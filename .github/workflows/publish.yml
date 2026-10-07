@@ -107,4 +107,4 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   # GitHub Release creation and binary artifact distribution are handled
-  # by cargo-dist in .github/workflows/release.yml.
+  # by cargo-dist in .github/workflows/v-release.yml.

@@ -7,6 +7,10 @@ members = ["cargo:crates/novomodelo-cli"]
 cargo-dist-version = "0.31.0"
 # CI backends to support
 ci = "github"
+# Only tags that start with `v` (the fork's own releases) start a release; the
+# imported upstream tags carry a namespace prefix. dist names the workflow
+# v-release.yml for this.
+tag-namespace = "v"
 # The installers to generate for each app
 installers = ["shell", "powershell"]
 # Target platforms to build apps for (Rust target-triple syntax)
@@ -27,7 +31,7 @@ install-updater = false
 # auto-included LICENSE and README — the statically-linked binary carries its
 # dependencies' notices with it. Paths are relative to the workspace root. This
 # is consumed by `dist build` at release time and does not change the generated
-# release.yml, so no `dist generate` re-run is required.
+# v-release.yml, so no `dist generate` re-run is required.
 include = [
     "NOTICE",
     "THIRD_PARTY_NOTICES.md",
