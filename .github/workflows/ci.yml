@@ -462,57 +462,6 @@ jobs:
             exit 1
           fi
 
-  # Coverage runs once on the primary (HiGHS) backend; NOT duplicated onto CLP.
-  coverage:
-    name: Code Coverage
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          submodules: recursive
-      - name: Cache MPICH
-        id: mpich-cache
-        uses: actions/cache@v5
-        with:
-          path: /opt/mpich
-          key: mpich-${{ env.MPICH_VERSION }}-${{ runner.os }}-${{ runner.arch }}
-      - name: Build MPICH from source
-        if: steps.mpich-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          wget -q "https://www.mpich.org/static/downloads/${MPICH_VERSION}/mpich-${MPICH_VERSION}.tar.gz"
-          tar xzf "mpich-${MPICH_VERSION}.tar.gz"
-          cd "mpich-${MPICH_VERSION}"
-          ./configure --prefix=/opt/mpich \
-              --disable-fortran \
-              --disable-cxx \
-              --disable-romio \
-              --disable-doc \
-              --with-device=ch3:nemesis
-          make -j"$(nproc)"
-          make install
-      - name: Set MPICH environment
-        run: |
-          echo "/opt/mpich/bin" >> "$GITHUB_PATH"
-          echo "PKG_CONFIG_PATH=/opt/mpich/lib/pkgconfig" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=/opt/mpich/lib" >> "$GITHUB_ENV"
-      - name: Install flatc (FlatBuffers compiler)
-        run: sudo apt-get update && sudo apt-get install -y flatbuffers-compiler
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: cov
-      - run: cargo install cargo-llvm-cov --locked
-      - run: cargo llvm-cov --workspace --features "${{ env.NON_SOLVER_FEATURES }}" --lcov --output-path lcov.info
-      - uses: codecov/codecov-action@v5
-        with:
-          files: lcov.info
-          fail_ci_if_error: false
-          token: ${{ secrets.CODECOV_TOKEN }}
-
   python:
     name: Python Bindings (${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -563,7 +512,7 @@ jobs:
         run: |
           python -m venv .venv
           source .venv/bin/activate
-          pip install maturin pytest pytest-cov pyarrow
+          pip install maturin pytest pyarrow
       - name: Build and install novomodelo-python
         working-directory: crates/novomodelo-python
         run: |
@@ -578,10 +527,10 @@ jobs:
           export LD_LIBRARY_PATH="$(python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))'):${LD_LIBRARY_PATH:-}"
           cargo test --manifest-path crates/novomodelo-python/Cargo.toml \
             --no-default-features --features highs
-      - name: Run Python tests with coverage
+      - name: Run Python tests
         run: |
           source .venv/bin/activate
-          pytest crates/novomodelo-python/tests/ -v --cov=novomodelo --cov-report=xml:python-coverage.xml --require-cli-binary
+          pytest crates/novomodelo-python/tests/ -v --require-cli-binary
       # Execute the quickstart notebook end-to-end against the locally built
       # wheel (the `maturin develop` artifact above — never a PyPI install) so
       # it cannot silently break. Run once on the lowest matrix Python; nbmake
@@ -596,10 +545,3 @@ jobs:
           # cannot false-fail the notebook for reasons unrelated to novomodelo.
           pip install 'nbmake>=1.5,<2' 'polars>=1.0,<2' 'matplotlib>=3.8,<4'
           pytest --nbmake examples/notebooks/quickstart.ipynb
-      - uses: codecov/codecov-action@v5
-        if: matrix.python-version == '3.12'
-        with:
-          files: python-coverage.xml
-          flags: python
-          fail_ci_if_error: false
-          token: ${{ secrets.CODECOV_TOKEN }}

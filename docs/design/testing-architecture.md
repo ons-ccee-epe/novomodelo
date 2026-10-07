@@ -80,15 +80,16 @@ baselines + deterministic case decks), the `mpi_wire.rs` determinism-gate binary
   job and the shuffle-matrix job use `cargo nextest`. There is **no
   `.config/nextest.toml`** — no profiles, retries, partitioning, JUnit, or
   archive.
-- **No CI cadence tiering**: `NON_SOLVER_FEATURES` (used by `Test`, `CLP`, and
-  `Coverage`) **includes `slow-tests`**, so the full slow suite runs on **every
+- **No CI cadence tiering**: `NON_SOLVER_FEATURES` (used by `Test` and `CLP`)
+  **includes `slow-tests`**, so the full slow suite runs on **every
   PR**. The `slow-tests` cargo feature therefore functions only as a _local-dev_
   convenience, not as a CI tier. The one lighter job is `Check`.
 - **Order-invariance shuffle matrix** (`invariance-shuffle.yml`) is
   **`workflow_dispatch`-only** — its nightly cron is commented out — so a
   _hard-rule_ determinism guarantee is exercised in automation only on manual
   dispatch.
-- **Coverage** via `cargo-llvm-cov` → codecov (HiGHS backend). Good.
+- **Coverage** is not measured in CI; `cargo llvm-cov --workspace` measures it
+  locally (HiGHS backend).
 - **Real multi-rank MPI** via a SLURM Docker cluster on `examples/4ree`
   (`mpi-slurm.yml`). Good. In-process MPI via `StubComm`/`Rank0Of2` across the
   in-process rank-shape tests.
