@@ -83,8 +83,6 @@ Each tape opens with the same block of `Set` directives: a `Set Theme` JSON obje
 carries the palette, and the other `Set` lines set the font and the window frame.
 Copy that block from an existing tape when you add one.
 
-The full brand palette is documented in `docs/internal/BRAND-GUIDELINES.md`.
-
 ## Embedding
 
 Reference GIF output in Markdown:

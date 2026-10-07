@@ -13,10 +13,6 @@ correctness contracts live in `.claude/rules/sddp.md` (§ "Water travel time" an
 "Anticipated thermal commitments"), which this document summarizes but does not
 replace.
 
-> New to these features? Start with the primer,
-> [`../guide/anticipated-thermals-and-water-travel-time.md`](../guide/anticipated-thermals-and-water-travel-time.md)
-> (contextualization, worked examples, diagrams), then return here for the contracts.
-
 ---
 
 ## 0. The unifying idea
