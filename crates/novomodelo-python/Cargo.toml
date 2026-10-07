@@ -1,0 +1,60 @@
+[package]
+name = "novomodelo-python"
+description = "Python bindings for the Novomodelo power systems solver — import novomodelo from Python scripts and Jupyter notebooks"
+version = "0.18.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://github.com/ons-ccee-epe/novomodelo"
+homepage = "https://docs.novomodelo.invalid/"
+authors = [
+    "Operador Nacional do Sistema Elétrico - ONS",
+    "Câmara de Comercialização de Energia Elétrica - CCEE",
+    "Empresa de Pesquisa Energética - EPE",
+]
+readme = "README.md"
+keywords = ["python", "bindings", "pyo3", "power-systems", "energy"]
+categories = ["science", "api-bindings"]
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+doc = false
+
+[dependencies]
+pyo3 = { version = "0.29.0", features = ["abi3-py312"] }
+novomodelo-core = { version = "0.18.0", path = "../novomodelo-core" }
+novomodelo-io = { version = "0.18.0", path = "../novomodelo-io", features = ["schema"] }
+novomodelo-sddp = { version = "0.18.0", path = "../novomodelo-sddp", default-features = false }
+novomodelo-stochastic = { version = "0.18.0", path = "../novomodelo-stochastic" }
+novomodelo-solver = { version = "0.18.0", path = "../novomodelo-solver", default-features = false }
+novomodelo-comm = { version = "0.18.0", path = "../novomodelo-comm" }
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+rayon = "1"
+arrow = { version = "60", default-features = false, features = ["ipc"] }
+parquet = { version = "60", default-features = false, features = ["arrow"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = ["extension-module", "highs"]
+extension-module = ["pyo3/extension-module"]
+highs = ["novomodelo-solver/highs", "novomodelo-sddp/highs"]
+clp = ["novomodelo-solver/clp", "novomodelo-sddp/clp"]
+
+# PyO3 proc macros generate unsafe code internally. The workspace forbids unsafe_code,
+# but this crate must override that lint to allow it, because the #[pymodule] and
+# #[pyclass] macros emit unsafe code that we do not write ourselves.
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "warn"
+too_many_arguments = "deny"

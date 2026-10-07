@@ -3,7 +3,7 @@
 # check-lints-drift.sh — Per-crate lint-table drift gate.
 #
 # The workspace default forbids unsafe code, so the four crates that need it for
-# FFI/PyO3 (cobre-solver, cobre-comm, cobre-sddp, cobre-python) cannot use
+# FFI/PyO3 (novomodelo-solver, novomodelo-comm, novomodelo-sddp, novomodelo-python) cannot use
 # `[lints] workspace = true` and instead hand-replicate the full
 # `[workspace.lints.*]` tables with `unsafe_code = "allow"`. Those copies can
 # silently drift from the workspace tables. This gate asserts each override
@@ -18,7 +18,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly REPO_ROOT
 
 readonly ROOT_CARGO="${REPO_ROOT}/Cargo.toml"
-readonly CRATES=(cobre-solver cobre-comm cobre-sddp cobre-python)
+readonly CRATES=(novomodelo-solver novomodelo-comm novomodelo-sddp novomodelo-python)
 
 build_table() {
     local file="$1"

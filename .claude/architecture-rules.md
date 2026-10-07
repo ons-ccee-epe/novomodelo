@@ -1,4 +1,4 @@
-# Cobre Architecture Rules — Hot Path & Context Structs
+# Novomodelo Architecture Rules — Hot Path & Context Structs
 
 This file is re-injected into Claude Code's context after compaction and should
 be read before modifying any hot-path code. It describes the required shape of
@@ -16,27 +16,27 @@ Available context structs:
 
 | Struct                | File                                                   | Purpose                                                                                                                                                                             | Mutability              |
 | --------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
-| `StageContext`        | `cobre-sddp/src/workspace/context.rs`                  | Per-stage templates, layout                                                                                                                                                         | Immutable (`&`)         |
-| `TrainingContext`     | `cobre-sddp/src/workspace/context.rs`                  | Horizon, indexer, stochastic, initial state, the runtime node graph                                                                                                                 | Immutable (`&`)         |
-| `ScratchBuffers`      | `cobre-sddp/src/workspace/workspace.rs`                | Per-worker noise/patch scratch space                                                                                                                                                | Mutable (`&mut`)        |
-| `SolverWorkspace`     | `cobre-sddp/src/workspace/workspace.rs`                | Solver + scratch + patch buffer                                                                                                                                                     | Mutable (`&mut`)        |
-| `TrainingConfig`      | `cobre-sddp/src/config.rs`                             | Forward passes, iteration limit, seed                                                                                                                                               | Owned (moved in)        |
-| `SimulationConfig`    | `cobre-sddp/src/simulation/config.rs`                  | Scenario count, channel capacity                                                                                                                                                    | Immutable (`&`)         |
-| `ForwardPassBatch`    | `cobre-sddp/src/training/forward/mod.rs`               | Local pass count, iteration, offset                                                                                                                                                 | Immutable (`&`)         |
-| `TrainingSession`     | `cobre-sddp/src/training/session/mod.rs`               | Owns solver, pools, sub-state structs, scratch                                                                                                                                      | Owned driver            |
-| `BackwardPassState`   | `cobre-sddp/src/training/backward_pass_state.rs`       | Owned scratch for backward-pass helpers                                                                                                                                             | Mutable (`&mut self`)   |
-| `ForwardPassState`    | `cobre-sddp/src/training/forward_pass_state.rs`        | Owned scratch for forward-pass workers                                                                                                                                              | Mutable (`&mut self`)   |
-| `SimulationState`     | `cobre-sddp/src/simulation/state.rs`                   | Owned scratch for simulation workers                                                                                                                                                | Mutable (`&mut self`)   |
-| `BackwardPassInputs`  | `cobre-sddp/src/training/backward_pass_state.rs`       | Borrowed inputs to `BackwardPassState::run`                                                                                                                                         | Mutable bundle (`&mut`) |
-| `ForwardPassInputs`   | `cobre-sddp/src/training/forward_pass_state.rs`        | Borrowed inputs to `ForwardPassState::run`                                                                                                                                          | Mutable bundle (`&mut`) |
-| `SimulationInputs`    | `cobre-sddp/src/simulation/state.rs`                   | Borrowed inputs to `SimulationState::run`                                                                                                                                           | Mutable bundle (`&mut`) |
-| `ForwardWorkerParams` | `cobre-sddp/src/training/forward_pass_state.rs`        | Read-only captures for rayon workers                                                                                                                                                | Immutable bundle (`&`)  |
-| `ForwardWorkerResult` | `cobre-sddp/src/training/forward_pass_state.rs`        | Return bundle from per-worker forward execution                                                                                                                                     | Owned (moved out)       |
-| `OpeningTreeInputs`   | `cobre-stochastic/src/tree/generate.rs`                | Optional inputs to `generate_opening_tree`                                                                                                                                          | Immutable bundle (`&`)  |
-| `LbEvalScratch`       | `cobre-sddp/src/training/lower_bound.rs`               | Rank-0 risk-measure aggregation scratch (`objectives_buf`, `weights_buf`, `risk_scratch`) with no `ScratchBuffers` counterpart                                                      | Mutable (`&mut`)        |
-| `LbEvalScratchBundle` | `cobre-sddp/src/training/lower_bound.rs`               | Bundles `patch_buf`, `lb_cut_batch`, `lb_cut_row_map`, `noise_scratch` (`ScratchBuffers`), `lb_scratch` for `evaluate_lower_bound`                                                  | Mutable bundle (`&mut`) |
-| `RiskMeasureScratch`  | `cobre-sddp/src/convergence/risk_measure.rs`           | CVaR weight-computation scratch (`upper_bounds`, `order`, `mu`)                                                                                                                     | Mutable (`&mut`)        |
-| `NestedUbScratch`     | `cobre-sddp/src/training/forward/stats_aggregation.rs` | Nested upper-bound gather layout, gathered costs and recursion buffers (with a `RiskMeasureScratch`), held on the session's `IterationScratch` beside the other upper-bound buffers | Mutable (`&mut`)        |
+| `StageContext`        | `novomodelo-sddp/src/workspace/context.rs`                  | Per-stage templates, layout                                                                                                                                                         | Immutable (`&`)         |
+| `TrainingContext`     | `novomodelo-sddp/src/workspace/context.rs`                  | Horizon, indexer, stochastic, initial state, the runtime node graph                                                                                                                 | Immutable (`&`)         |
+| `ScratchBuffers`      | `novomodelo-sddp/src/workspace/workspace.rs`                | Per-worker noise/patch scratch space                                                                                                                                                | Mutable (`&mut`)        |
+| `SolverWorkspace`     | `novomodelo-sddp/src/workspace/workspace.rs`                | Solver + scratch + patch buffer                                                                                                                                                     | Mutable (`&mut`)        |
+| `TrainingConfig`      | `novomodelo-sddp/src/config.rs`                             | Forward passes, iteration limit, seed                                                                                                                                               | Owned (moved in)        |
+| `SimulationConfig`    | `novomodelo-sddp/src/simulation/config.rs`                  | Scenario count, channel capacity                                                                                                                                                    | Immutable (`&`)         |
+| `ForwardPassBatch`    | `novomodelo-sddp/src/training/forward/mod.rs`               | Local pass count, iteration, offset                                                                                                                                                 | Immutable (`&`)         |
+| `TrainingSession`     | `novomodelo-sddp/src/training/session/mod.rs`               | Owns solver, pools, sub-state structs, scratch                                                                                                                                      | Owned driver            |
+| `BackwardPassState`   | `novomodelo-sddp/src/training/backward_pass_state.rs`       | Owned scratch for backward-pass helpers                                                                                                                                             | Mutable (`&mut self`)   |
+| `ForwardPassState`    | `novomodelo-sddp/src/training/forward_pass_state.rs`        | Owned scratch for forward-pass workers                                                                                                                                              | Mutable (`&mut self`)   |
+| `SimulationState`     | `novomodelo-sddp/src/simulation/state.rs`                   | Owned scratch for simulation workers                                                                                                                                                | Mutable (`&mut self`)   |
+| `BackwardPassInputs`  | `novomodelo-sddp/src/training/backward_pass_state.rs`       | Borrowed inputs to `BackwardPassState::run`                                                                                                                                         | Mutable bundle (`&mut`) |
+| `ForwardPassInputs`   | `novomodelo-sddp/src/training/forward_pass_state.rs`        | Borrowed inputs to `ForwardPassState::run`                                                                                                                                          | Mutable bundle (`&mut`) |
+| `SimulationInputs`    | `novomodelo-sddp/src/simulation/state.rs`                   | Borrowed inputs to `SimulationState::run`                                                                                                                                           | Mutable bundle (`&mut`) |
+| `ForwardWorkerParams` | `novomodelo-sddp/src/training/forward_pass_state.rs`        | Read-only captures for rayon workers                                                                                                                                                | Immutable bundle (`&`)  |
+| `ForwardWorkerResult` | `novomodelo-sddp/src/training/forward_pass_state.rs`        | Return bundle from per-worker forward execution                                                                                                                                     | Owned (moved out)       |
+| `OpeningTreeInputs`   | `novomodelo-stochastic/src/tree/generate.rs`                | Optional inputs to `generate_opening_tree`                                                                                                                                          | Immutable bundle (`&`)  |
+| `LbEvalScratch`       | `novomodelo-sddp/src/training/lower_bound.rs`               | Rank-0 risk-measure aggregation scratch (`objectives_buf`, `weights_buf`, `risk_scratch`) with no `ScratchBuffers` counterpart                                                      | Mutable (`&mut`)        |
+| `LbEvalScratchBundle` | `novomodelo-sddp/src/training/lower_bound.rs`               | Bundles `patch_buf`, `lb_cut_batch`, `lb_cut_row_map`, `noise_scratch` (`ScratchBuffers`), `lb_scratch` for `evaluate_lower_bound`                                                  | Mutable bundle (`&mut`) |
+| `RiskMeasureScratch`  | `novomodelo-sddp/src/convergence/risk_measure.rs`           | CVaR weight-computation scratch (`upper_bounds`, `order`, `mu`)                                                                                                                     | Mutable (`&mut`)        |
+| `NestedUbScratch`     | `novomodelo-sddp/src/training/forward/stats_aggregation.rs` | Nested upper-bound gather layout, gathered costs and recursion buffers (with a `RiskMeasureScratch`), held on the session's `IterationScratch` beside the other upper-bound buffers | Mutable (`&mut`)        |
 
 **Decision tree when adding new data to the hot path:**
 
@@ -55,7 +55,7 @@ Available context structs:
 
 The node-native engine's runtime node graph (node identity/canonical order,
 the `node → pool` map, per-node Ω views/out-edges — `NodeGraph` in
-`cobre-sddp/src/setup/node_graph.rs`) is **study-level, read-only** data
+`novomodelo-sddp/src/setup/node_graph.rs`) is **study-level, read-only** data
 (rule 2 above), so it is a field on `TrainingContext`
 (`node_graph: &'a NodeGraph`) rather than a new dedicated context struct — the
 same shape as `stochastic`, `study_dims`, and `cut_state_layouts`, which are
@@ -100,17 +100,17 @@ duplicates the other's resolution sequence.
 
 | Struct                | File                                            | Purpose                                                                                                                              | Visibility   | Storage form                |
 | ---------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------ | --------------------------- |
-| `SolveInputs`          | `cobre-sddp/src/setup/solve_inputs.rs`          | Every input `stage_ctx`/`training_ctx`/`simulation_ctx` borrow from: `stage_data`, `stochastic`, `scenario_libraries`, `node_graph`, `initial`, `ncs`, `study_stage_ids`, `horizon`, `cut_management`, `cut_state_layouts` | `pub`        | Aggregated sub-struct       |
-| `StageData`            | `cobre-sddp/src/setup/stage_data.rs`            | All stage-indexed data: templates, time value, indexer, stages, entity counts, blocks, lag transitions, noise groups, scaling report | `pub`        | Aggregated sub-struct       |
-| `ScenarioLibraries`    | `cobre-sddp/src/setup/scenario_library_set.rs`  | Training + simulation `PhaseLibraries` pair                                                                                          | `pub`        | Aggregated sub-struct       |
-| `PhaseLibraries`       | `cobre-sddp/src/setup/scenario_library_set.rs`  | Sampling schemes and optional libraries for one phase                                                                                | `pub`        | Aggregated sub-struct       |
-| `InitialConditions`    | `cobre-sddp/src/setup/mod.rs`                   | Initial state vector + derived per-hydro PAR lag-slot/accumulator seeds                                                              | `pub(crate)` | Aggregated sub-struct       |
-| `NcsEntityData`        | `cobre-sddp/src/setup/mod.rs`                   | Per-stage and per-slot NCS entity data: dense column map, commissioning windows, max gen, curtailment                                | `pub(crate)` | Aggregated sub-struct       |
-| `NodeGraph`            | `cobre-sddp/src/setup/node_graph.rs`            | Runtime node graph: node identity/order, `node → pool` map, per-node Ω views/out-edges                                               | `pub`        | Aggregated sub-struct       |
-| `LoopParams`           | `cobre-sddp/src/config.rs`                      | Pure-data projection of `LoopConfig` (excludes runtime-derived fields)                                                               | `pub`        | Projection of `LoopConfig`  |
-| `SimulationConfig`     | `cobre-sddp/src/simulation/config.rs`           | `n_scenarios`, `io_channel_capacity`                                                                                                 | `pub`        | Literal reuse               |
-| `CutManagementConfig`  | `cobre-sddp/src/config.rs`                      | Cut selection, budget cap, activity tolerance, warm-start cuts, per-stage risk measures                                              | `pub(crate)` | Literal reuse               |
-| `EventParams`          | `cobre-sddp/src/config.rs`                      | Output-side event flags; excludes runtime handles                                                                                    | `pub(crate)` | Projection of `EventConfig` |
+| `SolveInputs`          | `novomodelo-sddp/src/setup/solve_inputs.rs`          | Every input `stage_ctx`/`training_ctx`/`simulation_ctx` borrow from: `stage_data`, `stochastic`, `scenario_libraries`, `node_graph`, `initial`, `ncs`, `study_stage_ids`, `horizon`, `cut_management`, `cut_state_layouts` | `pub`        | Aggregated sub-struct       |
+| `StageData`            | `novomodelo-sddp/src/setup/stage_data.rs`            | All stage-indexed data: templates, time value, indexer, stages, entity counts, blocks, lag transitions, noise groups, scaling report | `pub`        | Aggregated sub-struct       |
+| `ScenarioLibraries`    | `novomodelo-sddp/src/setup/scenario_library_set.rs`  | Training + simulation `PhaseLibraries` pair                                                                                          | `pub`        | Aggregated sub-struct       |
+| `PhaseLibraries`       | `novomodelo-sddp/src/setup/scenario_library_set.rs`  | Sampling schemes and optional libraries for one phase                                                                                | `pub`        | Aggregated sub-struct       |
+| `InitialConditions`    | `novomodelo-sddp/src/setup/mod.rs`                   | Initial state vector + derived per-hydro PAR lag-slot/accumulator seeds                                                              | `pub(crate)` | Aggregated sub-struct       |
+| `NcsEntityData`        | `novomodelo-sddp/src/setup/mod.rs`                   | Per-stage and per-slot NCS entity data: dense column map, commissioning windows, max gen, curtailment                                | `pub(crate)` | Aggregated sub-struct       |
+| `NodeGraph`            | `novomodelo-sddp/src/setup/node_graph.rs`            | Runtime node graph: node identity/order, `node → pool` map, per-node Ω views/out-edges                                               | `pub`        | Aggregated sub-struct       |
+| `LoopParams`           | `novomodelo-sddp/src/config.rs`                      | Pure-data projection of `LoopConfig` (excludes runtime-derived fields)                                                               | `pub`        | Projection of `LoopConfig`  |
+| `SimulationConfig`     | `novomodelo-sddp/src/simulation/config.rs`           | `n_scenarios`, `io_channel_capacity`                                                                                                 | `pub`        | Literal reuse               |
+| `CutManagementConfig`  | `novomodelo-sddp/src/config.rs`                      | Cut selection, budget cap, activity tolerance, warm-start cuts, per-stage risk measures                                              | `pub(crate)` | Literal reuse               |
+| `EventParams`          | `novomodelo-sddp/src/config.rs`                      | Output-side event flags; excludes runtime handles                                                                                    | `pub(crate)` | Projection of `EventConfig` |
 
 ### Literal reuse vs projection
 
@@ -201,7 +201,7 @@ No bare per-call parameters — everything rides on either `self` or `inputs`.
 | `evaluate_lower_bound`           | 7        | `training/lower_bound.rs`               | Takes `&StageContext`/`&TrainingContext` directly |
 | `build_row_lower_unscaled`       | 8        | `simulation/pipeline.rs`                |                                                   |
 | `run_forward_worker`             | 6        | `training/forward_pass_state.rs`        | Free function; accepts `&ForwardWorkerParams`     |
-| `generate_opening_tree`          | 7        | `cobre-stochastic/src/tree/generate.rs` | Optional inputs go through `OpeningTreeInputs`    |
+| `generate_opening_tree`          | 7        | `novomodelo-stochastic/src/tree/generate.rs` | Optional inputs go through `OpeningTreeInputs`    |
 
 All four hot-path drivers (train/backward/forward/simulate) must take exactly
 `&mut self` + `&mut *Inputs` at their public `run` boundary. Any function that
@@ -250,11 +250,11 @@ the invariant CLAUDE.md's Python-parity hard rule owns (state the rule, not a
 "currently none missing" snapshot). When adding a new output:
 
 1. The CLI writes it via `write_training_outputs` / `write_simulation_outputs`
-   in `crates/cobre-cli/src/commands/run/outputs.rs`, before the phase's
+   in `crates/novomodelo-cli/src/commands/run/outputs.rs`, before the phase's
    `write_success_marker` call.
-2. Wire the same `cobre_io` write into the Python path — `write_training_outputs` /
-   `run_simulation_phase_py` in `crates/cobre-python/src/run.rs` — so both
-   surfaces emit the file. `cobre-python` is excluded from the Cargo workspace,
+2. Wire the same `novomodelo_io` write into the Python path — `write_training_outputs` /
+   `run_simulation_phase_py` in `crates/novomodelo-python/src/run.rs` — so both
+   surfaces emit the file. `novomodelo-python` is excluded from the Cargo workspace,
    but `scripts/ci/check_python_parity.py` (also run by
-   `cargo test -p cobre-cli --test python_parity_check`) checks that both paths
+   `cargo test -p novomodelo-cli --test python_parity_check`) checks that both paths
    call the same writers and that no write follows the phase marker.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# loc-stats.sh — Rust line & test-count statistics for the cobre workspace.
+# loc-stats.sh — Rust line & test-count statistics for the novomodelo workspace.
 #
 # Splits every tracked .rs line into PRODUCTION vs TEST, per crate and global,
 # and counts test functions. Refreshable: run it any time to get current numbers.
@@ -22,7 +22,7 @@ usage() {
 Usage: scripts/loc-stats.sh [options]
 
 Rust line counts (production vs test) and test-function counts, per crate and
-global, for the cobre workspace.
+global, for the novomodelo workspace.
 
 Options:
   --worktree   Count working-tree files (find) instead of git-tracked files.

@@ -23,22 +23,22 @@ located at `example/4ree/` in that repository.
 Validate the case (checks all 5 validation layers):
 
 ```sh
-cobre validate examples/4ree
+novomodelo validate examples/4ree
 ```
 
 Run the optimization:
 
 ```sh
-cobre run examples/4ree
+novomodelo run examples/4ree
 ```
 
 ## Conversion Decisions
 
 ### Bus ID remapping
 
-sddp-lab uses 1-indexed bus IDs; Cobre uses 0-indexed IDs. The mapping is:
+sddp-lab uses 1-indexed bus IDs; Novomodelo uses 0-indexed IDs. The mapping is:
 
-| sddp-lab ID | sddp-lab name | Cobre ID | Cobre name |
+| sddp-lab ID | sddp-lab name | Novomodelo ID | Novomodelo name |
 | ----------- | ------------- | -------- | ---------- |
 | 1           | SUDESTE       | 0        | SUDESTE    |
 | 2           | SUL           | 1        | SUL        |
@@ -47,7 +47,7 @@ sddp-lab uses 1-indexed bus IDs; Cobre uses 0-indexed IDs. The mapping is:
 | 5           | NOFICT1       | 4        | NOFICT1    |
 
 All `bus_id` references in hydros, thermals, and lines are remapped accordingly.
-Thermal IDs are also remapped from 1-indexed (sddp-lab) to 0-indexed (Cobre).
+Thermal IDs are also remapped from 1-indexed (sddp-lab) to 0-indexed (Novomodelo).
 
 ### NOFICT1 as a transit hub
 
@@ -60,7 +60,7 @@ All 126 thermals in sddp-lab are connected to real buses 1–4; none were connec
 to bus 5, so no thermal reassignment was needed. No hydro plant is assigned to
 NOFICT1.
 
-- **Lines retained**: all ten sddp-lab lines collapse to five Cobre bidirectional
+- **Lines retained**: all ten sddp-lab lines collapse to five Novomodelo bidirectional
   entries using `capacity.direct_mw` / `capacity.reverse_mw`:
   - `SUDESTE_SUL` (direct: 7500 MW, reverse: 5470 MW)
   - `SUDESTE_NORDESTE` (direct: 1000 MW, reverse: 600 MW)
@@ -69,12 +69,12 @@ NOFICT1.
   - `NORTE_NOFICT1` (direct: 10000 MW, reverse: 4407 MW)
 
   The sddp-lab model used paired unidirectional lines for asymmetric capacity.
-  Cobre's single bidirectional line entry encodes both directions.
+  Novomodelo's single bidirectional line entry encodes both directions.
 
 ### Inflow model (NOT converted)
 
 sddp-lab uses "Naive" inflow scenarios with per-season LogNormal marginal
-distributions and identity Gaussian copulas (independent hydros). Cobre uses
+distributions and identity Gaussian copulas (independent hydros). Novomodelo uses
 PAR(p) with additive normal noise.
 
 Converting LogNormal(mu, sigma) parameters to PAR(0) normal parameters requires
@@ -99,7 +99,7 @@ measures due to the differences in inflow distributions noted above.
 
 ### Discount rate
 
-sddp-lab's graph edges all have `discount_rate: 0.0`. Cobre's `stages.json` sets
+sddp-lab's graph edges all have `discount_rate: 0.0`. Novomodelo's `stages.json` sets
 `annual_discount_rate: 0.0` to match.
 
 ### Spillage penalty
@@ -111,7 +111,7 @@ The global spillage penalty in `penalties.json` is set to 1.0 $/hm³.
 
 Initial reservoir storage values are taken directly from `hydros.csv`:
 
-| Hydro (Cobre ID) | Initial storage (hm³) |
+| Hydro (Novomodelo ID) | Initial storage (hm³) |
 | ---------------- | --------------------- |
 | 0 (SUDESTE)      | 38343.9               |
 | 1 (SUL)          | 10068.8               |

@@ -351,13 +351,13 @@ Regressions to pin at implementation, each named for the contract it guards:
   reject are untouched by the excision (the classification is per delivery
   target, not per decision count).
 
-## 11. Bridge follow-up (cobre-bridge, separate repository)
+## 11. Bridge follow-up (novomodelo-bridge, separate repository)
 
 - Build the faithful post-study calendar: the horizon-end stub, the real
   operative weeks, and the month remainders — replacing the mirror-shift
   (`_build_post_study_calendar`).
 - Emit `lead_stages = n_stages + g` (exact on the faithful axis) instead of
-  the mirror-shift's hour lead; retire `_cobre_safe_lead_hours`.
+  the mirror-shift's hour lead; retire `_novomodelo_safe_lead_hours`.
 - Map `dadgnl` `GL` registers to `past_anticipated_commitments` windows on
   both sides of the horizon (in-study months as class-2 seeds, post-study
   weeks as class-4 fixed windows, the stub as an explicit zero).

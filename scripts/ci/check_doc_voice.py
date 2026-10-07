@@ -5,7 +5,7 @@ Enforces `.claude/rules/doc-integrity.md` §5 (sober reference register — no
 marketing/hype voice) and §2/§4 (no hand-frozen "typical"/"about N" numbers)
 across `README.md` and `CONTRIBUTING.md`. (The former `book/src/` scan root
 was retired with book/ — mdBook decommission; the unified docs site at
-docs.cobre-rs.dev owns prose voice for user-facing content now.)
+docs.novomodelo.invalid owns prose voice for user-facing content now.)
 
 Scans PROSE only: fenced code blocks (``` / ~~~), inline `code` spans, and HTML
 comments are blanked before matching, so code samples, identifiers, and config

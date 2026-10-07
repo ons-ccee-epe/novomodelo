@@ -2,11 +2,11 @@
 
 > **Status:** Live spec — reflects shipped behavior. Verify the cited symbols against the tree before acting.
 
-This is the contract-of-record for how cobre computes hydro productivity and
+This is the contract-of-record for how novomodelo computes hydro productivity and
 stored energy: which primitives exist, what inputs each one reads, and how a
 security-curve constraint is authored against them. It consolidates facts that
 are otherwise scattered across several crates' rustdoc; a caller integrating
-against cobre (a bridge writing input decks, or a reader of simulation output)
+against novomodelo (a bridge writing input decks, or a reader of simulation output)
 should need only this page plus the symbols it points at.
 
 ## The 2x2 scope x evaluator model
@@ -16,7 +16,7 @@ Hydro productivity is computed along two independent axes. **Scope** is `own`
 every downstream plant to the sea). **Evaluator** is `reference point` (head
 evaluated at a single reference volume) or `useful-range mean` (head averaged
 over a volume range). Each of the four cells is a `computed` scalar-parameter
-tag (`ComputedParameter` in `cobre-core`'s parameter model), serialized in
+tag (`ComputedParameter` in `novomodelo-core`'s parameter model), serialized in
 `snake_case` and carrying only a `hydro_id`:
 
 | | reference point | useful-range mean |
@@ -90,7 +90,7 @@ for the case of a genuine mid-study physical capacity enlargement.
 ## The per-column override table
 
 `system/hydro_energy_productivity.parquet` (parsed by
-`crates/cobre-io/src/extensions/hydro_energy_productivity.rs`) carries three
+`crates/novomodelo-io/src/extensions/hydro_energy_productivity.rs`) carries three
 optional per-`(hydro, stage)` override columns, each reaching a distinct,
 non-overlapping set of consumers:
 
@@ -126,8 +126,8 @@ stage duration enters the computation. `stored_energy_{initial,final}_mw` is
 derived from it: `_mwh` divided by the stage's total block hours. The source
 models this feature's inputs originate from (NEWAVE, DECOMP) report a
 comparable quantity on a month-based unit; reconciling that unit against
-cobre's stage-hours-based `_mw` column, when the two differ, is a consumer-side
-concern — cobre reports the stage's own duration-normalized value and takes no
+novomodelo's stage-hours-based `_mw` column, when the two differ, is a consumer-side
+concern — novomodelo reports the stage's own duration-normalized value and takes no
 position on a month-based convention.
 
 ## The collapsed-range rule
@@ -141,7 +141,7 @@ range equals the point value. This is how a source model's
 run-of-river-versus-reservoir distinction falls out of the data: a plant
 whose physical range is authored as collapsed behaves identically under
 either evaluator, with no separate per-plant regulation-type concept and no
-per-plant evaluator-selection field anywhere in cobre's input surface.
+per-plant evaluator-selection field anywhere in novomodelo's input surface.
 
 ## Geometry gates the mean evaluator, not the generation model
 
@@ -163,14 +163,14 @@ model, as it always has.
 
 `hydro_useful_volume_{initial,final}(id[, block])` are authorable generic
 constraint variable references, parsed in
-`crates/cobre-io/src/constraints/generic.rs` and resolving to
+`crates/novomodelo-io/src/constraints/generic.rs` and resolving to
 `VariableRef::HydroUsefulVolumeInitial` / `HydroUsefulVolumeFinal`. Each
 resolves to the exact same LP column as the corresponding
 `hydro_storage_{initial,final}` reference (coefficient multiplier `1.0`), and
 receives the same referential and per-block validation the storage pair
 already receives — it names no new LP variable. What differs is the bound: at
 LP build time, `useful_volume_bound_shift` (in
-`crates/cobre-sddp/src/lp/builder/layout.rs`) moves each term's dead volume
+`crates/novomodelo-sddp/src/lp/builder/layout.rs`) moves each term's dead volume
 onto the bound: a term `coef * hydro_useful_volume_*(h)` stands for
 `coef * (storage - V_lo)`, so `coef * V_lo` — with `V_lo` the entity physical
 `Hydro.min_storage_hm3` — is ADDED to every resolved bound endpoint the
@@ -180,7 +180,7 @@ underlying LP column still carries the absolute storage value; a negative
 coefficient lowers the bound by the same rule.
 
 The folded bound is publicly observable: `build_generic_constraint_echo_rows`
-(`crates/cobre-sddp/src/generic_constraint_echo.rs`) reports the
+(`crates/novomodelo-sddp/src/generic_constraint_echo.rs`) reports the
 post-fold value on `GenericConstraintEchoRow.bound_lower`, written to the same
 `generic_constraint_echo` output by both the CLI and the Python bindings. This
 echo output is the intended way to observe the folded bound — reading the
@@ -206,7 +206,7 @@ The bridge's hand-folded equivalent — the form used before this feature
 existed, still valid today — expresses the same constraint as a literal
 coefficient on `hydro_storage_final(id)` with the plant's dead volume
 pre-subtracted into the coefficient by hand. The two forms are equivalent by
-construction; `crates/cobre-sddp/tests/deterministic.rs`'s
+construction; `crates/novomodelo-sddp/tests/deterministic.rs`'s
 `security_curve_integrated_productivity_equivalence` module builds an
 end-to-end deck exercising both forms side by side (non-uniform VHA geometry,
 an entity `rho_esp` plus a stage-specific override, an operative ceiling below
@@ -223,12 +223,12 @@ other is a mismatch: the two ride different evaluators and would not cancel
 the way the authoring recipe above relies on. The matching (cancelling)
 coefficient for `max_stored_energy` is `integrated_accumulated_productivity`,
 never `accumulated_productivity`. This mismatch is what rule 51
-(`crates/cobre-io/src/validation/semantic/constraints.rs`) detects, reporting
+(`crates/novomodelo-io/src/validation/semantic/constraints.rs`) detects, reporting
 it as a non-blocking warning — it never rejects the constraint outright,
 since a study author may have a reason to combine them that the checker
 cannot see.
 
-Separately, rule 52 (`crates/cobre-io/src/validation/semantic/stages.rs`)
+Separately, rule 52 (`crates/novomodelo-io/src/validation/semantic/stages.rs`)
 requires every study stage to declare at least one block, and every declared
 block's duration to be finite and strictly positive. This is the invariant
 the `stored_energy_*_mw` division (`_mwh` divided by the stage's summed block

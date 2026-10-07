@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SLURM MPI integration test for `cobre run`.
+# SLURM MPI integration test for `novomodelo run`.
 #
 # Exercises up to 5 MPI execution modes against the 4ree example case and
 # verifies rank-count invariance: every classified output parquet of each
@@ -33,7 +33,7 @@
 #   full      every T and S case (default — preserves prior behavior).
 #
 # Prerequisites (satisfied by the Docker image):
-#   - /shared/cobre-mpi   (cobre binary built with --features mpi)
+#   - /shared/novomodelo-mpi   (novomodelo binary built with --features mpi)
 #   - /shared/4ree        (example case directory)
 #   - /opt/mpich/bin      (MPICH installation)
 #   - python3 with pyarrow
@@ -42,7 +42,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-readonly COBRE_BIN="/shared/cobre-mpi"
+readonly NOVOMODELO_BIN="/shared/novomodelo-mpi"
 readonly CASE_DIR="/shared/4ree"
 readonly TIMEOUT=120
 readonly WORK_DIR="/shared/work"
@@ -113,8 +113,8 @@ parse_mode() {
 preflight_check() {
     local ok=1
 
-    if [[ ! -x "${COBRE_BIN}" ]]; then
-        echo "ERROR: cobre binary not found or not executable: ${COBRE_BIN}"
+    if [[ ! -x "${NOVOMODELO_BIN}" ]]; then
+        echo "ERROR: novomodelo binary not found or not executable: ${NOVOMODELO_BIN}"
         ok=0
     fi
 
@@ -140,7 +140,7 @@ preflight_check() {
 
     mkdir -p "${WORK_DIR}"
 
-    echo "INFO: cobre binary: ${COBRE_BIN}"
+    echo "INFO: novomodelo binary: ${NOVOMODELO_BIN}"
     echo "INFO: case directory: ${CASE_DIR}"
     echo "INFO: work directory: ${WORK_DIR}"
     echo "INFO: mpiexec: $(command -v mpiexec)"
@@ -294,7 +294,7 @@ for rel_path in non_exempt:
     # ParquetFile(path).read() reads the file's own columns only; pq.read_table()
     # would add a dictionary<int32> scenario_id partition column from the
     # scenario_id=NNNN/ Hive path that collides with the in-file int32 column
-    # (the same read contract cobre's Python tests and native loader follow).
+    # (the same read contract novomodelo's Python tests and native loader follow).
     baseline_table = pq.ParquetFile(os.path.join(baseline_dir, rel_path)).read()
     test_table = pq.ParquetFile(os.path.join(test_dir, rel_path)).read()
 
@@ -768,7 +768,7 @@ check_outputs() {
 #                  <n_ranks> <extra_args...>
 #
 # Seeds $WORK_DIR/<test_name_lower> with <policy_src> when it is non-empty,
-# then runs: timeout $TIMEOUT mpiexec -n <n_ranks> $COBRE_BIN run <case_dir>
+# then runs: timeout $TIMEOUT mpiexec -n <n_ranks> $NOVOMODELO_BIN run <case_dir>
 #              --output $WORK_DIR/<test_name_lower> --quiet [extra_args]
 # Calls check_outputs against $WORK_DIR/<baseline_tag> (none when the test
 # is the baseline itself) and updates RESULTS.
@@ -796,7 +796,7 @@ run_mpiexec_test() {
 
     local exit_code=0
     timeout "${TIMEOUT}" mpiexec -n "${n_ranks}" \
-        "${COBRE_BIN}" run "${case_dir}" --output "${output_dir}" --quiet \
+        "${NOVOMODELO_BIN}" run "${case_dir}" --output "${output_dir}" --quiet \
         "${extra_args[@]+"${extra_args[@]}"}" || exit_code=$?
 
     local baseline=""
@@ -855,12 +855,12 @@ run_sbatch_test() {
     local extra_str="${extra_args[*]+"${extra_args[*]}"}"
 
     # Generate the batch script with absolute paths.
-    # The heredoc delimiter is unquoted so WORK_DIR, COBRE_BIN, case_dir,
+    # The heredoc delimiter is unquoted so WORK_DIR, NOVOMODELO_BIN, case_dir,
     # output_dir, and mpiexec_n expand at generation time.
     cat > "${batch_script}" << SBEOF
 #!/bin/bash
 export PATH=/opt/mpich/bin:\$PATH
-mpiexec -n ${mpiexec_n} ${COBRE_BIN} run ${case_dir} --output ${output_dir} --quiet ${extra_str}
+mpiexec -n ${mpiexec_n} ${NOVOMODELO_BIN} run ${case_dir} --output ${output_dir} --quiet ${extra_str}
 SBEOF
 
     chmod +x "${batch_script}"

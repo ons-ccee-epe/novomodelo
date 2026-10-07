@@ -32,7 +32,7 @@
 #   Known limitation (same as the sibling gates): the cfg(test) exclusion
 #   assumes the test module is a tail block. The `extern "C"` skip assumes the
 #   block's closing brace is the first column-0 `}` after the opener (true for
-#   the cobre FFI blocks, whose items are indented).
+#   the novomodelo FFI blocks, whose items are indented).
 #
 # Reporting: each hit is printed as `FILE:LINE: <matched glyph span>` under an
 #   `ADVISORY:` banner, followed by a non-zero hit count and a footer.
@@ -47,16 +47,16 @@ readonly REPO_ROOT
 # Production .rs source directories, scanned per-file with the cfg(test)
 # tail-block + extern "C" block exclusions. Mirrors check-comment-refs.sh.
 readonly SCAN_DIRS=(
-    "${REPO_ROOT}/crates/cobre-core/src"
-    "${REPO_ROOT}/crates/cobre-io/src"
-    "${REPO_ROOT}/crates/cobre-solver/src"
-    "${REPO_ROOT}/crates/cobre-comm/src"
-    "${REPO_ROOT}/crates/cobre-stochastic/src"
-    "${REPO_ROOT}/crates/cobre-sddp/src"
-    "${REPO_ROOT}/crates/cobre-cli/src"
-    "${REPO_ROOT}/crates/cobre-python/src"
-    "${REPO_ROOT}/crates/cobre-mcp/src"
-    "${REPO_ROOT}/crates/cobre-tui/src"
+    "${REPO_ROOT}/crates/novomodelo-core/src"
+    "${REPO_ROOT}/crates/novomodelo-io/src"
+    "${REPO_ROOT}/crates/novomodelo-solver/src"
+    "${REPO_ROOT}/crates/novomodelo-comm/src"
+    "${REPO_ROOT}/crates/novomodelo-stochastic/src"
+    "${REPO_ROOT}/crates/novomodelo-sddp/src"
+    "${REPO_ROOT}/crates/novomodelo-cli/src"
+    "${REPO_ROOT}/crates/novomodelo-python/src"
+    "${REPO_ROOT}/crates/novomodelo-mcp/src"
+    "${REPO_ROOT}/crates/novomodelo-tui/src"
 )
 
 # Box-drawing glyph range U+2500..U+257F. `\x{...}` requires grep -P (PCRE);

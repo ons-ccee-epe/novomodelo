@@ -1,13 +1,13 @@
-# Cobre — Development Guidelines
+# Novomodelo — Development Guidelines
 
 ## Project Overview
 
-Cobre is a Rust ecosystem for power system optimization. The first solver
+Novomodelo is a Rust ecosystem for power system optimization. The first solver
 vertical is SDDP-based hydrothermal dispatch.
 
 - **Language**: Rust 2024 edition, MSRV 1.88
 - **License**: Apache-2.0
-- **Workspace**: Cargo workspace members (`cobre-mcp`, `cobre-tui`, `cobre-flow`, `cobre-uc`, `cobre-emt` are reserved stubs) plus the maturin-built `cobre-python` (excluded from the workspace so `cargo test --workspace` does not require a Python interpreter); `ARCHITECTURE.md` owns the full crate map
+- **Workspace**: Cargo workspace members (`novomodelo-mcp`, `novomodelo-tui`, `novomodelo-flow`, `novomodelo-uc`, `novomodelo-emt` are reserved stubs) plus the maturin-built `novomodelo-python` (excluded from the workspace so `cargo test --workspace` does not require a Python interpreter); `ARCHITECTURE.md` owns the full crate map
 - **Build**: `cargo build --workspace`
 - **Test**: `cargo test --workspace --features "mpi numa shared-memory serde schema slow-tests flatc-conformance test-support"`
 - **Format**: `cargo fmt --all` (CI enforces `--check`)
@@ -16,7 +16,7 @@ vertical is SDDP-based hydrothermal dispatch.
 
 These are non-negotiable. Violations must be fixed before committing.
 
-- `unsafe_code = "forbid"` workspace default — `cobre-solver`, `cobre-comm`, and `cobre-python` override to `allow` for FFI/MPI/PyO3; `cobre-sddp` overrides for the `matrixmultiply::dgemm` call its cut-selection kernel needs (isolated in `src/gemm.rs`)
+- `unsafe_code = "forbid"` workspace default — `novomodelo-solver`, `novomodelo-comm`, and `novomodelo-python` override to `allow` for FFI/MPI/PyO3; `novomodelo-sddp` overrides for the `matrixmultiply::dgemm` call its cut-selection kernel needs (isolated in `src/gemm.rs`)
 - `unwrap_used = "deny"` — no `.unwrap()` in library code (ok in tests)
 - `clippy::all` and `clippy::pedantic` at `warn` level, zero warnings in CI
 - **Never use `Box<dyn Trait>`** — enum dispatch for closed variant sets
@@ -24,23 +24,23 @@ These are non-negotiable. Violations must be fixed before committing.
 - **Declaration-order invariance** — results must be bit-for-bit identical
   regardless of input entity ordering. Together with run-to-run
   reproducibility (same inputs → bit-for-bit same outputs, across fresh
-  solver instances) this defines Cobre determinism. Cross-algorithm
+  solver instances) this defines Novomodelo determinism. Cross-algorithm
   equivalence is NOT part of the contract: a hot/warm-started solve may
   report a different-but-equally-valid optimal vertex than a cold solve
   (same objective and primals, different duals). Assert reproducibility
   and order-invariance — never hot == cold
-  (`crates/cobre-solver/tests/clp_determinism.rs` is the reference harness)
+  (`crates/novomodelo-solver/tests/clp_determinism.rs` is the reference harness)
 - **Unwired config is reserved, not dead** — several config sections are
   loaded, validated, and schema-exported without yet being consumed (e.g.
   the vertex-based upper-bound-evaluation config `LipschitzConfig.mode`, a
   one-valued enum with no LP consumer). They
   reserve seams for planned features — do not remove unconsumed config in
   a dead-code sweep without owner sign-off
-- **Infrastructure crate genericity** — `cobre-core`, `cobre-io`, `cobre-solver`,
-  `cobre-stochastic`, `cobre-comm` must contain zero algorithm-specific references
+- **Infrastructure crate genericity** — `novomodelo-core`, `novomodelo-io`, `novomodelo-solver`,
+  `novomodelo-stochastic`, `novomodelo-comm` must contain zero algorithm-specific references
   (no "sddp", "SDDP", "Benders" in types, functions, or doc comments)
 - **Python parity** — every output file the CLI writes must also be written by
-  the Python bindings in `cobre-python`. When adding a new output, wire it in both.
+  the Python bindings in `novomodelo-python`. When adding a new output, wire it in both.
 - Do not use `bincode` — use `postcard` for MPI, `FlatBuffers` for policy
 - Do not commit secrets, `.env` files, or credentials
 - Do not force-push to `main`
@@ -71,7 +71,7 @@ These are non-negotiable. Violations must be fixed before committing.
 SDDP correctness contracts (Benders cut sign, column-bound state pinning, FPHA
 average storage, append-only cut pool / slot-identity basis, NCS availability
 factors) are codified in `.claude/rules/sddp.md`, which auto-loads when editing
-`crates/cobre-sddp/**/*.rs`. Each is a contract, not a style preference — a
+`crates/novomodelo-sddp/**/*.rs`. Each is a contract, not a style preference — a
 plausible deviation produces wrong bounds or rejected warm-starts that still
 compile.
 
@@ -85,13 +85,13 @@ read:
 → `.claude/architecture-rules.md`
 
 When applying a stored basis at any call site, read:
-→ `crates/cobre-sddp/src/cut/basis_reconstruct.rs` module docs — the authoritative
+→ `crates/novomodelo-sddp/src/cut/basis_reconstruct.rs` module docs — the authoritative
 statement of the two entry points and when each applies (`reconstruct_basis` on the
 frozen hot path; `reconstruct_basis_uniform_basic` on the DCS path). Use the correct
 one for the path; never bypass `reconstruct_basis` on the frozen path.
 
 When changing the MPI basis-cache wire format, read:
-→ `crates/cobre-sddp/src/workspace/workspace.rs` —
+→ `crates/novomodelo-sddp/src/workspace/workspace.rs` —
 `CapturedBasis::to_broadcast_payload` and
 `CapturedBasis::try_from_broadcast_payload` are the sole
 owners of the byte layout. Any layout change must update
@@ -104,22 +104,22 @@ code that resolves the builder's inputs), read:
 the questions every change to it must answer
 
 When adding new LP variables, constraints, or entity types, read:
-→ `crates/cobre-sddp/src/lp/builder/mod.rs` module docs and `crates/cobre-sddp/src/lp/indexer/mod.rs`
+→ `crates/novomodelo-sddp/src/lp/builder/mod.rs` module docs and `crates/novomodelo-sddp/src/lp/indexer/mod.rs`
 
 When modifying study setup construction or scenario library building, read:
-→ `crates/cobre-sddp/src/setup/mod.rs` — `setup/` is a directory module whose
+→ `crates/novomodelo-sddp/src/setup/mod.rs` — `setup/` is a directory module whose
 `mod.rs` owns the `StudySetup` struct and its two constructors. The sub-struct
 layout and which sub-module owns each piece is mapped in
 `.claude/architecture-rules.md` → "StudySetup Sub-Structs".
 
 When adding new output files, check both CLI and Python write paths:
-→ `crates/cobre-cli/src/commands/run/outputs.rs` (`write_training_outputs` / `write_simulation_outputs` functions)
-→ `crates/cobre-python/src/run.rs` (`write_training_outputs` / `run_simulation_phase_py` functions)
+→ `crates/novomodelo-cli/src/commands/run/outputs.rs` (`write_training_outputs` / `write_simulation_outputs` functions)
+→ `crates/novomodelo-python/src/run.rs` (`write_training_outputs` / `run_simulation_phase_py` functions)
 
-When changing schema-bearing `cobre-io` types (fields, `#[derive(JsonSchema)]`
+When changing schema-bearing `novomodelo-io` types (fields, `#[derive(JsonSchema)]`
 types, or schemars-visible doc comments), regenerate the committed schemas —
 CI's `schemas` job diffs `schemas/` against the live export and fails on drift:
-→ `cargo build --release --bin cobre && ./target/release/cobre schema export --output-dir schemas`
+→ `cargo build --release --bin novomodelo && ./target/release/novomodelo schema export --output-dir schemas`
 
 ---
 
@@ -128,7 +128,7 @@ CI's `schemas` job diffs `schemas/` against the live export and fails on drift:
 | Resource              | Location            | Purpose                                      |
 | --------------------- | ------------------- | -------------------------------------------- |
 | Workspace map         | `ARCHITECTURE.md`   | Crate responsibilities, dependency boundaries, build-time choices |
-| Unified docs site     | `https://docs.cobre-rs.dev/`                     | User-facing documentation (methodology + software) |
-| Methodology reference | `~/git/cobre-docs/` | Specs, theory, math                          |
+| Unified docs site     | `https://docs.novomodelo.invalid/`                     | User-facing documentation (methodology + software) |
+| Methodology reference | `~/git/novomodelo-docs/` | Specs, theory, math                          |
 | CHANGELOG             | `CHANGELOG.md`      | Per-release feature list                     |
 | Design docs           | `docs/design/`      | Live specs, decision records & proposals — `docs/design/README.md` is the status index |

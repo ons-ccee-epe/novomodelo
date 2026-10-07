@@ -57,7 +57,7 @@ probability-weighted walk over every root→leaf path (`enumerate_forward_paths`
 ### 1. Single initial node — no multi-state first stage
 
 The engine requires exactly one node at the first stage. `find_root_position`
-(`crates/cobre-sddp/src/training/lower_bound.rs`) rejects a first stage that holds
+(`crates/novomodelo-sddp/src/training/lower_bound.rs`) rejects a first stage that holds
 more than one node. A general Markovian graph can begin from an initial probability
 distribution over several first-stage states (an uncertain initial regime); the
 engine cannot represent that today.
@@ -70,7 +70,7 @@ which is the usual case (current storage and a known starting condition).
 ### 2. One shared boundary future-cost function, evaluated at each leaf's own state
 
 All terminal (leaf) nodes share one value-function pool — see `NodeRuntime` in
-`crates/cobre-sddp/src/setup/node_graph.rs`: leaves share one pool id, while a node
+`crates/novomodelo-sddp/src/setup/node_graph.rs`: leaves share one pool id, while a node
 with successors owns its own. In ordinary training terminal nodes accumulate no
 cost-to-go, so the shared pool holds nothing.
 
@@ -117,7 +117,7 @@ dialect, where every edge from a stage shares one factor.
 
 ### SDDP.jl mapping: explicit rate vs. discount-in-edge-mass
 
-SDDP.jl and cobre make the same modeling distinction differently, and the
+SDDP.jl and novomodelo make the same modeling distinction differently, and the
 difference is exactly where discounting lives.
 
 - **SDDP.jl folds discounting into edge mass.** A node's out-arc weights are
@@ -127,7 +127,7 @@ difference is exactly where discounting lives.
   completes a cycle equals the discount factor** — the cycle-closing arc carries
   weight `ρ`, so continuation costs enter the Bellman update multiplied by `ρ` per
   cycle. Probability and discount share one channel.
-- **cobre keeps the two channels separate.** Out-edge weights are normalized to
+- **novomodelo keeps the two channels separate.** Out-edge weights are normalized to
   `Σ ≈ 1` per source (`normalize_out_edge_probabilities`), discounting is carried
   as an **explicit per-stage rate** (`cumulative_discount_factors`), and a
   trajectory _terminates at a leaf_ — a node with no out-edges at the final stage,
@@ -159,7 +159,7 @@ the two compose — a branching graph whose nodes each carry the continuous lag 
 walking every root→leaf path. It enumerates only the **structural** axis of the graph
 — the node/edge branching — solving each node once per distinct incoming prefix, and
 multiplying a single opening weight per node into the path probability
-(`enumerate_forward_paths`, `crates/cobre-sddp/src/setup/node_graph.rs`). It does
+(`enumerate_forward_paths`, `crates/novomodelo-sddp/src/setup/node_graph.rs`). It does
 **not** enumerate the other two ways a graph can carry randomness, and rejects them at
 setup rather than compute a biased bound.
 
@@ -170,7 +170,7 @@ solves each node once and its probability walk multiplies one opening weight per
 a node with `|Ω_n| > 1` would cover only a subset of scenarios, with weights that no
 longer sum to one and a single-sample cost — an invalid bound. `setup` rejects
 `|Ω_n| > 1` under enumerated training with a named error
-(`reject_within_node_opening_enumeration`, `crates/cobre-sddp/src/setup/mod.rs`).
+(`reject_within_node_opening_enumeration`, `crates/novomodelo-sddp/src/setup/mod.rs`).
 Express the stochasticity structurally (one realization per node) or use sampled
 selection.
 
@@ -204,7 +204,7 @@ A declared node's opening set is either a single external-library column
 generated node at that stage. So a node with its own distinct multi-opening
 distribution — different from its siblings at the same stage — is not yet expressible:
 siblings either share the stage's generated set or are pinned to single external
-columns (`build_declared_node_graph`, `crates/cobre-sddp/src/setup/node_graph.rs`).
+columns (`build_declared_node_graph`, `crates/novomodelo-sddp/src/setup/node_graph.rs`).
 That per-node opening-weight axis is a **deferred future feature** — it would return
 with a per-node Markov configuration — not an input a study supplies today.
 
@@ -231,8 +231,8 @@ Their intent survives as standing engine behavior, not as re-added validation:
   (rule 40), not a rejection. `check_node_graph`'s surviving structural rules
   (well-formedness, every edge `t → t+1`, the pointer bound) are the whole gate.
 
-Retired rule ids in the cobre-io validation rule table
-(`crates/cobre-io/src/validation/rules.rs`) are **never reused** — a retired
+Retired rule ids in the novomodelo-io validation rule table
+(`crates/novomodelo-io/src/validation/rules.rs`) are **never reused** — a retired
 id is listed as never assignable, so a rule id always denotes the same
 behavior across the project's life.
 

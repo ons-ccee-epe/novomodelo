@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Check that CLI and Python bindings write the same output files.
 
-Parses both the CLI `run` module (`crates/cobre-cli/src/`, a directory) and
-`crates/cobre-python/src/` for calls to writers from `cobre_io` and
-`cobre_sddp::policy::orchestration`. Resolves bare imported calls back to their
+Parses both the CLI `run` module (`crates/novomodelo-cli/src/`, a directory) and
+`crates/novomodelo-python/src/` for calls to writers from `novomodelo_io` and
+`novomodelo_sddp::policy::orchestration`. Resolves bare imported calls back to their
 canonical names through `use` statements, then compares the two sets.
 
 Also checks that `write_success_marker` is the last write of each phase writer
@@ -36,15 +36,15 @@ MARKER_WRITER = "write_success_marker"
 
 # The phase writers: each must call MARKER_WRITER directly exactly once.
 PHASE_WRITERS: tuple[tuple[str, str], ...] = (
-    ("crates/cobre-cli/src/commands/run/outputs.rs", "write_training_outputs"),
-    ("crates/cobre-cli/src/commands/run/outputs.rs", "write_simulation_outputs"),
-    ("crates/cobre-python/src/run.rs", "write_training_outputs"),
-    ("crates/cobre-python/src/run.rs", "run_simulation_phase_py"),
+    ("crates/novomodelo-cli/src/commands/run/outputs.rs", "write_training_outputs"),
+    ("crates/novomodelo-cli/src/commands/run/outputs.rs", "write_simulation_outputs"),
+    ("crates/novomodelo-python/src/run.rs", "write_training_outputs"),
+    ("crates/novomodelo-python/src/run.rs", "run_simulation_phase_py"),
 )
 
 
 def parse_imports(text: str) -> dict[str, str]:
-    """Parse `use` statements from cobre_io/cobre_sddp::policy::orchestration into a local_name -> canonical_name map.
+    """Parse `use` statements from novomodelo_io/novomodelo_sddp::policy::orchestration into a local_name -> canonical_name map.
 
     Handles single-line, multi-line brace groups, nested {}, and `as` aliases.
     """
@@ -67,9 +67,9 @@ def parse_imports(text: str) -> dict[str, str]:
 
             # Check if it's a relevant import.
             if not (
-                "use cobre_io::" in statement
-                or "use cobre_sddp::orchestration::" in statement
-                or "use cobre_sddp::policy::orchestration::" in statement
+                "use novomodelo_io::" in statement
+                or "use novomodelo_sddp::orchestration::" in statement
+                or "use novomodelo_sddp::policy::orchestration::" in statement
             ):
                 continue
 
@@ -137,7 +137,7 @@ def _extract_from_text(text: str, names: set[str], import_map: dict[str, str]) -
 
         # Match fully-qualified calls.
         for match in re.finditer(
-            r"(?:cobre_io|cobre_sddp::(?:policy::)?orchestration)::([\w:]+::)*(write_\w+|export_\w+)\s*\(",
+            r"(?:novomodelo_io|novomodelo_sddp::(?:policy::)?orchestration)::([\w:]+::)*(write_\w+|export_\w+)\s*\(",
             line,
         ):
             name = match.group(2)
@@ -265,7 +265,7 @@ def direct_write_calls(body: str, import_map: dict[str, str]) -> list[tuple[int,
 
     Covers `write_*` / `export_*` free-function and path calls, `*Writer::`
     constructor calls, and bare calls to names `import_map` resolves to
-    `cobre_io` or `cobre_sddp::policy::orchestration`. Method calls and `fn`
+    `novomodelo_io` or `novomodelo_sddp::policy::orchestration`. Method calls and `fn`
     definitions are not calls.
     """
     calls: dict[int, str] = {}
@@ -345,7 +345,7 @@ def check_marker_order(root: Path) -> list[str]:
     after its first marker call.
     """
     scanned: dict[str, tuple[list, set[str]]] = {}
-    for tree in ("crates/cobre-cli/src", "crates/cobre-python/src"):
+    for tree in ("crates/novomodelo-cli/src", "crates/novomodelo-python/src"):
         files: dict[str, str] = {}
         for path in sorted((root / tree).rglob("*.rs")):
             file = f"{tree}/{path.relative_to(root / tree).as_posix()}"
@@ -411,8 +411,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    cli_path = args.root / "crates" / "cobre-cli" / "src"
-    python_path = args.root / "crates" / "cobre-python" / "src"
+    cli_path = args.root / "crates" / "novomodelo-cli" / "src"
+    python_path = args.root / "crates" / "novomodelo-python" / "src"
 
     cli_writes = extract_write_functions(cli_path)
     python_writes = extract_write_functions(python_path)
@@ -445,8 +445,8 @@ def main() -> None:
                 print(f"    - {name}")
         print()
         print("Fix: add the missing write call(s) to the other path.")
-        print("CLI path:    crates/cobre-cli/src/")
-        print("Python path: crates/cobre-python/src/")
+        print("CLI path:    crates/novomodelo-cli/src/")
+        print("Python path: crates/novomodelo-python/src/")
     else:
         set_failed = False
 

@@ -35,7 +35,7 @@ the input model follows:
 
 Five concrete asymmetries against `stages.json` and the rest of the input model:
 
-1. **Positional index, not identity.** Every other stage reference in cobre is a
+1. **Positional index, not identity.** Every other stage reference in novomodelo is a
    declared `id` resolved through `StageIdResolver` (transitions, nodes,
    `entry_stage_id`/`exit_stage_id`, initial-condition seeding). A post-study
    stage has no `id`; `thermal_bounds` joins to it by `post_study_stage_index`, a
@@ -136,10 +136,10 @@ defaults from the plant:
   (or omits it) — the engine derives the reached stages from the lead and applies
   the plant's own numbers. Entries appear only where the future differs.
 - `stage_id` references a `post_study_stages[]` id (§3.1).
-- This requires reshaping `anticipated_config`'s cobre-io parse from the current
+- This requires reshaping `anticipated_config`'s novomodelo-io parse from the current
   two-variant untagged union (`{lead_stages}` xor `{lead_time_hours}`) into a
   struct carrying the (still mutually-exclusive) lead spelling plus the optional
-  `post_horizon_delivery[]`. `cobre_core::AnticipatedConfig` keeps its plain,
+  `post_horizon_delivery[]`. `novomodelo_core::AnticipatedConfig` keeps its plain,
   postcard-broadcast-safe derive; only the parse layer changes, and the
   post-horizon envelope resolves into the same `PostStudyThermalBound`-shaped
   data the engine consumes today.
@@ -169,7 +169,7 @@ one consistent identity story: the window's dates resolve against the same
   `StateSpace::n_delivery` are unaffected in behavior. The redesign is an
   input-surface change, not a state-space change.
 
-## 5. Validation changes (`cobre-io`)
+## 5. Validation changes (`novomodelo-io`)
 
 `validation/semantic/thermal.rs` (the V2–V5 matrix) is re-expressed against stage
 `id`s instead of `post_study_stage_index`, and split across its two natural homes:
@@ -191,11 +191,11 @@ one consistent identity story: the window's dates resolve against the same
 
 | Crate              | Surface                                                                                                                                                                                                      | Change                                                                                                                                                                  |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cobre-core`       | `model/post_study.rs`, `system/{mod,builder}.rs`                                                                                                                                                             | `PostStudyThermalBound` keyed by resolved stage position (not raw index); calendar carried as id-bearing stages                                                         |
-| `cobre-io`         | `post_study_stages.rs` (retire), `config/{stages,thermals}.rs`, `validation/semantic/thermal.rs` (the largest consumer surface), `validation/{schema,structural,dimensional}.rs`, `schema.rs`, `pipeline.rs` | Parse `post_study_stages[]` in `stages.json`; parse `post_horizon_delivery[]` in `anticipated_config`; re-key validation                                                |
-| `cobre-sddp`       | `setup/mod.rs` (id-resolve the delivery calendar + bounds lookup), `policy/policy_export.rs`, `lp/builder/columns.rs`                                                                                        | Resolve `(thermal, stage_id)` → delivery position via the calendar, not a raw index                                                                                     |
-| `cobre-stochastic` | `season_cast/mod.rs` (`post_study_calendar_stages`)                                                                                                                                                          | Consume id-bearing post-study stages                                                                                                                                    |
-| `cobre-python`     | bindings + schema export                                                                                                                                                                                     | Regenerate `schemas/` (`stages.schema.json`, `thermals.schema.json`; retire `post_study_stages.schema.json`); output parity is via shared cobre-io parse and unaffected |
+| `novomodelo-core`       | `model/post_study.rs`, `system/{mod,builder}.rs`                                                                                                                                                             | `PostStudyThermalBound` keyed by resolved stage position (not raw index); calendar carried as id-bearing stages                                                         |
+| `novomodelo-io`         | `post_study_stages.rs` (retire), `config/{stages,thermals}.rs`, `validation/semantic/thermal.rs` (the largest consumer surface), `validation/{schema,structural,dimensional}.rs`, `schema.rs`, `pipeline.rs` | Parse `post_study_stages[]` in `stages.json`; parse `post_horizon_delivery[]` in `anticipated_config`; re-key validation                                                |
+| `novomodelo-sddp`       | `setup/mod.rs` (id-resolve the delivery calendar + bounds lookup), `policy/policy_export.rs`, `lp/builder/columns.rs`                                                                                        | Resolve `(thermal, stage_id)` → delivery position via the calendar, not a raw index                                                                                     |
+| `novomodelo-stochastic` | `season_cast/mod.rs` (`post_study_calendar_stages`)                                                                                                                                                          | Consume id-bearing post-study stages                                                                                                                                    |
+| `novomodelo-python`     | bindings + schema export                                                                                                                                                                                     | Regenerate `schemas/` (`stages.schema.json`, `thermals.schema.json`; retire `post_study_stages.schema.json`); output parity is via shared novomodelo-io parse and unaffected |
 | examples / docs    | `examples/deterministic/d55-*`, `anticipated-thermals-and-water-travel-time.md`, `CHANGELOG.md`                                                                                                              | Migrate the d55 deck; update the guide; BREAKING changelog entry                                                                                                        |
 
 ## 7. Migration
@@ -212,7 +212,7 @@ The transform from the 0.15.0 shape is mechanical:
 
 The post-horizon feature is **new in 0.15.0**, so if the redesign lands before
 0.15.0 has real adopters the migration burden is ~nil (see §9). A converter
-(`cobre-bridge`) emitting the old shape updates once.
+(`novomodelo-bridge`) emitting the old shape updates once.
 
 ## 8. Byte-neutrality & determinism
 
@@ -260,4 +260,4 @@ This document does not decide the fork; it makes either path executable.
   declaration cannot express (e.g. a plant not yet in service in-study)? If so,
   confirm the plant's `generation` still provides a sane default or require an
   explicit entry for such plants.
-- Confirm `cobre-bridge`'s emitter is the only external producer of the old shape.
+- Confirm `novomodelo-bridge`'s emitter is the only external producer of the old shape.

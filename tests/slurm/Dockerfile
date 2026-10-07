@@ -12,7 +12,7 @@
 # Build:  docker compose -f tests/slurm/docker-compose.yml build
 # Usage:  docker compose -f tests/slurm/docker-compose.yml up -d --wait
 
-ARG BASE_IMAGE=ghcr.io/cobre-rs/slurm-mpich-base:4.2.3
+ARG BASE_IMAGE=ghcr.io/ons-ccee-epe/slurm-mpich-base:4.2.3
 FROM ${BASE_IMAGE}
 
 # ---------------------------------------------------------------------------

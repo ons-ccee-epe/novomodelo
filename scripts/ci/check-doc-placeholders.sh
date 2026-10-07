@@ -20,10 +20,10 @@
 #   Known limitation (same as the sibling gates): the cfg(test) exclusion
 #   assumes the test module is a tail block. Files with a mid-file test module
 #   followed by production code would incorrectly skip that trailing code. In
-#   practice cobre files follow the tail-block convention.
+#   practice novomodelo files follow the tail-block convention.
 #
 #   (The former book-prose pass — every *.md under book/src/ — was retired with
-#   book/ (mdBook decommission); the unified docs site at docs.cobre-rs.dev owns
+#   book/ (mdBook decommission); the unified docs site at docs.novomodelo.invalid owns
 #   placeholder hygiene for user-facing prose now.)
 #
 # Flagged patterns:
@@ -56,16 +56,16 @@ readonly PLACEHOLDER_PATTERN='\bTBD\b|[Tt][Oo] [Bb][Ee] [Ii][Nn][Ss][Ee][Rr][Tt]
 # .rs source directories: scanned per-file with the cfg(test) tail-block
 # exclusion (see header). Mirrors check-no-plan-leaks.sh SCAN_DIRS.
 readonly SCAN_DIRS=(
-    "${REPO_ROOT}/crates/cobre-core/src"
-    "${REPO_ROOT}/crates/cobre-io/src"
-    "${REPO_ROOT}/crates/cobre-solver/src"
-    "${REPO_ROOT}/crates/cobre-comm/src"
-    "${REPO_ROOT}/crates/cobre-stochastic/src"
-    "${REPO_ROOT}/crates/cobre-sddp/src"
-    "${REPO_ROOT}/crates/cobre-cli/src"
-    "${REPO_ROOT}/crates/cobre-python/src"
-    "${REPO_ROOT}/crates/cobre-mcp/src"
-    "${REPO_ROOT}/crates/cobre-tui/src"
+    "${REPO_ROOT}/crates/novomodelo-core/src"
+    "${REPO_ROOT}/crates/novomodelo-io/src"
+    "${REPO_ROOT}/crates/novomodelo-solver/src"
+    "${REPO_ROOT}/crates/novomodelo-comm/src"
+    "${REPO_ROOT}/crates/novomodelo-stochastic/src"
+    "${REPO_ROOT}/crates/novomodelo-sddp/src"
+    "${REPO_ROOT}/crates/novomodelo-cli/src"
+    "${REPO_ROOT}/crates/novomodelo-python/src"
+    "${REPO_ROOT}/crates/novomodelo-mcp/src"
+    "${REPO_ROOT}/crates/novomodelo-tui/src"
 )
 
 violations=""

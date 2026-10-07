@@ -1,12 +1,12 @@
-[submodule "crates/cobre-solver/vendor/HiGHS"]
-	path = crates/cobre-solver/vendor/HiGHS
+[submodule "crates/novomodelo-solver/vendor/HiGHS"]
+	path = crates/novomodelo-solver/vendor/HiGHS
 	url = https://github.com/ERGO-Code/HiGHS.git
-[submodule "crates/cobre-solver/vendor/Clp"]
-	path = crates/cobre-solver/vendor/Clp
+[submodule "crates/novomodelo-solver/vendor/Clp"]
+	path = crates/novomodelo-solver/vendor/Clp
 	url = https://github.com/coin-or/Clp.git
-[submodule "crates/cobre-solver/vendor/CoinUtils"]
-	path = crates/cobre-solver/vendor/CoinUtils
+[submodule "crates/novomodelo-solver/vendor/CoinUtils"]
+	path = crates/novomodelo-solver/vendor/CoinUtils
 	url = https://github.com/coin-or/CoinUtils.git
-[submodule "crates/cobre-sddp/vendor/qhull"]
-	path = crates/cobre-sddp/vendor/qhull
+[submodule "crates/novomodelo-sddp/vendor/qhull"]
+	path = crates/novomodelo-sddp/vendor/qhull
 	url = https://github.com/qhull/qhull.git

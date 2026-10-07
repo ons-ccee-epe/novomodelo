@@ -5,7 +5,7 @@
 # Scans the five infrastructure crates for algorithm-specific vocabulary that
 # must not appear in their production source code:
 #
-#   cobre-core, cobre-io, cobre-solver, cobre-stochastic, cobre-comm
+#   novomodelo-core, novomodelo-io, novomodelo-solver, novomodelo-stochastic, novomodelo-comm
 #
 # Patterns flagged (word-boundary anchored to avoid false positives on
 # identifiers like "execution", "cuts_active", "cutting_edge"):
@@ -33,7 +33,7 @@
 # Known limitation: the #[cfg(test)] exclusion assumes the test module is a
 # tail block. Rust files with mid-file test modules separated by production
 # code after them would incorrectly skip that trailing production code. In
-# practice, all cobre infra files follow the tail-block convention.
+# practice, all novomodelo infra files follow the tail-block convention.
 #
 # Explicitly excluded files:
 #
@@ -60,11 +60,11 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 SCAN_DIRS=(
-    "${REPO_ROOT}/crates/cobre-core/src"
-    "${REPO_ROOT}/crates/cobre-io/src"
-    "${REPO_ROOT}/crates/cobre-solver/src"
-    "${REPO_ROOT}/crates/cobre-stochastic/src"
-    "${REPO_ROOT}/crates/cobre-comm/src"
+    "${REPO_ROOT}/crates/novomodelo-core/src"
+    "${REPO_ROOT}/crates/novomodelo-io/src"
+    "${REPO_ROOT}/crates/novomodelo-solver/src"
+    "${REPO_ROOT}/crates/novomodelo-stochastic/src"
+    "${REPO_ROOT}/crates/novomodelo-comm/src"
 )
 
 # Files to explicitly exclude from the scan (relative to REPO_ROOT).
@@ -134,7 +134,7 @@ if [[ ${#violation_lines[@]} -gt 0 ]]; then
         echo "$block"
     done
     echo ""
-    echo "Rename or move the flagged identifiers to cobre-sddp (or another"
+    echo "Rename or move the flagged identifiers to novomodelo-sddp (or another"
     echo "algorithm-specific crate) before committing."
     exit 1
 fi

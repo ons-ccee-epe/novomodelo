@@ -24,12 +24,12 @@
 #
 # Production scope only: a `#[allow(...)]` at or below the first test-module
 #   boundary is test scope and is not evaluated. The boundary matches both the
-#   bare `#[cfg(test)]` form AND the `#[cfg(all(test, ...))]` form cobre uses to
+#   bare `#[cfg(test)]` form AND the `#[cfg(all(test, ...))]` form novomodelo uses to
 #   feature-gate test modules — a strict superset of the bare-`#[cfg(test)]`
 #   tail-block filter in check-infra-genericity.sh / check-no-plan-leaks.sh.
 #   Known limitation (same as those gates): the filter assumes the test module
 #   is a tail block; a mid-file test module followed by production code would
-#   incorrectly exempt that trailing code. cobre files follow the tail-block
+#   incorrectly exempt that trailing code. novomodelo files follow the tail-block
 #   convention.
 #
 # Rationale recognition: a suppression is justified if there is a non-empty,
@@ -199,7 +199,7 @@ extract_sites() {
     awk '
         # Tail-block filter: stop at the first test-module boundary. Matches
         # both the bare `#[cfg(test)]` form and the `#[cfg(all(test, ...))]`
-        # form cobre uses to feature-gate test modules — a strict superset of
+        # form novomodelo uses to feature-gate test modules — a strict superset of
         # the bare-`#[cfg(test)]` idiom in the sibling gates, so test-scope
         # suppressions under either form are correctly out of scope.
         /^[[:space:]]*#\[cfg\((all\()?test[,)]/ { exit }
@@ -418,7 +418,7 @@ if [[ -n "$BASE" ]]; then
         esac
     # git pathspec `*` crosses directory separators (unlike shell globbing), so
     # 'crates/*/src/*.rs' also matches nested sub-modules such as
-    # crates/cobre-sddp/src/lp_builder/template.rs — they ARE in scope.
+    # crates/novomodelo-sddp/src/lp_builder/template.rs — they ARE in scope.
     done < <(git -C "$REPO_ROOT" diff --unified=0 "${BASE}"...HEAD -- 'crates/*/src/*.rs')
 fi
 

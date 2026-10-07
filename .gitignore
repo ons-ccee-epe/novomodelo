@@ -41,20 +41,20 @@ plans/
 !.claude/rules/
 assessment*.md
 
-# Stale vendor directory (real HiGHS submodule is at crates/cobre-solver/vendor/)
+# Stale vendor directory (real HiGHS submodule is at crates/novomodelo-solver/vendor/)
 vendor/
 # Track our authored COIN-OR superbuild glue (config headers + CMakeLists) under
-# crates/cobre-solver/vendor/coin-build/. Submodule contents (HiGHS/Clp/CoinUtils)
+# crates/novomodelo-solver/vendor/coin-build/. Submodule contents (HiGHS/Clp/CoinUtils)
 # stay ignored — they are gitlinks tracked separately, not regular files.
-!crates/cobre-solver/vendor/
-crates/cobre-solver/vendor/*
-!crates/cobre-solver/vendor/coin-build/
-# qhull is vendored as a git submodule under crates/cobre-sddp/vendor/qhull,
+!crates/novomodelo-solver/vendor/
+crates/novomodelo-solver/vendor/*
+!crates/novomodelo-solver/vendor/coin-build/
+# qhull is vendored as a git submodule under crates/novomodelo-sddp/vendor/qhull,
 # exactly like the solver submodules above: un-ignore the vendor dir so the
 # gitlink is visible, then re-ignore its contents (a gitlink is tracked via
 # .gitmodules + the index, not as regular files).
-!crates/cobre-sddp/vendor/
-crates/cobre-sddp/vendor/*
+!crates/novomodelo-sddp/vendor/
+crates/novomodelo-sddp/vendor/*
 
 # Python virtual environments (test infrastructure)
 .venv-mpi-smoke/

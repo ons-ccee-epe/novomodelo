@@ -45,7 +45,7 @@
     },
     "BoundaryPolicy": {
       "additionalProperties": false,
-      "description": "Boundary-row configuration for terminal-stage FCF coupling.\n\nWhen present, the solver loads rows from a source Cobre policy\ncheckpoint and injects them as fixed boundary conditions at the\nterminal stage of the current study. The loader selects the source pool\nwhose priced state date equals this study's last stage `end_date`.",
+      "description": "Boundary-row configuration for terminal-stage FCF coupling.\n\nWhen present, the solver loads rows from a source Novomodelo policy\ncheckpoint and injects them as fixed boundary conditions at the\nterminal stage of the current study. The loader selects the source pool\nwhose priced state date equals this study's last stage `end_date`.",
       "properties": {
         "path": {
           "description": "Path to the source policy checkpoint directory (a different study's\noutput). Resolved relative to the case (input) directory, like every\nother input; an absolute path is used as-is. NOT relative to this run's\noutput directory.",

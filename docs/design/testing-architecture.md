@@ -25,7 +25,7 @@ counts.
 
 The suite is **strong on correctness and weak on uniformity/sustainability.**
 The advanced machinery — the four test tiers, golden baselines, the determinism
-gate binary, the shared fixture harness — lives almost entirely in `cobre-sddp`;
+gate binary, the shared fixture harness — lives almost entirely in `novomodelo-sddp`;
 every other crate tests ad hoc. The workspace links **one integration binary per
 `tests/*.rs` file** — most of them statically linking the C++ solver — homes unit
 tests inconsistently (giant inline modules next to extracted `tests.rs` siblings
@@ -48,25 +48,25 @@ each rather than a frozen census. Re-measure before acting on any of them.
 | Metric                               | How to re-measure                                                                                          |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
 | Integration-test binaries, per crate | `for d in crates/*/tests; do printf '%s %s\n' "$d" "$(find "$d" -maxdepth 1 -name '*.rs' \| wc -l)"; done` |
-| …that statically link the solver     | the subset of the above whose crate depends on `cobre-solver` (`cobre-sddp`, `cobre-cli`, `cobre-solver`)  |
+| …that statically link the solver     | the subset of the above whose crate depends on `novomodelo-solver` (`novomodelo-sddp`, `novomodelo-cli`, `novomodelo-solver`)  |
 | Unit + integration test count        | `cargo nextest list --features test-support`                                                               |
 | Doctests                             | `cargo test --doc`                                                                                         |
-| pytest (`cobre-python`)              | `pytest crates/cobre-python --collect-only -q`                                                             |
+| pytest (`novomodelo-python`)              | `pytest crates/novomodelo-python --collect-only -q`                                                             |
 | Golden bit-exact cases               | a small deliberate set × 2 backends (HiGHS/CLP); enumerate the `tests/fixtures/parity_baselines*` decks    |
 | `to_bits`/ULP determinism assertions | `git grep -c 'to_bits' -- 'crates/**/*.rs'`                                                                |
 | `proptest!` sites                    | `git grep -l 'proptest!' -- 'crates/**/*.rs'`                                                              |
-| Slow-gated (`slow-tests`) attributes | `git grep -c 'slow-tests' -- 'crates/**/*.rs'` — concentrated entirely in `cobre-sddp`                     |
+| Slow-gated (`slow-tests`) attributes | `git grep -c 'slow-tests' -- 'crates/**/*.rs'` — concentrated entirely in `novomodelo-sddp`                     |
 
 The invariants those numbers evidence — which do **not** rot — are: unit tests
 outnumber integration tests by roughly an order of magnitude (a healthy
 pyramid), so the cost is not test _count_ but integration-binary _count_ ×
-static-solver-link; and the solver-linking crates (`cobre-sddp`, `cobre-cli`,
-`cobre-solver`) own most of the integration binaries and therefore most of the
+static-solver-link; and the solver-linking crates (`novomodelo-sddp`, `novomodelo-cli`,
+`novomodelo-solver`) own most of the integration binaries and therefore most of the
 link cost.
 
 ### 2.2 Where the sophistication lives
 
-`cobre-sddp` is the sole home of: all four test tiers, the only large
+`novomodelo-sddp` is the sole home of: all four test tiers, the only large
 `tests/common/` harness (`StubComm`/`Rank0Of2`, `build_setup_*`, `make_*`
 builders, `parity_hash`, `permute`), the only `tests/fixtures/` (dual golden
 baselines + deterministic case decks), the `mpi_wire.rs` determinism-gate binary
@@ -80,22 +80,23 @@ baselines + deterministic case decks), the `mpi_wire.rs` determinism-gate binary
   job and the shuffle-matrix job use `cargo nextest`. There is **no
   `.config/nextest.toml`** — no profiles, retries, partitioning, JUnit, or
   archive.
-- **No CI cadence tiering**: `NON_SOLVER_FEATURES` (used by `Test`, `CLP`, and
-  `Coverage`) **includes `slow-tests`**, so the full slow suite runs on **every
+- **No CI cadence tiering**: `NON_SOLVER_FEATURES` (used by `Test` and `CLP`)
+  **includes `slow-tests`**, so the full slow suite runs on **every
   PR**. The `slow-tests` cargo feature therefore functions only as a _local-dev_
   convenience, not as a CI tier. The one lighter job is `Check`.
 - **Order-invariance shuffle matrix** (`invariance-shuffle.yml`) is
   **`workflow_dispatch`-only** — its nightly cron is commented out — so a
   _hard-rule_ determinism guarantee is exercised in automation only on manual
   dispatch.
-- **Coverage** via `cargo-llvm-cov` → codecov (HiGHS backend). Good.
+- **Coverage** is not measured in CI; `cargo llvm-cov --workspace` measures it
+  locally (HiGHS backend).
 - **Real multi-rank MPI** via a SLURM Docker cluster on `examples/4ree`
   (`mpi-slurm.yml`). Good. In-process MPI via `StubComm`/`Rank0Of2` across the
   in-process rank-shape tests.
 - **Absent**: miri, sanitizers/valgrind, fuzzing, snapshot tooling
   (`insta`/`expect-test`), a uniform cross-crate fixture convention (the
   `test-support` feature exists but is applied inconsistently), and any
-  `cargo test`/doctest run for the workspace-excluded `cobre-python` (its Rust
+  `cargo test`/doctest run for the workspace-excluded `novomodelo-python` (its Rust
   unit tests and doctests never compile in CI).
 
 ---
@@ -125,19 +126,19 @@ baselines + deterministic case decks), the `mpi_wire.rs` determinism-gate binary
 
 1. **Binary sharding — the dominant structural cost.** Rust links one binary per
    `tests/*.rs`; with `n` binaries and `m` libraries the linker does `m·n` work,
-   and Cargo runs integration binaries _sequentially_. Cobre amplifies this by
+   and Cargo runs integration binaries _sequentially_. Novomodelo amplifies this by
    statically linking a C++ LP solver into every solver-linked binary. (When
    Cargo itself moved to a single integration binary, compile time dropped **3×**
    and artifacts **5×** — matklad.) This is Layer 1; its mechanics are in §5.1.
 2. **Per-crate non-uniformity.** There is no crate testing _standard_: tiers,
-   the shared harness, fixtures, and golden management exist only in `cobre-sddp`.
-   A contributor to `cobre-io` or `cobre-stochastic` has no template to follow.
+   the shared harness, fixtures, and golden management exist only in `novomodelo-sddp`.
+   A contributor to `novomodelo-io` or `novomodelo-stochastic` has no template to follow.
    This is the user's central concern and the reason the suite "isn't
    sustainable" — it cannot be taught, only imitated from one crate.
 3. **Fixture / test-support fragmentation.** The cross-crate mechanism is a
    `test-support` _cargo feature_ that gates internal symbols behind
    `#[cfg(any(test, feature = "test-support"))]`; the reusable builders live in
-   `cobre-sddp/tests/common/`; `cobre-python` (workspace-excluded) shares nothing
+   `novomodelo-sddp/tests/common/`; `novomodelo-python` (workspace-excluded) shares nothing
    and its Rust tests never run in CI. Three different sharing mechanisms, none
    uniform.
 4. **Inline-giant vs extracted-sibling asymmetry — intra-directory.**
@@ -157,7 +158,7 @@ baselines + deterministic case decks), the `mpi_wire.rs` determinism-gate binary
 7. **Correctness-hardening gaps for an FFI/HPC solver.** No miri on the pure-Rust
    `unsafe` (the isolated `gemm` kernel, raw-buffer reuse); no sanitizer/valgrind
    job for the C++ solver / MPI / PyO3 FFI; no fuzzing of the parser-heavy
-   `cobre-io`; property testing at only 5 sites despite pervasive
+   `novomodelo-io`; property testing at only 5 sites despite pervasive
    sort/canonicalization/reduction invariants that are its ideal target.
 8. **Ad hoc golden and matrix management.** Golden re-baselining is prose
    discipline; the HiGHS×CLP × mpi/numa/shared-memory × slow feature matrix is
@@ -174,7 +175,7 @@ baselines + deterministic case decks), the `mpi_wire.rs` determinism-gate binary
 - **One integration binary.** `tests/it/main.rs` with everything else a `mod`
   submodule; libtest still parallelizes the `#[test]`s within it. Adopted by
   Cargo and rust-analyzer (matklad, _Delete Cargo Integration Tests_ /
-  _Fast Rust Builds_). The `m·n` link argument is exactly cobre's amplified case.
+  _Fast Rust Builds_). The `m·n` link argument is exactly novomodelo's amplified case.
 - **cargo-nextest.** Process-per-test isolation (a solver segfault or MPI
   deadlock kills one process, not the binary's whole result set), `hash:`
   partitioning for sharding, retries with flaky-marking, JUnit XML, and
@@ -192,7 +193,7 @@ baselines + deterministic case decks), the `mpi_wire.rs` determinism-gate binary
   feature.** tokio-test, rust-analyzer `test-utils`, polars-testing, datafusion
   `test_util` are dedicated crates; the lighter, equally-common variant is a
   `test-support` cargo feature on existing crates. Either centralizes
-  fixtures/comparators workspace-wide; cobre uses the feature variant (§5.2).
+  fixtures/comparators workspace-wide; novomodelo uses the feature variant (§5.2).
 - **CI tiering.** tokio/DataFusion/polars all split PR-fast from an extended
   main-branch/nightly tier (the full edge-case sweep runs off the PR path).
 
@@ -207,15 +208,15 @@ baselines + deterministic case decks), the `mpi_wire.rs` determinism-gate binary
 - **Tolerance-aware golden diff with "alt" outputs** (deal.II `numdiff`, PETSc
   `petscdiff` + `alt` files): scientific codes _cannot_ demand byte-equality
   across machines, so they diff with FP tolerance and allow _multiple legitimate
-  outputs_. Cobre sits at the strict end (bit-exact within a mode); the PETSc
+  outputs_. Novomodelo sits at the strict end (bit-exact within a mode); the PETSc
   `alt`-file idea is the clean precedent for encoding "different-but-valid
-  optimal vertex" (the hot≠cold case cobre already exempts).
+  optimal vertex" (the hot≠cold case novomodelo already exempts).
 - **Verification & Validation.** The **Method of Manufactured Solutions** and
   **order-of-accuracy** tests (Sandia SAND2000-1444; deal.II `ConvergenceTable`)
-  prove correctness against a _derived_ truth — exactly cobre's analytical tier,
+  prove correctness against a _derived_ truth — exactly novomodelo's analytical tier,
   and the strongest correctness signal a numerical code can have.
 - **Nightly dashboards + promotion gates** (CDash; Trilinos requires a clean
-  nightly before `develop`→`master`) — maps onto cobre's `develop`→`main`
+  nightly before `develop`→`master`) — maps onto novomodelo's `develop`→`main`
   discipline; nextest JUnit is the Rust-native dashboard feed.
 - **Julia optimization (closest domain).** SDDP.jl seeds `Random.seed!(12345)` in
   its test runner and runs `docs/examples` as tests; JuMP.jl runs `Aqua.jl`
@@ -223,7 +224,7 @@ baselines + deterministic case decks), the `mpi_wire.rs` determinism-gate binary
 - **Reproducibility comparator split** (ReproBLAS, Intel MKL CNR, Collange et
   al.): exact bit/hash equality for within-mode + cross-rank-count invariance
   (seeded RNG, fixed reduction order); ULP tolerance for cross-mode equivalence.
-  This is _precisely_ cobre's stated contract.
+  This is _precisely_ novomodelo's stated contract.
 
 ---
 
@@ -258,7 +259,7 @@ The greenfield layout above is the end state; Layer 1 is the mechanism that gets
 the current solver-linking crates there without rewriting test bodies — the
 concrete grouping mechanics and target groupings follow.
 
-**Why it is the dominant cost.** Every crate depending on `cobre-solver`
+**Why it is the dominant cost.** Every crate depending on `novomodelo-solver`
 statically links the vendored HiGHS / CLP / CoinUtils / qhull C++ into _each_
 `tests/*.rs` binary, because Cargo compiles one executable per integration-test
 file. Each such binary embeds the solver object code + debug info + the crate
@@ -325,19 +326,19 @@ prescription to existing large files without rewriting them.
 group by subject so a contributor still finds tests by domain. Exact membership
 is a starting proposal, refined during migration:
 
-- **`cobre-sddp`** → a handful of domain binaries: `deterministic` (stays
+- **`novomodelo-sddp`** → a handful of domain binaries: `deterministic` (stays
   standalone — already one large domain file), `parity` (**stays standalone** —
   it owns the slow-gated `parity_regen` ignored tests and the golden baselines,
   which §6 / the parity fixtures leave untouched), `anticipated`, `boundary`,
   `simulation`, `cut_backward`, `lp_structural`, `pipeline_io`, and `mpi` (all
   `mpi`-gated files grouped so the binary is coherently gated).
-- **`cobre-cli`** → domain binaries by subject: `cli_run`, `cli_validate`,
+- **`novomodelo-cli`** → domain binaries by subject: `cli_run`, `cli_validate`,
   `cli_reporting`, `cli_metadata`, `cli_basics`.
-- **`cobre-solver`** → ~2–3 binaries grouped by concern (backend FFI,
+- **`novomodelo-solver`** → ~2–3 binaries grouped by concern (backend FFI,
   warm-start / basis, determinism) — a lower absolute win, but each of its
   binaries links the solver.
-- **Non-solver crates** (`cobre-io`, `cobre-stochastic`, `cobre-comm`,
-  `cobre-core`) are **out of scope**: their binaries do not link the solver, so
+- **Non-solver crates** (`novomodelo-io`, `novomodelo-stochastic`, `novomodelo-comm`,
+  `novomodelo-core`) are **out of scope**: their binaries do not link the solver, so
   the per-binary cost is small. Consolidate opportunistically only, never on this
   effort's critical path.
 
@@ -356,7 +357,7 @@ proportionally.
   are preserved verbatim.
 - **The shared `tests/common/` harness stays the single source** of fixture
   builders; it is not duplicated or forked per domain binary. (This is the
-  interim state; §5.2 later collapses `tests/common/` into `cobre-sddp`'s
+  interim state; §5.2 later collapses `tests/common/` into `novomodelo-sddp`'s
   `test-support` surface.)
 - **Determinism gates keep their power** (e.g. `mpi_wire.rs`'s self-checked
   thresholds). Integration submodules share no mutable global state today and
@@ -377,7 +378,7 @@ files at once).** Per domain binary:
 5. Commit per domain (`refactor(test): consolidate <domain> integration tests`)
    so a regression bisects to one domain.
 
-Order within `cobre-sddp`: start with a small, self-contained family (`boundary`
+Order within `novomodelo-sddp`: start with a small, self-contained family (`boundary`
 — already grouped by subject) to validate the mechanics end-to-end, then the
 larger families. The `mpi` domain binary must compile and run under
 `--features mpi` in the SLURM job and compile (its tests gated out) without it.
@@ -393,12 +394,12 @@ does not block consolidation and the two compose.
 ### 5.2 A uniform `test-support` feature convention (not a dedicated test crate)
 
 Keep the `test-support` cargo-feature mechanism the repo already uses
-(`cobre-core`, `cobre-solver`, `cobre-sddp`) and make it uniform and complete —
+(`novomodelo-core`, `novomodelo-solver`, `novomodelo-sddp`) and make it uniform and complete —
 do **not** introduce a dedicated test crate. Cross-crate test sharing in Rust is
 either a crate or a `#[cfg(any(test, feature = "test-support"))]` feature; a
 separate crate adds a workspace member, a version-bump and crates.io-publish
-surface, and a dev-dependency cycle (`cobre-io` → support → `cobre-sddp` →
-`cobre-io`), and forces an artificial layering split to respect the
+surface, and a dev-dependency cycle (`novomodelo-io` → support → `novomodelo-sddp` →
+`novomodelo-io`), and forces an artificial layering split to respect the
 infra-genericity hard rule — for no capability the feature does not already
 provide. The `#[cfg(...)]` gate compiles to nothing in a normal build, so the
 "test feature in a production `Cargo.toml`" cost is cosmetic.
@@ -408,23 +409,23 @@ The convention:
 - **Helpers live with the type they build** — a cleaner ownership model than a
   catch-all crate. Generic scaffolding (the golden-SHA helper, the two-tier
   comparator of §5.4, the `permute` order-shuffle helper, RNG-seed and `TempDir`
-  conventions) lives in `cobre-core` (the universal base dependency) behind its
-  `test-support` feature; `StubComm`/`Rank0Of2` live in `cobre-comm` (they impl
-  its `Communicator`); the entity/`StudySetup` builders stay in `cobre-sddp`.
+  conventions) lives in `novomodelo-core` (the universal base dependency) behind its
+  `test-support` feature; `StubComm`/`Rank0Of2` live in `novomodelo-comm` (they impl
+  its `Communicator`); the entity/`StudySetup` builders stay in `novomodelo-sddp`.
 - **Every crate exposes its shareable fixtures the same way** — a `test-support`
   feature gating them behind `#[cfg(any(test, feature = "test-support"))]`, enabled
-  by consumers as a dev-dependency feature. `cobre-sddp/tests/common/` collapses
-  into `cobre-sddp`'s `test-support` surface so `cobre-cli` and `cobre-python`
+  by consumers as a dev-dependency feature. `novomodelo-sddp/tests/common/` collapses
+  into `novomodelo-sddp`'s `test-support` surface so `novomodelo-cli` and `novomodelo-python`
   reach it, not just sddp's own `tests/`.
-- **`cobre-python` dev-depends on `cobre-sddp`'s `test-support`**, which (with the
+- **`novomodelo-python` dev-depends on `novomodelo-sddp`'s `test-support`**, which (with the
   §5.11 CI wiring) lets its Rust tests share the same fixtures.
 
 **Adoption (2026-09-15).** The convention is the adopted standard for the crates that own
 shareable fixtures: each exposes them behind its own `test-support` feature under the gate
 above, and consumers enable it as a dev-dependency feature. Two of its bullets are not yet
-carried out: `crates/cobre-sddp/tests/common/` still holds its own fixture directory rather
-than collapsing into the crate's `test-support` surface, and `crates/cobre-python/Cargo.toml`'s
-`[dev-dependencies]` does not yet name `cobre-sddp` with that feature. Until both land, the
+carried out: `crates/novomodelo-sddp/tests/common/` still holds its own fixture directory rather
+than collapsing into the crate's `test-support` surface, and `crates/novomodelo-python/Cargo.toml`'s
+`[dev-dependencies]` does not yet name `novomodelo-sddp` with that feature. Until both land, the
 status line above reads "partially adopted" rather than "adopted".
 
 A dedicated crate wins in exactly one case — heavy test-only dependencies you
@@ -432,7 +433,7 @@ want kept out of every production crate's dev-graph, or a pristine
 crates.io-published surface — neither of which applies today; revisit only if the
 helper surface grows its own heavy deps. This convention also resolves the
 register's oracle-harness-duplication item (hoist the `close`/tolerance helpers
-into `cobre-core`'s `test-support` surface).
+into `novomodelo-core`'s `test-support` surface).
 
 ### 5.3 The tier taxonomy, formalized with a decision rule
 
@@ -458,11 +459,11 @@ to the same answer).
 
 ### 5.4 The two-tier comparator standard
 
-Encode the determinism contract in shared comparators (`cobre-core`'s
+Encode the determinism contract in shared comparators (`novomodelo-core`'s
 `test-support` surface, §5.2), not ad hoc per test:
 
 - **Exact (`to_bits`/SHA)** for the _within-mode reproducibility_ and
-  _cross-rank/thread invariance_ tier — the guarantee cobre actually makes.
+  _cross-rank/thread invariance_ tier — the guarantee novomodelo actually makes.
 - **ULP-tolerance** for _cross-mode / cross-algorithm equivalence_ (objective
   agreement where duals legitimately differ). A `assert_equivalent_vertex`
   comparator asserts equal objective + primals within ULP and _permits_ different
@@ -518,7 +519,7 @@ this doc + a CI matrix), so the CLP path cannot silently rot: HiGHS is the golde
 
 ### 5.8 MPI & determinism testing standard
 
-- Keep `StubComm`/`Rank0Of2` (in `cobre-comm`'s `test-support` surface) as the
+- Keep `StubComm`/`Rank0Of2` (in `novomodelo-comm`'s `test-support` surface) as the
   in-process rank-shape harness for PR-tier determinism gates; keep the SLURM job for real
   multi-rank on the extended tier.
 - Give every multi-rank test an explicit **rank weight** (nextest test-group
@@ -537,7 +538,7 @@ Add Tier-3, off the PR path, scoped to where it pays:
   the solver.
 - **valgrind / `-Zsanitizer=address`** for the C++ solver + MPI + PyO3 FFI, where
   miri cannot reach (tokio runs both as dedicated jobs).
-- **One `cargo-fuzz` target for the `cobre-io` parsers** (config/Parquet/JSON
+- **One `cargo-fuzz` target for the `novomodelo-io` parsers** (config/Parquet/JSON
   ingest is the untrusted-input surface); commit the corpus.
 - **Expand `proptest`** from 5 sites to cover the declaration-order-invariance and
   reduction-order invariants directly (permute → assert identical bits), with
@@ -553,11 +554,11 @@ Add Tier-3, off the PR path, scoped to where it pays:
 - One `just`/script regen entrypoint per golden family; the "goldens are the final
   artifact, never the trajectory" rule (already in `testing.md`) stays.
 
-### 5.11 cobre-python parity
+### 5.11 novomodelo-python parity
 
-Wire the crate's Rust tests into CI (a `cargo test -p cobre-python` / `cargo check
+Wire the crate's Rust tests into CI (a `cargo test -p novomodelo-python` / `cargo check
 --tests` step), closing the register's "Python-Rust tests invisible to CI" item.
-Have it dev-depend on `cobre-sddp`'s `test-support` feature so its Rust fixtures
+Have it dev-depend on `novomodelo-sddp`'s `test-support` feature so its Rust fixtures
 match the CLI's by construction; keep the pytest output-parity suite unchanged.
 
 ---
@@ -575,8 +576,8 @@ leverage:
 2. **`.config/nextest.toml` + nextest as the sole runner** (+ `--doc` step). Cheap,
    immediate CI-time and observability win; unlocks archive/partitioning.
 3. **Standardize the `test-support` feature** (§5.2): collapse `tests/common/`
-   into `cobre-sddp`'s `test-support` surface, move the generic comparators into
-   `cobre-core`'s, and dev-depend `cobre-python` on it — no new crate.
+   into `novomodelo-sddp`'s `test-support` surface, move the generic comparators into
+   `novomodelo-core`'s, and dev-depend `novomodelo-python` on it — no new crate.
 4. **CI cadence tiering** (§5.6): move `slow-tests` off the PR feature set;
    enable the shuffle-matrix nightly. Ratify the tradeoff first.
 5. **Unit-test homing lint** (§5.1 threshold) + resolve the inline-giant

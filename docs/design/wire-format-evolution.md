@@ -5,7 +5,7 @@
 > assignments of policy checkpoint manifest fields; re-derive against the live
 > tree before acting.
 
-`VariableRef` (`cobre-core`) and `BroadcastComputedParameter` (`cobre-io`) are
+`VariableRef` (`novomodelo-core`) and `BroadcastComputedParameter` (`novomodelo-io`) are
 postcard-encoded enums with no version byte: postcard serializes a variant as
 its positional index, so inserting a variant mid-enum silently shifts every
 later discriminant and reinterprets previously serialized values as the wrong
@@ -60,10 +60,10 @@ reinterprets already-serialized values as the wrong variant.
 ## Policy checkpoint manifest fields (FlatBuffers)
 
 The policy checkpoint's `manifest.bin` is a FlatBuffers `CheckpointManifest`
-table. `crates/cobre-io/schemas/policy.fbs` is the canonical schema, and its
+table. `crates/novomodelo-io/schemas/policy.fbs` is the canonical schema, and its
 header owns the wire-level conventions, the burned slots and every field id
 assigned before this register. The hand-rolled codec in
-`crates/cobre-io/src/output/policy/codec.rs` addresses each field by a vtable
+`crates/novomodelo-io/src/output/policy/codec.rs` addresses each field by a vtable
 slot constant, `4 + 2 * id`. A new manifest field follows these rules:
 
 - It takes the next explicit `id` at the table's end and never reuses a
@@ -72,7 +72,7 @@ slot constant, `4 + 2 * id`. A new manifest field follows these rules:
 - A buffer without the field decodes to the field's empty or `None` value,
   never to an error.
 - The flatc conformance test
-  (`crates/cobre-io/tests/flatbuffers_schema_conformance.rs`, feature
+  (`crates/novomodelo-io/tests/flatbuffers_schema_conformance.rs`, feature
   `flatc-conformance`) guards both directions: the hand-rolled buffer read by
   `flatc`, and a `flatc`-built buffer read by the hand-rolled reader.
 - An additive field needs no `FORMAT_VERSION` step inside a release. The policy

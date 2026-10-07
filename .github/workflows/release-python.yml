@@ -1,4 +1,4 @@
-# Build platform-specific wheels for the `cobre` Python package and publish
+# Build platform-specific wheels for the `novomodelo` Python package and publish
 # to PyPI.  Wheels contain the compiled Rust extension (PyO3/maturin) with
 # the HiGHS LP solver statically linked.
 #
@@ -11,7 +11,7 @@
 # Users who need to build from source should clone the full workspace.
 #
 # Uses PyPI trusted publishing (OIDC) — no API tokens needed.
-# Configure at: https://pypi.org/manage/project/cobre-python/settings/publishing/
+# Configure at: https://pypi.org/manage/project/novomodelo-python/settings/publishing/
 
 name: Release Python
 
@@ -25,7 +25,7 @@ on:
   # publish job is gated to tag-push / workflow_dispatch, so PRs never publish.
   pull_request:
     paths:
-      - "crates/cobre-python/**"
+      - "crates/novomodelo-python/**"
       - ".github/workflows/release-python.yml"
   workflow_dispatch:
     inputs:
@@ -84,11 +84,11 @@ jobs:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'auto' }}
           args: --release --out dist
-          working-directory: crates/cobre-python
+          working-directory: crates/novomodelo-python
           before-script-linux: |
             # cmake is required for building HiGHS (vendored LP solver).
             # zlib is NOT needed — disabled via CMAKE_DISABLE_FIND_PACKAGE_ZLIB
-            # in cobre-solver/build.rs.
+            # in novomodelo-solver/build.rs.
             if command -v dnf &>/dev/null; then
               dnf install -y cmake
             elif command -v yum &>/dev/null; then
@@ -118,16 +118,16 @@ jobs:
           # ownership on Linux before repacking. macOS/Windows build natively, so
           # this is a Linux-only no-op elsewhere ($RUNNER_OS is set by Actions).
           if [ "$RUNNER_OS" = "Linux" ]; then
-            sudo chown -R "$(id -u):$(id -g)" crates/cobre-python/dist
+            sudo chown -R "$(id -u):$(id -g)" crates/novomodelo-python/dist
           fi
           python -m pip install --quiet wheel
-          python scripts/gen/inject_wheel_licenses.py crates/cobre-python/dist \
+          python scripts/gen/inject_wheel_licenses.py crates/novomodelo-python/dist \
             LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.md
 
       - uses: actions/upload-artifact@v6
         with:
           name: wheels-${{ matrix.target }}
-          path: crates/cobre-python/dist/
+          path: crates/novomodelo-python/dist/
 
   # Smoke-test the built wheels on native platforms across Python versions.
   test:
@@ -164,11 +164,11 @@ jobs:
 
       - name: Install wheel and test dependencies
         run: |
-          pip install --no-index --find-links dist/ cobre-python
+          pip install --no-index --find-links dist/ novomodelo-python
           pip install pytest pyarrow
 
       - name: Run tests
-        run: pytest crates/cobre-python/tests/ -v
+        run: pytest crates/novomodelo-python/tests/ -v
 
   # Publish all wheels to PyPI.
   #

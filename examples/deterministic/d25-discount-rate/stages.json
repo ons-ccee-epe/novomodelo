@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/stages.schema.json",
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/stages.schema.json",
   "policy_graph": {
     "type": "finite_horizon",
     "annual_discount_rate": 0.12

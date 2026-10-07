@@ -1,0 +1,23 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/load_factors.schema.json",
+  "load_factors": [
+    {
+      "bus_id": 0,
+      "stage_id": 0,
+      "block_factors": [
+        { "block_id": 0, "factor": 1.5 },
+        { "block_id": 1, "factor": 1.0 },
+        { "block_id": 2, "factor": 0.2 }
+      ]
+    },
+    {
+      "bus_id": 0,
+      "stage_id": 1,
+      "block_factors": [
+        { "block_id": 0, "factor": 1.5 },
+        { "block_id": 1, "factor": 1.0 },
+        { "block_id": 2, "factor": 0.2 }
+      ]
+    }
+  ]
+}

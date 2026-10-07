@@ -1,6 +1,6 @@
 # `scripts/`
 
-Helper scripts for Cobre, grouped by role.
+Helper scripts for Novomodelo, grouped by role.
 
 - **`ci/`** — quality gates and the advisory report. Run in CI
   (`.github/workflows/ci.yml`), and some also from the `pre-commit` hook and from
@@ -8,6 +8,9 @@ Helper scripts for Cobre, grouped by role.
   path, so they run from anywhere; the Python gates default to the current
   directory (pass `--root` to override).
 - **`gen/`** — generators for release/build artifacts.
+- **`rebrand/`** — the fork's rename tool. `rebrand.py paths|tokens|check`
+  moves paths, rewrites contents and guards against leftovers, all driven by
+  the one name map `map.toml`; `test_rebrand.py` covers it.
 - **`pre-commit`** — the git pre-commit hook. Install with
   `ln -sf ../../scripts/pre-commit .git/hooks/pre-commit`.
 - **`loc-stats.sh`** — refreshable reporting tool (not a CI gate): Rust line
@@ -36,7 +39,7 @@ still carry the canonical boundary regex).
 | `check-allow-rationale.sh`           | Every `#[allow]` carries a `// Rationale:` (E4; diff-scoped via `BASE_REF`).                               |
 | `check-infra-genericity.sh`          | No algorithm-specific vocabulary in the infrastructure crates.                                             |
 | `check-cut-selection-determinism.sh` | Cut-selection code stays declaration-order deterministic.                                                  |
-| `check_python_parity.py`             | Both write paths call the same set of `cobre_io` / `cobre_sddp::policy::orchestration` writers, and each phase writer calls `write_success_marker` as its last write. |
+| `check_python_parity.py`             | Both write paths call the same set of `novomodelo_io` / `novomodelo_sddp::policy::orchestration` writers, and each phase writer calls `write_success_marker` as its last write. |
 | `check_schemas.sh`                   | Exported JSON schemas match the source types (needs the release binary; `--build`).                        |
 | `quality-report.sh`                  | Advisory code-quality hotspot report; also runs the comment-bloat advisory.                                |
 | `lib/comment_scan.sh`                | Shared `cfg(test)`-boundary helpers, sourced by the comment gates.                                         |

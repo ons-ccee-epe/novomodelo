@@ -33,18 +33,18 @@
 #      require every cited filename resolves" bound.
 #
 #      Glob tokens (containing */** ) assert a directory class, not a literal
-#      file. Resolve the longest wildcard-free ancestor (e.g. crates/cobre-sddp/
-#      for `crates/cobre-sddp/**/*.rs`); a rotted directory prefix still fails.
+#      file. Resolve the longest wildcard-free ancestor (e.g. crates/novomodelo-sddp/
+#      for `crates/novomodelo-sddp/**/*.rs`); a rotted directory prefix still fails.
 #
 #   (The former Check 2 — intra-book relative link resolution — was retired
 #   with book/ (mdBook decommission); the unified docs site at
-#   docs.cobre-rs.dev owns link integrity for user-facing prose now.)
+#   docs.novomodelo.invalid owns link integrity for user-facing prose now.)
 #
 # Exclusions (MUST NOT be flagged), per §6.4's scope bound:
 #   - Absolute URLs: http://, https://, mailto:, ftp://.
-#   - Any token containing the substring `cobre-docs` (the external methodology
+#   - Any token containing the substring `novomodelo-docs` (the external methodology
 #     repo, absent from this tree by design).
-#   - Any token into an LP-solver submodule (`crates/cobre-solver/vendor/HiGHS`,
+#   - Any token into an LP-solver submodule (`crates/novomodelo-solver/vendor/HiGHS`,
 #     `.../Clp`, `.../CoinUtils`) — separately-versioned external repos, absent
 #     without a recursive checkout. The authored `vendor/coin-build/` glue is in
 #     this repo and stays validated.
@@ -93,15 +93,15 @@ readonly REPO_FILES=(
 
 # Substrings that disqualify a token outright (external repos).
 readonly EXCLUDED_SUBSTRINGS=(
-    "cobre-docs"
+    "novomodelo-docs"
     # The LP-solver submodules are separately-versioned external repos, absent
     # unless checked out recursively (the lightweight script gates do not). Their
     # contents are external to this tree, so paths into them are excluded on the
-    # same basis as cobre-docs. The authored `vendor/coin-build/` glue lives in
+    # same basis as novomodelo-docs. The authored `vendor/coin-build/` glue lives in
     # this repo and is NOT matched here, so it stays validated.
-    "crates/cobre-solver/vendor/HiGHS"
-    "crates/cobre-solver/vendor/Clp"
-    "crates/cobre-solver/vendor/CoinUtils"
+    "crates/novomodelo-solver/vendor/HiGHS"
+    "crates/novomodelo-solver/vendor/Clp"
+    "crates/novomodelo-solver/vendor/CoinUtils"
 )
 
 violations=""
@@ -158,8 +158,8 @@ token_resolves() {
     local token="$1"
     if [[ "$token" == *"*"* ]]; then
         # Longest wildcard-free ancestor: everything before the first `*`,
-        # with the trailing slash dropped (e.g. crates/cobre-sddp/**/*.rs ->
-        # crates/cobre-sddp). A glob asserts a directory class, not a literal
+        # with the trailing slash dropped (e.g. crates/novomodelo-sddp/**/*.rs ->
+        # crates/novomodelo-sddp). A glob asserts a directory class, not a literal
         # file; a rotted directory prefix still fails.
         local ancestor="${token%%"*"*}"
         ancestor="${ancestor%/}"
@@ -207,7 +207,7 @@ check_path_tokens() {
     # Markdown link target (](crates/...)). Those constructs are handled by the
     # URL exclusion and by Check 2 (intra-book links), not by this path pass.
     # This mirrors check-comment-refs.sh's -P lookbehind that drops the glued
-    # `cobre-docs` case.
+    # `novomodelo-docs` case.
     while IFS=: read -r ln token; do
         [[ -n "$token" ]] || continue
         is_in_scope "$token" || continue
@@ -245,9 +245,9 @@ if [[ -n "$violations" ]]; then
     echo "$violations"
     echo ""
     echo "Strip the rot, keep the invariant: fix the path so it resolves against"
-    echo "the live tree, or — if the reference points at the external cobre-docs"
+    echo "the live tree, or — if the reference points at the external novomodelo-docs"
     echo "spec/theory pages — rewrite it as an absolute URL or confirm it belongs"
-    echo "to the cobre-docs exclusion. A repo-relative path with a recognized"
+    echo "to the novomodelo-docs exclusion. A repo-relative path with a recognized"
     echo "prefix must resolve; never freeze a path that the tree can move out from"
     echo "under."
     exit 1

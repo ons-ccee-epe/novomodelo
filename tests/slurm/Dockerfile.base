@@ -1,6 +1,6 @@
 # tests/slurm/Dockerfile.base
 # Base image for SLURM + MPICH cluster testing.
-# Published to ghcr.io/cobre-rs/slurm-mpich-base:<mpich-version>
+# Published to ghcr.io/ons-ccee-epe/slurm-mpich-base:<mpich-version>
 #
 # Contains: Ubuntu 24.04, SLURM, MPICH 4.2.3 (ch4:ofi), pyarrow.
 # Does NOT contain: munge keys, SLURM config, entrypoint (added by Dockerfile).

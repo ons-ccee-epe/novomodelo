@@ -4,13 +4,13 @@ paths:
   - "examples/deterministic/**"
 ---
 
-# Cobre Testing Rules
+# Novomodelo Testing Rules
 
-How Cobre is tested, to balance coverage, precision, and maintainability; this
+How Novomodelo is tested, to balance coverage, precision, and maintainability; this
 file is the standing contract. Generic
 cross-language testing pillars (test pyramid, few binaries, one builder, property
 tests for ordering, benches≠tests, uniform slow-gating) live in the global Rust
-rule; the rules below are the Cobre-specific ones.
+rule; the rules below are the Novomodelo-specific ones.
 
 ## Tiers — use the cheapest tier that catches the regression
 
@@ -28,7 +28,7 @@ rule; the rules below are the Cobre-specific ones.
 2. **Behavioral (the default for deterministic cases).** `LB == UB` to tolerance,
    known optimum cost, water-balance closure, feature dispatch values. Backend-
    AGNOSTIC: one assertion covers HiGHS and CLP and survives benign refactors with no
-   re-baseline. `crates/cobre-sddp/tests/deterministic.rs` is the model.
+   re-baseline. `crates/novomodelo-sddp/tests/deterministic.rs` is the model.
 3. **LP structural.** Column / row counts, CSC validity, objective-coefficient wiring,
    without running a solver (`template_integration.rs`). First-class, not optional: a
    wrong column count produces numerically-smooth wrong bounds a tolerance assertion
@@ -58,7 +58,7 @@ rule; the rules below are the Cobre-specific ones.
 - **A determinism gate must have power on the fixture it runs — a bitwise
   comparison proves nothing on a fixture that never exercises the condition
   the gate is meant to guard.** Three invariants apply across
-  `crates/cobre-sddp/tests/mpi_wire.rs`'s determinism gates:
+  `crates/novomodelo-sddp/tests/mpi_wire.rs`'s determinism gates:
   - A gate whose power depends on a runtime-resolved fixture threshold
     self-checks that threshold and fails loudly instead of passing
     vacuously — a forced-retry gate asserts `retry_attempts > 0` per shape,
@@ -82,7 +82,7 @@ rule; the rules below are the Cobre-specific ones.
     trial-point scheduler warm-chains the whole trial point, so at a
     degenerate optimum a multi-opening comparison may settle on a
     different-but-equally-valid dual vertex — the hot≠cold divergence the
-    Cobre determinism contract explicitly permits (CLAUDE.md: "never hot ==
+    Novomodelo determinism contract explicitly permits (CLAUDE.md: "never hot ==
     cold") — so a multi-opening cross-scheduler bit-identity gate is not a
     gateable contract, even where a fixture happens to pass it today.
 
@@ -120,7 +120,7 @@ Rules that follow:
 
 ## Re-baselining parity hashes
 
-- Baselines live in TWO committed dirs under `crates/cobre-sddp/tests/fixtures/`:
+- Baselines live in TWO committed dirs under `crates/novomodelo-sddp/tests/fixtures/`:
   `parity_baselines/` (HiGHS) and `parity_baselines_clp/` (CLP — an independent
   set; CLP's simplex legitimately reaches different-but-valid vertices on
   degenerate optima). A deliberate re-baseline regenerates BOTH dirs in the same
@@ -128,9 +128,9 @@ Rules that follow:
   silently.
 
   ```bash
-  cargo nextest run -p cobre-sddp --features slow-tests --test parity \
+  cargo nextest run -p novomodelo-sddp --features slow-tests --test parity \
     -E 'test(parity_regen)' --run-ignored ignored-only
-  cargo nextest run -p cobre-sddp --no-default-features --features "clp slow-tests" \
+  cargo nextest run -p novomodelo-sddp --no-default-features --features "clp slow-tests" \
     --test parity -E 'test(parity_regen)' --run-ignored ignored-only
   ```
 
@@ -142,16 +142,16 @@ Rules that follow:
   empty diff between the two proves the change bit-for-bit safe — not by
   baseline match.
 
-## Cost discipline — Cobre links a solver into every test binary
+## Cost discipline — Novomodelo links a solver into every test binary
 
-- `cobre-solver` statically links HiGHS/CLP into every dependent `tests/*.rs`, so each
+- `novomodelo-solver` statically links HiGHS/CLP into every dependent `tests/*.rs`, so each
   new integration-test **binary** pays a full C++ link. Add a test function to an
   existing domain binary rather than a new file; group related tests with `mod`.
 - The shared harness helpers (`StubComm`, `build_setup_in_code`, `build_setup_for_case`,
   `run_simulation`) and entity construction (`Stage`/`Hydro`/`Bus`/`Thermal` through the
   `make_*` builders) live once in `tests/common/` — never re-defined per file. Because
   every `tests/*.rs` construction routes through the shared builder, adding a required
-  field to one of those `cobre-core` entities is a one-place change in
+  field to one of those `novomodelo-core` entities is a one-place change in
   `tests/common/builders.rs` (the `<Entity>Spec` default + the `make_<entity>` mapping);
   no `tests/*.rs` consumer is touched.
 - That one-place property is scoped to the integration-test layer and does NOT hold

@@ -8,9 +8,9 @@ Produces (committed alongside this script):
   - external_inflow_scenarios.parquet
 
 Also produces, at a fixed cross-crate path outside this deck, the reject
-fixture the cobre-io integration suite composes into a TempDir to exercise
+fixture the novomodelo-io integration suite composes into a TempDir to exercise
 the AR(p > 0) + sigma=0 rejection:
-  - crates/cobre-io/tests/fixtures/d56_reject_ar_coefficients.parquet
+  - crates/novomodelo-io/tests/fixtures/d56_reject_ar_coefficients.parquet
 """
 
 import os
@@ -93,7 +93,7 @@ inflow_path = os.path.join(script_dir, "external_inflow_scenarios.parquet")
 pq.write_table(inflow_table, inflow_path, compression="zstd")
 print(f"wrote {len(inflow_table)} rows -> {inflow_path}")
 
-# ── crates/cobre-io/tests/fixtures/d56_reject_ar_coefficients.parquet ─────────
+# ── crates/novomodelo-io/tests/fixtures/d56_reject_ar_coefficients.parquet ─────────
 #
 # Schema: hydro_id (INT32), stage_id (INT32), lag (INT32), coefficient (FLOAT64)
 #
@@ -128,7 +128,7 @@ reject_table = pa.table(
     schema=reject_schema,
 )
 
-reject_dir = os.path.join(repo_root, "crates", "cobre-io", "tests", "fixtures")
+reject_dir = os.path.join(repo_root, "crates", "novomodelo-io", "tests", "fixtures")
 os.makedirs(reject_dir, exist_ok=True)
 reject_path = os.path.join(reject_dir, "d56_reject_ar_coefficients.parquet")
 pq.write_table(reject_table, reject_path, compression="zstd")

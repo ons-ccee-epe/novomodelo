@@ -1,13 +1,13 @@
 # Terminal Recordings
 
 This directory holds the VHS tape files that render the terminal-recording GIFs
-demonstrating the Cobre CLI in action, plus the two scripts that install the
+demonstrating the Novomodelo CLI in action, plus the two scripts that install the
 toolchain and generate the GIFs.
 
 Generated GIFs are committed here as the source of truth. The documentation site
-([cobre-docs](https://github.com/cobre-rs/cobre-docs)) vendors them from a tagged
+([novomodelo-docs](https://github.com/ons-ccee-epe/novomodelo-docs)) vendors them from a tagged
 release via `npm run refresh:recordings -- --ref <tag>` — so after regenerating a
-GIF for a CLI change, cut a release and re-run that command in cobre-docs. The
+GIF for a CLI change, cut a release and re-run that command in novomodelo-docs. The
 temporary `demo/` case created while recording is gitignored.
 
 ## Quick start
@@ -19,12 +19,12 @@ temporary `demo/` case created while recording is gitignored.
 
 ## Prerequisites
 
-- **The `cobre` binary on PATH** — the subject of every recording. Install it
+- **The `novomodelo` binary on PATH** — the subject of every recording. Install it
   from the workspace root and confirm it resolves:
 
   ```sh
-  cargo install --path crates/cobre-cli
-  cobre version
+  cargo install --path crates/novomodelo-cli
+  novomodelo version
   ```
 
 - **The VHS toolchain** — `vhs` (the recorder), `ttyd` (the terminal it drives),
@@ -42,12 +42,12 @@ temporary `demo/` case created while recording is gitignored.
 ```
 
 `generate.sh` runs each tape from within `recordings/`, so every GIF is written
-next to its tape and the `demo/` case that `cobre init demo/` creates lands in
+next to its tape and the `demo/` case that `novomodelo init demo/` creates lands in
 `recordings/demo/` (gitignored). It removes that `demo/` — and any stray
 `tmp.json` a tape's `jq` step leaves — **before and after every tape**. Cleaning
 outside the tape is deliberate: it keeps helper commands out of the capture, so
 each GIF shows only the demo it is meant to show, and re-runs always start from a
-clean case (never a `cobre init` "directory exists" prompt).
+clean case (never a `novomodelo init` "directory exists" prompt).
 
 The tapes:
 
@@ -82,8 +82,6 @@ appear back-to-back for a direct comparison.
 Each tape opens with the same block of `Set` directives: a `Set Theme` JSON object
 carries the palette, and the other `Set` lines set the font and the window frame.
 Copy that block from an existing tape when you add one.
-
-The full brand palette is documented in `docs/internal/BRAND-GUIDELINES.md`.
 
 ## Embedding
 
