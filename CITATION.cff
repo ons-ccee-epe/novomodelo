@@ -22,3 +22,4 @@ references:
         given-names: "Rogerio J. M."
     repository-code: "https://github.com/cobre-rs/cobre"
     license: Apache-2.0
+    version: "0.18.0"

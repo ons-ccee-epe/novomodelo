@@ -47,9 +47,9 @@ GitHub releases.
 
 ## Getting Started
 
-- **Coming from other software?** -- See the [novomodelo-bridge guide](https://docs.novomodelo.invalid/guide/novomodelo-bridge.html)
-- **New to SDDP?** -- Read [What Novomodelo Solves](https://docs.novomodelo.invalid/tutorial/what-novomodelo-solves.html)
-- **Python user?** -- Try the [Python Quickstart](https://docs.novomodelo.invalid/guide/python-quickstart.html)
+- **Coming from other software?** -- See the [novomodelo-bridge guide](https://docs.novomodelo.invalid/running/case-conversion/)
+- **New to SDDP?** -- Read [What Novomodelo Solves](https://docs.novomodelo.invalid/overview/what-novomodelo-solves/)
+- **Python user?** -- Try the [Python Quickstart](https://docs.novomodelo.invalid/getting-started/python-quickstart/)
 
 ## Current Status
 
@@ -75,11 +75,21 @@ numbers (`#NN`) in commit messages before the fork refer to
 
 The Cobre name and logo belong to the Cobre project; [TRADEMARKS.md](TRADEMARKS.md)
 states how they may be used. If you use Novomodelo in published work, please
-also cite Cobre (see `CITATION.cff`).
+cite Cobre too (see [Citing](#citing)).
 
-## License
+## Citing
 
-Licensed under [Apache-2.0](LICENSE).
+If you use Novomodelo in published work, cite it and the upstream release it
+derives from; `CITATION.cff` carries the same two references.
+
+```bibtex
+@software{novomodelo,
+  author = {{Operador Nacional do Sistema Elétrico - ONS} and {Câmara de Comercialização de Energia Elétrica - CCEE} and {Empresa de Pesquisa Energética - EPE}},
+  title = {Novomodelo},
+  url = {https://github.com/ons-ccee-epe/novomodelo},
+  license = {Apache-2.0}
+}
+```
 
 ```bibtex
 @software{cobre,
@@ -89,3 +99,7 @@ Licensed under [Apache-2.0](LICENSE).
   license = {Apache-2.0}
 }
 ```
+
+## License
+
+Licensed under [Apache-2.0](LICENSE).
