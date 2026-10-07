@@ -1,12 +1,16 @@
 novomodelo
-Copyright 2026 Operador Nacional do Sistema Elétrico - ONS
+Copyright 2026 Operador Nacional do Sistema Elétrico - ONS,
+Câmara de Comercialização de Energia Elétrica - CCEE,
+Empresa de Pesquisa Energética - EPE and Contributors
 
 novomodelo is a fork of Cobre (https://github.com/cobre-rs/cobre), created from
 the Cobre v0.18.0 release. Since then it has been modified and maintained by
-Operador Nacional do Sistema Elétrico - ONS, which holds the copyright in the
-modifications it has made. Changes later taken from Cobre remain the copyright
-of their authors and carry an "Upstream-Commit:" trailer. The git history of
-this repository records who changed what.
+Operador Nacional do Sistema Elétrico - ONS,
+Câmara de Comercialização de Energia Elétrica - CCEE,
+Empresa de Pesquisa Energética - EPE and other contributors, each of whom holds
+the copyright in the modifications they have made. Changes later taken from
+Cobre remain the copyright of their authors and carry an "Upstream-Commit:"
+trailer. The git history of this repository records who changed what.
 
 --------------------------------------------------------------------------------
 The NOTICE of Cobre follows, retained as required by Apache License 2.0 §4(d).
