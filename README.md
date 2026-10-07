@@ -1,7 +1,7 @@
 <h1 align="center">Novomodelo</h1>
 
 <p align="center">
-  <strong>Open infrastructure for power system computation</strong>
+  <strong>Power system optimization in Rust</strong>
 </p>
 
 <p align="center">

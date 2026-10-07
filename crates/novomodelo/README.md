@@ -1,6 +1,6 @@
 # novomodelo
 
-**Open infrastructure for power system computation.**
+**Power system optimization in Rust.**
 
 Novomodelo is an ecosystem of Rust crates for power system analysis and optimization.
 This umbrella crate re-exports the individual components for convenience.

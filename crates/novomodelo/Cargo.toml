@@ -1,6 +1,6 @@
 [package]
 name = "novomodelo"
-description = "Open infrastructure for power system computation — umbrella crate"
+description = "Power system optimization in Rust — umbrella crate"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

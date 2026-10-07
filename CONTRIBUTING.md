@@ -1,6 +1,6 @@
 # Contributing to Novomodelo
 
-Thanks for your interest in contributing. Novomodelo is an open-source ecosystem for power system computation, and contributions of all kinds are welcome — code, documentation, bug reports, test cases, and domain expertise.
+Thanks for your interest in contributing. Novomodelo is an ecosystem for power system computation, and contributions of all kinds are welcome — code, documentation, bug reports, test cases, and domain expertise.
 
 ## Getting Started
 
