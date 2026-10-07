@@ -6,11 +6,19 @@ Novomodelo is a high-performance SDDP (Stochastic Dual Dynamic Programming) solv
 
 ## Installation
 
+Nothing is published to PyPI under this name. From the root of a clone made
+with `git clone --recurse-submodules` (the solvers are vendored as submodules),
+build and install the package with a Rust toolchain (1.88+) and Python 3.12+:
+
 ```bash
-pip install novomodelo-python
+pip install ./crates/novomodelo-python
 ```
 
-Pre-built wheels are available for:
+A project can also depend on a tagged release through a git URL, for example
+`novomodelo-python @ git+https://github.com/ons-ccee-epe/novomodelo@v0.18.0#subdirectory=crates/novomodelo-python`.
+
+The wheel workflow (`.github/workflows/release-python.yml`) builds for the
+platforms below; its wheels are not published to PyPI:
 
 - Linux x86_64 (manylinux_2_34)
 - Linux aarch64 (manylinux_2_28)
