@@ -4,7 +4,7 @@
  * generates this header. Novomodelo builds Clp via an authored CMake
  * superbuild without running autotools, so this header is hand-vendored
  * with every optional dependency DISABLED and the Aboca (Abc) vectorized
-*  simplex path excluded.
+ * simplex path excluded.
  *
  * It is intentionally self-contained: it defines only the Clp version macros
  * and leaves CLP_HAS_ABC plus every COIN_HAS_* optional-dependency macro

@@ -45,10 +45,7 @@ pub(crate) fn resolve_color(cli_color: ColorWhen) {
 }
 
 #[derive(Debug, Parser)]
-#[command(
-    name = "novomodelo",
-    about = "Power system optimization in Rust"
-)]
+#[command(name = "novomodelo", about = "Power system optimization in Rust")]
 struct Cli {
     /// Control ANSI color output on stderr.
     ///
