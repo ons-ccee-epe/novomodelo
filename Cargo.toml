@@ -29,8 +29,7 @@ rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://github.com/ons-ccee-epe/novomodelo"
 homepage = "https://docs.novomodelo.invalid/"
-documentation = "https://docs.rs/cobre-sddp"
-authors = ["Rogerio J. M. Alves <rogerio.alves@cobre-rs.dev>"]
+authors = ["Operador Nacional do Sistema Elétrico - ONS"]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
