@@ -1,9 +1,9 @@
 # Third-Party Notices
 
-Cobre is licensed under the Apache License 2.0 (see `LICENSE`). It bundles the
+Novomodelo is licensed under the Apache License 2.0 (see `LICENSE`). It bundles the
 following third-party components as git submodules under `crates/*/vendor/` — the
-solver libraries under `crates/cobre-solver/vendor/`, and qhull under
-`crates/cobre-sddp/vendor/`. Each component retains its original license;
+solver libraries under `crates/novomodelo-solver/vendor/`, and qhull under
+`crates/novomodelo-sddp/vendor/`. Each component retains its original license;
 bundling does not relicense it.
 
 These components are C/C++ libraries compiled and statically linked by the
@@ -13,46 +13,46 @@ dependencies). This file is the manual record of their license obligations.
 
 ## HiGHS — MIT
 
-- Submodule: `crates/cobre-solver/vendor/HiGHS` (tag `v1.13.1`)
+- Submodule: `crates/novomodelo-solver/vendor/HiGHS` (tag `v1.13.1`)
 - Upstream: <https://github.com/ERGO-Code/HiGHS>
 - Linked: statically, when the `highs` feature is enabled (enabled by default).
-- License text: `crates/cobre-solver/vendor/HiGHS/LICENSE.txt`
+- License text: `crates/novomodelo-solver/vendor/HiGHS/LICENSE.txt`
 - HiGHS bundles its own sub-dependencies; see
-  `crates/cobre-solver/vendor/HiGHS/THIRD_PARTY_NOTICES.md` for the full list.
+  `crates/novomodelo-solver/vendor/HiGHS/THIRD_PARTY_NOTICES.md` for the full list.
 
 ## Clp — Eclipse Public License 2.0 (EPL-2.0)
 
-- Submodule: `crates/cobre-solver/vendor/Clp` (tag `releases/1.17.11`)
+- Submodule: `crates/novomodelo-solver/vendor/Clp` (tag `releases/1.17.11`)
 - Upstream: <https://github.com/coin-or/Clp>
 - Linked: statically, **only** when the optional `clp` feature is enabled
   (disabled by default).
 - License: <https://www.eclipse.org/legal/epl-2.0/>
-- License text: `crates/cobre-solver/vendor/Clp/LICENSE`
+- License text: `crates/novomodelo-solver/vendor/Clp/LICENSE`
 
 EPL-2.0 source code is available via the upstream repository and via the
 vendored submodule in this repository.
 
 ## CoinUtils — Eclipse Public License 2.0 (EPL-2.0)
 
-- Submodule: `crates/cobre-solver/vendor/CoinUtils` (tag `releases/2.11.13`)
+- Submodule: `crates/novomodelo-solver/vendor/CoinUtils` (tag `releases/2.11.13`)
 - Upstream: <https://github.com/coin-or/CoinUtils>
 - Linked: statically, **only** when the optional `clp` feature is enabled
   (disabled by default).
 - License: <https://www.eclipse.org/legal/epl-2.0/>
-- License text: `crates/cobre-solver/vendor/CoinUtils/LICENSE`
+- License text: `crates/novomodelo-solver/vendor/CoinUtils/LICENSE`
 
 EPL-2.0 source code is available via the upstream repository and via the
 vendored submodule in this repository.
 
 ## Qhull — Qhull License
 
-- Submodule: `crates/cobre-sddp/vendor/qhull` (tag `2020.2`)
+- Submodule: `crates/novomodelo-sddp/vendor/qhull` (tag `2020.2`)
 - Upstream: <https://github.com/qhull/qhull>
-- Linked: statically into `cobre-sddp`. Only the reentrant `libqhull_r` library
+- Linked: statically into `novomodelo-sddp`. Only the reentrant `libqhull_r` library
   is compiled (from `src/libqhull_r/`); the non-reentrant `libqhull`, the C++
   `libqhullcpp`, the CLI mains, tests, and docs in the submodule are not built.
 - License: <http://www.qhull.org/COPYING.txt>
-- License text: `crates/cobre-sddp/vendor/qhull/COPYING.txt`
+- License text: `crates/novomodelo-sddp/vendor/qhull/COPYING.txt`
 
 ## Rust crate dependencies
 
