@@ -61,14 +61,16 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
 
 ## Origin and credits
 
-Novomodelo is developed by Operador Nacional do Sistema Elétrico - ONS as a
-fork of [Cobre](https://github.com/cobre-rs/cobre), the open-source Rust
-ecosystem for power system optimization created by Rogerio J. M. Alves and the
-Cobre contributors. The fork was created from the Cobre v0.18.0 release
-(commit `3ab1f748`, tagged `fork-point` in this repository); every commit up to
-and including it is Cobre's and is preserved unchanged here. Changes taken
-from Cobre after that release carry an `Upstream-Commit:` trailer. Issue and
-PR numbers (`#NN`) in commit messages before the fork refer to
+Novomodelo is developed by Operador Nacional do Sistema Elétrico - ONS, Câmara
+de Comercialização de Energia Elétrica - CCEE and Empresa de Pesquisa
+Energética - EPE, with other contributors, as a fork of
+[Cobre](https://github.com/cobre-rs/cobre), the open-source Rust ecosystem for
+power system optimization created by Rogerio J. M. Alves and the Cobre
+contributors. The fork was created from the Cobre v0.18.0 release (commit
+`3ab1f748`, tagged `fork-point` in this repository); every commit up to and
+including it is Cobre's and is preserved unchanged here. Changes taken from
+Cobre after that release carry an `Upstream-Commit:` trailer. Issue and PR
+numbers (`#NN`) in commit messages before the fork refer to
 <https://github.com/cobre-rs/cobre>.
 
 The Cobre name and logo belong to the Cobre project; [TRADEMARKS.md](TRADEMARKS.md)

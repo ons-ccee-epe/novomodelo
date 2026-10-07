@@ -4,6 +4,8 @@ type: software
 title: "Novomodelo"
 authors:
   - name: "Operador Nacional do Sistema Elétrico - ONS"
+  - name: "Câmara de Comercialização de Energia Elétrica - CCEE"
+  - name: "Empresa de Pesquisa Energética - EPE"
 repository-code: "https://github.com/ons-ccee-epe/novomodelo"
 license: Apache-2.0
 keywords:

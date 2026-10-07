@@ -7,7 +7,11 @@ rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://github.com/ons-ccee-epe/novomodelo"
 homepage = "https://docs.novomodelo.invalid/"
-authors = ["Operador Nacional do Sistema Elétrico - ONS"]
+authors = [
+    "Operador Nacional do Sistema Elétrico - ONS",
+    "Câmara de Comercialização de Energia Elétrica - CCEE",
+    "Empresa de Pesquisa Energética - EPE",
+]
 readme = "README.md"
 keywords = ["python", "bindings", "pyo3", "power-systems", "energy"]
 categories = ["science", "api-bindings"]
