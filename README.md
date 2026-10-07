@@ -68,14 +68,7 @@ Energética - EPE, with other contributors, as a fork of
 power system optimization created by Rogerio J. M. Alves and the Cobre
 contributors. The fork was created from the Cobre v0.18.0 release (commit
 `3ab1f748`, tagged `fork-point` in this repository); every commit up to and
-including it is Cobre's and is preserved unchanged here. Changes taken from
-Cobre after that release carry an `Upstream-Commit:` trailer. Issue and PR
-numbers (`#NN`) in commit messages before the fork refer to
-<https://github.com/cobre-rs/cobre>.
-
-The Cobre name and logo belong to the Cobre project; [TRADEMARKS.md](TRADEMARKS.md)
-states how they may be used. If you use Novomodelo in published work, please
-cite Cobre too (see [Citing](#citing)).
+including it is Cobre's and is preserved unchanged here.
 
 ## Citing
 

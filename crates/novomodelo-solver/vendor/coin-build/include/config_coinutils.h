@@ -11,8 +11,8 @@
  * here. Version pinned to the CoinUtils releases/2.11.13 submodule tag.
  */
 
-#ifndef COBRE_VENDOR_CONFIG_COINUTILS_H_INCLUDED
-#define COBRE_VENDOR_CONFIG_COINUTILS_H_INCLUDED
+#ifndef NOVOMODELO_VENDOR_CONFIG_COINUTILS_H_INCLUDED
+#define NOVOMODELO_VENDOR_CONFIG_COINUTILS_H_INCLUDED
 
 /* Version and integer-type macros (COINUTILS_VERSION*, COIN_INT64_T, ...). */
 #include "CoinUtilsConfig.h"
@@ -60,4 +60,4 @@
 #define VERSION "2.11.13"
 #endif
 
-#endif /* COBRE_VENDOR_CONFIG_COINUTILS_H_INCLUDED */
+#endif /* NOVOMODELO_VENDOR_CONFIG_COINUTILS_H_INCLUDED */

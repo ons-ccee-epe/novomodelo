@@ -1,10 +1,10 @@
-/* ClpConfig.h — vendored public config for the Cobre CMake superbuild.
+/* ClpConfig.h — vendored public config for the Novomodelo CMake superbuild.
  *
  * Clp is an autotools project. In a normal build, the configure script
- * generates this header. Cobre builds Clp via an authored CMake superbuild
- * without running autotools, so this header is hand-vendored with every
- * optional dependency DISABLED and the Aboca (Abc) vectorized simplex path
- * excluded.
+ * generates this header. Novomodelo builds Clp via an authored CMake
+ * superbuild without running autotools, so this header is hand-vendored
+ * with every optional dependency DISABLED and the Aboca (Abc) vectorized
+*  simplex path excluded.
  *
  * It is intentionally self-contained: it defines only the Clp version macros
  * and leaves CLP_HAS_ABC plus every COIN_HAS_* optional-dependency macro
@@ -14,8 +14,8 @@
  * Version pinned to the Clp releases/1.17.11 submodule tag.
  */
 
-#ifndef COBRE_VENDOR_CLPCONFIG_H_INCLUDED
-#define COBRE_VENDOR_CLPCONFIG_H_INCLUDED
+#ifndef NOVOMODELO_VENDOR_CLPCONFIG_H_INCLUDED
+#define NOVOMODELO_VENDOR_CLPCONFIG_H_INCLUDED
 
 /* Version number of project. */
 #define CLP_VERSION "1.17.11"
@@ -33,9 +33,9 @@
  *
  * Upstream Clp sources guard the inclusion of standard headers behind
  * autotools-detected HAVE_* macros. An autotools `configure` run would detect
- * these and record them in the generated config header; the Cobre superbuild
+ * these and record them in the generated config header; the Novomodelo superbuild
  * does not run autotools, so we record them here. Every macro below names a
- * header the C++11 standard guarantees on every platform Cobre supports, so
+ * header the C++11 standard guarantees on every platform Novomodelo supports, so
  * they are defined unconditionally. The `#ifndef` guards make this header
  * coexist cleanly with CoinUtilsConfig.h (which defines the same set) in
  * translation units that include both.
@@ -115,7 +115,7 @@
 
 /* The following macros are deliberately LEFT UNDEFINED. Do not define them:
  * the Aboca vectorized simplex path is excluded, and the optional packages are
- * not part of the Cobre vendored build.
+ * not part of the Novomodelo vendored build.
  *
  *   CLP_HAS_ABC
  *   COIN_HAS_GLPK     COIN_HAS_MUMPS    COIN_HAS_WSSMP
@@ -129,4 +129,4 @@
  * compiled unconditionally by the superbuild.
  */
 
-#endif /* COBRE_VENDOR_CLPCONFIG_H_INCLUDED */
+#endif /* NOVOMODELO_VENDOR_CLPCONFIG_H_INCLUDED */

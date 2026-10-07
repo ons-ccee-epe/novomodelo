@@ -11,8 +11,8 @@
  * pinned to the Clp releases/1.17.11 submodule tag.
  */
 
-#ifndef COBRE_VENDOR_CONFIG_CLP_H_INCLUDED
-#define COBRE_VENDOR_CONFIG_CLP_H_INCLUDED
+#ifndef NOVOMODELO_VENDOR_CONFIG_CLP_H_INCLUDED
+#define NOVOMODELO_VENDOR_CONFIG_CLP_H_INCLUDED
 
 /* Version macros (CLP_VERSION, CLP_VERSION_MAJOR, ...). */
 #include "ClpConfig.h"
@@ -60,4 +60,4 @@
 #define VERSION "1.17.11"
 #endif
 
-#endif /* COBRE_VENDOR_CONFIG_CLP_H_INCLUDED */
+#endif /* NOVOMODELO_VENDOR_CONFIG_CLP_H_INCLUDED */

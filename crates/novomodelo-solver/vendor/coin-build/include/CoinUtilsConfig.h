@@ -1,8 +1,9 @@
-/* CoinUtilsConfig.h — vendored public config for the Cobre CMake superbuild.
+/* CoinUtilsConfig.h — vendored public config for the Novomodelo CMake
+ * superbuild.
  *
  * CoinUtils is an autotools project. In a normal build, the configure script
  * generates this header (recording which optional dependencies were detected).
- * Cobre builds CoinUtils via an authored CMake superbuild without running
+ * Novomodelo builds CoinUtils via an authored CMake superbuild without running
  * autotools, so this header is hand-vendored with every optional dependency
  * DISABLED (no GLPK, no external Cholesky/AMD/MUMPS/WSSMP/TAUCS, no Osi, no
  * MPI, no zlib, no Sample/Netlib data, no Abc).
@@ -15,8 +16,8 @@
  * Version pinned to the CoinUtils releases/2.11.13 submodule tag.
  */
 
-#ifndef COBRE_VENDOR_COINUTILSCONFIG_H_INCLUDED
-#define COBRE_VENDOR_COINUTILSCONFIG_H_INCLUDED
+#ifndef NOVOMODELO_VENDOR_COINUTILSCONFIG_H_INCLUDED
+#define NOVOMODELO_VENDOR_COINUTILSCONFIG_H_INCLUDED
 
 /* Version number of project. */
 #define COINUTILS_VERSION "2.11.13"
@@ -61,9 +62,9 @@
  * behind autotools-detected HAVE_* macros (e.g. CoinFinite.cpp only does
  * `#include <cfloat>` when HAVE_CFLOAT is defined). An autotools `configure`
  * run would detect all of these and record them in the generated config
- * header. Because the Cobre superbuild does not run autotools, we record them
+ * header. Because the Novomodelo superbuild does not run autotools, we record them
  * here. Every macro below names a header that the C++11 standard guarantees on
- * every platform Cobre supports, so they are defined unconditionally — no
+ * every platform Novomodelo supports, so they are defined unconditionally — no
  * platform-detection logic is needed.
  *
  * Deliberately NOT defined here: non-standard / platform-specific headers
@@ -98,7 +99,7 @@
 
 /* The following optional-dependency macros are deliberately LEFT UNDEFINED.
  * Do not define them: doing so would make CoinUtils sources attempt to use
- * libraries that are not part of the Cobre vendored build.
+ * libraries that are not part of the Novomodelo vendored build.
  *
  *   COIN_HAS_GLPK     COIN_HAS_MUMPS    COIN_HAS_WSSMP
  *   COIN_HAS_TAUCS    COIN_HAS_AMD      COIN_HAS_CHOLMOD
@@ -107,4 +108,4 @@
  *   COIN_HAS_BZLIB    COIN_HAS_READLINE
  */
 
-#endif /* COBRE_VENDOR_COINUTILSCONFIG_H_INCLUDED */
+#endif /* NOVOMODELO_VENDOR_COINUTILSCONFIG_H_INCLUDED */
