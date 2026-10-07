@@ -87,7 +87,7 @@ keep = true
 
 [[rule]]
 pattern = 'cobre-rs/slurm-mpich-base'
-keep = true
+to = 'ons-ccee-epe/slurm-mpich-base'
 
 # A placeholder until the fork's documentation domain exists; one substitution
 # of this host replaces it.

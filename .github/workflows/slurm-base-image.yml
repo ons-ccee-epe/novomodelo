@@ -10,7 +10,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: cobre-rs/slurm-mpich-base
+  IMAGE_NAME: ons-ccee-epe/slurm-mpich-base
   MPICH_VERSION: "4.2.3"
 
 jobs:

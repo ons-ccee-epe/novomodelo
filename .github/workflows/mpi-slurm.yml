@@ -125,7 +125,7 @@ jobs:
       - name: Pull base image and start SLURM cluster
         run: |
           set -euo pipefail
-          docker pull ghcr.io/cobre-rs/slurm-mpich-base:${MPICH_VERSION}
+          docker pull ghcr.io/ons-ccee-epe/slurm-mpich-base:${MPICH_VERSION}
           docker compose -f tests/slurm/docker-compose.yml build
           docker compose -f tests/slurm/docker-compose.yml up -d --wait
 
