@@ -1,0 +1,117 @@
+# The one name map that every rebrand run reads: the fork's first rename, each
+# replay of an upstream commit, and the later swap to the final name.
+
+[name]
+from = "cobre"
+forms = { cobre = "novomodelo", Cobre = "Novomodelo", COBRE = "NOVOMODELO" }
+# Places where a letter legitimately touches the name. Any other occurrence
+# with a letter before it, or a lowercase letter after it, stops `tokens`:
+# "cobre" is also the Portuguese word for copper ("descobre", "cobrem").
+adjacent_ok = ['253mCOBRE']
+
+[paths]
+# Never moved by `paths`. `*` also matches `/`.
+keep = [
+  "*/vendor/*",
+  # Cobre's marks: the fork replaces them with its own instead of renaming them.
+  "assets/cobre-*.svg",
+]
+
+[content]
+# Never edited by `tokens` and not scanned by `check`: attribution and
+# upstream-owned texts, vendored code, and this tool.
+keep_files = [
+  "LICENSE",
+  "NOTICE",
+  "THIRD_PARTY_NOTICES.md",
+  "THIRD_PARTY_LICENSES.md",
+  "CHANGELOG.md",
+  ".mailmap",
+  "CITATION.cff",
+  "TRADEMARKS.md",
+  "docs/internal/BRAND-GUIDELINES.md",
+  "assets/cobre-*.svg",
+  "*/vendor/*",
+  "scripts/rebrand/*",
+]
+
+# Spans inside edited files that stay verbatim.
+[[keep_span]]
+files = ["README.md"]
+pattern = '(?s)```bibtex\n@software\{cobre,.*?\n```'
+
+# Address rules, tried before the name rule. At a given position the first
+# listed rule that matches wins, so specific addresses come before general ones.
+# Each rule takes exactly one action:
+#   to      replaces the match;
+#   keep    leaves an upstream address the fork still uses (`check` accepts it);
+#   manual  leaves the match for the hand-edit commit (`check` reports it);
+#           its pattern takes the whole address, so none of it is renamed.
+# A rule with `open` names a choice still to be made: `tokens` refuses to run
+# while it matches, unless `--rehearsal` applies its `to` anyway.
+
+[[rule]]
+pattern = 'raw\.githubusercontent\.com/cobre-rs/cobre/refs/heads/main/schemas/'
+to = 'raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/'
+
+# Repository paths match with or without a host: code also builds these
+# addresses from fragments such as "/cobre-rs/cobre/refs/tags/v".
+[[rule]]
+pattern = 'cobre-rs/cobre(-bridge)?/(issues|pull)/[0-9]+'
+keep = true
+
+[[rule]]
+pattern = 'cobre-rs/cobre(-bridge)?/compare/'
+keep = true
+
+[[rule]]
+pattern = 'cobre-rs/cobre-docs'
+to = 'ons-ccee-epe/novomodelo-docs'
+
+[[rule]]
+pattern = 'cobre-rs/cobre-bridge'
+to = 'ons-ccee-epe/novomodelo-bridge'
+
+[[rule]]
+pattern = 'cobre-rs/cobre(?![A-Za-z0-9_-])'
+to = 'ons-ccee-epe/novomodelo'
+
+[[rule]]
+pattern = 'cobre-rs/ferrompi'
+keep = true
+
+[[rule]]
+pattern = 'cobre-rs/slurm-mpich-base'
+keep = true
+
+# A placeholder until the fork's documentation domain exists; one substitution
+# of this host replaces it.
+[[rule]]
+pattern = 'docs\.cobre-rs\.dev'
+to = 'docs.novomodelo.invalid'
+
+[[rule]]
+pattern = '''cobre-(icon|logo)[A-Za-z0-9_-]*\.svg'''
+manual = "Cobre's mark, kept until the fork's own replaces it"
+
+[[rule]]
+pattern = 'rogerio\.alves@cobre-rs\.dev'
+manual = "author credit or project contact, decided per file"
+
+[[rule]]
+pattern = '''(docs\.rs|crates\.io/crates|img\.shields\.io/crates/v)/cobre[^\s)>"'\]]*'''
+manual = "a page of Cobre's published crates; the fork publishes none yet"
+
+[[rule]]
+pattern = '''(pypi\.org/project|img\.shields\.io/pypi/(v|pyversions))/cobre[^\s)>"'\]]*'''
+manual = "a page of Cobre's published wheel; the fork publishes none yet"
+
+[[rule]]
+pattern = '''codecov\.io/gh/cobre-rs/cobre[^\s)>"'\]]*'''
+manual = "Cobre's coverage dashboard"
+
+# Last: any other mention of the upstream organization, so the name rule never
+# turns it into a non-existent "novomodelo-rs".
+[[rule]]
+pattern = 'cobre-rs'
+manual = "another reference to the upstream organization; decide per site"
