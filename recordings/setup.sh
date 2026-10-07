@@ -8,7 +8,7 @@
 #              pinned release binary into BIN_DIR — no root required)
 #   - ttyd   : the headless terminal vhs drives (>= 1.7.2)
 #   - ffmpeg : the encoder that turns captured frames into a GIF
-# plus the `cobre` binary on PATH — the subject of every recording.
+# plus the `novomodelo` binary on PATH — the subject of every recording.
 #
 # ttyd + ffmpeg come from the system package manager (dnf / apt / brew); vhs is
 # downloaded into BIN_DIR and that directory is ensured on PATH. Versions are
@@ -128,7 +128,7 @@ ensure_path() {
   esac
   local line="export PATH=\"$BIN_DIR:\$PATH\""
   if ! grep -qsF "$line" "$rc"; then
-    printf '\n# added by cobre recordings/setup.sh\n%s\n' "$line" >>"$rc"
+    printf '\n# added by novomodelo recordings/setup.sh\n%s\n' "$line" >>"$rc"
     log "added $BIN_DIR to PATH in $rc"
   fi
   log "for this shell, run:  export PATH=\"$BIN_DIR:\$PATH\""
@@ -141,9 +141,9 @@ ensure_ttyd
 ensure_vhs
 ensure_path
 
-if ! have cobre; then
-  log "note: 'cobre' is not on PATH — install it before recording:"
-  log "      cargo install --path crates/cobre-cli"
+if ! have novomodelo; then
+  log "note: 'novomodelo' is not on PATH — install it before recording:"
+  log "      cargo install --path crates/novomodelo-cli"
 fi
 
 log "done. next: ./recordings/generate.sh"

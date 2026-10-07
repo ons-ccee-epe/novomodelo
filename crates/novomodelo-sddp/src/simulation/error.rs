@@ -5,7 +5,7 @@
 
 use crate::SddpError;
 
-use cobre_stochastic::StochasticError;
+use novomodelo_stochastic::StochasticError;
 
 /// Errors that can occur during simulation execution.
 #[derive(Debug, thiserror::Error)]

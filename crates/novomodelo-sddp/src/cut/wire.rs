@@ -98,7 +98,7 @@ pub type CutWireTuple<'a> = (u32, i32, u32, u32, f64, &'a [f64]);
 /// Return the byte size of one cut wire record with `n_state` coefficients.
 ///
 /// ```
-/// use cobre_sddp::cut::wire::cut_wire_size;
+/// use novomodelo_sddp::cut::wire::cut_wire_size;
 ///
 /// assert_eq!(cut_wire_size(0), 29);
 /// assert_eq!(cut_wire_size(1), 37);

@@ -41,7 +41,7 @@
 //! - `hydro_id` existence in the hydro registry — Layer 3.
 
 use arrow::array::Array;
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
@@ -58,8 +58,8 @@ use crate::parquet_helpers::{
 /// # Examples
 ///
 /// ```
-/// use cobre_io::extensions::TailraceCurveRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::extensions::TailraceCurveRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = TailraceCurveRow {
 ///     hydro_id: EntityId::from(42),
@@ -118,7 +118,7 @@ pub struct TailraceCurveRow {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::extensions::parse_tailrace_curves;
+/// use novomodelo_io::extensions::parse_tailrace_curves;
 /// use std::path::Path;
 ///
 /// let rows = parse_tailrace_curves(Path::new("system/tailrace_curves.parquet"))

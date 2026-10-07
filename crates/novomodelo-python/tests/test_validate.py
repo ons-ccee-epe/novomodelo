@@ -1,11 +1,11 @@
-"""Tests for the cobre.io.validate full pre-solver pipeline.
+"""Tests for the novomodelo.io.validate full pre-solver pipeline.
 
 Verifies that validate() exercises the full phase sequence (path check,
-cobre-io validation layers, SDDP preparation phases, and boundary
+novomodelo-io validation layers, SDDP preparation phases, and boundary
 reconciliation) and returns a correctly shaped result dict.
 
 Run with (from the repo root):
-    pytest crates/cobre-python/tests/test_validate.py -v
+    pytest crates/novomodelo-python/tests/test_validate.py -v
 """
 
 from __future__ import annotations
@@ -37,9 +37,9 @@ def copy_case_to_tempdir(src: str) -> pathlib.Path:
 
 def test_validate_result_has_required_keys() -> None:
     """validate() always returns a dict with valid, errors, and warnings keys."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    result = cobre.io.validate(VALID_CASE_1DTOY)
+    result = novomodelo.io.validate(VALID_CASE_1DTOY)
     assert isinstance(result, dict)
     assert "valid" in result
     assert "errors" in result
@@ -48,9 +48,9 @@ def test_validate_result_has_required_keys() -> None:
 
 def test_validate_warning_entries_have_required_fields() -> None:
     """Each warning entry has kind, message, file, and entity fields."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    result = cobre.io.validate(VALID_CASE_1DTOY)
+    result = novomodelo.io.validate(VALID_CASE_1DTOY)
     for w in result["warnings"]:
         assert "kind" in w, f"missing 'kind' in warning: {w}"
         assert "message" in w, f"missing 'message' in warning: {w}"
@@ -63,9 +63,9 @@ def test_validate_warning_entries_have_required_fields() -> None:
 
 def test_validate_clean_case_returns_valid_true() -> None:
     """validate(examples/1dtoy) returns valid=True with no errors."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    result = cobre.io.validate(VALID_CASE_1DTOY)
+    result = novomodelo.io.validate(VALID_CASE_1DTOY)
     assert result["valid"] is True, (
         f"expected valid=True, got errors: {result['errors']}"
     )
@@ -87,7 +87,7 @@ def test_validate_emits_penalty_ordering_warning() -> None:
     end-to-end and is robust to future curation of the shipped example. A
     warning must NOT invalidate the case, so ``valid`` stays ``True``.
     """
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
     case_dir = copy_case_to_tempdir(VALID_CASE_1DTOY)
     try:
@@ -105,7 +105,7 @@ def test_validate_emits_penalty_ordering_warning() -> None:
         with buses_path.open("w") as f:
             json.dump(buses, f, indent=2)
 
-        result = cobre.io.validate(str(case_dir))
+        result = novomodelo.io.validate(str(case_dir))
 
         # Warnings never invalidate a case.
         assert result["valid"] is True, (
@@ -135,17 +135,17 @@ def test_validate_emits_penalty_ordering_warning() -> None:
 
 def test_validate_clean_case_accepts_pathlib_path() -> None:
     """validate() accepts a pathlib.Path, not just a str."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    result = cobre.io.validate(pathlib.Path(VALID_CASE_1DTOY))
+    result = novomodelo.io.validate(pathlib.Path(VALID_CASE_1DTOY))
     assert result["valid"] is True
 
 
 def test_validate_4ree_warnings_populated() -> None:
     """validate(examples/4ree) also populates warnings from the pipeline."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    result = cobre.io.validate(VALID_CASE_4REE)
+    result = novomodelo.io.validate(VALID_CASE_4REE)
     assert result["valid"] is True, f"4ree should be valid, errors: {result['errors']}"
     # 4ree may emit zero warnings — we only assert the key is present and a list.
     assert isinstance(result["warnings"], list)
@@ -156,9 +156,9 @@ def test_validate_4ree_warnings_populated() -> None:
 
 def test_validate_missing_directory_returns_invalid() -> None:
     """validate() returns valid=False for a non-existent path without raising."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    result = cobre.io.validate("/tmp/nonexistent_cobre_case_abc999xyz")
+    result = novomodelo.io.validate("/tmp/nonexistent_novomodelo_case_abc999xyz")
     assert result["valid"] is False
     assert len(result["errors"]) >= 1
     err = result["errors"][0]
@@ -177,7 +177,7 @@ def test_validate_basis_activity_window_is_rejected() -> None:
     validate() must surface this as valid=False and name the offending field,
     rather than silently ignoring it.
     """
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
     case_dir = copy_case_to_tempdir(VALID_CASE_1DTOY)
     try:
@@ -192,7 +192,7 @@ def test_validate_basis_activity_window_is_rejected() -> None:
         with config_path.open("w") as f:
             json.dump(config, f, indent=2)
 
-        result = cobre.io.validate(str(case_dir))
+        result = novomodelo.io.validate(str(case_dir))
         assert result["valid"] is False, (
             "expected valid=False for the removed basis_activity_window field, "
             f"got: {result!r}"
@@ -204,19 +204,19 @@ def test_validate_basis_activity_window_is_rejected() -> None:
         shutil.rmtree(case_dir.parent, ignore_errors=True)
 
 
-# ── Phase 1-6: cobre-io pipeline (ConstraintError / IoError) ──────────────────
+# ── Phase 1-6: novomodelo-io pipeline (ConstraintError / IoError) ──────────────────
 
 
 def test_validate_missing_config_returns_error() -> None:
     """An empty directory (no config.json) returns valid=False with an error."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
     with tempfile.TemporaryDirectory() as tmp:
-        result = cobre.io.validate(tmp)
+        result = novomodelo.io.validate(tmp)
         assert result["valid"] is False
         assert len(result["errors"]) >= 1
         err = result["errors"][0]
-        # The cobre-io structural layer reports missing required files as
+        # The novomodelo-io structural layer reports missing required files as
         # ConstraintError (aggregated) or IoError (direct read failure).
         assert err["kind"] in (
             "ConstraintError",
@@ -228,18 +228,18 @@ def test_validate_missing_config_returns_error() -> None:
 
 def test_validate_never_raises_for_missing_case() -> None:
     """validate() must not raise any exception, even for bad inputs."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    result = cobre.io.validate("/dev/null/this/cannot/exist")
+    result = novomodelo.io.validate("/dev/null/this/cannot/exist")
     assert isinstance(result, dict)
     assert result["valid"] is False
 
 
 def test_validate_never_raises_for_valid_case() -> None:
     """validate() must not raise any exception for a valid case."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    result = cobre.io.validate(VALID_CASE_1DTOY)
+    result = novomodelo.io.validate(VALID_CASE_1DTOY)
     assert isinstance(result, dict)
 
 
@@ -248,9 +248,9 @@ def test_validate_never_raises_for_valid_case() -> None:
 
 def test_validate_config_overrides_none_is_valid() -> None:
     """config_overrides=None reproduces the default valid result."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    result = cobre.io.validate(VALID_CASE_1DTOY, config_overrides=None)
+    result = novomodelo.io.validate(VALID_CASE_1DTOY, config_overrides=None)
     assert result["valid"] is True, f"errors: {result['errors']}"
 
 
@@ -262,9 +262,9 @@ def test_validate_config_overrides_invalid_value_surfaces_schema_error() -> None
     identically to an edited config.json. 1dtoy uses `in_sample` for every
     class, so the override is rejected with the offending field named.
     """
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    result = cobre.io.validate(
+    result = novomodelo.io.validate(
         VALID_CASE_1DTOY,
         config_overrides={"training.scenario_source.historical_years": [1990, 1991]},
     )
@@ -279,9 +279,9 @@ def test_validate_config_overrides_invalid_value_surfaces_schema_error() -> None
 
 def test_validate_config_overrides_typo_surfaces_schema_error() -> None:
     """A typo override key is rejected via deny_unknown_fields as a SchemaError."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    result = cobre.io.validate(
+    result = novomodelo.io.validate(
         VALID_CASE_1DTOY,
         config_overrides={"trainning.tree_seed": 7},
     )
@@ -296,10 +296,10 @@ def test_validate_config_overrides_unsupported_value_raises_value_error() -> Non
     Unlike case-validation failures (returned as data), a malformed call payload
     is a programming error and is raised under the GIL before py.detach.
     """
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
     with pytest.raises(ValueError):
-        cobre.io.validate(
+        novomodelo.io.validate(
             VALID_CASE_1DTOY,
             config_overrides={"training.cut_selection.row_activity_tolerance": {1, 2}},
         )
@@ -315,7 +315,7 @@ def test_validate_missing_boundary_checkpoint_returns_invalid() -> None:
     Pre-fix: this same call returned {"valid": True, "errors": []}, diverging from
     the CLI validate which exited 1 for the identical case.
     """
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
     case_dir = copy_case_to_tempdir(VALID_CASE_1DTOY)
     try:
@@ -330,7 +330,7 @@ def test_validate_missing_boundary_checkpoint_returns_invalid() -> None:
         with config_path.open("w") as f:
             json.dump(config, f)
 
-        result = cobre.io.validate(str(case_dir))
+        result = novomodelo.io.validate(str(case_dir))
         assert result["valid"] is False, (
             f"expected valid=False for missing boundary checkpoint, got: {result!r}"
         )
@@ -347,9 +347,9 @@ def test_validate_without_boundary_policy_is_unchanged() -> None:
     """Validate with no boundary policy skips phase 11 and returns the same
     result as before the phase 11 addition.
     """
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    result = cobre.io.validate(VALID_CASE_1DTOY)
+    result = novomodelo.io.validate(VALID_CASE_1DTOY)
     assert result["valid"] is True
     assert result["errors"] == []
     assert isinstance(result["warnings"], list)
@@ -360,7 +360,7 @@ def test_validate_without_boundary_policy_is_unchanged() -> None:
 # `StudySetup::new_with_boundary_requirements` now receives the caller-loaded
 # `constraints/generic_parameters.json` table (never an empty placeholder), so
 # a boundary-configured study whose table has a genuine gap is rejected here
-# exactly as the CLI's `cobre validate` rejects it.
+# exactly as the CLI's `novomodelo validate` rejects it.
 
 
 def _build_case_with_boundary_and_scalar_parameter(
@@ -370,10 +370,10 @@ def _build_case_with_boundary_and_scalar_parameter(
     self-checkpoint, and add a single scalar-parameter `entry` to
     `constraints/generic_parameters.json`.
     """
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     source_output = tmp_path / "source"
-    cobre.run.run(VALID_CASE_1DTOY, output_dir=str(source_output))
+    novomodelo.run.run(VALID_CASE_1DTOY, output_dir=str(source_output))
     source_policy_dir = source_output / "policy"
 
     target_case = tmp_path / "target"
@@ -401,14 +401,14 @@ def test_validate_rejects_missing_season_scalar_parameter_gap(
     season (1dtoy's stages carry no `season_id`, so every stage resolves to
     season 0) is rejected as `BoundaryReconciliationError`.
     """
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
     target_case = _build_case_with_boundary_and_scalar_parameter(
         tmp_path,
         {"id": 1, "name": "p_season_gap", "kind": "seasonal", "values": [[5, 1.0]]},
     )
 
-    result = cobre.io.validate(str(target_case))
+    result = novomodelo.io.validate(str(target_case))
     assert result["valid"] is False, f"expected a MissingSeason reject, got: {result!r}"
     assert any("season" in err["message"] for err in result["errors"]), (
         f"expected an error naming the missing season, got: {result['errors']!r}"
@@ -421,10 +421,10 @@ def test_validate_rejects_per_stage_block_coverage_gap(
 ) -> None:
     """A `per_stage_block` scalar parameter covering only stage 0's block
     leaves every later stage's `(stage, block)` cell uncovered and is
-    rejected. (cobre-io's parser requires at least one entry, so the gap must
+    rejected. (novomodelo-io's parser requires at least one entry, so the gap must
     be a partial rather than an empty `block_values`.)
     """
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
     target_case = _build_case_with_boundary_and_scalar_parameter(
         tmp_path,
@@ -436,7 +436,7 @@ def test_validate_rejects_per_stage_block_coverage_gap(
         },
     )
 
-    result = cobre.io.validate(str(target_case))
+    result = novomodelo.io.validate(str(target_case))
     assert result["valid"] is False, (
         f"expected a PerStageBlockCoverage reject, got: {result!r}"
     )
@@ -452,7 +452,7 @@ def test_validate_rejects_missing_specific_productivity(
     no productivity override and no entity-level value is rejected. 1dtoy's
     hydro 0 declares neither.
     """
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
     target_case = _build_case_with_boundary_and_scalar_parameter(
         tmp_path,
@@ -464,7 +464,7 @@ def test_validate_rejects_missing_specific_productivity(
         },
     )
 
-    result = cobre.io.validate(str(target_case))
+    result = novomodelo.io.validate(str(target_case))
     assert result["valid"] is False, (
         f"expected a MissingSpecificProductivity reject, got: {result!r}"
     )
@@ -477,7 +477,7 @@ def test_validate_rejects_missing_specific_productivity(
 #
 # Validate runs the scalar-parameter guard before it builds the study, so a gap on
 # a deck with no boundary policy keeps the error kind
-# GenericConstraintValidationError and the same message as `cobre validate`.
+# GenericConstraintValidationError and the same message as `novomodelo validate`.
 
 
 def _write_scalar_parameters(
@@ -495,9 +495,9 @@ def test_validate_rejects_non_boundary_scalar_parameter_gap() -> None:
     """A non-boundary deck whose scalar-parameter table has a resolution gap (a
     `seasonal` param with no entry for the resolved season; 1dtoy resolves every
     stage to season 0) is rejected as GenericConstraintValidationError, closing
-    the gap that previously let it pass validate while `cobre run` failed.
+    the gap that previously let it pass validate while `novomodelo run` failed.
     """
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
     case_dir = copy_case_to_tempdir(VALID_CASE_1DTOY)
     try:
@@ -505,17 +505,19 @@ def test_validate_rejects_non_boundary_scalar_parameter_gap() -> None:
             case_dir,
             [{"id": 1, "name": "p_gap", "kind": "seasonal", "values": [[5, 1.0]]}],
         )
-        result = cobre.io.validate(str(case_dir))
+        result = novomodelo.io.validate(str(case_dir))
         assert result["valid"] is False, f"expected a reject, got: {result!r}"
         assert len(result["errors"]) == 1
         err = result["errors"][0]
         assert err["kind"] == "GenericConstraintValidationError", (
-            f"kind must match `cobre validate`, got: {err['kind']!r}"
+            f"kind must match `novomodelo validate`, got: {err['kind']!r}"
         )
         assert err["message"] == (
             "constraints/: configuration validation error: parameter 'p_gap': "
             "no seasonal value for season_id=0 (needed by stage 0)"
-        ), f"message must match `cobre validate` byte-for-byte, got: {err['message']!r}"
+        ), (
+            f"message must match `novomodelo validate` byte-for-byte, got: {err['message']!r}"
+        )
     finally:
         shutil.rmtree(case_dir.parent, ignore_errors=True)
 
@@ -523,7 +525,7 @@ def test_validate_rejects_non_boundary_scalar_parameter_gap() -> None:
 def test_validate_accepts_non_boundary_resolved_scalar_parameter() -> None:
     """A non-boundary deck whose scalar-parameter table resolves cleanly still
     validates with zero errors (the new guard raises no false rejection)."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
     case_dir = copy_case_to_tempdir(VALID_CASE_1DTOY)
     try:
@@ -531,7 +533,7 @@ def test_validate_accepts_non_boundary_resolved_scalar_parameter() -> None:
             case_dir,
             [{"id": 1, "name": "p_ok", "kind": "constant", "value": 1.0}],
         )
-        result = cobre.io.validate(str(case_dir))
+        result = novomodelo.io.validate(str(case_dir))
         assert result["valid"] is True, f"expected valid, got: {result!r}"
         assert result["errors"] == []
     finally:
@@ -545,9 +547,9 @@ WARM_START = {"policy.mode": "warm_start"}
 
 def _train_one_iteration(case: pathlib.Path, out: pathlib.Path) -> None:
     """Train `case` for one iteration into `out`, leaving a policy in `out/policy`."""
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
-    cobre.run.run(
+    novomodelo.run.run(
         str(case),
         output_dir=str(out),
         config_overrides={
@@ -558,13 +560,13 @@ def _train_one_iteration(case: pathlib.Path, out: pathlib.Path) -> None:
 
 
 def _restamp_policy_version(policy_dir: pathlib.Path) -> None:
-    """Rewrite the cobre version in `policy_dir/manifest.bin` to another string of
+    """Rewrite the novomodelo version in `policy_dir/manifest.bin` to another string of
     the same byte length, so the FlatBuffers layout is unchanged."""
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     manifest = policy_dir / "manifest.bin"
     data = manifest.read_bytes()
-    running = cobre.__version__.encode()
+    running = novomodelo.__version__.encode()
     assert data.count(running) == 1, "the running version occurs once in the manifest"
     other = (b"8" if running.startswith(b"9") else b"9") + running[1:]
     manifest.write_bytes(data.replace(running, other))
@@ -587,20 +589,20 @@ def test_validate_output_dir_checks_the_policy_run_loads_from_that_directory(
 ) -> None:
     """validate(output_dir=out) refuses the warm-start policy in `out` that
     run(output_dir=out) refuses, with the same message."""
-    import cobre.errors  # noqa: PLC0415
-    import cobre.io  # noqa: PLC0415
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     case, out = _case_with_restamped_policy(tmp_path)
 
-    result = cobre.io.validate(str(case), WARM_START, output_dir=str(out))
+    result = novomodelo.io.validate(str(case), WARM_START, output_dir=str(out))
 
     assert result["valid"] is False, result
     assert [e["kind"] for e in result["errors"]] == ["WarmStartIncompatible"]
     message = result["errors"][0]["message"]
     assert "policy was written by" in message, message
-    with pytest.raises(cobre.errors.PolicyIncompatibleError) as exc_info:
-        cobre.run.run(str(case), output_dir=str(out), config_overrides=WARM_START)
+    with pytest.raises(novomodelo.errors.PolicyIncompatibleError) as exc_info:
+        novomodelo.run.run(str(case), output_dir=str(out), config_overrides=WARM_START)
     reported = message[message.index("policy was written by") :]
     assert reported in str(exc_info.value), (reported, str(exc_info.value))
 
@@ -610,11 +612,11 @@ def test_validate_without_output_dir_reads_the_case_output_subdirectory(
 ) -> None:
     """Without output_dir, validate reads `<case>/output`, where the policy
     trained into a sibling directory is absent."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
     case, _ = _case_with_restamped_policy(tmp_path)
 
-    result = cobre.io.validate(str(case), WARM_START)
+    result = novomodelo.io.validate(str(case), WARM_START)
 
     assert result["valid"] is False, result
     message = result["errors"][0]["message"]
@@ -624,11 +626,13 @@ def test_validate_without_output_dir_reads_the_case_output_subdirectory(
 
 def test_validate_output_dir_is_never_created(tmp_path: pathlib.Path) -> None:
     """validate leaves an absent output_dir absent."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
     absent = tmp_path / "absent"
 
-    result = cobre.io.validate(VALID_CASE_1DTOY, WARM_START, output_dir=str(absent))
+    result = novomodelo.io.validate(
+        VALID_CASE_1DTOY, WARM_START, output_dir=str(absent)
+    )
 
     assert result["valid"] is False, result
     assert not absent.exists()
@@ -638,12 +642,12 @@ def test_validate_relative_output_dir_resolves_against_the_working_directory(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A relative output_dir is read from the process working directory."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
     case, _ = _case_with_restamped_policy(tmp_path)
     monkeypatch.chdir(tmp_path)
 
-    result = cobre.io.validate(str(case), WARM_START, output_dir="out")
+    result = novomodelo.io.validate(str(case), WARM_START, output_dir="out")
 
     assert result["valid"] is False, result
     assert "policy was written by" in result["errors"][0]["message"], result
@@ -651,7 +655,7 @@ def test_validate_relative_output_dir_resolves_against_the_working_directory(
 
 def test_validate_output_dir_is_keyword_only() -> None:
     """output_dir cannot be passed positionally."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
     with pytest.raises(TypeError):
-        cobre.io.validate(VALID_CASE_1DTOY, None, "out")  # type: ignore[call-arg]
+        novomodelo.io.validate(VALID_CASE_1DTOY, None, "out")  # type: ignore[call-arg]

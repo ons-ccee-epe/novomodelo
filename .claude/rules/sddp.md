@@ -1,6 +1,6 @@
 ---
 paths:
-  - "crates/cobre-sddp/**/*.rs"
+  - "crates/novomodelo-sddp/**/*.rs"
 ---
 
 # SDDP Numerical & Algorithm Conventions
@@ -138,10 +138,10 @@ production field is ever introduced, is to widen the cell partition key to
 `(bus_id, production-coefficient signature)`; partitioning by `bus_id` alone
 would then silently misprice any mixed-productivity cell.
 
-Read: `crates/cobre-sddp/src/production/hydro_models/types.rs`
-(`ProductionModelSet::model`), `crates/cobre-core/src/entities/hydro.rs`
+Read: `crates/novomodelo-sddp/src/production/hydro_models/types.rs`
+(`ProductionModelSet::model`), `crates/novomodelo-core/src/entities/hydro.rs`
 (`HydroGenerationModel` on `Hydro`, absent from `HydroUnitGroup`),
-`crates/cobre-sddp/src/lp/indexer/hydro_cell.rs` (`HydroCellIndex::build`).
+`crates/novomodelo-sddp/src/lp/indexer/hydro_cell.rs` (`HydroCellIndex::build`).
 Pinned by `production_model_set_model_returns_correct_variant` (the
 `(hydro, stage)` lookup has no group or cell dimension to key on) and
 `test_multi_bus_plant_splits_into_bus_ordered_cells` (partitioning depends on
@@ -185,7 +185,7 @@ before summing them, exactly as this sub-contract requires — each group's
 supplies one, the declaration otherwise, via `GroupBoundLookup`), never the
 bare declared value.
 
-Read: `crates/cobre-sddp/src/lp/builder/hydro_state.rs` (`cell_max_turbined`).
+Read: `crates/novomodelo-sddp/src/lp/builder/hydro_state.rs` (`cell_max_turbined`).
 Pinned by `test_same_bus_groups_sum_into_one_cell_box`, mutation-verified
 against sum-then-fold on a two-group fixture whose groups bind on opposite
 sides.
@@ -242,10 +242,10 @@ sit up to that tolerance above declared — the plant term could tighten by
 that same margin. No shipped fixture exercises this; do not round it up to
 "provably inert."
 
-Read: `crates/cobre-sddp/src/lp/builder/hydro_state.rs` (`cell_max_turbined`,
-`cell_max_generation`), `crates/cobre-io/src/validation/semantic/block_bounds.rs`
+Read: `crates/novomodelo-sddp/src/lp/builder/hydro_state.rs` (`cell_max_turbined`,
+`cell_max_generation`), `crates/novomodelo-io/src/validation/semantic/block_bounds.rs`
 (`check_bound_raises_declared_capacity`, the no-raising rule),
-`crates/cobre-io/src/validation/semantic/hydro.rs` (rule 41). Pinned by
+`crates/novomodelo-io/src/validation/semantic/hydro.rs` (rule 41). Pinned by
 `test_same_bus_groups_sum_into_one_cell_box`'s third plant (a same-bus pair at
 rule-41 equality, no override), which pins the group term binding, and by
 `test_cell_columns_take_their_own_group_box`'s block-2 override, which pins
@@ -324,15 +324,15 @@ basis to split by), while a per-cell floor VIOLATION is DETERMINED — each
 cell owns its own row and its own slack column, so there is exactly one
 correct per-cell slack value to sum, never a manufactured one.
 
-Read: `crates/cobre-sddp/src/lp/builder/hydro_state.rs` (`cell_min_turbined`,
-`cell_min_generation`), `crates/cobre-sddp/src/lp/builder/columns.rs`
-(`fill_cell_block_family`), `crates/cobre-sddp/src/lp/builder/rows.rs`
-(`fill_operational_violation_rows`), `crates/cobre-sddp/src/lp/builder/entries.rs`
-(`fill_operational_violation_entries`), `crates/cobre-sddp/src/lp/builder/layout.rs`
-(`OperViolationRanges`), `crates/cobre-sddp/src/simulation/extraction.rs`
-(`sum_cell_slack`, `hydro_operational_slacks`), `crates/cobre-io/src/validation/semantic/hydro.rs`
+Read: `crates/novomodelo-sddp/src/lp/builder/hydro_state.rs` (`cell_min_turbined`,
+`cell_min_generation`), `crates/novomodelo-sddp/src/lp/builder/columns.rs`
+(`fill_cell_block_family`), `crates/novomodelo-sddp/src/lp/builder/rows.rs`
+(`fill_operational_violation_rows`), `crates/novomodelo-sddp/src/lp/builder/entries.rs`
+(`fill_operational_violation_entries`), `crates/novomodelo-sddp/src/lp/builder/layout.rs`
+(`OperViolationRanges`), `crates/novomodelo-sddp/src/simulation/extraction.rs`
+(`sum_cell_slack`, `hydro_operational_slacks`), `crates/novomodelo-io/src/validation/semantic/hydro.rs`
 (rule 44). Pinned by the per-cell analytical row/coefficient test in
-`crates/cobre-sddp/src/lp/builder/entries.rs` (mutation-verified against the
+`crates/novomodelo-sddp/src/lp/builder/entries.rs` (mutation-verified against the
 `.min(plant)` clamp, the `max`-fold, the ρ-fold, and `1/|cells|`
 apportionment), the d53 binding fixture, and the group-declaration-order
 determinism regression.
@@ -360,12 +360,12 @@ dense but pinned `[0, 0]` (`fill_diversion_columns`) and presolve-eliminated, so
 omitting its zero-valued coefficient leaves the solved LP identical. Both flow
 families stay hydro-keyed (`n_op_hydro`), never per-cell.
 
-Read: `crates/cobre-sddp/src/lp/builder/entries.rs`
+Read: `crates/novomodelo-sddp/src/lp/builder/entries.rs`
 (`fill_operational_violation_entries` — both outflow blocks omit `d`),
-`crates/cobre-sddp/src/lp/builder/rows.rs` (`fill_operational_violation_rows`),
-`crates/cobre-core/src/entities/hydro.rs` (`Hydro::min_outflow_m3s` /
+`crates/novomodelo-sddp/src/lp/builder/rows.rs` (`fill_operational_violation_rows`),
+`crates/novomodelo-core/src/entities/hydro.rs` (`Hydro::min_outflow_m3s` /
 `max_outflow_m3s` docs). Pinned by `both_outflow_rows_exclude_diversion`
-(`crates/cobre-sddp/src/lp/builder/template/tests.rs`, the structural coefficient
+(`crates/novomodelo-sddp/src/lp/builder/template/tests.rs`, the structural coefficient
 check, mutation-verified against re-adding `d` to either row),
 `min_outflow_binds_the_non_diverted_flow_on_a_diverter`, and
 `max_outflow_binds_the_non_diverted_flow_on_a_diverter` (`tests/hydro_sim.rs`,
@@ -488,9 +488,9 @@ which hides a record this rule should have dropped. Read: `policy/policy_load.rs
 `warm_start_skips_a_stored_basis_with_too_few_basic_entries_instead_of_aborting`
 (`tests/cut_basis.rs`),
 `simulation_only_loads_a_policy_with_a_wider_stored_basis_and_warns`
-(`crates/cobre-cli/tests/cli_run.rs`) and
+(`crates/novomodelo-cli/tests/cli_run.rs`) and
 `test_load_policy_with_a_wider_stored_basis_loads_and_warns_once`
-(`crates/cobre-python/tests/test_policy_load_validation.py`).
+(`crates/novomodelo-python/tests/test_policy_load_validation.py`).
 
 ## A stored basis warm-starts only at its own node (node-tag)
 
@@ -512,9 +512,9 @@ alone is not where the asymmetry lives. Pinned by
 `test_solver_clp_solve_accepts_inconsistent_basis_status_combination_silently`,
 `test_solver_highs_solve_rejects_inconsistent_basis_status_combination`, and the
 symmetric pair `test_solver_{clp,highs}_solve_rejects_undersized_row_basis` in
-`crates/cobre-solver/tests/conformance.rs`. A cross-node warm-start is
+`crates/novomodelo-solver/tests/conformance.rs`. A cross-node warm-start is
 therefore a silent wrong-vertex / wrong-dual on the CLP backend with no solver
-backstop — so the check must live in cobre's own apply path, never be delegated
+backstop — so the check must live in novomodelo's own apply path, never be delegated
 to the solver. Dropping the `node_id` filter, or comparing pool id instead of the
 declared node id (sibling fan nodes share a pool — see the append-only section
 above), is the wrong-but-compiling alternative: it compiles, warm-starts from the
@@ -608,7 +608,7 @@ rank shapes (the pinned gates). No config field selects the order.
 CHANGING the order (a code change to `noise_key`) changes the warm-start
 chain each opening's solve starts from, and at a degenerate optimum a
 differently-warmed solve may settle on a different-but-equally-valid vertex
-with different duals — the hot≠cold divergence the Cobre determinism contract
+with different duals — the hot≠cold divergence the Novomodelo determinism contract
 permits — so an order change re-checks the golden parity baselines instead of
 assuming byte-identical outputs. Aggregating the outcome slice indexed by
 solve position — or handing solve-order-permuted probabilities to
@@ -630,7 +630,7 @@ under `training.parallelism.backward_scheduler`. The retired `trial_point` /
 `opening_block` spellings are unknown-variant deserialize errors — a clean break
 with no `serde(alias)` fallback — pinned by
 `retired_scheduler_spellings_are_deserialize_error`
-(`crates/cobre-io/src/config/training.rs`).
+(`crates/novomodelo-io/src/config/training.rs`).
 
 The opt-in by-node scheduler
 (`training.parallelism.backward_scheduler = { method = by_node }`)
@@ -979,7 +979,7 @@ entry point; there is no opt-out or bypass path. Its check matrix keys off
 `validate_policy_load` and defers to the per-slot reconciliation in
 `load_boundary_cuts` as the authority — the C17 source-drop surfacing
 (`BoundaryReconciliationReport::superset_summary`, `FamilyTally::dropped_source`/
-`dropped_source_slots`, serialized by `cobre validate --json`, and rejected
+`dropped_source_slots`, serialized by `novomodelo validate --json`, and rejected
 outright under `policy.boundary.strict`) is what makes relaxing it safe, letting a
 NEWAVE-shaped source (no transit buckets, monthly anticipated slots) feed a
 DECOMP-shaped current study at a differing state dimension. That deferral holds
@@ -1015,7 +1015,7 @@ alternative this contract rules out.
 A `BoundaryInjection` reads its study-global facts from the resolved pool's own
 `cuts/<pool>.bin`, never `metadata.json`. It selects the pool by DATE EQUALITY,
 never by index: the study's boundary date (`study_horizon_end`, the last study
-stage's exclusive `end_date`) is encoded once via `cobre_io::encode_slot_date`
+stage's exclusive `end_date`) is encoded once via `novomodelo_io::encode_slot_date`
 and compared as an integer against each pool's own `priced_state_date`, walking
 `checkpoint.stage_cuts` in its pool-id-sorted order — an index into
 `graph_stage_id` or the raw pool id could silently pick a different, wrong
@@ -1086,7 +1086,7 @@ checkpoint's `manifest.bin` `CheckpointManifest` root: `software` and
 `software_version`, read through `CheckpointManifest::written_by`) is not
 exactly `SoftwareIdentity::THIS_BUILD`, the identity this build stamps into
 every checkpoint it writes: the trainer's `write_checkpoint` and
-`cobre.write_policy_checkpoint`, which ignores a caller-supplied identity. A
+`novomodelo.write_policy_checkpoint`, which ignores a caller-supplied identity. A
 checkpoint that recorded no `software` is refused like one from another
 program. The refusal is `SddpError::PolicySoftwareMismatch`, naming both
 writers. Only same-software, same-version loads are supported; a looser rule
@@ -1101,14 +1101,14 @@ season-descriptor carve-out below. Every step after `validate_policy_load`
 decoding) sees only checkpoints this build wrote.
 
 Read: `policy/policy_load.rs` (`validate_policy_load`) and
-`cobre_io::SoftwareIdentity`. Pinned by `policy_version_refused_for_every_kind`,
+`novomodelo_io::SoftwareIdentity`. Pinned by `policy_version_refused_for_every_kind`,
 `policy_from_other_software_refused_at_the_same_version`,
 `policy_without_recorded_software_refused`,
 `policy_version_checked_before_the_layout` and
 `policy_version_refused_at_boundary_load` in `policy/policy_load.rs`, and by
 `warm_start_refuses_a_policy_written_by_another_version` and
 `boundary_policy_written_by_another_version_is_refused_at_run` in
-`crates/cobre-cli/tests/cli_validate.rs`.
+`crates/novomodelo-cli/tests/cli_validate.rs`.
 
 ### Boundary loads gate on season-cycle and PAR-order identity before reconciling
 
@@ -1149,7 +1149,7 @@ study side of the descriptor is `orchestration::StudySeasonManifest`, whose
 season the study's own stages never reach, including a stage a horizon
 reduction truncates away from a longer source study), `Some(k)` is a fitted
 order, including `Some(0)`. The source side stays the dense, zero-filled
-`cobre_io::SeasonManifest` the checkpoint wire carries — only the loading
+`novomodelo_io::SeasonManifest` the checkpoint wire carries — only the loading
 study's own opinion can be absent; a source that priced a season the study
 never visited is not, on that account alone, treated as absent.
 `StudySeasonManifest::to_season_manifest` projects every `None` to `0` when
@@ -1172,11 +1172,11 @@ distinct messages the reject tier requires, and it would report a hydro-SET
 difference (a missing hydro) as if it were a PAR-ORDER difference.
 
 The wire-side `SeasonManifest`'s ascending-`hydro_id` order and each hydro's
-`orders.len() == n_seasons` are no longer assumed from the writer alone: `cobre-io`
+`orders.len() == n_seasons` are no longer assumed from the writer alone: `novomodelo-io`
 rejects a decoded manifest violating either shape before this gate ever runs,
 pinned by `checkpoint_manifest_rejects_unsorted_season_hydro_orders` and
 `checkpoint_manifest_rejects_season_orders_length_mismatch` in
-`crates/cobre-io/src/output/policy/codec.rs`.
+`crates/novomodelo-io/src/output/policy/codec.rs`.
 
 `orchestration::build_season_manifest` (renamed from the file-private
 `season_manifest`, now `pub`) is the single owner both the checkpoint writer
@@ -1261,7 +1261,7 @@ followed by a `reference_date` check: the two `YYYYMMDD` `i32` stamps
 `ENTITY_SLOT_DATE_SENTINEL`) are compared RAW, never as decoded
 `NaiveDate`s. Both dated and equal copies exactly as before; both dated and
 DIFFERENT rejects, naming the hydro, the lag depth, and both dates (each
-rendered through `cobre_io::decode_slot_date`, degrading to the raw integer
+rendered through `novomodelo_io::decode_slot_date`, degrading to the raw integer
 on an undecodable stamp) — a "different past" diagnosis, worded distinctly
 from the identity-miss lag-depth-incompatibility reject above so the two
 failures, which have different remedies, are never conflated.
@@ -1388,7 +1388,7 @@ interval (anticipated delivery is NON-monotone in subindex — the modular
 delivery-target residue of the ring contract above — so a subindex join misaligns
 months to weeks). Source intervals are read from each live source slot's OWN
 `interval_start`/`interval_end` (`build_source_interval_index`, decoding through
-`cobre_io::decode_slot_date`) — the source-side counterpart of the target-side
+`novomodelo_io::decode_slot_date`) — the source-side counterpart of the target-side
 read the parent section describes, never a `YYYYMM01` anchor reconstruction; an
 exact or superset match reconciles byte-for-byte (`Copy`). The `H_w / covered`
 division is guarded: `resolve_by_interval_overlap` returns `Zero` on
@@ -1518,7 +1518,7 @@ filters each hydro's own historical windows by id. `build_initial_state`'s lag
 block trusts this pre-ordering and does a plain positional read, with no id
 lookup of its own.
 Read: `setup/mod.rs` (`id_to_position`, `build_initial_state`),
-`crates/cobre-stochastic/src/seeds.rs` (`derive_inflow_seeds`). Pinned by
+`crates/novomodelo-stochastic/src/seeds.rs` (`derive_inflow_seeds`). Pinned by
 `test_initial_state_seeds_correctly_under_staggered_commissioning_dates`,
 `build_initial_state_anticipated_seed_correct_under_staggered_commissioning_dates`,
 and `test_seed_correct_under_staggered_commissioning_dates`, each using a
@@ -1679,11 +1679,11 @@ window with a matching `hydro_id` and deposit each one independently
 (`volume = width · M3S_TO_HM3 · value_m3s`, `seed[start+d] += k[d] · volume`)
 — a `.find()` would silently keep only the first window and drop the rest,
 understating the seed with no error. There is no fallback for incomplete
-coverage: `cobre-io`'s `validate_travel_time` row-5 gate guarantees every
+coverage: `novomodelo-io`'s `validate_travel_time` row-5 gate guarantees every
 declared arc's windows cover `[start_0 − t_v, start_0)` before setup ever
 runs this seed.
 Read: `setup/mod.rs` (`build_initial_transit_bucket_state`,
-`splice_transit_bucket_seed`), `cobre-stochastic`'s
+`splice_transit_bucket_seed`), `novomodelo-stochastic`'s
 `season_cast::StageCalendar::hour_window_shares`. Pinned by the single-window
 unroll regression (the `k`-weighted deposit matches the closed-form
 half-share), the gapped-two-window additive regression (two non-contiguous
@@ -1769,7 +1769,7 @@ Read: `lp/indexer/state_space.rs` (`StateRegion::cut_enabled`),
 `lp/indexer/cut_state_projection.rs` (`CutStateProjection::new`),
 `bucket_topology.rs` (`horizon_cap_active`), `lp/builder/columns.rs`
 (`fill_anticipated_slot_columns`, `fill_transit_bucket_columns`),
-`crates/cobre-io/src/config/policy.rs` (`PolicyConfig::boundary`). Pinned by
+`crates/novomodelo-io/src/config/policy.rs` (`PolicyConfig::boundary`). Pinned by
 `every_bucket_dim_projects_including_deep_terminal_lags` (every bucket dim, the
 deep-lag terminal slots included, appears exactly once in the cut-state
 projection with no entity-type or per-stage gate) and
@@ -1901,7 +1901,7 @@ and `hydro_inflow_rows_count_an_exited_plants_maturing_transit_water_on_a_parall
 
 ### Pre-study anticipated commitments: calendar-derived coverage
 
-`AnticipatedCommitmentHistory` (`cobre-core`) is a windowed record —
+`AnticipatedCommitmentHistory` (`novomodelo-core`) is a windowed record —
 `{thermal_id, start_date, end_date, value_mw}`, one commitment window per
 entry, mirroring `HydroPastDefluence`'s shape — never a per-stage array
 indexed by delivery order. A plant's commitment windows must TILE EXACTLY its
@@ -1930,10 +1930,10 @@ are legal. This makes "no window straddles the horizon" an enforced precondition
 the class-4 date selectors rely on, not an assumed one. Pinned by
 `test_straddling_commitment_window_rejected` and
 `test_horizon_split_commitment_window_pair_loads_cleanly`
-(`crates/cobre-io/tests/post_study_stages.rs`).
+(`crates/novomodelo-io/tests/post_study_stages.rs`).
 
 The in-study half is calendar-derived, computed independently of the solver
-crate's point-commitment resolver (`cobre-io` is upstream and cannot depend on
+crate's point-commitment resolver (`novomodelo-io` is upstream and cannot depend on
 it): `LeadStages(l)` clamps to `min(l, n_stages)`; `LeadTime(delta)` counts the
 leading study stages whose stage-end cumulative hours are `<= delta`
 (tie-inclusive). `check_anticipated_thermals` resolves this count, then hands
@@ -2000,19 +2000,19 @@ it — the value would instead be SILENTLY FOLDED into the terminal-boundary
 valuation and reported as a delivery from a plant not in service, a
 mispriced output with no LP backstop at all.
 
-Read: `crates/cobre-core/src/constraints/initial_conditions.rs`
-(`AnticipatedCommitmentHistory`), `crates/cobre-io/src/validation/semantic/thermal.rs`
+Read: `crates/novomodelo-core/src/constraints/initial_conditions.rs`
+(`AnticipatedCommitmentHistory`), `crates/novomodelo-io/src/validation/semantic/thermal.rs`
 (`check_anticipated_thermals`, `lead_delivery_stage_count`,
 `check_commitment_coverage`, `check_post_study_stages`, `classify_deliveries`,
 `DeliveryClasses`, `check_fixed_post_study_tiling`,
 `check_post_study_window_excludes_unreachable_stages`,
 `check_committed_value_bounds`, `check_fixed_commitment_within_window`,
-`check_seed_within_window`), `crates/cobre-stochastic/src/season_cast/mod.rs`
+`check_seed_within_window`), `crates/novomodelo-stochastic/src/season_cast/mod.rs`
 (`StageCalendar::covers_exactly`, `StageCalendar::coverage`).
 Pinned by `test_anticipated_lead_time_coverage_pmo_calendar` and
 `test_anticipated_lead_time_coverage_pmo_calendar_under_coverage_rejected`
 (in-study coverage, `thermal.rs`); and, all in
-`crates/cobre-io/tests/post_study_stages.rs`:
+`crates/novomodelo-io/tests/post_study_stages.rs`:
 `test_fixed_post_horizon_windows_tiling_class_four_stages_loads` and
 `test_untiled_fixed_post_horizon_stage_rejected` (V2),
 `test_window_on_a_study_decided_post_study_stage_rejected`,
@@ -2411,7 +2411,7 @@ commissioning-gated at ITS OWN delivery stage `m` (its
 `t`. `fill_anticipated_columns` reads `thermal_block_base(thermal_idx,
 delivery_stage)` for the column's `[min, max]` bounds (the overlay-ignoring
 base is safe here only because a load-time rule rejects a `block_id` bound row
-on an anticipated thermal — see `cobre-io`'s
+on an anticipated thermal — see `novomodelo-io`'s
 `check_block_id_on_anticipated_thermal`),
 `thermal_bounds(thermal_idx, delivery_stage).cost_per_mwh` for its cost,
 `TimeValue::delivery_total_hours(delivery_stage)` for its hours,
@@ -2466,8 +2466,8 @@ Read: `lp/builder/columns.rs` (`fill_anticipated_columns`),
 delivery-anchored base),
 `lp/indexer/anticipated_gate.rs` (`is_anticipated_decision_active_for_delivery`),
 `lp/builder/generic_constraints.rs` (`resolve_anticipated_decision`),
-`cobre-io` `validation/semantic/thermal.rs`
-(`warn_thermal_generation_on_anticipated_thermal`), `cobre-io`
+`novomodelo-io` `validation/semantic/thermal.rs`
+(`warn_thermal_generation_on_anticipated_thermal`), `novomodelo-io`
 `validation/semantic/block_bounds.rs`
 (`check_block_id_on_anticipated_thermal`, the rule the base read's safety
 depends on). Pinned by
@@ -2509,7 +2509,7 @@ does not give it.
 
 A *genuine* over-commitment — past the delivery bound by more than solver noise —
 is NOT a runtime verdict and NOT the seam's to catch: it is rejected before the
-study runs, at `cobre-io` load time, by `check_committed_value_bounds`
+study runs, at `novomodelo-io` load time, by `check_committed_value_bounds`
 (`validation/semantic/thermal.rs`), which checks each committed value against the
 delivery-stage resolved generation box. The seam absorbs solver noise; the
 load-time validator rejects the modelling error. Letting the seam decide which
@@ -2521,7 +2521,7 @@ distinguishes noise from error, because the validator has already rejected any
 genuine over-commitment at load.
 
 Read: `solve/stage_solve.rs` (`assemble_outgoing_state`, the read-back seam),
-`lp/builder/scaling.rs` (`apply_commitment_hold_col_scale_unscale`), and `cobre-io`
+`lp/builder/scaling.rs` (`apply_commitment_hold_col_scale_unscale`), and `novomodelo-io`
 `validation/semantic/thermal.rs` (`check_committed_value_bounds`, the load-time
 over-commitment reject). Pinned for the seam by
 `anticipated_commitment_drifted_over_cap_is_absorbed` (a seed a hair past the cap

@@ -1,4 +1,4 @@
-//! Error types for the `cobre-io` loading pipeline.
+//! Error types for the `novomodelo-io` loading pipeline.
 //!
 //! [`LoadError`] is the primary error type returned by [`crate::load_case`] and every
 //! internal parsing function. Each variant carries enough context for the caller to
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 /// # Examples
 ///
 /// ```
-/// use cobre_io::LoadError;
+/// use novomodelo_io::LoadError;
 /// use std::path::PathBuf;
 ///
 /// let err = LoadError::SchemaError {
@@ -73,7 +73,7 @@ impl LoadError {
     /// # Examples
     ///
     /// ```
-    /// use cobre_io::LoadError;
+    /// use novomodelo_io::LoadError;
     /// use std::io;
     ///
     /// let io_err = io::Error::new(io::ErrorKind::NotFound, "no such file");
@@ -92,7 +92,7 @@ impl LoadError {
     /// # Examples
     ///
     /// ```
-    /// use cobre_io::LoadError;
+    /// use novomodelo_io::LoadError;
     ///
     /// let err = LoadError::parse("stages.json", "unexpected end of input");
     /// assert!(err.to_string().contains("stages.json"));
@@ -106,7 +106,7 @@ impl LoadError {
     }
 
     /// The stable `--json` classifier string for this variant — the single map
-    /// both `cobre validate --json` and `cobre.io.validate` draw `kind` from.
+    /// both `novomodelo validate --json` and `novomodelo.io.validate` draw `kind` from.
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {

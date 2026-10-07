@@ -1,7 +1,7 @@
-"""pytest configuration for the cobre-python test suite.
+"""pytest configuration for the novomodelo-python test suite.
 
 Registers the `--require-cli-binary` flag and provides a session-scoped
-`cli_binary` fixture that wraps the binary-discovery policy from `_cobre_cli`.
+`cli_binary` fixture that wraps the binary-discovery policy from `_novomodelo_cli`.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from _cobre_cli import resolve_cli_binary
+from _novomodelo_cli import resolve_cli_binary
 
 if TYPE_CHECKING:
     from _pytest.config.argparsing import Parser
@@ -32,7 +32,7 @@ def pytest_addoption(parser: Parser) -> None:
 
 @pytest.fixture(scope="session")
 def cli_binary(pytestconfig: Config) -> pathlib.Path:
-    """Return the compiled `cobre` CLI binary path.
+    """Return the compiled `novomodelo` CLI binary path.
 
     Uses the `--require-cli-binary` flag to determine whether absence is a
     skip (default, for local development) or a failure (CI).

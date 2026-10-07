@@ -45,7 +45,7 @@ pub use penalty_overrides::{
     parse_penalty_overrides_ncs,
 };
 
-use cobre_core::{EntityId, GenericConstraint};
+use novomodelo_core::{EntityId, GenericConstraint};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -70,7 +70,7 @@ fn load_optional<T>(
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::load_thermal_bounds;
+/// use novomodelo_io::constraints::load_thermal_bounds;
 ///
 /// let rows = load_thermal_bounds(None).expect("no file is fine");
 /// assert!(rows.is_empty());
@@ -88,7 +88,7 @@ pub fn load_thermal_bounds(path: Option<&Path>) -> Result<Vec<ThermalBoundsRow>,
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::load_hydro_bounds;
+/// use novomodelo_io::constraints::load_hydro_bounds;
 ///
 /// let rows = load_hydro_bounds(None).expect("no file is fine");
 /// assert!(rows.is_empty());
@@ -106,7 +106,7 @@ pub fn load_hydro_bounds(path: Option<&Path>) -> Result<Vec<HydroBoundsRow>, Loa
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::load_line_bounds;
+/// use novomodelo_io::constraints::load_line_bounds;
 ///
 /// let rows = load_line_bounds(None).expect("no file is fine");
 /// assert!(rows.is_empty());
@@ -124,7 +124,7 @@ pub fn load_line_bounds(path: Option<&Path>) -> Result<Vec<LineBoundsRow>, LoadE
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::load_pumping_bounds;
+/// use novomodelo_io::constraints::load_pumping_bounds;
 ///
 /// let rows = load_pumping_bounds(None).expect("no file is fine");
 /// assert!(rows.is_empty());
@@ -142,7 +142,7 @@ pub fn load_pumping_bounds(path: Option<&Path>) -> Result<Vec<PumpingBoundsRow>,
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::load_contract_bounds;
+/// use novomodelo_io::constraints::load_contract_bounds;
 ///
 /// let rows = load_contract_bounds(None).expect("no file is fine");
 /// assert!(rows.is_empty());
@@ -160,7 +160,7 @@ pub fn load_contract_bounds(path: Option<&Path>) -> Result<Vec<ContractBoundsRow
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::load_penalty_overrides_bus;
+/// use novomodelo_io::constraints::load_penalty_overrides_bus;
 ///
 /// let rows = load_penalty_overrides_bus(None).expect("no file is fine");
 /// assert!(rows.is_empty());
@@ -180,7 +180,7 @@ pub fn load_penalty_overrides_bus(
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::load_penalty_overrides_line;
+/// use novomodelo_io::constraints::load_penalty_overrides_line;
 ///
 /// let rows = load_penalty_overrides_line(None).expect("no file is fine");
 /// assert!(rows.is_empty());
@@ -200,7 +200,7 @@ pub fn load_penalty_overrides_line(
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::load_penalty_overrides_hydro;
+/// use novomodelo_io::constraints::load_penalty_overrides_hydro;
 ///
 /// let rows = load_penalty_overrides_hydro(None).expect("no file is fine");
 /// assert!(rows.is_empty());
@@ -220,7 +220,7 @@ pub fn load_penalty_overrides_hydro(
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::load_penalty_overrides_ncs;
+/// use novomodelo_io::constraints::load_penalty_overrides_ncs;
 ///
 /// let rows = load_penalty_overrides_ncs(None).expect("no file is fine");
 /// assert!(rows.is_empty());
@@ -248,7 +248,7 @@ pub fn load_penalty_overrides_ncs(
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::{LineBusPairIndex, load_generic_constraints};
+/// use novomodelo_io::constraints::{LineBusPairIndex, load_generic_constraints};
 /// use std::collections::HashMap;
 ///
 /// let constraints =
@@ -276,7 +276,7 @@ pub fn load_generic_constraints(
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::load_generic_constraint_bounds;
+/// use novomodelo_io::constraints::load_generic_constraint_bounds;
 ///
 /// let rows = load_generic_constraint_bounds(None).expect("no file is fine");
 /// assert!(rows.is_empty());
@@ -296,7 +296,7 @@ pub fn load_generic_constraint_bounds(
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::load_ncs_bounds;
+/// use novomodelo_io::constraints::load_ncs_bounds;
 ///
 /// let rows = load_ncs_bounds(None).expect("no file is fine");
 /// assert!(rows.is_empty());
@@ -314,7 +314,7 @@ pub fn load_ncs_bounds(path: Option<&Path>) -> Result<Vec<NcsBoundsRow>, LoadErr
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::load_hydro_unit_group_bounds;
+/// use novomodelo_io::constraints::load_hydro_unit_group_bounds;
 ///
 /// let rows = load_hydro_unit_group_bounds(None).expect("no file is fine");
 /// assert!(rows.is_empty());

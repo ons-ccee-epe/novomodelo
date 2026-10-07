@@ -225,12 +225,15 @@ mod tests {
 
         let err = BackendError::MissingConfiguration {
             backend: "tcp".into(),
-            missing_vars: vec!["COBRE_TCP_COORDINATOR".into(), "COBRE_TCP_RANK".into()],
+            missing_vars: vec![
+                "NOVOMODELO_TCP_COORDINATOR".into(),
+                "NOVOMODELO_TCP_RANK".into(),
+            ],
         };
         let display = format!("{err}");
         assert!(display.contains("tcp"), "display was: {display}");
         assert!(
-            display.contains("COBRE_TCP_COORDINATOR"),
+            display.contains("NOVOMODELO_TCP_COORDINATOR"),
             "display was: {display}"
         );
     }
@@ -251,7 +254,7 @@ mod tests {
         });
         accepts_std_error(&BackendError::MissingConfiguration {
             backend: "tcp".into(),
-            missing_vars: vec!["COBRE_TCP_RANK".into()],
+            missing_vars: vec!["NOVOMODELO_TCP_RANK".into()],
         });
     }
 }

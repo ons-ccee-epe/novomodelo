@@ -1,9 +1,9 @@
-# cobre-io
+# novomodelo-io
 
-Case directory loading, validation, and result writing for the [Cobre](https://github.com/cobre-rs/cobre) power systems ecosystem.
+Case directory loading, validation, and result writing for the [Novomodelo](https://github.com/ons-ccee-epe/novomodelo) power systems ecosystem.
 
 `load_case` and `write_results` are this crate's top-level entry points for all
-I/O in the Cobre ecosystem. `load_case` reads a case directory of JSON and
+I/O in the Novomodelo ecosystem. `load_case` reads a case directory of JSON and
 Parquet files, runs the layered validation pipeline described below, and
 produces a fully-validated `System` ready for the solver. `write_results`
 accepts aggregate result types and writes all output artifacts — Parquet tables,
@@ -12,10 +12,10 @@ directory.
 
 ## When to Use
 
-Depend on `cobre-io` when you need to load a case directory from disk or write
+Depend on `novomodelo-io` when you need to load a case directory from disk or write
 solver outputs to a result directory. If you are building a new subcommand or
 integration that reads case files and hands a `System` to an algorithm, this
-crate is the boundary between the filesystem and `cobre-core` types. Do not
+crate is the boundary between the filesystem and `novomodelo-core` types. Do not
 depend on it from pure algorithm crates — pass the `System` value instead.
 
 ## Key Types
@@ -135,10 +135,10 @@ assembly.
 
 | Resource   | URL                                                      |
 | ---------- | -------------------------------------------------------- |
-| Docs site  | <https://docs.cobre-rs.dev/>                             |
+| Docs site  | <https://docs.novomodelo.invalid/>                             |
 | API Docs   | https://docs.rs/cobre-io/latest/cobre_io/                |
-| Repository | https://github.com/cobre-rs/cobre                        |
-| CHANGELOG  | https://github.com/cobre-rs/cobre/blob/main/CHANGELOG.md |
+| Repository | https://github.com/ons-ccee-epe/novomodelo                        |
+| CHANGELOG  | https://github.com/ons-ccee-epe/novomodelo/blob/main/CHANGELOG.md |
 
 ## Status
 

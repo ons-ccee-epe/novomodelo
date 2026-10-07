@@ -48,7 +48,7 @@ impl SpectralFactor {
     /// # Examples
     ///
     /// ```
-    /// use cobre_stochastic::correlation::spectral::SpectralFactor;
+    /// use novomodelo_stochastic::correlation::spectral::SpectralFactor;
     ///
     /// let identity = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
     /// let factor = SpectralFactor::decompose(&identity).unwrap();

@@ -19,8 +19,8 @@
 //! The orchestration entry point `fit_fpha_planes` and its result `FphaFitResult`
 //! live here in `mod`, co-located with the re-export surface.
 
-use cobre_core::Hydro;
-use cobre_io::extensions::{FphaColumnLayout, HydroGeometryRow};
+use novomodelo_core::Hydro;
+use novomodelo_io::extensions::{FphaColumnLayout, HydroGeometryRow};
 
 use crate::hydro_models::FphaPlane;
 
@@ -48,7 +48,7 @@ mod tailrace;
 )]
 mod tests;
 
-use cobre_io::extensions::PlaneReductionConfig;
+use novomodelo_io::extensions::PlaneReductionConfig;
 
 use alpha::{compute_alpha_fpha, scale_plane_affine};
 use deviation::{collect_fit_deviation_points, compute_fit_deviation};
@@ -119,7 +119,7 @@ pub(crate) struct FphaFitResult {
 /// # Parameters
 ///
 /// - `forebay_rows` — VHA curve rows sorted ascending by `volume_hm3` (as returned
-///   by `cobre_io::extensions::parse_hydro_geometry`).
+///   by `novomodelo_io::extensions::parse_hydro_geometry`).
 /// - `long_term_mean_inflow_m3s` — long-term mean natural inflow \[m³/s\] driving
 ///   the lateral-secant `S_max = 2·long-term mean inflow`; `0.0` (no inflow
 ///   history) selects the `2 × max_turbined` fallback (see `secant::resolve_s_max`).

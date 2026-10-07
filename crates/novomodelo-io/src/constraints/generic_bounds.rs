@@ -57,7 +57,7 @@ use crate::parquet_helpers::{
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::GenericConstraintBoundsRow;
+/// use novomodelo_io::constraints::GenericConstraintBoundsRow;
 ///
 /// let row = GenericConstraintBoundsRow {
 ///     constraint_id: 0,
@@ -98,7 +98,7 @@ pub struct GenericConstraintBoundsRow {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::constraints::parse_generic_constraint_bounds;
+/// use novomodelo_io::constraints::parse_generic_constraint_bounds;
 /// use std::path::Path;
 ///
 /// let rows = parse_generic_constraint_bounds(

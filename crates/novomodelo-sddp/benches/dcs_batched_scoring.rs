@@ -15,14 +15,14 @@
     clippy::doc_markdown
 )]
 
-use cobre_core::StageStateConfig;
-use cobre_sddp::cut::{CutPool, CutRowMap};
-use cobre_sddp::cut_selection::CutMetadata;
-use cobre_sddp::dcs::{DcsParams, DcsScoringScratch, score_violated_candidates};
-use cobre_sddp::indexer::{CutStateProjection, StateDim, StateSpace};
-use cobre_sddp::lead_time::AnticipatedResolution;
-use cobre_sddp::setup::NodeId;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use novomodelo_core::StageStateConfig;
+use novomodelo_sddp::cut::{CutPool, CutRowMap};
+use novomodelo_sddp::cut_selection::CutMetadata;
+use novomodelo_sddp::dcs::{DcsParams, DcsScoringScratch, score_violated_candidates};
+use novomodelo_sddp::indexer::{CutStateProjection, StateDim, StateSpace};
+use novomodelo_sddp::lead_time::AnticipatedResolution;
+use novomodelo_sddp::setup::NodeId;
 use std::hint::black_box;
 
 // --- deterministic PRNG (no external rand dep) ------------------------------

@@ -1,14 +1,14 @@
 //! Bridge from `TrainingResult` and `TrainingEvent` log to `TrainingOutput`.
 //!
 //! [`build_training_output`] reads the post-training [`TrainingEvent`] log and
-//! reconstructs the per-iteration records [`cobre_io::TrainingOutput`] needs,
+//! reconstructs the per-iteration records [`novomodelo_io::TrainingOutput`] needs,
 //! rather than modifying the hot-path `train()` function. Missing events for an
 //! iteration produce zero values for the affected fields.
 
 use std::collections::BTreeMap;
 
-use cobre_core::TrainingEvent;
-use cobre_io::{
+use novomodelo_core::TrainingEvent;
+use novomodelo_io::{
     IterationRecord, MetadataTrainingSolveStats, RowPoolStatistics, RowSelectionRecord, RunStatus,
     TrainingOutput,
 };
@@ -240,8 +240,8 @@ fn partial_to_iteration_record(iter: u64, partial: &PartialRecord) -> IterationR
 /// # Examples
 ///
 /// ```rust
-/// use cobre_sddp::{build_training_output, TrainingResult, FutureCostFunction};
-/// use cobre_core::TrainingEvent;
+/// use novomodelo_sddp::{build_training_output, TrainingResult, FutureCostFunction};
+/// use novomodelo_core::TrainingEvent;
 ///
 /// let result = TrainingResult::new(
 ///     100.0,
@@ -414,7 +414,7 @@ pub fn build_training_output(
 
 /// Run-level sums (milliseconds) of the phase-wall, wait, and serial-bucket
 /// timing components carried per iteration in [`IterationRecord`]. Feeds
-/// `cobre-cli`'s post-run summary (`TrainingSummary::forward_phase_wall_seconds`
+/// `novomodelo-cli`'s post-run summary (`TrainingSummary::forward_phase_wall_seconds`
 /// and its siblings), which divides each field by 1000 once to seconds.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PhaseTimingTotals {
@@ -473,8 +473,8 @@ pub fn sum_phase_timing_ms(records: &[IterationRecord]) -> PhaseTimingTotals {
 fn build_worker_timing_records(
     events: &[TrainingEvent],
     convergence_records: &[IterationRecord],
-) -> Vec<cobre_io::WorkerTimingRecord> {
-    use cobre_core::{
+) -> Vec<novomodelo_io::WorkerTimingRecord> {
+    use novomodelo_core::{
         WORKER_TIMING_SLOT_BWD_SETUP, WORKER_TIMING_SLOT_BWD_WALL, WORKER_TIMING_SLOT_COUNT,
         WORKER_TIMING_SLOT_FWD_SETUP, WORKER_TIMING_SLOT_FWD_WALL, WORKER_TIMING_SLOT_SCORING,
     };
@@ -511,7 +511,7 @@ fn build_worker_timing_records(
         }
     }
 
-    let mut out: Vec<cobre_io::WorkerTimingRecord> =
+    let mut out: Vec<novomodelo_io::WorkerTimingRecord> =
         Vec::with_capacity(convergence_records.len() + per_worker.len());
 
     for record in convergence_records {
@@ -527,7 +527,7 @@ fn build_worker_timing_records(
         timings[12] = record.time_fwd_load_imbalance_ms;
         timings[13] = record.time_fwd_scheduling_overhead_ms;
         timings[14] = record.time_overhead_ms;
-        out.push(cobre_io::WorkerTimingRecord {
+        out.push(novomodelo_io::WorkerTimingRecord {
             iteration: record.iteration,
             rank: 0,
             worker_id: None,
@@ -536,7 +536,7 @@ fn build_worker_timing_records(
     }
 
     for ((iteration, rank, worker_id), timings) in per_worker {
-        out.push(cobre_io::WorkerTimingRecord {
+        out.push(novomodelo_io::WorkerTimingRecord {
             iteration,
             rank,
             worker_id: Some(worker_id),
@@ -550,8 +550,8 @@ fn build_worker_timing_records(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic, clippy::doc_markdown)]
 mod tests {
-    use cobre_core::TrainingEvent;
-    use cobre_io::{IterationRecord, RunStatus};
+    use novomodelo_core::TrainingEvent;
+    use novomodelo_io::{IterationRecord, RunStatus};
 
     use super::{PhaseTimingTotals, build_training_output, sum_phase_timing_ms};
     use crate::config::ShutdownSource;
@@ -1246,7 +1246,7 @@ mod tests {
 
     #[test]
     fn cut_selection_records_extracted_from_events() {
-        use cobre_core::StageRowSelectionRecord;
+        use novomodelo_core::StageRowSelectionRecord;
 
         let result = make_result("iteration_limit", 100.0, 110.0, 0.1, 3);
         let events = vec![

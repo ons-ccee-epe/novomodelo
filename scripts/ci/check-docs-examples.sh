@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Lock structural invariants of a fresh `cobre init` -> `run` against the live
+# Lock structural invariants of a fresh `novomodelo init` -> `run` against the live
 # binary, so the CLI's on-disk output shape cannot silently drift.
 #
 # What it asserts (bump constants when CLI output shape intentionally changes):
-#   1. `cobre init --template 1dtoy` materializes exactly EXPECTED_INPUT_FILES
+#   1. `novomodelo init --template 1dtoy` materializes exactly EXPECTED_INPUT_FILES
 #      regular files. Single source of truth below.
 #   2. training/metadata.json EXISTS and carries every TRAINING_METADATA_KEYS
 #      top-level key. Routed here per the file each key actually lives in:
@@ -20,7 +20,7 @@
 # re-cover command-execution behavior.
 #
 # Usage:
-#   scripts/ci/check-docs-examples.sh           — assumes ./target/release/cobre is built
+#   scripts/ci/check-docs-examples.sh           — assumes ./target/release/novomodelo is built
 #   scripts/ci/check-docs-examples.sh --build   — builds the release binary first
 set -euo pipefail
 
@@ -83,14 +83,14 @@ done
 
 command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required but not found on PATH." >&2; exit 2; }
 
-BIN="$REPO_ROOT/target/release/cobre"
+BIN="$REPO_ROOT/target/release/novomodelo"
 if [[ $BUILD -eq 1 || ! -x "$BIN" ]]; then
-  cargo build --release --bin cobre
+  cargo build --release --bin novomodelo
 fi
 
 # Fresh mktemp tree: never reuse a pre-existing local output dir, so a stale
 # artifact cannot mask a regression with a spurious pass.
-TMP_DIR="$(mktemp -d -t cobre-docs-examples-XXXXXX)"
+TMP_DIR="$(mktemp -d -t novomodelo-docs-examples-XXXXXX)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 CASE_DIR="$TMP_DIR/case"
@@ -114,7 +114,7 @@ check_keys() {
 "$BIN" init --template "$TEMPLATE" "$CASE_DIR" >/dev/null
 actual_files="$(find "$CASE_DIR" -type f | wc -l | tr -d '[:space:]')"
 if [[ "$actual_files" -ne "$EXPECTED_INPUT_FILES" ]]; then
-  fail "\`cobre init --template $TEMPLATE\` wrote $actual_files input files, expected $EXPECTED_INPUT_FILES. Update EXPECTED_INPUT_FILES in this script if the template intentionally changed."
+  fail "\`novomodelo init --template $TEMPLATE\` wrote $actual_files input files, expected $EXPECTED_INPUT_FILES. Update EXPECTED_INPUT_FILES in this script if the template intentionally changed."
 fi
 echo "init file count: $actual_files == $EXPECTED_INPUT_FILES (expected) ✓"
 

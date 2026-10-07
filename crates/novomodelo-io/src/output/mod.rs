@@ -319,7 +319,7 @@ pub struct WorkerTimingRecord {
     /// Fixed-size timing payload matching the 16 timing columns of
     /// `iteration_timing_schema()` (positions 3–18, after `iteration`, `rank`,
     /// `worker_id`). Slot indices correspond to the `WORKER_TIMING_SLOT_*`
-    /// constants defined in `cobre-core`.
+    /// constants defined in `novomodelo-core`.
     pub timings: [u64; 16],
 }
 

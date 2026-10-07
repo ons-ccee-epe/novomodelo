@@ -5,7 +5,7 @@
 /// `Result<LocalBackend, _>`, not the `CommBackend` of the `mpi` build.
 #[cfg(not(feature = "mpi"))]
 mod no_feature_factory {
-    use cobre_comm::{BackendError, BackendKind, Communicator, create_communicator};
+    use novomodelo_comm::{BackendError, BackendKind, Communicator, create_communicator};
 
     #[test]
     fn test_factory_no_feature_local() {
@@ -44,7 +44,7 @@ mod no_feature_factory {
 
 #[cfg(feature = "mpi")]
 mod any_feature_factory {
-    use cobre_comm::{BackendKind, CommBackend, Communicator, create_communicator};
+    use novomodelo_comm::{BackendKind, CommBackend, Communicator, create_communicator};
 
     #[test]
     fn test_factory_any_feature_local() {
@@ -65,7 +65,7 @@ mod any_feature_factory {
 // ── available_backends() tests ────────────────────────────────────────────────
 
 mod available_backends_tests {
-    use cobre_comm::available_backends;
+    use novomodelo_comm::available_backends;
 
     #[test]
     fn test_available_backends_contains_local() {
@@ -88,28 +88,28 @@ mod compile_time_checks {
     #[cfg(feature = "mpi")]
     fn test_ferrompi_backend_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<cobre_comm::FerrompiBackend>();
+        assert_send_sync::<novomodelo_comm::FerrompiBackend>();
     }
 
     #[test]
     #[cfg(feature = "mpi")]
     fn test_ferrompi_backend_communicator() {
-        fn assert_communicator<T: cobre_comm::Communicator>() {}
-        assert_communicator::<cobre_comm::FerrompiBackend>();
+        fn assert_communicator<T: novomodelo_comm::Communicator>() {}
+        assert_communicator::<novomodelo_comm::FerrompiBackend>();
     }
 
     #[test]
     #[cfg(all(feature = "mpi", feature = "shared-memory"))]
     fn test_ferrompi_backend_shared_memory_provider() {
-        fn assert_shared_memory_provider<T: cobre_comm::SharedMemoryProvider>() {}
-        assert_shared_memory_provider::<cobre_comm::FerrompiBackend>();
+        fn assert_shared_memory_provider<T: novomodelo_comm::SharedMemoryProvider>() {}
+        assert_shared_memory_provider::<novomodelo_comm::FerrompiBackend>();
     }
 }
 
 // ── error type checks ─────────────────────────────────────────────────────────
 
 mod error_type_checks {
-    use cobre_comm::{BackendError, CommError};
+    use novomodelo_comm::{BackendError, CommError};
 
     #[test]
     fn test_comm_error_std_error_send_sync() {

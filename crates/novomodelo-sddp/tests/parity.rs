@@ -1,5 +1,5 @@
 //! Consolidated parity / determinism / reproducibility integration tests for
-//! `cobre-sddp`.
+//! `novomodelo-sddp`.
 //!
 //! Groups the golden parity-hash regression, the self-reproducibility regression,
 //! the b6a hydro-inflow parity, the determinism conformance suite, and
@@ -56,7 +56,7 @@ mod parity_hash_highs {
     //! `FULL_SHUFFLE_PERMUTATIONS`-permutation matrix and are unconditionally
     //! `#[ignore]`d — see [`super::SHUFFLE_BASE_SEED`]/[`super::FULL_SHUFFLE_PERMUTATIONS`].
 
-    use cobre_solver::highs::HighsSolver;
+    use novomodelo_solver::highs::HighsSolver;
 
     fn run_case(label: &str) -> String {
         super::common::parity_hash::run_golden_case("parity_baselines", label, HighsSolver::new)
@@ -211,7 +211,7 @@ mod parity_hash_clp {
     //! run-to-run reproducibility there, not bit-for-bit reproduction on arbitrary
     //! machines.
 
-    use cobre_solver::clp::ClpSolver;
+    use novomodelo_solver::clp::ClpSolver;
 
     fn run_case(label: &str) -> String {
         super::common::parity_hash::run_golden_case("parity_baselines_clp", label, ClpSolver::new)
@@ -374,17 +374,17 @@ mod self_reproducibility_regression {
     //! would surface as a hash that drifts between consecutive runs of the same
     //! `(seed, config, input)`.
 
-    use cobre_io::config::SimulationSelection;
+    use novomodelo_io::config::SimulationSelection;
     use std::path::Path;
     use std::sync::mpsc;
 
-    use cobre_core::{TrainingEvent, scenario::ScenarioSource};
-    use cobre_sddp::{
+    use novomodelo_core::{TrainingEvent, scenario::ScenarioSource};
+    use novomodelo_sddp::{
         SimulationWeighting, StudySetup, aggregate_simulation,
         hydro_models::prepare_hydro_models,
         setup::{StudyParams, prepare_stochastic},
     };
-    use cobre_solver::ActiveSolver;
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
 
@@ -403,9 +403,9 @@ mod self_reproducibility_regression {
         let dir = d02_case_dir();
         let config_path = dir.join("config.json");
 
-        let config = cobre_io::parse_config(&config_path).expect("config must parse");
+        let config = novomodelo_io::parse_config(&config_path).expect("config must parse");
 
-        let system = cobre_io::load_case(&dir).expect("load_case must succeed");
+        let system = novomodelo_io::load_case(&dir).expect("load_case must succeed");
 
         let pr = prepare_stochastic(system, &dir, &config, 42, &ScenarioSource::default(), None)
             .expect("prepare_stochastic must succeed");
@@ -525,7 +525,7 @@ mod b6a_hydro_inflow_parity {
     //! that full column set — that the row references `z_inflow` AND each upstream
     //! plant's turbine+spillage (and diversion-into) at `+1.0`, NOT merely that
     //! `z_inflow` appears — is a crate-internal property of `resolve_variable_ref`,
-    //! which is `pub(crate)` to `cobre-sddp` and therefore unreachable from an
+    //! which is `pub(crate)` to `novomodelo-sddp` and therefore unreachable from an
     //! integration test under `tests/`. That assertion lives in the crate-internal
     //! unit tests in `lp::builder::generic_constraints` (e.g.
     //! `hydro_inflow_two_upstream_canonical_order`,
@@ -554,13 +554,13 @@ mod b6a_hydro_inflow_parity {
     //! constraint, so the existing parity baselines are byte-identical and this file
     //! adds **no** new `.sha256` baseline to `tests/fixtures/parity_baselines*`.
 
-    use cobre_io::config::SimulationSelection;
+    use novomodelo_io::config::SimulationSelection;
     use std::path::{Path, PathBuf};
     use std::sync::mpsc;
 
-    use cobre_core::scenario::ScenarioSource;
-    use cobre_core::{CoefficientRef, EntityId, VariableRef};
-    use cobre_sddp::{
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_core::{CoefficientRef, EntityId, VariableRef};
+    use novomodelo_sddp::{
         SimulationWeighting, aggregate_simulation, hydro_models::prepare_hydro_models,
         setup::prepare_stochastic,
     };
@@ -582,7 +582,7 @@ mod b6a_hydro_inflow_parity {
     /// responsibility of `lp::builder::generic_constraints`'s unit tests (see this file's
     /// module docs); this assertion only guards that the fixture references the
     /// cascade target so the end-to-end solve genuinely exercises B6a.
-    fn assert_cascade_inflow_constraint(system: &cobre_core::System) {
+    fn assert_cascade_inflow_constraint(system: &novomodelo_core::System) {
         let constraints = system.generic_constraints();
         assert_eq!(
             constraints.len(),
@@ -646,14 +646,14 @@ mod b6a_hydro_inflow_parity {
     /// pool exactly as the production training/simulation paths do.
     fn run_cascade_inflow_case<S, F>(make_solver: F)
     where
-        S: cobre_solver::SolverInterface<Profile = cobre_solver::ActiveProfile> + Send,
-        F: Fn() -> Result<S, cobre_solver::SolverError> + Copy,
+        S: novomodelo_solver::SolverInterface<Profile = novomodelo_solver::ActiveProfile> + Send,
+        F: Fn() -> Result<S, novomodelo_solver::SolverError> + Copy,
     {
         let dir = fixture_dir();
         let config_path = dir.join("config.json");
 
-        let config = cobre_io::parse_config(&config_path).expect("config must parse");
-        let system = cobre_io::load_case(&dir).expect("load_case must succeed");
+        let config = novomodelo_io::parse_config(&config_path).expect("config must parse");
+        let system = novomodelo_io::load_case(&dir).expect("load_case must succeed");
 
         assert_cascade_inflow_constraint(&system);
 
@@ -734,7 +734,7 @@ mod b6a_hydro_inflow_parity {
         ignore = "slow: run with --features slow-tests"
     )]
     fn b6a_hydro_inflow_cascade_solves_highs() {
-        use cobre_solver::highs::HighsSolver;
+        use novomodelo_solver::highs::HighsSolver;
         run_cascade_inflow_case(HighsSolver::new);
     }
 
@@ -747,7 +747,7 @@ mod b6a_hydro_inflow_parity {
         ignore = "slow: run with --features slow-tests"
     )]
     fn b6a_hydro_inflow_cascade_solves_clp() {
-        use cobre_solver::clp::ClpSolver;
+        use novomodelo_solver::clp::ClpSolver;
         run_cascade_inflow_case(ClpSolver::new);
     }
 }
@@ -771,8 +771,8 @@ mod determinism {
     use std::sync::mpsc;
 
     use chrono::NaiveDate;
-    use cobre_comm::{CommData, CommError, Communicator, ReduceOp};
-    use cobre_core::{
+    use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
+    use novomodelo_core::{
         DeficitSegment, EntityId,
         scenario::{
             CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile,
@@ -783,7 +783,7 @@ mod determinism {
             StageStateConfig,
         },
     };
-    use cobre_sddp::{
+    use novomodelo_sddp::{
         Phase, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
         config::{CutManagementConfig, EventConfig, LoopConfig},
         context::TrainingContext,
@@ -803,10 +803,10 @@ mod determinism {
         train,
         workspace::{SolverWorkspace, WorkspaceSizing},
     };
-    use cobre_solver::{
+    use novomodelo_solver::{
         Basis, RowBatch, SolverError, SolverInterface, SolverStatistics, StageTemplate,
     };
-    use cobre_stochastic::{
+    use novomodelo_stochastic::{
         ClassSchemes, OpeningTreeInputs, StochasticContext, build_stochastic_context,
     };
 
@@ -889,9 +889,9 @@ mod determinism {
     }
 
     impl SolverInterface for MockSolver3H {
-        type Profile = cobre_solver::ActiveProfile;
+        type Profile = novomodelo_solver::ActiveProfile;
 
-        fn apply_profile(&mut self, _profile: &cobre_solver::ActiveProfile) {}
+        fn apply_profile(&mut self, _profile: &novomodelo_solver::ActiveProfile) {}
         fn solver_name_version(&self) -> String {
             "MockSolver 0.0.0".to_string()
         }
@@ -903,8 +903,8 @@ mod determinism {
         fn solve(
             &mut self,
             _basis: Option<&Basis>,
-        ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
-            Ok(cobre_solver::SolutionView {
+        ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
+            Ok(novomodelo_solver::SolutionView {
                 objective: self.objective,
                 primal: PRIMAL_3H,
                 dual: DUAL_3H,
@@ -915,7 +915,7 @@ mod determinism {
         }
 
         fn get_basis(&mut self, out: &mut Basis) {
-            cobre_sddp::test_support::fill_consistent_basis(out);
+            novomodelo_sddp::test_support::fill_consistent_basis(out);
         }
 
         fn statistics(&self) -> SolverStatistics {
@@ -941,9 +941,9 @@ mod determinism {
         n_stages: usize,
         branching_factor: usize,
     ) -> StochasticContext {
-        use cobre_core::SystemBuilder;
-        use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-        use cobre_core::scenario::InflowModel;
+        use novomodelo_core::SystemBuilder;
+        use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+        use novomodelo_core::scenario::InflowModel;
 
         let zero_penalties = || HydroPenalties {
             spillage_cost: 0.0,
@@ -1259,7 +1259,7 @@ mod determinism {
         n_workspaces: usize,
         fx: &Fixture3H,
         n_iterations: u64,
-    ) -> (cobre_sddp::TrainingResult, FutureCostFunction) {
+    ) -> (novomodelo_sddp::TrainingResult, FutureCostFunction) {
         let mut fcf = make_fcf_3h(fx.n_stages);
         let mut primary_solver = MockSolver3H::new(100.0);
         let comm = StubComm;
@@ -1305,7 +1305,9 @@ mod determinism {
                     &mut fcf,
                     &stage_ctx,
                     &TrainingContext {
-                        node_graph: &cobre_sddp::test_support::chain_node_graph(&fx.stochastic),
+                        node_graph: &novomodelo_sddp::test_support::chain_node_graph(
+                            &fx.stochastic,
+                        ),
                         horizon: &fx.horizon,
                         state: &fx.state,
                         cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
@@ -1348,7 +1350,7 @@ mod determinism {
         fx: &Fixture3H,
         fcf: &FutureCostFunction,
         n_scenarios: u32,
-    ) -> Vec<(u32, f64, cobre_sddp::ScenarioCategoryCosts)> {
+    ) -> Vec<(u32, f64, novomodelo_sddp::ScenarioCategoryCosts)> {
         let sim_config = SimulationConfig {
             n_scenarios,
             io_channel_capacity: 64,
@@ -1374,12 +1376,12 @@ mod determinism {
         let ec = EnergyConversionSet::new(
             vec![vec![zero_ec; fx.n_stages]; 3],
             vec![vec![0.0_f64; fx.n_stages]; 3],
-            &cobre_sddp::test_support::minimal_hydros(3),
+            &novomodelo_sddp::test_support::minimal_hydros(3),
             fx.n_stages,
         );
 
         let sim_training_ctx = TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&fx.stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
@@ -1437,7 +1439,9 @@ mod determinism {
                     &sim_config,
                     SimulationOutputSpec {
                         result_tx: &result_tx,
-                        hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+                        hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(
+                            256,
+                        ),
                         block_hours_per_stage: &vec![vec![744.0]; fx.n_stages],
                         entity_counts: &entity_counts,
                         generic_constraint_row_entries: &vec![Vec::new(); fx.n_stages],
@@ -1908,27 +1912,27 @@ mod water_travel_time_no_arc_byte_identity {
     //!   [`common::parity_hash::run_golden_case`](super::common::parity_hash::run_golden_case)
     //!   against the EXISTING committed baseline — no new baseline is written.
 
-    use cobre_io::config::TrainingSelection;
+    use novomodelo_io::config::TrainingSelection;
     use std::path::{Path, PathBuf};
 
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{BlockMode, Stage};
-    use cobre_core::{
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{BlockMode, Stage};
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, DeficitSegment,
         EntityId, HydroBlockBounds, HydroGenerationModel, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
         ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
-    use cobre_sddp::{
+    use novomodelo_sddp::{
         StudySetup,
         hydro_models::prepare_hydro_models,
         indexer::StateSpace,
         setup::{StudyParams, prepare_stochastic},
     };
-    use cobre_solver::StageTemplate;
+    use novomodelo_solver::StageTemplate;
 
-    use cobre_sddp::test_support::assert_all_templates_byte_identical;
+    use novomodelo_sddp::test_support::assert_all_templates_byte_identical;
 
     use super::common::build_setup_in_code;
     use super::common::builders::{
@@ -1963,7 +1967,7 @@ mod water_travel_time_no_arc_byte_identity {
     /// no arc declared) with a backup thermal, `N_STAGES` stages each carrying a
     /// single default-length block (`StageSpec::default()`'s block: the `K = 1`
     /// case under test).
-    fn build_system(block_mode: BlockMode) -> cobre_core::System {
+    fn build_system(block_mode: BlockMode) -> novomodelo_core::System {
         use chrono::NaiveDate;
 
         let bus = make_bus(
@@ -2136,8 +2140,8 @@ mod water_travel_time_no_arc_byte_identity {
             .expect("build_system: valid no-arc single-block study")
     }
 
-    fn build_config() -> cobre_io::Config {
-        use cobre_io::config::{
+    fn build_config() -> novomodelo_io::Config {
+        use novomodelo_io::config::{
             Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
             InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
             RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
@@ -2157,10 +2161,10 @@ mod water_travel_time_no_arc_byte_identity {
                 enabled: true,
                 tree_seed: Some(42),
                 stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit { limit: 1 }]),
-                stopping_mode: cobre_io::config::StoppingMode::Any,
+                stopping_mode: novomodelo_io::config::StoppingMode::Any,
                 cut_selection: RowSelectionConfig::default(),
                 solver: TrainingSolverConfig::default(),
-                parallelism: cobre_io::config::ParallelismConfig::default(),
+                parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
                 selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
             },
@@ -2249,8 +2253,8 @@ mod water_travel_time_no_arc_byte_identity {
         let dir = d06_case_dir();
         let config_path = dir.join("config.json");
 
-        let config = cobre_io::parse_config(&config_path).expect("config must parse");
-        let system = cobre_io::load_case(&dir).expect("load_case must succeed");
+        let config = novomodelo_io::parse_config(&config_path).expect("config must parse");
+        let system = novomodelo_io::load_case(&dir).expect("load_case must succeed");
 
         let prep_source = config
             .training_scenario_source(&config_path)
@@ -2306,7 +2310,7 @@ mod water_travel_time_no_arc_byte_identity {
         ignore = "slow: run with --features slow-tests"
     )]
     fn d06_parity_hash_matches_existing_baseline_highs() {
-        use cobre_solver::highs::HighsSolver;
+        use novomodelo_solver::highs::HighsSolver;
         super::common::parity_hash::run_golden_case("parity_baselines", "D06", HighsSolver::new);
     }
 
@@ -2320,7 +2324,7 @@ mod water_travel_time_no_arc_byte_identity {
         ignore = "slow: run with --features slow-tests"
     )]
     fn d06_parity_hash_matches_existing_baseline_clp() {
-        use cobre_solver::clp::ClpSolver;
+        use novomodelo_solver::clp::ClpSolver;
         super::common::parity_hash::run_golden_case("parity_baselines_clp", "D06", ClpSolver::new);
     }
 }
@@ -2350,8 +2354,8 @@ mod water_travel_time_gate_byte_neutrality {
 
     use std::path::Path;
 
-    use cobre_io::config::BoundaryPolicy;
-    use cobre_solver::ActiveSolver;
+    use novomodelo_io::config::BoundaryPolicy;
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::{StubComm, fresh_setup_with};
 
@@ -2445,7 +2449,7 @@ mod water_travel_time_gate_byte_neutrality {
 
     #[test]
     fn declared_arc_golden_deck_declares_no_post_study_calendar() {
-        let system = cobre_io::load_case(&case_dir()).expect("load_case must succeed");
+        let system = novomodelo_io::load_case(&case_dir()).expect("load_case must succeed");
         assert!(
             system.post_study_stages().is_none(),
             "the water goldens' deck declares no post-study calendar, so the \
@@ -2458,12 +2462,12 @@ mod simulation_scenario_seed {
     use std::path::Path;
     use std::sync::mpsc;
 
-    use cobre_io::Config;
-    use cobre_io::config::{
+    use novomodelo_io::Config;
+    use novomodelo_io::config::{
         RawClassConfigEntry, RawSamplingScheme, RawScenarioSourceConfig, SimulationSelection,
         StoppingRuleConfig,
     };
-    use cobre_solver::ActiveSolver;
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::parity_hash::compute_parity_hash;
     use super::common::permute::permute_case;
@@ -2648,8 +2652,8 @@ mod sacred_chain_parity_roster {
     //! | # | Obligation | Named test | File | Introduced alongside |
     //! |---|---|---|---|---|
     //! | 1 | Pool indexing on a chain (`pool_id == stage`) | `pool_stage_chain_is_identity` | `setup/node_graph.rs` | the pool re-key to pool-id addressing |
-    //! | 2 | Draw-sequence tuples pinned at sampler level (no test-only env vars) | `transition_draw_call_does_not_perturb_subsequent_within_node_noise` | `cobre-stochastic` `sampling/class_sampler.rs` | the sampled root-to-leaf graph walk |
-    //! | 3 | Per-pool cut append order (checkpoint bytes) | `read_policy_checkpoint_full_round_trip` | `cobre-io` `output/policy/mod.rs` | the versioned value-function-artifact checkpoint schema |
+    //! | 2 | Draw-sequence tuples pinned at sampler level (no test-only env vars) | `transition_draw_call_does_not_perturb_subsequent_within_node_noise` | `novomodelo-stochastic` `sampling/class_sampler.rs` | the sampled root-to-leaf graph walk |
+    //! | 3 | Per-pool cut append order (checkpoint bytes) | `read_policy_checkpoint_full_round_trip` | `novomodelo-io` `output/policy/mod.rs` | the versioned value-function-artifact checkpoint schema |
     //! | 4 | Basis addressing + constant node tag | `opening_order_determinism` | `mpi_wire.rs` | basis node-tagging (cross-node warm-start rejection) |
     //! | 5 | Full golden-case output parity, both backends | `parity_hash_d06`/`d15`/`d30`/`d34`/`d41` (`parity_hash_highs` and `parity_hash_clp`) | `parity.rs` | pre-existing; the harness was re-keyed by pool id when pools became node-indexed |
     //! | 6 | The existing `mpi_wire.rs` gates | `opening_order_determinism`, `by_node_scheduler_determinism_expectation`, `by_node_scheduler_determinism_cvar`, `hardest_first_claim_order_is_result_neutral`, `retry_armed_determinism_expectation`, `retry_armed_determinism_cvar`, `derived_inflow_seeds_rank_invariant`, `four_rank_basis_broadcast_round_trip`, `k_fan_thread_shape_invariance`, `k_fan_weighted_aggregation_canonical_order_invariance`, `enumerated_k_fan_thread_and_declaration_shapes_agree` | `mpi_wire.rs` | various (see each gate's own module doc) |
@@ -2682,16 +2686,16 @@ mod sacred_chain_parity_roster {
     //!
     //! | # | Scratch mutation | Observed result |
     //! |---|---|---|
-    //! | 1 | `setup/node_graph.rs`: `build_chain_node_graph`'s `let pool_id = t;` changed to `n_stages - 1 - t` (reversed) | **FAILS** 22 tests across `cobre-sddp --lib`, including the mapped `pool_stage_chain_is_identity` and `chain_degeneracy_one_node_per_stage_1to1_pools_uniform_q_bit_pattern` — pool-id identity is a deeply load-bearing invariant with broad existing coverage (over-determined, not a hole). |
-    //! | 2 | `cobre-stochastic` `sampling/class_sampler.rs`: introduced a shared `static AtomicU64` call counter, XORed into both `select_transition_child`'s seed and `ClassSampler::fill`'s `InSample` seed (simulating a stateful, call-order-dependent draw) | **FAILS** exactly the mapped test within `class_sampler`'s own 29-test module (28 pass, 1 fails), plus 2 more at the crate level (`sampling::tests::test_composite_in_sample_fills_correct_segments`, `sampling::tests::test_in_sample_sample_is_deterministic`) that also exercise `InSample::fill` repeatability — over-determined, not a hole. The current architecture has no shared mutable state between the two draws (each independently re-derives a pure-function seed and a fresh RNG), so this mutation had to introduce the state the obligation forbids rather than merely reorder existing code. |
-    //! | 3 | `cobre-io` `output/policy/codec.rs`: `deserialize_stage_cuts`'s cut-vector read loop changed from `nested_positions.iter().enumerate()` to `.iter().rev().enumerate()` | **FAILS** exactly 2 tests in `cobre-io --lib`: the mapped `read_policy_checkpoint_full_round_trip` and the lower-level `deserialize_stage_cuts_three_cuts_all_match` — over-determined, not a hole. |
+    //! | 1 | `setup/node_graph.rs`: `build_chain_node_graph`'s `let pool_id = t;` changed to `n_stages - 1 - t` (reversed) | **FAILS** 22 tests across `novomodelo-sddp --lib`, including the mapped `pool_stage_chain_is_identity` and `chain_degeneracy_one_node_per_stage_1to1_pools_uniform_q_bit_pattern` — pool-id identity is a deeply load-bearing invariant with broad existing coverage (over-determined, not a hole). |
+    //! | 2 | `novomodelo-stochastic` `sampling/class_sampler.rs`: introduced a shared `static AtomicU64` call counter, XORed into both `select_transition_child`'s seed and `ClassSampler::fill`'s `InSample` seed (simulating a stateful, call-order-dependent draw) | **FAILS** exactly the mapped test within `class_sampler`'s own 29-test module (28 pass, 1 fails), plus 2 more at the crate level (`sampling::tests::test_composite_in_sample_fills_correct_segments`, `sampling::tests::test_in_sample_sample_is_deterministic`) that also exercise `InSample::fill` repeatability — over-determined, not a hole. The current architecture has no shared mutable state between the two draws (each independently re-derives a pure-function seed and a fresh RNG), so this mutation had to introduce the state the obligation forbids rather than merely reorder existing code. |
+    //! | 3 | `novomodelo-io` `output/policy/codec.rs`: `deserialize_stage_cuts`'s cut-vector read loop changed from `nested_positions.iter().enumerate()` to `.iter().rev().enumerate()` | **FAILS** exactly 2 tests in `novomodelo-io --lib`: the mapped `read_policy_checkpoint_full_round_trip` and the lower-level `deserialize_stage_cuts_three_cuts_all_match` — over-determined, not a hole. |
     //! | 4 | `training/forward/basis_capture.rs`: `write_capture_metadata`'s `captured.node_id = node_id;` hardcoded to `NodeId(0)` (every capture mistagged to node 0 regardless of the real node being solved) | **COVERAGE HOLE.** The mapped `opening_order_determinism`, all 39 other `mpi_wire.rs` tests, `parity_hash_d06`, and `d12_checkpoint_round_trip` all stayed green. On a chain the mismatch (`0 != t` for every `t > 0`) forces every non-root basis capture to cold-start — uniformly and deterministically, so it is bit-reproducible across every thread/rank shape these gates compare (a shape-invariance gate cannot see a shape-invariant defect), and the D02/D06 LPs these fixtures use converge to the same unique optimal vertex regardless of warm- or cold-start, so even the final numeric output is unmoved (the parity hash deliberately excludes iteration counts, so a hot-vs-cold difference in convergence speed alone would not move it either). `run_stage_solve_cross_node_stored_basis_is_treated_as_cold` (`solve/stage_solve.rs`) proves the reject mechanism fires correctly given an already-mismatched tag, but nothing in the suite proves `write_capture_metadata` populates the tag correctly from the real node in the first place, on an end-to-end chain run. Reported, not papered over. |
     //! | 5 | `simulation/extraction.rs`: the per-block `SimulationHydroResult` builder's `storage_final_hm3: storage_final,` changed to `storage_final + 1e-6` | **FAILS** `parity_hash_d06`/`d30`/`d34`/`d41` (D15 unaffected — its fixture has no hydro storage exercising this field) plus `water_travel_time_no_arc_byte_identity::d06_parity_hash_matches_existing_baseline_highs`, a second D06-hash-checking test — over-determined, not a hole. `d12_checkpoint_round_trip` (item 10) stays green under the same mutation (its cost comparison tolerance, 1e-2, absorbs a 1e-6 perturbation) — confirming items 5 and 10 are genuinely independent obligations, not accidental duplicates. |
-    //! | 6 | Three independent mutations tried against the item-6 roster: (a) the same seed perturbation as row 8 below applied to `cobre-stochastic`'s `derive_inflow_seeds`; (b) and (c) `training/forward/stats_aggregation.rs`'s `weighted_cost_reduction` reduction loop reversed (twice, isolating the K-fan aggregation path) | **COVERAGE HOLE for the roster as a whole.** All 40 `mpi_wire.rs` tests stayed green under every one of the three mutations. This is a structural property, not a fluke: every named gate in item 6 tests invariance across thread/rank/claim shape, which is orthogonal to value correctness — a uniformly-wrong-but-deterministic formula or order change produces the identical wrong value under every shape, so shape-comparison gates cannot see it by design (several backward-pass claim orderings are explicitly claim-order-neutral by contract — e.g. hardest-first, pinned by `hardest_first_claim_order_is_result_neutral`). Mutation (a) WAS caught elsewhere in the suite (`d16_par1_lag_shift`, `deterministic.rs`, a value-pinned behavioral-tier test) and mutation (b)/(c) reproduces the exact coverage hole `mpi_wire.rs`'s own `branching_gate_roster` row (c) already documents for the branching suite (Neumaier-compensated summation over these fixtures' literals happens to reorder to the same bit pattern). Reported, not papered over; the system as a whole has power, the item-6 roster alone does not. |
-    //! | 7 | `setup/node_graph.rs`: `assemble_outcome_weights`'s `for succ in successors` changed to `.iter().rev()` | **FAILS** 5 tests in `cobre-sddp --lib`, including the mapped `cvar_aggregation_tie_break_follows_canonical_child_order` and its sibling at the shared owner's other call site (`assemble_successor_outcome_weights_k_fan_canonical_order_and_product_weights`, `assemble_outcome_weights_k_fan_canonical_order_and_product_weights`, `root_outcome_weights_cvar_matches_evaluate_risk`, `root_outcome_weights_expectation_matches_analytical_sum`) — over-determined, not a hole; `assemble_outcome_weights` is deliberately the single owner both call sites delegate to. |
+    //! | 6 | Three independent mutations tried against the item-6 roster: (a) the same seed perturbation as row 8 below applied to `novomodelo-stochastic`'s `derive_inflow_seeds`; (b) and (c) `training/forward/stats_aggregation.rs`'s `weighted_cost_reduction` reduction loop reversed (twice, isolating the K-fan aggregation path) | **COVERAGE HOLE for the roster as a whole.** All 40 `mpi_wire.rs` tests stayed green under every one of the three mutations. This is a structural property, not a fluke: every named gate in item 6 tests invariance across thread/rank/claim shape, which is orthogonal to value correctness — a uniformly-wrong-but-deterministic formula or order change produces the identical wrong value under every shape, so shape-comparison gates cannot see it by design (several backward-pass claim orderings are explicitly claim-order-neutral by contract — e.g. hardest-first, pinned by `hardest_first_claim_order_is_result_neutral`). Mutation (a) WAS caught elsewhere in the suite (`d16_par1_lag_shift`, `deterministic.rs`, a value-pinned behavioral-tier test) and mutation (b)/(c) reproduces the exact coverage hole `mpi_wire.rs`'s own `branching_gate_roster` row (c) already documents for the branching suite (Neumaier-compensated summation over these fixtures' literals happens to reorder to the same bit pattern). Reported, not papered over; the system as a whole has power, the item-6 roster alone does not. |
+    //! | 7 | `setup/node_graph.rs`: `assemble_outcome_weights`'s `for succ in successors` changed to `.iter().rev()` | **FAILS** 5 tests in `novomodelo-sddp --lib`, including the mapped `cvar_aggregation_tie_break_follows_canonical_child_order` and its sibling at the shared owner's other call site (`assemble_successor_outcome_weights_k_fan_canonical_order_and_product_weights`, `assemble_outcome_weights_k_fan_canonical_order_and_product_weights`, `root_outcome_weights_cvar_matches_evaluate_risk`, `root_outcome_weights_expectation_matches_analytical_sum`) — over-determined, not a hole; `assemble_outcome_weights` is deliberately the single owner both call sites delegate to. |
     //! | 8 | `simulation/aggregation.rs`: `aggregate_simulation`'s `mean_cost` changed from `RiskMeasure::Expectation.evaluate_risk(&cost_recv, &weights)` to `cost_recv.iter().sum::<f64>() / n as f64` (sum-then-divide) | **FAILS** exactly the mapped (new) test, 39/40 other `mpi_wire.rs` tests stay green, and `parity_hash_d06`/`d15`/`d30`/`d34`/`d41` plus `d12_checkpoint_round_trip` are unaffected (the golden hash excludes simulation summary statistics; `d12`'s tolerance absorbs the difference). Confirms the new test closes a real, previously-undetectable gap rather than duplicating existing coverage. |
-    //! | 9 | `cut/fcf.rs`: `pool_capacity`'s `warm_start_count + max_iterations * visit_bound` changed to `warm_start_count + 1 + max_iterations * visit_bound` | **FAILS** 8 tests in `cobre-sddp --lib`, including the mapped `pool_cut_stride_chain_matches_forward_passes_over_a_sweep` (whose own assertion message states the chain-parity contract verbatim: "chain capacity must equal warm_start + max_iterations * forward_passes exactly") and its `cut::fcf` siblings — over-determined, not a hole. |
-    //! | 10 | `cobre-io` `output/policy/checkpoint.rs`: `bin_file_name`'s `format!("{id:03}.bin")` changed to 4-digit padding | **FAILS** exactly the mapped `d12_checkpoint_round_trip` in `deterministic.rs` (99 other tests unaffected) plus 4 sibling file-naming assertions in `cobre-io --lib` — over-determined, not a hole. The reader itself is unaffected (`read_sorted_bin_files` globs `*.bin` and derives identity from inside each buffer, never from the name), confirming the doc comment's own claim. |
+    //! | 9 | `cut/fcf.rs`: `pool_capacity`'s `warm_start_count + max_iterations * visit_bound` changed to `warm_start_count + 1 + max_iterations * visit_bound` | **FAILS** 8 tests in `novomodelo-sddp --lib`, including the mapped `pool_cut_stride_chain_matches_forward_passes_over_a_sweep` (whose own assertion message states the chain-parity contract verbatim: "chain capacity must equal warm_start + max_iterations * forward_passes exactly") and its `cut::fcf` siblings — over-determined, not a hole. |
+    //! | 10 | `novomodelo-io` `output/policy/checkpoint.rs`: `bin_file_name`'s `format!("{id:03}.bin")` changed to 4-digit padding | **FAILS** exactly the mapped `d12_checkpoint_round_trip` in `deterministic.rs` (99 other tests unaffected) plus 4 sibling file-naming assertions in `novomodelo-io --lib` — over-determined, not a hole. The reader itself is unaffected (`read_sorted_bin_files` globs `*.bin` and derives identity from inside each buffer, never from the name), confirming the doc comment's own claim. |
     //!
     //! Every mutation above was reverted immediately after being run; `git
     //! diff` on each touched production file was confirmed empty before

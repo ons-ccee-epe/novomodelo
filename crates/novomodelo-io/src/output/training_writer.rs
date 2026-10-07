@@ -39,12 +39,12 @@ pub(crate) const CUT_SELECTION_FILE: &str = "training/cut_selection/iterations.p
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::{TrainingOutput, RowPoolStatistics, RunStatus};
-/// use cobre_io::MetadataTrainingSolveStats;
-/// use cobre_io::output::training_writer::TrainingParquetWriter;
+/// use novomodelo_io::{TrainingOutput, RowPoolStatistics, RunStatus};
+/// use novomodelo_io::MetadataTrainingSolveStats;
+/// use novomodelo_io::output::training_writer::TrainingParquetWriter;
 /// use std::path::Path;
 ///
-/// # fn main() -> Result<(), cobre_io::OutputError> {
+/// # fn main() -> Result<(), novomodelo_io::OutputError> {
 /// let writer = TrainingParquetWriter::new(Path::new("/tmp/out"))?;
 /// let training = TrainingOutput {
 ///     convergence_records: Vec::new(),

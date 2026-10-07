@@ -1,4 +1,4 @@
-//! Subcommand implementations for the `cobre` binary.
+//! Subcommand implementations for the `novomodelo` binary.
 //!
 //! Each module pairs a clap-derived `Args` struct with an `execute` function.
 
@@ -11,8 +11,8 @@ pub mod schema;
 pub mod validate;
 pub mod version;
 
-/// The one resolution of the output directory for `cobre run` (writes) and
-/// `cobre validate` (reads policy): `output` verbatim, never canonicalised, else
+/// The one resolution of the output directory for `novomodelo run` (writes) and
+/// `novomodelo validate` (reads policy): `output` verbatim, never canonicalised, else
 /// `<case_dir>/output`.
 pub(crate) fn resolve_output_dir(case_dir: &Path, output: Option<&Path>) -> PathBuf {
     output.map_or_else(|| case_dir.join("output"), Path::to_path_buf)

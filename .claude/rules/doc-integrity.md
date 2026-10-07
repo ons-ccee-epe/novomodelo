@@ -7,7 +7,7 @@ paths:
   - ".claude/rules/*.md"
 ---
 
-# Cobre Prose Documentation Integrity Rules
+# Novomodelo Prose Documentation Integrity Rules
 
 Governs every Markdown file that serves as a user-facing or agent-facing artifact:
 `CLAUDE.md`, `.claude/rules/*`, `CONTRIBUTING.md`, `CHANGELOG.md`,
@@ -108,7 +108,7 @@ A code comment is co-located with one code site, so these cannot arise there:
    **repo-relative** path/command/flag must resolve against the live tree or
    binary. **Scope bound (critical):** repo-relative prefixes only — **never**
    "every cited filename resolves", because README/CONTRIBUTING legitimately
-   cite the external `cobre-docs` spec/theory pages absent from this repo. The
+   cite the external `novomodelo-docs` spec/theory pages absent from this repo. The
    path/link checker (`check-doc-paths.sh`) enforces this bound; it is the spec
    the checker must honor.
 
@@ -139,7 +139,7 @@ A code comment is co-located with one code site, so these cannot arise there:
   a number that a guard script could own.
 - For every **path/command/flag** cited in a repo-relative context: confirm it
   resolves in the live tree. Do not cite paths to external repositories (e.g.,
-  `cobre-docs` spec pages) as if they were repo-relative — they are legitimately
+  `novomodelo-docs` spec pages) as if they were repo-relative — they are legitimately
   absent.
 - For every **fact that appears in more than one doc**: identify the single owner.
   Secondary docs may carry a shape-only pointer ("see CONTRIBUTING.md for the full
@@ -165,7 +165,7 @@ A code comment is co-located with one code site, so these cannot arise there:
 - **Do not** add prose that only makes sense to a reader familiar with internal
   plan structure (`Epic N`, `ticket-NNN`, `workstream F-NNN`).
 - **Do not** conflate the scope bound: the path/link checker (when wired) checks
-  repo-relative prefixes only — treat external `cobre-docs` citations as
+  repo-relative prefixes only — treat external `novomodelo-docs` citations as
   intentionally unresolvable from this repo.
 
 ---

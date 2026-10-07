@@ -18,9 +18,9 @@ use std::ops::Range;
 
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 
-use cobre_comm::Communicator;
-use cobre_solver::{SolverInterface, StageTemplate};
-use cobre_stochastic::{ForwardNoiseTables, ForwardSampler, SampleRequest};
+use novomodelo_comm::Communicator;
+use novomodelo_solver::{SolverInterface, StageTemplate};
+use novomodelo_stochastic::{ForwardNoiseTables, ForwardSampler, SampleRequest};
 
 use crate::{
     claim_scatter::{ClaimCursor, canonical_scatter},
@@ -512,8 +512,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use cobre_comm::LocalBackend;
-    use cobre_solver::ActiveSolver;
+    use novomodelo_comm::LocalBackend;
+    use novomodelo_solver::ActiveSolver;
 
     use crate::{setup::node_graph::Traversal, test_support};
 

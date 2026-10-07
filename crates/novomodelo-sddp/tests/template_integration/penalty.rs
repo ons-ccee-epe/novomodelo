@@ -257,7 +257,7 @@ fn test_penalty_multi_stage_consistent() {
 // spillage ≥ 0), so the slack is mandatory regardless of turbine level.
 #[test]
 fn test_penalty_slack_absorbs_negative_inflow() {
-    use cobre_solver::{ActiveSolver, RowBatch, SolverInterface};
+    use novomodelo_solver::{ActiveSolver, RowBatch, SolverInterface};
 
     let system = one_hydro_system(1, 0);
     let config = penalty_config(1000.0);

@@ -3,15 +3,15 @@
 The `anticipated_lanes/` partition carries one row per anticipated thermal's
 genuine decision whose delivery target lands past the study horizon (a
 post-study delivery), read from the commitment-hold ring's carried state. Both
-the CLI (`crates/cobre-cli/src/commands/run/simulation.rs`) and the Python
-bindings (`crates/cobre-python/src/run.rs`) reach the partition through the
+the CLI (`crates/novomodelo-cli/src/commands/run/simulation.rs`) and the Python
+bindings (`crates/novomodelo-python/src/run.rs`) reach the partition through the
 SAME shared path — `ScenarioWritePayload::from(scenario_result)` into
 `SimulationParquetWriter::write_scenario`, where `scenario_result.
 anticipated_lanes` is populated by the single shared `extract_anticipated_lanes`
-in `cobre-sddp`. cobre-python has no anticipated-lane-specific output code, so
+in `novomodelo-sddp`. novomodelo-python has no anticipated-lane-specific output code, so
 Python parity holds by construction. This module is the guard that proves it
-end-to-end: it runs a post-study case through both the compiled `cobre` CLI
-(`cobre run --output`) and `cobre.run.run`, reads both `simulation/
+end-to-end: it runs a post-study case through both the compiled `novomodelo` CLI
+(`novomodelo run --output`) and `novomodelo.run.run`, reads both `simulation/
 anticipated_lanes/**/data.parquet`, and asserts the rows are element-wise
 equal. It also asserts the symmetric negative — a study with no post-study
 continuation writes no `anticipated_lanes/` directory at all.
@@ -29,7 +29,7 @@ lands, with no change to this file. Until then the row-parity test skips
 loudly rather than asserting against a synthetic-but-unrepresentative fixture.
 
 Run with (from the repo root):
-    pytest crates/cobre-python/tests/test_anticipated_lanes_output_parity.py -v
+    pytest crates/novomodelo-python/tests/test_anticipated_lanes_output_parity.py -v
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ import shutil
 import pyarrow.parquet as pq
 import pytest
 
-from _cobre_cli import run_cli
+from _novomodelo_cli import run_cli
 
 # Resolved against the repo root so the tests are independent of pytest's
 # working directory (never a CWD-relative path).
@@ -150,14 +150,14 @@ def test_cli_python_anticipated_lanes_row_parity(
 ) -> None:
     """The CLI and the Python surface emit identical anticipated_lanes rows.
 
-    Runs the post-study case through both the compiled `cobre` CLI (`cobre run
-    --output`) and `cobre.run.run`, reads both anticipated_lanes parquets,
+    Runs the post-study case through both the compiled `novomodelo` CLI (`novomodelo run
+    --output`) and `novomodelo.run.run`, reads both anticipated_lanes parquets,
     sorts each by `_SORT_FIELDS`, and asserts `thermal_id`, `delivery_date`,
     `deposited_decision_mw`, and `carried_committed_mw` are element-wise equal.
     If the CLI and Python paths diverge between the LP solve and the Parquet
     write, this fails.
     """
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     _require_post_study_case()
 
@@ -169,7 +169,7 @@ def test_cli_python_anticipated_lanes_row_parity(
     run_cli(case_dir, out_cli, cli_binary)
 
     out_py = tmp_path / "py_out"
-    cobre.run.run(str(case_dir), output_dir=str(out_py))
+    novomodelo.run.run(str(case_dir), output_dir=str(out_py))
 
     cli_parquets = _lanes_parquets(out_cli)
     py_parquets = _lanes_parquets(out_py)
@@ -225,14 +225,14 @@ def test_no_post_study_continuation_produces_no_anticipated_lanes_partition(
     exists. Unlike the row-parity test, this needs no post-study fixture, so
     it runs unconditionally.
     """
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     assert NO_POST_STUDY_CASE.is_dir(), (
         f"the no-post-study fixture must exist at {NO_POST_STUDY_CASE}"
     )
 
     out_py = tmp_path / "py_out"
-    cobre.run.run(str(NO_POST_STUDY_CASE), output_dir=str(out_py))
+    novomodelo.run.run(str(NO_POST_STUDY_CASE), output_dir=str(out_py))
     assert _lanes_parquets(out_py) == [], (
         "Python must not emit an anticipated_lanes partition for a study with "
         "no post-study continuation"

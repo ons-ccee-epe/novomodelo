@@ -2,7 +2,7 @@
 //!
 //! ## Basis-cache invariance
 //!
-//! Resolved values freeze into [`StageTemplate`](cobre_solver::StageTemplate)
+//! Resolved values freeze into [`StageTemplate`](novomodelo_solver::StageTemplate)
 //! entries at construction and are never rebuilt; the hot-path solver patches
 //! only row bounds, so LP matrix coefficients stay identical across iterations
 //! and the warm-start basis cache needs no invalidation. A future change that
@@ -12,7 +12,9 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use cobre_core::{ComputedParameter, EntityId, Hydro, ParameterKind, ScalarParameter, StageId};
+use novomodelo_core::{
+    ComputedParameter, EntityId, Hydro, ParameterKind, ScalarParameter, StageId,
+};
 use thiserror::Error;
 
 use crate::energy_conversion::{EnergyConversionSet, HydroEnergyProductivityOverride};
@@ -219,11 +221,11 @@ impl ResolvedParameters {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{EntityId, ParameterKind, ScalarParameter, StageId};
-/// use cobre_sddp::energy_conversion::{
+/// use novomodelo_core::{EntityId, ParameterKind, ScalarParameter, StageId};
+/// use novomodelo_sddp::energy_conversion::{
 ///     EnergyConversionSet, HydroEnergyProductivityOverride,
 /// };
-/// use cobre_sddp::resolved_parameters::build_resolved_parameters;
+/// use novomodelo_sddp::resolved_parameters::build_resolved_parameters;
 ///
 /// let params = vec![ScalarParameter {
 ///     id: EntityId(1),
@@ -572,12 +574,12 @@ fn resolve_computed(
 #[cfg(test)]
 #[allow(clippy::cast_precision_loss)]
 mod tests {
-    use cobre_core::{
+    use novomodelo_core::{
         CascadeTopology, ComputedParameter, EntityId, ParameterKind, ScalarParameter, StudyPos,
         entities::hydro::{HydroGenerationModel, HydroPenalties},
     };
 
-    use cobre_io::{
+    use novomodelo_io::{
         HydroEnergyProductivityRow, HydroGeometryRow, build_hydro_reference_volumes_resolved,
     };
 

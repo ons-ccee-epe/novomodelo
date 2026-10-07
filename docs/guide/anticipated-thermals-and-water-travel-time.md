@@ -1,7 +1,7 @@
 # Anticipated thermals & water travel time — a first-timer's guide
 
 **Status: Primer.** This is the gentle introduction. It assumes you know SDDP but
-are new to cobre, and it builds both features up from the physical problem, through
+are new to novomodelo, and it builds both features up from the physical problem, through
 the math, to the files you actually edit and read. For the code-level correctness
 contracts (symbol-by-symbol, with the invariants each regression test pins), read
 the companion reference [`../design/anticipated-thermals-and-water-travel-time.md`](../design/anticipated-thermals-and-water-travel-time.md)
@@ -53,11 +53,11 @@ flowchart LR
 Before the two features diverge, they share a substrate. Understanding it once
 makes both features easy.
 
-### 2.1 How cobre carries SDDP state (the "fishing" trick)
+### 2.1 How novomodelo carries SDDP state (the "fishing" trick)
 
 You know SDDP cuts approximate the future-cost function `V_t(x)` with hyperplanes
 `θ ≥ α + πᵀ x̂`, where `x̂` is the incoming state and `π` is the subgradient
-(the dual of the state-transition). Cobre realizes this without a state-fixing
+(the dual of the state-transition). Novomodelo realizes this without a state-fixing
 _constraint row_. Instead, **each incoming-state coordinate is its own LP column,
 pinned by equal bounds**:
 
@@ -67,7 +67,7 @@ column lower bound = column upper bound = x̂        (the value from stage t−1
 
 The cut coefficient `π` for that coordinate is then the **reduced cost** of
 the pinned column (divided by a fixed per-column prescaler, with no sign change).
-This is cobre's version of SDDP.jl "fishing": you fix the incoming state, solve,
+This is novomodelo's version of SDDP.jl "fishing": you fix the incoming state, solve,
 and read the price straight off the pinned column.
 
 ```mermaid
@@ -151,7 +151,7 @@ why turning a feature _off_ is guaranteed to change nothing.
 ### 3.1 The setup
 
 A thermal plant declares a **lead** — how far ahead the commitment must be locked.
-Cobre supports two ways to say it (mutually exclusive):
+Novomodelo supports two ways to say it (mutually exclusive):
 
 - **`lead_stages`** — an integer count of stages (`≥ 1`). The calendar is never
   consulted; a decision for delivery stage `m` is made at stage `m − ℓ`.
@@ -292,7 +292,7 @@ a decision is active  ⟺  delivery_stage < n_delivery
 
 That is the one rule that decides whether a commitment exists at all.
 
-> **Note for readers of older material:** earlier cobre (and the currently-published
+> **Note for readers of older material:** earlier novomodelo (and the currently-published
 > methodology pages) modeled this with a Markov-1 _shift_ ring, a `future_anticipated_deliveries[]`
 > input, and a separate block of "post-horizon lanes." All three are **retired**.
 > The current model is the residue-keyed _hold_ ring described above, with
@@ -593,7 +593,7 @@ horizon and is rejected — split it at the horizon end. The 500 MW must also li
 inside the plant's `[min_mw, max_mw]` (here it sits exactly at the cap).
 
 `config.json` — the NEWAVE future-cost function DECOMP couples to, converted to
-a cobre checkpoint, is the terminal boundary:
+a novomodelo checkpoint, is the terminal boundary:
 
 ```jsonc
 "policy": { "boundary": { "path": "boundary" } }
@@ -646,7 +646,7 @@ CRUZ's 500 MW in week 9 folds into every boundary cut's intercept as
 against the NEWAVE function — and never appears in the objective or in any
 cost output (sunk, §3.6).
 
-`cobre validate` reports the reconciliation before any solve. For this deck:
+`novomodelo validate` reports the reconciliation before any solve. For this deck:
 
 ```
 boundary reconciliation: 2184 copied, 6 fanned out, 2 defaulted to 0.0, 2 source slots dropped
@@ -662,7 +662,7 @@ in the reconciliation report's per-family `dropped_source` tally and in
 `dropped_source_slots`, which lists every dropped slot's entity and interval.
 Setting `policy.boundary.strict: true` (default `false`) turns a non-zero drop
 into a reject naming every dropping family and its count, instead of loading
-it. `cobre validate --json` returns the same tally per state family. Without
+it. `novomodelo validate --json` returns the same tally per state family. Without
 `config.policy.boundary` at all, setup warns once, naming SANTA CRUZ (a
 non-zero fixed value) and both plants (carried decisions): everything
 post-horizon prices at zero terminal value.
@@ -698,7 +698,7 @@ arriving water rarely lands neatly in one future stage — it **spreads across
 several**, weighted by how much of the travel-delayed release window overlaps each
 future stage.
 
-Cobre measures that overlap exactly. Take a release spread uniformly over the
+Novomodelo measures that overlap exactly. Take a release spread uniformly over the
 current stage (duration `h_t`), delay it by the travel time `t_v`, and intersect
 the resulting arrival window `[t_v, t_v + h_t)` with each future stage window
 `[S_d, S_{d+1})` (stage boundaries counted from the release stage). The fraction
@@ -862,7 +862,7 @@ delivery target exists.
 
 ---
 
-## 6. Bridge to the cobre files
+## 6. Bridge to the novomodelo files
 
 This section maps everything above to the actual files you edit and read. Field
 names and file locations are the current (post-retirement) surface.

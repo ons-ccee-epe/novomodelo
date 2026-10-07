@@ -19,17 +19,17 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 use std::path::Path;
 
-use cobre_core::{BlockMode, EntityId};
-use cobre_sddp::StudySetup;
-use cobre_sddp::indexer::{BlockIdx, BusSys, HydroSys, NcsSys, StateSpace};
-use cobre_sddp::lp::StageGeometry;
-use cobre_sddp::setup::{NodePos, StageIdx};
-use cobre_sddp::test_support::decks::{Deck, SLOW_DECKS, committed_decks};
-use cobre_sddp::test_support::{
+use novomodelo_core::{BlockMode, EntityId};
+use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::indexer::{BlockIdx, BusSys, HydroSys, NcsSys, StateSpace};
+use novomodelo_sddp::lp::StageGeometry;
+use novomodelo_sddp::setup::{NodePos, StageIdx};
+use novomodelo_sddp::test_support::decks::{Deck, SLOW_DECKS, committed_decks};
+use novomodelo_sddp::test_support::{
     capture_patched_node_template, capture_patched_node_template_at, lower_bound_root_templates,
     node_opening_noise, oracle_initial_state, stage_state_box_bounds, state_space,
 };
-use cobre_solver::{ActiveSolver, StageTemplate};
+use novomodelo_solver::{ActiveSolver, StageTemplate};
 
 use common::in_code_studies::{
     ChronologicalNoiseSpec, chronological_noise_study, mixed_lead_anticipated_study,
@@ -553,8 +553,8 @@ fn build_deck_or_panic(deck: &Deck) -> StudySetup {
 
 #[test]
 fn every_deck_workspace_pool_is_sized_from_its_owners() {
-    use cobre_comm::LocalBackend;
-    use cobre_sddp::test_support::workspace_downstream_lag_shape;
+    use novomodelo_comm::LocalBackend;
+    use novomodelo_sddp::test_support::workspace_downstream_lag_shape;
 
     let mut any_downstream_par_order_positive = false;
 

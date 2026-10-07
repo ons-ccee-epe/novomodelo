@@ -1,6 +1,6 @@
 # Anticipated thermal generation & water travel time
 
-A reference explanation of how cobre models two _time-delayed delivery_ phenomena
+A reference explanation of how novomodelo models two _time-delayed delivery_ phenomena
 — thermal generation that must be **committed a lead time in advance**, and water
 that **takes travel time to flow** from an upstream reservoir to a downstream one —
 from input parsing, through state-layout sizing, into the LP.
@@ -35,7 +35,7 @@ per stage:
 The in-flight amount lives in a **ring of state slots**. Each stage, the ring
 advances one slot; the slot that matures this stage is consumed; a fresh slot is
 deposited. That ring is one shared code primitive — `DeliveryRing`
-(`crates/cobre-sddp/src/lp/builder/delivery_ring.rs`) — and each subsystem
+(`crates/novomodelo-sddp/src/lp/builder/delivery_ring.rs`) — and each subsystem
 occupies its own region of the SDDP state vector (`Buckets` and
 `CommitmentHold`). They differ in the call-site-local ways §4 tabulates.
 
@@ -46,7 +46,7 @@ occupies its own region of the SDDP state vector (`Buckets` and
 ### 1.1 State-vector layout
 
 Every stage subproblem carries a stage-invariant state vector whose layout is
-owned by `StateSpace` (`crates/cobre-sddp/src/lp/indexer/state_space.rs`). Both
+owned by `StateSpace` (`crates/novomodelo-sddp/src/lp/indexer/state_space.rs`). Both
 delivery rings sit inside it:
 
 ```text
@@ -143,19 +143,19 @@ coefficient `β` lands on directly, via the one generic `β·state` projection
 
 Travel time is an **arc attribute declared on the upstream hydro, in hours** —
 `travel_time_hours: Option<f64>` on `Hydro`
-(`crates/cobre-core/src/entities/hydro.rs`). There is **no bucket count and no
-discretization in the input**: the user supplies one scalar per plant, and cobre
+(`crates/novomodelo-core/src/entities/hydro.rs`). There is **no bucket count and no
+discretization in the input**: the user supplies one scalar per plant, and novomodelo
 derives everything. An arc exists iff `travel_time_hours == Some(t) && t > 0.0 &&
 downstream_id.is_some()` — `0.0` means _undeclared_, not "instant-with-a-bucket"
 (`TransitBucketTopology::arcs`, resolved once in
-`crates/cobre-sddp/src/bucket_topology.rs`).
+`crates/novomodelo-sddp/src/bucket_topology.rs`).
 
 The companion input is the **pre-study release history** that seeds the buckets:
 `HydroPastDefluence { hydro_id, start_date, end_date, value_m3s }`
-(`crates/cobre-core/src/constraints/initial_conditions.rs`) — windowed records
+(`crates/novomodelo-core/src/constraints/initial_conditions.rs`) — windowed records
 (end-exclusive), multiple non-overlapping windows per hydro allowed.
 
-Validation (`crates/cobre-io/src/validation/semantic/travel_time.rs`) is a
+Validation (`crates/novomodelo-io/src/validation/semantic/travel_time.rs`) is a
 config-time matrix; the load-bearing gates: negative/non-finite `t` is a hard
 error; `t == 0` and negligible/horizon-inert travel times warn; **`past_defluences`
 must cover `(0, t]` hours before the study start, contiguously** (a hard
@@ -166,12 +166,12 @@ heterogeneous-`t` confluence into one downstream under chronological blocks is
 ### 2.2 Sizing — how many bucket slots
 
 The number of slots is a **measured overlap**, not a chosen count. The building
-block is `window_period_overlaps` (`crates/cobre-core/src/model/temporal/overlap.rs`):
+block is `window_period_overlaps` (`crates/novomodelo-core/src/model/temporal/overlap.rs`):
 it intersects a time window against consecutive stage periods and returns _one
 entry per period from period 0 through the deepest overlapped period_ — a
 contiguous run, keeping interior zeros, truncating only trailing zeros.
 
-`resolve_spread` (`crates/cobre-sddp/src/lead_time/mod.rs`) turns a travel time
+`resolve_spread` (`crates/novomodelo-sddp/src/lead_time/mod.rs`) turns a travel time
 into per-stage **k-weights** by overlapping the _arrival window_ `[t_v, t_v + h_t)`
 (a uniform release over the anchor stage, delayed by the travel time) against the
 stage calendar counted from the anchor stage:
@@ -256,7 +256,7 @@ row positions (`None` = masked). Then:
 
 - **One `DeliveryRing` per downstream plant**, `n_lanes = 1`, over that plant's
   contiguous sub-range (`DeliveryRing::transit_buckets`,
-  `crates/cobre-sddp/src/lp/builder/delivery_ring.rs`). Ring slot `k` ↔ lag
+  `crates/novomodelo-sddp/src/lp/builder/delivery_ring.rs`). Ring slot `k` ↔ lag
   `k+1`.
 - **The shift** (`fill_transit_bucket_definition_entries` → `emit_shift_rows`):
   `b_d^out = b_{d+1}^in + (deposits)` — each stage the mass advances one slot
@@ -297,13 +297,13 @@ cannot represent a lag deeper than the receiving study's stage count).
 ### 3.1 Input
 
 A thermal plant declares **only a lead** via `AnticipatedConfig`
-(`crates/cobre-core/src/entities/thermal.rs`), one of two mutually-exclusive modes:
+(`crates/novomodelo-core/src/entities/thermal.rs`), one of two mutually-exclusive modes:
 
 - `LeadStages(u32 ≥ 1)` — a stage-count lead; the calendar is never consulted.
 - `LeadTime(f64 > 0)` — a physical lead time in hours, delivery-anchored (the same
   clock as a water arc's `travel_time_hours`).
 
-The wire form (`crates/cobre-io/src/system/thermals.rs`) is `#[serde(untagged,
+The wire form (`crates/novomodelo-io/src/system/thermals.rs`) is `#[serde(untagged,
 deny_unknown_fields)]` over `{lead_stages}` / `{lead_time_hours}` — supplying both
 keys or neither matches no variant and is a parse error; that _is_ the exclusion
 mechanism.
@@ -315,18 +315,18 @@ on two separate surfaces:
   (`AnticipatedCommitmentHistory { thermal_id, start_date, end_date, value_mw }`) —
   pre-study **decided** MW windows that deliver into the study's leading stages
   (the stage-0 ring seed; sunk cost, never in the objective).
-- `post_study_stages.json` (`crates/cobre-core/src/model/post_study.rs`) — the
+- `post_study_stages.json` (`crates/novomodelo-core/src/model/post_study.rs`) — the
   **sole** post-study declaration surface: an ordered post-study calendar
   segment plus a per-`(thermal, post-study stage)` `cost_per_mwh`/`min_mw`/`max_mw`
   an in-study decision delivering past the horizon is priced and bounded against.
   It extends the delivery axis to `n_delivery = n_stages + n_post` — the runtime
   axis is `DeliveryCalendar::total_hours`, read by `resolve_anticipated_commitments_core`
-  (`build_extended_delivery_axis` is the separate cobre-io _validation_ axis used
+  (`build_extended_delivery_axis` is the separate novomodelo-io _validation_ axis used
   for the reach check below); with it absent the axis is study-only and no lead can
   reach a post-study stage. `min_mw == max_mw` pins a fixed post-study profile (a
   legitimate replay deck).
 
-Validation (`crates/cobre-io/src/validation/semantic/thermal.rs`): the
+Validation (`crates/novomodelo-io/src/validation/semantic/thermal.rs`): the
 lead-versus-horizon bound rejects a `LeadTime` whose lead exceeds the summed
 study-stage durations (strict `>`) _only_ when the plant's extended lead reaches
 **no** declared post-study stage at all — a lead that reaches one legitimately
@@ -358,7 +358,7 @@ overlay-ignoring bound read (§3.4).
 The lead resolves to a **decider** `c(m)` = the decision stage for each delivery
 stage `m` on the **extended delivery axis** `[0, n_delivery)` (`n_delivery =
 n_stages + n_post`, study-only when no `post_study_stages.json` is declared), via
-`PointResolution` (`crates/cobre-sddp/src/lead_time/mod.rs`):
+`PointResolution` (`crates/novomodelo-sddp/src/lead_time/mod.rs`):
 
 - `LeadTime` (`resolve_decider_physical`): `c(m)` is the stage containing
   `stage_end(m) − Δ` — **end-anchored** (a sub-stage lead `Δ < h_m` then gives
@@ -395,7 +395,7 @@ per-plant leads and the delivery calendar — independent of `n_blks`,
 `block_mode`, or the number of decisions. It is computed in
 `AnticipatedResolution::resolve`, and the final widen is
 `AnticipatedResolution::ring_size`, called by `resolve_state_layout`
-(`crates/cobre-sddp/src/setup/mod.rs`).
+(`crates/novomodelo-sddp/src/setup/mod.rs`).
 
 The state region is `S = A·k_max` (see §3.3). The **modular slot key** is keyed
 on the **ring axis**, not the raw delivery axis: the delivery axis with each
@@ -493,7 +493,7 @@ Masking is the ring's **two-sided reachability masking over the whole slot range
 — there is no separate appended block with a rule of its own. Every position keeps
 the two-sided discipline the shared skeleton ships together: a masked (unreachable)
 position gets **no** definition row _and_ a frozen `[0,0]` outgoing column in the
-same pass. `fill_anticipated_slot_columns` (`crates/cobre-sddp/src/lp/builder/columns.rs`)
+same pass. `fill_anticipated_slot_columns` (`crates/novomodelo-sddp/src/lp/builder/columns.rs`)
 applies `freeze_masked_columns` over the whole `anticipated_slot_row_pos`: a
 reachable post-study-targeted slot is open `(-inf, inf)` because it is **not**
 masked (its `row_pos` is `Some`), never because it is exempt from freezing, and the
@@ -501,7 +501,7 @@ boundary FCF then prices its carried state directly through the generic `β·sta
 projection. (Reachable slots use `(-inf, inf)`, not water's `[0, inf)`, because a
 committed MW value carries either sign.)
 
-**Drift reconciliation** (`crates/cobre-sddp/src/solve/stage_solve.rs`,
+**Drift reconciliation** (`crates/novomodelo-sddp/src/solve/stage_solve.rs`,
 `assemble_outgoing_state`): a latched `commit_out` is a _basic_ variable produced by
 the simplex factorization, so it is accurate only to the backend's
 `primal_feasibility_tolerance` (`1e-9`), never 1 ULP; a commitment at its cap arrives
@@ -511,7 +511,7 @@ admissible box before the value is pinned, solved against, or dotted into a cut,
 sub-tolerance drift is absorbed silently — no runtime verdict, no telemetry. The clamp
 runs at all four solve sites uniformly (forward, backward, lower bound, simulation). A
 _genuine_ over-commitment — a declared value outside the delivery stage's resolved
-generation box — is rejected before the study runs, at cobre-io load time
+generation box — is rejected before the study runs, at novomodelo-io load time
 (`check_committed_value_bounds`), never on the solve path.
 
 ### 3.5 `col_scale` and boundary pricing

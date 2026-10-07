@@ -45,7 +45,7 @@ pub use non_controllable_factors::{NcsFactorEntry, parse_non_controllable_factor
 pub use non_controllable_stats::parse_ncs_stats;
 pub use residual_derivation::{populate_derived_residual_ratios, resolve_stage_seasons};
 
-use cobre_core::scenario::{CorrelationModel, NcsModel};
+use novomodelo_core::scenario::{CorrelationModel, NcsModel};
 
 use crate::LoadError;
 use std::path::Path;

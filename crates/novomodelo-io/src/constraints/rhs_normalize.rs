@@ -12,7 +12,7 @@
 //! `0.0` drops, and every non-variable term collects into the affine
 //! remainder `R` assigned to the endpoint(s) the operator selects.
 
-use cobre_core::{AffineBound, CoefficientRef, EntityId, LinearTerm};
+use novomodelo_core::{AffineBound, CoefficientRef, EntityId, LinearTerm};
 
 /// One term of a relational side after the caller has inlined every
 /// named-expression reference and resolved every bound-position `@name` to a
@@ -150,7 +150,7 @@ fn is_zero_literal(coef: &CoefficientRef) -> bool {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-    use cobre_core::VariableRef;
+    use novomodelo_core::VariableRef;
 
     fn hg(id: i32) -> VariableRef {
         VariableRef::HydroGeneration {

@@ -8,11 +8,11 @@
 //! All workspace buffers are allocated once before the loop and reused: no heap
 //! allocation occurs on the hot path.
 
-use cobre_comm::CommError::InvalidBufferSize;
-use cobre_comm::Communicator;
-use cobre_solver::ActiveProfile;
-use cobre_solver::SolverError;
-use cobre_solver::{SolverInterface, StageTemplate};
+use novomodelo_comm::CommError::InvalidBufferSize;
+use novomodelo_comm::Communicator;
+use novomodelo_solver::ActiveProfile;
+use novomodelo_solver::SolverError;
+use novomodelo_solver::{SolverInterface, StageTemplate};
 
 use crate::visited_states::VisitedStatesArchive;
 use crate::workspace::BasisStore;
@@ -290,7 +290,7 @@ pub(crate) fn broadcast_basis_cache<C: Communicator>(
 ///
 /// ## Event channel
 ///
-/// When `config.event_sender` is `Some`, typed [`cobre_core::TrainingEvent`]
+/// When `config.event_sender` is `Some`, typed [`novomodelo_core::TrainingEvent`]
 /// values are emitted at each lifecycle boundary. Send failures (receiver
 /// dropped) are silently ignored so they cannot interrupt training.
 ///
@@ -298,7 +298,7 @@ pub(crate) fn broadcast_basis_cache<C: Communicator>(
 ///
 /// When `cut_selection` is `Some(strategy)`, its `should_run(iteration)` gate
 /// controls how often each stage's pool is scanned for inactive cuts. When
-/// `None`, no [`cobre_core::TrainingEvent::PolicySelectionComplete`] events are
+/// `None`, no [`novomodelo_core::TrainingEvent::PolicySelectionComplete`] events are
 /// emitted.
 ///
 /// # Errors
@@ -311,8 +311,8 @@ pub(crate) fn broadcast_basis_cache<C: Communicator>(
 /// # Examples
 ///
 /// ```rust,ignore
-/// use cobre_sddp::{train, TrainingConfig, LoopConfig, CutManagementConfig, EventConfig, SolverProfiles};
-/// use cobre_sddp::{StoppingRuleSet, StoppingRule, RiskMeasure, HorizonMode};
+/// use novomodelo_sddp::{train, TrainingConfig, LoopConfig, CutManagementConfig, EventConfig, SolverProfiles};
+/// use novomodelo_sddp::{StoppingRuleSet, StoppingRule, RiskMeasure, HorizonMode};
 ///
 /// let mut solver = HiggsBackend::new();
 /// let config = TrainingConfig {

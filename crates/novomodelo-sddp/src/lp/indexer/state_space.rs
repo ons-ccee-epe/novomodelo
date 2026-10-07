@@ -19,8 +19,8 @@ use super::{HydroSys, InCol, OutCol, RangeCursor, StateDim, for_each_live_commit
 use crate::bucket_topology::TransitBucketTopology;
 use crate::lead_time::AnticipatedResolution;
 
-use cobre_core::Hydro;
-use cobre_core::temporal::StageStateConfig;
+use novomodelo_core::Hydro;
+use novomodelo_core::temporal::StageStateConfig;
 
 /// Stage-invariant state-vector layout for one SDDP stage subproblem.
 ///
@@ -454,7 +454,7 @@ impl StateSpace {
     /// boundary:
     ///
     /// ```compile_fail
-    /// use cobre_sddp::indexer::StateSpace;
+    /// use novomodelo_sddp::indexer::StateSpace;
     ///
     /// fn misuse(state: &StateSpace) {
     ///     let _col = state.state_to_lp_column(0); // bare usize handed where StateDim is required
@@ -465,7 +465,7 @@ impl StateSpace {
     /// dimension:
     ///
     /// ```compile_fail
-    /// use cobre_sddp::indexer::{StateDim, StateSpace};
+    /// use novomodelo_sddp::indexer::{StateDim, StateSpace};
     ///
     /// fn misuse(state: &StateSpace) {
     ///     let col = state.state_to_lp_column(StateDim::new(0));

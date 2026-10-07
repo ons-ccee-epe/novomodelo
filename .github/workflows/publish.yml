@@ -37,8 +37,8 @@ jobs:
         shell: bash
         run: |
           # Retries on crates.io index-propagation lag: a freshly-published
-          # dependency (e.g. cobre-stochastic) may not yet be visible to the
-          # sparse index when a dependent crate (e.g. cobre-sddp) is published,
+          # dependency (e.g. novomodelo-stochastic) may not yet be visible to the
+          # sparse index when a dependent crate (e.g. novomodelo-sddp) is published,
           # surfacing as "failed to select a version" / "no matching package".
           # The inter-layer sleeps below give the index a head start; this loop
           # is the safety net when that is not enough.
@@ -77,30 +77,30 @@ jobs:
           }
 
           # Layer 1: no intra-workspace dependencies
-          publish cobre-core || exit 1
+          publish novomodelo-core || exit 1
           sleep 30
 
-          # Layer 2a: depends on cobre-core only
-          publish cobre-stochastic || exit 1
-          publish cobre-solver || exit 1
-          publish cobre-comm || exit 1
+          # Layer 2a: depends on novomodelo-core only
+          publish novomodelo-stochastic || exit 1
+          publish novomodelo-solver || exit 1
+          publish novomodelo-comm || exit 1
           sleep 30
 
-          # Layer 2b: depends on cobre-core + cobre-stochastic
-          publish cobre-io || exit 1
+          # Layer 2b: depends on novomodelo-core + novomodelo-stochastic
+          publish novomodelo-io || exit 1
           sleep 30
 
           # Layer 3: depends on infrastructure crates
-          publish cobre-sddp || exit 1
+          publish novomodelo-sddp || exit 1
           sleep 30
 
-          # Layer 4: application crates (depend on cobre-sddp)
-          publish cobre-cli || exit 1
+          # Layer 4: application crates (depend on novomodelo-sddp)
+          publish novomodelo-cli || exit 1
           sleep 30
 
           # Layer 5: umbrella crate (depends on all of the above)
-          # cobre-python is published to PyPI via maturin, not crates.io.
-          publish cobre || exit 1
+          # novomodelo-python is published to PyPI via maturin, not crates.io.
+          publish novomodelo || exit 1
 
           echo "All crates published successfully."
         env:

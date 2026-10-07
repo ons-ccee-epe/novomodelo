@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use cobre_core::{Bus, NonControllableSource, ResolvedLoadFactors, ResolvedNcsFactors, Stage};
+use novomodelo_core::{Bus, NonControllableSource, ResolvedLoadFactors, ResolvedNcsFactors, Stage};
 
 use crate::StageIdResolver;
 use crate::scenarios::{BlockFactor, LoadFactorEntry, NcsFactorEntry};
@@ -174,7 +174,7 @@ fn resolve_factors<K: FactorKind>(
 /// Build a resolved load factor table from parsed entries.
 ///
 /// `buses` and `stages` must each be in the order
-/// [`SystemBuilder::build`](cobre_core::SystemBuilder::build) establishes;
+/// [`SystemBuilder::build`](novomodelo_core::SystemBuilder::build) establishes;
 /// slice position becomes the entity index. The stage axis spans study
 /// stages only (`id >= 0`); the block axis is sized to the largest
 /// per-stage block count.
@@ -190,7 +190,7 @@ pub fn resolve_load_factors(
 /// Build a resolved NCS factor table from parsed entries.
 ///
 /// `non_controllable_sources` and `stages` must each be in the order
-/// [`SystemBuilder::build`](cobre_core::SystemBuilder::build) establishes;
+/// [`SystemBuilder::build`](novomodelo_core::SystemBuilder::build) establishes;
 /// slice position becomes the entity index. The stage axis spans study
 /// stages only (`id >= 0`); the block axis is sized to the largest
 /// per-stage block count.
@@ -210,8 +210,8 @@ pub fn resolve_ncs_factors(
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use cobre_core::EntityId;
-    use cobre_core::temporal::{
+    use novomodelo_core::EntityId;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
 

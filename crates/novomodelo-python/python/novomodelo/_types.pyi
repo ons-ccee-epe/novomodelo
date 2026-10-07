@@ -1,4 +1,4 @@
-"""Typing-only result shapes for `cobre.run.run(...)` and `cobre.Study` properties.
+"""Typing-only result shapes for `novomodelo.run.run(...)` and `novomodelo.Study` properties.
 
 This module carries **no** compiled counterpart: the leading underscore marks it
 as a pure typing helper (`PEP 589` `TypedDict`s). It is never registered as a
@@ -11,7 +11,7 @@ keys.
 from typing import Any, NotRequired, Optional, TypedDict
 
 class SimulationSummary(TypedDict):
-    """Nested `simulation` sub-dict built by `cobre.run.run`."""
+    """Nested `simulation` sub-dict built by `novomodelo.run.run`."""
 
     n_scenarios: int
     completed: int
@@ -83,7 +83,7 @@ class ProvenanceReport(TypedDict, total=False):
     hydro_production: Any
 
 class RunResult(TypedDict):
-    """Top-level result of `cobre.run.run(...)`.
+    """Top-level result of `novomodelo.run.run(...)`.
 
     All keys are always present; the `Optional[...]` values are `None` (not absent)
     when the corresponding phase did not run, so `RunResult` is **not** `total=False`.

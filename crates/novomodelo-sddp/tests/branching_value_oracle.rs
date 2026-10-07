@@ -66,19 +66,19 @@
 
 mod common;
 
-use cobre_io::config::BackwardScheduler;
-use cobre_sddp::CutPool;
-use cobre_sddp::StudySetup;
-use cobre_sddp::hydro_models::ResolvedProductionModel;
-use cobre_sddp::setup::{NodePos, OpeningSource, StageIdx};
-use cobre_sddp::test_support::{
+use novomodelo_io::config::BackwardScheduler;
+use novomodelo_sddp::CutPool;
+use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::hydro_models::ResolvedProductionModel;
+use novomodelo_sddp::setup::{NodePos, OpeningSource, StageIdx};
+use novomodelo_sddp::test_support::{
     dcs_k_fan_setup, extensive_form_optimum, external_distinct_fan_setup,
     external_distinct_fan_setup_heterogeneous_cut_state, external_root_fan_setup, k_fan_setup,
     node_prefix_counts, node_scenario_count, node_visit_probabilities, oracle_chain_setup,
     pool_cut_state_dimensions, terminal_generated_fan_setup, try_k_fan_simulation_enumerated,
     water_binding_external_fan_setup, water_binding_external_fan_setup_reversed,
 };
-use cobre_solver::ActiveSolver;
+use novomodelo_solver::ActiveSolver;
 
 use common::{StubComm, run_simulation};
 
@@ -902,7 +902,7 @@ fn inject_constant_terminal_boundary_fcf(setup: &mut StudySetup, intercept: f64,
         .unwrap();
     let state_dim = setup.fcf.state_dimension;
     let forward_passes = setup.fcf.forward_passes;
-    let record = cobre_io::OwnedPolicyCutRecord {
+    let record = novomodelo_io::OwnedPolicyCutRecord {
         cut_id: 0,
         slot_index: 0,
         coefficients: vec![0.0; state_dim],
@@ -949,7 +949,7 @@ fn terminal_boundary_fcf_training_gap_is_consistent() {
 }
 
 /// Mean per-scenario `total_cost` over a simulation's returned scenarios.
-fn mean_scenario_total_cost(sims: &[cobre_sddp::SimulationScenarioResult]) -> f64 {
+fn mean_scenario_total_cost(sims: &[novomodelo_sddp::SimulationScenarioResult]) -> f64 {
     assert!(
         !sims.is_empty(),
         "simulation must produce at least one scenario result"
@@ -1094,16 +1094,16 @@ mod terminal_fusion {
     use std::collections::HashMap;
     use std::sync::mpsc;
 
-    use cobre_core::TrainingEvent;
-    use cobre_solver::SolverInterface;
+    use novomodelo_core::TrainingEvent;
+    use novomodelo_solver::SolverInterface;
 
     use super::{
         ActiveSolver, NodePos, StageIdx, StubComm, StudySetup,
         assert_distinct_external_leaf_columns, close, extensive_form_optimum,
         external_distinct_fan_setup, terminal_generated_fan_setup, train_bounds_threads,
     };
-    use cobre_sddp::indexer::StateDim;
-    use cobre_sddp::test_support::{
+    use novomodelo_sddp::indexer::StateDim;
+    use novomodelo_sddp::test_support::{
         capture_patched_node_template, water_binding_external_fan_setup,
     };
 

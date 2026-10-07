@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use std::sync::mpsc;
 
 use chrono::NaiveDate;
-use cobre_core::{
+use novomodelo_core::{
     DeficitSegment, EntityId, SystemBuilder, TrainingEvent,
     entities::hydro::{HydroGenerationModel, HydroPenalties},
     scenario::{CorrelationModel, InflowModel, LoadModel, SamplingScheme},
@@ -29,7 +29,7 @@ use cobre_core::{
         StageStateConfig,
     },
 };
-use cobre_sddp::{
+use novomodelo_sddp::{
     SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
     config::{CutManagementConfig, EventConfig, LoopConfig},
     context::TrainingContext,
@@ -45,10 +45,10 @@ use cobre_sddp::{
     },
     train,
 };
-use cobre_solver::{
+use novomodelo_solver::{
     Basis, RowBatch, SolverError, SolverInterface, SolverStatistics, StageTemplate,
 };
-use cobre_stochastic::{
+use novomodelo_stochastic::{
     ClassSchemes, OpeningTreeInputs, StochasticContext, build_stochastic_context,
 };
 
@@ -90,9 +90,9 @@ impl MockSolver {
 }
 
 impl SolverInterface for MockSolver {
-    type Profile = cobre_solver::ActiveProfile;
+    type Profile = novomodelo_solver::ActiveProfile;
 
-    fn apply_profile(&mut self, _profile: &cobre_solver::ActiveProfile) {}
+    fn apply_profile(&mut self, _profile: &novomodelo_solver::ActiveProfile) {}
     fn solver_name_version(&self) -> String {
         "MockSolver 0.0.0".to_string()
     }
@@ -104,8 +104,8 @@ impl SolverInterface for MockSolver {
     fn solve(
         &mut self,
         _basis: Option<&Basis>,
-    ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
-        Ok(cobre_solver::SolutionView {
+    ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
+        Ok(novomodelo_solver::SolutionView {
             objective: self.objective,
             primal: &[0.0, 0.0, 0.0, 0.0],
             dual: &[0.0, 0.0],
@@ -116,7 +116,7 @@ impl SolverInterface for MockSolver {
     }
 
     fn get_basis(&mut self, out: &mut Basis) {
-        cobre_sddp::test_support::fill_consistent_basis(out);
+        novomodelo_sddp::test_support::fill_consistent_basis(out);
     }
 
     fn statistics(&self) -> SolverStatistics {
@@ -142,7 +142,7 @@ fn build_system_with_load(
     n_openings: usize,
     load_mean_mw: f64,
     load_std_mw: f64,
-) -> cobre_core::System {
+) -> novomodelo_core::System {
     let bus = make_bus(
         EntityId(0),
         BusSpec {
@@ -416,7 +416,7 @@ fn test_stochastic_load_training_completes() {
         &mut fcf,
         &stage_ctx,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -529,7 +529,7 @@ fn test_deterministic_load_training_matches_baseline() {
         &mut fcf,
         &stage_ctx,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -625,7 +625,7 @@ fn test_stochastic_load_seed_determinism() {
             &mut fcf,
             &stage_ctx,
             &TrainingContext {
-                node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+                node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
                 horizon: &horizon,
                 state: &state,
                 cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),

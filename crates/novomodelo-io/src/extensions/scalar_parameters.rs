@@ -88,7 +88,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use cobre_core::{ComputedParameter, EntityId, ParameterKind, ScalarParameter};
+use novomodelo_core::{ComputedParameter, EntityId, ParameterKind, ScalarParameter};
 use serde::Deserialize;
 
 use crate::LoadError;
@@ -200,7 +200,7 @@ impl RawParameterKind {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::parse_scalar_parameters_json;
+/// use novomodelo_io::parse_scalar_parameters_json;
 /// use std::path::Path;
 ///
 /// let params = parse_scalar_parameters_json(
@@ -517,7 +517,7 @@ fn convert_per_stage_block(
 mod tests {
     use super::*;
     use crate::test_support::write_json;
-    use cobre_core::EntityId;
+    use novomodelo_core::EntityId;
 
     // ── Test 1: happy path — all four variants ─────────────────────────────────
 

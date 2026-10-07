@@ -1,7 +1,7 @@
-//! Shared fixtures for the `cobre-stochastic` integration-test suite:
+//! Shared fixtures for the `novomodelo-stochastic` integration-test suite:
 //! correlation-model builders, entity-order dimensions, and preset
 //! bus/hydro/inflow-model/stage constructors built on top of
-//! `cobre_core::test_support` and `cobre_stochastic::test_support`.
+//! `novomodelo_core::test_support` and `novomodelo_stochastic::test_support`.
 
 #![allow(dead_code, unused_imports)]
 // Each `tests/*.rs` binary compiles this module separately and uses only the
@@ -10,15 +10,15 @@
 
 use std::collections::BTreeMap;
 
-pub use cobre_core::test_support::{StageSpec, make_stage, norm_cdf, single_block};
-use cobre_core::{
+pub use novomodelo_core::test_support::{StageSpec, make_stage, norm_cdf, single_block};
+use novomodelo_core::{
     Bus, DeficitSegment, EntityId, Hydro, InflowModel, NoiseMethod, SamplingScheme,
     ScenarioSourceConfig, Stage, SystemBuilder,
     scenario::{CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile},
     test_support::{BusSpec, HydroSpec, make_bus, make_hydro},
 };
-pub use cobre_stochastic::test_support::{InflowModelSpec, make_inflow_model};
-use cobre_stochastic::{
+pub use novomodelo_stochastic::test_support::{InflowModelSpec, make_inflow_model};
+use novomodelo_stochastic::{
     ClassDimensions, ClassSchemes, ForwardNoiseTables, ForwardSampler, ForwardSamplerConfig,
     OpeningTreeInputs, StochasticContext, build_stochastic_context,
     correlation::resolve::DecomposedCorrelation,
@@ -182,7 +182,7 @@ pub fn make_sampler_config<'a>(
 pub fn build_test_system(
     methods: &[NoiseMethod],
     correlation: CorrelationModel,
-) -> cobre_core::System {
+) -> novomodelo_core::System {
     assert_eq!(methods.len(), 3, "must supply exactly 3 per-stage methods");
     let hydros = vec![sized_hydro(1), sized_hydro(2)];
     let stages = vec![
@@ -210,7 +210,10 @@ pub fn build_test_system(
 
 /// The in-sample [`StochasticContext`] for `system`, base seed `42`.
 #[must_use]
-pub fn build_test_ctx(system: &cobre_core::System, forward_seed: Option<u64>) -> StochasticContext {
+pub fn build_test_ctx(
+    system: &novomodelo_core::System,
+    forward_seed: Option<u64>,
+) -> StochasticContext {
     build_stochastic_context(
         system,
         42,
@@ -229,7 +232,7 @@ pub fn build_test_ctx(system: &cobre_core::System, forward_seed: Option<u64>) ->
 
 /// The study stages of `system` (excludes the pre-study `id < 0` stage).
 #[must_use]
-pub fn stages_from_system(system: &cobre_core::System) -> Vec<Stage> {
+pub fn stages_from_system(system: &novomodelo_core::System) -> Vec<Stage> {
     system
         .stages()
         .iter()

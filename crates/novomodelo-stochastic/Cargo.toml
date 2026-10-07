@@ -1,5 +1,5 @@
 [package]
-name = "cobre-stochastic"
+name = "novomodelo-stochastic"
 description = "Stochastic process models for power systems — PAR(p), scenario generation, correlated sampling"
 version.workspace = true
 edition.workspace = true
@@ -23,10 +23,10 @@ slow-tests = []
 ## `#[cfg(any(test, feature = "test-support"))]`, so plain `cargo test` sees
 ## them via `test` and downstream integration tests see them via this feature.
 ## Must NOT be enabled in production builds.
-test-support = ["cobre-core/test-support"]
+test-support = ["novomodelo-core/test-support"]
 
 [dependencies]
-cobre-core = { version = "0.18.0", path = "../cobre-core" }
+novomodelo-core = { version = "0.18.0", path = "../novomodelo-core" }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 siphasher = "1"
 rand = "0.10"
@@ -38,8 +38,8 @@ tracing = "0.1"
 
 [dev-dependencies]
 chrono = "0.4"
-cobre-core = { version = "0.18.0", path = "../cobre-core", features = ["test-support"] }
-cobre-stochastic = { path = ".", features = ["test-support"] }
+novomodelo-core = { version = "0.18.0", path = "../novomodelo-core", features = ["test-support"] }
+novomodelo-stochastic = { path = ".", features = ["test-support"] }
 proptest = "1"
 
 [lints]

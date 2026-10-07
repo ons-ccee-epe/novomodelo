@@ -1,6 +1,6 @@
 [package]
-name = "cobre-cli"
-description = "Command-line interface for Cobre power system studies"
+name = "novomodelo-cli"
+description = "Command-line interface for Novomodelo power system studies"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,17 +13,17 @@ keywords = ["power-systems", "cli", "energy", "sddp", "simulation"]
 categories = ["command-line-utilities", "science"]
 
 [[bin]]
-name = "cobre"
+name = "novomodelo"
 path = "src/main.rs"
 doc = false
 
 [dependencies]
-cobre-core = { version = "0.18.0", path = "../cobre-core", features = ["serde"] }
-cobre-io = { version = "0.18.0", path = "../cobre-io", features = ["schema"] }
-cobre-sddp = { version = "0.18.0", path = "../cobre-sddp", default-features = false }
-cobre-solver = { version = "0.18.0", path = "../cobre-solver", default-features = false }
-cobre-comm = { version = "0.18.0", path = "../cobre-comm" }
-cobre-stochastic = { version = "0.18.0", path = "../cobre-stochastic" }
+novomodelo-core = { version = "0.18.0", path = "../novomodelo-core", features = ["serde"] }
+novomodelo-io = { version = "0.18.0", path = "../novomodelo-io", features = ["schema"] }
+novomodelo-sddp = { version = "0.18.0", path = "../novomodelo-sddp", default-features = false }
+novomodelo-solver = { version = "0.18.0", path = "../novomodelo-solver", default-features = false }
+novomodelo-comm = { version = "0.18.0", path = "../novomodelo-comm" }
+novomodelo-stochastic = { version = "0.18.0", path = "../novomodelo-stochastic" }
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 clap = { version = "4", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
@@ -44,15 +44,15 @@ default = ["highs"]
 
 ## Select the HiGHS LP solver backend across the dependency graph.
 ##
-## Forwards to both `cobre-solver` and `cobre-sddp`; forwarding to only one
+## Forwards to both `novomodelo-solver` and `novomodelo-sddp`; forwarding to only one
 ## leaves the other on its own `highs` default and re-trips the mutually
-## exclusive `compile_error!` in `cobre-solver`.
-highs = ["cobre-solver/highs", "cobre-sddp/highs"]
+## exclusive `compile_error!` in `novomodelo-solver`.
+highs = ["novomodelo-solver/highs", "novomodelo-sddp/highs"]
 
 ## Select the CLP/CoinUtils LP solver backend across the dependency graph.
-clp = ["cobre-solver/clp", "cobre-sddp/clp"]
+clp = ["novomodelo-solver/clp", "novomodelo-sddp/clp"]
 
-mpi = ["cobre-comm/mpi"]
+mpi = ["novomodelo-comm/mpi"]
 ## Opt-in to the slow test suite: includes every `SLOW_DECKS` deck in the
 ## non-root setup-rebuild two-constructor parity test.
 slow-tests = []
@@ -60,12 +60,12 @@ slow-tests = []
 [dev-dependencies]
 arrow = { version = "60", default-features = false }
 assert_cmd = "2"
-cobre-core = { version = "0.18.0", path = "../cobre-core", features = ["test-support"] }
-cobre-io = { version = "0.18.0", path = "../cobre-io" }
-cobre-sddp = { version = "0.18.0", path = "../cobre-sddp", default-features = false, features = [
+novomodelo-core = { version = "0.18.0", path = "../novomodelo-core", features = ["test-support"] }
+novomodelo-io = { version = "0.18.0", path = "../novomodelo-io" }
+novomodelo-sddp = { version = "0.18.0", path = "../novomodelo-sddp", default-features = false, features = [
     "test-support",
 ] }
-cobre-solver = { version = "0.18.0", path = "../cobre-solver", default-features = false }
+novomodelo-solver = { version = "0.18.0", path = "../novomodelo-solver", default-features = false }
 parquet = { version = "60", default-features = false, features = ["arrow"] }
 predicates = "3"
 tempfile = "3"

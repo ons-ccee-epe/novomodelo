@@ -15,10 +15,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use chrono::NaiveDate;
-use cobre_comm::LocalBackend;
-use cobre_core::scenario::{CorrelationModel, InflowModel, LoadModel, SamplingScheme};
-use cobre_core::temporal::{Node as PolicyNode, PolicyGraphType, StageLagTransition, Transition};
-use cobre_core::{
+use novomodelo_comm::LocalBackend;
+use novomodelo_core::scenario::{CorrelationModel, InflowModel, LoadModel, SamplingScheme};
+use novomodelo_core::temporal::{
+    Node as PolicyNode, PolicyGraphType, StageLagTransition, Transition,
+};
+use novomodelo_core::{
     AnticipatedConfig, Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties,
     ContractBlockBounds, DeficitSegment, EntityId, HorizonGraph, Hydro, HydroBlockBounds,
     HydroGenerationModel, HydroPenalties, HydroStageBounds, HydroStorage, HydroUnitGroup,
@@ -27,21 +29,21 @@ use cobre_core::{
     ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, System, SystemBuilder, Thermal,
     ThermalBlockBounds, ThermalStageBounds,
 };
-use cobre_io::StageIdResolver;
-use cobre_io::config::{
+use novomodelo_io::StageIdResolver;
+use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig, InflowNonNegativityMethod,
     ModelingConfig, ParallelismConfig, PolicyConfig, RawClassConfigEntry, RawSamplingScheme,
     RawScenarioSourceConfig, RowSelectionConfig, SelectionMethod,
     SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode, StoppingRuleConfig,
     TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
-use cobre_io::{
+use novomodelo_io::{
     EntitySlot, GraphManifest, ManifestEdge, ManifestNode, PolicyCutRecord, ProducerBlock,
     SOFTWARE_NAME, SOFTWARE_VERSION, SoftwareIdentity, StageCutsPayload, decode_slot_date,
     encode_slot_date, write_policy_checkpoint,
 };
-use cobre_stochastic::par::precompute::PrecomputedPar;
-use cobre_stochastic::{
+use novomodelo_stochastic::par::precompute::PrecomputedPar;
+use novomodelo_stochastic::{
     ClassSchemes, OpeningTreeInputs, StochasticContext, build_stochastic_context,
 };
 
@@ -91,8 +93,8 @@ use crate::training::stage_solve_prep::{
 };
 use crate::trajectory::TrajectoryRecord;
 use crate::workspace::{CapturedBasis, ScratchBuffers, SolverWorkspace, WorkspaceSizing};
-use cobre_core::scenario::{ExternalLoadRow, ExternalScenarioRow};
-use cobre_solver::{
+use novomodelo_core::scenario::{ExternalLoadRow, ExternalScenarioRow};
+use novomodelo_solver::{
     ActiveSolver, Basis, BasisStatus, LpSolution, RowBatch, SolutionView, SolverError,
     SolverInterface, SolverStatistics, StageTemplate,
 };
@@ -399,7 +401,7 @@ fn geometry_zero_penalties() -> HydroPenalties {
 
 /// Build a [`HydroUnitGroup`] with the given `id`, `bus_id`, and four bounds —
 /// the shared multi-bus fixture helper (`unit_groups` cannot otherwise be
-/// populated from outside `cobre-io`'s `pub(super)` validation-module helper).
+/// populated from outside `novomodelo-io`'s `pub(super)` validation-module helper).
 #[must_use]
 pub fn make_unit_group(
     id: EntityId,
@@ -1319,7 +1321,7 @@ pub fn study_dims_for(dims: &GeometryDims) -> StudyDimensions {
 )]
 #[must_use]
 pub fn trivial_full_fcf_proof(state_dimension: u32, num_stages: u32) -> PolicyLoadProof<FullFcf> {
-    let graph = cobre_io::GraphManifest::default();
+    let graph = novomodelo_io::GraphManifest::default();
     let manifest = PolicyStageManifest {
         state_dimension,
         num_stages,
@@ -1334,29 +1336,29 @@ pub fn trivial_full_fcf_proof(state_dimension: u32, num_stages: u32) -> PolicyLo
 /// Assemble the [`CheckpointManifest`] for a checkpoint fixture: the three
 /// invariant fields (`format_version` = [`FORMAT_VERSION`], the software identity
 /// matching the production writer, a fixed `created_at` no consumer reads) are
-/// filled here — the sole owner of the manifest literal for `cobre-sddp`
+/// filled here — the sole owner of the manifest literal for `novomodelo-sddp`
 /// tests. `season_manifest` defaults absent; a caller exercising the
 /// boundary-load season/PAR-identity gate
 /// (`policy::policy_load::check_season_compatibility`) overrides it via
 /// struct-update syntax on the returned value.
 ///
-/// [`CheckpointManifest`]: cobre_io::CheckpointManifest
-/// [`FORMAT_VERSION`]: cobre_io::FORMAT_VERSION
+/// [`CheckpointManifest`]: novomodelo_io::CheckpointManifest
+/// [`FORMAT_VERSION`]: novomodelo_io::FORMAT_VERSION
 #[must_use]
 pub fn checkpoint_metadata(
     num_stages: u32,
-    graph_manifest: cobre_io::GraphManifest,
-    producer: cobre_io::ProducerBlock,
-) -> cobre_io::CheckpointManifest {
-    cobre_io::CheckpointManifest {
-        format_version: cobre_io::FORMAT_VERSION,
+    graph_manifest: novomodelo_io::GraphManifest,
+    producer: novomodelo_io::ProducerBlock,
+) -> novomodelo_io::CheckpointManifest {
+    novomodelo_io::CheckpointManifest {
+        format_version: novomodelo_io::FORMAT_VERSION,
         software: Some(SOFTWARE_NAME.to_string()),
         software_version: SOFTWARE_VERSION.to_string(),
         created_at: "2026-01-01T00:00:00Z".to_string(),
         num_stages,
         graph_manifest,
         producer,
-        season_manifest: cobre_io::SeasonManifest::default(),
+        season_manifest: novomodelo_io::SeasonManifest::default(),
     }
 }
 
@@ -4788,7 +4790,7 @@ pub fn assert_all_templates_byte_identical(a: &[StageTemplate], b: &[StageTempla
 #[cfg(test)]
 mod byte_identity_tests {
     use super::assert_templates_byte_identical;
-    use cobre_solver::StageTemplate;
+    use novomodelo_solver::StageTemplate;
 
     #[test]
     #[should_panic(expected = "probe: col_scale")]
@@ -4823,7 +4825,7 @@ mod trunk_fan_tests {
         ActiveSolver, NodePos, ResolvedProductionModel, TRUNK_FAN_PRODUCTIVITY, TrunkFanFixture,
         trunk_fan_setup_enumerated,
     };
-    use cobre_comm::{CommData, CommError, Communicator, ReduceOp};
+    use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
 
     /// Single-rank `Communicator` stub, mirroring `tests/common/mod.rs`'s
     /// `StubComm` (unreachable here — this module lives in `src/`, not

@@ -6,14 +6,14 @@
 //! A fourth fixture, a fan-then-recombine DAG (a node reached from two or more
 //! parent nodes), is out of scope here: `setup::reject_recombining_node_enumeration`
 //! hard-rejects any node graph with in-degree `>= 2` under `enumerated` selection
-//! (`crates/cobre-sddp/src/setup/mod.rs`) — per-prefix state reconstruction for a
+//! (`crates/novomodelo-sddp/src/setup/mod.rs`) — per-prefix state reconstruction for a
 //! multi-parent node is a reserved seam, not built, and this binary's own
 //! `extensive_form_optimum` adoption (below) would need the same prefix-aware
 //! rewrite before it could expand one either. Tracked separately; not attempted.
 //!
 //! # The oracle
 //!
-//! [`extensive_form_optimum`] (`cobre_sddp::test_support`, adopted unchanged from
+//! [`extensive_form_optimum`] (`novomodelo_sddp::test_support`, adopted unchanged from
 //! `branching_value_oracle.rs`'s harness — not re-derived here) expands one LP
 //! column block per graph node. On these `|Ω| = 1`-per-node trees every node has
 //! exactly one predecessor, so one column block per node IS one column block per
@@ -36,7 +36,7 @@
 //!
 //! [`REL_TOL`]/[`ABS_TOL`] mirror `branching_value_oracle.rs`: both LP backends'
 //! `primal_feasibility_tolerance`/`dual_feasibility_tolerance` default to `1e-9`
-//! (`cobre-solver`'s `clp`/`highs` backend configs); scaled by the objective
+//! (`novomodelo-solver`'s `clp`/`highs` backend configs); scaled by the objective
 //! magnitude, this bounds the floating-point gap between the extensive-form LP and
 //! the node-native engine's own accumulated solves — two independent
 //! formulations, never bit equality.
@@ -54,15 +54,15 @@
 
 mod common;
 
-use cobre_sddp::StudySetup;
-use cobre_sddp::setup::{
+use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::setup::{
     NodeGraph, NodeId, NodeOpenings, NodePos, NodeRuntime, NodeSuccessor, OpeningSource, StageIdx,
 };
-use cobre_sddp::test_support::{
+use novomodelo_sddp::test_support::{
     branching_tree_setup_enumerated, extensive_form_optimum, k_fan_setup_enumerated,
     node_prefix_counts, oracle_chain_setup, single_path_enumerated_setup,
 };
-use cobre_solver::ActiveSolver;
+use novomodelo_solver::ActiveSolver;
 
 use common::StubComm;
 

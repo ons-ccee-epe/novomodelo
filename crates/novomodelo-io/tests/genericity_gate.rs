@@ -19,7 +19,7 @@ fn infrastructure_genericity_no_sddp_references() {
     assert_eq!(
         output.status.code(),
         Some(1),
-        "grep found algorithm-specific references in cobre-io/src/:\n{}",
+        "grep found algorithm-specific references in novomodelo-io/src/:\n{}",
         String::from_utf8_lossy(&output.stdout)
     );
 }
@@ -31,8 +31,8 @@ fn token(chars: &[char]) -> String {
 }
 
 /// The `stage_id -> study-index` inverse map has exactly two sanctioned owners:
-/// `StageIdResolver` (`cobre-io/src/stage_resolve.rs`) and cobre-core's
-/// `build_stage_index` (`cobre-core/src/system/`, upstream of cobre-io and
+/// `StageIdResolver` (`novomodelo-io/src/stage_resolve.rs`) and novomodelo-core's
+/// `build_stage_index` (`novomodelo-core/src/system/`, upstream of novomodelo-io and
 /// allow-listed). This gate fails if an inline construction of that map
 /// reappears in the consolidated downstream paths, so a future edit routes
 /// through the resolver instead of deriving a third copy that can drift.
@@ -52,9 +52,9 @@ fn no_inline_stage_id_index_map_outside_resolver() {
 
     let output = Command::new("grep")
         .args(["-rInE", &pattern])
-        .arg("crates/cobre-io/src/pipeline.rs")
-        .arg("crates/cobre-io/src/resolution")
-        .arg("crates/cobre-sddp/src/lp/builder")
+        .arg("crates/novomodelo-io/src/pipeline.rs")
+        .arg("crates/novomodelo-io/src/resolution")
+        .arg("crates/novomodelo-sddp/src/lp/builder")
         .current_dir(&workspace_root)
         .output()
         .expect("stage_id index-map gate: failed to execute grep");
@@ -63,7 +63,7 @@ fn no_inline_stage_id_index_map_outside_resolver() {
         output.status.code(),
         Some(1),
         "an inline stage-id to study-index inverse-map idiom reappeared outside the \
-         sanctioned owners (StageIdResolver / cobre-core build_stage_index):\n{}",
+         sanctioned owners (StageIdResolver / novomodelo-core build_stage_index):\n{}",
         String::from_utf8_lossy(&output.stdout)
     );
 }
@@ -131,7 +131,7 @@ fn historical_input_no_required_anticipated_commitment_count() {
 /// The three per-surface date-window validators (`RawAnticipatedCommitmentHistory`
 /// recent-observations pair, past-defluences pair, and the inflow-history-row
 /// overlap check) were unified onto the single shared windowed-record validator
-/// in `cobre-io`. This gate fails if any of their retired names resurface.
+/// in `novomodelo-io`. This gate fails if any of their retired names resurface.
 /// Each name is built via [`token`] for the same self-match reason as the
 /// sibling gates in this file.
 #[test]
@@ -213,7 +213,7 @@ fn historical_input_no_bucket_seed_resolver_module() {
             "-rnE",
             "--include=*.rs",
             &pattern,
-            "crates/cobre-sddp/src/setup/",
+            "crates/novomodelo-sddp/src/setup/",
         ])
         .current_dir(&workspace_root)
         .output()
@@ -223,7 +223,7 @@ fn historical_input_no_bucket_seed_resolver_module() {
         output.status.code(),
         Some(1),
         "the retired defluence-bucket seeding resolver module/symbol reappeared under \
-         crates/cobre-sddp/src/setup/:\n{}",
+         crates/novomodelo-sddp/src/setup/:\n{}",
         String::from_utf8_lossy(&output.stdout)
     );
 }

@@ -1,5 +1,5 @@
 # cargo-about configuration — drives generation of THIRD_PARTY_LICENSES.md (the
-# per-crate license texts of cobre's Rust dependency graph, reproduced for binary
+# per-crate license texts of novomodelo's Rust dependency graph, reproduced for binary
 # distribution). Regenerate with:
 #
 #   cargo about generate --all-features about.hbs -o THIRD_PARTY_LICENSES.md
@@ -41,7 +41,7 @@ accepted = [
 ignore-build-dependencies = true
 ignore-dev-dependencies = true
 
-# Auto-exclude any crate later marked `publish = false` (none today). cobre's own
+# Auto-exclude any crate later marked `publish = false` (none today). novomodelo's own
 # Apache-2.0 workspace crates publish normally, so they still appear — harmless,
 # they are part of the distributed Apache-2.0 corpus.
 [private]

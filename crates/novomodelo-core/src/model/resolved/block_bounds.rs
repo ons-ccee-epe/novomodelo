@@ -5,7 +5,7 @@
 //! per-family override struct means no override for that column. An empty
 //! overlay ([`ResolvedBlockBounds::empty`]) makes every per-block lookup fall
 //! back to exactly the stage-wide cell it would otherwise override. Populated
-//! by `cobre-io`; never modified after construction.
+//! by `novomodelo-io`; never modified after construction.
 //!
 //! Each `<Family>BlockOverride` struct is a full field-for-field mirror of its
 //! `<Family>BlockBounds` counterpart rather than an `Option<<Family>BlockBounds>`
@@ -130,7 +130,7 @@ pub struct BlockBoundsCountsSpec {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::resolved::ResolvedBlockBounds;
+/// use novomodelo_core::resolved::ResolvedBlockBounds;
 ///
 /// let empty = ResolvedBlockBounds::empty();
 /// assert!(empty.is_empty());
@@ -166,7 +166,7 @@ impl ResolvedBlockBounds {
     /// # Examples
     ///
     /// ```
-    /// use cobre_core::resolved::ResolvedBlockBounds;
+    /// use novomodelo_core::resolved::ResolvedBlockBounds;
     ///
     /// let t = ResolvedBlockBounds::empty();
     /// assert!(t.is_empty());

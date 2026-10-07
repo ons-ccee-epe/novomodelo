@@ -6,15 +6,15 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::{NaiveDate, TimeDelta};
-use cobre_core::commissioning::commissioning_active;
-use cobre_core::temporal::{
+use novomodelo_core::commissioning::commissioning_active;
+use novomodelo_core::temporal::{
     Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig,
 };
-use cobre_core::{
+use novomodelo_core::{
     AnticipatedCommitmentHistory, AnticipatedConfig, EntityId, PostStudyStages, ResolvedBounds,
     Thermal, VariableRef,
 };
-use cobre_stochastic::season_cast::{DatedWindow, StageCalendar};
+use novomodelo_stochastic::season_cast::{DatedWindow, StageCalendar};
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
 use super::envelope_tolerance;
@@ -54,7 +54,7 @@ pub(super) fn check_thermal_generation_bounds(data: &ParsedData, ctx: &mut Valid
 ///    mode. Whether the lead reaches a post-study stage is resolved once per
 ///    thermal by `classify_deliveries`'s `carried` and `fixed_post_study`
 ///    sets over the concatenated study + post-study calendar — computed
-///    independently of the solver crate's resolver (`cobre-io` is upstream
+///    independently of the solver crate's resolver (`novomodelo-io` is upstream
 ///    and cannot depend on it) — and shared by both guards. A commissioning
 ///    window IS supported and composes with the lookahead; these checks
 ///    validate the LEAD itself, independent of any window.
@@ -406,7 +406,7 @@ fn collect_anticipated_thermal_ids(data: &ParsedData) -> HashSet<EntityId> {
 /// post-study calendar is resolved by `classify_deliveries`/`extended_deciders`
 /// over the concatenated study + post-study calendar; this count stays
 /// study-only. Computed independently of the solver crate's point-commitment
-/// resolver (cobre-io is upstream and cannot depend on it), mirroring
+/// resolver (novomodelo-io is upstream and cannot depend on it), mirroring
 /// `check_defluence_coverage`'s own calendar walk
 /// (`validation/semantic/travel_time.rs`). Do not shortcut `LeadTime` to a stage
 /// count from a window length — on a non-uniform calendar the cumulative-hours
@@ -491,7 +491,7 @@ fn build_extended_delivery_axis(data: &ParsedData) -> Option<ExtendedDeliveryAxi
 /// anchors at the delivery stage's cumulative end (`c(m)` = the stage containing
 /// `end_m − δ`, boundary ties resolving to the earlier stage). `None` is a
 /// pre-study (initial-conditions) decider. Computed independently of the solver
-/// crate's `resolve_point` (cobre-io is upstream and cannot depend on it). Do
+/// crate's `resolve_point` (novomodelo-io is upstream and cannot depend on it). Do
 /// not shortcut `LeadTime` to a bare window length — on a non-uniform calendar
 /// the cumulative-hours walk and a bare length diverge.
 fn extended_deciders(mode: AnticipatedConfig, durations: &[f64]) -> Vec<Option<usize>> {
@@ -892,7 +892,7 @@ fn check_committed_value_bounds(
 /// and allowed.
 ///
 /// The window predicate is the LP builder's own
-/// `cobre_core::commissioning::commissioning_active`, so validation and the
+/// `novomodelo_core::commissioning::commissioning_active`, so validation and the
 /// builder cannot drift on what an infeasible seed is. Each window's covered
 /// study stages are resolved through the shared [`StageCalendar`], so a window
 /// straddling the commissioning boundary is checked stage-by-stage.
@@ -1485,8 +1485,8 @@ fn make_calendar_stage(
     clippy::cast_sign_loss
 )]
 mod tests {
-    use cobre_core::temporal::{Block, PolicyGraphType, Stage};
-    use cobre_core::{
+    use novomodelo_core::temporal::{Block, PolicyGraphType, Stage};
+    use novomodelo_core::{
         AnticipatedCommitmentHistory, AnticipatedConfig, EntityId, HorizonGraph, PostStudyStage,
         PostStudyStages, PostStudyThermalBound, Thermal,
     };
@@ -2408,7 +2408,7 @@ mod tests {
     /// `extended_deciders` mirrors the solver's `resolve_point` on the PMO
     /// calendar (weekly-then-monthly), producing the same delivery-anchored
     /// decider shape `[None×4, Some(3), Some(4), Some(5)]` — the fixture pins
-    /// cobre-io's independent walk to the solver's resolution shape.
+    /// novomodelo-io's independent walk to the solver's resolution shape.
     #[test]
     fn test_extended_deciders_lead_time_pmo_matches_solver_resolution() {
         let durations = [168.0, 168.0, 168.0, 168.0, 720.0, 720.0, 720.0];
@@ -3806,7 +3806,7 @@ mod tests {
     /// the constraint and the thermal ID.
     #[test]
     fn test_anticipated_decision_on_non_anticipated_thermal_error() {
-        use cobre_core::{
+        use novomodelo_core::{
             ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
         };
 
@@ -3883,7 +3883,7 @@ mod tests {
     /// new validator.
     #[test]
     fn test_anticipated_decision_on_anticipated_thermal_ok() {
-        use cobre_core::{
+        use novomodelo_core::{
             ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
             entities::AnticipatedConfig,
         };
@@ -3939,7 +3939,7 @@ mod tests {
     /// the constraint and the thermal ID with a hint to use `anticipated_decision`.
     #[test]
     fn test_thermal_generation_on_anticipated_thermal_warns() {
-        use cobre_core::{
+        use novomodelo_core::{
             ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
             entities::AnticipatedConfig,
         };
@@ -4026,7 +4026,7 @@ mod tests {
     /// thermal `N` is NOT anticipated produces no `SemanticAmbiguity` warning.
     #[test]
     fn test_thermal_generation_on_non_anticipated_thermal_no_warn() {
-        use cobre_core::{
+        use novomodelo_core::{
             ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
         };
 

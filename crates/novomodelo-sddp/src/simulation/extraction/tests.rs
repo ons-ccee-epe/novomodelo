@@ -13,7 +13,7 @@ use super::{
     extract_generic_violations, extract_pumping_stations, extract_stage_result,
     extract_stub_collections,
 };
-use cobre_core::{BlockMode, ContractType};
+use novomodelo_core::{BlockMode, ContractType};
 
 use crate::energy_conversion::EnergyConversionSet;
 use crate::horizon_mode::HorizonMode;
@@ -5081,7 +5081,7 @@ fn pumping_only_spec<'a>(
     entity_counts: &'a EntityCounts,
     consumption: &'a [f64],
     ec: &'a EnergyConversionSet,
-    diversion: &'a HashMap<cobre_core::EntityId, Vec<usize>>,
+    diversion: &'a HashMap<novomodelo_core::EntityId, Vec<usize>>,
 ) -> StageExtractionSpec<'a> {
     // Leaked so the borrow outlives this function call, matching the caller's own
     // `'a` — every call site here is single-bus, so an identity index is exact.
@@ -5285,7 +5285,7 @@ fn contract_only_spec<'a>(
     contract_prices: &'a [f64],
     contract_slots: &'a [(ContractType, usize)],
     ec: &'a EnergyConversionSet,
-    diversion: &'a HashMap<cobre_core::EntityId, Vec<usize>>,
+    diversion: &'a HashMap<novomodelo_core::EntityId, Vec<usize>>,
 ) -> StageExtractionSpec<'a> {
     // Leaked so the borrow outlives this function call, matching the caller's own
     // `'a` — every call site here is single-bus, so an identity index is exact.
@@ -6469,23 +6469,23 @@ fn split_plant_multi_bus_extraction_fixture() -> (StateSpace, StageGeometry, Hyd
             1,
             vec![
                 test_support::make_unit_group(
-                    cobre_core::EntityId(110),
-                    cobre_core::EntityId(10),
+                    novomodelo_core::EntityId(110),
+                    novomodelo_core::EntityId(10),
                     0.0,
                     10.0,
                     0.0,
                     10.0,
                 ),
                 test_support::make_unit_group(
-                    cobre_core::EntityId(111),
-                    cobre_core::EntityId(11),
+                    novomodelo_core::EntityId(111),
+                    novomodelo_core::EntityId(11),
                     0.0,
                     10.0,
                     0.0,
                     10.0,
                 ),
             ],
-            cobre_core::HydroGenerationModel::Fpha,
+            novomodelo_core::HydroGenerationModel::Fpha,
         ),
     ]);
     assert_eq!(hydro_cell_index.n_cells(), 3);
@@ -6618,48 +6618,48 @@ fn split_middle_plant_fixture() -> (StateSpace, StageGeometry, HydroCellIndex, V
         test_support::geometry_hydro_with_groups(
             0,
             vec![test_support::make_unit_group(
-                cobre_core::EntityId(1),
-                cobre_core::EntityId(41),
+                novomodelo_core::EntityId(1),
+                novomodelo_core::EntityId(41),
                 0.0,
                 10.0,
                 0.0,
                 10.0,
             )],
-            cobre_core::HydroGenerationModel::ConstantProductivity,
+            novomodelo_core::HydroGenerationModel::ConstantProductivity,
         ),
         test_support::geometry_hydro_with_groups(
             1,
             vec![
                 test_support::make_unit_group(
-                    cobre_core::EntityId(2),
-                    cobre_core::EntityId(31),
+                    novomodelo_core::EntityId(2),
+                    novomodelo_core::EntityId(31),
                     0.0,
                     10.0,
                     0.0,
                     10.0,
                 ),
                 test_support::make_unit_group(
-                    cobre_core::EntityId(3),
-                    cobre_core::EntityId(37),
+                    novomodelo_core::EntityId(3),
+                    novomodelo_core::EntityId(37),
                     0.0,
                     10.0,
                     0.0,
                     10.0,
                 ),
             ],
-            cobre_core::HydroGenerationModel::ConstantProductivity,
+            novomodelo_core::HydroGenerationModel::ConstantProductivity,
         ),
         test_support::geometry_hydro_with_groups(
             2,
             vec![test_support::make_unit_group(
-                cobre_core::EntityId(4),
-                cobre_core::EntityId(53),
+                novomodelo_core::EntityId(4),
+                novomodelo_core::EntityId(53),
                 0.0,
                 10.0,
                 0.0,
                 10.0,
             )],
-            cobre_core::HydroGenerationModel::ConstantProductivity,
+            novomodelo_core::HydroGenerationModel::ConstantProductivity,
         ),
     ]);
     assert_eq!(hydro_cell_index.n_cells(), 4, "1 + 2 + 1 cells");
@@ -6889,44 +6889,44 @@ fn order_sensitive_split_plant_fixture() -> (StateSpace, StageGeometry, HydroCel
         test_support::geometry_hydro_with_groups(
             0,
             vec![test_support::make_unit_group(
-                cobre_core::EntityId(1),
-                cobre_core::EntityId(9),
+                novomodelo_core::EntityId(1),
+                novomodelo_core::EntityId(9),
                 0.0,
                 10.0,
                 0.0,
                 10.0,
             )],
-            cobre_core::HydroGenerationModel::ConstantProductivity,
+            novomodelo_core::HydroGenerationModel::ConstantProductivity,
         ),
         test_support::geometry_hydro_with_groups(
             1,
             vec![
                 test_support::make_unit_group(
-                    cobre_core::EntityId(2),
-                    cobre_core::EntityId(5),
+                    novomodelo_core::EntityId(2),
+                    novomodelo_core::EntityId(5),
                     0.0,
                     10.0,
                     0.0,
                     10.0,
                 ),
                 test_support::make_unit_group(
-                    cobre_core::EntityId(3),
-                    cobre_core::EntityId(6),
+                    novomodelo_core::EntityId(3),
+                    novomodelo_core::EntityId(6),
                     0.0,
                     10.0,
                     0.0,
                     10.0,
                 ),
                 test_support::make_unit_group(
-                    cobre_core::EntityId(4),
-                    cobre_core::EntityId(7),
+                    novomodelo_core::EntityId(4),
+                    novomodelo_core::EntityId(7),
                     0.0,
                     10.0,
                     0.0,
                     10.0,
                 ),
             ],
-            cobre_core::HydroGenerationModel::ConstantProductivity,
+            novomodelo_core::HydroGenerationModel::ConstantProductivity,
         ),
     ]);
     assert_eq!(hydro_cell_index.n_cells(), 4, "1 + 3 cells");
@@ -7183,7 +7183,7 @@ fn generic_only_spec<'a>(
         non_controllable_ids: vec![],
     }));
     let ec: &'a EnergyConversionSet = Box::leak(Box::new(zero_energy_conversion(0, 1)));
-    let diversion: &'a HashMap<cobre_core::EntityId, Vec<usize>> =
+    let diversion: &'a HashMap<novomodelo_core::EntityId, Vec<usize>> =
         Box::leak(Box::new(HashMap::new()));
     let hydro_cell_index: &'a HydroCellIndex =
         Box::leak(Box::new(test_support::identity_hydro_cell_index(0)));

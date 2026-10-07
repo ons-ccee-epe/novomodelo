@@ -26,7 +26,7 @@ The existing ``test_parity_hydros.py`` D02 suite cannot catch a per-stage
 ``filling_target_violation_hm3`` is uniformly ``0.0``.
 
 Run with (from the repo root):
-    pytest crates/cobre-python/tests/test_parity_filling_sigma.py -v
+    pytest crates/novomodelo-python/tests/test_parity_filling_sigma.py -v
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from _cobre_cli import run_cli
+from _novomodelo_cli import run_cli
 from test_parity_hydros import (
     _collect_hydros_parquet,
     _make_case_with_simulation,
@@ -133,10 +133,10 @@ def d38_python_output(
     d38_case_dir: pathlib.Path,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> pathlib.Path:
-    """Run d38 via ``cobre.run.run()`` and return the output directory."""
-    cobre_run = pytest.importorskip("cobre.run")
+    """Run d38 via ``novomodelo.run.run()`` and return the output directory."""
+    novomodelo_run = pytest.importorskip("novomodelo.run")
     output_dir = tmp_path_factory.mktemp("d38_python_out")
-    cobre_run.run(str(d38_case_dir), output_dir=str(output_dir))
+    novomodelo_run.run(str(d38_case_dir), output_dir=str(output_dir))
     return output_dir
 
 

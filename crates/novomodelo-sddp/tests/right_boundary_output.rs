@@ -22,16 +22,16 @@
 )]
 
 use chrono::NaiveDate;
-use cobre_core::entities::thermal::AnticipatedConfig;
-use cobre_core::{
+use novomodelo_core::entities::thermal::AnticipatedConfig;
+use novomodelo_core::{
     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
     HydroStageBounds, InitialConditions, LineBlockBounds, PostStudyStage, PostStudyStages,
     PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds, System, SystemBuilder,
     ThermalBlockBounds, ThermalStageBounds,
 };
-use cobre_io::config::SimulationSelection;
-use cobre_io::output::simulation_writer::{ScenarioWritePayload, SimulationParquetWriter};
-use cobre_sddp::{SimulationScenarioResult, StudySetup};
+use novomodelo_io::config::SimulationSelection;
+use novomodelo_io::output::simulation_writer::{ScenarioWritePayload, SimulationParquetWriter};
+use novomodelo_sddp::{SimulationScenarioResult, StudySetup};
 
 mod common;
 use common::build_setup_in_code;
@@ -69,7 +69,7 @@ fn study_start() -> NaiveDate {
 /// Two stages matching their real calendar span exactly (required for
 /// `StageCalendar` coverage): stage 0 is January (744h), stage 1 is 30 days
 /// (720h) so the post-study window below overlaps it exactly at `dest = 0`.
-fn stages() -> Vec<cobre_core::temporal::Stage> {
+fn stages() -> Vec<novomodelo_core::temporal::Stage> {
     let start = study_start();
     let stage0_end = start + chrono::TimeDelta::days(31);
     let stage1_end = stage0_end + chrono::TimeDelta::days(30);
@@ -79,7 +79,7 @@ fn stages() -> Vec<cobre_core::temporal::Stage> {
             StageSpec {
                 start_date: start,
                 end_date: stage0_end,
-                blocks: vec![cobre_core::temporal::Block {
+                blocks: vec![novomodelo_core::temporal::Block {
                     index: 0,
                     name: "S0".to_string(),
                     duration_hours: 744.0,
@@ -92,7 +92,7 @@ fn stages() -> Vec<cobre_core::temporal::Stage> {
             StageSpec {
                 start_date: stage0_end,
                 end_date: stage1_end,
-                blocks: vec![cobre_core::temporal::Block {
+                blocks: vec![novomodelo_core::temporal::Block {
                     index: 0,
                     name: "S1".to_string(),
                     duration_hours: 720.0,
@@ -163,9 +163,9 @@ fn bounds() -> ResolvedBounds {
     )
 }
 
-fn penalties() -> cobre_core::resolved::ResolvedPenalties {
-    use cobre_core::HydroPenalties;
-    use cobre_core::resolved::{
+fn penalties() -> novomodelo_core::resolved::ResolvedPenalties {
+    use novomodelo_core::HydroPenalties;
+    use novomodelo_core::resolved::{
         BusStagePenalties, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
         PenaltiesDefaults, ResolvedPenalties,
     };
@@ -234,8 +234,8 @@ fn build_system(with_commitment: bool, min_k: f64, max_k: f64) -> System {
     builder.build().expect("fixture System must build")
 }
 
-fn config(num_scenarios: u32) -> cobre_io::config::Config {
-    use cobre_io::config::{
+fn config(num_scenarios: u32) -> novomodelo_io::config::Config {
+    use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod, ModelingConfig, ParallelismConfig, PolicyConfig,
         RowSelectionConfig, SimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig,
@@ -467,13 +467,13 @@ mod inert_without_commitment {
 
 // -- Shared-writer parity: byte-identical output for identical inputs --
 //
-// `cobre-python` is not linkable from a `cobre-sddp` integration test, so
+// `novomodelo-python` is not linkable from a `novomodelo-sddp` integration test, so
 // parity is verified structurally: two independent runs of the identical
 // deterministic fixture, each converted and written through the EXACT
 // production path both the CLI and Python bindings call
 // (`ScenarioWritePayload::from` then `SimulationParquetWriter::write_scenario`
-// -- see `crates/cobre-cli/src/commands/run/simulation.rs` and
-// `crates/cobre-python/src/run.rs`), must produce byte-identical Parquet.
+// -- see `crates/novomodelo-cli/src/commands/run/simulation.rs` and
+// `crates/novomodelo-python/src/run.rs`), must produce byte-identical Parquet.
 mod shared_writer_parity {
     use super::*;
 

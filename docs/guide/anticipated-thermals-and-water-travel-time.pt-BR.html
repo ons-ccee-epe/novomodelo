@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Térmicas antecipadas &amp; tempo de viagem da água — Guia Cobre</title>
+<title>Térmicas antecipadas &amp; tempo de viagem da água — Guia Novomodelo</title>
 
 <script>
   window.MathJax = {
@@ -154,15 +154,15 @@
 <div class="wrap">
 
 <header class="doc">
-  <span class="chip">Guia Introdutório Cobre</span>
+  <span class="chip">Guia Introdutório Novomodelo</span>
   <h1>Térmicas antecipadas &amp; tempo de viagem da água</h1>
-  <p class="lede">Um guia para iniciantes sobre como o cobre modela dois fenômenos de entrega com atraso
+  <p class="lede">Um guia para iniciantes sobre como o novomodelo modela dois fenômenos de entrega com atraso
   temporal — geração térmica comprometida com antecedência, e água que leva tempo de viagem para fluir
-  rio abaixo. Assume que você conhece SDDP, mas é novo no cobre.</p>
+  rio abaixo. Assume que você conhece SDDP, mas é novo no novomodelo.</p>
 </header>
 
 <p>O despacho SDDP comum assume que uma decisão tomada no estágio \(t\) tem efeito no estágio \(t\).
-Duas realidades físicas quebram essa hipótese, e o cobre trata ambas com um mesmo mecanismo
+Duas realidades físicas quebram essa hipótese, e o novomodelo trata ambas com um mesmo mecanismo
 compartilhado. Esta página as constrói a partir do problema, passando pela matemática, até os arquivos
 que você edita e lê. Para os contratos de correção símbolo a símbolo, leia a referência complementar,
 <code>docs/design/anticipated-thermals-and-water-travel-time.md</code>, depois desta.</p>
@@ -179,7 +179,7 @@ As equações são renderizadas com MathJax; os diagramas com Mermaid. Os índic
     <li><a href="#anticipated">Geração térmica antecipada</a></li>
     <li><a href="#water">Tempo de viagem da água</a></li>
     <li><a href="#differ">Como os dois recursos diferem</a></li>
-    <li><a href="#files">Ponte para os arquivos do cobre</a></li>
+    <li><a href="#files">Ponte para os arquivos do novomodelo</a></li>
   </ol>
 </div>
 
@@ -214,14 +214,14 @@ flowchart LR
 
 <h2 id="idea">2. A ideia central: um buffer circular de entrega defasada</h2>
 
-<h3>2.1 Como o cobre carrega o estado do SDDP (o truque do "fishing")</h3>
+<h3>2.1 Como o novomodelo carrega o estado do SDDP (o truque do "fishing")</h3>
 
 <p>Os cortes do SDDP aproximam a função de custo futuro \(V_t(x)\) com hiperplanos</p>
 
 \[ \theta \;\ge\; \alpha + \pi^{\top}\hat{x}, \]
 
 <p>onde \(\theta\) é a variável de epígrafo que limita o custo futuro, \(\alpha\) o intercepto do corte,
-\(\hat{x}\) o estado de entrada, e \(\pi\) o subgradiente (os coeficientes do corte). O cobre realiza
+\(\hat{x}\) o estado de entrada, e \(\pi\) o subgradiente (os coeficientes do corte). O novomodelo realiza
 isso sem uma <em>linha de restrição</em> que fixe o estado. Em vez disso, cada coordenada de estado de entrada é sua
 própria coluna do PL, fixada por limites iguais:</p>
 
@@ -230,7 +230,7 @@ própria coluna do PL, fixada por limites iguais:</p>
 <p>Aqui \(\underline{x}\) e \(\overline{x}\) são os limites inferior e superior da coluna, e \(\hat{x}\)
 é o valor carregado do estágio \(t-1\). O coeficiente do corte \(\pi\) para essa coordenada é então o
 <strong>custo reduzido</strong> da coluna fixada (dividido por um pré-escalador fixo por coluna, sem
-mudança de sinal). Esta é a versão do cobre para o "fishing" do SDDP.jl: fixe o estado de entrada,
+mudança de sinal). Esta é a versão do novomodelo para o "fishing" do SDDP.jl: fixe o estado de entrada,
 resolva, leia o preço na coluna fixada.</p>
 
 <pre class="mermaid">
@@ -473,7 +473,7 @@ decisão</strong> é uma única desigualdade no eixo estendido:</p>
 
 <div class="admon warn">
   <span class="tag">Nota para leitores de material antigo</span>
-  O cobre mais antigo (e as páginas de metodologia atualmente publicadas) modelavam isto com um buffer de
+  O novomodelo mais antigo (e as páginas de metodologia atualmente publicadas) modelavam isto com um buffer de
   <em>deslocamento</em> Markov-1, uma entrada <code>future_anticipated_deliveries[]</code>, e um bloco
   separado de "faixas pós-horizonte" (post-horizon lanes). Os três foram <strong>aposentados</strong>. O
   modelo atual é o buffer de <em>retenção</em> indexado por resíduo descrito acima, com
@@ -492,7 +492,7 @@ estudo, exatamente como qualquer outra janela de compromisso. Três coisas a ter
 <ul>
   <li><strong>Uma janela pode ficar além do horizonte.</strong> A mesma forma de janela datada
   (<code>{ thermal_id, start_date, end_date, value_mw }</code>) que inicializa os estágios iniciais dentro
-  do estudo também cobre uma entrega pós-horizonte — não há campo ou arquivo separado para isso.</li>
+  do estudo também novomodelo uma entrega pós-horizonte — não há campo ou arquivo separado para isso.</li>
   <li><strong>Um zero explícito é uma janela legítima, não um espaço reservado a ser omitido.</strong> Um
   curto estágio residual bem na fronteira do horizonte é comum na prática; declare-o com
   <code>value_mw: 0</code> em vez de deixá-lo descoberto — a matriz de validação (a referência de projeto
@@ -682,7 +682,7 @@ que lado você errou:</p>
 
 <div class="admon warn">
   <span class="tag">Curta demais (digamos 1500 h)</span>
-  A semana 9 passa a ser <em>decidida pelo estudo</em>, e a janela de 500 MW que a cobre é rejeitada —
+  A semana 9 passa a ser <em>decidida pelo estudo</em>, e a janela de 500 MW que a novomodelo é rejeitada —
   <code>past_anticipated_commitments cover post-study stage index(es) [2], which the study itself decides …
   lengthen anticipated_config's lead</code>.
 </div>
@@ -757,7 +757,7 @@ divida-a no fim do horizonte. Os 500 MW também precisam estar dentro do
 \([\text{min\_mw}, \text{max\_mw}]\) da usina (aqui, exatamente no limite).</p>
 
 <p><code>config.json</code> — a função de custo futuro do NEWAVE à qual o DECOMP se acopla, convertida em um
-checkpoint do cobre, é a fronteira terminal:</p>
+checkpoint do novomodelo, é a fronteira terminal:</p>
 <pre><code>"policy": { "boundary": { "path": "boundary" } }</code></pre>
 <p>O carregador escolhe o pool da fonte cuja data de precificação do estado é igual à
 <code>end_date</code> do último estágio deste estudo; não há índice de estágio a definir.</p>
@@ -802,7 +802,7 @@ térmica antecipada são <strong>mensais</strong>, os do estudo são <strong>sem
 juntados por data de calendário (§6.3). Uma semana inteiramente dentro de um mês precificado pela fonte
 recebe \(\text{sobreposição} / H_M\) do coeficiente daquele mês — a semana 10 (16–23 de maio) recebe
 \(168 / 744\) do de maio; uma semana que atravessa para um mês que a fonte não precifica é renormalizada
-sobre seu trecho coberto; um slot que nenhum mês da fonte cobre é precificado em zero. As janelas fixas
+sobre seu trecho coberto; um slot que nenhum mês da fonte novomodelo é precificado em zero. As janelas fixas
 entram na mesma junção como constantes: os 500 MW de SANTA CRUZ na semana 9 são incorporados ao intercepto
 de cada corte da fronteira como</p>
 
@@ -811,7 +811,7 @@ de cada corte da fronteira como</p>
 <p>do mesmo modo que o próprio DECOMP valora uma já-comandada contra a função do NEWAVE — e nunca aparecem
 na função objetivo nem em qualquer saída de custo (custo afundado, §3.6).</p>
 
-<p>O <code>cobre validate</code> reporta a reconciliação antes de qualquer solve. Para este deck:</p>
+<p>O <code>novomodelo validate</code> reporta a reconciliação antes de qualquer solve. Para este deck:</p>
 <pre><code>boundary reconciliation: 2184 copied, 6 fanned out, 2 defaulted to 0.0, 2 source slots dropped</code></pre>
 <p>Lendo: os 6 slots em fan-out são as três semanas de maio de cada usina; os 2 slots em zero são o restante
 de junho de cada usina — este checkpoint-fonte precifica apenas abril e maio, então a entrega de junho é
@@ -821,7 +821,7 @@ benigno. Um slot da fonte descartado nunca dispara um aviso: seu detalhe vive na
 <code>dropped_source</code> do relatório de reconciliação e em <code>dropped_source_slots</code>, que lista
 a entidade e o intervalo de cada slot descartado. Definir <code>policy.boundary.strict: true</code> (padrão
 <code>false</code>) transforma um descarte não nulo em uma rejeição que nomeia cada família que descarta e
-sua contagem, em vez de carregar o slot. <code>cobre validate --json</code> devolve a mesma contagem por
+sua contagem, em vez de carregar o slot. <code>novomodelo validate --json</code> devolve a mesma contagem por
 família de estado. Sem nenhum <code>config.policy.boundary</code>, o setup avisa uma vez, nomeando SANTA
 CRUZ (um valor fixo não nulo) e as duas usinas (decisões carregadas): tudo o que é pós-horizonte é
 precificado com valor terminal zero.</p>
@@ -1031,7 +1031,7 @@ flowchart TB
   end
 </pre>
 
-<p>Há uma assimetria correspondente na borda do horizonte (a referência de projeto a cobre por
+<p>Há uma assimetria correspondente na borda do horizonte (a referência de projeto a novomodelo por
 completo): um balde de água mascarado no terminal descarta uma parcela <em>genuína</em> de defluência de
 fim de horizonte (uma imprecisão deliberada e limitada), ao passo que um slot antecipado mascarado é
 <em>comprovadamente</em> vazio (nenhum compromisso jamais o tem como alvo). E "manter o estado terminal
@@ -1039,7 +1039,7 @@ vivo" é condicionado de formas diferentes — a água precisa de uma fronteira 
 (<code>policy.boundary</code>), enquanto a antecipada depende de existir um alvo de entrega em
 <code>post_study_stages.json</code>.</p>
 
-<h2 id="files">6. Ponte para os arquivos do cobre</h2>
+<h2 id="files">6. Ponte para os arquivos do novomodelo</h2>
 
 <p>Isto mapeia tudo o que vimos acima para os arquivos que você edita e lê. Os nomes de campo e locais
 são a superfície atual (pós-aposentadoria).</p>
@@ -1050,7 +1050,7 @@ flowchart LR
   in2["post_study_stages.json"] --> eng
   in3["hydros.json: travel_time_hours + downstream_id"] --> eng
   in4["initial_conditions.json: condições iniciais"] --> eng
-  eng["motor do cobre"] --> out1["simulation/anticipated_lanes"]
+  eng["motor do novomodelo"] --> out1["simulation/anticipated_lanes"]
   eng --> out2["simulation/in_transit"]
   eng --> out3["simulation/transit_seed"]
   eng --> out4["entidades do checkpoint de política"]

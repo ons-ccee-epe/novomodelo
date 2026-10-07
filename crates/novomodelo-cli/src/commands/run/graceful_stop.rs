@@ -1,4 +1,4 @@
-//! SIGTERM and SIGINT handling for `cobre run`, and the cross-rank agreement
+//! SIGTERM and SIGINT handling for `novomodelo run`, and the cross-rank agreement
 //! that settles a signal stop after the training writes.
 
 use std::ffi::c_int;
@@ -7,8 +7,8 @@ use std::io;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use cobre_comm::{Communicator, ReduceOp};
-use cobre_sddp::config::ShutdownSource;
+use novomodelo_comm::{Communicator, ReduceOp};
+use novomodelo_sddp::config::ShutdownSource;
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::{flag, low_level};
 
@@ -160,7 +160,7 @@ pub(super) fn into_agreed_result(
 
 #[cfg(test)]
 mod tests {
-    use cobre_comm::LocalBackend;
+    use novomodelo_comm::LocalBackend;
 
     use super::{PostWriteAgreement, agree_post_write, into_agreed_result};
 

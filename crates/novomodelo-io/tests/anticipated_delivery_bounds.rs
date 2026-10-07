@@ -4,7 +4,7 @@
 //! stage is checked against that stage's RESOLVED box (the per-stage
 //! `thermal_bounds.parquet` override folded in), not the plant's static
 //! `[min_generation_mw, max_generation_mw]` — driven through the public
-//! `cobre_io::load_case` pipeline end to end.
+//! `novomodelo_io::load_case` pipeline end to end.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -14,7 +14,7 @@ use std::sync::Arc;
 use arrow::array::{Float64Array, Int32Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use cobre_io::load_case;
+use novomodelo_io::load_case;
 use parquet::arrow::ArrowWriter;
 use tempfile::TempDir;
 

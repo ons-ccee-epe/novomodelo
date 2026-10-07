@@ -51,16 +51,16 @@ readonly TOP_N="${TOP_N:-25}"
 
 # Production .rs source roots (mirrors the comment/doc gates' SCAN_DIRS).
 readonly SCAN_DIRS=(
-    "${REPO_ROOT}/crates/cobre-core/src"
-    "${REPO_ROOT}/crates/cobre-io/src"
-    "${REPO_ROOT}/crates/cobre-solver/src"
-    "${REPO_ROOT}/crates/cobre-comm/src"
-    "${REPO_ROOT}/crates/cobre-stochastic/src"
-    "${REPO_ROOT}/crates/cobre-sddp/src"
-    "${REPO_ROOT}/crates/cobre-cli/src"
-    "${REPO_ROOT}/crates/cobre-python/src"
-    "${REPO_ROOT}/crates/cobre-mcp/src"
-    "${REPO_ROOT}/crates/cobre-tui/src"
+    "${REPO_ROOT}/crates/novomodelo-core/src"
+    "${REPO_ROOT}/crates/novomodelo-io/src"
+    "${REPO_ROOT}/crates/novomodelo-solver/src"
+    "${REPO_ROOT}/crates/novomodelo-comm/src"
+    "${REPO_ROOT}/crates/novomodelo-stochastic/src"
+    "${REPO_ROOT}/crates/novomodelo-sddp/src"
+    "${REPO_ROOT}/crates/novomodelo-cli/src"
+    "${REPO_ROOT}/crates/novomodelo-python/src"
+    "${REPO_ROOT}/crates/novomodelo-mcp/src"
+    "${REPO_ROOT}/crates/novomodelo-tui/src"
 )
 
 # --- Churn map: one git pass over all source paths, counted per file. --------

@@ -9,7 +9,7 @@ use super::{
 // -----------------------------------------------------------------------
 
 use chrono::{Datelike, NaiveDate};
-use cobre_core::{
+use novomodelo_core::{
     EntityId,
     temporal::Stage,
     test_support::{StageSpec, date, single_block},
@@ -28,7 +28,7 @@ fn make_stage(
     month_end: u32,
     season_id: Option<usize>,
 ) -> Stage {
-    cobre_core::test_support::make_stage(StageSpec {
+    novomodelo_core::test_support::make_stage(StageSpec {
         id,
         index: Some(index),
         start_date: date(year_start, month_start, 1),

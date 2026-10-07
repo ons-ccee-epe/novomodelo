@@ -1,6 +1,6 @@
 # Design docs
 
-Design specifications, decision records, and proposals for the Cobre workspace.
+Design specifications, decision records, and proposals for the Novomodelo workspace.
 Each doc carries a **status** at its top; this index is the map. Status vocabulary:
 
 - **Live spec** — documents shipped behavior. The cited symbols exist in the tree;

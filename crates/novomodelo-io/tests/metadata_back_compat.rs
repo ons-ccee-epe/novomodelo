@@ -8,7 +8,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 
-use cobre_io::{
+use novomodelo_io::{
     DeviationSummary, DeviationWorstEntry, DistributionInfo, HostLayout, MetadataBounds,
     MetadataConfiguration, MetadataConvergence, MetadataCost, MetadataIterations,
     MetadataProblemDimensions, MetadataRowPool, MetadataScenarios, MetadataSimulationSolveStats,
@@ -26,7 +26,7 @@ use cobre_io::{
 /// Legacy `training/metadata.json` without the `bounds`, `solve_stats`, and
 /// `distribution.hosts` fields.
 const LEGACY_TRAINING_JSON: &str = r#"{
-  "software": "cobre",
+  "software": "novomodelo",
   "software_version": "0.1.0",
   "hostname": "legacy-host",
   "solver": "highs",
@@ -75,7 +75,7 @@ const LEGACY_TRAINING_JSON: &str = r#"{
 /// Legacy `simulation/metadata.json` without the `cost`, `solve_stats`, and
 /// `distribution.hosts` fields.
 const LEGACY_SIM_JSON: &str = r#"{
-  "software": "cobre",
+  "software": "novomodelo",
   "software_version": "0.1.0",
   "hostname": "legacy-host",
   "solver": "highs",
@@ -252,7 +252,7 @@ fn fully_populated_distribution() -> DistributionInfo {
 
 fn fully_populated_training_metadata() -> TrainingMetadata {
     TrainingMetadata {
-        software: "cobre".to_string(),
+        software: "novomodelo".to_string(),
         software_version: "0.1.6".to_string(),
         hostname: "node01".to_string(),
         solver: "highs".to_string(),
@@ -329,7 +329,7 @@ fn fully_populated_training_metadata() -> TrainingMetadata {
 
 fn fully_populated_simulation_metadata() -> SimulationMetadata {
     SimulationMetadata {
-        software: "cobre".to_string(),
+        software: "novomodelo".to_string(),
         software_version: "0.1.6".to_string(),
         hostname: "node01".to_string(),
         solver: "highs".to_string(),
@@ -476,7 +476,7 @@ fn product_named_version_key_is_a_deserialize_error() {
         let object = value.as_object_mut().unwrap();
         object.remove("software");
         let version = object.remove("software_version").unwrap();
-        object.insert("cobre_version".to_string(), version);
+        object.insert("novomodelo_version".to_string(), version);
     }
 
     assert!(serde_json::from_value::<TrainingMetadata>(training).is_err());

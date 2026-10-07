@@ -14,7 +14,7 @@ ignore = [
     # paste via parquet (dev-dep); transitive, no upgrade available
     "RUSTSEC-2024-0436",
     # rand 0.10.0 unsoundness with custom logger + thread_rng reseed; not exploitable
-    # in cobre (we don't use a custom logger that calls rand::rng())
+    # in novomodelo (we don't use a custom logger that calls rand::rng())
     "RUSTSEC-2026-0097",
 ]
 
@@ -22,7 +22,7 @@ ignore = [
 [licenses]
 # NOTE: cargo-deny only inspects Rust crates resolved by Cargo. The vendored
 # C++ solver libraries (HiGHS MIT, Clp EPL-2.0, CoinUtils EPL-2.0) are git
-# submodules compiled by the cobre-solver build script and are invisible to
+# submodules compiled by the novomodelo-solver build script and are invisible to
 # cargo-deny. Their license obligations are documented in THIRD_PARTY_NOTICES.md.
 # No EPL-2.0 entry is added to the allow list below — doing so would be
 # misleading, as no Rust crate in the dependency graph carries that license.

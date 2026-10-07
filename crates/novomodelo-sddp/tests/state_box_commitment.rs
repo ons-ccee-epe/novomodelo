@@ -21,21 +21,21 @@
 mod common;
 
 use chrono::{NaiveDate, TimeDelta};
-use cobre_core::entities::{
+use novomodelo_core::entities::{
     bus::DeficitSegment, hydro::HydroGenerationModel, thermal::AnticipatedConfig,
 };
-use cobre_core::scenario::{InflowModel, LoadModel};
-use cobre_core::temporal::{
+use novomodelo_core::scenario::{InflowModel, LoadModel};
+use novomodelo_core::temporal::{
     Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig,
 };
-use cobre_core::{
+use novomodelo_core::{
     AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
     ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
     HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
     PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties,
     SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
 };
-use cobre_io::config::{
+use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
     InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig, RowSelectionConfig,
     SimulationConfig as IoSimulationConfig, StoppingRuleConfig, TrainingConfig, TrainingSelection,
@@ -137,7 +137,7 @@ fn default_hydro_penalties() -> HydroPenalties {
 /// so neither assertion can pass on a stage-invariant default value. Returns the
 /// system and the exact `ResolvedBounds` baked into it, so the test can read
 /// `thermal_block_base` back from the same table `build_state_box` reads.
-fn build_system_and_bounds() -> (cobre_core::System, ResolvedBounds) {
+fn build_system_and_bounds() -> (novomodelo_core::System, ResolvedBounds) {
     let bus = make_bus(
         EntityId(1),
         BusSpec {
@@ -377,10 +377,10 @@ fn build_config() -> Config {
             enabled: true,
             tree_seed: Some(42),
             stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit { limit: 8 }]),
-            stopping_mode: cobre_io::config::StoppingMode::Any,
+            stopping_mode: novomodelo_io::config::StoppingMode::Any,
             cut_selection: RowSelectionConfig::default(),
             solver: TrainingSolverConfig::default(),
-            parallelism: cobre_io::config::ParallelismConfig::default(),
+            parallelism: novomodelo_io::config::ParallelismConfig::default(),
             scenario_source: None,
             selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
         },
@@ -415,7 +415,7 @@ fn state_box_commitment_slot_takes_the_delivery_stage_resolved_bound() {
     let local_idx = 0;
     let j = state.commit_out.start + slot * n_anticipated + local_idx;
 
-    let (lower, upper) = cobre_sddp::test_support::stage_state_box_bounds(&setup, 0);
+    let (lower, upper) = novomodelo_sddp::test_support::stage_state_box_bounds(&setup, 0);
 
     let expected = bounds.thermal_block_base(0, DELIVERY_STAGE);
     assert_eq!(
@@ -457,7 +457,7 @@ fn state_box_commitment_carried_interior_slot_takes_its_own_held_delivery_target
         "interior and fresh-deposit slots must differ for this fixture to isolate them"
     );
 
-    let (lower, upper) = cobre_sddp::test_support::stage_state_box_bounds(&setup, 0);
+    let (lower, upper) = novomodelo_sddp::test_support::stage_state_box_bounds(&setup, 0);
 
     let expected = bounds.thermal_block_base(0, INTERIOR_DELIVERY_STAGE);
     assert_eq!(

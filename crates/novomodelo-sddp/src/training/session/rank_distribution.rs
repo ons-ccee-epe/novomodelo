@@ -1,6 +1,6 @@
 //! Rank-distribution constants for one training run.
 
-use cobre_comm::Communicator;
+use novomodelo_comm::Communicator;
 
 /// Base/remainder arithmetic that divides `total_forward_passes` across MPI
 /// ranks. All fields are set once in `RankDistribution::new` and read-only for
@@ -59,7 +59,7 @@ impl RankDistribution {
     clippy::float_cmp
 )]
 mod tests {
-    use cobre_comm::{CommData, CommError, Communicator, ReduceOp, per_rank_counts};
+    use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp, per_rank_counts};
 
     use super::RankDistribution;
 

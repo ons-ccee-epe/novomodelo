@@ -113,7 +113,7 @@
 //! - Entity ID existence in entity registries — Layer 3.
 //! - Block ID validity for the referenced stage — Layer 3/5.
 
-use cobre_core::{
+use novomodelo_core::{
     ConstraintExpression, EntityId, GenericConstraint, Line, LinearTerm, SlackConfig, VariableRef,
 };
 use serde::Deserialize;
@@ -127,7 +127,7 @@ use super::rhs_normalize::{RelOp, SideTerm, normalize};
 use crate::LoadError;
 
 #[cfg(test)]
-use cobre_core::AffineBound;
+use novomodelo_core::AffineBound;
 
 // ── Intermediate serde types ──────────────────────────────────────────────────
 
@@ -336,7 +336,7 @@ fn duplicate_line_pair_error(key: (EntityId, EntityId)) -> LoadError {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::constraints::{LineBusPairIndex, parse_generic_constraints};
+/// use novomodelo_io::constraints::{LineBusPairIndex, parse_generic_constraints};
 /// use std::collections::HashMap;
 /// use std::path::Path;
 ///
@@ -1748,7 +1748,7 @@ fn build_variable_ref(
 mod tests {
     use super::*;
     use crate::test_support::write_json;
-    use cobre_core::CoefficientRef;
+    use novomodelo_core::CoefficientRef;
     use std::fmt::Write as _;
 
     fn lit(term: &LinearTerm) -> f64 {
@@ -2426,7 +2426,7 @@ mod tests {
 
     /// DECOMP-shaped form 2: affine parameters plus a constant, no decision
     /// variable on the RHS at all (`RNE <= 11000 - 0.04*val_demanda(3) +
-    /// 0.06*ger_pee(11)`, authored with cobre's own `@name` scalar-parameter
+    /// 0.06*ger_pee(11)`, authored with novomodelo's own `@name` scalar-parameter
     /// grammar).
     #[test]
     fn decomp_shaped_affine_param_rhs() {

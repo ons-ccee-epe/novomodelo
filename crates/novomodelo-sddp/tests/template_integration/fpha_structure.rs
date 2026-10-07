@@ -1,7 +1,7 @@
 //! `fpha_structure` section tests.
 
 use super::*;
-use cobre_solver::{ActiveSolver, RowBatch, SolverInterface};
+use novomodelo_solver::{ActiveSolver, RowBatch, SolverInterface};
 
 fn empty_cut_batch() -> RowBatch {
     RowBatch {
@@ -390,7 +390,7 @@ fn fpha_solve_incoming_storage_reduced_cost_differs_from_constant() {
     )
     .expect("constant productivity template build must succeed");
 
-    let solve_and_get_storage_dual = |template: &cobre_solver::StageTemplate| -> f64 {
+    let solve_and_get_storage_dual = |template: &novomodelo_solver::StageTemplate| -> f64 {
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
         solver.load_model(template);
         solver.add_rows(&empty_cut_batch());

@@ -6,12 +6,12 @@
 //! populates the pool to the value the sizing estimate needs.
 //!
 //! ```text
-//! cargo build --release -p cobre-sddp --example probe_k_disaggregated
+//! cargo build --release -p novomodelo-sddp --example probe_k_disaggregated
 //! ./target/release/examples/probe_k_disaggregated <study-config-path>
 //! ```
 //!
 //! `<study-config-path>` is a `config.json`; the case directory is its parent
-//! (mirroring the CLI's `cobre run <CASE_DIR>` convention).
+//! (mirroring the CLI's `novomodelo run <CASE_DIR>` convention).
 //!
 //! Output on stdout: one `stage=<t> populated_count=<K> active_count=<A>` line
 //! per stage, then a `summary D=<D> M=<M> max_K=… mean_K=… min_K=…` line.
@@ -32,15 +32,15 @@ use std::process::ExitCode;
 use std::path::{Path, PathBuf};
 
 #[cfg(feature = "highs")]
-use cobre_comm::LocalBackend;
+use novomodelo_comm::LocalBackend;
 #[cfg(feature = "highs")]
-use cobre_core::scenario::ScenarioSource;
+use novomodelo_core::scenario::ScenarioSource;
 #[cfg(feature = "highs")]
-use cobre_io::{config::StoppingRuleConfig, parse_config};
+use novomodelo_io::{config::StoppingRuleConfig, parse_config};
 #[cfg(feature = "highs")]
-use cobre_sddp::{StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic};
+use novomodelo_sddp::{StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic};
 #[cfg(feature = "highs")]
-use cobre_solver::highs::HighsSolver;
+use novomodelo_solver::highs::HighsSolver;
 
 #[cfg(feature = "highs")]
 const PROBE_MAX_ITERATIONS: u32 = 1;
@@ -99,7 +99,7 @@ fn run_probe(config_path: &Path) -> Result<(), ExitCode> {
         limit: PROBE_MAX_ITERATIONS,
     }]);
 
-    let system = cobre_io::load_case(&case_dir).map_err(|e| {
+    let system = novomodelo_io::load_case(&case_dir).map_err(|e| {
         eprintln!("error: load_case failed: {e}");
         ExitCode::from(1)
     })?;

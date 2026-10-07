@@ -413,7 +413,7 @@ pub struct HydroSeasonOrders {
 #[derive(Debug, Clone)]
 pub struct SeasonManifest {
     /// Season cycle discriminant; one of the `SEASON_CYCLE_CODE_*`
-    /// constants. A raw `u8`, never a `cobre-core` season type — the
+    /// constants. A raw `u8`, never a `novomodelo-core` season type — the
     /// crate-genericity rule forbids the algorithm-specific dependency here.
     pub cycle_code: u8,
     /// Number of distinct seasons in the cycle; the length of every

@@ -3,29 +3,29 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId, System,
     scenario::{SamplingScheme, ScenarioSource},
 };
-use cobre_io::Config;
-use cobre_io::LoadError;
-use cobre_io::LoadFactorEntry;
-use cobre_io::StageIdResolver;
-use cobre_io::config::Openings;
-use cobre_io::scenarios::assemble_opening_tree;
-use cobre_io::scenarios::estimation::estimate_from_history;
-use cobre_io::scenarios::load_noise_openings;
-use cobre_io::scenarios::parse_load_factors;
-use cobre_io::scenarios::validate_noise_openings;
-use cobre_stochastic::BlockFactorPair;
-use cobre_stochastic::ClassSchemes;
-use cobre_stochastic::HistoricalScenarioLibrary;
-use cobre_stochastic::build_inflow_par;
-use cobre_stochastic::build_stochastic_context;
-use cobre_stochastic::noise_entity_order;
-use cobre_stochastic::normal::precompute::EntityFactorEntry;
-use cobre_stochastic::par::lag_transition::precompute_noise_groups;
-use cobre_stochastic::{OpeningTreeInputs, StochasticContext, context::OpeningTree};
+use novomodelo_io::Config;
+use novomodelo_io::LoadError;
+use novomodelo_io::LoadFactorEntry;
+use novomodelo_io::StageIdResolver;
+use novomodelo_io::config::Openings;
+use novomodelo_io::scenarios::assemble_opening_tree;
+use novomodelo_io::scenarios::estimation::estimate_from_history;
+use novomodelo_io::scenarios::load_noise_openings;
+use novomodelo_io::scenarios::parse_load_factors;
+use novomodelo_io::scenarios::validate_noise_openings;
+use novomodelo_stochastic::BlockFactorPair;
+use novomodelo_stochastic::ClassSchemes;
+use novomodelo_stochastic::HistoricalScenarioLibrary;
+use novomodelo_stochastic::build_inflow_par;
+use novomodelo_stochastic::build_stochastic_context;
+use novomodelo_stochastic::noise_entity_order;
+use novomodelo_stochastic::normal::precompute::EntityFactorEntry;
+use novomodelo_stochastic::par::lag_transition::precompute_noise_groups;
+use novomodelo_stochastic::{OpeningTreeInputs, StochasticContext, context::OpeningTree};
 
 use super::resolve_inflow_seeds;
 use super::scenario_libraries;
@@ -200,7 +200,7 @@ fn build_opening_tree_library(
     training_source: &ScenarioSource,
     declared_lag_depth: Option<u32>,
 ) -> Result<Option<HistoricalScenarioLibrary>, SddpError> {
-    use cobre_core::temporal::NoiseMethod;
+    use novomodelo_core::temporal::NoiseMethod;
     let needs_historical_tree = system
         .stages()
         .iter()
@@ -222,7 +222,7 @@ fn build_opening_tree_library(
 
 /// Per-class per-stage raw scenario count for opening-tree clamping, keyed by the
 /// resolved study index. `None` when the class is not External. A row whose
-/// `stage_id` does not resolve is impossible here — cobre-io's A2 rejects it at
+/// `stage_id` does not resolve is impossible here — novomodelo-io's A2 rejects it at
 /// load — and the resolve consumes the study stage-id resolver's map, never a
 /// `stage_id as usize` index a gapped or 1-based domain would mis-key.
 fn class_scenario_counts(
@@ -252,7 +252,7 @@ fn class_scenario_counts(
 ///
 /// When any entity class uses External sampling, the external library is padded
 /// to a uniform scenario count after loading. The opening tree generator must
-/// clamp per-stage openings to the pre-padding raw count. P-B1 (cobre-io Layer
+/// clamp per-stage openings to the pre-padding raw count. P-B1 (novomodelo-io Layer
 /// 5b) rejects any deck whose slot-occupying external classes disagree on the
 /// per-stage raw count, so the present classes are guaranteed to agree here and
 /// the first present class's vector is authoritative — never an element-wise
@@ -418,7 +418,7 @@ pub fn build_stochastic_context_for_study(
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, HorizonGraph,
         HydroBlockBounds, HydroPenalties, HydroStageBounds, InitialConditions, LineBlockBounds,
         LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
@@ -437,10 +437,10 @@ mod tests {
             StageStateConfig,
         },
     };
-    use cobre_stochastic::par::lag_transition::{
+    use novomodelo_stochastic::par::lag_transition::{
         derive_downstream_par_order, precompute_stage_lag_transitions,
     };
-    use cobre_stochastic::{
+    use novomodelo_stochastic::{
         ComponentProvenance, PrecomputedPar, StochasticError, derive_inflow_seeds,
         par::lag_kernel::{DownstreamLagAccum, LagMajor, PrimaryLagAccum, advance_lag_chain},
         solve_par_noise,
@@ -1910,7 +1910,7 @@ mod tests {
     /// carrying `inflow_per_stage`/`load_per_stage` external realizations per stage
     /// (one row per entity per realization). Deliberately supports disagreeing
     /// per-class counts so a unit test can drive `compute_external_scenario_counts`
-    /// directly — a disagreement P-B1 (cobre-io) would reject at load, unreachable
+    /// directly — a disagreement P-B1 (novomodelo-io) would reject at load, unreachable
     /// through the public API but the exact input that separates take-first from an
     /// element-wise minimum.
     #[expect(
@@ -2210,7 +2210,7 @@ mod tests {
     fn config_from_json(json: &str) -> Config {
         let tmp = tempfile::NamedTempFile::new().expect("tempfile");
         std::fs::write(tmp.path(), json).expect("write config");
-        cobre_io::parse_config(tmp.path()).expect("parse config")
+        novomodelo_io::parse_config(tmp.path()).expect("parse config")
     }
 
     const SAMPLED_TRAINING: &str = r#""selection": {"method": "sampled", "forward_passes": 10}, "stopping_rules": [{"type": "iteration_limit", "limit": 5}]"#;
@@ -2220,7 +2220,7 @@ mod tests {
     /// `branching_factor = 1` study stages declare.
     fn write_ring_noise_openings(case_dir: &Path) {
         let path = case_dir.join("scenarios").join("noise_openings.parquet");
-        cobre_io::output::stochastic::write_noise_openings(&path, &ring_user_tree())
+        novomodelo_io::output::stochastic::write_noise_openings(&path, &ring_user_tree())
             .expect("write noise_openings");
     }
 
@@ -2353,9 +2353,9 @@ mod tests {
         let err = build_opening_tree_library(&system, &training_source, None)
             .expect_err("a zero-std AR(1) model must be rejected");
         match err {
-            SddpError::Stochastic(cobre_stochastic::StochasticError::InvalidParParameters {
-                ..
-            }) => {}
+            SddpError::Stochastic(
+                novomodelo_stochastic::StochasticError::InvalidParParameters { .. },
+            ) => {}
             other => panic!("expected InvalidParParameters, got: {other:?}"),
         }
     }

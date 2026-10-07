@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId,
     scenario::{ExternalLoadRow, ExternalNcsRow, ExternalScenarioRow, LoadModel, NcsModel},
     temporal::{Stage, StageLagTransition},
@@ -41,7 +41,7 @@ use super::eta_inversion::run_eta_inversion;
 /// # Examples
 ///
 /// ```
-/// use cobre_stochastic::ExternalScenarioLibrary;
+/// use novomodelo_stochastic::ExternalScenarioLibrary;
 ///
 /// let raw = vec![50usize; 12];
 /// let mut lib = ExternalScenarioLibrary::new(12, 50, 5, "inflow", raw);
@@ -190,9 +190,9 @@ impl ExternalScenarioLibrary {
 
 /// Map each study stage's declared `Stage.id` to its 0-based position in
 /// `stages` — the declared-domain-id -> canonical-study-index resolution
-/// cobre-io's `StageIdResolver` performs for the σ=0 validator (rule 47),
-/// replicated here because `cobre-stochastic` cannot depend on `cobre-io`
-/// (`cobre-io` depends on `cobre-stochastic`). `ExternalScenarioRow`/
+/// novomodelo-io's `StageIdResolver` performs for the σ=0 validator (rule 47),
+/// replicated here because `novomodelo-stochastic` cannot depend on `novomodelo-io`
+/// (`novomodelo-io` depends on `novomodelo-stochastic`). `ExternalScenarioRow`/
 /// `ExternalLoadRow`/`ExternalNcsRow`'s own `stage_id` doc is explicit that
 /// the value is a declared domain id, "not a 0-based index" — every
 /// External-row consumer below resolves through this map, never casts
@@ -318,7 +318,7 @@ pub fn standardize_external_inflow(
         let Some(&h_idx) = hydro_index.get(&row.hydro_id) else {
             continue;
         };
-        // Defensive bound: cobre-io's A1 (exact scenario_id set) is the
+        // Defensive bound: novomodelo-io's A1 (exact scenario_id set) is the
         // load-bearing guard that rejects an out-of-range scenario_id at
         // load; this keeps a stray index from writing into a neighbouring
         // stage's realization 0 instead of being caught.
@@ -446,7 +446,7 @@ fn standardize_external_simple<R, M, FM, FR>(
         let Some(&e_idx) = entity_index.get(&entity_id) else {
             continue;
         };
-        // Defensive bound: cobre-io's A1 is the load-bearing guard that
+        // Defensive bound: novomodelo-io's A1 is the load-bearing guard that
         // rejects an out-of-range scenario_id at load; this keeps a stray
         // index from writing into a neighbouring stage's realization 0.
         if scenario_idx >= n_scenarios {
@@ -479,7 +479,7 @@ fn standardize_external_simple<R, M, FM, FR>(
 /// `row_fields`' `stage_id` MUST already be the canonical 0-based study-stage
 /// index, never the row's raw declared domain id — this reduction has no
 /// stage list to resolve one against. Every caller resolves first (this
-/// crate's `stage_id_to_index`, or the equivalent `cobre-io`
+/// crate's `stage_id_to_index`, or the equivalent `novomodelo-io`
 /// `StageIdResolver`); passing a raw `ExternalScenarioRow`/`ExternalLoadRow`/
 /// `ExternalNcsRow::stage_id` directly silently mis-indexes or drops rows
 /// whenever a study's declared stage ids are not exactly `0..n_stages`.
@@ -667,8 +667,8 @@ pub fn standardize_external_ncs(
 ///
 /// ```
 /// use std::collections::HashSet;
-/// use cobre_core::EntityId;
-/// use cobre_stochastic::{ExternalScenarioLibrary, sampling::external::validate_external_library};
+/// use novomodelo_core::EntityId;
+/// use novomodelo_stochastic::{ExternalScenarioLibrary, sampling::external::validate_external_library};
 ///
 /// let lib = ExternalScenarioLibrary::new(3, 50, 2, "inflow", vec![50usize; 3]);
 /// let entity_ids = [EntityId(1), EntityId(2)];
@@ -877,7 +877,7 @@ pub fn pad_library_to_uniform(library: &mut ExternalScenarioLibrary) {
 )]
 mod tests {
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId, Hydro, InflowHistoryRow, RecentObservation,
         scenario::{
             AnnualComponent, ExternalLoadRow, ExternalNcsRow, ExternalScenarioRow, InflowModel,
@@ -923,7 +923,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn make_stage(index: usize, id: i32, season_id: usize) -> Stage {
-        cobre_core::test_support::make_stage(StageSpec {
+        novomodelo_core::test_support::make_stage(StageSpec {
             id,
             index: Some(index),
             season_id: Some(season_id),
@@ -1500,7 +1500,7 @@ mod tests {
         assert!((eta - 1.0).abs() < 1e-10, "eta = {eta}");
     }
 
-    /// The standardization bound is defensive, not load-bearing: cobre-io's A1
+    /// The standardization bound is defensive, not load-bearing: novomodelo-io's A1
     /// (exact `scenario_id` set) rejects an out-of-range `scenario_id` at load. An
     /// index equal to `n_scenarios` must be dropped here, never written into the
     /// next stage's realization 0 (the release-build corruption A1 now prevents).
@@ -2389,7 +2389,7 @@ mod tests {
         end: NaiveDate,
         season_id: usize,
     ) -> Stage {
-        cobre_core::test_support::make_stage(StageSpec {
+        novomodelo_core::test_support::make_stage(StageSpec {
             id,
             index: Some(index),
             start_date: start,
@@ -2401,7 +2401,7 @@ mod tests {
     }
 
     fn make_hydro(id: i32) -> Hydro {
-        cobre_core::test_support::make_hydro(HydroSpec {
+        novomodelo_core::test_support::make_hydro(HydroSpec {
             id,
             name: format!("H{id}"),
             max_storage_hm3: 100.0,

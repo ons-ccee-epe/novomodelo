@@ -24,7 +24,7 @@
     )
 )]
 
-use cobre_solver::{ClpProfile, ClpSolver, RowBatch, SolverInterface, StageTemplate};
+use novomodelo_solver::{ClpProfile, ClpSolver, RowBatch, SolverInterface, StageTemplate};
 
 // ─── Shared fixtures (re-declared locally; see module docs) ──────────────────
 

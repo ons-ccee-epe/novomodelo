@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use cobre_core::{EntityId, Stage, System};
-use cobre_solver::StageTemplate;
-use cobre_stochastic::normal::precompute::PrecomputedNormal;
-use cobre_stochastic::par::precompute::PrecomputedPar;
+use novomodelo_core::{EntityId, Stage, System};
+use novomodelo_solver::StageTemplate;
+use novomodelo_stochastic::normal::precompute::PrecomputedNormal;
+use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
 use crate::bucket_topology::TransitBucketTopology;
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
@@ -36,7 +36,7 @@ pub struct StageTemplates {
     /// reporting boundaries multiply back by it.
     pub cost_scale_factor: f64,
     /// Position in the `buses` slice for each stochastic load bus, sorted by
-    /// [`cobre_core::EntityId`] for declaration-order invariance. Bus `i`'s
+    /// [`novomodelo_core::EntityId`] for declaration-order invariance. Bus `i`'s
     /// load-balance base row is [`StageGeometry::load_balance_row`].
     pub load_bus_indices: Vec<usize>,
     /// Per-stage metadata for active generic constraint rows: one
@@ -218,7 +218,7 @@ fn finalize_stage_objective(
 /// read, never a re-derivation from raw rows. Shared by the external library
 /// builders' standardization-moment derivation
 /// (`build_external_load_library` / `build_external_ncs_library`), so a
-/// library's standardization and `cobre_stochastic::context`'s
+/// library's standardization and `novomodelo_stochastic::context`'s
 /// reconstruction read the identical moments rather than each re-deriving
 /// independently.
 pub(crate) fn models_from_normal<M>(

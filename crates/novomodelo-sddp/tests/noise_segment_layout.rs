@@ -6,10 +6,10 @@
 
 mod common;
 
-use cobre_core::{EntityId, System};
-use cobre_sddp::StudySetup;
-use cobre_sddp::hydro_models::PrepareHydroModelsResult;
-use cobre_sddp::test_support::decks::committed_decks;
+use novomodelo_core::{EntityId, System};
+use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::hydro_models::PrepareHydroModelsResult;
+use novomodelo_sddp::test_support::decks::committed_decks;
 
 fn assert_noise_segments_match_lp(label: &str, system: &System, setup: &StudySetup) {
     let stochastic = &setup.inputs.stochastic;
@@ -46,7 +46,7 @@ fn assert_noise_segments_match_lp(label: &str, system: &System, setup: &StudySet
 )]
 fn noise_segments_match_lp_entity_sets_on_committed_decks() {
     for deck in committed_decks() {
-        let system = cobre_io::load_case(&deck.dir).expect("load_case must succeed");
+        let system = novomodelo_io::load_case(&deck.dir).expect("load_case must succeed");
         let setup = common::fresh_setup_with(&deck.dir, |_| {});
         assert_noise_segments_match_lp(&deck.key, &system, &setup);
     }

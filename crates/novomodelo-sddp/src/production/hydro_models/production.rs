@@ -11,15 +11,15 @@ use std::collections::HashMap;
 
 use rayon::prelude::*;
 
-use cobre_core::temporal::Stage;
-use cobre_core::{
+use novomodelo_core::temporal::Stage;
+use novomodelo_core::{
     EntityId, Hydro, StageId, StudyPos, System, entities::hydro::HydroGenerationModel,
 };
-use cobre_io::CaseArtifacts;
-use cobre_io::FphaDeviationPointRow;
-use cobre_io::HydroReferenceVolumeFractions;
-use cobre_io::extensions::PlaneReductionConfig;
-use cobre_io::extensions::{
+use novomodelo_io::CaseArtifacts;
+use novomodelo_io::FphaDeviationPointRow;
+use novomodelo_io::HydroReferenceVolumeFractions;
+use novomodelo_io::extensions::PlaneReductionConfig;
+use novomodelo_io::extensions::{
     FphaColumnLayout, FphaHyperplaneRow, HydroGeometryRow, ProductionModelConfig, ReferenceVolume,
     SeasonConfig, SelectionMode, StageRange, build_hydro_reference_volumes_resolved,
 };
@@ -51,7 +51,7 @@ type ResolveProductionResult = (
 );
 
 /// Resolve per-hydro per-stage production models from a pre-parsed
-/// [`cobre_io::CaseArtifacts`] bundle.
+/// [`novomodelo_io::CaseArtifacts`] bundle.
 ///
 /// Absent a `hydro_production_models.json` entry, every hydro falls back to its
 /// entity [`HydroGenerationModel`]. `collect_deviation_points` is the run-level
@@ -516,7 +516,7 @@ fn fit_planes_for_hydro(
 
 /// Resolve the [`TailraceSource`] for one (hydro, stage) pair: exact backwater
 /// families coupled to the resolved downstream level when the plant is in
-/// `families_map`, else the entity [`cobre_core::TailraceModel`] fallback.
+/// `families_map`, else the entity [`novomodelo_core::TailraceModel`] fallback.
 fn resolve_tailrace_source(
     hydro: &Hydro,
     stage_pos: StudyPos,
@@ -850,7 +850,7 @@ fn resolve_stage_model(
     cached_computed_planes: Option<&[FphaPlane]>,
     productivity_override: Option<&HydroEnergyProductivityOverride>,
 ) -> Result<ResolvedProductionModel, SddpError> {
-    // `cobre_io::validation::productivity_resolution` rejects both-JSON-and-parquet
+    // `novomodelo_io::validation::productivity_resolution` rejects both-JSON-and-parquet
     // at load time, so this override lookup never silently masks a JSON value.
     let parquet_productivity =
         productivity_override.and_then(|o| o.equivalent_productivity(hydro.id, StageId(stage.id)));
@@ -883,7 +883,7 @@ fn resolve_stage_model(
                     debug_assert!(
                         false,
                         "non-FPHA {}/{} reached resolve_stage_model with productivity=None; \
-                         see cobre_io::validation::productivity_resolution",
+                         see novomodelo_io::validation::productivity_resolution",
                         hydro.name, stage.id
                     );
                     0.0
@@ -897,7 +897,7 @@ fn resolve_stage_model(
             debug_assert!(
                 false,
                 "non-FPHA {}/{} reached resolve_stage_model with productivity=None; \
-                 see cobre_io::validation::productivity_resolution",
+                 see novomodelo_io::validation::productivity_resolution",
                 hydro.name, stage.id
             );
             0.0

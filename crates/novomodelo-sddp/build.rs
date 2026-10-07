@@ -1,9 +1,9 @@
-//! Build script for cobre-sddp.
+//! Build script for novomodelo-sddp.
 //!
 //! This script compiles the vendored `libqhull_r` reentrant convex-hull library
 //! (`vendor/qhull/src/libqhull_r/`) into a static archive (`libqhull_r.a`) via the
 //! `cc` crate — no `CMake`, no bindgen, no libclang. The produced archive is linked
-//! into `cobre-sddp`; the Rust FFI bindings that consume its symbols land in a
+//! into `novomodelo-sddp`; the Rust FFI bindings that consume its symbols land in a
 //! later step. Until then the archive carries no undefined references back into
 //! Rust, so linking it is a no-op-safe addition.
 //!
@@ -55,7 +55,7 @@ fn main() {
     // error pointing at a missing file deep in the build output.
     if !qhull_dir.join("libqhull_r.c").exists() {
         panic!(
-            "qhull source not found under crates/cobre-sddp/vendor/qhull/src/libqhull_r/. \
+            "qhull source not found under crates/novomodelo-sddp/vendor/qhull/src/libqhull_r/. \
              Run: git submodule update --init --recursive"
         );
     }
@@ -71,7 +71,7 @@ fn main() {
     // its C-compiler warnings (e.g. `-Wunused-but-set-variable`) are silenced
     // rather than forwarded as `cargo:warning=` lines that would clutter every
     // build and conflict with the zero-warnings policy. This mirrors the
-    // LP-solver build, which keeps `.warnings(true)` only for cobre's own thin C
+    // LP-solver build, which keeps `.warnings(true)` only for novomodelo's own thin C
     // wrappers and silences vendored code. The shim added at the seam below gets
     // its own `cc::Build` with `.warnings(true)` — our code stays under scrutiny
     // while qhull stays quiet.
@@ -88,7 +88,7 @@ fn main() {
         if !path.exists() {
             panic!(
                 "qhull source {source} not found under \
-                 crates/cobre-sddp/vendor/qhull/src/libqhull_r/. \
+                 crates/novomodelo-sddp/vendor/qhull/src/libqhull_r/. \
                  The vendored submodule is incomplete; run: \
                  git submodule update --init --recursive"
             );
@@ -100,7 +100,7 @@ fn main() {
 
     // The C shim `csrc/qhull_wrapper.c` is a thin reentrant wrapper exposing a
     // stable convex-hull entry point to Rust; unlike the vendored build above,
-    // it compiles with `.warnings(true)` since it's cobre's own code. It
+    // it compiles with `.warnings(true)` since it's novomodelo's own code. It
     // includes `qhull_ra.h` from the vendored tree, so the same include dir is
     // required; it links against the `qhull_r` archive compiled above (both
     // archives are linked into the crate, resolving the shim's qhull symbols).
@@ -108,7 +108,7 @@ fn main() {
     let shim_source = shim_dir.join("qhull_wrapper.c");
     if !shim_source.exists() {
         panic!(
-            "qhull shim source not found at crates/cobre-sddp/csrc/qhull_wrapper.c. \
+            "qhull shim source not found at crates/novomodelo-sddp/csrc/qhull_wrapper.c. \
              The thin reentrant wrapper is required."
         );
     }
@@ -121,5 +121,5 @@ fn main() {
     shim.warnings(true);
     shim.opt_level(2);
     shim.file(&shim_source);
-    shim.compile("cobre_qhull_shim");
+    shim.compile("novomodelo_qhull_shim");
 }

@@ -90,8 +90,8 @@ use std::sync::Arc;
 use arrow::array::{Float64Builder, Int32Builder, RecordBatch, UInt32Builder};
 #[cfg(test)]
 use arrow::datatypes::DataType;
-use cobre_core::scenario::{CorrelationModel, CorrelationScheduleEntry};
-use cobre_stochastic::OpeningTree;
+use novomodelo_core::scenario::{CorrelationModel, CorrelationScheduleEntry};
+use novomodelo_stochastic::OpeningTree;
 use serde::Serialize;
 
 use crate::output::atomic::{ensure_parent_dir, write_batch_atomic, write_bytes_atomic};
@@ -117,11 +117,11 @@ use crate::scenarios::{
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::output::stochastic::write_noise_openings;
-/// use cobre_stochastic::OpeningTree;
+/// use novomodelo_io::output::stochastic::write_noise_openings;
+/// use novomodelo_stochastic::OpeningTree;
 /// use std::path::Path;
 ///
-/// # fn main() -> Result<(), cobre_io::OutputError> {
+/// # fn main() -> Result<(), novomodelo_io::OutputError> {
 /// let tree = OpeningTree::from_parts(
 ///     vec![1.0, 2.0, 3.0, 4.0],
 ///     vec![1, 1],
@@ -149,12 +149,12 @@ pub fn write_noise_openings(path: &Path, tree: &OpeningTree) -> Result<(), Outpu
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::output::stochastic::write_inflow_seasonal_stats;
-/// use cobre_io::scenarios::InflowSeasonalStatsRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::output::stochastic::write_inflow_seasonal_stats;
+/// use novomodelo_io::scenarios::InflowSeasonalStatsRow;
+/// use novomodelo_core::EntityId;
 /// use std::path::Path;
 ///
-/// # fn main() -> Result<(), cobre_io::OutputError> {
+/// # fn main() -> Result<(), novomodelo_io::OutputError> {
 /// let rows = vec![
 ///     InflowSeasonalStatsRow {
 ///         hydro_id: EntityId::from(1),
@@ -191,12 +191,12 @@ pub fn write_inflow_seasonal_stats(
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::output::stochastic::write_inflow_ar_coefficients;
-/// use cobre_io::scenarios::InflowArCoefficientRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::output::stochastic::write_inflow_ar_coefficients;
+/// use novomodelo_io::scenarios::InflowArCoefficientRow;
+/// use novomodelo_core::EntityId;
 /// use std::path::Path;
 ///
-/// # fn main() -> Result<(), cobre_io::OutputError> {
+/// # fn main() -> Result<(), novomodelo_io::OutputError> {
 /// let rows = vec![
 ///     InflowArCoefficientRow {
 ///         hydro_id: EntityId::from(1),
@@ -234,12 +234,12 @@ pub fn write_inflow_ar_coefficients(
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::output::stochastic::write_inflow_annual_component;
-/// use cobre_io::scenarios::InflowAnnualComponentRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::output::stochastic::write_inflow_annual_component;
+/// use novomodelo_io::scenarios::InflowAnnualComponentRow;
+/// use novomodelo_core::EntityId;
 /// use std::path::Path;
 ///
-/// # fn main() -> Result<(), cobre_io::OutputError> {
+/// # fn main() -> Result<(), novomodelo_io::OutputError> {
 /// let rows = vec![
 ///     InflowAnnualComponentRow {
 ///         hydro_id: EntityId::from(1),
@@ -279,7 +279,7 @@ struct WriteCorrelationFile {
     schedule: Vec<WriteScheduleEntry>,
 }
 
-/// Field name `correlation_groups` matches the input JSON; the `cobre-core` type
+/// Field name `correlation_groups` matches the input JSON; the `novomodelo-core` type
 /// names it `groups`, so this intermediate renames at the serialization boundary.
 #[derive(Serialize)]
 struct WriteProfile {
@@ -293,7 +293,7 @@ struct WriteCorrelationGroup {
     matrix: Vec<Vec<f64>>,
 }
 
-/// `#[serde(rename = "type")]` matches the input JSON; the `cobre-core` type
+/// `#[serde(rename = "type")]` matches the input JSON; the `novomodelo-core` type
 /// names this field `entity_type`.
 #[derive(Serialize)]
 struct WriteEntity {
@@ -378,11 +378,11 @@ fn to_write_format(model: &CorrelationModel) -> WriteCorrelationFile {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::output::stochastic::write_correlation_json;
-/// use cobre_core::scenario::CorrelationModel;
+/// use novomodelo_io::output::stochastic::write_correlation_json;
+/// use novomodelo_core::scenario::CorrelationModel;
 /// use std::path::Path;
 ///
-/// # fn main() -> Result<(), cobre_io::OutputError> {
+/// # fn main() -> Result<(), novomodelo_io::OutputError> {
 /// let model = CorrelationModel::default();
 /// write_correlation_json(Path::new("/tmp/out/stochastic/correlation.json"), &model)?;
 /// # Ok(())
@@ -411,12 +411,12 @@ pub fn write_correlation_json(path: &Path, model: &CorrelationModel) -> Result<(
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::output::stochastic::write_load_seasonal_stats;
-/// use cobre_io::scenarios::LoadSeasonalStatsRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::output::stochastic::write_load_seasonal_stats;
+/// use novomodelo_io::scenarios::LoadSeasonalStatsRow;
+/// use novomodelo_core::EntityId;
 /// use std::path::Path;
 ///
-/// # fn main() -> Result<(), cobre_io::OutputError> {
+/// # fn main() -> Result<(), novomodelo_io::OutputError> {
 /// let rows = vec![
 ///     LoadSeasonalStatsRow {
 ///         bus_id: EntityId::from(1),
@@ -667,11 +667,11 @@ pub struct FittingReport {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::output::stochastic::{write_fitting_report, FittingReport, HydroFittingEntry};
+/// use novomodelo_io::output::stochastic::{write_fitting_report, FittingReport, HydroFittingEntry};
 /// use std::collections::BTreeMap;
 /// use std::path::Path;
 ///
-/// # fn main() -> Result<(), cobre_io::OutputError> {
+/// # fn main() -> Result<(), novomodelo_io::OutputError> {
 /// let mut hydros = BTreeMap::new();
 /// hydros.insert("1".to_string(), HydroFittingEntry {
 ///     selected_order: 3,
@@ -700,8 +700,8 @@ pub fn write_fitting_report(path: &Path, report: &FittingReport) -> Result<(), O
 mod tests {
     use super::*;
     use crate::test_support::output::read_first_batch;
-    use cobre_core::EntityId;
-    use cobre_stochastic::OpeningTree;
+    use novomodelo_core::EntityId;
+    use novomodelo_stochastic::OpeningTree;
 
     fn make_tree_2s_2d() -> OpeningTree {
         let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
@@ -1278,7 +1278,7 @@ mod tests {
     // write_correlation_json tests
     // =========================================================================
 
-    use cobre_core::scenario::{
+    use novomodelo_core::scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile,
         CorrelationScheduleEntry,
     };

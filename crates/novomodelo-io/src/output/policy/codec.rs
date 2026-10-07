@@ -259,7 +259,7 @@ fn check_file_identifier(buf: &[u8], ctx: &str) -> Result<(), OutputError> {
 /// # Examples
 ///
 /// ```
-/// use cobre_io::{
+/// use novomodelo_io::{
 ///     PolicyCutRecord, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, StageCutsPayload,
 ///     serialize_stage_cuts,
 /// };
@@ -355,7 +355,7 @@ pub(super) fn build_stage_cuts(payload: &StageCutsPayload<'_>) -> FlatBufferBuil
 /// # Examples
 ///
 /// ```
-/// use cobre_io::{PolicyBasisRecord, serialize_stage_basis};
+/// use novomodelo_io::{PolicyBasisRecord, serialize_stage_basis};
 ///
 /// let record = PolicyBasisRecord {
 ///     stage_id: 0,
@@ -1162,7 +1162,7 @@ fn deserialize_hydro_season_orders_table(
 /// # Examples
 ///
 /// ```
-/// use cobre_io::{
+/// use novomodelo_io::{
 ///     PolicyCutRecord, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, StageCutsPayload,
 ///     deserialize_stage_cuts, serialize_stage_cuts,
 /// };
@@ -1366,7 +1366,7 @@ fn deserialize_cut_table(buf: &[u8], cut_table_pos: usize) -> Option<OwnedPolicy
 /// # Examples
 ///
 /// ```
-/// use cobre_io::{PolicyBasisRecord, serialize_stage_basis, deserialize_stage_basis};
+/// use novomodelo_io::{PolicyBasisRecord, serialize_stage_basis, deserialize_stage_basis};
 ///
 /// let record = PolicyBasisRecord {
 ///     stage_id: 0,
@@ -1888,7 +1888,7 @@ mod tests {
 
     #[test]
     fn checkpoint_manifest_software_round_trips_and_absent_reads_as_none() {
-        for software in [Some("cobre".to_string()), None] {
+        for software in [Some("novomodelo".to_string()), None] {
             let manifest = CheckpointManifest {
                 format_version: FORMAT_VERSION,
                 software: software.clone(),
@@ -1913,7 +1913,7 @@ mod tests {
         let history = [1.5, -0.0, f64::MIN_POSITIVE, 1.0e300];
         let manifest = CheckpointManifest {
             format_version: FORMAT_VERSION,
-            software: Some("cobre".to_string()),
+            software: Some("novomodelo".to_string()),
             software_version: "0.18.0".to_string(),
             created_at: "2026-10-06T00:00:00Z".to_string(),
             num_stages: 1,
@@ -1945,7 +1945,7 @@ mod tests {
 
         let season_manifest_offset =
             build_season_manifest_table(&mut builder, &SeasonManifest::default());
-        let software = builder.create_string("cobre");
+        let software = builder.create_string("novomodelo");
         let software_version = builder.create_string("0.18.0");
         let created_at = builder.create_string("2026-10-06T00:00:00Z");
         let training_block_mode = builder.create_string("parallel");
@@ -1995,7 +1995,7 @@ mod tests {
     fn checkpoint_manifest_season_descriptor_round_trips() {
         let manifest = CheckpointManifest {
             format_version: FORMAT_VERSION,
-            software: Some("cobre".to_string()),
+            software: Some("novomodelo".to_string()),
             software_version: "0.14.0".to_string(),
             created_at: "2026-09-15T00:00:00Z".to_string(),
             num_stages: 2,
@@ -2046,7 +2046,7 @@ mod tests {
     fn checkpoint_manifest_rejects_unsorted_season_hydro_orders() {
         let manifest = CheckpointManifest {
             format_version: FORMAT_VERSION,
-            software: Some("cobre".to_string()),
+            software: Some("novomodelo".to_string()),
             software_version: "0.14.0".to_string(),
             created_at: "2026-09-16T00:00:00Z".to_string(),
             num_stages: 1,
@@ -2085,7 +2085,7 @@ mod tests {
     fn checkpoint_manifest_rejects_season_orders_length_mismatch() {
         let manifest = CheckpointManifest {
             format_version: FORMAT_VERSION,
-            software: Some("cobre".to_string()),
+            software: Some("novomodelo".to_string()),
             software_version: "0.14.0".to_string(),
             created_at: "2026-09-16T00:00:00Z".to_string(),
             num_stages: 1,

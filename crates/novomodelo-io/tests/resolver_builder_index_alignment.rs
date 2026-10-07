@@ -3,7 +3,7 @@
 //! `(operational_start_date, id)`, even when a resolver indexed its output
 //! table by parse-order position (id order) instead.
 //!
-//! Drives the real `cobre_io::load_case` pipeline end to end (structural,
+//! Drives the real `novomodelo_io::load_case` pipeline end to end (structural,
 //! schema, referential, dimensional, semantic validation, the `resolve_*`
 //! functions, then `SystemBuilder::build`) rather than hand-assembling
 //! internals, so any misalignment found here is the one production hits.
@@ -22,8 +22,8 @@ use std::sync::Arc;
 use arrow::array::{Float64Array, Int32Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use cobre_core::EntityId;
-use cobre_io::{LoadError, load_case};
+use novomodelo_core::EntityId;
+use novomodelo_io::{LoadError, load_case};
 use parquet::arrow::ArrowWriter;
 use tempfile::TempDir;
 

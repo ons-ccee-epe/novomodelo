@@ -26,7 +26,7 @@ use crate::{
 ///
 /// ```
 /// use chrono::NaiveDate;
-/// use cobre_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
+/// use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
 ///
 /// let early = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
 /// let late = NaiveDate::from_ymd_opt(2024, 2, 1).unwrap();

@@ -22,7 +22,7 @@ use crate::traits::{LocalCommKind, LocalCommunicator};
 /// # Examples
 ///
 /// ```rust
-/// use cobre_comm::{LocalBackend, Communicator, ReduceOp};
+/// use novomodelo_comm::{LocalBackend, Communicator, ReduceOp};
 ///
 /// let comm = LocalBackend;
 /// assert_eq!(comm.rank(), 0);

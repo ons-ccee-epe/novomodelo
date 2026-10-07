@@ -1,4 +1,4 @@
-//! # cobre-stochastic
+//! # novomodelo-stochastic
 //!
 //! Stochastic process models for power systems: PAR(p) processes, correlated
 //! sampling, scenario trees, deterministic forward sampling via `SipHash` seed

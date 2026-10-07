@@ -18,9 +18,11 @@
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
-use cobre_core::{TrainingEvent, WorkerTimingPhase};
-use cobre_solver::{SolutionView, SolverInterface, StageTemplate};
-use cobre_stochastic::{ClassSampleRequest, ForwardNoiseTables, ForwardSampler, SampleRequest};
+use novomodelo_core::{TrainingEvent, WorkerTimingPhase};
+use novomodelo_solver::{SolutionView, SolverInterface, StageTemplate};
+use novomodelo_stochastic::{
+    ClassSampleRequest, ForwardNoiseTables, ForwardSampler, SampleRequest,
+};
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 
 use crate::{
@@ -866,9 +868,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::cast_precision_loss)]
 
     use super::*;
-    use cobre_comm::LocalBackend;
-    use cobre_core::temporal::StageStateConfig;
-    use cobre_solver::ActiveSolver;
+    use novomodelo_comm::LocalBackend;
+    use novomodelo_core::temporal::StageStateConfig;
+    use novomodelo_solver::ActiveSolver;
 
     use crate::{
         indexer::StateSpace,

@@ -10,23 +10,23 @@
 //! and `factorization_frequency = 200`. All values come from an empirical solver
 //! sweep on production-scale cases.
 //!
-//! ## Why the per-phase profiles live here, not in `cobre-solver`
+//! ## Why the per-phase profiles live here, not in `novomodelo-solver`
 //!
 //! The mapping "which phase wants which solver behaviour" is algorithm knowledge
-//! that must live in the algorithm crate; `cobre-solver` stays strictly
+//! that must live in the algorithm crate; `novomodelo-solver` stays strictly
 //! backend-agnostic and cannot know about SDDP phases. The [`PhaseProfiles`]
 //! trait abstracts only *which phase is running*, never the tuning content. The
 //! trait is local and the implemented profile types are foreign, which the
 //! orphan rule permits.
 
-use cobre_io::config::{BackwardScheduler, PhaseSolverProfileConfig};
+use novomodelo_io::config::{BackwardScheduler, PhaseSolverProfileConfig};
 #[cfg(feature = "highs")]
-use cobre_io::config::{DualEdgeWeight, PresolveMode, PriceStrategy, ScaleStrategy};
-use cobre_solver::{ActiveProfile, DEFAULT_PROFILE_HEURISTIC_SENTINEL};
+use novomodelo_io::config::{DualEdgeWeight, PresolveMode, PriceStrategy, ScaleStrategy};
+use novomodelo_solver::{ActiveProfile, DEFAULT_PROFILE_HEURISTIC_SENTINEL};
 #[cfg(feature = "clp")]
-use cobre_solver::{ClpAlgorithm, ClpProfile};
+use novomodelo_solver::{ClpAlgorithm, ClpProfile};
 #[cfg(feature = "highs")]
-use cobre_solver::{HighsProfile, PresolveKind};
+use novomodelo_solver::{HighsProfile, PresolveKind};
 
 use crate::SddpError;
 
@@ -85,7 +85,7 @@ impl Default for SolverProfiles {
 }
 
 /// Per-phase identity selection of a backend solver profile (see the module
-/// docs for why the tuned values live in `cobre-sddp`, not `cobre-solver`).
+/// docs for why the tuned values live in `novomodelo-sddp`, not `novomodelo-solver`).
 ///
 /// The members are **associated constants** because every backend profile field
 /// is const-constructible.
@@ -111,7 +111,7 @@ impl PhaseProfiles for HighsProfile {
         simplex_iteration_limit: DEFAULT_PROFILE_HEURISTIC_SENTINEL,
         ipm_iteration_limit: 10_000,
         simplex_dual_edge_weight_strategy: 1, // Devex
-        simplex_scale_strategy: 0,            // Off — cobre prescaler conditions the matrix
+        simplex_scale_strategy: 0,            // Off — novomodelo prescaler conditions the matrix
         simplex_price_strategy: 2,            // RowHyperSparse
         presolve: PresolveKind::On,
         simplex_update_limit: 5000,
@@ -127,7 +127,7 @@ impl PhaseProfiles for HighsProfile {
         simplex_iteration_limit: DEFAULT_PROFILE_HEURISTIC_SENTINEL,
         ipm_iteration_limit: 10_000,
         simplex_dual_edge_weight_strategy: 1, // Devex
-        simplex_scale_strategy: 0,            // Off — cobre prescaler conditions the matrix
+        simplex_scale_strategy: 0,            // Off — novomodelo prescaler conditions the matrix
         simplex_price_strategy: 2,            // RowHyperSparse
         presolve: PresolveKind::On,
         simplex_update_limit: 5000,
@@ -143,7 +143,7 @@ impl PhaseProfiles for HighsProfile {
         simplex_iteration_limit: DEFAULT_PROFILE_HEURISTIC_SENTINEL,
         ipm_iteration_limit: 10_000,
         simplex_dual_edge_weight_strategy: 1, // Devex
-        simplex_scale_strategy: 0,            // Off — cobre prescaler conditions the matrix
+        simplex_scale_strategy: 0,            // Off — novomodelo prescaler conditions the matrix
         simplex_price_strategy: 2,            // RowHyperSparse
         presolve: PresolveKind::On,
         simplex_update_limit: 5000,
@@ -214,7 +214,7 @@ pub const FORWARD_PROFILE: HighsProfile = HighsProfile {
     simplex_iteration_limit: DEFAULT_PROFILE_HEURISTIC_SENTINEL,
     ipm_iteration_limit: 10_000,
     simplex_dual_edge_weight_strategy: 1, // Devex
-    simplex_scale_strategy: 0,            // Off — cobre prescaler conditions the matrix
+    simplex_scale_strategy: 0,            // Off — novomodelo prescaler conditions the matrix
     simplex_price_strategy: 2,            // RowHyperSparse
     presolve: PresolveKind::On,
     simplex_update_limit: 5000,
@@ -235,7 +235,7 @@ pub const BACKWARD_PROFILE: HighsProfile = HighsProfile {
     simplex_iteration_limit: DEFAULT_PROFILE_HEURISTIC_SENTINEL,
     ipm_iteration_limit: 10_000,
     simplex_dual_edge_weight_strategy: 1, // Devex
-    simplex_scale_strategy: 0,            // Off — cobre prescaler conditions the matrix
+    simplex_scale_strategy: 0,            // Off — novomodelo prescaler conditions the matrix
     simplex_price_strategy: 2,            // RowHyperSparse
     presolve: PresolveKind::On,
     simplex_update_limit: 5000,
@@ -256,7 +256,7 @@ pub const SIMULATION_PROFILE: HighsProfile = HighsProfile {
     simplex_iteration_limit: DEFAULT_PROFILE_HEURISTIC_SENTINEL,
     ipm_iteration_limit: 10_000,
     simplex_dual_edge_weight_strategy: 1, // Devex
-    simplex_scale_strategy: 0,            // Off — cobre prescaler conditions the matrix
+    simplex_scale_strategy: 0,            // Off — novomodelo prescaler conditions the matrix
     simplex_price_strategy: 2,            // RowHyperSparse
     presolve: PresolveKind::On,
     simplex_update_limit: 5000,
@@ -322,7 +322,7 @@ pub(crate) fn validate_phase_solver_config(
 
 /// `HiGHS` `factor_pivot_threshold`'s accepted range (`kMinPivotThreshold`/
 /// `kMaxPivotThreshold`,
-/// `crates/cobre-solver/vendor/HiGHS/highs/util/HFactorConst.h`).
+/// `crates/novomodelo-solver/vendor/HiGHS/highs/util/HFactorConst.h`).
 #[cfg(feature = "highs")]
 const MIN_FACTOR_PIVOT_THRESHOLD: f64 = 8e-4;
 #[cfg(feature = "highs")]
@@ -650,8 +650,10 @@ mod validate_phase_solver_config_tests {
 
 #[cfg(all(test, feature = "highs"))]
 mod highs_tests {
-    use cobre_io::config::{DualEdgeWeight, PhaseSolverProfileConfig, PresolveMode, PriceStrategy};
-    use cobre_solver::{HighsProfile, PresolveKind};
+    use novomodelo_io::config::{
+        DualEdgeWeight, PhaseSolverProfileConfig, PresolveMode, PriceStrategy,
+    };
+    use novomodelo_solver::{HighsProfile, PresolveKind};
 
     use super::{
         BACKWARD_PROFILE, FORWARD_PROFILE, Phase, PhaseProfiles, SIMULATION_PROFILE,
@@ -1040,10 +1042,10 @@ mod highs_tests {
 
 #[cfg(all(test, feature = "clp"))]
 mod clp_tests {
-    use cobre_io::config::{
+    use novomodelo_io::config::{
         DualEdgeWeight, PhaseSolverProfileConfig, PresolveMode, PriceStrategy, ScaleStrategy,
     };
-    use cobre_solver::{ClpAlgorithm, ClpProfile};
+    use novomodelo_solver::{ClpAlgorithm, ClpProfile};
 
     use super::{Phase, PhaseProfiles, first_set_override, validate_phase_solver_config};
 

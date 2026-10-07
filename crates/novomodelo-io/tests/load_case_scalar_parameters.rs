@@ -4,7 +4,7 @@
 
 mod helpers;
 
-use cobre_io::{LoadError, load_case};
+use novomodelo_io::{LoadError, load_case};
 use tempfile::TempDir;
 
 /// References `hydro_id` 99, which the minimal case (zero hydros) cannot satisfy.

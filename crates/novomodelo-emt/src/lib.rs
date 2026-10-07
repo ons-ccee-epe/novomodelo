@@ -1,1 +1,1 @@
-//! Reserved crate for future Cobre electromagnetic-transient analysis; not yet implemented.
+//! Reserved crate for future Novomodelo electromagnetic-transient analysis; not yet implemented.

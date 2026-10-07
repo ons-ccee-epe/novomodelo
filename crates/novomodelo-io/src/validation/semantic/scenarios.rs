@@ -3,13 +3,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
-use cobre_core::scenario::SamplingScheme;
-use cobre_core::{EntityId, Hydro};
-use cobre_stochastic::derive_external_sample_moments;
-use cobre_stochastic::par::{
+use novomodelo_core::scenario::SamplingScheme;
+use novomodelo_core::{EntityId, Hydro};
+use novomodelo_stochastic::derive_external_sample_moments;
+use novomodelo_stochastic::par::{
     AnnualParams, ClosureRejection, check_stationarity, check_stationarity_annual,
 };
-use cobre_stochastic::season_cast::{RealizedWindow, SeasonPeriodWindow, cast};
+use novomodelo_stochastic::season_cast::{RealizedWindow, SeasonPeriodWindow, cast};
 
 use crate::{LoadError, StageIdResolver};
 
@@ -149,7 +149,7 @@ pub(super) fn check_penalty_ordering(data: &ParsedData, ctx: &mut ValidationCont
 /// LP has no incentive to spill rather than turbine. Negative values are rejected
 /// because they would make turbining artificially profitable and distort dispatch.
 pub(super) fn check_fpha_penalty_rule(data: &ParsedData, ctx: &mut ValidationContext) {
-    use cobre_core::entities::HydroGenerationModel;
+    use novomodelo_core::entities::HydroGenerationModel;
     for hydro in &data.hydros {
         if hydro.generation_model != HydroGenerationModel::Fpha {
             continue;
@@ -230,7 +230,7 @@ fn inflow_scheme_is_external_everywhere(data: &ParsedData) -> bool {
 // ── Rule 35: Hard stationarity gate on user-supplied AR coefficients ─────────
 
 /// Rule 35: gates user-supplied `inflow_ar_coefficients.parquet` rows for stationarity
-/// via the periodic-ACF closure (`cobre_stochastic::par::closure`).
+/// via the periodic-ACF closure (`novomodelo_stochastic::par::closure`).
 ///
 /// Runs only when `data.inflow_ar_coefficients` is non-empty -- the
 /// external-input path. The internal fitting/estimation path (triggered from
@@ -1058,7 +1058,7 @@ pub(super) fn check_estimation_prerequisites(data: &ParsedData, ctx: &mut Valida
 // ── Filling-schedule sufficiency ──────────────────────────────────────────────
 
 /// m³/s → hm³ per stage-hour: `3600 s/h ÷ 1e6 m³/hm³`. Duplicated from the
-/// solver-side copy on purpose — a shared dependency would break cobre-io's
+/// solver-side copy on purpose — a shared dependency would break novomodelo-io's
 /// infrastructure-genericity rule; this is redundancy-with-purpose, not drift.
 const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
 
@@ -1169,7 +1169,7 @@ mod tests {
         stages::StagesData,
         validation::{ErrorKind, ValidationContext, schema::ParsedData},
     };
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId, HorizonGraph, Hydro,
         entities::HydroGenerationModel,
         scenario::{ExternalLoadRow, ExternalNcsRow, ExternalScenarioRow, NcsModel},
@@ -1982,7 +1982,7 @@ mod tests {
     /// A deterministic load (`std_mw == 0.0`) with defined block factors
     /// produces zero ModelQuality warnings mentioning "deterministic" or "no
     /// effect" — block factors are applied at σ = 0 (see
-    /// `test_block_factors_applied_at_zero_sigma` in `cobre-stochastic`), so
+    /// `test_block_factors_applied_at_zero_sigma` in `novomodelo-stochastic`), so
     /// the retired rule-18 claim does not resurface.
     #[test]
     fn test_deterministic_load_emits_no_factor_warning() {
@@ -2321,7 +2321,7 @@ mod tests {
     /// Training uses External inflow and the external file is present: no error.
     #[test]
     fn test_training_external_inflow_with_file_is_ok() {
-        use cobre_core::scenario::ExternalScenarioRow;
+        use novomodelo_core::scenario::ExternalScenarioRow;
         let mut data = make_data_5b(
             vec![make_hydro_ordered_penalties(1)],
             make_stages_5b(vec![0]),
@@ -2398,7 +2398,7 @@ mod tests {
         entry_stage_id: i32,
         filling_min_rate_m3s: f64,
     ) -> Hydro {
-        use cobre_core::entities::FillingConfig;
+        use novomodelo_core::entities::FillingConfig;
         let mut h = make_hydro_ordered_penalties(id);
         h.min_storage_hm3 = min_storage_hm3;
         h.entry_stage_id = Some(entry_stage_id);

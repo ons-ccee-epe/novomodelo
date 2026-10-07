@@ -1,6 +1,6 @@
-# cobre-cli
+# novomodelo-cli
 
-Command-line interface for the [Cobre](https://github.com/cobre-rs/cobre) power systems ecosystem.
+Command-line interface for the [Novomodelo](https://github.com/ons-ccee-epe/novomodelo) power systems ecosystem.
 
 Provides five subcommands for running SDDP studies, scaffolding case
 directories, validating input data, and inspecting build
@@ -8,9 +8,9 @@ information from the terminal.
 
 ## When to Use
 
-Use `cobre-cli` when you want to run a complete SDDP study — training and
+Use `novomodelo-cli` when you want to run a complete SDDP study — training and
 simulation — from the command line without writing Rust or Python code. For
-programmatic embedding of the solver, depend on `cobre-sddp` directly.
+programmatic embedding of the solver, depend on `novomodelo-sddp` directly.
 
 ## Key Subcommands
 
@@ -32,7 +32,7 @@ All subcommands map failures to a typed exit code through the `CliError` type
 | `2`       | `Io`         | Filesystem error during loading or output                                                                                                                                        |
 | `3`       | `Solver`     | LP infeasible or numerical solver failure during training/simulation                                                                                                             |
 | `4`       | `Internal`   | Communication failure or unexpected state                                                                                                                                        |
-| `5`       | —            | `cobre run` only: a SIGTERM or SIGINT stopped training at an iteration boundary; the training outputs and policy checkpoint were written and a configured simulation was skipped |
+| `5`       | —            | `novomodelo run` only: a SIGTERM or SIGINT stopped training at an iteration boundary; the training outputs and policy checkpoint were written and a configured simulation was skipped |
 
 Exit code `5` is not a failure and has no `CliError` variant. Under MPI every
 rank exits 5, so the launcher reports 5. When writing the training outputs or
@@ -43,25 +43,25 @@ single-process run. Shells report 128 plus the signal number: 130 for SIGINT,
 143 for SIGTERM. Under MPI a repeated SIGINT only repeats the stop request, and
 aborting is left to the launcher.
 
-This contract enables `cobre run` to be driven from shell scripts and batch
+This contract enables `novomodelo run` to be driven from shell scripts and batch
 schedulers by inspecting the process exit code. `CliError` also carries the
-`From` conversions that route every upstream error type (`cobre_io::LoadError`,
-`cobre_io::OutputError`, `cobre_comm::BackendError`, `cobre_sddp::SddpError`,
-`cobre_sddp::SimulationError`) onto one of these four variants.
+`From` conversions that route every upstream error type (`novomodelo_io::LoadError`,
+`novomodelo_io::OutputError`, `novomodelo_comm::BackendError`, `novomodelo_sddp::SddpError`,
+`novomodelo_sddp::SimulationError`) onto one of these four variants.
 
 ## Output and Terminal Behavior
 
-- **`cobre run`** writes a live progress bar to stderr and a run summary after
+- **`novomodelo run`** writes a live progress bar to stderr and a run summary after
   completion (both suppressed in `--quiet` mode). Error messages are always
   written to stderr.
-- **`cobre validate --json`** prints a single JSON object to stdout — stdout is
+- **`novomodelo validate --json`** prints a single JSON object to stdout — stdout is
   reserved for machine-readable output.
 
-## `cobre init`
+## `novomodelo init`
 
 Scaffolds a new case directory from a built-in template. This is the recommended
 way to start a new study: the template provides a complete, valid case that passes
-`cobre validate` out of the box and can be run immediately with `cobre run`.
+`novomodelo validate` out of the box and can be run immediately with `novomodelo run`.
 
 ### Arguments
 
@@ -91,20 +91,20 @@ Templates are embedded at compile time (`src/templates.rs`, via
 
 ```bash
 # List all available templates
-cobre init --list
+novomodelo init --list
 
 # Scaffold the 1dtoy template into a new directory
-cobre init --template 1dtoy my_study
+novomodelo init --template 1dtoy my_study
 
 # Overwrite an existing directory
-cobre init --template 1dtoy my_study --force
+novomodelo init --template 1dtoy my_study --force
 ```
 
 After scaffolding, validate and run the case:
 
 ```bash
-cobre validate my_study
-cobre run my_study --output my_study/results
+novomodelo validate my_study
+novomodelo run my_study --output my_study/results
 ```
 
 ### Error Behavior
@@ -119,13 +119,13 @@ cobre run my_study --output my_study/results
 
 | Resource             | URL                                                         |
 | -------------------- | ----------------------------------------------------------- |
-| CLI reference        | <https://docs.cobre-rs.dev/reference/cli-reference/>       |
-| Repository           | <https://github.com/cobre-rs/cobre>                         |
-| Changelog            | <https://github.com/cobre-rs/cobre/blob/main/CHANGELOG.md>  |
+| CLI reference        | <https://docs.novomodelo.invalid/reference/cli-reference/>       |
+| Repository           | <https://github.com/ons-ccee-epe/novomodelo>                         |
+| Changelog            | <https://github.com/ons-ccee-epe/novomodelo/blob/main/CHANGELOG.md>  |
 
 ## Status
 
-**Alpha** — API is functional but not yet stable. See the [main repository](https://github.com/cobre-rs/cobre) for the current release.
+**Alpha** — API is functional but not yet stable. See the [main repository](https://github.com/ons-ccee-epe/novomodelo) for the current release.
 
 ## License
 

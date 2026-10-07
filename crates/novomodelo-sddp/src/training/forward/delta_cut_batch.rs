@@ -1,6 +1,6 @@
 //! Delta-cut `RowBatch` construction for frozen-template appends.
 
-use cobre_solver::RowBatch;
+use novomodelo_solver::RowBatch;
 
 use crate::cut::FutureCostFunction;
 use crate::cut::row::push_scaled_coefficient;

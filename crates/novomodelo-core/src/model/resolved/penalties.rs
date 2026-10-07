@@ -1,7 +1,7 @@
 //! Pre-resolved per-(entity, stage) penalty containers for O(1) solver lookup.
 //!
 //! Tables store their per-stage structs in a flat `Vec<T>` indexed
-//! `data[entity_idx * n_stages + stage_idx]`. Populated by `cobre-io` after the
+//! `data[entity_idx * n_stages + stage_idx]`. Populated by `novomodelo-io` after the
 //! three-tier penalty cascade is applied; never modified after construction.
 
 use crate::HydroPenalties;
@@ -14,7 +14,7 @@ use crate::HydroPenalties;
 /// # Examples
 ///
 /// ```
-/// use cobre_core::resolved::BusStagePenalties;
+/// use novomodelo_core::resolved::BusStagePenalties;
 ///
 /// let p = BusStagePenalties { excess_cost: 0.01 };
 /// let q = p;
@@ -32,7 +32,7 @@ pub struct BusStagePenalties {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::resolved::LineStagePenalties;
+/// use novomodelo_core::resolved::LineStagePenalties;
 ///
 /// let p = LineStagePenalties { exchange_cost: 0.5 };
 /// let q = p;
@@ -50,7 +50,7 @@ pub struct LineStagePenalties {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::resolved::NcsStagePenalties;
+/// use novomodelo_core::resolved::NcsStagePenalties;
 ///
 /// let p = NcsStagePenalties { curtailment_cost: 10.0 };
 /// let q = p;
@@ -70,8 +70,8 @@ pub struct NcsStagePenalties {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::HydroPenalties;
-/// use cobre_core::resolved::{
+/// use novomodelo_core::HydroPenalties;
+/// use novomodelo_core::resolved::{
 ///     BusStagePenalties, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
 ///     PenaltiesDefaults, ResolvedPenalties,
 /// };
@@ -154,7 +154,7 @@ impl ResolvedPenalties {
     /// # Examples
     ///
     /// ```
-    /// use cobre_core::ResolvedPenalties;
+    /// use novomodelo_core::ResolvedPenalties;
     ///
     /// let empty = ResolvedPenalties::empty();
     /// assert_eq!(empty.n_stages(), 0);

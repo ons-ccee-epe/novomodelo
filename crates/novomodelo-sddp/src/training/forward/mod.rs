@@ -28,9 +28,9 @@ use crate::{
     workspace::{BasisStore, SolverWorkspace},
 };
 #[cfg(any(test, feature = "test-support"))]
-use cobre_core::TrainingEvent;
+use novomodelo_core::TrainingEvent;
 #[cfg(any(test, feature = "test-support"))]
-use cobre_solver::{ActiveProfile, SolverInterface, StageTemplate};
+use novomodelo_solver::{ActiveProfile, SolverInterface, StageTemplate};
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::mpsc::Sender;
 

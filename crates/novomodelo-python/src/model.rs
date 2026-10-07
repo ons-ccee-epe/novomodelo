@@ -1,4 +1,4 @@
-//! `PyO3` wrapper classes exposing `cobre-core` entity types in `cobre.model`.
+//! `PyO3` wrapper classes exposing `novomodelo-core` entity types in `novomodelo.model`.
 //!
 //! Each entity wrapper holds the shared `Arc<System>` plus its index into the
 //! matching collection, so a `System` getter (e.g. `System.hydros`) reads
@@ -12,18 +12,18 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use cobre_core::Bus;
-use cobre_core::ContractType;
-use cobre_core::EnergyContract;
-use cobre_core::Hydro;
-use cobre_core::HydroGenerationModel::ConstantProductivity;
-use cobre_core::HydroGenerationModel::Fpha;
-use cobre_core::HydroGenerationModel::LinearizedHead;
-use cobre_core::Line;
-use cobre_core::NonControllableSource;
-use cobre_core::PumpingStation;
-use cobre_core::System;
-use cobre_core::Thermal;
+use novomodelo_core::Bus;
+use novomodelo_core::ContractType;
+use novomodelo_core::EnergyContract;
+use novomodelo_core::Hydro;
+use novomodelo_core::HydroGenerationModel::ConstantProductivity;
+use novomodelo_core::HydroGenerationModel::Fpha;
+use novomodelo_core::HydroGenerationModel::LinearizedHead;
+use novomodelo_core::Line;
+use novomodelo_core::NonControllableSource;
+use novomodelo_core::PumpingStation;
+use novomodelo_core::System;
+use novomodelo_core::Thermal;
 
 // ─── Bus ─────────────────────────────────────────────────────────────────────
 
@@ -584,9 +584,9 @@ impl PyNonControllableSource {
 
 // ─── System ──────────────────────────────────────────────────────────────────
 
-/// Top-level system representation wrapping a loaded Cobre case.
+/// Top-level system representation wrapping a loaded Novomodelo case.
 ///
-/// Cannot be constructed from Python — use `cobre.io.load_case()` to obtain one.
+/// Cannot be constructed from Python — use `novomodelo.io.load_case()` to obtain one.
 /// Every entity-list getter below returns its items in canonical ID order.
 #[pyclass(name = "System", frozen)]
 pub struct PySystem {
@@ -689,7 +689,7 @@ impl PySystem {
         }
     }
 
-    /// Wrap an already-shared [`cobre_core::System`] via a refcount bump rather
+    /// Wrap an already-shared [`novomodelo_core::System`] via a refcount bump rather
     /// than a full clone (used by [`crate::study::Study`]'s `system` getter).
     pub(crate) fn from_arc(inner: Arc<System>) -> Self {
         Self { inner }

@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cobre_core::{
+use novomodelo_core::{
     AffineBound, CoefficientRef, ComputedParameter, EntityId, GenericConstraint, ParameterKind,
     VariableRef, temporal::BlockMode,
 };
@@ -354,7 +354,7 @@ fn boundary_is_interior(k: usize, num_blocks: usize) -> bool {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
-    use cobre_core::{
+    use novomodelo_core::{
         AffineBound, CoefficientRef, ComputedParameter, ConstraintExpression, EntityId,
         GenericConstraint, LinearTerm, ParameterKind, ScalarParameter, SlackConfig, VariableRef,
         temporal::{Block, BlockMode},

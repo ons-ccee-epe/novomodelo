@@ -19,7 +19,7 @@ use rand_pcg::Pcg64;
 ///
 /// ```
 /// use rand::RngExt;
-/// use cobre_stochastic::noise::rng::rng_from_seed;
+/// use novomodelo_stochastic::noise::rng::rng_from_seed;
 ///
 /// let mut rng1 = rng_from_seed(12345);
 /// let mut rng2 = rng_from_seed(12345);

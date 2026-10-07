@@ -30,7 +30,7 @@
 //! - Monotonicity (`volume_hm3` increasing within each hydro) — Layer 5.
 //! - `hydro_id` existence in the hydro registry — Layer 3.
 
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
@@ -45,8 +45,8 @@ use crate::parquet_helpers::{
 /// # Examples
 ///
 /// ```
-/// use cobre_io::extensions::HydroGeometryRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::extensions::HydroGeometryRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = HydroGeometryRow {
 ///     hydro_id: EntityId::from(42),
@@ -84,7 +84,7 @@ pub struct HydroGeometryRow {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::extensions::parse_hydro_geometry;
+/// use novomodelo_io::extensions::parse_hydro_geometry;
 /// use std::path::Path;
 ///
 /// let rows = parse_hydro_geometry(Path::new("system/hydro_geometry.parquet"))

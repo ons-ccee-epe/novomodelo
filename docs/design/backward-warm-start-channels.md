@@ -17,10 +17,10 @@
 > **Companions** (the two standalone design notes were retired with the naming
 > pass; the code and rules below are the surviving anchors):
 >
-> - `crates/cobre-sddp/src/stochastic/noise_key.rs` (`apply_chain_order`) — the
+> - `crates/novomodelo-sddp/src/stochastic/noise_key.rs` (`apply_chain_order`) — the
 >   warm-start-friendly opening solve order (shortest-chain path; σ-key kept
 >   below three openings) that H1 rotates; the mechanism H1 builds on.
-> - `crates/cobre-sddp/src/training/backward/opening_block.rs` — the
+> - `crates/novomodelo-sddp/src/training/backward/opening_block.rs` — the
 >   opening-block claim scheduler (hardest-first claim order) whose
 >   per-`(stage, block)` structure H2 keys its cache on. Its retired note was
 >   also the house precedent for the pre-registered, matched-epoch

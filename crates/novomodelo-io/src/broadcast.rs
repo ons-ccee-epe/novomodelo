@@ -6,14 +6,14 @@
 //! representation postcard cannot encode. [`BroadcastScalarParameter`],
 //! [`BroadcastParameterKind`] and [`BroadcastComputedParameter`] mirror them
 //! with externally-tagged encoding instead, convertible via `From` in both
-//! directions. This is the same pattern as `BroadcastConfig` in `cobre-cli`,
+//! directions. This is the same pattern as `BroadcastConfig` in `novomodelo-cli`,
 //! used for [`crate::Config`].
 //!
-//! A postcard round-trip of a [`cobre_core::System`] returns a value whose
+//! A postcard round-trip of a [`novomodelo_core::System`] returns a value whose
 //! lookup indices are rebuilt by its `Deserialize` impl, so `system.bus(id)`
 //! works immediately.
 
-use cobre_core::{ComputedParameter, EntityId, ParameterKind, ScalarParameter};
+use novomodelo_core::{ComputedParameter, EntityId, ParameterKind, ScalarParameter};
 use serde::{Deserialize, Serialize};
 
 // ── Broadcast mirror types (tag-free, postcard-compatible) ──────────────────
@@ -184,7 +184,7 @@ impl From<BroadcastComputedParameter> for ComputedParameter {
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         AnticipatedCommitmentHistory, Bus, ComputedParameter, DeficitSegment, EntityId, Hydro,
         HydroGenerationModel, HydroPenalties, InitialConditions, ParameterKind, ScalarParameter,
         System, SystemBuilder, Thermal, entities::AnticipatedConfig,
@@ -323,7 +323,7 @@ mod tests {
     /// round-trips.
     #[test]
     fn test_round_trip_generic_constraint_bound_ref() {
-        use cobre_core::{
+        use novomodelo_core::{
             AffineBound, ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig,
             VariableRef,
         };

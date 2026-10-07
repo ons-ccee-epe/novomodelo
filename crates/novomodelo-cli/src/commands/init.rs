@@ -1,4 +1,4 @@
-//! `cobre init --template <NAME> <DIRECTORY>` subcommand.
+//! `novomodelo init --template <NAME> <DIRECTORY>` subcommand.
 //!
 //! Scaffolds a new case directory from an embedded template. `--list` prints the
 //! available templates to stdout; the summary and banner go to stderr.
@@ -12,7 +12,7 @@ use crate::banner::print_banner;
 use crate::error::CliError;
 use crate::templates;
 
-/// Arguments for the `cobre init` subcommand.
+/// Arguments for the `novomodelo init` subcommand.
 #[derive(Debug, Args)]
 #[command(
     about = "Scaffold a new case directory from an embedded template",
@@ -153,13 +153,13 @@ fn execute_scaffold(
 
 /// Rewrite a template's floating `$schema` URLs (`refs/heads/main`) to this
 /// binary's own release tag, so a scaffolded case's editor completion and
-/// validation match the `cobre` version that will consume it rather than
+/// validation match the `novomodelo` version that will consume it rather than
 /// whatever `main` has since become.
 fn pin_schema_urls(content: &str) -> String {
     content.replace(
-        "/cobre-rs/cobre/refs/heads/main/schemas/",
+        "/ons-ccee-epe/novomodelo/refs/heads/main/schemas/",
         concat!(
-            "/cobre-rs/cobre/refs/tags/v",
+            "/ons-ccee-epe/novomodelo/refs/tags/v",
             env!("CARGO_PKG_VERSION"),
             "/schemas/"
         ),
@@ -189,12 +189,12 @@ fn print_summary(stderr: &Term, template: &templates::Template, directory: &std:
     let _ = stderr.write_line("");
     let _ = stderr.write_line("Next steps:");
     let _ = stderr.write_line(&format!(
-        "  {} cobre validate {}",
+        "  {} novomodelo validate {}",
         dim_arrow,
         directory.display()
     ));
     let _ = stderr.write_line(&format!(
-        "  {} cobre run {} --output {}/results",
+        "  {} novomodelo run {} --output {}/results",
         dim_arrow,
         directory.display(),
         directory.display()
@@ -288,7 +288,7 @@ mod tests {
 
         let config_content = std::fs::read_to_string(target.join("config.json")).unwrap();
         let expected = format!(
-            "https://raw.githubusercontent.com/cobre-rs/cobre/refs/tags/v{}/schemas/config.schema.json",
+            "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/tags/v{}/schemas/config.schema.json",
             env!("CARGO_PKG_VERSION")
         );
         assert!(
@@ -314,7 +314,7 @@ mod tests {
         assert!(execute(args).is_ok());
 
         let base = concat!(
-            "https://raw.githubusercontent.com/cobre-rs/cobre/refs/tags/v",
+            "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/tags/v",
             env!("CARGO_PKG_VERSION"),
             "/schemas/"
         );

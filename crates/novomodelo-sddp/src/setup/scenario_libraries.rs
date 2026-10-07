@@ -5,13 +5,13 @@
 
 use std::collections::HashSet;
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId, Stage, System,
     scenario::{HistoricalYears, LoadModel, NcsModel, SamplingScheme},
     temporal::StageLagTransition,
 };
-use cobre_io::StageIdResolver;
-use cobre_stochastic::{
+use novomodelo_io::StageIdResolver;
+use novomodelo_stochastic::{
     DerivedSeed, ExternalScenarioLibrary, HistoricalScenarioLibrary, PrecomputedNormal,
     PrecomputedPar, check_historical_structure, discover_historical_windows,
     pad_library_to_uniform, standardize_external_inflow, standardize_external_load,
@@ -172,7 +172,7 @@ pub(crate) fn build_external_inflow_library(
 /// `assert_external_library_widths`, not here.
 ///
 /// Standardizes against `normal_lp`/`normal_bus_ids` — the SAME
-/// `PrecomputedNormal` and entity list `cobre_stochastic::context` builds for
+/// `PrecomputedNormal` and entity list `novomodelo_stochastic::context` builds for
 /// reconstruction — rather than re-deriving moments independently from
 /// `external_rows`, mirroring how [`build_external_inflow_library`]
 /// standardizes against the reconstruction `PrecomputedPar` it receives.
@@ -248,7 +248,7 @@ pub(crate) fn build_external_load_library(
 /// an NCS with no `non_controllable_stats` row is still a noise member.
 ///
 /// Standardizes against `ncs_normal`/`normal_ncs_ids` — the SAME
-/// `PrecomputedNormal` and entity list `cobre_stochastic::context` builds for
+/// `PrecomputedNormal` and entity list `novomodelo_stochastic::context` builds for
 /// reconstruction — rather than re-deriving moments independently, mirroring
 /// [`build_external_load_library`]'s own fix (see its doc for the
 /// TRAINING-scheme-gated `normal_ncs_ids` vs. this library's own
@@ -309,12 +309,14 @@ pub(crate) fn build_external_ncs_library(
 #[cfg(test)]
 mod tests {
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         Block, BlockMode, ExternalLoadRow, ExternalScenarioRow, InflowHistoryRow, InflowModel,
         NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig, System,
         SystemBuilder,
     };
-    use cobre_stochastic::{PrecomputedNormal, StochasticError, derive_external_sample_moments};
+    use novomodelo_stochastic::{
+        PrecomputedNormal, StochasticError, derive_external_sample_moments,
+    };
 
     use super::{
         DerivedSeed, EntityId, LoadModel, PrecomputedPar, SamplingScheme, SddpError, Stage,
@@ -541,7 +543,7 @@ mod tests {
     /// Regression: a divergent sim-only-External LOAD deck — training uses
     /// `InSample`, simulation uses `External` for the same bus — must
     /// standardize against the SAME `PrecomputedNormal`
-    /// `cobre_stochastic::context` builds for the training-gated
+    /// `novomodelo_stochastic::context` builds for the training-gated
     /// reconstruction, never re-derive independently from `external_rows`.
     /// Two distinct external scenarios give a nonzero external sample sigma
     /// (25.0), so a re-derivation would standardize a genuinely nonzero eta;
@@ -834,7 +836,7 @@ mod tests {
 
     /// Regression: a gapped/non-0-based External LOAD deck
     /// (declared stage ids `2`/`5`, never `0`/`1`) must resolve through the
-    /// same canonical `stage_id -> index` mapping cobre-io's rule-47
+    /// same canonical `stage_id -> index` mapping novomodelo-io's rule-47
     /// validator uses. Pre-fix, `rows_per_stage`'s `row.stage_id as usize`
     /// bound-check (`< n_stages`) silently dropped every row of a gapped
     /// deck outright, since the raw ids (2, 5) both exceed `n_stages` (2).

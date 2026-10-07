@@ -2,9 +2,9 @@
 
 use std::path::Path;
 
-use cobre_core::ScalarParameter;
-use cobre_io::Config;
-use cobre_io::config::{
+use novomodelo_core::ScalarParameter;
+use novomodelo_io::Config;
+use novomodelo_io::config::{
     BackwardScheduler, CheckpointSchedule, ForwardPassesResolution, NumScenariosResolution,
     PhaseSolverProfileConfig, StoppingRuleConfig,
 };
@@ -242,8 +242,8 @@ impl StudyParams {
             .collect::<Result<Vec<_>, _>>()?;
 
         let stopping_mode = match config.training.stopping_mode {
-            cobre_io::config::StoppingMode::Any => StoppingMode::Any,
-            cobre_io::config::StoppingMode::All => StoppingMode::All,
+            novomodelo_io::config::StoppingMode::Any => StoppingMode::Any,
+            novomodelo_io::config::StoppingMode::All => StoppingMode::All,
         };
 
         let stopping_rule_set = StoppingRuleSet {
@@ -348,8 +348,8 @@ impl StudyParams {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use cobre_core::{EntityId, ParameterKind, ScalarParameter};
-    use cobre_io::config::{
+    use novomodelo_core::{EntityId, ParameterKind, ScalarParameter};
+    use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, ParallelismConfig,
         PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,

@@ -28,15 +28,15 @@ use crate::types::{Basis, RowBatch, SolutionView, SolverError, SolverStatistics,
 /// # Usage as a Generic Bound
 ///
 /// ```rust
-/// use cobre_solver::{SolverInterface, SolutionView, SolverError};
+/// use novomodelo_solver::{SolverInterface, SolutionView, SolverError};
 ///
 /// fn run_solve<S: SolverInterface>(solver: &mut S) -> Result<SolutionView<'_>, SolverError> {
 ///     solver.solve(None)
 /// }
 /// ```
 ///
-/// See [Solver Interface Trait SS1](../../../cobre-docs/src/specs/architecture/solver-interface-trait.md)
-/// and [Solver Interface Trait SS5](../../../cobre-docs/src/specs/architecture/solver-interface-trait.md)
+/// See [Solver Interface Trait SS1](../../../novomodelo-docs/src/specs/architecture/solver-interface-trait.md)
+/// and [Solver Interface Trait SS5](../../../novomodelo-docs/src/specs/architecture/solver-interface-trait.md)
 /// for the dispatch mechanism rationale.
 pub trait SolverInterface: Send {
     /// The solver-specific profile type — each backend's full tunable-option
@@ -138,7 +138,7 @@ pub trait SolverInterface: Send {
     ///
     /// ```no_run
     /// # #[cfg(feature = "highs")] {
-    /// use cobre_solver::{Basis, HighsSolver, SolverInterface};
+    /// use novomodelo_solver::{Basis, HighsSolver, SolverInterface};
     ///
     /// let mut solver = HighsSolver::new().expect("HiGHS init");
     /// # let template = unimplemented!();

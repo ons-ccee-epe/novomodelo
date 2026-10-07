@@ -1,4 +1,4 @@
-//! Consolidated filling / commissioning integration tests for `cobre-sddp`.
+//! Consolidated filling / commissioning integration tests for `novomodelo-sddp`.
 //!
 //! Each filling/commissioning domain group lives in its own inner `mod` so the
 //! suite links the statically-bound solver once rather than once per file.
@@ -70,17 +70,17 @@ mod d38_dead_volume_filling_simulation {
     //! climbs above the dead volume and `σ^{v-} → 0` by id 5. `H1` is starved before
     //! Operating (seed 0, inflow 2/2/0/0 m³/s over ids 0–3).
 
-    use cobre_io::config::SimulationSelection;
+    use novomodelo_io::config::SimulationSelection;
     use std::path::Path;
     use std::sync::mpsc;
 
-    use cobre_core::TrainingEvent;
-    use cobre_core::scenario::ScenarioSource;
-    use cobre_io::config::SimulationConfig;
-    use cobre_sddp::{
+    use novomodelo_core::TrainingEvent;
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_io::config::SimulationConfig;
+    use novomodelo_sddp::{
         SolverStatsDelta, StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
     };
-    use cobre_solver::ActiveSolver;
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
 
@@ -132,7 +132,7 @@ mod d38_dead_volume_filling_simulation {
 
     /// Collect the per-stage hydro view for `hydro_id` from a scenario result.
     fn stage_hydro(
-        scenario: &cobre_sddp::SimulationScenarioResult,
+        scenario: &novomodelo_sddp::SimulationScenarioResult,
         hydro_id: i32,
         stage_index: usize,
     ) -> StageHydro {
@@ -173,8 +173,8 @@ mod d38_dead_volume_filling_simulation {
             .join("examples/deterministic/d38-dead-volume-filling");
 
         let config_path = case_dir.join("config.json");
-        let mut config = cobre_io::parse_config(&config_path).expect("config must parse");
-        let system_for_check = cobre_io::load_case(&case_dir).expect("load_case must succeed");
+        let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
+        let system_for_check = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         let h2 = system_for_check
             .hydros()
             .iter()
@@ -200,7 +200,7 @@ mod d38_dead_volume_filling_simulation {
             ..SimulationConfig::default()
         };
 
-        let system = cobre_io::load_case(&case_dir).expect("load_case must succeed");
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         let prepare_result = prepare_stochastic(
             system,
             &case_dir,
@@ -613,15 +613,17 @@ mod d40_filling_cascade_simulation {
     //! holding it. Inflows recover to 60 m³/s in Operating so both climb above the dead
     //! volume and `σ^{v-} → 0`.
 
-    use cobre_io::config::SimulationSelection;
+    use novomodelo_io::config::SimulationSelection;
     use std::path::Path;
     use std::sync::mpsc;
 
-    use cobre_core::TrainingEvent;
-    use cobre_core::scenario::ScenarioSource;
-    use cobre_io::config::SimulationConfig;
-    use cobre_sddp::{StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_core::TrainingEvent;
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_io::config::SimulationConfig;
+    use novomodelo_sddp::{
+        StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
+    };
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
 
@@ -679,7 +681,7 @@ mod d40_filling_cascade_simulation {
 
     /// Collect the per-stage hydro view for `hydro_id` from a scenario result.
     fn stage_hydro(
-        scenario: &cobre_sddp::SimulationScenarioResult,
+        scenario: &novomodelo_sddp::SimulationScenarioResult,
         hydro_id: i32,
         stage_index: usize,
     ) -> StageHydro {
@@ -708,7 +710,7 @@ mod d40_filling_cascade_simulation {
     /// water-balance row at `stage_index`, in hm³. Uses per-block τ_k, not a stage-level
     /// ζ: a single ζ mis-weights the multi-block 1/1/3/2/3/1 schedule.
     fn routed_release_hm3(
-        scenario: &cobre_sddp::SimulationScenarioResult,
+        scenario: &novomodelo_sddp::SimulationScenarioResult,
         upstream_id: i32,
         stage_index: usize,
     ) -> f64 {
@@ -741,8 +743,8 @@ mod d40_filling_cascade_simulation {
             .join("examples/deterministic/d40-filling-cascade");
 
         let config_path = case_dir.join("config.json");
-        let mut config = cobre_io::parse_config(&config_path).expect("config must parse");
-        let system_for_check = cobre_io::load_case(&case_dir).expect("load_case must succeed");
+        let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
+        let system_for_check = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         for (id, downstream) in [(H_UP_ID, H_DOWN_ID), (H_DOWN_ID, H_SINK_ID)] {
             let h = system_for_check
                 .hydros()
@@ -777,7 +779,7 @@ mod d40_filling_cascade_simulation {
             ..SimulationConfig::default()
         };
 
-        let system = cobre_io::load_case(&case_dir).expect("load_case must succeed");
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         let prepare_result = prepare_stochastic(
             system,
             &case_dir,
@@ -1080,15 +1082,17 @@ mod prefilling_spillage_frozen {
     //! these two stages are exactly the "PreFilling hydro upstream of an active
     //! reservoir" geometry the "spillage frozen [0,0] during PreFilling" contract targets.
 
-    use cobre_io::config::SimulationSelection;
+    use novomodelo_io::config::SimulationSelection;
     use std::path::Path;
     use std::sync::mpsc;
 
-    use cobre_core::TrainingEvent;
-    use cobre_core::scenario::ScenarioSource;
-    use cobre_io::config::SimulationConfig;
-    use cobre_sddp::{StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_core::TrainingEvent;
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_io::config::SimulationConfig;
+    use novomodelo_sddp::{
+        StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
+    };
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
 
@@ -1115,7 +1119,7 @@ mod prefilling_spillage_frozen {
 
     /// Sum a hydro's release (turbine + spillage, m³/s) across the blocks of one stage.
     fn release_m3s(
-        scenario: &cobre_sddp::SimulationScenarioResult,
+        scenario: &novomodelo_sddp::SimulationScenarioResult,
         hydro_id: i32,
         stage_index: usize,
     ) -> (f64, f64) {
@@ -1136,7 +1140,7 @@ mod prefilling_spillage_frozen {
 
     /// First-block scalar (storage is block-invariant) for a hydro at one stage.
     fn storage_initial_final(
-        scenario: &cobre_sddp::SimulationScenarioResult,
+        scenario: &novomodelo_sddp::SimulationScenarioResult,
         hydro_id: i32,
         stage_index: usize,
     ) -> (f64, f64, f64) {
@@ -1166,7 +1170,7 @@ mod prefilling_spillage_frozen {
             .join("examples/deterministic/d38-dead-volume-filling");
 
         let mut config =
-            cobre_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
+            novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
         config.simulation = SimulationConfig {
             enabled: true,
             io_channel_capacity: 8,
@@ -1174,7 +1178,7 @@ mod prefilling_spillage_frozen {
             ..SimulationConfig::default()
         };
 
-        let system = cobre_io::load_case(&case_dir).expect("load_case must succeed");
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         let prepare_result = prepare_stochastic(
             system,
             &case_dir,
@@ -1300,34 +1304,34 @@ mod filling_cut_validity {
     //! water can land on `Hf2`'s frozen-identity RHS, producing a wrong-but-compiling
     //! cut.
 
-    use cobre_io::config::TrainingSelection;
+    use novomodelo_io::config::TrainingSelection;
     use std::sync::mpsc;
 
-    use cobre_core::entities::{
+    use novomodelo_core::entities::{
         bus::DeficitSegment,
         hydro::{FillingConfig, HydroGenerationModel},
     };
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, EntityId,
         HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, InitialConditions,
         LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
         PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
         ThermalBlockBounds, ThermalStageBounds, TrainingEvent,
     };
-    use cobre_io::config::{
+    use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
         RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
         TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
-    use cobre_sddp::SolverStatsDelta;
-    use cobre_sddp::setup::NodePos;
-    use cobre_solver::ActiveSolver;
+    use novomodelo_sddp::SolverStatsDelta;
+    use novomodelo_sddp::setup::NodePos;
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
     use super::common::build_setup_in_code;
@@ -1387,7 +1391,7 @@ mod filling_cut_validity {
     /// both PreFilling at ids 0,1; `Hop` the transitive short-circuit target),
     /// an off-cascade control `Hctl`, plus a bus deficit segment + backup thermal so
     /// the LP stays feasible regardless of the filling hydros' frozen storage.
-    fn build_system() -> cobre_core::System {
+    fn build_system() -> novomodelo_core::System {
         use chrono::NaiveDate;
 
         let bus = make_bus(
@@ -1696,10 +1700,10 @@ mod filling_cut_validity {
                 stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit {
                     limit: N_ITERATIONS as u32,
                 }]),
-                stopping_mode: cobre_io::config::StoppingMode::Any,
+                stopping_mode: novomodelo_io::config::StoppingMode::Any,
                 cut_selection: RowSelectionConfig::default(),
                 solver: TrainingSolverConfig::default(),
-                parallelism: cobre_io::config::ParallelismConfig::default(),
+                parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
                 selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
             },
@@ -1984,14 +1988,16 @@ mod d35_pumping_commissioning_simulation {
     //! dense layout a dormant station keeps its column but is pinned to `[0, 0]`,
     //! emitting a ZERO row rather than being absent.
 
-    use cobre_io::config::SimulationSelection;
+    use novomodelo_io::config::SimulationSelection;
     use std::path::Path;
     use std::sync::mpsc;
 
-    use cobre_core::scenario::ScenarioSource;
-    use cobre_io::config::SimulationConfig;
-    use cobre_sddp::{StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_io::config::SimulationConfig;
+    use novomodelo_sddp::{
+        StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
+    };
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
 
@@ -2005,7 +2011,7 @@ mod d35_pumping_commissioning_simulation {
             .join("examples/deterministic/d35-pumping-commissioning");
 
         let config_path = case_dir.join("config.json");
-        let mut config = cobre_io::parse_config(&config_path).expect("config must parse");
+        let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
         // The shipped parity case trains only; enable one sim scenario so the pumping extraction path runs.
         config.simulation = SimulationConfig {
             enabled: true,
@@ -2014,7 +2020,7 @@ mod d35_pumping_commissioning_simulation {
             ..SimulationConfig::default()
         };
 
-        let system = cobre_io::load_case(&case_dir).expect("load_case must succeed");
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         let prepare_result = prepare_stochastic(
             system,
             &case_dir,
@@ -2149,14 +2155,16 @@ mod d36_thermal_line_commissioning_simulation {
     //! `entry <= stage.id && stage.id < exit`. This test exercises those paths
     //! directly through the full train+simulate pipeline.
 
-    use cobre_io::config::SimulationSelection;
+    use novomodelo_io::config::SimulationSelection;
     use std::path::Path;
     use std::sync::mpsc;
 
-    use cobre_core::scenario::ScenarioSource;
-    use cobre_io::config::SimulationConfig;
-    use cobre_sddp::{StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_io::config::SimulationConfig;
+    use novomodelo_sddp::{
+        StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
+    };
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
 
@@ -2170,7 +2178,7 @@ mod d36_thermal_line_commissioning_simulation {
             .join("examples/deterministic/d36-thermal-line-commissioning");
 
         let config_path = case_dir.join("config.json");
-        let mut config = cobre_io::parse_config(&config_path).expect("config must parse");
+        let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
         // The shipped parity case trains only; enable one sim scenario so the thermal/line
         // extraction paths run (`StudySetup::new` reads `n_scenarios` from this).
         config.simulation = SimulationConfig {
@@ -2180,7 +2188,7 @@ mod d36_thermal_line_commissioning_simulation {
             ..SimulationConfig::default()
         };
 
-        let system = cobre_io::load_case(&case_dir).expect("load_case must succeed");
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         let prepare_result = prepare_stochastic(
             system,
             &case_dir,
@@ -2365,15 +2373,17 @@ mod d42_nonfilling_hydro_commissioning {
     //! dormant, so an infeasibility here is a real trapped-water regression, not a
     //! tuning artifact.
 
-    use cobre_io::config::SimulationSelection;
+    use novomodelo_io::config::SimulationSelection;
     use std::path::Path;
     use std::sync::mpsc;
 
-    use cobre_core::TrainingEvent;
-    use cobre_core::scenario::ScenarioSource;
-    use cobre_io::config::SimulationConfig;
-    use cobre_sddp::{StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_core::TrainingEvent;
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_io::config::SimulationConfig;
+    use novomodelo_sddp::{
+        StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
+    };
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
 
@@ -2413,10 +2423,10 @@ mod d42_nonfilling_hydro_commissioning {
     }
 
     fn hydro_rows(
-        scenario: &cobre_sddp::SimulationScenarioResult,
+        scenario: &novomodelo_sddp::SimulationScenarioResult,
         hydro_id: i32,
         stage_index: usize,
-    ) -> Vec<&cobre_sddp::SimulationHydroResult> {
+    ) -> Vec<&novomodelo_sddp::SimulationHydroResult> {
         scenario.stages[stage_index]
             .hydros
             .iter()
@@ -2425,7 +2435,7 @@ mod d42_nonfilling_hydro_commissioning {
     }
 
     fn stage_hydro(
-        scenario: &cobre_sddp::SimulationScenarioResult,
+        scenario: &novomodelo_sddp::SimulationScenarioResult,
         hydro_id: i32,
         stage_index: usize,
     ) -> StageHydro {
@@ -2463,7 +2473,7 @@ mod d42_nonfilling_hydro_commissioning {
 
         // Load + parse succeed: a non-filling hydro carrying a commissioning window is
         // valid (the relaxed filling⟹entry guard), and the three windows round-trip.
-        let system_for_check = cobre_io::load_case(&case_dir).expect("load_case must succeed");
+        let system_for_check = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         for (id, entry, downstream) in [
             (H_NEW_ID, Some(ENTRY_STAGE_ID as i32), Some(H_DOWN_ID)),
             (H_DOWN_ID, None, None),
@@ -2484,7 +2494,7 @@ mod d42_nonfilling_hydro_commissioning {
         }
 
         let mut config =
-            cobre_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
+            novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
         config.simulation = SimulationConfig {
             enabled: true,
             io_channel_capacity: 8,
@@ -2492,7 +2502,7 @@ mod d42_nonfilling_hydro_commissioning {
             ..SimulationConfig::default()
         };
 
-        let system = cobre_io::load_case(&case_dir).expect("load_case must succeed");
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         let prepare_result = prepare_stochastic(
             system,
             &case_dir,
@@ -2708,10 +2718,10 @@ mod backwater_reference_volume {
 
     use std::path::Path;
 
-    use cobre_core::EntityId;
-    use cobre_io::FphaHyperplaneRow;
-    use cobre_io::extensions::{SelectionMode, load_tailrace_curves};
-    use cobre_sddp::hydro_models::prepare_hydro_models_from_artifacts;
+    use novomodelo_core::EntityId;
+    use novomodelo_io::FphaHyperplaneRow;
+    use novomodelo_io::extensions::{SelectionMode, load_tailrace_curves};
+    use novomodelo_sddp::hydro_models::prepare_hydro_models_from_artifacts;
 
     fn case_dir() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2723,9 +2733,9 @@ mod backwater_reference_volume {
     /// the field to empty); `prepare_hydro_models` fills it from disk in production. This
     /// helper mirrors that step so `prepare_hydro_models_from_artifacts` below sees the
     /// same backwater families the CLI/training path does.
-    fn load_d31() -> (cobre_core::System, cobre_io::CaseArtifacts) {
+    fn load_d31() -> (novomodelo_core::System, novomodelo_io::CaseArtifacts) {
         let dir = case_dir();
-        let loaded = cobre_io::load_case_with_artifacts(&dir).expect("d31 must load");
+        let loaded = novomodelo_io::load_case_with_artifacts(&dir).expect("d31 must load");
         let mut artifacts = loaded.artifacts;
         let tailrace_path = dir.join("system").join("tailrace_curves.parquet");
         artifacts.tailrace_curves =
@@ -2736,8 +2746,8 @@ mod backwater_reference_volume {
     /// FPHA export rows for upstream plant U (`hydro_id = 0`), sorted into a stable
     /// order so two runs compare element-by-element.
     fn upstream_planes(
-        system: &cobre_core::System,
-        artifacts: &cobre_io::CaseArtifacts,
+        system: &novomodelo_core::System,
+        artifacts: &novomodelo_io::CaseArtifacts,
     ) -> Vec<FphaHyperplaneRow> {
         let prepared = prepare_hydro_models_from_artifacts(system, artifacts, false, None)
             .expect("hydro models must prepare");
@@ -2757,7 +2767,7 @@ mod backwater_reference_volume {
     /// Clears downstream plant D's (`hydro_id = 1`) `reference_volume` so the resolver
     /// falls back to the 0.65 default fraction; U's plane fit is the only observable
     /// that may change.
-    fn clear_downstream_reference_volume(artifacts: &mut cobre_io::CaseArtifacts) {
+    fn clear_downstream_reference_volume(artifacts: &mut novomodelo_io::CaseArtifacts) {
         for config in &mut artifacts.production_models {
             if config.hydro_id != EntityId::from(1) {
                 continue;
@@ -2859,7 +2869,7 @@ mod exited_plant_transit {
     //! Water in transit toward a hydro plant that retires before it arrives must
     //! reach the next operating plant downstream.
     //!
-    //! ## Fixture (`crates/cobre-sddp/tests/fixtures/exited_plant_transit`)
+    //! ## Fixture (`crates/novomodelo-sddp/tests/fixtures/exited_plant_transit`)
     //!
     //! Cascade `U (id 0) -> J (id 1) -> D (id 2)`, two single-block 720 h stages, no
     //! storage anywhere, productivity 0.0036 MW/(m³/s) on every plant (1 MWh per
@@ -2878,9 +2888,9 @@ mod exited_plant_transit {
 
     use std::path::PathBuf;
 
-    use cobre_core::EntityId;
-    use cobre_sddp::{SimulationHydroResult, SimulationScenarioResult};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_core::EntityId;
+    use novomodelo_sddp::{SimulationHydroResult, SimulationScenarioResult};
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::{StubComm, fresh_system_and_setup_with, run_simulation};
 

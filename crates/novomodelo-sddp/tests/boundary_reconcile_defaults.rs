@@ -26,15 +26,15 @@
 )]
 
 use chrono::NaiveDate;
-use cobre_io::{
+use novomodelo_io::{
     EntitySlot, GraphManifest, PolicyCutRecord, ProducerBlock, SoftwareIdentity, StageCutsPayload,
     encode_slot_date, write_policy_checkpoint,
 };
-use cobre_sddp::test_support::{
+use novomodelo_sddp::test_support::{
     anticipated_slot, anticipated_slot_at, anticipated_slot_over, chain_graph_manifest,
     inflow_lag_slot, inflow_lag_slot_at, storage_slot, transit_bucket_slot_over, ymd,
 };
-use cobre_sddp::{
+use novomodelo_sddp::{
     BoundaryInjection, BoundaryLoadRequest, FullFcf, PolicyStageManifest, load_boundary_cuts,
     validate_policy_load,
 };
@@ -51,7 +51,7 @@ fn dated_inflow_lag_slot(id: i32, lag_depth: u32) -> EntitySlot {
 /// fixture in this suite prices, so a later date-driven boundary selector
 /// never zeroes the coefficients those fixtures assert on.
 fn fixture_priced_date(pool: u32) -> NaiveDate {
-    cobre_sddp::test_support::fixture_priced_date(ymd(2026, 4, 1), pool)
+    novomodelo_sddp::test_support::fixture_priced_date(ymd(2026, 4, 1), pool)
 }
 
 #[test]
@@ -64,7 +64,7 @@ fn producer_block() -> ProducerBlock {
         completed_iterations: 10,
         max_iterations: 50,
         forward_passes: 1,
-        ..cobre_sddp::test_support::producer_block()
+        ..novomodelo_sddp::test_support::producer_block()
     }
 }
 
@@ -96,8 +96,11 @@ fn write_checkpoint(dir: &std::path::Path, manifest: &[EntitySlot], coefficients
         graph_stage_id: -1,
         priced_state_date: encode_slot_date(fixture_priced_date(0)),
     };
-    let metadata =
-        cobre_sddp::test_support::checkpoint_metadata(1, chain_graph_manifest(1), producer_block());
+    let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
+        1,
+        chain_graph_manifest(1),
+        producer_block(),
+    );
     write_policy_checkpoint(dir, &[payload], &[], &metadata, &[]).expect("write checkpoint");
 }
 
@@ -539,7 +542,7 @@ fn boundary_injection_target_shaped_source_reconciles_bit_identically() {
 
 /// Given a current terminal manifest with a transit-bucket slot and a source
 /// carrying a matching transit-bucket slot at the SAME arrival interval (a
-/// Cobre-to-Cobre boundary with matching transit arcs), when the
+/// Novomodelo-to-Novomodelo boundary with matching transit arcs), when the
 /// `BoundaryInjection` load runs, then the transit coefficient blends at
 /// unit weight from the source verbatim, never zeroed — distinct from
 /// `boundary_injection_transit_bucket_defaults_to_zero`'s no-source-transit

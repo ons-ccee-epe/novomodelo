@@ -10,7 +10,7 @@
 //!
 //! ```json
 //! {
-//!   "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/post_study_stages.schema.json",
+//!   "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/post_study_stages.schema.json",
 //!   "stages": [
 //!     { "start_date": "2026-11-01", "duration_hours": 720.0 },
 //!     { "start_date": "2026-12-01", "duration_hours": 744.0 }
@@ -27,7 +27,7 @@
 //! (date-contiguity, first `start_date` equals the study horizon end, a
 //! `PostStudyThermalBound` for every post-study stage an anticipated lead
 //! reaches, and no post-study delivery decided at a pre-study stage) are
-//! enforced by the `cobre-io` semantic validator, which has the study
+//! enforced by the `novomodelo-io` semantic validator, which has the study
 //! calendar this reader does not.
 //!
 //! 1. Every `start_date` parses as ISO 8601 (`YYYY-MM-DD`); no two stages share a
@@ -40,7 +40,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use cobre_core::{EntityId, PostStudyStage, PostStudyStages, PostStudyThermalBound};
+use novomodelo_core::{EntityId, PostStudyStage, PostStudyStages, PostStudyThermalBound};
 use serde::Deserialize;
 
 use crate::LoadError;
@@ -238,7 +238,7 @@ mod tests {
     use crate::test_support::write_json;
 
     const VALID_JSON: &str = r#"{
-      "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/post_study_stages.schema.json",
+      "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/post_study_stages.schema.json",
       "stages": [
         { "start_date": "2026-11-01", "duration_hours": 720.0 },
         { "start_date": "2026-12-01", "duration_hours": 744.0 }

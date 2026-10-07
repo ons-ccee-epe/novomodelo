@@ -7,15 +7,15 @@
 
 use std::sync::mpsc;
 
-use cobre_core::{TrainingEvent, WorkerPhaseTimings, WorkerTimingPhase};
-use cobre_solver::{
+use criterion::{Criterion, criterion_group, criterion_main};
+use novomodelo_core::{TrainingEvent, WorkerPhaseTimings, WorkerTimingPhase};
+use novomodelo_solver::{
     SolverInterface,
     types::{Basis, RowBatch, SolutionView, SolverError, SolverStatistics, StageTemplate},
 };
-use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 
-use cobre_sddp::solver_stats::{SolverStatsDelta, StageWorkerStatsBuffer};
+use novomodelo_sddp::solver_stats::{SolverStatsDelta, StageWorkerStatsBuffer};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 struct BenchProfile;

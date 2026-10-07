@@ -5,8 +5,8 @@
 //! *distinct* reservoirs (rule 19), and it may be active only at stages where both
 //! endpoint hydros are `Operating` (rule 52).
 
-use cobre_core::commissioning::{commissioning_active, hydro_operating_active};
-use cobre_core::{Hydro, PumpingStation};
+use novomodelo_core::commissioning::{commissioning_active, hydro_operating_active};
+use novomodelo_core::{Hydro, PumpingStation};
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
 
@@ -97,7 +97,7 @@ fn first_stage_outside_operating_window(
 #[allow(clippy::unwrap_used, clippy::panic, clippy::doc_markdown)]
 mod tests {
     use chrono::NaiveDate;
-    use cobre_core::{EntityId, FillingConfig, Hydro, entities::PumpingStation};
+    use novomodelo_core::{EntityId, FillingConfig, Hydro, entities::PumpingStation};
 
     use super::super::validate_semantic_hydro_thermal;
     use crate::test_support::{make_data, make_hydro, make_stages};

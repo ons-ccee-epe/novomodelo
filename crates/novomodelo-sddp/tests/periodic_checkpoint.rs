@@ -8,12 +8,12 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
-use cobre_core::{System, TrainingEvent};
-use cobre_io::config::{CheckpointingConfig, StoppingRuleConfig};
-use cobre_io::output::policy::{PolicyCheckpoint, read_policy_checkpoint};
-use cobre_sddp::policy::orchestration::{CheckpointParams, write_checkpoint};
-use cobre_sddp::{SddpError, StudySetup, TrainingResult};
-use cobre_solver::ActiveSolver;
+use novomodelo_core::{System, TrainingEvent};
+use novomodelo_io::config::{CheckpointingConfig, StoppingRuleConfig};
+use novomodelo_io::output::policy::{PolicyCheckpoint, read_policy_checkpoint};
+use novomodelo_sddp::policy::orchestration::{CheckpointParams, write_checkpoint};
+use novomodelo_sddp::{SddpError, StudySetup, TrainingResult};
+use novomodelo_solver::ActiveSolver;
 
 use common::{StubComm, fresh_system_and_setup_with};
 

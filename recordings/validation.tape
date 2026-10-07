@@ -1,7 +1,7 @@
-# Cobre Validate Demo
+# Novomodelo Validate Demo
 # Generates: validation.gif
 
-Require cobre
+Require novomodelo
 
 Set Shell "bash"
 Set FontFamily "JetBrains Mono"
@@ -17,11 +17,11 @@ Set MarginFill "#2D3440"
 
 Output validation.gif
 
-Type "cobre init --template 1dtoy demo/"
+Type "novomodelo init --template 1dtoy demo/"
 Enter
 Sleep 5s
 
-Type "cobre validate demo/"
+Type "novomodelo validate demo/"
 Enter
 Sleep 5s
 

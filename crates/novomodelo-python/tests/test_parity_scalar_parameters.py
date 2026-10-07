@@ -1,6 +1,6 @@
 """CLI / Python parity tests for scalar-parameter resolution.
 
-Verifies that ``cobre.run.run()`` and the ``cobre`` CLI binary produce
+Verifies that ``novomodelo.run.run()`` and the ``novomodelo`` CLI binary produce
 identical ``simulation/buses.parquet`` output for a case that uses
 ``constraints/generic_parameters.json``.
 
@@ -10,7 +10,7 @@ single ``constant`` parameter named ``demand_scale``, and rewriting the existing
 generic constraint to reference ``@demand_scale`` in its expression.
 
 Run with (from the repo root):
-    pytest crates/cobre-python/tests/test_parity_scalar_parameters.py -v
+    pytest crates/novomodelo-python/tests/test_parity_scalar_parameters.py -v
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from _cobre_cli import run_cli
+from _novomodelo_cli import run_cli
 
 D13_CASE = "examples/deterministic/d13-generic-constraint"
 
@@ -126,10 +126,10 @@ def d13_python_output(
     d13_scalar_case_dir: pathlib.Path,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> pathlib.Path:
-    """Run the scalar-parameter D13 fixture via ``cobre.run.run()`` and return output dir."""
-    cobre_run = pytest.importorskip("cobre.run")
+    """Run the scalar-parameter D13 fixture via ``novomodelo.run.run()`` and return output dir."""
+    novomodelo_run = pytest.importorskip("novomodelo.run")
     output_dir = tmp_path_factory.mktemp("d13_python_out")
-    cobre_run.run(str(d13_scalar_case_dir), output_dir=str(output_dir))
+    novomodelo_run.run(str(d13_scalar_case_dir), output_dir=str(output_dir))
     return output_dir
 
 

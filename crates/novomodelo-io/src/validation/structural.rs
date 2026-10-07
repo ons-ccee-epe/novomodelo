@@ -17,7 +17,7 @@
 //!
 //! ```no_run
 //! use std::path::Path;
-//! use cobre_io::validation::{ValidationContext, structural::{InputFile, validate_structure}};
+//! use novomodelo_io::validation::{ValidationContext, structural::{InputFile, validate_structure}};
 //!
 //! let mut ctx = ValidationContext::new();
 //! let manifest = validate_structure(Path::new("/path/to/case"), &mut ctx);

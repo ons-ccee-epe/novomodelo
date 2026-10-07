@@ -1,9 +1,11 @@
 //! Context structs for reducing parameter count in hot-path functions.
 
-use cobre_core::{Stage, scenario::SamplingScheme, temporal::StageLagTransition};
-use cobre_solver::StageTemplate;
-use cobre_stochastic::par::resolve_stage_lag_transition;
-use cobre_stochastic::{ExternalScenarioLibrary, HistoricalScenarioLibrary, StochasticContext};
+use novomodelo_core::{Stage, scenario::SamplingScheme, temporal::StageLagTransition};
+use novomodelo_solver::StageTemplate;
+use novomodelo_stochastic::par::resolve_stage_lag_transition;
+use novomodelo_stochastic::{
+    ExternalScenarioLibrary, HistoricalScenarioLibrary, StochasticContext,
+};
 
 use crate::{
     dcs::DcsParams,
@@ -188,7 +190,7 @@ pub struct TrainingContext<'a> {
     pub load_scheme: SamplingScheme,
     /// Forward-pass noise source scheme for the NCS entity class.
     pub ncs_scheme: SamplingScheme,
-    /// Study stages (id >= 0) in index order; required by [`cobre_stochastic::build_forward_sampler`].
+    /// Study stages (id >= 0) in index order; required by [`novomodelo_stochastic::build_forward_sampler`].
     pub stages: &'a [Stage],
     /// Pre-standardized historical inflow windows library.
     pub historical_library: Option<&'a HistoricalScenarioLibrary>,

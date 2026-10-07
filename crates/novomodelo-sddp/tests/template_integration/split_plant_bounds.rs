@@ -9,20 +9,20 @@
 
 use std::path::Path;
 
-use cobre_core::EntityId;
-use cobre_core::scenario::ScenarioSource;
-use cobre_sddp::hydro_models::prepare_hydro_models;
-use cobre_sddp::indexer::{BlockIdx, HydroCell, HydroCellIndex, HydroSys};
-use cobre_sddp::{StageTemplates, StudyParams, prepare_stochastic};
+use novomodelo_core::EntityId;
+use novomodelo_core::scenario::ScenarioSource;
+use novomodelo_sddp::hydro_models::prepare_hydro_models;
+use novomodelo_sddp::indexer::{BlockIdx, HydroCell, HydroCellIndex, HydroSys};
+use novomodelo_sddp::{StageTemplates, StudyParams, prepare_stochastic};
 
 use super::*;
 
 /// Structural (Tier 3) read of d51's `col_upper` — no solve.
-fn build_d51_templates() -> (cobre_core::System, StageTemplates) {
+fn build_d51_templates() -> (novomodelo_core::System, StageTemplates) {
     let case_dir = Path::new("../../examples/deterministic/d51-split-plant-two-bus");
     let config_path = case_dir.join("config.json");
-    let config = cobre_io::parse_config(&config_path).expect("d51 config must parse");
-    let system = cobre_io::load_case(case_dir).expect("d51 load_case must succeed");
+    let config = novomodelo_io::parse_config(&config_path).expect("d51 config must parse");
+    let system = novomodelo_io::load_case(case_dir).expect("d51 load_case must succeed");
 
     let prepare_result = prepare_stochastic(
         system,
@@ -58,7 +58,7 @@ fn build_d51_templates() -> (cobre_core::System, StageTemplates) {
 /// Reads `StageTemplate.col_upper` directly, never hand-recomputing
 /// `cell_max_generation`'s formula.
 fn cell_generation_bounds_at(
-    system: &cobre_core::System,
+    system: &novomodelo_core::System,
     templates: &StageTemplates,
     stage_idx: usize,
     blk: usize,
@@ -154,7 +154,7 @@ fn split_plant_ac2_available_capacity_is_not_the_fold_after_sum_plant_product() 
 
     // Hand-derived from the deck alone (generate_parquet.py's override row and
     // hydros.json's declared group/plant envelopes) -- never routed through
-    // `cell_max_generation` or any other cobre-sddp/-io function, so this is
+    // `cell_max_generation` or any other novomodelo-sddp/-io function, so this is
     // an independent check on what a fold-after-sum implementation would give.
     let raw_group_sum_stage0 = 30.0_f64 + 20.0;
     let plant_resolved_envelope_stage0 = 28.0_f64;

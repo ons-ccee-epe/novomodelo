@@ -53,14 +53,14 @@ mod common;
 use std::collections::BTreeMap;
 use std::sync::mpsc;
 
-use cobre_core::{TrainingEvent, WorkerTimingPhase};
-use cobre_io::config::BackwardScheduler;
-use cobre_sddp::StudySetup;
-use cobre_sddp::setup::NodePos;
-use cobre_sddp::test_support::{
+use novomodelo_core::{TrainingEvent, WorkerTimingPhase};
+use novomodelo_io::config::BackwardScheduler;
+use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::setup::NodePos;
+use novomodelo_sddp::test_support::{
     extensive_form_optimum, trunk_fan_setup, trunk_fan_setup_enumerated,
 };
-use cobre_solver::ActiveSolver;
+use novomodelo_solver::ActiveSolver;
 
 use common::StubComm;
 

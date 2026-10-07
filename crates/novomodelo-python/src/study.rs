@@ -1,4 +1,4 @@
-//! The `cobre.Study` pyclass — a live, in-memory study loaded once from a case
+//! The `novomodelo.Study` pyclass — a live, in-memory study loaded once from a case
 //! directory and reused across the solve lifecycle.
 //!
 //! `Study.__new__` runs the front half of the solve lifecycle via
@@ -10,7 +10,7 @@
 //!
 //! ## Single-process only
 //!
-//! Like [`crate::run`], this module uses [`cobre_comm::LocalBackend`] exclusively
+//! Like [`crate::run`], this module uses [`novomodelo_comm::LocalBackend`] exclusively
 //! and never initializes MPI.
 
 use std::path::{Path, PathBuf};
@@ -21,13 +21,13 @@ use pyo3::exceptions::{PyIndexError, PyOSError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use cobre_io::remove_conditional_training_outputs;
-use cobre_io::remove_success_marker;
-use cobre_sddp::policy::full_fcf_load::{
+use novomodelo_io::remove_conditional_training_outputs;
+use novomodelo_io::remove_success_marker;
+use novomodelo_sddp::policy::full_fcf_load::{
     FullFcfLoadError, FullFcfLoadKind, check_full_fcf_load, locate_policy_dir,
 };
-use cobre_sddp::validate_phases::check_configured_policy_load;
-use cobre_sddp::{
+use novomodelo_sddp::validate_phases::check_configured_policy_load;
+use novomodelo_sddp::{
     FutureCostFunction, HydroModelSummary, ModelProvenanceReport, StochasticSummary, StudySetup,
     TrainingResult,
 };
@@ -45,7 +45,7 @@ use crate::run::{
 
 /// Map a [`PhaseError`] to a Python exception through the single
 /// [`convert_error`] mapping site, so `run_via_study` and the `Study` methods map
-/// identically. The `Load` arm maps each [`cobre_io::LoadError`] variant to its
+/// identically. The `Load` arm maps each [`novomodelo_io::LoadError`] variant to its
 /// typed class; the `Sddp` arm preserves the typed error's structured fields (e.g.
 /// `Infeasible`'s stage/iteration/scenario) as `SolverError` attributes.
 fn phase_error_to_pyerr(err: PhaseError) -> PyErr {
@@ -82,11 +82,11 @@ pub struct Study {
     /// mutate.
     setup: StudySetup,
     /// The system after stochastic preprocessing. Shared (not copied) with the
-    /// `cobre.model.System` view returned by the `system` getter; `train`/
+    /// `novomodelo.model.System` view returned by the `system` getter; `train`/
     /// `simulate` borrow `&*self.system`.
-    system: Arc<cobre_core::System>,
+    system: Arc<novomodelo_core::System>,
     /// The effective (post-override) configuration.
-    config: cobre_io::Config,
+    config: novomodelo_io::Config,
     /// The resolved tree seed.
     seed: u64,
     /// The model-provenance report.
@@ -97,9 +97,9 @@ pub struct Study {
     hydro_models_summary: HydroModelSummary,
     /// Validation-pipeline warnings captured during the case load, reported by
     /// [`Study::validate`].
-    warnings: Vec<cobre_io::ReportEntry>,
+    warnings: Vec<novomodelo_io::ReportEntry>,
     /// Wall-clock setup-phase timings captured during construction.
-    setup_timings: cobre_io::SetupTimings,
+    setup_timings: novomodelo_io::SetupTimings,
     /// The output directory fixed at construction time.
     output_dir: PathBuf,
     /// The case (input) directory fixed at construction time — the root
@@ -428,7 +428,7 @@ impl Study {
         let policy_dir = locate_policy_dir(kind, &out_dir, setup)?;
         let (fcf, training_result) =
             check_full_fcf_load(kind, &policy_dir, system, setup, &mut |msg| {
-                eprintln!("cobre-python: policy validation warning: {msg}");
+                eprintln!("novomodelo-python: policy validation warning: {msg}");
             })?
             .into_simulation_policy();
         Ok(Policy {
@@ -546,7 +546,7 @@ impl Study {
         self.output_dir.to_string_lossy().into_owned()
     }
 
-    /// The loaded [`cobre_core::System`] (as `cobre.model.System`).
+    /// The loaded [`novomodelo_core::System`] (as `novomodelo.model.System`).
     ///
     /// Lets callers introspect the loaded study without a reload. Returned via a
     /// cheap [`Arc`] refcount bump — the underlying `System` is shared, not
@@ -575,14 +575,14 @@ impl Study {
     }
 
     /// Validate the loaded study, returning the same report dict shape as
-    /// `cobre.io.validate`: keys `"valid"` (bool), `"errors"` (`list[dict]`),
+    /// `novomodelo.io.validate`: keys `"valid"` (bool), `"errors"` (`list[dict]`),
     /// `"warnings"` (`list[dict]`).
     ///
     /// `__new__` raises on any construction-time validation failure. This method
     /// reports the warnings captured then, and checks the configured warm-start,
     /// resume or simulation-only policy against this study's output directory
     /// without re-reading the case, so it returns `valid: False` for a policy
-    /// that `cobre.run.run` would refuse, with the error `cobre.io.validate`
+    /// that `novomodelo.run.run` would refuse, with the error `novomodelo.io.validate`
     /// reports for the same output directory.
     fn validate<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let outcome = py
@@ -709,7 +709,7 @@ impl Study {
     ///
     /// Validation is unconditional: the checkpoint is always checked against
     /// this study's state dimension, stage count, and terminal entity manifest
-    /// via [`cobre_sddp::validate_policy_load`].
+    /// via [`novomodelo_sddp::validate_policy_load`].
     ///
     /// # Errors
     ///

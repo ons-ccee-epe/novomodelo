@@ -1,6 +1,6 @@
 //! End-to-end integration tests for the SDDP training loop.
 //!
-//! Exercises the full [`cobre_sddp::train`] function with a small toy system
+//! Exercises the full [`novomodelo_sddp::train`] function with a small toy system
 //! (1 hydro, 0 PAR order, 2 stages). Also covers `StudySetup::new`'s own
 //! validation surface, e.g. a precomputed inflow model shape mismatch.
 
@@ -23,8 +23,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 
 use chrono::NaiveDate;
-use cobre_comm::{CommData, CommError, Communicator, ReduceOp};
-use cobre_core::{
+use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
+use novomodelo_core::{
     DeficitSegment, EntityId, TrainingEvent,
     scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, SamplingScheme,
@@ -34,14 +34,14 @@ use cobre_core::{
         StageStateConfig,
     },
 };
-use cobre_solver::{
+use novomodelo_solver::{
     Basis, RowBatch, SolverError, SolverInterface, SolverStatistics, StageTemplate,
 };
-use cobre_stochastic::{
+use novomodelo_stochastic::{
     ClassSchemes, OpeningTreeInputs, StochasticContext, build_stochastic_context,
 };
 
-use cobre_sddp::{
+use novomodelo_sddp::{
     SddpError, SolverProfiles, StopMask, StoppingMode, StoppingRule, StoppingRuleSet,
     TrainingConfig,
     config::{CutManagementConfig, EventConfig, LoopConfig, ShutdownSource},
@@ -180,9 +180,9 @@ impl MockSolver {
 }
 
 impl SolverInterface for MockSolver {
-    type Profile = cobre_solver::ActiveProfile;
+    type Profile = novomodelo_solver::ActiveProfile;
 
-    fn apply_profile(&mut self, _profile: &cobre_solver::ActiveProfile) {}
+    fn apply_profile(&mut self, _profile: &novomodelo_solver::ActiveProfile) {}
     fn solver_name_version(&self) -> String {
         "MockSolver 0.0.0".to_string()
     }
@@ -194,14 +194,14 @@ impl SolverInterface for MockSolver {
     fn solve(
         &mut self,
         _basis: Option<&Basis>,
-    ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+    ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
         let call = self.call_count;
         self.call_count += 1;
         if self.infeasible_on_call == Some(call) {
             return Err(SolverError::Infeasible);
         }
         let obj = self.objectives[call % self.objectives.len()];
-        Ok(cobre_solver::SolutionView {
+        Ok(novomodelo_solver::SolutionView {
             objective: obj,
             primal: &[0.0, 0.0, 0.0, 0.0],
             dual: &[0.0, 0.0],
@@ -212,7 +212,7 @@ impl SolverInterface for MockSolver {
     }
 
     fn get_basis(&mut self, out: &mut Basis) {
-        cobre_sddp::test_support::fill_consistent_basis(out);
+        novomodelo_sddp::test_support::fill_consistent_basis(out);
     }
 
     fn statistics(&self) -> SolverStatistics {
@@ -254,9 +254,9 @@ impl ExpandingMockSolver {
 }
 
 impl SolverInterface for ExpandingMockSolver {
-    type Profile = cobre_solver::ActiveProfile;
+    type Profile = novomodelo_solver::ActiveProfile;
 
-    fn apply_profile(&mut self, _profile: &cobre_solver::ActiveProfile) {}
+    fn apply_profile(&mut self, _profile: &novomodelo_solver::ActiveProfile) {}
     fn solver_name_version(&self) -> String {
         "ExpandingMockSolver 0.0.0".to_string()
     }
@@ -278,14 +278,14 @@ impl SolverInterface for ExpandingMockSolver {
     fn solve(
         &mut self,
         _basis: Option<&Basis>,
-    ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+    ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
         let call = self.call_count;
         self.call_count += 1;
         let obj = self.objectives[call % self.objectives.len()];
         if self.dual_buf.len() < self.current_num_rows {
             self.dual_buf.resize(self.current_num_rows, 0.0);
         }
-        Ok(cobre_solver::SolutionView {
+        Ok(novomodelo_solver::SolutionView {
             objective: obj,
             primal: &self.primal_buf,
             dual: &self.dual_buf[..self.current_num_rows],
@@ -296,7 +296,7 @@ impl SolverInterface for ExpandingMockSolver {
     }
 
     fn get_basis(&mut self, out: &mut Basis) {
-        cobre_sddp::test_support::fill_consistent_basis(out);
+        novomodelo_sddp::test_support::fill_consistent_basis(out);
     }
 
     fn statistics(&self) -> SolverStatistics {
@@ -315,9 +315,9 @@ impl SolverInterface for ExpandingMockSolver {
 /// Build a `StochasticContext` with `n_stages` stages, 1 hydro, and seed 42.
 #[allow(clippy::cast_possible_wrap, clippy::too_many_lines)]
 fn make_stochastic_context(n_stages: usize, n_openings: usize) -> StochasticContext {
-    use cobre_core::SystemBuilder;
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::InflowModel;
+    use novomodelo_core::SystemBuilder;
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::InflowModel;
 
     let bus = make_bus(
         EntityId(0),
@@ -540,7 +540,7 @@ fn run_one_deterministic_pass(
     fx: &Fixture,
     stochastic: &StochasticContext,
     limit: u64,
-) -> cobre_sddp::TrainingOutcome {
+) -> novomodelo_sddp::TrainingOutcome {
     let mut fcf = make_fcf(fx.n_stages);
     let mut solver = MockSolver::with_fixed(50.0);
     let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
@@ -575,7 +575,7 @@ fn run_one_deterministic_pass(
         &mut fcf,
         &stage_ctx,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
@@ -644,7 +644,7 @@ fn train_converges_with_mock_solver() {
         &mut fcf,
         &stage_ctx,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&fx.stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
@@ -742,7 +742,7 @@ fn train_lb_monotonically_nondecreasing() {
         &mut fcf,
         &stage_ctx,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&fx.stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
@@ -829,7 +829,7 @@ fn train_emits_correct_event_sequence() {
         &mut fcf,
         &stage_ctx,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&fx.stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
@@ -922,7 +922,7 @@ fn train_stops_at_iteration_limit() {
         &mut fcf,
         &stage_ctx,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&fx.stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
@@ -959,7 +959,7 @@ fn train_stops_at_iteration_limit() {
 fn train_with_a_shutdown_during_iteration_1(
     iteration_limit: u64,
     level: usize,
-) -> (cobre_sddp::TrainingOutcome, Arc<AtomicUsize>) {
+) -> (novomodelo_sddp::TrainingOutcome, Arc<AtomicUsize>) {
     let fx = Fixture::new(2);
     let mut fcf = make_fcf(fx.n_stages);
     let mut solver = MockSolver::with_fixed(100.0);
@@ -1006,7 +1006,7 @@ fn train_with_a_shutdown_during_iteration_1(
         &mut fcf,
         &stage_ctx,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&fx.stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
@@ -1168,7 +1168,7 @@ fn train_propagates_infeasible_error() {
         &mut fcf,
         &stage_ctx,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&fx.stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
@@ -1214,7 +1214,7 @@ fn train_propagates_infeasible_error() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn d17_level1_cut_selection_convergence() {
-    use cobre_sddp::CutSelectionStrategy;
+    use novomodelo_sddp::CutSelectionStrategy;
 
     let fx = Fixture::new(2);
     let mut fcf = make_fcf(fx.n_stages);
@@ -1259,7 +1259,7 @@ fn d17_level1_cut_selection_convergence() {
         &mut fcf,
         &stage_ctx,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&fx.stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
@@ -1354,7 +1354,7 @@ fn d17_level1_cut_selection_convergence() {
 /// (zero rejections).
 #[test]
 fn d17_level1_cut_selection_reconstruction() {
-    use cobre_sddp::CutSelectionStrategy;
+    use novomodelo_sddp::CutSelectionStrategy;
 
     let fx = Fixture::new(2);
     let mut fcf = make_fcf(fx.n_stages);
@@ -1397,7 +1397,7 @@ fn d17_level1_cut_selection_reconstruction() {
         &mut fcf,
         &stage_ctx,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&fx.stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
@@ -1444,7 +1444,7 @@ fn d17_level1_cut_selection_reconstruction() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn d18_lml1_cut_selection_convergence() {
-    use cobre_sddp::CutSelectionStrategy;
+    use novomodelo_sddp::CutSelectionStrategy;
 
     let fx = Fixture::new(2);
     let mut fcf = make_fcf(fx.n_stages);
@@ -1489,7 +1489,7 @@ fn d18_lml1_cut_selection_convergence() {
         &mut fcf,
         &stage_ctx,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&fx.stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
@@ -1575,14 +1575,16 @@ fn d18_lml1_cut_selection_convergence() {
 fn test_forward_basis_reconstruct_bit_identical_d01() {
     use std::path::Path;
 
-    use cobre_core::scenario::ScenarioSource;
-    use cobre_sddp::{StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_sddp::{
+        StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
+    };
+    use novomodelo_solver::ActiveSolver;
 
     let case_dir = Path::new("../../examples/deterministic/d01-thermal-dispatch");
     let config_path = case_dir.join("config.json");
-    let config = cobre_io::parse_config(&config_path).expect("config must parse");
-    let system = cobre_io::load_case(case_dir).expect("load_case must succeed");
+    let config = novomodelo_io::parse_config(&config_path).expect("config must parse");
+    let system = novomodelo_io::load_case(case_dir).expect("load_case must succeed");
 
     let prepare_result = prepare_stochastic(
         system,
@@ -1669,7 +1671,7 @@ fn frozen_backward_pass_smoke_test() {
         &mut fcf,
         &stage_ctx,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&fx.stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
@@ -1713,11 +1715,11 @@ fn frozen_backward_pass_smoke_test() {
 /// shape is rejected at setup rather than silently treated as absent.
 #[test]
 fn par_model_shape_mismatch_is_rejected_at_setup() {
-    use cobre_sddp::StudySetup;
-    use cobre_sddp::hydro_models::PrepareHydroModelsResult;
     use common::in_code_studies::{
         ChronologicalNoiseSpec, chronological_noise_study, stochastic_parallel_study,
     };
+    use novomodelo_sddp::StudySetup;
+    use novomodelo_sddp::hydro_models::PrepareHydroModelsResult;
 
     let (system, config) = chronological_noise_study(&ChronologicalNoiseSpec {
         block_modes: [BlockMode::Parallel; 2],

@@ -21,8 +21,8 @@
 //! ## Example
 //!
 //! ```rust
-//! use cobre_sddp::cut::fcf::FutureCostFunction;
-//! use cobre_sddp::setup::NodeId;
+//! use novomodelo_sddp::cut::fcf::FutureCostFunction;
+//! use novomodelo_sddp::setup::NodeId;
 //!
 //! let mut fcf = FutureCostFunction::new(3, 4, 10, 50, &[0; 3]);
 //! assert_eq!(fcf.pools.len(), 3);
@@ -43,7 +43,7 @@ use crate::SddpError;
 use crate::SddpError::Validation;
 use crate::setup::NodeId;
 
-use cobre_io::StageCutsReadResult;
+use novomodelo_io::StageCutsReadResult;
 
 /// All-pools container for the Future Cost Function (FCF): one [`CutPool`] per
 /// pool id. Per-cut logic is delegated to [`CutPool`].
@@ -85,7 +85,7 @@ impl FutureCostFunction {
     /// # Example
     ///
     /// ```rust
-    /// use cobre_sddp::cut::fcf::FutureCostFunction;
+    /// use novomodelo_sddp::cut::fcf::FutureCostFunction;
     ///
     /// let fcf = FutureCostFunction::new(5, 9, 10, 100, &[0; 5]);
     /// assert_eq!(fcf.pools.len(), 5);
@@ -256,19 +256,19 @@ impl FutureCostFunction {
     /// fails to compile.
     ///
     /// ```compile_fail
-    /// use cobre_sddp::FutureCostFunction;
+    /// use novomodelo_sddp::FutureCostFunction;
     ///
-    /// fn call_without_proof(stage_results: &[cobre_io::StageCutsReadResult]) {
+    /// fn call_without_proof(stage_results: &[novomodelo_io::StageCutsReadResult]) {
     ///     let _ = FutureCostFunction::new_with_warm_start(stage_results, &[], &[], 4, 10);
     /// }
     /// ```
     ///
     /// ```compile_fail
-    /// use cobre_sddp::{BoundaryInjection, FutureCostFunction, PolicyLoadProof};
+    /// use novomodelo_sddp::{BoundaryInjection, FutureCostFunction, PolicyLoadProof};
     ///
     /// fn call_with_wrong_kind(
     ///     proof: &PolicyLoadProof<BoundaryInjection>,
-    ///     stage_results: &[cobre_io::StageCutsReadResult],
+    ///     stage_results: &[novomodelo_io::StageCutsReadResult],
     /// ) {
     ///     let _ = FutureCostFunction::new_with_warm_start(proof, stage_results, &[], &[], 4, 10);
     /// }
@@ -776,8 +776,8 @@ mod tests {
         intercept: f64,
         coefficients: Vec<f64>,
         is_active: bool,
-    ) -> cobre_io::OwnedPolicyCutRecord {
-        cobre_io::OwnedPolicyCutRecord {
+    ) -> novomodelo_io::OwnedPolicyCutRecord {
+        novomodelo_io::OwnedPolicyCutRecord {
             cut_id: 0,
             slot_index: 0,
             iteration: 0,
@@ -791,10 +791,10 @@ mod tests {
     fn make_stage(
         stage_id: u32,
         state_dimension: u32,
-        cuts: Vec<cobre_io::OwnedPolicyCutRecord>,
-    ) -> cobre_io::StageCutsReadResult {
+        cuts: Vec<novomodelo_io::OwnedPolicyCutRecord>,
+    ) -> novomodelo_io::StageCutsReadResult {
         let populated_count = u32::try_from(cuts.len()).expect("cuts count fits in u32");
-        cobre_io::StageCutsReadResult {
+        novomodelo_io::StageCutsReadResult {
             stage_id,
             state_dimension,
             capacity: populated_count,
@@ -805,7 +805,7 @@ mod tests {
             cost_scale_factor: None,
             node_id: -1,
             graph_stage_id: -1,
-            priced_state_date: cobre_io::STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+            priced_state_date: novomodelo_io::STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
         }
     }
 

@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 
-use cobre_core::{EntityId, scenario::LoadModel, temporal::Stage};
+use novomodelo_core::{EntityId, scenario::LoadModel, temporal::Stage};
 
 use crate::StochasticError;
 
@@ -47,8 +47,8 @@ pub type EntityFactorEntry<'a> = (EntityId, i32, &'a [BlockFactorPair]);
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{EntityId, scenario::LoadModel, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
-/// use cobre_stochastic::normal::precompute::PrecomputedNormal;
+/// use novomodelo_core::{EntityId, scenario::LoadModel, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
+/// use novomodelo_stochastic::normal::precompute::PrecomputedNormal;
 /// use chrono::NaiveDate;
 ///
 /// let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
@@ -284,7 +284,7 @@ impl Default for PrecomputedNormal {
 
 #[cfg(test)]
 mod tests {
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId,
         scenario::LoadModel,
         temporal::{NoiseMethod, ScenarioSourceConfig, Stage},
@@ -294,7 +294,7 @@ mod tests {
     use super::{BlockFactorPair, EntityFactorEntry, PrecomputedNormal};
 
     fn make_stage(index: usize, id: i32) -> Stage {
-        cobre_core::test_support::make_stage(StageSpec {
+        novomodelo_core::test_support::make_stage(StageSpec {
             id,
             index: Some(index),
             season_id: Some(0),

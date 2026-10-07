@@ -5,7 +5,7 @@
 //!
 //! [`StochasticError::InvalidParParameters`]: crate::StochasticError::InvalidParParameters
 
-use cobre_core::InflowModel;
+use novomodelo_core::InflowModel;
 
 use crate::StochasticError;
 
@@ -24,8 +24,8 @@ use crate::StochasticError;
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{EntityId, scenario::InflowModel};
-/// use cobre_stochastic::par::validation::validate_par_parameters;
+/// use novomodelo_core::{EntityId, scenario::InflowModel};
+/// use novomodelo_stochastic::par::validation::validate_par_parameters;
 ///
 /// let valid = InflowModel {
 ///     hydro_id: EntityId(1),
@@ -75,7 +75,7 @@ pub fn validate_par_parameters(inflow_models: &[InflowModel]) -> Result<(), Stoc
 
 #[cfg(test)]
 mod tests {
-    use cobre_core::InflowModel;
+    use novomodelo_core::InflowModel;
 
     use super::validate_par_parameters;
     use crate::StochasticError;
@@ -105,7 +105,7 @@ mod tests {
         ar_coefficients: Vec<f64>,
         residual_std_ratio: f64,
     ) -> InflowModel {
-        use cobre_core::scenario::AnnualComponent;
+        use novomodelo_core::scenario::AnnualComponent;
         crate::test_support::make_inflow_model(InflowModelSpec {
             hydro_id,
             stage_id,

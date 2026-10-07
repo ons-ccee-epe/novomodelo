@@ -2,18 +2,18 @@
 //!
 //! Flattens the resolved [`EvaporationModelSet`](super::types::EvaporationModelSet)
 //! and its reference-volume provenance into the
-//! `Vec<cobre_io::EvaporationModelRow>` the CLI and Python write sites persist to
+//! `Vec<novomodelo_io::EvaporationModelRow>` the CLI and Python write sites persist to
 //! `evaporation_models.parquet`.
 
-use cobre_core::System;
-use cobre_io::{DeviationSummary, DeviationWorstEntry, EvaporationModelRow};
+use novomodelo_core::System;
+use novomodelo_io::{DeviationSummary, DeviationWorstEntry, EvaporationModelRow};
 
 use super::types::{
     EvaporationModel, EvaporationReferenceSource, FphaFitDeviationEntry, PrepareHydroModelsResult,
 };
 
 /// Provenance tag string for a [`EvaporationReferenceSource`]. The literals must
-/// match the `source` column values [`cobre_io::extensions::parse_evaporation_models`]
+/// match the `source` column values [`novomodelo_io::extensions::parse_evaporation_models`]
 /// round-trips.
 fn reference_source_tag(source: EvaporationReferenceSource) -> &'static str {
     match source {
@@ -86,7 +86,7 @@ pub fn build_evaporation_model_rows(
 }
 
 /// Roll up the computed-FPHA fit deviations into the run-level
-/// [`cobre_io::DeviationSummary`] in `training/metadata.json`. `None` on an empty
+/// [`novomodelo_io::DeviationSummary`] in `training/metadata.json`. `None` on an empty
 /// slice (the metadata section is then omitted).
 ///
 /// # Determinism — first-seen wins on a relative tie
@@ -150,7 +150,7 @@ pub fn build_deviation_summary(entries: &[FphaFitDeviationEntry]) -> Option<Devi
 )]
 mod tests {
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         Bus, DeficitSegment, EntityId, Hydro, SystemBuilder,
         entities::hydro::{HydroGenerationModel, HydroPenalties},
         scenario::CorrelationModel,
@@ -243,7 +243,7 @@ mod tests {
         }
     }
 
-    fn make_system(hydros: Vec<Hydro>, stages: Vec<Stage>) -> cobre_core::System {
+    fn make_system(hydros: Vec<Hydro>, stages: Vec<Stage>) -> novomodelo_core::System {
         let bus = Bus {
             id: EntityId(10),
             name: "B10".to_string(),

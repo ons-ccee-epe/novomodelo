@@ -10,12 +10,12 @@
 )]
 
 use chrono::NaiveDate;
-use cobre_core::test_support::{
+use novomodelo_core::test_support::{
     BusSpec, ContractSpec, HydroSpec, LineSpec, NcsSpec, PumpingSpec, ThermalSpec, UnitGroupSpec,
     make_bus, make_contract, make_hydro, make_line, make_ncs, make_pumping_station, make_thermal,
     make_unit_group,
 };
-use cobre_core::{
+use novomodelo_core::{
     Bus, DeficitSegment, DiversionChannel, EnergyContract, EntityId, FillingConfig, Hydro,
     HydroUnitGroup, Line, NonControllableSource, PumpingStation, SystemBuilder, Thermal,
     ValidationError,

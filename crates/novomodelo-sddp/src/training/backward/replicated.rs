@@ -17,8 +17,8 @@
 //! one LP load per child, exactly as the by-scenario backward's per-trial-point
 //! loop does minus the trial-point axis.
 
-use cobre_comm::Communicator;
-use cobre_solver::SolverInterface;
+use novomodelo_comm::Communicator;
+use novomodelo_solver::SolverInterface;
 
 use crate::{
     SddpError,

@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-use cobre_core::{BlockMode, EntityId, PostStudyThermalBound};
-use cobre_solver::StageTemplate;
+use novomodelo_core::{BlockMode, EntityId, PostStudyThermalBound};
+use novomodelo_solver::StageTemplate;
 
 use crate::lp::builder::{GenericConstraintRowEntry, StageGeometry, StateBox};
 use crate::lp::indexer::{

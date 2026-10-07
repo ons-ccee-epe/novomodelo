@@ -5,11 +5,11 @@
 //! Each fixture is synthetic: the deck that first surfaced the idle-thermal
 //! shape below is unavailable, so the case is reproduced by mechanism, not by
 //! the original data. Every fixture is built via `build_setup_in_code`
-//! (`tests/common/mod.rs`), which bypasses `cobre-io` the same way
+//! (`tests/common/mod.rs`), which bypasses `novomodelo-io` the same way
 //! `anticipated_commitment_drifted_over_cap_is_absorbed`
 //! (`tests/anticipated_scenarios.rs`) does. Most are within-drift seeds
-//! `cobre-io` would accept; `anticipated_commitment_over_cap_seed_is_clamped`
-//! injects a genuine over-commitment in-code (one `cobre-io` would reject at
+//! `novomodelo-io` would accept; `anticipated_commitment_over_cap_seed_is_clamped`
+//! injects a genuine over-commitment in-code (one `novomodelo-io` would reject at
 //! load time) to prove the setup-time seed clamp absorbs it too.
 //!
 //! Each test asserts a positive completion signal — `Ok` with a finite
@@ -34,27 +34,27 @@
 mod common;
 
 use chrono::{NaiveDate, TimeDelta};
-use cobre_core::entities::hydro::HydroGenerationModel;
-use cobre_core::entities::thermal::AnticipatedConfig;
-use cobre_core::scenario::InflowModel;
-use cobre_core::temporal::{
+use novomodelo_core::entities::hydro::HydroGenerationModel;
+use novomodelo_core::entities::thermal::AnticipatedConfig;
+use novomodelo_core::scenario::InflowModel;
+use novomodelo_core::temporal::{
     Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig,
 };
-use cobre_core::{
+use novomodelo_core::{
     AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
     ContractBlockBounds, EntityId, HydroBlockBounds, HydroPastDefluence, HydroPenalties,
     HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties,
     NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
     ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
 };
-use cobre_io::config::{
+use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig, InflowNonNegativityMethod,
     ModelingConfig, ParallelismConfig, PolicyConfig, RowSelectionConfig,
     SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode, StoppingRuleConfig,
     TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
-use cobre_sddp::test_support::oracle_initial_state;
-use cobre_solver::ActiveSolver;
+use novomodelo_sddp::test_support::oracle_initial_state;
+use novomodelo_solver::ActiveSolver;
 
 use common::builders::{
     BusSpec, HydroSpec, StageSpec, ThermalSpec, make_bus, make_hydro, make_stage, make_thermal,

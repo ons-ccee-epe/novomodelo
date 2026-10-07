@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId,
     entities::Hydro,
     resolved::{HydroUnitGroupOverride, ResolvedHydroUnitGroupBounds},
@@ -23,7 +23,7 @@ use crate::constraints::HydroUnitGroupBoundsRow;
 /// Build a resolved hydro unit group bounds table from parsed override rows.
 ///
 /// `hydros` must be in the order
-/// [`SystemBuilder::build`](cobre_core::SystemBuilder::build) establishes;
+/// [`SystemBuilder::build`](novomodelo_core::SystemBuilder::build) establishes;
 /// slice position becomes the entity index. Each plant's `unit_groups` are
 /// sorted by id by `Hydro::sort_unit_groups`, applied identically at parse
 /// time and by `SystemBuilder::build`, so that axis has no equivalent
@@ -58,7 +58,7 @@ pub fn resolve_hydro_unit_group_bounds(
     let max_blocks = blocks_per_stage.iter().copied().max().unwrap_or(0);
 
     let mut table =
-        ResolvedHydroUnitGroupBounds::new(&cobre_core::HydroUnitGroupBoundsCountsSpec {
+        ResolvedHydroUnitGroupBounds::new(&novomodelo_core::HydroUnitGroupBoundsCountsSpec {
             groups_per_plant: &groups_per_plant,
             n_stages,
             max_blocks,
@@ -139,7 +139,7 @@ fn apply_group_bounds_row(row: &HydroUnitGroupBoundsRow, over: &mut HydroUnitGro
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use cobre_core::entities::{HydroGenerationModel, HydroPenalties, HydroUnitGroup};
+    use novomodelo_core::entities::{HydroGenerationModel, HydroPenalties, HydroUnitGroup};
 
     fn make_penalties() -> HydroPenalties {
         HydroPenalties {

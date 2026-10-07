@@ -45,8 +45,8 @@
 //! block hours sum equals stage duration) is deferred to the semantic layer.
 
 use chrono::{Datelike, NaiveDate};
-use cobre_core::HorizonGraph;
-use cobre_core::temporal::{
+use novomodelo_core::HorizonGraph;
+use novomodelo_core::temporal::{
     Block, BlockMode, Node, NoiseMethod, PolicyGraphType, SUB_PERIOD_TOLERANCE_DAYS,
     ScenarioSourceConfig, SeasonCycleType, SeasonCycles, SeasonDefinition, SeasonMap, Stage,
     StageRiskConfig, StageStateConfig, Transition,
@@ -413,7 +413,7 @@ fn default_true() -> bool {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::stages::parse_stages;
+/// use novomodelo_io::stages::parse_stages;
 /// use std::path::Path;
 ///
 /// let data = parse_stages(Path::new("case/stages.json")).unwrap();
@@ -460,7 +460,7 @@ pub struct StagesData {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::stages::parse_stages;
+/// use novomodelo_io::stages::parse_stages;
 /// use std::path::Path;
 ///
 /// let data = parse_stages(Path::new("case/stages.json")).unwrap();
@@ -1213,7 +1213,7 @@ mod tests {
 
     /// Canonical minimal valid `stages.json` used as a baseline for error tests.
     const VALID_JSON: &str = r#"{
-      "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/stages.schema.json",
+      "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/stages.schema.json",
       "policy_graph": {
         "type": "finite_horizon",
         "annual_discount_rate": 0.06,
@@ -2710,9 +2710,9 @@ mod tests {
 
     /// `precompute_stage_lag_transitions` must derive its "stages after this
     /// one" window from each stage's own position in the slice passed to it,
-    /// not from `Stage.index` — [`Stage::index`](cobre_core::temporal::Stage)
+    /// not from `Stage.index` — [`Stage::index`](novomodelo_core::temporal::Stage)
     /// is 0 for every stage `parse_stages`/`convert_stages` produces, since
-    /// [`SystemBuilder::build`](cobre_core::SystemBuilder::build) is the only
+    /// [`SystemBuilder::build`](novomodelo_core::SystemBuilder::build) is the only
     /// writer. Three single-occurrence-per-season monthly stages are each the
     /// last (and only) occurrence of their season within the year, so
     /// `finalize_period` must be `true` for all three; an index-trusting
@@ -2764,8 +2764,11 @@ mod tests {
             .season_map
             .as_ref()
             .expect("season_definitions parsed into a SeasonMap");
-        let transitions =
-            cobre_stochastic::par::precompute_stage_lag_transitions(&data.stages, season_map, 0);
+        let transitions = novomodelo_stochastic::par::precompute_stage_lag_transitions(
+            &data.stages,
+            season_map,
+            0,
+        );
 
         let finalize: Vec<bool> = transitions.iter().map(|t| t.finalize_period).collect();
         assert_eq!(

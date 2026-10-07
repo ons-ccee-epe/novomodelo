@@ -1,6 +1,6 @@
-//! `cobre.write_policy_checkpoint` — writes a policy checkpoint from plain
+//! `novomodelo.write_policy_checkpoint` — writes a policy checkpoint from plain
 //! Python dicts/sequences, single-sourcing the `FlatBuffers` byte layout in
-//! `cobre_io`.
+//! `novomodelo_io`.
 //!
 //! Input dict shapes mirror what [`crate::results::load_policy`] emits, so a
 //! loaded checkpoint round-trips: load -> edit -> write. `season_manifest` and
@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use cobre_io::{
+use novomodelo_io::{
     CheckpointManifest, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, FORMAT_VERSION, GraphManifest,
     HydroSeasonOrders, ManifestEdge, ManifestNode, PolicyBasisRecord, PolicyCutRecord,
     ProducerBlock, SOFTWARE_NAME, SOFTWARE_VERSION, STAGE_CUTS_GRAPH_STAGE_ID_SENTINEL,
@@ -23,7 +23,7 @@ use cobre_io::{
     STAGE_STATES_NODE_ID_SENTINEL, SeasonManifest, StageCutsPayload, StageStatesPayload,
     StateFamily,
 };
-use cobre_sddp::{SddpError, reserve_boundary_inflow_lag_slots};
+use novomodelo_sddp::{SddpError, reserve_boundary_inflow_lag_slots};
 
 use crate::errors::{ErrorSource, convert_error};
 
@@ -426,7 +426,7 @@ fn build_stage_cuts_data(
 /// default to empty when omitted (a checkpoint authored from raw cut data
 /// carries neither).
 ///
-/// `inflow_lag_depth`, when set to `N > 0`, has cobre reserve `N` canonical
+/// `inflow_lag_depth`, when set to `N > 0`, has novomodelo reserve `N` canonical
 /// `HydroInflowLag` state slots per storage hydro in every stage's manifest
 /// (via [`reserve_boundary_inflow_lag_slots`]), placing each cut's
 /// `inflow_lag_coefficients` at their `(hydro, depth)` positions. This is the
@@ -435,8 +435,8 @@ fn build_stage_cuts_data(
 /// byte-identical to one written without the argument.
 ///
 /// The checkpoint always records this build's identity
-/// ([`cobre_io::SoftwareIdentity::THIS_BUILD`]); `software`, `software_version`
-/// or `cobre_version` keys in `metadata` are ignored.
+/// ([`novomodelo_io::SoftwareIdentity::THIS_BUILD`]); `software`, `software_version`
+/// or `novomodelo_version` keys in `metadata` are ignored.
 ///
 /// # Errors
 ///
@@ -448,7 +448,7 @@ fn build_stage_cuts_data(
 /// `season_manifest` whose `hydro_orders` are not ascending by `hydro_id` or
 /// whose `orders` lengths disagree with `n_seasons` is written as given and
 /// rejected by [`crate::results::load_policy`] with `OutputError`. Otherwise
-/// the `cobre.errors` leaf mapped from the underlying [`cobre_io::OutputError`].
+/// the `novomodelo.errors` leaf mapped from the underlying [`novomodelo_io::OutputError`].
 #[pyfunction]
 #[pyo3(signature = (path, stage_cuts, metadata, stage_bases=None, stage_states=None, inflow_lag_depth=None))]
 #[allow(clippy::needless_pass_by_value)]
@@ -549,7 +549,7 @@ pub fn write_policy_checkpoint(
             })
             .collect();
 
-        cobre_io::write_policy_checkpoint(
+        novomodelo_io::write_policy_checkpoint(
             &path,
             &stage_cuts_payloads,
             &basis_records,

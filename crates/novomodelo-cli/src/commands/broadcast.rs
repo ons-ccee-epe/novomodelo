@@ -2,12 +2,12 @@
 
 use std::num::NonZeroUsize;
 
-use cobre_comm::Communicator;
-use cobre_core::scenario::ScenarioSource;
-use cobre_io::Config;
-use cobre_io::PolicyMode;
-use cobre_io::config::{BackwardScheduler, CheckpointSchedule, PhaseSolverProfileConfig};
-use cobre_sddp::{
+use novomodelo_comm::Communicator;
+use novomodelo_core::scenario::ScenarioSource;
+use novomodelo_io::Config;
+use novomodelo_io::PolicyMode;
+use novomodelo_io::config::{BackwardScheduler, CheckpointSchedule, PhaseSolverProfileConfig};
+use novomodelo_sddp::{
     BoundaryStateRequirements, CutSelectionStrategy, InflowNonNegativityMethod, StoppingMode,
     StoppingRule, StoppingRuleSet, StudyParams,
     setup::{
@@ -119,7 +119,7 @@ pub(crate) struct BroadcastConfig {
     pub(crate) simulation_source: ScenarioSource,
     /// Backward-pass solver profile override (`training.solver.backward`),
     /// resolved identically on every rank by
-    /// `cobre_sddp::solve::solver_phase::Phase::resolve_profile`.
+    /// `novomodelo_sddp::solve::solver_phase::Phase::resolve_profile`.
     pub(crate) training_solver_backward: Option<PhaseSolverProfileConfig>,
     /// Forward-pass solver profile override (`training.solver.forward`).
     pub(crate) training_solver_forward: Option<PhaseSolverProfileConfig>,
@@ -449,7 +449,7 @@ where
 mod tests {
     use super::{BroadcastNodeGraph, BroadcastOpeningTree, BroadcastStoppingRule, broadcast_value};
     use crate::error::CliError;
-    use cobre_sddp::setup::{
+    use novomodelo_sddp::setup::{
         NodeGraph, NodeId, NodeOpenings, NodePos, NodeRuntime, NodeSuccessor, OpeningSource,
         StageIdx,
     };
@@ -462,7 +462,7 @@ mod tests {
 
     #[test]
     fn broadcast_value_local_round_trips_simple() {
-        let comm = cobre_comm::LocalBackend;
+        let comm = novomodelo_comm::LocalBackend;
         let original = Simple {
             x: std::f64::consts::PI,
             label: "test".to_string(),
@@ -473,7 +473,7 @@ mod tests {
 
     #[test]
     fn broadcast_value_local_round_trips_vec() {
-        let comm = cobre_comm::LocalBackend;
+        let comm = novomodelo_comm::LocalBackend;
         let original: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0];
         let result = broadcast_value(Some(original.clone()), &comm).unwrap();
         assert_eq!(result, original);
@@ -485,8 +485,8 @@ mod tests {
     /// every non-root rank with an empty terminal pool.
     #[test]
     fn broadcast_value_round_trips_owned_policy_cut_records() {
-        let comm = cobre_comm::LocalBackend;
-        let original = vec![cobre_io::OwnedPolicyCutRecord {
+        let comm = novomodelo_comm::LocalBackend;
+        let original = vec![novomodelo_io::OwnedPolicyCutRecord {
             cut_id: 7,
             slot_index: 3,
             iteration: 2,
@@ -512,7 +512,7 @@ mod tests {
             seed: Option<i64>,
         }
 
-        let comm = cobre_comm::LocalBackend;
+        let comm = novomodelo_comm::LocalBackend;
         let original = ConfigLike {
             forward_passes: 4,
             seed: Some(42),
@@ -523,7 +523,7 @@ mod tests {
 
     #[test]
     fn broadcast_value_returns_err_when_root_passes_none() {
-        let comm = cobre_comm::LocalBackend;
+        let comm = novomodelo_comm::LocalBackend;
         let result: Result<Simple, _> = broadcast_value(None, &comm);
         assert!(result.is_err(), "expected Err when root passes None");
         let err = result.unwrap_err();
@@ -537,7 +537,7 @@ mod tests {
     #[cfg(feature = "mpi")]
     #[test]
     fn broadcast_value_round_trips_u64() {
-        let comm = cobre_comm::LocalBackend;
+        let comm = novomodelo_comm::LocalBackend;
         let value: u64 = 42;
         let result = broadcast_value(Some(value), &comm).unwrap();
         assert_eq!(result, 42u64);
@@ -685,7 +685,7 @@ mod tests {
 
     #[test]
     fn broadcast_optional_node_graph_local_round_trips() {
-        let comm = cobre_comm::LocalBackend;
+        let comm = novomodelo_comm::LocalBackend;
         let original = sample_node_graph();
         let bcast = Some(BroadcastNodeGraph::from(&original));
         let result = broadcast_value(Some(bcast), &comm).unwrap();
@@ -725,7 +725,7 @@ mod tests {
 
         // training.enabled omitted from JSON → defaults to true.
         let enabled_json = r#"{ "training": {} }"#;
-        let enabled_config: cobre_io::Config = serde_json::from_str(enabled_json).unwrap();
+        let enabled_config: novomodelo_io::Config = serde_json::from_str(enabled_json).unwrap();
         let bcast = BroadcastConfig::from_config(&enabled_config).unwrap();
         assert!(
             bcast.training_enabled,
@@ -733,7 +733,7 @@ mod tests {
         );
 
         let disabled_json = r#"{ "training": { "enabled": false } }"#;
-        let disabled_config: cobre_io::Config = serde_json::from_str(disabled_json).unwrap();
+        let disabled_config: novomodelo_io::Config = serde_json::from_str(disabled_json).unwrap();
         let bcast = BroadcastConfig::from_config(&disabled_config).unwrap();
         assert!(
             !bcast.training_enabled,
@@ -748,7 +748,7 @@ mod tests {
     #[test]
     fn broadcast_config_carries_boundary_requirements() {
         use super::BroadcastConfig;
-        use cobre_sddp::BoundaryStateRequirements;
+        use novomodelo_sddp::BoundaryStateRequirements;
 
         let json = r#"{
             "training": {
@@ -756,7 +756,7 @@ mod tests {
                 "stopping_rules": [{ "type": "iteration_limit", "limit": 10 }]
             }
         }"#;
-        let config: cobre_io::Config = serde_json::from_str(json).unwrap();
+        let config: novomodelo_io::Config = serde_json::from_str(json).unwrap();
         let mut original = BroadcastConfig::from_config(&config).unwrap();
         assert!(
             !original.boundary.is_present(),
@@ -783,7 +783,7 @@ mod tests {
                 "checkpointing": { "enabled": true, "initial_iteration": 3, "interval_iterations": 2 }
             }
         }"#;
-        let config: cobre_io::Config = serde_json::from_str(json).unwrap();
+        let config: novomodelo_io::Config = serde_json::from_str(json).unwrap();
         let original = BroadcastConfig::from_config(&config).unwrap();
         let expected = config
             .checkpoint_schedule(std::path::Path::new("config.json"))
@@ -799,7 +799,7 @@ mod tests {
 
     #[test]
     fn broadcast_config_roundtrips_via_postcard() {
-        use cobre_core::scenario::{SamplingScheme, ScenarioSource};
+        use novomodelo_core::scenario::{SamplingScheme, ScenarioSource};
 
         use super::BroadcastConfig;
 
@@ -811,7 +811,7 @@ mod tests {
                 ]
             }
         }"#;
-        let config: cobre_io::Config = serde_json::from_str(json).unwrap();
+        let config: novomodelo_io::Config = serde_json::from_str(json).unwrap();
         let original = BroadcastConfig::from_config(&config).unwrap();
 
         let bytes = postcard::to_allocvec(&original)
@@ -870,7 +870,7 @@ mod tests {
                 }
             }
         }"#;
-        let config: cobre_io::Config = serde_json::from_str(json).unwrap();
+        let config: novomodelo_io::Config = serde_json::from_str(json).unwrap();
         let original = BroadcastConfig::from_config(&config).unwrap();
 
         let bytes = postcard::to_allocvec(&original)
@@ -913,7 +913,7 @@ mod tests {
                 "solver": { "scale": "solver_scaling" }
             }
         }"#;
-        let config: cobre_io::Config = serde_json::from_str(json).unwrap();
+        let config: novomodelo_io::Config = serde_json::from_str(json).unwrap();
         let original = BroadcastConfig::from_config(&config).unwrap();
 
         let bytes = postcard::to_allocvec(&original)
@@ -932,7 +932,7 @@ mod tests {
         assert_eq!(decoded_backward.price, original_backward.price);
         assert_eq!(
             decoded_backward.price,
-            Some(cobre_io::config::PriceStrategy::RowHyperSparse)
+            Some(novomodelo_io::config::PriceStrategy::RowHyperSparse)
         );
         assert!(decoded_backward.dual_edge_weight.is_none());
 
@@ -950,7 +950,7 @@ mod tests {
         );
         assert_eq!(
             decoded_forward.dual_edge_weight,
-            Some(cobre_io::config::DualEdgeWeight::Dantzig)
+            Some(novomodelo_io::config::DualEdgeWeight::Dantzig)
         );
 
         let original_sim = original
@@ -964,7 +964,7 @@ mod tests {
         assert_eq!(decoded_sim.scale, original_sim.scale);
         assert_eq!(
             decoded_sim.scale,
-            Some(cobre_io::config::ScaleStrategy::SolverScaling)
+            Some(novomodelo_io::config::ScaleStrategy::SolverScaling)
         );
     }
 
@@ -974,7 +974,7 @@ mod tests {
     /// must produce bitwise-identical `ActiveProfile`s for every phase.
     #[test]
     fn resolve_profile_is_identical_before_and_after_broadcast_roundtrip() {
-        use cobre_sddp::Phase;
+        use novomodelo_sddp::Phase;
 
         use super::BroadcastConfig;
 
@@ -993,7 +993,7 @@ mod tests {
                 "solver": { "dual_edge_weight": "steepest_edge" }
             }
         }"#;
-        let config: cobre_io::Config = serde_json::from_str(json).unwrap();
+        let config: novomodelo_io::Config = serde_json::from_str(json).unwrap();
         let rank0 = BroadcastConfig::from_config(&config).unwrap();
 
         let bytes = postcard::to_allocvec(&rank0).expect("postcard serialization must succeed");
@@ -1039,7 +1039,7 @@ mod tests {
                 ]
             }
         }"#;
-        let config: cobre_io::Config = serde_json::from_str(json).unwrap();
+        let config: novomodelo_io::Config = serde_json::from_str(json).unwrap();
         let bcast = BroadcastConfig::from_config(&config).unwrap();
         let bytes = postcard::to_allocvec(&bcast).expect("postcard serialization must succeed");
 
@@ -1058,9 +1058,9 @@ mod tests {
 
     #[test]
     fn broadcast_optional_opening_tree_local_round_trips() {
-        use cobre_stochastic::context::OpeningTree;
+        use novomodelo_stochastic::context::OpeningTree;
 
-        let comm = cobre_comm::LocalBackend;
+        let comm = novomodelo_comm::LocalBackend;
 
         // Some(None) = no user-supplied tree.
         let no_tree: Option<BroadcastOpeningTree> = None;

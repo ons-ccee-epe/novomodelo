@@ -8,15 +8,15 @@
 
 use std::collections::HashMap;
 
-use cobre_core::entities::NonControllableSource;
-use cobre_core::resolved::ResolvedNcsBounds;
+use novomodelo_core::entities::NonControllableSource;
+use novomodelo_core::resolved::ResolvedNcsBounds;
 
 use crate::constraints::NcsBoundsRow;
 
 /// Build a resolved NCS bounds table from parsed override rows.
 ///
 /// `non_controllable_sources` must be in the order
-/// [`SystemBuilder::build`](cobre_core::SystemBuilder::build) establishes;
+/// [`SystemBuilder::build`](novomodelo_core::SystemBuilder::build) establishes;
 /// slice position becomes the entity index. With empty `overrides`, every
 /// cell holds the entity's installed-capacity default.
 #[must_use]
@@ -64,7 +64,7 @@ pub fn resolve_ncs_bounds(
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use cobre_core::EntityId;
+    use novomodelo_core::EntityId;
 
     fn make_ncs(id: i32, max_mw: f64) -> NonControllableSource {
         NonControllableSource {

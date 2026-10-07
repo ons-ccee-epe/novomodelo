@@ -3,8 +3,8 @@
 //! All scratch is owned by the workspace and reused across scenarios; no
 //! allocation occurs on this hot path.
 
-use cobre_solver::SolverInterface;
-use cobre_stochastic::par::resolve_stage_lag_transition;
+use novomodelo_solver::SolverInterface;
+use novomodelo_stochastic::par::resolve_stage_lag_transition;
 
 use crate::{
     context::{StageContext, TrainingContext},

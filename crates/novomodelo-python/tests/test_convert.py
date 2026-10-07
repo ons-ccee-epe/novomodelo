@@ -1,11 +1,11 @@
 """Tests for the GIL-bound Python -> serde_json conversion helpers.
 
-`cobre_python::convert::py_to_json_value` and `pydict_to_json_map` translate a
+`novomodelo_python::convert::py_to_json_value` and `pydict_to_json_map` translate a
 `config_overrides` mapping (Python objects) into a `serde_json::Map` under the
 GIL, before the solver lifecycle releases it. Because those helpers require a
 live interpreter, they cannot be unit-tested from a `#[cfg(test)]` Rust module
 linked against the extension-module build. Instead they are exercised here
-through `cobre.io.validate(..., config_overrides=...)`, mirroring how
+through `novomodelo.io.validate(..., config_overrides=...)`, mirroring how
 `results::json_value_to_py` is covered from Python.
 
 The conversion is verified per Python type by routing each value onto a real
@@ -17,7 +17,7 @@ shape. Rejection of unsupported types (and non-str dict keys) is asserted via
 the GIL before the merge, not case-validation failures returned as data.
 
 Run with (from the repo root):
-    pytest crates/cobre-python/tests/test_convert.py -v
+    pytest crates/novomodelo-python/tests/test_convert.py -v
 """
 
 from __future__ import annotations
@@ -29,9 +29,9 @@ VALID_CASE_1DTOY = "examples/1dtoy"
 
 def _validate(overrides: dict[str, object]) -> dict[str, object]:
     """Run validate() with the given override map and return the result dict."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    return cobre.io.validate(VALID_CASE_1DTOY, config_overrides=overrides)
+    return novomodelo.io.validate(VALID_CASE_1DTOY, config_overrides=overrides)
 
 
 # ── per-type round-trip (py_to_json_value) ────────────────────────────────────

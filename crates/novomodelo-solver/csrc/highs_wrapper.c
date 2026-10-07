@@ -1,4 +1,4 @@
-/* Thin C wrapper around the HiGHS C API for use by cobre-solver FFI bindings.
+/* Thin C wrapper around the HiGHS C API for use by novomodelo-solver FFI bindings.
  *
  * Each function is a direct call-through to the corresponding Highs_* function
  * with no additional logic.  The wrapper uses int32_t consistently; HighsInt
@@ -10,22 +10,22 @@
 #include <interfaces/highs_c_api.h>
 #include <stdint.h>
 
-/* Compile-time guard: cobre-solver assumes HighsInt is 32-bit (i32 on the
+/* Compile-time guard: novomodelo-solver assumes HighsInt is 32-bit (i32 on the
  * Rust side). If HiGHS was built with -DHIGHSINT64=ON, all FFI calls would
  * silently corrupt memory. Fail the build early instead.
  * MSVC does not support C11 _Static_assert in C mode; use a negative-sized
  * array trick that works on all compilers. */
-typedef char cobre_highs_int_size_check_[(sizeof(HighsInt) == sizeof(int32_t)) ? 1 : -1];
+typedef char novomodelo_highs_int_size_check_[(sizeof(HighsInt) == sizeof(int32_t)) ? 1 : -1];
 
 /* =========================================================================
  * Lifecycle
  * ========================================================================= */
 
-void* cobre_highs_create(void) {
+void* novomodelo_highs_create(void) {
     return Highs_create();
 }
 
-void cobre_highs_destroy(void* highs) {
+void novomodelo_highs_destroy(void* highs) {
     Highs_destroy(highs);
 }
 
@@ -33,7 +33,7 @@ void cobre_highs_destroy(void* highs) {
  * Model Loading
  * ========================================================================= */
 
-int32_t cobre_highs_pass_lp(
+int32_t novomodelo_highs_pass_lp(
     void*           highs,
     int32_t         num_col,
     int32_t         num_row,
@@ -73,7 +73,7 @@ int32_t cobre_highs_pass_lp(
  * Row / Column Modification
  * ========================================================================= */
 
-int32_t cobre_highs_add_rows(
+int32_t novomodelo_highs_add_rows(
     void*           highs,
     int32_t         num_new_row,
     const double*   lower,
@@ -95,7 +95,7 @@ int32_t cobre_highs_add_rows(
     );
 }
 
-int32_t cobre_highs_change_rows_bounds_by_set(
+int32_t novomodelo_highs_change_rows_bounds_by_set(
     void*           highs,
     int32_t         num_set_entries,
     const int32_t*  set,
@@ -111,7 +111,7 @@ int32_t cobre_highs_change_rows_bounds_by_set(
     );
 }
 
-int32_t cobre_highs_change_cols_bounds_by_set(
+int32_t novomodelo_highs_change_cols_bounds_by_set(
     void*           highs,
     int32_t         num_set_entries,
     const int32_t*  set,
@@ -131,7 +131,7 @@ int32_t cobre_highs_change_cols_bounds_by_set(
  * Solving
  * ========================================================================= */
 
-int32_t cobre_highs_run(void* highs) {
+int32_t novomodelo_highs_run(void* highs) {
     return (int32_t)Highs_run(highs);
 }
 
@@ -139,7 +139,7 @@ int32_t cobre_highs_run(void* highs) {
  * Solution Extraction
  * ========================================================================= */
 
-int32_t cobre_highs_get_solution(
+int32_t novomodelo_highs_get_solution(
     const void* highs,
     double*     col_value,
     double*     col_dual,
@@ -149,15 +149,15 @@ int32_t cobre_highs_get_solution(
     return (int32_t)Highs_getSolution(highs, col_value, col_dual, row_value, row_dual);
 }
 
-double cobre_highs_get_objective_value(const void* highs) {
+double novomodelo_highs_get_objective_value(const void* highs) {
     return Highs_getObjectiveValue(highs);
 }
 
-int32_t cobre_highs_get_model_status(const void* highs) {
+int32_t novomodelo_highs_get_model_status(const void* highs) {
     return (int32_t)Highs_getModelStatus(highs);
 }
 
-int32_t cobre_highs_get_simplex_iteration_count(const void* highs) {
+int32_t novomodelo_highs_get_simplex_iteration_count(const void* highs) {
     return (int32_t)Highs_getSimplexIterationCount(highs);
 }
 
@@ -165,7 +165,7 @@ int32_t cobre_highs_get_simplex_iteration_count(const void* highs) {
  * Basis Management
  * ========================================================================= */
 
-int32_t cobre_highs_get_basis(
+int32_t novomodelo_highs_get_basis(
     const void* highs,
     int32_t*    col_status,
     int32_t*    row_status
@@ -181,7 +181,7 @@ int32_t cobre_highs_get_basis(
  * Reset
  * ========================================================================= */
 
-int32_t cobre_highs_clear_solver(void* highs) {
+int32_t novomodelo_highs_clear_solver(void* highs) {
     return (int32_t)Highs_clearSolver(highs);
 }
 
@@ -189,7 +189,7 @@ int32_t cobre_highs_clear_solver(void* highs) {
  * Configuration
  * ========================================================================= */
 
-int32_t cobre_highs_set_string_option(
+int32_t novomodelo_highs_set_string_option(
     void*       highs,
     const char* option,
     const char* value
@@ -197,7 +197,7 @@ int32_t cobre_highs_set_string_option(
     return (int32_t)Highs_setStringOptionValue(highs, option, value);
 }
 
-int32_t cobre_highs_set_bool_option(
+int32_t novomodelo_highs_set_bool_option(
     void*       highs,
     const char* option,
     int32_t     value
@@ -205,7 +205,7 @@ int32_t cobre_highs_set_bool_option(
     return (int32_t)Highs_setBoolOptionValue(highs, option, (HighsInt)value);
 }
 
-int32_t cobre_highs_set_int_option(
+int32_t novomodelo_highs_set_int_option(
     void*       highs,
     const char* option,
     int32_t     value
@@ -213,7 +213,7 @@ int32_t cobre_highs_set_int_option(
     return (int32_t)Highs_setIntOptionValue(highs, option, (HighsInt)value);
 }
 
-int32_t cobre_highs_set_double_option(
+int32_t novomodelo_highs_set_double_option(
     void*       highs,
     const char* option,
     double      value
@@ -221,7 +221,7 @@ int32_t cobre_highs_set_double_option(
     return (int32_t)Highs_setDoubleOptionValue(highs, option, value);
 }
 
-int32_t cobre_highs_get_int_option(
+int32_t novomodelo_highs_get_int_option(
     const void* highs,
     const char* option,
     int32_t*    value
@@ -229,7 +229,7 @@ int32_t cobre_highs_get_int_option(
     return (int32_t)Highs_getIntOptionValue(highs, option, (HighsInt*)value);
 }
 
-int32_t cobre_highs_get_double_option(
+int32_t novomodelo_highs_get_double_option(
     const void* highs,
     const char* option,
     double*     value
@@ -241,7 +241,7 @@ int32_t cobre_highs_get_double_option(
  * Diagnostics
  * ========================================================================= */
 
-int32_t cobre_highs_get_dual_ray(
+int32_t novomodelo_highs_get_dual_ray(
     const void* highs,
     int32_t*    has_dual_ray,
     double*     dual_ray_value
@@ -253,7 +253,7 @@ int32_t cobre_highs_get_dual_ray(
     );
 }
 
-int32_t cobre_highs_get_primal_ray(
+int32_t novomodelo_highs_get_primal_ray(
     const void* highs,
     int32_t*    has_primal_ray,
     double*     primal_ray_value
@@ -269,11 +269,11 @@ int32_t cobre_highs_get_primal_ray(
  * Info
  * ========================================================================= */
 
-int32_t cobre_highs_get_num_col(const void* highs) {
+int32_t novomodelo_highs_get_num_col(const void* highs) {
     return (int32_t)Highs_getNumCol(highs);
 }
 
-int32_t cobre_highs_get_num_row(const void* highs) {
+int32_t novomodelo_highs_get_num_row(const void* highs) {
     return (int32_t)Highs_getNumRow(highs);
 }
 
@@ -281,14 +281,14 @@ int32_t cobre_highs_get_num_row(const void* highs) {
  * Version query (no instance required)
  * ========================================================================= */
 
-int32_t cobre_highs_version_major(void) {
+int32_t novomodelo_highs_version_major(void) {
     return (int32_t)Highs_versionMajor();
 }
 
-int32_t cobre_highs_version_minor(void) {
+int32_t novomodelo_highs_version_minor(void) {
     return (int32_t)Highs_versionMinor();
 }
 
-int32_t cobre_highs_version_patch(void) {
+int32_t novomodelo_highs_version_patch(void) {
     return (int32_t)Highs_versionPatch();
 }

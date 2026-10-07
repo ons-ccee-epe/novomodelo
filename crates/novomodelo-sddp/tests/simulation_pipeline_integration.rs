@@ -1,4 +1,4 @@
-//! Integration tests for [`cobre_sddp::simulate`] (simulation pipeline).
+//! Integration tests for [`novomodelo_sddp::simulate`] (simulation pipeline).
 //!
 //! Uses a [`MockSolver`] and [`StubComm`] to exercise the simulation pipeline
 //! end-to-end without a real LP solver or MPI communicator. Covers scenario
@@ -23,15 +23,15 @@
 use std::collections::HashMap;
 use std::sync::mpsc;
 
-use cobre_comm::{CommData, CommError, Communicator, ReduceOp};
-use cobre_core::scenario::SamplingScheme;
-use cobre_solver::{
+use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
+use novomodelo_core::scenario::SamplingScheme;
+use novomodelo_solver::{
     Basis, BasisStatus, LpSolution, RowBatch, SolverError, SolverInterface, SolverStatistics,
     StageTemplate,
 };
-use cobre_stochastic::{StochasticContext, select_transition_child};
+use novomodelo_stochastic::{StochasticContext, select_transition_child};
 
-use cobre_sddp::{
+use novomodelo_sddp::{
     CapturedBasis, EnergyConversionSet, Phase, SimulationError,
     context::TrainingContext,
     cut::FutureCostFunction,
@@ -171,7 +171,7 @@ impl MockSolver {
         Self::new(solution, Some(n))
     }
 
-    fn do_solve(&mut self) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+    fn do_solve(&mut self) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
         let call = self.call_count;
         self.call_count += 1;
         if self.infeasible_at == Some(call) {
@@ -181,7 +181,7 @@ impl MockSolver {
         self.buf_dual.clone_from(&self.solution.dual);
         self.buf_reduced_costs
             .clone_from(&self.solution.reduced_costs);
-        Ok(cobre_solver::SolutionView {
+        Ok(novomodelo_solver::SolutionView {
             objective: self.solution.objective,
             primal: &self.buf_primal,
             dual: &self.buf_dual,
@@ -193,9 +193,9 @@ impl MockSolver {
 }
 
 impl SolverInterface for MockSolver {
-    type Profile = cobre_solver::ActiveProfile;
+    type Profile = novomodelo_solver::ActiveProfile;
 
-    fn apply_profile(&mut self, _profile: &cobre_solver::ActiveProfile) {}
+    fn apply_profile(&mut self, _profile: &novomodelo_solver::ActiveProfile) {}
     fn solver_name_version(&self) -> String {
         "MockSolver 0.0.0".to_string()
     }
@@ -210,7 +210,7 @@ impl SolverInterface for MockSolver {
     fn solve(
         &mut self,
         basis: Option<&Basis>,
-    ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+    ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
         if let Some(b) = basis {
             self.solve_with_basis_count += 1;
             self.recorded_basis = Some(b.clone());
@@ -220,7 +220,7 @@ impl SolverInterface for MockSolver {
         self.do_solve()
     }
     fn get_basis(&mut self, out: &mut Basis) {
-        cobre_sddp::test_support::fill_consistent_basis(out);
+        novomodelo_sddp::test_support::fill_consistent_basis(out);
     }
     fn record_reconstruction_stats(&mut self) {}
     fn statistics(&self) -> SolverStatistics {
@@ -257,16 +257,18 @@ fn make_stochastic_context(n_stages: usize) -> StochasticContext {
     use std::collections::BTreeMap;
 
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
     };
-    use cobre_core::temporal::{
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{DeficitSegment, EntityId, SystemBuilder};
-    use cobre_stochastic::context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+    use novomodelo_core::{DeficitSegment, EntityId, SystemBuilder};
+    use novomodelo_stochastic::context::{
+        ClassSchemes, OpeningTreeInputs, build_stochastic_context,
+    };
 
     let bus = make_bus(
         EntityId(0),
@@ -421,7 +423,7 @@ fn hydro_productivities_1hydro(n_stages: usize) -> Vec<Vec<f64>> {
 /// Build a zero-valued [`EnergyConversionSet`] for tests
 /// that do not assert on energy fields.
 fn zero_energy_conversion(n_hydros: usize, n_stages: usize) -> EnergyConversionSet {
-    use cobre_sddp::energy_conversion::EnergyConversion;
+    use novomodelo_sddp::energy_conversion::EnergyConversion;
     let zero_ec = EnergyConversion {
         equivalent_productivity_mw_per_m3s: 0.0,
         reference_volume_hm3: 0.0,
@@ -430,7 +432,7 @@ fn zero_energy_conversion(n_hydros: usize, n_stages: usize) -> EnergyConversionS
     EnergyConversionSet::new(
         vec![vec![zero_ec; n_stages]; n_hydros],
         vec![vec![0.0_f64; n_stages]; n_hydros],
-        &cobre_sddp::test_support::minimal_hydros(n_hydros),
+        &novomodelo_sddp::test_support::minimal_hydros(n_hydros),
         n_stages,
     )
 }
@@ -441,8 +443,8 @@ fn zero_energy_conversion(n_hydros: usize, n_stages: usize) -> EnergyConversionS
 /// assertions about scenario ordering and call counts remain valid.
 fn single_workspace(solver: MockSolver) -> Vec<SolverWorkspace<MockSolver>> {
     let state = state_layout_for(1, 0);
-    let stochastic = cobre_sddp::test_support::hydro_free_stochastic_context(1, 1);
-    let node_graph = cobre_sddp::test_support::chain_node_graph(&stochastic);
+    let stochastic = novomodelo_sddp::test_support::hydro_free_stochastic_context(1, 1);
+    let node_graph = novomodelo_sddp::test_support::chain_node_graph(&stochastic);
     let sd = study_dims();
     let horizon = HorizonMode::Finite { num_stages: 1 };
     let cut_state_layouts = all_enabled_cut_state_layouts(&state, 1);
@@ -515,12 +517,12 @@ fn simulate_single_rank_4_scenarios_produces_4_results() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    let result = cobre_sddp::simulate(
+    let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -543,7 +545,7 @@ fn simulate_single_rank_4_scenarios_produces_4_results() {
         &config,
         SimulationOutputSpec {
             result_tx: &tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 2],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 2],
@@ -624,12 +626,12 @@ fn simulate_infeasible_returns_lp_infeasible_error() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    let result = cobre_sddp::simulate(
+    let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -652,7 +654,7 @@ fn simulate_infeasible_returns_lp_infeasible_error() {
         &config,
         SimulationOutputSpec {
             result_tx: &tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 2],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 2],
@@ -724,12 +726,12 @@ fn simulate_infeasible_at_scenario2_stage3() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    let result = cobre_sddp::simulate(
+    let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -752,7 +754,7 @@ fn simulate_infeasible_at_scenario2_stage3() {
         &config,
         SimulationOutputSpec {
             result_tx: &tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 4],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 4],
@@ -823,12 +825,12 @@ fn simulate_channel_closed_returns_error() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    let result = cobre_sddp::simulate(
+    let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -851,7 +853,7 @@ fn simulate_channel_closed_returns_error() {
         &config,
         SimulationOutputSpec {
             result_tx: &tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 2],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 2],
@@ -922,12 +924,12 @@ fn simulate_total_cost_equals_sum_of_stage_costs() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    let run_result = cobre_sddp::simulate(
+    let run_result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -950,7 +952,7 @@ fn simulate_total_cost_equals_sum_of_stage_costs() {
         &config,
         SimulationOutputSpec {
             result_tx: &tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 3],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 3],
@@ -1019,12 +1021,12 @@ fn simulate_cost_buffer_scenario_ids_match_assigned_range() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    let run_result = cobre_sddp::simulate(
+    let run_result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -1047,7 +1049,7 @@ fn simulate_cost_buffer_scenario_ids_match_assigned_range() {
         &config,
         SimulationOutputSpec {
             result_tx: &tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 1],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 1],
@@ -1117,12 +1119,12 @@ fn simulate_channel_receives_results_in_scenario_order() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    cobre_sddp::simulate(
+    novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -1145,7 +1147,7 @@ fn simulate_channel_receives_results_in_scenario_order() {
         &config,
         SimulationOutputSpec {
             result_tx: &tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 1],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 1],
@@ -1211,12 +1213,12 @@ fn test_simulation_parallel_cost_determinism() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    let result_1 = cobre_sddp::simulate(
+    let result_1 = novomodelo_sddp::simulate(
         &mut workspaces_1,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -1239,7 +1241,7 @@ fn test_simulation_parallel_cost_determinism() {
         &config,
         SimulationOutputSpec {
             result_tx: &tx1,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 2],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 2],
@@ -1265,7 +1267,7 @@ fn test_simulation_parallel_cost_determinism() {
 
     let (tx4, _rx4) = mpsc::sync_channel(64);
     let workspace_4_training_ctx = TrainingContext {
-        node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+        node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
         horizon: &horizon,
         state: &state,
         cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -1301,12 +1303,12 @@ fn test_simulation_parallel_cost_determinism() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    let result_4 = cobre_sddp::simulate(
+    let result_4 = novomodelo_sddp::simulate(
         &mut workspaces_4,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -1329,7 +1331,7 @@ fn test_simulation_parallel_cost_determinism() {
         &config,
         SimulationOutputSpec {
             result_tx: &tx4,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 2],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 2],
@@ -1391,7 +1393,7 @@ fn test_simulation_parallel_cost_determinism() {
 /// and a finite non-NaN `scenario_cost`.
 #[test]
 fn simulate_emits_progress_events() {
-    use cobre_core::TrainingEvent;
+    use novomodelo_core::TrainingEvent;
 
     let n_stages = 2;
     let templates: Vec<StageTemplate> = (0..n_stages).map(|_| hydro_only_bus_template()).collect();
@@ -1424,12 +1426,12 @@ fn simulate_emits_progress_events() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    let result = cobre_sddp::simulate(
+    let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -1452,7 +1454,7 @@ fn simulate_emits_progress_events() {
         &config,
         SimulationOutputSpec {
             result_tx: &result_tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 2],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 2],
@@ -1543,12 +1545,12 @@ fn simulate_no_events_when_sender_is_none() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    let result = cobre_sddp::simulate(
+    let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -1571,7 +1573,7 @@ fn simulate_no_events_when_sender_is_none() {
         &config,
         SimulationOutputSpec {
             result_tx: &result_tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 2],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 2],
@@ -1613,7 +1615,7 @@ fn simulate_no_events_when_sender_is_none() {
 /// contains events by the time `simulate()` returns.
 #[test]
 fn simulate_progress_events_received_before_return() {
-    use cobre_core::TrainingEvent;
+    use novomodelo_core::TrainingEvent;
 
     let n_stages = 1;
     let n_scenarios = 10;
@@ -1647,12 +1649,12 @@ fn simulate_progress_events_received_before_return() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    cobre_sddp::simulate(
+    novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -1675,7 +1677,7 @@ fn simulate_progress_events_received_before_return() {
         &config,
         SimulationOutputSpec {
             result_tx: &result_tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 1],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 1],
@@ -1725,7 +1727,7 @@ fn simulate_progress_events_received_before_return() {
 /// equals the expected per-scenario cost.
 #[test]
 fn simulate_progress_scenario_cost_equals_total_cost() {
-    use cobre_core::TrainingEvent;
+    use novomodelo_core::TrainingEvent;
 
     let n_stages = 1;
     let n_scenarios = 5_u32;
@@ -1762,12 +1764,12 @@ fn simulate_progress_scenario_cost_equals_total_cost() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    cobre_sddp::simulate(
+    novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -1790,7 +1792,7 @@ fn simulate_progress_scenario_cost_equals_total_cost() {
         &config,
         SimulationOutputSpec {
             result_tx: &result_tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 1],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 1],
@@ -1841,7 +1843,7 @@ fn simulate_progress_scenario_cost_equals_total_cost() {
 /// emitted after all `SimulationProgress` events.
 #[test]
 fn simulate_emits_simulation_finished_as_last_event() {
-    use cobre_core::TrainingEvent;
+    use novomodelo_core::TrainingEvent;
 
     let n_stages = 1;
     let n_scenarios = 6_u32;
@@ -1875,12 +1877,12 @@ fn simulate_emits_simulation_finished_as_last_event() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    cobre_sddp::simulate(
+    novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -1903,7 +1905,7 @@ fn simulate_emits_simulation_finished_as_last_event() {
         &config,
         SimulationOutputSpec {
             result_tx: &result_tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 1],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 1],
@@ -1966,7 +1968,7 @@ fn simulate_emits_simulation_finished_as_last_event() {
 /// field is always valid.
 #[test]
 fn simulate_progress_scenario_cost_is_finite() {
-    use cobre_core::TrainingEvent;
+    use novomodelo_core::TrainingEvent;
 
     let n_stages = 1;
     let templates: Vec<StageTemplate> = (0..n_stages).map(|_| hydro_only_bus_template()).collect();
@@ -1999,12 +2001,12 @@ fn simulate_progress_scenario_cost_is_finite() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    cobre_sddp::simulate(
+    novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -2027,7 +2029,7 @@ fn simulate_progress_scenario_cost_is_finite() {
         &config,
         SimulationOutputSpec {
             result_tx: &result_tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 1],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 1],
@@ -2107,12 +2109,12 @@ fn simulate_frozen_path_issues_zero_add_rows() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    let result = cobre_sddp::simulate(
+    let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -2135,7 +2137,7 @@ fn simulate_frozen_path_issues_zero_add_rows() {
         &config,
         SimulationOutputSpec {
             result_tx: &tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 2],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 2],
@@ -2208,12 +2210,12 @@ fn simulate_fallback_path_issues_expected_add_rows() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    let result = cobre_sddp::simulate(
+    let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -2236,7 +2238,7 @@ fn simulate_fallback_path_issues_expected_add_rows() {
         &config,
         SimulationOutputSpec {
             result_tx: &tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 2],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 2],
@@ -2312,12 +2314,12 @@ fn simulate_frozen_length_mismatch_returns_error() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    let result = cobre_sddp::simulate(
+    let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -2340,7 +2342,7 @@ fn simulate_frozen_length_mismatch_returns_error() {
         &config,
         SimulationOutputSpec {
             result_tx: &tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 3],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 3],
@@ -2460,12 +2462,12 @@ fn simulate_with_captured_basis_preserves_row_statuses() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    let result = cobre_sddp::simulate(
+    let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -2488,7 +2490,7 @@ fn simulate_with_captured_basis_preserves_row_statuses() {
         &config,
         SimulationOutputSpec {
             result_tx: &tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 1],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 1],
@@ -2602,12 +2604,12 @@ fn simulate_with_empty_stage_bases_cold_starts() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    let result = cobre_sddp::simulate(
+    let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
         &fcf,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
@@ -2630,7 +2632,7 @@ fn simulate_with_empty_stage_bases_cold_starts() {
         &config,
         SimulationOutputSpec {
             result_tx: &tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 2],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 2],
@@ -2808,7 +2810,7 @@ fn simulate_branching_k_fan_warm_starts_from_visited_node_basis() {
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    let result = cobre_sddp::simulate(
+    let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
         &fcf,
@@ -2836,7 +2838,7 @@ fn simulate_branching_k_fan_warm_starts_from_visited_node_basis() {
         &config,
         SimulationOutputSpec {
             result_tx: &tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; 2],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); 2],

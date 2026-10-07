@@ -9,7 +9,7 @@
 //! ## Examples
 //!
 //! ```rust
-//! use cobre_sddp::risk_measure::{BackwardOutcome, RiskMeasure};
+//! use novomodelo_sddp::risk_measure::{BackwardOutcome, RiskMeasure};
 //!
 //! // Expectation: weighted average of intercepts
 //! let outcomes = vec![
@@ -22,9 +22,9 @@
 //! assert!((intercept - 20.0).abs() < 1e-10);
 //! ```
 
-use cobre_core::StageRiskConfig;
-use cobre_core::StageRiskConfig::CVaR;
-use cobre_core::StageRiskConfig::Expectation;
+use novomodelo_core::StageRiskConfig;
+use novomodelo_core::StageRiskConfig::CVaR;
+use novomodelo_core::StageRiskConfig::Expectation;
 /// Reusable `CVaR` weight-computation buffers, so the allocation is paid once.
 /// Every consumer (each backward worker, the lower bound, the nested upper
 /// bound) owns its own, so no synchronisation.
@@ -73,7 +73,7 @@ pub struct BackwardOutcome {
 /// ## Examples
 ///
 /// ```rust
-/// use cobre_sddp::risk_measure::{BackwardOutcome, RiskMeasure};
+/// use novomodelo_sddp::risk_measure::{BackwardOutcome, RiskMeasure};
 ///
 /// let rm = RiskMeasure::CVaR { alpha: 0.5, lambda: 1.0 };
 /// let costs = vec![10.0, 20.0, 30.0, 40.0];
@@ -395,7 +395,7 @@ pub(crate) fn aggregate_weighted_into(
 #[cfg(test)]
 #[allow(clippy::cast_precision_loss)] // test helpers use small n values
 mod tests {
-    use cobre_core::StageRiskConfig;
+    use novomodelo_core::StageRiskConfig;
 
     use super::{BackwardOutcome, RiskMeasure};
 

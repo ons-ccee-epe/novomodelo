@@ -8,8 +8,8 @@ use std::collections::HashSet;
 
 use super::*;
 
-use cobre_sddp::indexer::{BlockIdx, HydroSys};
-use cobre_sddp::test_support::template_structure::{
+use novomodelo_sddp::indexer::{BlockIdx, HydroSys};
+use novomodelo_sddp::test_support::template_structure::{
     RowOwner, UnscaledMatrix, hours_to_hm3, row_owners, z_inflow_column,
 };
 
@@ -172,7 +172,7 @@ fn every_study_reads_z_inflow_on_its_water_rows() {
 /// carries exactly `par_lp.deterministic_base`.
 #[test]
 fn water_rows_carry_no_par_base() {
-    use cobre_core::scenario::AnnualComponent;
+    use novomodelo_core::scenario::AnnualComponent;
 
     let ar_coeffs: Vec<f64> = vec![0.3, 0.2];
     let ann = AnnualComponent {

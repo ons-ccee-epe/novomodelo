@@ -1,7 +1,7 @@
 //! Study setup struct that owns all precomputed state for a solve run.
 //!
 //! [`StudySetup`] centralises orchestration from CLI/Python entry points, built
-//! from a validated [`System`] and [`cobre_io::Config`].
+//! from a validated [`System`] and [`novomodelo_io::Config`].
 //!
 //! **Ownership**: `StudySetup` owns all data; callers borrow for `TrainingContext`
 //! and `StageContext` construction. The [`StochasticContext`] lifetime matches setup.
@@ -12,12 +12,12 @@
 //! ## Example
 //!
 //! ```rust,no_run
-//! use cobre_sddp::setup::StudySetup;
-//! use cobre_sddp::hydro_models::PrepareHydroModelsResult;
-//! use cobre_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+//! use novomodelo_sddp::setup::StudySetup;
+//! use novomodelo_sddp::hydro_models::PrepareHydroModelsResult;
+//! use novomodelo_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
 //!
-//! # fn example(system: &cobre_core::System, config: &cobre_io::Config)
-//! #     -> Result<(), cobre_sddp::SddpError> {
+//! # fn example(system: &novomodelo_core::System, config: &novomodelo_io::Config)
+//! #     -> Result<(), novomodelo_sddp::SddpError> {
 //! let stochastic = build_stochastic_context(system, 42, None, &[], &[], OpeningTreeInputs::default(), ClassSchemes { inflow: None, load: None, ncs: None })?;
 //! let hydro_models = PrepareHydroModelsResult::default_from_system(system);
 //! let setup = StudySetup::new(system, config, stochastic, hydro_models, Vec::new())?;
@@ -29,22 +29,22 @@
 #![deny(clippy::allow_attributes, clippy::allow_attributes_without_reason)]
 
 use chrono::NaiveDate;
-use cobre_core::ContractType;
-use cobre_core::temporal::SeasonCycleType::Monthly;
-use cobre_core::temporal::SeasonMap;
-use cobre_core::temporal::StageLagTransition;
-use cobre_core::temporal::StageStateConfig;
-use cobre_io::Config;
-use cobre_io::config::BackwardScheduler;
-use cobre_solver::ActiveProfile;
-use cobre_stochastic::DerivedInflowSeeds;
-use cobre_stochastic::DerivedSeed;
-use cobre_stochastic::derive_inflow_seeds;
-use cobre_stochastic::noise_entity_order;
-use cobre_stochastic::par::lag_transition::derive_downstream_par_order;
-use cobre_stochastic::par::lag_transition::precompute_noise_groups;
-use cobre_stochastic::par::lag_transition::precompute_stage_lag_transitions;
-use cobre_stochastic::season_cast::{DatedWindow, StageCalendar};
+use novomodelo_core::ContractType;
+use novomodelo_core::temporal::SeasonCycleType::Monthly;
+use novomodelo_core::temporal::SeasonMap;
+use novomodelo_core::temporal::StageLagTransition;
+use novomodelo_core::temporal::StageStateConfig;
+use novomodelo_io::Config;
+use novomodelo_io::config::BackwardScheduler;
+use novomodelo_solver::ActiveProfile;
+use novomodelo_stochastic::DerivedInflowSeeds;
+use novomodelo_stochastic::DerivedSeed;
+use novomodelo_stochastic::derive_inflow_seeds;
+use novomodelo_stochastic::noise_entity_order;
+use novomodelo_stochastic::par::lag_transition::derive_downstream_par_order;
+use novomodelo_stochastic::par::lag_transition::precompute_noise_groups;
+use novomodelo_stochastic::par::lag_transition::precompute_stage_lag_transitions;
+use novomodelo_stochastic::season_cast::{DatedWindow, StageCalendar};
 
 use crate::StageTemplates;
 use crate::bucket_topology;
@@ -86,15 +86,15 @@ pub use stochastic_pipeline::{
 use std::collections::HashMap;
 use std::path::Path;
 
-use cobre_core::{
+use novomodelo_core::{
     AffineBound, AnticipatedConfig, CoefficientRef, EntityId, GenericConstraint, Hydro,
     HydroPastDefluence, ScalarParameter, Stage, StageId, System, Thermal,
     scenario::{SamplingScheme, ScenarioSource},
 };
-use cobre_io::StageIdResolver;
-use cobre_io::build_hydro_reference_volumes_resolved;
-use cobre_stochastic::par::precompute::PrecomputedPar;
-use cobre_stochastic::{
+use novomodelo_io::StageIdResolver;
+use novomodelo_io::build_hydro_reference_volumes_resolved;
+use novomodelo_stochastic::par::precompute::PrecomputedPar;
+use novomodelo_stochastic::{
     ClassSchemes, ExternalScenarioLibrary, HistoricalScenarioLibrary, StochasticContext,
 };
 
@@ -132,7 +132,7 @@ use crate::{
 /// All precomputed study state built once before training and simulation.
 ///
 /// Constructed by [`StudySetup::new`] from a validated [`System`] and
-/// [`cobre_io::Config`]. Owns all data so it can be held across async
+/// [`novomodelo_io::Config`]. Owns all data so it can be held across async
 /// boundaries (e.g., Python GIL release) without lifetime issues.
 ///
 /// Callers build `TrainingContext` and `StageContext` by borrowing
@@ -345,7 +345,7 @@ impl StudySetup {
     /// Build all precomputed study state from pre-resolved broadcast parameters.
     ///
     /// This constructor accepts the scalar fields already extracted from either a
-    /// [`cobre_io::Config`] (on rank 0) or a broadcast config struct (on non-root
+    /// [`novomodelo_io::Config`] (on rank 0) or a broadcast config struct (on non-root
     /// ranks), performing the expensive computation steps that cannot be serialised.
     ///
     /// # Errors
@@ -2621,7 +2621,7 @@ fn build_pumping_consumption(system: &System) -> Vec<f64> {
 /// Build the per-stage RESOLVED contract prices \[$/`MWh`\], per block.
 ///
 /// Outer index is the study-stage index `t` (0-based, matching
-/// [`ResolvedBounds`](cobre_core::ResolvedBounds)'s contract stage axis); each
+/// [`ResolvedBounds`](novomodelo_core::ResolvedBounds)'s contract stage axis); each
 /// inner slice is flat with the per-stage stride `geometry_per_stage[t].n_blks`
 /// — index `c * n_blks + blk`, `c` ID-sorted parallel to `system.contracts()`
 /// (the same order `EntityCounts::contract_ids` is built in) — carrying
@@ -2661,7 +2661,7 @@ fn build_contract_slots(system: &System) -> Vec<(ContractType, usize)> {
 /// ordered slice (`System::hydros()` / `System::thermals()`).
 ///
 /// Canonical order sorts by `(operational_start_date, id)`
-/// (`cobre_core::system::builder::sort_canonical`), which is id-ascending only
+/// (`novomodelo_core::system::builder::sort_canonical`), which is id-ascending only
 /// when every entity shares one operational start date. A staggered-
 /// commissioning system (filling reservoirs, future-entry plants) breaks that
 /// coincidence, so any id-keyed initial-condition lookup MUST resolve through
@@ -2758,7 +2758,7 @@ fn build_initial_state(
         let calendar = StageCalendar::new(study_stages_slice(system));
         for history in &ic.past_anticipated_commitments {
             let Some(&global_idx) = thermal_positions.get(&history.thermal_id.0) else {
-                // Defense-in-depth — the cobre-io validator rejects an unknown ID in
+                // Defense-in-depth — the novomodelo-io validator rejects an unknown ID in
                 // production.
                 continue;
             };
@@ -2771,7 +2771,7 @@ fn build_initial_state(
                 continue;
             };
             // A covered stage at or beyond K_i is a resolver/validator desync,
-            // unreachable through valid input — cobre-io's coverage rule rejects
+            // unreachable through valid input — novomodelo-io's coverage rule rejects
             // it before setup runs.
             let k_i = layout.anticipated_lead_stages[local_idx];
             let window = DatedWindow {
@@ -2842,7 +2842,7 @@ fn build_initial_state(
 /// silently keep only the first window and drop the rest, understating the
 /// seed with no error.
 ///
-/// `cobre-io`'s `validate_travel_time` coverage gate guarantees every declared
+/// `novomodelo-io`'s `validate_travel_time` coverage gate guarantees every declared
 /// arc's windows cover `[start_0 − t_v, start_0)` before this runs; there is no
 /// fallback for incomplete coverage.
 fn build_initial_transit_bucket_state(
@@ -2882,7 +2882,7 @@ fn build_initial_transit_bucket_state(
                 debug_assert!(
                     window.end_date <= start_0,
                     "past_defluences window must end at or before start_0 ({start_0}); \
-                     cobre-io's validate_travel_time row-5b gate guarantees this"
+                     novomodelo-io's validate_travel_time row-5b gate guarantees this"
                 );
                 let e_off = hours_between(start_0, window.end_date);
                 let width = hours_between(window.end_date, window.start_date);
@@ -2954,13 +2954,13 @@ mod tests;
 #[cfg(test)]
 mod transit_seed_round_trip_tests {
     use chrono::{Duration, NaiveDate};
-    use cobre_core::entities::bus::{Bus, DeficitSegment};
-    use cobre_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::bus::{Bus, DeficitSegment};
+    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{EntityId, HydroPastDefluence, InitialConditions, System, SystemBuilder};
+    use novomodelo_core::{EntityId, HydroPastDefluence, InitialConditions, System, SystemBuilder};
 
     use super::{TransitSeedArc, build_initial_transit_bucket_state};
     use crate::bucket_topology;
@@ -3278,13 +3278,13 @@ mod transit_seed_round_trip_tests {
 /// [`ResolvedParameters::get`]'s `0.0` sentinel.
 #[cfg(test)]
 mod scalar_parameter_construction_tests {
-    use cobre_core::scenario::SamplingScheme;
-    use cobre_core::{
+    use novomodelo_core::scenario::SamplingScheme;
+    use novomodelo_core::{
         AffineBound, ComputedParameter, ConstraintExpression, EntityId, GenericConstraint,
         ParameterKind, ScalarParameter, SlackConfig, SystemBuilder,
     };
-    use cobre_io::Config;
-    use cobre_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+    use novomodelo_io::Config;
+    use novomodelo_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
 
     use super::{BoundaryStateRequirements, StudySetup};
     use crate::SddpError;
@@ -3292,7 +3292,7 @@ mod scalar_parameter_construction_tests {
     use crate::test_support::{k_fan_config, k_fan_system};
 
     fn build(
-        system: &cobre_core::System,
+        system: &novomodelo_core::System,
         config: &Config,
         scalar_parameters: Vec<ScalarParameter>,
     ) -> Result<StudySetup, SddpError> {

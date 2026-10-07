@@ -6,7 +6,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use cobre_sddp::{
+use novomodelo_sddp::{
     ConvergenceMonitor, MonitorState, StoppingMode, StoppingRule, StoppingRuleSet, SyncResult,
 };
 

@@ -2,7 +2,7 @@
 //! rebuilt once per training iteration and shared by reference across
 //! forward-pass workers.
 
-use cobre_core::temporal::NoiseMethod;
+use novomodelo_core::temporal::NoiseMethod;
 
 use crate::{
     StochasticError,
@@ -205,7 +205,7 @@ impl ForwardNoiseTables {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use cobre_core::temporal::NoiseMethod;
+    use novomodelo_core::temporal::NoiseMethod;
 
     use super::{ClassNoiseTables, NoiseTable};
     use crate::{StochasticError, tree::qmc_sobol::MAX_SOBOL_DIM};

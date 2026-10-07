@@ -4,7 +4,7 @@
 //! 3 (the group's own declared value) stays on [`HydroUnitGroup`](crate::HydroUnitGroup)
 //! and is applied by the consumer, never copied into this table. A `None`
 //! field in [`HydroUnitGroupOverride`] means no override for that column.
-//! Populated by `cobre-io`; never modified after construction.
+//! Populated by `novomodelo-io`; never modified after construction.
 //!
 //! The group axis is ragged (group counts vary per plant), so it is addressed
 //! as `(hydro_idx, group_pos)` — `group_pos` being the position within the
@@ -48,7 +48,7 @@ pub struct HydroUnitGroupBoundsCountsSpec<'a> {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::resolved::ResolvedHydroUnitGroupBounds;
+/// use novomodelo_core::resolved::ResolvedHydroUnitGroupBounds;
 ///
 /// let empty = ResolvedHydroUnitGroupBounds::empty();
 /// assert!(empty.is_empty());

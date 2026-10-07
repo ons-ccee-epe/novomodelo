@@ -51,7 +51,7 @@
 //! Deferred to later layers: entity-id existence in registries, and `block_id`
 //! range and duplicate-row checks.
 
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
@@ -74,8 +74,8 @@ use super::bounds::{optional_f64, optional_i32, validate_optional_finite};
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::HydroUnitGroupBoundsRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::constraints::HydroUnitGroupBoundsRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = HydroUnitGroupBoundsRow {
 ///     hydro_id: EntityId::from(1),
@@ -132,7 +132,7 @@ pub struct HydroUnitGroupBoundsRow {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::constraints::parse_hydro_unit_group_bounds;
+/// use novomodelo_io::constraints::parse_hydro_unit_group_bounds;
 /// use std::path::Path;
 ///
 /// let rows =

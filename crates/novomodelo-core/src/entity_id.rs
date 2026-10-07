@@ -19,7 +19,7 @@ use core::fmt;
 /// # Examples
 ///
 /// ```
-/// use cobre_core::EntityId;
+/// use novomodelo_core::EntityId;
 ///
 /// let id: EntityId = EntityId::from(42);
 /// assert_eq!(id.to_string(), "42");

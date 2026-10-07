@@ -11,8 +11,8 @@ mod stitched;
 pub use stitched::StitchedSeasonMap;
 
 use chrono::{Datelike, NaiveDate, TimeDelta, Weekday};
-use cobre_core::PostStudyStage;
-use cobre_core::temporal::{
+use novomodelo_core::PostStudyStage;
+use novomodelo_core::temporal::{
     Block, BlockMode, NoiseMethod, ScenarioSourceConfig, SeasonCycleType, SeasonCycles,
     SeasonDefinition, SeasonMap, Stage, StageRiskConfig, StageStateConfig, window_period_overlaps,
 };
@@ -512,7 +512,7 @@ fn hours_between(later: NaiveDate, earlier: NaiveDate) -> f64 {
 /// [`Stage`]s a [`StageCalendar`] can resolve against.
 ///
 /// `end_date = start_date + round(duration_hours / 24)` days — the whole-day
-/// rounding the `cobre-io` semantic validator applies when it builds the same
+/// rounding the `novomodelo-io` semantic validator applies when it builds the same
 /// segment, so this resolver and that validator agree on exactly which
 /// post-study stage a window covers. Only `start_date`/`end_date`/`blocks` are
 /// load-bearing (the fields [`StageCalendar`] reads); the rest are inert
@@ -749,8 +749,8 @@ mod tests {
     };
     use crate::test_support::{MonthlyLabels, monthly_season_map, weekly_season_map};
     use chrono::NaiveDate;
-    use cobre_core::PostStudyStage;
-    use cobre_core::temporal::{
+    use novomodelo_core::PostStudyStage;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
 
@@ -1349,7 +1349,7 @@ mod tests {
         );
 
         // A duration that is not an exact day multiple (700h = 29.1(6) days)
-        // rounds to the nearest whole day, mirroring the `cobre-io` validator's
+        // rounds to the nearest whole day, mirroring the `novomodelo-io` validator's
         // own `post_study_end_date` convention.
         let odd = vec![PostStudyStage {
             start_date: NaiveDate::from_ymd_opt(2026, 11, 1).unwrap(),

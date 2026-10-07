@@ -4,10 +4,10 @@
 //! is evaluated once during input loading; these containers hold the result.
 //! Penalties resolve in exactly these three tiers; bounds add a per-block
 //! overlay ([`ResolvedBlockBounds`]) that wins over the stage cell. Populated
-//! by `cobre-io`; never modified after construction.
+//! by `novomodelo-io`; never modified after construction.
 //!
 //! Every public symbol is re-exported here so both the curated flat surface in
-//! `lib.rs` and the `cobre_core::resolved::Symbol` module path resolve to the
+//! `lib.rs` and the `novomodelo_core::resolved::Symbol` module path resolve to the
 //! same item regardless of which submodule owns it.
 
 mod block_bounds;

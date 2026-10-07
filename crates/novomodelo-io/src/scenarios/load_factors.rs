@@ -4,7 +4,7 @@
 //! Entity-ID existence, `block_id` contiguity, and block-count matching are
 //! deferred to Layer 3/5 referential validation.
 
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::Path;
@@ -57,7 +57,7 @@ struct RawBlockFactor {
 /// # Examples
 ///
 /// ```
-/// use cobre_io::scenarios::BlockFactor;
+/// use novomodelo_io::scenarios::BlockFactor;
 ///
 /// let bf = BlockFactor { block_id: 0, factor: 0.85 };
 /// assert_eq!(bf.block_id, 0);
@@ -78,8 +78,8 @@ pub struct BlockFactor {
 /// # Examples
 ///
 /// ```
-/// use cobre_io::scenarios::{BlockFactor, LoadFactorEntry};
-/// use cobre_core::EntityId;
+/// use novomodelo_io::scenarios::{BlockFactor, LoadFactorEntry};
+/// use novomodelo_core::EntityId;
 ///
 /// let entry = LoadFactorEntry {
 ///     bus_id: EntityId::from(0),
@@ -121,7 +121,7 @@ pub struct LoadFactorEntry {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::scenarios::parse_load_factors;
+/// use novomodelo_io::scenarios::parse_load_factors;
 /// use std::path::Path;
 ///
 /// let entries = parse_load_factors(Path::new("scenarios/load_factors.json"))

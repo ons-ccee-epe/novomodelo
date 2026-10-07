@@ -9,21 +9,21 @@ import pytest
 
 def test_module_census_matches_registered_submodules() -> None:
     """The README's `## Modules` section lists all public submodules."""
-    import cobre  # noqa: F401 -- registers the cobre.* submodules in sys.modules
+    import novomodelo  # noqa: F401 -- registers the novomodelo.* submodules in sys.modules
 
     readme_path = Path(__file__).resolve().parents[1] / "README.md"
     readme_text = readme_path.read_text(encoding="utf-8")
 
     readme_modules = set(
-        re.findall(r"^- \*\*`cobre\.([a-z_]+)`\*\*", readme_text, re.MULTILINE)
+        re.findall(r"^- \*\*`novomodelo\.([a-z_]+)`\*\*", readme_text, re.MULTILINE)
     )
 
     installed_modules = {
-        name.removeprefix("cobre.")
+        name.removeprefix("novomodelo.")
         for name in sys.modules
-        if name.startswith("cobre.")
-        and "." not in name[len("cobre.") :]
-        and not name.startswith("cobre._")
+        if name.startswith("novomodelo.")
+        and "." not in name[len("novomodelo.") :]
+        and not name.startswith("novomodelo._")
     }
 
     assert readme_modules == installed_modules, (

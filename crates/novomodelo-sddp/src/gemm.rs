@@ -1,7 +1,7 @@
 //! Cache-blocked GEMM primitive for batched matrix-vector evaluation.
 //!
 //! The single entry point [`gemm_block`] is the only call site in
-//! `cobre-sddp` for [`matrixmultiply::dgemm`]. The wrapper isolates the
+//! `novomodelo-sddp` for [`matrixmultiply::dgemm`]. The wrapper isolates the
 //! one `unsafe` block this crate's `cut_selection.rs` needs so the call
 //! site itself stays in safe code.
 

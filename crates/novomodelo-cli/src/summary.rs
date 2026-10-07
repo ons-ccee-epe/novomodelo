@@ -1,4 +1,4 @@
-//! Post-run summary block for the `cobre run` command.
+//! Post-run summary block for the `novomodelo run` command.
 //!
 //! One printing function per run phase, each emitting its section independently
 //! so the caller can place it at the right point in the execution flow. Every
@@ -7,13 +7,13 @@
 //! tests assert on the same code path production prints from.
 
 use chrono::NaiveDate;
-use cobre_comm::ExecutionTopology;
-use cobre_io::SetupTimings;
 use console::Term;
+use novomodelo_comm::ExecutionTopology;
+use novomodelo_io::SetupTimings;
 
 use std::path::Path;
 
-use cobre_sddp::{BoundaryReconciliationReport, HydroModelSummary, ModelProvenanceReport};
+use novomodelo_sddp::{BoundaryReconciliationReport, HydroModelSummary, ModelProvenanceReport};
 
 fn hydro_model_summary_lines(summary: &HydroModelSummary) -> Vec<String> {
     vec![
@@ -105,7 +105,7 @@ pub fn print_execution_topology(
     solver_name: &str,
     solver_version: Option<&str>,
 ) {
-    use cobre_comm::BackendKind;
+    use novomodelo_comm::BackendKind;
 
     let thread_word = if n_threads == 1 {
         "rayon thread"
@@ -271,7 +271,7 @@ pub fn print_provenance_summary(stderr: &Term, report: &ModelProvenanceReport) {
 }
 
 /// Wording is independent of [`BoundaryReconciliationReport::summary_line`]
-/// (legacy "N source slots dropped" for `cobre validate`); totals come from
+/// (legacy "N source slots dropped" for `novomodelo validate`); totals come from
 /// [`BoundaryReconciliationReport::tally_totals`].
 fn format_boundary_reconciliation_row(report: &BoundaryReconciliationReport) -> String {
     if !report.reconciled {
@@ -1270,9 +1270,9 @@ mod tests {
 
     use std::sync::mpsc;
 
-    use cobre_core::TrainingEvent;
-    use cobre_io::IterationRecord;
-    use cobre_sddp::sum_phase_timing_ms;
+    use novomodelo_core::TrainingEvent;
+    use novomodelo_io::IterationRecord;
+    use novomodelo_sddp::sum_phase_timing_ms;
 
     use crate::progress::{RenderMode, run_progress_thread};
 
@@ -1435,8 +1435,8 @@ mod tests {
     // ── HydroModelSummary tests ────────────────────────────────────────────
 
     use super::{HydroModelSummary, hydro_model_summary_lines, print_hydro_model_summary};
-    use cobre_core::EntityId;
-    use cobre_sddp::{FphaHydroDetail, ProductionModelSource};
+    use novomodelo_core::EntityId;
+    use novomodelo_sddp::{FphaHydroDetail, ProductionModelSource};
 
     fn make_hydro_model_summary_mixed() -> HydroModelSummary {
         HydroModelSummary {
@@ -1874,7 +1874,7 @@ mod tests {
 
     // ── ModelProvenanceReport tests ───────────────────────────────────────────
 
-    use cobre_sddp::{HydroProductionProvenance, InflowProvenance, ProvenanceSource};
+    use novomodelo_sddp::{HydroProductionProvenance, InflowProvenance, ProvenanceSource};
 
     use super::{ModelProvenanceReport, print_provenance_summary, provenance_summary_lines};
 
@@ -2076,7 +2076,7 @@ mod tests {
     use chrono::NaiveDate;
 
     use super::{BoundaryReconciliationReport, boundary_summary_lines, print_boundary_summary};
-    use cobre_sddp::{AnticipatedCoverage, FamilyTally};
+    use novomodelo_sddp::{AnticipatedCoverage, FamilyTally};
 
     fn make_reconciled_boundary_report() -> BoundaryReconciliationReport {
         BoundaryReconciliationReport {

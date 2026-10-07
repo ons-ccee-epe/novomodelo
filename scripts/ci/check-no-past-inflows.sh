@@ -10,12 +10,12 @@
 #
 # Scope: examples/ (all deterministic + other case directories) and
 #   crates/*/tests/ (integration-test fixture trees, e.g.
-#   crates/cobre-sddp/tests/fixtures/). This mirrors the scan scope of
+#   crates/novomodelo-sddp/tests/fixtures/). This mirrors the scan scope of
 #   `grep -rl past_inflows examples/ crates/*/tests/`.
 #
 # Deliberately NOT scanned: crates/*/src/ — the loader-rejection regression
 # `test_legacy_past_inflows_field_is_rejected`
-# (crates/cobre-io/src/initial_conditions.rs) legitimately constructs a JSON
+# (crates/novomodelo-io/src/initial_conditions.rs) legitimately constructs a JSON
 # literal carrying the retired field name to assert the loader rejects it;
 # this gate must never flag that literal. Excluding crates/*/src/ from the
 # scan scope keeps the gate's own PATTERN out of the range it searches, so no

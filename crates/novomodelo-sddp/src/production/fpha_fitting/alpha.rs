@@ -95,8 +95,8 @@ pub(crate) fn scale_plane_affine(plane: &RawPlane, alpha: f64) -> RawPlane {
     clippy::similar_names
 )]
 mod tests {
-    use cobre_core::{EfficiencyModel, EntityId, HydraulicLossesModel, TailraceModel};
-    use cobre_io::extensions::HydroGeometryRow;
+    use novomodelo_core::{EfficiencyModel, EntityId, HydraulicLossesModel, TailraceModel};
+    use novomodelo_io::extensions::HydroGeometryRow;
 
     use super::super::geometry::{FittingBounds, ForebayTable};
     use super::super::hull_fit::RawPlane;

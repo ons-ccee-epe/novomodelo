@@ -3,11 +3,11 @@
 //! Single home for the noise→RHS transforms so a fix to one applies to every
 //! call site (forward, backward, lower-bound).
 
-use cobre_core::commissioning::commissioning_active;
-use cobre_core::temporal::StageLagTransition;
-use cobre_solver::SolverInterface;
-use cobre_stochastic::par::lag_kernel::{LagMajor, advance_lag_chain};
-use cobre_stochastic::{StochasticContext, evaluate_par_batch, solve_par_noise_batch};
+use novomodelo_core::commissioning::commissioning_active;
+use novomodelo_core::temporal::StageLagTransition;
+use novomodelo_solver::SolverInterface;
+use novomodelo_stochastic::par::lag_kernel::{LagMajor, advance_lag_chain};
+use novomodelo_stochastic::{StochasticContext, evaluate_par_batch, solve_par_noise_batch};
 
 use crate::indexer::{BlockIdx, NcsSys, StateSpace};
 use crate::lp::builder::StageGeometry;
@@ -170,8 +170,8 @@ pub(crate) fn shift_lag_state(
 // LagAccumState/DownstreamAccumState alias the kernel's own accumulator
 // structs (identical fields) so stage_solve.rs/pipeline.rs and their tests
 // keep constructing them under these names.
-pub(crate) use cobre_stochastic::par::lag_kernel::DownstreamLagAccum as DownstreamAccumState;
-pub(crate) use cobre_stochastic::par::lag_kernel::PrimaryLagAccum as LagAccumState;
+pub(crate) use novomodelo_stochastic::par::lag_kernel::DownstreamLagAccum as DownstreamAccumState;
+pub(crate) use novomodelo_stochastic::par::lag_kernel::PrimaryLagAccum as LagAccumState;
 
 /// Accumulate this stage's inflow and, when a lag period finalizes, shift the
 /// lag state — supporting multi-resolution studies where stages are shorter than
@@ -508,23 +508,25 @@ pub(crate) fn apply_ncs_col_bounds<S: SolverInterface>(
 )]
 mod tests {
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
-    use cobre_core::entities::non_controllable::NonControllableSource;
-    use cobre_core::scenario::{
+    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::entities::non_controllable::NonControllableSource;
+    use novomodelo_core::scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
         LoadModel, NcsModel, SamplingScheme,
     };
-    use cobre_core::temporal::{
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
-    use cobre_solver::{
+    use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
+    use novomodelo_solver::{
         Basis, RowBatch, SolutionView, SolverError, SolverInterface, SolverStatistics,
         StageTemplate,
     };
-    use cobre_stochastic::StochasticContext;
-    use cobre_stochastic::context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+    use novomodelo_stochastic::StochasticContext;
+    use novomodelo_stochastic::context::{
+        ClassSchemes, OpeningTreeInputs, build_stochastic_context,
+    };
     use std::collections::BTreeMap;
 
     use crate::{
@@ -551,7 +553,7 @@ mod tests {
     }
 
     impl SolverInterface for RecordingSolver {
-        type Profile = cobre_solver::ActiveProfile;
+        type Profile = novomodelo_solver::ActiveProfile;
 
         fn apply_profile(&mut self, _profile: &Self::Profile) {}
 
@@ -1314,7 +1316,7 @@ mod tests {
 
     // ── accumulate_and_shift_lag_state tests ─────────────────────────────────
 
-    use cobre_core::temporal::StageLagTransition;
+    use novomodelo_core::temporal::StageLagTransition;
 
     use crate::noise::{DownstreamAccumState, LagAccumState, accumulate_and_shift_lag_state};
     // Convenience helper: build a no-op DownstreamAccumState for tests that

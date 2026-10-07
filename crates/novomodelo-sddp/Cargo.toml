@@ -1,5 +1,5 @@
 [package]
-name = "cobre-sddp"
+name = "novomodelo-sddp"
 description = "Stochastic Dual Dynamic Programming (SDDP) for hydrothermal dispatch and energy planning"
 version.workspace = true
 edition.workspace = true
@@ -16,17 +16,17 @@ categories = ["science", "simulation", "mathematics"]
 ## Default feature set: build against the HiGHS solver backend.
 default = ["highs"]
 
-## Select the HiGHS LP solver backend (enables `cobre-solver/highs`).
+## Select the HiGHS LP solver backend (enables `novomodelo-solver/highs`).
 ##
 ## This is on by default. The per-phase `PhaseProfiles for HighsProfile` impl
 ## and the `FORWARD_PROFILE`/`BACKWARD_PROFILE`/`SIMULATION_PROFILE` constants in
 ## `solver_phase.rs` are gated on this feature.
-highs = ["cobre-solver/highs"]
+highs = ["novomodelo-solver/highs"]
 
-## Select the CLP/CoinUtils LP solver backend (enables `cobre-solver/clp`).
+## Select the CLP/CoinUtils LP solver backend (enables `novomodelo-solver/clp`).
 ##
 ## Gates the per-phase `PhaseProfiles for ClpProfile` impl in `solver_phase.rs`.
-clp = ["cobre-solver/clp"]
+clp = ["novomodelo-solver/clp"]
 
 ## Enable DHAT heap profiling instrumentation.
 ##
@@ -52,14 +52,14 @@ slow-tests = []
 ## `#[cfg(any(test, feature = "test-support"))]`, so plain `cargo test` sees
 ## them via `test` and downstream integration tests see them via this feature.
 ## Must NOT be enabled in production builds.
-test-support = ["cobre-core/test-support"]
+test-support = ["novomodelo-core/test-support"]
 
 [dependencies]
-cobre-core = { version = "0.18.0", path = "../cobre-core" }
-cobre-solver = { version = "0.18.0", path = "../cobre-solver", default-features = false }
-cobre-comm = { version = "0.18.0", path = "../cobre-comm" }
-cobre-stochastic = { version = "0.18.0", path = "../cobre-stochastic" }
-cobre-io = { version = "0.18.0", path = "../cobre-io" }
+novomodelo-core = { version = "0.18.0", path = "../novomodelo-core" }
+novomodelo-solver = { version = "0.18.0", path = "../novomodelo-solver", default-features = false }
+novomodelo-comm = { version = "0.18.0", path = "../novomodelo-comm" }
+novomodelo-stochastic = { version = "0.18.0", path = "../novomodelo-stochastic" }
+novomodelo-io = { version = "0.18.0", path = "../novomodelo-io" }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 dhat = { version = "0.3", optional = true }
 matrixmultiply = { workspace = true }
@@ -74,7 +74,7 @@ cc = "1.2"
 [dev-dependencies]
 arrow = { version = "60", default-features = false, features = ["prettyprint"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
-cobre-core = { version = "0.18.0", path = "../cobre-core", features = ["test-support"] }
+novomodelo-core = { version = "0.18.0", path = "../novomodelo-core", features = ["test-support"] }
 criterion = { version = "0.8", default-features = false }
 # Used only by the `dcs_batched_scoring` bench to reproduce the pre-batching
 # per-candidate `dgemm` baseline (the crate's own `gemm_block` wrapper is

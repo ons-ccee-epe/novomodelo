@@ -2,8 +2,8 @@
 //! stage templates for numerical conditioning (`D_r * A * D_c` form), plus the
 //! noise pre-scaling helper. Invoked from `setup/template_postprocess::postprocess_templates`.
 
-use cobre_core::Stage;
-use cobre_solver::StageTemplate;
+use novomodelo_core::Stage;
+use novomodelo_solver::StageTemplate;
 
 use crate::indexer::StateSpace;
 
@@ -198,7 +198,7 @@ pub(super) fn compute_stage_hours(study_stages: &[&Stage]) -> Vec<Vec<f64>> {
     reason = "test docs name LP symbols that are not code identifiers"
 )]
 mod tests {
-    use cobre_solver::StageTemplate;
+    use novomodelo_solver::StageTemplate;
 
     // =========================================================================
     // Row scaling tests

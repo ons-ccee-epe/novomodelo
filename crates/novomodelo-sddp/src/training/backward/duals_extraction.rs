@@ -4,7 +4,7 @@
 //! because the incoming-state column pin sets `v_scaled = v_orig / col_scale`
 //! (sddp.md "Benders cut sign & subgradient extraction").
 
-use cobre_solver::SolutionView;
+use novomodelo_solver::SolutionView;
 
 use crate::indexer::{CutSlot, CutStateProjection};
 
@@ -87,12 +87,12 @@ pub(crate) fn extract_state_duals_only(
 #[cfg(test)]
 #[allow(clippy::cast_precision_loss)]
 mod tests {
-    use cobre_solver::SolutionView;
+    use novomodelo_solver::SolutionView;
 
     use super::extract_state_duals_only;
     use crate::indexer::{CutStateProjection, StateDim, StateSpace};
     use crate::lead_time::AnticipatedResolution;
-    use cobre_core::temporal::StageStateConfig;
+    use novomodelo_core::temporal::StageStateConfig;
 
     const ALL_ENABLED: StageStateConfig = StageStateConfig {
         storage: true,

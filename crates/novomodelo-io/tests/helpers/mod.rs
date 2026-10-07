@@ -6,7 +6,7 @@
 
 use tempfile::TempDir;
 
-pub use cobre_io::test_support::{
+pub use novomodelo_io::test_support::{
     VALID_BUSES_JSON, VALID_CONFIG_JSON, VALID_HYDROS_JSON, VALID_INITIAL_CONDITIONS_JSON,
     VALID_LINES_JSON, VALID_PENALTIES_JSON, VALID_STAGES_JSON, VALID_THERMALS_JSON,
     make_minimal_case, write_file,

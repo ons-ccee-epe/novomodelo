@@ -1,9 +1,9 @@
-# cobre-mcp
+# novomodelo-mcp
 
-Reserved crate name for the Cobre ecosystem.
+Reserved crate name for the Novomodelo ecosystem.
 
 This binary is not yet implemented. For command-line interaction with
-Cobre, use `cobre-cli`.
+Novomodelo, use `novomodelo-cli`.
 
 ## License
 

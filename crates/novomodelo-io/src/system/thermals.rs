@@ -7,7 +7,7 @@
 //!
 //! ```json
 //! {
-//!   "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/thermals.schema.json",
+//!   "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/thermals.schema.json",
 //!   "thermals": [
 //!     {
 //!       "id": 0,
@@ -43,7 +43,7 @@
 //!
 //! Cross-reference validation (e.g., `bus_id` existence) is deferred to Layer 3.
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId,
     entities::{AnticipatedConfig, Thermal},
 };
@@ -105,7 +105,7 @@ pub(crate) struct RawThermalGeneration {
     max_mw: f64,
 }
 
-// The untagged shape lives here: cobre_core::AnticipatedConfig keeps a plain
+// The untagged shape lives here: novomodelo_core::AnticipatedConfig keeps a plain
 // derive so it stays postcard-broadcast-safe.
 /// Anticipated dispatch configuration: `{"lead_stages": N}` or
 /// `{"lead_time_hours": H}`, never both.
@@ -130,7 +130,7 @@ pub(crate) enum RawAnticipatedConfig {
 ///
 /// The result is sorted by `id` ascending, so parser output is deterministic
 /// regardless of file row order (declaration-order invariance); canonical order is
-/// [`SystemBuilder::build`](cobre_core::SystemBuilder::build)'s to establish.
+/// [`SystemBuilder::build`](novomodelo_core::SystemBuilder::build)'s to establish.
 ///
 /// Semantic validation (cross-field) is performed by
 /// `validation::semantic::thermal`; cross-reference validation (e.g., `bus_id`
@@ -154,7 +154,7 @@ pub(crate) enum RawAnticipatedConfig {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::system::parse_thermals;
+/// use novomodelo_io::system::parse_thermals;
 /// use std::path::Path;
 ///
 /// let thermals = parse_thermals(Path::new("case/system/thermals.json")).unwrap();
@@ -325,7 +325,7 @@ mod tests {
     /// Canonical valid `thermals.json` with 2 thermals: one with anticipated config
     /// (id=1), one without (id=0).
     const VALID_JSON: &str = r#"{
-      "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/thermals.schema.json",
+      "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/thermals.schema.json",
       "thermals": [
         {
           "id": 0,

@@ -1,4 +1,4 @@
-//! Build script for cobre-solver: builds the vendored `HiGHS` (`highs` feature,
+//! Build script for novomodelo-solver: builds the vendored `HiGHS` (`highs` feature,
 //! default) and/or `CLP` (`clp` feature) solver libraries via `cmake`, then
 //! compiles their thin C wrappers via `cc`.
 
@@ -36,12 +36,15 @@ fn main() {
 
         if !highs_src.join("CMakeLists.txt").exists() {
             panic!(
-                "HiGHS source not found at crates/cobre-solver/vendor/HiGHS/. \
+                "HiGHS source not found at crates/novomodelo-solver/vendor/HiGHS/. \
                  Run: git submodule update --init --recursive"
             );
         }
 
-        eprintln!("cobre-solver: building HiGHS from {}", highs_src.display());
+        eprintln!(
+            "novomodelo-solver: building HiGHS from {}",
+            highs_src.display()
+        );
 
         // Always build HiGHS in Release mode regardless of the Rust profile.
         // An unoptimized solver is ~10x slower and misleads performance work.
@@ -55,7 +58,7 @@ fn main() {
             // Must stay 32-bit to match the FFI i32 bindings;
             // highs_wrapper.c's _Static_assert catches mismatches at compile time.
             .define("HIGHSINT64", "OFF")
-            // HiGHS uses zlib only for compressed file I/O; Cobre builds LPs
+            // HiGHS uses zlib only for compressed file I/O; Novomodelo builds LPs
             // programmatically, so disabling it avoids a system dependency that breaks
             // cross-compilation in the Python wheel CI.
             .define("CMAKE_DISABLE_FIND_PACKAGE_ZLIB", "ON");
@@ -70,7 +73,7 @@ fn main() {
         let highs_dst = cmake_config.build();
 
         eprintln!(
-            "cobre-solver: HiGHS cmake output at {}",
+            "novomodelo-solver: HiGHS cmake output at {}",
             highs_dst.display()
         );
 
@@ -106,7 +109,7 @@ fn main() {
         let highs_include_highs = highs_dst.join("include/highs");
 
         eprintln!(
-            "cobre-solver: compiling C wrapper with include paths: {}, {}",
+            "novomodelo-solver: compiling C wrapper with include paths: {}, {}",
             highs_include.display(),
             highs_include_highs.display()
         );
@@ -135,7 +138,7 @@ fn main() {
 
         build.compile("highs_wrapper");
 
-        // C++ shim: implements cobre_highs_set_basis_non_alien to bypass the
+        // C++ shim: implements novomodelo_highs_set_basis_non_alien to bypass the
         // alien-path LU factorisation the C API always triggers. Compiled as
         // a separate C++17 object so the plain-C wrapper above is unaffected.
         let mut build_cpp = cc::Build::new();
@@ -183,8 +186,8 @@ fn main() {
             manifest_dir.join("vendor/CoinUtils/CoinUtils/src/CoinFactorization.hpp");
         if !clp_header.exists() || !coinutils_header.exists() {
             panic!(
-                "CLP/CoinUtils source not found under crates/cobre-solver/vendor/Clp/ and \
-                 crates/cobre-solver/vendor/CoinUtils/. \
+                "CLP/CoinUtils source not found under crates/novomodelo-solver/vendor/Clp/ and \
+                 crates/novomodelo-solver/vendor/CoinUtils/. \
                  Run: git submodule update --init --recursive"
             );
         }
@@ -192,7 +195,7 @@ fn main() {
         let coin_build_src = manifest_dir.join("vendor/coin-build");
 
         eprintln!(
-            "cobre-solver: building CLP superbuild from {}",
+            "novomodelo-solver: building CLP superbuild from {}",
             coin_build_src.display()
         );
 
@@ -212,7 +215,10 @@ fn main() {
 
         let clp_dst = clp_config.build();
 
-        eprintln!("cobre-solver: CLP cmake output at {}", clp_dst.display());
+        eprintln!(
+            "novomodelo-solver: CLP cmake output at {}",
+            clp_dst.display()
+        );
 
         println!(
             "cargo:rustc-link-search=native={}",
@@ -253,7 +259,7 @@ fn main() {
         let coinutils_src_include = manifest_dir.join("vendor/CoinUtils/CoinUtils/src");
 
         eprintln!(
-            "cobre-solver: compiling CLP wrapper with include paths: {}, {}, {}",
+            "novomodelo-solver: compiling CLP wrapper with include paths: {}, {}, {}",
             clp_src_include.display(),
             coinutils_src_include.display(),
             clp_include.display()

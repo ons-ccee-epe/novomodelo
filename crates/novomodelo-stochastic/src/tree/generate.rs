@@ -4,7 +4,7 @@
 
 use std::ops::Range;
 
-use cobre_core::{EntityId, Stage, temporal::NoiseMethod};
+use novomodelo_core::{EntityId, Stage, temporal::NoiseMethod};
 use rand::RngExt;
 use rand_distr::StandardNormal;
 
@@ -99,7 +99,7 @@ impl ClassDimensions {
 /// `None`, the tree is generated from each stage's `scenario_config.noise_method`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct OpeningTreeGenerationInputs<'a> {
-    /// Required when any stage uses [`cobre_core::temporal::NoiseMethod::HistoricalResiduals`].
+    /// Required when any stage uses [`novomodelo_core::temporal::NoiseMethod::HistoricalResiduals`].
     pub historical_library: Option<&'a HistoricalScenarioLibrary>,
     /// Per-stage external scenario count clamping opening counts where the
     /// external library was padded from fewer raw scenarios. `Some` length must
@@ -414,7 +414,7 @@ pub fn generate_opening_tree<'a>(
 mod tests {
     use std::collections::BTreeMap;
 
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId, Stage,
         scenario::{CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile},
         temporal::{NoiseMethod, ScenarioSourceConfig},
@@ -438,7 +438,7 @@ mod tests {
         branching_factor: usize,
         noise_method: NoiseMethod,
     ) -> Stage {
-        cobre_core::test_support::make_stage(StageSpec {
+        novomodelo_core::test_support::make_stage(StageSpec {
             id,
             index: Some(index),
             season_id: Some(0),

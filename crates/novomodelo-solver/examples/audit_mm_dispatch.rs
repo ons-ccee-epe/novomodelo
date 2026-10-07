@@ -2,18 +2,18 @@
 //! hosts of different microarchitecture when compiled with
 //! `target-feature=+avx2,+fma,+sse4.2`.
 //!
-//! # Why this binary lives in `cobre-solver`
+//! # Why this binary lives in `novomodelo-solver`
 //!
 //! `matrixmultiply::dgemm` is `pub unsafe fn`. The workspace default
 //! `unsafe_code = "forbid"` (set in the root `Cargo.toml` under
 //! `[workspace.lints.rust]`) blocks any `unsafe` block in crates that do not
-//! override the lint. `cobre-solver` overrides `unsafe_code = "allow"` because
+//! override the lint. `novomodelo-solver` overrides `unsafe_code = "allow"` because
 //! its `HiGHS` FFI bindings require it, so the audit example lives here.
 //!
 //! # Usage
 //!
 //! ```text
-//! cargo build --release -p cobre-solver --example audit_mm_dispatch
+//! cargo build --release -p novomodelo-solver --example audit_mm_dispatch
 //! ./target/release/examples/audit_mm_dispatch > /tmp/mm.bin
 //! sha256sum /tmp/mm.bin
 //! ```

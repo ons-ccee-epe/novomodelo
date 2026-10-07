@@ -1,15 +1,15 @@
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
-use cobre_core::commissioning::Phase;
-use cobre_core::{
+use novomodelo_core::commissioning::Phase;
+use novomodelo_core::{
     AffineBound, BlockMode, Bus, CascadeTopology, CoefficientRef, ConstraintExpression,
     ContractType, EnergyContract, EntityId, GenericConstraint, Hydro, Line, LoadModel,
     NonControllableSource, PumpingStation, ResolvedBounds, ResolvedGenericConstraintBounds,
     ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors, ResolvedPenalties, SlackConfig,
     Stage, Thermal, VariableRef,
 };
-use cobre_stochastic::par::precompute::PrecomputedPar;
+use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
 use crate::bucket_topology::TransitBucketTopology;
 use crate::hydro_models::{
@@ -47,7 +47,7 @@ pub(crate) struct ResolvedTables<'a> {
     /// Per-block NCS generation scaling factors.
     pub(crate) resolved_ncs_factors: &'a ResolvedNcsFactors,
     /// `(parameter_id, stage_idx, block_idx)` → resolved `f64`, queried for a
-    /// [`cobre_core::CoefficientRef::Parameter`] term.
+    /// [`novomodelo_core::CoefficientRef::Parameter`] term.
     pub(crate) resolved_parameters: &'a ResolvedParameters,
 }
 
@@ -621,7 +621,7 @@ fn build_evap_indices(
 /// generation column block is densely packed by FPHA-local index, dropping a hydro
 /// here removes its column entirely — no orphaned `[0, max]` column for an
 /// unconstrained solve to exploit. `stage_id` is the study `stage.id`, not the
-/// stage index ([`filling_phase`](cobre_core::commissioning::filling_phase) keys
+/// stage index ([`filling_phase`](novomodelo_core::commissioning::filling_phase) keys
 /// on the commissioning id). A
 /// commissioning-dormant non-filling hydro is `PreFilling` and is dropped here too;
 /// a non-filling hydro with no window is `Operating` at every stage (parity-neutral).
@@ -681,7 +681,7 @@ fn identify_evap_hydros(ctx: &TemplateBuildCtx<'_>, stage_id: i32) -> Vec<HydroS
 /// σ_fill[t] ≥ V_target[t]` at each. The wrong-but-compiling alternative —
 /// restricting membership to `entry − 1 == stage_id` (the v1 terminal-only rule) —
 /// drops every intermediate floor. `PreFilling`/`Operating` are excluded by
-/// [`filling_phase`](cobre_core::commissioning::filling_phase) (`filled_min_storage_floor`
+/// [`filling_phase`](novomodelo_core::commissioning::filling_phase) (`filled_min_storage_floor`
 /// takes over at/after `entry`). A
 /// non-filling hydro is `Operating` at every stage (parity-neutral).
 fn identify_filling_target_hydros(ctx: &TemplateBuildCtx<'_>, stage_id: i32) -> Vec<HydroSys> {
@@ -2067,7 +2067,7 @@ mod tests;
 #[cfg(test)]
 mod collapse_stage_level_tests {
     use super::*;
-    use cobre_core::{LinearTerm, VariableRef};
+    use novomodelo_core::{LinearTerm, VariableRef};
 
     fn expr(term: LinearTerm) -> ConstraintExpression {
         ConstraintExpression { terms: vec![term] }
@@ -2128,7 +2128,7 @@ mod collapse_stage_level_tests {
             name: "c".to_string(),
             description: None,
             expression: expr(LinearTerm::literal(1.0, hydro_storage())),
-            slack: cobre_core::SlackConfig {
+            slack: novomodelo_core::SlackConfig {
                 enabled: false,
                 penalty: None,
             },

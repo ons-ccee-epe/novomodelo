@@ -9,8 +9,10 @@
     clippy::float_cmp
 )]
 
-use cobre_core::{EntityId, NoiseMethod, ScenarioSourceConfig, Stage};
-use cobre_stochastic::{ClassDimensions, generate_opening_tree, tree::OpeningTreeGenerationInputs};
+use novomodelo_core::{EntityId, NoiseMethod, ScenarioSourceConfig, Stage};
+use novomodelo_stochastic::{
+    ClassDimensions, generate_opening_tree, tree::OpeningTreeGenerationInputs,
+};
 
 mod common;
 use common::{StageSpec, identity_correlation};

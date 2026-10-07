@@ -24,7 +24,7 @@
 //! before any non-null value.
 
 use arrow::array::{Array, StringArray};
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
@@ -38,8 +38,8 @@ use crate::parquet_helpers::{
 /// # Examples
 ///
 /// ```
-/// use cobre_io::extensions::EvaporationModelRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::extensions::EvaporationModelRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = EvaporationModelRow {
 ///     hydro_id: EntityId::from(66),

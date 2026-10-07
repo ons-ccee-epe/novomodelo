@@ -7,7 +7,7 @@
 //!
 //! ```json
 //! {
-//!   "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/hydros.schema.json",
+//!   "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/hydros.schema.json",
 //!   "hydros": [{
 //!     "id": 0, "name": "FURNAS", "operational_start_date": "2030-01-01",
 //!     "downstream_id": 2,
@@ -53,7 +53,7 @@
 //! Cross-reference validation (`downstream_id`, `diversion.downstream_id`,
 //! `unit_groups[].bus_id`) is deferred to Layer 3.
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId,
     entities::{
         DiversionChannel, EfficiencyModel, FillingConfig, HydraulicLossesModel, Hydro,
@@ -445,7 +445,7 @@ pub(crate) struct RawHydroPenaltyOverrides {
 /// the three-tier penalty resolution cascade (global → entity). The result is
 /// sorted by `id` ascending, so parser output is deterministic regardless of
 /// file row order (declaration-order invariance); canonical order is
-/// [`SystemBuilder::build`](cobre_core::SystemBuilder::build)'s to establish.
+/// [`SystemBuilder::build`](novomodelo_core::SystemBuilder::build)'s to establish.
 ///
 /// # Errors
 ///
@@ -468,8 +468,8 @@ pub(crate) struct RawHydroPenaltyOverrides {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::system::parse_hydros;
-/// use cobre_core::penalty::GlobalPenaltyDefaults;
+/// use novomodelo_io::system::parse_hydros;
+/// use novomodelo_core::penalty::GlobalPenaltyDefaults;
 /// use std::path::Path;
 ///
 /// # fn make_global() -> GlobalPenaltyDefaults { unimplemented!() }
@@ -2309,7 +2309,7 @@ mod tests {
     #[test]
     fn test_schema_field_is_ignored() {
         let json = r#"{
-          "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/hydros.schema.json",
+          "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/hydros.schema.json",
           "hydros": [{
             "id": 0, "name": "H",
             "operational_start_date": "2024-01-01",

@@ -56,11 +56,11 @@ pub struct FixedDeliveryRow {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::{FixedDeliveryRow, write_fixed_delivery};
+/// use novomodelo_io::{FixedDeliveryRow, write_fixed_delivery};
 /// use chrono::NaiveDate;
 /// use std::path::Path;
 ///
-/// # fn main() -> Result<(), cobre_io::OutputError> {
+/// # fn main() -> Result<(), novomodelo_io::OutputError> {
 /// let rows = vec![FixedDeliveryRow {
 ///     thermal_id: 3,
 ///     start_date: NaiveDate::from_ymd_opt(2030, 1, 1).expect("valid date"),

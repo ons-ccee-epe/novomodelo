@@ -45,7 +45,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId,
     scenario::InflowModel,
     temporal::{SeasonCycles, SeasonMap, Stage},
@@ -105,8 +105,8 @@ fn cross_resolution_lag_season(
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{EntityId, scenario::InflowModel, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
-/// use cobre_stochastic::par::precompute::PrecomputedPar;
+/// use novomodelo_core::{EntityId, scenario::InflowModel, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
+/// use novomodelo_stochastic::par::precompute::PrecomputedPar;
 /// use chrono::NaiveDate;
 ///
 /// let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
@@ -634,7 +634,7 @@ fn fill_stage_arrays(
 #[cfg(test)]
 mod tests {
     use chrono::{Months, NaiveDate};
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId,
         scenario::InflowModel,
         temporal::{NoiseMethod, ScenarioSourceConfig, Stage},
@@ -648,7 +648,7 @@ mod tests {
     };
 
     fn make_stage(index: usize, id: i32, season_id: Option<usize>) -> Stage {
-        cobre_core::test_support::make_stage(StageSpec {
+        novomodelo_core::test_support::make_stage(StageSpec {
             id,
             index: Some(index),
             season_id,
@@ -1510,7 +1510,7 @@ mod tests {
     // PAR(p)-A annual component tests
     // -----------------------------------------------------------------------
 
-    use cobre_core::scenario::AnnualComponent;
+    use novomodelo_core::scenario::AnnualComponent;
 
     /// Build an `InflowModel` carrying a `Some(AnnualComponent)`.
     fn make_model_with_annual(
@@ -1947,7 +1947,7 @@ mod tests {
     }
 
     fn dated_stage(id: i32, start_date: NaiveDate, end_date: NaiveDate, season: usize) -> Stage {
-        cobre_core::test_support::make_stage(StageSpec {
+        novomodelo_core::test_support::make_stage(StageSpec {
             id,
             start_date,
             end_date,

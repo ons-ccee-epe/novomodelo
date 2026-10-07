@@ -1,12 +1,12 @@
-"""Table-driven parity between `cobre.io.validate` and `cobre.run.run` refusals.
+"""Table-driven parity between `novomodelo.io.validate` and `novomodelo.run.run` refusals.
 
-One table, mirrored from `crates/cobre-cli/tests/refusal_parity.rs`: rows are
+One table, mirrored from `crates/novomodelo-cli/tests/refusal_parity.rs`: rows are
 added in both files together, each with one of the three outcomes
 (`BracketedRefusal`, `PlainRefusal`, `Warning`). The checker is not changed by
 row additions.
 
 Run with (from the repo root):
-    pytest crates/cobre-python/tests/test_refusal_parity.py -v
+    pytest crates/novomodelo-python/tests/test_refusal_parity.py -v
 """
 
 from __future__ import annotations
@@ -187,22 +187,22 @@ def _time_limit_only_stopping_rules(case: pathlib.Path) -> None:
 
 
 def _train_one_iteration(case: pathlib.Path) -> None:
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     def edit(config: Any) -> None:
         config["training"]["stopping_rules"] = [{"type": "iteration_limit", "limit": 1}]
         config["simulation"]["enabled"] = False
 
     _edit_json(case / "config.json", edit)
-    cobre.run.run(str(case), output_dir=str(case / "output"))
+    novomodelo.run.run(str(case), output_dir=str(case / "output"))
 
 
 def _restamp_policy_version(policy_dir: pathlib.Path) -> None:
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     manifest = policy_dir / "manifest.bin"
     data = manifest.read_bytes()
-    running = cobre.__version__.encode()
+    running = novomodelo.__version__.encode()
     assert data.count(running) == 1, "the running version must occur once"
     other = (b"8" if running.startswith(b"9") else b"9") + running[1:]
     manifest.write_bytes(data.replace(running, other))
@@ -550,9 +550,9 @@ def test_validate_and_run_report_identically(
     error_class_name: str | None,
 ) -> None:
     """`validate` and `run` report the row's refusal or warning with the same line."""
-    import cobre.errors  # noqa: PLC0415
-    import cobre.io  # noqa: PLC0415
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     case = tmp_path / "case"
     shutil.copytree(_REPO_ROOT / "examples" / base_case, case)
@@ -560,15 +560,17 @@ def test_validate_and_run_report_identically(
 
     out = case / "output"
 
-    validate_result = cobre.io.validate(str(case), output_dir=str(out))
+    validate_result = novomodelo.io.validate(str(case), output_dir=str(out))
     run_error: BaseException | None
     try:
-        cobre.run.run(str(case), output_dir=str(out))
+        novomodelo.run.run(str(case), output_dir=str(out))
         run_error = None
     except Exception as exc:
         run_error = exc
     run_stderr = capfd.readouterr().err
-    error_class = getattr(cobre.errors, error_class_name) if error_class_name else None
+    error_class = (
+        getattr(novomodelo.errors, error_class_name) if error_class_name else None
+    )
 
     assert (
         _parity_violations(
@@ -641,7 +643,7 @@ _HOLDS = [
         _WARNING_LINE,
         _valid(_WARNING_LINE),
         None,
-        f"cobre-python: policy validation warning: {_WARNING_LINE}\n",
+        f"novomodelo-python: policy validation warning: {_WARNING_LINE}\n",
         id="Warning",
     ),
 ]
@@ -676,7 +678,7 @@ _MISMATCHES = [
         _WARNING_LINE,
         _valid(),
         ValueError("boom"),
-        f"cobre-python: policy validation warning: {_WARNING_LINE}\n",
+        f"novomodelo-python: policy validation warning: {_WARNING_LINE}\n",
         ("run raised", "validate reported no line"),
         id="Warning",
     ),

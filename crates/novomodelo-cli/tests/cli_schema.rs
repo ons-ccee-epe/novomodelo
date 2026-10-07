@@ -1,4 +1,4 @@
-//! Integration tests for `cobre schema export`.
+//! Integration tests for `novomodelo schema export`.
 //!
 //! Verifies that the subcommand writes `.schema.json` files to the specified
 //! output directory, creates directories on demand, handles the default
@@ -13,8 +13,8 @@ use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
-fn cobre() -> Command {
-    Command::new(assert_cmd::cargo::cargo_bin!("cobre"))
+fn novomodelo() -> Command {
+    Command::new(assert_cmd::cargo::cargo_bin!("novomodelo"))
 }
 
 #[test]
@@ -22,7 +22,7 @@ fn test_schema_export_writes_files() {
     let tmp = TempDir::new().unwrap();
     let output_dir = tmp.path();
 
-    cobre()
+    novomodelo()
         .args([
             "schema",
             "export",
@@ -104,7 +104,7 @@ fn test_schema_export_writes_files() {
 fn test_schema_export_default_dir() {
     let tmp = TempDir::new().unwrap();
 
-    cobre()
+    novomodelo()
         .args(["schema", "export"])
         .current_dir(tmp.path())
         .assert()
@@ -130,7 +130,7 @@ fn test_schema_export_creates_dir() {
 
     assert!(!new_dir.exists(), "precondition: directory must not exist");
 
-    cobre()
+    novomodelo()
         .args([
             "schema",
             "export",
@@ -159,7 +159,7 @@ fn test_schema_export_creates_dir() {
 /// directories cannot be created and the export exits non-zero.
 #[test]
 fn test_schema_export_unwritable_dir_exits_nonzero() {
-    cobre()
+    novomodelo()
         .args([
             "schema",
             "export",

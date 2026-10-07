@@ -8,7 +8,7 @@
  * dual-row pivot setter. Those live solely on the C++ ClpSimplex class.
  *
  * Handle layout (critical): the opaque handle threaded through the FFI is the
- * pointer cobre_clp_create() returns from Clp_newModel(). That is NOT a
+ * pointer novomodelo_clp_create() returns from Clp_newModel(). That is NOT a
  * ClpSimplex* — it is a `Clp_Simplex*` WRAPPER struct. With CLP_EXTERN_C
  * defined, Coin_C_defines.h declares Clp_Simplex as a concrete
  * `{ ClpSimplex* model_; CMessageHandler* handler_; }`, and Clp_newModel()
@@ -45,8 +45,8 @@
 
 extern "C" {
 
-void cobre_clp_set_dual_row_steepest(void* model, int32_t mode) {
-    // SAFETY: `model` is a `Clp_Simplex*` wrapper from cobre_clp_create()
+void novomodelo_clp_set_dual_row_steepest(void* model, int32_t mode) {
+    // SAFETY: `model` is a `Clp_Simplex*` wrapper from novomodelo_clp_create()
     // (Clp_newModel()); the real C++ ClpSimplex is `wrapper->model_`. We cast
     // the void* to the concrete wrapper struct and read ->model_, matching how
     // every Clp_* C-API call reaches the model.
@@ -55,8 +55,8 @@ void cobre_clp_set_dual_row_steepest(void* model, int32_t mode) {
     simplex->setDualRowPivotAlgorithm(steepest);
 }
 
-void cobre_clp_set_factorization_frequency(void* model, int32_t value) {
-    // SAFETY: `model` is a `Clp_Simplex*` wrapper from cobre_clp_create(); the
+void novomodelo_clp_set_factorization_frequency(void* model, int32_t value) {
+    // SAFETY: `model` is a `Clp_Simplex*` wrapper from novomodelo_clp_create(); the
     // real ClpSimplex is `wrapper->model_`. See the file header invariant.
     ClpSimplex* simplex = static_cast<Clp_Simplex*>(model)->model_;
     simplex->setFactorizationFrequency(value);

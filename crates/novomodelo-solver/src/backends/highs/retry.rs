@@ -62,7 +62,8 @@ impl HighsSolver {
                 // SAFETY: handle is valid non-null HiGHS pointer.
                 #[allow(clippy::cast_sign_loss)]
                 let iters =
-                    unsafe { ffi::cobre_highs_get_simplex_iteration_count(self.handle) } as u64;
+                    unsafe { ffi::novomodelo_highs_get_simplex_iteration_count(self.handle) }
+                        as u64;
                 outcome = Some(RetryOutcome {
                     attempts: retry_attempts,
                     solve_time: retry_time,
@@ -99,8 +100,8 @@ impl HighsSolver {
         self.reapply_profile();
         self.restore_iteration_limits();
         unsafe {
-            ffi::cobre_highs_set_int_option(self.handle, c"user_objective_scale".as_ptr(), 0);
-            ffi::cobre_highs_set_int_option(self.handle, c"user_bound_scale".as_ptr(), 0);
+            ffi::novomodelo_highs_set_int_option(self.handle, c"user_objective_scale".as_ptr(), 0);
+            ffi::novomodelo_highs_set_int_option(self.handle, c"user_bound_scale".as_ptr(), 0);
         }
 
         if let Some(outcome) = outcome {
@@ -143,8 +144,8 @@ impl HighsSolver {
             // first-line intervention against cycling.
             0 => {
                 unsafe {
-                    ffi::cobre_highs_clear_solver(self.handle);
-                    ffi::cobre_highs_set_double_option(
+                    ffi::novomodelo_highs_clear_solver(self.handle);
+                    ffi::novomodelo_highs_set_double_option(
                         self.handle,
                         c"dual_simplex_cost_perturbation_multiplier".as_ptr(),
                         1.0,
@@ -153,18 +154,18 @@ impl HighsSolver {
                 self.set_iteration_limits();
             }
             1 => unsafe {
-                ffi::cobre_highs_set_string_option(
+                ffi::novomodelo_highs_set_string_option(
                     self.handle,
                     c"presolve".as_ptr(),
                     c"on".as_ptr(),
                 );
             },
             2 => unsafe {
-                ffi::cobre_highs_set_int_option(self.handle, c"simplex_strategy".as_ptr(), 1);
+                ffi::novomodelo_highs_set_int_option(self.handle, c"simplex_strategy".as_ptr(), 1);
             },
             3 => self.apply_feasibility_tolerances(1e-8),
             4 => unsafe {
-                ffi::cobre_highs_set_string_option(
+                ffi::novomodelo_highs_set_string_option(
                     self.handle,
                     c"solver".as_ptr(),
                     c"ipm".as_ptr(),
@@ -185,32 +186,48 @@ impl HighsSolver {
         // SAFETY: handle is valid non-null HiGHS pointer; option names/values
         // are static C strings; no retained pointers after call.
         unsafe {
-            ffi::cobre_highs_set_string_option(self.handle, c"presolve".as_ptr(), c"on".as_ptr());
+            ffi::novomodelo_highs_set_string_option(
+                self.handle,
+                c"presolve".as_ptr(),
+                c"on".as_ptr(),
+            );
         }
         match level {
             5 => {}
             6 => unsafe {
-                ffi::cobre_highs_set_int_option(self.handle, c"simplex_strategy".as_ptr(), 1);
+                ffi::novomodelo_highs_set_int_option(self.handle, c"simplex_strategy".as_ptr(), 1);
             },
             7 => self.apply_feasibility_tolerances(1e-8),
             8 => unsafe {
-                ffi::cobre_highs_set_int_option(self.handle, c"user_objective_scale".as_ptr(), -10);
+                ffi::novomodelo_highs_set_int_option(
+                    self.handle,
+                    c"user_objective_scale".as_ptr(),
+                    -10,
+                );
             },
             9 => unsafe {
-                ffi::cobre_highs_set_int_option(self.handle, c"simplex_strategy".as_ptr(), 1);
-                ffi::cobre_highs_set_int_option(self.handle, c"user_objective_scale".as_ptr(), -10);
-                ffi::cobre_highs_set_int_option(self.handle, c"user_bound_scale".as_ptr(), -5);
+                ffi::novomodelo_highs_set_int_option(self.handle, c"simplex_strategy".as_ptr(), 1);
+                ffi::novomodelo_highs_set_int_option(
+                    self.handle,
+                    c"user_objective_scale".as_ptr(),
+                    -10,
+                );
+                ffi::novomodelo_highs_set_int_option(self.handle, c"user_bound_scale".as_ptr(), -5);
             },
             10 => {
                 // SAFETY: handle is valid non-null HiGHS pointer; option names
                 // are static C string literals; no retained pointers.
                 unsafe {
-                    ffi::cobre_highs_set_int_option(
+                    ffi::novomodelo_highs_set_int_option(
                         self.handle,
                         c"user_objective_scale".as_ptr(),
                         -13,
                     );
-                    ffi::cobre_highs_set_int_option(self.handle, c"user_bound_scale".as_ptr(), -8);
+                    ffi::novomodelo_highs_set_int_option(
+                        self.handle,
+                        c"user_bound_scale".as_ptr(),
+                        -8,
+                    );
                 }
                 self.apply_feasibility_tolerances(1e-7);
             }
@@ -218,17 +235,21 @@ impl HighsSolver {
                 // SAFETY: handle is valid non-null HiGHS pointer; option names
                 // are static C string literals; no retained pointers.
                 unsafe {
-                    ffi::cobre_highs_set_string_option(
+                    ffi::novomodelo_highs_set_string_option(
                         self.handle,
                         c"solver".as_ptr(),
                         c"ipm".as_ptr(),
                     );
-                    ffi::cobre_highs_set_int_option(
+                    ffi::novomodelo_highs_set_int_option(
                         self.handle,
                         c"user_objective_scale".as_ptr(),
                         -10,
                     );
-                    ffi::cobre_highs_set_int_option(self.handle, c"user_bound_scale".as_ptr(), -5);
+                    ffi::novomodelo_highs_set_int_option(
+                        self.handle,
+                        c"user_bound_scale".as_ptr(),
+                        -5,
+                    );
                 }
                 self.apply_feasibility_tolerances(1e-7);
             }
@@ -244,12 +265,12 @@ impl HighsSolver {
         // SAFETY: handle is valid non-null HiGHS pointer; option names
         // are static C string literals; no retained pointers.
         unsafe {
-            ffi::cobre_highs_set_double_option(
+            ffi::novomodelo_highs_set_double_option(
                 self.handle,
                 c"primal_feasibility_tolerance".as_ptr(),
                 primal,
             );
-            ffi::cobre_highs_set_double_option(
+            ffi::novomodelo_highs_set_double_option(
                 self.handle,
                 c"dual_feasibility_tolerance".as_ptr(),
                 dual,

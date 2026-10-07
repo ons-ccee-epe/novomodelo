@@ -1,6 +1,6 @@
 //! Automatic PAR(p) parameter estimation from historical inflow observations.
 //!
-//! This module bridges case loading (this crate) and PAR fitting (`cobre-stochastic`).
+//! This module bridges case loading (this crate) and PAR fitting (`novomodelo-stochastic`).
 //! It inspects the input file manifest, resolves which of seven input paths applies
 //! (see [`EstimationPath`]), and dispatches to the appropriate estimation function.
 //!
@@ -58,8 +58,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 use chrono::{Months, NaiveDate};
-use cobre_core::{EntityId, SeasonMap, Stage, System, ValidationError};
-use cobre_stochastic::{
+use novomodelo_core::{EntityId, SeasonMap, Stage, System, ValidationError};
+use novomodelo_stochastic::{
     StochasticError,
     par::aggregate::aggregate_observations_to_season,
     par::fitting::{
@@ -85,9 +85,9 @@ use crate::{
     validate_structure,
 };
 
-// `EstimationReport` lives in `cobre_stochastic::par::fitting`; re-exported here
+// `EstimationReport` lives in `novomodelo_stochastic::par::fitting`; re-exported here
 // so callers resolve it alongside `EstimationPath`/`estimate_from_history`.
-pub use cobre_stochastic::par::fitting::EstimationReport;
+pub use novomodelo_stochastic::par::fitting::EstimationReport;
 
 /// Classification of the estimation path taken for a given input file manifest.
 ///
@@ -1080,7 +1080,7 @@ fn build_season_to_stages(stages: &[Stage]) -> HashMap<usize, Vec<i32>> {
 
 /// Convert [`SeasonalStats`] to [`InflowSeasonalStatsRow`], expanding each
 /// per-season estimate to every stage sharing its `season_id` so that
-/// [`cobre_stochastic::PrecomputedPar`] finds a model at every stage index.
+/// [`novomodelo_stochastic::PrecomputedPar`] finds a model at every stage index.
 ///
 /// Pre-study stages (negative `id`) are included in the expansion, emitting rows
 /// at their negative `stage_id` for direct lag-stage hits.

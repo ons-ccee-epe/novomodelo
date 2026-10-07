@@ -2,7 +2,7 @@
 //!
 //! `resolve_variable_ref` maps a [`VariableRef`] and block index to a list of
 //! `(column_index, coefficient_multiplier)` pairs; the LP builder calls it for each
-//! [`cobre_core::LinearTerm`] of a generic-constraint expression to produce CSC
+//! [`novomodelo_core::LinearTerm`] of a generic-constraint expression to produce CSC
 //! entries. Column offsets come from the same two owners every other builder fill
 //! function reads — [`TemplateBuildCtx`] for entity slices and position maps,
 //! [`StageLayout`] for this stage's column/row ranges and the typed accessors over
@@ -21,7 +21,7 @@
 //! with no LP columns (contracts, non-controllable sources, withdrawal) return an
 //! empty vec.
 
-use cobre_core::{ContractType, EntityId, PumpingStation, VariableRef};
+use novomodelo_core::{ContractType, EntityId, PumpingStation, VariableRef};
 
 use super::delivery_ring::{maturing_bucket_in_col, resolve_bucket_arrival_density};
 use super::hydro_state::resolve_shortcircuit_target;

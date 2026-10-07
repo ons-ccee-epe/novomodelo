@@ -1,10 +1,10 @@
-"""Integration tests for cobre.io Python wrapper functions.
+"""Integration tests for novomodelo.io Python wrapper functions.
 
 These tests verify that load_case and validate are correctly exposed and
 behave as expected for both valid and invalid case directories.
 
 Run with (from the repo root):
-    pytest crates/cobre-python/tests/
+    pytest crates/novomodelo-python/tests/
 """
 
 import json
@@ -15,41 +15,41 @@ import pytest
 
 
 VALID_CASE = "examples/1dtoy"
-MISSING_CASE = "/tmp/nonexistent_cobre_case_xzy123"
+MISSING_CASE = "/tmp/nonexistent_novomodelo_case_xzy123"
 
 
 def test_load_case_returns_system() -> None:
     """load_case returns a System with correct entity counts for the 1dtoy case."""
-    import cobre.io  # noqa: PLC0415
-    import cobre.model  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.model  # noqa: PLC0415
 
-    system = cobre.io.load_case(VALID_CASE)
-    assert isinstance(system, cobre.model.System)
+    system = novomodelo.io.load_case(VALID_CASE)
+    assert isinstance(system, novomodelo.model.System)
     assert isinstance(system.n_buses, int)
     assert system.n_buses > 0
 
 
 def test_load_case_nonexistent_raises_oserror() -> None:
     """load_case raises OSError when the case directory does not exist."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
     with pytest.raises(OSError):
-        cobre.io.load_case(MISSING_CASE)
+        novomodelo.io.load_case(MISSING_CASE)
 
 
 def test_load_case_accepts_pathlib() -> None:
     """load_case accepts a pathlib.Path argument, not just a str."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    system = cobre.io.load_case(pathlib.Path(VALID_CASE))
+    system = novomodelo.io.load_case(pathlib.Path(VALID_CASE))
     assert system.n_buses > 0
 
 
 def test_validate_valid_case() -> None:
     """validate returns valid=True with no errors for the 1dtoy case."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    result = cobre.io.validate(VALID_CASE)
+    result = novomodelo.io.validate(VALID_CASE)
     assert isinstance(result, dict)
     assert result["valid"] is True
     assert result["errors"] == []
@@ -58,7 +58,7 @@ def test_validate_valid_case() -> None:
 
 def test_validate_invalid_simulation_scenario_source(tmp_path: pathlib.Path) -> None:
     """validate returns valid=False when simulation.scenario_source violates an admission rule."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
     case_dir = tmp_path / "case"
     shutil.copytree(VALID_CASE, case_dir)
@@ -71,7 +71,7 @@ def test_validate_invalid_simulation_scenario_source(tmp_path: pathlib.Path) -> 
     }
     config_path.write_text(json.dumps(config))
 
-    result = cobre.io.validate(str(case_dir))
+    result = novomodelo.io.validate(str(case_dir))
     assert isinstance(result, dict)
     assert result["valid"] is False
     assert any(
@@ -82,9 +82,9 @@ def test_validate_invalid_simulation_scenario_source(tmp_path: pathlib.Path) -> 
 
 def test_validate_nonexistent_case() -> None:
     """validate returns valid=False with at least one error for a missing path."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    result = cobre.io.validate(MISSING_CASE)
+    result = novomodelo.io.validate(MISSING_CASE)
     assert isinstance(result, dict)
     assert result["valid"] is False
     assert len(result["errors"]) > 0
@@ -95,9 +95,9 @@ def test_validate_nonexistent_case() -> None:
 
 def test_validate_docstring_names_the_raising_path() -> None:
     """validate.__doc__ names ValueError for malformed config_overrides, does not claim never raises."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    docstring = cobre.io.validate.__doc__
+    docstring = novomodelo.io.validate.__doc__
     assert docstring is not None
     assert "ValueError" in docstring
     assert "never raise" not in docstring

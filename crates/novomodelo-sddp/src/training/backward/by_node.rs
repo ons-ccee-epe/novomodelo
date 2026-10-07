@@ -17,7 +17,7 @@ use std::cmp;
 use std::num::NonZeroUsize;
 use std::time::Instant;
 
-use cobre_solver::SolverInterface;
+use novomodelo_solver::SolverInterface;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 
 use crate::{

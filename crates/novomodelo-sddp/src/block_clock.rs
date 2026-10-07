@@ -1,6 +1,6 @@
 //! Single owner of the stage block-hours facts derived from `Stage::blocks`.
 
-use cobre_core::{Block, Stage};
+use novomodelo_core::{Block, Stage};
 
 use crate::indexer::BlockIdx;
 
@@ -49,7 +49,7 @@ impl<'a> BlockClock<'a> {
 #[cfg(test)]
 mod tests {
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };

@@ -7,7 +7,7 @@
 //!
 //! ```json
 //! {
-//!   "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/production_models.schema.json",
+//!   "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/production_models.schema.json",
 //!   "production_models": [
 //!     {
 //!       "hydro_id": 0,
@@ -59,7 +59,7 @@
 //! - That exactly one source (JSON or parquet) provides `productivity_mw_per_m3s` for each
 //!   `(hydro, stage)` pair — `validation::productivity_resolution`.
 
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::Path;
@@ -74,8 +74,8 @@ use crate::LoadError;
 /// # Examples
 ///
 /// ```
-/// use cobre_io::extensions::{ProductionModelConfig, SelectionMode};
-/// use cobre_core::EntityId;
+/// use novomodelo_io::extensions::{ProductionModelConfig, SelectionMode};
+/// use novomodelo_core::EntityId;
 ///
 /// let config = ProductionModelConfig {
 ///     hydro_id: EntityId::from(0),
@@ -472,7 +472,7 @@ struct RawReferenceVolume {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::extensions::parse_production_models;
+/// use novomodelo_io::extensions::parse_production_models;
 /// use std::path::Path;
 ///
 /// let file = parse_production_models(Path::new("system/hydro_production_models.json"))

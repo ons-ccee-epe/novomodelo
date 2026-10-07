@@ -36,7 +36,7 @@
 //! [`PrecomputedPar`]: crate::par::precompute::PrecomputedPar
 
 use chrono::NaiveDate;
-use cobre_core::{
+use novomodelo_core::{
     EntityId,
     scenario::{HistoricalYears, InflowHistoryRow},
     temporal::{SeasonMap, Stage, StageLagTransition},
@@ -60,7 +60,7 @@ use super::{eta_inversion::run_eta_inversion, window::history_row_key};
 /// # Examples
 ///
 /// ```
-/// use cobre_stochastic::HistoricalScenarioLibrary;
+/// use novomodelo_stochastic::HistoricalScenarioLibrary;
 ///
 /// let mut lib = HistoricalScenarioLibrary::new(3, 12, 5, 2, vec![1990, 1995, 2000]);
 /// assert_eq!(lib.n_windows(), 3);
@@ -516,13 +516,13 @@ pub fn standardize_historical_windows(
 ///
 /// ```
 /// use chrono::NaiveDate;
-/// use cobre_core::EntityId;
-/// use cobre_core::temporal::{
+/// use novomodelo_core::EntityId;
+/// use novomodelo_core::temporal::{
 ///     Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
 ///     StageStateConfig,
 /// };
-/// use cobre_stochastic::HistoricalScenarioLibrary;
-/// use cobre_stochastic::sampling::historical::{
+/// use novomodelo_stochastic::HistoricalScenarioLibrary;
+/// use novomodelo_stochastic::sampling::historical::{
 ///     check_historical_structure, validate_historical_library,
 /// };
 ///
@@ -699,7 +699,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     use chrono::{Datelike, Months, NaiveDate, TimeDelta, Weekday};
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId, Hydro,
         scenario::{InflowHistoryRow, InflowModel},
         temporal::{
@@ -1845,7 +1845,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn make_hydro(id: i32) -> Hydro {
-        cobre_core::test_support::make_hydro(HydroSpec {
+        novomodelo_core::test_support::make_hydro(HydroSpec {
             id,
             name: format!("H{id}"),
             max_storage_hm3: 100.0,
@@ -2011,7 +2011,7 @@ mod tests {
         end: NaiveDate,
         season_id: usize,
     ) -> Stage {
-        cobre_core::test_support::make_stage(StageSpec {
+        novomodelo_core::test_support::make_stage(StageSpec {
             id,
             index: Some(index),
             start_date: start,

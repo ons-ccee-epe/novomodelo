@@ -1,6 +1,6 @@
 //! Provenance metadata for stochastic pipeline components.
 
-use cobre_core::scenario::SamplingScheme;
+use novomodelo_core::scenario::SamplingScheme;
 
 /// Origin of a single stochastic pipeline component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,7 +36,7 @@ pub struct StochasticProvenance {
 mod tests {
     use std::collections::BTreeMap;
 
-    use cobre_core::{
+    use novomodelo_core::{
         Bus, DeficitSegment, EntityId, Hydro, SystemBuilder,
         scenario::{
             CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
@@ -52,7 +52,7 @@ mod tests {
     };
 
     fn make_stage(index: usize, id: i32, branching_factor: usize) -> Stage {
-        cobre_core::test_support::make_stage(StageSpec {
+        novomodelo_core::test_support::make_stage(StageSpec {
             id,
             index: Some(index),
             season_id: Some(0),
@@ -66,7 +66,7 @@ mod tests {
     }
 
     fn make_bus(id: i32) -> Bus {
-        cobre_core::test_support::make_bus(BusSpec {
+        novomodelo_core::test_support::make_bus(BusSpec {
             id,
             name: format!("Bus{id}"),
             deficit_segments: vec![DeficitSegment {
@@ -78,7 +78,7 @@ mod tests {
     }
 
     fn make_hydro(id: i32) -> Hydro {
-        cobre_core::test_support::make_hydro(HydroSpec {
+        novomodelo_core::test_support::make_hydro(HydroSpec {
             id,
             name: format!("H{id}"),
             max_storage_hm3: 100.0,

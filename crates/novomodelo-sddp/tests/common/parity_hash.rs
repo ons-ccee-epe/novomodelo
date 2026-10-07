@@ -29,12 +29,12 @@
     dead_code
 )]
 
-use cobre_io::config::SimulationSelection;
+use novomodelo_io::config::SimulationSelection;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
-use cobre_core::TrainingEvent;
-use cobre_sddp::{
+use novomodelo_core::TrainingEvent;
+use novomodelo_sddp::{
     SimulationScenarioResult, SimulationWeighting, StudySetup, aggregate_simulation,
     hydro_models::prepare_hydro_models,
     setup::{StudyParams, prepare_stochastic},
@@ -253,13 +253,13 @@ pub fn train_and_simulate_at_dir<S, F>(
     make_solver: F,
 ) -> (StudySetup, Vec<SimulationScenarioResult>)
 where
-    S: cobre_solver::SolverInterface<Profile = cobre_solver::ActiveProfile> + Send,
-    F: Fn() -> Result<S, cobre_solver::SolverError> + Copy,
+    S: novomodelo_solver::SolverInterface<Profile = novomodelo_solver::ActiveProfile> + Send,
+    F: Fn() -> Result<S, novomodelo_solver::SolverError> + Copy,
 {
     let config_path = dir.join("config.json");
 
-    let config = cobre_io::parse_config(&config_path).expect("config must parse");
-    let system = cobre_io::load_case(dir).expect("load_case must succeed");
+    let config = novomodelo_io::parse_config(&config_path).expect("config must parse");
+    let system = novomodelo_io::load_case(dir).expect("load_case must succeed");
 
     let prep_source = config
         .training_scenario_source(&config_path)
@@ -356,8 +356,8 @@ where
 /// training/simulation paths do.
 fn compute_case_hash_at_dir<S, F>(dir: &Path, make_solver: F) -> String
 where
-    S: cobre_solver::SolverInterface<Profile = cobre_solver::ActiveProfile> + Send,
-    F: Fn() -> Result<S, cobre_solver::SolverError> + Copy,
+    S: novomodelo_solver::SolverInterface<Profile = novomodelo_solver::ActiveProfile> + Send,
+    F: Fn() -> Result<S, novomodelo_solver::SolverError> + Copy,
 {
     let (setup, scenario_results) = train_and_simulate_at_dir::<S, F>(dir, make_solver);
     compute_parity_hash(&setup, scenario_results)
@@ -366,8 +366,8 @@ where
 /// Run [`compute_case_hash_at_dir`] for a golden case's own directory.
 fn compute_golden_case_hash<S, F>(label: &str, make_solver: F) -> String
 where
-    S: cobre_solver::SolverInterface<Profile = cobre_solver::ActiveProfile> + Send,
-    F: Fn() -> Result<S, cobre_solver::SolverError> + Copy,
+    S: novomodelo_solver::SolverInterface<Profile = novomodelo_solver::ActiveProfile> + Send,
+    F: Fn() -> Result<S, novomodelo_solver::SolverError> + Copy,
 {
     compute_case_hash_at_dir::<S, F>(&case_dir(label), make_solver)
 }
@@ -378,8 +378,8 @@ where
 /// classification map and coverage bound.
 fn compute_permuted_case_hash<S, F>(label: &str, seed: u64, make_solver: F) -> String
 where
-    S: cobre_solver::SolverInterface<Profile = cobre_solver::ActiveProfile> + Send,
-    F: Fn() -> Result<S, cobre_solver::SolverError> + Copy,
+    S: novomodelo_solver::SolverInterface<Profile = novomodelo_solver::ActiveProfile> + Send,
+    F: Fn() -> Result<S, novomodelo_solver::SolverError> + Copy,
 {
     let permuted = permute_case(&case_dir(label), seed);
     compute_case_hash_at_dir::<S, F>(permuted.path(), make_solver)
@@ -392,8 +392,8 @@ where
 /// `tests/fixtures/`.
 pub fn run_golden_case<S, F>(baseline_subdir: &str, label: &str, make_solver: F) -> String
 where
-    S: cobre_solver::SolverInterface<Profile = cobre_solver::ActiveProfile> + Send,
-    F: Fn() -> Result<S, cobre_solver::SolverError> + Copy,
+    S: novomodelo_solver::SolverInterface<Profile = novomodelo_solver::ActiveProfile> + Send,
+    F: Fn() -> Result<S, novomodelo_solver::SolverError> + Copy,
 {
     let hash = compute_golden_case_hash::<S, F>(label, make_solver);
     assert_baseline(baseline_subdir, label, &hash).unwrap_or_else(|msg| panic!("{msg}"));
@@ -407,8 +407,8 @@ where
 /// selects the per-backend baseline directory under `tests/fixtures/`.
 pub fn regen_golden_case<S, F>(baseline_subdir: &str, label: &str, make_solver: F)
 where
-    S: cobre_solver::SolverInterface<Profile = cobre_solver::ActiveProfile> + Send,
-    F: Fn() -> Result<S, cobre_solver::SolverError> + Copy,
+    S: novomodelo_solver::SolverInterface<Profile = novomodelo_solver::ActiveProfile> + Send,
+    F: Fn() -> Result<S, novomodelo_solver::SolverError> + Copy,
 {
     let hash = compute_golden_case_hash::<S, F>(label, make_solver);
     write_baseline(baseline_subdir, label, &hash).unwrap_or_else(|msg| panic!("{msg}"));
@@ -423,8 +423,8 @@ where
 /// equality is not).
 pub fn assert_permutation_hash<S, F>(label: &str, seed: u64, base_hash: &str, make_solver: F)
 where
-    S: cobre_solver::SolverInterface<Profile = cobre_solver::ActiveProfile> + Send,
-    F: Fn() -> Result<S, cobre_solver::SolverError> + Copy,
+    S: novomodelo_solver::SolverInterface<Profile = novomodelo_solver::ActiveProfile> + Send,
+    F: Fn() -> Result<S, novomodelo_solver::SolverError> + Copy,
 {
     let permuted_hash = compute_permuted_case_hash::<S, F>(label, seed, make_solver);
     assert_eq!(

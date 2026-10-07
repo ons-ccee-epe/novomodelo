@@ -1,5 +1,5 @@
 #![allow(clippy::expect_used, clippy::panic)]
-//! Build script for cobre-cli.
+//! Build script for novomodelo-cli.
 //!
 //! Copies the 1dtoy template files from `templates/1dtoy/` into
 //! `OUT_DIR/templates/1dtoy/` so that `include_bytes!` in `templates.rs`

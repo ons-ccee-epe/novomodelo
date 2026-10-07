@@ -13,8 +13,8 @@ use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
-const CLI_OUTPUTS: &str = "crates/cobre-cli/src/commands/run/outputs.rs";
-const PYTHON_RUN: &str = "crates/cobre-python/src/run.rs";
+const CLI_OUTPUTS: &str = "crates/novomodelo-cli/src/commands/run/outputs.rs";
+const PYTHON_RUN: &str = "crates/novomodelo-python/src/run.rs";
 const CLI_TRAINING_MARKER: &str = r#"write_success_marker(&args.output_dir.join("training"))"#;
 const PYTHON_TRAINING_MARKER: &str = r#"write_success_marker(&output_dir.join("training"))"#;
 
@@ -69,7 +69,7 @@ fn copy_tree(from: &Path, to: &Path) {
 
 fn fixture_root() -> TempDir {
     let fixture = TempDir::new().expect("failed to create fixture root");
-    for tree in ["crates/cobre-cli/src", "crates/cobre-python/src"] {
+    for tree in ["crates/novomodelo-cli/src", "crates/novomodelo-python/src"] {
         copy_tree(&repo_root().join(tree), &fixture.path().join(tree));
     }
     fixture
@@ -168,7 +168,7 @@ fn parity_script_rejects_a_write_after_the_success_marker() {
     insert_after_statement(
         &fixture.path().join(CLI_OUTPUTS),
         CLI_TRAINING_MARKER,
-        "    cobre_io::write_fixed_delivery(args.output_dir, &fixed_rows).map_err(CliError::from)?;",
+        "    novomodelo_io::write_fixed_delivery(args.output_dir, &fixed_rows).map_err(CliError::from)?;",
     );
     assert_rejected_naming(
         &run_script(fixture.path()),
@@ -185,7 +185,7 @@ fn parity_script_follows_a_local_wrapper_called_after_the_success_marker() {
     let run_rs = fixture.path().join(PYTHON_RUN);
     append(
         &run_rs,
-        "fn stage_extra_sidecar(dir: &Path) -> Result<(), String> { cobre_io::write_fixed_delivery(dir, &[]).map_err(|e| e.to_string()) }\n",
+        "fn stage_extra_sidecar(dir: &Path) -> Result<(), String> { novomodelo_io::write_fixed_delivery(dir, &[]).map_err(|e| e.to_string()) }\n",
     );
     insert_after_statement(
         &run_rs,
@@ -195,7 +195,7 @@ fn parity_script_follows_a_local_wrapper_called_after_the_success_marker() {
     assert_rejected_naming(
         &run_script(fixture.path()),
         &[
-            "crates/cobre-python/src/run.rs::write_training_outputs",
+            "crates/novomodelo-python/src/run.rs::write_training_outputs",
             "stage_extra_sidecar",
         ],
     );
@@ -210,7 +210,7 @@ fn parity_script_rejects_a_phase_writer_without_the_success_marker() {
     remove_statement(&fixture.path().join(PYTHON_RUN), PYTHON_TRAINING_MARKER);
     assert_rejected_naming(
         &run_script(fixture.path()),
-        &["crates/cobre-python/src/run.rs::write_training_outputs"],
+        &["crates/novomodelo-python/src/run.rs::write_training_outputs"],
     );
 }
 
@@ -258,7 +258,7 @@ fn parity_script_checks_every_function_that_writes_the_marker() {
         "
 fn extra_phase(dir: &Path) -> Result<(), CliError> {
     write_success_marker(dir).map_err(CliError::from)?;
-    cobre_io::write_fixed_delivery(dir, &[]).map_err(CliError::from)?;
+    novomodelo_io::write_fixed_delivery(dir, &[]).map_err(CliError::from)?;
     Ok(())
 }
 ",

@@ -1,9 +1,11 @@
-use cobre_core::{
+use novomodelo_core::{
     EfficiencyModel, EntityId, HydraulicLossesModel, Hydro, HydroGenerationModel, HydroPenalties,
     TailraceModel, TailracePoint,
 };
-use cobre_io::PlaneReductionConfig;
-use cobre_io::extensions::{FittingWindow, FphaColumnLayout, HydroGeometryRow, TailraceCurveRow};
+use novomodelo_io::PlaneReductionConfig;
+use novomodelo_io::extensions::{
+    FittingWindow, FphaColumnLayout, HydroGeometryRow, TailraceCurveRow,
+};
 
 use super::alpha::compute_alpha_fpha;
 use super::error::FphaFittingError;
@@ -274,7 +276,7 @@ fn tailrace_polynomial_quartic_five_coefficients() {
 
 /// Build the 3-point piecewise model from the acceptance criteria.
 fn ac_piecewise() -> TailraceModel {
-    use cobre_core::TailracePoint;
+    use novomodelo_core::TailracePoint;
     TailraceModel::Piecewise {
         points: vec![
             TailracePoint {
@@ -2285,7 +2287,7 @@ fn fit_fpha_planes_none_reduction_is_bit_identical_skip() {
 /// merge decisions.
 #[test]
 fn fit_fpha_planes_distance_reduction_is_deterministic() {
-    use cobre_io::extensions::PlaneReductionConfig;
+    use novomodelo_io::extensions::PlaneReductionConfig;
 
     let rows = sobradinho_rows();
     let hydro = make_sobradinho_hydro();
@@ -2431,7 +2433,7 @@ fn reduced_sobradinho_planes(reduction: &PlaneReductionConfig) -> Vec<FphaPlane>
 /// every coefficient.
 #[test]
 fn fit_fpha_planes_angle_reduction_is_shuffle_invariant() {
-    use cobre_io::extensions::PlaneReductionConfig;
+    use novomodelo_io::extensions::PlaneReductionConfig;
     let reduction = PlaneReductionConfig::Angle { tolerance_deg: 2.0 };
     let first = reduced_sobradinho_planes(&reduction);
     let second = reduced_sobradinho_planes(&reduction);
@@ -2449,7 +2451,7 @@ fn fit_fpha_planes_angle_reduction_is_shuffle_invariant() {
 /// decisions — `to_bits`-identical for every coefficient.
 #[test]
 fn fit_fpha_planes_distance_reduction_is_shuffle_invariant() {
-    use cobre_io::extensions::PlaneReductionConfig;
+    use novomodelo_io::extensions::PlaneReductionConfig;
     let reduction = PlaneReductionConfig::Distance {
         tolerance_pct: 0.5,
         n_samples: 128,
@@ -2471,7 +2473,7 @@ fn fit_fpha_planes_distance_reduction_is_shuffle_invariant() {
 /// input leaked into the seed or the sample loop.
 #[test]
 fn fit_fpha_planes_distance_reduction_is_rank_count_invariant() {
-    use cobre_io::extensions::PlaneReductionConfig;
+    use novomodelo_io::extensions::PlaneReductionConfig;
     let reduction = PlaneReductionConfig::Distance {
         tolerance_pct: 0.5,
         n_samples: 128,
@@ -2503,7 +2505,7 @@ fn fit_fpha_planes_distance_reduction_is_rank_count_invariant() {
 fn reduce_planes_huge_tolerance_preserves_origin_plane_both_methods() {
     use super::production::{ProductionFunction, TailraceSource};
     use super::reduction::reduce_planes;
-    use cobre_io::extensions::PlaneReductionConfig;
+    use novomodelo_io::extensions::PlaneReductionConfig;
 
     // A concave production function with a positive generation window so the
     // Distance sampler exercises a real box (mirrors the reduction unit fixture).

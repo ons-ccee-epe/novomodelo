@@ -1,13 +1,13 @@
 //! `stochastic_load` section tests.
 
 use super::*;
-use cobre_core::scenario::SamplingScheme;
-use cobre_core::temporal::Stage;
+use novomodelo_core::scenario::SamplingScheme;
+use novomodelo_core::temporal::Stage;
 
 /// A [`PrecomputedNormal`] built over `system`'s own noise-member load buses,
 /// so it satisfies the strict `n_entities() == n_load_buses` equality
 /// [`build_stage_templates_resolving_layout`] now asserts.
-fn noise_member_load_normal(system: &cobre_core::System) -> PrecomputedNormal {
+fn noise_member_load_normal(system: &novomodelo_core::System) -> PrecomputedNormal {
     let stages: Vec<Stage> = system
         .stages()
         .iter()

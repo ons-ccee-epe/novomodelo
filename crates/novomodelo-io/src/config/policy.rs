@@ -48,7 +48,7 @@ pub enum PolicyDirIntent {
 
 /// Boundary-row configuration for terminal-stage FCF coupling.
 ///
-/// When present, the solver loads rows from a source Cobre policy
+/// When present, the solver loads rows from a source Novomodelo policy
 /// checkpoint and injects them as fixed boundary conditions at the
 /// terminal stage of the current study. The loader selects the source pool
 /// whose priced state date equals this study's last stage `end_date`.

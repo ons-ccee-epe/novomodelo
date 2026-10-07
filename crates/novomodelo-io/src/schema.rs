@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```rust
-//! use cobre_io::schema::generate_schemas;
+//! use novomodelo_io::schema::generate_schemas;
 //!
 //! let schemas = generate_schemas().expect("schema generation must not fail");
 //! assert!(!schemas.is_empty());
@@ -62,7 +62,7 @@ use serde_json::{Error, Value};
 /// # Examples
 ///
 /// ```rust
-/// use cobre_io::schema::generate_schemas;
+/// use novomodelo_io::schema::generate_schemas;
 ///
 /// let schemas = generate_schemas().expect("schema generation must not fail");
 /// assert!(schemas.len() >= 17);
@@ -656,7 +656,7 @@ mod tests {
             ("An internally-tagged union.", &["internally-tagged"]),
             ("Uses `#[serde(tag = \"model\")]`.", &["serde", "#["]),
             (
-                "`cobre_core::AnticipatedConfig` keeps a plain derive.",
+                "`novomodelo_core::AnticipatedConfig` keeps a plain derive.",
                 &["::"],
             ),
             (

@@ -2,7 +2,7 @@
 //!
 //! [`HorizonMode`] controls how the training loop traverses stages and
 //! determines terminal conditions. Discount factors are computed from the
-//! [`HorizonGraph`](cobre_core::HorizonGraph) at setup time and stored in
+//! [`HorizonGraph`](novomodelo_core::HorizonGraph) at setup time and stored in
 //! `StageTemplates`.
 
 use crate::SddpError;
@@ -19,7 +19,7 @@ use crate::SddpError;
 /// ## Examples
 ///
 /// ```rust
-/// use cobre_sddp::horizon_mode::HorizonMode;
+/// use novomodelo_sddp::horizon_mode::HorizonMode;
 ///
 /// let h = HorizonMode::Finite { num_stages: 12 };
 /// assert!(h.is_terminal(12));
@@ -45,7 +45,7 @@ impl HorizonMode {
     /// # Examples
     ///
     /// ```rust
-    /// use cobre_sddp::horizon_mode::HorizonMode;
+    /// use novomodelo_sddp::horizon_mode::HorizonMode;
     ///
     /// let h = HorizonMode::Finite { num_stages: 5 };
     /// assert!(h.is_terminal(5));
@@ -69,7 +69,7 @@ impl HorizonMode {
     /// # Examples
     ///
     /// ```rust
-    /// use cobre_sddp::horizon_mode::HorizonMode;
+    /// use novomodelo_sddp::horizon_mode::HorizonMode;
     ///
     /// assert!(HorizonMode::Finite { num_stages: 5 }.validate().is_ok());
     /// assert!(HorizonMode::Finite { num_stages: 1 }.validate().is_err());
@@ -93,7 +93,7 @@ impl HorizonMode {
     /// # Examples
     ///
     /// ```rust
-    /// use cobre_sddp::horizon_mode::HorizonMode;
+    /// use novomodelo_sddp::horizon_mode::HorizonMode;
     ///
     /// let h = HorizonMode::Finite { num_stages: 12 };
     /// assert_eq!(h.num_stages(), 12);

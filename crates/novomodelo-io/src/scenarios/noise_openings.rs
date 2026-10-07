@@ -15,7 +15,7 @@
 
 use std::path::PathBuf;
 
-use cobre_stochastic::OpeningTree;
+use novomodelo_stochastic::OpeningTree;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -31,7 +31,7 @@ use crate::parquet_helpers::{
 /// # Examples
 ///
 /// ```
-/// use cobre_io::scenarios::NoiseOpeningRow;
+/// use novomodelo_io::scenarios::NoiseOpeningRow;
 ///
 /// let row = NoiseOpeningRow {
 ///     stage_id: 0,
@@ -71,7 +71,7 @@ pub struct NoiseOpeningRow {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::scenarios::parse_noise_openings;
+/// use novomodelo_io::scenarios::parse_noise_openings;
 /// use std::path::Path;
 ///
 /// let rows = parse_noise_openings(Path::new("scenarios/noise_openings.parquet"))
@@ -139,8 +139,8 @@ pub fn parse_noise_openings(path: &Path) -> Result<Vec<NoiseOpeningRow>, LoadErr
 /// # Examples
 ///
 /// ```
-/// use cobre_io::scenarios::{NoiseOpeningRow, validate_noise_openings};
-/// use cobre_io::StageIdResolver;
+/// use novomodelo_io::scenarios::{NoiseOpeningRow, validate_noise_openings};
+/// use novomodelo_io::StageIdResolver;
 ///
 /// // 2 stages, 3 openings each, dim=2 → 12 rows
 /// let rows: Vec<NoiseOpeningRow> = (0..2_i32)
@@ -260,8 +260,8 @@ pub fn validate_noise_openings(
 /// # Examples
 ///
 /// ```
-/// use cobre_io::scenarios::{NoiseOpeningRow, assemble_opening_tree};
-/// use cobre_io::StageIdResolver;
+/// use novomodelo_io::scenarios::{NoiseOpeningRow, assemble_opening_tree};
+/// use novomodelo_io::StageIdResolver;
 ///
 /// // 2 stages, 3 openings each, dim=2 → 12 rows
 /// let rows: Vec<NoiseOpeningRow> = (0..2_i32)

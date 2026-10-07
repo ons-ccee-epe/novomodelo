@@ -1,15 +1,15 @@
-#ifndef COBRE_QHULL_WRAPPER_H
-#define COBRE_QHULL_WRAPPER_H
+#ifndef NOVOMODELO_QHULL_WRAPPER_H
+#define NOVOMODELO_QHULL_WRAPPER_H
 
 /* Thin C shim around the reentrant qhull library (libqhull_r) for use by
- * cobre-sddp FFI bindings.
+ * novomodelo-sddp FFI bindings.
  *
  * The shim presents a minimal, stable, flat C surface: it takes a flat array of
  * 3-D point coordinates, computes the convex hull, and writes back the facet
  * hyperplanes (unit normal + offset). The Rust side therefore never touches
  * qhull's internal data structures and exposes exactly one `unsafe extern "C"`.
  *
- * All functions use the `cobre_qhull_` prefix and fixed-width / standard C types
+ * All functions use the `novomodelo_qhull_` prefix and fixed-width / standard C types
  * (double, int, size-free pointers) for FFI safety.
  *
  * This header is intentionally self-contained: it does NOT include any qhull
@@ -82,19 +82,19 @@ extern "C" {
  * ========================================================================= */
 
 /** Success: `*out_planes` and `*out_n_facets` are populated. */
-#define COBRE_QHULL_OK 0
+#define NOVOMODELO_QHULL_OK 0
 
 /** qhull initialization or computation failed (internal / precision / other
  *  qhull error that is not specifically degenerate input or allocation). */
-#define COBRE_QHULL_ERR_COMPUTE 1
+#define NOVOMODELO_QHULL_ERR_COMPUTE 1
 
 /** Degenerate or insufficient input: fewer than 4 affinely-independent points,
  *  so no full-dimensional 3-D hull exists (qhull singular/topology error). */
-#define COBRE_QHULL_ERR_DEGENERATE 2
+#define NOVOMODELO_QHULL_ERR_DEGENERATE 2
 
 /** Memory allocation failed (qhull-internal allocation or the shim's output
  *  buffer allocation). */
-#define COBRE_QHULL_ERR_ALLOC 3
+#define NOVOMODELO_QHULL_ERR_ALLOC 3
 
 /* =========================================================================
  * Convex hull
@@ -108,33 +108,33 @@ extern "C" {
  *                   `[x0,y0,z0, x1,y1,z1, ...]`. Borrowed; not retained.
  *    - `n_points` : number of input points.
  *
- *  Outputs (on COBRE_QHULL_OK only):
+ *  Outputs (on NOVOMODELO_QHULL_OK only):
  *    - `*out_planes`   : a shim-malloc'd array of `4 * (*out_n_facets)` doubles,
  *                        laid out `[nx,ny,nz,d, ...]` (one quadruple per hull
  *                        facet, normal unit-length, plane nx*x+ny*y+nz*z+d=0).
- *                        The caller MUST release it with `cobre_qhull_free`.
+ *                        The caller MUST release it with `novomodelo_qhull_free`.
  *    - `*out_n_facets` : the number of hull facets written.
  *  On any non-zero return, `*out_planes` is set to NULL and `*out_n_facets` to
  *  0; the caller must not free anything.
  *
- *  Returns one of the COBRE_QHULL_* status codes above.
+ *  Returns one of the NOVOMODELO_QHULL_* status codes above.
  */
-int cobre_qhull_convex_hull_3d(
+int novomodelo_qhull_convex_hull_3d(
     const double* points,
     int           n_points,
     double**      out_planes,
     int*          out_n_facets
 );
 
-/** Free a plane array returned by `cobre_qhull_convex_hull_3d`.
+/** Free a plane array returned by `novomodelo_qhull_convex_hull_3d`.
  *
  *  The free MUST happen through this function so the buffer is released with the
  *  same allocator that produced it (the shim's `malloc`/`free`), independent of
  *  the Rust-side allocator. Passing NULL is a no-op. */
-void cobre_qhull_free(double* planes);
+void novomodelo_qhull_free(double* planes);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* COBRE_QHULL_WRAPPER_H */
+#endif /* NOVOMODELO_QHULL_WRAPPER_H */

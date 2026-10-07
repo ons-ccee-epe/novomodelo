@@ -1,16 +1,16 @@
-//! # cobre-python
+//! # novomodelo-python
 //!
-//! Python bindings for the [Cobre](https://github.com/cobre-rs/cobre) power systems solver.
+//! Python bindings for the [Novomodelo](https://github.com/ons-ccee-epe/novomodelo) power systems solver.
 //!
 //! ## Constraints
 //!
 //! - **Single-process only** — this crate MUST NOT initialize MPI or depend
 //!   on `ferrompi`. The GIL/MPI incompatibility makes it unsafe to combine
 //!   MPI initialization with Python embedding. For distributed execution,
-//!   launch `mpiexec cobre` as a subprocess.
+//!   launch `mpiexec novomodelo` as a subprocess.
 //! - **GIL released during computation** — all Rust computation runs with
 //!   the GIL released via `py.detach()`, allowing worker threads
-//!   within `cobre-sddp` to run at full parallelism.
+//!   within `novomodelo-sddp` to run at full parallelism.
 //! - **No Python callbacks in the hot loop** — all customization is
 //!   via configuration structs, not Python callables.
 
@@ -34,7 +34,7 @@ mod version;
 fn model_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "__doc__",
-        "Data model types for the Cobre power systems solver.",
+        "Data model types for the Novomodelo power systems solver.",
     )?;
     m.add_class::<model::PySystem>()?;
     m.add_class::<model::PyBus>()?;
@@ -50,7 +50,10 @@ fn model_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[pymodule]
 #[pyo3(name = "io")]
 fn io_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add("__doc__", "I/O helpers for loading Cobre case directories.")?;
+    m.add(
+        "__doc__",
+        "I/O helpers for loading Novomodelo case directories.",
+    )?;
     m.add_function(wrap_pyfunction!(io::load_case, m)?)?;
     m.add_function(wrap_pyfunction!(io::validate, m)?)?;
     Ok(())
@@ -72,7 +75,7 @@ fn run_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
 fn results_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "__doc__",
-        "Result loading and inspection functions for Cobre output artifacts.",
+        "Result loading and inspection functions for Novomodelo output artifacts.",
     )?;
     m.add_function(wrap_pyfunction!(results::load_results, m)?)?;
     m.add_function(wrap_pyfunction!(results::load_convergence, m)?)?;
@@ -96,13 +99,13 @@ fn errors_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
 fn schema_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "__doc__",
-        "JSON Schema export helpers for Cobre case directory input types.",
+        "JSON Schema export helpers for Novomodelo case directory input types.",
     )?;
     m.add_function(wrap_pyfunction!(schema::export, m)?)?;
     Ok(())
 }
 
-/// Register a submodule in `sys.modules` so `import cobre.foo` works: `PyO3`'s
+/// Register a submodule in `sys.modules` so `import novomodelo.foo` works: `PyO3`'s
 /// `add_submodule` only attaches it as an attribute, leaving `import` to fail.
 fn register_submodule<'py>(
     parent: &Bound<'py, PyModule>,
@@ -119,9 +122,9 @@ fn register_submodule<'py>(
     parent.add_submodule(child)
 }
 
-/// The compiled extension module, imported privately as `cobre._native`.
-/// The public `cobre` package (pure-Python `__init__.py`) re-exports everything
-/// from here under the documented `cobre.*` names.
+/// The compiled extension module, imported privately as `novomodelo._native`.
+/// The public `novomodelo` package (pure-Python `__init__.py`) re-exports everything
+/// from here under the documented `novomodelo.*` names.
 #[pymodule]
 #[pyo3(name = "_native")]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -131,38 +134,38 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     register_submodule(
         m,
         pyo3::wrap_pymodule!(model_module)(py).bind(py),
-        "cobre._native",
+        "novomodelo._native",
     )?;
     register_submodule(
         m,
         pyo3::wrap_pymodule!(io_module)(py).bind(py),
-        "cobre._native",
+        "novomodelo._native",
     )?;
     register_submodule(
         m,
         pyo3::wrap_pymodule!(run_module)(py).bind(py),
-        "cobre._native",
+        "novomodelo._native",
     )?;
     register_submodule(
         m,
         pyo3::wrap_pymodule!(results_module)(py).bind(py),
-        "cobre._native",
+        "novomodelo._native",
     )?;
     register_submodule(
         m,
         pyo3::wrap_pymodule!(errors_module)(py).bind(py),
-        "cobre._native",
+        "novomodelo._native",
     )?;
     register_submodule(
         m,
         pyo3::wrap_pymodule!(schema_module)(py).bind(py),
-        "cobre._native",
+        "novomodelo._native",
     )?;
 
     m.add_function(wrap_pyfunction!(version::version_info, m)?)?;
     m.add_function(wrap_pyfunction!(policy::write_policy_checkpoint, m)?)?;
 
-    // Top-level classes (`cobre.Study`, `cobre.Policy`), not submodule members.
+    // Top-level classes (`novomodelo.Study`, `novomodelo.Policy`), not submodule members.
     m.add_class::<study::Study>()?;
     m.add_class::<study::Policy>()?;
 

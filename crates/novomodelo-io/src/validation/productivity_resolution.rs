@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 
-use cobre_core::{EntityId, entities::HydroGenerationModel, temporal::Stage};
+use novomodelo_core::{EntityId, entities::HydroGenerationModel, temporal::Stage};
 
 use crate::{
     extensions::{HydroEnergyProductivityRow, ProductionModelConfig, SelectionMode},
@@ -165,7 +165,7 @@ fn find_productivity_for_stage(config: &ProductionModelConfig, stage: &Stage) ->
 )]
 mod tests {
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         DeficitSegment, EntityId, HorizonGraph, Hydro,
         entities::{Bus, HydroGenerationModel},
         temporal::{

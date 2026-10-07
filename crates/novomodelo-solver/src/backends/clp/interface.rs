@@ -20,18 +20,21 @@ impl SolverInterface for ClpSolver {
         self.current_profile = *profile;
         let cap = self.resolve_simplex_cap();
         // SAFETY: `self.handle` is a valid, non-null CLP pointer obtained from
-        // `cobre_clp_create()`. Each `cobre_clp_set_*` setter accepts any
+        // `novomodelo_clp_create()`. Each `novomodelo_clp_set_*` setter accepts any
         // `i32`/`f64` value, retains no pointer after the call returns, and
         // cannot fail on a valid handle. `cap` is the resolved iteration limit.
         unsafe {
-            clp_ffi::cobre_clp_set_perturbation(self.handle, profile.perturbation);
-            clp_ffi::cobre_clp_scaling(self.handle, profile.scaling);
-            clp_ffi::cobre_clp_set_primal_tolerance(
+            clp_ffi::novomodelo_clp_set_perturbation(self.handle, profile.perturbation);
+            clp_ffi::novomodelo_clp_scaling(self.handle, profile.scaling);
+            clp_ffi::novomodelo_clp_set_primal_tolerance(
                 self.handle,
                 profile.primal_feasibility_tolerance,
             );
-            clp_ffi::cobre_clp_set_dual_tolerance(self.handle, profile.dual_feasibility_tolerance);
-            clp_ffi::cobre_clp_set_maximum_iterations(self.handle, cap);
+            clp_ffi::novomodelo_clp_set_dual_tolerance(
+                self.handle,
+                profile.dual_feasibility_tolerance,
+            );
+            clp_ffi::novomodelo_clp_set_maximum_iterations(self.handle, cap);
         }
 
         // Skip mode 3 (CLP's steepest-edge ctor default) so the default profile
@@ -42,13 +45,13 @@ impl SolverInterface for ClpSolver {
 
         if profile.factorization_frequency != 0 {
             // SAFETY: `self.handle` is a valid, non-null CLP pointer from
-            // `cobre_clp_create()`. The shim reaches the live `ClpSimplex`
+            // `novomodelo_clp_create()`. The shim reaches the live `ClpSimplex`
             // through the wrapper's `model_` member and calls
             // `setFactorizationFrequency`, which stores the cadence on the
             // factorization object; it retains no pointer and cannot fail on a
             // valid handle.
             unsafe {
-                clp_ffi::cobre_clp_set_factorization_frequency(
+                clp_ffi::novomodelo_clp_set_factorization_frequency(
                     self.handle,
                     profile.factorization_frequency,
                 );
@@ -66,23 +69,23 @@ impl SolverInterface for ClpSolver {
     /// state entirely; the cached profile is re-applied so configuration
     /// survives the swap.
     fn reset_solver_state(&mut self) {
-        // SAFETY: `cobre_clp_create` has no preconditions; it allocates a new
+        // SAFETY: `novomodelo_clp_create` has no preconditions; it allocates a new
         // empty CLP model or returns null on allocation failure.
-        let new_handle = unsafe { clp_ffi::cobre_clp_create() };
+        let new_handle = unsafe { clp_ffi::novomodelo_clp_create() };
         if new_handle.is_null() {
             // Allocation failed: keep the existing handle rather than abort;
             // determinism degrades but the run continues.
             return;
         }
         // SAFETY: `self.handle` is the valid handle from construction (or a prior
-        // reset); `cobre_clp_destroy` frees it. It is immediately replaced by the
+        // reset); `novomodelo_clp_destroy` frees it. It is immediately replaced by the
         // freshly created, non-null `new_handle` before any further use.
-        unsafe { clp_ffi::cobre_clp_destroy(self.handle) };
+        unsafe { clp_ffi::novomodelo_clp_destroy(self.handle) };
         self.handle = new_handle;
         self.has_model = false;
         // SAFETY: `self.handle` is the just-created non-null model; mirror
         // `new()` by silencing CLP's per-solve logging.
-        unsafe { clp_ffi::cobre_clp_set_log_level(self.handle, 0) };
+        unsafe { clp_ffi::novomodelo_clp_set_log_level(self.handle, 0) };
         let profile = self.current_profile;
         self.apply_profile(&profile);
     }
@@ -121,7 +124,7 @@ impl SolverInterface for ClpSolver {
         #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         let num_row = template.num_rows as i32;
         // SAFETY:
-        // - `self.handle` is a valid, non-null CLP pointer from `cobre_clp_create()`.
+        // - `self.handle` is a valid, non-null CLP pointer from `novomodelo_clp_create()`.
         // - `num_col`/`num_row` fit in i32 (asserted above).
         // - All pointer arguments point into owned `Vec` data on `template` that
         //   remains alive for the duration of this call.
@@ -132,7 +135,7 @@ impl SolverInterface for ClpSolver {
         // - Bounds are forwarded verbatim; the C wrapper owns the
         //   ±IEEE-inf → ±DBL_MAX translation and sets the objective sense.
         unsafe {
-            clp_ffi::cobre_clp_load_problem(
+            clp_ffi::novomodelo_clp_load_problem(
                 self.handle,
                 num_col,
                 num_row,
@@ -180,7 +183,7 @@ impl SolverInterface for ClpSolver {
 
     /// Appends a batch of constraint rows to the loaded LP.
     ///
-    /// `rows` is CSR; the retained model is CSC. `cobre_clp_add_rows` takes the
+    /// `rows` is CSR; the retained model is CSC. `novomodelo_clp_add_rows` takes the
     /// CSR batch directly, so the CSC transpose feeds only the retained mirror,
     /// not the FFI call. The native append preserves CLP's persistent simplex
     /// basis (no full rebuild).
@@ -279,7 +282,7 @@ impl SolverInterface for ClpSolver {
         let number = rows.num_rows as i32;
         // SAFETY:
         // - `self.handle` is a valid, non-null CLP pointer from
-        //   `cobre_clp_create()` with a model loaded.
+        //   `novomodelo_clp_create()` with a model loaded.
         // - `number` (== `rows.num_rows`) is non-negative and fits in i32
         //   (asserted at the top of this method).
         // - The pointer arguments point into the caller's `rows` CSR slices,
@@ -290,7 +293,7 @@ impl SolverInterface for ClpSolver {
         // - Row bounds are forwarded verbatim; the C wrapper owns the
         //   ±IEEE-inf → ±DBL_MAX translation.
         unsafe {
-            clp_ffi::cobre_clp_add_rows(
+            clp_ffi::novomodelo_clp_add_rows(
                 self.handle,
                 number,
                 rows.row_lower.as_ptr(),
@@ -308,7 +311,7 @@ impl SolverInterface for ClpSolver {
     ///
     /// An empty `indices` slice is a no-op. The retained `row_lower`/`row_upper`
     /// (the canonical mirror) is patched, then the **full** bound vectors are
-    /// pushed into CLP via `cobre_clp_chg_row_lower`/`cobre_clp_chg_row_upper`,
+    /// pushed into CLP via `novomodelo_clp_chg_row_lower`/`novomodelo_clp_chg_row_upper`,
     /// which take the whole array, not an index subset. This preserves CLP's
     /// factorization/basis across the patch.
     ///
@@ -347,8 +350,8 @@ impl SolverInterface for ClpSolver {
         // - Bounds are forwarded verbatim; the C wrapper owns the
         //   ±IEEE-inf → ±DBL_MAX translation.
         unsafe {
-            clp_ffi::cobre_clp_chg_row_lower(self.handle, self.row_lower.as_ptr());
-            clp_ffi::cobre_clp_chg_row_upper(self.handle, self.row_upper.as_ptr());
+            clp_ffi::novomodelo_clp_chg_row_lower(self.handle, self.row_lower.as_ptr());
+            clp_ffi::novomodelo_clp_chg_row_upper(self.handle, self.row_upper.as_ptr());
         }
         self.stats.total_set_bounds_time_seconds += t0.elapsed().as_secs_f64();
     }
@@ -357,7 +360,7 @@ impl SolverInterface for ClpSolver {
     ///
     /// Symmetric to [`Self::set_row_bounds`], patching the retained
     /// `col_lower`/`col_upper` and pushing them into CLP via
-    /// `cobre_clp_chg_column_lower`/`cobre_clp_chg_column_upper`.
+    /// `novomodelo_clp_chg_column_lower`/`novomodelo_clp_chg_column_upper`.
     ///
     /// # Panics
     ///
@@ -395,8 +398,8 @@ impl SolverInterface for ClpSolver {
         // - Bounds are forwarded verbatim; the C wrapper owns the
         //   ±IEEE-inf → ±DBL_MAX translation.
         unsafe {
-            clp_ffi::cobre_clp_chg_column_lower(self.handle, self.col_lower.as_ptr());
-            clp_ffi::cobre_clp_chg_column_upper(self.handle, self.col_upper.as_ptr());
+            clp_ffi::novomodelo_clp_chg_column_lower(self.handle, self.col_lower.as_ptr());
+            clp_ffi::novomodelo_clp_chg_column_upper(self.handle, self.col_upper.as_ptr());
         }
         self.stats.total_set_bounds_time_seconds += t0.elapsed().as_secs_f64();
     }
@@ -451,17 +454,17 @@ impl SolverInterface for ClpSolver {
         let status = match self.current_profile.algorithm {
             ClpAlgorithm::Dual => {
                 // SAFETY: `self.handle` is a valid, non-null CLP pointer from
-                // `cobre_clp_create()` with a model loaded (asserted via
+                // `novomodelo_clp_create()` with a model loaded (asserted via
                 // `has_model`). `if_values_pass = 0` requests a cold solve (no
                 // values pass). The returned int is the CLP solve status.
-                unsafe { clp_ffi::cobre_clp_dual(self.handle, 0) }
+                unsafe { clp_ffi::novomodelo_clp_dual(self.handle, 0) }
             }
             ClpAlgorithm::Primal => {
                 // SAFETY: `self.handle` is a valid, non-null CLP pointer from
-                // `cobre_clp_create()` with a model loaded (asserted via
+                // `novomodelo_clp_create()` with a model loaded (asserted via
                 // `has_model`). `if_values_pass = 0` requests a cold solve (no
                 // values pass). The returned int is the CLP solve status.
-                unsafe { clp_ffi::cobre_clp_primal(self.handle, 0) }
+                unsafe { clp_ffi::novomodelo_clp_primal(self.handle, 0) }
             }
         };
         let solve_time = t0.elapsed().as_secs_f64();
@@ -475,11 +478,12 @@ impl SolverInterface for ClpSolver {
             // just been solved; iteration count is non-negative so the cast is
             // safe.
             #[allow(clippy::cast_sign_loss)]
-            let iterations = unsafe { clp_ffi::cobre_clp_number_iterations(self.handle) } as u64;
+            let iterations =
+                unsafe { clp_ffi::novomodelo_clp_number_iterations(self.handle) } as u64;
             // SAFETY: `self.handle` is a valid, non-null CLP pointer that has
             // just been solved. Objective is already in minimize sense (the
             // wrapper set the optimization direction at load); returned as-is.
-            let objective = unsafe { clp_ffi::cobre_clp_objective_value(self.handle) };
+            let objective = unsafe { clp_ffi::novomodelo_clp_objective_value(self.handle) };
 
             self.copy_solution();
 
@@ -542,7 +546,8 @@ impl SolverInterface for ClpSolver {
             // SAFETY: `self.handle` is a valid, non-null CLP pointer; iteration
             // count is non-negative so the cast is safe.
             #[allow(clippy::cast_sign_loss)]
-            let iterations = unsafe { clp_ffi::cobre_clp_number_iterations(self.handle) } as u64;
+            let iterations =
+                unsafe { clp_ffi::novomodelo_clp_number_iterations(self.handle) } as u64;
             return Err(SolverError::IterationLimit { iterations });
         }
 
@@ -586,7 +591,7 @@ impl SolverInterface for ClpSolver {
             // loaded (asserted via `has_model`); `c` is in `0..num_cols`, a valid
             // column sequence index, and fits in i32. The getter reads a single
             // status byte and returns it widened to i32.
-            let code = unsafe { clp_ffi::cobre_clp_get_column_status(self.handle, c as i32) };
+            let code = unsafe { clp_ffi::novomodelo_clp_get_column_status(self.handle, c as i32) };
             out.col_status[c] = BasisStatus::from_clp_code(code);
         }
         #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
@@ -594,7 +599,7 @@ impl SolverInterface for ClpSolver {
             // SAFETY: `self.handle` is a valid, non-null CLP pointer with a model
             // loaded; `r` is in `0..num_rows`, a valid row sequence index, and fits
             // in i32. The getter reads a single status byte and returns it widened.
-            let code = unsafe { clp_ffi::cobre_clp_get_row_status(self.handle, r as i32) };
+            let code = unsafe { clp_ffi::novomodelo_clp_get_row_status(self.handle, r as i32) };
             out.row_status[r] = BasisStatus::from_clp_code(code);
         }
     }

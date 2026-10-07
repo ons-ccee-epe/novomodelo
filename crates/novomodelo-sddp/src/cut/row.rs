@@ -8,7 +8,7 @@
 //! The forward training loop uses pre-frozen templates and does not call these
 //! builders; the backward pass, simulation, lower-bound evaluation, and DCS do.
 
-use cobre_solver::{RowBatch, SolverInterface};
+use novomodelo_solver::{RowBatch, SolverInterface};
 
 use crate::cut::CutPool;
 use crate::cut::CutRowMap;
@@ -352,8 +352,8 @@ pub fn append_slots_to_lp<S: SolverInterface>(
 
 #[cfg(test)]
 mod tests {
-    use cobre_core::temporal::StageStateConfig;
-    use cobre_solver::{
+    use novomodelo_core::temporal::StageStateConfig;
+    use novomodelo_solver::{
         Basis, RowBatch, SolverError, SolverInterface, SolverStatistics, StageTemplate,
     };
 
@@ -480,9 +480,9 @@ mod tests {
     }
 
     impl SolverInterface for RecordingMockSolver {
-        type Profile = cobre_solver::ActiveProfile;
+        type Profile = novomodelo_solver::ActiveProfile;
 
-        fn apply_profile(&mut self, _profile: &cobre_solver::ActiveProfile) {}
+        fn apply_profile(&mut self, _profile: &novomodelo_solver::ActiveProfile) {}
 
         fn solver_name_version(&self) -> String {
             "MockSolver 0.0.0".to_string()
@@ -508,7 +508,7 @@ mod tests {
         fn solve(
             &mut self,
             _basis: Option<&Basis>,
-        ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+        ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
             Err(SolverError::InternalError {
                 message: "not implemented for test".to_string(),
                 error_code: None,

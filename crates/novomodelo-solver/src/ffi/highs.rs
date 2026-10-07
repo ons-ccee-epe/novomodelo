@@ -1,4 +1,4 @@
-//! Raw FFI bindings mapping 1:1 to the `cobre_highs_*` functions declared in
+//! Raw FFI bindings mapping 1:1 to the `novomodelo_highs_*` functions declared in
 //! `csrc/highs_wrapper.h`. Use the safe wrappers in the parent module rather
 //! than calling these directly.
 
@@ -78,11 +78,11 @@ unsafe extern "C" {
     // ============================================================
 
     /// Create a `HiGHS` instance. Wraps `Highs_create()`.
-    pub fn cobre_highs_create() -> *mut c_void;
+    pub fn novomodelo_highs_create() -> *mut c_void;
 
     /// Destroy a `HiGHS` instance and free all associated memory.
     /// Wraps `Highs_destroy()`.
-    pub fn cobre_highs_destroy(highs: *mut c_void);
+    pub fn novomodelo_highs_destroy(highs: *mut c_void);
 
     // ============================================================
     // Model Loading
@@ -90,7 +90,7 @@ unsafe extern "C" {
 
     /// Pass a complete LP to `HiGHS` in a single call.
     /// Wraps `Highs_passLp()`.
-    pub fn cobre_highs_pass_lp(
+    pub fn novomodelo_highs_pass_lp(
         highs: *mut c_void,
         num_col: int32_t,
         num_row: int32_t,
@@ -113,7 +113,7 @@ unsafe extern "C" {
     // ============================================================
 
     /// Add rows to the incumbent model. Wraps `Highs_addRows()`.
-    pub fn cobre_highs_add_rows(
+    pub fn novomodelo_highs_add_rows(
         highs: *mut c_void,
         num_new_row: int32_t,
         lower: *const c_double,
@@ -126,7 +126,7 @@ unsafe extern "C" {
 
     /// Change bounds of rows identified by an index set.
     /// Wraps `Highs_changeRowsBoundsBySet()`.
-    pub fn cobre_highs_change_rows_bounds_by_set(
+    pub fn novomodelo_highs_change_rows_bounds_by_set(
         highs: *mut c_void,
         num_set_entries: int32_t,
         set: *const int32_t,
@@ -136,7 +136,7 @@ unsafe extern "C" {
 
     /// Change bounds of columns identified by an index set.
     /// Wraps `Highs_changeColsBoundsBySet()`.
-    pub fn cobre_highs_change_cols_bounds_by_set(
+    pub fn novomodelo_highs_change_cols_bounds_by_set(
         highs: *mut c_void,
         num_set_entries: int32_t,
         set: *const int32_t,
@@ -149,14 +149,14 @@ unsafe extern "C" {
     // ============================================================
 
     /// Run the solver on the incumbent model. Wraps `Highs_run()`.
-    pub fn cobre_highs_run(highs: *mut c_void) -> c_int;
+    pub fn novomodelo_highs_run(highs: *mut c_void) -> c_int;
 
     // ============================================================
     // Solution Extraction
     // ============================================================
 
     /// Get the primal and dual solution arrays. Wraps `Highs_getSolution()`.
-    pub fn cobre_highs_get_solution(
+    pub fn novomodelo_highs_get_solution(
         highs: *const c_void,
         col_value: *mut c_double,
         col_dual: *mut c_double,
@@ -165,14 +165,14 @@ unsafe extern "C" {
     ) -> c_int;
 
     /// Get the primal objective value. Wraps `Highs_getObjectiveValue()`.
-    pub fn cobre_highs_get_objective_value(highs: *const c_void) -> c_double;
+    pub fn novomodelo_highs_get_objective_value(highs: *const c_void) -> c_double;
 
     /// Get the model status after solving. Wraps `Highs_getModelStatus()`.
-    pub fn cobre_highs_get_model_status(highs: *const c_void) -> c_int;
+    pub fn novomodelo_highs_get_model_status(highs: *const c_void) -> c_int;
 
     /// Get the simplex iteration count from the most recent solve.
     /// Wraps `Highs_getSimplexIterationCount()`.
-    pub fn cobre_highs_get_simplex_iteration_count(highs: *const c_void) -> c_int;
+    pub fn novomodelo_highs_get_simplex_iteration_count(highs: *const c_void) -> c_int;
 
     // ============================================================
     // Basis Management
@@ -183,14 +183,14 @@ unsafe extern "C" {
     /// consistency: total basic count must equal `num_rows`, else the call is
     /// rejected with `HIGHS_STATUS_ERROR` (there is no alien-setter fallback).
     /// Wraps `Highs::setBasis(const HighsBasis&)` with `basis.alien = false`.
-    pub fn cobre_highs_set_basis_non_alien(
+    pub fn novomodelo_highs_set_basis_non_alien(
         highs: *mut c_void,
         col_status: *const int32_t,
         row_status: *const int32_t,
     ) -> c_int;
 
     /// Get the current basis into caller-allocated arrays. Wraps `Highs_getBasis()`.
-    pub fn cobre_highs_get_basis(
+    pub fn novomodelo_highs_get_basis(
         highs: *const c_void,
         col_status: *mut int32_t,
         row_status: *mut int32_t,
@@ -202,49 +202,49 @@ unsafe extern "C" {
 
     /// Clear the solver state while preserving the model.
     /// Wraps `Highs_clearSolver()`.
-    pub fn cobre_highs_clear_solver(highs: *mut c_void) -> c_int;
+    pub fn novomodelo_highs_clear_solver(highs: *mut c_void) -> c_int;
 
     // ============================================================
     // Configuration
     // ============================================================
 
     /// Set a string-valued `HiGHS` option. Wraps `Highs_setStringOptionValue()`.
-    pub fn cobre_highs_set_string_option(
+    pub fn novomodelo_highs_set_string_option(
         highs: *mut c_void,
         option: *const c_char,
         value: *const c_char,
     ) -> c_int;
 
     /// Set a boolean-valued `HiGHS` option. Wraps `Highs_setBoolOptionValue()`.
-    pub fn cobre_highs_set_bool_option(
+    pub fn novomodelo_highs_set_bool_option(
         highs: *mut c_void,
         option: *const c_char,
         value: int32_t,
     ) -> c_int;
 
     /// Set an integer-valued `HiGHS` option. Wraps `Highs_setIntOptionValue()`.
-    pub fn cobre_highs_set_int_option(
+    pub fn novomodelo_highs_set_int_option(
         highs: *mut c_void,
         option: *const c_char,
         value: int32_t,
     ) -> c_int;
 
     /// Set a double-valued `HiGHS` option. Wraps `Highs_setDoubleOptionValue()`.
-    pub fn cobre_highs_set_double_option(
+    pub fn novomodelo_highs_set_double_option(
         highs: *mut c_void,
         option: *const c_char,
         value: c_double,
     ) -> c_int;
 
     /// Get an integer-valued `HiGHS` option. Wraps `Highs_getIntOptionValue()`.
-    pub fn cobre_highs_get_int_option(
+    pub fn novomodelo_highs_get_int_option(
         highs: *const c_void,
         option: *const c_char,
         value: *mut c_int,
     ) -> c_int;
 
     /// Get a double-valued `HiGHS` option. Wraps `Highs_getDoubleOptionValue()`.
-    pub fn cobre_highs_get_double_option(
+    pub fn novomodelo_highs_get_double_option(
         highs: *const c_void,
         option: *const c_char,
         value: *mut c_double,
@@ -256,7 +256,7 @@ unsafe extern "C" {
 
     /// Check whether a dual ray exists and retrieve it.
     /// Wraps `Highs_getDualRay()`.
-    pub fn cobre_highs_get_dual_ray(
+    pub fn novomodelo_highs_get_dual_ray(
         highs: *const c_void,
         has_dual_ray: *mut int32_t,
         dual_ray_value: *mut c_double,
@@ -264,7 +264,7 @@ unsafe extern "C" {
 
     /// Check whether a primal ray exists and retrieve it.
     /// Wraps `Highs_getPrimalRay()`.
-    pub fn cobre_highs_get_primal_ray(
+    pub fn novomodelo_highs_get_primal_ray(
         highs: *const c_void,
         has_primal_ray: *mut int32_t,
         primal_ray_value: *mut c_double,
@@ -276,24 +276,24 @@ unsafe extern "C" {
 
     /// Return the number of columns in the incumbent model.
     /// Wraps `Highs_getNumCol()`.
-    pub fn cobre_highs_get_num_col(highs: *const c_void) -> c_int;
+    pub fn novomodelo_highs_get_num_col(highs: *const c_void) -> c_int;
 
     /// Return the number of rows in the incumbent model.
     /// Wraps `Highs_getNumRow()`.
-    pub fn cobre_highs_get_num_row(highs: *const c_void) -> c_int;
+    pub fn novomodelo_highs_get_num_row(highs: *const c_void) -> c_int;
 
     // ============================================================
     // Version query (no solver instance required)
     // ============================================================
 
     /// Return the `HiGHS` major version number. Wraps `Highs_versionMajor()`.
-    pub fn cobre_highs_version_major() -> c_int;
+    pub fn novomodelo_highs_version_major() -> c_int;
 
     /// Return the `HiGHS` minor version number. Wraps `Highs_versionMinor()`.
-    pub fn cobre_highs_version_minor() -> c_int;
+    pub fn novomodelo_highs_version_minor() -> c_int;
 
     /// Return the `HiGHS` patch version number. Wraps `Highs_versionPatch()`.
-    pub fn cobre_highs_version_patch() -> c_int;
+    pub fn novomodelo_highs_version_patch() -> c_int;
 }
 
 // Gated behind `feature = "highs"` so a clp-only test build links no HiGHS symbol.
@@ -304,14 +304,14 @@ mod tests {
     /// Smoke test that the FFI pipeline links and a trivial LP solves end-to-end.
     #[test]
     fn test_ffi_smoke_create_solve_destroy() {
-        let highs = unsafe { cobre_highs_create() };
-        assert!(!highs.is_null(), "cobre_highs_create() returned null");
+        let highs = unsafe { novomodelo_highs_create() };
+        assert!(!highs.is_null(), "novomodelo_highs_create() returned null");
 
         // output_flag is bool-typed; use bool setter, not int setter.
-        let status = unsafe { cobre_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0) };
+        let status = unsafe { novomodelo_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0) };
         assert_eq!(
             status, HIGHS_STATUS_OK,
-            "cobre_highs_set_bool_option(output_flag) returned status {status}"
+            "novomodelo_highs_set_bool_option(output_flag) returned status {status}"
         );
 
         // Minimize x where x ∈ [0, 10] with no constraints. Expected: x* = 0, obj = 0.
@@ -321,7 +321,7 @@ mod tests {
         let a_start: [i32; 2] = [0, 0];
 
         let status = unsafe {
-            cobre_highs_pass_lp(
+            novomodelo_highs_pass_lp(
                 highs,
                 1, // num_col
                 0, // num_row
@@ -341,27 +341,27 @@ mod tests {
         };
         assert_eq!(
             status, HIGHS_STATUS_OK,
-            "cobre_highs_pass_lp() returned status {status}"
+            "novomodelo_highs_pass_lp() returned status {status}"
         );
 
-        let status = unsafe { cobre_highs_run(highs) };
+        let status = unsafe { novomodelo_highs_run(highs) };
         assert_eq!(
             status, HIGHS_STATUS_OK,
-            "cobre_highs_run() returned status {status}"
+            "novomodelo_highs_run() returned status {status}"
         );
 
-        let model_status = unsafe { cobre_highs_get_model_status(highs) };
+        let model_status = unsafe { novomodelo_highs_get_model_status(highs) };
         assert_eq!(
             model_status, HIGHS_MODEL_STATUS_OPTIMAL,
             "expected Optimal model status, got {model_status}"
         );
 
-        let obj = unsafe { cobre_highs_get_objective_value(highs) };
+        let obj = unsafe { novomodelo_highs_get_objective_value(highs) };
         assert!(
             (obj - 0.0_f64).abs() < 1e-10,
             "objective value {obj} is not within 1e-10 of expected 0.0"
         );
 
-        unsafe { cobre_highs_destroy(highs) };
+        unsafe { novomodelo_highs_destroy(highs) };
     }
 }

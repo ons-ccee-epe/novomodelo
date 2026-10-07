@@ -5,7 +5,7 @@
 //! call sites (`pipeline.rs`, and `scenarios::estimation`'s `run_estimation`,
 //! `run_partial_estimation`, `run_user_ar_estimation`). The standardized AR
 //! coefficients (`ψ*`) plus the unit-marginal-variance contract pin every
-//! residual std ratio `r_m` (see `cobre_stochastic::par::closure` module docs); this
+//! residual std ratio `r_m` (see `novomodelo_stochastic::par::closure` module docs); this
 //! function overwrites each [`InflowModel::residual_std_ratio`] with that
 //! closure-derived value, making the closure authoritative for both file-loaded and
 //! internally-fitted models (assembly writes only a placeholder into the field).
@@ -18,10 +18,10 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use cobre_core::EntityId;
-use cobre_core::scenario::InflowModel;
-use cobre_core::temporal::{SeasonCycles, SeasonMap, Stage};
-use cobre_stochastic::par::{
+use novomodelo_core::EntityId;
+use novomodelo_core::scenario::InflowModel;
+use novomodelo_core::temporal::{SeasonCycles, SeasonMap, Stage};
+use novomodelo_stochastic::par::{
     AnnualParams, derive_residual_std_ratios, derive_residual_std_ratios_annual,
 };
 
@@ -58,9 +58,9 @@ use crate::LoadError;
 ///
 /// ```
 /// use std::collections::HashMap;
-/// use cobre_core::EntityId;
-/// use cobre_core::scenario::InflowModel;
-/// use cobre_io::scenarios::residual_derivation::populate_derived_residual_ratios;
+/// use novomodelo_core::EntityId;
+/// use novomodelo_core::scenario::InflowModel;
+/// use novomodelo_io::scenarios::residual_derivation::populate_derived_residual_ratios;
 ///
 /// let mut models = vec![InflowModel {
 ///     hydro_id: EntityId(1),
@@ -258,7 +258,7 @@ pub(crate) fn season_dense_index(
 )]
 mod tests {
     use super::*;
-    use cobre_core::scenario::AnnualComponent;
+    use novomodelo_core::scenario::AnnualComponent;
 
     fn model(
         hydro_id: i32,
@@ -283,7 +283,7 @@ mod tests {
     /// mirrors `closure.rs`'s `par_a_stage` fixture construction.
     fn stage_with_season(index: usize, id: i32, season_id: usize) -> Stage {
         use chrono::NaiveDate;
-        use cobre_core::temporal::{
+        use novomodelo_core::temporal::{
             Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
         };
 
@@ -316,7 +316,7 @@ mod tests {
     /// season definitions covered only weeks 21/26, which exposed the
     /// raw-season-id-as-array-index panic.
     fn sparse_two_season_map() -> SeasonMap {
-        use cobre_core::temporal::{SeasonCycleType, SeasonDefinition};
+        use novomodelo_core::temporal::{SeasonCycleType, SeasonDefinition};
 
         SeasonMap {
             cycle_type: SeasonCycleType::Weekly,
@@ -629,7 +629,7 @@ mod tests {
     #[test]
     fn derived_residual_ratios_follow_the_calendar_cycle_when_season_ids_are_out_of_order() {
         const OUT_OF_ORDER_IDS: [usize; 4] = [2, 0, 3, 1];
-        let calendar_ordered = cobre_stochastic::test_support::quarterly_season_map();
+        let calendar_ordered = novomodelo_stochastic::test_support::quarterly_season_map();
         let mut out_of_order = calendar_ordered.clone();
         for (def, id) in out_of_order.seasons.iter_mut().zip(OUT_OF_ORDER_IDS) {
             def.id = id;
@@ -642,7 +642,9 @@ mod tests {
             vec![0.6, -0.15],
             vec![0.4, 0.25],
         ];
-        assert!(cobre_stochastic::par::check_stationarity(&psi_by_quarter, &[2; 4], 4).is_ok());
+        assert!(
+            novomodelo_stochastic::par::check_stationarity(&psi_by_quarter, &[2; 4], 4).is_ok()
+        );
 
         let stages_with = |season_ids: [usize; 4]| -> Vec<Stage> {
             (0_usize..)

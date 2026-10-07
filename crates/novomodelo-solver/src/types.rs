@@ -42,11 +42,11 @@ impl Basis {
 ///
 /// All values are in the original (unscaled) problem space. Dual values
 /// are pre-normalized to the canonical sign convention defined in
-/// [Solver Abstraction SS8](../../../cobre-docs/src/specs/architecture/solver-abstraction.md)
+/// [Solver Abstraction SS8](../../../novomodelo-docs/src/specs/architecture/solver-abstraction.md)
 /// before this struct is returned -- solver-specific sign differences are
 /// resolved within the [`crate::SolverInterface`] implementation.
 ///
-/// See [Solver Interface Trait SS4.1](../../../cobre-docs/src/specs/architecture/solver-interface-trait.md).
+/// See [Solver Interface Trait SS4.1](../../../novomodelo-docs/src/specs/architecture/solver-interface-trait.md).
 #[derive(Debug, Clone)]
 pub struct LpSolution {
     /// Optimal objective value (minimization sense).
@@ -79,7 +79,7 @@ pub struct LpSolution {
 /// solution data must outlive the current borrow, or when the same data will be
 /// accessed after a subsequent solver call.
 ///
-/// See [Solver Interface Trait SS4.1](../../../cobre-docs/src/specs/architecture/solver-interface-trait.md).
+/// See [Solver Interface Trait SS4.1](../../../novomodelo-docs/src/specs/architecture/solver-interface-trait.md).
 #[derive(Debug, Clone, Copy)]
 pub struct SolutionView<'a> {
     /// Optimal objective value (minimization sense).
@@ -127,7 +127,7 @@ impl SolutionView<'_> {
 /// Statistics counters persist across model reloads for the lifetime of the
 /// solver instance.
 ///
-/// See [Solver Interface Trait SS4.3](../../../cobre-docs/src/specs/architecture/solver-interface-trait.md).
+/// See [Solver Interface Trait SS4.3](../../../novomodelo-docs/src/specs/architecture/solver-interface-trait.md).
 #[derive(Debug, Clone, Default)]
 pub struct SolverStatistics {
     /// Total number of `solve` calls (cold-start and warm-start).
@@ -149,7 +149,7 @@ pub struct SolverStatistics {
     pub total_solve_time_seconds: f64,
 
     /// Number of warm-start `solve(Some(&basis))` calls in which
-    /// `cobre_highs_set_basis_non_alien` rejected the offered basis because
+    /// `novomodelo_highs_set_basis_non_alien` rejected the offered basis because
     /// `isBasisConsistent` returned false (incremented once per rejected offer).
     pub basis_consistency_failures: u64,
 
@@ -225,12 +225,12 @@ impl SolverStatistics {
 /// Passed to [`crate::SolverInterface::load_model`] to bulk-load the LP.
 ///
 /// Column and row ordering follows the LP layout convention defined in
-/// [Solver Abstraction SS2](../../../cobre-docs/src/specs/architecture/solver-abstraction.md).
-/// The calling algorithm crate owns construction of this type; `cobre-solver`
+/// [Solver Abstraction SS2](../../../novomodelo-docs/src/specs/architecture/solver-abstraction.md).
+/// The calling algorithm crate owns construction of this type; `novomodelo-solver`
 /// treats it as an opaque data holder and does not interpret the LP structure.
 ///
-/// See [Solver Interface Trait SS4.4](../../../cobre-docs/src/specs/architecture/solver-interface-trait.md)
-/// and [Solver Abstraction SS11.1](../../../cobre-docs/src/specs/architecture/solver-abstraction.md).
+/// See [Solver Interface Trait SS4.4](../../../novomodelo-docs/src/specs/architecture/solver-interface-trait.md)
+/// and [Solver Abstraction SS11.1](../../../novomodelo-docs/src/specs/architecture/solver-abstraction.md).
 #[derive(Debug, Clone)]
 pub struct StageTemplate {
     /// Number of columns (decision variables) in the structural LP.
@@ -298,11 +298,11 @@ pub struct StageTemplate {
 /// and passed to [`crate::SolverInterface::add_rows`] for a single batch call.
 /// Rows are appended at the bottom of the constraint matrix in the dynamic
 /// constraint region per
-/// [Solver Abstraction SS2.2](../../../cobre-docs/src/specs/architecture/solver-abstraction.md).
+/// [Solver Abstraction SS2.2](../../../novomodelo-docs/src/specs/architecture/solver-abstraction.md).
 ///
-/// See [Solver Interface Trait SS4.5](../../../cobre-docs/src/specs/architecture/solver-interface-trait.md)
+/// See [Solver Interface Trait SS4.5](../../../novomodelo-docs/src/specs/architecture/solver-interface-trait.md)
 /// and the row-pool assembly protocol in
-/// [Solver Abstraction SS5.4](../../../cobre-docs/src/specs/architecture/solver-abstraction.md).
+/// [Solver Abstraction SS5.4](../../../novomodelo-docs/src/specs/architecture/solver-abstraction.md).
 #[derive(Debug, Clone)]
 pub struct RowBatch {
     /// Number of active constraint rows in this batch.

@@ -6,14 +6,14 @@
 //! regressions of the form "didn't crash, didn't fail to converge".
 //!
 //! Value-correctness coverage is the `anticipated_closed_form_lb_k1_single_thermal`
-//! test in `crates/cobre-sddp/tests/anticipated_core.rs`, the hand-derivable canary. The two are complementary: the canary defends
+//! test in `crates/novomodelo-sddp/tests/anticipated_core.rs`, the hand-derivable canary. The two are complementary: the canary defends
 //! the LP/cut math at a single trivial fixture; these structural assertions
 //! defend the larger fixtures that have no closed form.
 
 #![allow(clippy::expect_used, clippy::float_cmp, dead_code)]
 
-use cobre_core::TrainingEvent;
-use cobre_sddp::TrainingResult;
+use novomodelo_core::TrainingEvent;
+use novomodelo_sddp::TrainingResult;
 
 /// Assert the training run terminated cleanly with the expected iteration count,
 /// a finite numeric lower bound, no NaNs in the iteration history, and a

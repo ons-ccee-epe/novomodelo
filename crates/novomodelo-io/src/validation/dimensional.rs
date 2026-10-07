@@ -10,8 +10,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cobre_core::Hydro;
-use cobre_core::entities::HydroGenerationModel;
+use novomodelo_core::Hydro;
+use novomodelo_core::entities::HydroGenerationModel;
 
 use super::{ValidationContext, rules, schema::ParsedData};
 use crate::extensions::{ProductionModelConfig, SelectionMode};
@@ -306,7 +306,7 @@ fn production_model_uses_head_dependent(config: &ProductionModelConfig) -> bool 
 mod tests {
     use std::collections::BTreeMap;
 
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId, HorizonGraph,
         entities::{Bus, HydroGenerationModel},
         scenario::{

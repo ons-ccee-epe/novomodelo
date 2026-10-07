@@ -15,15 +15,15 @@ impl SolverInterface for HighsSolver {
 
     fn apply_profile(&mut self, profile: &HighsProfile) {
         // SAFETY: `self.handle` is a valid, non-null HiGHS pointer obtained
-        // from `cobre_highs_create()`. The option name is a static C string
+        // from `novomodelo_highs_create()`. The option name is a static C string
         // literal with no retained pointer after the call returns.
         unsafe {
-            ffi::cobre_highs_set_double_option(
+            ffi::novomodelo_highs_set_double_option(
                 self.handle,
                 c"primal_feasibility_tolerance".as_ptr(),
                 profile.primal_feasibility_tolerance,
             );
-            ffi::cobre_highs_set_double_option(
+            ffi::novomodelo_highs_set_double_option(
                 self.handle,
                 c"dual_feasibility_tolerance".as_ptr(),
                 profile.dual_feasibility_tolerance,
@@ -33,17 +33,17 @@ impl SolverInterface for HighsSolver {
         // those caps per solve from the cached `current_profile`.
         // SAFETY: self.handle is a valid HiGHS pointer; ffi setters accept any i32.
         unsafe {
-            ffi::cobre_highs_set_int_option(
+            ffi::novomodelo_highs_set_int_option(
                 self.handle,
                 c"simplex_dual_edge_weight_strategy".as_ptr(),
                 profile.simplex_dual_edge_weight_strategy,
             );
-            ffi::cobre_highs_set_int_option(
+            ffi::novomodelo_highs_set_int_option(
                 self.handle,
                 c"simplex_scale_strategy".as_ptr(),
                 profile.simplex_scale_strategy,
             );
-            ffi::cobre_highs_set_int_option(
+            ffi::novomodelo_highs_set_int_option(
                 self.handle,
                 c"simplex_price_strategy".as_ptr(),
                 profile.simplex_price_strategy,
@@ -54,39 +54,39 @@ impl SolverInterface for HighsSolver {
         // returns; `simplex_update_limit` is clamped to `i32::MAX` before the
         // u32 -> i32 cast so the cast cannot wrap.
         unsafe {
-            ffi::cobre_highs_set_string_option(
+            ffi::novomodelo_highs_set_string_option(
                 self.handle,
                 c"presolve".as_ptr(),
                 profile.presolve.as_option().as_ptr(),
             );
-            ffi::cobre_highs_set_bool_option(
+            ffi::novomodelo_highs_set_bool_option(
                 self.handle,
                 c"use_warm_start".as_ptr(),
                 i32::from(profile.use_warm_start),
             );
             #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
             let simplex_update_limit = profile.simplex_update_limit.min(i32::MAX as u32) as i32;
-            ffi::cobre_highs_set_int_option(
+            ffi::novomodelo_highs_set_int_option(
                 self.handle,
                 c"simplex_update_limit".as_ptr(),
                 simplex_update_limit,
             );
-            ffi::cobre_highs_set_double_option(
+            ffi::novomodelo_highs_set_double_option(
                 self.handle,
                 c"dual_simplex_cost_perturbation_multiplier".as_ptr(),
                 profile.cost_perturbation,
             );
-            ffi::cobre_highs_set_double_option(
+            ffi::novomodelo_highs_set_double_option(
                 self.handle,
                 c"rebuild_refactor_solution_error_tolerance".as_ptr(),
                 profile.refactor_error_tolerance,
             );
-            ffi::cobre_highs_set_double_option(
+            ffi::novomodelo_highs_set_double_option(
                 self.handle,
                 c"factor_pivot_threshold".as_ptr(),
                 profile.factor_pivot_threshold,
             );
-            ffi::cobre_highs_set_double_option(
+            ffi::novomodelo_highs_set_double_option(
                 self.handle,
                 c"dual_steepest_edge_weight_log_error_threshold".as_ptr(),
                 profile.steepest_edge_devex_fallback_threshold,
@@ -106,7 +106,7 @@ impl SolverInterface for HighsSolver {
     fn load_model(&mut self, template: &StageTemplate) {
         let t0 = Instant::now();
         // SAFETY:
-        // - `self.handle` is a valid, non-null HiGHS pointer from `cobre_highs_create()`.
+        // - `self.handle` is a valid, non-null HiGHS pointer from `novomodelo_highs_create()`.
         // - All pointer arguments point into owned `Vec` data that remains alive for the
         //   duration of this call.
         // - `template.col_starts` and `template.row_indices` are `Vec<i32>` owned by the
@@ -210,7 +210,7 @@ impl SolverInterface for HighsSolver {
         #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         let num_nz = template.num_nz as i32;
         let status = unsafe {
-            ffi::cobre_highs_pass_lp(
+            ffi::novomodelo_highs_pass_lp(
                 self.handle,
                 num_col,
                 num_row,
@@ -232,7 +232,7 @@ impl SolverInterface for HighsSolver {
         assert_ne!(
             status,
             ffi::HIGHS_STATUS_ERROR,
-            "cobre_highs_pass_lp failed with status {status}"
+            "novomodelo_highs_pass_lp failed with status {status}"
         );
 
         self.num_cols = template.num_cols;
@@ -275,7 +275,7 @@ impl SolverInterface for HighsSolver {
         // - Slice lengths: `num_rows + 1` for starts, total nnz for index and value,
         //   `num_rows` for lower/upper bounds.
         let status = unsafe {
-            ffi::cobre_highs_add_rows(
+            ffi::novomodelo_highs_add_rows(
                 self.handle,
                 num_new_row,
                 rows.row_lower.as_ptr(),
@@ -290,7 +290,7 @@ impl SolverInterface for HighsSolver {
         assert_ne!(
             status,
             ffi::HIGHS_STATUS_ERROR,
-            "cobre_highs_add_rows failed with status {status}"
+            "novomodelo_highs_add_rows failed with status {status}"
         );
 
         self.num_rows += rows.num_rows;
@@ -328,7 +328,7 @@ impl SolverInterface for HighsSolver {
         // - `lower` and `upper` are borrowed slices alive for the duration of this call.
         // - `num_entries` equals the lengths of all three arrays.
         let status = unsafe {
-            ffi::cobre_highs_change_rows_bounds_by_set(
+            ffi::novomodelo_highs_change_rows_bounds_by_set(
                 self.handle,
                 num_entries,
                 self.convert_to_i32_scratch(indices).as_ptr(),
@@ -340,7 +340,7 @@ impl SolverInterface for HighsSolver {
         assert_ne!(
             status,
             ffi::HIGHS_STATUS_ERROR,
-            "cobre_highs_change_rows_bounds_by_set failed with status {status}"
+            "novomodelo_highs_change_rows_bounds_by_set failed with status {status}"
         );
         self.stats.total_set_bounds_time_seconds += t0.elapsed().as_secs_f64();
     }
@@ -372,7 +372,7 @@ impl SolverInterface for HighsSolver {
         // - `lower` and `upper` are borrowed slices alive for the duration of this call.
         // - `num_entries` equals the lengths of all three arrays.
         let status = unsafe {
-            ffi::cobre_highs_change_cols_bounds_by_set(
+            ffi::novomodelo_highs_change_cols_bounds_by_set(
                 self.handle,
                 num_entries,
                 self.convert_to_i32_scratch(indices).as_ptr(),
@@ -384,7 +384,7 @@ impl SolverInterface for HighsSolver {
         assert_ne!(
             status,
             ffi::HIGHS_STATUS_ERROR,
-            "cobre_highs_change_cols_bounds_by_set failed with status {status}"
+            "novomodelo_highs_change_cols_bounds_by_set failed with status {status}"
         );
         self.stats.total_set_bounds_time_seconds += t0.elapsed().as_secs_f64();
     }
@@ -452,7 +452,7 @@ impl SolverInterface for HighsSolver {
 
             // SAFETY:
             // - `self.handle` is a valid, non-null HiGHS pointer obtained from
-            //   `cobre_highs_create()` and kept alive by `HighsSolver`.
+            //   `novomodelo_highs_create()` and kept alive by `HighsSolver`.
             // - `basis_col_i32` was sized to `num_cols` in `load_model` and grown in
             //   `add_rows`; the slice written above covers exactly `num_cols` entries.
             // - `basis_row_i32` was sized to `num_rows` in `load_model` and grown in
@@ -460,7 +460,7 @@ impl SolverInterface for HighsSolver {
             //   (an undersized basis is rejected before reaching this point).
             let basis_set_start = Instant::now();
             let set_status = unsafe {
-                ffi::cobre_highs_set_basis_non_alien(
+                ffi::novomodelo_highs_set_basis_non_alien(
                     self.handle,
                     self.basis_col_i32.as_ptr(),
                     self.basis_row_i32.as_ptr(),
@@ -509,7 +509,7 @@ impl SolverInterface for HighsSolver {
         //   `load_model`/`add_rows`.
         // - HiGHS writes exactly `num_cols` col values and `num_rows` row values.
         let get_status = unsafe {
-            ffi::cobre_highs_get_basis(
+            ffi::novomodelo_highs_get_basis(
                 self.handle,
                 self.basis_col_i32.as_mut_ptr(),
                 self.basis_row_i32.as_mut_ptr(),
@@ -519,7 +519,7 @@ impl SolverInterface for HighsSolver {
         assert_ne!(
             get_status,
             ffi::HIGHS_STATUS_ERROR,
-            "cobre_highs_get_basis failed: basis must exist after a successful solve (programming error)"
+            "novomodelo_highs_get_basis failed: basis must exist after a successful solve (programming error)"
         );
 
         out.col_status.resize(self.num_cols, BasisStatus::Lower);

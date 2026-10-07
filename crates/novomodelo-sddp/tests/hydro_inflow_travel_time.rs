@@ -19,12 +19,12 @@
 use std::collections::HashMap;
 
 use chrono::{Duration, NaiveDate};
-use cobre_core::entities::hydro::HydroGenerationModel;
-use cobre_core::scenario::InflowModel;
-use cobre_core::temporal::{
+use novomodelo_core::entities::hydro::HydroGenerationModel;
+use novomodelo_core::scenario::InflowModel;
+use novomodelo_core::temporal::{
     Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig,
 };
-use cobre_core::{
+use novomodelo_core::{
     BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties, ConstraintExpression,
     ContractBlockBounds, DeficitSegment, DiversionChannel, EntityId, GenericConstraint,
     HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, HydroUnitGroup,
@@ -33,16 +33,18 @@ use cobre_core::{
     ResolvedGenericConstraintBounds, ResolvedPenalties, SlackConfig, System, SystemBuilder,
     ThermalBlockBounds, ThermalStageBounds, VariableRef,
 };
-use cobre_io::config::{
+use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig, InflowNonNegativityMethod,
     ModelingConfig, PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
     SimulationSelection, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
     TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
-use cobre_sddp::indexer::{BlockGrid, BlockIdx, HydroCell, HydroCellIndex, HydroSys, StateSpace};
-use cobre_sddp::lp::StageGeometry;
-use cobre_sddp::{StageTemplates, StudySetup};
-use cobre_solver::StageTemplate;
+use novomodelo_sddp::indexer::{
+    BlockGrid, BlockIdx, HydroCell, HydroCellIndex, HydroSys, StateSpace,
+};
+use novomodelo_sddp::lp::StageGeometry;
+use novomodelo_sddp::{StageTemplates, StudySetup};
+use novomodelo_solver::StageTemplate;
 
 mod common;
 
@@ -472,7 +474,7 @@ fn prefilling_hydro_defaults() -> HydroSpec {
 /// `U` has `entry_stage_id: Some(PREFILLING_ENTRY_STAGE_ID)`, so it is
 /// `PreFilling` at both study stages. `travel_time_hours` sits on the one arc
 /// into `H` (`U_a`'s without `chain`, `U_b`'s with it); every other arc is
-/// lag-free, because `cobre-io` travel-time rule 12 rejects a lagged arc into
+/// lag-free, because `novomodelo-io` travel-time rule 12 rejects a lagged arc into
 /// a plant that is not yet operating.
 fn build_prefilling_system(
     chain: bool,
@@ -709,7 +711,7 @@ fn config() -> Config {
             stopping_mode: StoppingMode::Any,
             cut_selection: RowSelectionConfig::default(),
             solver: TrainingSolverConfig::default(),
-            parallelism: cobre_io::config::ParallelismConfig::default(),
+            parallelism: novomodelo_io::config::ParallelismConfig::default(),
             scenario_source: None,
             selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
         },

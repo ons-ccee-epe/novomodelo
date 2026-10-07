@@ -3,7 +3,7 @@
 //! This module defines the in-memory representation of generic constraints
 //! that users can specify to add custom linear relationships between LP
 //! variables. The expression parser (string → [`ConstraintExpression`])
-//! lives in `cobre-io`, not here. This module contains only the output types.
+//! lives in `novomodelo-io`, not here. This module contains only the output types.
 //!
 //! See `internal-structures.md §15` and `input-constraints.md §3` for the
 //! full specification, grammar, and validation rules.
@@ -33,7 +33,7 @@
 //! # Examples
 //!
 //! ```
-//! use cobre_core::{
+//! use novomodelo_core::{
 //!     EntityId, GenericConstraint, ConstraintExpression,
 //!     LinearTerm, SlackConfig, VariableRef,
 //! };
@@ -552,7 +552,7 @@ pub struct SlackConfig {
 /// A user-defined generic linear constraint.
 ///
 /// Sorted by `id` after loading to satisfy declaration-order invariance.
-/// Parsing, referential validation, and bounds loading happen in `cobre-io`.
+/// Parsing, referential validation, and bounds loading happen in `novomodelo-io`.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GenericConstraint {

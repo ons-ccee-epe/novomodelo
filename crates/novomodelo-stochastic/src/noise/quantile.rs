@@ -75,7 +75,7 @@ const EXTREME_BOUNDARY: f64 = 1e-20;
 /// # Examples
 ///
 /// ```
-/// use cobre_stochastic::norm_quantile;
+/// use novomodelo_stochastic::norm_quantile;
 ///
 /// assert_eq!(norm_quantile(0.5), 0.0);
 ///

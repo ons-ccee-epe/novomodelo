@@ -1,10 +1,10 @@
-//! Table-driven parity between `cobre validate` and `cobre run` refusals.
+//! Table-driven parity between `novomodelo validate` and `novomodelo run` refusals.
 //!
 //! One table, three outcomes: each `ParityRow` in `ROWS` mutates a committed
 //! example, declares its `Outcome` (bracketed refusal, plain refusal or
 //! warning) and a message fragment, and both commands must report the same
 //! line from the outcome's anchor onward. Add a row here and in
-//! `crates/cobre-python/tests/test_refusal_parity.py`; the checker does not
+//! `crates/novomodelo-python/tests/test_refusal_parity.py`; the checker does not
 //! change when rows are added.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 mod common;
-use common::{case_dir, cobre, copy_dir_recursive, restamp_policy_version};
+use common::{case_dir, copy_dir_recursive, novomodelo, restamp_policy_version};
 
 enum Outcome {
     BracketedRefusal { kind: &'static str },
@@ -410,7 +410,7 @@ fn train_one_iteration(case: &Path) {
         config["training"]["stopping_rules"] = json!([{"type": "iteration_limit", "limit": 1}]);
         config["simulation"]["enabled"] = json!(false);
     });
-    let trained = cobre()
+    let trained = novomodelo()
         .arg("run")
         .arg(case)
         .arg("--quiet")
@@ -531,7 +531,7 @@ fn parity_violations(
         )),
         _ => {}
     }
-    if run.text.contains("run `cobre validate")
+    if run.text.contains("run `novomodelo validate")
         && (validate.code != Some(1) || validate_tail.is_none())
     {
         violations.push(
@@ -549,16 +549,16 @@ fn mutated_case(row: &ParityRow) -> TempDir {
 }
 
 fn cli_violations(row: &ParityRow, validate_case: &Path, run_case: &Path) -> Vec<String> {
-    let validate = cobre()
+    let validate = novomodelo()
         .arg("validate")
         .arg(validate_case)
         .output()
-        .unwrap_or_else(|e| panic!("{}: cobre validate failed to spawn: {e}", row.name));
-    let run = cobre()
+        .unwrap_or_else(|e| panic!("{}: novomodelo validate failed to spawn: {e}", row.name));
+    let run = novomodelo()
         .arg("run")
         .arg(run_case)
         .output()
-        .unwrap_or_else(|e| panic!("{}: cobre run failed to spawn: {e}", row.name));
+        .unwrap_or_else(|e| panic!("{}: novomodelo run failed to spawn: {e}", row.name));
     let validate_text = String::from_utf8_lossy(&validate.stdout);
     let run_text = String::from_utf8_lossy(&run.stderr);
     parity_violations(
@@ -604,7 +604,7 @@ fn parity_check_flags_a_refusal_validate_does_not_reproduce() {
     );
 }
 
-const HINT: &str = "  -> run `cobre validate <CASE_DIR>` for a full diagnostic report\n";
+const HINT: &str = "  -> run `novomodelo validate <CASE_DIR>` for a full diagnostic report\n";
 const BRACKETED_FRAGMENT: &str = "travel_time_hours must be finite";
 const PLAIN_FRAGMENT: &str = "V2.1: seasonless historical stage";
 const WARNING_FRAGMENT: &str = "stored basis is stale";

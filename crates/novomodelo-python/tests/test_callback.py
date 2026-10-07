@@ -1,4 +1,4 @@
-"""Integration tests for the ``on_iteration`` streaming callback of cobre.run.run().
+"""Integration tests for the ``on_iteration`` streaming callback of novomodelo.run.run().
 
 These tests exercise the GIL-reacquiring drain thread that forwards each training
 iteration boundary to a user-supplied Python callable while the solver runs with
@@ -13,8 +13,8 @@ the GIL released. They verify three behaviours:
    the run's exception, after the partial ``training/metadata.json`` is written.
 
 Run with (from the repo root, after building the extension):
-    .venv/bin/maturin develop --manifest-path crates/cobre-python/Cargo.toml
-    .venv/bin/python -m pytest crates/cobre-python/tests/test_callback.py -q
+    .venv/bin/maturin develop --manifest-path crates/novomodelo-python/Cargo.toml
+    .venv/bin/python -m pytest crates/novomodelo-python/tests/test_callback.py -q
 """
 
 from __future__ import annotations
@@ -45,14 +45,14 @@ def test_callback_matches_convergence_parquet(tmp_path: pathlib.Path) -> None:
     ``iteration``/``lower_bound``/``gap`` values must match the corresponding
     parquet row (the parquet stores ``gap_percent`` = ``gap`` * 100).
     """
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     observed: list[dict[str, Any]] = []
 
     def on_iteration(event: dict[str, Any]) -> None:
         observed.append(event)
 
-    cobre.run.run(
+    novomodelo.run.run(
         VALID_CASE,
         output_dir=str(tmp_path),
         config_overrides={"simulation": {"enabled": False}},
@@ -108,7 +108,7 @@ def test_callback_truthy_return_stops_early(tmp_path: pathlib.Path) -> None:
     4. the callback was invoked only a small bounded number of extra times after
        the trigger.
     """
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     trigger_iteration = 3
     calls: list[int] = []
@@ -118,7 +118,7 @@ def test_callback_truthy_return_stops_early(tmp_path: pathlib.Path) -> None:
         calls.append(iteration)
         return iteration >= trigger_iteration
 
-    result = cobre.run.run(
+    result = novomodelo.run.run(
         VALID_CASE,
         output_dir=str(tmp_path),
         config_overrides={"simulation": {"enabled": False}},
@@ -162,12 +162,12 @@ def test_callback_truthy_return_writes_partial_training_status(
     tmp_path: pathlib.Path,
 ) -> None:
     """A training a callback stop alone ended reports ``status`` ``partial``."""
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     def on_iteration(event: dict[str, Any]) -> bool:
         return int(event["iteration"]) >= 3
 
-    cobre.run.run(
+    novomodelo.run.run(
         VALID_CASE,
         output_dir=str(tmp_path),
         config_overrides={"simulation": {"enabled": False}},
@@ -185,12 +185,12 @@ def test_callback_truthy_return_keeps_configured_simulation(
     tmp_path: pathlib.Path,
 ) -> None:
     """A callback stop leaves training ``partial`` and still runs the simulation."""
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     def on_iteration(event: dict[str, Any]) -> bool:
         return int(event["iteration"]) >= 2
 
-    result = cobre.run.run(
+    result = novomodelo.run.run(
         VALID_CASE,
         output_dir=str(tmp_path),
         on_iteration=on_iteration,
@@ -215,13 +215,13 @@ def test_callback_raises_propagates_with_partial_metadata(
     written before the captured exception is re-raised), and the propagated
     exception's message must contain the callback's message.
     """
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     def on_iteration(_event: dict[str, Any]) -> None:
         raise RuntimeError("boom")
 
     with pytest.raises(RuntimeError, match="boom"):
-        cobre.run.run(
+        novomodelo.run.run(
             VALID_CASE,
             output_dir=str(tmp_path),
             config_overrides={"simulation": {"enabled": False}},

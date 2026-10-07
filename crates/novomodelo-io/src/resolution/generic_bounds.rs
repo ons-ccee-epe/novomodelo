@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use cobre_core::{GenericConstraint, ResolvedGenericConstraintBounds};
+use novomodelo_core::{GenericConstraint, ResolvedGenericConstraintBounds};
 
 use crate::constraints::GenericConstraintBoundsRow;
 
@@ -18,11 +18,11 @@ use crate::constraints::GenericConstraintBoundsRow;
 /// # Examples
 ///
 /// ```
-/// use cobre_core::GenericConstraint;
-/// use cobre_core::generic_constraint::{ConstraintExpression, SlackConfig};
-/// use cobre_core::EntityId;
-/// use cobre_io::constraints::GenericConstraintBoundsRow;
-/// use cobre_io::resolution::resolve_generic_constraint_bounds;
+/// use novomodelo_core::GenericConstraint;
+/// use novomodelo_core::generic_constraint::{ConstraintExpression, SlackConfig};
+/// use novomodelo_core::EntityId;
+/// use novomodelo_io::constraints::GenericConstraintBoundsRow;
+/// use novomodelo_io::resolution::resolve_generic_constraint_bounds;
 ///
 /// let constraint = GenericConstraint {
 ///     id: EntityId(0),
@@ -90,12 +90,12 @@ pub fn resolve_generic_constraint_bounds(
 )]
 mod tests {
     use super::*;
-    use cobre_core::EntityId;
-    use cobre_core::generic_constraint::ConstraintExpression;
-    use cobre_core::model::resolved::GenericConstraintBoundEntry;
+    use novomodelo_core::EntityId;
+    use novomodelo_core::generic_constraint::ConstraintExpression;
+    use novomodelo_core::model::resolved::GenericConstraintBoundEntry;
 
     fn make_constraint(id: i32) -> GenericConstraint {
-        use cobre_core::generic_constraint::SlackConfig;
+        use novomodelo_core::generic_constraint::SlackConfig;
         GenericConstraint {
             id: EntityId(id),
             name: format!("c{id}"),

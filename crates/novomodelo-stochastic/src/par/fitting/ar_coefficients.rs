@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::NaiveDate;
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId,
     scenario::AnnualComponent,
     temporal::{SeasonMap, Stage},
@@ -138,8 +138,8 @@ pub(super) fn build_season_lookups<'a>(
 ///
 /// ```
 /// use chrono::NaiveDate;
-/// use cobre_core::{EntityId, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
-/// use cobre_stochastic::par::fitting::{estimate_seasonal_stats_with_season_map, estimate_ar_coefficients_with_season_map};
+/// use novomodelo_core::{EntityId, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
+/// use novomodelo_stochastic::par::fitting::{estimate_seasonal_stats_with_season_map, estimate_ar_coefficients_with_season_map};
 ///
 /// fn stage(id: i32, y0: i32, m0: u32, y1: i32, m1: u32, season: usize) -> Stage {
 ///     Stage {

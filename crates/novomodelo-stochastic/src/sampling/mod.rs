@@ -7,8 +7,8 @@
 //! [`build_forward_sampler`].
 //!
 //! ```
-//! use cobre_core::scenario::SamplingScheme;
-//! use cobre_stochastic::sampling::{ForwardSampler, build_forward_sampler};
+//! use novomodelo_core::scenario::SamplingScheme;
+//! use novomodelo_stochastic::sampling::{ForwardSampler, build_forward_sampler};
 //! ```
 
 use crate::context::ClassSchemes;
@@ -38,7 +38,7 @@ pub use tables::{ClassNoiseTables, ForwardNoiseTables, NoiseTable};
 pub use window::discover_historical_windows;
 pub(crate) mod out_of_sample;
 
-use cobre_core::{
+use novomodelo_core::{
     scenario::SamplingScheme,
     temporal::{NoiseMethod, SeasonMap, Stage},
 };
@@ -747,7 +747,7 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    use cobre_core::{
+    use novomodelo_core::{
         Bus, DeficitSegment, EntityId, Hydro, SystemBuilder,
         scenario::{
             CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
@@ -836,7 +836,7 @@ mod tests {
     }
 
     fn make_bus(id: i32) -> Bus {
-        cobre_core::test_support::make_bus(BusSpec {
+        novomodelo_core::test_support::make_bus(BusSpec {
             id,
             name: format!("Bus{id}"),
             deficit_segments: vec![DeficitSegment {
@@ -852,7 +852,7 @@ mod tests {
     }
 
     fn make_stage_with_method(index: usize, id: i32, bf: usize, method: NoiseMethod) -> Stage {
-        cobre_core::test_support::make_stage(StageSpec {
+        novomodelo_core::test_support::make_stage(StageSpec {
             id,
             index: Some(index),
             season_id: Some(0),
@@ -866,7 +866,7 @@ mod tests {
     }
 
     fn make_hydro(id: i32) -> Hydro {
-        cobre_core::test_support::make_hydro(HydroSpec {
+        novomodelo_core::test_support::make_hydro(HydroSpec {
             id,
             name: format!("H{id}"),
             max_storage_hm3: 100.0,

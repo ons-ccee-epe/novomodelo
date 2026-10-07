@@ -4,8 +4,8 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use cobre_core::scenario::{SamplingScheme, ScenarioSource};
-use cobre_core::temporal::{Node, PolicyGraphType, Transition};
+use novomodelo_core::scenario::{SamplingScheme, ScenarioSource};
+use novomodelo_core::temporal::{Node, PolicyGraphType, Transition};
 
 use crate::StageIdResolver;
 use crate::config::{ForwardPassesResolution, Openings};
@@ -829,9 +829,9 @@ mod tests {
     use super::super::validate_semantic_stages_penalties_scenarios;
     use crate::test_support::*;
     use crate::validation::schema::ParsedData;
-    use cobre_core::EntityId;
-    use cobre_core::scenario::ExternalScenarioRow;
-    use cobre_core::temporal::{
+    use novomodelo_core::EntityId;
+    use novomodelo_core::scenario::ExternalScenarioRow;
+    use novomodelo_core::temporal::{
         Block, Node, PolicyGraphType, SeasonCycleType, SeasonDefinition, SeasonMap, Stage,
         Transition,
     };

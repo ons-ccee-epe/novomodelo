@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Cobre value-function artifact FlatBuffers schema.
+// Novomodelo value-function artifact FlatBuffers schema.
 //
 // This file is the canonical schema for the binary `.bin` files written
-// under a Cobre study's `policy/` directory:
+// under a Novomodelo study's `policy/` directory:
 //
-//   policy/cuts/<pool>.bin       — root: Cobre.IO.Policy.StageCuts
-//   policy/basis/<stage>.bin     — root: Cobre.IO.Policy.StageBasis
-//   policy/states/<stage>.bin    — root: Cobre.IO.Policy.StageStates
+//   policy/cuts/<pool>.bin       — root: Novomodelo.IO.Policy.StageCuts
+//   policy/basis/<stage>.bin     — root: Novomodelo.IO.Policy.StageBasis
+//   policy/states/<stage>.bin    — root: Novomodelo.IO.Policy.StageStates
 //
-// The Cobre Rust runtime does NOT consume this file; the writer/reader
+// The Novomodelo Rust runtime does NOT consume this file; the writer/reader
 // in `src/output/policy/` is hand-rolled to satisfy the workspace's
 // `unsafe_code = "forbid"` rule. This schema exists for external
 // consumers (Python, C++, TypeScript, Java, …) who want a typed reader
@@ -41,7 +41,7 @@
 //     former single-field `delivery_date` anchor, replaced by the per-family
 //     `reference_date`/`interval_start`/`interval_end` fields. Each is kept
 //     `deprecated` so no future field silently reuses that slot.
-//   • A further root, `Cobre.IO.Policy.CheckpointManifest`, carries the
+//   • A further root, `Novomodelo.IO.Policy.CheckpointManifest`, carries the
 //     study-global checkpoint metadata (format version, the policy-graph
 //     manifest of nodes/edges, and the producer provenance block). Its field
 //     ids start fresh at 0 and reuse none of the burned slots above — those are
@@ -49,7 +49,7 @@
 //     the manifest's own id 4, id 5, and id 7 sit in a distinct vtable and
 //     collide with none of them.
 
-namespace Cobre.IO.Policy;
+namespace Novomodelo.IO.Policy;
 
 file_identifier "CBVF";
 file_extension "bin";

@@ -23,8 +23,8 @@ use crate::test_support::{
     geometry_hydro, geometry_hydro_with_groups, make_unit_group, minimal_hydros,
 };
 use crate::time_value::{PostStudyResolved, TimeValue};
-use cobre_core::entities::{HydroGenerationModel, HydroPenalties};
-use cobre_core::{
+use novomodelo_core::entities::{HydroGenerationModel, HydroPenalties};
+use novomodelo_core::{
     AnticipatedConfig, Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, CascadeTopology,
     ContractBlockBounds, ContractType, DeficitSegment, EnergyContract, EntityId, Hydro,
     HydroBlockBounds, HydroStageBounds, Line, LineBlockBounds, NoiseMethod, PumpingBlockBounds,

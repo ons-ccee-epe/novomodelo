@@ -30,14 +30,14 @@
 //!
 //! ## Commissioning window
 //!
-//! [`cobre_core::commissioning::commissioning_active`] returns `true`/`false`, not
+//! [`novomodelo_core::commissioning::commissioning_active`] returns `true`/`false`, not
 //! an active-subset index: under the dense layout an inactive entity keeps its LP
 //! column (callers force its bounds to `[0, 0]`), so the column position is the
 //! entity's system index at every stage and no per-stage active-set remap is
 //! needed. Every per-phase gating site derived from
-//! [`cobre_core::commissioning::filling_phase`] — column bounds, row emission, FPHA
+//! [`novomodelo_core::commissioning::filling_phase`] — column bounds, row emission, FPHA
 //! exclusion — recomputes the phase by calling it; no caller may cache a per-stage
-//! [`cobre_core::commissioning::Phase`] mask.
+//! [`novomodelo_core::commissioning::Phase`] mask.
 
 mod build_inputs;
 mod columns;

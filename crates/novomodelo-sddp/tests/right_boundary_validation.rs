@@ -35,25 +35,25 @@
 use std::path::Path;
 
 use chrono::{NaiveDate, TimeDelta};
-use cobre_core::entities::thermal::AnticipatedConfig;
-use cobre_core::temporal::StageStateConfig;
-use cobre_core::{
+use novomodelo_core::entities::thermal::AnticipatedConfig;
+use novomodelo_core::temporal::StageStateConfig;
+use novomodelo_core::{
     AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId,
     HydroBlockBounds, HydroStageBounds, InitialConditions, LineBlockBounds, PostStudyStage,
     PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds, System,
     SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
 };
-use cobre_sddp::indexer::CutStateProjection;
-use cobre_sddp::setup::{NodeId, StageIdx};
-use cobre_sddp::test_support::{
+use novomodelo_sddp::indexer::CutStateProjection;
+use novomodelo_sddp::setup::{NodeId, StageIdx};
+use novomodelo_sddp::test_support::{
     patch_backward_opening_for_counterfactual_probe, solve_stage_for_probe,
 };
-use cobre_sddp::workspace::SolverWorkspace;
-use cobre_sddp::{
+use novomodelo_sddp::workspace::SolverWorkspace;
+use novomodelo_sddp::{
     BoundaryLoadRequest, CutPool, StudySetup, build_cut_row_batch_into, inject_boundary_cuts,
     load_boundary_cuts,
 };
-use cobre_solver::{
+use novomodelo_solver::{
     ActiveSolver, FreezeScratch, RowBatch, SolverInterface, StageTemplate,
     freeze_rows_into_template,
 };
@@ -102,7 +102,7 @@ fn study_end() -> NaiveDate {
 /// (744h), stage 1 the following 30 days (720h). Shared by every fixture in
 /// this suite — the LEFT/RIGHT "calendar reflection" is the same horizon,
 /// read from its two opposite edges.
-fn stages() -> Vec<cobre_core::temporal::Stage> {
+fn stages() -> Vec<novomodelo_core::temporal::Stage> {
     let start = study_start();
     let s0_end = stage0_end();
     vec![
@@ -111,7 +111,7 @@ fn stages() -> Vec<cobre_core::temporal::Stage> {
             StageSpec {
                 start_date: start,
                 end_date: s0_end,
-                blocks: vec![cobre_core::temporal::Block {
+                blocks: vec![novomodelo_core::temporal::Block {
                     index: 0,
                     name: "S0".to_string(),
                     duration_hours: 744.0,
@@ -124,7 +124,7 @@ fn stages() -> Vec<cobre_core::temporal::Stage> {
             StageSpec {
                 start_date: s0_end,
                 end_date: study_end(),
-                blocks: vec![cobre_core::temporal::Block {
+                blocks: vec![novomodelo_core::temporal::Block {
                     index: 0,
                     name: "S1".to_string(),
                     duration_hours: 720.0,
@@ -199,9 +199,9 @@ fn bounds(thermal_block_max_mw: f64) -> ResolvedBounds {
     )
 }
 
-fn penalties() -> cobre_core::resolved::ResolvedPenalties {
-    use cobre_core::HydroPenalties;
-    use cobre_core::resolved::{
+fn penalties() -> novomodelo_core::resolved::ResolvedPenalties {
+    use novomodelo_core::HydroPenalties;
+    use novomodelo_core::resolved::{
         BusStagePenalties, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
         PenaltiesDefaults, ResolvedPenalties,
     };
@@ -308,8 +308,8 @@ fn build_system_left(v: f64) -> System {
         .expect("fixture System must build")
 }
 
-fn config() -> cobre_io::config::Config {
-    use cobre_io::config::{
+fn config() -> novomodelo_io::config::Config {
+    use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod, ModelingConfig, ParallelismConfig, PolicyConfig,
         RowSelectionConfig, SimulationConfig, SimulationSelection, StoppingMode,
@@ -361,7 +361,10 @@ fn post_study_ring_slot(setup: &StudySetup) -> usize {
 /// Pool `pool`'s fixture `priced_state_date`: `2030-01-01` plus `pool`
 /// months.
 fn fixture_priced_date(pool: u32) -> NaiveDate {
-    cobre_sddp::test_support::fixture_priced_date(cobre_sddp::test_support::ymd(2030, 1, 1), pool)
+    novomodelo_sddp::test_support::fixture_priced_date(
+        novomodelo_sddp::test_support::ymd(2030, 1, 1),
+        pool,
+    )
 }
 
 /// Load a boundary carrying `beta` on [`post_study_ring_slot`] alone, zero
@@ -372,7 +375,7 @@ fn inject_ring_boundary(setup: &mut StudySetup, dir: &Path, beta: f64) {
     let slot = post_study_ring_slot(setup);
     let mut coefficients = vec![0.0_f64; state_dimension as usize];
     coefficients[slot] = beta;
-    cobre_sddp::test_support::write_synthetic_boundary(
+    novomodelo_sddp::test_support::write_synthetic_boundary(
         dir,
         state_dimension,
         ALPHA,

@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cobre_core::{EntityId, Hydro, HydroUnitGroup};
+use novomodelo_core::{EntityId, Hydro, HydroUnitGroup};
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
 use super::envelope_tolerance;
@@ -532,7 +532,7 @@ fn check_row_columns(
 /// One bound column with no per-block LP variable, and the reason to surface
 /// in its rejection message.
 ///
-/// Hand-synced against `cobre_core::resolved::HydroBlockOverride` /
+/// Hand-synced against `novomodelo_core::resolved::HydroBlockOverride` /
 /// `ThermalBlockOverride`'s excluded fields, which mirror
 /// [`crate::constraints::bounds`]'s `## Block eligibility` table — the struct
 /// field sets are the actual eligibility check; this table is not derived
@@ -863,8 +863,8 @@ fn emit_group_raises_declared_capacity_error(
 mod tests {
     use std::collections::HashSet;
 
-    use cobre_core::temporal::PolicyGraphType;
-    use cobre_core::{
+    use novomodelo_core::temporal::PolicyGraphType;
+    use novomodelo_core::{
         AnticipatedCommitmentHistory, AnticipatedConfig, EntityId, HorizonGraph, Hydro, Thermal,
     };
 

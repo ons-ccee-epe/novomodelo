@@ -11,7 +11,7 @@ use crate::EntityId;
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{EntityId, ValidationError};
+/// use novomodelo_core::{EntityId, ValidationError};
 ///
 /// let err = ValidationError::DuplicateId {
 ///     entity_type: "Bus",

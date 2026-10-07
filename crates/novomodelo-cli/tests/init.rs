@@ -1,4 +1,4 @@
-//! Integration tests for the `cobre init` subcommand.
+//! Integration tests for the `novomodelo init` subcommand.
 
 #![allow(clippy::unwrap_used)]
 
@@ -9,13 +9,13 @@ use predicates::prelude::*;
 use std::process::Command;
 use tempfile::TempDir;
 
-fn cobre() -> Command {
-    Command::new(assert_cmd::cargo::cargo_bin!("cobre"))
+fn novomodelo() -> Command {
+    Command::new(assert_cmd::cargo::cargo_bin!("novomodelo"))
 }
 
 #[test]
 fn test_init_list_shows_1dtoy() {
-    cobre()
+    novomodelo()
         .args(["init", "--list"])
         .assert()
         .success()
@@ -27,12 +27,12 @@ fn test_init_1dtoy_creates_valid_case() {
     let dir = TempDir::new().unwrap();
     let dir_str = dir.path().to_str().unwrap();
 
-    cobre()
+    novomodelo()
         .args(["init", "--template", "1dtoy", dir_str])
         .assert()
         .success();
 
-    cobre().args(["validate", dir_str]).assert().success();
+    novomodelo().args(["validate", dir_str]).assert().success();
 }
 
 #[test]
@@ -40,7 +40,7 @@ fn test_init_unknown_template_fails() {
     let dir = TempDir::new().unwrap();
     let dir_str = dir.path().to_str().unwrap();
 
-    cobre()
+    novomodelo()
         .args(["init", "--template", "bogus", dir_str])
         .assert()
         .failure()
@@ -49,7 +49,7 @@ fn test_init_unknown_template_fails() {
 
 #[test]
 fn test_init_no_args_fails() {
-    cobre().args(["init"]).assert().failure();
+    novomodelo().args(["init"]).assert().failure();
 }
 
 #[test]
@@ -57,7 +57,7 @@ fn test_init_existing_non_empty_dir_fails() {
     let dir = TempDir::new().unwrap();
     fs::write(dir.path().join("dummy.txt"), "x").unwrap();
 
-    cobre()
+    novomodelo()
         .args(["init", "--template", "1dtoy", dir.path().to_str().unwrap()])
         .assert()
         .failure()
@@ -70,7 +70,7 @@ fn test_init_force_overwrites() {
     let dir = TempDir::new().unwrap();
     fs::write(dir.path().join("dummy.txt"), "x").unwrap();
 
-    cobre()
+    novomodelo()
         .args([
             "init",
             "--template",

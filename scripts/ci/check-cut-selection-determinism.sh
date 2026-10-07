@@ -17,7 +17,7 @@
 #
 # Scope:
 #   - Every Cargo.toml at the workspace root and under crates/**/.
-#   - .rs files under crates/cobre-sddp/src/ and crates/cobre-solver/src/
+#   - .rs files under crates/novomodelo-sddp/src/ and crates/novomodelo-solver/src/
 #     (the two crates that participate in the cut-selection GEMM call
 #     chain). Other crates' Rust files are out of scope.
 #
@@ -27,7 +27,7 @@
 #     tokens for negative tests).
 #   - Files under plans/, docs/ are not in scope by construction (the find
 #     predicates only walk Cargo.toml and the two src/ subtrees).
-#   - The crates/cobre-solver/examples/ tree is naturally excluded because
+#   - The crates/novomodelo-solver/examples/ tree is naturally excluded because
 #     the .rs scan is scoped to crates/*/src/ only — the audit_mm_dispatch
 #     example legitimately references matrixmultiply::dgemm.
 #
@@ -116,7 +116,7 @@ scan_root() {
     # when the subtree does not exist (relevant for the --verify fixture
     # which only mocks crates/x/src/).
     local rs_dir
-    for rs_dir in "$root/crates/cobre-sddp/src" "$root/crates/cobre-solver/src" "$root/crates/x/src"; do
+    for rs_dir in "$root/crates/novomodelo-sddp/src" "$root/crates/novomodelo-solver/src" "$root/crates/x/src"; do
         if [[ -d "$rs_dir" ]]; then
             while IFS= read -r -d '' file; do
                 basename="${file##*/}"
@@ -216,8 +216,8 @@ matrixmultiply-alt = { version = "0.3", threading = true }
 TOML
 
     # lib.rs carries the code-style patterns. The fixture is placed under
-    # crates/x/src/ which scan_root scans (alongside cobre-sddp and
-    # cobre-solver) when present.
+    # crates/x/src/ which scan_root scans (alongside novomodelo-sddp and
+    # novomodelo-solver) when present.
     cat >"${fixture}/crates/x/src/lib.rs" <<'RUST'
 // Synthetic fixture exercising every forbidden code-style pattern.
 fn check_avx() -> bool {

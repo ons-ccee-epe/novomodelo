@@ -41,7 +41,7 @@
 //! - `hydro_id` existence in the hydro registry — Layer 3.
 
 use arrow::array::Array;
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
@@ -58,8 +58,8 @@ use crate::parquet_helpers::{
 /// # Examples
 ///
 /// ```
-/// use cobre_io::extensions::FphaHyperplaneRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::extensions::FphaHyperplaneRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = FphaHyperplaneRow {
 ///     hydro_id: EntityId::from(66),
@@ -116,7 +116,7 @@ pub struct FphaHyperplaneRow {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::extensions::parse_fpha_hyperplanes;
+/// use novomodelo_io::extensions::parse_fpha_hyperplanes;
 /// use std::path::Path;
 ///
 /// let rows = parse_fpha_hyperplanes(Path::new("system/fpha_hyperplanes.parquet"))

@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/load_factors.schema.json",
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/load_factors.schema.json",
   "load_factors": [
     {
       "bus_id": 0,

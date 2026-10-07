@@ -1,20 +1,20 @@
-//! Training phase for `cobre run`.
+//! Training phase for `novomodelo run`.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc;
 
-use cobre_comm::{Communicator, ReduceOp};
-use cobre_core::TrainingEvent;
-use cobre_io::MetadataTrainingSolveStats;
-use cobre_io::TrainingOutput;
-use cobre_sddp::SddpError;
-use cobre_sddp::SolverStatsDelta;
-use cobre_sddp::StudySetup;
-use cobre_sddp::TrainingResult;
-use cobre_sddp::aggregate_solver_stats_log;
-use cobre_sddp::sum_phase_timing_ms;
-use cobre_solver::ActiveSolver;
+use novomodelo_comm::{Communicator, ReduceOp};
+use novomodelo_core::TrainingEvent;
+use novomodelo_io::MetadataTrainingSolveStats;
+use novomodelo_io::TrainingOutput;
+use novomodelo_sddp::SddpError;
+use novomodelo_sddp::SolverStatsDelta;
+use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::TrainingResult;
+use novomodelo_sddp::aggregate_solver_stats_log;
+use novomodelo_sddp::sum_phase_timing_ms;
+use novomodelo_solver::ActiveSolver;
 
 use crate::error::CliError;
 use crate::summary::TrainingSummary;
@@ -32,7 +32,7 @@ pub(super) struct TrainingPhaseResult {
 }
 
 /// Single owner of the training-run stats the printed [`TrainingSummary`] and
-/// the persisted [`cobre_io::MetadataTrainingSolveStats`] both read from, so the
+/// the persisted [`novomodelo_io::MetadataTrainingSolveStats`] both read from, so the
 /// two stay identical. `first_try`/`retried`/`failed`/`*_solve_seconds` are
 /// cross-rank allreduce sums; the phase-wall/wait/serial `*_ms` fields are a
 /// rank-0-local sum over this rank's own convergence records (never allreduced
@@ -69,7 +69,7 @@ pub(super) fn run_training_phase(
     let mut solver = ActiveSolver::new().map_err(|e| CliError::Solver {
         message: format!(
             "{} initialisation failed: {e}",
-            cobre_solver::active_solver_name()
+            novomodelo_solver::active_solver_name()
         ),
     })?;
 

@@ -284,11 +284,11 @@ fn validate_ncs_refs(
 /// - `filling_min_rate_m3s` must be non-negative: zero is valid (no minimum
 ///   accumulation required); only a negative or NaN rate is rejected.
 /// - `entry_stage_id` must be `Some`.
-/// - `start_stage_id < entry_stage_id`. Mirrors the cobre-io ordering guard here so
+/// - `start_stage_id < entry_stage_id`. Mirrors the novomodelo-io ordering guard here so
 ///   a `System` built directly via the public [`SystemBuilder`](super::SystemBuilder)
 ///   still rejects an inverted config, which otherwise mis-phases the reservoir in
 ///   the solver with no error. Validating `start_stage_id` against the study stage
-///   set stays in cobre-io, which alone holds the horizon.
+///   set stays in novomodelo-io, which alone holds the horizon.
 pub(crate) fn validate_filling_configs(hydros: &[Hydro], errors: &mut Vec<ValidationError>) {
     for hydro in hydros {
         if let Some(filling) = &hydro.filling {

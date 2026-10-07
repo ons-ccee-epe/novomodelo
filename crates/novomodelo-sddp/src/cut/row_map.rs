@@ -21,7 +21,7 @@
 //! ## Example
 //!
 //! ```rust
-//! use cobre_sddp::cut::row_map::CutRowMap;
+//! use novomodelo_sddp::cut::row_map::CutRowMap;
 //!
 //! let mut map = CutRowMap::new(100, 50);
 //! assert_eq!(map.total_cut_rows(), 0);
@@ -63,7 +63,7 @@ impl CutRowMap {
     /// # Example
     ///
     /// ```rust
-    /// use cobre_sddp::cut::row_map::CutRowMap;
+    /// use novomodelo_sddp::cut::row_map::CutRowMap;
     ///
     /// let map = CutRowMap::new(100, 50);
     /// assert_eq!(map.base_row_offset(), 50);
@@ -90,7 +90,7 @@ impl CutRowMap {
     /// # Example
     ///
     /// ```rust
-    /// use cobre_sddp::cut::row_map::CutRowMap;
+    /// use novomodelo_sddp::cut::row_map::CutRowMap;
     ///
     /// let mut map = CutRowMap::new(10, 20);
     /// let row = map.insert(3);

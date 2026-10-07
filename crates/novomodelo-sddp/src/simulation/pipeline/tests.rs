@@ -3,14 +3,14 @@
 use std::collections::HashMap;
 use std::sync::mpsc;
 
-use cobre_comm::{CommData, CommError, Communicator, ReduceOp};
-use cobre_core::WorkerPhaseTimings;
-use cobre_core::scenario::SamplingScheme;
-use cobre_solver::{
+use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
+use novomodelo_core::WorkerPhaseTimings;
+use novomodelo_core::scenario::SamplingScheme;
+use novomodelo_solver::{
     Basis, LpSolution, ProfiledSolver, RowBatch, SolverError, SolverInterface, SolverStatistics,
     StageTemplate,
 };
-use cobre_stochastic::StochasticContext;
+use novomodelo_stochastic::StochasticContext;
 
 use super::SimulationOutputSpec;
 use crate::{
@@ -34,20 +34,20 @@ use crate::{
 
 // A params struct would churn every call site; the wide arity is deliberate.
 #[allow(clippy::too_many_arguments)]
-fn run_simulate<S, C: cobre_comm::Communicator>(
+fn run_simulate<S, C: novomodelo_comm::Communicator>(
     workspaces: &mut [SolverWorkspace<S>],
     ctx: &StageContext<'_>,
     fcf: &FutureCostFunction,
     training_ctx: &TrainingContext<'_>,
     config: &SimulationConfig,
     output: SimulationOutputSpec<'_>,
-    frozen_templates: Option<&[cobre_solver::StageTemplate]>,
+    frozen_templates: Option<&[novomodelo_solver::StageTemplate]>,
     node_bases: &[Option<CapturedBasis>],
     comm: &C,
     traversal: &Traversal,
 ) -> Result<super::SimulationRunResult, SimulationError>
 where
-    S: cobre_solver::SolverInterface<Profile = cobre_solver::ActiveProfile> + Send,
+    S: novomodelo_solver::SolverInterface<Profile = novomodelo_solver::ActiveProfile> + Send,
 {
     let num_stages = training_ctx.horizon.num_stages();
     let mut state = SimulationState::new(num_stages);
@@ -70,21 +70,21 @@ where
 /// before `run()` — exercises the resolved-profile threading mechanism.
 // A params struct would churn every call site; the wide arity is deliberate.
 #[allow(clippy::too_many_arguments)]
-fn run_simulate_with_profile<S, C: cobre_comm::Communicator>(
+fn run_simulate_with_profile<S, C: novomodelo_comm::Communicator>(
     workspaces: &mut [SolverWorkspace<S>],
     ctx: &StageContext<'_>,
     fcf: &FutureCostFunction,
     training_ctx: &TrainingContext<'_>,
     config: &SimulationConfig,
     output: SimulationOutputSpec<'_>,
-    frozen_templates: Option<&[cobre_solver::StageTemplate]>,
+    frozen_templates: Option<&[novomodelo_solver::StageTemplate]>,
     node_bases: &[Option<CapturedBasis>],
     comm: &C,
-    profile: cobre_solver::ActiveProfile,
+    profile: novomodelo_solver::ActiveProfile,
     traversal: &Traversal,
 ) -> Result<super::SimulationRunResult, SimulationError>
 where
-    S: cobre_solver::SolverInterface<Profile = cobre_solver::ActiveProfile> + Send,
+    S: novomodelo_solver::SolverInterface<Profile = novomodelo_solver::ActiveProfile> + Send,
 {
     let num_stages = training_ctx.horizon.num_stages();
     let mut state = SimulationState::new(num_stages);
@@ -193,7 +193,7 @@ impl MockSolver {
         }
     }
 
-    fn do_solve(&mut self) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+    fn do_solve(&mut self) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
         let call = self.call_count;
         self.call_count += 1;
         if self.infeasible_at == Some(call) {
@@ -203,7 +203,7 @@ impl MockSolver {
         self.buf_dual.clone_from(&self.solution.dual);
         self.buf_reduced_costs
             .clone_from(&self.solution.reduced_costs);
-        Ok(cobre_solver::SolutionView {
+        Ok(novomodelo_solver::SolutionView {
             objective: self.solution.objective,
             primal: &self.buf_primal,
             dual: &self.buf_dual,
@@ -215,9 +215,9 @@ impl MockSolver {
 }
 
 impl SolverInterface for MockSolver {
-    type Profile = cobre_solver::ActiveProfile;
+    type Profile = novomodelo_solver::ActiveProfile;
 
-    fn apply_profile(&mut self, _profile: &cobre_solver::ActiveProfile) {}
+    fn apply_profile(&mut self, _profile: &novomodelo_solver::ActiveProfile) {}
 
     fn solver_name_version(&self) -> String {
         "MockSolver 0.0.0".to_string()
@@ -233,7 +233,7 @@ impl SolverInterface for MockSolver {
     fn solve(
         &mut self,
         basis: Option<&Basis>,
-    ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+    ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
         if let Some(b) = basis {
             self.solve_with_basis_count += 1;
             self.recorded_basis = Some(b.clone());
@@ -280,16 +280,18 @@ fn make_stochastic_context(n_stages: usize) -> StochasticContext {
     use std::collections::BTreeMap;
 
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{
+    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
     };
-    use cobre_core::temporal::{
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
-    use cobre_stochastic::context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+    use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
+    use novomodelo_stochastic::context::{
+        ClassSchemes, OpeningTreeInputs, build_stochastic_context,
+    };
 
     let bus = Bus {
         id: EntityId(0),
@@ -566,14 +568,16 @@ fn make_stochastic_context_1_hydro_1_load_bus_sim(mean_mw: f64, std_mw: f64) -> 
     use std::collections::BTreeMap;
 
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{CorrelationModel, InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{CorrelationModel, InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
-    use cobre_stochastic::context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+    use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
+    use novomodelo_stochastic::context::{
+        ClassSchemes, OpeningTreeInputs, build_stochastic_context,
+    };
 
     let bus0 = Bus {
         id: EntityId(0),
@@ -994,9 +998,9 @@ fn simulation_state_set_profile_reaches_current_profile_after_run() {
     let mut workspaces = single_workspace(solver);
 
     let resolved =
-        Phase::Simulation.resolve_profile(Some(&cobre_io::config::PhaseSolverProfileConfig {
+        Phase::Simulation.resolve_profile(Some(&novomodelo_io::config::PhaseSolverProfileConfig {
             dual_edge_weight: None,
-            scale: Some(cobre_io::config::ScaleStrategy::SolverScaling),
+            scale: Some(novomodelo_io::config::ScaleStrategy::SolverScaling),
             price: None,
             primal_feasibility_tolerance: None,
             dual_feasibility_tolerance: None,
@@ -1202,16 +1206,18 @@ fn make_stochastic_1h_1s(mean_m3s: f64, std_m3s: f64) -> StochasticContext {
     use std::collections::BTreeMap;
 
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{
+    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
     };
-    use cobre_core::temporal::{
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
-    use cobre_stochastic::context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+    use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
+    use novomodelo_stochastic::context::{
+        ClassSchemes, OpeningTreeInputs, build_stochastic_context,
+    };
 
     let bus = Bus {
         id: EntityId(0),
@@ -1638,8 +1644,8 @@ mod dcs_simulation {
     use std::collections::HashMap;
     use std::sync::mpsc;
 
-    use cobre_core::scenario::SamplingScheme;
-    use cobre_solver::{ActiveSolver, StageTemplate};
+    use novomodelo_core::scenario::SamplingScheme;
+    use novomodelo_solver::{ActiveSolver, StageTemplate};
 
     use super::super::{
         SimLookups, SimStageIds, SimStageLoadSpec, SimulationOutputSpec, solve_simulation_stage,
@@ -1948,7 +1954,7 @@ mod dcs_simulation {
         };
 
         let (tx, _rx) = mpsc::sync_channel(4);
-        let diversion: HashMap<cobre_core::EntityId, Vec<usize>> = HashMap::new();
+        let diversion: HashMap<novomodelo_core::EntityId, Vec<usize>> = HashMap::new();
         let output = SimulationOutputSpec {
             result_tx: &tx,
             hydro_cell_index: &test_support::identity_hydro_cell_index(256),
@@ -2115,8 +2121,8 @@ mod anticipated_ring_matches_forward_propagation {
     use std::collections::HashMap;
     use std::sync::mpsc;
 
-    use cobre_core::scenario::SamplingScheme;
-    use cobre_solver::{
+    use novomodelo_core::scenario::SamplingScheme;
+    use novomodelo_solver::{
         Basis, LpSolution, RowBatch, SolverError, SolverInterface, SolverStatistics, StageTemplate,
     };
 
@@ -2166,9 +2172,9 @@ mod anticipated_ring_matches_forward_propagation {
     }
 
     impl SolverInterface for SequencedSolver {
-        type Profile = cobre_solver::ActiveProfile;
+        type Profile = novomodelo_solver::ActiveProfile;
 
-        fn apply_profile(&mut self, _profile: &cobre_solver::ActiveProfile) {}
+        fn apply_profile(&mut self, _profile: &novomodelo_solver::ActiveProfile) {}
         fn solver_name_version(&self) -> String {
             "SequencedSolver 0.0.0".to_string()
         }
@@ -2179,13 +2185,13 @@ mod anticipated_ring_matches_forward_propagation {
         fn solve(
             &mut self,
             _basis: Option<&Basis>,
-        ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+        ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
             let sol = &self.solutions[self.call_count];
             self.call_count += 1;
             self.buf_primal.clone_from(&sol.primal);
             self.buf_dual.clone_from(&sol.dual);
             self.buf_reduced_costs.clone_from(&sol.reduced_costs);
-            Ok(cobre_solver::SolutionView {
+            Ok(novomodelo_solver::SolutionView {
                 objective: sol.objective,
                 primal: &self.buf_primal,
                 dual: &self.buf_dual,
@@ -2366,7 +2372,7 @@ mod anticipated_ring_matches_forward_propagation {
         };
         let hprod: Vec<Vec<f64>> = vec![Vec::new(); N_STAGES];
         let ec = EnergyConversionSet::new(Vec::new(), Vec::new(), &[], N_STAGES);
-        let diversion: HashMap<cobre_core::EntityId, Vec<usize>> = HashMap::new();
+        let diversion: HashMap<novomodelo_core::EntityId, Vec<usize>> = HashMap::new();
         let (tx, _rx) = mpsc::sync_channel(N_STAGES.max(1));
         let output = SimulationOutputSpec {
             result_tx: &tx,

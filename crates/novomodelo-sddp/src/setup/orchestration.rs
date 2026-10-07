@@ -4,12 +4,12 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::{Sender, SyncSender};
 
-use cobre_comm::Communicator;
-use cobre_core::TrainingEvent;
-use cobre_io::TrainingOutput;
-use cobre_solver::ActiveProfile;
-use cobre_solver::StageTemplate;
-use cobre_solver::{SolverError, SolverInterface};
+use novomodelo_comm::Communicator;
+use novomodelo_core::TrainingEvent;
+use novomodelo_io::TrainingOutput;
+use novomodelo_solver::ActiveProfile;
+use novomodelo_solver::StageTemplate;
+use novomodelo_solver::{SolverError, SolverInterface};
 
 use crate::{
     config::{CutManagementConfig, EventConfig, LoopConfig, TrainingConfig},

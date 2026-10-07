@@ -9,10 +9,10 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::{Datelike, NaiveDate};
-use cobre_core::EntityId;
-use cobre_core::SeasonMap;
-use cobre_core::Stage;
-use cobre_core::scenario::AnnualComponent;
+use novomodelo_core::EntityId;
+use novomodelo_core::SeasonMap;
+use novomodelo_core::Stage;
+use novomodelo_core::scenario::AnnualComponent;
 use rayon::prelude::*;
 
 use crate::StochasticError;

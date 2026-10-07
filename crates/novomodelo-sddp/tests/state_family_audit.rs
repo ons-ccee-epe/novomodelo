@@ -31,31 +31,31 @@ mod common;
 
 mod inflow_lag_audit {
     use chrono::{NaiveDate, TimeDelta};
-    use cobre_core::entities::bus::DeficitSegment;
-    use cobre_core::entities::hydro::HydroGenerationModel;
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::bus::DeficitSegment;
+    use novomodelo_core::entities::hydro::HydroGenerationModel;
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, EntityId,
         HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, InitialConditions,
         LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
         PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
         ThermalBlockBounds, ThermalStageBounds,
     };
-    use cobre_io::config::{
+    use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod, ModelingConfig, ParallelismConfig, PolicyConfig,
         RowSelectionConfig, SimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig,
         TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
-    use cobre_sddp::setup::{NodeId, StageIdx};
-    use cobre_sddp::test_support::{patch_backward_opening_for_probe, solve_stage_for_probe};
-    use cobre_sddp::workspace::SolverWorkspace;
-    use cobre_sddp::{SddpError, StudySetup};
-    use cobre_solver::{ActiveSolver, SolverInterface};
+    use novomodelo_sddp::setup::{NodeId, StageIdx};
+    use novomodelo_sddp::test_support::{patch_backward_opening_for_probe, solve_stage_for_probe};
+    use novomodelo_sddp::workspace::SolverWorkspace;
+    use novomodelo_sddp::{SddpError, StudySetup};
+    use novomodelo_solver::{ActiveSolver, SolverInterface};
 
     use super::common::build_setup_in_code;
     use super::common::builders::{
@@ -92,7 +92,7 @@ mod inflow_lag_audit {
 
     /// One bus (unbounded deficit), one AR(1) hydro, two stages — the minimal
     /// fixture with a reachable inflow-lag state dimension.
-    fn build_system() -> cobre_core::System {
+    fn build_system() -> novomodelo_core::System {
         let anchor = NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date");
 
         let bus = make_bus(
@@ -355,27 +355,27 @@ mod inflow_lag_audit {
 
 mod prefilling_audit {
     use chrono::{NaiveDate, TimeDelta};
-    use cobre_core::entities::bus::DeficitSegment;
-    use cobre_core::entities::hydro::HydroGenerationModel;
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::bus::DeficitSegment;
+    use novomodelo_core::entities::hydro::HydroGenerationModel;
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, EntityId,
         HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, InitialConditions,
         LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
         PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
         ThermalBlockBounds, ThermalStageBounds,
     };
-    use cobre_io::config::{
+    use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod, ModelingConfig, ParallelismConfig, PolicyConfig,
         RowSelectionConfig, SimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig,
         TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
-    use cobre_sddp::test_support::stage_state_box_bounds;
+    use novomodelo_sddp::test_support::stage_state_box_bounds;
 
     use super::common::build_setup_in_code;
     use super::common::builders::{
@@ -415,7 +415,7 @@ mod prefilling_audit {
     /// `ENTRY_STAGE_ID` (`PreFilling` at stage 0, `Operating` from stage 1),
     /// a nonzero declared `min_storage_hm3` so the PreFilling floor relax is
     /// observable rather than incidental.
-    fn build_system() -> cobre_core::System {
+    fn build_system() -> novomodelo_core::System {
         let anchor = NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date");
 
         let bus = make_bus(

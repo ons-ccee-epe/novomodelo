@@ -10,7 +10,7 @@ fn infra_genericity_gate() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir
         .parent()
-        .expect("cobre-core has a parent directory")
+        .expect("novomodelo-core has a parent directory")
         .parent()
         .expect("crates/ has a parent directory");
 

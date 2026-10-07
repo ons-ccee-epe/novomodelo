@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use cobre_core::temporal::{SeasonCycles, SeasonDefinition, SeasonMap, Stage};
+use novomodelo_core::temporal::{SeasonCycles, SeasonDefinition, SeasonMap, Stage};
 
 use super::{ArCoefficientEstimate, ContributionReduction, EstimationReport, HydroEstimationEntry};
 
@@ -167,8 +167,8 @@ impl CyclePositions {
 #[allow(clippy::expect_used)]
 pub(super) mod twin_fixtures {
     use chrono::NaiveDate;
-    use cobre_core::test_support::{StageSpec, date, make_stage};
-    use cobre_core::{EntityId, SeasonDefinition, SeasonMap, Stage};
+    use novomodelo_core::test_support::{StageSpec, date, make_stage};
+    use novomodelo_core::{EntityId, SeasonDefinition, SeasonMap, Stage};
 
     use crate::test_support::{quarterly_season_map, sparse_ring_season_map};
 

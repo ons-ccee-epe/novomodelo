@@ -87,7 +87,7 @@
 //!   [`FloorLocal`]/[`AnticipatedLocal`], [`HydroCell`]/[`FphaCellLocal`]).
 //! - `hydro_cell` — the [`HydroCellIndex`] partition and [`HydroCell`] type.
 //!
-//! Every public symbol is re-exported here so the `cobre_sddp::indexer::Symbol`
+//! Every public symbol is re-exported here so the `novomodelo_sddp::indexer::Symbol`
 //! and `crate::indexer::Symbol` module paths resolve to the same item regardless
 //! of which submodule owns it.
 

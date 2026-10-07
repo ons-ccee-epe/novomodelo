@@ -1,4 +1,4 @@
-//! End-to-end integration tests for `cobre_io::load_case`.
+//! End-to-end integration tests for `novomodelo_io::load_case`.
 #![allow(
     clippy::unwrap_used,
     clippy::panic,
@@ -14,15 +14,15 @@ use std::path::Path;
 
 use arrow::array::{Array, Int32Array};
 use arrow::record_batch::RecordBatch;
-use cobre_core::AnticipatedConfig;
-use cobre_core::EntityId;
-use cobre_core::System;
-use cobre_io::constraints::ThermalBoundsRow;
-use cobre_io::output::simulation_writer::{
+use novomodelo_core::AnticipatedConfig;
+use novomodelo_core::EntityId;
+use novomodelo_core::System;
+use novomodelo_io::constraints::ThermalBoundsRow;
+use novomodelo_io::output::simulation_writer::{
     HydroBusWriteRecord, HydroWriteRecord, ScenarioWritePayload, SimulationParquetWriter,
     StageWritePayload, write_paths,
 };
-use cobre_io::{load_case, validate_case};
+use novomodelo_io::{load_case, validate_case};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tempfile::TempDir;
 

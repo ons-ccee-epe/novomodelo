@@ -21,8 +21,8 @@
 #     (optionally with a leading `../`/`./` walk) that does NOT resolve against
 #     the repository root. A dead design-doc pointer is drift, not a
 #     shipped-contract lie, so it is reported as advisory only. External
-#     citations (e.g. the sibling `cobre-docs` methodology repo, referenced via
-#     `../../../cobre-docs/...`) carry a different prefix and are intentionally
+#     citations (e.g. the sibling `novomodelo-docs` methodology repo, referenced via
+#     `../../../novomodelo-docs/...`) carry a different prefix and are intentionally
 #     NOT flagged.
 #
 # Scope: production source under crates/*/src/ (including stub crates). The
@@ -33,7 +33,7 @@
 #   Known limitation (same as the sibling gates): the exclusion assumes the
 #   test module is a tail block. Files with a mid-file test module followed by
 #   production code would incorrectly skip that trailing code. In practice
-#   cobre files follow the tail-block convention.
+#   novomodelo files follow the tail-block convention.
 #
 # Reporting: each hit is printed as `FILE:LINE: <matched token span>` — the
 #   token span only (grep -oE / -oP style), not the whole comment line.
@@ -55,16 +55,16 @@ command -v cs_emit_production_lines >/dev/null \
 # .rs source directories: scanned per-file with the cfg(test) tail-block
 # exclusion (see header). Mirrors check-no-plan-leaks.sh SCAN_DIRS.
 readonly SCAN_DIRS=(
-    "${REPO_ROOT}/crates/cobre-core/src"
-    "${REPO_ROOT}/crates/cobre-io/src"
-    "${REPO_ROOT}/crates/cobre-solver/src"
-    "${REPO_ROOT}/crates/cobre-comm/src"
-    "${REPO_ROOT}/crates/cobre-stochastic/src"
-    "${REPO_ROOT}/crates/cobre-sddp/src"
-    "${REPO_ROOT}/crates/cobre-cli/src"
-    "${REPO_ROOT}/crates/cobre-python/src"
-    "${REPO_ROOT}/crates/cobre-mcp/src"
-    "${REPO_ROOT}/crates/cobre-tui/src"
+    "${REPO_ROOT}/crates/novomodelo-core/src"
+    "${REPO_ROOT}/crates/novomodelo-io/src"
+    "${REPO_ROOT}/crates/novomodelo-solver/src"
+    "${REPO_ROOT}/crates/novomodelo-comm/src"
+    "${REPO_ROOT}/crates/novomodelo-stochastic/src"
+    "${REPO_ROOT}/crates/novomodelo-sddp/src"
+    "${REPO_ROOT}/crates/novomodelo-cli/src"
+    "${REPO_ROOT}/crates/novomodelo-python/src"
+    "${REPO_ROOT}/crates/novomodelo-mcp/src"
+    "${REPO_ROOT}/crates/novomodelo-tui/src"
 )
 
 # E3a token patterns (grep -oE extracts the matched span only):
@@ -78,7 +78,7 @@ readonly E3A_CLAUDE_ALLOW='\.claude/rules/'
 # E3b token extraction. A repo-relative doc-path token: an optional leading
 # `../`/`./` walk followed by a `docs/`, `artifacts/`, or `plans/` prefix and
 # the rest of the path. The negative lookbehind `(?<![A-Za-z0-9_./-])` ensures
-# the prefix is not glued to a preceding word (so `cobre-docs/...` is NOT
+# the prefix is not glued to a preceding word (so `novomodelo-docs/...` is NOT
 # matched — its `docs` is preceded by `-`), while still allowing a `../`/`./`
 # walk to lead the token.
 readonly E3B_TOKEN_PATTERN='(?<![A-Za-z0-9_./-])((\.\./|\./)*(docs|artifacts|plans)/[A-Za-z0-9_./#-]+)'
@@ -182,7 +182,7 @@ fi
 
 # --- E3b: repo-relative doc-path tokens that do not resolve ----------------
 # Pre-filter to candidate lines carrying a docs/|artifacts/|plans/ token
-# (-P lookbehind drops the cobre-docs glued prefix), then test each token's
+# (-P lookbehind drops the novomodelo-docs glued prefix), then test each token's
 # resolution against REPO_ROOT. Non-resolving tokens go to the advisory bucket.
 e3b_lines="$(printf '%s\n' "$comment_stream" \
     | grep -P "$E3B_TOKEN_PATTERN" || true)"

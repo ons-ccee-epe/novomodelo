@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::hash::BuildHasher;
 
-use cobre_core::{CascadeTopology, EntityId, Hydro, HydroGenerationModel, StageId, StudyPos};
-use cobre_io::{HydroGeometryRow, HydroReferenceVolumeFractions};
+use novomodelo_core::{CascadeTopology, EntityId, Hydro, HydroGenerationModel, StageId, StudyPos};
+use novomodelo_io::{HydroGeometryRow, HydroReferenceVolumeFractions};
 
 use super::productivity_override::HydroEnergyProductivityOverride;
 use super::types::{EnergyConversion, EnergyConversionError, EnergyConversionSet};
@@ -128,7 +128,7 @@ pub fn build_energy_conversion_set<S: BuildHasher>(
                 derive_conversion_for_hydro(hydro, reference_volume_hm3, productivity);
 
             // Keyed by the domain StageId (matches how the table is built and how
-            // cobre_io's validator keys it) — never the study position.
+            // novomodelo_io's validator keys it) — never the study position.
             let parquet_rho_eq =
                 override_table.and_then(|o| o.equivalent_productivity(hydro.id, stage_id));
             let rho_esp_at_stage = resolved_rho_esp[stage_pos];
@@ -375,11 +375,11 @@ fn fpha_equivalent_head(
     clippy::unwrap_used
 )]
 mod tests {
-    use cobre_core::{
+    use novomodelo_core::{
         CascadeTopology, EntityId, HydraulicLossesModel, Hydro, HydroGenerationModel,
         HydroPenalties, TailraceModel,
     };
-    use cobre_io::{
+    use novomodelo_io::{
         HydroEnergyProductivityRow, HydroGeometryRow, HydroReferenceVolumeFractions,
         build_hydro_reference_volumes_resolved,
     };
@@ -1686,7 +1686,7 @@ mod tests {
         let pm = production_set(&[0.9], n_stages);
         // Override table contains an inconsistent value that must NOT win at
         // this layer (such an inconsistency would be caught upstream by
-        // `cobre_io::validation::productivity_resolution`).
+        // `novomodelo_io::validation::productivity_resolution`).
         let override_table =
             build_hydro_energy_productivity_override(&[HydroEnergyProductivityRow {
                 hydro_id: hydros[0].id,

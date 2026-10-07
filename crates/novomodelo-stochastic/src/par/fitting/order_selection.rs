@@ -32,7 +32,7 @@ pub struct AicSelectionResult {
 /// # Examples
 ///
 /// ```
-/// use cobre_stochastic::par::fitting::select_order_aic;
+/// use novomodelo_stochastic::par::fitting::select_order_aic;
 ///
 /// // A variance drop at order 1 that outweighs the penalty selects order 1.
 /// let result = select_order_aic(&[0.3], 100);
@@ -116,7 +116,7 @@ pub struct PacfSelectionResult {
 /// # Examples
 ///
 /// ```
-/// use cobre_stochastic::par::fitting::select_order_pacf;
+/// use novomodelo_stochastic::par::fitting::select_order_pacf;
 ///
 /// // PACF at lag 1 = 0.5 exceeds 1.96/sqrt(100) = 0.196; lag 2 = 0.1 does not.
 /// let result = select_order_pacf(&[0.5, 0.1], 100, 1.96);
@@ -184,7 +184,7 @@ pub fn select_order_pacf(
 /// # Examples
 ///
 /// ```
-/// use cobre_stochastic::par::fitting::select_order_pacf_annual;
+/// use novomodelo_stochastic::par::fitting::select_order_pacf_annual;
 ///
 /// // Conditional FACP at lag 1 = 0.5 exceeds 1.96/sqrt(100) = 0.196; lag 2 = 0.1 does not.
 /// let result = select_order_pacf_annual(&[0.5, 0.1], 100, 1.96);

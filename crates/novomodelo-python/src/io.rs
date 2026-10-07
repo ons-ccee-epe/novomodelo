@@ -1,13 +1,13 @@
-//! I/O helpers for loading Cobre case directories from Python.
+//! I/O helpers for loading Novomodelo case directories from Python.
 //!
-//! Exposes [`load_case`] and [`validate`] in the `cobre.io` sub-module.
+//! Exposes [`load_case`] and [`validate`] in the `novomodelo.io` sub-module.
 //! These are the primary entry points for Python scripts and Jupyter notebooks
-//! that need to read and inspect Cobre power-system cases.
+//! that need to read and inspect Novomodelo power-system cases.
 //!
 //! ## Error mapping
 //!
-//! [`cobre_io::LoadError`] variants are routed through the single
-//! [`crate::errors::convert_error`] mapping site to the `cobre.errors` hierarchy
+//! [`novomodelo_io::LoadError`] variants are routed through the single
+//! [`crate::errors::convert_error`] mapping site to the `novomodelo.errors` hierarchy
 //! (each leaf subclasses the matching builtin, so `except OSError` /
 //! `except ValueError` keeps catching):
 //!
@@ -27,12 +27,12 @@ use pyo3::exceptions::PyOSError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
-use cobre_io::Config;
-use cobre_io::LoadError;
-use cobre_io::ReportEntry;
-use cobre_io::parse_config;
-use cobre_io::validate_case_with_artifacts;
-use cobre_sddp::validate_phases::{self, PolicyLoadFailure, ValidateRequest, validate_study};
+use novomodelo_io::Config;
+use novomodelo_io::LoadError;
+use novomodelo_io::ReportEntry;
+use novomodelo_io::parse_config;
+use novomodelo_io::validate_case_with_artifacts;
+use novomodelo_sddp::validate_phases::{self, PolicyLoadFailure, ValidateRequest, validate_study};
 
 use crate::convert::pydict_to_json_map;
 use crate::errors::ErrorSource::Load;
@@ -47,7 +47,7 @@ use crate::study::resolve_output_dir;
 fn load_validate_config(
     config_path: &std::path::Path,
     overrides: Option<&serde_json::Map<String, serde_json::Value>>,
-) -> Result<cobre_io::Config, LoadError> {
+) -> Result<novomodelo_io::Config, LoadError> {
     match overrides {
         Some(map) if !map.is_empty() => {
             let raw =
@@ -82,11 +82,11 @@ fn build_warnings_list<'py>(
 
 // ── load_case ────────────────────────────────────────────────────────────────
 
-/// Load a Cobre case directory and return a validated `System`.
+/// Load a Novomodelo case directory and return a validated `System`.
 ///
 /// Executes the six-layer validation pipeline (structural, schema, referential
 /// integrity, dimensional consistency, semantic, and cross-file resolution).
-/// Returns a fully-validated `cobre.model.System` on success or raises a Python
+/// Returns a fully-validated `novomodelo.model.System` on success or raises a Python
 /// exception on failure.
 ///
 /// # Arguments
@@ -103,8 +103,8 @@ fn build_warnings_list<'py>(
 /// # Examples
 ///
 /// ```python
-/// import cobre.io
-/// system = cobre.io.load_case("examples/1dtoy")
+/// import novomodelo.io
+/// system = novomodelo.io.load_case("examples/1dtoy")
 /// print(system.n_buses)
 /// ```
 #[allow(clippy::needless_pass_by_value)]
@@ -117,14 +117,14 @@ pub fn load_case(py: Python<'_>, path: PathBuf) -> PyResult<PySystem> {
         )));
     }
     let system = py
-        .detach(|| cobre_io::load_case(&path))
+        .detach(|| novomodelo_io::load_case(&path))
         .map_err(|e| convert_load_error(&e))?;
     Ok(PySystem::from_rust(system))
 }
 
 // ── validate ─────────────────────────────────────────────────────────────────
 
-/// Validate a Cobre case directory and return a structured report dict.
+/// Validate a Novomodelo case directory and return a structured report dict.
 ///
 /// Case-validation failures are returned as data in the result dict so that
 /// callers see all problems at once. A malformed `config_overrides` dict
@@ -141,7 +141,7 @@ pub fn load_case(py: Python<'_>, path: PathBuf) -> PyResult<PySystem> {
 ///
 /// * `path` — path to the case directory, as a `str` or `pathlib.Path`.
 /// * `output_dir` — keyword-only; the directory the configured policy is read
-///   from, as `cobre.run.run`'s `output_dir` names it. Defaults to
+///   from, as `novomodelo.run.run`'s `output_dir` names it. Defaults to
 ///   `<path>/output`. A relative path resolves from the process working
 ///   directory.
 ///
@@ -159,8 +159,8 @@ pub fn load_case(py: Python<'_>, path: PathBuf) -> PyResult<PySystem> {
 /// # Examples
 ///
 /// ```python
-/// import cobre.io
-/// result = cobre.io.validate("examples/1dtoy")
+/// import novomodelo.io
+/// result = novomodelo.io.validate("examples/1dtoy")
 /// assert result["valid"] is True
 /// assert result["errors"] == []
 /// ```

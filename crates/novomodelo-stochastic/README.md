@@ -1,6 +1,6 @@
-# cobre-stochastic
+# novomodelo-stochastic
 
-Stochastic process models for the [Cobre](https://github.com/cobre-rs/cobre) power systems ecosystem.
+Stochastic process models for the [Novomodelo](https://github.com/ons-ccee-epe/novomodelo) power systems ecosystem.
 
 This crate provides the probabilistic building blocks used in scenario-based stochastic
 optimization of power systems. It implements Periodic Autoregressive (PAR(p)) models
@@ -12,7 +12,7 @@ a single value ready for iterative optimization algorithms.
 
 ## When to Use
 
-Depend on `cobre-stochastic` when you need to generate correlated stochastic scenarios
+Depend on `novomodelo-stochastic` when you need to generate correlated stochastic scenarios
 for a power system optimization algorithm. If you are implementing a new iterative
 algorithm that draws inflow or load realisations at each iteration, `sample_forward`
 and `StochasticContext` are the primary entry points. The crate is solver-agnostic
@@ -74,7 +74,7 @@ explicit prefix on every variant.
 
 ## Feature flags
 
-`cobre-stochastic` has one reserved, currently-inert feature:
+`novomodelo-stochastic` has one reserved, currently-inert feature:
 
 | Feature      | Default | Description                                                                                                       |
 | ------------ | ------- | ----------------------------------------------------------------------------------------------------------------- |
@@ -86,7 +86,7 @@ this crate.
 ## Testing
 
 ```
-cargo test -p cobre-stochastic
+cargo test -p novomodelo-stochastic
 ```
 
 No external dependencies or system libraries are required — everything
@@ -102,10 +102,10 @@ and doc-tests for all public types.
 
 | Resource   | URL                                                       |
 | ---------- | --------------------------------------------------------- |
-| Docs site  | <https://docs.cobre-rs.dev/>                              |
+| Docs site  | <https://docs.novomodelo.invalid/>                              |
 | API Docs   | https://docs.rs/cobre-stochastic/latest/cobre_stochastic/ |
-| Repository | https://github.com/cobre-rs/cobre                         |
-| CHANGELOG  | https://github.com/cobre-rs/cobre/blob/main/CHANGELOG.md  |
+| Repository | https://github.com/ons-ccee-epe/novomodelo                         |
+| CHANGELOG  | https://github.com/ons-ccee-epe/novomodelo/blob/main/CHANGELOG.md  |
 
 ## Status
 

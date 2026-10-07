@@ -18,7 +18,7 @@
 
 use std::ops::Range;
 
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 
 use crate::block_clock::BlockClock;
 use crate::indexer::{BlockIdx, HydroSys, StateSpace};
@@ -379,7 +379,7 @@ pub(super) fn maturing_bucket_in_col(state: &StateSpace, plant: HydroSys) -> Opt
 /// heterogeneous-confluence panic in debug, a silent uniform split in release.
 ///
 /// A heterogeneous-density confluence has no resolved policy;
-/// `check_chronological_confluence_heterogeneous_travel_time` (`cobre-io`) rejects it at
+/// `check_chronological_confluence_heterogeneous_travel_time` (`novomodelo-io`) rejects it at
 /// config time, so the `debug_assert!` below is a defensive backstop, not the enforcement
 /// point.
 pub(super) fn resolve_bucket_arrival_density(

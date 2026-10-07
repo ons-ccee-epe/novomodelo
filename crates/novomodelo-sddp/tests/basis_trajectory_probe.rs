@@ -1,4 +1,4 @@
-//! Probe substrate and lag-fold probes over the `cobre_rodada` case.
+//! Probe substrate and lag-fold probes over the `novomodelo_rodada` case.
 //!
 //! Kept entry points:
 //!
@@ -14,11 +14,11 @@
 //!   checkpoints).
 //!
 //! ```text
-//! cargo nextest run --release -p cobre-sddp --features test-support --test basis_trajectory_probe \
+//! cargo nextest run --release -p novomodelo-sddp --features test-support --test basis_trajectory_probe \
 //!     --run-ignored ignored-only -E 'test(lag_fold_chain_rule_identity)'
 //! ```
 //!
-//! `case_dir` resolves the converted `cobre_rodada` case from `$HOME` — it
+//! `case_dir` resolves the converted `novomodelo_rodada` case from `$HOME` — it
 //! lives outside this repository (a sibling checkout), so no repo-relative
 //! path can name it; the probes panic with a clear message if the checkout
 //! is absent rather than silently skipping.
@@ -43,25 +43,25 @@
     clippy::single_match_else
 )]
 
-use cobre_io::config::TrainingSelection;
+use novomodelo_io::config::TrainingSelection;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use cobre_solver::{ActiveSolver, SolverInterface, StageTemplate};
+use novomodelo_solver::{ActiveSolver, SolverInterface, StageTemplate};
 
-use cobre_sddp::context::StageContext;
-use cobre_sddp::cut::pool::CutPool;
-use cobre_sddp::forward::{ForwardPassBatch, run_forward_pass};
-use cobre_sddp::indexer::{StateDim, StateSpace};
-use cobre_sddp::setup::NodeId;
-use cobre_sddp::setup::NodePos;
-use cobre_sddp::setup::StageIdx;
-use cobre_sddp::test_support::{
+use novomodelo_sddp::context::StageContext;
+use novomodelo_sddp::cut::pool::CutPool;
+use novomodelo_sddp::forward::{ForwardPassBatch, run_forward_pass};
+use novomodelo_sddp::indexer::{StateDim, StateSpace};
+use novomodelo_sddp::setup::NodeId;
+use novomodelo_sddp::setup::NodePos;
+use novomodelo_sddp::setup::StageIdx;
+use novomodelo_sddp::test_support::{
     StageContextFixture, patch_backward_opening_for_probe, solve_stage_for_probe,
 };
-use cobre_sddp::workspace::{BasisStore, CapturedBasis, SolverWorkspace};
-use cobre_sddp::{PrepareHydroModelsResult, StudySetup, TrajectoryRecord};
+use novomodelo_sddp::workspace::{BasisStore, CapturedBasis, SolverWorkspace};
+use novomodelo_sddp::{PrepareHydroModelsResult, StudySetup, TrajectoryRecord};
 
 mod common;
 use common::StubComm;
@@ -135,7 +135,7 @@ impl RowFamily {
 /// construction: `transit_bucket_definition`'s size falls out of the
 /// `water_balance.end() .. load_balance.start()` gap regardless of its value; the
 /// three anticipated-thermal families are asserted empty (panics naming the
-/// gap) rather than silently misclassified — `cobre_rodada` has neither
+/// gap) rather than silently misclassified — `novomodelo_rodada` has neither
 /// declared travel-time arcs nor anticipated thermals, confirmed by the
 /// `filling_target.start` reconciliation this function asserts; and
 /// `generic_constraint` is the un-subdivided residual between the anticipated
@@ -282,7 +282,7 @@ fn census(fam: &[RowFamily]) -> RowCensus {
 
 #[test]
 fn classify_stage_rows_reconciles_on_a_hand_built_geometry() {
-    use cobre_sddp::test_support::{eq, geometry, state_layout};
+    use novomodelo_sddp::test_support::{eq, geometry, state_layout};
 
     let dims = eq(
         /* hydro_count */ 3, /* max_par_order */ 0, /* n_thermals */ 0,
@@ -361,11 +361,12 @@ fn classify_stage_rows_reconciles_on_a_hand_built_geometry() {
 const SEED: u64 = 42;
 
 fn case_dir() -> PathBuf {
-    let home = std::env::var("HOME").expect("HOME must be set to resolve the cobre_rodada case");
-    let dir = PathBuf::from(home).join("git/cobre-bridge/example/cobre_rodada");
+    let home =
+        std::env::var("HOME").expect("HOME must be set to resolve the novomodelo_rodada case");
+    let dir = PathBuf::from(home).join("git/novomodelo-bridge/example/novomodelo_rodada");
     assert!(
         dir.join("config.json").exists(),
-        "cobre_rodada case not found at {}; these probes target the converted case checked \
+        "novomodelo_rodada case not found at {}; these probes target the converted case checked \
          out as a sibling of this repository",
         dir.display()
     );
@@ -388,26 +389,28 @@ fn fresh_setup(
     cut_selection_off: bool,
 ) -> StudySetup {
     let config_path = case_dir.join("config.json");
-    let mut config = cobre_io::parse_config(&config_path).expect("config.json must parse");
+    let mut config = novomodelo_io::parse_config(&config_path).expect("config.json must parse");
     config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
-    config.training.stopping_rules =
-        Some(vec![cobre_io::config::StoppingRuleConfig::IterationLimit {
+    config.training.stopping_rules = Some(vec![
+        novomodelo_io::config::StoppingRuleConfig::IterationLimit {
             limit: iteration_limit,
-        }]);
+        },
+    ]);
     if cut_selection_off {
-        config.training.cut_selection = cobre_io::config::RowSelectionConfig::default();
+        config.training.cut_selection = novomodelo_io::config::RowSelectionConfig::default();
     }
 
-    let system = cobre_io::load_case(case_dir).expect("load_case must succeed for cobre_rodada");
+    let system =
+        novomodelo_io::load_case(case_dir).expect("load_case must succeed for novomodelo_rodada");
     let source = config
         .training_scenario_source(&config_path)
         .expect("training_scenario_source must resolve");
     let prepared =
-        cobre_sddp::setup::prepare_stochastic(system, case_dir, &config, SEED, &source, None)
-            .expect("prepare_stochastic must succeed for cobre_rodada");
+        novomodelo_sddp::setup::prepare_stochastic(system, case_dir, &config, SEED, &source, None)
+            .expect("prepare_stochastic must succeed for novomodelo_rodada");
     let hydro_models: PrepareHydroModelsResult =
-        cobre_sddp::hydro_models::prepare_hydro_models(&prepared.system, case_dir, false)
-            .expect("prepare_hydro_models must succeed for cobre_rodada");
+        novomodelo_sddp::hydro_models::prepare_hydro_models(&prepared.system, case_dir, false)
+            .expect("prepare_hydro_models must succeed for novomodelo_rodada");
 
     StudySetup::new(
         &prepared.system,
@@ -416,7 +419,7 @@ fn fresh_setup(
         hydro_models,
         Vec::new(),
     )
-    .expect("StudySetup::new must build for cobre_rodada")
+    .expect("StudySetup::new must build for novomodelo_rodada")
 }
 
 struct CheckpointRun {
@@ -440,7 +443,7 @@ fn train_checkpoint(
 
     let outcome = setup
         .train(&mut solver, &comm, threads, ActiveSolver::new, None, None)
-        .expect("train() must not return Err on cobre_rodada");
+        .expect("train() must not return Err on novomodelo_rodada");
     assert!(
         outcome.error.is_none(),
         "training error at checkpoint {iteration_limit}: {:?}",
@@ -519,7 +522,7 @@ fn run_extra_forward_pass(
         &batch,
         &mut records,
     )
-    .expect("the extra deterministic forward pass must not error on cobre_rodada");
+    .expect("the extra deterministic forward pass must not error on novomodelo_rodada");
 
     ForwardProbe {
         basis_store,
@@ -810,7 +813,7 @@ fn lag_fold_check_stage(
                 m,
                 NodeId(stage as i32),
             )
-            .expect("stage solve must not error on cobre_rodada");
+            .expect("stage solve must not error on novomodelo_rodada");
             let rc = view.reduced_costs;
             let y = view.dual;
             solves += 1;
@@ -869,7 +872,7 @@ fn lag_fold_check_stage(
     }
 }
 
-/// Lag-fold feasibility probe: trains one checkpoint of the `cobre_rodada`
+/// Lag-fold feasibility probe: trains one checkpoint of the `novomodelo_rodada`
 /// case (cut selection off, so resident-cut mass is production-shaped), then
 /// verifies on every replayed backward solve that the pinned inflow-lag
 /// columns couple to the LP through exactly three channels (their z-inflow
@@ -878,7 +881,7 @@ fn lag_fold_check_stage(
 /// from row duals and pool coefficients alone. See [`lag_fold_check_stage`]
 /// for the four identities.
 #[test]
-#[ignore = "slow: trains a real checkpoint against the cobre_rodada case; \
+#[ignore = "slow: trains a real checkpoint against the novomodelo_rodada case; \
             run with --run-ignored --release"]
 fn lag_fold_chain_rule_identity() {
     let case = case_dir();
@@ -1113,7 +1116,7 @@ fn run_lag_fold_ab_stage(
                     m,
                     NodeId(stage as i32),
                 )
-                .expect("stage solve must not error on cobre_rodada");
+                .expect("stage solve must not error on novomodelo_rodada");
                 let wall_ms = view.solve_time_seconds * 1_000.0;
                 let pivots = view.iterations;
                 let objective = view.objective;
@@ -1152,14 +1155,14 @@ fn run_lag_fold_ab_stage(
 }
 
 /// Lag-fold static A/B (the fold's go/no-go performance readout): trains
-/// checkpoints {3, 10, 30} of the `cobre_rodada` case with cut selection off
+/// checkpoints {3, 10, 30} of the `novomodelo_rodada` case with cut selection off
 /// (resident cuts ~24/80/240 — the density curve up to production-shaped
 /// mass), then replays every trial's backward chain at stages {5, 32, 60}
 /// on the original frozen template and on its per-trial cut-row-folded twin,
 /// asserting per-opening objective equality and reporting wall/pivot ratios
 /// per (checkpoint, stage).
 #[test]
-#[ignore = "slow (~1h): trains three checkpoints against the cobre_rodada case; \
+#[ignore = "slow (~1h): trains three checkpoints against the novomodelo_rodada case; \
             run with --run-ignored --release"]
 fn lag_fold_static_ab() {
     let case = case_dir();

@@ -4,9 +4,9 @@ use std::collections::{HashMap, HashSet};
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
 
-use cobre_core::SeasonMap;
-use cobre_core::temporal::SUB_PERIOD_TOLERANCE_DAYS;
-use cobre_stochastic::season_cast::observation_occurrence_year;
+use novomodelo_core::SeasonMap;
+use novomodelo_core::temporal::SUB_PERIOD_TOLERANCE_DAYS;
+use novomodelo_stochastic::season_cast::observation_occurrence_year;
 
 // ── Rules 27+29: Season ID range coverage and resolution consistency ──────────
 
@@ -223,7 +223,7 @@ pub(super) fn check_season_observation_coverage(
     season_map: &SeasonMap,
     ctx: &mut ValidationContext,
 ) {
-    use cobre_core::scenario::SamplingScheme;
+    use novomodelo_core::scenario::SamplingScheme;
     use std::path::Path;
 
     if !estimation_active(data) {
@@ -315,7 +315,7 @@ mod tests {
         stages::StagesData,
         validation::{ErrorKind, ValidationContext},
     };
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId, HorizonGraph,
         temporal::{
             BlockMode, NoiseMethod, PolicyGraphType, ScenarioSourceConfig, SeasonCycleType,
@@ -979,7 +979,7 @@ mod tests {
     /// season_map layers multiple resolution levels.
     #[test]
     fn test_resolution_consistency_multi_resolution_map_notes_layering() {
-        use cobre_core::temporal::SeasonCycleType;
+        use novomodelo_core::temporal::SeasonCycleType;
 
         let mut seasons: Vec<SeasonDefinition> = (0..12)
             .map(|i| SeasonDefinition {
@@ -1748,7 +1748,7 @@ mod tests {
 
     #[test]
     fn rule_31_counts_weekly_history_by_iso_week_numbering_year() {
-        use cobre_stochastic::test_support::weekly_season_map;
+        use novomodelo_stochastic::test_support::weekly_season_map;
 
         let mut stages = make_stages_with_seasons(0, /*with_season_map=*/ false);
         stages.policy_graph.season_map = Some(weekly_season_map());

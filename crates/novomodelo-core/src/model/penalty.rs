@@ -6,7 +6,7 @@
 //! do not need to re-evaluate the cascade during execution.
 //!
 //! This module implements the first two tiers (global → entity). Stage-varying
-//! overrides are handled by `cobre-io` and are not implemented here.
+//! overrides are handled by `novomodelo-io` and are not implemented here.
 
 use crate::entities::{DeficitSegment, HydroPenalties};
 
@@ -82,8 +82,8 @@ pub struct HydroPenaltyOverrides {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::penalty::{GlobalPenaltyDefaults, resolve_bus_deficit_segments};
-/// use cobre_core::entities::{DeficitSegment, HydroPenalties};
+/// use novomodelo_core::penalty::{GlobalPenaltyDefaults, resolve_bus_deficit_segments};
+/// use novomodelo_core::entities::{DeficitSegment, HydroPenalties};
 ///
 /// let global = GlobalPenaltyDefaults {
 ///     bus_deficit_segments: vec![DeficitSegment { depth_mw: None, cost_per_mwh: 500.0 }],
@@ -122,8 +122,8 @@ pub fn resolve_bus_deficit_segments(
 /// # Examples
 ///
 /// ```
-/// use cobre_core::penalty::{GlobalPenaltyDefaults, resolve_bus_excess_cost};
-/// use cobre_core::entities::{DeficitSegment, HydroPenalties};
+/// use novomodelo_core::penalty::{GlobalPenaltyDefaults, resolve_bus_excess_cost};
+/// use novomodelo_core::entities::{DeficitSegment, HydroPenalties};
 ///
 /// let global = GlobalPenaltyDefaults {
 ///     bus_deficit_segments: vec![DeficitSegment { depth_mw: None, cost_per_mwh: 500.0 }],
@@ -158,8 +158,8 @@ pub fn resolve_bus_excess_cost(
 /// # Examples
 ///
 /// ```
-/// use cobre_core::penalty::{GlobalPenaltyDefaults, resolve_line_exchange_cost};
-/// use cobre_core::entities::{DeficitSegment, HydroPenalties};
+/// use novomodelo_core::penalty::{GlobalPenaltyDefaults, resolve_line_exchange_cost};
+/// use novomodelo_core::entities::{DeficitSegment, HydroPenalties};
 ///
 /// let global = GlobalPenaltyDefaults {
 ///     bus_deficit_segments: vec![DeficitSegment { depth_mw: None, cost_per_mwh: 500.0 }],
@@ -200,10 +200,10 @@ pub fn resolve_line_exchange_cost(
 /// # Examples
 ///
 /// ```
-/// use cobre_core::penalty::{
+/// use novomodelo_core::penalty::{
 ///     GlobalPenaltyDefaults, HydroPenaltyOverrides, resolve_hydro_penalties,
 /// };
-/// use cobre_core::entities::{DeficitSegment, HydroPenalties};
+/// use novomodelo_core::entities::{DeficitSegment, HydroPenalties};
 ///
 /// let global_hydro = HydroPenalties {
 ///     spillage_cost: 0.01, diversion_cost: 0.02, turbined_cost: 0.03,
@@ -305,8 +305,8 @@ pub fn resolve_hydro_penalties(
 /// # Examples
 ///
 /// ```
-/// use cobre_core::penalty::{GlobalPenaltyDefaults, resolve_ncs_curtailment_cost};
-/// use cobre_core::entities::{DeficitSegment, HydroPenalties};
+/// use novomodelo_core::penalty::{GlobalPenaltyDefaults, resolve_ncs_curtailment_cost};
+/// use novomodelo_core::entities::{DeficitSegment, HydroPenalties};
 ///
 /// let global = GlobalPenaltyDefaults {
 ///     bus_deficit_segments: vec![],

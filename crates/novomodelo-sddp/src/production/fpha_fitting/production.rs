@@ -4,7 +4,7 @@
 //! evaluable bundle of forebay table + tailrace + hydraulic-loss + efficiency that
 //! computes `phi(v, q, s)`.
 
-use cobre_core::{EfficiencyModel, HydraulicLossesModel, TailraceModel};
+use novomodelo_core::{EfficiencyModel, HydraulicLossesModel, TailraceModel};
 
 use super::geometry::{ForebayTable, evaluate_losses, evaluate_tailrace};
 use super::tailrace::TailraceFamilies;

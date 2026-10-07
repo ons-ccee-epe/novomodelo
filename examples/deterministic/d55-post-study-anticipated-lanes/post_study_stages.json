@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/post_study_stages.schema.json",
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/post_study_stages.schema.json",
   "stages": [{ "start_date": "2024-07-01", "duration_hours": 744.0 }],
   "thermal_bounds": [
     {

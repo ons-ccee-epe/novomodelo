@@ -1,4 +1,4 @@
-//! Reproducibility and invariance integration tests for `cobre-stochastic`:
+//! Reproducibility and invariance integration tests for `novomodelo-stochastic`:
 //! deterministic reproducibility, declaration-order invariance (the pipeline
 //! sorts entities by `EntityId` internally), seed sensitivity, and infrastructure
 //! genericity (the crate source carries zero algorithm-specific references).
@@ -10,15 +10,17 @@
     clippy::float_cmp
 )]
 
-use cobre_core::{Hydro, SystemBuilder, scenario::SamplingScheme};
-use cobre_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context, sample_forward};
+use novomodelo_core::{Hydro, SystemBuilder, scenario::SamplingScheme};
+use novomodelo_stochastic::{
+    ClassSchemes, OpeningTreeInputs, build_stochastic_context, sample_forward,
+};
 
 mod common;
 use common::{
     default_inflow_model, deficit_bus, identity_correlation_model, saa_stage, sized_hydro,
 };
 
-fn build_fixture(hydros: Vec<Hydro>, base_seed: u64) -> cobre_stochastic::StochasticContext {
+fn build_fixture(hydros: Vec<Hydro>, base_seed: u64) -> novomodelo_stochastic::StochasticContext {
     let stages = vec![saa_stage(0, 0, 5), saa_stage(1, 1, 5), saa_stage(2, 2, 5)];
     let inflow_models = vec![
         default_inflow_model(1, 0),
@@ -210,7 +212,7 @@ fn infrastructure_genericity_no_sddp_references() {
     assert_eq!(
         output.status.code(),
         Some(1),
-        "grep found algorithm-specific references in cobre-stochastic/src/:\n{}",
+        "grep found algorithm-specific references in novomodelo-stochastic/src/:\n{}",
         String::from_utf8_lossy(&output.stdout)
     );
 }

@@ -2,7 +2,7 @@
 //! block-level generation scaling factors. Mirrors `load_factors.json`
 //! parsing, keyed by `ncs_id` instead of `bus_id`.
 
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::Path;
@@ -59,8 +59,8 @@ struct RawBlockFactor {
 /// # Examples
 ///
 /// ```
-/// use cobre_io::scenarios::{BlockFactor, NcsFactorEntry};
-/// use cobre_core::EntityId;
+/// use novomodelo_io::scenarios::{BlockFactor, NcsFactorEntry};
+/// use novomodelo_core::EntityId;
 ///
 /// let entry = NcsFactorEntry {
 ///     ncs_id: EntityId::from(0),
@@ -101,7 +101,7 @@ pub struct NcsFactorEntry {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::scenarios::parse_non_controllable_factors;
+/// use novomodelo_io::scenarios::parse_non_controllable_factors;
 /// use std::path::Path;
 ///
 /// let entries = parse_non_controllable_factors(

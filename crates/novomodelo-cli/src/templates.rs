@@ -1,4 +1,4 @@
-//! Template registry for the `cobre init` subcommand.
+//! Template registry for the `novomodelo init` subcommand.
 //!
 //! Provides a compile-time registry of embedded case templates. Each template
 //! contains a named collection of files that reproduce a complete, runnable
@@ -189,7 +189,7 @@ mod tests {
                 on_disk.as_slice(),
                 "embedded '{0}' must be byte-identical to its canonical source \
                  examples/1dtoy/{0} — build.rs embeds the \
-                 crates/cobre-cli/templates/1dtoy/ copy, so both copies must stay in sync",
+                 crates/novomodelo-cli/templates/1dtoy/ copy, so both copies must stay in sync",
                 file.relative_path,
             );
         }

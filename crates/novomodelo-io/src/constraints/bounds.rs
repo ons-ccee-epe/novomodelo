@@ -73,7 +73,7 @@
 //! ## Block eligibility
 //!
 //! A bound column is block-eligible exactly when its family's
-//! `<Family>BlockOverride` struct (`cobre_core::resolved`) carries a field for
+//! `<Family>BlockOverride` struct (`novomodelo_core::resolved`) carries a field for
 //! it — the struct's field set is the check, not this table. A column marked
 //! "no" below has no per-block variant: a row combining a non-null value here
 //! with a non-null `block_id` is rejected at validation (see the per-file
@@ -141,7 +141,7 @@
 //! - Cross-field validation for the remaining bounds types — deferred.
 
 use arrow::array::{Array, Float64Array, Int32Array};
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
@@ -161,8 +161,8 @@ use crate::parquet_helpers::{
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::ThermalBoundsRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::constraints::ThermalBoundsRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = ThermalBoundsRow {
 ///     thermal_id: EntityId::from(2),
@@ -211,8 +211,8 @@ pub struct ThermalBoundsRow {
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::HydroBoundsRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::constraints::HydroBoundsRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = HydroBoundsRow {
 ///     hydro_id: EntityId::from(1),
@@ -314,8 +314,8 @@ impl Default for HydroBoundsRow {
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::LineBoundsRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::constraints::LineBoundsRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = LineBoundsRow {
 ///     line_id: EntityId::from(10),
@@ -350,8 +350,8 @@ pub struct LineBoundsRow {
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::PumpingBoundsRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::constraints::PumpingBoundsRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = PumpingBoundsRow {
 ///     station_id: EntityId::from(3),
@@ -386,8 +386,8 @@ pub struct PumpingBoundsRow {
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::ContractBoundsRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::constraints::ContractBoundsRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = ContractBoundsRow {
 ///     contract_id: EntityId::from(7),
@@ -485,7 +485,7 @@ pub(super) fn validate_optional_nonneg(
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::constraints::parse_thermal_bounds;
+/// use novomodelo_io::constraints::parse_thermal_bounds;
 /// use std::path::Path;
 ///
 /// let rows = parse_thermal_bounds(Path::new("constraints/thermal_bounds.parquet"))
@@ -573,7 +573,7 @@ pub fn parse_thermal_bounds(path: &Path) -> Result<Vec<ThermalBoundsRow>, LoadEr
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::constraints::parse_hydro_bounds;
+/// use novomodelo_io::constraints::parse_hydro_bounds;
 /// use std::path::Path;
 ///
 /// let rows = parse_hydro_bounds(Path::new("constraints/hydro_bounds.parquet"))
@@ -745,7 +745,7 @@ pub fn parse_hydro_bounds(path: &Path) -> Result<Vec<HydroBoundsRow>, LoadError>
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::constraints::parse_line_bounds;
+/// use novomodelo_io::constraints::parse_line_bounds;
 /// use std::path::Path;
 ///
 /// let rows = parse_line_bounds(Path::new("constraints/line_bounds.parquet"))
@@ -814,7 +814,7 @@ pub fn parse_line_bounds(path: &Path) -> Result<Vec<LineBoundsRow>, LoadError> {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::constraints::parse_pumping_bounds;
+/// use novomodelo_io::constraints::parse_pumping_bounds;
 /// use std::path::Path;
 ///
 /// let rows = parse_pumping_bounds(Path::new("constraints/pumping_bounds.parquet"))
@@ -899,7 +899,7 @@ pub fn parse_pumping_bounds(path: &Path) -> Result<Vec<PumpingBoundsRow>, LoadEr
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::constraints::parse_contract_bounds;
+/// use novomodelo_io::constraints::parse_contract_bounds;
 /// use std::path::Path;
 ///
 /// let rows = parse_contract_bounds(Path::new("constraints/contract_bounds.parquet"))

@@ -3,18 +3,18 @@
 //! Provides [`StochasticSummary`], [`ArOrderSummary`], and [`StochasticSource`]
 //! plus the [`build_stochastic_summary`] constructor.
 //!
-//! These types live in `cobre-sddp` (not `cobre-cli`) so Python bindings and
+//! These types live in `novomodelo-sddp` (not `novomodelo-cli`) so Python bindings and
 //! other callers reuse them without the CLI's `console::style` display deps.
 
-use cobre_core::EntityId;
-use cobre_core::InflowModel;
-use cobre_core::{System, scenario::SamplingScheme};
-use cobre_io::output::{FittingReductionEntry, FittingReport, HydroFittingEntry};
-use cobre_io::scenarios::{
+use novomodelo_core::EntityId;
+use novomodelo_core::InflowModel;
+use novomodelo_core::{System, scenario::SamplingScheme};
+use novomodelo_io::output::{FittingReductionEntry, FittingReport, HydroFittingEntry};
+use novomodelo_io::scenarios::{
     InflowAnnualComponentRow, InflowArCoefficientRow, InflowSeasonalStatsRow,
 };
-use cobre_stochastic::par::fitting::HydroEstimationEntry;
-use cobre_stochastic::{ComponentProvenance, StochasticContext};
+use novomodelo_stochastic::par::fitting::HydroEstimationEntry;
+use novomodelo_stochastic::{ComponentProvenance, StochasticContext};
 
 use crate::EstimationReport;
 
@@ -53,7 +53,7 @@ impl ArOrderSummary {
     /// # Examples
     ///
     /// ```
-    /// use cobre_sddp::ArOrderSummary;
+    /// use novomodelo_sddp::ArOrderSummary;
     ///
     /// let s = ArOrderSummary {
     ///     method: "AIC".into(),
@@ -357,7 +357,7 @@ pub fn inflow_models_to_ar_rows(models: &[InflowModel]) -> Vec<InflowArCoefficie
         .collect()
 }
 
-/// Convert [`cobre_core::scenario::InflowModel`]s to
+/// Convert [`novomodelo_core::scenario::InflowModel`]s to
 /// [`InflowAnnualComponentRow`]s for `inflow_annual_component.parquet`.
 ///
 /// Models with `annual: None` (classical PAR(p)) are silently skipped. Output
@@ -388,7 +388,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         Bus, DeficitSegment, EntityId, SystemBuilder,
         entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties},
         scenario::{AnnualComponent, CorrelationModel, InflowModel, SamplingScheme},
@@ -397,7 +397,7 @@ mod tests {
             StageStateConfig,
         },
     };
-    use cobre_stochastic::{
+    use novomodelo_stochastic::{
         ArCoefficientEstimate, ClassSchemes, OpeningTreeInputs, build_stochastic_context,
     };
 
@@ -406,7 +406,7 @@ mod tests {
         inflow_models_to_ar_rows, inflow_models_to_stats_rows,
     };
     use crate::EstimationReport;
-    use cobre_stochastic::par::fitting::HydroEstimationEntry;
+    use novomodelo_stochastic::par::fitting::HydroEstimationEntry;
 
     // ── Test helpers ──────────────────────────────────────────────────────────
 
@@ -511,7 +511,7 @@ mod tests {
     }
 
     fn identity_correlation(entity_ids: &[i32]) -> CorrelationModel {
-        use cobre_core::scenario::{CorrelationEntity, CorrelationGroup, CorrelationProfile};
+        use novomodelo_core::scenario::{CorrelationEntity, CorrelationGroup, CorrelationProfile};
         let n = entity_ids.len();
         let matrix: Vec<Vec<f64>> = (0..n)
             .map(|i| (0..n).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
@@ -542,7 +542,7 @@ mod tests {
 
     /// Build a minimal `System` with one hydro, one bus, two study stages,
     /// and two `InflowModel` entries (one per stage, AR order 2).
-    fn make_system_with_hydro() -> cobre_core::System {
+    fn make_system_with_hydro() -> novomodelo_core::System {
         let stages = vec![make_stage(0, 0), make_stage(1, 1)];
         let inflow_models = vec![make_inflow_model(10, 0), make_inflow_model(10, 1)];
 
@@ -830,7 +830,7 @@ mod tests {
 
     #[test]
     fn opening_tree_source_user_supplied() {
-        use cobre_stochastic::context::OpeningTree;
+        use novomodelo_stochastic::context::OpeningTree;
 
         let system = make_system_with_hydro();
         // 2 stages × 2 openings × 1 dim = 4 entries
@@ -1118,7 +1118,7 @@ mod tests {
 
     #[test]
     fn fitting_report_includes_reason_strings() {
-        use cobre_stochastic::par::fitting::{
+        use novomodelo_stochastic::par::fitting::{
             ContributionReduction, EstimationReport, HydroEstimationEntry, ReductionReason,
         };
 
@@ -1187,7 +1187,7 @@ mod tests {
 
     #[test]
     fn estimation_report_tracks_all_reductions() {
-        use cobre_stochastic::par::fitting::{
+        use novomodelo_stochastic::par::fitting::{
             ContributionReduction, ReductionReason, build_estimation_report,
         };
         use std::collections::HashMap;
@@ -1262,7 +1262,7 @@ mod tests {
 
     #[test]
     fn inflow_models_to_annual_component_rows_three_models() {
-        use cobre_core::scenario::AnnualComponent;
+        use novomodelo_core::scenario::AnnualComponent;
 
         use super::inflow_models_to_annual_component_rows;
 
@@ -1314,7 +1314,7 @@ mod tests {
 
     #[test]
     fn inflow_models_to_annual_component_rows_skips_classical() {
-        use cobre_core::scenario::AnnualComponent;
+        use novomodelo_core::scenario::AnnualComponent;
 
         use super::inflow_models_to_annual_component_rows;
 

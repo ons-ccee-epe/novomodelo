@@ -1,5 +1,5 @@
 //! Centralises the shared Parquet reader-opening and typed column-downcast
-//! logic used by every Parquet parser in `cobre-io`.
+//! logic used by every Parquet parser in `novomodelo-io`.
 
 use arrow::array::{Array, Date32Array, Float64Array, Int32Array, UInt32Array};
 use arrow::datatypes::DataType;
@@ -10,7 +10,7 @@ use std::path::Path;
 
 use crate::LoadError;
 
-/// Single owner of `cobre-io`'s parquet open/build error mappings.
+/// Single owner of `novomodelo-io`'s parquet open/build error mappings.
 pub(crate) fn open_record_batch_reader(path: &Path) -> Result<ParquetRecordBatchReader, LoadError> {
     let file = File::open(path).map_err(|e| LoadError::io(path, e))?;
 

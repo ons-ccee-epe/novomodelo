@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use chrono::NaiveDate;
-use cobre_core::SystemBuilder;
+use novomodelo_core::SystemBuilder;
 
 use crate::{
     CaseArtifacts, LoadError, LoadedCase, StageIdResolver,
@@ -30,7 +30,7 @@ use crate::{
     },
 };
 
-/// The canonical pipeline: returns the validated [`System`](cobre_core::System) in a
+/// The canonical pipeline: returns the validated [`System`](novomodelo_core::System) in a
 /// [`LoadedCase`] bundle with the [`CaseArtifacts`] rows and the [`ValidationReport`].
 ///
 /// # Errors
@@ -258,7 +258,7 @@ pub(crate) fn run_pipeline_with_artifacts(
 }
 
 /// Sorts `entities` into the order
-/// [`SystemBuilder::build`](cobre_core::SystemBuilder::build) establishes —
+/// [`SystemBuilder::build`](novomodelo_core::SystemBuilder::build) establishes —
 /// not `(id, date)` or `id` alone — so a resolver's `entity_idx` matches the
 /// position `System` will expose it at.
 fn sort_into_canonical_order<T>(

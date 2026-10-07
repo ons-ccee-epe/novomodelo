@@ -7,7 +7,7 @@
 //! Its rules are the `travel_time.*` entries of [`RULES`](crate::validation::rules::RULES).
 
 use chrono::NaiveDate;
-use cobre_core::{
+use novomodelo_core::{
     BlockMode, EntityId, Hydro, Stage, window_period_reach_depth, window_reaches_any_period,
 };
 
@@ -389,9 +389,9 @@ mod tests {
     use crate::stages::StagesData;
     use crate::test_support::*;
     use crate::validation::ErrorKind;
-    use cobre_core::entities::Hydro;
-    use cobre_core::temporal::{Block, PolicyGraphType, Stage};
-    use cobre_core::{EntityId, HorizonGraph, HydroPastDefluence};
+    use novomodelo_core::entities::Hydro;
+    use novomodelo_core::temporal::{Block, PolicyGraphType, Stage};
+    use novomodelo_core::{EntityId, HorizonGraph, HydroPastDefluence};
 
     fn make_hydro_with_travel_time(id: i32, downstream_id: i32, t: Option<f64>) -> Hydro {
         let mut h = make_hydro(id, Some(downstream_id));

@@ -1,9 +1,9 @@
-# cobre-tui
+# novomodelo-tui
 
-Reserved crate name for the Cobre ecosystem.
+Reserved crate name for the Novomodelo ecosystem.
 
 This crate is not yet implemented. For command-line interaction with
-Cobre, depend on `cobre-cli`.
+Novomodelo, depend on `novomodelo-cli`.
 
 ## License
 

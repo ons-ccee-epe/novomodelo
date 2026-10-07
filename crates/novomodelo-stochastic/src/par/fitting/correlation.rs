@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use chrono::NaiveDate;
 use rayon::prelude::*;
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId,
     scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile,
@@ -88,8 +88,8 @@ const MIN_CORRELATION_PAIRS: usize = 30;
 ///
 /// ```
 /// use chrono::NaiveDate;
-/// use cobre_core::{EntityId, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
-/// use cobre_stochastic::par::fitting::{
+/// use novomodelo_core::{EntityId, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
+/// use novomodelo_stochastic::par::fitting::{
 ///     estimate_seasonal_stats_with_season_map, estimate_ar_coefficients_with_season_map,
 ///     estimate_correlation_with_season_map,
 /// };
@@ -616,7 +616,7 @@ fn assemble_seasonal_correlation_model(
 
     let mut profiles = BTreeMap::new();
 
-    // CorrelationGroup.matrix (cobre-core) is AoS, not the flat row-major buffer.
+    // CorrelationGroup.matrix (novomodelo-core) is AoS, not the flat row-major buffer.
     let flat_to_aos = |flat: &[f64]| -> Vec<Vec<f64>> {
         (0..n).map(|i| flat[i * n..(i + 1) * n].to_vec()).collect()
     };
@@ -682,8 +682,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use chrono::{Datelike, NaiveDate};
-    use cobre_core::scenario::CorrelationModel;
-    use cobre_core::{EntityId, SeasonMap};
+    use novomodelo_core::scenario::CorrelationModel;
+    use novomodelo_core::{EntityId, SeasonMap};
     use tracing::field::{Field, Visit};
     use tracing::{Event, Level, Metadata, Subscriber, span};
 

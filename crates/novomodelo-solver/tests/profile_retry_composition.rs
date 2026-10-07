@@ -7,7 +7,7 @@
 //! delta-only dispatch contract; retry finalization owns re-application).
 //!
 //! Requires the `test-support` feature:
-//!   cargo nextest run -p cobre-solver --features test-support
+//!   cargo nextest run -p novomodelo-solver --features test-support
 #![cfg_attr(
     test,
     allow(
@@ -24,8 +24,8 @@
 mod tests {
     use std::cell::Cell;
 
-    use cobre_solver::types::{Basis, RowBatch, SolutionView, SolverError, SolverStatistics};
-    use cobre_solver::{
+    use novomodelo_solver::types::{Basis, RowBatch, SolutionView, SolverError, SolverStatistics};
+    use novomodelo_solver::{
         HighsProfile, HighsSolver, PresolveKind, ProfiledSolver, SolverInterface, StageTemplate,
     };
 

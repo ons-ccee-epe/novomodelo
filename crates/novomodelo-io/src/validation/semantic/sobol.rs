@@ -13,7 +13,7 @@ use super::super::{ValidationContext, rules, schema::ParsedData};
 /// recurrence. It warns rather than rejects, because the configuration is valid
 /// but suboptimal.
 pub(super) fn check_sobol_power_of_2(data: &ParsedData, ctx: &mut ValidationContext) {
-    use cobre_core::temporal::NoiseMethod;
+    use novomodelo_core::temporal::NoiseMethod;
 
     for stage in &data.stages.stages {
         if stage.id < 0 {
@@ -58,7 +58,7 @@ pub(super) fn check_sobol_power_of_2(data: &ParsedData, ctx: &mut ValidationCont
 mod tests {
     use super::super::validate_semantic_stages_penalties_scenarios;
     use crate::test_support::*;
-    use cobre_core::temporal::{NoiseMethod, ScenarioSourceConfig};
+    use novomodelo_core::temporal::{NoiseMethod, ScenarioSourceConfig};
 
     use crate::validation::{ErrorKind, ValidationContext};
 

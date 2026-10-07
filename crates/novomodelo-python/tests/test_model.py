@@ -1,10 +1,10 @@
-"""Integration tests for cobre.model Python wrapper classes.
+"""Integration tests for novomodelo.model Python wrapper classes.
 
-These tests verify that the PyO3 wrapper classes for the Cobre data model
+These tests verify that the PyO3 wrapper classes for the Novomodelo data model
 types are correctly exposed with the expected properties and behaviour.
 
 Run with (from the repo root):
-    pytest crates/cobre-python/tests/
+    pytest crates/novomodelo-python/tests/
 """
 
 import pytest
@@ -12,9 +12,9 @@ import pytest
 
 def test_system_entity_counts() -> None:
     """Load the 1dtoy case and verify entity count properties on System."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    system = cobre.io.load_case("examples/1dtoy")
+    system = novomodelo.io.load_case("examples/1dtoy")
     assert isinstance(system.n_buses, int)
     assert isinstance(system.n_hydros, int)
     assert isinstance(system.n_thermals, int)
@@ -25,9 +25,9 @@ def test_system_entity_counts() -> None:
 
 def test_bus_properties() -> None:
     """Load the 1dtoy case and verify Bus properties."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    system = cobre.io.load_case("examples/1dtoy")
+    system = novomodelo.io.load_case("examples/1dtoy")
     buses = system.buses
     assert len(buses) > 0
     bus = buses[0]
@@ -38,9 +38,9 @@ def test_bus_properties() -> None:
 
 def test_hydro_properties() -> None:
     """Load the 1dtoy case and verify Hydro properties."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    system = cobre.io.load_case("examples/1dtoy")
+    system = novomodelo.io.load_case("examples/1dtoy")
     hydros = system.hydros
     assert len(hydros) > 0
     hydro = hydros[0]
@@ -50,9 +50,9 @@ def test_hydro_properties() -> None:
 
 def test_thermal_properties() -> None:
     """Load the 1dtoy case and verify Thermal properties."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    system = cobre.io.load_case("examples/1dtoy")
+    system = novomodelo.io.load_case("examples/1dtoy")
     thermals = system.thermals
     assert len(thermals) > 0
     thermal = thermals[0]
@@ -63,9 +63,9 @@ def test_thermal_properties() -> None:
 
 def test_line_properties() -> None:
     """1dtoy has no lines — verify the accessor returns an empty list."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    system = cobre.io.load_case("examples/1dtoy")
+    system = novomodelo.io.load_case("examples/1dtoy")
     lines = system.lines
     assert isinstance(lines, list)
     assert len(lines) == 0
@@ -73,9 +73,9 @@ def test_line_properties() -> None:
 
 def test_bus_repr() -> None:
     """Verify repr(bus) contains 'Bus(id=' and the bus name."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    system = cobre.io.load_case("examples/1dtoy")
+    system = novomodelo.io.load_case("examples/1dtoy")
     bus = system.buses[0]
     r = repr(bus)
     assert "Bus(id=" in r
@@ -83,18 +83,18 @@ def test_bus_repr() -> None:
 
 
 def test_system_not_constructable() -> None:
-    """cobre.model.System() must raise TypeError (no Python constructor)."""
-    import cobre.model  # noqa: PLC0415
+    """novomodelo.model.System() must raise TypeError (no Python constructor)."""
+    import novomodelo.model  # noqa: PLC0415
 
     with pytest.raises(TypeError):
-        cobre.model.System()  # type: ignore[call-arg]
+        novomodelo.model.System()  # type: ignore[call-arg]
 
 
 def test_energy_contract_properties() -> None:
     """Load the D41 case and verify EnergyContract exposes its full field set."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    system = cobre.io.load_case("examples/deterministic/d41-energy-contracts")
+    system = novomodelo.io.load_case("examples/deterministic/d41-energy-contracts")
     contracts = system.contracts
     assert len(contracts) > 0
     contract = contracts[0]
@@ -112,9 +112,11 @@ def test_energy_contract_properties() -> None:
 
 def test_pumping_station_properties() -> None:
     """Load the pumping-transfer fixture and verify PumpingStation's full field set."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    system = cobre.io.load_case("crates/cobre-sddp/tests/fixtures/pumping_transfer")
+    system = novomodelo.io.load_case(
+        "crates/novomodelo-sddp/tests/fixtures/pumping_transfer"
+    )
     stations = system.pumping_stations
     assert len(stations) > 0
     station = stations[0]
@@ -133,9 +135,11 @@ def test_pumping_station_properties() -> None:
 
 def test_non_controllable_source_properties() -> None:
     """Load the D15 case and verify NonControllableSource's full field set."""
-    import cobre.io  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
 
-    system = cobre.io.load_case("examples/deterministic/d15-non-controllable-source")
+    system = novomodelo.io.load_case(
+        "examples/deterministic/d15-non-controllable-source"
+    )
     sources = system.non_controllable_sources
     assert len(sources) > 0
     source = sources[0]
@@ -151,8 +155,8 @@ def test_non_controllable_source_properties() -> None:
 
 
 def test_model_classes_importable() -> None:
-    """All expected classes must be present in cobre.model."""
-    import cobre.model  # noqa: PLC0415
+    """All expected classes must be present in novomodelo.model."""
+    import novomodelo.model  # noqa: PLC0415
 
     for name in (
         "System",
@@ -164,4 +168,4 @@ def test_model_classes_importable() -> None:
         "PumpingStation",
         "NonControllableSource",
     ):
-        assert hasattr(cobre.model, name), f"cobre.model.{name} not found"
+        assert hasattr(novomodelo.model, name), f"novomodelo.model.{name} not found"

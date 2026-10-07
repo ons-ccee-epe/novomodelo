@@ -274,14 +274,14 @@ fn bin_file_name(id: u32) -> String {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::{
+/// use novomodelo_io::{
 ///     write_policy_checkpoint, FORMAT_VERSION, GraphManifest, PolicyBasisRecord,
 ///     CheckpointManifest, PolicyCutRecord, ProducerBlock, SeasonManifest,
 ///     SOFTWARE_NAME, SOFTWARE_VERSION, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, StageCutsPayload,
 /// };
 /// use std::path::Path;
 ///
-/// # fn main() -> Result<(), cobre_io::OutputError> {
+/// # fn main() -> Result<(), novomodelo_io::OutputError> {
 /// let coefficients = [1.0_f64, 2.0, 3.0];
 /// let piece = PolicyCutRecord {
 ///     cut_id: 1,
@@ -750,10 +750,10 @@ pub fn resolve_policy_checkpoint(path: &Path) -> Result<ResolvedCheckpoint, Outp
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::read_policy_checkpoint;
+/// use novomodelo_io::read_policy_checkpoint;
 /// use std::path::Path;
 ///
-/// # fn main() -> Result<(), cobre_io::OutputError> {
+/// # fn main() -> Result<(), novomodelo_io::OutputError> {
 /// let checkpoint = read_policy_checkpoint(Path::new("/tmp/policy"))?;
 /// println!("metadata: {} stages", checkpoint.metadata.num_stages);
 /// println!("stages loaded: {}", checkpoint.stage_cuts.len());

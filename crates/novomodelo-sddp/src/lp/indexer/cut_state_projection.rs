@@ -2,7 +2,7 @@
 //! dimensions a stage enables, for cut storage, subgradient extraction (incoming
 //! columns), and cut rendering (outgoing columns).
 
-use cobre_core::temporal::StageStateConfig;
+use novomodelo_core::temporal::StageStateConfig;
 
 use super::{CutSlot, InCol, OutCol, REGION_ORDER, StateDim, StateSpace};
 
@@ -69,7 +69,7 @@ impl CutStateProjection {
     /// the incoming-column vector fails to compile.
     ///
     /// ```compile_fail
-    /// use cobre_sddp::indexer::{InCol, StateDim, StateSpace};
+    /// use novomodelo_sddp::indexer::{InCol, StateDim, StateSpace};
     ///
     /// fn misuse(global: &StateSpace) {
     ///     let outgoing = global.lp_column_for_state(StateDim::new(0));
@@ -203,8 +203,8 @@ impl CutStateProjection {
     /// return role, not its parameter.
     ///
     /// ```compile_fail
-    /// use cobre_core::temporal::StageStateConfig;
-    /// use cobre_sddp::indexer::{CutStateProjection, StateDim, StateSpace};
+    /// use novomodelo_core::temporal::StageStateConfig;
+    /// use novomodelo_sddp::indexer::{CutStateProjection, StateDim, StateSpace};
     ///
     /// fn misuse(global: &StateSpace) {
     ///     let cut = CutStateProjection::new(
@@ -216,8 +216,8 @@ impl CutStateProjection {
     /// ```
     ///
     /// ```compile_fail
-    /// use cobre_core::temporal::StageStateConfig;
-    /// use cobre_sddp::indexer::{CutStateProjection, OutCol, StateSpace};
+    /// use novomodelo_core::temporal::StageStateConfig;
+    /// use novomodelo_sddp::indexer::{CutStateProjection, OutCol, StateSpace};
     ///
     /// fn misuse(global: &StateSpace) {
     ///     let cut = CutStateProjection::new(

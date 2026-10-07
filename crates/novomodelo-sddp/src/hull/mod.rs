@@ -41,18 +41,18 @@ pub(crate) enum HullError {
 
     /// Degenerate or insufficient input: fewer than 4 affinely-independent
     /// points, so no full-dimensional 3-D hull exists. Maps shim status
-    /// `COBRE_QHULL_ERR_DEGENERATE`.
+    /// `NOVOMODELO_QHULL_ERR_DEGENERATE`.
     #[error("convex hull input is degenerate or has fewer than 4 affinely-independent points")]
     Degenerate,
 
     /// qhull initialization or computation failed (internal/precision error
     /// that is neither degenerate input nor allocation). Maps shim status
-    /// `COBRE_QHULL_ERR_COMPUTE`.
+    /// `NOVOMODELO_QHULL_ERR_COMPUTE`.
     #[error("qhull convex-hull computation failed")]
     Compute,
 
     /// Memory allocation failed (qhull-internal or the shim's output buffer).
-    /// Maps shim status `COBRE_QHULL_ERR_ALLOC`.
+    /// Maps shim status `NOVOMODELO_QHULL_ERR_ALLOC`.
     #[error("convex hull allocation failed")]
     Alloc,
 
@@ -63,7 +63,7 @@ pub(crate) enum HullError {
 
 /// RAII owner of the shim-malloc'd plane buffer.
 ///
-/// Drop frees the buffer through [`ffi::cobre_qhull_free`] so the buffer is
+/// Drop frees the buffer through [`ffi::novomodelo_qhull_free`] so the buffer is
 /// released with the same allocator that produced it (the shim's
 /// `malloc`/`free`) on *every* path — including an early `?` return or a panic
 /// while copying the facets out. The buffer is never freed elsewhere.
@@ -74,12 +74,12 @@ struct PlaneBuffer {
 impl Drop for PlaneBuffer {
     fn drop(&mut self) {
         // SAFETY:
-        //   * `self.ptr` is either NULL (a no-op for cobre_qhull_free, per the
+        //   * `self.ptr` is either NULL (a no-op for novomodelo_qhull_free, per the
         //     shim contract) or a pointer the shim returned from
-        //     cobre_qhull_convex_hull_3d on a COBRE_QHULL_OK status.
+        //     novomodelo_qhull_convex_hull_3d on a NOVOMODELO_QHULL_OK status.
         //   * This is the sole owner of that pointer and the sole free site;
         //     the buffer is freed exactly once.
-        unsafe { ffi::cobre_qhull_free(self.ptr) };
+        unsafe { ffi::novomodelo_qhull_free(self.ptr) };
     }
 }
 
@@ -139,18 +139,18 @@ pub(crate) fn convex_hull_3d(points: &[[f64; 3]]) -> Result<Vec<Hyperplane3d>, H
     //     `n_points` precondition.
     //   * `out_planes` and `out_n_facets` are addresses of live, initialized
     //     local variables (`null_mut()` / `0`); the shim writes through them
-    //     exactly once and only on a `COBRE_QHULL_OK` return. They do not
+    //     exactly once and only on a `NOVOMODELO_QHULL_OK` return. They do not
     //     alias `flat` (distinct locals, distinct allocations).
     //   * The returned `out_planes` pointer is dereferenced ONLY when the
-    //     status is `COBRE_QHULL_OK`; on any non-zero status the shim sets it
+    //     status is `NOVOMODELO_QHULL_OK`; on any non-zero status the shim sets it
     //     to NULL and we never read it (the early `match` returns first).
-    //   * On `COBRE_QHULL_OK` the buffer holds exactly `4 * out_n_facets`
+    //   * On `NOVOMODELO_QHULL_OK` the buffer holds exactly `4 * out_n_facets`
     //     `f64`s (the shim's documented layout `[nx,ny,nz,d, ...]`), which is
     //     the slice length we reconstruct below.
     //   * The returned pointer is wrapped in `PlaneBuffer` immediately, whose
-    //     `Drop` frees it via the paired `cobre_qhull_free` on every path.
+    //     `Drop` frees it via the paired `novomodelo_qhull_free` on every path.
     let status = unsafe {
-        ffi::cobre_qhull_convex_hull_3d(
+        ffi::novomodelo_qhull_convex_hull_3d(
             flat.as_ptr(),
             n_points_c,
             std::ptr::addr_of_mut!(out_planes),
@@ -158,13 +158,13 @@ pub(crate) fn convex_hull_3d(points: &[[f64; 3]]) -> Result<Vec<Hyperplane3d>, H
         )
     };
 
-    if status != ffi::COBRE_QHULL_OK {
+    if status != ffi::NOVOMODELO_QHULL_OK {
         // On any non-zero status the shim guarantees `out_planes == NULL`, so
         // there is nothing to free; map the code to a typed error.
         return Err(match status {
-            ffi::COBRE_QHULL_ERR_DEGENERATE => HullError::Degenerate,
-            ffi::COBRE_QHULL_ERR_COMPUTE => HullError::Compute,
-            ffi::COBRE_QHULL_ERR_ALLOC => HullError::Alloc,
+            ffi::NOVOMODELO_QHULL_ERR_DEGENERATE => HullError::Degenerate,
+            ffi::NOVOMODELO_QHULL_ERR_COMPUTE => HullError::Compute,
+            ffi::NOVOMODELO_QHULL_ERR_ALLOC => HullError::Alloc,
             other => HullError::UnknownStatus(other),
         });
     }
@@ -180,7 +180,7 @@ pub(crate) fn convex_hull_3d(points: &[[f64; 3]]) -> Result<Vec<Hyperplane3d>, H
     let mut facets: Vec<Hyperplane3d> = Vec::with_capacity(n_facets);
     if n_facets > 0 {
         // SAFETY:
-        //   * `buffer.ptr` is non-NULL (status was COBRE_QHULL_OK with
+        //   * `buffer.ptr` is non-NULL (status was NOVOMODELO_QHULL_OK with
         //     `n_facets > 0`, so the shim malloc'd a populated buffer).
         //   * The shim's documented layout is `4 * n_facets` `f64`s laid out
         //     `[nx,ny,nz,d, ...]`; `4 * n_facets` is exactly the slice length.

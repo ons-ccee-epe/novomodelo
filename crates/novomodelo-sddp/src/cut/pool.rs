@@ -28,8 +28,8 @@
 //! ## Example
 //!
 //! ```rust
-//! use cobre_sddp::cut::pool::CutPool;
-//! use cobre_sddp::setup::NodeId;
+//! use novomodelo_sddp::cut::pool::CutPool;
+//! use novomodelo_sddp::setup::NodeId;
 //!
 //! // 100-slot pool, 9-dimensional state, a per-pool visit stride of 10,
 //! // no warm-start cuts.
@@ -47,7 +47,7 @@ use crate::cut_selection::CutActivityUpdates;
 use crate::cut_selection::CutMetadata;
 use crate::setup::NodeId;
 
-use cobre_io::OwnedPolicyCutRecord;
+use novomodelo_io::OwnedPolicyCutRecord;
 
 /// Pre-allocated per-stage cut pool for the Future Cost Function (FCF).
 ///
@@ -125,7 +125,7 @@ impl CutPool {
     /// # Example
     ///
     /// ```rust
-    /// use cobre_sddp::cut::pool::CutPool;
+    /// use novomodelo_sddp::cut::pool::CutPool;
     ///
     /// let pool = CutPool::new(50, 4, 5, 0);
     /// assert_eq!(pool.capacity, 50);
@@ -210,8 +210,8 @@ impl CutPool {
     /// # Example
     ///
     /// ```rust
-    /// use cobre_sddp::cut::pool::CutPool;
-    /// use cobre_sddp::setup::NodeId;
+    /// use novomodelo_sddp::cut::pool::CutPool;
+    /// use novomodelo_sddp::setup::NodeId;
     ///
     /// let mut pool = CutPool::new(20, 3, 5, 0);
     /// pool.add_cut(NodeId(0), 1, 2, 10.0, &[1.0, 2.0, 3.0]);
@@ -277,8 +277,8 @@ impl CutPool {
     /// # Example
     ///
     /// ```rust
-    /// use cobre_sddp::cut::pool::CutPool;
-    /// use cobre_sddp::setup::NodeId;
+    /// use novomodelo_sddp::cut::pool::CutPool;
+    /// use novomodelo_sddp::setup::NodeId;
     ///
     /// let mut pool = CutPool::new(10, 2, 1, 0);
     /// pool.add_cut(NodeId(0), 0, 0, 3.0, &[1.0, 2.0]);
@@ -356,8 +356,8 @@ impl CutPool {
     /// # Example
     ///
     /// ```rust
-    /// use cobre_sddp::cut::pool::CutPool;
-    /// use cobre_sddp::setup::NodeId;
+    /// use novomodelo_sddp::cut::pool::CutPool;
+    /// use novomodelo_sddp::setup::NodeId;
     ///
     /// let mut pool = CutPool::new(10, 1, 1, 0);
     /// assert_eq!(pool.active_count(), 0);
@@ -397,8 +397,8 @@ impl CutPool {
     /// # Example
     ///
     /// ```rust
-    /// use cobre_sddp::cut::pool::CutPool;
-    /// use cobre_sddp::setup::NodeId;
+    /// use novomodelo_sddp::cut::pool::CutPool;
+    /// use novomodelo_sddp::setup::NodeId;
     ///
     /// let mut pool = CutPool::new(10, 1, 1, 0);
     /// pool.add_cut(NodeId(0), 0, 0, 1.0, &[1.0]);
@@ -545,8 +545,8 @@ impl CutPool {
     /// # Example
     ///
     /// ```rust
-    /// use cobre_sddp::cut::pool::CutPool;
-    /// use cobre_sddp::setup::NodeId;
+    /// use novomodelo_sddp::cut::pool::CutPool;
+    /// use novomodelo_sddp::setup::NodeId;
     ///
     /// let mut pool = CutPool::new(10, 1, 1, 0);
     /// pool.add_cut(NodeId(0), 0, 0, 1.0, &[1.0]);
@@ -574,9 +574,9 @@ impl CutPool {
     /// # Example
     ///
     /// ```rust
-    /// use cobre_sddp::cut::pool::CutPool;
-    /// use cobre_sddp::cut_selection::CutActivityUpdates;
-    /// use cobre_sddp::setup::NodeId;
+    /// use novomodelo_sddp::cut::pool::CutPool;
+    /// use novomodelo_sddp::cut_selection::CutActivityUpdates;
+    /// use novomodelo_sddp::setup::NodeId;
     ///
     /// let mut pool = CutPool::new(10, 1, 1, 0);
     /// pool.add_cut(NodeId(0), 0, 0, 1.0, &[1.0]);
@@ -620,9 +620,9 @@ impl CutPool {
     /// # Example
     ///
     /// ```rust
-    /// use cobre_sddp::cut::pool::CutPool;
-    /// use cobre_sddp::cut_selection::CutMetadata;
-    /// use cobre_sddp::setup::NodeId;
+    /// use novomodelo_sddp::cut::pool::CutPool;
+    /// use novomodelo_sddp::cut_selection::CutMetadata;
+    /// use novomodelo_sddp::setup::NodeId;
     ///
     /// let mut pool = CutPool::new(10, 1, 1, 0);
     /// pool.add_cut(NodeId(0), 0, 0, 1.0, &[1.0]);
@@ -659,8 +659,8 @@ impl CutPool {
     /// # Example
     ///
     /// ```rust
-    /// use cobre_sddp::cut::pool::CutPool;
-    /// use cobre_sddp::setup::NodeId;
+    /// use novomodelo_sddp::cut::pool::CutPool;
+    /// use novomodelo_sddp::setup::NodeId;
     ///
     /// let mut pool = CutPool::new(10, 1, 1, 0);
     /// pool.add_cut(NodeId(0), 0, 0, 1.0, &[1.0]);
@@ -703,8 +703,8 @@ impl CutPool {
     /// # Example
     ///
     /// ```rust
-    /// use cobre_sddp::cut::pool::CutPool;
-    /// use cobre_sddp::setup::NodeId;
+    /// use novomodelo_sddp::cut::pool::CutPool;
+    /// use novomodelo_sddp::setup::NodeId;
     ///
     /// let mut pool = CutPool::new(10, 2, 1, 0);
     /// pool.add_cut(NodeId(0), 0, 0, 10.0, &[1.0, 0.0]);
@@ -742,8 +742,8 @@ impl CutPool {
     /// # Example
     ///
     /// ```rust
-    /// use cobre_sddp::cut::pool::CutPool;
-    /// use cobre_sddp::setup::NodeId;
+    /// use novomodelo_sddp::cut::pool::CutPool;
+    /// use novomodelo_sddp::setup::NodeId;
     ///
     /// let mut pool = CutPool::new(10, 3, 1, 0);
     /// pool.add_cut(NodeId(0), 0, 0, 1.0, &[1.0, 0.0, 2.0]);
@@ -795,8 +795,8 @@ impl CutPool {
     /// # Example
     ///
     /// ```rust
-    /// use cobre_io::OwnedPolicyCutRecord;
-    /// use cobre_sddp::cut::pool::CutPool;
+    /// use novomodelo_io::OwnedPolicyCutRecord;
+    /// use novomodelo_sddp::cut::pool::CutPool;
     ///
     /// let records = vec![
     ///     OwnedPolicyCutRecord {
@@ -875,8 +875,8 @@ impl CutPool {
     /// # Example
     ///
     /// ```rust
-    /// use cobre_io::OwnedPolicyCutRecord;
-    /// use cobre_sddp::cut::pool::CutPool;
+    /// use novomodelo_io::OwnedPolicyCutRecord;
+    /// use novomodelo_sddp::cut::pool::CutPool;
     ///
     /// let records = vec![
     ///     OwnedPolicyCutRecord {
@@ -978,8 +978,8 @@ impl CutPool {
     /// # Example
     ///
     /// ```rust
-    /// use cobre_sddp::cut::pool::CutPool;
-    /// use cobre_sddp::setup::NodeId;
+    /// use novomodelo_sddp::cut::pool::CutPool;
+    /// use novomodelo_sddp::setup::NodeId;
     ///
     /// let mut pool = CutPool::new(2, 2, 1, 0);
     /// pool.add_cut(NodeId(0), 0, 0, 5.0, &[1.0, 2.0]);
@@ -1541,7 +1541,7 @@ mod tests {
     #[test]
     fn warm_start_cuts_have_sentinel_iteration() {
         use crate::cut::WARM_START_ITERATION;
-        use cobre_io::OwnedPolicyCutRecord;
+        use novomodelo_io::OwnedPolicyCutRecord;
 
         let records = vec![
             OwnedPolicyCutRecord {
@@ -1578,7 +1578,7 @@ mod tests {
 
     #[test]
     fn new_with_warm_start_zero_max_iterations_yields_fixed_capacity() {
-        use cobre_io::OwnedPolicyCutRecord;
+        use novomodelo_io::OwnedPolicyCutRecord;
 
         let records = vec![
             OwnedPolicyCutRecord {
@@ -1613,7 +1613,7 @@ mod tests {
 
     #[test]
     fn has_warm_start_cuts_follows_the_warm_start_records() {
-        use cobre_io::OwnedPolicyCutRecord;
+        use novomodelo_io::OwnedPolicyCutRecord;
 
         let empty = CutPool::new(100, 2, 10, 0);
         assert!(!empty.has_warm_start_cuts());

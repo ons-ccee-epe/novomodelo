@@ -1,24 +1,24 @@
 use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
-use cobre_comm::{CommData, Communicator, ReduceOp};
-use cobre_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
-use cobre_core::scenario::{
+use novomodelo_comm::{CommData, Communicator, ReduceOp};
+use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+use novomodelo_core::scenario::{
     CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
     LoadModel, SamplingScheme,
 };
-use cobre_core::temporal::{
+use novomodelo_core::temporal::{
     Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig,
 };
-use cobre_core::{Bus, DeficitSegment, EntityId, SystemBuilder, WorkerPhaseTimings};
-use cobre_solver::{
+use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder, WorkerPhaseTimings};
+use novomodelo_solver::{
     Basis, LpSolution, ProfiledSolver, RowBatch, SolverError, SolverInterface, SolverStatistics,
     StageTemplate,
 };
-use cobre_stochastic::StochasticContext;
-use cobre_stochastic::context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+use novomodelo_stochastic::StochasticContext;
+use novomodelo_stochastic::context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
 
-use cobre_comm::LocalBackend;
+use novomodelo_comm::LocalBackend;
 
 use super::stats_aggregation::weighted_cost_reduction;
 use super::{
@@ -93,7 +93,7 @@ impl MockSolver {
         }
     }
 
-    fn do_solve(&mut self) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+    fn do_solve(&mut self) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
         let call = self.call_count;
         self.call_count += 1;
         if self.infeasible_at == Some(call) {
@@ -103,7 +103,7 @@ impl MockSolver {
         self.buf_dual.clone_from(&self.solution.dual);
         self.buf_reduced_costs
             .clone_from(&self.solution.reduced_costs);
-        Ok(cobre_solver::SolutionView {
+        Ok(novomodelo_solver::SolutionView {
             objective: self.solution.objective,
             primal: &self.buf_primal,
             dual: &self.buf_dual,
@@ -115,9 +115,9 @@ impl MockSolver {
 }
 
 impl SolverInterface for MockSolver {
-    type Profile = cobre_solver::ActiveProfile;
+    type Profile = novomodelo_solver::ActiveProfile;
 
-    fn apply_profile(&mut self, _profile: &cobre_solver::ActiveProfile) {}
+    fn apply_profile(&mut self, _profile: &novomodelo_solver::ActiveProfile) {}
 
     fn solver_name_version(&self) -> String {
         "MockSolver 0.0.0".to_string()
@@ -133,7 +133,7 @@ impl SolverInterface for MockSolver {
     fn solve(
         &mut self,
         basis: Option<&Basis>,
-    ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+    ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
         if basis.is_some() {
             self.warm_start_calls += 1;
         }
@@ -396,7 +396,7 @@ fn forward_result_clone_and_debug() {
 
 #[test]
 fn forward_overhead_decomposition_four_workers() {
-    use cobre_solver::SolverStatistics;
+    use novomodelo_solver::SolverStatistics;
 
     use crate::solver_stats::SolverStatsDelta;
 
@@ -483,7 +483,7 @@ fn forward_overhead_decomposition_four_workers() {
 
 #[test]
 fn forward_overhead_decomposition_single_worker_zero_imbalance() {
-    use cobre_solver::SolverStatistics;
+    use novomodelo_solver::SolverStatistics;
 
     use crate::solver_stats::SolverStatsDelta;
 
@@ -515,7 +515,7 @@ fn forward_overhead_decomposition_single_worker_zero_imbalance() {
 
 #[test]
 fn forward_overhead_scheduling_clamped_to_zero_on_clock_skew() {
-    use cobre_solver::SolverStatistics;
+    use novomodelo_solver::SolverStatistics;
 
     use crate::solver_stats::SolverStatsDelta;
 
@@ -589,7 +589,7 @@ fn single_workspace(solver: MockSolver, state: &StateSpace) -> SolverWorkspace<M
 /// Build 3 minimal [`Stage`] values matching `make_stochastic_context_1_hydro(3, true)`.
 ///
 /// Provides the `stages` slice required by [`TrainingContext`] so that
-/// [`cobre_stochastic::build_forward_sampler`] can read per-stage noise methods.
+/// [`novomodelo_stochastic::build_forward_sampler`] can read per-stage noise methods.
 fn make_stages_3() -> Vec<Stage> {
     let make_stage = |idx: usize, id: i32| Stage {
         index: idx,
@@ -1197,7 +1197,7 @@ fn sync_forward_sync_time_ms_is_valid_u64() {
 
 #[test]
 fn sync_forward_comm_error_wraps_as_sddp_communication() {
-    use cobre_comm::CommError;
+    use novomodelo_comm::CommError;
 
     /// Communicator that always returns `CommError::InvalidCommunicator`.
     struct FailingComm;
@@ -2973,7 +2973,7 @@ fn test_build_delta_skips_deactivated_cuts() {
 fn test_build_delta_excludes_warm_start_cuts() {
     // Pool seeded with a warm-start cut AND one training iteration cut.
     // Delta call with current_iteration=1 must exclude the warm-start row.
-    use cobre_io::OwnedPolicyCutRecord;
+    use novomodelo_io::OwnedPolicyCutRecord;
 
     let warm_record = OwnedPolicyCutRecord {
         cut_id: 0,
@@ -3161,7 +3161,7 @@ fn test_build_delta_clears_row_starts() {
 /// cuts must emit zero rows regardless of the requested iteration.
 #[test]
 fn build_delta_cut_row_batch_into_skips_warm_start_slots() {
-    use cobre_io::OwnedPolicyCutRecord;
+    use novomodelo_io::OwnedPolicyCutRecord;
 
     // One warm-start cut at slot 0.
     let ws_record = OwnedPolicyCutRecord {
@@ -3210,8 +3210,8 @@ fn build_delta_cut_row_batch_into_skips_warm_start_slots() {
 // col2, and cuts constrain theta against col0), so the primal/objective are
 // determinate at the pinned state.
 mod dcs_forward {
-    use cobre_core::scenario::SamplingScheme;
-    use cobre_solver::{ActiveSolver, SolverInterface, StageTemplate};
+    use novomodelo_core::scenario::SamplingScheme;
+    use novomodelo_solver::{ActiveSolver, SolverInterface, StageTemplate};
 
     use super::super::{StageKey, run_forward_stage};
     use crate::context::TrainingContext;
@@ -3651,8 +3651,8 @@ mod dcs_forward {
 // state-assembly plain copy: the lag-shift overwrite lands on index 1 and the
 // anticipated-shift overwrite lands on index 3, never on the bucket index 2.
 mod transit_bucket_copy_gap {
-    use cobre_core::scenario::SamplingScheme;
-    use cobre_solver::{LpSolution, SolverInterface, StageTemplate};
+    use novomodelo_core::scenario::SamplingScheme;
+    use novomodelo_solver::{LpSolution, SolverInterface, StageTemplate};
 
     use super::super::{StageKey, run_forward_stage};
     use super::MockSolver;

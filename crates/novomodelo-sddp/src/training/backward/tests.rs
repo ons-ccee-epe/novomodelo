@@ -8,7 +8,7 @@ fn run_backward_pass<S, C: Communicator>(
     inputs: &mut BackwardPassInputs<'_, S, C>,
 ) -> Result<BackwardResult, SddpError>
 where
-    S: SolverInterface<Profile = cobre_solver::ActiveProfile> + Send,
+    S: SolverInterface<Profile = novomodelo_solver::ActiveProfile> + Send,
 {
     let n_workers_local = inputs.workspaces.len();
     let n_ranks = inputs.comm.size();
@@ -31,14 +31,14 @@ where
     bwd_state.run(inputs)
 }
 
-use cobre_comm::{CommData, CommError, Communicator, ReduceOp};
-use cobre_solver::{
+use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
+use novomodelo_solver::{
     Basis, LpSolution, ProfiledSolver, RowBatch, SolverError, SolverInterface, SolverStatistics,
     StageTemplate,
 };
 
-use cobre_core::scenario::SamplingScheme;
-use cobre_core::{StageStateConfig, WorkerPhaseTimings};
+use novomodelo_core::scenario::SamplingScheme;
+use novomodelo_core::{StageStateConfig, WorkerPhaseTimings};
 
 use super::BackwardResult;
 use crate::{
@@ -338,9 +338,9 @@ impl MockSolver {
 }
 
 impl SolverInterface for MockSolver {
-    type Profile = cobre_solver::ActiveProfile;
+    type Profile = novomodelo_solver::ActiveProfile;
 
-    fn apply_profile(&mut self, _profile: &cobre_solver::ActiveProfile) {}
+    fn apply_profile(&mut self, _profile: &novomodelo_solver::ActiveProfile) {}
 
     fn solver_name_version(&self) -> String {
         "MockSolver 0.0.0".to_string()
@@ -359,7 +359,7 @@ impl SolverInterface for MockSolver {
     fn solve(
         &mut self,
         basis: Option<&Basis>,
-    ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+    ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
         if basis.is_some() {
             self.warm_start_calls += 1;
         }
@@ -375,7 +375,7 @@ impl SolverInterface for MockSolver {
             .resize(self.current_num_rows, self.cut_dual_padding);
         self.buf_reduced_costs
             .clone_from(&self.solution.reduced_costs);
-        Ok(cobre_solver::SolutionView {
+        Ok(novomodelo_solver::SolutionView {
             objective: self.solution.objective,
             primal: &self.buf_primal,
             dual: &self.buf_dual,
@@ -433,9 +433,9 @@ impl PerChildProbeSolver {
 }
 
 impl SolverInterface for PerChildProbeSolver {
-    type Profile = cobre_solver::ActiveProfile;
+    type Profile = novomodelo_solver::ActiveProfile;
 
-    fn apply_profile(&mut self, _profile: &cobre_solver::ActiveProfile) {}
+    fn apply_profile(&mut self, _profile: &novomodelo_solver::ActiveProfile) {}
     fn solver_name_version(&self) -> String {
         "PerChildProbe 0.0.0".to_string()
     }
@@ -453,7 +453,7 @@ impl SolverInterface for PerChildProbeSolver {
     fn solve(
         &mut self,
         basis: Option<&Basis>,
-    ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+    ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
         self.per_solve_basis_offered.push(basis.is_some());
         self.per_solve_row_lower
             .push(std::mem::take(&mut self.pending_row_lower));
@@ -462,7 +462,7 @@ impl SolverInterface for PerChildProbeSolver {
             .resize(self.current_num_rows, self.binding_dual);
         self.buf_reduced_costs.clear();
         self.buf_reduced_costs.resize(self.current_num_cols, 0.0);
-        Ok(cobre_solver::SolutionView {
+        Ok(novomodelo_solver::SolutionView {
             objective: 0.0,
             primal: &[],
             dual: &self.buf_dual,
@@ -667,7 +667,7 @@ fn exchange_and_records(
     states: &[Vec<f64>],
     n_stages: usize,
 ) -> (ExchangeBuffers, Vec<TrajectoryRecord>) {
-    use cobre_comm::LocalBackend;
+    use novomodelo_comm::LocalBackend;
 
     let records = test_support::trial_state_records(states, n_stages);
     let mut bufs = ExchangeBuffers::new(&test_support::state_layout(n_state, 0), states.len(), 1);
@@ -677,7 +677,7 @@ fn exchange_and_records(
 }
 
 fn exchange_with_states(n_state: usize, states: Vec<Vec<f64>>) -> ExchangeBuffers {
-    use cobre_comm::LocalBackend;
+    use novomodelo_comm::LocalBackend;
 
     let local_count = states.len();
     let mut bufs = ExchangeBuffers::new(&test_support::state_layout(n_state, 0), local_count, 1);
@@ -701,10 +701,10 @@ fn exchange_with_states(n_state: usize, states: Vec<Vec<f64>>) -> ExchangeBuffer
 fn make_stochastic_context(
     n_stages: usize,
     branching_factor: usize,
-) -> cobre_stochastic::StochasticContext {
+) -> novomodelo_stochastic::StochasticContext {
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
-    use cobre_core::{
+    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::{
         Bus, DeficitSegment, EntityId, SystemBuilder,
         scenario::{
             CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
@@ -714,7 +714,9 @@ fn make_stochastic_context(
             StageStateConfig,
         },
     };
-    use cobre_stochastic::context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+    use novomodelo_stochastic::context::{
+        ClassSchemes, OpeningTreeInputs, build_stochastic_context,
+    };
     use std::collections::BTreeMap;
 
     let bus = Bus {
@@ -1771,7 +1773,7 @@ fn cut_is_tight_at_trial_state() {
 
 #[test]
 fn single_rank_backward_pass_with_local_backend_produces_correct_fcf() {
-    use cobre_comm::LocalBackend;
+    use novomodelo_comm::LocalBackend;
 
     let n_stages = 3_usize;
     let n_openings = 2_usize;
@@ -2463,16 +2465,18 @@ fn make_stochastic_context_with_load(
     branching_factor: usize,
     mean_mw: f64,
     std_mw: f64,
-) -> cobre_stochastic::StochasticContext {
+) -> novomodelo_stochastic::StochasticContext {
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{CorrelationModel, InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{CorrelationModel, InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
-    use cobre_stochastic::context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+    use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
+    use novomodelo_stochastic::context::{
+        ClassSchemes, OpeningTreeInputs, build_stochastic_context,
+    };
 
     let bus0 = Bus {
         id: EntityId(0),
@@ -3095,7 +3099,7 @@ fn backward_pass_cut_coefficients_unaffected() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn per_stage_cut_sync_invariant_after_bug1_fix() {
-    use cobre_comm::LocalBackend;
+    use novomodelo_comm::LocalBackend;
 
     let n_stages = 4_usize;
     let n_openings = 2_usize;
@@ -3210,7 +3214,7 @@ fn per_stage_cut_sync_invariant_after_bug1_fix() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn metadata_sync_updates_active_count_and_last_active_iter() {
-    use cobre_comm::LocalBackend;
+    use novomodelo_comm::LocalBackend;
 
     // 3-stage system: backward loop processes t=1 then t=0.
     // At t=1: generates cuts into pool[1], successor pool[2] is empty.
@@ -4269,7 +4273,7 @@ fn per_child_backward_isolates_column_basis_and_pool_metadata() {
 
     // Two external inflow columns at stage 1 carrying materially different eta.
     let mut inflow_lib =
-        cobre_stochastic::ExternalScenarioLibrary::new(n_stages, 2, 1, "inflow", vec![1, 2]);
+        novomodelo_stochastic::ExternalScenarioLibrary::new(n_stages, 2, 1, "inflow", vec![1, 2]);
     inflow_lib.eta_slice_mut(1, 0).copy_from_slice(&[2.0]);
     inflow_lib.eta_slice_mut(1, 1).copy_from_slice(&[-2.0]);
 
@@ -4525,7 +4529,7 @@ fn backward_write_populates_basis_store_at_omega_zero() {
 
 #[test]
 fn backward_write_preserves_slot_on_infeasibility_at_omega_zero() {
-    use cobre_solver::Basis;
+    use novomodelo_solver::Basis;
 
     use crate::workspace::{BasisStore, CapturedBasis};
 
@@ -4894,7 +4898,7 @@ fn cut_coefficient_sign_convention_slot_zero_k2() {
 use crate::cut_selection::{CutMetadata, CutSelectionStrategy};
 use crate::dcs::DcsParams;
 use crate::workspace::{NoisePreallocation, WorkspaceSizing};
-use cobre_solver::ActiveSolver;
+use novomodelo_solver::ActiveSolver;
 
 /// Cut-free successor core for a 1-hydro, no-lag stage:
 /// columns `[storage_out=0, z_inflow=1, storage_in=2, theta=3]`.

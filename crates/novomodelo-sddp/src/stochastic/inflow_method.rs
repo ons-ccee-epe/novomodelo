@@ -4,10 +4,10 @@
 //! negative PAR(p) inflow realisations, dispatched via `match` when constructing
 //! LP templates and extracting simulation results.
 
-use cobre_io::config::InflowNonNegativityConfig;
-use cobre_io::config::InflowNonNegativityMethod::Penalty;
-use cobre_io::config::InflowNonNegativityMethod::Truncation;
-use cobre_io::config::InflowNonNegativityMethod::TruncationWithPenalty;
+use novomodelo_io::config::InflowNonNegativityConfig;
+use novomodelo_io::config::InflowNonNegativityMethod::Penalty;
+use novomodelo_io::config::InflowNonNegativityMethod::Truncation;
+use novomodelo_io::config::InflowNonNegativityMethod::TruncationWithPenalty;
 /// Inflow non-negativity treatment method.
 ///
 /// The variant must be the same across all stages (set once at solver
@@ -16,7 +16,7 @@ use cobre_io::config::InflowNonNegativityMethod::TruncationWithPenalty;
 /// # Examples
 ///
 /// ```rust
-/// use cobre_sddp::InflowNonNegativityMethod;
+/// use novomodelo_sddp::InflowNonNegativityMethod;
 ///
 /// let penalty = InflowNonNegativityMethod::Penalty;
 /// assert!(penalty.has_slack_columns());
@@ -52,7 +52,7 @@ impl InflowNonNegativityMethod {
     /// # Examples
     ///
     /// ```rust
-    /// use cobre_sddp::InflowNonNegativityMethod;
+    /// use novomodelo_sddp::InflowNonNegativityMethod;
     ///
     /// assert!(!InflowNonNegativityMethod::None.has_slack_columns());
     /// assert!(InflowNonNegativityMethod::Penalty.has_slack_columns());
@@ -71,7 +71,9 @@ impl From<&InflowNonNegativityConfig> for InflowNonNegativityMethod {
     /// before this total conversion runs.
     fn from(cfg: &InflowNonNegativityConfig) -> Self {
         match cfg.method {
-            cobre_io::config::InflowNonNegativityMethod::None => InflowNonNegativityMethod::None,
+            novomodelo_io::config::InflowNonNegativityMethod::None => {
+                InflowNonNegativityMethod::None
+            }
             Truncation => InflowNonNegativityMethod::Truncation,
             Penalty => InflowNonNegativityMethod::Penalty,
             TruncationWithPenalty => InflowNonNegativityMethod::TruncationWithPenalty,
@@ -82,7 +84,9 @@ impl From<&InflowNonNegativityConfig> for InflowNonNegativityMethod {
 #[cfg(test)]
 mod tests {
     use super::InflowNonNegativityMethod;
-    use cobre_io::config::{InflowNonNegativityConfig, InflowNonNegativityMethod as CfgMethod};
+    use novomodelo_io::config::{
+        InflowNonNegativityConfig, InflowNonNegativityMethod as CfgMethod,
+    };
 
     // ── has_slack_columns ────────────────────────────────────────────────────
 

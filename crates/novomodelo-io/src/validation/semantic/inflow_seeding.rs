@@ -1,7 +1,7 @@
 //! Layer 5a — inflow lag-slot seeding validation (load-time coverage gates).
 //!
 //! Validates the record/conditioning coverage the load-time PAR seed
-//! derivation ([`cobre_stochastic::derive_inflow_seeds`]) needs to fill the
+//! derivation ([`novomodelo_stochastic::derive_inflow_seeds`]) needs to fill the
 //! lag chain and the mid-period accumulator, plus the annual-component
 //! monthly-exclusive restriction.
 //!
@@ -9,9 +9,9 @@
 
 use std::collections::HashMap;
 
-use cobre_core::{EntityId, SeasonCycleType, Stage};
-use cobre_stochastic::par::precompute_stage_lag_transitions;
-use cobre_stochastic::season_cast::{
+use novomodelo_core::{EntityId, SeasonCycleType, Stage};
+use novomodelo_stochastic::par::precompute_stage_lag_transitions;
+use novomodelo_stochastic::season_cast::{
     RealizedWindow, cast, merge_layered_windows, nth_previous_occurrence, season_period_window,
 };
 
@@ -161,7 +161,7 @@ fn finalizing_period_count(data: &ParsedData) -> usize {
         .count()
 }
 
-/// Mirrors [`cobre_stochastic::derive_inflow_seeds`] per-hydro construction.
+/// Mirrors [`novomodelo_stochastic::derive_inflow_seeds`] per-hydro construction.
 /// Preserves row order: overlaps resolve to the first-listed window.
 fn merged_windows_by_hydro(data: &ParsedData) -> HashMap<EntityId, Vec<RealizedWindow>> {
     let mut record: HashMap<EntityId, Vec<RealizedWindow>> = HashMap::new();
@@ -445,7 +445,7 @@ mod tests {
     use crate::scenarios::InflowAnnualComponentRow;
     use crate::test_support::*;
     use crate::validation::ErrorKind;
-    use cobre_core::{RecentObservation, SeasonCycleType, SeasonMap};
+    use novomodelo_core::{RecentObservation, SeasonCycleType, SeasonMap};
 
     fn d(y: i32, m: u32, day: u32) -> chrono::NaiveDate {
         chrono::NaiveDate::from_ymd_opt(y, m, day).unwrap()
@@ -560,8 +560,8 @@ mod tests {
     /// order dominated by `L_state - n_fin` and an annual component present,
     /// `L_state = 12`.
     fn weekly_monthly_two_month_stages() -> crate::stages::StagesData {
-        use cobre_core::HorizonGraph;
-        use cobre_core::temporal::{
+        use novomodelo_core::HorizonGraph;
+        use novomodelo_core::temporal::{
             Block, BlockMode, NoiseMethod, PolicyGraphType, ScenarioSourceConfig, SeasonCycleType,
             SeasonDefinition, SeasonMap, Stage, StageRiskConfig, StageStateConfig,
         };
@@ -859,7 +859,7 @@ mod tests {
     // ── Row 6: non-monthly annual component reject ─────────────────────────
 
     fn season_map_with_cycle(cycle: SeasonCycleType) -> SeasonMap {
-        use cobre_core::temporal::SeasonDefinition;
+        use novomodelo_core::temporal::SeasonDefinition;
         SeasonMap {
             cycle_type: cycle,
             seasons: vec![SeasonDefinition {

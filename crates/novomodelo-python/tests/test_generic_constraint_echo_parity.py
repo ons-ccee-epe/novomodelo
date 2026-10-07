@@ -5,16 +5,16 @@ must also be written by the Python bindings. This closes the loop for
 `generic_constraints/resolved_echo.parquet`: it runs both write
 paths end-to-end on a case that declares a generic constraint and asserts the
 echo exists on BOTH sides with identical content. Both paths serialize the
-identical `cobre_sddp::build_generic_constraint_echo_rows` output through the
-identical `cobre_io::write_generic_constraint_echo` writer, so the two files
+identical `novomodelo_sddp::build_generic_constraint_echo_rows` output through the
+identical `novomodelo_io::write_generic_constraint_echo` writer, so the two files
 must match column-for-column.
 
-`cobre-python` is excluded from the cargo workspace (it needs a Python
+`novomodelo-python` is excluded from the cargo workspace (it needs a Python
 interpreter to build), so `cargo test --workspace` never runs this gate; it
-runs in cobre-python's own test job:
+runs in novomodelo-python's own test job:
 
-    maturin develop --release --manifest-path crates/cobre-python/Cargo.toml
-    pytest crates/cobre-python/tests/test_generic_constraint_echo_parity.py -v
+    maturin develop --release --manifest-path crates/novomodelo-python/Cargo.toml
+    pytest crates/novomodelo-python/tests/test_generic_constraint_echo_parity.py -v
 
 The fixture `examples/deterministic/d13-generic-constraint` declares one
 generic constraint (`thermal_generation(0) <= 10`), so a single run exercises
@@ -28,7 +28,7 @@ import pathlib
 import pyarrow.parquet as pq
 import pytest
 
-from _cobre_cli import run_cli
+from _novomodelo_cli import run_cli
 
 _REPO_ROOT = pathlib.Path(__file__).parents[3]
 D13_CASE = _REPO_ROOT / "examples" / "deterministic" / "d13-generic-constraint"
@@ -50,11 +50,11 @@ def d13_cli_output(
 @pytest.fixture(scope="module")
 def d13_python_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     """Run D13 through the module-level Python bindings entry point."""
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     assert D13_CASE.is_dir(), f"the D13 fixture must exist at {D13_CASE}"
     output_dir = tmp_path_factory.mktemp("d13_python_out")
-    cobre.run.run(str(D13_CASE), output_dir=str(output_dir))
+    novomodelo.run.run(str(D13_CASE), output_dir=str(output_dir))
     return output_dir
 
 

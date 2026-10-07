@@ -11,7 +11,7 @@
 //!
 //! ```json
 //! {
-//!   "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/non_controllable_sources.schema.json",
+//!   "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/non_controllable_sources.schema.json",
 //!   "non_controllable_sources": [
 //!     {
 //!       "id": 0,
@@ -43,7 +43,7 @@
 //! Cross-reference validation (e.g., checking that `bus_id` exists in the bus
 //! registry) is deferred to Layer 3.
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId,
     entities::NonControllableSource,
     penalty::{GlobalPenaltyDefaults, resolve_ncs_curtailment_cost},
@@ -120,7 +120,7 @@ pub(crate) struct RawNcs {
 /// (global → entity) for `curtailment_cost`. The result is sorted by `id`
 /// ascending, so parser output is deterministic regardless of file row order
 /// (declaration-order invariance); canonical order is
-/// [`SystemBuilder::build`](cobre_core::SystemBuilder::build)'s to establish.
+/// [`SystemBuilder::build`](novomodelo_core::SystemBuilder::build)'s to establish.
 ///
 /// # Errors
 ///
@@ -134,8 +134,8 @@ pub(crate) struct RawNcs {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::system::parse_non_controllable_sources;
-/// use cobre_core::penalty::GlobalPenaltyDefaults;
+/// use novomodelo_io::system::parse_non_controllable_sources;
+/// use novomodelo_core::penalty::GlobalPenaltyDefaults;
 /// use std::path::Path;
 ///
 /// # fn make_global() -> GlobalPenaltyDefaults { unimplemented!() }

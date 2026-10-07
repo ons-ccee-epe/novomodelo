@@ -8,9 +8,9 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use cobre_core::Hydro;
-use cobre_io::scenarios::estimation::{EstimationPath, EstimationReport};
-use cobre_stochastic::{ComponentProvenance, StochasticProvenance};
+use novomodelo_core::Hydro;
+use novomodelo_io::scenarios::estimation::{EstimationPath, EstimationReport};
+use novomodelo_stochastic::{ComponentProvenance, StochasticProvenance};
 
 use crate::hydro_models::{
     EvaporationReferenceSource, EvaporationSource, HydroModelProvenance, ProductionModelSource,
@@ -101,7 +101,7 @@ pub struct HydroProductionProvenance {
 /// # Example
 ///
 /// ```rust
-/// use cobre_sddp::{
+/// use novomodelo_sddp::{
 ///     HydroProductionProvenance, InflowProvenance, ModelProvenanceReport, ProvenanceSource,
 /// };
 ///
@@ -267,15 +267,15 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use cobre_core::EntityId;
-    use cobre_io::scenarios::estimation::{EstimationPath, EstimationReport};
-    use cobre_stochastic::{ComponentProvenance, StochasticProvenance};
+    use novomodelo_core::EntityId;
+    use novomodelo_io::scenarios::estimation::{EstimationPath, EstimationReport};
+    use novomodelo_stochastic::{ComponentProvenance, StochasticProvenance};
 
     use crate::hydro_models::{
         EvaporationReferenceSource, EvaporationSource, HydroModelProvenance, ProductionModelSource,
     };
     use crate::test_support::minimal_hydros;
-    use cobre_stochastic::par::fitting::HydroEstimationEntry;
+    use novomodelo_stochastic::par::fitting::HydroEstimationEntry;
 
     use super::{
         HydroProductionProvenance, ModelProvenanceReport, ProvenanceSource, build_provenance_report,

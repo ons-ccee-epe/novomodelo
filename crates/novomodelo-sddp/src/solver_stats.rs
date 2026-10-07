@@ -5,8 +5,8 @@
 //! The deltas are stored per-iteration and per-phase for later Parquet output and
 //! CLI display.
 
-use cobre_io::SolverStatsRow;
-use cobre_solver::SolverStatistics;
+use novomodelo_io::SolverStatsRow;
+use novomodelo_solver::SolverStatistics;
 
 /// Delta of solver counters between two snapshots.
 ///

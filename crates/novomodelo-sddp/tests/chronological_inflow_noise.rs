@@ -22,14 +22,14 @@
 
 mod common;
 
-use cobre_sddp::StudySetup;
-use cobre_sddp::indexer::StateDim;
-use cobre_sddp::setup::{NodePos, StageIdx};
-use cobre_sddp::test_support::{
+use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::indexer::StateDim;
+use novomodelo_sddp::setup::{NodePos, StageIdx};
+use novomodelo_sddp::test_support::{
     capture_patched_node_template_at, capture_patched_node_template_with_inflow_noise,
     no_cut_root_lower_bound, node_opening_noise, oracle_initial_state,
 };
-use cobre_solver::{ActiveSolver, SolverInterface};
+use novomodelo_solver::{ActiveSolver, SolverInterface};
 
 use common::build_setup_in_code;
 use common::in_code_studies::{

@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use cobre_core::{EntityId, Hydro, InflowHistoryRow, RecentObservation, SeasonMap, Stage};
+use novomodelo_core::{EntityId, Hydro, InflowHistoryRow, RecentObservation, SeasonMap, Stage};
 
 #[cfg(test)]
 use crate::season_cast::nth_previous_occurrence;
@@ -224,7 +224,7 @@ fn derive_inflow_seeds_reference(
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId,
         test_support::{HydroSpec, MirrorUnitGroup, StageSpec, date, single_block},
     };
@@ -242,7 +242,7 @@ mod tests {
         season_id: Option<usize>,
     ) -> Stage {
         let days = u32::try_from((end - start).num_days()).unwrap();
-        cobre_core::test_support::make_stage(StageSpec {
+        novomodelo_core::test_support::make_stage(StageSpec {
             id: i32::try_from(index).unwrap(),
             index: Some(index),
             start_date: start,
@@ -254,7 +254,7 @@ mod tests {
     }
 
     fn make_hydro(id: i32) -> Hydro {
-        cobre_core::test_support::make_hydro(HydroSpec {
+        novomodelo_core::test_support::make_hydro(HydroSpec {
             id,
             name: format!("H{id}"),
             max_storage_hm3: 100.0,

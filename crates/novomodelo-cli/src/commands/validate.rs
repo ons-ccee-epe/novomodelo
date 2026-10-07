@@ -1,4 +1,4 @@
-//! `cobre validate <CASE_DIR>` subcommand.
+//! `novomodelo validate <CASE_DIR>` subcommand.
 //!
 //! Runs the six-layer validation pipeline followed by the pre-solver
 //! preparation phases and prints a structured diagnostic report to stdout —
@@ -10,33 +10,33 @@
 //!
 //! ## Validation contract
 //!
-//! If `cobre validate <CASE_DIR>` exits 0, then `cobre run <CASE_DIR>` will not
+//! If `novomodelo validate <CASE_DIR>` exits 0, then `novomodelo run <CASE_DIR>` will not
 //! fail in any phase before the solver begins iterating. After the case loads and
 //! `config.json` parses, every pre-solver check runs through
-//! [`cobre_sddp::validate_phases::validate_study`], the pipeline `cobre.io.validate`
-//! shares: it builds the study with the constructor `cobre run` uses, checks the
+//! [`novomodelo_sddp::validate_phases::validate_study`], the pipeline `novomodelo.io.validate`
+//! shares: it builds the study with the constructor `novomodelo run` uses, checks the
 //! warm-start, resume or simulation-only policy the run would load, and, when
 //! `config.policy.boundary` is configured, reconciles the boundary policy against
 //! its terminal manifest, without solving. A failure exits by its
-//! [`cobre_sddp::ErrorClass`].
+//! [`novomodelo_sddp::ErrorClass`].
 
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
 use clap::Args;
-use cobre_io::{LoadError, ReportEntry, validate_case_with_artifacts};
-use cobre_sddp::policy::full_fcf_load::FullFcfLoadKind;
-use cobre_sddp::validate_phases::{
+use console::{Term, style};
+use novomodelo_io::{LoadError, ReportEntry, validate_case_with_artifacts};
+use novomodelo_sddp::policy::full_fcf_load::FullFcfLoadKind;
+use novomodelo_sddp::validate_phases::{
     PolicyLoadSummary, ValidateFailure, ValidateRequest, validate_study,
 };
-use cobre_sddp::{BoundaryReconciliation, BoundaryReconciliationReport, ErrorClass};
-use console::{Term, style};
+use novomodelo_sddp::{BoundaryReconciliation, BoundaryReconciliationReport, ErrorClass};
 use serde::Serialize;
 
 use crate::commands::resolve_output_dir;
 use crate::error::CliError;
 
-/// Arguments for the `cobre validate` subcommand.
+/// Arguments for the `novomodelo validate` subcommand.
 #[derive(Debug, Args)]
 #[command(about = "Validate a case directory and print a structured diagnostic report")]
 pub struct ValidateArgs {
@@ -50,7 +50,7 @@ pub struct ValidateArgs {
 
     /// Output directory whose policy a configured warm-start, resume or
     /// simulation-only load is checked against (defaults to `<CASE_DIR>/output/`,
-    /// as for `cobre run`).
+    /// as for `novomodelo run`).
     #[arg(long, value_name = "DIR")]
     pub output: Option<PathBuf>,
 }
@@ -65,7 +65,7 @@ struct ValidateBoundaryOutput {
     boundary_date: Option<NaiveDate>,
     /// The reconciliation report when `configured` is `Some(true)`.
     report: Option<BoundaryReconciliationReport>,
-    /// The policy load `cobre run` would apply, present only when one is configured.
+    /// The policy load `novomodelo run` would apply, present only when one is configured.
     #[serde(skip_serializing_if = "Option::is_none")]
     policy_load: Option<PolicyLoadOutput>,
     /// The failing phase and message, populated only on an early abort.
@@ -79,7 +79,7 @@ struct PolicyLoadOutput {
     unused_stored_bases: usize,
 }
 
-/// Early-abort failure. `phase` is the stable kind string from [`cobre_sddp::validate_phases::PhaseFailure::kind`], [`cobre_sddp::validate_phases::PolicyLoadFailure::kind`] or [`LoadError::kind`] (same string programmatic callers filter on).
+/// Early-abort failure. `phase` is the stable kind string from [`novomodelo_sddp::validate_phases::PhaseFailure::kind`], [`novomodelo_sddp::validate_phases::PolicyLoadFailure::kind`] or [`LoadError::kind`] (same string programmatic callers filter on).
 #[derive(Debug, Serialize)]
 struct ValidateErrorOutput {
     phase: String,
@@ -205,7 +205,7 @@ fn render_failure(
     Ok(())
 }
 
-/// Serialize `output` as `cobre validate --json`'s single stdout JSON object.
+/// Serialize `output` as `novomodelo validate --json`'s single stdout JSON object.
 /// Stdout carries exactly one JSON object and no human-readable text.
 fn emit_validate_json(output: &ValidateBoundaryOutput) -> Result<(), CliError> {
     let json = serde_json::to_string_pretty(output).map_err(|e| CliError::Internal {
@@ -226,7 +226,7 @@ fn emit_json_error(json: bool, kind: &str, message: &str) -> Result<(), CliError
 
 /// Execute the `validate` subcommand, printing a structured diagnostic report
 /// (with any pipeline warnings) to stdout. Honors the module's validation contract:
-/// exit 0 implies `cobre run` will not fail before the solver begins iterating.
+/// exit 0 implies `novomodelo run` will not fail before the solver begins iterating.
 ///
 /// # Errors
 ///
@@ -281,7 +281,7 @@ pub fn execute(args: &ValidateArgs) -> Result<(), CliError> {
     };
 
     let config_path = args.case_dir.join("config.json");
-    let config = match cobre_io::parse_config(&config_path) {
+    let config = match novomodelo_io::parse_config(&config_path) {
         Ok(config) => config,
         Err(err) => {
             emit_json_error(args.json, err.kind(), &err.to_string())?;
@@ -381,8 +381,8 @@ pub fn execute(args: &ValidateArgs) -> Result<(), CliError> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use cobre_io::{ReportEntry, ValidationReport};
-    use cobre_sddp::SddpError;
+    use novomodelo_io::{ReportEntry, ValidationReport};
+    use novomodelo_sddp::SddpError;
 
     use super::*;
 
@@ -403,7 +403,7 @@ mod tests {
     #[test]
     fn phase_failure_exit_code_follows_the_error_class() {
         let stochastic =
-            SddpError::Stochastic(cobre_stochastic::StochasticError::InsufficientData {
+            SddpError::Stochastic(novomodelo_stochastic::StochasticError::InsufficientData {
                 context: "no valid historical windows found".to_string(),
             });
         let class = stochastic.class();

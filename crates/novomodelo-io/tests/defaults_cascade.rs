@@ -1,12 +1,12 @@
 //! Integration tests for config/stages defaults cascade.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::doc_markdown)]
 
-use cobre_io::PolicyMode;
-use cobre_io::config::{
+use novomodelo_io::PolicyMode;
+use novomodelo_io::config::{
     ForwardPassesResolution, InflowNonNegativityMethod, NumScenariosResolution, StoppingMode,
     parse_config,
 };
-use cobre_io::test_support::write_json;
+use novomodelo_io::test_support::write_json;
 
 #[test]
 fn test_minimal_config_all_defaults() {

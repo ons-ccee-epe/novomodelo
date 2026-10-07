@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 
-use cobre_core::TrainingEvent;
+use novomodelo_core::TrainingEvent;
 
 use crate::config::ShutdownSource;
 use crate::policy::orchestration::PeriodicCheckpoint;
@@ -71,7 +71,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
 
-    use cobre_core::TrainingEvent;
+    use novomodelo_core::TrainingEvent;
 
     use super::RuntimeHandles;
     use crate::config::ShutdownSource;

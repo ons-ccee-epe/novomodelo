@@ -12,7 +12,7 @@
 //! storage before the call would lose the old lags to an in-place shift, so it
 //! passes a pre-saved snapshot as `incoming_lags`.
 
-use cobre_core::temporal::StageLagTransition;
+use novomodelo_core::temporal::StageLagTransition;
 
 /// Maps a `(lag, entity)` pair to a flat-buffer index for one lag-storage
 /// order, plus the two dimensions the advancer loops over. Static-dispatched
@@ -261,7 +261,7 @@ pub fn advance_lag_chain<L: LagIndex>(
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::{DownstreamLagAccum, EntityMajor, LagMajor, PrimaryLagAccum, advance_lag_chain};
-    use cobre_core::temporal::StageLagTransition;
+    use novomodelo_core::temporal::StageLagTransition;
 
     /// Builds a `StageLagTransition` exercising only the primary path — the
     /// `downstream_*` fields stay inert (`0.0` / `false`).
@@ -611,7 +611,7 @@ mod tests {
     }
 
     /// A seeded accumulator (mirroring `derive_inflow_seeds`'s `accum = rate *
-    /// coverage`, `crates/cobre-stochastic/src/seeds.rs`) for a 3-day
+    /// coverage`, `crates/novomodelo-stochastic/src/seeds.rs`) for a 3-day
     /// conditioning window at 500 m3/s out of a 30-day month, carried through
     /// the finalize where the remaining 27 days complete at 480 m3/s — the
     /// seed-unit-bug killer: an accumulator seeded in raw hours (or days) but

@@ -4,7 +4,7 @@
 //! from algorithm-specific types is the calling crate's responsibility.
 //!
 //! The canonical wire-format description is `schemas/policy.fbs` in this crate
-//! (namespace `Cobre.IO.Policy`, tables `StageCuts`, `AffinePiece`, `StageBasis`,
+//! (namespace `Novomodelo.IO.Policy`, tables `StageCuts`, `AffinePiece`, `StageBasis`,
 //! `StageStates`); the build hand-writes both the builder calls and the safe
 //! raw-byte parser rather than consuming the schema. The `*_FIELD_*: u16` slot
 //! constants in `codec` mirror the schema's `(id: N)` attributes via
@@ -273,7 +273,7 @@ mod tests {
     fn make_metadata(num_stages: u32, _state_dimension: u32) -> CheckpointManifest {
         CheckpointManifest {
             format_version: FORMAT_VERSION,
-            software: Some("cobre".to_string()),
+            software: Some("novomodelo".to_string()),
             software_version: "0.0.1".to_string(),
             created_at: "2026-03-08T00:00:00Z".to_string(),
             num_stages,

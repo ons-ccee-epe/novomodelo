@@ -1,35 +1,35 @@
-//! Simulation phase for `cobre run`.
+//! Simulation phase for `novomodelo run`.
 
 use std::path::Path;
 use std::sync::mpsc;
 
 use console::Term;
 
-use cobre_comm::{Communicator, ReduceOp};
-use cobre_core::{System, TrainingEvent};
-use cobre_io::MetadataCost;
-use cobre_io::MetadataSimulationSolveStats;
-use cobre_io::OutputContext;
-use cobre_io::SimulationOutput;
-use cobre_io::now_iso8601;
-use cobre_io::output::simulation_writer::ScenarioWritePayload;
-use cobre_io::output::simulation_writer::SimulationParquetWriter;
-use cobre_io::output::simulation_writer::SimulationPathRecord;
-use cobre_io::write_skipped_simulation_results;
-use cobre_io::write_success_marker;
-use cobre_sddp::SOLVER_STATS_DELTA_SCALAR_FIELDS;
-use cobre_sddp::SimulationWeighting;
-use cobre_sddp::SolverStatsDelta;
-use cobre_sddp::StudySetup;
-use cobre_sddp::TrainingResult;
-use cobre_sddp::aggregate_simulation;
-use cobre_sddp::pack_delta_scalars;
-use cobre_sddp::pack_scenario_stats;
-use cobre_sddp::reconcile_global_ok;
-use cobre_sddp::unpack_delta_scalars;
-use cobre_sddp::unpack_scenario_stats;
-use cobre_solver::ActiveSolver;
-use cobre_solver::active_solver_metadata_id;
+use novomodelo_comm::{Communicator, ReduceOp};
+use novomodelo_core::{System, TrainingEvent};
+use novomodelo_io::MetadataCost;
+use novomodelo_io::MetadataSimulationSolveStats;
+use novomodelo_io::OutputContext;
+use novomodelo_io::SimulationOutput;
+use novomodelo_io::now_iso8601;
+use novomodelo_io::output::simulation_writer::ScenarioWritePayload;
+use novomodelo_io::output::simulation_writer::SimulationParquetWriter;
+use novomodelo_io::output::simulation_writer::SimulationPathRecord;
+use novomodelo_io::write_skipped_simulation_results;
+use novomodelo_io::write_success_marker;
+use novomodelo_sddp::SOLVER_STATS_DELTA_SCALAR_FIELDS;
+use novomodelo_sddp::SimulationWeighting;
+use novomodelo_sddp::SolverStatsDelta;
+use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::TrainingResult;
+use novomodelo_sddp::aggregate_simulation;
+use novomodelo_sddp::pack_delta_scalars;
+use novomodelo_sddp::pack_scenario_stats;
+use novomodelo_sddp::reconcile_global_ok;
+use novomodelo_sddp::unpack_delta_scalars;
+use novomodelo_sddp::unpack_scenario_stats;
+use novomodelo_solver::ActiveSolver;
+use novomodelo_solver::active_solver_metadata_id;
 
 use crate::error::CliError;
 use crate::summary::SimulationSummary;
@@ -56,7 +56,7 @@ pub(super) fn run_simulation_phase(
         .map_err(|e| CliError::Solver {
             message: format!(
                 "{} initialisation failed for simulation pool: {e}",
-                cobre_solver::active_solver_name()
+                novomodelo_solver::active_solver_name()
             ),
         })?;
 
@@ -283,7 +283,7 @@ fn print_sim_summary(
     n_scenarios: u32,
     sim_time_ms: u64,
     agg: &SolverStatsDelta,
-    cost_summary: &cobre_sddp::SimulationSummary,
+    cost_summary: &novomodelo_sddp::SimulationSummary,
     parallelism: u32,
 ) {
     print_simulation_summary(
@@ -305,7 +305,7 @@ fn print_sim_summary(
     );
 }
 
-/// Merge each rank's local [`SimulationOutput`](cobre_io::SimulationOutput) via
+/// Merge each rank's local [`SimulationOutput`](novomodelo_io::SimulationOutput) via
 /// MPI collectives.
 fn merge_simulation_metadata<C: Communicator>(
     comm: &C,
@@ -401,7 +401,7 @@ fn aggregate_simulation_paths<C: Communicator>(
 
 /// Aggregate simulation solver statistics across all MPI ranks.
 ///
-/// Returns the global [`cobre_sddp::SolverStatsDelta`] (sum over all ranks, for
+/// Returns the global [`novomodelo_sddp::SolverStatsDelta`] (sum over all ranks, for
 /// the root summary) and a per-global-scenario `Vec`, sorted by scenario ID for
 /// deterministic Parquet output.
 fn aggregate_simulation_solver_stats<C: Communicator>(
@@ -451,15 +451,15 @@ mod tests {
     use console::Term;
     use tempfile::TempDir;
 
-    use cobre_comm::{
+    use novomodelo_comm::{
         BackendKind, CommData, CommError, Communicator, ExecutionTopology, HostInfo, LocalBackend,
         ReduceOp,
     };
-    use cobre_io::{
+    use novomodelo_io::{
         DistributionInfo, HostLayout, OutputContext, RunStatus, read_simulation_metadata,
     };
-    use cobre_sddp::SimulationWeighting;
-    use cobre_sddp::setup::{
+    use novomodelo_sddp::SimulationWeighting;
+    use novomodelo_sddp::setup::{
         NodeGraph, NodeId, NodeOpenings, NodeRuntime, OpeningSource, StageIdx, Traversal,
     };
 

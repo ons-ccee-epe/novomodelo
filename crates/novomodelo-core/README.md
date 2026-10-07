@@ -1,20 +1,20 @@
-# cobre-core
+# novomodelo-core
 
-Shared data model for the [Cobre](https://github.com/cobre-rs/cobre) power systems ecosystem.
+Shared data model for the [Novomodelo](https://github.com/ons-ccee-epe/novomodelo) power systems ecosystem.
 
-This crate defines the fundamental types used across all Cobre tools: buses, branches,
+This crate defines the fundamental types used across all Novomodelo tools: buses, branches,
 generators (hydro, thermal, renewable), loads, and the top-level
-`System` struct. A power system described with `cobre-core` types can be used for
+`System` struct. A power system described with `novomodelo-core` types can be used for
 stochastic optimization, steady-state analysis, and any other procedure in the
 ecosystem. The crate carries no solver or algorithm dependencies and enforces
 declaration-order invariance so that results are identical regardless of input ordering.
 
 ## When to Use
 
-Depend on `cobre-core` directly when you are building a new analysis tool or
+Depend on `novomodelo-core` directly when you are building a new analysis tool or
 algorithm that needs to consume a validated power system description without
 pulling in solver or I/O logic. If you are writing test utilities or fixtures
-that construct small `System` instances, `cobre-core` is the only dependency
+that construct small `System` instances, `novomodelo-core` is the only dependency
 you need.
 
 ## Key Types
@@ -78,7 +78,7 @@ entities in different input orders are structurally identical.
 
 | Feature  | Default | Description                                                                                                                                                                                                                                                                               |
 | -------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `serde`  | off     | Enables `serde::Serialize`/`Deserialize` for all public types (and `chrono/serde`, needed because `Stage` carries `NaiveDate` fields). Required by `cobre-io` (JSON loading), MPI broadcast via `postcard` in `cobre-comm`, checkpoint serialization in `cobre-sddp`, and `cobre-python`. |
+| `serde`  | off     | Enables `serde::Serialize`/`Deserialize` for all public types (and `chrono/serde`, needed because `Stage` carries `NaiveDate` fields). Required by `novomodelo-io` (JSON loading), MPI broadcast via `postcard` in `novomodelo-comm`, checkpoint serialization in `novomodelo-sddp`, and `novomodelo-python`. |
 | `schema` | off     | Enables `schemars::JsonSchema` for public types referenced from auto-generated JSON Schemas (e.g. `ComputedParameter` embedded in `constraints/generic_parameters.json`). Implies `serde`.                                                                                                |
 
 Every public type carries a `#[cfg_attr(feature = "serde", derive(...))]`
@@ -90,10 +90,10 @@ no API surface change.
 
 | Resource   | URL                                                      |
 | ---------- | -------------------------------------------------------- |
-| Docs site  | <https://docs.cobre-rs.dev/>                             |
+| Docs site  | <https://docs.novomodelo.invalid/>                             |
 | API Docs   | https://docs.rs/cobre-core/latest/cobre_core/            |
-| Repository | https://github.com/cobre-rs/cobre                        |
-| CHANGELOG  | https://github.com/cobre-rs/cobre/blob/main/CHANGELOG.md |
+| Repository | https://github.com/ons-ccee-epe/novomodelo                        |
+| CHANGELOG  | https://github.com/ons-ccee-epe/novomodelo/blob/main/CHANGELOG.md |
 
 ## Status
 

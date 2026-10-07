@@ -8,7 +8,7 @@
 //! appended rows in ascending CSR row order — a reproducibility convention;
 //! `HiGHS` does not require sorted per-column row indices.
 //!
-//! See [Solver Abstraction SS11.1](../../../cobre-docs/src/specs/architecture/solver-abstraction.md).
+//! See [Solver Abstraction SS11.1](../../../novomodelo-docs/src/specs/architecture/solver-abstraction.md).
 
 use crate::types::{RowBatch, StageTemplate};
 

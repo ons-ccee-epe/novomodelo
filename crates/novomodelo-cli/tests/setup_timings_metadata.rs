@@ -11,8 +11,8 @@ use std::process::Command;
 use assert_cmd::prelude::*;
 use tempfile::TempDir;
 
-fn cobre() -> Command {
-    Command::new(assert_cmd::cargo::cargo_bin!("cobre"))
+fn novomodelo() -> Command {
+    Command::new(assert_cmd::cargo::cargo_bin!("novomodelo"))
 }
 
 fn d01_case_dir() -> PathBuf {
@@ -36,7 +36,7 @@ fn training_metadata_carries_well_formed_setup_timings() {
     // Temp output dir so the committed `output/` tree under the fixture is never disturbed.
     let out = TempDir::new().expect("create temp output dir");
 
-    cobre()
+    novomodelo()
         .args([
             "run",
             case.to_str().expect("D01 path is valid UTF-8"),

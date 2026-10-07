@@ -1,11 +1,11 @@
-//! The `cobre.errors` exception hierarchy and the single error-mapping site.
+//! The `novomodelo.errors` exception hierarchy and the single error-mapping site.
 //!
-//! Every leaf class subclasses BOTH `CobreError` and the matching builtin
+//! Every leaf class subclasses BOTH `NovomodeloError` and the matching builtin
 //! (`OSError`, `ValueError`, `RuntimeError`), so existing `except OSError` /
 //! `except ValueError` / `except RuntimeError` code keeps catching while new code
-//! can catch the typed class or the common `CobreError` base. The qualified name
-//! of every class is `cobre.errors.<Name>` so tracebacks read
-//! `cobre.errors.SolverError`.
+//! can catch the typed class or the common `NovomodeloError` base. The qualified name
+//! of every class is `novomodelo.errors.<Name>` so tracebacks read
+//! `novomodelo.errors.SolverError`.
 //!
 //! [`convert_error`] is the ONLY place Rust errors become Python exceptions for
 //! the raising paths. It accepts a concrete [`ErrorSource`] enum (never a
@@ -14,10 +14,10 @@
 //! `SddpError` match keeps explicit `Infeasible`/`Simulation` arms and a
 //! `CheckpointWrite` arm raising its `OutputError`'s class. Every other
 //! `SddpError`, and every `FullFcfLoadError`, takes its class from
-//! [`cobre_sddp::ErrorClass`] through `exception_for_class`, the classification
-//! `cobre run` derives its exit code from.
+//! [`novomodelo_sddp::ErrorClass`] through `exception_for_class`, the classification
+//! `novomodelo run` derives its exit code from.
 //!
-//! The `cobre.io.validate` data-report `kind` field is intentionally NOT routed
+//! The `novomodelo.io.validate` data-report `kind` field is intentionally NOT routed
 //! here — it is a stable data contract decoupled from these class names.
 
 use pyo3::exceptions::{PyException, PyFileNotFoundError, PyOSError, PyRuntimeError, PyValueError};
@@ -25,26 +25,26 @@ use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyTuple, PyType};
 
-use cobre_io::{LoadError, OutputError};
-use cobre_sddp::policy::full_fcf_load::{FullFcfLoadError, FullFcfLoadKind};
-use cobre_sddp::{ErrorClass, SddpError};
+use novomodelo_io::{LoadError, OutputError};
+use novomodelo_sddp::policy::full_fcf_load::{FullFcfLoadError, FullFcfLoadKind};
+use novomodelo_sddp::{ErrorClass, SddpError};
 
 pyo3::create_exception!(
     errors,
-    CobreError,
+    NovomodeloError,
     PyException,
-    "Base class for every Cobre exception (subclasses `Exception`)."
+    "Base class for every Novomodelo exception (subclasses `Exception`)."
 );
 
-/// A leaf exception class in the `cobre.errors` hierarchy.
+/// A leaf exception class in the `novomodelo.errors` hierarchy.
 ///
-/// Each leaf subclasses BOTH [`CobreError`] and a builtin, so the dual-base
+/// Each leaf subclasses BOTH [`NovomodeloError`] and a builtin, so the dual-base
 /// type object is built once via Python's `type(name, bases, dict)` and cached
 /// for the life of the interpreter.
 struct LeafClass {
     /// Unqualified class name (e.g. `"ValidationError"`).
     name: &'static str,
-    /// The builtin co-base alongside [`CobreError`] (e.g. `PyValueError`).
+    /// The builtin co-base alongside [`NovomodeloError`] (e.g. `PyValueError`).
     builtin_base: BuiltinBase,
     /// Docstring exposed as `__doc__`.
     doc: &'static str,
@@ -75,18 +75,18 @@ impl LeafClass {
         self.cell.get_or_try_init(py, || self.build(py))
     }
 
-    /// Build the dual-base class object with `__module__ = "cobre.errors"`, so the
-    /// qualified name reads `cobre.errors.<Name>`.
+    /// Build the dual-base class object with `__module__ = "novomodelo.errors"`, so the
+    /// qualified name reads `novomodelo.errors.<Name>`.
     fn build(&self, py: Python<'_>) -> PyResult<Py<PyType>> {
-        let cobre_base = py.get_type::<CobreError>();
+        let novomodelo_base = py.get_type::<NovomodeloError>();
         let builtin: Bound<'_, PyType> = match self.builtin_base {
             BuiltinBase::Value => py.get_type::<PyValueError>(),
             BuiltinBase::Os => py.get_type::<PyOSError>(),
             BuiltinBase::Runtime => py.get_type::<PyRuntimeError>(),
         };
-        let bases = PyTuple::new(py, [cobre_base, builtin])?;
+        let bases = PyTuple::new(py, [novomodelo_base, builtin])?;
         let namespace = pyo3::types::PyDict::new(py);
-        namespace.set_item("__module__", "cobre.errors")?;
+        namespace.set_item("__module__", "novomodelo.errors")?;
         namespace.set_item("__doc__", self.doc)?;
 
         let type_builtin = py.get_type::<PyType>();
@@ -96,7 +96,7 @@ impl LeafClass {
     }
 }
 
-/// `ValidationError(CobreError, ValueError)` — schema / parse / constraint /
+/// `ValidationError(NovomodeloError, ValueError)` — schema / parse / constraint /
 /// config-override load failures, and study-setup configuration-validation
 /// failures.
 static VALIDATION_ERROR: LeafClass = LeafClass::new(
@@ -105,7 +105,7 @@ static VALIDATION_ERROR: LeafClass = LeafClass::new(
     "Raised when case data or configuration fails validation (subclasses ValueError).",
 );
 
-/// `PolicyIncompatibleError(CobreError, ValueError)` — warm-start / resume
+/// `PolicyIncompatibleError(NovomodeloError, ValueError)` — warm-start / resume
 /// policy incompatibility.
 static POLICY_INCOMPATIBLE_ERROR: LeafClass = LeafClass::new(
     "PolicyIncompatibleError",
@@ -114,7 +114,7 @@ static POLICY_INCOMPATIBLE_ERROR: LeafClass = LeafClass::new(
      (subclasses ValueError).",
 );
 
-/// `CaseIoError(CobreError, OSError)` — filesystem read/write failures.
+/// `CaseIoError(NovomodeloError, OSError)` — filesystem read/write failures.
 static CASE_IO_ERROR: LeafClass = LeafClass::new(
     "CaseIoError",
     BuiltinBase::Os,
@@ -122,7 +122,7 @@ static CASE_IO_ERROR: LeafClass = LeafClass::new(
      (subclasses OSError).",
 );
 
-/// `OutputError(CobreError, OSError)` — output serialization / schema / manifest
+/// `OutputError(NovomodeloError, OSError)` — output serialization / schema / manifest
 /// failures on the write path.
 static OUTPUT_ERROR: LeafClass = LeafClass::new(
     "OutputError",
@@ -131,7 +131,7 @@ static OUTPUT_ERROR: LeafClass = LeafClass::new(
      results (subclasses OSError).",
 );
 
-/// `SolverError(CobreError, RuntimeError)` — training/solver failures. Carries
+/// `SolverError(NovomodeloError, RuntimeError)` — training/solver failures. Carries
 /// `stage`/`iteration`/`scenario` int attributes for an infeasible subproblem,
 /// `None` otherwise.
 static SOLVER_ERROR: LeafClass = LeafClass::new(
@@ -142,14 +142,14 @@ static SOLVER_ERROR: LeafClass = LeafClass::new(
      attributes; otherwise they are None.",
 );
 
-/// `SimulationError(CobreError, RuntimeError)` — simulation-phase failures.
+/// `SimulationError(NovomodeloError, RuntimeError)` — simulation-phase failures.
 static SIMULATION_ERROR: LeafClass = LeafClass::new(
     "SimulationError",
     BuiltinBase::Runtime,
     "Raised on a simulation-phase failure (subclasses RuntimeError).",
 );
 
-/// `InternalError(CobreError, RuntimeError)` — software or environment faults.
+/// `InternalError(NovomodeloError, RuntimeError)` — software or environment faults.
 static INTERNAL_ERROR: LeafClass = LeafClass::new(
     "InternalError",
     BuiltinBase::Runtime,
@@ -161,9 +161,9 @@ static INTERNAL_ERROR: LeafClass = LeafClass::new(
 /// A concrete enum (NOT a `Box<dyn Trait>`, per the hard rules) so every call
 /// site funnels through [`convert_error`] with an exhaustive match.
 pub(crate) enum ErrorSource<'a> {
-    /// A case-load failure from `cobre-io`.
+    /// A case-load failure from `novomodelo-io`.
     Load(&'a LoadError),
-    /// An output-write / metadata-read failure from `cobre-io`.
+    /// An output-write / metadata-read failure from `novomodelo-io`.
     Output(&'a OutputError),
     /// A typed SDDP error carried verbatim from a phase helper, paired with the
     /// descriptive message that today's string path would have produced.
@@ -207,7 +207,7 @@ fn new_leaf_err(py: Python<'_>, leaf: &LeafClass, message: &str) -> PyErr {
     }
 }
 
-/// Map an [`ErrorSource`] to the appropriate `cobre.errors` Python exception —
+/// Map an [`ErrorSource`] to the appropriate `novomodelo.errors` Python exception —
 /// the single mapping site for every raising path.
 ///
 /// Requires a GIL token internally (it constructs Python exception instances and
@@ -424,15 +424,15 @@ fn build_solver_error(
     PyErr::from_value(instance)
 }
 
-/// Register the exception classes (`CobreError` plus its dual-base leaves) into
-/// the `errors` submodule so `from cobre.errors import …` resolves them all.
+/// Register the exception classes (`NovomodeloError` plus its dual-base leaves) into
+/// the `errors` submodule so `from novomodelo.errors import …` resolves them all.
 pub(crate) fn register_errors(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
     m.add(
         "__doc__",
-        "Structured exception hierarchy for Cobre errors.",
+        "Structured exception hierarchy for Novomodelo errors.",
     )?;
-    m.add("CobreError", py.get_type::<CobreError>())?;
+    m.add("NovomodeloError", py.get_type::<NovomodeloError>())?;
     for leaf in [
         &VALIDATION_ERROR,
         &POLICY_INCOMPATIBLE_ERROR,
@@ -455,26 +455,26 @@ mod tests {
         POLICY_INCOMPATIBLE_ERROR, POLICY_VALIDATION_ERROR_PREFIX, SIMULATION_ERROR, SOLVER_ERROR,
         VALIDATION_ERROR, convert_error_with,
     };
-    use cobre_comm::CommError;
-    use cobre_io::{LoadError, OutputError};
-    use cobre_sddp::SddpError;
-    use cobre_sddp::policy::full_fcf_load::{FullFcfLoadError, FullFcfLoadKind};
-    use cobre_solver::SolverError;
-    use cobre_stochastic::StochasticError;
+    use novomodelo_comm::CommError;
+    use novomodelo_io::{LoadError, OutputError};
+    use novomodelo_sddp::SddpError;
+    use novomodelo_sddp::policy::full_fcf_load::{FullFcfLoadError, FullFcfLoadKind};
+    use novomodelo_solver::SolverError;
+    use novomodelo_stochastic::StochasticError;
     use pyo3::prelude::*;
 
     /// Assert the bound `PyErr` value is an instance of the supplied leaf class
-    /// and that its qualified name reads `cobre.errors.<Name>`.
+    /// and that its qualified name reads `novomodelo.errors.<Name>`.
     ///
     /// Resolves the type object directly from the leaf static (no `sys.modules`
-    /// or `import cobre.errors`, which would require the parent `cobre` package
+    /// or `import novomodelo.errors`, which would require the parent `novomodelo` package
     /// to exist in the standalone test binary).
     fn assert_leaf(py: Python<'_>, err: &PyErr, leaf: &LeafClass) {
         let class = leaf.get(py).expect("leaf class builds").bind(py);
         let value = err.value(py);
         assert!(
             value.is_instance(class).expect("isinstance check"),
-            "expected cobre.errors.{}, got {value:?}",
+            "expected novomodelo.errors.{}, got {value:?}",
             leaf.name
         );
         let qualname: String = class
@@ -482,7 +482,7 @@ mod tests {
             .expect("__module__")
             .extract()
             .expect("str");
-        assert_eq!(qualname, "cobre.errors", "{} __module__", leaf.name);
+        assert_eq!(qualname, "novomodelo.errors", "{} __module__", leaf.name);
     }
 
     /// An `Infeasible` SDDP error maps to `SolverError` with the three int
@@ -738,7 +738,7 @@ mod tests {
             }
 
             let empty = tempfile::tempdir().expect("temp dir");
-            let read_failure = cobre_io::read_policy_checkpoint(empty.path())
+            let read_failure = novomodelo_io::read_policy_checkpoint(empty.path())
                 .expect_err("an empty directory holds no checkpoint");
             let expected = format!("failed to read policy checkpoint: {read_failure}");
             check(

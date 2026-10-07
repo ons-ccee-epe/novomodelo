@@ -1,7 +1,7 @@
 //! The identity this build stamps into every output it writes.
 
 /// Recorded as `software` in output metadata and policy checkpoints.
-pub const SOFTWARE_NAME: &str = "cobre";
+pub const SOFTWARE_NAME: &str = "novomodelo";
 
 /// Recorded as `software_version`. The workspace shares one version, so this
 /// crate's version is the product's.

@@ -1,4 +1,4 @@
-"""Integration tests for the cobre.Study pyclass.
+"""Integration tests for the novomodelo.Study pyclass.
 
 These tests verify that a case directory can be loaded once into a live,
 reusable Study (front half of the solve lifecycle: load -> stochastic
@@ -8,7 +8,7 @@ load without a reload, and that a missing case directory is rejected before any
 work runs.
 
 Run with (from the repo root):
-    pytest crates/cobre-python/tests/test_study.py
+    pytest crates/novomodelo-python/tests/test_study.py
 
 Note: each construction writes the front-half sidecars to a temporary directory
 created by pytest's tmp_path fixture. The 1dtoy case is small enough that tests
@@ -23,7 +23,7 @@ import pytest
 
 
 VALID_CASE = "examples/1dtoy"
-MISSING_CASE = "/tmp/nonexistent_cobre_case_xzy123"
+MISSING_CASE = "/tmp/nonexistent_novomodelo_case_xzy123"
 
 
 def _read_training_metadata(output_dir: pathlib.Path) -> dict:
@@ -40,15 +40,15 @@ def _read_simulation_metadata(output_dir: pathlib.Path) -> dict:
 
 def test_study_constructs_and_validates(tmp_path: pathlib.Path) -> None:
     """Study(case_dir) loads once and exposes a valid report + system view."""
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
 
     assert study.output_dir == str(tmp_path), "output_dir must echo the resolved path"
 
     system = study.system
-    assert isinstance(system, cobre.model.System), (
-        "system getter must return a cobre.model.System"
+    assert isinstance(system, novomodelo.model.System), (
+        "system getter must return a novomodelo.model.System"
     )
     assert system.n_stages > 0, "loaded system must report stages"
 
@@ -71,9 +71,9 @@ def test_study_constructs_and_validates(tmp_path: pathlib.Path) -> None:
 
 def test_study_writes_front_half_sidecars(tmp_path: pathlib.Path) -> None:
     """Constructing a Study writes the three front-half training sidecars."""
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
-    cobre.Study(VALID_CASE, output_dir=str(tmp_path))
+    novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
 
     for sidecar in (
         "training/scaling_report.json",
@@ -86,28 +86,30 @@ def test_study_writes_front_half_sidecars(tmp_path: pathlib.Path) -> None:
 
 def test_study_missing_case_raises(tmp_path: pathlib.Path) -> None:
     """Study raises OSError when the case directory does not exist."""
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     with pytest.raises(OSError):
-        cobre.Study(MISSING_CASE, output_dir=str(tmp_path))
+        novomodelo.Study(MISSING_CASE, output_dir=str(tmp_path))
 
 
 def test_study_rejects_threads_zero(tmp_path: pathlib.Path) -> None:
     """Study raises ValueError when threads=0."""
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     with pytest.raises(ValueError, match="threads"):
-        cobre.Study(VALID_CASE, output_dir=str(tmp_path), threads=0)
+        novomodelo.Study(VALID_CASE, output_dir=str(tmp_path), threads=0)
 
 
 def test_study_train_returns_policy(tmp_path: pathlib.Path) -> None:
     """Study.train() trains in-memory, writes _SUCCESS, and returns a Policy."""
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
     policy = study.train()
 
-    assert isinstance(policy, cobre.Policy), "train() must return a cobre.Policy"
+    assert isinstance(policy, novomodelo.Policy), (
+        "train() must return a novomodelo.Policy"
+    )
     assert policy.iterations > 0, "a trained policy must report completed iterations"
     # The headline bounds are exposed on the handle.
     assert isinstance(policy.final_lower_bound, float)
@@ -118,21 +120,21 @@ def test_study_train_returns_policy(tmp_path: pathlib.Path) -> None:
 
 
 def test_study_train_matches_run_lower_bound(tmp_path: pathlib.Path) -> None:
-    """Study.train and cobre.run.run train identically (same final_lower_bound).
+    """Study.train and novomodelo.run.run train identically (same final_lower_bound).
 
     Both paths train the same 1dtoy case into separate temp dirs; the persisted
     training metadata final_lower_bound must agree within 1e-6 relative, proving
     Study.train and run.run share the training path (no divergence).
     """
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     study_out = tmp_path / "study_out"
     run_out = tmp_path / "run_out"
 
-    study = cobre.Study(VALID_CASE, output_dir=str(study_out))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(study_out))
     policy = study.train()
 
-    cobre.run.run(VALID_CASE, output_dir=str(run_out))
+    novomodelo.run.run(VALID_CASE, output_dir=str(run_out))
 
     study_meta = _read_training_metadata(study_out)
     run_meta = _read_training_metadata(run_out)
@@ -162,7 +164,7 @@ def test_study_train_callback_cooperative_stop(tmp_path: pathlib.Path) -> None:
     a 1dtoy-calibrated ceiling (k is small for this case), documented here as a
     test heuristic, not an API guarantee.
     """
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     calls = []
 
@@ -170,7 +172,7 @@ def test_study_train_callback_cooperative_stop(tmp_path: pathlib.Path) -> None:
         calls.append(event)
         return len(calls) >= 3
 
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
     policy = study.train(on_iteration=on_iteration)
 
     assert len(calls) >= 1, "the callback must fire at least once"
@@ -199,12 +201,12 @@ def test_study_train_raising_callback_propagates_after_artifacts(
     tmp_path: pathlib.Path,
 ) -> None:
     """A raising callback re-raises verbatim AFTER artifacts are written."""
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     def on_iteration(event):
         raise ValueError("boom")
 
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
 
     with pytest.raises(ValueError, match="boom"):
         study.train(on_iteration=on_iteration)
@@ -222,9 +224,9 @@ def test_study_train_then_simulate(tmp_path: pathlib.Path) -> None:
     without any checkpoint reload. Asserts the returned dict and the _SUCCESS
     marker.
     """
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
     policy = study.train()
     sim = study.simulate(policy)
 
@@ -239,22 +241,22 @@ def test_study_train_then_simulate(tmp_path: pathlib.Path) -> None:
 def test_in_memory_simulate_matches_run_metadata(tmp_path: pathlib.Path) -> None:
     """P3 (make-or-break): in-memory train().simulate() == monolithic run.run.
 
-    Study.train().simulate() into tmp_a and cobre.run.run into tmp_b for the same
+    Study.train().simulate() into tmp_a and novomodelo.run.run into tmp_b for the same
     case + seed must write simulation metadata whose cost.mean_cost agrees within
     1e-6 relative and whose solve_stats.total_lp_solves is EXACTLY equal. This is
     the load-bearing invariant: the in-memory simulate must be bit-identical to
     the monolithic on-disk simulate.
     """
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     tmp_a = tmp_path / "study_out"
     tmp_b = tmp_path / "run_out"
 
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_a))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_a))
     policy = study.train()
     study.simulate(policy)
 
-    cobre.run.run(VALID_CASE, output_dir=str(tmp_b))
+    novomodelo.run.run(VALID_CASE, output_dir=str(tmp_b))
 
     meta_a = _read_simulation_metadata(tmp_a)
     meta_b = _read_simulation_metadata(tmp_b)
@@ -280,9 +282,9 @@ def test_repeated_simulate_one_policy(tmp_path: pathlib.Path) -> None:
     return the full scenario counts and write equal mean_cost (the study's
     simulate is read-only over the setup, so repeated calls are deterministic).
     """
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
     policy = study.train()
 
     out_1 = tmp_path / "sim_1"
@@ -301,27 +303,33 @@ def test_repeated_simulate_one_policy(tmp_path: pathlib.Path) -> None:
     )
 
 
-def test_load_policy_missing_dir_raises_validation_error(tmp_path: pathlib.Path) -> None:
+def test_load_policy_missing_dir_raises_validation_error(
+    tmp_path: pathlib.Path,
+) -> None:
     """load_policy() with no prior training raises ValidationError.
 
     The error message must mention the missing policy directory so callers can
     diagnose a simulation-only request against an untrained output dir.
     """
-    import cobre  # noqa: PLC0415
-    import cobre.errors  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.errors  # noqa: PLC0415
 
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
 
-    with pytest.raises(cobre.errors.ValidationError, match="Policy directory not found"):
+    with pytest.raises(
+        novomodelo.errors.ValidationError, match="Policy directory not found"
+    ):
         study.load_policy()
 
 
-def test_stochastic_data_refusal_raises_validation_error(tmp_path: pathlib.Path) -> None:
+def test_stochastic_data_refusal_raises_validation_error(
+    tmp_path: pathlib.Path,
+) -> None:
     """A historical inflow scheme over a case with no inflow history is refused
     at setup with ValidationError, from both `Study(...)` and `run(...)`."""
-    import cobre  # noqa: PLC0415
-    import cobre.errors  # noqa: PLC0415
-    import cobre.run  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     case = tmp_path / "case"
     shutil.copytree(VALID_CASE, case)
@@ -331,11 +339,11 @@ def test_stochastic_data_refusal_raises_validation_error(tmp_path: pathlib.Path)
     config_path.write_text(json.dumps(config))
     expected = "stochastic error: insufficient data: no valid historical windows found"
 
-    with pytest.raises(cobre.errors.ValidationError, match=expected):
-        cobre.Study(str(case), output_dir=str(tmp_path / "study_output"))
+    with pytest.raises(novomodelo.errors.ValidationError, match=expected):
+        novomodelo.Study(str(case), output_dir=str(tmp_path / "study_output"))
 
-    with pytest.raises(cobre.errors.ValidationError, match=expected):
-        cobre.run.run(str(case), output_dir=str(tmp_path / "run_output"))
+    with pytest.raises(novomodelo.errors.ValidationError, match=expected):
+        novomodelo.run.run(str(case), output_dir=str(tmp_path / "run_output"))
 
 
 def test_simulate_zero_cut_policy_raises(tmp_path: pathlib.Path) -> None:
@@ -346,9 +354,9 @@ def test_simulate_zero_cut_policy_raises(tmp_path: pathlib.Path) -> None:
     a wrong result, so simulate() must raise and direct the caller to
     load_policy() instead.
     """
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
-    study = cobre.Study(
+    study = novomodelo.Study(
         VALID_CASE,
         output_dir=str(tmp_path),
         config_overrides={"training.enabled": False},
@@ -362,20 +370,20 @@ def test_simulate_zero_cut_policy_raises(tmp_path: pathlib.Path) -> None:
 def test_load_policy_then_simulate_matches_run(tmp_path: pathlib.Path) -> None:
     """A loaded policy feeds the IDENTICAL simulate path as a trained one.
 
-    Produce a completed run with cobre.run.run, then load that policy from disk
+    Produce a completed run with novomodelo.run.run, then load that policy from disk
     into a fresh Study and simulate. The loaded policy's iteration count must
     equal the run's completed iterations and the simulate must return the full
     scenario counts.
     """
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     run_dir = tmp_path / "run_dir"
     study_dir = tmp_path / "study_dir"
 
-    cobre.run.run(VALID_CASE, output_dir=str(run_dir))
+    novomodelo.run.run(VALID_CASE, output_dir=str(run_dir))
     run_completed = _read_training_metadata(run_dir)["iterations"]["completed"]
 
-    study = cobre.Study(VALID_CASE, output_dir=str(study_dir))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(study_dir))
     policy = study.load_policy(output_dir=str(run_dir))
     assert policy.iterations == run_completed, (
         "load_policy().iterations must equal the run's completed-iteration count"
@@ -393,9 +401,9 @@ def test_policy_evaluate_matches_cut_matrix_max(tmp_path: pathlib.Path) -> None:
     equality is exact f64 (no tolerance).
     """
     np = pytest.importorskip("numpy")
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
     policy = study.train()
 
     intercepts, coeffs = policy.cut_matrix(0)
@@ -416,9 +424,9 @@ def test_policy_evaluate_matches_cut_matrix_max(tmp_path: pathlib.Path) -> None:
 def test_policy_cut_matrix_shapes_and_dtype(tmp_path: pathlib.Path) -> None:
     """cut_matrix(0) returns (n,)/(n, dim) float64 arrays; n == active-cut count."""
     np = pytest.importorskip("numpy")
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
     policy = study.train()
 
     intercepts, coeffs = policy.cut_matrix(0)
@@ -430,7 +438,7 @@ def test_policy_cut_matrix_shapes_and_dtype(tmp_path: pathlib.Path) -> None:
     assert coeffs.dtype == np.float64, "coeffs dtype must be float64"
 
     # n_cuts must equal the active-cut count for stage 0 from the on-disk policy.
-    loaded = cobre.results.load_policy(str(tmp_path))
+    loaded = novomodelo.results.load_policy(str(tmp_path))
     active = [c for c in loaded["stage_cuts"][0]["cuts"] if c["is_active"]]
     assert n_cuts == len(active), (
         f"cut_matrix active-cut count {n_cuts} must equal the load_policy "
@@ -443,9 +451,9 @@ def test_policy_evaluate_stage_out_of_range_raises_indexerror(
 ) -> None:
     """evaluate() with a stage index past the horizon raises IndexError."""
     pytest.importorskip("numpy")
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
     policy = study.train()
 
     _, coeffs = policy.cut_matrix(0)
@@ -460,9 +468,9 @@ def test_policy_evaluate_bad_state_length_raises_valueerror(
 ) -> None:
     """evaluate() with a state of the wrong length raises ValueError."""
     pytest.importorskip("numpy")
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
     policy = study.train()
 
     with pytest.raises(ValueError, match="expected"):
@@ -478,9 +486,9 @@ def test_train_and_simulate_docstrings_name_written_paths(
     exist on disk after a 1dtoy train+simulate AND appear verbatim in the
     corresponding __doc__. The four historically drifted paths must be absent.
     """
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
     policy = study.train()
     study.simulate(policy)
 
@@ -502,7 +510,7 @@ def test_train_and_simulate_docstrings_name_written_paths(
         "training/dictionaries/bounds.parquet",
     ]
 
-    train_doc = cobre.Study.train.__doc__
+    train_doc = novomodelo.Study.train.__doc__
     assert train_doc is not None, "train() must have a docstring"
 
     for path in train_paths:
@@ -537,7 +545,7 @@ def test_train_and_simulate_docstrings_name_written_paths(
         "simulation/solver/retry_histogram.parquet",
     ]
 
-    simulate_doc = cobre.Study.simulate.__doc__
+    simulate_doc = novomodelo.Study.simulate.__doc__
     assert simulate_doc is not None, "simulate() must have a docstring"
 
     for path in simulate_paths:
@@ -572,13 +580,13 @@ def test_study_summary_properties_match_run_result(tmp_path: pathlib.Path) -> No
     the sections carry no output-path-dependent values, which makes the equality
     assertion a parity claim rather than a coincidence.
     """
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     run_dir = tmp_path / "run"
     study_dir = tmp_path / "study"
 
-    result = cobre.run.run(VALID_CASE, output_dir=str(run_dir))
-    study = cobre.Study(VALID_CASE, output_dir=str(study_dir))
+    result = novomodelo.run.run(VALID_CASE, output_dir=str(run_dir))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(study_dir))
 
     assert study.stochastic == result["stochastic"], (
         "Study.stochastic must equal run.run()['stochastic']"
@@ -609,13 +617,13 @@ _SIMULATION_ONLY = {
 
 
 def _restamp_policy_version(policy_dir: pathlib.Path) -> None:
-    """Rewrite the cobre version in `policy_dir/manifest.bin` to another string of
+    """Rewrite the novomodelo version in `policy_dir/manifest.bin` to another string of
     the same byte length, so the FlatBuffers layout is unchanged."""
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     manifest = policy_dir / "manifest.bin"
     data = manifest.read_bytes()
-    running = cobre.__version__.encode()
+    running = novomodelo.__version__.encode()
     assert data.count(running) == 1, "the running version occurs once in the manifest"
     other = (b"8" if running.startswith(b"9") else b"9") + running[1:]
     manifest.write_bytes(data.replace(running, other))
@@ -645,19 +653,21 @@ def test_study_validate_refuses_a_policy_that_train_refuses(
     tmp_path: pathlib.Path,
 ) -> None:
     """A warm-start Study whose policy `train()` refuses validates as invalid,
-    with the errors `cobre.io.validate` reports for the same output directory."""
-    import cobre  # noqa: PLC0415
-    import cobre.errors  # noqa: PLC0415
-    import cobre.io  # noqa: PLC0415
-    import cobre.run  # noqa: PLC0415
+    with the errors `novomodelo.io.validate` reports for the same output directory."""
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     out = tmp_path / "out"
-    cobre.run.run(
+    novomodelo.run.run(
         VALID_CASE, output_dir=str(out), config_overrides=_ONE_ITERATION_NO_SIMULATION
     )
     _restamp_policy_version(out / "policy")
-    study = cobre.Study(VALID_CASE, output_dir=str(out), config_overrides=_WARM_START)
-    from_validate = cobre.io.validate(VALID_CASE, _WARM_START, output_dir=str(out))
+    study = novomodelo.Study(
+        VALID_CASE, output_dir=str(out), config_overrides=_WARM_START
+    )
+    from_validate = novomodelo.io.validate(VALID_CASE, _WARM_START, output_dir=str(out))
 
     report = study.validate()
 
@@ -665,7 +675,7 @@ def test_study_validate_refuses_a_policy_that_train_refuses(
     assert report["warnings"] == []
     assert report["errors"] == from_validate["errors"]
     message = report["errors"][0]["message"]
-    with pytest.raises(cobre.errors.PolicyIncompatibleError) as exc_info:
+    with pytest.raises(novomodelo.errors.PolicyIncompatibleError) as exc_info:
         study.train()
     reported = message[message.index("policy was written by") :]
     assert reported in str(exc_info.value), (reported, str(exc_info.value))
@@ -676,21 +686,23 @@ def test_study_validate_reports_unused_stored_bases_as_a_warning(
 ) -> None:
     """A simulation-only Study over a policy trained with an extra thermal is
     valid and warns about the stored bases that no longer fit, with the warnings
-    `cobre.io.validate` reports for the same output directory."""
-    import cobre  # noqa: PLC0415
-    import cobre.io  # noqa: PLC0415
-    import cobre.run  # noqa: PLC0415
+    `novomodelo.io.validate` reports for the same output directory."""
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     variant = tmp_path / "variant"
     _copy_case_with_extra_thermal(variant)
     out = tmp_path / "out"
-    cobre.run.run(
+    novomodelo.run.run(
         str(variant), output_dir=str(out), config_overrides=_ONE_ITERATION_NO_SIMULATION
     )
-    study = cobre.Study(
+    study = novomodelo.Study(
         VALID_CASE, output_dir=str(out), config_overrides=_SIMULATION_ONLY
     )
-    from_validate = cobre.io.validate(VALID_CASE, _SIMULATION_ONLY, output_dir=str(out))
+    from_validate = novomodelo.io.validate(
+        VALID_CASE, _SIMULATION_ONLY, output_dir=str(out)
+    )
 
     report = study.validate()
 

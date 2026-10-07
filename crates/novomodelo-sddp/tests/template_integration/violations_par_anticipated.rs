@@ -4,12 +4,12 @@ use super::*;
 
 use super::common::in_code_studies::{discounted_anticipated_study, mixed_lead_anticipated_study};
 use super::common::{build_setup_in_code, run_simulation};
-use cobre_io::Config;
-use cobre_io::config::{SimulationConfig as IoSimulationConfig, SimulationSelection};
-use cobre_sddp::test_support::template_structure::{
+use novomodelo_io::Config;
+use novomodelo_io::config::{SimulationConfig as IoSimulationConfig, SimulationSelection};
+use novomodelo_sddp::test_support::template_structure::{
     RingLaneKind, RowOwner, UnscaledMatrix, geometry_row_families, ring_lanes, row_owners,
 };
-use cobre_sddp::test_support::{constant_lead_resolution, equipment_free_geometry};
+use novomodelo_sddp::test_support::{constant_lead_resolution, equipment_free_geometry};
 
 #[test]
 fn min_outflow_active_col_bounds() {
@@ -122,7 +122,7 @@ fn turbine_column_lower_bound_is_zero() {
 /// regardless of the classical AR order.
 #[test]
 fn max_par_order_uses_par_lp_when_annual_present() {
-    use cobre_core::scenario::{AnnualComponent, InflowModel};
+    use novomodelo_core::scenario::{AnnualComponent, InflowModel};
 
     let ar_coeffs: Vec<f64> = vec![0.3, 0.2];
     let ann = AnnualComponent {
@@ -179,7 +179,7 @@ fn max_par_order_uses_par_lp_when_annual_present() {
 /// Classical PAR systems are unaffected: `max_par_order` equals the AR order.
 #[test]
 fn max_par_order_classical_unchanged() {
-    use cobre_core::scenario::InflowModel;
+    use novomodelo_core::scenario::InflowModel;
 
     let ar_coeffs: Vec<f64> = vec![0.3, 0.2, 0.1];
     let inflow_models = vec![
@@ -235,7 +235,7 @@ fn max_par_order_classical_unchanged() {
 #[allow(clippy::cast_sign_loss)]
 #[test]
 fn max_par_order_z_inflow_row_has_twelve_lag_entries() {
-    use cobre_core::scenario::{AnnualComponent, InflowModel};
+    use novomodelo_core::scenario::{AnnualComponent, InflowModel};
 
     let ar_coeffs: Vec<f64> = vec![0.3, 0.2];
     let ann = AnnualComponent {
@@ -1961,7 +1961,7 @@ fn discounted_anticipated_fixture_decides_after_stage_zero() {
 /// rather than left as a doc-only claim.
 #[test]
 fn mixed_lead_long_lead_late_decisions_target_post_study_delivery() {
-    use cobre_sddp::indexer::AnticipatedLocal;
+    use novomodelo_sddp::indexer::AnticipatedLocal;
 
     let (system, config) = mixed_lead_anticipated_study(false);
     let setup = build_setup_in_code(system, &config);

@@ -3,7 +3,7 @@
 # generate.sh — (re)generate the terminal-recording GIFs in this directory.
 #
 # Each VHS tape is run from WITHIN recordings/, so `Output <name>.gif` lands
-# here and the `demo/` case that the tape's `cobre init demo/` creates lands in
+# here and the `demo/` case that the tape's `novomodelo init demo/` creates lands in
 # recordings/demo/ (which is gitignored). That temporary demo/ — and any stray
 # tmp.json a tape's jq step leaves behind — is removed BEFORE and AFTER every
 # tape. Cleaning outside the tape is deliberate: it keeps every helper command
@@ -31,7 +31,7 @@ clean_temp() { rm -rf demo/ tmp.json; }
 # --- preflight ---------------------------------------------------------------
 
 have vhs || die "vhs not found — run ./recordings/setup.sh first"
-have cobre || die "cobre not on PATH — 'cargo install --path crates/cobre-cli' (or add target/release to PATH)"
+have novomodelo || die "novomodelo not on PATH — 'cargo install --path crates/novomodelo-cli' (or add target/release to PATH)"
 have jq || die "jq not found — validation-error.tape and multithreading.tape need it (install via your package manager)"
 
 # --- select tapes ------------------------------------------------------------
@@ -55,10 +55,10 @@ fi
 trap clean_temp EXIT
 for tape in "${tapes[@]}"; do
   log "recording ${tape%.tape}"
-  clean_temp # clean slate so `cobre init demo/` starts fresh, never prompting
+  clean_temp # clean slate so `novomodelo init demo/` starts fresh, never prompting
   vhs "$tape"
 done
 clean_temp
 
 log "done — regenerated ${#tapes[@]} recording(s)"
-log "if a GIF changed, vendor it into cobre-docs:  npm run refresh:recordings -- --ref <tag>"
+log "if a GIF changed, vendor it into novomodelo-docs:  npm run refresh:recordings -- --ref <tag>"

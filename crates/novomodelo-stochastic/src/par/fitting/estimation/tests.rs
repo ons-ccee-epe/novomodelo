@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use chrono::{Datelike, Days, Months, NaiveDate, Weekday};
-use cobre_core::test_support::{StageSpec, date, make_stage};
-use cobre_core::{EntityId, SeasonMap, Stage};
+use novomodelo_core::test_support::{StageSpec, date, make_stage};
+use novomodelo_core::{EntityId, SeasonMap, Stage};
 
 use super::{
     ArEstimationConfig, ContributionReduction, EstimationReport, PacfReductionParams,
@@ -195,7 +195,7 @@ fn make_two_season_stage(
     year: i32,
     first_half: bool,
 ) -> Stage {
-    use cobre_core::temporal::{
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
 
@@ -237,7 +237,7 @@ fn make_two_season_stage(
 
 /// Build a 2-season `SeasonMap` (H1: Jan–Jun, H2: Jul–Dec).
 fn two_season_map() -> SeasonMap {
-    use cobre_core::temporal::{SeasonCycleType, SeasonDefinition};
+    use novomodelo_core::temporal::{SeasonCycleType, SeasonDefinition};
     SeasonMap {
         cycle_type: SeasonCycleType::Custom,
         seasons: vec![
@@ -264,7 +264,7 @@ fn two_season_map() -> SeasonMap {
 /// Build a 12-season monthly stage sequence spanning `n_years` starting from
 /// year 2000. Stage IDs are 0-based sequential; season IDs cycle 0..12.
 fn make_monthly_stages_for_annual(n_years: usize) -> Vec<Stage> {
-    use cobre_core::temporal::{
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
     let mut stages = Vec::new();

@@ -1,6 +1,6 @@
 """CLI / Python parity tests for ``simulation/hydros.parquet``.
 
-Verifies that ``cobre.run.run()`` and the ``cobre`` CLI binary produce
+Verifies that ``novomodelo.run.run()`` and the ``novomodelo`` CLI binary produce
 identical ``hydros.parquet`` output for the D02 single-hydro deterministic
 case, with particular focus on the five energy-conversion columns:
 
@@ -11,7 +11,7 @@ case, with particular focus on the five energy-conversion columns:
 - ``stored_energy_final_mwh``
 
 Run with (from the repo root):
-    pytest crates/cobre-python/tests/test_parity_hydros.py -v
+    pytest crates/novomodelo-python/tests/test_parity_hydros.py -v
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from _cobre_cli import run_cli
+from _novomodelo_cli import run_cli
 
 D02_CASE = "examples/deterministic/d02-single-hydro"
 
@@ -116,10 +116,10 @@ def d02_python_output(
     d02_case_dir: pathlib.Path,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> pathlib.Path:
-    """Run D02 via ``cobre.run.run()`` and return the output directory."""
-    cobre_run = pytest.importorskip("cobre.run")
+    """Run D02 via ``novomodelo.run.run()`` and return the output directory."""
+    novomodelo_run = pytest.importorskip("novomodelo.run")
     output_dir = tmp_path_factory.mktemp("d02_python_out")
-    cobre_run.run(str(d02_case_dir), output_dir=str(output_dir))
+    novomodelo_run.run(str(d02_case_dir), output_dir=str(output_dir))
     return output_dir
 
 

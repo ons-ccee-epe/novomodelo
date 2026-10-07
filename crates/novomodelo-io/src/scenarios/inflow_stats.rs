@@ -31,7 +31,7 @@
 //! - `stage_id` existence in the stages registry — Layer 3.
 //! - Coverage: every (hydro, stage) with AR coefficients has a stats row — Layer 4/5.
 
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
@@ -44,13 +44,13 @@ use crate::parquet_helpers::{
 /// Carries the PAR(p) seasonal statistics for a (hydro, stage) pair loaded
 /// from the `inflow_seasonal_stats.parquet` file. These rows are later joined
 /// with [`InflowArCoefficientRow`](super::InflowArCoefficientRow) by
-/// [`super::assemble_inflow_models`] to produce [`cobre_core::scenario::InflowModel`] entries.
+/// [`super::assemble_inflow_models`] to produce [`novomodelo_core::scenario::InflowModel`] entries.
 ///
 /// # Examples
 ///
 /// ```
-/// use cobre_io::scenarios::InflowSeasonalStatsRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::scenarios::InflowSeasonalStatsRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = InflowSeasonalStatsRow {
 ///     hydro_id: EntityId::from(1),
@@ -88,7 +88,7 @@ pub struct InflowSeasonalStatsRow {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::scenarios::parse_inflow_seasonal_stats;
+/// use novomodelo_io::scenarios::parse_inflow_seasonal_stats;
 /// use std::path::Path;
 ///
 /// let rows = parse_inflow_seasonal_stats(Path::new("scenarios/inflow_seasonal_stats.parquet"))

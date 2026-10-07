@@ -10,8 +10,8 @@
 
 use std::time::Instant;
 
-use cobre_comm::{Communicator, per_rank_counts, prefix_displs};
-use cobre_core::WelfordAccumulator;
+use novomodelo_comm::{Communicator, per_rank_counts, prefix_displs};
+use novomodelo_core::WelfordAccumulator;
 
 use super::{ForwardResult, SyncResult};
 use crate::error::SddpError;
@@ -342,7 +342,7 @@ pub(crate) fn nested_ub_recursion(
 
 #[cfg(test)]
 mod tests {
-    use cobre_comm::LocalBackend;
+    use novomodelo_comm::LocalBackend;
 
     use super::{ForwardBound, NestedUbScratch, sync_forward};
     use crate::risk_measure::RiskMeasure;

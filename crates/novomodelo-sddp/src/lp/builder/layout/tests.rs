@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use chrono::NaiveDate;
-use cobre_core::{
+use novomodelo_core::{
     AffineBound, Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, CascadeTopology,
     ConstraintExpression, ContractBlockBounds, ContractType, EnergyContract, EntityId,
     FillingConfig, GenericConstraint, Hydro, HydroBlockBounds, HydroGenerationModel,
@@ -3117,7 +3117,7 @@ fn contract_col_covers_each_contract_column_once() {
 /// exit stage.
 #[test]
 fn commissioning_active_gates_on_stage_id_with_half_open_window() {
-    use cobre_core::commissioning::commissioning_active;
+    use novomodelo_core::commissioning::commissioning_active;
     // p0 no window: active at every stage.
     for id in [0, 1, 2, 3, 4, 100] {
         assert!(
@@ -4285,7 +4285,7 @@ fn storage_boundary_variants_are_block_independent() {
 #[test]
 fn two_sided_real_layout_allocates_minus_slack_column() {
     let constraint = GenericConstraint {
-        id: cobre_core::EntityId(1),
+        id: novomodelo_core::EntityId(1),
         name: "gc_range_test".to_string(),
         description: None,
         expression: ConstraintExpression { terms: vec![] },

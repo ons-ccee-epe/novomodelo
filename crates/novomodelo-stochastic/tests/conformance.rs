@@ -1,10 +1,12 @@
-//! End-to-end pipeline conformance tests for `cobre-stochastic`, from `System`
+//! End-to-end pipeline conformance tests for `novomodelo-stochastic`, from `System`
 //! input through `sample_forward` output, over a shared AR(1) fixture.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use cobre_core::{InflowModel, SamplingScheme, SystemBuilder};
-use cobre_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context, sample_forward};
+use novomodelo_core::{InflowModel, SamplingScheme, SystemBuilder};
+use novomodelo_stochastic::{
+    ClassSchemes, OpeningTreeInputs, build_stochastic_context, sample_forward,
+};
 
 mod common;
 use common::{InflowModelSpec, deficit_bus, identity_correlation_model, saa_stage, sized_hydro};
@@ -28,7 +30,7 @@ fn make_inflow_model(
     })
 }
 
-fn fixture_with_openings(n_openings: usize) -> cobre_core::System {
+fn fixture_with_openings(n_openings: usize) -> novomodelo_core::System {
     let hydros = vec![sized_hydro(1), sized_hydro(2)];
 
     // Stage id=-1 is pre-study (excluded from the opening tree); it supplies the
@@ -61,11 +63,11 @@ fn fixture_with_openings(n_openings: usize) -> cobre_core::System {
         .expect("fixture_with_openings: system build must succeed")
 }
 
-fn shared_fixture() -> cobre_core::System {
+fn shared_fixture() -> novomodelo_core::System {
     fixture_with_openings(5)
 }
 
-fn build_shared_ctx(system: &cobre_core::System) -> cobre_stochastic::StochasticContext {
+fn build_shared_ctx(system: &novomodelo_core::System) -> novomodelo_stochastic::StochasticContext {
     build_stochastic_context(
         system,
         42,

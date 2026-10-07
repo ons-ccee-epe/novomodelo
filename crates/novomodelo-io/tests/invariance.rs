@@ -1,4 +1,4 @@
-//! Declaration-order invariance tests for `cobre_io::load_case`.
+//! Declaration-order invariance tests for `novomodelo_io::load_case`.
 //!
 //! `load_case` must produce bit-for-bit identical [`System`] values regardless
 //! of entity declaration order: collections are stored in canonical
@@ -13,8 +13,8 @@
 
 mod helpers;
 
-use cobre_core::EntityId;
-use cobre_io::load_case;
+use novomodelo_core::EntityId;
+use novomodelo_io::load_case;
 use tempfile::TempDir;
 
 // ── make_shuffled_multi_entity_case ───────────────────────────────────────────

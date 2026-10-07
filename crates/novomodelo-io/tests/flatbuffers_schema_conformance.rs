@@ -12,7 +12,7 @@
 //! an explicit request to run these checks.
 //!
 //! ```bash
-//! cargo test -p cobre-io --features flatc-conformance --test flatbuffers_schema_conformance
+//! cargo test -p novomodelo-io --features flatc-conformance --test flatbuffers_schema_conformance
 //! ```
 
 #![cfg(feature = "flatc-conformance")]
@@ -26,7 +26,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use cobre_io::{
+use novomodelo_io::{
     CheckpointManifest, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, FORMAT_VERSION, GraphManifest,
     HydroSeasonOrders, ManifestEdge, ManifestNode, OwnedPolicyBasisRecord, OwnedPolicyCutRecord,
     PolicyBasisRecord, PolicyCutRecord, ProducerBlock, SEASON_CYCLE_CODE_MONTHLY,
@@ -68,7 +68,7 @@ fn schema_path() -> PathBuf {
 /// `--root-type` must be namespace-qualified: flatc rejects the unqualified
 /// short name (e.g. `StageCuts`) with `unknown root type`.
 fn qualified(root_type: &str) -> String {
-    format!("Cobre.IO.Policy.{root_type}")
+    format!("Novomodelo.IO.Policy.{root_type}")
 }
 
 fn flatc_decode(buf: &[u8], root_type: &str) -> Value {
@@ -564,7 +564,7 @@ fn stage_cuts_self_describing_facts_round_trip() {
 #[test]
 fn pre_self_describing_stage_cuts_reads_as_absent_and_sentinels() {
     let schema_pre_self_describing = "
-namespace Cobre.IO.Policy;
+namespace Novomodelo.IO.Policy;
 
 file_identifier \"CBVF\";
 
@@ -784,7 +784,7 @@ fn stage_states_reader_consumes_flatc_buffer() {
 #[test]
 fn pre_node_id_stage_states_reads_as_sentinel() {
     let schema_pre_node_id = "
-namespace Cobre.IO.Policy;
+namespace Novomodelo.IO.Policy;
 
 file_identifier \"CBVF\";
 
@@ -855,7 +855,7 @@ table StageStates {
 fn conformance_manifest_value() -> CheckpointManifest {
     CheckpointManifest {
         format_version: FORMAT_VERSION,
-        software: Some("cobre".to_string()),
+        software: Some("novomodelo".to_string()),
         software_version: "9.9.9".to_string(),
         created_at: "2026-08-23T12:00:00Z".to_string(),
         num_stages: 60,
@@ -1017,7 +1017,7 @@ fn checkpoint_manifest_round_trip() {
 
     let json = flatc_decode(&buf, "CheckpointManifest");
     assert_eq!(as_u64(&json, "format_version"), u64::from(FORMAT_VERSION));
-    assert_eq!(get(&json, "software").as_str().unwrap(), "cobre");
+    assert_eq!(get(&json, "software").as_str().unwrap(), "novomodelo");
     assert_eq!(get(&json, "software_version").as_str().unwrap(), "9.9.9");
     assert_eq!(
         get(&json, "created_at").as_str().unwrap(),
@@ -1089,7 +1089,7 @@ fn checkpoint_manifest_round_trip() {
 
     let document = json!({
         "format_version": FORMAT_VERSION,
-        "software": "cobre",
+        "software": "novomodelo",
         "software_version": "9.9.9",
         "created_at": "2026-08-23T12:00:00Z",
         "num_stages": 60,
@@ -1349,7 +1349,7 @@ fn entity_slot_per_family_dates_round_trip() {
 #[test]
 fn pre_interval_entity_slot_reads_as_sentinel() {
     let schema_pre_interval = "
-namespace Cobre.IO.Policy;
+namespace Novomodelo.IO.Policy;
 
 file_identifier \"CBVF\";
 

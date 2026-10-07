@@ -2,7 +2,7 @@
 //!
 //! The asserted `solver` field tracks the built backend (`highs` by default,
 //! `clp` under `--no-default-features --features clp`). Combined with the
-//! identical struct-literal wiring in `cobre-python/src/run.rs` and the
+//! identical struct-literal wiring in `novomodelo-python/src/run.rs` and the
 //! source-level parity gate (`check_python_parity.py`), this establishes
 //! CLI↔Python output-metadata parity per backend without requiring a built CLP
 //! Python wheel.
@@ -15,8 +15,8 @@ use std::process::Command;
 use assert_cmd::prelude::*;
 use tempfile::TempDir;
 
-fn cobre() -> Command {
-    Command::new(assert_cmd::cargo::cargo_bin!("cobre"))
+fn novomodelo() -> Command {
+    Command::new(assert_cmd::cargo::cargo_bin!("novomodelo"))
 }
 
 fn d01_case_dir() -> PathBuf {
@@ -40,7 +40,7 @@ fn training_metadata_solver_matches_active_backend() {
     // Temp output dir so the committed `output/` tree under the fixture is never disturbed.
     let out = TempDir::new().expect("create temp output dir");
 
-    cobre()
+    novomodelo()
         .args([
             "run",
             case.to_str().expect("D01 path is valid UTF-8"),
@@ -67,9 +67,9 @@ fn training_metadata_solver_matches_active_backend() {
         .expect("training metadata must carry a string `solver` field");
     assert_eq!(
         solver,
-        cobre_solver::active_solver_metadata_id(),
+        novomodelo_solver::active_solver_metadata_id(),
         "training metadata `solver` must name the active backend ({})",
-        cobre_solver::active_solver_metadata_id()
+        novomodelo_solver::active_solver_metadata_id()
     );
 
     let solver_version = json["solver_version"]

@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use cobre_core::{CorrelationModel, EntityId};
+use novomodelo_core::{CorrelationModel, EntityId};
 
 use crate::{ClassDimensions, StochasticError, correlation::spectral::SpectralFactor};
 
@@ -122,10 +122,10 @@ impl DecomposedCorrelation {
     ///
     /// ```
     /// use std::collections::BTreeMap;
-    /// use cobre_core::{EntityId, scenario::{
+    /// use novomodelo_core::{EntityId, scenario::{
     ///     CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile,
     /// }};
-    /// use cobre_stochastic::{ClassDimensions, correlation::resolve::DecomposedCorrelation};
+    /// use novomodelo_stochastic::{ClassDimensions, correlation::resolve::DecomposedCorrelation};
     ///
     /// let mut profiles = BTreeMap::new();
     /// profiles.insert("default".to_string(), CorrelationProfile {
@@ -404,7 +404,7 @@ impl DecomposedCorrelation {
 mod tests {
     use std::collections::BTreeMap;
 
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId,
         scenario::{
             CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile,

@@ -7,8 +7,8 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 
-use cobre_core::{BlockMode, ContractType, System};
-use cobre_solver::StageTemplate;
+use novomodelo_core::{BlockMode, ContractType, System};
+use novomodelo_solver::StageTemplate;
 
 use crate::indexer::{
     AnticipatedLocal, BlockGrid, BlockIdx, Boundary, BusSys, FphaCellLocal, HydroCell, HydroSys,

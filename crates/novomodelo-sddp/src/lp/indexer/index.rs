@@ -30,7 +30,7 @@
 /// A raw `StateDim` cannot stand in for the [`OutCol`] a resolver returns:
 ///
 /// ```compile_fail
-/// use cobre_sddp::indexer::{OutCol, StateDim};
+/// use novomodelo_sddp::indexer::{OutCol, StateDim};
 ///
 /// let dim = StateDim::new(0);
 /// let _unresolved: OutCol = dim; // StateDim substituted for a resolved OutCol
@@ -134,7 +134,7 @@ impl BlockIdx {
 /// incoming-column role the pin/dual-extraction path uses.
 ///
 /// ```compile_fail
-/// use cobre_sddp::indexer::{InCol, OutCol};
+/// use novomodelo_sddp::indexer::{InCol, OutCol};
 ///
 /// fn render(_outgoing: OutCol) {}
 ///
@@ -168,7 +168,7 @@ impl OutCol {
 /// interior catch-all:
 ///
 /// ```compile_fail
-/// use cobre_sddp::indexer::Boundary;
+/// use novomodelo_sddp::indexer::Boundary;
 ///
 /// fn interior_catch_all(b: Boundary) -> usize {
 ///     match b {

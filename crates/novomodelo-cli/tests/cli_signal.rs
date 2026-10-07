@@ -1,4 +1,4 @@
-//! Integration tests for how `cobre run` handles SIGTERM and SIGINT, in one
+//! Integration tests for how `novomodelo run` handles SIGTERM and SIGINT, in one
 //! process and under `mpiexec -n 2`, and for the exit code every rank takes when
 //! rank 0's final writes fail. The tests spawn the binary, signal a process at a
 //! stderr readiness line, and check the exit status and outputs.
@@ -20,7 +20,7 @@ use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use tempfile::TempDir;
 
 mod common;
-use common::{case_dir, cobre, copy_dir_recursive, write_file};
+use common::{case_dir, copy_dir_recursive, novomodelo, write_file};
 
 const TIMEOUT: Duration = Duration::from_secs(180);
 
@@ -132,7 +132,7 @@ fn output_with_a_stale_simulation_partition() -> TempDir {
 }
 
 fn spawn_run(launcher: Option<&Path>, case: &Path, out: &Path) -> (Child, Receiver<String>) {
-    let binary = cobre();
+    let binary = novomodelo();
     let mut command = match launcher {
         Some(launcher) => {
             let mut command = Command::new(launcher);
@@ -149,7 +149,7 @@ fn spawn_run(launcher: Option<&Path>, case: &Path, out: &Path) -> (Child, Receiv
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("cobre must spawn");
+        .expect("novomodelo must spawn");
 
     let mut stderr = BufReader::new(child.stderr.take().expect("stderr is piped"));
     let (tx, rx) = mpsc::channel();
@@ -264,7 +264,7 @@ fn assert_signal_stop_outputs(out: &Path) {
 }
 
 fn assert_checkpoint_at(out: &Path, completed: u64) {
-    let checkpoint = cobre_io::read_policy_checkpoint(&out.join("policy"))
+    let checkpoint = novomodelo_io::read_policy_checkpoint(&out.join("policy"))
         .expect("the stopped run must leave a readable policy checkpoint");
     assert_eq!(
         u64::from(checkpoint.metadata.producer.completed_iterations),

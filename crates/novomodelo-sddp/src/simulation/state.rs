@@ -16,14 +16,14 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
-use cobre_comm::Communicator;
-use cobre_core::TrainingEvent;
-use cobre_solver::ActiveProfile;
-use cobre_solver::FreezeScratch;
-use cobre_solver::freeze_rows_into_template;
-use cobre_solver::{RowBatch, SolverInterface, StageTemplate};
-use cobre_stochastic::context::ClassSchemes;
-use cobre_stochastic::{
+use novomodelo_comm::Communicator;
+use novomodelo_core::TrainingEvent;
+use novomodelo_solver::ActiveProfile;
+use novomodelo_solver::FreezeScratch;
+use novomodelo_solver::freeze_rows_into_template;
+use novomodelo_solver::{RowBatch, SolverInterface, StageTemplate};
+use novomodelo_stochastic::context::ClassSchemes;
+use novomodelo_stochastic::{
     ForwardNoiseTables, ForwardSampler, ForwardSamplerConfig, build_forward_sampler,
 };
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};

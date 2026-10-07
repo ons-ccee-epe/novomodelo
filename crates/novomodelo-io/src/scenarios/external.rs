@@ -53,7 +53,7 @@
 //! - `stage_id` existence in the stages registry — Layer 3.
 //! - Scenario count matching `stage.num_scenarios` — Layer 3/5.
 
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
@@ -61,7 +61,7 @@ use crate::parquet_helpers::{
     extract_required_float64, extract_required_int32, open_record_batch_reader,
 };
 
-pub use cobre_core::scenario::{ExternalLoadRow, ExternalNcsRow, ExternalScenarioRow};
+pub use novomodelo_core::scenario::{ExternalLoadRow, ExternalNcsRow, ExternalScenarioRow};
 
 /// Parse `scenarios/external_inflow_scenarios.parquet` and return a sorted row table.
 ///
@@ -78,7 +78,7 @@ pub use cobre_core::scenario::{ExternalLoadRow, ExternalNcsRow, ExternalScenario
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::scenarios::parse_external_inflow_scenarios;
+/// use novomodelo_io::scenarios::parse_external_inflow_scenarios;
 /// use std::path::Path;
 ///
 /// let rows = parse_external_inflow_scenarios(
@@ -185,7 +185,7 @@ pub fn parse_external_inflow_scenarios(path: &Path) -> Result<Vec<ExternalScenar
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::scenarios::parse_external_load_scenarios;
+/// use novomodelo_io::scenarios::parse_external_load_scenarios;
 /// use std::path::Path;
 ///
 /// let rows = parse_external_load_scenarios(
@@ -292,7 +292,7 @@ pub fn parse_external_load_scenarios(path: &Path) -> Result<Vec<ExternalLoadRow>
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::scenarios::parse_external_ncs_scenarios;
+/// use novomodelo_io::scenarios::parse_external_ncs_scenarios;
 /// use std::path::Path;
 ///
 /// let rows = parse_external_ncs_scenarios(

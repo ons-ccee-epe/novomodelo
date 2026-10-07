@@ -1,5 +1,5 @@
-use cobre_core::commissioning::{Phase, commissioning_active};
-use cobre_core::{BlockMode, ContractType, Stage};
+use novomodelo_core::commissioning::{Phase, commissioning_active};
+use novomodelo_core::{BlockMode, ContractType, Stage};
 
 use crate::hydro_models::EvaporationModel;
 use crate::indexer::{
@@ -336,7 +336,7 @@ fn fill_diversion_columns(
 /// in `fill_anticipated_columns`, not here.
 ///
 /// The generation bound is read per block
-/// ([`thermal_bounds_at_block`](cobre_core::ResolvedBounds::thermal_bounds_at_block)); the
+/// ([`thermal_bounds_at_block`](novomodelo_core::ResolvedBounds::thermal_bounds_at_block)); the
 /// cost stays stage-level (`thermal_bounds`) — `ThermalBlockOverride` has no cost field.
 pub(super) fn fill_thermal_columns(
     ctx: &TemplateBuildCtx<'_>,
@@ -475,7 +475,7 @@ pub(super) fn fill_anticipated_columns(
                     .study_dims
                     .anticipated_plants
                     .thermal_of(AnticipatedLocal::new(res.plant));
-                // Safe only because cobre-io's load-time validation rejects a
+                // Safe only because novomodelo-io's load-time validation rejects a
                 // `block_id` bound row on an anticipated thermal, so the base is the
                 // value at every block — a guarantee this type cannot see.
                 let cap = ctx
@@ -1123,8 +1123,8 @@ fn fill_z_inflow_columns(layout: &StageLayout, bufs: &mut ColumnBufs<'_>) {
 mod interior_storage_bound_tests {
     use crate::test_support::ctx_fixture::CtxFixture;
 
-    use cobre_core::entities::hydro::HydroGenerationModel;
-    use cobre_core::{
+    use novomodelo_core::entities::hydro::HydroGenerationModel;
+    use novomodelo_core::{
         Block, BlockMode, BoundsCountsSpec, BoundsDefaults, BusStagePenalties, CascadeTopology,
         ContractBlockBounds, EntityId, Hydro, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         LineBlockBounds, LineStagePenalties, NcsStagePenalties, NoiseMethod, PenaltiesCountsSpec,
@@ -1529,7 +1529,7 @@ mod interior_storage_bound_tests {
         clippy::cast_sign_loss,
         reason = "the test reads non-negative CSC offsets"
     )]
-    fn csc_to_dense(tpl: &cobre_solver::StageTemplate) -> Vec<Vec<f64>> {
+    fn csc_to_dense(tpl: &novomodelo_solver::StageTemplate) -> Vec<Vec<f64>> {
         let mut dense = vec![vec![0.0_f64; tpl.num_cols]; tpl.num_rows];
         for j in 0..tpl.num_cols {
             let start = tpl.col_starts[j] as usize;
@@ -1547,8 +1547,8 @@ mod interior_storage_bound_tests {
 mod diversion_bound_tests {
     use crate::test_support::ctx_fixture::CtxFixture;
 
-    use cobre_core::entities::hydro::{DiversionChannel, HydroGenerationModel};
-    use cobre_core::{
+    use novomodelo_core::entities::hydro::{DiversionChannel, HydroGenerationModel};
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, BusStagePenalties, CascadeTopology, ContractBlockBounds,
         EntityId, Hydro, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
         LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
@@ -1869,8 +1869,8 @@ mod diversion_bound_tests {
 mod filling_phase_gating_tests {
     use crate::test_support::ctx_fixture::CtxFixture;
 
-    use cobre_core::entities::hydro::{FillingConfig, HydroGenerationModel};
-    use cobre_core::{
+    use novomodelo_core::entities::hydro::{FillingConfig, HydroGenerationModel};
+    use novomodelo_core::{
         BlockBoundsCountsSpec, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
         CascadeTopology, ContractBlockBounds, EntityId, Hydro, HydroBlockBounds, HydroPenalties,
         HydroStageBounds, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
@@ -2936,15 +2936,15 @@ mod filling_phase_gating_tests {
 mod anticipated_objective_tests {
     use crate::test_support::ctx_fixture::CtxFixture;
 
-    use cobre_core::entities::thermal::AnticipatedConfig;
-    use cobre_core::{
+    use novomodelo_core::entities::thermal::AnticipatedConfig;
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HorizonGraph,
         HydroBlockBounds, HydroStageBounds, LineBlockBounds, PostStudyStage, PostStudyStages,
         PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds, Thermal, ThermalBlockBounds,
         ThermalStageBounds,
     };
 
-    use cobre_stochastic::season_cast::post_study_calendar_stages;
+    use novomodelo_stochastic::season_cast::post_study_calendar_stages;
 
     use crate::lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime};
 
@@ -3642,8 +3642,8 @@ mod anticipated_objective_tests {
 mod block_family_slack_tests {
     use crate::test_support::ctx_fixture::CtxFixture;
 
-    use cobre_core::entities::hydro::HydroGenerationModel;
-    use cobre_core::{
+    use novomodelo_core::entities::hydro::HydroGenerationModel;
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, BusStagePenalties, CascadeTopology, ContractBlockBounds,
         EntityId, Hydro, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
         LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
@@ -4098,8 +4098,8 @@ mod block_family_slack_tests {
 mod evaporation_slack_objective_tests {
     use crate::test_support::ctx_fixture::CtxFixture;
 
-    use cobre_core::entities::hydro::HydroGenerationModel;
-    use cobre_core::{
+    use novomodelo_core::entities::hydro::HydroGenerationModel;
+    use novomodelo_core::{
         Block, BlockMode, BoundsCountsSpec, BoundsDefaults, BusStagePenalties, CascadeTopology,
         ContractBlockBounds, EntityId, Hydro, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         LineBlockBounds, LineStagePenalties, NcsStagePenalties, NoiseMethod, PenaltiesCountsSpec,
@@ -4433,8 +4433,8 @@ mod evaporation_slack_objective_tests {
 mod contract_column_tests {
     use crate::test_support::ctx_fixture::CtxFixture;
 
-    use cobre_core::entities::energy_contract::{ContractType, EnergyContract};
-    use cobre_core::{
+    use novomodelo_core::entities::energy_contract::{ContractType, EnergyContract};
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
         HydroStageBounds, LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
         ThermalStageBounds,
@@ -4545,9 +4545,9 @@ mod contract_column_tests {
     }
 
     /// Single-block stage at `STAGE_IDX` with `id = 0` and `BLOCK_HOURS` duration.
-    fn one_block_stage() -> cobre_core::Stage {
+    fn one_block_stage() -> novomodelo_core::Stage {
         use chrono::NaiveDate;
-        use cobre_core::{
+        use novomodelo_core::{
             Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
             StageStateConfig,
         };
@@ -4650,7 +4650,7 @@ mod contract_column_tests {
 mod thermal_block_bound_tests {
     use crate::test_support::ctx_fixture::CtxFixture;
 
-    use cobre_core::{
+    use novomodelo_core::{
         BlockBoundsCountsSpec, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId,
         HydroBlockBounds, HydroStageBounds, LineBlockBounds, PumpingBlockBounds,
         ResolvedBlockBounds, ResolvedBounds, Thermal, ThermalBlockBounds, ThermalStageBounds,
@@ -4986,8 +4986,8 @@ mod thermal_block_bound_tests {
 mod line_contract_pumping_block_bound_tests {
     use crate::test_support::ctx_fixture::CtxFixture;
 
-    use cobre_core::entities::energy_contract::{ContractType, EnergyContract};
-    use cobre_core::{
+    use novomodelo_core::entities::energy_contract::{ContractType, EnergyContract};
+    use novomodelo_core::{
         BlockBoundsCountsSpec, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
         ContractBlockBounds, ContractBlockOverride, EntityId, HydroBlockBounds, HydroPenalties,
         HydroStageBounds, Line, LineBlockBounds, LineBlockOverride, LineStagePenalties,
@@ -5608,8 +5608,8 @@ mod line_contract_pumping_block_bound_tests {
 mod hydro_block_bound_tests {
     use crate::test_support::ctx_fixture::CtxFixture;
 
-    use cobre_core::entities::hydro::HydroGenerationModel;
-    use cobre_core::{
+    use novomodelo_core::entities::hydro::HydroGenerationModel;
+    use novomodelo_core::{
         BlockBoundsCountsSpec, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
         CascadeTopology, ContractBlockBounds, EntityId, Hydro, HydroBlockBounds,
         HydroBlockOverride, HydroPenalties, HydroStageBounds, HydroUnitGroupBoundsCountsSpec,
@@ -6598,8 +6598,8 @@ mod hydro_block_bound_tests {
 mod cell_column_bound_tests {
     use crate::test_support::ctx_fixture::CtxFixture;
 
-    use cobre_core::entities::hydro::{FillingConfig, HydroGenerationModel};
-    use cobre_core::{
+    use novomodelo_core::entities::hydro::{FillingConfig, HydroGenerationModel};
+    use novomodelo_core::{
         BlockBoundsCountsSpec, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
         CascadeTopology, ContractBlockBounds, EntityId, Hydro, HydroBlockBounds,
         HydroBlockOverride, HydroPenalties, HydroStageBounds, HydroUnitGroup,
@@ -7782,7 +7782,7 @@ mod cell_column_bound_tests {
 mod ncs_objective_tests {
     use crate::test_support::ctx_fixture::CtxFixture;
 
-    use cobre_core::{
+    use novomodelo_core::{
         BusStagePenalties, EntityId, HydroPenalties, LineStagePenalties, NcsStagePenalties,
         NonControllableSource, PenaltiesCountsSpec, PenaltiesDefaults, ResolvedNcsBounds,
         ResolvedNcsFactors, ResolvedPenalties,

@@ -13,7 +13,7 @@
 //! recursion in [`inline`] terminates. It is an iterative three-colour DFS, never
 //! recursion over the chain, so a deep dependency chain cannot overflow the stack.
 
-use cobre_core::LinearTerm;
+use novomodelo_core::LinearTerm;
 use std::collections::{HashMap, HashSet};
 
 /// Hard cap on terms one [`inline`] call may materialize — aborts an exponential
@@ -236,7 +236,7 @@ fn cycle_message(path: &[&str], back_to: &str) -> String {
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use cobre_core::{CoefficientRef, EntityId, VariableRef};
+    use novomodelo_core::{CoefficientRef, EntityId, VariableRef};
 
     fn hg(id: i32) -> VariableRef {
         VariableRef::HydroGeneration {

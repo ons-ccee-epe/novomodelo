@@ -10,9 +10,9 @@
     clippy::float_cmp
 )]
 
-use cobre_core::{EntityId, ParameterKind, ScalarParameter, StageId};
-use cobre_sddp::build_resolved_parameters;
-use cobre_sddp::energy_conversion::{EnergyConversionSet, HydroEnergyProductivityOverride};
+use novomodelo_core::{EntityId, ParameterKind, ScalarParameter, StageId};
+use novomodelo_sddp::build_resolved_parameters;
+use novomodelo_sddp::energy_conversion::{EnergyConversionSet, HydroEnergyProductivityOverride};
 
 /// Return the four fixed [`ScalarParameter`] entries permuted by `order`. The
 /// last is a `PerStageBlock` parameter (a per-`(stage, block)` value) so the
@@ -67,7 +67,7 @@ fn scalar_parameters_resolution_is_declaration_order_invariant() {
     let n_stages = 4;
     let ec = EnergyConversionSet::new(vec![], vec![], &[], n_stages);
     let overrides = HydroEnergyProductivityOverride::default();
-    let hydros: Vec<cobre_core::Hydro> = Vec::new();
+    let hydros: Vec<novomodelo_core::Hydro> = Vec::new();
 
     let order_a = make_params(&[0, 1, 2, 3]);
     let order_b = make_params(&[3, 1, 0, 2]);

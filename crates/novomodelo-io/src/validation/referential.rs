@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cobre_core::AffineBound;
+use novomodelo_core::AffineBound;
 
 use super::{ValidationContext, rules, schema::ParsedData};
 
@@ -1039,19 +1039,19 @@ fn check_ncs_bounds_and_factors(
     }
 }
 
-/// Validate that a [`VariableRef`](cobre_core::VariableRef) references an existing entity.
+/// Validate that a [`VariableRef`](novomodelo_core::VariableRef) references an existing entity.
 ///
 /// A dangling reference is an `ErrorKind::InvalidReference` error for every
 /// modeled entity type. `Contract` is the sole remaining stub (data-complete but
 /// contributing no LP variables), so a dangling `Contract` reference is downgraded
 /// to an `ErrorKind::UnusedEntity` warning, not an error.
 fn validate_variable_ref_entity(
-    var: &cobre_core::VariableRef,
+    var: &novomodelo_core::VariableRef,
     label: &str,
     ids: &LookupSets,
     ctx: &mut ValidationContext,
 ) {
-    use cobre_core::VariableRef;
+    use novomodelo_core::VariableRef;
 
     let file = "constraints/generic_constraints.json";
     match var {
@@ -1196,7 +1196,7 @@ fn validate_variable_ref_entity(
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId,
         entities::{
             Bus, DiversionChannel, HydroUnitGroup, Line, NonControllableSource, PumpingStation,
@@ -2147,8 +2147,8 @@ mod tests {
         id: i32,
         lower_ref: Option<i32>,
         upper_ref: Option<i32>,
-    ) -> cobre_core::GenericConstraint {
-        use cobre_core::{AffineBound, ConstraintExpression, GenericConstraint, SlackConfig};
+    ) -> novomodelo_core::GenericConstraint {
+        use novomodelo_core::{AffineBound, ConstraintExpression, GenericConstraint, SlackConfig};
 
         GenericConstraint {
             id: EntityId(id),
@@ -2802,7 +2802,7 @@ mod tests {
     /// including the constraint id in the context.
     #[test]
     fn test_anticipated_decision_unknown_thermal_ref() {
-        use cobre_core::{
+        use novomodelo_core::{
             ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
         };
 
@@ -2860,7 +2860,7 @@ mod tests {
 
     #[test]
     fn test_hydro_inflow_unknown_hydro_ref() {
-        use cobre_core::{
+        use novomodelo_core::{
             ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
         };
 
@@ -2917,7 +2917,7 @@ mod tests {
     /// `Some(_)` form validates identically to the `None` form.
     #[test]
     fn test_hydro_inflow_with_block_unknown_hydro_ref() {
-        use cobre_core::{
+        use novomodelo_core::{
             ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
         };
 
@@ -2973,7 +2973,7 @@ mod tests {
     /// hydro arm's `..` pattern absorbs `block_id`, matching `HydroStorage`.
     #[test]
     fn test_hydro_storage_initial_unknown_hydro_ref() {
-        use cobre_core::{
+        use novomodelo_core::{
             ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
         };
 
@@ -3029,7 +3029,7 @@ mod tests {
     /// the same check `hydro_storage_final` gets, via the shared hydro arm.
     #[test]
     fn test_hydro_useful_volume_final_unknown_hydro_ref() {
-        use cobre_core::{
+        use novomodelo_core::{
             ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
         };
 
@@ -3122,7 +3122,7 @@ mod tests {
     /// group. The per-plant check rejects it even though bus 9 is a declared bus.
     #[test]
     fn test_generic_constraint_unknown_bus_selector_rejected() {
-        use cobre_core::{
+        use novomodelo_core::{
             ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
         };
 
@@ -3192,7 +3192,7 @@ mod tests {
     /// bus rather than group id accepts the valid selector.
     #[test]
     fn test_generic_constraint_valid_bus_selector_and_none_accepted() {
-        use cobre_core::{
+        use novomodelo_core::{
             ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
         };
 
@@ -3265,7 +3265,7 @@ mod tests {
     /// plant and must not also fire.
     #[test]
     fn test_generic_constraint_unknown_hydro_with_selector_emits_one_finding() {
-        use cobre_core::{
+        use novomodelo_core::{
             ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
         };
 
@@ -3328,7 +3328,7 @@ mod tests {
     /// the "bus does not exist" case, so no second finding is added.
     #[test]
     fn test_generic_constraint_nonexistent_bus_selector_emits_one_finding() {
-        use cobre_core::{
+        use novomodelo_core::{
             ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
         };
 
@@ -3390,7 +3390,7 @@ mod tests {
     /// file generic constraints are read from.
     #[test]
     fn generic_constraint_reference_findings_name_the_constraints_file() {
-        use cobre_core::{
+        use novomodelo_core::{
             ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
         };
 

@@ -12,7 +12,7 @@
 
 use std::collections::HashSet;
 
-use cobre_core::{ComputedParameter, EntityId, Hydro, ParameterKind, ScalarParameter};
+use novomodelo_core::{ComputedParameter, EntityId, Hydro, ParameterKind, ScalarParameter};
 
 use super::{ValidationContext, rules};
 
@@ -138,7 +138,7 @@ fn hydro_id_of(c: ComputedParameter) -> EntityId {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         Bus, ComputedParameter, DeficitSegment, EntityId, Hydro, HydroGenerationModel,
         HydroPenalties, ParameterKind, ScalarParameter, SystemBuilder,
     };
@@ -151,7 +151,7 @@ mod tests {
     /// Build a minimal [`System`] containing hydros with the given ids.
     ///
     /// A single bus (id=1) is added so `SystemBuilder` does not reject the input.
-    fn system_with_hydros(ids: &[i32]) -> cobre_core::System {
+    fn system_with_hydros(ids: &[i32]) -> novomodelo_core::System {
         let bus = Bus {
             id: EntityId(1),
             name: "Bus 1".to_string(),

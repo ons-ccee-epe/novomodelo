@@ -1,4 +1,4 @@
-//! Error types for the `cobre-io` output writing pipeline.
+//! Error types for the `novomodelo-io` output writing pipeline.
 //!
 //! [`OutputError`] is the primary error type returned by all output writer functions.
 //! Each variant carries enough context for the caller to produce a diagnostic message
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 /// # Examples
 ///
 /// ```
-/// use cobre_io::OutputError;
+/// use novomodelo_io::OutputError;
 /// use std::path::PathBuf;
 ///
 /// let err = OutputError::SchemaError {
@@ -88,7 +88,7 @@ impl OutputError {
     /// # Examples
     ///
     /// ```
-    /// use cobre_io::OutputError;
+    /// use novomodelo_io::OutputError;
     /// use std::io;
     ///
     /// let io_err = io::Error::new(io::ErrorKind::NotFound, "no such file");
@@ -107,7 +107,7 @@ impl OutputError {
     /// # Examples
     ///
     /// ```
-    /// use cobre_io::OutputError;
+    /// use novomodelo_io::OutputError;
     ///
     /// let err = OutputError::serialization("hydros", "unsupported field type");
     /// assert!(err.to_string().contains("hydros"));

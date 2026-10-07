@@ -11,9 +11,9 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::ops::{Index, IndexMut};
 
-use cobre_core::HorizonGraph;
-use cobre_io::StageIdResolver;
-use cobre_stochastic::{StochasticContext, select_transition_child};
+use novomodelo_core::HorizonGraph;
+use novomodelo_io::StageIdResolver;
+use novomodelo_stochastic::{StochasticContext, select_transition_child};
 
 use crate::error::SddpError;
 use crate::simulation::SimulationWeighting;
@@ -43,7 +43,7 @@ impl fmt::Display for NodeId {
 }
 
 /// A 0-based positional stage index — the study-stage array position
-/// (`stage_data.stages[stage]`, `for t in 0..n_stages`), never [`cobre_core`]'s
+/// (`stage_data.stages[stage]`, `for t in 0..n_stages`), never [`novomodelo_core`]'s
 /// declared `StageId`. Runtime-only: an infra crate or a wire payload takes
 /// the bare `usize`/`i32`/`u32`, converted at that boundary exactly as
 /// [`NodeId`] converts at the cut/policy codecs.
@@ -74,7 +74,7 @@ impl StageIdx {
 /// index stand in for a node position at a call site, silently, across this
 /// crate — `NodePos` makes the substitution a compile error. Runtime-only:
 /// converted to a bare `usize`/`i32` at an infra-crate or wire boundary
-/// (`policy/codec.rs`'s `stage_id` field, the `cobre-cli` broadcast payload),
+/// (`policy/codec.rs`'s `stage_id` field, the `novomodelo-cli` broadcast payload),
 /// exactly as [`StageIdx`] converts at its own boundaries.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodePos(pub usize);
@@ -258,7 +258,7 @@ impl<Idx, T> From<Vec<T>> for TypedVec<Idx, T> {
 /// Which substrate a node's [`NodeOpenings`] view addresses. Both are
 /// single-storage, read-only realization stores — `Generated` reads
 /// [`StochasticContext::opening_tree`], `External` reads the standardized
-/// external library for the node's stage (`cobre_stochastic::ExternalScenarioLibrary`,
+/// external library for the node's stage (`novomodelo_stochastic::ExternalScenarioLibrary`,
 /// via `ScenarioLibraries::training`) — never a copy of realization values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpeningSource {
@@ -314,7 +314,7 @@ pub struct NodeSuccessor {
     /// Dense canonical position of the child in [`NodeGraph::nodes`] — not
     /// its declared JSON node id.
     pub child: NodePos,
-    /// Normalized transition probability `P(n -> m)` — cobre-io's load-time,
+    /// Normalized transition probability `P(n -> m)` — novomodelo-io's load-time,
     /// once-only Neumaier normalization (`normalize_out_edge_probabilities`);
     /// never re-normalized here.
     pub probability: f64,
@@ -541,7 +541,7 @@ fn build_declared_node_graph(
 ) -> Result<NodeGraph, SddpError> {
     let tree = stochastic.opening_tree();
 
-    // `order[k]` is the original `graph.nodes` index (a `cobre_core`-owned
+    // `order[k]` is the original `graph.nodes` index (a `novomodelo_core`-owned
     // array, never this crate's own node position) of the node that becomes
     // canonical position `k`; the two loops below over `order` therefore
     // build `node_ids`/`nodes` in ascending canonical `NodePos` order.
@@ -663,7 +663,7 @@ fn build_declared_node_graph(
     // pool has one owner; leaves sharing the terminal pool are all terminal),
     // so the last writer per pool is also the only stage value written. The
     // debug-only conflict check guards a future leaf-terminality relaxation or a
-    // programmatic construction path that bypasses cobre-io validation.
+    // programmatic construction path that bypasses novomodelo-io validation.
     let mut pool_stage = vec![StageIdx(0); n_pools];
     #[cfg(debug_assertions)]
     let mut pool_stage_seen = vec![false; n_pools];
@@ -1569,8 +1569,8 @@ impl NestedUbTopology {
 mod tests {
     use super::*;
     use crate::cut::FutureCostFunction;
-    use cobre_core::temporal::{Node as PolicyNode, PolicyGraphType, Transition};
-    use cobre_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+    use novomodelo_core::temporal::{Node as PolicyNode, PolicyGraphType, Transition};
+    use novomodelo_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
 
     fn cb(node_id: i32, marker: u32) -> CapturedBasis {
         let mut c = CapturedBasis::new(0, 0, 0, 1, 0, NodeId(node_id));
@@ -1751,13 +1751,13 @@ mod tests {
         branching_factor: usize,
     ) -> StochasticContext {
         use chrono::NaiveDate;
-        use cobre_core::entities::bus::{Bus, DeficitSegment};
-        use cobre_core::entities::hydro::{Hydro, HydroGenerationModel};
-        use cobre_core::temporal::{
+        use novomodelo_core::entities::bus::{Bus, DeficitSegment};
+        use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel};
+        use novomodelo_core::temporal::{
             Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
             StageStateConfig,
         };
-        use cobre_core::{
+        use novomodelo_core::{
             BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, EntityId,
             HydroBlockBounds, HydroPenalties, HydroStageBounds, InflowModel, LineBlockBounds,
             LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,

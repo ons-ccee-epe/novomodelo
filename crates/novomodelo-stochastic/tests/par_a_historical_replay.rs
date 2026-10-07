@@ -19,7 +19,7 @@
 //!   offsets the replay algebraically whenever the two differ.
 
 use chrono::{Months, NaiveDate};
-use cobre_core::{
+use novomodelo_core::{
     EntityId,
     scenario::{AnnualComponent, InflowHistoryRow, InflowModel},
     temporal::{
@@ -27,7 +27,7 @@ use cobre_core::{
         StageRiskConfig, StageStateConfig,
     },
 };
-use cobre_stochastic::{
+use novomodelo_stochastic::{
     DerivedSeed, HistoricalScenarioLibrary, check_historical_structure, evaluate_par_batch,
     par::precompute::PrecomputedPar, standardize_historical_windows,
 };

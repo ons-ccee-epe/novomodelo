@@ -1,4 +1,4 @@
-//! Integration tests for [`cobre_sddp::build_stage_templates_resolving_layout`].
+//! Integration tests for [`novomodelo_sddp::build_stage_templates_resolving_layout`].
 //!
 //! Covers structural (column/row counts, CSC validity), objective coefficient
 //! wiring, and constraint-matrix entries for hydro / FPHA / evaporation /
@@ -22,17 +22,17 @@
 // seam from `common::builders` — a no-op today, not dead code.
 #![allow(clippy::needless_update)]
 
-use cobre_core::{
+use novomodelo_core::{
     AnticipatedConfig, BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties,
     ContractBlockBounds, DeficitSegment, EntityId, HydroBlockBounds, HydroPenalties,
     HydroStageBounds, LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
     PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
     ThermalBlockBounds, ThermalStageBounds, scenario::InflowModel,
 };
-use cobre_stochastic::normal::precompute::PrecomputedNormal;
-use cobre_stochastic::par::precompute::PrecomputedPar;
+use novomodelo_stochastic::normal::precompute::PrecomputedNormal;
+use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
-use cobre_sddp::{
+use novomodelo_sddp::{
     build_stage_templates_resolving_layout,
     hydro_models::{
         EvaporationModel, EvaporationModelSet, FphaPlane, LinearizedEvaporation,
@@ -50,17 +50,17 @@ use common::builders::{
     BusSpec, HydroSpec, StageSpec, ThermalSpec, make_bus, make_hydro, make_stage, make_thermal,
 };
 
-/// LP objective cost scale factor. Matches `cobre_sddp::setup::params::DEFAULT_COST_SCALE_FACTOR`.
+/// LP objective cost scale factor. Matches `novomodelo_sddp::setup::params::DEFAULT_COST_SCALE_FACTOR`.
 const COST_SCALE_FACTOR: f64 = 1_000_000.0;
 
-/// Evaporation flow safety margin multiplier. Matches `cobre_sddp::lp::builder::EVAPORATION_FLOW_SAFETY_MARGIN`.
+/// Evaporation flow safety margin multiplier. Matches `novomodelo_sddp::lp::builder::EVAPORATION_FLOW_SAFETY_MARGIN`.
 const EVAPORATION_FLOW_SAFETY_MARGIN: f64 = 2.0;
 
-fn default_production(system: &cobre_core::System) -> ProductionModelSet {
+fn default_production(system: &novomodelo_core::System) -> ProductionModelSet {
     PrepareHydroModelsResult::default_from_system(system).production
 }
 
-fn default_evaporation(system: &cobre_core::System) -> EvaporationModelSet {
+fn default_evaporation(system: &novomodelo_core::System) -> EvaporationModelSet {
     PrepareHydroModelsResult::default_from_system(system).evaporation
 }
 
@@ -72,7 +72,7 @@ fn production_set(productivities: &[f64], n_stages: usize) -> ProductionModelSet
         .collect();
     ProductionModelSet::new(
         models,
-        &cobre_sddp::test_support::minimal_hydros(n_hydros),
+        &novomodelo_sddp::test_support::minimal_hydros(n_hydros),
         n_stages,
     )
 }
@@ -125,10 +125,10 @@ fn default_hydro_penalties() -> HydroPenalties {
 
 /// One-bus, no-entity system with `n_stages` study stages.
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-fn one_bus_system(n_stages: usize) -> cobre_core::System {
+fn one_bus_system(n_stages: usize) -> novomodelo_core::System {
     use chrono::NaiveDate;
-    use cobre_core::scenario::LoadModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
@@ -253,11 +253,11 @@ fn one_bus_system(n_stages: usize) -> cobre_core::System {
     clippy::cast_possible_wrap,
     clippy::too_many_lines
 )]
-fn one_hydro_system(n_stages: usize, lag_order: usize) -> cobre_core::System {
+fn one_hydro_system(n_stages: usize, lag_order: usize) -> novomodelo_core::System {
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
@@ -450,11 +450,11 @@ fn fpha_system_with_turbined_cost(
     n_planes: usize,
     turbined_cost: f64,
     block_durations_hours: &[f64],
-) -> (cobre_core::System, ProductionModelSet) {
+) -> (novomodelo_core::System, ProductionModelSet) {
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
@@ -685,11 +685,11 @@ fn two_bus_system_with_stochastic_load(
     n_stages: usize,
     n_hydros_in_system: usize,
     n_blocks: usize,
-) -> cobre_core::System {
+) -> novomodelo_core::System {
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
@@ -902,7 +902,7 @@ fn two_bus_system_with_stochastic_load(
 
 /// CSC coefficient at (`col`, `row`); `None` if the column has no entry in that row.
 #[allow(clippy::cast_sign_loss)] // col_starts and row_indices are non-negative by construction
-fn csc_entry(tmpl: &cobre_solver::StageTemplate, col: usize, row: usize) -> Option<f64> {
+fn csc_entry(tmpl: &novomodelo_solver::StageTemplate, col: usize, row: usize) -> Option<f64> {
     let start = tmpl.col_starts[col] as usize;
     let end = tmpl.col_starts[col + 1] as usize;
     for pos in start..end {
@@ -920,11 +920,11 @@ fn csc_entry(tmpl: &cobre_solver::StageTemplate, col: usize, row: usize) -> Opti
     clippy::cast_possible_wrap,
     clippy::too_many_lines
 )]
-fn one_fpha_hydro_system(n_planes: usize) -> (cobre_core::System, ProductionModelSet) {
+fn one_fpha_hydro_system(n_planes: usize) -> (novomodelo_core::System, ProductionModelSet) {
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
@@ -1124,11 +1124,11 @@ fn one_fpha_hydro_system(n_planes: usize) -> (cobre_core::System, ProductionMode
     clippy::cast_possible_wrap,
     clippy::too_many_lines
 )]
-fn four_hydro_mixed_system() -> (cobre_core::System, ProductionModelSet) {
+fn four_hydro_mixed_system() -> (novomodelo_core::System, ProductionModelSet) {
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
@@ -1429,7 +1429,7 @@ fn four_hydro_mixed_system() -> (cobre_core::System, ProductionModelSet) {
 /// 1-FPHA-hydro system reusing `one_fpha_hydro_system` but with 3 planes whose
 /// large intercept keeps the solve feasible for any `v_in` in `[0, 500]` hm³:
 /// `intercept=300.0, gamma_v=1.0, gamma_q=3.0, gamma_s=0.0`.
-fn fpha_solve_system() -> (cobre_core::System, ProductionModelSet) {
+fn fpha_solve_system() -> (novomodelo_core::System, ProductionModelSet) {
     let planes = vec![
         FphaPlane {
             intercept: 300.0,
@@ -1449,12 +1449,12 @@ fn fpha_solve_system() -> (cobre_core::System, ProductionModelSet) {
 // Evaporation variable tests
 // =========================================================================
 
-use cobre_solver::StageTemplate;
+use novomodelo_solver::StageTemplate;
 
 /// `EvaporationModelSet` giving `None` to every hydro except those in
 /// `evap_indices`, which get `Linearized` from `intercept_per_stage`.
 fn evap_set_for_system(
-    system: &cobre_core::System,
+    system: &novomodelo_core::System,
     evap_indices: &[usize],
     intercept_per_stage: &[f64],
 ) -> EvaporationModelSet {
@@ -1491,7 +1491,7 @@ fn evap_set_for_system(
 /// Like `evap_set_for_system` but with an explicit `volume_slope_m3s_per_hm3`
 /// alongside `intercept_m3s`.
 fn evap_set_with_volume_slope(
-    system: &cobre_core::System,
+    system: &novomodelo_core::System,
     evap_indices: &[usize],
     intercept_m3s: f64,
     volume_slope_m3s_per_hm3: f64,
@@ -1543,11 +1543,11 @@ fn entries_for_col(t: &StageTemplate, col: usize) -> Vec<(usize, f64)> {
 fn evap_hydro_system_with_violation_cost(
     block_hours: f64,
     evaporation_violation_cost: f64,
-) -> cobre_core::System {
+) -> novomodelo_core::System {
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
 
@@ -1749,10 +1749,10 @@ fn evap_hydro_system_with_violation_cost(
 
 /// No-hydro, no-thermal, no-line system over the given buses, 1 stage / 1 block.
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-fn multi_segment_system(buses: Vec<Bus>, block_hours: f64) -> cobre_core::System {
+fn multi_segment_system(buses: Vec<Bus>, block_hours: f64) -> novomodelo_core::System {
     use chrono::NaiveDate;
-    use cobre_core::scenario::LoadModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
 
@@ -1865,11 +1865,11 @@ fn one_hydro_system_with_withdrawal(
     lag_order: usize,
     water_withdrawal_m3s: f64,
     water_withdrawal_violation_cost: f64,
-) -> cobre_core::System {
+) -> novomodelo_core::System {
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
@@ -2090,10 +2090,10 @@ fn one_hydro_system_with_withdrawal(
 
 /// One-bus, one-stage system with `n_blks` operating blocks.
 #[allow(clippy::cast_possible_wrap)]
-fn one_bus_system_n_blks(n_blks: usize) -> cobre_core::System {
+fn one_bus_system_n_blks(n_blks: usize) -> novomodelo_core::System {
     use chrono::NaiveDate;
-    use cobre_core::scenario::LoadModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
 
@@ -2211,8 +2211,8 @@ fn one_bus_system_n_blks(n_blks: usize) -> cobre_core::System {
 /// `GenericConstraint` with a trivial (no-term) expression. A no-term expression
 /// is vacuously block-independent, so a `block_id = None` bound on it collapses to
 /// a single stage-level row.
-fn make_constraint(id: i32, slack_enabled: bool) -> cobre_core::GenericConstraint {
-    use cobre_core::ConstraintExpression;
+fn make_constraint(id: i32, slack_enabled: bool) -> novomodelo_core::GenericConstraint {
+    use novomodelo_core::ConstraintExpression;
     make_constraint_with_expr(id, slack_enabled, ConstraintExpression { terms: vec![] })
 }
 
@@ -2220,9 +2220,9 @@ fn make_constraint(id: i32, slack_enabled: bool) -> cobre_core::GenericConstrain
 fn make_constraint_with_expr(
     id: i32,
     slack_enabled: bool,
-    expression: cobre_core::ConstraintExpression,
-) -> cobre_core::GenericConstraint {
-    use cobre_core::{GenericConstraint, SlackConfig};
+    expression: novomodelo_core::ConstraintExpression,
+) -> novomodelo_core::GenericConstraint {
+    use novomodelo_core::{GenericConstraint, SlackConfig};
     GenericConstraint {
         id: EntityId(id),
         name: format!("gc_{id}"),
@@ -2241,8 +2241,8 @@ fn make_constraint_with_expr(
 /// `block_id = None`. `BusExcess` resolves to a per-block column
 /// (`excess.start + bus_pos * n_blks + block_idx`), so a `block_id = None` bound
 /// on this expression is **not** collapsible — distinct blocks yield distinct rows.
-fn block_level_excess_expr(bus_id: i32) -> cobre_core::ConstraintExpression {
-    use cobre_core::{ConstraintExpression, LinearTerm, VariableRef};
+fn block_level_excess_expr(bus_id: i32) -> novomodelo_core::ConstraintExpression {
+    use novomodelo_core::{ConstraintExpression, LinearTerm, VariableRef};
     ConstraintExpression {
         terms: vec![LinearTerm::literal(
             1.0,
@@ -2255,7 +2255,7 @@ fn block_level_excess_expr(bus_id: i32) -> cobre_core::ConstraintExpression {
 }
 
 /// Build templates for `system` using the no-penalty method and default PAR/Normal.
-fn build_templates_for(system: &cobre_core::System) -> Vec<cobre_solver::StageTemplate> {
+fn build_templates_for(system: &novomodelo_core::System) -> Vec<novomodelo_solver::StageTemplate> {
     let production = default_production(system);
     let evaporation = default_evaporation(system);
     build_stage_templates_resolving_layout(
@@ -2276,12 +2276,12 @@ fn build_templates_for(system: &cobre_core::System) -> Vec<cobre_solver::StageTe
 #[allow(clippy::cast_possible_wrap)]
 fn one_bus_system_n_blks_with_generic(
     n_blks: usize,
-    constraints: Vec<cobre_core::GenericConstraint>,
-    bounds: cobre_core::ResolvedGenericConstraintBounds,
-) -> cobre_core::System {
+    constraints: Vec<novomodelo_core::GenericConstraint>,
+    bounds: novomodelo_core::ResolvedGenericConstraintBounds,
+) -> novomodelo_core::System {
     use chrono::NaiveDate;
-    use cobre_core::scenario::LoadModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
 
@@ -2403,7 +2403,7 @@ fn one_bus_system_n_blks_with_generic(
 /// All values stored at `(col, row)` in the CSC template. Returns a `Vec` (not
 /// `Option`) because two fill helpers can add to the same position; tests check
 /// the total or assert uniqueness.
-fn csc_entries_at(t: &cobre_solver::StageTemplate, col: usize, row: usize) -> Vec<f64> {
+fn csc_entries_at(t: &novomodelo_solver::StageTemplate, col: usize, row: usize) -> Vec<f64> {
     let start = t.col_starts[col] as usize;
     let end = t.col_starts[col + 1] as usize;
     t.row_indices[start..end]
@@ -2423,12 +2423,12 @@ fn csc_entries_at(t: &cobre_solver::StageTemplate, col: usize, row: usize) -> Ve
 #[allow(clippy::cast_possible_wrap)]
 fn one_bus_one_thermal_system(
     thermal_entity_id: EntityId,
-    constraints: Vec<cobre_core::GenericConstraint>,
-    bounds: cobre_core::ResolvedGenericConstraintBounds,
-) -> cobre_core::System {
+    constraints: Vec<novomodelo_core::GenericConstraint>,
+    bounds: novomodelo_core::ResolvedGenericConstraintBounds,
+) -> novomodelo_core::System {
     use chrono::NaiveDate;
-    use cobre_core::scenario::LoadModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
 
@@ -2568,11 +2568,11 @@ fn one_bus_one_thermal_system(
 ///        min_generation=5.0, productivity=0.5.
 /// Penalties: outflow_below/above=1000, turbined_below=1000, generation_below=1000.
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-fn one_hydro_active_violations(n_stages: usize) -> cobre_core::System {
+fn one_hydro_active_violations(n_stages: usize) -> novomodelo_core::System {
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
@@ -2789,7 +2789,7 @@ fn one_hydro_active_violations(n_stages: usize) -> cobre_core::System {
         .build()
         .expect("one_hydro_active_violations: valid")
 }
-fn build_active_violations_template() -> cobre_sddp::StageTemplates {
+fn build_active_violations_template() -> novomodelo_sddp::StageTemplates {
     let system = one_hydro_active_violations(1);
     // Productivity = 0.5 to match the coefficient expected by
     // `min_generation_constant_productivity_coefficients`.
@@ -2814,11 +2814,14 @@ fn build_active_violations_template() -> cobre_sddp::StageTemplates {
 /// lets `PrecomputedPar::build` resolve lag-stage statistics via the season fallback
 /// even with no pre-study inflow models.
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-fn two_hydro_par_system(ar_order: usize, inflow_models: Vec<InflowModel>) -> cobre_core::System {
+fn two_hydro_par_system(
+    ar_order: usize,
+    inflow_models: Vec<InflowModel>,
+) -> novomodelo_core::System {
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::LoadModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
 
@@ -3054,10 +3057,10 @@ fn one_anticipated_thermal_system(
     lead_stages: u32,
     min_generation_mw: f64,
     max_generation_mw: f64,
-) -> cobre_core::System {
+) -> novomodelo_core::System {
     use chrono::NaiveDate;
-    use cobre_core::scenario::LoadModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
@@ -3227,10 +3230,13 @@ fn anticipated_decision_col(lead_stages: usize) -> usize {
 /// - `col_anticipated_decision_start = col_thermal_start + 2 * n_blks`
 ///   = `theta + 1 + 2`
 #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-fn two_thermal_one_anticipated_system(n_stages: usize, lead_stages: u32) -> cobre_core::System {
+fn two_thermal_one_anticipated_system(
+    n_stages: usize,
+    lead_stages: u32,
+) -> novomodelo_core::System {
     use chrono::NaiveDate;
-    use cobre_core::scenario::LoadModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
@@ -3410,10 +3416,10 @@ fn two_thermal_col_thermal_start(lead_stages: usize) -> usize {
 /// - `col_thermal_start = 9` (decision_start = theta+1 = 9; 0 turbine/spillage/diversion)
 /// - `StateSpace::commit_out.start = 0` (N*(1+L)=0, outgoing ring)
 #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-fn two_anticipated_thermal_system(n_stages: usize) -> cobre_core::System {
+fn two_anticipated_thermal_system(n_stages: usize) -> novomodelo_core::System {
     use chrono::NaiveDate;
-    use cobre_core::scenario::LoadModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
@@ -3574,11 +3580,11 @@ fn two_anticipated_thermal_system(n_stages: usize) -> cobre_core::System {
 /// accesses with `par_lp.n_stages() > 0` (false for the default), so PAR
 /// coefficients are treated as zero — acceptable for structural tests.
 #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-fn one_hydro_one_ant_system(n_stages: usize) -> cobre_core::System {
+fn one_hydro_one_ant_system(n_stages: usize) -> novomodelo_core::System {
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
@@ -3841,12 +3847,12 @@ fn build_hydro_one_ant_system(
     n_stages: usize,
     lead_stages: u32,
     annual_discount_rate: f64,
-) -> cobre_core::System {
+) -> novomodelo_core::System {
     use chrono::NaiveDate;
-    use cobre_core::HorizonGraph;
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::HorizonGraph;
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, PolicyGraphType, ScenarioSourceConfig, Stage,
         StageRiskConfig, StageStateConfig,
     };
@@ -4067,27 +4073,27 @@ fn build_hydro_one_ant_system(
 }
 
 /// Build the K=1 roundtrip system (lead_stages=1, no discounting).
-fn build_k1_system() -> cobre_core::System {
+fn build_k1_system() -> novomodelo_core::System {
     build_hydro_one_ant_system(4, 1, 0.0)
 }
 
 /// Build the K=2 roundtrip system (lead_stages=2, no discounting).
-fn build_k2_system() -> cobre_core::System {
+fn build_k2_system() -> novomodelo_core::System {
     build_hydro_one_ant_system(4, 2, 0.0)
 }
 
 /// Build the K=3 roundtrip system (lead_stages=3, no discounting).
-fn build_k3_system() -> cobre_core::System {
+fn build_k3_system() -> novomodelo_core::System {
     build_hydro_one_ant_system(4, 3, 0.0)
 }
 
 /// K=0 baseline: 1 hydro + 1 NON-anticipated thermal (`anticipated_config: None`
 /// → `n_anticipated=0`), so the LP layout matches the pre-anticipated baseline.
-fn build_k0_baseline_system() -> cobre_core::System {
+fn build_k0_baseline_system() -> novomodelo_core::System {
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };

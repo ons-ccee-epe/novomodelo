@@ -17,7 +17,7 @@
 //!
 //! ```
 //! use chrono::NaiveDate;
-//! use cobre_core::{EntityId, PostStudyStage, PostStudyStages, PostStudyThermalBound};
+//! use novomodelo_core::{EntityId, PostStudyStage, PostStudyStages, PostStudyThermalBound};
 //!
 //! let ps = PostStudyStages {
 //!     stages: vec![PostStudyStage {
@@ -47,7 +47,7 @@ use crate::EntityId;
 /// `end_date` is not declared; it is `start_date` advanced by `duration_hours`.
 /// The containing [`PostStudyStages::stages`] is date-contiguous (each stage's
 /// end equals the next stage's `start_date`) and its first `start_date` equals
-/// the study horizon end (enforced by the `cobre-io` semantic validator, which
+/// the study horizon end (enforced by the `novomodelo-io` semantic validator, which
 /// has the study calendar this crate does not).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -64,7 +64,7 @@ pub struct PostStudyStage {
 /// `[min_mw, max_mw]` interval is the plant's delivery capability at that
 /// post-study stage — the sole post-horizon bound surface, directly costing
 /// and bounding the delivery with no separate committed interval to reconcile
-/// against. The `cobre-io` semantic validator rejects a post-study stage an
+/// against. The `novomodelo-io` semantic validator rejects a post-study stage an
 /// anticipated thermal's lead reaches with no such cell declared.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

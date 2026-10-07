@@ -13,7 +13,7 @@
 //! scenario)` and excludes `stage`, so one window/scenario serves all stages of
 //! a forward trajectory.
 
-use cobre_core::temporal::NoiseMethod;
+use novomodelo_core::temporal::NoiseMethod;
 
 use crate::{
     StochasticError,
@@ -171,7 +171,7 @@ where
     for (i, w) in weights.into_iter().enumerate() {
         any = true;
         last_idx = i;
-        // Neumaier-compensated running sum (mirrors cobre-io's
+        // Neumaier-compensated running sum (mirrors novomodelo-io's
         // `normalize_weights`), so a long successor list does not drift the
         // cumulative boundary away from the true sum.
         let t = cumsum + w;
@@ -367,7 +367,7 @@ impl ClassSampler<'_> {
     clippy::float_cmp
 )]
 mod tests {
-    use cobre_core::temporal::NoiseMethod;
+    use novomodelo_core::temporal::NoiseMethod;
 
     use crate::{
         StochasticError, sample_forward,

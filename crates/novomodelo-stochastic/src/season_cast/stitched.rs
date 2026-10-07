@@ -1,7 +1,7 @@
 //! Stage-id to season-id lookup that stitches the study stages to the
 //! pre-study lags recorded by the backward season walk.
 
-use cobre_core::temporal::{SeasonCycles, SeasonMap, Stage};
+use novomodelo_core::temporal::{SeasonCycles, SeasonMap, Stage};
 
 use super::{previous_occurrence, season_period_window};
 
@@ -94,7 +94,7 @@ impl StitchedSeasonMap {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use chrono::NaiveDate;
-    use cobre_core::temporal::{
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, SeasonMap, Stage, StageRiskConfig,
         StageStateConfig,
     };

@@ -68,7 +68,7 @@ use std::path::Path;
 /// # Examples
 ///
 /// ```
-/// use cobre_io::extensions::load_hydro_geometry;
+/// use novomodelo_io::extensions::load_hydro_geometry;
 ///
 /// let rows = load_hydro_geometry(None).expect("no file is fine");
 /// assert!(rows.is_empty());
@@ -90,7 +90,7 @@ pub fn load_hydro_geometry(path: Option<&Path>) -> Result<Vec<HydroGeometryRow>,
 /// # Examples
 ///
 /// ```
-/// use cobre_io::extensions::load_production_models;
+/// use novomodelo_io::extensions::load_production_models;
 ///
 /// let file = load_production_models(None).expect("no file is fine");
 /// assert!(file.configs.is_empty());
@@ -112,7 +112,7 @@ pub fn load_production_models(path: Option<&Path>) -> Result<ProductionModelFile
 /// # Examples
 ///
 /// ```
-/// use cobre_io::extensions::load_fpha_hyperplanes;
+/// use novomodelo_io::extensions::load_fpha_hyperplanes;
 ///
 /// let rows = load_fpha_hyperplanes(None).expect("no file is fine");
 /// assert!(rows.is_empty());
@@ -135,7 +135,7 @@ pub fn load_fpha_hyperplanes(path: Option<&Path>) -> Result<Vec<FphaHyperplaneRo
 /// # Examples
 ///
 /// ```
-/// use cobre_io::extensions::load_hydro_energy_productivity;
+/// use novomodelo_io::extensions::load_hydro_energy_productivity;
 ///
 /// let rows = load_hydro_energy_productivity(None).expect("no file is fine");
 /// assert!(rows.is_empty());
@@ -158,7 +158,7 @@ pub fn load_hydro_energy_productivity(
 /// # Examples
 ///
 /// ```
-/// use cobre_io::extensions::load_tailrace_curves;
+/// use novomodelo_io::extensions::load_tailrace_curves;
 ///
 /// let rows = load_tailrace_curves(None).expect("no file is fine");
 /// assert!(rows.is_empty());

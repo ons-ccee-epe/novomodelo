@@ -1,4 +1,4 @@
-//! Terminal banner for the `cobre` CLI.
+//! Terminal banner for the `novomodelo` CLI.
 //!
 //! Color output is gated on the resolved `--color` setting (the `console` crate's
 //! global stderr flag, set by `resolve_color`).
@@ -13,20 +13,20 @@ pub(crate) fn render_banner_string(use_color: bool) -> String {
         let bar = "\x1b[38;5;172m\u{257a}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{257b}\x1b[0m";
         let dot = "\x1b[38;5;179m\u{25cf}\x1b[0m";
         let spark = "\x1b[38;5;214m\u{26a1}\x1b[0m";
-        let cobre = format!("\x1b[1;38;5;253mCOBRE v{version}\x1b[0m");
+        let novomodelo = format!("\x1b[1;38;5;253mNOVOMODELO v{version}\x1b[0m");
         let tagline = "\x1b[38;5;245mPower systems in Rust\x1b[0m";
-        format!(" {bar}{dot}\n {bar}{dot}{spark}  {cobre}\n {bar}{dot}   {tagline}\n")
+        format!(" {bar}{dot}\n {bar}{dot}{spark}  {novomodelo}\n {bar}{dot}   {tagline}\n")
     } else {
         let bar = "\u{257a}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{257b}";
         let dot = "\u{25cf}";
         let spark = "\u{26a1}";
         format!(
-            " {bar}{dot}\n {bar}{dot}{spark}  COBRE v{version}\n {bar}{dot}   Power systems in Rust\n"
+            " {bar}{dot}\n {bar}{dot}{spark}  NOVOMODELO v{version}\n {bar}{dot}   Power systems in Rust\n"
         )
     }
 }
 
-/// Write the three-line Cobre banner followed by an empty line to `stderr`.
+/// Write the three-line Novomodelo banner followed by an empty line to `stderr`.
 pub fn print_banner(stderr: &Term) {
     let use_color = console::colors_enabled_stderr();
     let banner = render_banner_string(use_color);
@@ -59,9 +59,9 @@ mod tests {
     fn test_render_banner_contains_version() {
         let banner = render_banner_string(false);
         let idx = banner
-            .find("COBRE v")
-            .expect("banner must contain 'COBRE v'");
-        let after = &banner[idx + "COBRE v".len()..];
+            .find("NOVOMODELO v")
+            .expect("banner must contain 'NOVOMODELO v'");
+        let after = &banner[idx + "NOVOMODELO v".len()..];
         assert!(after.chars().next().is_some_and(|c| c.is_ascii_digit()));
     }
 

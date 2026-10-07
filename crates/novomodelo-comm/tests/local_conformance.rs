@@ -1,4 +1,4 @@
-//! Conformance tests for [`LocalBackend`] through the public `cobre_comm` API.
+//! Conformance tests for [`LocalBackend`] through the public `novomodelo_comm` API.
 //!
 //! Verifies the `Communicator`, `SharedMemoryProvider`, and `LocalCommunicator`
 //! contracts of `backend-testing.md` SS1.1-SS1.8, adapted for the identity
@@ -7,10 +7,10 @@
 #![allow(clippy::float_cmp)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use cobre_comm::{CommError, Communicator, LocalBackend, ReduceOp};
+use novomodelo_comm::{CommError, Communicator, LocalBackend, ReduceOp};
 
 #[cfg(feature = "shared-memory")]
-use cobre_comm::{LocalCommunicator, SharedMemoryProvider, SharedRegion};
+use novomodelo_comm::{LocalCommunicator, SharedMemoryProvider, SharedRegion};
 
 // ── SS1.1 allgatherv ─────────────────────────────────────────────────────────
 

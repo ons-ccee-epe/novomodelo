@@ -1,7 +1,7 @@
 //! Shared `#[cfg(test)]` fixtures for the split builder representation modules.
 
 use chrono::NaiveDate;
-use cobre_core::{
+use novomodelo_core::{
     Block, BlockMode, HydroPenalties, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
     StageStateConfig,
 };

@@ -40,7 +40,7 @@ use super::precompute::PrecomputedPar;
 /// AR(0) — mean plus noise:
 ///
 /// ```
-/// use cobre_stochastic::evaluate_par;
+/// use novomodelo_stochastic::evaluate_par;
 ///
 /// let a_h = evaluate_par(100.0, &[], &[], 30.0, 1.5);
 /// assert!((a_h - 145.0).abs() < 1e-10);
@@ -49,7 +49,7 @@ use super::precompute::PrecomputedPar;
 /// AR(1) — one lag:
 ///
 /// ```
-/// use cobre_stochastic::evaluate_par;
+/// use novomodelo_stochastic::evaluate_par;
 ///
 /// // a_h = 70.0 + 0.48 * 90.0 + 28.62 * 0.5 = 127.51
 /// let a_h = evaluate_par(70.0, &[0.48], &[90.0], 28.62, 0.5);
@@ -89,7 +89,7 @@ pub fn evaluate_par(
 ///
 /// ```
 /// #[allow(deprecated)]
-/// use cobre_stochastic::evaluate_par_inflow;
+/// use novomodelo_stochastic::evaluate_par_inflow;
 ///
 /// let a_h = evaluate_par_inflow(100.0, &[], &[], 30.0, 1.5);
 /// assert!((a_h - 145.0).abs() < 1e-10);
@@ -99,7 +99,7 @@ pub fn evaluate_par(
 ///
 /// ```
 /// #[allow(deprecated)]
-/// use cobre_stochastic::evaluate_par_inflow;
+/// use novomodelo_stochastic::evaluate_par_inflow;
 ///
 /// // a_h = 70.0 + 0.48 * 90.0 + 28.62 * 0.5 = 127.51
 /// let a_h = evaluate_par_inflow(70.0, &[0.48], &[90.0], 28.62, 0.5);
@@ -126,9 +126,9 @@ pub fn evaluate_par_inflow(
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{EntityId, scenario::InflowModel, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
-/// use cobre_stochastic::par::precompute::PrecomputedPar;
-/// use cobre_stochastic::evaluate_par_batch;
+/// use novomodelo_core::{EntityId, scenario::InflowModel, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
+/// use novomodelo_stochastic::par::precompute::PrecomputedPar;
+/// use novomodelo_stochastic::evaluate_par_batch;
 /// use chrono::NaiveDate;
 ///
 /// let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
@@ -203,10 +203,10 @@ pub fn evaluate_par_batch(
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{EntityId, scenario::InflowModel, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
-/// use cobre_stochastic::par::precompute::PrecomputedPar;
+/// use novomodelo_core::{EntityId, scenario::InflowModel, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
+/// use novomodelo_stochastic::par::precompute::PrecomputedPar;
 /// #[allow(deprecated)]
-/// use cobre_stochastic::evaluate_par_inflows;
+/// use novomodelo_stochastic::evaluate_par_inflows;
 /// use chrono::NaiveDate;
 ///
 /// let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
@@ -266,7 +266,7 @@ pub fn evaluate_par_inflows(
 /// Solve for noise that produces zero output (truncation):
 ///
 /// ```
-/// use cobre_stochastic::solve_par_noise;
+/// use novomodelo_stochastic::solve_par_noise;
 ///
 /// // η = (0.0 - 70.0 - 0.48 * 90.0) / 28.62
 /// let eta = solve_par_noise(70.0, &[0.48], &[90.0], 28.62, 0.0);
@@ -277,7 +277,7 @@ pub fn evaluate_par_inflows(
 /// Zero sigma with a matching target returns `0.0`:
 ///
 /// ```
-/// use cobre_stochastic::solve_par_noise;
+/// use novomodelo_stochastic::solve_par_noise;
 ///
 /// // deterministic_value = 100.0 + 0.5 * 50.0 = 125.0; target matches → 0.0
 /// let eta = solve_par_noise(100.0, &[0.5], &[50.0], 0.0, 125.0);
@@ -287,7 +287,7 @@ pub fn evaluate_par_inflows(
 /// Zero sigma with a non-matching target returns `f64::NEG_INFINITY`:
 ///
 /// ```
-/// use cobre_stochastic::solve_par_noise;
+/// use novomodelo_stochastic::solve_par_noise;
 ///
 /// // deterministic_value = 125.0; target = 0.0 → impossible → NEG_INFINITY
 /// let eta = solve_par_noise(100.0, &[0.5], &[50.0], 0.0, 0.0);
@@ -328,9 +328,9 @@ pub fn solve_par_noise(
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{EntityId, scenario::InflowModel, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
-/// use cobre_stochastic::par::precompute::PrecomputedPar;
-/// use cobre_stochastic::{solve_par_noise, solve_par_noise_batch};
+/// use novomodelo_core::{EntityId, scenario::InflowModel, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
+/// use novomodelo_stochastic::par::precompute::PrecomputedPar;
+/// use novomodelo_stochastic::{solve_par_noise, solve_par_noise_batch};
 /// use chrono::NaiveDate;
 ///
 /// let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
@@ -414,10 +414,10 @@ pub fn solve_par_noise_batch(
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{EntityId, scenario::InflowModel, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
-/// use cobre_stochastic::par::precompute::PrecomputedPar;
+/// use novomodelo_core::{EntityId, scenario::InflowModel, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
+/// use novomodelo_stochastic::par::precompute::PrecomputedPar;
 /// #[allow(deprecated)]
-/// use cobre_stochastic::{solve_par_noise, solve_par_noises};
+/// use novomodelo_stochastic::{solve_par_noise, solve_par_noises};
 /// use chrono::NaiveDate;
 ///
 /// let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
@@ -467,7 +467,7 @@ pub fn solve_par_noises(
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId,
         scenario::InflowModel,
         temporal::{NoiseMethod, ScenarioSourceConfig, Stage},
@@ -482,7 +482,7 @@ mod tests {
     use crate::test_support::InflowModelSpec;
 
     fn make_stage(index: usize, id: i32, season_id: Option<usize>) -> Stage {
-        cobre_core::test_support::make_stage(StageSpec {
+        novomodelo_core::test_support::make_stage(StageSpec {
             id,
             index: Some(index),
             season_id,
@@ -898,7 +898,7 @@ mod tests {
     fn test_solve_par_noise_batch_sigma_zero_matching_target() {
         // Build a single-hydro, single-stage PAR with sigma=0 (std_m3s=0 → sigma=0).
         // AR(0) with mean=125.0, std=0.0 → deterministic_value=125.0.
-        use cobre_core::{EntityId, scenario::InflowModel};
+        use novomodelo_core::{EntityId, scenario::InflowModel};
 
         let stage = make_stage(0, 0, Some(0));
         let model = InflowModel {

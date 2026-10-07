@@ -4,7 +4,7 @@
 //! [`standardize_external_inflow`]: super::external::standardize_external_inflow
 //! [`standardize_historical_windows`]: super::historical::standardize_historical_windows
 
-use cobre_core::temporal::StageLagTransition;
+use novomodelo_core::temporal::StageLagTransition;
 
 use crate::par::{
     DownstreamLagAccum, EntityMajor, PrimaryLagAccum, advance_lag_chain, evaluate::solve_par_noise,

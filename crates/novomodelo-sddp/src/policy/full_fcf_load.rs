@@ -8,11 +8,11 @@
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use cobre_core::System;
-use cobre_io::output::policy::{
+use novomodelo_core::System;
+use novomodelo_io::output::policy::{
     ResolvedCheckpoint, read_policy_checkpoint, resolve_policy_checkpoint,
 };
-use cobre_io::{EntitySlot, OutputError, ProducerBlock};
+use novomodelo_io::{EntitySlot, OutputError, ProducerBlock};
 
 use crate::cut::fcf::FutureCostFunction;
 use crate::error::{ErrorClass, SddpError};

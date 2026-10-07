@@ -37,7 +37,7 @@ use validate::{build_index, build_stage_index};
 ///
 /// ```
 /// use chrono::NaiveDate;
-/// use cobre_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
+/// use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
 ///
 /// let bus = Bus {
 ///     id: EntityId(1),
@@ -555,8 +555,8 @@ impl System {
     /// # Examples
     ///
     /// ```
-    /// use cobre_core::{EntityId, SystemBuilder};
-    /// use cobre_core::scenario::{InflowModel, CorrelationModel};
+    /// use novomodelo_core::{EntityId, SystemBuilder};
+    /// use novomodelo_core::scenario::{InflowModel, CorrelationModel};
     ///
     /// let system = SystemBuilder::new().build().expect("valid system");
     /// let model = InflowModel {
@@ -1633,7 +1633,7 @@ mod tests {
 
     #[test]
     fn test_filling_start_not_before_entry_rejected() {
-        // SystemBuilder rejects start_stage_id >= entry_stage_id even when cobre-io
+        // SystemBuilder rejects start_stage_id >= entry_stage_id even when novomodelo-io
         // is bypassed; an inverted ordering otherwise mis-phases the reservoir.
         let bus = make_bus(BusSpec {
             id: 0,

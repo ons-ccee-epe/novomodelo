@@ -1,7 +1,7 @@
 //! Pre-resolved per-block factor and NCS-availability lookup tables, consumed on
 //! the LP-building hot path. Absent factor entries return the no-scaling identity
 //! `1.0`; absent NCS availability returns `0.0`.
-//! Populated by `cobre-io`; never modified after construction.
+//! Populated by `novomodelo-io`; never modified after construction.
 
 /// Pre-resolved per-block load scaling factors.
 ///
@@ -11,7 +11,7 @@
 /// # Examples
 ///
 /// ```
-/// use cobre_core::resolved::ResolvedLoadFactors;
+/// use novomodelo_core::resolved::ResolvedLoadFactors;
 ///
 /// let empty = ResolvedLoadFactors::empty();
 /// assert!((empty.factor(0, 0, 0) - 1.0).abs() < f64::EPSILON);
@@ -33,7 +33,7 @@ impl ResolvedLoadFactors {
     /// # Examples
     ///
     /// ```
-    /// use cobre_core::resolved::ResolvedLoadFactors;
+    /// use novomodelo_core::resolved::ResolvedLoadFactors;
     ///
     /// let t = ResolvedLoadFactors::empty();
     /// assert!((t.factor(5, 3, 2) - 1.0).abs() < f64::EPSILON);
@@ -100,7 +100,7 @@ impl ResolvedLoadFactors {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::resolved::ResolvedNcsBounds;
+/// use novomodelo_core::resolved::ResolvedNcsBounds;
 ///
 /// let empty = ResolvedNcsBounds::empty();
 /// assert!(empty.is_empty());
@@ -121,7 +121,7 @@ impl ResolvedNcsBounds {
     /// # Examples
     ///
     /// ```
-    /// use cobre_core::resolved::ResolvedNcsBounds;
+    /// use novomodelo_core::resolved::ResolvedNcsBounds;
     ///
     /// let t = ResolvedNcsBounds::empty();
     /// assert!(t.is_empty());
@@ -197,7 +197,7 @@ impl ResolvedNcsBounds {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::resolved::ResolvedNcsFactors;
+/// use novomodelo_core::resolved::ResolvedNcsFactors;
 ///
 /// let empty = ResolvedNcsFactors::empty();
 /// assert!((empty.factor(0, 0, 0) - 1.0).abs() < f64::EPSILON);
@@ -219,7 +219,7 @@ impl ResolvedNcsFactors {
     /// # Examples
     ///
     /// ```
-    /// use cobre_core::resolved::ResolvedNcsFactors;
+    /// use novomodelo_core::resolved::ResolvedNcsFactors;
     ///
     /// let t = ResolvedNcsFactors::empty();
     /// assert!((t.factor(5, 3, 2) - 1.0).abs() < f64::EPSILON);

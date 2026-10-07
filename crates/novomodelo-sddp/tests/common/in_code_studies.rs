@@ -19,13 +19,13 @@
 #![allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 
 use chrono::{NaiveDate, TimeDelta};
-use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-use cobre_core::scenario::{InflowModel, LoadModel, NcsModel};
-use cobre_core::temporal::{
+use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+use novomodelo_core::scenario::{InflowModel, LoadModel, NcsModel};
+use novomodelo_core::temporal::{
     Block, BlockMode, NoiseMethod, PolicyGraphType, ScenarioSourceConfig, Stage, StageRiskConfig,
     StageStateConfig,
 };
-use cobre_core::{
+use novomodelo_core::{
     AnticipatedCommitmentHistory, AnticipatedConfig, BoundsCountsSpec, BoundsDefaults,
     BusStagePenalties, ContractBlockBounds, DeficitSegment, EntityId, HorizonGraph,
     HydroBlockBounds, HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds,
@@ -34,14 +34,14 @@ use cobre_core::{
     PumpingStation, ResolvedBounds, ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
     ThermalStageBounds,
 };
-use cobre_io::config::{
+use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
     InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig, RowSelectionConfig,
     SimulationConfig as IoSimulationConfig, StoppingRuleConfig, TrainingConfig, TrainingSelection,
     TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
-use cobre_sddp::StudySetup;
-use cobre_sddp::hydro_models::{
+use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::hydro_models::{
     EvaporationModel, EvaporationModelSet, LinearizedEvaporation, PrepareHydroModelsResult,
 };
 
@@ -84,7 +84,7 @@ fn hydro_penalties() -> HydroPenalties {
 // fixture; splitting it into helper fns would fragment the declared shape
 // across call sites with no reuse benefit.
 #[allow(clippy::too_many_lines)]
-fn build_system() -> cobre_core::System {
+fn build_system() -> novomodelo_core::System {
     let bus = make_bus(
         BUS_ID,
         BusSpec {
@@ -324,10 +324,10 @@ fn build_config() -> Config {
             enabled: true,
             tree_seed: Some(42),
             stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit { limit: 1 }]),
-            stopping_mode: cobre_io::config::StoppingMode::Any,
+            stopping_mode: novomodelo_io::config::StoppingMode::Any,
             cut_selection: RowSelectionConfig::default(),
             solver: TrainingSolverConfig::default(),
-            parallelism: cobre_io::config::ParallelismConfig::default(),
+            parallelism: novomodelo_io::config::ParallelismConfig::default(),
             scenario_source: None,
             selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
         },
@@ -343,7 +343,7 @@ fn build_config() -> Config {
 /// thermal: isolates an anticipated decision priced after stage 0 under a
 /// nonzero discount rate, a combination no committed deck exercises.
 #[must_use]
-pub fn discounted_anticipated_study() -> (cobre_core::System, Config) {
+pub fn discounted_anticipated_study() -> (novomodelo_core::System, Config) {
     (build_system(), build_config())
 }
 
@@ -359,7 +359,7 @@ fn build_config_with_inflow_penalty() -> Config {
 /// stage — no committed deck combines a `Penalty`/`TruncationWithPenalty`
 /// inflow method with more than one parallel block.
 #[must_use]
-pub fn parallel_inflow_slack_study() -> (cobre_core::System, Config) {
+pub fn parallel_inflow_slack_study() -> (novomodelo_core::System, Config) {
     (build_system(), build_config_with_inflow_penalty())
 }
 
@@ -384,7 +384,7 @@ fn mixed_lead_stage_date(index: usize) -> NaiveDate {
 // fixture; splitting it into helper fns would fragment the declared shape
 // across call sites with no reuse benefit.
 #[allow(clippy::too_many_lines)]
-fn build_mixed_lead_system(reversed: bool) -> cobre_core::System {
+fn build_mixed_lead_system(reversed: bool) -> novomodelo_core::System {
     let bus = make_bus(
         MIXED_LEAD_BUS_ID,
         BusSpec {
@@ -684,7 +684,7 @@ fn build_mixed_lead_system(reversed: bool) -> cobre_core::System {
 /// delivery — a mixed-lead combination no committed deck exercises.
 /// `reversed == true` reverses every entity vector before `SystemBuilder::build`.
 #[must_use]
-pub fn mixed_lead_anticipated_study(reversed: bool) -> (cobre_core::System, Config) {
+pub fn mixed_lead_anticipated_study(reversed: bool) -> (novomodelo_core::System, Config) {
     (build_mixed_lead_system(reversed), build_config())
 }
 
@@ -826,7 +826,7 @@ fn delivery_oracle_post_study(study_end: NaiveDate) -> PostStudyStages {
     }
 }
 
-fn build_delivery_oracle_system(annual_discount_rate: f64) -> cobre_core::System {
+fn build_delivery_oracle_system(annual_discount_rate: f64) -> novomodelo_core::System {
     let boundaries = delivery_oracle_boundaries();
     let bus = make_bus(
         DELIVERY_ORACLE_BUS_ID,
@@ -930,7 +930,9 @@ fn build_delivery_oracle_system(annual_discount_rate: f64) -> cobre_core::System
 /// post-study delivery, discounted at `annual_discount_rate`: unequal delivery
 /// hours, a positive rate and a post-study delivery in one no-hydro study.
 #[must_use]
-pub fn discounted_delivery_oracle_study(annual_discount_rate: f64) -> (cobre_core::System, Config) {
+pub fn discounted_delivery_oracle_study(
+    annual_discount_rate: f64,
+) -> (novomodelo_core::System, Config) {
     let mut config = build_config();
     config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit { limit: 3 }]);
     (build_delivery_oracle_system(annual_discount_rate), config)
@@ -953,7 +955,7 @@ fn evap_hydro_penalties() -> HydroPenalties {
 // fixture; splitting it into helper fns would fragment the declared shape
 // across call sites with no reuse benefit.
 #[allow(clippy::too_many_lines)]
-fn build_parallel_evap_system() -> cobre_core::System {
+fn build_parallel_evap_system() -> novomodelo_core::System {
     let bus = make_bus(
         EVAP_BUS_ID,
         BusSpec {
@@ -1160,7 +1162,7 @@ fn build_parallel_evap_system() -> cobre_core::System {
         .expect("parallel_multiblock_evaporation_study: valid system")
 }
 
-fn parallel_evap_hydro_models(system: &cobre_core::System) -> PrepareHydroModelsResult {
+fn parallel_evap_hydro_models(system: &novomodelo_core::System) -> PrepareHydroModelsResult {
     let mut hydro_models = PrepareHydroModelsResult::default_from_system(system);
     hydro_models.evaporation = EvaporationModelSet::new(vec![EvaporationModel::Linearized {
         coefficients: vec![
@@ -1185,7 +1187,7 @@ fn parallel_evap_hydro_models(system: &cobre_core::System) -> PrepareHydroModels
 /// one block's hours distinguishable from one priced at the stage's 744 h.
 #[must_use]
 pub fn parallel_multiblock_evaporation_study()
--> (cobre_core::System, Config, PrepareHydroModelsResult) {
+-> (novomodelo_core::System, Config, PrepareHydroModelsResult) {
     let system = build_parallel_evap_system();
     let hydro_models = parallel_evap_hydro_models(&system);
     (system, build_config(), hydro_models)
@@ -1200,7 +1202,7 @@ const STOCHASTIC_NCS_ID: EntityId = EntityId(3);
 // fixture; splitting it into helper fns would fragment the declared shape
 // across call sites with no reuse benefit.
 #[allow(clippy::too_many_lines)]
-fn build_stochastic_parallel_system() -> cobre_core::System {
+fn build_stochastic_parallel_system() -> novomodelo_core::System {
     let bus = make_bus(
         STOCHASTIC_BUS_ID,
         BusSpec {
@@ -1415,7 +1417,7 @@ fn build_stochastic_parallel_system() -> cobre_core::System {
 /// stochastic availability noise on its one non-controllable source —
 /// isolates the load- and NCS-noise patch paths no committed deck exercises.
 #[must_use]
-pub fn stochastic_parallel_study() -> (cobre_core::System, Config) {
+pub fn stochastic_parallel_study() -> (novomodelo_core::System, Config) {
     (build_stochastic_parallel_system(), build_config())
 }
 
@@ -1481,7 +1483,7 @@ fn chronological_noise_hydro_penalties() -> HydroPenalties {
 // fixture; splitting it into helper fns would fragment the declared shape
 // across call sites with no reuse benefit.
 #[allow(clippy::too_many_lines)]
-fn build_chronological_noise_system(spec: &ChronologicalNoiseSpec) -> cobre_core::System {
+fn build_chronological_noise_system(spec: &ChronologicalNoiseSpec) -> novomodelo_core::System {
     let start = NaiveDate::from_ymd_opt(2024, 1, 1).expect("chronological_noise_study: valid date");
 
     let bus = make_bus(
@@ -1717,7 +1719,9 @@ fn build_chronological_noise_system(spec: &ChronologicalNoiseSpec) -> cobre_core
 /// (`tests/chronological_inflow_noise.rs`) and the `(Chronological, inflow)`
 /// cell of the patch-ownership sweep (`tests/patch_ownership_sweep.rs`).
 #[must_use]
-pub fn chronological_noise_study(spec: &ChronologicalNoiseSpec) -> (cobre_core::System, Config) {
+pub fn chronological_noise_study(
+    spec: &ChronologicalNoiseSpec,
+) -> (novomodelo_core::System, Config) {
     (build_chronological_noise_system(spec), build_config())
 }
 
@@ -1734,8 +1738,8 @@ pub fn chronological_noise_study(spec: &ChronologicalNoiseSpec) -> (cobre_core::
 /// comment for why.
 #[must_use]
 pub fn chronological_pumping_pair() -> (
-    (cobre_core::System, StudySetup),
-    (cobre_core::System, StudySetup),
+    (novomodelo_core::System, StudySetup),
+    (novomodelo_core::System, StudySetup),
 ) {
     let chrono_spec = ChronologicalNoiseSpec {
         pumping_station: true,
@@ -1773,7 +1777,7 @@ const TWO_HYDRO_EVAP_THERMAL_ID: EntityId = EntityId(4);
 // fixture; splitting it into helper fns would fragment the declared shape
 // across call sites with no reuse benefit.
 #[allow(clippy::too_many_lines)]
-fn build_two_hydro_evap_system() -> cobre_core::System {
+fn build_two_hydro_evap_system() -> novomodelo_core::System {
     let bus = make_bus(
         TWO_HYDRO_EVAP_BUS_ID,
         BusSpec {
@@ -1998,7 +2002,7 @@ fn build_two_hydro_evap_system() -> cobre_core::System {
         .expect("two_hydro_evaporation_study: valid system")
 }
 
-fn two_hydro_evap_hydro_models(system: &cobre_core::System) -> PrepareHydroModelsResult {
+fn two_hydro_evap_hydro_models(system: &novomodelo_core::System) -> PrepareHydroModelsResult {
     let mut hydro_models = PrepareHydroModelsResult::default_from_system(system);
     hydro_models.evaporation = EvaporationModelSet::new(vec![
         EvaporationModel::None,
@@ -2022,7 +2026,8 @@ fn two_hydro_evap_hydro_models(system: &cobre_core::System) -> PrepareHydroModel
 /// `evap_hydro_indices` (`0`) instead of its system index (`1`) is
 /// distinguishable here, unlike on any single-hydro evaporating fixture.
 #[must_use]
-pub fn two_hydro_evaporation_study() -> (cobre_core::System, Config, PrepareHydroModelsResult) {
+pub fn two_hydro_evaporation_study() -> (novomodelo_core::System, Config, PrepareHydroModelsResult)
+{
     let system = build_two_hydro_evap_system();
     let hydro_models = two_hydro_evap_hydro_models(&system);
     (system, build_config(), hydro_models)
@@ -2040,11 +2045,11 @@ pub fn two_hydro_evaporation_study() -> (cobre_core::System, Config, PrepareHydr
 ///
 /// Each study's builder is called twice — once for the returned `System`,
 /// once for the `System` `build_setup_in_code*` consumes by value — since
-/// `cobre_core::System` has no `Clone` impl and every builder here is a pure,
+/// `novomodelo_core::System` has no `Clone` impl and every builder here is a pure,
 /// deterministic function of its literal inputs, so the two calls yield
 /// equal systems.
 #[must_use]
-pub fn structural_studies() -> Vec<(String, cobre_core::System, StudySetup)> {
+pub fn structural_studies() -> Vec<(String, novomodelo_core::System, StudySetup)> {
     let (discounted_system, discounted_config) = discounted_anticipated_study();
     let (discounted_system_for_setup, _) = discounted_anticipated_study();
     let (parallel_evap_system, parallel_evap_config, _) = parallel_multiblock_evaporation_study();

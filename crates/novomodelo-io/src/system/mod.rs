@@ -32,7 +32,7 @@ pub use pumping_stations::parse_pumping_stations;
 pub use thermals::parse_thermals;
 
 use chrono::NaiveDate;
-use cobre_core::{
+use novomodelo_core::{
     entities::{EnergyContract, NonControllableSource, PumpingStation},
     penalty::GlobalPenaltyDefaults,
 };

@@ -6,7 +6,7 @@
 //! `solve_order` permutation but writes and aggregates outcomes by canonical ω, so
 //! the generated cut is bit-identical regardless of solve order.
 
-use cobre_solver::SolverInterface;
+use novomodelo_solver::SolverInterface;
 
 use crate::{
     SddpError,

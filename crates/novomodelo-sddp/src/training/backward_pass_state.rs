@@ -7,11 +7,11 @@ use std::ops::Range;
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
-use cobre_comm::{Communicator, ReduceOp};
-use cobre_core::{TrainingEvent, WorkerPhaseTimings, WorkerTimingPhase};
-use cobre_io::config::BackwardScheduler;
-use cobre_solver::ActiveProfile;
-use cobre_solver::{RowBatch, SolverInterface, SolverStatistics, StageTemplate};
+use novomodelo_comm::{Communicator, ReduceOp};
+use novomodelo_core::{TrainingEvent, WorkerPhaseTimings, WorkerTimingPhase};
+use novomodelo_io::config::BackwardScheduler;
+use novomodelo_solver::ActiveProfile;
+use novomodelo_solver::{RowBatch, SolverInterface, SolverStatistics, StageTemplate};
 use rayon::iter::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
 };
@@ -2087,9 +2087,9 @@ pub(crate) fn process_stage_backward<S: SolverInterface + Send>(
 )]
 mod tests {
     use super::*;
-    use cobre_comm::{CommData, CommError, Communicator, ReduceOp};
-    use cobre_core::scenario::{InflowModel, SamplingScheme};
-    use cobre_solver::{
+    use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
+    use novomodelo_core::scenario::{InflowModel, SamplingScheme};
+    use novomodelo_solver::{
         Basis, LpSolution, ProfiledSolver, RowBatch, SolverError, SolverInterface,
         SolverStatistics, StageTemplate,
     };
@@ -2227,9 +2227,9 @@ mod tests {
     }
 
     impl SolverInterface for MockSolver {
-        type Profile = cobre_solver::ActiveProfile;
+        type Profile = novomodelo_solver::ActiveProfile;
 
-        fn apply_profile(&mut self, _profile: &cobre_solver::ActiveProfile) {}
+        fn apply_profile(&mut self, _profile: &novomodelo_solver::ActiveProfile) {}
 
         fn name(&self) -> &'static str {
             "mock"
@@ -2253,9 +2253,9 @@ mod tests {
         fn solve(
             &mut self,
             _basis: Option<&Basis>,
-        ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+        ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
             self.call_count += 1;
-            Ok(cobre_solver::SolutionView {
+            Ok(novomodelo_solver::SolutionView {
                 objective: self.solution.objective,
                 primal: &self.buf_primal,
                 dual: &self.buf_dual,
@@ -2400,10 +2400,10 @@ mod tests {
     fn make_stochastic_context(
         n_stages: usize,
         branching_factor: usize,
-    ) -> cobre_stochastic::StochasticContext {
+    ) -> novomodelo_stochastic::StochasticContext {
         use chrono::NaiveDate;
-        use cobre_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
-        use cobre_core::{
+        use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+        use novomodelo_core::{
             Bus, DeficitSegment, EntityId, SystemBuilder,
             scenario::{CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile},
             temporal::{
@@ -2411,7 +2411,7 @@ mod tests {
                 StageStateConfig,
             },
         };
-        use cobre_stochastic::context::{
+        use novomodelo_stochastic::context::{
             ClassSchemes, OpeningTreeInputs, build_stochastic_context,
         };
         use std::collections::BTreeMap;
@@ -2760,7 +2760,7 @@ mod tests {
     #[allow(clippy::too_many_arguments)]
     fn run_backward_over_k_fan(
         node_graph: &NodeGraph,
-        stochastic: &cobre_stochastic::StochasticContext,
+        stochastic: &novomodelo_stochastic::StochasticContext,
         state: &StateSpace,
         templates: &[StageTemplate],
         n_stages: usize,
@@ -2893,9 +2893,9 @@ mod tests {
     /// produce byte-identical cut counts.
     #[test]
     fn backward_pass_state_run_over_k_fan_is_invariant_to_per_trial_leaf_node_id() {
-        use cobre_core::HorizonGraph;
-        use cobre_core::temporal::{Node, PolicyGraphType, Transition};
-        use cobre_io::StageIdResolver;
+        use novomodelo_core::HorizonGraph;
+        use novomodelo_core::temporal::{Node, PolicyGraphType, Transition};
+        use novomodelo_io::StageIdResolver;
 
         use crate::setup::node_graph::build_node_graph;
 
@@ -2996,9 +2996,9 @@ mod tests {
     /// is `dcs_arm_generated_fan_value_matches_oracle`.
     #[test]
     fn successor_pool_resolves_by_node_position_not_stage_index() {
-        use cobre_core::HorizonGraph;
-        use cobre_core::temporal::{Node, PolicyGraphType, Transition};
-        use cobre_io::StageIdResolver;
+        use novomodelo_core::HorizonGraph;
+        use novomodelo_core::temporal::{Node, PolicyGraphType, Transition};
+        use novomodelo_io::StageIdResolver;
 
         use crate::setup::node_graph::build_node_graph;
 
@@ -3129,7 +3129,7 @@ mod tests {
     #[allow(clippy::too_many_arguments)]
     fn run_backward_over_binary_tree(
         node_graph: &NodeGraph,
-        stochastic: &cobre_stochastic::StochasticContext,
+        stochastic: &novomodelo_stochastic::StochasticContext,
         state: &StateSpace,
         templates: &[StageTemplate],
         n_stages: usize,
@@ -3261,11 +3261,11 @@ mod tests {
     /// A hand-built small trunk+fan graph: root (stage 0, id 0) → ONE trunk
     /// node (stage 1, id 1) → THREE leaves (stage 2, ids 2..4, one shared
     /// pool). Two non-leaf (cut-generating) nodes: root and the trunk node.
-    fn trunk_fan_graph() -> (NodeGraph, cobre_stochastic::StochasticContext) {
+    fn trunk_fan_graph() -> (NodeGraph, novomodelo_stochastic::StochasticContext) {
         use crate::setup::node_graph::build_node_graph;
-        use cobre_core::HorizonGraph;
-        use cobre_core::temporal::{Node, PolicyGraphType, Transition};
-        use cobre_io::StageIdResolver;
+        use novomodelo_core::HorizonGraph;
+        use novomodelo_core::temporal::{Node, PolicyGraphType, Transition};
+        use novomodelo_io::StageIdResolver;
 
         fn node(id: i32, stage_id: i32) -> Node {
             Node {
@@ -3315,11 +3315,11 @@ mod tests {
     /// Hydro-free: `run_enumerated_backward_over_graph`'s harness declares no
     /// `external_inflow_library`, and the External leaf's declared column must
     /// resolve against an empty inflow noise class to avoid it.
-    fn mixed_terminal_fan_graph() -> (NodeGraph, cobre_stochastic::StochasticContext) {
+    fn mixed_terminal_fan_graph() -> (NodeGraph, novomodelo_stochastic::StochasticContext) {
         use crate::setup::node_graph::build_node_graph;
-        use cobre_core::HorizonGraph;
-        use cobre_core::temporal::{Node, PolicyGraphType, Transition};
-        use cobre_io::StageIdResolver;
+        use novomodelo_core::HorizonGraph;
+        use novomodelo_core::temporal::{Node, PolicyGraphType, Transition};
+        use novomodelo_io::StageIdResolver;
 
         fn node(id: i32, stage_id: i32, scenario_id: Option<i32>) -> Node {
             Node {
@@ -3371,7 +3371,7 @@ mod tests {
     /// since `fcf` retains whatever cuts were appended before any error).
     fn run_enumerated_backward_over_graph<C: Communicator>(
         node_graph: &NodeGraph,
-        stochastic: &cobre_stochastic::StochasticContext,
+        stochastic: &novomodelo_stochastic::StochasticContext,
         traversal: &Traversal,
         enumerated_state: &EnumeratedForwardScratch,
         comm: &C,
@@ -3725,9 +3725,9 @@ mod tests {
     /// backward schedulers must route identically.
     #[test]
     fn backward_pass_state_routes_trial_states_to_the_visited_nodes_pool() {
-        use cobre_core::HorizonGraph;
-        use cobre_core::temporal::{Node, PolicyGraphType, Transition};
-        use cobre_io::StageIdResolver;
+        use novomodelo_core::HorizonGraph;
+        use novomodelo_core::temporal::{Node, PolicyGraphType, Transition};
+        use novomodelo_io::StageIdResolver;
 
         use crate::setup::node_graph::build_node_graph;
 
@@ -3940,11 +3940,11 @@ mod tests {
             &state_layout_fixture,
             &horizon,
         );
-        let resolved =
-            Phase::Backward.resolve_profile(Some(&cobre_io::config::PhaseSolverProfileConfig {
-                dual_edge_weight: Some(cobre_io::config::DualEdgeWeight::SteepestEdge),
-                scale: Some(cobre_io::config::ScaleStrategy::SolverScaling),
-                price: Some(cobre_io::config::PriceStrategy::Row),
+        let resolved = Phase::Backward.resolve_profile(Some(
+            &novomodelo_io::config::PhaseSolverProfileConfig {
+                dual_edge_weight: Some(novomodelo_io::config::DualEdgeWeight::SteepestEdge),
+                scale: Some(novomodelo_io::config::ScaleStrategy::SolverScaling),
+                price: Some(novomodelo_io::config::PriceStrategy::Row),
                 primal_feasibility_tolerance: Some(1e-7),
                 dual_feasibility_tolerance: None,
                 presolve: None,
@@ -3954,7 +3954,8 @@ mod tests {
                 factor_pivot_threshold: None,
                 use_warm_start: None,
                 steepest_edge_devex_fallback_threshold: None,
-            }));
+            },
+        ));
         bwd_state.set_profile(resolved);
 
         let mut inputs = BackwardPassInputs {
@@ -4477,7 +4478,7 @@ mod tests {
 
     #[test]
     fn resolve_backward_scheduler_dcs_forces_by_scenario_else_keeps_configured() {
-        use cobre_io::config::BackwardScheduler;
+        use novomodelo_io::config::BackwardScheduler;
 
         // No active DCS: the configured scheduler passes through unchanged.
         assert!(matches!(
@@ -4502,7 +4503,7 @@ mod tests {
 
     #[test]
     fn by_node_scratch_sizing_follows_configured_scheduler_only() {
-        use cobre_io::config::BackwardScheduler;
+        use novomodelo_io::config::BackwardScheduler;
 
         let state = state_layout(3, 0);
         let horizon = HorizonMode::Finite { num_stages: 5 };
@@ -4633,8 +4634,8 @@ mod tests {
         setup: &mut crate::StudySetup,
         event_sender: Option<&Sender<TrainingEvent>>,
     ) -> BackwardResult {
-        use cobre_solver::ActiveSolver;
-        use cobre_stochastic::ForwardNoiseTables;
+        use novomodelo_solver::ActiveSolver;
+        use novomodelo_stochastic::ForwardNoiseTables;
 
         let comm = StubComm;
         let num_stages = setup.inputs.stage_data.stages.len();

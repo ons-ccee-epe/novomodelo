@@ -35,7 +35,7 @@
 //!
 //! ## Output
 //!
-//! Returns a [`CorrelationModel`] directly (the `cobre-core` type). The `profiles`
+//! Returns a [`CorrelationModel`] directly (the `novomodelo-core` type). The `profiles`
 //! map uses [`BTreeMap`] for deterministic ordering (declaration-order invariance).
 //!
 //! ## Validation
@@ -61,8 +61,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-use cobre_core::EntityId;
-use cobre_core::scenario::{
+use novomodelo_core::EntityId;
+use novomodelo_core::scenario::{
     CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile,
     CorrelationScheduleEntry,
 };
@@ -214,7 +214,7 @@ struct RawScheduleEntry {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::scenarios::parse_correlation;
+/// use novomodelo_io::scenarios::parse_correlation;
 /// use std::path::Path;
 ///
 /// let model = parse_correlation(Path::new("scenarios/correlation.json"))

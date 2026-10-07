@@ -1,4 +1,4 @@
-//! Consolidated cut / basis / warm-start integration tests for `cobre-sddp`.
+//! Consolidated cut / basis / warm-start integration tests for `novomodelo-sddp`.
 //!
 //! Each cut/basis domain group lives in its own inner `mod` so the suite links
 //! the statically-bound solver once rather than once per file. Per-`mod` scoping
@@ -29,12 +29,14 @@ mod boundary_cuts {
 
     use std::path::Path;
 
-    use cobre_core::scenario::ScenarioSource;
-    use cobre_io::STAGE_CUTS_PRICED_STATE_DATE_SENTINEL;
-    use cobre_io::config::StoppingRuleConfig;
-    use cobre_io::output::policy::{read_policy_checkpoint, write_policy_checkpoint};
-    use cobre_sddp::{StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_io::STAGE_CUTS_PRICED_STATE_DATE_SENTINEL;
+    use novomodelo_io::config::StoppingRuleConfig;
+    use novomodelo_io::output::policy::{read_policy_checkpoint, write_policy_checkpoint};
+    use novomodelo_sddp::{
+        StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
+    };
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
 
@@ -61,17 +63,18 @@ mod boundary_cuts {
     fn write_test_checkpoint(
         policy_dir: &Path,
         setup: &StudySetup,
-        result: &cobre_sddp::TrainingResult,
+        result: &novomodelo_sddp::TrainingResult,
         seed: u64,
     ) {
-        use cobre_sddp::policy_export::{
+        use novomodelo_sddp::policy_export::{
             build_active_indices, build_stage_basis_records, build_stage_cut_records,
             build_stage_cuts_payloads, convert_basis_cache,
         };
         let fcf = &setup.fcf;
         let stage_records = build_stage_cut_records(fcf);
         let stage_active_indices = build_active_indices(&stage_records);
-        let stage_manifests: Vec<Vec<cobre_io::EntitySlot>> = vec![Vec::new(); fcf.pools.len()];
+        let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
+            vec![Vec::new(); fcf.pools.len()];
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
         let study_stage_end_dates = ascending_stage_end_dates(fcf.pools.len());
         let stage_cuts = build_stage_cuts_payloads(
@@ -92,10 +95,10 @@ mod boundary_cuts {
             &basis_row,
         );
         let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
-        let metadata = cobre_sddp::test_support::checkpoint_metadata(
+        let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             fcf.pools.len() as u32,
             setup.build_graph_manifest(),
-            cobre_io::ProducerBlock {
+            novomodelo_io::ProducerBlock {
                 completed_iterations: result.iterations as u32,
                 final_lower_bound: result.final_lb,
                 best_upper_bound: Some(result.final_ub),
@@ -115,8 +118,11 @@ mod boundary_cuts {
             .expect("write checkpoint");
     }
 
-    fn build_setup(case_dir: &Path, config: &cobre_io::Config) -> (StudySetup, cobre_core::System) {
-        let system = cobre_io::load_case(case_dir).expect("load_case");
+    fn build_setup(
+        case_dir: &Path,
+        config: &novomodelo_io::Config,
+    ) -> (StudySetup, novomodelo_core::System) {
+        let system = novomodelo_io::load_case(case_dir).expect("load_case");
         let prep = prepare_stochastic(
             system,
             case_dir,
@@ -143,7 +149,7 @@ mod boundary_cuts {
     fn boundary_cuts_improve_terminal_stage_objective() {
         let case_dir = d01_case_dir();
         let config_path = case_dir.join("config.json");
-        let config = cobre_io::parse_config(&config_path).expect("config");
+        let config = novomodelo_io::parse_config(&config_path).expect("config");
 
         let mut config_5iter = config;
         config_5iter.training.stopping_rules =
@@ -177,7 +183,7 @@ mod boundary_cuts {
         let state_dim = setup_c.fcf.state_dimension as u32;
         let current_manifest = setup_c.build_terminal_entity_manifest(&system_c);
         let boundary_records =
-            cobre_sddp::load_boundary_cuts(&cobre_sddp::BoundaryLoadRequest::new(
+            novomodelo_sddp::load_boundary_cuts(&novomodelo_sddp::BoundaryLoadRequest::new(
                 &source_policy_dir,
                 boundary_date,
                 state_dim,
@@ -189,7 +195,7 @@ mod boundary_cuts {
             !boundary_records.is_empty(),
             "source stage must have cuts after training"
         );
-        cobre_sddp::inject_boundary_cuts(&mut setup_c, &boundary_records).unwrap();
+        novomodelo_sddp::inject_boundary_cuts(&mut setup_c, &boundary_records).unwrap();
 
         let terminal_pool_id = setup_c.inputs.node_graph.terminal_pool(num_stages).unwrap();
         let terminal_pool = &setup_c.fcf.pools[terminal_pool_id];
@@ -221,7 +227,7 @@ mod boundary_cuts {
     fn write_test_checkpoint_pools_carry_distinct_priced_dates() {
         let case_dir = d01_case_dir();
         let config_path = case_dir.join("config.json");
-        let config = cobre_io::parse_config(&config_path).expect("config");
+        let config = novomodelo_io::parse_config(&config_path).expect("config");
 
         let mut config_5iter = config;
         config_5iter.training.stopping_rules =
@@ -326,7 +332,7 @@ mod cut_subgradient_parity {
     //! ```
 
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, DeficitSegment,
         EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
         LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
@@ -338,7 +344,7 @@ mod cut_subgradient_parity {
             Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
         },
     };
-    use cobre_sddp::{
+    use novomodelo_sddp::{
         build_stage_templates_resolving_layout,
         hydro_models::{
             EvaporationModel, EvaporationModelSet, FphaPlane, LinearizedEvaporation,
@@ -347,8 +353,8 @@ mod cut_subgradient_parity {
         inflow_method::InflowNonNegativityMethod,
         resolved_parameters::ResolvedParameters,
     };
-    use cobre_solver::{ActiveSolver, RowBatch, SolverInterface};
-    use cobre_stochastic::{PrecomputedPar, normal::precompute::PrecomputedNormal};
+    use novomodelo_solver::{ActiveSolver, RowBatch, SolverInterface};
+    use novomodelo_stochastic::{PrecomputedPar, normal::precompute::PrecomputedNormal};
 
     use super::common::builders::{
         BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage,
@@ -376,7 +382,7 @@ mod cut_subgradient_parity {
     ///
     /// Parameters chosen so the LP is feasible and the FPHA constraint is active
     /// at the optimum (maximising turbine use to minimise thermal/deficit cost).
-    fn fpha_evap_system() -> cobre_core::System {
+    fn fpha_evap_system() -> novomodelo_core::System {
         let bus = make_bus(
             EntityId(1),
             BusSpec {
@@ -581,7 +587,7 @@ mod cut_subgradient_parity {
         let models = vec![vec![ResolvedProductionModel::Fpha {
             planes: vec![plane],
         }]];
-        ProductionModelSet::new(models, &cobre_sddp::test_support::minimal_hydros(1), 1)
+        ProductionModelSet::new(models, &novomodelo_sddp::test_support::minimal_hydros(1), 1)
     }
 
     fn fpha_evap_evaporation() -> EvaporationModelSet {
@@ -711,9 +717,9 @@ mod cut_selection_determinism_realistic {
     //! size, rayon caps the worker count; this is acceptable — the assertions
     //! compare bitmaps across whatever thread counts rayon actually instantiates.
 
-    use cobre_sddp::cut::CutPool;
-    use cobre_sddp::cut_selection::{CutActivityUpdates, CutMetadata, CutSelectionStrategy};
-    use cobre_sddp::setup::NodeId;
+    use novomodelo_sddp::cut::CutPool;
+    use novomodelo_sddp::cut_selection::{CutActivityUpdates, CutMetadata, CutSelectionStrategy};
+    use novomodelo_sddp::setup::NodeId;
 
     fn splitmix64(state: &mut u64) -> u64 {
         *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -887,22 +893,22 @@ mod cut_selection_determinism_realistic {
 }
 
 mod basis_reconstruct_churn {
-    //! Cross-churn regression tests for [`cobre_sddp::basis_reconstruct`]: guards
+    //! Cross-churn regression tests for [`novomodelo_sddp::basis_reconstruct`]: guards
     //! slot reconciliation, `state_at_capture` routing, and the iteration-wide
     //! hot-path allocation invariants against LML1 deactivation, budget eviction,
     //! and new-cut churn.
 
-    use cobre_io::config::{SimulationSelection, TrainingSelection};
+    use novomodelo_io::config::{SimulationSelection, TrainingSelection};
     use std::path::Path;
     use std::sync::mpsc;
 
-    use cobre_core::scenario::ScenarioSource;
-    use cobre_io::config::{SelectionMethod, StoppingRuleConfig};
-    use cobre_sddp::{
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_io::config::{SelectionMethod, StoppingRuleConfig};
+    use novomodelo_sddp::{
         CutPool, FutureCostFunction, SolverStatsDelta, SolverStatsLogEntry, StudySetup,
         hydro_models::prepare_hydro_models, setup::prepare_stochastic,
     };
-    use cobre_solver::ActiveSolver;
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
 
@@ -964,7 +970,7 @@ mod basis_reconstruct_churn {
 
         let case_dir = d03_case_dir();
         let config_path = case_dir.join("config.json");
-        let mut config = cobre_io::parse_config(&config_path).expect("config must parse");
+        let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
 
         config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 3 });
         config.training.stopping_rules =
@@ -978,7 +984,7 @@ mod basis_reconstruct_churn {
         // Budget = 6 = 2 iters × 3 fwd-passes, so eviction first fires after iteration 2.
         config.training.cut_selection.max_active_per_stage = Some(6);
 
-        let system = cobre_io::load_case(&case_dir).expect("load_case must succeed");
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         let prepare_result = prepare_stochastic(
             system,
             &case_dir,
@@ -1063,7 +1069,7 @@ mod basis_reconstruct_churn {
     fn test_basis_reconstruct_no_churn_full_preservation() {
         let case_dir = d03_case_dir();
         let config_path = case_dir.join("config.json");
-        let mut config = cobre_io::parse_config(&config_path).expect("config must parse");
+        let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
 
         config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
         config.training.stopping_rules =
@@ -1072,7 +1078,7 @@ mod basis_reconstruct_churn {
         config.training.cut_selection.selection = None;
         config.training.cut_selection.max_active_per_stage = None;
 
-        let system = cobre_io::load_case(&case_dir).expect("load_case must succeed");
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         let prepare_result = prepare_stochastic(
             system,
             &case_dir,
@@ -1141,7 +1147,7 @@ mod basis_reconstruct_churn {
     fn test_basis_reconstruct_full_churn_no_rows_preserved() {
         let case_dir = d01_case_dir();
         let config_path = case_dir.join("config.json");
-        let mut config = cobre_io::parse_config(&config_path).expect("config must parse");
+        let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
 
         // Two IterationLimit rules in "any" mode: limit 2 sizes the FCF pool to
         // (2+1) × forward_passes slots/stage (capacity headroom); limit 1 fires first
@@ -1151,7 +1157,7 @@ mod basis_reconstruct_churn {
             StoppingRuleConfig::IterationLimit { limit: 2 },
             StoppingRuleConfig::IterationLimit { limit: 1 },
         ]);
-        let system = cobre_io::load_case(&case_dir).expect("load_case phase1 must succeed");
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case phase1 must succeed");
         let prepare_result = prepare_stochastic(
             system,
             &case_dir,
@@ -1226,7 +1232,8 @@ mod basis_reconstruct_churn {
         // phase-1 setup with the new stopping rule: rebuild a fresh setup from the same
         // system and transplant the fully-deactivated FCF into it.
         {
-            let system2 = cobre_io::load_case(&case_dir).expect("load_case phase2 must succeed");
+            let system2 =
+                novomodelo_io::load_case(&case_dir).expect("load_case phase2 must succeed");
             let prepare2 = prepare_stochastic(
                 system2,
                 &case_dir,
@@ -1317,7 +1324,7 @@ mod basis_reconstruct_churn {
     fn simulate_frozen_path_zero_consistency_failures() {
         let case_dir = d03_case_dir();
         let config_path = case_dir.join("config.json");
-        let mut config = cobre_io::parse_config(&config_path).expect("config must parse");
+        let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
 
         // 2 iterations so iter 2's forward pass captures a basis with non-empty
         // cut_row_slots into basis_cache for the simulation warm-start.
@@ -1331,7 +1338,7 @@ mod basis_reconstruct_churn {
         config.simulation.enabled = true;
         config.simulation.selection = Some(SimulationSelection::Sampled { num_scenarios: 2 });
 
-        let system = cobre_io::load_case(&case_dir).expect("load_case must succeed");
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         let prepare_result = prepare_stochastic(
             system,
             &case_dir,
@@ -1420,20 +1427,20 @@ mod basis_reconstruct_churn {
 mod hybrid_reconstruction {
     //! Integration smoke for the slot-identity basis-reconstruction path.
 
-    use cobre_sddp::basis_reconstruct::{
+    use novomodelo_sddp::basis_reconstruct::{
         ReconstructionStats, ReconstructionTarget, reconstruct_basis,
     };
-    use cobre_sddp::setup::NodeId;
-    use cobre_sddp::workspace::CapturedBasis;
-    use cobre_solver::Basis;
-    use cobre_solver::BasisStatus::{Basic as B, Lower as L};
+    use novomodelo_sddp::setup::NodeId;
+    use novomodelo_sddp::workspace::CapturedBasis;
+    use novomodelo_solver::Basis;
+    use novomodelo_solver::BasisStatus::{Basic as B, Lower as L};
 
     /// All columns are `BASIC` so the column block does not perturb the test focus.
     fn make_stored(
         base_rows: usize,
         num_cols: usize,
         slots: &[u32],
-        cut_statuses: &[cobre_solver::BasisStatus],
+        cut_statuses: &[novomodelo_solver::BasisStatus],
         state_at_capture: &[f64],
     ) -> CapturedBasis {
         assert_eq!(slots.len(), cut_statuses.len());
@@ -1571,15 +1578,15 @@ mod warm_start {
 
     use std::path::Path;
 
-    use cobre_core::scenario::ScenarioSource;
-    use cobre_io::config::StoppingRuleConfig;
-    use cobre_io::output::policy::{read_policy_checkpoint, write_policy_checkpoint};
-    use cobre_sddp::{
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_io::config::StoppingRuleConfig;
+    use novomodelo_io::output::policy::{read_policy_checkpoint, write_policy_checkpoint};
+    use novomodelo_sddp::{
         FutureCostFunction, SolverStatsDelta, StoredBasisMisfit, StudySetup,
         build_basis_cache_from_checkpoint, hydro_models::prepare_hydro_models,
         setup::prepare_stochastic,
     };
-    use cobre_solver::ActiveSolver;
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
 
@@ -1606,17 +1613,18 @@ mod warm_start {
     fn write_test_checkpoint(
         policy_dir: &Path,
         setup: &StudySetup,
-        result: &cobre_sddp::TrainingResult,
+        result: &novomodelo_sddp::TrainingResult,
         seed: u64,
     ) {
-        use cobre_sddp::policy_export::{
+        use novomodelo_sddp::policy_export::{
             build_active_indices, build_stage_basis_records, build_stage_cut_records,
             build_stage_cuts_payloads, convert_basis_cache,
         };
         let fcf = &setup.fcf;
         let stage_records = build_stage_cut_records(fcf);
         let stage_active_indices = build_active_indices(&stage_records);
-        let stage_manifests: Vec<Vec<cobre_io::EntitySlot>> = vec![Vec::new(); fcf.pools.len()];
+        let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
+            vec![Vec::new(); fcf.pools.len()];
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
         let study_stage_end_dates = ascending_stage_end_dates(fcf.pools.len());
         let stage_cuts = build_stage_cuts_payloads(
@@ -1637,10 +1645,10 @@ mod warm_start {
             &basis_row,
         );
         let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
-        let metadata = cobre_sddp::test_support::checkpoint_metadata(
+        let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             fcf.pools.len() as u32,
             setup.build_graph_manifest(),
-            cobre_io::ProducerBlock {
+            novomodelo_io::ProducerBlock {
                 completed_iterations: result.iterations as u32,
                 final_lower_bound: result.final_lb,
                 best_upper_bound: Some(result.final_ub),
@@ -1660,8 +1668,8 @@ mod warm_start {
             .expect("write checkpoint");
     }
 
-    fn build_setup(case_dir: &Path, config: &cobre_io::Config) -> StudySetup {
-        let system = cobre_io::load_case(case_dir).expect("load_case");
+    fn build_setup(case_dir: &Path, config: &novomodelo_io::Config) -> StudySetup {
+        let system = novomodelo_io::load_case(case_dir).expect("load_case");
         let prep = prepare_stochastic(
             system,
             case_dir,
@@ -1687,7 +1695,7 @@ mod warm_start {
     fn resume_training_from_checkpoint() {
         let case_dir = d01_case_dir();
         let config_path = case_dir.join("config.json");
-        let config_full = cobre_io::parse_config(&config_path).expect("config must parse");
+        let config_full = novomodelo_io::parse_config(&config_path).expect("config must parse");
 
         let mut config_phase1 = config_full.clone();
         config_phase1.training.stopping_rules =
@@ -1714,7 +1722,7 @@ mod warm_start {
         let checkpoint = read_policy_checkpoint(&policy_dir).expect("read checkpoint");
         let mut setup_phase2 = build_setup(&case_dir, &config_full);
 
-        let proof = cobre_sddp::test_support::trivial_full_fcf_proof(
+        let proof = novomodelo_sddp::test_support::trivial_full_fcf_proof(
             checkpoint.stage_cuts[0].state_dimension,
             checkpoint.metadata.num_stages,
         );
@@ -1767,11 +1775,11 @@ mod warm_start {
 
     #[test]
     fn exported_basis_records_count_the_cut_rows_each_basis_was_captured_with() {
-        use cobre_sddp::policy_export::{build_stage_basis_records, convert_basis_cache};
+        use novomodelo_sddp::policy_export::{build_stage_basis_records, convert_basis_cache};
 
         let case_dir = d01_case_dir();
         let mut config =
-            cobre_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
+            novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
         config.training.stopping_rules =
             Some(vec![StoppingRuleConfig::IterationLimit { limit: 5 }]);
 
@@ -1825,7 +1833,7 @@ mod warm_start {
     fn warm_start_training_preserves_cuts_and_trains_further() {
         let case_dir = d01_case_dir();
         let config_path = case_dir.join("config.json");
-        let config = cobre_io::parse_config(&config_path).expect("config must parse");
+        let config = novomodelo_io::parse_config(&config_path).expect("config must parse");
 
         let mut setup_fresh = build_setup(&case_dir, &config);
         let comm = StubComm;
@@ -1847,7 +1855,7 @@ mod warm_start {
 
         // Capacity must match from_broadcast_params's saturating_add(1) or the slot
         // layout diverges.
-        let proof = cobre_sddp::test_support::trivial_full_fcf_proof(
+        let proof = novomodelo_sddp::test_support::trivial_full_fcf_proof(
             checkpoint.stage_cuts[0].state_dimension,
             checkpoint.metadata.num_stages,
         );
@@ -1911,7 +1919,7 @@ mod warm_start {
 
         let case_dir = d01_case_dir();
         let config =
-            cobre_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
+            novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
 
         let mut setup_fresh = build_setup(&case_dir, &config);
         let comm = StubComm;
@@ -1939,7 +1947,7 @@ mod warm_start {
         misfit.row_status.fill(0);
 
         let mut setup_warm = build_setup(&case_dir, &config);
-        let proof = cobre_sddp::test_support::trivial_full_fcf_proof(
+        let proof = novomodelo_sddp::test_support::trivial_full_fcf_proof(
             checkpoint.stage_cuts[0].state_dimension,
             checkpoint.metadata.num_stages,
         );
@@ -2046,9 +2054,11 @@ mod test_backward_cache_reduces_pivots {
     use std::path::Path;
     use std::sync::mpsc;
 
-    use cobre_core::scenario::ScenarioSource;
-    use cobre_sddp::{StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_sddp::{
+        StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
+    };
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
 
@@ -2093,14 +2103,14 @@ mod test_backward_cache_reduces_pivots {
     fn test_backward_cache_reduces_pivots() {
         let case_dir = d03_case_dir();
         let config_path = case_dir.join("config.json");
-        let mut config = cobre_io::parse_config(&config_path).expect("config must parse");
+        let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
 
         // Clear cut-selection overrides so the default no-selection path the baseline
         // was measured on is exercised.
         config.training.cut_selection.selection = None;
         config.training.cut_selection.max_active_per_stage = None;
 
-        let system = cobre_io::load_case(&case_dir).expect("load_case must succeed");
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         let prepare_result = prepare_stochastic(
             system,
             &case_dir,
@@ -2191,12 +2201,14 @@ mod group_state_invariance {
 
     use std::path::Path;
 
-    use cobre_core::scenario::ScenarioSource;
-    use cobre_core::{EntityId, HydroUnitGroup, System, SystemBuilder};
-    use cobre_sddp::indexer::{HydroCellIndex, HydroSys};
-    use cobre_sddp::policy_export::build_stage_cut_records;
-    use cobre_sddp::{StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_core::{EntityId, HydroUnitGroup, System, SystemBuilder};
+    use novomodelo_sddp::indexer::{HydroCellIndex, HydroSys};
+    use novomodelo_sddp::policy_export::build_stage_cut_records;
+    use novomodelo_sddp::{
+        StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
+    };
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::{StubComm, build_setup_for_case};
 
@@ -2285,7 +2297,7 @@ mod group_state_invariance {
     /// terminal-manifest and cell-count reads.
     fn train_short_run(
         system: System,
-        config: &cobre_io::Config,
+        config: &novomodelo_io::Config,
         case_dir: &Path,
     ) -> (StudySetup, System) {
         let prepare_result = prepare_stochastic(
@@ -2392,9 +2404,9 @@ mod group_state_invariance {
     fn two_bus_split_matches_single_mirror_group_state_cut_manifest() {
         let case_dir = d51_case_dir();
         let config =
-            cobre_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
+            novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
 
-        let two_bus_system = cobre_io::load_case(&case_dir).expect("load_case must succeed");
+        let two_bus_system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         let mirror_groups = single_mirror_group(&two_bus_system, 0);
         let mirror_system = rebuild_with_hydro0_groups(&two_bus_system, mirror_groups);
 
@@ -2438,9 +2450,9 @@ mod group_state_invariance {
     fn same_bus_collapse_matches_single_mirror_group_state_cut_manifest() {
         let case_dir = d51_case_dir();
         let config =
-            cobre_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
+            novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
 
-        let base_system = cobre_io::load_case(&case_dir).expect("load_case must succeed");
+        let base_system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
 
         let same_bus_groups_h0 = same_bus_groups(&base_system);
         let same_bus_system = rebuild_with_hydro0_groups(&base_system, same_bus_groups_h0);
@@ -2496,11 +2508,11 @@ mod range_warm_start_determinism {
     use chrono::NaiveDate;
     use parquet::arrow::ArrowWriter;
 
-    use cobre_core::scenario::{LoadModel, ScenarioSource};
-    use cobre_core::temporal::{
+    use novomodelo_core::scenario::{LoadModel, ScenarioSource};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ConstraintExpression,
         ContractBlockBounds, DeficitSegment, EntityId, GenericConstraint, HydroBlockBounds,
         HydroPenalties, HydroStageBounds, LineBlockBounds, LineStagePenalties, LinearTerm,
@@ -2508,29 +2520,29 @@ mod range_warm_start_determinism {
         ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SlackConfig,
         SystemBuilder, ThermalBlockBounds, ThermalStageBounds, VariableRef,
     };
-    use cobre_io::config::{
+    use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, ParallelismConfig,
         PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
         SimulationSelection, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
         TrainingSolverConfig,
     };
-    use cobre_io::output::policy::{read_policy_checkpoint, write_policy_checkpoint};
-    use cobre_sddp::basis_reconstruct::{
+    use novomodelo_io::output::policy::{read_policy_checkpoint, write_policy_checkpoint};
+    use novomodelo_sddp::basis_reconstruct::{
         ReconstructionTarget, enforce_basic_count_invariant, reconstruct_basis,
     };
-    use cobre_sddp::hydro_models::{PrepareHydroModelsResult, prepare_hydro_models};
-    use cobre_sddp::inflow_method::InflowNonNegativityMethod;
-    use cobre_sddp::policy_export::{
+    use novomodelo_sddp::hydro_models::{PrepareHydroModelsResult, prepare_hydro_models};
+    use novomodelo_sddp::inflow_method::InflowNonNegativityMethod;
+    use novomodelo_sddp::policy_export::{
         build_active_indices, build_stage_basis_records, build_stage_cut_records,
         build_stage_cuts_payloads, convert_basis_cache,
     };
-    use cobre_sddp::resolved_parameters::ResolvedParameters;
-    use cobre_sddp::setup::prepare_stochastic;
-    use cobre_sddp::{
+    use novomodelo_sddp::resolved_parameters::ResolvedParameters;
+    use novomodelo_sddp::setup::prepare_stochastic;
+    use novomodelo_sddp::{
         FutureCostFunction, SolverStatsDelta, StudySetup, build_stage_templates_resolving_layout,
     };
-    use cobre_solver::{ActiveSolver, Basis, BasisStatus};
+    use novomodelo_solver::{ActiveSolver, Basis, BasisStatus};
 
     use super::common::builders::{
         BusSpec, StageSpec, ThermalSpec, make_bus, make_stage, make_thermal,
@@ -2699,7 +2711,7 @@ mod range_warm_start_determinism {
     fn build_system(
         constraints: Vec<GenericConstraint>,
         bounds: ResolvedGenericConstraintBounds,
-    ) -> cobre_core::System {
+    ) -> novomodelo_core::System {
         let bus = make_bus(
             range_bus_id(),
             BusSpec {
@@ -2740,7 +2752,7 @@ mod range_warm_start_determinism {
                 NaiveDate::from_ymd_opt(2024, 3, 1).expect("valid date"),
             ),
         ];
-        let stages: Vec<cobre_core::temporal::Stage> = stage_dates
+        let stages: Vec<novomodelo_core::temporal::Stage> = stage_dates
             .iter()
             .enumerate()
             .map(|(i, (start, end))| {
@@ -2890,7 +2902,7 @@ mod range_warm_start_determinism {
                 scenario_source: None,
                 selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
             },
-            upper_bound_evaluation: cobre_io::config::UpperBoundEvaluationConfig::default(),
+            upper_bound_evaluation: novomodelo_io::config::UpperBoundEvaluationConfig::default(),
             policy: PolicyConfig::default(),
             simulation: IoSimulationConfig::default(),
             exports: ExportsConfig::default(),
@@ -2902,13 +2914,13 @@ mod range_warm_start_determinism {
     /// row_upper)` is exactly `(3.0, 8.0)` — the range row's unique bound pair
     /// (no other row in the fixture shares it). Located structurally rather than
     /// by a hand-derived offset so the test stays correct if the LP layout shifts.
-    fn find_range_row_stage0(system: &cobre_core::System) -> usize {
+    fn find_range_row_stage0(system: &novomodelo_core::System) -> usize {
         let prepared = PrepareHydroModelsResult::default_from_system(system);
         let templates = build_stage_templates_resolving_layout(
             system,
             InflowNonNegativityMethod::None,
-            &cobre_stochastic::par::precompute::PrecomputedPar::default(),
-            &cobre_stochastic::normal::precompute::PrecomputedNormal::default(),
+            &novomodelo_stochastic::par::precompute::PrecomputedPar::default(),
+            &novomodelo_stochastic::normal::precompute::PrecomputedNormal::default(),
             &prepared.production,
             &prepared.evaporation,
             &ResolvedParameters::default(),
@@ -2940,13 +2952,14 @@ mod range_warm_start_determinism {
     fn write_test_checkpoint(
         policy_dir: &Path,
         setup: &StudySetup,
-        result: &cobre_sddp::TrainingResult,
+        result: &novomodelo_sddp::TrainingResult,
         seed: u64,
     ) {
         let fcf = &setup.fcf;
         let stage_records = build_stage_cut_records(fcf);
         let stage_active_indices = build_active_indices(&stage_records);
-        let stage_manifests: Vec<Vec<cobre_io::EntitySlot>> = vec![Vec::new(); fcf.pools.len()];
+        let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
+            vec![Vec::new(); fcf.pools.len()];
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
         let study_stage_end_dates = ascending_stage_end_dates(fcf.pools.len());
         let stage_cuts = build_stage_cuts_payloads(
@@ -2967,10 +2980,10 @@ mod range_warm_start_determinism {
             &basis_row,
         );
         let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
-        let metadata = cobre_sddp::test_support::checkpoint_metadata(
+        let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             fcf.pools.len() as u32,
             setup.build_graph_manifest(),
-            cobre_io::ProducerBlock {
+            novomodelo_io::ProducerBlock {
                 completed_iterations: result.iterations as u32,
                 final_lower_bound: result.final_lb,
                 best_upper_bound: Some(result.final_ub),
@@ -3146,7 +3159,7 @@ mod range_warm_start_determinism {
             build_system(build_range_constraints(), build_range_bounds()),
             &cold_config,
         );
-        let proof = cobre_sddp::test_support::trivial_full_fcf_proof(
+        let proof = novomodelo_sddp::test_support::trivial_full_fcf_proof(
             checkpoint.stage_cuts[0].state_dimension,
             checkpoint.metadata.num_stages,
         );
@@ -3218,7 +3231,7 @@ mod range_warm_start_determinism {
     /// Two fresh solver instances over the same
     /// range-constraint study produce bit-identical results — compared via
     /// `to_bits()`/`==`, never a tolerance (mirrors
-    /// `crates/cobre-solver/tests/clp_determinism.rs`'s determinism harness).
+    /// `crates/novomodelo-solver/tests/clp_determinism.rs`'s determinism harness).
     #[test]
     fn range_study_run_to_run_reproducibility() {
         let config = build_config(3);
@@ -3327,21 +3340,21 @@ mod range_warm_start_determinism {
         )
     }
 
-    /// Sort-contract tier: `cobre_io::parse_generic_constraints`
+    /// Sort-contract tier: `novomodelo_io::parse_generic_constraints`
     /// sorts by id regardless of the JSON array's declared order — the mechanism
     /// that makes declaration-order invariance hold. Exhaustive over every
     /// ordering of 3 elements, not one hand-picked reordering.
     #[test]
     fn generic_constraints_json_sorts_by_id_for_every_ordering() {
-        let mut canonical: Option<Vec<cobre_core::GenericConstraint>> = None;
+        let mut canonical: Option<Vec<novomodelo_core::GenericConstraint>> = None;
         for order in ALL_ORDERINGS {
             let tmp = tempfile::tempdir().expect("tempdir");
             let path = tmp.path().join("generic_constraints.json");
             std::fs::write(&path, generic_constraints_json(&order)).expect("write json");
-            let parsed = cobre_io::parse_generic_constraints(
+            let parsed = novomodelo_io::parse_generic_constraints(
                 &path,
                 &HashMap::new(),
-                &cobre_io::LineBusPairIndex::default(),
+                &novomodelo_io::LineBusPairIndex::default(),
             )
             .unwrap_or_else(|e| panic!("parse_generic_constraints failed for {order:?}: {e}"));
             match &canonical {
@@ -3462,7 +3475,7 @@ mod range_warm_start_determinism {
     /// `generic_constraints.json`'s 3 constraints (including `band`, the range
     /// one) produces a bit-identical LP (`frozen_templates`' CSC arrays and row
     /// bounds) and a bit-identical result (`final_lb`) through the real
-    /// `cobre_io::load_case -> train` pipeline. Gated behind `slow-tests`: it
+    /// `novomodelo_io::load_case -> train` pipeline. Gated behind `slow-tests`: it
     /// builds and trains 6 full case directories.
     #[test]
     #[cfg_attr(
@@ -3485,8 +3498,8 @@ mod range_warm_start_determinism {
             let tmp = build_permuted_case(&order);
             let dir = tmp.path();
 
-            let config = cobre_io::parse_config(&dir.join("config.json")).expect("config");
-            let system = cobre_io::load_case(dir).expect("load_case must succeed");
+            let config = novomodelo_io::parse_config(&dir.join("config.json")).expect("config");
+            let system = novomodelo_io::load_case(dir).expect("load_case must succeed");
 
             let ids: Vec<i32> = system
                 .generic_constraints()

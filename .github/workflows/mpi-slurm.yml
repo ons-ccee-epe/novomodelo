@@ -5,21 +5,21 @@ on:
   pull_request:
     branches: [main, develop]
     paths:
-      - "crates/cobre-comm/**"
-      - "crates/cobre-cli/src/commands/run/**"
-      - "crates/cobre-cli/src/commands/broadcast.rs"
-      - "crates/cobre-sddp/src/training/**"
-      - "crates/cobre-sddp/src/simulation/**"
-      - "crates/cobre-sddp/src/policy/**"
-      - "crates/cobre-sddp/src/solve/**"
-      - "crates/cobre-sddp/src/cut/**"
-      - "crates/cobre-sddp/src/setup/**"
-      - "crates/cobre-sddp/src/workspace/**"
-      - "crates/cobre-sddp/src/convergence/**"
-      - "crates/cobre-sddp/src/lp/**"
-      - "crates/cobre-io/src/output/policy/**"
+      - "crates/novomodelo-comm/**"
+      - "crates/novomodelo-cli/src/commands/run/**"
+      - "crates/novomodelo-cli/src/commands/broadcast.rs"
+      - "crates/novomodelo-sddp/src/training/**"
+      - "crates/novomodelo-sddp/src/simulation/**"
+      - "crates/novomodelo-sddp/src/policy/**"
+      - "crates/novomodelo-sddp/src/solve/**"
+      - "crates/novomodelo-sddp/src/cut/**"
+      - "crates/novomodelo-sddp/src/setup/**"
+      - "crates/novomodelo-sddp/src/workspace/**"
+      - "crates/novomodelo-sddp/src/convergence/**"
+      - "crates/novomodelo-sddp/src/lp/**"
+      - "crates/novomodelo-io/src/output/policy/**"
       - "examples/4ree/**"
-      - "crates/cobre-solver/**"
+      - "crates/novomodelo-solver/**"
       - "tests/slurm/**"
       - ".github/workflows/mpi-slurm.yml"
   push:
@@ -27,21 +27,21 @@ on:
     tags:
       - "**[0-9]+.[0-9]+.[0-9]+*"
     paths:
-      - "crates/cobre-comm/**"
-      - "crates/cobre-cli/src/commands/run/**"
-      - "crates/cobre-cli/src/commands/broadcast.rs"
-      - "crates/cobre-sddp/src/training/**"
-      - "crates/cobre-sddp/src/simulation/**"
-      - "crates/cobre-sddp/src/policy/**"
-      - "crates/cobre-sddp/src/solve/**"
-      - "crates/cobre-sddp/src/cut/**"
-      - "crates/cobre-sddp/src/setup/**"
-      - "crates/cobre-sddp/src/workspace/**"
-      - "crates/cobre-sddp/src/convergence/**"
-      - "crates/cobre-sddp/src/lp/**"
-      - "crates/cobre-io/src/output/policy/**"
+      - "crates/novomodelo-comm/**"
+      - "crates/novomodelo-cli/src/commands/run/**"
+      - "crates/novomodelo-cli/src/commands/broadcast.rs"
+      - "crates/novomodelo-sddp/src/training/**"
+      - "crates/novomodelo-sddp/src/simulation/**"
+      - "crates/novomodelo-sddp/src/policy/**"
+      - "crates/novomodelo-sddp/src/solve/**"
+      - "crates/novomodelo-sddp/src/cut/**"
+      - "crates/novomodelo-sddp/src/setup/**"
+      - "crates/novomodelo-sddp/src/workspace/**"
+      - "crates/novomodelo-sddp/src/convergence/**"
+      - "crates/novomodelo-sddp/src/lp/**"
+      - "crates/novomodelo-io/src/output/policy/**"
       - "examples/4ree/**"
-      - "crates/cobre-solver/**"
+      - "crates/novomodelo-solver/**"
       - "tests/slurm/**"
       - ".github/workflows/mpi-slurm.yml"
 
@@ -110,16 +110,16 @@ jobs:
         with:
           prefix-key: mpi-slurm
 
-      - name: Build cobre-mpi
+      - name: Build novomodelo-mpi
         run: |
           set -euo pipefail
-          cargo build --release --features mpi -p cobre-cli
+          cargo build --release --features mpi -p novomodelo-cli
 
       - name: Prepare test artifacts
         run: |
           set -euo pipefail
           mkdir -p tests/slurm/staging
-          cp target/release/cobre tests/slurm/staging/cobre-mpi
+          cp target/release/novomodelo tests/slurm/staging/novomodelo-mpi
           cp -r examples/4ree tests/slurm/staging/4ree
 
       - name: Pull base image and start SLURM cluster
@@ -132,10 +132,10 @@ jobs:
       - name: Copy artifacts to cluster
         run: |
           set -euo pipefail
-          docker compose -f tests/slurm/docker-compose.yml cp tests/slurm/staging/cobre-mpi controller:/shared/cobre-mpi
+          docker compose -f tests/slurm/docker-compose.yml cp tests/slurm/staging/novomodelo-mpi controller:/shared/novomodelo-mpi
           docker compose -f tests/slurm/docker-compose.yml cp tests/slurm/staging/4ree controller:/shared/4ree
           docker compose -f tests/slurm/docker-compose.yml cp tests/slurm/run-tests.sh controller:/shared/run-tests.sh
-          docker compose -f tests/slurm/docker-compose.yml exec controller chmod +x /shared/cobre-mpi
+          docker compose -f tests/slurm/docker-compose.yml exec controller chmod +x /shared/novomodelo-mpi
 
       - name: Run SLURM integration tests
         run: |

@@ -8,15 +8,18 @@ use std::process::Command;
 /// (`extract_required_int32_aliased` / `extract_required_float64_aliased` /
 /// their shared `resolve_required_column` resolver) and any `#[serde(alias =
 /// "…")]` kept for a retired config spelling. This gate fails the moment either
-/// reappears anywhere under `crates/cobre-io/src`.
+/// reappears anywhere under `crates/novomodelo-io/src`.
 ///
 /// Complements, and does not replace, the per-site behaviour tests that already
 /// pin the individual removals: `retired_scheduler_spellings_are_deserialize_error`
 /// (`src/config/training.rs`), `test_num_scenarios_removed_field_rejected`
 /// (`src/stages.rs`), and the `domination_count` `FlatBuffers` conformance check
 /// (`tests/flatbuffers_schema_conformance.rs`).
-fn cobre_io_src(workspace_root: &Path) -> std::path::PathBuf {
-    workspace_root.join("crates").join("cobre-io").join("src")
+fn novomodelo_io_src(workspace_root: &Path) -> std::path::PathBuf {
+    workspace_root
+        .join("crates")
+        .join("novomodelo-io")
+        .join("src")
 }
 
 fn workspace_root() -> std::path::PathBuf {
@@ -27,7 +30,7 @@ fn workspace_root() -> std::path::PathBuf {
 #[test]
 fn no_aliased_parquet_column_extractor_remains() {
     let root = workspace_root();
-    let src = cobre_io_src(&root);
+    let src = novomodelo_io_src(&root);
 
     let output = Command::new("grep")
         .args(["-rnE", r"extract_[A-Za-z0-9_]*_aliased"])
@@ -40,7 +43,7 @@ fn no_aliased_parquet_column_extractor_remains() {
         output.status.code(),
         Some(1),
         "an aliased parquet-column extractor (preferred-then-legacy column \
-         resolution) reappeared under crates/cobre-io/src — the 0.14 clean break \
+         resolution) reappeared under crates/novomodelo-io/src — the 0.14 clean break \
          removed this mechanism with no whitelist:\n{}",
         String::from_utf8_lossy(&output.stdout)
     );
@@ -49,7 +52,7 @@ fn no_aliased_parquet_column_extractor_remains() {
 #[test]
 fn no_serde_alias_for_retired_spelling() {
     let root = workspace_root();
-    let src = cobre_io_src(&root);
+    let src = novomodelo_io_src(&root);
 
     let output = Command::new("grep")
         .args(["-rnF", "#[serde(alias"])
@@ -61,7 +64,7 @@ fn no_serde_alias_for_retired_spelling() {
     assert_eq!(
         output.status.code(),
         Some(1),
-        "a #[serde(alias = \"…\")] reappeared under crates/cobre-io/src — the 0.14 \
+        "a #[serde(alias = \"…\")] reappeared under crates/novomodelo-io/src — the 0.14 \
          clean break accepts exactly one spelling per config key, with no \
          deprecated-alias whitelist:\n{}",
         String::from_utf8_lossy(&output.stdout)

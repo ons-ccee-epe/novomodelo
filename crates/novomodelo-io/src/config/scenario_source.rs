@@ -1,7 +1,7 @@
 //! Raw serde types for scenario source configuration in `config.json`.
 //!
 //! These are intermediate deserialization types. Conversion to the canonical
-//! [`cobre_core::scenario::ScenarioSource`] is performed by the helpers in
+//! [`novomodelo_core::scenario::ScenarioSource`] is performed by the helpers in
 //! `config/mod.rs`.
 
 use serde::{Deserialize, Deserializer, Serialize};

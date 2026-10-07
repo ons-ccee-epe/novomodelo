@@ -8,10 +8,10 @@
 use std::collections::HashMap;
 
 use chrono::{Datelike, NaiveDate};
-use cobre_core::temporal::Stage;
-use cobre_core::{EntityId, Hydro, System, month_of};
-use cobre_io::CaseArtifacts;
-use cobre_io::extensions::HydroGeometryRow;
+use novomodelo_core::temporal::Stage;
+use novomodelo_core::{EntityId, Hydro, System, month_of};
+use novomodelo_io::CaseArtifacts;
+use novomodelo_io::extensions::HydroGeometryRow;
 
 use super::types::{
     EvaporationModel, EvaporationModelSet, EvaporationReferenceSource, EvaporationSource,
@@ -22,7 +22,7 @@ use crate::block_clock::BlockClock;
 // ── Evaporation model resolution ──────────────────────────────────────────────
 
 /// Resolve per-hydro linearized evaporation models from a pre-parsed
-/// [`cobre_io::CaseArtifacts`] bundle.
+/// [`novomodelo_io::CaseArtifacts`] bundle.
 ///
 /// Plants without `evaporation_coefficients_mm` get `EvaporationModel::None`; if
 /// no plant has them, no geometry is consulted. Otherwise the model is a
@@ -407,7 +407,7 @@ mod tests {
     use std::collections::HashMap;
 
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId,
         entities::hydro::{HydroGenerationModel, HydroPenalties},
         temporal::{
@@ -874,7 +874,7 @@ mod tests {
 
     /// A hydro with evaporation coefficients but a geometry whose areas are all
     /// zero — e.g. a new/being-filled reservoir with only a dead-volume point,
-    /// as JURUENA in cobre_rodada_2001 — degrades to disabled evaporation
+    /// as JURUENA in novomodelo_rodada_2001 — degrades to disabled evaporation
     /// instead of failing the whole run.
     #[test]
     fn resolve_evaporation_all_zero_area_disables_evaporation() {

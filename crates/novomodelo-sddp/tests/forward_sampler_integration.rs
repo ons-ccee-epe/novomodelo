@@ -21,7 +21,7 @@
 use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
-use cobre_core::{
+use novomodelo_core::{
     BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, DeficitSegment,
     EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
     LineStagePenalties, NcsStagePenalties, NonControllableSource, PenaltiesCountsSpec,
@@ -38,13 +38,13 @@ use cobre_core::{
         SeasonMap, Stage, StageLagTransition, StageRiskConfig, StageStateConfig,
     },
 };
-use cobre_sddp::{
+use novomodelo_sddp::{
     InflowNonNegativityMethod, StoppingMode, StoppingRule, StoppingRuleSet, StudySetup,
     hydro_models::PrepareHydroModelsResult,
     setup::{SimulationEnumeratedRequest, StudyParams},
 };
-use cobre_solver::ActiveSolver;
-use cobre_stochastic::{
+use novomodelo_solver::ActiveSolver;
+use novomodelo_stochastic::{
     ClassSchemes, DerivedSeed, ExternalScenarioLibrary, ForwardNoiseTables, ForwardSamplerConfig,
     HistoricalScenarioLibrary, OpeningTreeInputs, PrecomputedPar, SampleRequest,
     build_forward_sampler, build_stochastic_context, check_historical_structure,
@@ -178,7 +178,7 @@ fn build_single_hydro_system(
     branching_factor: usize,
     sampling_scheme: SamplingScheme,
     forward_seed: Option<i64>,
-) -> (cobre_core::System, ScenarioSource) {
+) -> (novomodelo_core::System, ScenarioSource) {
     let bus = make_bus(
         EntityId(0),
         BusSpec {
@@ -315,7 +315,7 @@ fn build_two_hydro_system(
     branching_factor: usize,
     sampling_scheme: SamplingScheme,
     forward_seed: Option<i64>,
-) -> (cobre_core::System, ScenarioSource) {
+) -> (novomodelo_core::System, ScenarioSource) {
     let bus = make_bus(
         EntityId(0),
         BusSpec {
@@ -502,12 +502,12 @@ fn build_two_hydro_system(
 }
 
 fn run_programmatic(
-    system: &cobre_core::System,
+    system: &novomodelo_core::System,
     source: &ScenarioSource,
     forward_passes: u32,
     max_iterations: u64,
     inflow_method: InflowNonNegativityMethod,
-) -> cobre_sddp::TrainingResult {
+) -> novomodelo_sddp::TrainingResult {
     let forward_seed = source.seed.map(i64::unsigned_abs);
 
     let stochastic = build_stochastic_context(
@@ -553,9 +553,9 @@ fn run_programmatic(
         training_solver_backward: None,
         training_solver_forward: None,
         simulation_solver: None,
-        backward_scheduler: cobre_io::config::BackwardScheduler::default(),
-        cost_scale_factor: cobre_sddp::DEFAULT_COST_SCALE_FACTOR,
-        boundary: cobre_sddp::BoundaryStateRequirements::none(),
+        backward_scheduler: novomodelo_io::config::BackwardScheduler::default(),
+        cost_scale_factor: novomodelo_sddp::DEFAULT_COST_SCALE_FACTOR,
+        boundary: novomodelo_sddp::BoundaryStateRequirements::none(),
     };
     let mut setup =
         StudySetup::from_broadcast_params(system, stochastic, config, hydro_models, source, source)
@@ -713,7 +713,7 @@ fn build_historical_system(
     branching_factor: usize,
     n_history_years: usize,
     forward_seed: Option<i64>,
-) -> (cobre_core::System, ScenarioSource) {
+) -> (novomodelo_core::System, ScenarioSource) {
     let bus = make_bus(
         EntityId(0),
         BusSpec {
@@ -849,11 +849,11 @@ fn build_historical_system(
 /// Run training pipeline with per-class schemes derived from the supplied source.
 /// Returns the `StudySetup` so callers can assert library presence before training.
 fn run_with_setup(
-    system: &cobre_core::System,
+    system: &novomodelo_core::System,
     source: &ScenarioSource,
     forward_passes: u32,
     max_iterations: u64,
-) -> (StudySetup, cobre_sddp::TrainingResult) {
+) -> (StudySetup, novomodelo_sddp::TrainingResult) {
     let forward_seed = source.seed.map(i64::unsigned_abs);
     let schemes = ClassSchemes {
         inflow: Some(source.inflow_scheme),
@@ -899,9 +899,9 @@ fn run_with_setup(
         training_solver_backward: None,
         training_solver_forward: None,
         simulation_solver: None,
-        backward_scheduler: cobre_io::config::BackwardScheduler::default(),
-        cost_scale_factor: cobre_sddp::DEFAULT_COST_SCALE_FACTOR,
-        boundary: cobre_sddp::BoundaryStateRequirements::none(),
+        backward_scheduler: novomodelo_io::config::BackwardScheduler::default(),
+        cost_scale_factor: novomodelo_sddp::DEFAULT_COST_SCALE_FACTOR,
+        boundary: novomodelo_sddp::BoundaryStateRequirements::none(),
     };
     let mut setup =
         StudySetup::from_broadcast_params(system, stochastic, config, hydro_models, source, source)
@@ -943,7 +943,7 @@ fn build_external_system(
     branching_factor: usize,
     n_scenarios: usize,
     forward_seed: Option<i64>,
-) -> (cobre_core::System, ScenarioSource) {
+) -> (novomodelo_core::System, ScenarioSource) {
     let bus = make_bus(
         EntityId(0),
         BusSpec {
@@ -1142,7 +1142,7 @@ fn build_mixed_system(
     inflow_scheme: SamplingScheme,
     load_scheme: SamplingScheme,
     ncs_scheme: SamplingScheme,
-) -> (cobre_core::System, ScenarioSource) {
+) -> (novomodelo_core::System, ScenarioSource) {
     let bus = make_bus(
         EntityId(0),
         BusSpec {
@@ -1549,7 +1549,7 @@ fn build_external_ncs_rows(
 fn build_external_load_system(
     n_scenarios: usize,
     forward_seed: Option<i64>,
-) -> (cobre_core::System, ScenarioSource) {
+) -> (novomodelo_core::System, ScenarioSource) {
     let bus = make_bus(
         EntityId(0),
         BusSpec {
@@ -1697,7 +1697,7 @@ fn build_external_load_system(
 fn build_external_ncs_system(
     n_scenarios: usize,
     forward_seed: Option<i64>,
-) -> (cobre_core::System, ScenarioSource) {
+) -> (novomodelo_core::System, ScenarioSource) {
     let bus = make_bus(
         EntityId(0),
         BusSpec {
@@ -1966,7 +1966,7 @@ fn external_library_population_sweep() {
 fn build_monthly_unique_groups_system(
     n_stages: usize,
     branching_factor: usize,
-) -> (cobre_core::System, ScenarioSource) {
+) -> (novomodelo_core::System, ScenarioSource) {
     let bus = make_bus(
         EntityId(0),
         BusSpec {
@@ -2168,7 +2168,7 @@ fn monthly_noise_sharing_regression() {
 // ---------------------------------------------------------------------------
 //
 // Three call sites route through the shared kernel
-// (`cobre_stochastic::par::lag_kernel::advance_lag_chain`): the forward pass
+// (`novomodelo_stochastic::par::lag_kernel::advance_lag_chain`): the forward pass
 // (`LagMajor` layout), and the External/Historical samplers (`EntityMajor`
 // layout). This drives the same realized inflow sequence through all three
 // on a monthly→quarterly multi-resolution fixture and asserts per-stage,

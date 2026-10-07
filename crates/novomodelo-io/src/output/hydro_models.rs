@@ -62,12 +62,12 @@ pub const FPHA_DEVIATION_POINTS_FILE: &str = "hydro_models/fpha_deviation_points
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::output::write_fpha_hyperplanes;
-/// use cobre_io::extensions::FphaHyperplaneRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::output::write_fpha_hyperplanes;
+/// use novomodelo_io::extensions::FphaHyperplaneRow;
+/// use novomodelo_core::EntityId;
 /// use std::path::Path;
 ///
-/// # fn main() -> Result<(), cobre_io::OutputError> {
+/// # fn main() -> Result<(), novomodelo_io::OutputError> {
 /// let rows = vec![
 ///     FphaHyperplaneRow {
 ///         hydro_id: EntityId::from(66),
@@ -163,12 +163,12 @@ fn build_fpha_hyperplanes_batch(rows: &[FphaHyperplaneRow]) -> Result<RecordBatc
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::output::write_evaporation_models;
-/// use cobre_io::extensions::EvaporationModelRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::output::write_evaporation_models;
+/// use novomodelo_io::extensions::EvaporationModelRow;
+/// use novomodelo_core::EntityId;
 /// use std::path::Path;
 ///
-/// # fn main() -> Result<(), cobre_io::OutputError> {
+/// # fn main() -> Result<(), novomodelo_io::OutputError> {
 /// let rows = vec![
 ///     EvaporationModelRow {
 ///         hydro_id: EntityId::from(66),
@@ -246,12 +246,12 @@ fn build_evaporation_models_batch(
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::output::write_fpha_deviation_points;
-/// use cobre_io::extensions::FphaDeviationPointRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::output::write_fpha_deviation_points;
+/// use novomodelo_io::extensions::FphaDeviationPointRow;
+/// use novomodelo_core::EntityId;
 /// use std::path::Path;
 ///
-/// # fn main() -> Result<(), cobre_io::OutputError> {
+/// # fn main() -> Result<(), novomodelo_io::OutputError> {
 /// let rows = vec![
 ///     FphaDeviationPointRow {
 ///         hydro_id: EntityId::from(66),
@@ -349,7 +349,7 @@ pub fn write_hydro_model_summary(path: &Path, summary: &impl Serialize) -> Resul
 )]
 mod tests {
     use super::*;
-    use cobre_core::EntityId;
+    use novomodelo_core::EntityId;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use tempfile::tempdir;
 

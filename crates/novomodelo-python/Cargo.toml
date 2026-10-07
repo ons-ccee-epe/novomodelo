@@ -1,12 +1,12 @@
 [package]
-name = "cobre-python"
-description = "Python bindings for the Cobre power systems solver — import cobre from Python scripts and Jupyter notebooks"
+name = "novomodelo-python"
+description = "Python bindings for the Novomodelo power systems solver — import novomodelo from Python scripts and Jupyter notebooks"
 version = "0.18.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
-repository = "https://github.com/cobre-rs/cobre"
-homepage = "https://docs.cobre-rs.dev/"
+repository = "https://github.com/ons-ccee-epe/novomodelo"
+homepage = "https://docs.novomodelo.invalid/"
 authors = ["Rogerio J. M. Alves <rogerio.alves@cobre-rs.dev>"]
 readme = "README.md"
 keywords = ["python", "bindings", "pyo3", "power-systems", "energy"]
@@ -19,12 +19,12 @@ doc = false
 
 [dependencies]
 pyo3 = { version = "0.29.0", features = ["abi3-py312"] }
-cobre-core = { version = "0.18.0", path = "../cobre-core" }
-cobre-io = { version = "0.18.0", path = "../cobre-io", features = ["schema"] }
-cobre-sddp = { version = "0.18.0", path = "../cobre-sddp", default-features = false }
-cobre-stochastic = { version = "0.18.0", path = "../cobre-stochastic" }
-cobre-solver = { version = "0.18.0", path = "../cobre-solver", default-features = false }
-cobre-comm = { version = "0.18.0", path = "../cobre-comm" }
+novomodelo-core = { version = "0.18.0", path = "../novomodelo-core" }
+novomodelo-io = { version = "0.18.0", path = "../novomodelo-io", features = ["schema"] }
+novomodelo-sddp = { version = "0.18.0", path = "../novomodelo-sddp", default-features = false }
+novomodelo-stochastic = { version = "0.18.0", path = "../novomodelo-stochastic" }
+novomodelo-solver = { version = "0.18.0", path = "../novomodelo-solver", default-features = false }
+novomodelo-comm = { version = "0.18.0", path = "../novomodelo-comm" }
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 rayon = "1"
 arrow = { version = "60", default-features = false, features = ["ipc"] }
@@ -37,8 +37,8 @@ tempfile = "3"
 [features]
 default = ["extension-module", "highs"]
 extension-module = ["pyo3/extension-module"]
-highs = ["cobre-solver/highs", "cobre-sddp/highs"]
-clp = ["cobre-solver/clp", "cobre-sddp/clp"]
+highs = ["novomodelo-solver/highs", "novomodelo-sddp/highs"]
+clp = ["novomodelo-solver/clp", "novomodelo-sddp/clp"]
 
 # PyO3 proc macros generate unsafe code internally. The workspace forbids unsafe_code,
 # but this crate must override that lint to allow it, because the #[pymodule] and

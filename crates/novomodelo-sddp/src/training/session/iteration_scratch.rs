@@ -3,9 +3,9 @@
 //! Allocated once at training-run startup and reused every iteration to avoid
 //! per-iteration heap allocation.
 
-use cobre_solver::FreezeScratch;
-use cobre_solver::freeze_rows_into_template;
-use cobre_solver::{RowBatch, StageTemplate};
+use novomodelo_solver::FreezeScratch;
+use novomodelo_solver::freeze_rows_into_template;
+use novomodelo_solver::{RowBatch, StageTemplate};
 
 use crate::{
     context::{StageContext, TrainingContext},
@@ -169,7 +169,7 @@ impl IterationScratch {
     clippy::needless_range_loop
 )]
 mod tests {
-    use cobre_solver::StageTemplate;
+    use novomodelo_solver::StageTemplate;
 
     use super::IterationScratch;
     use crate::lp::builder::StageGeometry;

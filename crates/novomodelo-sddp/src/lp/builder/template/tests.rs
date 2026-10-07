@@ -7,8 +7,8 @@
 )]
 
 use chrono::NaiveDate;
-use cobre_core::scenario::SamplingScheme;
-use cobre_core::{
+use novomodelo_core::scenario::SamplingScheme;
+use novomodelo_core::{
     AnticipatedConfig, Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties,
     ContractBlockBounds, ContractType, DeficitSegment, EnergyContract, EntityId, FillingConfig,
     Hydro, HydroBlockBounds, HydroGenerationModel, HydroPenalties, HydroStageBounds,
@@ -18,9 +18,9 @@ use cobre_core::{
     ResolvedNcsFactors, ResolvedPenalties, ScenarioSourceConfig, Stage, StageRiskConfig,
     StageStateConfig, SystemBuilder, Thermal, ThermalBlockBounds, ThermalStageBounds,
 };
-use cobre_stochastic::PrecomputedNormal;
-use cobre_stochastic::par::precompute::PrecomputedPar;
-use cobre_stochastic::season_cast::post_study_calendar_stages;
+use novomodelo_stochastic::PrecomputedNormal;
+use novomodelo_stochastic::par::precompute::PrecomputedPar;
+use novomodelo_stochastic::season_cast::post_study_calendar_stages;
 
 use crate::block_clock::M3S_TO_HM3;
 use crate::hydro_models::PrepareHydroModelsResult;
@@ -42,7 +42,7 @@ use crate::time_value::{
 /// The value `build_template_build_ctx`'s own `time_value` parameter takes at
 /// every direct test call site — resolved through the same production entry
 /// point (`TimeValue::from_system`) rather than hand-assembled.
-fn build_time_value_for(system: &cobre_core::System) -> TimeValue {
+fn build_time_value_for(system: &novomodelo_core::System) -> TimeValue {
     let anticipated_plants = AnticipatedPlants::build(system.thermals());
     TimeValue::from_system(
         system,
@@ -107,7 +107,7 @@ fn fixture_bus() -> Bus {
 /// Build a one-bus system with exactly the thermals provided.
 ///
 /// Uses one study stage with a single block of 744 hours and no hydros.
-fn system_with_thermals(thermals: Vec<Thermal>) -> cobre_core::System {
+fn system_with_thermals(thermals: Vec<Thermal>) -> novomodelo_core::System {
     let n_thermals = thermals.len();
     let n_stages = 1_usize;
 
@@ -328,7 +328,7 @@ fn fixture_hydro(id: i32) -> Hydro {
 /// guarantee that `build_template_build_ctx` relies on when threading the
 /// slice into `ctx.pumping_stations`/`ctx.positions`. The two hydros and bus
 /// exist solely to satisfy pumping-station reference validation.
-fn system_with_pumping_stations(stations: Vec<PumpingStation>) -> cobre_core::System {
+fn system_with_pumping_stations(stations: Vec<PumpingStation>) -> novomodelo_core::System {
     let n_pumping = stations.len();
     let n_hydros = 2_usize;
     let n_stages = 1_usize;
@@ -723,7 +723,7 @@ fn fixture_non_controllable_source(id: i32) -> NonControllableSource {
 fn system_with_non_controllable_sources(
     sources: Vec<NonControllableSource>,
     n_blks: usize,
-) -> cobre_core::System {
+) -> novomodelo_core::System {
     let n_ncs = sources.len();
     let n_hydros = 2_usize;
     let n_stages = 1_usize;
@@ -1026,7 +1026,7 @@ fn fixture_contract(id: i32, contract_type: ContractType) -> EnergyContract {
 /// resolved-bounds count check holds; the two hydros and bus exist solely to
 /// satisfy contract bus-reference validation and give the layout pumping-end
 /// anchor a non-trivial column prefix.
-fn system_with_contracts(contracts: Vec<EnergyContract>, n_blks: usize) -> cobre_core::System {
+fn system_with_contracts(contracts: Vec<EnergyContract>, n_blks: usize) -> novomodelo_core::System {
     let n_contracts = contracts.len();
     let n_hydros = 2_usize;
     let n_stages = 1_usize;
@@ -1650,7 +1650,7 @@ fn build_template_build_ctx_zero_anticipated_when_none() {
 ///
 /// `n_stages = 5` ensures both anticipated decisions are active at `stage_idx=0`
 /// (strict gate `t + K_i < n_stages` -> `2 < 5` and `3 < 5`).
-fn anticipated_invariance_system() -> cobre_core::System {
+fn anticipated_invariance_system() -> novomodelo_core::System {
     let thermals = vec![
         Thermal {
             id: EntityId(1),
@@ -1830,8 +1830,8 @@ fn anticipated_invariance_system() -> cobre_core::System {
     reason = "the equivalence check takes each varied input explicitly"
 )]
 fn assert_lp_equivalence_after_anticipated_swap(
-    tpl_a: &cobre_solver::StageTemplate,
-    tpl_b: &cobre_solver::StageTemplate,
+    tpl_a: &novomodelo_solver::StageTemplate,
+    tpl_b: &novomodelo_solver::StageTemplate,
     dec_start_a: usize,
     dec_start_b: usize,
     state_start_a: usize,
@@ -1963,7 +1963,7 @@ fn assert_lp_equivalence_after_anticipated_swap(
 }
 
 /// Expand a CSC `StageTemplate` to a dense `Vec<Vec<f64>>`.
-fn csc_to_dense(tpl: &cobre_solver::StageTemplate) -> Vec<Vec<f64>> {
+fn csc_to_dense(tpl: &novomodelo_solver::StageTemplate) -> Vec<Vec<f64>> {
     let mut dense = vec![vec![0.0_f64; tpl.num_cols]; tpl.num_rows];
     for j in 0..tpl.num_cols {
         let start = tpl.col_starts[j] as usize;
@@ -1983,7 +1983,7 @@ fn csc_to_dense(tpl: &cobre_solver::StageTemplate) -> Vec<Vec<f64>> {
 /// A full-`System` declaration-order test is a tautology here — `SystemBuilder::build`
 /// sorts by `EntityId`, so both orderings present identical canonical input and
 /// prove only determinism, not invariance (that canonicalization is covered by the
-/// `cobre-core` proptest `build_canonical_order_invariant_under_input_permutation`).
+/// `novomodelo-core` proptest `build_canonical_order_invariant_under_input_permutation`).
 /// This test constructs the permuted `TemplateBuildCtx` directly, hitting the path
 /// the canonical sort otherwise masks.
 #[test]
@@ -2249,7 +2249,7 @@ fn set_state_boxes_rejects_a_box_count_other_than_the_stage_count() {
 /// discount rate. Empty `transitions` means every stage falls back to the
 /// global rate, so the per-stage factors are all < 1.0 and the cumulative
 /// vector compounds below 1.0.
-fn discounted_multi_stage_system() -> cobre_core::System {
+fn discounted_multi_stage_system() -> novomodelo_core::System {
     discounted_multi_stage_system_with_post_study(None)
 }
 
@@ -2258,8 +2258,8 @@ fn discounted_multi_stage_system() -> cobre_core::System {
 /// tests share the same non-trivial discount rate.
 fn discounted_multi_stage_system_with_post_study(
     post_study: Option<PostStudyStages>,
-) -> cobre_core::System {
-    use cobre_core::{HorizonGraph, PolicyGraphType};
+) -> novomodelo_core::System {
+    use novomodelo_core::{HorizonGraph, PolicyGraphType};
 
     let n_stages = 3_usize;
     let thermals = vec![Thermal {
@@ -2545,7 +2545,7 @@ fn theta_discount_lands_on_the_state_theta_column_with_anticipated_thermals() {
 // time_value) ────────────────────────────────────────────────────────────
 
 /// Two post-study stages following the discounted 3-stage study horizon,
-/// mirroring [`cobre_core::model::post_study`]'s doc fixture. No thermal
+/// mirroring [`novomodelo_core::model::post_study`]'s doc fixture. No thermal
 /// bounds: these tests exercise only the delivery-vector concatenation, not
 /// the per-thermal cost/bounds lookup.
 fn two_post_study_stages() -> PostStudyStages {
@@ -2759,9 +2759,9 @@ fn delivery_cumulative_discount_matches_recomputed_extended_horizon() {
     // Mirrors `resolve_post_study_artifacts`'s own deliberately stripped rate
     // graph — a full `system.policy_graph()` would let a real stage's
     // discount-rate override leak onto a synthetic post-study stage.
-    let rate_graph = cobre_core::HorizonGraph {
+    let rate_graph = novomodelo_core::HorizonGraph {
         annual_discount_rate: system.policy_graph().annual_discount_rate,
-        ..cobre_core::HorizonGraph::default()
+        ..novomodelo_core::HorizonGraph::default()
     };
     let calendar_stages = post_study_calendar_stages(&post_study.stages);
     let calendar_stage_refs: Vec<_> = calendar_stages.iter().collect();
@@ -2811,7 +2811,7 @@ fn two_anticipated_thermals(ids: [i32; 2]) -> Vec<Thermal> {
 fn system_with_anticipated_thermals_and_post_study(
     thermals: Vec<Thermal>,
     post_study: PostStudyStages,
-) -> cobre_core::System {
+) -> novomodelo_core::System {
     let n_thermals = thermals.len();
     let n_stages = 1_usize;
     let bus = fixture_bus();
@@ -2982,7 +2982,7 @@ fn post_study_artifacts_none_returns_default_and_empty_table() {
     let resolved = resolve_post_study_artifacts(
         None,
         &[],
-        &cobre_core::HorizonGraph::default(),
+        &novomodelo_core::HorizonGraph::default(),
         1.0,
         1.0,
         &[],
@@ -3116,15 +3116,15 @@ fn anticipated_bounds_table_shape_is_two_plants_by_three_stages() {
 use super::super::layout::StageLayout;
 use crate::DEFAULT_COST_SCALE_FACTOR;
 use crate::hydro_models::{ProductionModelSet, ResolvedProductionModel};
-use cobre_core::System;
-use cobre_solver::StageTemplate;
+use novomodelo_core::System;
+use novomodelo_solver::StageTemplate;
 
 /// One-hydro system with all operational-violation bounds active (min/max
 /// outflow, min turbine, min generation > 0), two blocks per stage, and
 /// `1000.0` violation penalties — the fixture the operational-violation
 /// builder tests exercise.
 fn one_hydro_active_violations(n_stages: usize) -> System {
-    use cobre_core::scenario::InflowModel;
+    use novomodelo_core::scenario::InflowModel;
 
     let bus = fixture_bus();
 
@@ -3729,7 +3729,7 @@ fn relocated_diagnostic_template_operational_violation_correctness() {
 /// coefficient on both the incoming and outgoing storage columns, so the
 /// byte-identity check actually exercises the storage-bearing rows.
 fn one_hydro_block_system(block_mode: BlockMode, n_blks: usize) -> System {
-    use cobre_core::scenario::InflowModel;
+    use novomodelo_core::scenario::InflowModel;
 
     let bus = fixture_bus();
 
@@ -4382,7 +4382,7 @@ fn stage_layout_geometry_water_balance_family_matches_layout_source_in_parallel_
 /// stage 0, Filling at stages 1-2, Operating at stage 3), and a `LeadStages(1)`
 /// anticipated thermal — so every rerouted `StageGeometry` range is non-trivial
 /// and the filling families are exercised both populated and empty across stages.
-fn system_with_contracts_filling_and_anticipated() -> cobre_core::System {
+fn system_with_contracts_filling_and_anticipated() -> novomodelo_core::System {
     let n_stages = 4_usize;
 
     let bus = fixture_bus();
@@ -4781,7 +4781,7 @@ const FILL_FILL_HYDRO_ID: i32 = 3;
 /// id 0 it is `Filling`. Both share `entry = FILL_ENTRY_ID`. A backup thermal and a
 /// bus deficit segment keep the LP feasible regardless of the frozen filling storage.
 fn filling_block_system(block_mode: BlockMode, n_blks: usize) -> System {
-    use cobre_core::scenario::InflowModel;
+    use novomodelo_core::scenario::InflowModel;
 
     let bus = fixture_bus();
 
@@ -5197,7 +5197,7 @@ fn anticipated_lead_config_system(
     stage_hours: f64,
     anticipated_config: AnticipatedConfig,
     k_max_bounds: usize,
-) -> cobre_core::System {
+) -> novomodelo_core::System {
     let bus = fixture_bus();
 
     let thermal = Thermal {

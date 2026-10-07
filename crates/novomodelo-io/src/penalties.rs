@@ -8,7 +8,7 @@
 //!
 //! See the penalty system spec §3 for the full requirements.
 
-use cobre_core::{
+use novomodelo_core::{
     entities::{DeficitSegment, HydroPenalties},
     penalty::GlobalPenaltyDefaults,
 };
@@ -136,7 +136,7 @@ pub(crate) struct RawNcsPenalties {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::penalties::parse_penalties;
+/// use novomodelo_io::penalties::parse_penalties;
 /// use std::path::Path;
 ///
 /// let defaults = parse_penalties(Path::new("case/penalties.json")).unwrap();
@@ -379,7 +379,7 @@ mod tests {
     use crate::test_support::write_json;
 
     const VALID_JSON: &str = r#"{
-      "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/penalties.schema.json",
+      "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/penalties.schema.json",
       "bus": {
         "deficit_segments": [
           { "depth_mw": 500.0, "cost": 1000.0 },

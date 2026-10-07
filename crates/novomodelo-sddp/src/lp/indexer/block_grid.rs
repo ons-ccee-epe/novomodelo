@@ -70,7 +70,7 @@ impl BlockGrid {
     /// slot fails to compile — the block operand requires [`BlockIdx`]:
     ///
     /// ```compile_fail
-    /// use cobre_sddp::indexer::BlockGrid;
+    /// use novomodelo_sddp::indexer::BlockGrid;
     ///
     /// BlockGrid::new(2, 1).flat(0, 1, 2usize); // block operand requires BlockIdx, not usize
     /// ```

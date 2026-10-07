@@ -27,14 +27,14 @@
 )]
 
 use chrono::NaiveDate;
-use cobre_core::entities::thermal::AnticipatedConfig;
-use cobre_core::{
+use novomodelo_core::entities::thermal::AnticipatedConfig;
+use novomodelo_core::{
     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
     HydroStageBounds, LineBlockBounds, PostStudyStage, PostStudyStages, PostStudyThermalBound,
     PumpingBlockBounds, ResolvedBounds, System, SystemBuilder, ThermalBlockBounds,
     ThermalStageBounds,
 };
-use cobre_solver::{ActiveSolver, SolverInterface};
+use novomodelo_solver::{ActiveSolver, SolverInterface};
 
 mod common;
 use common::build_setup_in_code;
@@ -65,7 +65,7 @@ fn study_start() -> NaiveDate {
 /// `StageCalendar` coverage): stage 0 is January (744h), stage 1 is February
 /// (696h in a common year, but 2024 is a leap year — 30 days declared here to
 /// keep `duration_hours` an exact calendar match).
-fn stages() -> Vec<cobre_core::temporal::Stage> {
+fn stages() -> Vec<novomodelo_core::temporal::Stage> {
     let start = study_start();
     let stage0_end = start + chrono::TimeDelta::days(31);
     let stage1_end = stage0_end + chrono::TimeDelta::days(30);
@@ -75,7 +75,7 @@ fn stages() -> Vec<cobre_core::temporal::Stage> {
             StageSpec {
                 start_date: start,
                 end_date: stage0_end,
-                blocks: vec![cobre_core::temporal::Block {
+                blocks: vec![novomodelo_core::temporal::Block {
                     index: 0,
                     name: "S0".to_string(),
                     duration_hours: 744.0,
@@ -88,7 +88,7 @@ fn stages() -> Vec<cobre_core::temporal::Stage> {
             StageSpec {
                 start_date: stage0_end,
                 end_date: stage1_end,
-                blocks: vec![cobre_core::temporal::Block {
+                blocks: vec![novomodelo_core::temporal::Block {
                     index: 0,
                     name: "S1".to_string(),
                     duration_hours: 720.0,
@@ -161,9 +161,9 @@ fn bounds() -> ResolvedBounds {
     )
 }
 
-fn penalties() -> cobre_core::resolved::ResolvedPenalties {
-    use cobre_core::HydroPenalties;
-    use cobre_core::resolved::{
+fn penalties() -> novomodelo_core::resolved::ResolvedPenalties {
+    use novomodelo_core::HydroPenalties;
+    use novomodelo_core::resolved::{
         BusStagePenalties, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
         PenaltiesDefaults, ResolvedPenalties,
     };
@@ -231,8 +231,8 @@ fn build_system(with_commitment: bool, min_k: f64, max_k: f64) -> System {
     builder.build().expect("fixture System must build")
 }
 
-fn config() -> cobre_io::config::Config {
-    use cobre_io::config::{
+fn config() -> novomodelo_io::config::Config {
+    use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod, ModelingConfig, ParallelismConfig, PolicyConfig,
         RowSelectionConfig, SimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig,
@@ -275,7 +275,7 @@ fn config() -> cobre_io::config::Config {
 /// `commitment_decision` range — its length alone cannot confirm "the
 /// fixture's plant decides at this stage"; callers needing that confirm it
 /// separately (a nonzero objective, e.g.).
-fn decision_col(setup: &cobre_sddp::StudySetup, decider_stage: usize) -> usize {
+fn decision_col(setup: &novomodelo_sddp::StudySetup, decider_stage: usize) -> usize {
     setup.stage_ctx().geometry_per_stage[decider_stage]
         .anticipated_decision
         .start

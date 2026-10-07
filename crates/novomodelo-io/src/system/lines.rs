@@ -7,7 +7,7 @@
 //!
 //! ```json
 //! {
-//!   "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/lines.schema.json",
+//!   "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/lines.schema.json",
 //!   "lines": [
 //!     {
 //!       "id": 0,
@@ -44,7 +44,7 @@
 //! Cross-reference validation (e.g., checking that `source_bus_id` and `target_bus_id`
 //! exist in the bus registry) is deferred to Layer 3.
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId,
     entities::Line,
     penalty::{GlobalPenaltyDefaults, resolve_line_exchange_cost},
@@ -118,7 +118,7 @@ pub(crate) struct RawLineCapacity {
 /// the two-tier penalty resolution cascade (global → entity) for `exchange_cost`.
 /// The result is sorted by `id` ascending, so parser output is deterministic
 /// regardless of file row order (declaration-order invariance); canonical order is
-/// [`SystemBuilder::build`](cobre_core::SystemBuilder::build)'s to establish.
+/// [`SystemBuilder::build`](novomodelo_core::SystemBuilder::build)'s to establish.
 ///
 /// # Errors
 ///
@@ -133,8 +133,8 @@ pub(crate) struct RawLineCapacity {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::system::parse_lines;
-/// use cobre_core::penalty::GlobalPenaltyDefaults;
+/// use novomodelo_io::system::parse_lines;
+/// use novomodelo_core::penalty::GlobalPenaltyDefaults;
 /// use std::path::Path;
 ///
 /// # fn make_global() -> GlobalPenaltyDefaults { unimplemented!() }
@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn test_parse_valid_lines() {
         let json = r#"{
-          "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/lines.schema.json",
+          "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/lines.schema.json",
           "lines": [
             {
               "id": 0,

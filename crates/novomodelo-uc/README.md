@@ -1,9 +1,9 @@
-# cobre-uc
+# novomodelo-uc
 
-Reserved crate name for the Cobre ecosystem.
+Reserved crate name for the Novomodelo ecosystem.
 
 This crate is not yet implemented. It will host the MILP-based unit
-commitment solver for hydrothermal dispatch in the Cobre ecosystem.
+commitment solver for hydrothermal dispatch in the Novomodelo ecosystem.
 
 ## License
 

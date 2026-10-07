@@ -1,7 +1,7 @@
 """Python parity tests for `training/solver/iterations.parquet`.
 
-Verifies that `cobre.run.run()` produces an identical per-opening solver-stats
-Parquet file to the `cobre` CLI for the D01 deterministic case.
+Verifies that `novomodelo.run.run()` produces an identical per-opening solver-stats
+Parquet file to the `novomodelo` CLI for the D01 deterministic case.
 
 ## What "parity" means here
 
@@ -23,7 +23,7 @@ This is the correct definition of "Python parity" for outputs that record
 wall-clock timing information.
 
 Run with (from the repo root):
-    pytest crates/cobre-python/tests/test_solver_stats_parity.py -v
+    pytest crates/novomodelo-python/tests/test_solver_stats_parity.py -v
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from _cobre_cli import run_cli
+from _novomodelo_cli import run_cli
 
 D01_CASE = "examples/deterministic/d01-thermal-dispatch"
 
@@ -86,11 +86,11 @@ def d01_cli_output(
 
 @pytest.fixture(scope="module")
 def d01_python_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
-    """Run D01 via `cobre.run.run()` and return the output directory."""
-    cobre_run = pytest.importorskip("cobre.run")
+    """Run D01 via `novomodelo.run.run()` and return the output directory."""
+    novomodelo_run = pytest.importorskip("novomodelo.run")
 
     output_dir = tmp_path_factory.mktemp("d01_python")
-    cobre_run.run(D01_CASE, output_dir=str(output_dir))
+    novomodelo_run.run(D01_CASE, output_dir=str(output_dir))
     return output_dir
 
 

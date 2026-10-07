@@ -5,7 +5,7 @@
 # SOURCE this file; do not execute it. It is the single source of truth for the
 # cfg(test) tail-block boundary — the line where a .rs file transitions from
 # production to test scope. The boundary matches BOTH the bare `#[cfg(test)]`
-# form and the `#[cfg(all(test, ...))]` form cobre uses to feature-gate test
+# form and the `#[cfg(all(test, ...))]` form novomodelo uses to feature-gate test
 # modules, and tolerates leading indentation.
 #
 # Two gates cannot use these streaming helpers and keep their own boundary copy:

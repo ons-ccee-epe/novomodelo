@@ -24,7 +24,7 @@
 
 use std::ops::Range;
 
-use cobre_core::{EntityId, Hydro};
+use novomodelo_core::{EntityId, Hydro};
 
 use super::{HydroCell, HydroSys};
 
@@ -206,7 +206,7 @@ impl HydroCellIndex {
 #[cfg(test)]
 mod tests {
     use chrono::NaiveDate;
-    use cobre_core::{EntityId, Hydro, HydroGenerationModel, HydroPenalties, HydroUnitGroup};
+    use novomodelo_core::{EntityId, Hydro, HydroGenerationModel, HydroPenalties, HydroUnitGroup};
 
     use super::{HydroCell, HydroCellIndex, HydroSys};
     use crate::test_support::{geometry_hydro, make_unit_group};
@@ -383,7 +383,7 @@ mod tests {
 
     /// `build`'s chosen semantics: a plant with an empty `unit_groups`
     /// contributes zero cells rather than a defensively derived implicit one.
-    /// Unreachable in production — `SystemBuilder::build` and `cobre-io`'s
+    /// Unreachable in production — `SystemBuilder::build` and `novomodelo-io`'s
     /// parse path both reject an empty `unit_groups` before a system is ever
     /// constructed.
     #[test]

@@ -14,7 +14,7 @@ scheme — including the deterministic (σ = 0) case.
 **Relationship to other docs:**
 
 - `.claude/rules/sddp.md` owns the policy-load and stochastic correctness
-  contracts; this proposal changes one `cobre-io` semantic validation rule (the
+  contracts; this proposal changes one `novomodelo-io` semantic validation rule (the
   external-library σ check) and its rationale, and adds no numerical contract.
 
 ---
@@ -31,13 +31,13 @@ Two things break that expectation today:
 1. **A deterministic external value is silently discarded, then loudly rejected.**
    For load and NCS the realized value is reconstructed as `μ + σ·η`, where the
    deviate `η` is obtained by standardizing the external value with the seasonal
-   mean/std (`standardize_external_simple` in `cobre-stochastic`
+   mean/std (`standardize_external_simple` in `novomodelo-stochastic`
    `sampling/external.rs`; reconstruction in `transform_load_noise` /
-   `transform_ncs_noise`, `cobre-sddp` `stochastic/noise.rs`). When `σ = 0`, `η` is
+   `transform_ncs_noise`, `novomodelo-sddp` `stochastic/noise.rs`). When `σ = 0`, `η` is
    forced to `0`, so the realized value collapses to `μ` — the seasonal mean from
    `load_seasonal_stats.parquet` — and the external value is ignored. To keep that
    silent collapse from being a silent _lie_, rule 50 in
-   `check_external_library_coherence` (`cobre-io`
+   `check_external_library_coherence` (`novomodelo-io`
    `validation/semantic/scenarios.rs`) rejects any `σ = 0` external value that
    disagrees with `μ`. The net effect: to change a deterministic external load the
    user must edit `load_seasonal_stats.parquet` (`mean_mw`), not the external file
@@ -119,7 +119,7 @@ own values. σ > 0 AR(0) already round-trips.
 ### 4.3 Inflow AR(p > 0) — PAR stays the model, not generation
 
 For an autoregressive inflow the lag coupling is intrinsic: the realized inflow feeds
-the inflow-lag **state** (`shift_lag_state` in `cobre-sddp` `stochastic/noise.rs`),
+the inflow-lag **state** (`shift_lag_state` in `novomodelo-sddp` `stochastic/noise.rs`),
 and the PAR ψ coefficients price those lag-state dimensions into the Benders cuts. The
 ψ structure and residual σ are model artifacts that cannot be recovered from realized
 samples. So for AR(p > 0):
@@ -144,7 +144,7 @@ samples. So for AR(p > 0):
 - Hot-path reconstruction for load/NCS is untouched; the only change is where the
   moments come from.
 
-## 5. Validation changes (`cobre-io`)
+## 5. Validation changes (`novomodelo-io`)
 
 - **Rule 50 rewrite.** The σ = 0 "must equal μ" branch is removed for load and NCS:
   under External, μ is _defined by_ the external file, so there is nothing to
@@ -189,7 +189,7 @@ samples. So for AR(p > 0):
 An external converter that emits all three classes as `External` can, after this
 change, treat each external scenario file as the editable source of truth and stop
 emitting a redundant deterministic seasonal-stats twin. That is a change in the
-converter's own repository, sequenced after this one; it needs no further cobre
+converter's own repository, sequenced after this one; it needs no further novomodelo
 change once the external file is authoritative.
 
 ## 9. Non-goals

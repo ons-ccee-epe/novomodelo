@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId, GenericConstraint, PostStudyStages, ScalarParameter,
     entities::{Bus, EnergyContract, Hydro, Line, NonControllableSource, PumpingStation, Thermal},
     initial_conditions::InitialConditions,
@@ -747,7 +747,7 @@ where
 /// Build a minimal valid [`GlobalPenaltyDefaults`] sentinel used when
 /// `penalties.json` failed to parse.
 fn sentinel_penalties() -> GlobalPenaltyDefaults {
-    use cobre_core::entities::{DeficitSegment, HydroPenalties};
+    use novomodelo_core::entities::{DeficitSegment, HydroPenalties};
     GlobalPenaltyDefaults {
         bus_deficit_segments: vec![DeficitSegment {
             depth_mw: None,

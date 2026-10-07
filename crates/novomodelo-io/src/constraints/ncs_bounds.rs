@@ -21,7 +21,7 @@
 //! - Required columns must be present with correct types.
 //! - `available_generation_mw` must be finite and >= 0.0.
 
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
@@ -38,8 +38,8 @@ use crate::parquet_helpers::{
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::NcsBoundsRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::constraints::NcsBoundsRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = NcsBoundsRow {
 ///     ncs_id: EntityId::from(0),
@@ -76,7 +76,7 @@ pub struct NcsBoundsRow {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::constraints::parse_ncs_bounds;
+/// use novomodelo_io::constraints::parse_ncs_bounds;
 /// use std::path::Path;
 ///
 /// let rows = parse_ncs_bounds(Path::new("constraints/ncs_bounds.parquet"))

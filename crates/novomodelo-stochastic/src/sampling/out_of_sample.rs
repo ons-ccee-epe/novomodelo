@@ -4,7 +4,7 @@
 //! Methods: SAA, LHS, QMC (Sobol/Halton); Selective and `HistoricalResiduals`
 //! fall back to SAA in the forward pass.
 
-use cobre_core::temporal::NoiseMethod;
+use novomodelo_core::temporal::NoiseMethod;
 use rand::RngExt;
 use rand_distr::StandardNormal;
 
@@ -170,7 +170,7 @@ fn fill_saa(spec: FreshNoiseSpec, output: &mut [f64]) {
 mod tests {
     use std::collections::BTreeMap;
 
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId,
         scenario::{CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile},
         temporal::NoiseMethod,

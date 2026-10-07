@@ -1,12 +1,12 @@
-"""Integration tests for cobre.write_policy_checkpoint.
+"""Integration tests for novomodelo.write_policy_checkpoint.
 
 Verifies that a policy checkpoint authored from plain Python dicts round-trips
-through cobre.results.load_policy — the read path whose emitted dict shapes
+through novomodelo.results.load_policy — the read path whose emitted dict shapes
 write_policy_checkpoint's input mirrors — and that malformed input raises a
 clear error naming the offending stage/cut.
 
 Run with (from the repo root):
-    pytest crates/cobre-python/tests/test_write_policy_checkpoint.py
+    pytest crates/novomodelo-python/tests/test_write_policy_checkpoint.py
 """
 
 import pathlib
@@ -78,14 +78,14 @@ def test_write_policy_checkpoint_round_trip(tmp_path: pathlib.Path) -> None:
     """A synthetic checkpoint written from dicts reads back with matching cuts
     and metadata, including the cost_scale_factor provenance marker.
     """
-    import cobre  # noqa: PLC0415
-    import cobre.results  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    cobre.write_policy_checkpoint(
+    novomodelo.write_policy_checkpoint(
         str(tmp_path / "policy"), _make_stage_cuts(), _make_metadata()
     )
 
-    loaded = cobre.results.load_policy(str(tmp_path))
+    loaded = novomodelo.results.load_policy(str(tmp_path))
 
     assert loaded["metadata"]["format_version"] == 3
     assert loaded["metadata"]["producer"]["cost_scale_factor"] == pytest.approx(
@@ -115,21 +115,21 @@ def test_write_policy_checkpoint_stamps_the_running_software(
     """A caller-supplied software identity is ignored; the checkpoint always
     records the running software and version.
     """
-    import cobre  # noqa: PLC0415
-    import cobre.results  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
     metadata = _make_metadata()
     metadata["software"] = "another-program"
     metadata["software_version"] = "0.13.0"
-    metadata["cobre_version"] = "0.13.0"
+    metadata["novomodelo_version"] = "0.13.0"
 
-    cobre.write_policy_checkpoint(
+    novomodelo.write_policy_checkpoint(
         str(tmp_path / "policy"), _make_stage_cuts(), metadata
     )
 
-    loaded = cobre.results.load_policy(str(tmp_path))
-    assert loaded["metadata"]["software"] == "cobre"
-    assert loaded["metadata"]["software_version"] == cobre.__version__
+    loaded = novomodelo.results.load_policy(str(tmp_path))
+    assert loaded["metadata"]["software"] == "novomodelo"
+    assert loaded["metadata"]["software_version"] == novomodelo.__version__
 
 
 def test_write_policy_checkpoint_cost_scale_factor_omitted_reads_as_none(
@@ -138,16 +138,16 @@ def test_write_policy_checkpoint_cost_scale_factor_omitted_reads_as_none(
     """Omitting cost_scale_factor from the metadata dict reads back as None,
     matching a legacy (pre-marker) checkpoint.
     """
-    import cobre  # noqa: PLC0415
-    import cobre.results  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    cobre.write_policy_checkpoint(
+    novomodelo.write_policy_checkpoint(
         str(tmp_path / "policy"),
         _make_stage_cuts(),
         _make_metadata(cost_scale_factor=None),
     )
 
-    loaded = cobre.results.load_policy(str(tmp_path))
+    loaded = novomodelo.results.load_policy(str(tmp_path))
     assert loaded["metadata"]["producer"]["cost_scale_factor"] is None
 
 
@@ -155,18 +155,18 @@ def test_write_policy_checkpoint_lower_bound_history_round_trips(
     tmp_path: pathlib.Path,
 ) -> None:
     """The producer's lower_bound_history reads back bit for bit, -0.0 included."""
-    import cobre  # noqa: PLC0415
-    import cobre.results  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
     history = [130.0, -0.0, 2.2250738585072014e-308, 123.45]
     metadata = _make_metadata()
     metadata["producer"]["lower_bound_history"] = history
 
-    cobre.write_policy_checkpoint(
+    novomodelo.write_policy_checkpoint(
         str(tmp_path / "policy"), _make_stage_cuts(), metadata
     )
 
-    loaded = cobre.results.load_policy(str(tmp_path))
+    loaded = novomodelo.results.load_policy(str(tmp_path))
     recorded = loaded["metadata"]["producer"]["lower_bound_history"]
     assert [v.hex() for v in recorded] == [v.hex() for v in history]
 
@@ -175,17 +175,17 @@ def test_write_policy_checkpoint_lower_bound_history_omitted_reads_as_empty(
     tmp_path: pathlib.Path,
 ) -> None:
     """Omitting lower_bound_history from the producer dict writes an empty series."""
-    import cobre  # noqa: PLC0415
-    import cobre.results  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
     metadata = _make_metadata()
     assert "lower_bound_history" not in metadata["producer"]
 
-    cobre.write_policy_checkpoint(
+    novomodelo.write_policy_checkpoint(
         str(tmp_path / "policy"), _make_stage_cuts(), metadata
     )
 
-    loaded = cobre.results.load_policy(str(tmp_path))
+    loaded = novomodelo.results.load_policy(str(tmp_path))
     assert loaded["metadata"]["producer"]["lower_bound_history"] == []
 
 
@@ -195,13 +195,13 @@ def test_write_policy_checkpoint_coefficient_length_mismatch_raises(
     """A cut whose coefficients length disagrees with its stage's
     state_dimension raises ValueError naming the stage and cut.
     """
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     stage_cuts = _make_stage_cuts()
     stage_cuts[0]["cuts"][0]["coefficients"] = [1.0, 2.0]  # state_dimension is 3
 
     with pytest.raises(ValueError, match=r"stage 0 cut 1.*coefficients"):
-        cobre.write_policy_checkpoint(
+        novomodelo.write_policy_checkpoint(
             str(tmp_path / "policy"), stage_cuts, _make_metadata()
         )
 
@@ -212,23 +212,23 @@ def test_write_policy_checkpoint_defaults_apply_when_keys_omitted(
     """warm_start_count, active_cut_indices, and entity_manifest all default
     when their keys are absent from the stage_cuts dict.
     """
-    import cobre  # noqa: PLC0415
-    import cobre.results  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
     stage_cuts = _make_stage_cuts()
     assert "warm_start_count" not in stage_cuts[0]
     assert "active_cut_indices" not in stage_cuts[0]
     assert "entity_manifest" not in stage_cuts[0]
 
-    cobre.write_policy_checkpoint(
+    novomodelo.write_policy_checkpoint(
         str(tmp_path / "policy"), stage_cuts, _make_metadata()
     )
 
-    loaded = cobre.results.load_policy(str(tmp_path))
+    loaded = novomodelo.results.load_policy(str(tmp_path))
     assert loaded["stage_cuts"][0]["warm_start_count"] == 0
 
 
-# EntityType discriminants from schemas/policy.fbs (owned by cobre-sddp, mirrored
+# EntityType discriminants from schemas/policy.fbs (owned by novomodelo-sddp, mirrored
 # here for the manifest a bridge-style caller supplies).
 _ENTITY_TYPE_HYDRO_STORAGE = 0
 _ENTITY_TYPE_HYDRO_INFLOW_LAG = 1
@@ -279,22 +279,22 @@ def test_write_policy_checkpoint_reserves_inflow_lag_slots(
     HydroInflowLag slots per storage hydro, self-describing depth N, and places
     each keyed pi_qafl coefficient at its (hydro, depth) position.
     """
-    import cobre  # noqa: PLC0415
-    import cobre.results  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
     hydro_ids = [1, 2]
     # hydro 1: depth1=1.1, depth2=1.2; hydro 2: depth1=2.1, depth2 defaults 0.0.
     lag_coefficients = {1: [1.1, 1.2], 2: [2.1]}
     stage_cuts = _storage_only_stage_cuts(hydro_ids, lag_coefficients)
 
-    cobre.write_policy_checkpoint(
+    novomodelo.write_policy_checkpoint(
         str(tmp_path / "policy"),
         stage_cuts,
         _make_metadata(),
         inflow_lag_depth=2,
     )
 
-    loaded = cobre.results.load_policy(str(tmp_path))
+    loaded = novomodelo.results.load_policy(str(tmp_path))
     stage = loaded["stage_cuts"][0]
 
     # 2 storage + 2 hydros × 2 depths = 6 slots.
@@ -320,7 +320,7 @@ def test_write_policy_checkpoint_inflow_lag_depth_absent_is_byte_identical(
     """Omitting inflow_lag_depth (or passing 0) writes the exact same bytes as
     not passing it — the reservation path is inert by default.
     """
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     def _digest(policy_dir: pathlib.Path) -> dict[str, bytes]:
         return {
@@ -330,10 +330,10 @@ def test_write_policy_checkpoint_inflow_lag_depth_absent_is_byte_identical(
     stage_cuts = _storage_only_stage_cuts([1, 2], {})
 
     default_dir = tmp_path / "default"
-    cobre.write_policy_checkpoint(str(default_dir), stage_cuts, _make_metadata())
+    novomodelo.write_policy_checkpoint(str(default_dir), stage_cuts, _make_metadata())
 
     zero_dir = tmp_path / "zero"
-    cobre.write_policy_checkpoint(
+    novomodelo.write_policy_checkpoint(
         str(zero_dir), stage_cuts, _make_metadata(), inflow_lag_depth=0
     )
 
@@ -346,13 +346,13 @@ def test_write_policy_checkpoint_unplaceable_lag_coefficient_raises(
     """A keyed inflow-lag coefficient for a hydro with no storage slot is
     unplaceable and raises ValueError naming the hydro — never silently dropped.
     """
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     # hydro 99 is not among the storage hydros [1, 2].
     stage_cuts = _storage_only_stage_cuts([1, 2], {99: [0.5]})
 
     with pytest.raises(ValueError, match=r"hydro 99"):
-        cobre.write_policy_checkpoint(
+        novomodelo.write_policy_checkpoint(
             str(tmp_path / "policy"),
             stage_cuts,
             _make_metadata(),
@@ -367,19 +367,19 @@ def test_write_policy_checkpoint_accepts_self_describing_stage_fields(
     node_id, graph_stage_id) that the CLI writer emits — Python write-parity — and
     produces a checkpoint whose read surfaces those facts again.
     """
-    import cobre  # noqa: PLC0415
-    import cobre.results  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
     stage_cuts = _make_stage_cuts()
     stage_cuts[0]["cost_scale_factor"] = 2_500_000.0
     stage_cuts[0]["node_id"] = 3
     stage_cuts[0]["graph_stage_id"] = 7
 
-    cobre.write_policy_checkpoint(
+    novomodelo.write_policy_checkpoint(
         str(tmp_path / "policy"), stage_cuts, _make_metadata()
     )
 
-    loaded = cobre.results.load_policy(str(tmp_path))
+    loaded = novomodelo.results.load_policy(str(tmp_path))
     stage = loaded["stage_cuts"][0]
     assert stage["state_dimension"] == 3
     assert len(stage["cuts"]) == 2
@@ -403,8 +403,8 @@ def test_load_policy_self_describing_fields_survive_rewrite(
     cost_scale_factor to None), collapsing a genuine single-node pool and
     breaking boundary-cut load. This test fails unless load_policy surfaces them.
     """
-    import cobre  # noqa: PLC0415
-    import cobre.results  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
     stage_cuts = _make_stage_cuts()
     stage_cuts[0]["node_id"] = 3
@@ -417,15 +417,15 @@ def test_load_policy_self_describing_fields_survive_rewrite(
     metadata = _make_metadata(cost_scale_factor=None)
 
     first_dir = tmp_path / "first"
-    cobre.write_policy_checkpoint(str(first_dir / "policy"), stage_cuts, metadata)
+    novomodelo.write_policy_checkpoint(str(first_dir / "policy"), stage_cuts, metadata)
 
-    loaded = cobre.results.load_policy(str(first_dir))
+    loaded = novomodelo.results.load_policy(str(first_dir))
 
     second_dir = tmp_path / "second"
-    cobre.write_policy_checkpoint(
+    novomodelo.write_policy_checkpoint(
         str(second_dir / "policy"), loaded["stage_cuts"], metadata
     )
-    reloaded = cobre.results.load_policy(str(second_dir))
+    reloaded = novomodelo.results.load_policy(str(second_dir))
 
     stage = reloaded["stage_cuts"][0]
     assert stage["node_id"] == 3
@@ -439,17 +439,17 @@ def test_write_policy_checkpoint_active_cut_indices_do_not_survive_the_round_tri
     """active_cut_indices is written but not returned by load_policy, so a
     load -> write cycle resets it; cut activity round-trips through is_active.
     """
-    import cobre  # noqa: PLC0415
-    import cobre.results  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
     stage_cuts = _make_stage_cuts()
     stage_cuts[0]["active_cut_indices"] = [0]
 
-    cobre.write_policy_checkpoint(
+    novomodelo.write_policy_checkpoint(
         str(tmp_path / "policy"), stage_cuts, _make_metadata()
     )
 
-    loaded = cobre.results.load_policy(str(tmp_path))
+    loaded = novomodelo.results.load_policy(str(tmp_path))
     stage = loaded["stage_cuts"][0]
 
     assert "active_cut_indices" not in stage
@@ -462,12 +462,12 @@ def test_write_policy_checkpoint_lag_coefficients_without_depth_raises(
     """inflow_lag_coefficients supplied without inflow_lag_depth raises
     ValueError naming the stage and cut — never silently dropped.
     """
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     stage_cuts = _storage_only_stage_cuts([1, 2], {1: [0.5]})
 
     with pytest.raises(ValueError, match=r"stage 0 cut .*inflow_lag_depth"):
-        cobre.write_policy_checkpoint(
+        novomodelo.write_policy_checkpoint(
             str(tmp_path / "policy"), stage_cuts, _make_metadata()
         )
 
@@ -479,8 +479,8 @@ def test_write_policy_checkpoint_season_manifest_round_trips(
     descriptor, and writing the loaded metadata produces a byte-identical
     checkpoint file.
     """
-    import cobre  # noqa: PLC0415
-    import cobre.results  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
     season_manifest = {
         "cycle_code": 0,
@@ -492,17 +492,17 @@ def test_write_policy_checkpoint_season_manifest_round_trips(
     }
 
     first_dir = tmp_path / "first"
-    cobre.write_policy_checkpoint(
+    novomodelo.write_policy_checkpoint(
         str(first_dir / "policy"),
         _make_stage_cuts(),
         _make_metadata(season_manifest=season_manifest),
     )
 
-    loaded = cobre.results.load_policy(str(first_dir))
+    loaded = novomodelo.results.load_policy(str(first_dir))
     assert loaded["metadata"]["season_manifest"] == season_manifest
 
     second_dir = tmp_path / "second"
-    cobre.write_policy_checkpoint(
+    novomodelo.write_policy_checkpoint(
         str(second_dir / "policy"),
         loaded["stage_cuts"],
         loaded["metadata"],
@@ -519,14 +519,14 @@ def test_write_policy_checkpoint_season_manifest_omitted_is_absent(
     """A checkpoint authored with today's _make_metadata() (no season_manifest
     key) reads back with the absent descriptor.
     """
-    import cobre  # noqa: PLC0415
-    import cobre.results  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    cobre.write_policy_checkpoint(
+    novomodelo.write_policy_checkpoint(
         str(tmp_path / "policy"), _make_stage_cuts(), _make_metadata()
     )
 
-    loaded = cobre.results.load_policy(str(tmp_path))
+    loaded = novomodelo.results.load_policy(str(tmp_path))
     assert loaded["metadata"]["season_manifest"] == {
         "cycle_code": 255,
         "n_seasons": 0,
@@ -540,9 +540,9 @@ def test_write_policy_checkpoint_season_manifest_unsorted_hydros_rejected_on_loa
     """hydro_orders with non-ascending hydro_id values: the write succeeds, and
     load_policy raises OutputError with 'not ascending by hydro_id'.
     """
-    import cobre  # noqa: PLC0415
-    import cobre.errors  # noqa: PLC0415
-    import cobre.results  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
     season_manifest = {
         "cycle_code": 0,
@@ -553,14 +553,16 @@ def test_write_policy_checkpoint_season_manifest_unsorted_hydros_rejected_on_loa
         ],
     }
 
-    cobre.write_policy_checkpoint(
+    novomodelo.write_policy_checkpoint(
         str(tmp_path / "policy"),
         _make_stage_cuts(),
         _make_metadata(season_manifest=season_manifest),
     )
 
-    with pytest.raises(cobre.errors.OutputError, match=r"not ascending by hydro_id"):
-        cobre.results.load_policy(str(tmp_path))
+    with pytest.raises(
+        novomodelo.errors.OutputError, match=r"not ascending by hydro_id"
+    ):
+        novomodelo.results.load_policy(str(tmp_path))
 
 
 def test_write_policy_checkpoint_season_manifest_order_length_rejected_on_load(
@@ -569,9 +571,9 @@ def test_write_policy_checkpoint_season_manifest_order_length_rejected_on_load(
     """n_seasons=3 but one hydro with two orders: the write succeeds, and
     load_policy raises OutputError with 'expected n_seasons=3'.
     """
-    import cobre  # noqa: PLC0415
-    import cobre.errors  # noqa: PLC0415
-    import cobre.results  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
     season_manifest = {
         "cycle_code": 0,
@@ -581,14 +583,14 @@ def test_write_policy_checkpoint_season_manifest_order_length_rejected_on_load(
         ],
     }
 
-    cobre.write_policy_checkpoint(
+    novomodelo.write_policy_checkpoint(
         str(tmp_path / "policy"),
         _make_stage_cuts(),
         _make_metadata(season_manifest=season_manifest),
     )
 
-    with pytest.raises(cobre.errors.OutputError, match=r"expected n_seasons=3"):
-        cobre.results.load_policy(str(tmp_path))
+    with pytest.raises(novomodelo.errors.OutputError, match=r"expected n_seasons=3"):
+        novomodelo.results.load_policy(str(tmp_path))
 
 
 def test_write_policy_checkpoint_refuses_a_directory_holding_other_files(
@@ -597,8 +599,8 @@ def test_write_policy_checkpoint_refuses_a_directory_holding_other_files(
     """A policy directory holding a file no checkpoint writer leaves there is
     refused with ValidationError, and the file survives.
     """
-    import cobre  # noqa: PLC0415
-    import cobre.errors  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.errors  # noqa: PLC0415
 
     policy = tmp_path / "policy"
     policy.mkdir()
@@ -606,10 +608,12 @@ def test_write_policy_checkpoint_refuses_a_directory_holding_other_files(
     notes.write_text("keep me")
 
     with pytest.raises(
-        cobre.errors.ValidationError,
+        novomodelo.errors.ValidationError,
         match=r"notes\.txt, found in .*, is not part of a checkpoint",
     ):
-        cobre.write_policy_checkpoint(str(policy), _make_stage_cuts(), _make_metadata())
+        novomodelo.write_policy_checkpoint(
+            str(policy), _make_stage_cuts(), _make_metadata()
+        )
 
     assert notes.read_text() == "keep me"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["policy"]

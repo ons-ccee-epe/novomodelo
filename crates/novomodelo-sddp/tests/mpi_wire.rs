@@ -1,4 +1,4 @@
-//! Consolidated MPI wire-format integration tests for `cobre-sddp`.
+//! Consolidated MPI wire-format integration tests for `novomodelo-sddp`.
 //!
 //! Each source domain lives in its own inner `mod` so the suite links the
 //! statically-bound solver once rather than once per file. Per-`mod` scoping
@@ -24,7 +24,7 @@ mod test_mpi_hydro_models_output_path {
 
     use std::path::Path;
 
-    use cobre_sddp::prepare_hydro_models;
+    use novomodelo_sddp::prepare_hydro_models;
 
     fn d07_case_dir() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -43,7 +43,7 @@ mod test_mpi_hydro_models_output_path {
             "d07-fpha-computed fixture must exist at {case_dir:?}"
         );
 
-        let system = cobre_io::load_case(&case_dir).expect("load_case must succeed on d07");
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed on d07");
 
         let result = prepare_hydro_models(&system, &case_dir, false)
             .expect("prepare_hydro_models must succeed");
@@ -64,8 +64,8 @@ mod test_mpi_basis_broadcast_large_len {
     //! `SddpError::Communication` with both actual (oversized) and expected
     //! (`i32::MAX`) length fields preserved, enabling diagnostic messages.
 
-    use cobre_comm::CommError;
-    use cobre_sddp::SddpError;
+    use novomodelo_comm::CommError;
+    use novomodelo_sddp::SddpError;
 
     /// Mirrors the error `checked_broadcast_len` produces for
     /// `len = (i32::MAX as usize) + 1` — the smallest value that cannot be
@@ -140,13 +140,13 @@ mod test_mpi_wire_format_version {
     //! version byte/field — a stale version must be rejected, never silently
     //! decoded as corrupt data. Exercised through the public API, no MPI spawn.
 
-    use cobre_sddp::{
+    use novomodelo_sddp::{
         SddpError,
         cut::wire::{CUT_WIRE_FORMAT_TAG, cut_wire_size, deserialize_cut, serialize_cut},
         setup::NodeId,
         workspace::{BASIS_BROADCAST_FORMAT_TAG, CapturedBasis},
     };
-    use cobre_solver::BasisStatus;
+    use novomodelo_solver::BasisStatus;
 
     // ---------------------------------------------------------------------------
     // basis wire-format version guard
@@ -268,9 +268,9 @@ mod test_mpi_4rank_basis_broadcast_round_trip {
     //! `to_broadcast_payload` / `try_from_broadcast_payload` produce bit-identical
     //! `CapturedBasis` values across four ranks reading from the same shared buffers.
 
-    use cobre_sddp::setup::NodeId;
-    use cobre_sddp::workspace::{BASIS_BROADCAST_FORMAT_TAG, CapturedBasis};
-    use cobre_solver::BasisStatus;
+    use novomodelo_sddp::setup::NodeId;
+    use novomodelo_sddp::workspace::{BASIS_BROADCAST_FORMAT_TAG, CapturedBasis};
+    use novomodelo_solver::BasisStatus;
 
     /// The seven canonical statuses, indexed by `(seed + i) % 7` in
     /// `make_captured_basis` to derive a deterministic, seed-varying sequence.
@@ -432,7 +432,7 @@ mod retry_armed_determinism {
     //! dual edge weight, Curtis-Reid scaling, `Row` pricing, primal tolerance
     //! `1e-7`) with a deliberately low `simplex_iteration_limit` forces the
     //! `HiGHS` retry escalation ladder
-    //! (`crates/cobre-solver/src/backends/highs/retry.rs`) to fire, then
+    //! (`crates/novomodelo-solver/src/backends/highs/retry.rs`) to fire, then
     //! asserts the final training lower bound is bitwise
     //! identical across four execution shapes of the SAME config: threads=k,
     //! threads=1, a same-shape repeat, and a faithful 2-rank leg. Runs on both
@@ -450,17 +450,17 @@ mod retry_armed_determinism {
     //! four-shape bitwise `final_lb` comparison also proves each survives the
     //! seam at integration scope; this complements the unit-level
     //! `full_profile_survives_retry_finalization_seam` readback in
-    //! `crates/cobre-solver/tests/profile_retry_composition.rs`.
+    //! `crates/novomodelo-solver/tests/profile_retry_composition.rs`.
 
     use std::path::Path;
 
-    use cobre_comm::Communicator;
-    use cobre_io::config::{
+    use novomodelo_comm::Communicator;
+    use novomodelo_io::config::{
         BackwardScheduler, DualEdgeWeight, PhaseSolverProfileConfig, PresolveMode, PriceStrategy,
         ScaleStrategy,
     };
-    use cobre_sddp::{Phase, RiskMeasure, SolverProfiles, StudySetup};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_sddp::{Phase, RiskMeasure, SolverProfiles, StudySetup};
+    use novomodelo_solver::ActiveSolver;
 
     use crate::common::{Rank0Of2, StubComm};
 
@@ -649,9 +649,9 @@ mod opening_order_determinism {
 
     use std::path::Path;
 
-    use cobre_comm::Communicator;
-    use cobre_sddp::StudySetup;
-    use cobre_solver::ActiveSolver;
+    use novomodelo_comm::Communicator;
+    use novomodelo_sddp::StudySetup;
+    use novomodelo_solver::ActiveSolver;
 
     use crate::common::{Rank0Of2, StubComm};
 
@@ -747,8 +747,8 @@ mod derived_inflow_seeds_rank_invariance {
 
     use std::path::Path;
 
-    use cobre_comm::Communicator;
-    use cobre_solver::ActiveSolver;
+    use novomodelo_comm::Communicator;
+    use novomodelo_solver::ActiveSolver;
 
     use crate::common::{Rank0Of2, StubComm};
 
@@ -866,12 +866,12 @@ mod by_node_scheduler_determinism {
     use std::path::Path;
     use std::sync::mpsc;
 
-    use cobre_comm::Communicator;
-    use cobre_core::{TrainingEvent, WorkerTimingPhase};
-    use cobre_io::Config;
-    use cobre_io::config::{BackwardScheduler, SelectionMethod, StoppingRuleConfig};
-    use cobre_sddp::{RiskMeasure, StudySetup};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_comm::Communicator;
+    use novomodelo_core::{TrainingEvent, WorkerTimingPhase};
+    use novomodelo_io::Config;
+    use novomodelo_io::config::{BackwardScheduler, SelectionMethod, StoppingRuleConfig};
+    use novomodelo_sddp::{RiskMeasure, StudySetup};
+    use novomodelo_solver::ActiveSolver;
 
     use crate::by_node_scratch::run_by_node_one_iteration;
     use crate::common::{Rank0Of2, StubComm};
@@ -1323,14 +1323,14 @@ mod by_node_scratch {
 
     use std::num::NonZeroUsize;
 
-    use cobre_core::scenario::{
+    use novomodelo_core::scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
         SamplingScheme,
     };
-    use cobre_core::temporal::{NoiseMethod, ScenarioSourceConfig};
-    use cobre_core::{EntityId, HydroGenerationModel, SystemBuilder};
-    use cobre_io::config::BackwardScheduler;
-    use cobre_sddp::{
+    use novomodelo_core::temporal::{NoiseMethod, ScenarioSourceConfig};
+    use novomodelo_core::{EntityId, HydroGenerationModel, SystemBuilder};
+    use novomodelo_io::config::BackwardScheduler;
+    use novomodelo_sddp::{
         BackwardPassInputs, BackwardPassState, ExchangeBuffers,
         context::TrainingContext,
         cut::FutureCostFunction,
@@ -1346,11 +1346,11 @@ mod by_node_scratch {
         },
         workspace::{BasisStore, WorkspacePool, WorkspaceSizing},
     };
-    use cobre_solver::{
+    use novomodelo_solver::{
         Basis, LpSolution, RowBatch, SolutionView, SolverError, SolverInterface, SolverStatistics,
         StageTemplate,
     };
-    use cobre_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+    use novomodelo_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
 
     use crate::common::StubComm;
     use crate::common::builders::{BusSpec, HydroSpec, make_bus, make_hydro, make_stage};
@@ -1387,9 +1387,9 @@ mod by_node_scratch {
     }
 
     impl SolverInterface for MockSolver {
-        type Profile = cobre_solver::ActiveProfile;
+        type Profile = novomodelo_solver::ActiveProfile;
 
-        fn apply_profile(&mut self, _profile: &cobre_solver::ActiveProfile) {}
+        fn apply_profile(&mut self, _profile: &novomodelo_solver::ActiveProfile) {}
 
         fn name(&self) -> &'static str {
             "mock"
@@ -1487,7 +1487,7 @@ mod by_node_scratch {
     fn make_stochastic_context(
         n_stages: usize,
         branching_factor: usize,
-    ) -> cobre_stochastic::StochasticContext {
+    ) -> novomodelo_stochastic::StochasticContext {
         use std::collections::BTreeMap;
 
         let bus = make_bus(EntityId(0), BusSpec::default());
@@ -1681,7 +1681,7 @@ mod by_node_scratch {
         let ctx = fixture.ctx();
         let study_dims_fixture = study_dims();
         let training_ctx = TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state_layout_fixture,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state_layout_fixture, n_stages),
@@ -1806,7 +1806,7 @@ mod by_node_scratch {
         let ctx = fixture.ctx();
         let study_dims_fixture = study_dims();
         let training_ctx = TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state_layout_fixture,
             cut_state_layouts: &all_enabled_cut_state_layouts(&state_layout_fixture, n_stages),
@@ -1926,9 +1926,9 @@ mod k_fan_graph_invariance {
     //! reduce in canonical order — invariant across several distinct
     //! worker-partition boundaries, not merely a single threads=1-vs-k pair.
 
-    use cobre_sddp::setup::NodePos;
-    use cobre_sddp::test_support::k_fan_setup;
-    use cobre_solver::ActiveSolver;
+    use novomodelo_sddp::setup::NodePos;
+    use novomodelo_sddp::test_support::k_fan_setup;
+    use novomodelo_solver::ActiveSolver;
 
     use crate::common::StubComm;
 
@@ -2086,11 +2086,11 @@ mod by_node_k_fan_branching {
     //!   iteration on a fan takes the by-scenario path exactly as the by-node path
     //!   does, bit-for-bit.
 
-    use cobre_comm::{BackendKind, Communicator, LocalBackend, create_communicator};
-    use cobre_io::config::BackwardScheduler;
-    use cobre_sddp::setup::NodePos;
-    use cobre_sddp::test_support::{dcs_k_fan_setup, k_fan_setup};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_comm::{BackendKind, Communicator, LocalBackend, create_communicator};
+    use novomodelo_io::config::BackwardScheduler;
+    use novomodelo_sddp::setup::NodePos;
+    use novomodelo_sddp::test_support::{dcs_k_fan_setup, k_fan_setup};
+    use novomodelo_solver::ActiveSolver;
 
     use crate::common::StubComm;
 
@@ -2292,14 +2292,14 @@ mod k_fan_enumerated_determinism {
     //! chain under a `Rank0Of2` stub adds the 2-rank leg the backward by-node
     //! gates also carry (faithful only at `forward_passes == 1`).
 
-    use cobre_comm::Communicator;
-    use cobre_sddp::StudySetup;
-    use cobre_sddp::setup::NodePos;
-    use cobre_sddp::test_support::{
+    use novomodelo_comm::Communicator;
+    use novomodelo_sddp::StudySetup;
+    use novomodelo_sddp::setup::NodePos;
+    use novomodelo_sddp::test_support::{
         KFanFixture, k_fan_setup_enumerated, k_fan_setup_enumerated_reversed,
         single_path_enumerated_setup,
     };
-    use cobre_solver::ActiveSolver;
+    use novomodelo_solver::ActiveSolver;
 
     use crate::common::{Rank0Of2, StubComm};
 
@@ -2444,9 +2444,11 @@ mod simulation_aggregation_determinism {
     //! 0" directly, mirroring `enumerated_single_path_2rank_stub_matches_single_rank`
     //! above), and a same-shape repeat.
 
-    use cobre_comm::{Communicator, LocalBackend};
-    use cobre_sddp::simulation::{ScenarioCategoryCosts, SimulationConfig, SimulationWeighting};
-    use cobre_sddp::{Phase, aggregate_simulation};
+    use novomodelo_comm::{Communicator, LocalBackend};
+    use novomodelo_sddp::simulation::{
+        ScenarioCategoryCosts, SimulationConfig, SimulationWeighting,
+    };
+    use novomodelo_sddp::{Phase, aggregate_simulation};
 
     use crate::common::{Rank0Of2, StubComm};
 
@@ -2587,9 +2589,11 @@ mod uniform_weight_left_to_right_reduction {
     //! so it cannot discriminate a wrong-but-internally-consistent formula;
     //! this gate compares against an independently hand-rolled reference.
 
-    use cobre_comm::LocalBackend;
-    use cobre_sddp::simulation::{ScenarioCategoryCosts, SimulationConfig, SimulationWeighting};
-    use cobre_sddp::{Phase, aggregate_simulation};
+    use novomodelo_comm::LocalBackend;
+    use novomodelo_sddp::simulation::{
+        ScenarioCategoryCosts, SimulationConfig, SimulationWeighting,
+    };
+    use novomodelo_sddp::{Phase, aggregate_simulation};
 
     fn zero_cats() -> ScenarioCategoryCosts {
         ScenarioCategoryCosts {
@@ -2655,15 +2659,15 @@ mod k_fan_sampled_declaration_order_invariance {
     //! `enumerated` (`k_fan_enumerated_determinism`'s
     //! `enumerated_k_fan_thread_and_declaration_shapes_agree`, driven by
     //! `k_fan_setup_enumerated_reversed`) but never under `sampled`, even though
-    //! [`cobre_sddp::test_support::k_fan_fixture`] always supported a reversed
+    //! [`novomodelo_sddp::test_support::k_fan_fixture`] always supported a reversed
     //! declaration generically. `k_fan_setup_reversed` exposes it: a canonical
     //! vs. reversed node/transition declaration must train to a bit-identical
     //! `final_lb`/`final_ub`/`final_ub_std` under `sampled` mode too.
 
-    use cobre_sddp::StudySetup;
-    use cobre_sddp::setup::NodePos;
-    use cobre_sddp::test_support::{KFanFixture, k_fan_setup, k_fan_setup_reversed};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_sddp::StudySetup;
+    use novomodelo_sddp::setup::NodePos;
+    use novomodelo_sddp::test_support::{KFanFixture, k_fan_setup, k_fan_setup_reversed};
+    use novomodelo_solver::ActiveSolver;
 
     use crate::common::StubComm;
 
@@ -2761,14 +2765,14 @@ mod non_uniform_branching_projection {
 
     use std::collections::BTreeSet;
 
-    use cobre_io::config::BackwardScheduler;
-    use cobre_sddp::StudySetup;
-    use cobre_sddp::setup::{NodePos, StageIdx};
-    use cobre_sddp::test_support::{
+    use novomodelo_io::config::BackwardScheduler;
+    use novomodelo_sddp::StudySetup;
+    use novomodelo_sddp::setup::{NodePos, StageIdx};
+    use novomodelo_sddp::test_support::{
         extensive_form_optimum, non_uniform_branching_setup, non_uniform_branching_setup_reversed,
         pool_cut_state_dimensions,
     };
-    use cobre_solver::ActiveSolver;
+    use novomodelo_solver::ActiveSolver;
 
     use crate::common::StubComm;
 

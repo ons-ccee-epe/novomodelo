@@ -1,7 +1,7 @@
 //! Forward-pass scenario sampler construction.
 
-use cobre_stochastic::context::ClassSchemes;
-use cobre_stochastic::{ForwardSampler, ForwardSamplerConfig, build_forward_sampler};
+use novomodelo_stochastic::context::ClassSchemes;
+use novomodelo_stochastic::{ForwardSampler, ForwardSamplerConfig, build_forward_sampler};
 
 use crate::context::TrainingContext;
 use crate::error::SddpError;

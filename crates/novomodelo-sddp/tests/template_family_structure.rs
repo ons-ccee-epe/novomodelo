@@ -1,7 +1,7 @@
 //! Per-family structural pins for evaporation, FPHA and the delivery rings.
 //!
 //! Each test reads its family through the address owners (`StageGeometry`,
-//! `StateSpace`, `DeliveryRing`, via `cobre_sddp::test_support::template_structure`),
+//! `StateSpace`, `DeliveryRing`, via `novomodelo_sddp::test_support::template_structure`),
 //! never hand-rolled column/row arithmetic, over every committed deck and
 //! in-code study (`common::for_each_study`).
 
@@ -16,16 +16,18 @@ mod common;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use cobre_core::{BlockMode, EntityId, System};
-use cobre_sddp::StudySetup;
-use cobre_sddp::indexer::{BlockIdx, Boundary, BusSys, FphaCellLocal, HydroCellIndex, HydroSys};
-use cobre_sddp::lp::StageGeometry;
-use cobre_sddp::test_support::template_structure::{
+use novomodelo_core::{BlockMode, EntityId, System};
+use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::indexer::{
+    BlockIdx, Boundary, BusSys, FphaCellLocal, HydroCellIndex, HydroSys,
+};
+use novomodelo_sddp::lp::StageGeometry;
+use novomodelo_sddp::test_support::template_structure::{
     ColKey, ColOwner, RingLane, RingLaneKind, RowOwner, UnscaledMatrix, column_owners,
     generation_column_owners, hours_to_hm3, ring_lanes, row_by_owner, row_owners,
     storage_column_owners, water_row_owners,
 };
-use cobre_solver::StageTemplate;
+use novomodelo_solver::StageTemplate;
 
 const TOL: f64 = 1e-12;
 

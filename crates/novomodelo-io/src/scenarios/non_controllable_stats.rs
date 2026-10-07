@@ -12,8 +12,8 @@
 //!
 //! Entity-ID existence is deferred to Layer 3 referential validation.
 
-use cobre_core::EntityId;
-use cobre_core::scenario::NcsModel;
+use novomodelo_core::EntityId;
+use novomodelo_core::scenario::NcsModel;
 use std::path::Path;
 
 use crate::LoadError;
@@ -40,7 +40,7 @@ use crate::parquet_helpers::{
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::scenarios::parse_ncs_stats;
+/// use novomodelo_io::scenarios::parse_ncs_stats;
 /// use std::path::Path;
 ///
 /// let models = parse_ncs_stats(Path::new("scenarios/non_controllable_stats.parquet"))

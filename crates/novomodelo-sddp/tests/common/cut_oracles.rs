@@ -2,17 +2,17 @@
 
 #![allow(clippy::expect_used, clippy::panic, clippy::cast_precision_loss)]
 
-use cobre_io::Config;
-use cobre_io::config::{RowSelectionConfig, StoppingRuleConfig};
-use cobre_sddp::indexer::CutSlot;
-use cobre_sddp::setup::{NodePos, StageIdx};
-use cobre_sddp::test_support::{
+use novomodelo_io::Config;
+use novomodelo_io::config::{RowSelectionConfig, StoppingRuleConfig};
+use novomodelo_sddp::indexer::CutSlot;
+use novomodelo_sddp::setup::{NodePos, StageIdx};
+use novomodelo_sddp::test_support::{
     stage_state_box_bounds, write_backward_opening_outcome_at_canonical_state_for_probe,
 };
-use cobre_sddp::workspace::StageContext;
-use cobre_sddp::{SddpError, StudySetup};
-use cobre_solver::{ActiveSolver, StageTemplate};
-use cobre_stochastic::OpeningTreeView;
+use novomodelo_sddp::workspace::StageContext;
+use novomodelo_sddp::{SddpError, StudySetup};
+use novomodelo_solver::{ActiveSolver, StageTemplate};
+use novomodelo_stochastic::OpeningTreeView;
 
 use super::StubComm;
 
@@ -220,7 +220,7 @@ fn check_mask(
 fn evaluate_point(
     label: &str,
     occ: &OracleCtx<'_>,
-    ws: &mut cobre_sddp::workspace::SolverWorkspace<ActiveSolver>,
+    ws: &mut novomodelo_sddp::workspace::SolverWorkspace<ActiveSolver>,
     t: usize,
     s: usize,
     x: &[f64],
@@ -283,7 +283,7 @@ fn check_pool(
     occ: &OracleCtx<'_>,
     trial_points: &[Vec<f64>],
     box_points: &[Vec<f64>],
-    ws: &mut cobre_sddp::workspace::SolverWorkspace<ActiveSolver>,
+    ws: &mut novomodelo_sddp::workspace::SolverWorkspace<ActiveSolver>,
     report: &mut CutOracleReport,
 ) {
     let pool_t = &occ.setup.fcf.pools[t];

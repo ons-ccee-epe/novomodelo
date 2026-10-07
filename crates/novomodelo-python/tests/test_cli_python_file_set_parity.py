@@ -12,12 +12,12 @@ paths. The equality gate compares file SETS ONLY -- never bytes, never
 columns, since content parity is already covered by the `test_*_parity.py`
 suite and duplicating it here would be dead coverage.
 
-`cobre-python` is excluded from the cargo workspace (it needs a Python
+`novomodelo-python` is excluded from the cargo workspace (it needs a Python
 interpreter to build), so `cargo test --workspace` never runs this gate; it
-runs in cobre-python's own test job, e.g.:
+runs in novomodelo-python's own test job, e.g.:
 
-    maturin develop --release --manifest-path crates/cobre-python/Cargo.toml
-    pytest crates/cobre-python/tests/test_cli_python_file_set_parity.py -v
+    maturin develop --release --manifest-path crates/novomodelo-python/Cargo.toml
+    pytest crates/novomodelo-python/tests/test_cli_python_file_set_parity.py -v
 
 The fixture case (`examples/deterministic/d28-decomp-weekly-monthly`) ships
 training and simulation both enabled with 5 simulated scenarios, so a single
@@ -46,13 +46,11 @@ import shutil
 
 import pytest
 
-from _cobre_cli import resolve_cli_binary, run_cli
+from _novomodelo_cli import resolve_cli_binary, run_cli
 
 _REPO_ROOT = pathlib.Path(__file__).parents[3]
 D28_CASE = _REPO_ROOT / "examples" / "deterministic" / "d28-decomp-weekly-monthly"
-D57_CASE = (
-    _REPO_ROOT / "examples" / "deterministic" / "d57-fpha-zero-turbine-capacity"
-)
+D57_CASE = _REPO_ROOT / "examples" / "deterministic" / "d57-fpha-zero-turbine-capacity"
 
 _SCENARIO_PARTITION_RE = re.compile(r"scenario_id=(\d{4})")
 
@@ -115,11 +113,11 @@ def d28_cli_output(
 @pytest.fixture(scope="module")
 def d28_python_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     """Run D28 through the module-level Python bindings entry point."""
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     assert D28_CASE.is_dir(), f"the D28 fixture must exist at {D28_CASE}"
     output_dir = tmp_path_factory.mktemp("d28_python_out")
-    cobre.run.run(str(D28_CASE), output_dir=str(output_dir))
+    novomodelo.run.run(str(D28_CASE), output_dir=str(output_dir))
     return output_dir
 
 
@@ -137,11 +135,11 @@ def d57_cli_output(
 @pytest.fixture(scope="module")
 def d57_python_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     """Run D57 through the module-level Python bindings entry point."""
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     assert D57_CASE.is_dir(), f"the D57 fixture must exist at {D57_CASE}"
     output_dir = tmp_path_factory.mktemp("d57_python_out")
-    cobre.run.run(str(D57_CASE), output_dir=str(output_dir))
+    novomodelo.run.run(str(D57_CASE), output_dir=str(output_dir))
     return output_dir
 
 
@@ -254,6 +252,6 @@ def test_resolve_cli_binary_not_required_skips_when_absent(
 def test_resolve_cli_binary_required_fails_when_absent(tmp_path: pathlib.Path) -> None:
     """When required=True, a missing binary raises pytest.Failed with build guidance."""
     with pytest.raises(
-        pytest.fail.Exception, match=r"cargo build --release -p cobre-cli"
+        pytest.fail.Exception, match=r"cargo build --release -p novomodelo-cli"
     ):
         resolve_cli_binary(tmp_path, required=True)

@@ -1,11 +1,11 @@
-//! # cobre-core
+//! # novomodelo-core
 //!
-//! Shared data model for the [Cobre](https://github.com/cobre-rs/cobre) power systems ecosystem.
+//! Shared data model for the [Novomodelo](https://github.com/ons-ccee-epe/novomodelo) power systems ecosystem.
 //!
-//! This crate defines the fundamental types used across all Cobre tools:
+//! This crate defines the fundamental types used across all Novomodelo tools:
 //! buses, branches, generators (hydro, thermal, renewable), loads, and the
 //! top-level [`system`] struct. A power system defined with
-//! `cobre-core` types can be used for power flow analysis, optimization, dynamic
+//! `novomodelo-core` types can be used for power flow analysis, optimization, dynamic
 //! simulation, and any other analysis procedure in the ecosystem.
 //!
 //! ## Design principles
@@ -22,7 +22,7 @@
 //!
 //! This crate is in early development. The API **will** change.
 //!
-//! See the [repository](https://github.com/cobre-rs/cobre) for the current status.
+//! See the [repository](https://github.com/ons-ccee-epe/novomodelo) for the current status.
 
 // Internal (unpublished) workspace crate: public items intra-doc-link their
 // pub(crate) collaborators as a maintainer aid (docs read with

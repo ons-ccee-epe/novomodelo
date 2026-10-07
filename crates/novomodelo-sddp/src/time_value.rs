@@ -1,8 +1,10 @@
 //! Present-value discounting of stage costs and the post-study delivery
 //! calendar.
 
-use cobre_core::{EntityId, HorizonGraph, PostStudyStages, PostStudyThermalBound, Stage, System};
-use cobre_stochastic::season_cast::post_study_calendar_stages;
+use novomodelo_core::{
+    EntityId, HorizonGraph, PostStudyStages, PostStudyThermalBound, Stage, System,
+};
+use novomodelo_stochastic::season_cast::post_study_calendar_stages;
 
 use crate::lp::indexer::{AnticipatedLocal, AnticipatedPlants};
 
@@ -79,7 +81,7 @@ impl PostStudyThermalLookup {
         debug_assert!(
             bounds.is_sorted_by_key(|b| (b.thermal_id, b.post_study_stage_index)),
             "PostStudyStages::thermal_bounds must already be canonically sorted by \
-             (thermal_id, post_study_stage_index) — the cobre-io parser's own invariant"
+             (thermal_id, post_study_stage_index) — the novomodelo-io parser's own invariant"
         );
         Self { bounds }
     }
@@ -634,7 +636,7 @@ impl TimeValue {
 mod tests {
     use super::{DeliveryCalendar, PostStudyResolved, PostStudyStages, TimeValue, stage};
     use crate::test_support::ymd;
-    use cobre_core::{Block, PostStudyStage, SystemBuilder};
+    use novomodelo_core::{Block, PostStudyStage, SystemBuilder};
 
     fn fixture() -> Vec<f64> {
         vec![1.0, 0.9, 0.81, 0.729]
@@ -742,7 +744,7 @@ mod tests {
 }
 
 #[cfg(test)]
-use cobre_core::temporal::{
+use novomodelo_core::temporal::{
     BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
 };
 
@@ -773,7 +775,9 @@ fn stage(id: i32, start: chrono::NaiveDate, end: chrono::NaiveDate) -> Stage {
 mod from_system_tests {
     use super::{AnticipatedPlants, DeliveryCalendar, TimeValue, stage};
     use crate::test_support::ymd;
-    use cobre_core::{AnticipatedConfig, Bus, DeficitSegment, EntityId, SystemBuilder, Thermal};
+    use novomodelo_core::{
+        AnticipatedConfig, Bus, DeficitSegment, EntityId, SystemBuilder, Thermal,
+    };
 
     /// A two-stage system with one anticipated thermal resolves through
     /// `from_system` to the same `delivery_stage_ids` a study-only-axis
@@ -827,10 +831,10 @@ mod post_study_resolution_tests {
         resolve_post_study_artifacts,
     };
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId, HorizonGraph, PostStudyStage, PostStudyStages, PostStudyThermalBound,
     };
-    use cobre_stochastic::season_cast::post_study_calendar_stages;
+    use novomodelo_stochastic::season_cast::post_study_calendar_stages;
 
     fn two_stage_post_study() -> PostStudyStages {
         PostStudyStages {
@@ -975,8 +979,8 @@ mod post_study_resolution_tests {
 mod discount_factor_tests {
     use super::{compute_cumulative_discount_factors, compute_per_stage_discount_factors};
     use chrono::NaiveDate;
-    use cobre_core::HorizonGraph;
-    use cobre_core::temporal::{
+    use novomodelo_core::HorizonGraph;
+    use novomodelo_core::temporal::{
         BlockMode, NoiseMethod, PolicyGraphType, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
@@ -1105,8 +1109,8 @@ mod resolve_tests {
         compute_per_stage_discount_factors, resolve_post_study_artifacts, stage,
     };
     use crate::test_support::ymd;
-    use cobre_core::{HorizonGraph, PostStudyStage, PostStudyStages, Stage};
-    use cobre_stochastic::season_cast::post_study_calendar_stages;
+    use novomodelo_core::{HorizonGraph, PostStudyStage, PostStudyStages, Stage};
+    use novomodelo_stochastic::season_cast::post_study_calendar_stages;
 
     /// `resolve` concatenates the study and post-study hours, cumulative
     /// factors and synthetic ids bit-exactly, for a deck with two post-study

@@ -1,5 +1,5 @@
 //! Resolution of calendar-anchored lags into per-stage and per-block
-//! factors, built on `cobre_core`'s [`window_period_overlaps`]
+//! factors, built on `novomodelo_core`'s [`window_period_overlaps`]
 //! interval-overlap primitive. Two entry points share the overlap engine:
 //! [`resolve_spread`] resolves a spreadable quantity's stage-clock and
 //! block-clock weights; [`resolve_point`] resolves a point commitment
@@ -15,7 +15,7 @@
 //! aggregation identity `Σ_b w_b·χ_{b,d} == k_d` holds by construction
 //! rather than by convention.
 
-use cobre_core::window_period_overlaps;
+use novomodelo_core::window_period_overlaps;
 
 /// Resolved spread of one arc's travel-time arrival density, anchored at a
 /// single stage `t`.

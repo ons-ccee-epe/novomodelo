@@ -1,5 +1,5 @@
 //! Consolidated hydro-simulation and stage-structure integration tests for
-//! `cobre-sddp`.
+//! `novomodelo-sddp`.
 //!
 //! Each source domain lives in its own inner `mod` so the suite links the
 //! statically-bound solver once rather than once per file. Per-`mod` scoping
@@ -25,9 +25,9 @@ mod simulation_only {
 
     use std::path::Path;
 
-    use cobre_core::scenario::ScenarioSource;
-    use cobre_io::output::policy::{read_policy_checkpoint, write_policy_checkpoint};
-    use cobre_sddp::{
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_io::output::policy::{read_policy_checkpoint, write_policy_checkpoint};
+    use novomodelo_sddp::{
         FutureCostFunction, StudySetup, build_basis_cache_from_checkpoint,
         hydro_models::prepare_hydro_models,
         policy_export::{
@@ -36,7 +36,7 @@ mod simulation_only {
         },
         setup::{NodePos, prepare_stochastic},
     };
-    use cobre_solver::ActiveSolver;
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
 
@@ -61,9 +61,9 @@ mod simulation_only {
             .join("examples/deterministic/d01-thermal-dispatch");
 
         let config_path = case_dir.join("config.json");
-        let config = cobre_io::parse_config(&config_path).expect("config must parse");
+        let config = novomodelo_io::parse_config(&config_path).expect("config must parse");
 
-        let system = cobre_io::load_case(&case_dir).expect("load_case must succeed");
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         let prepare_result = prepare_stochastic(
             system,
             &case_dir,
@@ -109,7 +109,8 @@ mod simulation_only {
         let fcf = &setup.fcf;
         let stage_records = build_stage_cut_records(fcf);
         let stage_active_indices = build_active_indices(&stage_records);
-        let stage_manifests: Vec<Vec<cobre_io::EntitySlot>> = vec![Vec::new(); fcf.pools.len()];
+        let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
+            vec![Vec::new(); fcf.pools.len()];
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
         let study_stage_end_dates = ascending_stage_end_dates(fcf.pools.len());
         let stage_cuts = build_stage_cuts_payloads(
@@ -132,10 +133,10 @@ mod simulation_only {
         );
 
         let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
-        let metadata = cobre_sddp::test_support::checkpoint_metadata(
+        let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             n_stages as u32,
             setup.build_graph_manifest(),
-            cobre_io::ProducerBlock {
+            novomodelo_io::ProducerBlock {
                 completed_iterations: training_result.iterations as u32,
                 final_lower_bound: training_result.final_lb,
                 best_upper_bound: Some(training_result.final_ub),
@@ -171,7 +172,7 @@ mod simulation_only {
             "stage_cuts count must match"
         );
 
-        let proof = cobre_sddp::test_support::trivial_full_fcf_proof(
+        let proof = novomodelo_sddp::test_support::trivial_full_fcf_proof(
             checkpoint.stage_cuts[0].state_dimension,
             checkpoint.metadata.num_stages,
         );
@@ -254,17 +255,17 @@ mod d17_signed_evaporation {
     //! future regression that flips the sign convention is caught by an
     //! actionable assertion rather than an opaque hash diff.
 
-    use cobre_io::config::SimulationSelection;
+    use novomodelo_io::config::SimulationSelection;
     use std::path::Path;
     use std::sync::mpsc;
 
-    use cobre_core::scenario::ScenarioSource;
-    use cobre_sddp::{
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_sddp::{
         SimulationWeighting, StudySetup, aggregate_simulation,
         hydro_models::prepare_hydro_models,
         setup::{StudyParams, prepare_stochastic},
     };
-    use cobre_solver::ActiveSolver;
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
 
@@ -278,8 +279,8 @@ mod d17_signed_evaporation {
             .join("../../examples/deterministic/d17-evaporation-mixed-sign");
 
         let config_path = dir.join("config.json");
-        let config = cobre_io::parse_config(&config_path).expect("config must parse");
-        let system = cobre_io::load_case(&dir).expect("load_case must succeed");
+        let config = novomodelo_io::parse_config(&config_path).expect("config must parse");
+        let system = novomodelo_io::load_case(&dir).expect("load_case must succeed");
 
         let pr = prepare_stochastic(system, &dir, &config, 42, &ScenarioSource::default(), None)
             .expect("prepare_stochastic must succeed");
@@ -410,16 +411,18 @@ mod d17_signed_evaporation {
 }
 
 mod d41_energy_contracts_simulation {
-    use cobre_io::config::SimulationSelection;
+    use novomodelo_io::config::SimulationSelection;
     use std::path::Path;
     use std::sync::mpsc;
 
-    use cobre_core::scenario::ScenarioSource;
-    use cobre_io::config::SimulationConfig;
-    use cobre_sddp::simulation::accumulate_category_costs;
-    use cobre_sddp::simulation::types::ScenarioCategoryCosts;
-    use cobre_sddp::{StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_io::config::SimulationConfig;
+    use novomodelo_sddp::simulation::accumulate_category_costs;
+    use novomodelo_sddp::simulation::types::ScenarioCategoryCosts;
+    use novomodelo_sddp::{
+        StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
+    };
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
 
@@ -450,7 +453,7 @@ mod d41_energy_contracts_simulation {
             .join("examples/deterministic/d41-energy-contracts");
 
         let config_path = case_dir.join("config.json");
-        let mut config = cobre_io::parse_config(&config_path).expect("config must parse");
+        let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
         // The shipped parity case trains only; enable one sim scenario so the contract extraction path runs.
         config.simulation = SimulationConfig {
             enabled: true,
@@ -459,7 +462,7 @@ mod d41_energy_contracts_simulation {
             ..SimulationConfig::default()
         };
 
-        let system = cobre_io::load_case(&case_dir).expect("load_case must succeed");
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         let prepare_result = prepare_stochastic(
             system,
             &case_dir,
@@ -662,9 +665,11 @@ mod multi_resolution_integration {
     use std::path::Path;
     use std::sync::mpsc;
 
-    use cobre_core::temporal::SeasonCycleType;
-    use cobre_sddp::{StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_core::temporal::SeasonCycleType;
+    use novomodelo_sddp::{
+        StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
+    };
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
 
@@ -683,8 +688,8 @@ mod multi_resolution_integration {
 
     /// Uses `config.training_scenario_source()`, not [`ScenarioSource::default()`]:
     /// the default silently falls back to `InSample` and bypasses the PAR(1) pipeline.
-    fn build_setup(case_dir: &Path, config: &cobre_io::Config) -> StudySetup {
-        let system = cobre_io::load_case(case_dir).expect("load_case");
+    fn build_setup(case_dir: &Path, config: &novomodelo_io::Config) -> StudySetup {
+        let system = novomodelo_io::load_case(case_dir).expect("load_case");
         let config_path = case_dir.join("config.json");
         let source = config
             .training_scenario_source(&config_path)
@@ -711,9 +716,9 @@ mod multi_resolution_integration {
     fn multi_resolution_structural_properties_and_training() {
         let case_dir = d30_case_dir();
         let config_path = case_dir.join("config.json");
-        let config = cobre_io::parse_config(&config_path).expect("config");
+        let config = novomodelo_io::parse_config(&config_path).expect("config");
 
-        let system = cobre_io::load_case(&case_dir).expect("load_case D30");
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case D30");
 
         // Pre-study stages carry negative IDs; the study count is the non-negative set.
         let study_stages: Vec<_> = system.stages().iter().filter(|s| s.id >= 0).collect();
@@ -898,13 +903,13 @@ mod sparse_dense {
     //! proper-subset mask (mixed AR orders), the emitted columns and values must
     //! equal the remapped LP columns and the negated coefficients.
 
-    use cobre_sddp::FutureCostFunction;
-    use cobre_sddp::build_cut_row_batch_into;
-    use cobre_sddp::indexer::StateSpace;
-    use cobre_sddp::lead_time::AnticipatedResolution;
-    use cobre_sddp::setup::NodeId;
-    use cobre_sddp::test_support::cut_state_projection;
-    use cobre_solver::RowBatch;
+    use novomodelo_sddp::FutureCostFunction;
+    use novomodelo_sddp::build_cut_row_batch_into;
+    use novomodelo_sddp::indexer::StateSpace;
+    use novomodelo_sddp::lead_time::AnticipatedResolution;
+    use novomodelo_sddp::setup::NodeId;
+    use novomodelo_sddp::test_support::cut_state_projection;
+    use novomodelo_solver::RowBatch;
 
     #[test]
     fn sparse_partial_mask_produces_correct_subset() {
@@ -981,10 +986,12 @@ mod decomp_integration {
     use std::path::Path;
     use std::sync::mpsc;
 
-    use cobre_core::temporal::SeasonCycleType;
-    use cobre_io::output::policy::write_policy_checkpoint;
-    use cobre_sddp::{StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_core::temporal::SeasonCycleType;
+    use novomodelo_io::output::policy::write_policy_checkpoint;
+    use novomodelo_sddp::{
+        StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
+    };
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
 
@@ -1012,10 +1019,10 @@ mod decomp_integration {
     fn write_test_checkpoint(
         policy_dir: &Path,
         setup: &StudySetup,
-        result: &cobre_sddp::TrainingResult,
+        result: &novomodelo_sddp::TrainingResult,
         seed: u64,
     ) {
-        let stage_manifests: Vec<Vec<cobre_io::EntitySlot>> =
+        let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); setup.fcf.pools.len()];
         write_test_checkpoint_with_manifests(policy_dir, setup, result, seed, &stage_manifests);
     }
@@ -1026,11 +1033,11 @@ mod decomp_integration {
     fn write_test_checkpoint_with_manifests(
         policy_dir: &Path,
         setup: &StudySetup,
-        result: &cobre_sddp::TrainingResult,
+        result: &novomodelo_sddp::TrainingResult,
         seed: u64,
-        stage_manifests: &[Vec<cobre_io::EntitySlot>],
+        stage_manifests: &[Vec<novomodelo_io::EntitySlot>],
     ) {
-        use cobre_sddp::policy_export::{
+        use novomodelo_sddp::policy_export::{
             build_active_indices, build_stage_basis_records, build_stage_cut_records,
             build_stage_cuts_payloads, convert_basis_cache,
         };
@@ -1057,10 +1064,10 @@ mod decomp_integration {
             &basis_row,
         );
         let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
-        let metadata = cobre_sddp::test_support::checkpoint_metadata(
+        let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             fcf.pools.len() as u32,
             setup.build_graph_manifest(),
-            cobre_io::ProducerBlock {
+            novomodelo_io::ProducerBlock {
                 completed_iterations: result.iterations as u32,
                 final_lower_bound: result.final_lb,
                 best_upper_bound: Some(result.final_ub),
@@ -1083,8 +1090,11 @@ mod decomp_integration {
     /// Build a `StudySetup` for the D28 case, calling `config.training_scenario_source()`
     /// so the External inflow library is loaded; `ScenarioSource::default()` (`InSample`)
     /// would skip the external parquet and produce a wrong scenario pipeline.
-    fn build_setup(case_dir: &Path, config: &cobre_io::Config) -> (StudySetup, cobre_core::System) {
-        let system = cobre_io::load_case(case_dir).expect("load_case");
+    fn build_setup(
+        case_dir: &Path,
+        config: &novomodelo_io::Config,
+    ) -> (StudySetup, novomodelo_core::System) {
+        let system = novomodelo_io::load_case(case_dir).expect("load_case");
         let config_path = case_dir.join("config.json");
         let source = config
             .training_scenario_source(&config_path)
@@ -1114,9 +1124,9 @@ mod decomp_integration {
     fn structural_properties_and_training() {
         let case_dir = d28_case_dir();
         let config_path = case_dir.join("config.json");
-        let config = cobre_io::parse_config(&config_path).expect("config");
+        let config = novomodelo_io::parse_config(&config_path).expect("config");
 
-        let system = cobre_io::load_case(&case_dir).expect("load_case D28");
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case D28");
         let stages = system.stages();
 
         assert_eq!(
@@ -1245,7 +1255,7 @@ mod decomp_integration {
     fn decomp_boundary_cuts_compose_with_weekly_monthly() {
         let case_dir = d28_case_dir();
         let config_path = case_dir.join("config.json");
-        let config = cobre_io::parse_config(&config_path).expect("config");
+        let config = novomodelo_io::parse_config(&config_path).expect("config");
 
         let comm = StubComm;
 
@@ -1279,7 +1289,7 @@ mod decomp_integration {
         let state_dim = setup_c.fcf.state_dimension as u32;
         let current_manifest = setup_c.build_terminal_entity_manifest(&system_c);
         let boundary_records =
-            cobre_sddp::load_boundary_cuts(&cobre_sddp::BoundaryLoadRequest::new(
+            novomodelo_sddp::load_boundary_cuts(&novomodelo_sddp::BoundaryLoadRequest::new(
                 &source_policy_dir,
                 boundary_date,
                 state_dim,
@@ -1291,7 +1301,7 @@ mod decomp_integration {
             !boundary_records.is_empty(),
             "source stage must have cuts after training"
         );
-        cobre_sddp::inject_boundary_cuts(&mut setup_c, &boundary_records).unwrap();
+        novomodelo_sddp::inject_boundary_cuts(&mut setup_c, &boundary_records).unwrap();
 
         let terminal_pool_id = setup_c.inputs.node_graph.terminal_pool(num_stages).unwrap();
         let terminal_pool = &setup_c.fcf.pools[terminal_pool_id];
@@ -1330,7 +1340,7 @@ mod decomp_integration {
     fn decomp_boundary_cuts_reject_permuted_entity_identity() {
         let case_dir = d28_case_dir();
         let config_path = case_dir.join("config.json");
-        let config = cobre_io::parse_config(&config_path).expect("config");
+        let config = novomodelo_io::parse_config(&config_path).expect("config");
 
         let comm = StubComm;
 
@@ -1355,7 +1365,7 @@ mod decomp_integration {
         let mut permuted = current_manifest.clone();
         permuted[0].entity_id += 1000;
         let n_pools = setup_a.fcf.pools.len();
-        let stage_manifests: Vec<Vec<cobre_io::EntitySlot>> = vec![permuted; n_pools];
+        let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> = vec![permuted; n_pools];
 
         let tmpdir = tempfile::tempdir().expect("tempdir");
         let source_policy_dir = tmpdir.path().join("source_policy");
@@ -1369,13 +1379,14 @@ mod decomp_integration {
 
         let boundary_date = ascending_stage_end_dates(n_pools)[n_pools - 2];
         let state_dim = setup_a.fcf.state_dimension as u32;
-        let result = cobre_sddp::load_boundary_cuts(&cobre_sddp::BoundaryLoadRequest::new(
-            &source_policy_dir,
-            boundary_date,
-            state_dim,
-            &current_manifest,
-            1_000_000.0,
-        ));
+        let result =
+            novomodelo_sddp::load_boundary_cuts(&novomodelo_sddp::BoundaryLoadRequest::new(
+                &source_policy_dir,
+                boundary_date,
+                state_dim,
+                &current_manifest,
+                1_000_000.0,
+            ));
 
         assert!(
             result.is_err(),
@@ -1400,28 +1411,28 @@ mod transit_seed_output {
     //! per-scenario writer for automatic CLI+Python parity.
 
     use chrono::{Duration, NaiveDate};
-    use cobre_core::entities::hydro::HydroGenerationModel;
-    use cobre_core::scenario::InflowModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::HydroGenerationModel;
+    use novomodelo_core::scenario::InflowModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, DeficitSegment,
         EntityId, HydroBlockBounds, HydroPastDefluence, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
         ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
-    use cobre_io::config::{
+    use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod, ModelingConfig, PolicyConfig, RowSelectionConfig,
         SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode,
         StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
         UpperBoundEvaluationConfig,
     };
-    use cobre_io::output::simulation_writer::{ScenarioWritePayload, SimulationParquetWriter};
-    use cobre_sddp::SimulationScenarioResult;
+    use novomodelo_io::output::simulation_writer::{ScenarioWritePayload, SimulationParquetWriter};
+    use novomodelo_sddp::SimulationScenarioResult;
 
     use super::common::builders::{
         BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage,
@@ -1666,7 +1677,7 @@ mod transit_seed_output {
                 stopping_mode: StoppingMode::Any,
                 cut_selection: RowSelectionConfig::default(),
                 solver: TrainingSolverConfig::default(),
-                parallelism: cobre_io::config::ParallelismConfig::default(),
+                parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
                 selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
             },
@@ -1794,29 +1805,29 @@ mod transit_seed_round_trip {
     use std::collections::BTreeMap;
 
     use chrono::{Duration, NaiveDate};
-    use cobre_core::entities::hydro::HydroGenerationModel;
-    use cobre_core::scenario::InflowModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::HydroGenerationModel;
+    use novomodelo_core::scenario::InflowModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, DeficitSegment,
         EntityId, HydroBlockBounds, HydroPastDefluence, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
         ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
-    use cobre_io::config::{
+    use novomodelo_io::config::{
         BoundaryPolicy, Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod, ModelingConfig, PolicyConfig, RowSelectionConfig,
         SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode,
         StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
         UpperBoundEvaluationConfig,
     };
-    use cobre_sddp::SimulationScenarioResult;
-    use cobre_sddp::simulation::types::SimulationTransitSeedResult;
-    use cobre_sddp::test_support::oracle_initial_state;
+    use novomodelo_sddp::SimulationScenarioResult;
+    use novomodelo_sddp::simulation::types::SimulationTransitSeedResult;
+    use novomodelo_sddp::test_support::oracle_initial_state;
 
     use super::common::builders::{
         BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage,
@@ -2073,7 +2084,7 @@ mod transit_seed_round_trip {
                 stopping_mode: StoppingMode::Any,
                 cut_selection: RowSelectionConfig::default(),
                 solver: TrainingSolverConfig::default(),
-                parallelism: cobre_io::config::ParallelismConfig::default(),
+                parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
                 selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
             },
@@ -2364,27 +2375,27 @@ mod diversion_outflow_bounds {
     //! bounded separately — carries the surplus past it).
 
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{DiversionChannel, HydroGenerationModel};
-    use cobre_core::scenario::InflowModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::{DiversionChannel, HydroGenerationModel};
+    use novomodelo_core::scenario::InflowModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, DeficitSegment,
         EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
         ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
-    use cobre_io::config::{
+    use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod, ModelingConfig, PolicyConfig, RowSelectionConfig,
         SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode,
         StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
         UpperBoundEvaluationConfig,
     };
-    use cobre_sddp::SimulationScenarioResult;
+    use novomodelo_sddp::SimulationScenarioResult;
 
     use super::common::builders::{
         BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage,
@@ -2673,7 +2684,7 @@ mod diversion_outflow_bounds {
                 stopping_mode: StoppingMode::Any,
                 cut_selection: RowSelectionConfig::default(),
                 solver: TrainingSolverConfig::default(),
-                parallelism: cobre_io::config::ParallelismConfig::default(),
+                parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
                 selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
             },
@@ -2814,30 +2825,30 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
     use std::path::Path;
 
     use chrono::{Duration, NaiveDate};
-    use cobre_core::entities::hydro::HydroGenerationModel;
-    use cobre_core::entities::thermal::AnticipatedConfig;
-    use cobre_core::scenario::InflowModel;
-    use cobre_core::temporal::{Block, Stage};
-    use cobre_core::{
+    use novomodelo_core::entities::hydro::HydroGenerationModel;
+    use novomodelo_core::entities::thermal::AnticipatedConfig;
+    use novomodelo_core::scenario::InflowModel;
+    use novomodelo_core::temporal::{Block, Stage};
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
         HydroPastDefluence, HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds,
         PostStudyStage, PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds,
         System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
-    use cobre_io::config::{
+    use novomodelo_io::config::{
         BoundaryPolicy, Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod, ModelingConfig, ParallelismConfig, PolicyConfig,
         RowSelectionConfig, SimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig,
         TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
-    use cobre_sddp::indexer::{CutStateProjection, StateDim};
-    use cobre_sddp::setup::{NodeId, StageIdx};
-    use cobre_sddp::test_support::{patch_backward_opening_for_probe, solve_stage_for_probe};
-    use cobre_sddp::workspace::SolverWorkspace;
-    use cobre_sddp::{
+    use novomodelo_sddp::indexer::{CutStateProjection, StateDim};
+    use novomodelo_sddp::setup::{NodeId, StageIdx};
+    use novomodelo_sddp::test_support::{patch_backward_opening_for_probe, solve_stage_for_probe};
+    use novomodelo_sddp::workspace::SolverWorkspace;
+    use novomodelo_sddp::{
         BoundaryLoadRequest, SolverStatsDelta, inject_boundary_cuts, load_boundary_cuts,
     };
-    use cobre_solver::{
+    use novomodelo_solver::{
         ActiveSolver, FreezeScratch, RowBatch, SolverInterface, StageTemplate,
         freeze_rows_into_template,
     };
@@ -2920,7 +2931,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
     }
 
     /// Per-stage total hours, mirroring `DeliveryCalendar::study_total_hours`
-    /// for the [`resolve_spread`](cobre_sddp::lead_time::resolve_spread) calls
+    /// for the [`resolve_spread`](novomodelo_sddp::lead_time::resolve_spread) calls
     /// property 3 drives directly.
     fn study_durations() -> Vec<f64> {
         stages()
@@ -2993,9 +3004,9 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
         )
     }
 
-    fn penalties() -> cobre_core::resolved::ResolvedPenalties {
-        use cobre_core::HydroPenalties;
-        use cobre_core::resolved::{
+    fn penalties() -> novomodelo_core::resolved::ResolvedPenalties {
+        use novomodelo_core::HydroPenalties;
+        use novomodelo_core::resolved::{
             BusStagePenalties, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
             PenaltiesDefaults, ResolvedPenalties,
         };
@@ -3176,7 +3187,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
     /// post-study stage) — mirrors `StateSpace::commitment_hold_in_study_offset`
     /// byte-for-byte (`pub(crate)`, unreachable from this integration-test
     /// binary), never a hand-rolled `commit_out.end`-relative guess.
-    fn post_study_ring_slot(setup: &cobre_sddp::StudySetup) -> usize {
+    fn post_study_ring_slot(setup: &novomodelo_sddp::StudySetup) -> usize {
         let state = setup.stage_state();
         let m = setup.num_stages();
         state.commit_out.start + (m % state.k_max) * state.n_anticipated
@@ -3188,7 +3199,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
     /// right-boundary pricing" contract). Its OUTGOING definition is
     /// `b_1^out = b_2^in + k_1*D` ([`water_pin_slot`]'s incoming state plus
     /// this stage's own deposit share).
-    fn water_priced_slot(setup: &cobre_sddp::StudySetup) -> usize {
+    fn water_priced_slot(setup: &novomodelo_sddp::StudySetup) -> usize {
         let state = setup.stage_state();
         assert_eq!(
             state.n_buckets, 2,
@@ -3204,7 +3215,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
     /// comparison). Unlike lag 1, lag 2's own outgoing has no incoming
     /// dependency (`b_2^out = k_2*D` alone, the deepest lag), so it is not
     /// itself pin-controllable — only usable as the CONTROL for lag 1.
-    fn water_pin_slot(setup: &cobre_sddp::StudySetup) -> usize {
+    fn water_pin_slot(setup: &novomodelo_sddp::StudySetup) -> usize {
         let state = setup.stage_state();
         assert_eq!(
             state.n_buckets, 2,
@@ -3214,7 +3225,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
     }
 
     /// Pin the full state vector at zero except `entries`.
-    fn pin_state(setup: &cobre_sddp::StudySetup, entries: &[(usize, f64)]) -> Vec<f64> {
+    fn pin_state(setup: &novomodelo_sddp::StudySetup, entries: &[(usize, f64)]) -> Vec<f64> {
         let mut pin = vec![0.0_f64; setup.stage_state().n_state];
         for &(slot, v) in entries {
             pin[slot] = v;
@@ -3225,8 +3236,8 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
     /// Pool `pool`'s fixture `priced_state_date`: `2030-01-01` plus `pool`
     /// months.
     fn fixture_priced_date(pool: u32) -> NaiveDate {
-        cobre_sddp::test_support::fixture_priced_date(
-            cobre_sddp::test_support::ymd(2030, 1, 1),
+        novomodelo_sddp::test_support::fixture_priced_date(
+            novomodelo_sddp::test_support::ymd(2030, 1, 1),
             pool,
         )
     }
@@ -3235,7 +3246,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
     /// `BETA_ANT` on `ant_slot`, zero elsewhere, intercept `ALPHA`, and
     /// inject it into `setup`'s terminal pool.
     fn inject_two_family_boundary(
-        setup: &mut cobre_sddp::StudySetup,
+        setup: &mut novomodelo_sddp::StudySetup,
         dir: &Path,
         water_priced_slot: usize,
         ant_slot: usize,
@@ -3244,7 +3255,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
         let mut coefficients = vec![0.0_f64; state_dimension as usize];
         coefficients[water_priced_slot] = BETA_WATER;
         coefficients[ant_slot] = BETA_ANT;
-        cobre_sddp::test_support::write_synthetic_boundary(
+        novomodelo_sddp::test_support::write_synthetic_boundary(
             dir,
             state_dimension,
             ALPHA,
@@ -3269,7 +3280,10 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
     /// so the all-enabled projection reproduces exactly the coefficients the
     /// boundary cut carries, regardless of this study's own per-stage
     /// `StageStateConfig`.
-    fn freeze_terminal_template(setup: &cobre_sddp::StudySetup, pool_id: usize) -> StageTemplate {
+    fn freeze_terminal_template(
+        setup: &novomodelo_sddp::StudySetup,
+        pool_id: usize,
+    ) -> StageTemplate {
         let state = setup.stage_state();
         let terminal_stage = setup.num_stages() - 1;
         let ctx = setup.stage_ctx();
@@ -3277,7 +3291,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
 
         let cut_state = CutStateProjection::new(
             state,
-            cobre_core::temporal::StageStateConfig {
+            novomodelo_core::temporal::StageStateConfig {
                 storage: true,
                 inflow_lags: true,
             },
@@ -3291,7 +3305,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
             row_lower: Vec::new(),
             row_upper: Vec::new(),
         };
-        cobre_sddp::build_cut_row_batch_into(
+        novomodelo_sddp::build_cut_row_batch_into(
             &mut batch,
             &setup.fcf,
             pool_id,
@@ -3312,9 +3326,9 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
     /// the probe's pinned state alone drives `theta`, independent of the
     /// realized noise draw.
     fn terminal_theta(
-        setup: &cobre_sddp::StudySetup,
+        setup: &novomodelo_sddp::StudySetup,
         template: &StageTemplate,
-        pool: &cobre_sddp::CutPool,
+        pool: &novomodelo_sddp::CutPool,
         node_id: NodeId,
         pinned_state: &[f64],
     ) -> f64 {
@@ -3399,8 +3413,12 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
         }
 
         for anchor in 0..durations.len() {
-            let resolution =
-                cobre_sddp::lead_time::resolve_spread(TRAVEL_TIME_HOURS, anchor, &extended, None);
+            let resolution = novomodelo_sddp::lead_time::resolve_spread(
+                TRAVEL_TIME_HOURS,
+                anchor,
+                &extended,
+                None,
+            );
             let sum: f64 = resolution.stage_weights.iter().sum();
             assert!(
                 (sum - 1.0).abs() < 1e-9,

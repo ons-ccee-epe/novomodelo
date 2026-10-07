@@ -1,7 +1,7 @@
 """Python-parity tests for the unified `Study.load_policy` validation path.
 
 Every policy load (warm-start, resume, simulation-only, `Study.load_policy`) now
-routes unconditionally through the shared `cobre_sddp::validate_policy_load`
+routes unconditionally through the shared `novomodelo_sddp::validate_policy_load`
 entry point -- there is no per-call opt-out. This module verifies the
 Python-facing consequences of the unified validation path: the removed opt-out
 kwarg raises `TypeError`, a policy whose terminal entity manifest disagrees with
@@ -11,7 +11,7 @@ with one warning. The compatible-load path is already exercised by
 `test_load_policy_then_simulate_matches_run` in `test_study.py`.
 
 Run with (from the repo root):
-    pytest crates/cobre-python/tests/test_policy_load_validation.py
+    pytest crates/novomodelo-python/tests/test_policy_load_validation.py
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ def _copy_case_with_renamed_hydro(
             entry["hydro_id"] = new_hydro_id
     ic_path.write_text(json.dumps(initial_conditions))
 
-    # ZSTD to match the shipped example's codec: cobre's Rust parquet reader
+    # ZSTD to match the shipped example's codec: novomodelo's Rust parquet reader
     # is built without the "snap" feature, so pyarrow's default (Snappy)
     # produces an unreadable file.
     inflow_path = dest / "scenarios" / "inflow_seasonal_stats.parquet"
@@ -121,14 +121,14 @@ def _copy_case_with_extra_thermal(src: pathlib.Path, dest: pathlib.Path) -> None
 
 
 def _restamp_policy_version(policy_dir: pathlib.Path) -> str:
-    """Rewrite the cobre version in ``policy_dir/manifest.bin`` to another
+    """Rewrite the novomodelo version in ``policy_dir/manifest.bin`` to another
     string of the same byte length (the FlatBuffers string keeps its layout;
     the manifest carries no checksum) and return it."""
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     manifest = policy_dir / "manifest.bin"
     data = manifest.read_bytes()
-    running = cobre.__version__.encode()
+    running = novomodelo.__version__.encode()
     assert data.count(running) == 1, (
         "the running version must occur once in manifest.bin"
     )
@@ -145,9 +145,9 @@ def test_load_policy_removed_optout_kwarg_raises_typeerror(
     Validation is now unconditional, so the parameter no longer exists on
     `load_policy`; passing it must fail loudly, not be silently ignored.
     """
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
 
     with pytest.raises(TypeError):
         study.load_policy(
@@ -167,7 +167,7 @@ def test_load_policy_mismatched_entity_manifest_raises_valueerror(
     the checkpoint's terminal entity manifest names a different hydro id, so
     `validate_policy_load`'s slot-identity check must reject the load.
     """
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     mismatched_case = tmp_path / "mismatched_case"
     mismatched_case.mkdir()
@@ -176,9 +176,9 @@ def test_load_policy_mismatched_entity_manifest_raises_valueerror(
     )
 
     mismatched_run_dir = tmp_path / "mismatched_run"
-    cobre.run.run(str(mismatched_case), output_dir=str(mismatched_run_dir))
+    novomodelo.run.run(str(mismatched_case), output_dir=str(mismatched_run_dir))
 
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path / "study_dir"))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path / "study_dir"))
 
     with pytest.raises(ValueError, match="policy validation error"):
         study.load_policy(output_dir=str(mismatched_run_dir))
@@ -187,30 +187,30 @@ def test_load_policy_mismatched_entity_manifest_raises_valueerror(
 def test_load_policy_written_by_another_version_raises_policy_incompatible(
     tmp_path: pathlib.Path,
 ) -> None:
-    """A policy checkpoint recording a cobre version other than the running
+    """A policy checkpoint recording a novomodelo version other than the running
     one raises `PolicyIncompatibleError`, naming both versions.
     """
-    import cobre  # noqa: PLC0415
-    import cobre.errors  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.errors  # noqa: PLC0415
 
     run_dir = tmp_path / "run"
-    cobre.run.run(VALID_CASE, output_dir=str(run_dir))
+    novomodelo.run.run(VALID_CASE, output_dir=str(run_dir))
 
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path / "study_dir"))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path / "study_dir"))
     study.load_policy(output_dir=str(run_dir))
 
     other_version = _restamp_policy_version(run_dir / "policy")
 
-    fresh_study = cobre.Study(
+    fresh_study = novomodelo.Study(
         VALID_CASE, output_dir=str(tmp_path / "fresh_study_dir")
     )
     with pytest.raises(
-        cobre.errors.PolicyIncompatibleError,
-        match=f"written by cobre {other_version}",
+        novomodelo.errors.PolicyIncompatibleError,
+        match=f"written by novomodelo {other_version}",
     ) as exc_info:
         fresh_study.load_policy(output_dir=str(run_dir))
 
-    assert cobre.__version__ in str(exc_info.value), (
+    assert novomodelo.__version__ in str(exc_info.value), (
         f"expected the running version in the message: {exc_info.value}"
     )
 
@@ -222,14 +222,14 @@ def test_load_policy_with_a_wider_stored_basis_loads_and_warns_once(
     state) loads into the original 1dtoy: each stored basis whose column count
     no longer matches its node's LP is left out, with one warning per load.
     """
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     variant_case = tmp_path / "variant_case"
     variant_case.mkdir()
     _copy_case_with_extra_thermal(pathlib.Path(VALID_CASE), variant_case)
 
     variant_run_dir = tmp_path / "variant_run"
-    cobre.run.run(
+    novomodelo.run.run(
         str(variant_case),
         output_dir=str(variant_run_dir),
         config_overrides={
@@ -238,7 +238,7 @@ def test_load_policy_with_a_wider_stored_basis_loads_and_warns_once(
         },
     )
 
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path / "study_dir"))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path / "study_dir"))
     capfd.readouterr()  # discard the source run's own stderr
 
     study.load_policy(output_dir=str(variant_run_dir))
@@ -259,16 +259,16 @@ def test_training_load_without_a_policy_directory_raises_validation_error(
 ) -> None:
     """Warm-start and resume against an output dir with no policy raise
     `ValidationError` naming the missing directory and what the load needed."""
-    import cobre  # noqa: PLC0415
-    import cobre.errors  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.errors  # noqa: PLC0415
 
-    study = cobre.Study(
+    study = novomodelo.Study(
         VALID_CASE,
         output_dir=str(tmp_path),
         config_overrides={"policy.mode": mode},
     )
 
-    with pytest.raises(cobre.errors.ValidationError) as exc_info:
+    with pytest.raises(novomodelo.errors.ValidationError) as exc_info:
         study.train()
 
     message = str(exc_info.value)
@@ -281,19 +281,19 @@ def test_warm_start_from_an_unparseable_checkpoint_raises_policy_incompatible_er
 ) -> None:
     """A warm-start whose checkpoint manifest cannot be parsed raises
     `PolicyIncompatibleError` with the read-failure message."""
-    import cobre  # noqa: PLC0415
-    import cobre.errors  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.errors  # noqa: PLC0415
 
-    cobre.run.run(VALID_CASE, output_dir=str(tmp_path))
+    novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path))
     (tmp_path / "policy" / "manifest.bin").write_bytes(b"garbage")
 
-    study = cobre.Study(
+    study = novomodelo.Study(
         VALID_CASE,
         output_dir=str(tmp_path),
         config_overrides={"policy.mode": "warm_start"},
     )
 
-    with pytest.raises(cobre.errors.PolicyIncompatibleError) as exc_info:
+    with pytest.raises(novomodelo.errors.PolicyIncompatibleError) as exc_info:
         study.train()
 
     message = str(exc_info.value)
@@ -305,18 +305,18 @@ def test_warm_start_from_a_policy_directory_without_manifest_raises_policy_incom
 ) -> None:
     """A warm-start against a `policy/` directory holding no `manifest.bin`
     raises `PolicyIncompatibleError` with the read-failure message."""
-    import cobre  # noqa: PLC0415
-    import cobre.errors  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.errors  # noqa: PLC0415
 
     (tmp_path / "policy").mkdir()
 
-    study = cobre.Study(
+    study = novomodelo.Study(
         VALID_CASE,
         output_dir=str(tmp_path),
         config_overrides={"policy.mode": "warm_start"},
     )
 
-    with pytest.raises(cobre.errors.PolicyIncompatibleError) as exc_info:
+    with pytest.raises(novomodelo.errors.PolicyIncompatibleError) as exc_info:
         study.train()
 
     message = str(exc_info.value)
@@ -329,10 +329,10 @@ def test_warm_start_from_a_manifest_the_process_cannot_open_raises_case_io_error
 ) -> None:
     """A warm-start whose `manifest.bin` the process cannot open raises
     `CaseIoError`, also catchable as `OSError`."""
-    import cobre  # noqa: PLC0415
-    import cobre.errors  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.errors  # noqa: PLC0415
 
-    cobre.run.run(VALID_CASE, output_dir=str(tmp_path))
+    novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path))
     manifest = tmp_path / "policy" / "manifest.bin"
     manifest.chmod(0o000)
     try:
@@ -343,13 +343,13 @@ def test_warm_start_from_a_manifest_the_process_cannot_open_raises_case_io_error
         else:
             pytest.skip("the process can read a 0o000 file (running as root)")
 
-        study = cobre.Study(
+        study = novomodelo.Study(
             VALID_CASE,
             output_dir=str(tmp_path),
             config_overrides={"policy.mode": "warm_start"},
         )
 
-        with pytest.raises(cobre.errors.CaseIoError) as exc_info:
+        with pytest.raises(novomodelo.errors.CaseIoError) as exc_info:
             study.train()
     finally:
         manifest.chmod(0o644)
@@ -362,23 +362,23 @@ def test_warm_start_from_a_manifest_the_process_cannot_open_raises_case_io_error
 def test_warm_start_from_another_version_raises_policy_incompatible(
     tmp_path: pathlib.Path,
 ) -> None:
-    """A warm-start from a checkpoint written by another cobre version raises
+    """A warm-start from a checkpoint written by another novomodelo version raises
     `PolicyIncompatibleError` with the `policy validation error: ` prefix."""
-    import cobre  # noqa: PLC0415
-    import cobre.errors  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.errors  # noqa: PLC0415
 
-    cobre.run.run(VALID_CASE, output_dir=str(tmp_path))
+    novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path))
     other_version = _restamp_policy_version(tmp_path / "policy")
 
-    study = cobre.Study(
+    study = novomodelo.Study(
         VALID_CASE,
         output_dir=str(tmp_path),
         config_overrides={"policy.mode": "warm_start"},
     )
 
-    with pytest.raises(cobre.errors.PolicyIncompatibleError) as exc_info:
+    with pytest.raises(novomodelo.errors.PolicyIncompatibleError) as exc_info:
         study.train()
 
     message = str(exc_info.value)
     assert message.startswith("policy validation error: "), message
-    assert f"written by cobre {other_version}" in message, message
+    assert f"written by novomodelo {other_version}" in message, message

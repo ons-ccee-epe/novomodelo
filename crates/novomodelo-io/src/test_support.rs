@@ -25,7 +25,7 @@ use arrow::array::{Float64Array, Int32Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use chrono::NaiveDate;
-use cobre_core::{
+use novomodelo_core::{
     CorrelationGroup, CorrelationModel, EntityId, HorizonGraph, SeasonMap,
     entities::{
         Bus, DeficitSegment, Hydro, HydroGenerationModel, HydroPenalties, HydroUnitGroup, Thermal,
@@ -37,7 +37,7 @@ use cobre_core::{
     },
 };
 #[cfg(test)]
-use cobre_core::{entities::Line, initial_conditions::InitialConditions};
+use novomodelo_core::{entities::Line, initial_conditions::InitialConditions};
 
 use crate::{
     InflowArCoefficientRow, InflowHistoryRow, LoadError,
@@ -911,7 +911,7 @@ pub fn make_geom_row(
 /// Build a valid 2x2 symmetric correlation group.
 #[must_use]
 pub fn make_corr_group(name: &str, matrix: Vec<Vec<f64>>) -> CorrelationGroup {
-    use cobre_core::scenario::CorrelationEntity;
+    use novomodelo_core::scenario::CorrelationEntity;
     CorrelationGroup {
         name: name.to_string(),
         entities: vec![
@@ -932,7 +932,7 @@ pub fn make_corr_group(name: &str, matrix: Vec<Vec<f64>>) -> CorrelationGroup {
 /// given group.
 #[must_use]
 pub fn make_correlation(group: CorrelationGroup) -> CorrelationModel {
-    use cobre_core::scenario::CorrelationProfile;
+    use novomodelo_core::scenario::CorrelationProfile;
     use std::collections::BTreeMap;
     let mut profiles = BTreeMap::new();
     profiles.insert(
@@ -1118,7 +1118,7 @@ pub fn config_with_simulation_external_load() -> Config {
 /// Build a monthly `SeasonMap` with 12 seasons (January=0 .. December=11).
 #[must_use]
 pub fn make_monthly_season_map() -> SeasonMap {
-    use cobre_core::temporal::{SeasonCycleType, SeasonDefinition};
+    use novomodelo_core::temporal::{SeasonCycleType, SeasonDefinition};
     let seasons = (0..12u32)
         .map(|m| SeasonDefinition {
             id: m as usize,
@@ -1217,7 +1217,7 @@ pub fn make_ar_row(hydro_id: i32, stage_id: i32, lag: i32) -> InflowArCoefficien
 /// Fixtures for the output writers and readers.
 pub mod output {
     use arrow::record_batch::RecordBatch;
-    use cobre_core::{System, SystemBuilder};
+    use novomodelo_core::{System, SystemBuilder};
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use std::path::Path;
 

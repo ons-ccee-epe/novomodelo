@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use chrono::NaiveDate;
-use cobre_core::{
+use novomodelo_core::{
     Bus, EfficiencyModel, EntityId, HydraulicLossesModel, InflowHistoryRow, StudyPos,
     SystemBuilder, TailraceModel,
     entities::hydro::{HydroGenerationModel, HydroPenalties},
@@ -21,11 +21,11 @@ use cobre_core::{
         StageStateConfig,
     },
 };
-use cobre_io::extensions::{
+use novomodelo_io::extensions::{
     FittingWindow, FphaColumnLayout, FphaHyperplaneRow, HydroGeometryRow, ProductionModelConfig,
     SeasonConfig, SelectionMode, StageRange, TailraceCurveRow, parse_fpha_hyperplanes,
 };
-use cobre_io::output::write_fpha_hyperplanes;
+use novomodelo_io::output::write_fpha_hyperplanes;
 
 use super::*;
 
@@ -764,7 +764,7 @@ fn resolve_stage_model_uses_productivity_override() {
 /// `resolve_stage_model` returns a sentinel `ConstantProductivity { 0.0 }` that
 /// `build_energy_conversion_set` later overwrites from the parquet override.
 /// A debug_assert (debug only) catches configs that escape load-time
-/// `cobre_io::validation::productivity_resolution`; release returns the sentinel.
+/// `novomodelo_io::validation::productivity_resolution`; release returns the sentinel.
 #[test]
 fn test_resolve_stage_model_returns_sentinel_when_json_lacks_productivity() {
     let hydro = make_hydro(0, HydroGenerationModel::ConstantProductivity);
@@ -856,7 +856,7 @@ fn test_resolve_stage_model_uses_parquet_override_when_json_omits_productivity()
     };
     let empty_map = std::collections::HashMap::new();
     let override_table =
-        build_hydro_energy_productivity_override(&[cobre_io::HydroEnergyProductivityRow {
+        build_hydro_energy_productivity_override(&[novomodelo_io::HydroEnergyProductivityRow {
             hydro_id: EntityId::from(0),
             stage_id: Some(0),
             equivalent_productivity_mw_per_m3s: Some(0.42),
@@ -887,7 +887,7 @@ fn test_resolve_stage_model_uses_parquet_override_when_json_omits_productivity()
 
 /// No JSON config entry at all for a non-FPHA hydro: `resolve_stage_model`
 /// returns the same sentinel. A debug_assert (debug only) catches missing
-/// entries that escape load-time `cobre_io::validation::productivity_resolution`;
+/// entries that escape load-time `novomodelo_io::validation::productivity_resolution`;
 /// release trusts the invariant and returns the sentinel.
 #[test]
 fn test_resolve_stage_model_returns_sentinel_when_no_config_entry() {
@@ -2485,7 +2485,7 @@ fn fit_computed_planes_per_stage_records_every_distinct_fit() {
 fn resolver_carries_every_fit_deviation_in_canonical_order() {
     let hydro = make_sobradinho_computed_hydro(0);
     let geo_rows = make_sobradinho_geometry_rows(0);
-    let artifacts = cobre_io::CaseArtifacts {
+    let artifacts = novomodelo_io::CaseArtifacts {
         production_models: vec![computed_fpha_config(0)],
         hydro_geometry: geo_rows,
         ..Default::default()
@@ -2525,8 +2525,8 @@ fn export_rows_are_declaration_order_invariant_with_tailrace() {
     fn build_artifacts(
         tailrace_rows: Vec<TailraceCurveRow>,
         geo_rows: Vec<HydroGeometryRow>,
-    ) -> cobre_io::CaseArtifacts {
-        cobre_io::CaseArtifacts {
+    ) -> novomodelo_io::CaseArtifacts {
+        novomodelo_io::CaseArtifacts {
             production_models: vec![computed_fpha_config(0)],
             hydro_geometry: geo_rows,
             tailrace_curves: tailrace_rows,
@@ -2699,8 +2699,8 @@ fn ref_vol_system(v_min: f64, v_max: f64) -> System {
         .expect("single-hydro two-stage system builds")
 }
 
-fn ref_vol_artifacts(rv: Option<ReferenceVolume>) -> cobre_io::CaseArtifacts {
-    cobre_io::CaseArtifacts {
+fn ref_vol_artifacts(rv: Option<ReferenceVolume>) -> novomodelo_io::CaseArtifacts {
+    novomodelo_io::CaseArtifacts {
         production_models: vec![ProductionModelConfig {
             hydro_id: EntityId::from(0),
             selection_mode: SelectionMode::StageRanges {
@@ -2798,7 +2798,7 @@ fn seasonal_reference_volume_supports_nonzero_start_season() {
         .build()
         .expect("two-stage non-zero-start-season system builds");
 
-    let artifacts = cobre_io::CaseArtifacts {
+    let artifacts = novomodelo_io::CaseArtifacts {
         production_models: vec![ProductionModelConfig {
             hydro_id: EntityId::from(0),
             selection_mode: SelectionMode::Seasonal {
@@ -2843,7 +2843,7 @@ fn seasonal_reference_volume_supports_nonzero_start_season() {
 }
 
 fn resolve_single_computed_hydro(hydro: Hydro) -> ResolveProductionResult {
-    let artifacts = cobre_io::CaseArtifacts {
+    let artifacts = novomodelo_io::CaseArtifacts {
         production_models: vec![computed_fpha_config(0)],
         hydro_geometry: make_sobradinho_geometry_rows(0),
         ..Default::default()
@@ -2912,7 +2912,7 @@ fn computed_fpha_without_turbine_capacity_still_requires_its_prerequisites() {
     let mut hydro = make_sobradinho_computed_hydro(0);
     hydro.max_turbined_m3s = 0.0;
     hydro.tailrace = None;
-    let artifacts = cobre_io::CaseArtifacts {
+    let artifacts = novomodelo_io::CaseArtifacts {
         production_models: vec![computed_fpha_config(0)],
         hydro_geometry: make_sobradinho_geometry_rows(0),
         ..Default::default()
@@ -2941,7 +2941,7 @@ fn precomputed_round_trip_keeps_a_zero_capacity_plant_at_zero_productivity() {
         .stages(vec![make_stage(0), make_stage(1)])
         .build()
         .expect("two-hydro computed-FPHA system builds");
-    let computed_artifacts = cobre_io::CaseArtifacts {
+    let computed_artifacts = novomodelo_io::CaseArtifacts {
         production_models: vec![computed_fpha_config(0), computed_fpha_config(1)],
         hydro_geometry: [
             make_sobradinho_geometry_rows(0),
@@ -2954,7 +2954,7 @@ fn precomputed_round_trip_keeps_a_zero_capacity_plant_at_zero_productivity() {
         super::resolve_production_models_from_artifacts(&system, &computed_artifacts, false)
             .expect("computed resolve must succeed");
 
-    let precomputed_artifacts = cobre_io::CaseArtifacts {
+    let precomputed_artifacts = novomodelo_io::CaseArtifacts {
         production_models: vec![precomputed_fpha_config(0), precomputed_fpha_config(1)],
         fpha_hyperplanes: export_rows,
         ..Default::default()
@@ -2998,7 +2998,7 @@ fn resolve_single_precomputed_hydro(
     hydro: Hydro,
     fpha_hyperplanes: Vec<FphaHyperplaneRow>,
 ) -> Result<ResolveProductionResult, SddpError> {
-    let artifacts = cobre_io::CaseArtifacts {
+    let artifacts = novomodelo_io::CaseArtifacts {
         production_models: vec![precomputed_fpha_config(0)],
         fpha_hyperplanes,
         ..Default::default()
@@ -3062,7 +3062,7 @@ fn precomputed_round_trip_reproduces_the_capped_computed_fit() {
         .stages(vec![make_stage(0), make_stage(1)])
         .build()
         .expect("computed-FPHA system builds");
-    let computed_artifacts = cobre_io::CaseArtifacts {
+    let computed_artifacts = novomodelo_io::CaseArtifacts {
         production_models: vec![computed_fpha_config(0)],
         hydro_geometry: make_sobradinho_geometry_rows(0),
         ..Default::default()
@@ -3082,7 +3082,7 @@ fn precomputed_round_trip_reproduces_the_capped_computed_fit() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("fpha_hyperplanes.parquet");
     write_fpha_hyperplanes(&path, &export_rows).expect("write_fpha_hyperplanes must succeed");
-    let precomputed_artifacts = cobre_io::CaseArtifacts {
+    let precomputed_artifacts = novomodelo_io::CaseArtifacts {
         production_models: vec![precomputed_fpha_config(0)],
         fpha_hyperplanes: parse_fpha_hyperplanes(&path).expect("re-read must succeed"),
         ..Default::default()

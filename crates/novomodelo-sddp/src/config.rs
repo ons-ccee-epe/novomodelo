@@ -9,8 +9,8 @@
 //! # Examples
 //!
 //! ```rust
-//! use cobre_sddp::TrainingConfig;
-//! use cobre_sddp::config::{CutManagementConfig, EventConfig, LoopConfig};
+//! use novomodelo_sddp::TrainingConfig;
+//! use novomodelo_sddp::config::{CutManagementConfig, EventConfig, LoopConfig};
 //!
 //! let config = TrainingConfig {
 //!     loop_config: LoopConfig {
@@ -36,8 +36,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::Sender;
 
-use cobre_core::TrainingEvent;
-use cobre_io::config::CheckpointSchedule;
+use novomodelo_core::TrainingEvent;
+use novomodelo_io::config::CheckpointSchedule;
 
 use crate::cut_selection::CutSelectionStrategy;
 use crate::policy::orchestration::PeriodicCheckpoint;
@@ -73,7 +73,7 @@ pub struct LoopParams {
 /// # Examples
 ///
 /// ```rust
-/// use cobre_sddp::config::LoopConfig;
+/// use novomodelo_sddp::config::LoopConfig;
 ///
 /// let cfg = LoopConfig { forward_passes: 10, max_iterations: 200, ..LoopConfig::default() };
 /// assert_eq!(cfg.forward_passes, 10);
@@ -129,7 +129,7 @@ impl Default for LoopConfig {
 /// # Examples
 ///
 /// ```rust
-/// use cobre_sddp::config::CutManagementConfig;
+/// use novomodelo_sddp::config::CutManagementConfig;
 ///
 /// let cfg = CutManagementConfig { cut_activity_tolerance: 1e-8, ..CutManagementConfig::default() };
 /// assert_eq!(cfg.cut_activity_tolerance, 1e-8);
@@ -166,7 +166,7 @@ impl Default for CutManagementConfig {
 /// # Examples
 ///
 /// ```rust
-/// use cobre_sddp::config::EventConfig;
+/// use novomodelo_sddp::config::EventConfig;
 ///
 /// let cfg = EventConfig { export_states: true, ..EventConfig::default() };
 /// assert!(cfg.periodic_checkpoint.is_none());
@@ -247,8 +247,8 @@ pub(crate) struct EventParams {
 /// # Examples
 ///
 /// ```rust
-/// use cobre_sddp::TrainingConfig;
-/// use cobre_sddp::config::{CutManagementConfig, EventConfig, LoopConfig};
+/// use novomodelo_sddp::TrainingConfig;
+/// use novomodelo_sddp::config::{CutManagementConfig, EventConfig, LoopConfig};
 ///
 /// let config = TrainingConfig {
 ///     loop_config: LoopConfig {
@@ -277,7 +277,7 @@ pub struct TrainingConfig {
 #[cfg(test)]
 mod tests {
     use super::{CutManagementConfig, EventConfig, LoopConfig, TrainingConfig};
-    use cobre_core::TrainingEvent;
+    use novomodelo_core::TrainingEvent;
 
     // ── Field access ─────────────────────────────────────────────────────────
 

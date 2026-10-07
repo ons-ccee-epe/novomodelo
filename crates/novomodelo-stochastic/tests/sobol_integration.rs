@@ -11,13 +11,13 @@
     clippy::cast_precision_loss
 )]
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId, Hydro, SystemBuilder,
     scenario::{InflowModel, SamplingScheme},
     temporal::{NoiseMethod, ScenarioSourceConfig, Stage},
 };
-use cobre_stochastic::tree::generate::OpeningTreeGenerationInputs;
-use cobre_stochastic::{
+use novomodelo_stochastic::tree::generate::OpeningTreeGenerationInputs;
+use novomodelo_stochastic::{
     ClassDimensions, ClassSchemes, NoisePointSpec, OpeningTreeInputs, build_stochastic_context,
     generate_opening_tree,
     tree::qmc_sobol::{SobolPrecomputed, scrambled_sobol_point},
@@ -67,7 +67,7 @@ fn build_sobol_context(
     hydros: Vec<Hydro>,
     n_openings: usize,
     base_seed: u64,
-) -> cobre_stochastic::StochasticContext {
+) -> novomodelo_stochastic::StochasticContext {
     let hydro_ids: Vec<i32> = {
         let mut ids: Vec<i32> = hydros.iter().map(|h| h.id.0).collect();
         ids.sort_unstable();

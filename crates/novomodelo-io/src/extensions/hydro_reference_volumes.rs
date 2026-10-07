@@ -3,7 +3,7 @@
 //! [`HydroReferenceVolumeFractions::get`] returns the resolved reference operating
 //! volume in absolute storage units (hm³) for a given `(hydro_id, stage_pos)`
 //! — `stage_pos` is the 0-based study-horizon position, not the domain
-//! [`cobre_core::StageId`] — falling back to the case default for an unpopulated
+//! [`novomodelo_core::StageId`] — falling back to the case default for an unpopulated
 //! pair.
 //!
 //! The caller resolves the declared input (absolute, percentile, or default) to
@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use cobre_core::{EntityId, StudyPos};
+use novomodelo_core::{EntityId, StudyPos};
 
 /// Resolver returning the reference operating volume (hm³) for a given
 /// `(hydro_id, stage_pos)` pair, built via [`build_hydro_reference_volumes_resolved`].
@@ -58,7 +58,7 @@ pub fn build_hydro_reference_volumes_resolved(
 #[cfg(test)]
 #[allow(clippy::float_cmp)]
 mod tests {
-    use cobre_core::{EntityId, StudyPos};
+    use novomodelo_core::{EntityId, StudyPos};
 
     use super::build_hydro_reference_volumes_resolved;
 

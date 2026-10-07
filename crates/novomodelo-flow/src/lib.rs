@@ -1,1 +1,1 @@
-//! Reserved crate for future Cobre power-flow algorithms (AC/DC); not yet implemented.
+//! Reserved crate for future Novomodelo power-flow algorithms (AC/DC); not yet implemented.

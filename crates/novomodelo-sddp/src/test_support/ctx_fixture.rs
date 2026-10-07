@@ -2,12 +2,12 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use cobre_core::{
+use novomodelo_core::{
     Bus, CascadeTopology, EnergyContract, EntityId, GenericConstraint, Hydro, Line, LoadModel,
     NonControllableSource, PumpingStation, ResolvedBounds, ResolvedGenericConstraintBounds,
     ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors, ResolvedPenalties, Thermal,
 };
-use cobre_stochastic::par::precompute::PrecomputedPar;
+use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
 use crate::bucket_topology::TransitBucketTopology;
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};

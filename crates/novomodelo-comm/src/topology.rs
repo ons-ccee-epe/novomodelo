@@ -1,4 +1,4 @@
-//! Execution topology types for cobre-comm: process layout, communication
+//! Execution topology types for novomodelo-comm: process layout, communication
 //! backend metadata, and optional scheduler information for a running job.
 
 use crate::factory::BackendKind;

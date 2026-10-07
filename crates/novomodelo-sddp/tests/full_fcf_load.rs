@@ -10,18 +10,18 @@
 
 use std::path::{Path, PathBuf};
 
-use cobre_core::System;
-use cobre_core::scenario::ScenarioSource;
-use cobre_io::config::StoppingRuleConfig;
-use cobre_io::read_policy_checkpoint;
-use cobre_sddp::StudySetup;
-use cobre_sddp::hydro_models::prepare_hydro_models;
-use cobre_sddp::policy::full_fcf_load::{
+use novomodelo_core::System;
+use novomodelo_core::scenario::ScenarioSource;
+use novomodelo_io::config::StoppingRuleConfig;
+use novomodelo_io::read_policy_checkpoint;
+use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::hydro_models::prepare_hydro_models;
+use novomodelo_sddp::policy::full_fcf_load::{
     FullFcfLoadError, FullFcfLoadKind, check_full_fcf_load, locate_policy_dir,
 };
-use cobre_sddp::policy::orchestration::{CheckpointParams, write_checkpoint};
-use cobre_sddp::setup::prepare_stochastic;
-use cobre_solver::ActiveSolver;
+use novomodelo_sddp::policy::orchestration::{CheckpointParams, write_checkpoint};
+use novomodelo_sddp::setup::prepare_stochastic;
+use novomodelo_solver::ActiveSolver;
 use tempfile::TempDir;
 
 mod common;
@@ -40,11 +40,11 @@ fn d01_case_dir() -> PathBuf {
 
 fn build_setup() -> (StudySetup, System) {
     let case_dir = d01_case_dir();
-    let mut config = cobre_io::parse_config(&case_dir.join("config.json")).expect("config");
+    let mut config = novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config");
     config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
         limit: ITERATIONS,
     }]);
-    let system = cobre_io::load_case(&case_dir).expect("load_case");
+    let system = novomodelo_io::load_case(&case_dir).expect("load_case");
     let prep = prepare_stochastic(
         system,
         &case_dir,

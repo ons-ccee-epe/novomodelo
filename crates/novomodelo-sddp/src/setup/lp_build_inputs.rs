@@ -5,14 +5,14 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[cfg(any(test, feature = "test-support"))]
-use cobre_core::Stage;
-use cobre_core::scenario::LoadModel;
-use cobre_core::{EntityId, Hydro, ResolvedBounds, System};
-use cobre_io::StageIdResolver;
+use novomodelo_core::Stage;
+use novomodelo_core::scenario::LoadModel;
+use novomodelo_core::{EntityId, Hydro, ResolvedBounds, System};
+use novomodelo_io::StageIdResolver;
 #[cfg(any(test, feature = "test-support"))]
-use cobre_stochastic::normal::precompute::PrecomputedNormal;
+use novomodelo_stochastic::normal::precompute::PrecomputedNormal;
 #[cfg(any(test, feature = "test-support"))]
-use cobre_stochastic::par::precompute::PrecomputedPar;
+use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
 use crate::block_clock::BlockClock;
 #[cfg(any(test, feature = "test-support"))]
@@ -209,7 +209,7 @@ pub(crate) fn resolve_lp_build_inputs<'a>(
 /// context to resolve it from directly ([`build_stage_templates_resolving_layout`]).
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn resolve_in_sample_load_bus_ids(system: &System) -> Vec<EntityId> {
-    system.load_noise_member_bus_ids(cobre_core::scenario::SamplingScheme::InSample)
+    system.load_noise_member_bus_ids(novomodelo_core::scenario::SamplingScheme::InSample)
 }
 
 /// Test/integration-only convenience wrapper over [`build_stage_templates`]:
@@ -287,7 +287,7 @@ mod tests {
     use std::collections::HashMap;
 
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, FillingConfig, Hydro,
         HydroBlockBounds, HydroGenerationModel, HydroPenalties, HydroStageBounds, LineBlockBounds,
         PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds, ThermalStageBounds,

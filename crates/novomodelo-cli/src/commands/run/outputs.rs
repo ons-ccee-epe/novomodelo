@@ -1,44 +1,44 @@
-//! Output-writing phase for `cobre run`.
+//! Output-writing phase for `novomodelo run`.
 //!
 //! Python-parity contract: every file written here must also be written by
-//! `cobre-python`'s `run.rs`; the two writers must stay mirrored.
+//! `novomodelo-python`'s `run.rs`; the two writers must stay mirrored.
 
 use std::path::Path;
 
 use console::Term;
 
-use cobre_core::System;
-use cobre_io::Config;
-use cobre_io::EVAPORATION_MODELS_FILE;
-use cobre_io::FPHA_DEVIATION_POINTS_FILE;
-use cobre_io::FPHA_HYPERPLANES_FILE;
-use cobre_io::GENERIC_CONSTRAINT_ECHO_FILE;
-use cobre_io::OutputContext;
-use cobre_io::SimulationOutput;
-use cobre_io::SolverStatsRow;
-use cobre_io::TrainingOutput;
-use cobre_io::output::simulation_writer::{
+use novomodelo_core::System;
+use novomodelo_io::Config;
+use novomodelo_io::EVAPORATION_MODELS_FILE;
+use novomodelo_io::FPHA_DEVIATION_POINTS_FILE;
+use novomodelo_io::FPHA_HYPERPLANES_FILE;
+use novomodelo_io::GENERIC_CONSTRAINT_ECHO_FILE;
+use novomodelo_io::OutputContext;
+use novomodelo_io::SimulationOutput;
+use novomodelo_io::SolverStatsRow;
+use novomodelo_io::TrainingOutput;
+use novomodelo_io::output::simulation_writer::{
     SimulationPathRecord, write_paths, write_scenario_summary,
 };
-use cobre_io::write_evaporation_models;
-use cobre_io::write_fpha_deviation_points;
-use cobre_io::write_fpha_hyperplanes;
-use cobre_io::write_row_selection_records;
-use cobre_io::write_simulation_results;
-use cobre_io::write_simulation_solver_stats;
-use cobre_io::write_solver_stats;
-use cobre_io::write_success_marker;
-use cobre_io::write_training_results;
-use cobre_sddp::SolverStatsDelta;
-use cobre_sddp::StudySetup;
-use cobre_sddp::TrainingResult;
-use cobre_sddp::build_evaporation_model_rows;
-use cobre_sddp::build_fixed_delivery_rows;
-use cobre_sddp::build_generic_constraint_echo_rows;
-use cobre_sddp::delta_to_stats_row;
-use cobre_sddp::policy::orchestration::CheckpointParams;
-use cobre_sddp::policy::orchestration::write_checkpoint;
-use cobre_sddp::solver_stats_log_to_rows;
+use novomodelo_io::write_evaporation_models;
+use novomodelo_io::write_fpha_deviation_points;
+use novomodelo_io::write_fpha_hyperplanes;
+use novomodelo_io::write_row_selection_records;
+use novomodelo_io::write_simulation_results;
+use novomodelo_io::write_simulation_solver_stats;
+use novomodelo_io::write_solver_stats;
+use novomodelo_io::write_success_marker;
+use novomodelo_io::write_training_results;
+use novomodelo_sddp::SolverStatsDelta;
+use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::TrainingResult;
+use novomodelo_sddp::build_evaporation_model_rows;
+use novomodelo_sddp::build_fixed_delivery_rows;
+use novomodelo_sddp::build_generic_constraint_echo_rows;
+use novomodelo_sddp::delta_to_stats_row;
+use novomodelo_sddp::policy::orchestration::CheckpointParams;
+use novomodelo_sddp::policy::orchestration::write_checkpoint;
+use novomodelo_sddp::solver_stats_log_to_rows;
 
 use crate::error::CliError;
 use crate::summary::print_output_path;
@@ -112,15 +112,15 @@ pub(super) fn write_training_outputs(args: &WriteTrainingArgs<'_>) -> Result<(),
 
     // No generic constraint writes no file, so a default run stays byte-identical.
     // The writer is called fully qualified, not imported, so the Python-parity
-    // checker's `cobre_io::write_*` match sees it.
+    // checker's `novomodelo_io::write_*` match sees it.
     if !args.system.generic_constraints().is_empty() {
         let rows = build_generic_constraint_echo_rows(args.setup, args.system);
         let echo_path = args.output_dir.join(GENERIC_CONSTRAINT_ECHO_FILE);
-        cobre_io::write_generic_constraint_echo(&echo_path, &rows).map_err(CliError::from)?;
+        novomodelo_io::write_generic_constraint_echo(&echo_path, &rows).map_err(CliError::from)?;
     }
 
     let fixed_rows = build_fixed_delivery_rows(args.setup, args.system);
-    cobre_io::write_fixed_delivery(args.output_dir, &fixed_rows).map_err(CliError::from)?;
+    novomodelo_io::write_fixed_delivery(args.output_dir, &fixed_rows).map_err(CliError::from)?;
 
     if !args.training_result.solver_stats_log.is_empty() {
         let rows = solver_stats_log_to_rows(&args.training_result.solver_stats_log);

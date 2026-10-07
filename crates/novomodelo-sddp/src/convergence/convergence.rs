@@ -10,9 +10,9 @@
 //! ## Usage
 //!
 //! ```rust
-//! use cobre_sddp::ConvergenceMonitor;
-//! use cobre_sddp::SyncResult;
-//! use cobre_sddp::{StoppingMode, StoppingRule, StoppingRuleSet};
+//! use novomodelo_sddp::ConvergenceMonitor;
+//! use novomodelo_sddp::SyncResult;
+//! use novomodelo_sddp::{StoppingMode, StoppingRule, StoppingRuleSet};
 //!
 //! let rule_set = StoppingRuleSet {
 //!     rules: vec![StoppingRule::IterationLimit { limit: 5 }],

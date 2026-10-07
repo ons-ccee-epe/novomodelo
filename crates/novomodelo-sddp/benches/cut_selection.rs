@@ -6,10 +6,10 @@
 
 #![allow(missing_docs, clippy::expect_used, clippy::cast_possible_truncation)]
 
-use cobre_sddp::cut::CutPool;
-use cobre_sddp::cut_selection::{CutMetadata, CutSelectionStrategy};
-use cobre_sddp::setup::NodeId;
 use criterion::{Criterion, criterion_group, criterion_main};
+use novomodelo_sddp::cut::CutPool;
+use novomodelo_sddp::cut_selection::{CutMetadata, CutSelectionStrategy};
+use novomodelo_sddp::setup::NodeId;
 use std::hint::black_box;
 
 fn splitmix64(state: &mut u64) -> u64 {

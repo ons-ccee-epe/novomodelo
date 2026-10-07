@@ -3,15 +3,15 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use cobre_core::{EntityId, LoadModel, NcsModel, SamplingScheme, SystemBuilder};
-use cobre_stochastic::{
+use novomodelo_core::{EntityId, LoadModel, NcsModel, SamplingScheme, SystemBuilder};
+use novomodelo_stochastic::{
     ClassSchemes, OpeningTreeInputs, build_stochastic_context, noise_entity_order,
 };
 
 mod common;
 use common::{default_inflow_model, deficit_bus, saa_stage, sized_hydro};
 
-fn build_system(with_load: bool) -> cobre_core::System {
+fn build_system(with_load: bool) -> novomodelo_core::System {
     let mut builder = SystemBuilder::new()
         .buses(vec![deficit_bus(0)])
         .hydros(vec![sized_hydro(1), sized_hydro(2)])

@@ -8,7 +8,7 @@
 //!
 //! ```rust
 //! # #[cfg(feature = "highs")] {
-//! use cobre_solver::{HighsProfile, ProfiledSolver, SolverInterface, HighsSolver};
+//! use novomodelo_solver::{HighsProfile, ProfiledSolver, SolverInterface, HighsSolver};
 //!
 //! let inner = HighsSolver::new().expect("HiGHS init");
 //! let mut solver = ProfiledSolver::new(inner);

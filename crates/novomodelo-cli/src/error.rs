@@ -13,26 +13,26 @@
 
 use console::Term;
 
-use cobre_comm::BackendError;
-use cobre_io::LoadError;
-use cobre_io::OutputError;
-use cobre_sddp::ErrorClass;
-use cobre_sddp::SddpError;
-use cobre_sddp::SddpError::BasisShapeMismatch;
-use cobre_sddp::SddpError::CheckpointWrite;
-use cobre_sddp::SddpError::Communication;
-use cobre_sddp::SddpError::Infeasible;
-use cobre_sddp::SddpError::Io;
-use cobre_sddp::SddpError::PolicySoftwareMismatch;
-use cobre_sddp::SddpError::Simulation;
-use cobre_sddp::SddpError::Solver;
-use cobre_sddp::SddpError::Stochastic;
-use cobre_sddp::SddpError::Validation;
-use cobre_sddp::SddpError::WireVersionMismatch;
-use cobre_sddp::SimulationError;
-use cobre_sddp::SimulationError::LpInfeasible;
-use cobre_sddp::SimulationError::SolverError;
-use cobre_sddp::policy::full_fcf_load::FullFcfLoadError;
+use novomodelo_comm::BackendError;
+use novomodelo_io::LoadError;
+use novomodelo_io::OutputError;
+use novomodelo_sddp::ErrorClass;
+use novomodelo_sddp::SddpError;
+use novomodelo_sddp::SddpError::BasisShapeMismatch;
+use novomodelo_sddp::SddpError::CheckpointWrite;
+use novomodelo_sddp::SddpError::Communication;
+use novomodelo_sddp::SddpError::Infeasible;
+use novomodelo_sddp::SddpError::Io;
+use novomodelo_sddp::SddpError::PolicySoftwareMismatch;
+use novomodelo_sddp::SddpError::Simulation;
+use novomodelo_sddp::SddpError::Solver;
+use novomodelo_sddp::SddpError::Stochastic;
+use novomodelo_sddp::SddpError::Validation;
+use novomodelo_sddp::SddpError::WireVersionMismatch;
+use novomodelo_sddp::SimulationError;
+use novomodelo_sddp::SimulationError::LpInfeasible;
+use novomodelo_sddp::SimulationError::SolverError;
+use novomodelo_sddp::policy::full_fcf_load::FullFcfLoadError;
 
 use std::io::Error;
 
@@ -43,7 +43,7 @@ use std::io::Error;
 /// # Examples
 ///
 /// ```ignore
-/// use cobre_cli::error::CliError;
+/// use novomodelo_cli::error::CliError;
 ///
 /// let err = CliError::Validation {
 ///     report: "constraint violation: hydro cascade contains a cycle".to_string(),
@@ -99,7 +99,7 @@ impl CliError {
     /// # Examples
     ///
     /// ```ignore
-    /// use cobre_cli::error::CliError;
+    /// use novomodelo_cli::error::CliError;
     ///
     /// assert_eq!(
     ///     CliError::Validation { report: "bad".to_string(), already_rendered: false }.exit_code(),
@@ -169,7 +169,9 @@ impl CliError {
         let hint_arrow = console::style("->").yellow();
         vec![
             format!("{label} {report}"),
-            format!("  {hint_arrow} run `cobre validate <CASE_DIR>` for a full diagnostic report"),
+            format!(
+                "  {hint_arrow} run `novomodelo validate <CASE_DIR>` for a full diagnostic report"
+            ),
         ]
     }
 
@@ -178,7 +180,7 @@ impl CliError {
     /// # Examples
     ///
     /// ```ignore
-    /// use cobre_cli::error::CliError;
+    /// use novomodelo_cli::error::CliError;
     /// use console::Term;
     ///
     /// let err = CliError::Solver { message: "LP infeasible at stage 12".to_string() };
@@ -210,7 +212,7 @@ impl CliError {
                     "  {hint_arrow} check constraint bounds (hydros may have conflicting min/max storage)"
                 ));
                 let _ = stderr.write_line(&format!(
-                    "  {hint_arrow} run `cobre validate <CASE_DIR>` for a full diagnostic report"
+                    "  {hint_arrow} run `novomodelo validate <CASE_DIR>` for a full diagnostic report"
                 ));
             }
             Self::Internal { message } => {
@@ -219,14 +221,14 @@ impl CliError {
                     "  {hint_arrow} this may indicate a software or environment problem"
                 ));
                 let _ = stderr.write_line(&format!(
-                    "  {hint_arrow} report this at https://github.com/cobre-rs/cobre/issues"
+                    "  {hint_arrow} report this at https://github.com/ons-ccee-epe/novomodelo/issues"
                 ));
             }
         }
     }
 }
 
-impl From<cobre_io::LoadError> for CliError {
+impl From<novomodelo_io::LoadError> for CliError {
     fn from(err: LoadError) -> Self {
         match err {
             LoadError::IoError { path, source } => Self::Io {
@@ -241,7 +243,7 @@ impl From<cobre_io::LoadError> for CliError {
     }
 }
 
-impl From<cobre_io::OutputError> for CliError {
+impl From<novomodelo_io::OutputError> for CliError {
     fn from(err: OutputError) -> Self {
         match err {
             OutputError::IoError { path, source } => Self::Io {
@@ -259,7 +261,7 @@ impl From<cobre_io::OutputError> for CliError {
     }
 }
 
-impl From<cobre_comm::BackendError> for CliError {
+impl From<novomodelo_comm::BackendError> for CliError {
     fn from(err: BackendError) -> Self {
         Self::Internal {
             message: format!("communication backend error: {err}"),
@@ -267,7 +269,7 @@ impl From<cobre_comm::BackendError> for CliError {
     }
 }
 
-impl From<cobre_sddp::SddpError> for CliError {
+impl From<novomodelo_sddp::SddpError> for CliError {
     fn from(err: SddpError) -> Self {
         let class = err.class();
         let message = match err {
@@ -328,7 +330,7 @@ impl From<FullFcfLoadError> for CliError {
     }
 }
 
-impl From<cobre_sddp::SimulationError> for CliError {
+impl From<novomodelo_sddp::SimulationError> for CliError {
     fn from(err: SimulationError) -> Self {
         match err {
             LpInfeasible {
@@ -360,8 +362,8 @@ impl From<cobre_sddp::SimulationError> for CliError {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use cobre_comm::CommError;
-    use cobre_stochastic::StochasticError;
+    use novomodelo_comm::CommError;
+    use novomodelo_stochastic::StochasticError;
 
     fn expected_exit_code(class: ErrorClass) -> i32 {
         match class {
@@ -409,7 +411,7 @@ mod tests {
             "expected the report in the rendered lines, got: {joined}"
         );
         assert!(
-            joined.contains("run `cobre validate <CASE_DIR>`"),
+            joined.contains("run `novomodelo validate <CASE_DIR>`"),
             "expected the validate hint in the rendered lines, got: {joined}"
         );
     }
@@ -563,7 +565,7 @@ mod tests {
 
     #[test]
     fn from_sddp_error_solver_maps_to_solver() {
-        let sddp_err = Solver(cobre_solver::SolverError::Infeasible);
+        let sddp_err = Solver(novomodelo_solver::SolverError::Infeasible);
         let cli_err = CliError::from(sddp_err);
         assert!(
             matches!(cli_err, CliError::Solver { .. }),
@@ -603,7 +605,7 @@ mod tests {
     #[test]
     fn from_sddp_error_policy_software_mismatch_maps_to_validation() {
         let sddp_err = PolicySoftwareMismatch {
-            policy_software: Some("cobre".to_string()),
+            policy_software: Some("novomodelo".to_string()),
             policy_version: "0.0.1".to_string(),
         };
         let cli_err = CliError::from(sddp_err);
@@ -616,7 +618,7 @@ mod tests {
             unreachable!("checked above")
         };
         assert!(report.contains("0.0.1"), "{report}");
-        assert!(report.contains(cobre_io::SOFTWARE_VERSION), "{report}");
+        assert!(report.contains(novomodelo_io::SOFTWARE_VERSION), "{report}");
     }
 
     #[test]
@@ -657,7 +659,7 @@ mod tests {
 
     #[test]
     fn cli_exit_code_follows_the_error_class() {
-        use cobre_sddp::policy::full_fcf_load::FullFcfLoadKind;
+        use novomodelo_sddp::policy::full_fcf_load::FullFcfLoadKind;
         use std::path::PathBuf;
 
         let errors = vec![
@@ -687,7 +689,7 @@ mod tests {
                 iteration: 1,
                 scenario: 0,
             },
-            Solver(cobre_solver::SolverError::Infeasible),
+            Solver(novomodelo_solver::SolverError::Infeasible),
             Communication(CommError::InvalidCommunicator),
             Simulation("output channel closed".to_string()),
             WireVersionMismatch {
@@ -798,7 +800,7 @@ mod tests {
         let err = CheckpointWrite {
             iteration: 2,
             source: OutputError::IoError {
-                path: std::path::PathBuf::from("/proc/cobre-unwritable-policy.staging"),
+                path: std::path::PathBuf::from("/proc/novomodelo-unwritable-policy.staging"),
                 source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
             },
         };
@@ -810,7 +812,7 @@ mod tests {
         };
         assert_eq!(
             context,
-            "checkpoint write at iteration 2: /proc/cobre-unwritable-policy.staging"
+            "checkpoint write at iteration 2: /proc/novomodelo-unwritable-policy.staging"
         );
 
         let refusal = OutputError::ForeignEntry {

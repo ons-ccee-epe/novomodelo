@@ -1,24 +1,24 @@
-//! Policy load/warm-start/resume phase for `cobre run`.
+//! Policy load/warm-start/resume phase for `novomodelo run`.
 
 use std::path::Path;
 
-use cobre_comm::Communicator;
-use cobre_core::System;
-use cobre_io::Config;
-use cobre_io::OwnedPolicyCutRecord;
-use cobre_io::PolicyMode;
-use cobre_io::PolicyMode::Fresh;
-use cobre_io::PolicyMode::Resume;
-use cobre_io::PolicyMode::WarmStart;
-use cobre_sddp::StudySetup;
-use cobre_sddp::TrainingResult;
-use cobre_sddp::ValidatedBoundaryCuts;
-use cobre_sddp::inject_boundary_cuts;
-use cobre_sddp::policy::full_fcf_load::CheckedFullFcfLoad;
-use cobre_sddp::policy::full_fcf_load::FullFcfLoadKind;
-use cobre_sddp::policy::full_fcf_load::check_full_fcf_load;
-use cobre_sddp::policy::full_fcf_load::locate_policy_dir;
-use cobre_sddp::reconcile_boundary_policy;
+use novomodelo_comm::Communicator;
+use novomodelo_core::System;
+use novomodelo_io::Config;
+use novomodelo_io::OwnedPolicyCutRecord;
+use novomodelo_io::PolicyMode;
+use novomodelo_io::PolicyMode::Fresh;
+use novomodelo_io::PolicyMode::Resume;
+use novomodelo_io::PolicyMode::WarmStart;
+use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::TrainingResult;
+use novomodelo_sddp::ValidatedBoundaryCuts;
+use novomodelo_sddp::inject_boundary_cuts;
+use novomodelo_sddp::policy::full_fcf_load::CheckedFullFcfLoad;
+use novomodelo_sddp::policy::full_fcf_load::FullFcfLoadKind;
+use novomodelo_sddp::policy::full_fcf_load::check_full_fcf_load;
+use novomodelo_sddp::policy::full_fcf_load::locate_policy_dir;
+use novomodelo_sddp::reconcile_boundary_policy;
 
 use crate::commands::broadcast::broadcast_value;
 use crate::error::CliError;

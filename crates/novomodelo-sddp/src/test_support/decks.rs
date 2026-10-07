@@ -1,5 +1,5 @@
 //! Committed-deck discovery shared by every committed-deck sweep across the
-//! crate's integration tests and cobre-cli's non-root setup-rebuild parity
+//! crate's integration tests and novomodelo-cli's non-root setup-rebuild parity
 //! test.
 
 use std::path::{Path, PathBuf};
@@ -61,7 +61,7 @@ fn decks_with_config_under(root: &Path, scan_dir: &Path) -> Vec<Deck> {
 
 /// Every committed deck (a directory is a deck when it contains
 /// `config.json`): directories directly under `examples/deterministic/` and
-/// `crates/cobre-sddp/tests/fixtures/`, plus `examples/1dtoy` and
+/// `crates/novomodelo-sddp/tests/fixtures/`, plus `examples/1dtoy` and
 /// `examples/4ree`, sorted by `key`.
 ///
 /// # Panics
@@ -75,7 +75,7 @@ pub fn committed_decks() -> Vec<Deck> {
     let mut decks = decks_with_config_under(&root, &root.join("examples/deterministic"));
     decks.extend(decks_with_config_under(
         &root,
-        &root.join("crates/cobre-sddp/tests/fixtures"),
+        &root.join("crates/novomodelo-sddp/tests/fixtures"),
     ));
     for extra in ["examples/1dtoy", "examples/4ree"] {
         decks.push(Deck {

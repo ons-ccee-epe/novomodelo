@@ -11,7 +11,7 @@
 //!
 //! ```json
 //! {
-//!   "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/pumping_stations.schema.json",
+//!   "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/pumping_stations.schema.json",
 //!   "pumping_stations": [
 //!     {
 //!       "id": 0,
@@ -40,7 +40,7 @@
 //! `destination_hydro_id` exist in their respective registries) is deferred to
 //! Layer 3.
 
-use cobre_core::{EntityId, entities::PumpingStation};
+use novomodelo_core::{EntityId, entities::PumpingStation};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::Path;
@@ -107,7 +107,7 @@ pub(crate) struct RawPumpingFlow {
 /// `Vec<PumpingStation>`. The result is sorted by `id` ascending, so parser
 /// output is deterministic regardless of file row order (declaration-order
 /// invariance); canonical order is
-/// [`SystemBuilder::build`](cobre_core::SystemBuilder::build)'s to establish.
+/// [`SystemBuilder::build`](novomodelo_core::SystemBuilder::build)'s to establish.
 ///
 /// # Errors
 ///
@@ -123,7 +123,7 @@ pub(crate) struct RawPumpingFlow {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::system::parse_pumping_stations;
+/// use novomodelo_io::system::parse_pumping_stations;
 /// use std::path::Path;
 ///
 /// let stations = parse_pumping_stations(
@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn test_parse_valid_pumping_stations() {
         let json = r#"{
-          "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/pumping_stations.schema.json",
+          "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/pumping_stations.schema.json",
           "pumping_stations": [
             {
               "id": 0,

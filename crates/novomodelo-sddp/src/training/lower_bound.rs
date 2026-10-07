@@ -8,9 +8,9 @@
 //! Must be called **after** the backward pass and cut sync so the FCF holds the
 //! latest cuts when the LPs are solved.
 
-use cobre_comm::Communicator;
-use cobre_solver::{RowBatch, SolverError, SolverInterface};
-use cobre_stochastic::{evaluate_par_batch, solve_par_noise_batch};
+use novomodelo_comm::Communicator;
+use novomodelo_solver::{RowBatch, SolverError, SolverInterface};
+use novomodelo_stochastic::{evaluate_par_batch, solve_par_noise_batch};
 
 use crate::cut::CutRowMap;
 use crate::cut::row::append_new_cuts_to_lp;
@@ -506,15 +506,15 @@ mod tests {
         },
         workspace::{ScratchBuffers, WorkspaceSizing},
     };
-    use cobre_comm::{CommData, CommError, Communicator, ReduceOp};
-    use cobre_core::SystemBuilder;
-    use cobre_core::scenario::SamplingScheme;
-    use cobre_solver::ActiveSolver;
-    use cobre_solver::{
+    use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
+    use novomodelo_core::SystemBuilder;
+    use novomodelo_core::scenario::SamplingScheme;
+    use novomodelo_solver::ActiveSolver;
+    use novomodelo_solver::{
         Basis, RowBatch, SolverError, SolverInterface, SolverStatistics, StageTemplate,
     };
-    use cobre_stochastic::tree::generate::OpeningTreeGenerationInputs;
-    use cobre_stochastic::{
+    use novomodelo_stochastic::tree::generate::OpeningTreeGenerationInputs;
+    use novomodelo_stochastic::{
         ClassSchemes, OpeningTree, OpeningTreeInputs, PrecomputedNormal, StochasticContext,
         build_stochastic_context, generate_opening_tree,
     };
@@ -568,7 +568,7 @@ mod tests {
     /// `dim = 1` throughout (single hydro, the N=1, L=0 state layout).
     fn simple_opening_tree(n_openings: usize) -> OpeningTree {
         use chrono::NaiveDate;
-        use cobre_core::{
+        use novomodelo_core::{
             EntityId,
             scenario::{CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile},
             temporal::{
@@ -576,7 +576,7 @@ mod tests {
                 StageStateConfig,
             },
         };
-        use cobre_stochastic::correlation::resolve::DecomposedCorrelation;
+        use novomodelo_stochastic::correlation::resolve::DecomposedCorrelation;
         use std::collections::BTreeMap;
 
         // Single study stage with the requested branching factor.
@@ -627,7 +627,7 @@ mod tests {
         let decomposed = DecomposedCorrelation::build(
             &corr_model,
             &entity_order,
-            cobre_stochastic::ClassDimensions {
+            novomodelo_stochastic::ClassDimensions {
                 n_hydros: 1,
                 n_load_buses: 0,
                 n_ncs: 0,
@@ -640,7 +640,7 @@ mod tests {
             &[stage],
             &decomposed,
             &entity_order,
-            cobre_stochastic::ClassDimensions {
+            novomodelo_stochastic::ClassDimensions {
                 n_hydros: 1,
                 n_load_buses: 0,
                 n_ncs: 0,
@@ -660,7 +660,7 @@ mod tests {
     /// injected tree's shape is preserved verbatim.
     #[allow(clippy::cast_possible_wrap)]
     fn wrap_opening_tree(n_hydros: usize, tree: OpeningTree) -> StochasticContext {
-        use cobre_core::test_support::{BusSpec, HydroSpec, make_bus, make_hydro};
+        use novomodelo_core::test_support::{BusSpec, HydroSpec, make_bus, make_hydro};
 
         let system = SystemBuilder::new()
             .buses(vec![make_bus(BusSpec {
@@ -892,9 +892,9 @@ mod tests {
     }
 
     impl SolverInterface for MockSolver {
-        type Profile = cobre_solver::ActiveProfile;
+        type Profile = novomodelo_solver::ActiveProfile;
 
-        fn apply_profile(&mut self, _profile: &cobre_solver::ActiveProfile) {}
+        fn apply_profile(&mut self, _profile: &novomodelo_solver::ActiveProfile) {}
 
         fn solver_name_version(&self) -> String {
             "MockSolver 0.0.0".to_string()
@@ -909,7 +909,7 @@ mod tests {
         fn solve(
             &mut self,
             _basis: Option<&Basis>,
-        ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+        ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
             let call = self.call_count;
             self.call_count += 1;
             if self.infeasible_on_call == Some(call) {
@@ -917,7 +917,7 @@ mod tests {
             }
             let obj = self.objectives[call % self.objectives.len()];
             // evaluate_lower_bound reads only `view.objective`, so the slices stay empty.
-            Ok(cobre_solver::SolutionView {
+            Ok(novomodelo_solver::SolutionView {
                 objective: obj,
                 primal: &[],
                 dual: &[],
@@ -1751,7 +1751,7 @@ mod tests {
     #[allow(clippy::too_many_lines, clippy::similar_names)]
     #[test]
     fn lb_evaluate_stage_0_patches_ncs_bounds_per_opening() {
-        use cobre_core::{
+        use novomodelo_core::{
             Bus, DeficitSegment, EntityId, SystemBuilder,
             entities::non_controllable::NonControllableSource,
             scenario::{
@@ -1762,7 +1762,7 @@ mod tests {
                 StageStateConfig,
             },
         };
-        use cobre_stochastic::context::{
+        use novomodelo_stochastic::context::{
             ClassSchemes, OpeningTreeInputs, build_stochastic_context,
         };
         use std::collections::BTreeMap;
@@ -2106,8 +2106,8 @@ mod tests {
     )]
     fn filling_study_templates() -> (StageTemplates, usize, usize) {
         use chrono::NaiveDate;
-        use cobre_core::scenario::InflowModel;
-        use cobre_core::{
+        use novomodelo_core::scenario::InflowModel;
+        use novomodelo_core::{
             Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties,
             ContractBlockBounds, DeficitSegment, EntityId, FillingConfig, Hydro, HydroBlockBounds,
             HydroGenerationModel, HydroPenalties, HydroStageBounds, LineBlockBounds,
@@ -2116,7 +2116,7 @@ mod tests {
             ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, SystemBuilder,
             ThermalBlockBounds, ThermalStageBounds,
         };
-        use cobre_stochastic::par::precompute::PrecomputedPar;
+        use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
         let n_hydros = 2_usize;
         // Five study stages (ids 0..=4) span every filling phase of both hydros.
@@ -2379,7 +2379,7 @@ mod tests {
     /// between the two inflow entities keeps the tree shape trivial.
     fn filling_opening_tree(n_openings: usize) -> OpeningTree {
         use chrono::NaiveDate;
-        use cobre_core::{
+        use novomodelo_core::{
             EntityId,
             scenario::{CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile},
             temporal::{
@@ -2387,7 +2387,7 @@ mod tests {
                 StageStateConfig,
             },
         };
-        use cobre_stochastic::correlation::resolve::DecomposedCorrelation;
+        use novomodelo_stochastic::correlation::resolve::DecomposedCorrelation;
         use std::collections::BTreeMap;
 
         let stage = Stage {
@@ -2442,7 +2442,7 @@ mod tests {
         let decomposed = DecomposedCorrelation::build(
             &corr_model,
             &entity_order,
-            cobre_stochastic::ClassDimensions {
+            novomodelo_stochastic::ClassDimensions {
                 n_hydros: 2,
                 n_load_buses: 0,
                 n_ncs: 0,
@@ -2455,7 +2455,7 @@ mod tests {
             &[stage],
             &decomposed,
             &entity_order,
-            cobre_stochastic::ClassDimensions {
+            novomodelo_stochastic::ClassDimensions {
                 n_hydros: 2,
                 n_load_buses: 0,
                 n_ncs: 0,

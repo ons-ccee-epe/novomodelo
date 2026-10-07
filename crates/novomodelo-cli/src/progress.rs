@@ -12,7 +12,7 @@
 //!
 //! ```rust,no_run
 //! use std::sync::mpsc;
-//! use cobre_core::TrainingEvent;
+//! use novomodelo_core::TrainingEvent;
 //! use crate::progress::{run_progress_thread, RenderMode};
 //!
 //! let (tx, rx) = mpsc::channel::<TrainingEvent>();
@@ -26,9 +26,9 @@ use std::io;
 use std::sync::mpsc;
 use std::thread;
 
-use cobre_core::TrainingEvent;
 use console::Term;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle, TermLike};
+use novomodelo_core::TrainingEvent;
 
 const TRAINING_TEMPLATE: &str =
     "Training   {bar:40} {pos}/{len} iter  {msg}  [{elapsed_precise} < {eta_precise}]";
@@ -518,7 +518,7 @@ impl LineRenderer {
 mod tests {
     use std::sync::mpsc;
 
-    use cobre_core::{TrainingEvent, WelfordAccumulator};
+    use novomodelo_core::{TrainingEvent, WelfordAccumulator};
 
     use super::{RenderMode, eta_millis, fmt_hms, fmt_time_cell, run_progress_thread};
 

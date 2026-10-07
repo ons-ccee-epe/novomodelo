@@ -9,9 +9,9 @@ use super::*;
 #[allow(clippy::too_many_lines)]
 fn test_fpha_model_accepted() {
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };

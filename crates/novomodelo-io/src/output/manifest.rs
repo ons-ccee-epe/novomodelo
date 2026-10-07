@@ -118,7 +118,7 @@ pub struct DistributionInfo {
 /// Selected training configuration fields captured for reproducibility.
 ///
 /// This is an informational snapshot, not a normative schema. The canonical
-/// configuration schema lives in `config.json` (see `cobre_io::config`).
+/// configuration schema lives in `config.json` (see `novomodelo_io::config`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetadataConfiguration {
     /// Random seed used for scenario generation.
@@ -811,7 +811,7 @@ mod tests {
     #[test]
     fn simulation_metadata_back_compat_without_cost_or_solve_stats() {
         let legacy = r#"{
-            "software": "cobre",
+            "software": "novomodelo",
             "software_version": "0.0.0",
             "hostname": "legacy-host",
             "solver": "highs",
@@ -948,7 +948,7 @@ mod tests {
     #[test]
     fn training_metadata_back_compat_without_bounds_or_solve_stats() {
         let legacy = r#"{
-            "software": "cobre",
+            "software": "novomodelo",
             "software_version": "0.0.0",
             "hostname": "legacy-host",
             "solver": "highs",
@@ -1030,7 +1030,7 @@ mod tests {
     #[test]
     fn training_metadata_without_setup_reads_as_none() {
         let without_setup = r#"{
-            "software": "cobre",
+            "software": "novomodelo",
             "software_version": "0.0.0",
             "hostname": "legacy-host",
             "solver": "highs",
@@ -1139,7 +1139,7 @@ mod tests {
     #[test]
     fn training_metadata_without_deviation_reads_as_none() {
         let without_deviation = r#"{
-            "software": "cobre",
+            "software": "novomodelo",
             "software_version": "0.0.0",
             "hostname": "legacy-host",
             "solver": "highs",
@@ -1337,7 +1337,7 @@ mod tests {
                 serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
             assert_eq!(value["software"], SOFTWARE_NAME);
             assert_eq!(value["software_version"], SOFTWARE_VERSION);
-            assert!(value.get("cobre_version").is_none(), "{value}");
+            assert!(value.get("novomodelo_version").is_none(), "{value}");
         }
     }
 

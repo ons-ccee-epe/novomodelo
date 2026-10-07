@@ -1,7 +1,7 @@
 //! Integration test: lag-12 LP coefficient for PAR(2)-A vs classical PAR.
 //!
 //! Builds two small synthetic fixtures (2 hydros × 24 stages × 12 seasons) and
-//! calls [`cobre_sddp::build_stage_templates_resolving_layout`] on each. No HiGHS solve, no
+//! calls [`novomodelo_sddp::build_stage_templates_resolving_layout`] on each. No HiGHS solve, no
 //! forward/backward pass, no filesystem I/O. Sub-second runtime; not gated
 //! behind `slow-tests`.
 //!
@@ -36,7 +36,7 @@
 #![allow(clippy::needless_update)]
 
 use chrono::NaiveDate;
-use cobre_core::{
+use novomodelo_core::{
     BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, DeficitSegment,
     EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
     LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
@@ -49,11 +49,11 @@ use cobre_core::{
         StageStateConfig,
     },
 };
-use cobre_sddp::{
+use novomodelo_sddp::{
     InflowNonNegativityMethod, ResolvedParameters, build_stage_templates_resolving_layout,
     hydro_models::PrepareHydroModelsResult,
 };
-use cobre_stochastic::{PrecomputedPar, normal::precompute::PrecomputedNormal};
+use novomodelo_stochastic::{PrecomputedPar, normal::precompute::PrecomputedNormal};
 
 mod common;
 use common::builders::{BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage};
@@ -101,7 +101,7 @@ const PHI_2: f64 = 0.2;
 /// `PrecomputedPar` builder can resolve lag-stage statistics for stage 0.
 fn build_par_a_fixture_core(
     annual: Option<&AnnualComponent>,
-) -> (cobre_core::System, PrecomputedPar) {
+) -> (novomodelo_core::System, PrecomputedPar) {
     let hydro_ids = [EntityId(1), EntityId(2)];
 
     let zero_penalties = HydroPenalties {
@@ -321,7 +321,7 @@ fn build_par_a_fixture_core(
 }
 
 /// PAR(2)-A fixture: [`build_par_a_fixture_core`] with the annual component present.
-fn build_par_a_fixture() -> (cobre_core::System, PrecomputedPar) {
+fn build_par_a_fixture() -> (novomodelo_core::System, PrecomputedPar) {
     let annual = AnnualComponent {
         coefficient: PSI,
         mean_m3s: 1000.0,
@@ -332,7 +332,7 @@ fn build_par_a_fixture() -> (cobre_core::System, PrecomputedPar) {
 
 /// Classical PAR(2) fixture: [`build_par_a_fixture_core`] with no annual
 /// component; `max_par_order` stays at 2.
-fn build_classical_fixture() -> (cobre_core::System, PrecomputedPar) {
+fn build_classical_fixture() -> (novomodelo_core::System, PrecomputedPar) {
     build_par_a_fixture_core(None)
 }
 
@@ -345,7 +345,7 @@ fn build_classical_fixture() -> (cobre_core::System, PrecomputedPar) {
 /// Returns `None` when the entry is structurally absent (coefficient == 0 and
 /// not stored). Panics when more than one entry maps to `row_target`.
 fn find_csc_entry(
-    template: &cobre_solver::StageTemplate,
+    template: &novomodelo_solver::StageTemplate,
     col_idx: usize,
     row_target: usize,
 ) -> Option<f64> {

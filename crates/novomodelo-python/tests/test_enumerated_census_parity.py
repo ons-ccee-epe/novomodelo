@@ -1,12 +1,12 @@
 """CLI / Python parity for the enumerated (census) simulation.
 
-`cargo test --workspace` never builds `cobre-python` (it is workspace-excluded —
+`cargo test --workspace` never builds `novomodelo-python` (it is workspace-excluded —
 see `CONTRIBUTING.md`), so the Rust-side census gates in
-`crates/cobre-sddp/tests/simulation_integration.rs` and
-`crates/cobre-sddp/tests/mpi_wire.rs` say nothing about the Python write path.
+`crates/novomodelo-sddp/tests/simulation_integration.rs` and
+`crates/novomodelo-sddp/tests/mpi_wire.rs` say nothing about the Python write path.
 This module closes that gap for `simulation.selection = enumerated`: it drives
 a small `K = 2` census through both the compiled CLI binary and
-`cobre.Study.train()` / `cobre.Study.simulate()`, then asserts the two output
+`novomodelo.Study.train()` / `novomodelo.Study.simulate()`, then asserts the two output
 trees agree on `scenario_summary.parquet`'s `mean_cost`/`std_cost`/
 `probability` columns and on the per-entity `thermals` simulation output.
 
@@ -18,13 +18,13 @@ stage 0, two leaves at stage 1 under non-uniform declared probabilities) and
 its `config.json` `training`/`simulation` selections switched to `enumerated`.
 `num_openings: 1` on both stages is left untouched — the K-fan shape comes
 entirely from the declared nodes/transitions, exactly mirroring
-`cobre_sddp::test_support::k_fan_policy_graph`'s construction, never from a
+`novomodelo_sddp::test_support::k_fan_policy_graph`'s construction, never from a
 within-node opening count (which the enumerated engine's admission gate
 requires to stay `1`).
 
 Run with (from the repo root, after `maturin develop --release
---manifest-path crates/cobre-python/Cargo.toml`):
-    pytest crates/cobre-python/tests/test_enumerated_census_parity.py -v
+--manifest-path crates/novomodelo-python/Cargo.toml`):
+    pytest crates/novomodelo-python/tests/test_enumerated_census_parity.py -v
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from _cobre_cli import run_cli
+from _novomodelo_cli import run_cli
 
 _REPO_ROOT = pathlib.Path(__file__).parents[3]
 _D01_CASE = _REPO_ROOT / "examples" / "deterministic" / "d01-thermal-dispatch"
@@ -141,15 +141,15 @@ def census_python_output(
     census_case_dir: pathlib.Path,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> pathlib.Path:
-    """Run the census case via `cobre.Study.train()` / `.simulate()`.
+    """Run the census case via `novomodelo.Study.train()` / `.simulate()`.
 
-    Drives the lower-level `Study` API (not the `cobre.run.run()` convenience
+    Drives the lower-level `Study` API (not the `novomodelo.run.run()` convenience
     wrapper) so the test genuinely exercises `Study.simulate` against a
     trained `Policy`, per this gate's charter.
     """
-    cobre = pytest.importorskip("cobre")
+    novomodelo = pytest.importorskip("novomodelo")
     output_dir = tmp_path_factory.mktemp("census_python_out")
-    study = cobre.Study(str(census_case_dir), output_dir=str(output_dir))
+    study = novomodelo.Study(str(census_case_dir), output_dir=str(output_dir))
     policy = study.train()
     study.simulate(policy)
     return output_dir
@@ -195,7 +195,7 @@ def test_cli_python_scenario_summary_bit_for_bit(
     `mean_cost`/`std_cost` are not columns of this table (they live in
     `metadata.json`); this table's per-scenario `discounted_immediate_cost`
     and `probability` columns are what R6 requires to match exactly, and both
-    write paths converge on `cobre_io::write_scenario_summary`.
+    write paths converge on `novomodelo_io::write_scenario_summary`.
     """
     cli_table = _scenario_summary_table(census_cli_output).sort_by(
         [("scenario_id", "ascending")]

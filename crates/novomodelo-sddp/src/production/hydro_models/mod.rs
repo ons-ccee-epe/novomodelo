@@ -4,9 +4,9 @@
 //! hyperplanes) and per-hydro evaporation models from the case directory, bundles
 //! them into a `PrepareHydroModelsResult`, and produces a display summary.
 //!
-//! These types and functions live in `cobre-sddp` because they are
+//! These types and functions live in `novomodelo-sddp` because they are
 //! algorithm-specific (FPHA hyperplane approximation is an SDDP concept). They
-//! must not be placed in `cobre-core`.
+//! must not be placed in `novomodelo-core`.
 //!
 //! The orchestration entry points (`prepare_hydro_models`,
 //! `prepare_hydro_models_from_artifacts`) and the private
@@ -14,23 +14,23 @@
 //! `evaporation`, `summary`, and `export` submodules own the rest.
 //!
 //! Every public symbol is re-exported here so both the curated flat surface in
-//! `lib.rs` and the `cobre_sddp::hydro_models::Symbol` module path resolve to the
+//! `lib.rs` and the `novomodelo_sddp::hydro_models::Symbol` module path resolve to the
 //! same item regardless of which submodule owns it.
 
 use std::path::Path;
 
-use cobre_core::EntityId;
-use cobre_core::System;
-use cobre_io::CaseArtifacts;
-use cobre_io::HydroGeometryRow;
-use cobre_io::InputFile;
-use cobre_io::ValidationContext;
-use cobre_io::extensions::load_tailrace_curves;
-use cobre_io::load_fpha_hyperplanes;
-use cobre_io::load_hydro_energy_productivity;
-use cobre_io::load_hydro_geometry;
-use cobre_io::load_production_models;
-use cobre_io::validate_structure;
+use novomodelo_core::EntityId;
+use novomodelo_core::System;
+use novomodelo_io::CaseArtifacts;
+use novomodelo_io::HydroGeometryRow;
+use novomodelo_io::InputFile;
+use novomodelo_io::ValidationContext;
+use novomodelo_io::extensions::load_tailrace_curves;
+use novomodelo_io::load_fpha_hyperplanes;
+use novomodelo_io::load_hydro_energy_productivity;
+use novomodelo_io::load_hydro_geometry;
+use novomodelo_io::load_production_models;
+use novomodelo_io::validate_structure;
 
 use crate::SddpError;
 
@@ -85,10 +85,10 @@ pub fn prepare_hydro_models(
 }
 
 /// Variant of [`prepare_hydro_models`] consuming a pre-parsed
-/// [`cobre_io::CaseArtifacts`] bundle.
+/// [`novomodelo_io::CaseArtifacts`] bundle.
 ///
 /// Use this from any pipeline that has already called
-/// [`cobre_io::load_case_with_artifacts`]; it avoids re-parsing and re-validating.
+/// [`novomodelo_io::load_case_with_artifacts`]; it avoids re-parsing and re-validating.
 /// `timings`, when `Some`, records each fitting step's wall time.
 ///
 /// # Errors
@@ -152,9 +152,9 @@ pub fn prepare_hydro_models_from_artifacts(
     })
 }
 
-/// Build a [`cobre_io::CaseArtifacts`] by reading the case directory directly,
+/// Build a [`novomodelo_io::CaseArtifacts`] by reading the case directory directly,
 /// backing the legacy [`prepare_hydro_models`] signature; production pipelines
-/// should call [`cobre_io::load_case_with_artifacts`] so the full validation runs
+/// should call [`novomodelo_io::load_case_with_artifacts`] so the full validation runs
 /// once.
 fn load_artifacts_for_hydro_models(case_dir: &Path) -> Result<CaseArtifacts, SddpError> {
     let mut ctx = ValidationContext::new();
@@ -208,7 +208,7 @@ fn load_artifacts_for_hydro_models(case_dir: &Path) -> Result<CaseArtifacts, Sdd
 mod tests {
     // ── cross-path parity test ────────────────────────────────────────────────
 
-    /// `cobre-cli` builds hydro models two ways: rank 0 from the already-parsed
+    /// `novomodelo-cli` builds hydro models two ways: rank 0 from the already-parsed
     /// artifacts (`prepare_hydro_models_from_artifacts`), non-root ranks by
     /// re-reading the case directory (`prepare_hydro_models`). This pins that the
     /// two agree on a computed-FPHA case, where geometry-derived hyperplane fitting
@@ -217,13 +217,13 @@ mod tests {
     fn prepare_hydro_models_from_artifacts_matches_prepare_hydro_models_for_computed_fpha() {
         let case_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .expect("cobre-sddp parent dir must exist")
+            .expect("novomodelo-sddp parent dir must exist")
             .parent()
             .expect("crates parent dir must exist")
             .join("examples/deterministic/d07-fpha-computed");
 
-        let cobre_io::LoadedCase { system, artifacts } =
-            cobre_io::load_case_with_artifacts(&case_dir)
+        let novomodelo_io::LoadedCase { system, artifacts } =
+            novomodelo_io::load_case_with_artifacts(&case_dir)
                 .expect("d07-fpha-computed must load successfully");
 
         let from_artifacts =
@@ -258,13 +258,13 @@ mod tests {
     fn prepare_hydro_models_carries_sorted_vha_geometry() {
         let case_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .expect("cobre-sddp parent dir must exist")
+            .expect("novomodelo-sddp parent dir must exist")
             .parent()
             .expect("crates parent dir must exist")
             .join("examples/deterministic/d07-fpha-computed");
 
         let system =
-            cobre_io::load_case(&case_dir).expect("d07-fpha-computed must load successfully");
+            novomodelo_io::load_case(&case_dir).expect("d07-fpha-computed must load successfully");
         let result = super::prepare_hydro_models(&system, &case_dir, false)
             .expect("prepare_hydro_models must succeed");
 
@@ -301,18 +301,18 @@ mod tests {
         // parallel fit, so both must be pool-size invariant; this alias carries
         // them out of each fixed-size-pool resolve together.
         type FitOutputs = (
-            Vec<cobre_io::FphaHyperplaneRow>,
+            Vec<novomodelo_io::FphaHyperplaneRow>,
             Vec<super::FphaFitDeviationEntry>,
         );
 
         let case_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .expect("cobre-sddp parent dir must exist")
+            .expect("novomodelo-sddp parent dir must exist")
             .parent()
             .expect("crates parent dir must exist")
             .join("examples/deterministic/d31-backwater-reference-volume");
 
-        let system = cobre_io::load_case(&case_dir)
+        let system = novomodelo_io::load_case(&case_dir)
             .expect("d31-backwater-reference-volume must load successfully");
 
         // Resolve the FPHA export rows and the per-fit deviations inside a
@@ -335,7 +335,8 @@ mod tests {
             .iter()
             .map(|&n| resolve_under_pool(n))
             .collect();
-        let rows: Vec<&Vec<cobre_io::FphaHyperplaneRow>> = outputs.iter().map(|(r, _)| r).collect();
+        let rows: Vec<&Vec<novomodelo_io::FphaHyperplaneRow>> =
+            outputs.iter().map(|(r, _)| r).collect();
         let deviations: Vec<&Vec<super::FphaFitDeviationEntry>> =
             outputs.iter().map(|(_, d)| d).collect();
 
@@ -350,8 +351,8 @@ mod tests {
 
         // Bit-exact equality across pool sizes: ids, stage/plane ordering, and the
         // gamma coefficients (compared via `to_bits`, not float `==`).
-        let assert_bit_identical = |a: &[cobre_io::FphaHyperplaneRow],
-                                    b: &[cobre_io::FphaHyperplaneRow],
+        let assert_bit_identical = |a: &[novomodelo_io::FphaHyperplaneRow],
+                                    b: &[novomodelo_io::FphaHyperplaneRow],
                                     threads_a: usize,
                                     threads_b: usize| {
             assert_eq!(
@@ -452,15 +453,15 @@ mod tests {
     fn deviation_points_are_thread_count_invariant_when_on() {
         let case_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .expect("cobre-sddp parent dir must exist")
+            .expect("novomodelo-sddp parent dir must exist")
             .parent()
             .expect("crates parent dir must exist")
             .join("examples/deterministic/d07-fpha-computed");
 
         let system =
-            cobre_io::load_case(&case_dir).expect("d07-fpha-computed must load successfully");
+            novomodelo_io::load_case(&case_dir).expect("d07-fpha-computed must load successfully");
 
-        let resolve_under_pool = |n: usize| -> Vec<cobre_io::FphaDeviationPointRow> {
+        let resolve_under_pool = |n: usize| -> Vec<novomodelo_io::FphaDeviationPointRow> {
             rayon::ThreadPoolBuilder::new()
                 .num_threads(n)
                 .build()
@@ -473,7 +474,7 @@ mod tests {
         };
 
         let thread_counts = [1usize, 2, 4];
-        let outputs: Vec<Vec<cobre_io::FphaDeviationPointRow>> = thread_counts
+        let outputs: Vec<Vec<novomodelo_io::FphaDeviationPointRow>> = thread_counts
             .iter()
             .map(|&n| resolve_under_pool(n))
             .collect();
@@ -527,13 +528,13 @@ mod tests {
     fn deviation_points_off_is_empty_and_does_not_perturb_export_rows() {
         let case_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .expect("cobre-sddp parent dir must exist")
+            .expect("novomodelo-sddp parent dir must exist")
             .parent()
             .expect("crates parent dir must exist")
             .join("examples/deterministic/d07-fpha-computed");
 
         let system =
-            cobre_io::load_case(&case_dir).expect("d07-fpha-computed must load successfully");
+            novomodelo_io::load_case(&case_dir).expect("d07-fpha-computed must load successfully");
 
         let off = super::prepare_hydro_models(&system, &case_dir, false)
             .expect("prepare_hydro_models (off) must succeed");

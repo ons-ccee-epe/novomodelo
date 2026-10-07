@@ -3,17 +3,17 @@
 The contract LP adds a NEW simulation output file
 (`simulation/contracts/scenario_id=NNNN/data.parquet`). The Python-parity hard
 rule (`CLAUDE.md`) requires every output the CLI writes to also be written by the
-`cobre-python` bindings, so this new file must be confirmed to flow through the
+`novomodelo-python` bindings, so this new file must be confirmed to flow through the
 Python paths.
 
-The committed architecture routes all three surfaces (the `cobre` CLI, the
-`cobre.Study.simulate` binding, and the module-level `cobre.run.run`) through a
+The committed architecture routes all three surfaces (the `novomodelo` CLI, the
+`novomodelo.Study.simulate` binding, and the module-level `novomodelo.run.run`) through a
 single shared `write_simulation_results` call, and the writer is schema-driven
 and already emits the contract partition. This module is the guard that proves it
 end-to-end: it loads the D41 energy-contracts study (the only case shipping
 `system/energy_contracts.json`), runs it through both Python surfaces, and asserts
 the partition appears with the exact 8-field schema. It also subprocesses the
-`cobre` CLI binary and compares the contract rows column-by-column to the Python
+`novomodelo` CLI binary and compares the contract rows column-by-column to the Python
 output (CLI/Python row parity), and asserts the symmetric negative — a
 zero-contract study produces no contract partition — so a future regression that
 emits an empty partition (or drops the populated one) fails loudly.
@@ -26,7 +26,7 @@ ship simulation disabled. The zero-contract case (`examples/1dtoy`) already ship
 simulation enabled, so the symmetric-negative test uses it unchanged.
 
 Run with (from the repo root):
-    pytest crates/cobre-python/tests/test_contract_output_parity.py -v
+    pytest crates/novomodelo-python/tests/test_contract_output_parity.py -v
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ import shutil
 
 import pyarrow.parquet as pq
 
-from _cobre_cli import run_cli
+from _novomodelo_cli import run_cli
 
 # The D41 energy-contracts case is the only example shipping
 # system/energy_contracts.json, so the only case whose run produces a contracts/
@@ -52,7 +52,7 @@ CONTRACT_CASE = _REPO_ROOT / "examples" / "deterministic" / "d41-energy-contract
 ZERO_CONTRACT_CASE = _REPO_ROOT / "examples" / "1dtoy"
 
 # The exact 8 fields of the contracts output schema. The schema is owned by
-# `contracts_schema()` in cobre-io's schemas.rs; this set mirrors its shape so a
+# `contracts_schema()` in novomodelo-io's schemas.rs; this set mirrors its shape so a
 # schema drift (added/removed/renamed column) fails this test. `energy_mwh` is the
 # writer-derived column, present in the parquet even though it is not a
 # `SimulationContractResult` struct field.
@@ -146,14 +146,14 @@ def test_study_simulate_emits_contract_output_with_schema(
     tmp_path: pathlib.Path,
 ) -> None:
     """Study.train().simulate() emits the contract partition with the 8-field
-    schema, and cobre.results surfaces the rows.
+    schema, and novomodelo.results surfaces the rows.
 
-    Covers the `cobre.Study` Python surface: a successful load + clean validate,
+    Covers the `novomodelo.Study` Python surface: a successful load + clean validate,
     a `simulation/contracts/` directory with at least one `data.parquet`, a
     Parquet schema equal to exactly the 8 contract fields, and a non-empty read
-    through `cobre.results(entity_type="contracts")`.
+    through `novomodelo.results(entity_type="contracts")`.
     """
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     assert CONTRACT_CASE.is_dir(), (
         f"the D41 energy-contracts fixture must exist at {CONTRACT_CASE}"
@@ -164,7 +164,7 @@ def test_study_simulate_emits_contract_output_with_schema(
     _make_case_with_simulation(CONTRACT_CASE, case_dir)
 
     out = tmp_path / "study_out"
-    study = cobre.Study(str(case_dir), output_dir=str(out))
+    study = novomodelo.Study(str(case_dir), output_dir=str(out))
 
     report = study.validate()
     assert report["valid"] is True, (
@@ -183,7 +183,7 @@ def test_study_simulate_emits_contract_output_with_schema(
     )
 
     # Reading the Parquet directly yields exactly the 8 schema fields (the
-    # cobre.results read adds a synthetic scenario_id partition column, so the
+    # novomodelo.results read adds a synthetic scenario_id partition column, so the
     # schema-equality assertion reads the file directly).
     schema_names = set(pq.read_schema(parquets[0]).names)
     assert schema_names == CONTRACT_SCHEMA_FIELDS, (
@@ -191,11 +191,13 @@ def test_study_simulate_emits_contract_output_with_schema(
         f"got {sorted(schema_names)}"
     )
 
-    # The read-side (cobre.results) surfaces the rows through the already-listed
+    # The read-side (novomodelo.results) surfaces the rows through the already-listed
     # "contracts" entity type. Each row carries the 8 schema fields plus the
     # partition-derived scenario_id.
-    rows = cobre.results.load_simulation(str(out), entity_type="contracts")
-    assert len(rows) > 0, "cobre.results must surface contract rows for the D41 study"
+    rows = novomodelo.results.load_simulation(str(out), entity_type="contracts")
+    assert len(rows) > 0, (
+        "novomodelo.results must surface contract rows for the D41 study"
+    )
     assert CONTRACT_SCHEMA_FIELDS <= set(rows[0].keys()), (
         "each contract row must carry the 8 schema fields; "
         f"got {sorted(rows[0].keys())}"
@@ -203,14 +205,14 @@ def test_study_simulate_emits_contract_output_with_schema(
 
 
 def test_run_via_study_emits_contract_output(tmp_path: pathlib.Path) -> None:
-    """The module-level cobre.run.run entry point emits the contract partition for
+    """The module-level novomodelo.run.run entry point emits the contract partition for
     the same fixture.
 
-    Covers the second Python surface: cobre.run.run runs train + simulate and must
+    Covers the second Python surface: novomodelo.run.run runs train + simulate and must
     produce simulation/contracts/.../data.parquet identically to Study.simulate
     (both converge on the shared write_simulation_results call).
     """
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     assert CONTRACT_CASE.is_dir(), (
         f"the D41 energy-contracts fixture must exist at {CONTRACT_CASE}"
@@ -221,11 +223,11 @@ def test_run_via_study_emits_contract_output(tmp_path: pathlib.Path) -> None:
     _make_case_with_simulation(CONTRACT_CASE, case_dir)
 
     out = tmp_path / "run_out"
-    cobre.run.run(str(case_dir), output_dir=str(out))
+    novomodelo.run.run(str(case_dir), output_dir=str(out))
 
     parquets = _contract_parquets(out)
     assert len(parquets) > 0, (
-        "cobre.run.run must emit at least one simulation/contracts/.../data.parquet"
+        "novomodelo.run.run must emit at least one simulation/contracts/.../data.parquet"
     )
 
     schema_names = set(pq.read_schema(parquets[0]).names)
@@ -240,14 +242,14 @@ def test_cli_python_contract_row_parity(
 ) -> None:
     """The CLI and the Python surface emit identical contract rows.
 
-    Runs the D41 case (simulation enabled) through both the compiled `cobre` CLI
-    (`cobre run --output`) and `cobre.run.run`, reads both contract parquets, sorts
+    Runs the D41 case (simulation enabled) through both the compiled `novomodelo` CLI
+    (`novomodelo run --output`) and `novomodelo.run.run`, reads both contract parquets, sorts
     each by `(stage_id, block_id, contract_id)`, and asserts row-for-row value
     equality on the 8 shared schema columns with a float tolerance. This is the
     end-to-end Python-parity check: if the CLI and Python paths diverge between the
     LP solve and the Parquet write, this fails.
     """
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     assert CONTRACT_CASE.is_dir(), (
         f"the D41 energy-contracts fixture must exist at {CONTRACT_CASE}"
@@ -261,7 +263,7 @@ def test_cli_python_contract_row_parity(
     run_cli(case_dir, out_cli, cli_binary)
 
     out_py = tmp_path / "py_out"
-    cobre.run.run(str(case_dir), output_dir=str(out_py))
+    novomodelo.run.run(str(case_dir), output_dir=str(out_py))
 
     cli_parquets = _contract_parquets(out_cli)
     py_parquets = _contract_parquets(out_py)
@@ -303,14 +305,14 @@ def test_zero_contract_study_emits_no_contract_output(
     is symmetric, so a regression that always created the directory (an empty
     partition) would fail here.
     """
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     assert ZERO_CONTRACT_CASE.is_dir(), (
         f"the zero-contract case must exist at {ZERO_CONTRACT_CASE}"
     )
 
     out = tmp_path / "zero_out"
-    cobre.run.run(str(ZERO_CONTRACT_CASE), output_dir=str(out))
+    novomodelo.run.run(str(ZERO_CONTRACT_CASE), output_dir=str(out))
 
     # The simulation must have run (so absence is meaningful, not a skipped sim).
     assert (out / "simulation").is_dir(), (

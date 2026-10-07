@@ -19,8 +19,8 @@
 
 use std::collections::HashMap;
 
-use cobre_core::EntityId;
-use cobre_io::extensions::TailraceCurveRow;
+use novomodelo_core::EntityId;
+use novomodelo_io::extensions::TailraceCurveRow;
 
 use super::error::FphaFittingError;
 
@@ -419,8 +419,8 @@ pub(crate) fn build_tailrace_families_map(
     clippy::similar_names
 )]
 mod tests {
-    use cobre_core::EntityId;
-    use cobre_io::extensions::TailraceCurveRow;
+    use novomodelo_core::EntityId;
+    use novomodelo_io::extensions::TailraceCurveRow;
 
     use super::super::error::FphaFittingError;
     use super::{TailraceFamilies, TailraceSegments, build_tailrace_families_map};

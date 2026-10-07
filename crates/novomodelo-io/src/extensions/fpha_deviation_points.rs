@@ -28,7 +28,7 @@
 //! order is preserved as written (the canonical `(V, Q)` walk).
 
 use arrow::array::Array;
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
@@ -42,8 +42,8 @@ use crate::parquet_helpers::{
 /// # Examples
 ///
 /// ```
-/// use cobre_io::extensions::FphaDeviationPointRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::extensions::FphaDeviationPointRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = FphaDeviationPointRow {
 ///     hydro_id: EntityId::from(66),

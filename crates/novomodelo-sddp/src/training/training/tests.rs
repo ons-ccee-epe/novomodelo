@@ -15,8 +15,8 @@ use std::collections::BTreeMap;
 use std::sync::mpsc;
 
 use chrono::NaiveDate;
-use cobre_comm::{CommData, CommError, Communicator, ReduceOp};
-use cobre_core::{
+use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
+use novomodelo_core::{
     Bus, EntityId, SystemBuilder, TrainingEvent, WorkerTimingPhase,
     scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, SamplingScheme,
@@ -26,10 +26,10 @@ use cobre_core::{
         StageStateConfig,
     },
 };
-use cobre_solver::{
+use novomodelo_solver::{
     Basis, BasisStatus, RowBatch, SolverError, SolverInterface, SolverStatistics, StageTemplate,
 };
-use cobre_stochastic::{
+use novomodelo_stochastic::{
     ClassSchemes, OpeningTreeInputs, StochasticContext, build_stochastic_context,
 };
 
@@ -108,9 +108,9 @@ impl MockSolver {
 }
 
 impl SolverInterface for MockSolver {
-    type Profile = cobre_solver::ActiveProfile;
+    type Profile = novomodelo_solver::ActiveProfile;
 
-    fn apply_profile(&mut self, _profile: &cobre_solver::ActiveProfile) {}
+    fn apply_profile(&mut self, _profile: &novomodelo_solver::ActiveProfile) {}
 
     fn solver_name_version(&self) -> String {
         "MockSolver 0.0.0".to_string()
@@ -123,7 +123,7 @@ impl SolverInterface for MockSolver {
     fn solve(
         &mut self,
         _basis: Option<&Basis>,
-    ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+    ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
         let call = self.call_count;
         self.call_count += 1;
         if self.infeasible_on_first && call == 0 {
@@ -131,7 +131,7 @@ impl SolverInterface for MockSolver {
         }
         let obj = self.objectives[call % self.objectives.len()];
         // Return primal[3] = 0.0 so forward computes stage_cost = objective - primal[theta] = obj.
-        Ok(cobre_solver::SolutionView {
+        Ok(novomodelo_solver::SolutionView {
             objective: obj,
             primal: &[0.0, 0.0, 0.0, 0.0],
             dual: &[0.0, 0.0],
@@ -205,14 +205,14 @@ impl Communicator for StubComm {
 
 /// Minimal `StochasticContext` for `train` with `n_stages` stages, one hydro, branching factor `n_openings`.
 fn make_stochastic_context(n_stages: usize, n_openings: usize) -> StochasticContext {
-    use cobre_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::InflowModel;
+    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::InflowModel;
 
     let bus = Bus {
         id: EntityId(0),
         name: "B0".to_string(),
         operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![cobre_core::DeficitSegment {
+        deficit_segments: vec![novomodelo_core::DeficitSegment {
             depth_mw: None,
             cost_per_mwh: 1000.0,
         }],

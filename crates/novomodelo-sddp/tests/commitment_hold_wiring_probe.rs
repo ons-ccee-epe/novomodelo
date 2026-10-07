@@ -16,23 +16,23 @@
 mod common;
 
 use chrono::{NaiveDate, TimeDelta};
-use cobre_core::entities::thermal::AnticipatedConfig;
-use cobre_core::{
+use novomodelo_core::entities::thermal::AnticipatedConfig;
+use novomodelo_core::{
     BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, EntityId,
     HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds, LineStagePenalties,
     NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
     ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
 };
-use cobre_io::config::{
+use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig, InflowNonNegativityMethod,
     ModelingConfig, ParallelismConfig, PolicyConfig, RowSelectionConfig, SimulationConfig,
     StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
     UpperBoundEvaluationConfig,
 };
-use cobre_io::{
+use novomodelo_io::{
     EntitySlot, OwnedPolicyCutRecord, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, StageCutsReadResult,
 };
-use cobre_sddp::{
+use novomodelo_sddp::{
     LEGACY_COST_SCALE_FACTOR, SddpError, compare_manifest_slot_identity,
     rescale_checkpoint_cuts_for_load,
 };

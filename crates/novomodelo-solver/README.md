@@ -1,6 +1,6 @@
-# cobre-solver
+# novomodelo-solver
 
-LP/MIP solver abstraction for the [Cobre](https://github.com/cobre-rs/cobre)
+LP/MIP solver abstraction for the [Novomodelo](https://github.com/ons-ccee-epe/novomodelo)
 power systems ecosystem.
 
 Defines a backend-agnostic `SolverInterface` trait for LP and MIP problem
@@ -16,10 +16,10 @@ exists behind the `clp` feature (off by default); it implements the same
 
 ## When to Use
 
-Depend on `cobre-solver` directly when you are writing an optimization
+Depend on `novomodelo-solver` directly when you are writing an optimization
 algorithm that needs to build and solve LP subproblems and you want
 backend-portability without coupling to HiGHS internals. If you only need to
-run the full SDDP pipeline, depend on `cobre-sddp` instead, which manages the
+run the full SDDP pipeline, depend on `novomodelo-sddp` instead, which manages the
 solver lifecycle for you.
 
 ## Features
@@ -50,7 +50,7 @@ git submodule update --init --recursive
 ```
 
 This fetches the Clp (`releases/1.17.11`) and CoinUtils (`releases/2.11.13`)
-sources into `crates/cobre-solver/vendor/`.
+sources into `crates/novomodelo-solver/vendor/`.
 
 The first build with `--features clp` runs a CoinUtils + Clp cmake superbuild
 (approximately 150 C++ translation units), which takes several minutes. The
@@ -78,10 +78,10 @@ Each backend's test suite can be run in isolation, building only that solver:
 
 ```
 # HiGHS backend (default features)
-cargo test -p cobre-solver --features highs
+cargo test -p novomodelo-solver --features highs
 
 # CLP backend only (HiGHS excluded)
-cargo test -p cobre-solver --no-default-features --features clp
+cargo test -p novomodelo-solver --no-default-features --features clp
 ```
 
 Both invocations compile, run, and lint clean on their own: the test suite is
@@ -101,7 +101,7 @@ includes at least one runnable end-to-end integration test.
 | `backends::highs`         | `HighsSolver` and `HighsProfile` — the HiGHS backend (feature-gated behind `highs`)                                         |
 | `backends::clp`           | `ClpSolver` and `ClpProfile` — the CLP backend (feature-gated behind `clp`)                                                 |
 | `backends::profiled`      | `ProfiledSolver<S>` — generic per-phase profile-tracking wrapper over any `SolverInterface`                                 |
-| `ffi::highs` / `ffi::clp` | Raw `unsafe` FFI bindings to the `cobre_highs_*` / `cobre_clp_*` C wrapper functions                                        |
+| `ffi::highs` / `ffi::clp` | Raw `unsafe` FFI bindings to the `novomodelo_highs_*` / `novomodelo_clp_*` C wrapper functions                                        |
 
 The `backends::highs` and `ffi::highs` modules compile only with the `highs`
 feature; `backends::clp` and `ffi::clp` only with `clp`. `trait_def`, `types`,
@@ -122,7 +122,7 @@ pub trait SolverInterface: Send {
 Resolved as a **generic type parameter at compile time** (never `dyn
 SolverInterface`), keeping virtual dispatch off the hot path — the same
 compile-time monomorphization pattern used by `Communicator` in
-[cobre-comm](../cobre-comm/README.md). Requires `Send` but not `Sync`: a
+[novomodelo-comm](../novomodelo-comm/README.md). Requires `Send` but not `Sync`: a
 solver instance holds mutable C-library state (factorization workspace) that
 is not thread-safe, so each worker thread owns exactly one instance.
 
@@ -212,7 +212,7 @@ failure was an unbounded status).
 | `simplex_iteration_limit`           | `u32` | `0` (heuristic: `num_cols * 50`, capped at `100_000`)             |
 | `ipm_iteration_limit`               | `u32` | `10_000`                                                          |
 | `simplex_dual_edge_weight_strategy` | `i32` | `1` (Devex)                                                       |
-| `simplex_scale_strategy`            | `i32` | `0` (off — the cobre prescaler already normalizes matrix entries) |
+| `simplex_scale_strategy`            | `i32` | `0` (off — the novomodelo prescaler already normalizes matrix entries) |
 | `simplex_price_strategy`            | `i32` | `1` (Row)                                                         |
 
 `ProfiledSolver<S>` (`backends::profiled`) wraps any `SolverInterface`
@@ -225,15 +225,15 @@ zero inner calls when they match.
 
 ### Git submodule
 
-HiGHS is vendored as a git submodule at `crates/cobre-solver/vendor/HiGHS/`. Before building
-`cobre-solver` for the first time (or after a fresh clone), initialize the
+HiGHS is vendored as a git submodule at `crates/novomodelo-solver/vendor/HiGHS/`. Before building
+`novomodelo-solver` for the first time (or after a fresh clone), initialize the
 submodule:
 
 ```
 git submodule update --init --recursive
 ```
 
-The build script checks for `crates/cobre-solver/vendor/HiGHS/CMakeLists.txt` and panics with a
+The build script checks for `crates/novomodelo-solver/vendor/HiGHS/CMakeLists.txt` and panics with a
 clear error message if the submodule is not initialized.
 
 ### System dependencies
@@ -248,11 +248,11 @@ clear error message if the submodule is not initialized.
 ## Testing
 
 ```
-cargo test -p cobre-solver --features highs
+cargo test -p novomodelo-solver --features highs
 ```
 
 This requires cmake, a C/C++ compiler, and an initialized
-`crates/cobre-solver/vendor/HiGHS/` submodule (see
+`crates/novomodelo-solver/vendor/HiGHS/` submodule (see
 [Build requirements](#build-requirements)). See
 [Per-solver test invocations](#per-solver-test-invocations) above for running
 the CLP backend's suite in isolation.
@@ -278,10 +278,10 @@ the CLP backend's suite in isolation.
 
 | Resource   | URL                                                        |
 | ---------- | ---------------------------------------------------------- |
-| Docs site  | <https://docs.cobre-rs.dev/>                               |
+| Docs site  | <https://docs.novomodelo.invalid/>                               |
 | API Docs   | <https://docs.rs/cobre-solver/latest/cobre_solver/>        |
-| Repository | <https://github.com/cobre-rs/cobre>                        |
-| CHANGELOG  | <https://github.com/cobre-rs/cobre/blob/main/CHANGELOG.md> |
+| Repository | <https://github.com/ons-ccee-epe/novomodelo>                        |
+| CHANGELOG  | <https://github.com/ons-ccee-epe/novomodelo/blob/main/CHANGELOG.md> |
 
 ## Status
 

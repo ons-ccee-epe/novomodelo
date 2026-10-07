@@ -3,8 +3,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use cobre_core::EntityId;
-use cobre_core::scenario::LoadModel;
+use novomodelo_core::EntityId;
+use novomodelo_core::scenario::LoadModel;
 
 use crate::indexer::{EntityPositions, HydroCellIndex, StudyDimensions};
 use crate::resolved_parameters::ResolvedParameters;

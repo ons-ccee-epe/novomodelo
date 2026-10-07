@@ -8,14 +8,16 @@ use std::any::TypeId;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use cobre_comm::{CommData, CommError, Communicator, ReduceOp};
-use cobre_core::System;
-use cobre_io::config::StoppingRuleConfig;
-use cobre_io::output::policy::read_policy_checkpoint;
-use cobre_sddp::policy::full_fcf_load::{FullFcfLoadKind, check_full_fcf_load, locate_policy_dir};
-use cobre_sddp::policy::orchestration::{CheckpointParams, write_checkpoint};
-use cobre_sddp::{SddpError, StopMask, StudySetup, TrainingOutcome, TrainingResult};
-use cobre_solver::ActiveSolver;
+use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
+use novomodelo_core::System;
+use novomodelo_io::config::StoppingRuleConfig;
+use novomodelo_io::output::policy::read_policy_checkpoint;
+use novomodelo_sddp::policy::full_fcf_load::{
+    FullFcfLoadKind, check_full_fcf_load, locate_policy_dir,
+};
+use novomodelo_sddp::policy::orchestration::{CheckpointParams, write_checkpoint};
+use novomodelo_sddp::{SddpError, StopMask, StudySetup, TrainingOutcome, TrainingResult};
+use novomodelo_solver::ActiveSolver;
 use tempfile::TempDir;
 
 use common::{StubComm, fresh_system_and_setup_with};

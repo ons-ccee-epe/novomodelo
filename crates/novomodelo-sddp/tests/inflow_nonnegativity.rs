@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::mpsc;
 
 use chrono::NaiveDate;
-use cobre_core::{
+use novomodelo_core::{
     BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, DeficitSegment,
     EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
     LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
@@ -38,7 +38,7 @@ use cobre_core::{
         StageStateConfig,
     },
 };
-use cobre_sddp::{
+use novomodelo_sddp::{
     Phase, ResolvedParameters, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet,
     TrainingConfig, build_stage_templates_resolving_layout,
     config::{CutManagementConfig, EventConfig, LoopConfig},
@@ -59,8 +59,8 @@ use cobre_sddp::{
     train,
     workspace::{SolverWorkspace, WorkspaceSizing},
 };
-use cobre_solver::ActiveSolver;
-use cobre_stochastic::{
+use novomodelo_solver::ActiveSolver;
+use novomodelo_stochastic::{
     ClassSchemes, OpeningTreeInputs, PrecomputedNormal, PrecomputedPar, StochasticContext,
     build_stochastic_context,
 };
@@ -103,9 +103,9 @@ fn study_dims_for(has_inflow_penalty: bool) -> StudyDimensions {
 const N_STAGES: usize = 3;
 const N_HYDROS: usize = 2;
 
-fn build_system() -> cobre_core::System {
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::InflowModel;
+fn build_system() -> novomodelo_core::System {
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::InflowModel;
 
     let zero_entity_penalties = HydroPenalties {
         spillage_cost: 0.0,
@@ -362,7 +362,7 @@ fn build_stochastic() -> StochasticContext {
 
 /// All resources needed to run training and simulation.
 struct Fixture {
-    stage_templates: cobre_sddp::StageTemplates,
+    stage_templates: novomodelo_sddp::StageTemplates,
     stochastic: StochasticContext,
     /// Production stage-0 geometry (the role-(b) equipment/slack column ranges),
     /// cloned from `stage_templates.geometry_per_stage[0]`.
@@ -459,8 +459,8 @@ fn build_fixture_with_method(inflow_method: InflowNonNegativityMethod) -> Fixtur
 fn base_stage_context<'a>(
     fx: &'a Fixture,
     state_boxes: &'a [StateBox],
-) -> cobre_sddp::test_support::StageContextFixture<'a> {
-    cobre_sddp::test_support::StageContextFixture::from_stage_templates(
+) -> novomodelo_sddp::test_support::StageContextFixture<'a> {
+    novomodelo_sddp::test_support::StageContextFixture::from_stage_templates(
         &fx.stage_templates,
         state_boxes,
     )
@@ -469,7 +469,7 @@ fn base_stage_context<'a>(
 fn train_fixture(
     fx: &Fixture,
     iterations: u64,
-) -> Result<cobre_sddp::TrainingOutcome, cobre_sddp::SddpError> {
+) -> Result<novomodelo_sddp::TrainingOutcome, novomodelo_sddp::SddpError> {
     let n_stages = fx.stage_templates.templates.len();
     let mut fcf = FutureCostFunction::new(n_stages, fx.state.n_state, 1, 20, &vec![0; n_stages]);
     let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
@@ -509,7 +509,7 @@ fn train_fixture(
         &mut fcf,
         &stage_ctx,
         &TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&fx.stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
             cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, n_stages),
@@ -539,7 +539,7 @@ fn train_fixture(
 fn simulate_fixture(
     fx: &Fixture,
     fcf: &FutureCostFunction,
-) -> Result<Vec<cobre_sddp::SimulationScenarioResult>, cobre_sddp::SimulationError> {
+) -> Result<Vec<novomodelo_sddp::SimulationScenarioResult>, novomodelo_sddp::SimulationError> {
     let (result_tx, result_rx) = mpsc::sync_channel(32);
 
     let collector_thread = std::thread::spawn(move || {
@@ -551,7 +551,7 @@ fn simulate_fixture(
     });
 
     let sim_training_ctx = TrainingContext {
-        node_graph: &cobre_sddp::test_support::chain_node_graph(&fx.stochastic),
+        node_graph: &novomodelo_sddp::test_support::chain_node_graph(&fx.stochastic),
         horizon: &fx.horizon,
         state: &fx.state,
         cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, N_STAGES),
@@ -593,7 +593,7 @@ fn simulate_fixture(
     let ec = EnergyConversionSet::new(
         vec![vec![zero_ec; N_STAGES]; N_HYDROS],
         vec![vec![0.0_f64; N_STAGES]; N_HYDROS],
-        &cobre_sddp::test_support::minimal_hydros(N_HYDROS),
+        &novomodelo_sddp::test_support::minimal_hydros(N_HYDROS),
         N_STAGES,
     );
 
@@ -610,7 +610,7 @@ fn simulate_fixture(
         },
         SimulationOutputSpec {
             result_tx: &result_tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &fx.stage_templates.block_hours_per_stage,
             entity_counts: &fx.entity_counts,
             generic_constraint_row_entries: &fx.stage_templates.generic_constraint_row_entries,
@@ -639,7 +639,7 @@ fn simulate_fixture(
         .expect("collector thread must not panic"))
 }
 
-fn has_nonzero_slack(scenario_results: &[cobre_sddp::SimulationScenarioResult]) -> bool {
+fn has_nonzero_slack(scenario_results: &[novomodelo_sddp::SimulationScenarioResult]) -> bool {
     scenario_results.iter().any(|scenario| {
         scenario.stages.iter().any(|stage| {
             stage

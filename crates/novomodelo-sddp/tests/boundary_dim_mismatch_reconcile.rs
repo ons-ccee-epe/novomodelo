@@ -26,32 +26,32 @@
 use std::collections::BTreeSet;
 
 use chrono::{Duration, NaiveDate};
-use cobre_core::entities::hydro::HydroGenerationModel;
-use cobre_core::entities::thermal::AnticipatedConfig;
-use cobre_core::scenario::InflowModel;
-use cobre_core::temporal::{Block, Stage};
-use cobre_core::{
+use novomodelo_core::entities::hydro::HydroGenerationModel;
+use novomodelo_core::entities::thermal::AnticipatedConfig;
+use novomodelo_core::scenario::InflowModel;
+use novomodelo_core::temporal::{Block, Stage};
+use novomodelo_core::{
     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
     HydroPastDefluence, HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds,
     PostStudyStage, PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds,
     System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
 };
-use cobre_io::config::{
+use novomodelo_io::config::{
     BoundaryPolicy, Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
     InflowNonNegativityMethod, ModelingConfig, ParallelismConfig, PolicyConfig, RowSelectionConfig,
     SimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
     TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
-use cobre_io::{
+use novomodelo_io::{
     ENTITY_SLOT_DATE_SENTINEL, EntitySlot, PolicyCutRecord, ProducerBlock, StageCutsPayload,
     StateFamily, encode_slot_date, write_policy_checkpoint,
 };
-use cobre_sddp::test_support::{
+use novomodelo_sddp::test_support::{
     anticipated_slot_at, chain_graph_manifest, inflow_lag_slot, storage_slot, transit_bucket_slot,
     ymd,
 };
-use cobre_sddp::{BoundaryLoadRequest, inject_boundary_cuts, load_boundary_cuts};
-use cobre_solver::ActiveSolver;
+use novomodelo_sddp::{BoundaryLoadRequest, inject_boundary_cuts, load_boundary_cuts};
+use novomodelo_solver::ActiveSolver;
 
 mod common;
 use common::StubComm;
@@ -68,7 +68,7 @@ use common::builders::{
 /// the fan-out coefficients `newave_source_reconciles_into_decomp_current`
 /// asserts on.
 fn fixture_priced_date(pool: u32) -> NaiveDate {
-    cobre_sddp::test_support::fixture_priced_date(ymd(2026, 4, 1), pool)
+    novomodelo_sddp::test_support::fixture_priced_date(ymd(2026, 4, 1), pool)
 }
 
 fn producer_block() -> ProducerBlock {
@@ -76,7 +76,7 @@ fn producer_block() -> ProducerBlock {
         completed_iterations: 10,
         max_iterations: 50,
         forward_passes: 1,
-        ..cobre_sddp::test_support::producer_block()
+        ..novomodelo_sddp::test_support::producer_block()
     }
 }
 
@@ -114,7 +114,7 @@ fn write_source_checkpoint(
         graph_stage_id: -1,
         priced_state_date: encode_slot_date(fixture_priced_date(0)),
     };
-    let metadata = cobre_sddp::test_support::checkpoint_metadata(
+    let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
         1,
         chain_graph_manifest(1),
         ProducerBlock {
@@ -436,9 +436,9 @@ fn run_bounds() -> ResolvedBounds {
     )
 }
 
-fn run_penalties() -> cobre_core::resolved::ResolvedPenalties {
-    use cobre_core::HydroPenalties;
-    use cobre_core::resolved::{
+fn run_penalties() -> novomodelo_core::resolved::ResolvedPenalties {
+    use novomodelo_core::HydroPenalties;
+    use novomodelo_core::resolved::{
         BusStagePenalties, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
         PenaltiesDefaults, ResolvedPenalties,
     };

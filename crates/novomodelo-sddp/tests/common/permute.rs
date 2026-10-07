@@ -32,14 +32,14 @@ use tempfile::TempDir;
 
 /// `(case-relative path, top-level keys)` entries whose JSON array order
 /// carries no meaning: each resolves through an id-keyed lookup downstream —
-/// `cobre_io::stages::convert_stages` folds `pre_study_stages` into `stages`
-/// then `sort_by_key(|s| s.id)`; `cobre_io::initial_conditions::convert`
+/// `novomodelo_io::stages::convert_stages` folds `pre_study_stages` into `stages`
+/// then `sort_by_key(|s| s.id)`; `novomodelo_io::initial_conditions::convert`
 /// sorts every field by `hydro_id`/`thermal_id`; `System::hydros`/`thermals`
 /// canonicalize by `(operational_start_date, id)`; `resolve_load_factors`
 /// writes into a dense table keyed by `(bus_id, stage_id, block_id)`;
-/// `cobre_io::constraints::generic::convert` sorts `constraints` by `gc.id`;
-/// `cobre_io::system::pumping_stations::convert_pumping` sorts
-/// `pumping_stations` by `s.id`; `cobre_io::post_study_stages::convert_stages`
+/// `novomodelo_io::constraints::generic::convert` sorts `constraints` by `gc.id`;
+/// `novomodelo_io::system::pumping_stations::convert_pumping` sorts
+/// `pumping_stations` by `s.id`; `novomodelo_io::post_study_stages::convert_stages`
 /// sorts `stages` by `start_date` and `convert_thermal_bounds` sorts
 /// `thermal_bounds` by `(thermal_id, post_study_stage_index)`.
 const SHUFFLE_WHITELIST: &[(&str, &[&str])] = &[

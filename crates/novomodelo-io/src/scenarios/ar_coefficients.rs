@@ -22,10 +22,10 @@
 //!
 //! `coefficient` is the AR coefficient of the process normalized by the seasonal
 //! **sample std** sₘ (the `std_m3s` column of `inflow_seasonal_stats.parquet`),
-//! not by the innovation std σₘ. A model fitted outside Cobre must store
+//! not by the innovation std σₘ. A model fitted outside Novomodelo must store
 //! `coefficient = ψ · s_{m-ℓ}/s_m` against the same sₘ it reports in `std_m3s`;
 //! runtime reconstructs original-unit ψ and σ from the stored sₘ
-//! (`cobre-stochastic::par::precompute`), so an inconsistent sₘ silently
+//! (`novomodelo-stochastic::par::precompute`), so an inconsistent sₘ silently
 //! rescales the model. See the PAR(p) methodology, "Two planes".
 //!
 //! ## Output ordering
@@ -45,7 +45,7 @@
 //! - `stage_id` existence in the stages registry — Layer 3.
 //! - Lag contiguity (1, 2, …, p for each (hydro, stage)) — Layer 3/5.
 
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
@@ -63,8 +63,8 @@ use crate::parquet_helpers::{
 /// # Examples
 ///
 /// ```
-/// use cobre_io::scenarios::InflowArCoefficientRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::scenarios::InflowArCoefficientRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = InflowArCoefficientRow {
 ///     hydro_id: EntityId::from(1),
@@ -101,7 +101,7 @@ pub struct InflowArCoefficientRow {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::scenarios::parse_inflow_ar_coefficients;
+/// use novomodelo_io::scenarios::parse_inflow_ar_coefficients;
 /// use std::path::Path;
 ///
 /// let rows = parse_inflow_ar_coefficients(Path::new("scenarios/inflow_ar_coefficients.parquet"))

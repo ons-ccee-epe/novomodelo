@@ -3,7 +3,7 @@
 //! Captures the pre-scaling and post-scaling coefficient ranges of the stage template
 //! LPs. Written once after template build as a JSON diagnostic artifact.
 
-use cobre_solver::StageTemplate;
+use novomodelo_solver::StageTemplate;
 use serde::Serialize;
 
 /// Complete scaling report for all stages.
@@ -153,7 +153,7 @@ fn median(values: &[f64]) -> f64 {
     }
     let mut sorted = values.to_vec();
     // total_cmp, not partial_cmp: NaN lands in a deterministic position so the
-    // sort upholds declaration-order invariance (Cobre hard rule).
+    // sort upholds declaration-order invariance (Novomodelo hard rule).
     sorted.sort_by(f64::total_cmp);
     let n = sorted.len();
     if n.is_multiple_of(2) {

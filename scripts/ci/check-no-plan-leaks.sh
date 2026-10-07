@@ -37,7 +37,7 @@
 #   \bAC: |\bAC[0-9]\b|\bAC-[0-9] — acceptance-criteria tags ("AC:", "AC1",
 #                          "AC-3"). Deliberately colon/digit-anchored: the bare
 #                          word "AC" stays free for the electrical domain sense
-#                          (AC power flow) that cobre-flow will legitimately use.
+#                          (AC power flow) that novomodelo-flow will legitimately use.
 #
 # Section-reference pass (separate stage below, not part of PATTERN):
 #   `§<n>` references are gated UNLESS the same line anchors them to a named
@@ -60,7 +60,7 @@
 # ids ("D06", "D15") never collide (single-digit gate) and are always allowed.
 #
 # Scope: production source under crates/*/src/ (including the umbrella
-#   crates/cobre/src and the reserved stub crates), test/bench source under
+#   crates/novomodelo/src and the reserved stub crates), test/bench source under
 #   crates/*/tests/ and crates/*/benches/, CHANGELOG.md, and README.md.
 #   Vendored *.min.js files are excluded from every pass.
 #
@@ -84,7 +84,7 @@
 #   Known limitation (same as check-infra-genericity.sh): the exclusion
 #   assumes the test module is a tail block. Files with mid-file test modules
 #   followed by production code would incorrectly skip that trailing code. In
-#   practice, cobre files follow the tail-block convention.
+#   practice, novomodelo files follow the tail-block convention.
 #
 #   Non-.rs targets (CHANGELOG.md, README.md) have no cfg(test) concept
 #   and stay on the plain whole-file grep path.
@@ -119,25 +119,25 @@ readonly SECTION_REF='§[0-9]'
 readonly SECTION_REF_ALLOW='\.md|([Ss]pec|Structures|Scenarios|Entities|Principles|Model|paper.s)[] )]*[ (]?§'
 
 # .rs source directories: scanned per-file with the cfg(test) tail-block
-# exclusion (see header). The umbrella crates/cobre/src and the reserved stub
+# exclusion (see header). The umbrella crates/novomodelo/src and the reserved stub
 # crates are scanned too. The crates/*/tests and crates/*/benches dirs are
 # glob-expanded below and appended; the cfg(test) awk filter is a harmless
 # no-op there (test/bench files carry no #[cfg(test)] tail boundary).
 SCAN_DIRS=(
-    "${REPO_ROOT}/crates/cobre-core/src"
-    "${REPO_ROOT}/crates/cobre-io/src"
-    "${REPO_ROOT}/crates/cobre-solver/src"
-    "${REPO_ROOT}/crates/cobre-comm/src"
-    "${REPO_ROOT}/crates/cobre-stochastic/src"
-    "${REPO_ROOT}/crates/cobre-sddp/src"
-    "${REPO_ROOT}/crates/cobre-cli/src"
-    "${REPO_ROOT}/crates/cobre-python/src"
-    "${REPO_ROOT}/crates/cobre-mcp/src"
-    "${REPO_ROOT}/crates/cobre-tui/src"
-    "${REPO_ROOT}/crates/cobre/src"
-    "${REPO_ROOT}/crates/cobre-flow/src"
-    "${REPO_ROOT}/crates/cobre-uc/src"
-    "${REPO_ROOT}/crates/cobre-emt/src"
+    "${REPO_ROOT}/crates/novomodelo-core/src"
+    "${REPO_ROOT}/crates/novomodelo-io/src"
+    "${REPO_ROOT}/crates/novomodelo-solver/src"
+    "${REPO_ROOT}/crates/novomodelo-comm/src"
+    "${REPO_ROOT}/crates/novomodelo-stochastic/src"
+    "${REPO_ROOT}/crates/novomodelo-sddp/src"
+    "${REPO_ROOT}/crates/novomodelo-cli/src"
+    "${REPO_ROOT}/crates/novomodelo-python/src"
+    "${REPO_ROOT}/crates/novomodelo-mcp/src"
+    "${REPO_ROOT}/crates/novomodelo-tui/src"
+    "${REPO_ROOT}/crates/novomodelo/src"
+    "${REPO_ROOT}/crates/novomodelo-flow/src"
+    "${REPO_ROOT}/crates/novomodelo-uc/src"
+    "${REPO_ROOT}/crates/novomodelo-emt/src"
 )
 
 # Append the test/bench source dirs. nullglob keeps the loop a no-op when a

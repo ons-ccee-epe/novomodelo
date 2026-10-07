@@ -1,5 +1,5 @@
 [package]
-name = "cobre"
+name = "novomodelo"
 description = "Open infrastructure for power system computation — umbrella crate"
 version.workspace = true
 edition.workspace = true

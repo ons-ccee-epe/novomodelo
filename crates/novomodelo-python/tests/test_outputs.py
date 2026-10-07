@@ -4,7 +4,7 @@ These tests verify that a completed run produces the expected directory
 structure, and that Parquet files have correct schemas.
 
 Run with (from the repo root):
-    pytest crates/cobre-python/tests/test_outputs.py
+    pytest crates/novomodelo-python/tests/test_outputs.py
 """
 
 from __future__ import annotations
@@ -25,10 +25,10 @@ D28_CASE = "examples/deterministic/d28-decomp-weekly-monthly"
 @pytest.fixture(scope="module")
 def run_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     """Run 1dtoy once and return the output directory."""
-    import cobre.run
+    import novomodelo.run
 
     output_dir = tmp_path_factory.mktemp("outputs_test")
-    cobre.run.run(VALID_CASE, output_dir=str(output_dir))
+    novomodelo.run.run(VALID_CASE, output_dir=str(output_dir))
     return output_dir
 
 
@@ -94,7 +94,7 @@ def test_training_manifest_structure(run_output: pathlib.Path) -> None:
     """metadata.json has expected top-level keys."""
     manifest = json.loads((run_output / "training" / "metadata.json").read_text())
     assert isinstance(manifest, dict)
-    assert manifest["software"] == "cobre"
+    assert manifest["software"] == "novomodelo"
     assert "software_version" in manifest
     assert "status" in manifest
     assert "convergence" in manifest
@@ -129,7 +129,7 @@ def d20_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     we need the full write path exercised, so we copy the case to a temp
     directory and flip the simulation flag on.
     """
-    import cobre.run
+    import novomodelo.run
 
     src = pathlib.Path(D20_CASE)
     case_dir = tmp_path_factory.mktemp("d20_case")
@@ -148,7 +148,7 @@ def d20_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     (case_dir / "config.json").write_text(json.dumps(config))
 
     output_dir = tmp_path_factory.mktemp("d20_output")
-    cobre.run.run(str(case_dir), output_dir=str(output_dir))
+    novomodelo.run.run(str(case_dir), output_dir=str(output_dir))
     return output_dir
 
 
@@ -203,7 +203,7 @@ def test_hydro_slack_values_nonzero_on_violations(d20_output: pathlib.Path) -> N
 @pytest.fixture(scope="module")
 def d28_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     """Run D28 case via Python bindings and return the output directory."""
-    import cobre.run
+    import novomodelo.run
 
     src = pathlib.Path(D28_CASE)
     case_dir = tmp_path_factory.mktemp("d28_case")
@@ -216,7 +216,7 @@ def d28_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
             shutil.copy2(item, dest)
 
     output_dir = tmp_path_factory.mktemp("d28_output")
-    cobre.run.run(str(case_dir), output_dir=str(output_dir))
+    novomodelo.run.run(str(case_dir), output_dir=str(output_dir))
     return output_dir
 
 
@@ -260,19 +260,21 @@ def test_d28_convergence_has_iterations(d28_output: pathlib.Path) -> None:
 
 
 def _run_1dtoy_with_a_directory_at(output_dir: pathlib.Path, blocked: str) -> None:
-    import cobre.errors
-    import cobre.run
+    import novomodelo.errors
+    import novomodelo.run
 
     (output_dir / blocked).mkdir(parents=True)
-    with pytest.raises(cobre.errors.CaseIoError):
-        cobre.run.run(VALID_CASE, output_dir=str(output_dir))
+    with pytest.raises(novomodelo.errors.CaseIoError):
+        novomodelo.run.run(VALID_CASE, output_dir=str(output_dir))
 
 
 def test_run_writes_no_training_marker_when_the_last_training_write_fails(
     tmp_path: pathlib.Path,
 ) -> None:
     """A failed training write leaves no training/_SUCCESS beside the files written before it."""
-    _run_1dtoy_with_a_directory_at(tmp_path, "training/solver/retry_histogram.parquet.tmp")
+    _run_1dtoy_with_a_directory_at(
+        tmp_path, "training/solver/retry_histogram.parquet.tmp"
+    )
 
     assert (tmp_path / "training" / "metadata.json").is_file()
     assert not (tmp_path / "training" / "_SUCCESS").exists()
@@ -305,7 +307,7 @@ def _marker_states(output_dir: pathlib.Path) -> tuple[bool, bool]:
 
 def test_run_clears_stale_markers_before_training(tmp_path: pathlib.Path) -> None:
     """A run into a reused directory shows neither stale marker while it trains."""
-    import cobre.run
+    import novomodelo.run
 
     _seed_empty_markers(tmp_path, "training", "simulation")
     observed: list[tuple[bool, bool]] = []
@@ -313,7 +315,7 @@ def test_run_clears_stale_markers_before_training(tmp_path: pathlib.Path) -> Non
     def on_iteration(_event: dict[str, Any]) -> None:
         observed.append(_marker_states(tmp_path))
 
-    cobre.run.run(VALID_CASE, output_dir=str(tmp_path), on_iteration=on_iteration)
+    novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path), on_iteration=on_iteration)
 
     assert observed, "on_iteration was never called"
     assert set(observed) == {(False, False)}
@@ -324,16 +326,16 @@ def test_simulate_clears_stale_marker_before_its_first_write(
     tmp_path: pathlib.Path,
 ) -> None:
     """A simulate() whose first write fails leaves no stale simulation/_SUCCESS."""
-    import cobre
-    import cobre.errors
+    import novomodelo
+    import novomodelo.errors
 
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path / "trained"))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path / "trained"))
     policy = study.train()
     target = tmp_path / "target"
     _seed_empty_markers(target, "simulation")
     (target / "simulation" / "costs").touch()
 
-    with pytest.raises(cobre.errors.CobreError):
+    with pytest.raises(novomodelo.errors.NovomodeloError):
         study.simulate(policy, output_dir=str(target))
 
     assert not (target / "simulation" / "_SUCCESS").exists()
@@ -341,10 +343,10 @@ def test_simulate_clears_stale_marker_before_its_first_write(
 
 def test_study_train_clears_only_its_own_marker(tmp_path: pathlib.Path) -> None:
     """Study.train() hides the stale training marker and keeps the simulation one."""
-    import cobre
+    import novomodelo
 
     _seed_empty_markers(tmp_path, "training", "simulation")
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
     assert _marker_states(tmp_path) == (True, True)
     observed: list[tuple[bool, bool]] = []
 
@@ -362,21 +364,21 @@ def test_load_policy_then_simulate_elsewhere_keeps_the_trained_markers(
     tmp_path: pathlib.Path,
 ) -> None:
     """Loading a policy from X and simulating into Y leaves X's markers in place."""
-    import cobre
-    import cobre.results
-    import cobre.run
+    import novomodelo
+    import novomodelo.results
+    import novomodelo.run
 
     trained = tmp_path / "trained"
     elsewhere = tmp_path / "elsewhere"
-    cobre.run.run(VALID_CASE, output_dir=str(trained))
+    novomodelo.run.run(VALID_CASE, output_dir=str(trained))
 
-    study = cobre.Study(VALID_CASE, output_dir=str(trained))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(trained))
     policy = study.load_policy()
     study.simulate(policy, output_dir=str(elsewhere))
 
     assert _marker_states(trained) == (True, True)
     assert (elsewhere / "simulation" / "_SUCCESS").is_file()
-    cobre.results.load_results(str(trained))
+    novomodelo.results.load_results(str(trained))
 
 
 def _seed_file(path: pathlib.Path, content: str = "") -> None:
@@ -388,7 +390,7 @@ def test_run_clears_stale_simulation_outputs_before_training(
     tmp_path: pathlib.Path,
 ) -> None:
     """A run into a reused directory shows no earlier simulation output while it trains."""
-    import cobre.run
+    import novomodelo.run
 
     sim = tmp_path / "simulation"
     stale = {
@@ -405,7 +407,7 @@ def test_run_clears_stale_simulation_outputs_before_training(
     def on_iteration(_event: dict[str, Any]) -> None:
         observed.append(tuple(path.exists() for path in stale))
 
-    cobre.run.run(VALID_CASE, output_dir=str(tmp_path), on_iteration=on_iteration)
+    novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path), on_iteration=on_iteration)
 
     assert observed, "on_iteration was never called"
     assert set(observed) == {(False, False, False, False)}
@@ -418,9 +420,9 @@ def test_run_clears_stale_simulation_outputs_before_training(
 
 def test_simulate_clears_stale_outputs_before_writing(tmp_path: pathlib.Path) -> None:
     """simulate() into a reused directory drops earlier partitions and keeps foreign files."""
-    import cobre
+    import novomodelo
 
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path / "trained"))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path / "trained"))
     policy = study.train()
     target = tmp_path / "target"
     sim = target / "simulation"
@@ -468,7 +470,7 @@ def test_run_clears_stale_training_outputs_before_training(
     tmp_path: pathlib.Path,
 ) -> None:
     """A run into a reused directory shows no earlier conditional training output while it trains."""
-    import cobre.run
+    import novomodelo.run
 
     stale = [tmp_path / relative for relative in _STALE_CONDITIONAL_TRAINING_OUTPUTS]
     for path in stale:
@@ -478,7 +480,7 @@ def test_run_clears_stale_training_outputs_before_training(
     def on_iteration(_event: dict[str, Any]) -> None:
         observed.append(tuple(path.exists() for path in stale))
 
-    cobre.run.run(VALID_CASE, output_dir=str(tmp_path), on_iteration=on_iteration)
+    novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path), on_iteration=on_iteration)
 
     assert observed, "on_iteration was never called"
     assert set(observed) == {(False,) * len(stale)}
@@ -487,7 +489,7 @@ def test_run_clears_stale_training_outputs_before_training(
 
 def test_study_train_clears_stale_training_outputs(tmp_path: pathlib.Path) -> None:
     """Study() keeps an earlier run's conditional training outputs; train() removes them."""
-    import cobre
+    import novomodelo
 
     stale = [
         tmp_path / "hydro_models" / "fpha_hyperplanes.parquet",
@@ -495,7 +497,7 @@ def test_study_train_clears_stale_training_outputs(tmp_path: pathlib.Path) -> No
     ]
     for path in stale:
         _seed_file(path, "stale")
-    study = cobre.Study(VALID_CASE, output_dir=str(tmp_path))
+    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
     assert all(path.is_file() for path in stale)
 
     study.train()
@@ -508,7 +510,7 @@ def test_run_clears_cut_selection_output_after_cut_selection_is_disabled(
     tmp_path: pathlib.Path,
 ) -> None:
     """A rerun without cut selection leaves no training/cut_selection/ from the first run."""
-    import cobre.run
+    import novomodelo.run
 
     case_dir = tmp_path / "case"
     output_dir = tmp_path / "output"
@@ -522,11 +524,11 @@ def test_run_clears_cut_selection_output_after_cut_selection_is_disabled(
         config["simulation"]["enabled"] = False
 
     _rewrite_config(case_dir, enable_cut_selection)
-    cobre.run.run(str(case_dir), output_dir=str(output_dir))
+    novomodelo.run.run(str(case_dir), output_dir=str(output_dir))
     assert (output_dir / "training" / "cut_selection" / "iterations.parquet").is_file()
 
     _rewrite_config(case_dir, lambda config: config["training"].pop("cut_selection"))
-    cobre.run.run(str(case_dir), output_dir=str(output_dir))
+    novomodelo.run.run(str(case_dir), output_dir=str(output_dir))
 
     assert (output_dir / "training" / "_SUCCESS").is_file()
     assert not (output_dir / "training" / "cut_selection").exists()
@@ -536,10 +538,10 @@ def test_warm_start_rerun_reads_the_policy_the_training_clear_keeps(
     tmp_path: pathlib.Path,
 ) -> None:
     """A warm-start rerun into the same directory reads the policy the first run wrote."""
-    import cobre.run
+    import novomodelo.run
 
-    cobre.run.run(VALID_CASE, output_dir=str(tmp_path))
-    cobre.run.run(
+    novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path))
+    novomodelo.run.run(
         VALID_CASE,
         output_dir=str(tmp_path),
         config_overrides={"policy.mode": "warm_start"},
@@ -550,13 +552,13 @@ def test_warm_start_rerun_reads_the_policy_the_training_clear_keeps(
 
 def test_simulation_only_run_keeps_training_outputs(tmp_path: pathlib.Path) -> None:
     """A run with training disabled removes no training output."""
-    import cobre.run
+    import novomodelo.run
 
-    cobre.run.run(VALID_CASE, output_dir=str(tmp_path))
+    novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path))
     seeded = tmp_path / "hydro_models" / "fpha_hyperplanes.parquet"
     _seed_file(seeded, "stale")
 
-    cobre.run.run(
+    novomodelo.run.run(
         VALID_CASE,
         output_dir=str(tmp_path),
         config_overrides={"training.enabled": False},

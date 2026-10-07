@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use cobre_core::System;
+use novomodelo_core::System;
 
 use super::dictionary::write_dictionaries;
 use super::error::OutputError;

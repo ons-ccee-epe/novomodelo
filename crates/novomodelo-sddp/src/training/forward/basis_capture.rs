@@ -1,6 +1,6 @@
 //! Captured-basis metadata population after a forward stage solve.
 
-use cobre_solver::BasisStatus;
+use novomodelo_solver::BasisStatus;
 
 use crate::cut::pool::CutPool;
 use crate::setup::NodeId;

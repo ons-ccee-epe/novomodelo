@@ -7,7 +7,7 @@
 //! ## Usage
 //!
 //! ```rust
-//! use cobre_sddp::stopping_rule::{
+//! use novomodelo_sddp::stopping_rule::{
 //!     MonitorState, StoppingMode, StoppingRule, StoppingRuleSet,
 //! };
 //!
@@ -362,7 +362,7 @@ impl StopDecision {
 /// # Examples
 ///
 /// ```rust
-/// use cobre_sddp::stopping_rule::{
+/// use novomodelo_sddp::stopping_rule::{
 ///     MonitorState, StopMask, StoppingMode, StoppingRule, StoppingRuleSet,
 /// };
 ///

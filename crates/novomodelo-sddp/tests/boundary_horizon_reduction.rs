@@ -24,37 +24,37 @@
 )]
 
 use chrono::{Duration, NaiveDate};
-use cobre_core::entities::hydro::HydroGenerationModel;
-use cobre_core::entities::thermal::AnticipatedConfig;
-use cobre_core::resolved::{
+use novomodelo_core::entities::hydro::HydroGenerationModel;
+use novomodelo_core::entities::thermal::AnticipatedConfig;
+use novomodelo_core::resolved::{
     BusStagePenalties, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
     PenaltiesDefaults,
 };
-use cobre_core::scenario::InflowModel;
-use cobre_core::temporal::{
+use novomodelo_core::scenario::InflowModel;
+use novomodelo_core::temporal::{
     Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig,
 };
-use cobre_core::{
+use novomodelo_core::{
     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HorizonGraph,
     HydroBlockBounds, HydroPastDefluence, HydroPenalties, HydroStageBounds, HydroStorage,
     InitialConditions, LineBlockBounds, PostStudyStage, PostStudyStages, PostStudyThermalBound,
     PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SeasonCycleType, SeasonDefinition,
     SeasonMap, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
 };
-use cobre_io::config::{
+use novomodelo_io::config::{
     BoundaryPolicy, Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
     InflowNonNegativityMethod, ModelingConfig, ParallelismConfig, PolicyConfig, RowSelectionConfig,
     SimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
     TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
-use cobre_io::{SEASON_CYCLE_CODE_MONTHLY, encode_slot_date, read_policy_checkpoint};
-use cobre_sddp::policy::orchestration::{
+use novomodelo_io::{SEASON_CYCLE_CODE_MONTHLY, encode_slot_date, read_policy_checkpoint};
+use novomodelo_sddp::policy::orchestration::{
     CheckpointParams, build_season_manifest, write_checkpoint,
 };
-use cobre_sddp::{
+use novomodelo_sddp::{
     BoundaryLoadRequest, FamilyTally, ValidatedBoundaryCuts, load_boundary_cuts, study_horizon_end,
 };
-use cobre_solver::ActiveSolver;
+use novomodelo_solver::ActiveSolver;
 use tempfile::TempDir;
 
 mod common;

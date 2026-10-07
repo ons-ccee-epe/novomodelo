@@ -25,10 +25,10 @@
 /// its genuine 2-rank pass is verified by the real-MPI integration job.
 #[cfg(feature = "test-support")]
 mod k_fan_branching_rank_invariance {
-    use cobre_comm::{BackendKind, Communicator, LocalBackend, create_communicator};
-    use cobre_sddp::setup::NodePos;
-    use cobre_sddp::test_support::k_fan_setup;
-    use cobre_solver::ActiveSolver;
+    use novomodelo_comm::{BackendKind, Communicator, LocalBackend, create_communicator};
+    use novomodelo_sddp::setup::NodePos;
+    use novomodelo_sddp::test_support::k_fan_setup;
+    use novomodelo_solver::ActiveSolver;
 
     const K: usize = 8;
     const FORWARD_PASSES: u32 = 6;

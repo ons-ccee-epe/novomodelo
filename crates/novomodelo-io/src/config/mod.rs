@@ -17,7 +17,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use cobre_io::config::parse_config;
+//! use novomodelo_io::config::parse_config;
 //! use std::path::Path;
 //!
 //! let cfg = parse_config(Path::new("case/config.json")).unwrap();
@@ -54,7 +54,7 @@ pub use training::{
 
 use simulation::DEFAULT_NUM_SCENARIOS;
 
-use cobre_core::scenario::{HistoricalYears, SamplingScheme, ScenarioSource};
+use novomodelo_core::scenario::{HistoricalYears, SamplingScheme, ScenarioSource};
 
 use crate::LoadError;
 use serde::{Deserialize, Serialize};
@@ -120,7 +120,7 @@ pub struct Config {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::config::parse_config;
+/// use novomodelo_io::config::parse_config;
 /// use std::path::Path;
 ///
 /// let cfg = parse_config(Path::new("case/config.json")).unwrap();
@@ -370,7 +370,7 @@ impl Config {
     /// # Examples
     ///
     /// ```no_run
-    /// use cobre_io::config::parse_config;
+    /// use novomodelo_io::config::parse_config;
     /// use std::path::Path;
     ///
     /// let cfg = parse_config(Path::new("case/config.json")).unwrap();
@@ -393,7 +393,7 @@ impl Config {
     /// # Examples
     ///
     /// ```no_run
-    /// use cobre_io::config::parse_config;
+    /// use novomodelo_io::config::parse_config;
     /// use std::path::Path;
     ///
     /// let cfg = parse_config(Path::new("case/config.json")).unwrap();
@@ -776,7 +776,7 @@ mod tests {
     #[test]
     fn test_parse_full_config() {
         let json = r#"{
-          "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/config.schema.json",
+          "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/config.schema.json",
           "modeling": {
             "inflow_non_negativity": {
               "method": "penalty"
@@ -967,7 +967,7 @@ mod tests {
     fn test_schema_field_accepted() {
         let f = write_config(
             r#"{
-            "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/config.schema.json",
+            "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/config.schema.json",
             "training": {
                 "selection": {"method": "sampled", "forward_passes": 1},
                 "stopping_rules": [{"type": "iteration_limit", "limit": 10}]
@@ -978,7 +978,7 @@ mod tests {
         assert_eq!(
             cfg.schema.as_deref(),
             Some(
-                "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/config.schema.json"
+                "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/config.schema.json"
             ),
             "schema field should be stored when present in JSON"
         );

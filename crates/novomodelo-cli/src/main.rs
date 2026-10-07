@@ -1,6 +1,6 @@
-//! # cobre
+//! # novomodelo
 //!
-//! Command-line interface for the [Cobre](https://github.com/cobre-rs/cobre) power systems ecosystem.
+//! Command-line interface for the [Novomodelo](https://github.com/ons-ccee-epe/novomodelo) power systems ecosystem.
 //!
 //! Provides commands for running optimization studies, validating input data,
 //! and inspecting results from the terminal.
@@ -46,7 +46,7 @@ pub(crate) fn resolve_color(cli_color: ColorWhen) {
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "cobre",
+    name = "novomodelo",
     about = "Open infrastructure for power system computation"
 )]
 struct Cli {

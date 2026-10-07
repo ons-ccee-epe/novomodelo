@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Anticipated Thermals &amp; Water Travel Time — Cobre Primer</title>
+<title>Anticipated Thermals &amp; Water Travel Time — Novomodelo Primer</title>
 
 <script>
   window.MathJax = {
@@ -154,15 +154,15 @@
 <div class="wrap">
 
 <header class="doc">
-  <span class="chip">Cobre Primer</span>
+  <span class="chip">Novomodelo Primer</span>
   <h1>Anticipated thermals &amp; water travel time</h1>
-  <p class="lede">A first-timer's guide to how cobre models two time-delayed delivery phenomena —
+  <p class="lede">A first-timer's guide to how novomodelo models two time-delayed delivery phenomena —
   thermal generation committed a lead time ahead, and water that takes travel time to flow downstream.
-  Assumes you know SDDP, but are new to cobre.</p>
+  Assumes you know SDDP, but are new to novomodelo.</p>
 </header>
 
 <p>Ordinary SDDP dispatch assumes a decision you make in stage \(t\) takes effect in stage \(t\).
-Two physical realities break that assumption, and cobre handles both with one shared mechanism.
+Two physical realities break that assumption, and novomodelo handles both with one shared mechanism.
 This page builds them up from the problem, through the math, to the files you edit and read. For the
 symbol-by-symbol correctness contracts, read the companion reference,
 <code>docs/design/anticipated-thermals-and-water-travel-time.md</code>, after this.</p>
@@ -179,7 +179,7 @@ Equations are rendered with MathJax; diagrams with Mermaid. Stage indices are <s
     <li><a href="#anticipated">Anticipated thermal generation</a></li>
     <li><a href="#water">Water travel time</a></li>
     <li><a href="#differ">How the two features differ</a></li>
-    <li><a href="#files">Bridge to the cobre files</a></li>
+    <li><a href="#files">Bridge to the novomodelo files</a></li>
   </ol>
 </div>
 
@@ -212,14 +212,14 @@ flowchart LR
 
 <h2 id="idea">2. The one idea: a lagged-delivery ring</h2>
 
-<h3>2.1 How cobre carries SDDP state (the "fishing" trick)</h3>
+<h3>2.1 How novomodelo carries SDDP state (the "fishing" trick)</h3>
 
 <p>SDDP cuts approximate the future-cost function \(V_t(x)\) with hyperplanes</p>
 
 \[ \theta \;\ge\; \alpha + \pi^{\top}\hat{x}, \]
 
 <p>where \(\theta\) is the epigraph variable bounding the future cost, \(\alpha\) the cut's intercept,
-\(\hat{x}\) the incoming state, and \(\pi\) the subgradient (the cut's coefficients). Cobre realizes this without a
+\(\hat{x}\) the incoming state, and \(\pi\) the subgradient (the cut's coefficients). Novomodelo realizes this without a
 state-fixing <em>constraint row</em>. Instead, each incoming-state coordinate is its own LP column,
 pinned by equal bounds:</p>
 
@@ -227,7 +227,7 @@ pinned by equal bounds:</p>
 
 <p>Here \(\underline{x}\) and \(\overline{x}\) are the column's lower and upper bounds, and \(\hat{x}\)
 is the value carried from stage \(t-1\). The cut coefficient \(\pi\) for that coordinate is then the <strong>reduced cost</strong> of the
-pinned column (divided by a fixed per-column prescaler, with no sign change). This is cobre's version
+pinned column (divided by a fixed per-column prescaler, with no sign change). This is novomodelo's version
 of SDDP.jl "fishing": fix the incoming state, solve, read the price off the pinned column.</p>
 
 <pre class="mermaid">
@@ -461,7 +461,7 @@ is a single inequality on the extended axis:</p>
 
 <div class="admon warn">
   <span class="tag">Note for readers of older material</span>
-  Earlier cobre (and the currently-published methodology pages) modeled this with a Markov-1
+  Earlier novomodelo (and the currently-published methodology pages) modeled this with a Markov-1
   <em>shift</em> ring, a <code>future_anticipated_deliveries[]</code> input, and a separate block of
   "post-horizon lanes." All three are <strong>retired</strong>. The current model is the residue-keyed
   <em>hold</em> ring described above, with <code>post_study_stages.json</code> as the sole post-horizon
@@ -735,7 +735,7 @@ A single window <code>2026-04-04 → 2026-05-09</code> would straddle the horizo
 at the horizon end. The 500 MW must also lie inside the plant's \([\text{min\_mw}, \text{max\_mw}]\) (here
 it sits exactly at the cap).</p>
 
-<p><code>config.json</code> — the NEWAVE future-cost function DECOMP couples to, converted to a cobre
+<p><code>config.json</code> — the NEWAVE future-cost function DECOMP couples to, converted to a novomodelo
 checkpoint, is the terminal boundary:</p>
 <pre><code>"policy": { "boundary": { "path": "boundary" } }</code></pre>
 <p>The loader picks the source pool whose priced state date equals this study's last stage
@@ -787,7 +787,7 @@ cut's intercept as</p>
 <p>the way DECOMP itself values a já-comandada against the NEWAVE function — and never appears in the
 objective or in any cost output (sunk, §3.6).</p>
 
-<p><code>cobre validate</code> reports the reconciliation before any solve. For this deck:</p>
+<p><code>novomodelo validate</code> reports the reconciliation before any solve. For this deck:</p>
 <pre><code>boundary reconciliation: 2184 copied, 6 fanned out, 2 defaulted to 0.0, 2 source slots dropped</code></pre>
 <p>Reading it: the 6 fanned-out slots are the three May weeks of each plant; the 2 defaulted slots are each
 plant's June remainder — this source checkpoint prices April and May only, so the June delivery is valued at
@@ -797,7 +797,7 @@ source slot never triggers a warning: its detail lives in the reconciliation rep
 <code>dropped_source</code> tally and in <code>dropped_source_slots</code>, which lists every dropped
 slot's entity and interval. Setting <code>policy.boundary.strict: true</code> (default <code>false</code>)
 turns a non-zero drop into a reject naming every dropping family and its count, instead of loading it.
-<code>cobre validate --json</code> returns the same tally per state family. Without
+<code>novomodelo validate --json</code> returns the same tally per state family. Without
 <code>config.policy.boundary</code> at all, setup warns once, naming SANTA CRUZ (a non-zero fixed value)
 and both plants (carried decisions): everything post-horizon prices at zero terminal value.</p>
 
@@ -1010,7 +1010,7 @@ targets it). And "keeping terminal state live" is gated differently — water ne
 boundary (<code>policy.boundary</code>), while anticipated keys on whether a
 <code>post_study_stages.json</code> delivery target exists.</p>
 
-<h2 id="files">6. Bridge to the cobre files</h2>
+<h2 id="files">6. Bridge to the novomodelo files</h2>
 
 <p>This maps everything above to the files you edit and read. Field names and locations are the current
 (post-retirement) surface.</p>
@@ -1021,7 +1021,7 @@ flowchart LR
   in2["post_study_stages.json"] --> eng
   in3["hydros.json: travel_time_hours + downstream_id"] --> eng
   in4["initial_conditions.json: seeds"] --> eng
-  eng["cobre engine"] --> out1["simulation/anticipated_lanes"]
+  eng["novomodelo engine"] --> out1["simulation/anticipated_lanes"]
   eng --> out2["simulation/in_transit"]
   eng --> out3["simulation/transit_seed"]
   eng --> out4["policy checkpoint entities"]

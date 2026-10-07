@@ -1,6 +1,6 @@
-# cobre-comm
+# novomodelo-comm
 
-Pluggable communication backend abstraction for the [Cobre](https://github.com/cobre-rs/cobre)
+Pluggable communication backend abstraction for the [Novomodelo](https://github.com/ons-ccee-epe/novomodelo)
 distributed solver ecosystem.
 
 Defines the `Communicator` and `SharedMemoryProvider` traits that decouple
@@ -17,10 +17,10 @@ dynamic dispatch overhead on the hot path.
 
 ## When to Use
 
-Depend on `cobre-comm` directly when you are writing a distributed algorithm
+Depend on `novomodelo-comm` directly when you are writing a distributed algorithm
 that needs collective communication (broadcast, reduce, scatter/gather) and
 you want to test it locally without an MPI installation. Algorithm crates such
-as `cobre-sddp` depend on this crate and accept a generic `Communicator`
+as `novomodelo-sddp` depend on this crate and accept a generic `Communicator`
 parameter; you only need to depend here when adding a new algorithm crate or a
 new backend.
 
@@ -57,7 +57,7 @@ actually shared across processes; a true implementation on ferrompi's
 
 `create_communicator(kind: BackendKind) -> Result<impl Communicator, BackendError>`
 is the single runtime entry point for constructing the active communicator.
-The `cobre` CLI maps `--comm-backend <auto|local|mpi>` (default `auto`) onto
+The `novomodelo` CLI maps `--comm-backend <auto|local|mpi>` (default `auto`) onto
 this argument.
 
 | `BackendKind` variant | Behavior                                                                                                      |
@@ -78,7 +78,7 @@ When the `mpi` feature is compiled in, `create_communicator` returns the
 `CommBackend` enum (`CommBackend::Mpi` / `CommBackend::Local`), which
 implements `Communicator` (and, with `shared-memory`, `SharedMemoryProvider`)
 by delegating each call to the active inner backend via a `match` — the
-mandated enum-dispatch pattern for closed variant sets in Cobre, used because
+mandated enum-dispatch pattern for closed variant sets in Novomodelo, used because
 `Communicator`'s generic methods make it non-object-safe (`Box<dyn
 Communicator>` does not compile). Without the `mpi` feature,
 `create_communicator` returns `LocalBackend` directly, with no wrapper enum.
@@ -93,7 +93,7 @@ type-safe wrappers around the collective operations (`allgatherv`,
 `MPI_Init_thread`/`MPI_Finalize` lifecycle.
 
 Construction (`FerrompiBackend::new`) calls `MPI_Init_thread` with
-`ThreadLevel::Funneled`, matching the Cobre execution model where only the
+`ThreadLevel::Funneled`, matching the Novomodelo execution model where only the
 main thread issues MPI calls; rank/size/topology are cached at construction
 so the hot path never re-queries them. When `FerrompiBackend` is dropped, the
 RAII guard calls `MPI_Finalize` automatically — field declaration order is
@@ -140,7 +140,7 @@ same communicator instance. `rank()` and `size()` are safe to call
 concurrently: their values are cached at construction time and never change.
 
 This is the same monomorphization pattern used by `SolverInterface` in
-[cobre-solver](../cobre-solver/README.md): callers parameterize a generic
+[novomodelo-solver](../novomodelo-solver/README.md): callers parameterize a generic
 function once and the compiler generates one concrete instantiation per
 backend, so `LocalBackend`'s no-op implementations compile to zero
 instructions after inlining.
@@ -179,14 +179,14 @@ to replace the current `HeapRegion` placeholder. Both would follow the same
 ## Testing
 
 ```
-cargo test -p cobre-comm
+cargo test -p novomodelo-comm
 ```
 
 Runs all unit, integration, and doc-tests for the default (no-feature)
 configuration — no MPI installation required. To include the MPI backend:
 
 ```
-cargo test -p cobre-comm --features mpi
+cargo test -p novomodelo-comm --features mpi
 ```
 
 This requires an MPI runtime (`libmpich-dev` on Debian/Ubuntu, `mpich` on
@@ -202,10 +202,10 @@ contract, verified against `LocalBackend` through the public API only) and
 
 | Resource   | URL                                                        |
 | ---------- | ---------------------------------------------------------- |
-| Docs site  | <https://docs.cobre-rs.dev/>                               |
+| Docs site  | <https://docs.novomodelo.invalid/>                               |
 | API Docs   | <https://docs.rs/cobre-comm/latest/cobre_comm/>            |
-| Repository | <https://github.com/cobre-rs/cobre>                        |
-| CHANGELOG  | <https://github.com/cobre-rs/cobre/blob/main/CHANGELOG.md> |
+| Repository | <https://github.com/ons-ccee-epe/novomodelo>                        |
+| CHANGELOG  | <https://github.com/ons-ccee-epe/novomodelo/blob/main/CHANGELOG.md> |
 
 ## Status
 

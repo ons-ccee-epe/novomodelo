@@ -16,21 +16,21 @@ import pytest
 
 
 def resolve_cli_binary(search_root: pathlib.Path, *, required: bool) -> pathlib.Path:
-    """Return the compiled `cobre` CLI binary path, failing or skipping if absent.
+    """Return the compiled `novomodelo` CLI binary path, failing or skipping if absent.
 
-    Searches `<search_root>/target/{release,debug}/cobre` in that order,
+    Searches `<search_root>/target/{release,debug}/novomodelo` in that order,
     returning the first that exists. When `required` is True, absence is a
     hard failure; when False, it raises pytest.Skipped with guidance to build
     the binary.
     """
     for profile in ("release", "debug"):
-        candidate = search_root / "target" / profile / "cobre"
+        candidate = search_root / "target" / profile / "novomodelo"
         if candidate.is_file():
             return candidate
 
     message = (
-        "No compiled `cobre` binary found in target/release or target/debug. "
-        "Run `cargo build --release -p cobre-cli` first."
+        "No compiled `novomodelo` binary found in target/release or target/debug. "
+        "Run `cargo build --release -p novomodelo-cli` first."
     )
     if required:
         pytest.fail(message, pytrace=False)
@@ -42,7 +42,7 @@ def resolve_cli_binary(search_root: pathlib.Path, *, required: bool) -> pathlib.
 def run_cli(
     case_dir: pathlib.Path, output_dir: pathlib.Path, binary: pathlib.Path
 ) -> None:
-    """Run the cobre CLI for `case_dir`, writing outputs to `output_dir`."""
+    """Run the novomodelo CLI for `case_dir`, writing outputs to `output_dir`."""
     result = subprocess.run(
         [str(binary), "run", str(case_dir), "--output", str(output_dir)],
         capture_output=True,
@@ -52,7 +52,7 @@ def run_cli(
     )
     if result.returncode != 0:
         pytest.fail(
-            f"cobre CLI failed (exit {result.returncode}):\n"
+            f"novomodelo CLI failed (exit {result.returncode}):\n"
             f"stdout: {result.stdout}\n"
             f"stderr: {result.stderr}"
         )

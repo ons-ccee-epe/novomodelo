@@ -168,7 +168,7 @@ mod tests {
         assert_eq!(thermal, deserialized);
         // Externally-tagged (not `#[serde(untagged)]`) — postcard's Deserializer
         // does not implement `deserialize_any`, which `untagged` requires; this
-        // shape keeps `Thermal` postcard-broadcast-safe (`cobre-io::broadcast`).
+        // shape keeps `Thermal` postcard-broadcast-safe (`novomodelo-io::broadcast`).
         assert!(json.contains("\"anticipated_config\":{\"LeadStages\":2}"));
     }
 

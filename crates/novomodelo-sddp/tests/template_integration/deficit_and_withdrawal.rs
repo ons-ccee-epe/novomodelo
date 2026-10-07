@@ -6,8 +6,8 @@ use super::*;
 #[allow(clippy::too_many_lines)]
 fn test_multi_segment_deficit_column_count() {
     use chrono::NaiveDate;
-    use cobre_core::scenario::LoadModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
 
@@ -612,9 +612,9 @@ fn withdrawal_slack_bounds_are_sign_aware_positive_target() {
 )]
 fn two_hydro_withdrawal_slack_entries_per_hydro() {
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
 
@@ -897,9 +897,9 @@ fn two_hydro_withdrawal_slack_entries_per_hydro() {
 #[allow(clippy::too_many_lines)]
 fn three_hydro_num_cols_includes_three_withdrawal_slacks() {
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
 

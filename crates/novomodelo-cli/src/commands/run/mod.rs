@@ -1,21 +1,21 @@
-//! `cobre run <CASE_DIR>` subcommand: load, train the SDDP policy, optionally
+//! `novomodelo run <CASE_DIR>` subcommand: load, train the SDDP policy, optionally
 //! simulate, and write outputs.
 
-use cobre_core::System;
-use cobre_io::Config;
-use cobre_io::DistributionInfo;
-use cobre_io::HostLayout;
-use cobre_io::OutputContext;
-use cobre_io::PolicyMode;
-use cobre_io::SetupTimings;
-use cobre_io::now_iso8601;
-use cobre_sddp::SolverStatsDelta;
-use cobre_sddp::StudySetup;
-use cobre_sddp::build_deviation_summary;
-use cobre_sddp::setup::PostTrainingSimulation;
-use cobre_sddp::setup::RunPhasePlan;
-use cobre_sddp::setup::signal_stop_requested;
-use cobre_solver::active_solver_metadata_id;
+use novomodelo_core::System;
+use novomodelo_io::Config;
+use novomodelo_io::DistributionInfo;
+use novomodelo_io::HostLayout;
+use novomodelo_io::OutputContext;
+use novomodelo_io::PolicyMode;
+use novomodelo_io::SetupTimings;
+use novomodelo_io::now_iso8601;
+use novomodelo_sddp::SolverStatsDelta;
+use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::build_deviation_summary;
+use novomodelo_sddp::setup::PostTrainingSimulation;
+use novomodelo_sddp::setup::RunPhasePlan;
+use novomodelo_sddp::setup::signal_stop_requested;
+use novomodelo_solver::active_solver_metadata_id;
 
 use crate::progress::RenderMode;
 mod graceful_stop;
@@ -30,7 +30,7 @@ use std::path::PathBuf;
 use clap::{Args, ValueEnum};
 use console::Term;
 
-use cobre_comm::{BackendKind, Communicator, ExecutionTopology};
+use novomodelo_comm::{BackendKind, Communicator, ExecutionTopology};
 
 use crate::error::CliError;
 
@@ -64,7 +64,7 @@ use setup::{LoadBroadcastResult, broadcast_and_build_setup, run_pre_training, se
 use simulation::{run_simulation_phase, skip_simulation_phase};
 use training::run_training_phase;
 
-/// Arguments for the `cobre run` subcommand.
+/// Arguments for the `novomodelo run` subcommand.
 #[derive(Debug, Args)]
 #[command(about = "Load a case directory, train an SDDP policy, and run simulation")]
 pub struct RunArgs {
@@ -109,7 +109,7 @@ pub(super) struct RunContext<C: Communicator> {
     pub(super) solver_version: String,
 }
 
-/// How a `cobre run` that returned no error ended.
+/// How a `novomodelo run` that returned no error ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 pub enum RunOutcome {
@@ -358,7 +358,7 @@ pub(super) fn check_stats_overflow(delta: &SolverStatsDelta) -> Result<(), CliEr
     Ok(())
 }
 
-/// Build a [`cobre_io::DistributionInfo`] from the cached execution topology.
+/// Build a [`novomodelo_io::DistributionInfo`] from the cached execution topology.
 pub(super) fn build_distribution_info(
     topology: &ExecutionTopology,
     n_threads: usize,
@@ -414,8 +414,8 @@ fn host_layouts(topology: &ExecutionTopology) -> Vec<HostLayout> {
 mod tests {
     use super::setup::resolve_thread_count;
     use super::{RunOutcome, check_stats_overflow, host_layouts};
-    use cobre_comm::{BackendKind, ExecutionTopology, HostInfo};
-    use cobre_sddp::{SolverStatsDelta, delta_to_stats_row};
+    use novomodelo_comm::{BackendKind, ExecutionTopology, HostInfo};
+    use novomodelo_sddp::{SolverStatsDelta, delta_to_stats_row};
 
     fn topology_with_hosts(hosts: Vec<HostInfo>) -> ExecutionTopology {
         let world_size = hosts.iter().map(|h| h.ranks.len()).sum();

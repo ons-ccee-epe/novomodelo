@@ -1,6 +1,6 @@
 [package]
-name = "cobre-io"
-description = "Case directory loading and validation for the Cobre power systems ecosystem"
+name = "novomodelo-io"
+description = "Case directory loading and validation for the Novomodelo power systems ecosystem"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,14 +13,14 @@ keywords = ["power-systems", "energy", "io", "validation"]
 categories = ["science", "parser-implementations"]
 
 [features]
-schema = ["dep:schemars", "cobre-core/schema"]
+schema = ["dep:schemars", "novomodelo-core/schema"]
 ## Opt-in to the slow test suite (no slow tests currently in this crate;
 ## declaration reserved for workspace consistency).
 slow-tests = []
 ## Opt-in to the FlatBuffers schema-conformance tests in
 ## `tests/flatbuffers_schema_conformance.rs`. Requires `flatc` on PATH
 ## (or `FLATC` env var) at test run time. Not part of the default test
-## suite because `flatc` is not a build-time dependency of cobre and is
+## suite because `flatc` is not a build-time dependency of novomodelo and is
 ## not always available in CI.
 flatc-conformance = []
 ## Expose crate-internal test fixtures to other crates' tests and to this
@@ -30,11 +30,11 @@ flatc-conformance = []
 ## `#[cfg(any(test, feature = "test-support"))]`, so plain `cargo test` sees
 ## them via `test` and downstream integration tests see them via this feature.
 ## Must NOT be enabled in production builds.
-test-support = ["cobre-core/test-support", "dep:tempfile"]
+test-support = ["novomodelo-core/test-support", "dep:tempfile"]
 
 [dependencies]
-cobre-core = { version = "0.18.0", path = "../cobre-core", features = ["serde"] }
-cobre-stochastic = { version = "0.18.0", path = "../cobre-stochastic" }
+novomodelo-core = { version = "0.18.0", path = "../novomodelo-core", features = ["serde"] }
+novomodelo-stochastic = { version = "0.18.0", path = "../novomodelo-stochastic" }
 arrow = { version = "60", default-features = false, features = ["prettyprint"] }
 chrono = { version = "0.4", features = ["serde"] }
 csv = "1"
@@ -50,9 +50,9 @@ flatbuffers = "25"
 gethostname = "1.1.0"
 
 [dev-dependencies]
-cobre-core = { version = "0.18.0", path = "../cobre-core", features = ["test-support"] }
-cobre-stochastic = { version = "0.18.0", path = "../cobre-stochastic", features = ["test-support"] }
-cobre-io = { path = ".", features = ["test-support"] }
+novomodelo-core = { version = "0.18.0", path = "../novomodelo-core", features = ["test-support"] }
+novomodelo-stochastic = { version = "0.18.0", path = "../novomodelo-stochastic", features = ["test-support"] }
+novomodelo-io = { path = ".", features = ["test-support"] }
 parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
 proptest = "1"
 tempfile = "3"

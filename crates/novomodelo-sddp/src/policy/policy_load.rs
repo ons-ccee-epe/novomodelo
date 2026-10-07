@@ -14,28 +14,28 @@
 //! [`FutureCostFunction::from_deserialized`]: crate::FutureCostFunction::from_deserialized
 
 use chrono::NaiveDate;
-use cobre_core::AnticipatedCommitmentHistory;
-use cobre_core::System;
-use cobre_io::BoundaryPolicy;
-use cobre_io::Config;
-use cobre_io::EntitySlot;
-use cobre_io::GraphManifest;
-use cobre_io::OwnedPolicyBasisRecord;
-use cobre_io::OwnedPolicyCutRecord;
-use cobre_io::PolicyCheckpoint;
-use cobre_io::SEASON_CYCLE_CODE_ABSENT;
-use cobre_io::SEASON_CYCLE_CODE_CUSTOM;
-use cobre_io::SEASON_CYCLE_CODE_MONTHLY;
-use cobre_io::SEASON_CYCLE_CODE_WEEKLY;
-use cobre_io::STAGE_CUTS_NODE_ID_SENTINEL;
-use cobre_io::STAGE_CUTS_PRICED_STATE_DATE_SENTINEL;
-use cobre_io::SeasonManifest;
-use cobre_io::StageCutsReadResult;
-use cobre_io::decode_slot_date;
-use cobre_io::encode_slot_date;
-use cobre_io::policy_checkpoint_remedy;
-use cobre_io::read_policy_checkpoint;
-use cobre_solver::{Basis, BasisStatus};
+use novomodelo_core::AnticipatedCommitmentHistory;
+use novomodelo_core::System;
+use novomodelo_io::BoundaryPolicy;
+use novomodelo_io::Config;
+use novomodelo_io::EntitySlot;
+use novomodelo_io::GraphManifest;
+use novomodelo_io::OwnedPolicyBasisRecord;
+use novomodelo_io::OwnedPolicyCutRecord;
+use novomodelo_io::PolicyCheckpoint;
+use novomodelo_io::SEASON_CYCLE_CODE_ABSENT;
+use novomodelo_io::SEASON_CYCLE_CODE_CUSTOM;
+use novomodelo_io::SEASON_CYCLE_CODE_MONTHLY;
+use novomodelo_io::SEASON_CYCLE_CODE_WEEKLY;
+use novomodelo_io::STAGE_CUTS_NODE_ID_SENTINEL;
+use novomodelo_io::STAGE_CUTS_PRICED_STATE_DATE_SENTINEL;
+use novomodelo_io::SeasonManifest;
+use novomodelo_io::StageCutsReadResult;
+use novomodelo_io::decode_slot_date;
+use novomodelo_io::encode_slot_date;
+use novomodelo_io::policy_checkpoint_remedy;
+use novomodelo_io::read_policy_checkpoint;
+use novomodelo_solver::{Basis, BasisStatus};
 
 use crate::SddpError;
 use crate::cut::pool::CutPool;
@@ -48,7 +48,7 @@ use crate::setup::{
     BoundaryStateRequirements, NodeId, NodePos, StudySetup, TypedVec, study_horizon_end,
 };
 use crate::workspace::CapturedBasis;
-use cobre_io::{SoftwareIdentity, StateFamily};
+use novomodelo_io::{SoftwareIdentity, StateFamily};
 
 use std::collections::HashMap;
 use std::fmt;
@@ -1143,7 +1143,7 @@ fn check_topology_subset(
     Ok(())
 }
 
-/// Load boundary cuts from the pool of a source Cobre policy checkpoint that
+/// Load boundary cuts from the pool of a source Novomodelo policy checkpoint that
 /// prices the state at the study's boundary date.
 ///
 /// Pool selection ([`select_boundary_pool`]) and the source cost scale are
@@ -1483,11 +1483,11 @@ impl Deref for ValidatedBoundaryCuts {
 /// Returns [`SddpError::Validation`] if the study has no terminal pool.
 ///
 /// ```compile_fail
-/// use cobre_sddp::{StudySetup, inject_boundary_cuts};
+/// use novomodelo_sddp::{StudySetup, inject_boundary_cuts};
 ///
 /// fn call_with_bare_records(
 ///     setup: &mut StudySetup,
-///     records: &[cobre_io::OwnedPolicyCutRecord],
+///     records: &[novomodelo_io::OwnedPolicyCutRecord],
 /// ) {
 ///     inject_boundary_cuts(setup, records); // bare records, not ValidatedBoundaryCuts
 /// }
@@ -1584,8 +1584,8 @@ pub fn reconcile_boundary_policy(
 #[allow(clippy::unwrap_used, clippy::cast_possible_truncation)]
 mod tests {
     use chrono::NaiveDate;
-    use cobre_core::{AnticipatedCommitmentHistory, EntityId};
-    use cobre_io::{
+    use novomodelo_core::{AnticipatedCommitmentHistory, EntityId};
+    use novomodelo_io::{
         EntitySlot, GraphManifest, HydroSeasonOrders, ProducerBlock, SEASON_CYCLE_CODE_MONTHLY,
         SEASON_CYCLE_CODE_WEEKLY, SOFTWARE_NAME, SOFTWARE_VERSION,
         STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, SeasonManifest, SoftwareIdentity, StageCutsPayload,
@@ -1708,9 +1708,9 @@ mod tests {
         state_dimension: u32,
         cut_intercepts: &[f64],
         manifest: &[EntitySlot],
-        season_manifest: cobre_io::SeasonManifest,
+        season_manifest: novomodelo_io::SeasonManifest,
     ) {
-        let metadata = cobre_io::CheckpointManifest {
+        let metadata = novomodelo_io::CheckpointManifest {
             season_manifest,
             ..test_support::checkpoint_metadata(
                 n_stages,
@@ -1737,18 +1737,18 @@ mod tests {
         state_dimension: u32,
         cut_intercepts: &[f64],
         manifest: &[EntitySlot],
-        metadata: &cobre_io::CheckpointManifest,
+        metadata: &novomodelo_io::CheckpointManifest,
     ) {
         let state_dim = state_dimension as usize;
         let coefficients = vec![1.0_f64; state_dim];
         let n_cuts = cut_intercepts.len();
 
-        let cut_records: Vec<Vec<cobre_io::PolicyCutRecord<'_>>> = (0..n_stages)
+        let cut_records: Vec<Vec<novomodelo_io::PolicyCutRecord<'_>>> = (0..n_stages)
             .map(|_| {
                 cut_intercepts
                     .iter()
                     .enumerate()
-                    .map(|(i, &intercept)| cobre_io::PolicyCutRecord {
+                    .map(|(i, &intercept)| novomodelo_io::PolicyCutRecord {
                         cut_id: i as u64,
                         slot_index: i as u32,
                         iteration: i as u32,
@@ -1782,7 +1782,7 @@ mod tests {
             })
             .collect();
 
-        cobre_io::write_policy_checkpoint(dir, &payloads, &[], metadata, &[]).unwrap();
+        novomodelo_io::write_policy_checkpoint(dir, &payloads, &[], metadata, &[]).unwrap();
     }
 
     /// Every pool [`write_checkpoint_with_manifest`] writes carries a
@@ -1822,7 +1822,7 @@ mod tests {
         coefficients: &[f64],
     ) {
         let state_dimension = coefficients.len() as u32;
-        let cut = cobre_io::PolicyCutRecord {
+        let cut = novomodelo_io::PolicyCutRecord {
             cut_id: 0,
             slot_index: 0,
             iteration: 0,
@@ -1851,7 +1851,7 @@ mod tests {
             chain_graph_manifest(stage_id + 1),
             producer_block(),
         );
-        cobre_io::write_policy_checkpoint(dir, &[payload], &[], &metadata, &[]).unwrap();
+        novomodelo_io::write_policy_checkpoint(dir, &[payload], &[], &metadata, &[]).unwrap();
     }
 
     /// Behavioral: [`load_boundary_cuts`] on a MARKED checkpoint (canonical
@@ -1899,7 +1899,7 @@ mod tests {
 
     use super::{LEGACY_COST_SCALE_FACTOR, rescale_cut_records_for_load};
     use crate::policy_export::scale_cut_records_for_export;
-    use cobre_io::OwnedPolicyCutRecord;
+    use novomodelo_io::OwnedPolicyCutRecord;
 
     fn owned_cut(intercept: f64, coefficients: Vec<f64>) -> OwnedPolicyCutRecord {
         OwnedPolicyCutRecord {
@@ -1993,11 +1993,11 @@ mod tests {
         let originals = [vec![1.0_f64, -3.5, 1e-6, 123_456.789]];
         let intercepts = [7.25_f64];
 
-        let internal_records: Vec<Vec<cobre_io::PolicyCutRecord<'_>>> = vec![
+        let internal_records: Vec<Vec<novomodelo_io::PolicyCutRecord<'_>>> = vec![
             originals
                 .iter()
                 .zip(&intercepts)
-                .map(|(coeffs, &intercept)| cobre_io::PolicyCutRecord {
+                .map(|(coeffs, &intercept)| novomodelo_io::PolicyCutRecord {
                     cut_id: 0,
                     slot_index: 0,
                     iteration: 0,
@@ -2043,8 +2043,8 @@ mod tests {
         let original = [vec![2.0_f64, -0.5]];
         let intercept = 9.0_f64;
 
-        let internal_records: Vec<Vec<cobre_io::PolicyCutRecord<'_>>> =
-            vec![vec![cobre_io::PolicyCutRecord {
+        let internal_records: Vec<Vec<novomodelo_io::PolicyCutRecord<'_>>> =
+            vec![vec![novomodelo_io::PolicyCutRecord {
                 cut_id: 0,
                 slot_index: 0,
                 iteration: 0,
@@ -2078,7 +2078,7 @@ mod tests {
     fn full_fcf_source_cost_scale_reads_terminal_pool_from_bin() {
         let tmp = tempfile::tempdir().unwrap();
         write_checkpoint_with_scale(tmp.path(), 0, 1.0, &[1.0]);
-        let checkpoint = cobre_io::read_policy_checkpoint(tmp.path()).unwrap();
+        let checkpoint = novomodelo_io::read_policy_checkpoint(tmp.path()).unwrap();
 
         let resolved = checkpoint_terminal_cost_scale_factor(&checkpoint).unwrap();
 
@@ -2090,7 +2090,7 @@ mod tests {
     /// [`load_boundary_cuts`]'s own clean-break reject.
     #[test]
     fn full_fcf_source_cost_scale_rejects_pre_self_describing() {
-        let checkpoint = cobre_io::PolicyCheckpoint {
+        let checkpoint = novomodelo_io::PolicyCheckpoint {
             metadata: test_support::checkpoint_metadata(
                 1,
                 GraphManifest::default(),
@@ -2415,7 +2415,7 @@ mod tests {
     /// length, so a truncated descriptor can never pass the positional
     /// comparison by silently comparing fewer seasons. Called directly with
     /// a hand-built [`SeasonManifest`], not through [`load_boundary_cuts`]'s
-    /// checkpoint round trip: `cobre_io`'s decode-time shape validation now
+    /// checkpoint round trip: `novomodelo_io`'s decode-time shape validation now
     /// rejects a truncated `orders` vector before this gate ever runs, so a
     /// wire-sourced manifest can no longer reach this branch — this test
     /// pins the gate's own defense for a manifest constructed directly.
@@ -3140,13 +3140,13 @@ mod tests {
     /// priced date or every pool sharing the sentinel.
     fn write_pools_with_priced_state_dates(dir: &std::path::Path, pools: &[(u32, i32, &[f64])]) {
         let coefficients = [1.0_f64];
-        let cuts_per_pool: Vec<Vec<cobre_io::PolicyCutRecord<'_>>> = pools
+        let cuts_per_pool: Vec<Vec<novomodelo_io::PolicyCutRecord<'_>>> = pools
             .iter()
             .map(|(_, _, intercepts)| {
                 intercepts
                     .iter()
                     .enumerate()
-                    .map(|(i, &intercept)| cobre_io::PolicyCutRecord {
+                    .map(|(i, &intercept)| novomodelo_io::PolicyCutRecord {
                         cut_id: i as u64,
                         slot_index: i as u32,
                         iteration: 0,
@@ -3188,7 +3188,7 @@ mod tests {
             GraphManifest::default(),
             producer_block(),
         );
-        cobre_io::write_policy_checkpoint(dir, &payloads, &[], &metadata, &[]).unwrap();
+        novomodelo_io::write_policy_checkpoint(dir, &payloads, &[], &metadata, &[]).unwrap();
     }
 
     /// Given a two-pool checkpoint whose pools are stamped `fixture_priced_date(0)`
@@ -3577,7 +3577,7 @@ mod tests {
     #[test]
     fn policy_version_refused_at_boundary_load() {
         let tmp = tempfile::tempdir().unwrap();
-        let metadata = cobre_io::CheckpointManifest {
+        let metadata = novomodelo_io::CheckpointManifest {
             software_version: "0.0.1".to_string(),
             ..test_support::checkpoint_metadata(1, chain_graph_manifest(1), producer_block())
         };
@@ -3930,8 +3930,8 @@ mod tests {
     /// decode via `build_basis_cache_for_nodes`.
     #[test]
     fn basis_status_round_trips_through_export_and_load_for_every_variant() {
-        use cobre_io::{PolicyBasisRecord, deserialize_stage_basis, serialize_stage_basis};
-        use cobre_solver::{Basis, BasisStatus};
+        use novomodelo_io::{PolicyBasisRecord, deserialize_stage_basis, serialize_stage_basis};
+        use novomodelo_solver::{Basis, BasisStatus};
 
         use super::build_basis_cache_for_nodes;
         use crate::TrainingResult;
@@ -4018,8 +4018,8 @@ mod tests {
     /// and `HiGHS` code spaces.
     #[test]
     fn pre_existing_checkpoint_bytes_load_to_highs_space_statuses() {
-        use cobre_io::{PolicyBasisRecord, deserialize_stage_basis, serialize_stage_basis};
-        use cobre_solver::BasisStatus;
+        use novomodelo_io::{PolicyBasisRecord, deserialize_stage_basis, serialize_stage_basis};
+        use novomodelo_solver::BasisStatus;
 
         use super::build_basis_cache_for_nodes;
 
@@ -4070,7 +4070,7 @@ mod tests {
 
     // ── branching-graph basis-cache keying ────────────────────────────────────
 
-    use cobre_io::{OwnedPolicyBasisRecord, StageCutsReadResult};
+    use novomodelo_io::{OwnedPolicyBasisRecord, StageCutsReadResult};
 
     /// An active cut record at LP slot `slot`.
     fn active_cut(slot: u32) -> OwnedPolicyCutRecord {
@@ -4681,7 +4681,7 @@ mod tests {
         cost_scale_factor: f64,
     ) {
         let state_dimension = coefficients.len() as u32;
-        let cut = cobre_io::PolicyCutRecord {
+        let cut = novomodelo_io::PolicyCutRecord {
             cut_id: 0,
             slot_index: 0,
             iteration: 0,
@@ -4713,7 +4713,7 @@ mod tests {
                 ..producer_block()
             },
         );
-        cobre_io::write_policy_checkpoint(dir, &[payload], &[], &metadata, &[]).unwrap();
+        novomodelo_io::write_policy_checkpoint(dir, &[payload], &[], &metadata, &[]).unwrap();
     }
 
     /// A marked source whose cut carries a known anticipated coefficient at

@@ -1,12 +1,12 @@
-//! # cobre-io
+//! # novomodelo-io
 //!
 //! Case directory loading, validation, and result writing for the
-//! [Cobre](https://github.com/cobre-rs/cobre) power systems ecosystem.
+//! [Novomodelo](https://github.com/ons-ccee-epe/novomodelo) power systems ecosystem.
 //!
 //! This crate provides two top-level entry points:
 //!
 //! - [`load_case`] — reads a case directory and produces a fully-validated
-//!   [`cobre_core::System`] ready for use by the solver.
+//!   [`novomodelo_core::System`] ready for use by the solver.
 //! - [`write_results`] — writes the training result tables, the training
 //!   dictionaries, and the training/simulation completion metadata under a
 //!   root directory; the remaining artifacts are written by the callers through
@@ -149,7 +149,7 @@ pub use validation::semantic::seed_lag_state_depth;
 pub use validation::structural::{FileManifest, InputFile, validate_structure};
 pub use validation::{ErrorKind, Severity, ValidationContext, ValidationEntry};
 
-use cobre_core::{ScalarParameter, System};
+use novomodelo_core::{ScalarParameter, System};
 use std::path::Path;
 
 /// Auxiliary rows produced by the load pipeline alongside [`System`].

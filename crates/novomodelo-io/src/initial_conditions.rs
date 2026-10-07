@@ -27,7 +27,7 @@
 //!
 //! ```json
 //! {
-//!   "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/initial_conditions.schema.json",
+//!   "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/initial_conditions.schema.json",
 //!   "storage": [
 //!     { "hydro_id": 0, "value_hm3": 15000.0 },
 //!     { "hydro_id": 1, "value_hm3": 8500.0 }
@@ -80,7 +80,7 @@
 //!    the plant has a commissioning window, the value must mature inside it.
 //!    All are enforced by the semantic validator (Layer 5a); the committed
 //!    values are sunk cost and do not enter the study objective. See
-//!    [`AnticipatedCommitmentHistory`] in `cobre-core` for the full contract.
+//!    [`AnticipatedCommitmentHistory`] in `novomodelo-core` for the full contract.
 //! 10. Every `start_date` and `end_date` in `past_defluences` parses as ISO 8601
 //!     (`YYYY-MM-DD`), and `end_date > start_date`.
 //! 11. Every `value_m3s` in `past_defluences` is finite and non-negative.
@@ -93,7 +93,7 @@
 //! hydro registry and is likewise deferred.
 
 use chrono::NaiveDate;
-use cobre_core::{
+use novomodelo_core::{
     AnticipatedCommitmentHistory, EntityId, HydroPastDefluence, HydroStorage, InitialConditions,
     RecentObservation,
 };
@@ -256,7 +256,7 @@ pub(crate) struct RawAnticipatedCommitmentHistory {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::initial_conditions::parse_initial_conditions;
+/// use novomodelo_io::initial_conditions::parse_initial_conditions;
 /// use std::path::Path;
 ///
 /// let ic = parse_initial_conditions(Path::new("case/initial_conditions.json")).unwrap();
@@ -594,7 +594,7 @@ mod tests {
 
     /// Canonical valid `initial_conditions.json` with 2 storage and 1 filling entry.
     const VALID_JSON: &str = r#"{
-      "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/initial_conditions.schema.json",
+      "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/initial_conditions.schema.json",
       "storage": [
         { "hydro_id": 0, "value_hm3": 15000.0 },
         { "hydro_id": 1, "value_hm3": 8500.0 }

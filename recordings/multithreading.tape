@@ -1,8 +1,8 @@
-# Cobre Multi-threading Speedup Demo
+# Novomodelo Multi-threading Speedup Demo
 # Generates: multithreading.gif
 # Shows the wall-clock time difference between --threads 1 and --threads 4.
 
-Require cobre
+Require novomodelo
 
 Set Shell "bash"
 Set FontFamily "JetBrains Mono"
@@ -18,7 +18,7 @@ Set MarginFill "#2D3440"
 
 Output multithreading.gif
 
-Type "cobre init --template 1dtoy demo/"
+Type "novomodelo init --template 1dtoy demo/"
 Enter
 Sleep 4s
 
@@ -27,11 +27,11 @@ Type "jq '.training.selection.forward_passes = 8 | .simulation.selection.num_sce
 Enter
 Sleep 4s
 
-Type "cobre run demo/ --threads 1"
+Type "novomodelo run demo/ --threads 1"
 Enter
 Sleep 33s
 
-Type "cobre run demo/ --threads 4"
+Type "novomodelo run demo/ --threads 4"
 Enter
 Sleep 17s
 

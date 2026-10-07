@@ -1,15 +1,15 @@
-//! Version and build-environment reporting for the top-level `cobre` module.
+//! Version and build-environment reporting for the top-level `novomodelo` module.
 //!
-//! [`version_info`] assembles the same fields the `cobre version` CLI prints.
+//! [`version_info`] assembles the same fields the `novomodelo version` CLI prints.
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-/// Return a dict describing the running Cobre build.
+/// Return a dict describing the running Novomodelo build.
 ///
 /// The returned dict has the following keys:
 ///
-/// * `"version"` — the `cobre-python` package version (`cobre.__version__`).
+/// * `"version"` — the `novomodelo-python` package version (`novomodelo.__version__`).
 /// * `"solver"` — the active LP backend and its version, e.g. `"HiGHS 1.7.2"`
 ///   or `"CLP <v>"`.
 /// * `"comm"` — always `"local"`; this crate is single-process and never
@@ -21,9 +21,9 @@ use pyo3::types::PyDict;
 /// # Examples
 ///
 /// ```python
-/// import cobre
-/// info = cobre.version_info()
-/// assert info["version"] == cobre.__version__
+/// import novomodelo
+/// info = novomodelo.version_info()
+/// assert info["version"] == novomodelo.__version__
 /// assert info["comm"] == "local"
 /// assert info["solver"].split()[0] in ("HiGHS", "CLP")
 /// ```
@@ -35,8 +35,8 @@ pub fn version_info(py: Python<'_>) -> PyResult<Py<PyAny>> {
         "solver",
         format!(
             "{} {}",
-            cobre_solver::active_solver_name(),
-            cobre_solver::active_solver_version()
+            novomodelo_solver::active_solver_name(),
+            novomodelo_solver::active_solver_version()
         ),
     )?;
     dict.set_item("comm", "local")?;

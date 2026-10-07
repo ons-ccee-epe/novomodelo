@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use chrono::{Datelike, NaiveDate};
-use cobre_core::{
+use novomodelo_core::{
     temporal::{SUB_PERIOD_TOLERANCE_DAYS, SeasonDefinition, SeasonMap, Stage, StageLagTransition},
     window_period_overlaps,
 };
@@ -366,8 +366,10 @@ pub fn precompute_noise_groups(stages: &[Stage]) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cobre_core::temporal::{SeasonCycleType, SeasonCycles, SeasonDefinition, SeasonMap, Stage};
-    use cobre_core::{
+    use novomodelo_core::temporal::{
+        SeasonCycleType, SeasonCycles, SeasonDefinition, SeasonMap, Stage,
+    };
+    use novomodelo_core::{
         EntityId, Hydro, InflowHistoryRow, RecentObservation,
         test_support::{HydroSpec, MirrorUnitGroup, StageSpec, date, single_block},
     };
@@ -412,7 +414,7 @@ mod tests {
         season_id: Option<usize>,
     ) -> Stage {
         let days = u32::try_from((end - start).num_days()).unwrap();
-        cobre_core::test_support::make_stage(StageSpec {
+        novomodelo_core::test_support::make_stage(StageSpec {
             id: i32::try_from(index).unwrap(),
             index: Some(index),
             start_date: start,
@@ -831,7 +833,7 @@ mod tests {
     /// Stage `[2026-01-28, 2026-02-04)` with `season_id=0` (January).
     ///
     /// "Jan 28 to Feb 3" in inclusive notation equals `[Jan 28, Feb 04)` in
-    /// Cobre exclusive-end convention.  That gives 4 January days (28–31) and
+    /// Novomodelo exclusive-end convention.  That gives 4 January days (28–31) and
     /// 3 February days (01–03).
     ///
     /// January 2026: 31 days = 744 h.
@@ -1368,7 +1370,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn make_hydro(id: i32) -> Hydro {
-        cobre_core::test_support::make_hydro(HydroSpec {
+        novomodelo_core::test_support::make_hydro(HydroSpec {
             id,
             name: format!("H{id}"),
             max_storage_hm3: 100.0,

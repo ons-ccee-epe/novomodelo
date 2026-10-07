@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/energy_contracts.schema.json",
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/energy_contracts.schema.json",
   "contracts": [
     {
       "id": 0,

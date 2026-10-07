@@ -1,4 +1,4 @@
-//! Trait definitions for the cobre-comm abstraction layer, decoupling distributed
+//! Trait definitions for the novomodelo-comm abstraction layer, decoupling distributed
 //! computations from specific communication technologies: [`CommData`],
 //! [`Communicator`], and the `shared-memory`-gated [`LocalCommunicator`],
 //! [`SharedRegion`], and [`SharedMemoryProvider`].
@@ -37,7 +37,7 @@ use crate::topology::ExecutionTopology;
 /// All types satisfying the bounds are `CommData` via a blanket impl:
 ///
 /// ```rust
-/// # use cobre_comm::CommData;
+/// # use novomodelo_comm::CommData;
 /// fn requires_comm_data<T: CommData>() {}
 /// requires_comm_data::<f64>();
 /// requires_comm_data::<u8>();
@@ -81,7 +81,7 @@ impl<T: Send + Sync + Copy + Default + 'static> CommData for T {}
 /// # Example
 ///
 /// ```rust
-/// use cobre_comm::{Communicator, CommError};
+/// use novomodelo_comm::{Communicator, CommError};
 ///
 /// fn print_topology<C: Communicator>(comm: &C) {
 ///     println!("rank {} of {}", comm.rank(), comm.size());
@@ -244,7 +244,7 @@ pub trait Communicator: Send + Sync {
 /// # Example
 ///
 /// ```rust
-/// use cobre_comm::LocalCommunicator;
+/// use novomodelo_comm::LocalCommunicator;
 ///
 /// fn determine_leader(local_comm: &dyn LocalCommunicator) -> bool {
 ///     local_comm.rank() == 0
@@ -361,7 +361,7 @@ pub trait SharedRegion<T: CommData>: Send + Sync {
 /// and those needing shared memory bound `C: Communicator + SharedMemoryProvider`:
 ///
 /// ```rust
-/// # use cobre_comm::{Communicator, SharedMemoryProvider};
+/// # use novomodelo_comm::{Communicator, SharedMemoryProvider};
 /// fn train<C: Communicator + SharedMemoryProvider>(comm: &C) {
 /// }
 /// ```

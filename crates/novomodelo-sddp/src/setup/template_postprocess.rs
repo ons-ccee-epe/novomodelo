@@ -1,6 +1,6 @@
 //! Template post-processing: state boxes and LP scaling.
 
-use cobre_core::System;
+use novomodelo_core::System;
 
 use crate::lp::builder::{self, StageTemplates};
 use crate::lp::indexer::{AnticipatedPlants, StateSpace};
@@ -98,11 +98,11 @@ mod tests {
     use crate::test_support::{equipment_free_geometry, state_layout_full};
     use crate::time_value::{PostStudyResolved, TimeValue};
     use chrono::NaiveDate;
-    use cobre_core::temporal::{
+    use novomodelo_core::temporal::{
         BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig,
     };
-    use cobre_core::{ResolvedBounds, SystemBuilder};
-    use cobre_solver::StageTemplate;
+    use novomodelo_core::{ResolvedBounds, SystemBuilder};
+    use novomodelo_solver::StageTemplate;
 
     fn one_year_stage(id: i32) -> Stage {
         Stage {

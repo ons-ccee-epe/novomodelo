@@ -320,9 +320,9 @@ fn map_ferrompi_error(e: &ferrompi::Error, operation: &'static str) -> CommError
     }
 }
 
-/// Map a `cobre_comm::ReduceOp` to the corresponding `ferrompi::ReduceOp`.
+/// Map a `novomodelo_comm::ReduceOp` to the corresponding `ferrompi::ReduceOp`.
 ///
-/// `ferrompi::ReduceOp::Prod` is not exposed in the Cobre trait.
+/// `ferrompi::ReduceOp::Prod` is not exposed in the Novomodelo trait.
 fn map_reduce_op(op: ReduceOp) -> ferrompi::ReduceOp {
     match op {
         Sum => ferrompi::ReduceOp::Sum,

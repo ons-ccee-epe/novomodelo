@@ -1,11 +1,11 @@
 """Periodic training checkpoints written by the CLI and the Python bindings.
 
 A run killed during training must leave the checkpoint of its last scheduled
-write, loadable by `cobre.results.load_policy`, and both front ends must write
+write, loadable by `novomodelo.results.load_policy`, and both front ends must write
 the same files when periodic checkpointing is on.
 
-Run with (from the repo root, after `cargo build --release -p cobre-cli`):
-    pytest crates/cobre-python/tests/test_periodic_checkpoint.py --require-cli-binary
+Run with (from the repo root, after `cargo build --release -p novomodelo-cli`):
+    pytest crates/novomodelo-python/tests/test_periodic_checkpoint.py --require-cli-binary
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import time
 
 import pytest
 
-from _cobre_cli import run_cli
+from _novomodelo_cli import run_cli
 
 _REPO_ROOT = pathlib.Path(__file__).parents[3]
 _TOY_CASE = _REPO_ROOT / "examples" / "1dtoy"
@@ -27,7 +27,7 @@ _TOY_CASE = _REPO_ROOT / "examples" / "1dtoy"
 _UNREACHABLE_ITERATION_LIMIT = 100_000
 _CHECKPOINT_WAIT_SECONDS = 120.0
 
-_PYTHON_RUN = "import sys, cobre.run; cobre.run.run(sys.argv[1], output_dir=sys.argv[2])"
+_PYTHON_RUN = "import sys, novomodelo.run; novomodelo.run.run(sys.argv[1], output_dir=sys.argv[2])"
 
 
 def _periodic_case(root: pathlib.Path, iteration_limit: int) -> pathlib.Path:
@@ -72,10 +72,12 @@ def _kill_after_first_checkpoint(
 
 
 def _assert_loadable_periodic_checkpoint(output_dir: pathlib.Path) -> None:
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    producer = cobre.results.load_policy(output_dir)["metadata"]["producer"]
-    assert 1 <= producer["completed_iterations"] < _UNREACHABLE_ITERATION_LIMIT, producer
+    producer = novomodelo.results.load_policy(output_dir)["metadata"]["producer"]
+    assert 1 <= producer["completed_iterations"] < _UNREACHABLE_ITERATION_LIMIT, (
+        producer
+    )
     assert producer["max_iterations"] == _UNREACHABLE_ITERATION_LIMIT, producer
 
 
@@ -112,13 +114,13 @@ def test_killed_cli_run_leaves_a_loadable_periodic_checkpoint(
 def test_periodic_checkpoint_runs_write_the_same_file_set_on_cli_and_python(
     tmp_path: pathlib.Path, cli_binary: pathlib.Path
 ) -> None:
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     case = _periodic_case(tmp_path, iteration_limit=4)
     cli_output = tmp_path / "cli_out"
     python_output = tmp_path / "python_out"
     run_cli(case, cli_output, cli_binary)
-    cobre.run.run(str(case), output_dir=str(python_output))
+    novomodelo.run.run(str(case), output_dir=str(python_output))
 
     cli_files = _relative_files(cli_output)
     python_files = _relative_files(python_output)

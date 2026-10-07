@@ -16,16 +16,16 @@ env:
   # `--all-features` convention covered is enumerated here so neither backend
   # loses non-solver coverage. Features are unified workspace-wide by name, so
   # this is the deduplicated union across crates:
-  #   cobre-comm:       mpi, numa, shared-memory
-  #   cobre-core:       serde, schema
-  #   cobre-io:         schema, flatc-conformance, slow-tests
-  #   cobre-solver:     test-support
-  #   cobre-sddp:       slow-tests
-  #   cobre-stochastic: slow-tests
-  #   cobre-cli:        mpi, slow-tests
+  #   novomodelo-comm:       mpi, numa, shared-memory
+  #   novomodelo-core:       serde, schema
+  #   novomodelo-io:         schema, flatc-conformance, slow-tests
+  #   novomodelo-solver:     test-support
+  #   novomodelo-sddp:       slow-tests
+  #   novomodelo-stochastic: slow-tests
+  #   novomodelo-cli:        mpi, slow-tests
   # `slow-tests` is kept ON: the D-case `parity_hash` correctness sweep is gated
   # behind it, so the primary backend must enable it to run that sweep.
-  # `cobre-sddp/dhat-heap` is deliberately EXCLUDED: it swaps in a profiling
+  # `novomodelo-sddp/dhat-heap` is deliberately EXCLUDED: it swaps in a profiling
   # global allocator ("Never enable by default") that alters allocation behavior
   # for every test; it belongs only to the `dhat_baseline` example, never the
   # regular test/coverage runs.
@@ -244,7 +244,7 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
-      - run: cargo fmt --manifest-path crates/cobre-python/Cargo.toml -- --check
+      - run: cargo fmt --manifest-path crates/novomodelo-python/Cargo.toml -- --check
 
   quality-scripts:
     name: Quality Scripts
@@ -341,11 +341,11 @@ jobs:
       - name: Verify schema freshness
         run: ./scripts/ci/check_schemas.sh --build
 
-  # Locks structural invariants of a fresh `cobre init` -> `run` (template file
+  # Locks structural invariants of a fresh `novomodelo init` -> `run` (template file
   # count, training/metadata.json keys, policy/manifest.bin presence,
   # simulation/metadata.json keys) against the live binary, so the CLI's on-disk
   # output shape cannot silently drift. Minimal setup: only the default-feature
-  # (HiGHS) `cobre` binary is needed — no MPICH or flatc, since the default CLI
+  # (HiGHS) `novomodelo` binary is needed — no MPICH or flatc, since the default CLI
   # build enables neither `mpi` nor `flatc-conformance`. `jq` is preinstalled on
   # `ubuntu-latest`. Scoped to structural invariants the assert_cmd suite does
   # not already pin exactly; it does not re-run command-execution coverage.
@@ -407,7 +407,7 @@ jobs:
           RUSTDOCFLAGS: -Dwarnings
 
   # cargo-audit reads Cargo.lock and the advisory DB; it does not compile any
-  # crate, so it never trips cobre-solver's both-backends `compile_error!`.
+  # crate, so it never trips novomodelo-solver's both-backends `compile_error!`.
   security:
     name: Security Audit
     runs-on: ubuntu-latest
@@ -420,7 +420,7 @@ jobs:
       - run: cargo audit
 
   # cargo-deny resolves the dependency/feature graph for advisory, license, and
-  # bans checks; it does NOT compile cobre-solver, so `--all-features` here only
+  # bans checks; it does NOT compile novomodelo-solver, so `--all-features` here only
   # widens the advisory graph and never trips the both-backends `compile_error!`.
   deny:
     name: Dependency Check
@@ -558,24 +558,24 @@ jobs:
           python -m venv .venv
           source .venv/bin/activate
           pip install maturin pytest pytest-cov pyarrow
-      - name: Build and install cobre-python
-        working-directory: crates/cobre-python
+      - name: Build and install novomodelo-python
+        working-directory: crates/novomodelo-python
         run: |
           source ../../.venv/bin/activate
           maturin develop --release
       - name: Build the CLI for the parity tests
-        run: cargo build --release -p cobre-cli
+        run: cargo build --release -p novomodelo-cli
       - name: Run Rust tests for the bindings crate
         if: matrix.python-version == '3.12'
         run: |
           source .venv/bin/activate
           export LD_LIBRARY_PATH="$(python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))'):${LD_LIBRARY_PATH:-}"
-          cargo test --manifest-path crates/cobre-python/Cargo.toml \
+          cargo test --manifest-path crates/novomodelo-python/Cargo.toml \
             --no-default-features --features highs
       - name: Run Python tests with coverage
         run: |
           source .venv/bin/activate
-          pytest crates/cobre-python/tests/ -v --cov=cobre --cov-report=xml:python-coverage.xml --require-cli-binary
+          pytest crates/novomodelo-python/tests/ -v --cov=novomodelo --cov-report=xml:python-coverage.xml --require-cli-binary
       # Execute the quickstart notebook end-to-end against the locally built
       # wheel (the `maturin develop` artifact above — never a PyPI install) so
       # it cannot silently break. Run once on the lowest matrix Python; nbmake
@@ -587,7 +587,7 @@ jobs:
         run: |
           source .venv/bin/activate
           # Loose upper bounds so a future major release of these floating deps
-          # cannot false-fail the notebook for reasons unrelated to cobre.
+          # cannot false-fail the notebook for reasons unrelated to novomodelo.
           pip install 'nbmake>=1.5,<2' 'polars>=1.0,<2' 'matplotlib>=3.8,<4'
           pytest --nbmake examples/notebooks/quickstart.ipynb
       - uses: codecov/codecov-action@v5

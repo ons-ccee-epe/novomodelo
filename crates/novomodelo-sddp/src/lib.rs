@@ -77,9 +77,6 @@ pub use training::backward_pass_state::{BackwardPassInputs, BackwardPassState};
 
 pub(crate) use training::session as training_session;
 
-pub use cobre_io::scenarios::estimation::{
-    EstimationPath, EstimationReport, estimate_from_history,
-};
 pub use config::TrainingConfig;
 pub use convergence::convergence::ConvergenceMonitor;
 pub use convergence::risk_measure::{BackwardOutcome, RiskMeasure};
@@ -95,6 +92,9 @@ pub use error::{ErrorClass, SddpError};
 pub use fixed_delivery_echo::build_fixed_delivery_rows;
 pub use generic_constraint_echo::build_generic_constraint_echo_rows;
 pub use lp::builder::StageTemplates;
+pub use novomodelo_io::scenarios::estimation::{
+    EstimationPath, EstimationReport, estimate_from_history,
+};
 pub use policy::policy_export::{ReservedInflowLagLayout, reserve_boundary_inflow_lag_slots};
 pub use policy::policy_load::{
     BoundaryInjection, BoundaryLoadRequest, BoundaryReconciliation, FullFcf,

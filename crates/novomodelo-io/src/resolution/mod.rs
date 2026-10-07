@@ -1,7 +1,7 @@
 //! Resolution functions that apply the penalty and bound cascades.
 //!
 //! Each takes parsed entity data plus sparse stage-varying override rows and
-//! produces a fully pre-resolved [`cobre_core::resolved`] table for O(1) lookup.
+//! produces a fully pre-resolved [`novomodelo_core::resolved`] table for O(1) lookup.
 
 pub mod bounds;
 pub mod factors;

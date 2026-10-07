@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use chrono::NaiveDate;
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId,
     temporal::{SeasonMap, Stage},
 };
@@ -190,8 +190,8 @@ pub fn classify_history(observations: &[f64]) -> HistoryClass {
 ///
 /// ```
 /// use chrono::NaiveDate;
-/// use cobre_core::{EntityId, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
-/// use cobre_stochastic::par::fitting::estimate_seasonal_stats_with_season_map;
+/// use novomodelo_core::{EntityId, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
+/// use novomodelo_stochastic::par::fitting::estimate_seasonal_stats_with_season_map;
 ///
 /// fn stage(id: i32, y0: i32, m0: u32, y1: i32, m1: u32, season: usize) -> Stage {
 ///     Stage {

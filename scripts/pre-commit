@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Pre-commit hook for Cobre
+# Pre-commit hook for Novomodelo
 # Install: ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
 
 echo "==> Running cargo fmt --check..."

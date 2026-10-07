@@ -1,11 +1,11 @@
 """Golden CLI-versus-Python determinism test on examples/1dtoy.
 
 This module verifies the byte-identity claim the bindings make in the docstrings
-of `Study.train` and `Study.simulate` (`crates/cobre-python/src/study.rs`): both
+of `Study.train` and `Study.simulate` (`crates/novomodelo-python/src/study.rs`): both
 state that they invoke the same writers as `run_via_study` in
-`crates/cobre-python/src/run.rs`, and that the resulting outputs are identical. This test asserts
+`crates/novomodelo-python/src/run.rs`, and that the resulting outputs are identical. This test asserts
 that claim by running the same case (`examples/1dtoy`) through both the compiled
-CLI and the Python `cobre.run.run()` entry point, then comparing the two output
+CLI and the Python `novomodelo.run.run()` entry point, then comparing the two output
 trees.
 
 The case is deterministic (seed-pinned, all `in_sample` schemes, 128-iteration
@@ -19,7 +19,7 @@ independent reasons make byte-level comparison guaranteed to fail:
 2. The solver-stats Parquet files carry wall-clock millisecond columns
    (`solve_time_ms`, `load_model_time_ms`, `set_bounds_time_ms`,
    `basis_set_time_ms`).
-3. The policy checkpoint embeds `created_at: cobre_io::now_iso8601()`.
+3. The policy checkpoint embeds `created_at: novomodelo_io::now_iso8601()`.
 
 Every other field and column is compared exactly. The two module-level mask
 constants name the excluded paths and columns, with the reason each is masked:
@@ -37,12 +37,12 @@ file-set equality, but its bytes are not compared, because the manifest embeds
 
 Run with (from the repo root):
 
-    pytest crates/cobre-python/tests/test_cli_python_determinism_parity.py -v \\
+    pytest crates/novomodelo-python/tests/test_cli_python_determinism_parity.py -v \\
         --require-cli-binary
 
 Or as part of the full suite:
 
-    pytest crates/cobre-python/tests -q --require-cli-binary
+    pytest crates/novomodelo-python/tests -q --require-cli-binary
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ from typing import Any
 import pyarrow.parquet as pq
 import pytest
 
-from _cobre_cli import run_cli
+from _novomodelo_cli import run_cli
 
 _REPO_ROOT = pathlib.Path(__file__).parents[3]
 TOY_CASE = _REPO_ROOT / "examples" / "1dtoy"
@@ -202,12 +202,12 @@ def toy_cli_output(
 def toy_python_run(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> tuple[pathlib.Path, dict[str, Any]]:
-    """Run 1dtoy once through `cobre.run.run()`; return the output dir and result."""
-    import cobre.run  # noqa: PLC0415
+    """Run 1dtoy once through `novomodelo.run.run()`; return the output dir and result."""
+    import novomodelo.run  # noqa: PLC0415
 
     assert TOY_CASE.is_dir(), f"the 1dtoy fixture must exist at {TOY_CASE}"
     output_dir = tmp_path_factory.mktemp("toy_python_out")
-    result = cobre.run.run(str(TOY_CASE), output_dir=str(output_dir))
+    result = novomodelo.run.run(str(TOY_CASE), output_dir=str(output_dir))
     return output_dir, result
 
 
@@ -429,7 +429,7 @@ def test_python_result_dict_matches_written_metadata(
 ) -> None:
     """The Python result dict agrees with the training metadata the same call wrote.
 
-    The five fields returned by `cobre.run.run()` (`converged`, `iterations`,
+    The five fields returned by `novomodelo.run.run()` (`converged`, `iterations`,
     `lower_bound`, `upper_bound`, `gap_percent`) are compared against their
     mapped paths in `training/metadata.json`. All must equal exactly, because
     both sides serialise the same in-memory `result`.

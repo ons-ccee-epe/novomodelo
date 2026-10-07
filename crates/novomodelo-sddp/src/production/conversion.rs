@@ -1,6 +1,6 @@
 //! Field-for-field conversions from `Simulation*Result` to write-payload types.
 
-use cobre_io::output::simulation_writer::{
+use novomodelo_io::output::simulation_writer::{
     AnticipatedLaneWriteRecord, BusWriteRecord, ContractWriteRecord, CostWriteRecord,
     ExchangeWriteRecord, GenericViolationWriteRecord, HydroBusWriteRecord, HydroWriteRecord,
     InflowLagWriteRecord, NonControllableWriteRecord, PumpingWriteRecord, ScenarioWritePayload,
@@ -295,7 +295,7 @@ impl From<SimulationTransitSeedResult> for TransitSeedWriteRecord {
     }
 }
 
-/// Convert a `Simulation*Result` into its cobre-io write record, stamping the
+/// Convert a `Simulation*Result` into its novomodelo-io write record, stamping the
 /// stage's `node_id` (the source carries no node axis).
 ///
 /// A local trait rather than `From<(S, i32)>`: the orphan rule forbids
@@ -353,7 +353,7 @@ mod tests {
 
     use super::*;
     use crate::simulation::ScenarioCategoryCosts;
-    use cobre_io::output::simulation_writer::ScenarioWritePayload;
+    use novomodelo_io::output::simulation_writer::ScenarioWritePayload;
 
     fn make_cost(stage_id: u32, block_id: u32) -> SimulationCostResult {
         SimulationCostResult {

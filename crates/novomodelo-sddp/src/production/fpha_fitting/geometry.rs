@@ -5,8 +5,8 @@
 //! evaluators ([`evaluate_tailrace`], [`evaluate_losses`]). The `production` submodule
 //! reads these to assemble the complete production function.
 
-use cobre_core::{HydraulicLossesModel, Hydro, TailraceModel};
-use cobre_io::extensions::{FphaColumnLayout, HydroGeometryRow};
+use novomodelo_core::{HydraulicLossesModel, Hydro, TailraceModel};
+use novomodelo_io::extensions::{FphaColumnLayout, HydroGeometryRow};
 
 use super::error::FphaFittingError;
 
@@ -272,8 +272,8 @@ pub(crate) fn resolve_fitting_bounds(
 /// already sorted by ascending `volume_hm3` by the parser):
 ///
 /// ```no_run
-/// use cobre_io::extensions::HydroGeometryRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::extensions::HydroGeometryRow;
+/// use novomodelo_core::EntityId;
 ///
 /// // (ForebayTable is pub(crate); this example is for illustration only.)
 /// let rows = vec![
@@ -295,7 +295,7 @@ impl ForebayTable {
     /// # Parameters
     ///
     /// - `rows` — all [`HydroGeometryRow`] entries for the hydro plant, sorted
-    ///   by ascending `volume_hm3` (as returned by `cobre_io::extensions::parse_hydro_geometry`).
+    ///   by ascending `volume_hm3` (as returned by `novomodelo_io::extensions::parse_hydro_geometry`).
     /// - `hydro_name` — human-readable plant name used in error messages.
     ///
     /// A single row is accepted: a run-of-river plant has one operating volume
@@ -382,8 +382,8 @@ impl ForebayTable {
     /// # Examples
     ///
     /// ```no_run
-    /// use cobre_io::extensions::HydroGeometryRow;
-    /// use cobre_core::EntityId;
+    /// use novomodelo_io::extensions::HydroGeometryRow;
+    /// use novomodelo_core::EntityId;
     ///
     /// // (ForebayTable is pub(crate); this example is for illustration only.)
     /// // let table = ForebayTable::new(&rows, "Sobradinho").unwrap();
@@ -464,11 +464,11 @@ impl ForebayTable {
 /// Tailrace elevation `h_tail(q_out)` for a total outflow of `outflow_m3s` (m).
 ///
 /// - `Polynomial`: evaluates `c[0] + c[1]·q + c[2]·q² + …` via Horner's method.
-/// - `Piecewise`: linearly interpolates between adjacent [`cobre_core::TailracePoint`]
+/// - `Piecewise`: linearly interpolates between adjacent [`novomodelo_core::TailracePoint`]
 ///   breakpoints; the outflow is clamped to the table's range before lookup.
 ///
 /// The function is infallible — the model invariants (≥ 1 coefficient; ≥ 2 points
-/// sorted ascending) are enforced by the `cobre-io` parsing layer.
+/// sorted ascending) are enforced by the `novomodelo-io` parsing layer.
 pub(crate) fn evaluate_tailrace(model: &TailraceModel, outflow_m3s: f64) -> f64 {
     match model {
         TailraceModel::Polynomial { coefficients } => coefficients
@@ -514,7 +514,7 @@ pub(crate) fn evaluate_losses(
 /// The caller must ensure `q` is already clamped to `[q_min, q_max]`. Uses
 /// `partition_point` for O(log n) binary search; saturates at `n - 2` to keep
 /// `i + 1` in bounds at `q == q_max`.
-fn locate_tailrace(points: &[cobre_core::TailracePoint], q: f64) -> (usize, f64) {
+fn locate_tailrace(points: &[novomodelo_core::TailracePoint], q: f64) -> (usize, f64) {
     let n = points.len();
     let idx = points.partition_point(|p| p.outflow_m3s <= q);
     let i = idx.saturating_sub(1).min(n - 2);
@@ -525,8 +525,8 @@ fn locate_tailrace(points: &[cobre_core::TailracePoint], q: f64) -> (usize, f64)
 
 #[cfg(test)]
 mod tests {
-    use cobre_core::EntityId;
-    use cobre_io::extensions::HydroGeometryRow;
+    use novomodelo_core::EntityId;
+    use novomodelo_io::extensions::HydroGeometryRow;
     use proptest::prelude::*;
     use proptest::test_runner::RngSeed;
 

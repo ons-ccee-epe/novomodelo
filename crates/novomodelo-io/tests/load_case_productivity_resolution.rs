@@ -1,6 +1,6 @@
 //! Integration tests for the cross-file productivity-resolution validator.
 //!
-//! Exercise [`cobre_io::load_case`] against tempfile-based case directories
+//! Exercise [`novomodelo_io::load_case`] against tempfile-based case directories
 //! that conflict, leave coverage gaps, or are authored entirely through
 //! the parquet override.
 
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use arrow::array::{Float64Array, Int32Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use cobre_io::{LoadError, load_case};
+use novomodelo_io::{LoadError, load_case};
 use parquet::arrow::ArrowWriter;
 use tempfile::TempDir;
 

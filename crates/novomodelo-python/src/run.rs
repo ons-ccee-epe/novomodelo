@@ -1,7 +1,7 @@
-//! Solver execution entry points for the `cobre.run` Python sub-module.
+//! Solver execution entry points for the `novomodelo.run` Python sub-module.
 //!
 //! Exposes [`run`] — a high-level function that replicates the lifecycle of
-//! `cobre run` but without MPI, progress bars, or a terminal banner. The GIL
+//! `novomodelo run` but without MPI, progress bars, or a terminal banner. The GIL
 //! is released for the entire Rust computation so Python threads and the
 //! interpreter continue to run alongside the solver.
 //!
@@ -14,8 +14,8 @@
 //!
 //! ## Single-process only
 //!
-//! This module uses [`cobre_comm::LocalBackend`] exclusively. MPI is never
-//! initialized here. For distributed runs, launch `mpiexec cobre` as a
+//! This module uses [`novomodelo_comm::LocalBackend`] exclusively. MPI is never
+//! initialized here. For distributed runs, launch `mpiexec novomodelo` as a
 //! subprocess.
 
 use std::path::Path;
@@ -30,7 +30,7 @@ use pyo3::types::PyDict;
 use serde_json::Map;
 use serde_json::Value;
 
-use cobre_core::TrainingEvent;
+use novomodelo_core::TrainingEvent;
 
 use crate::convert::pydict_to_json_map;
 use crate::errors::{
@@ -42,88 +42,88 @@ use crate::errors::{
     STOCHASTIC_PREPROCESSING_ERROR_PREFIX, TRAINING_ERROR_PREFIX, convert_error,
 };
 use crate::study::resolve_output_dir;
-use cobre_io::LoadError;
+use novomodelo_io::LoadError;
 
-use cobre_comm::LocalBackend;
-use cobre_core::System;
-use cobre_core::TrainingEvent::IterationSummary;
-use cobre_io::Config;
-use cobre_io::DistributionInfo;
-use cobre_io::EVAPORATION_MODELS_FILE;
-use cobre_io::FPHA_DEVIATION_POINTS_FILE;
-use cobre_io::FPHA_HYPERPLANES_FILE;
-use cobre_io::GENERIC_CONSTRAINT_ECHO_FILE;
-use cobre_io::LoadedCase;
-use cobre_io::MetadataCost;
-use cobre_io::MetadataSimulationSolveStats;
-use cobre_io::MetadataTrainingSolveStats;
-use cobre_io::OutputContext;
-use cobre_io::PolicyMode::Fresh;
-use cobre_io::PolicyMode::Resume;
-use cobre_io::PolicyMode::WarmStart;
-use cobre_io::ReportEntry;
-use cobre_io::SetupTimings;
-use cobre_io::SolverStatsRow;
-use cobre_io::TrainingOutput;
-use cobre_io::get_hostname;
-use cobre_io::now_iso8601;
-use cobre_io::output::simulation_writer::{
+use novomodelo_comm::LocalBackend;
+use novomodelo_core::System;
+use novomodelo_core::TrainingEvent::IterationSummary;
+use novomodelo_io::Config;
+use novomodelo_io::DistributionInfo;
+use novomodelo_io::EVAPORATION_MODELS_FILE;
+use novomodelo_io::FPHA_DEVIATION_POINTS_FILE;
+use novomodelo_io::FPHA_HYPERPLANES_FILE;
+use novomodelo_io::GENERIC_CONSTRAINT_ECHO_FILE;
+use novomodelo_io::LoadedCase;
+use novomodelo_io::MetadataCost;
+use novomodelo_io::MetadataSimulationSolveStats;
+use novomodelo_io::MetadataTrainingSolveStats;
+use novomodelo_io::OutputContext;
+use novomodelo_io::PolicyMode::Fresh;
+use novomodelo_io::PolicyMode::Resume;
+use novomodelo_io::PolicyMode::WarmStart;
+use novomodelo_io::ReportEntry;
+use novomodelo_io::SetupTimings;
+use novomodelo_io::SolverStatsRow;
+use novomodelo_io::TrainingOutput;
+use novomodelo_io::get_hostname;
+use novomodelo_io::now_iso8601;
+use novomodelo_io::output::simulation_writer::{
     ScenarioWritePayload, SimulationParquetWriter, write_paths, write_scenario_summary,
 };
-use cobre_io::output::write_evaporation_models;
-use cobre_io::output::write_fpha_deviation_points;
-use cobre_io::output::write_fpha_hyperplanes;
-use cobre_io::parse_config;
-use cobre_io::remove_simulation_outputs;
-use cobre_io::remove_success_marker;
-use cobre_io::validate_case_with_artifacts;
-use cobre_io::write_fixed_delivery;
-use cobre_io::write_generic_constraint_echo;
-use cobre_io::write_hydro_model_summary;
-use cobre_io::write_provenance_report;
-use cobre_io::write_row_selection_records;
-use cobre_io::write_scaling_report;
-use cobre_io::write_simulation_results;
-use cobre_io::write_simulation_solver_stats;
-use cobre_io::write_skipped_simulation_results;
-use cobre_io::write_solver_stats;
-use cobre_io::write_success_marker;
-use cobre_io::write_training_results;
-use cobre_sddp::HydroFitTimings;
-use cobre_sddp::SddpError;
-use cobre_sddp::SimulationWeighting;
-use cobre_sddp::TrainingResult;
-use cobre_sddp::aggregate_simulation;
-use cobre_sddp::aggregate_solver_stats_log;
-use cobre_sddp::build_deviation_summary;
-use cobre_sddp::build_evaporation_model_rows;
-use cobre_sddp::build_fixed_delivery_rows;
-use cobre_sddp::build_generic_constraint_echo_rows;
-use cobre_sddp::config::ShutdownSource;
-use cobre_sddp::delta_to_stats_row;
-use cobre_sddp::hydro_models::prepare_hydro_models_from_artifacts;
-use cobre_sddp::inject_boundary_cuts;
-use cobre_sddp::policy::full_fcf_load::FullFcfLoadError;
-use cobre_sddp::policy::full_fcf_load::FullFcfLoadKind;
-use cobre_sddp::policy::full_fcf_load::check_full_fcf_load;
-use cobre_sddp::policy::full_fcf_load::locate_policy_dir;
-use cobre_sddp::policy::orchestration::CheckpointParams;
-use cobre_sddp::policy::orchestration::export_stochastic_artifacts;
-use cobre_sddp::policy::orchestration::write_checkpoint;
-use cobre_sddp::reconcile_boundary_policy;
-use cobre_sddp::resolve_boundary_state_requirements;
-use cobre_sddp::setup::PostTrainingSimulation;
-use cobre_sddp::setup::RunPhasePlan;
-use cobre_sddp::solver_stats_log_to_rows;
-use cobre_sddp::{
+use novomodelo_io::output::write_evaporation_models;
+use novomodelo_io::output::write_fpha_deviation_points;
+use novomodelo_io::output::write_fpha_hyperplanes;
+use novomodelo_io::parse_config;
+use novomodelo_io::remove_simulation_outputs;
+use novomodelo_io::remove_success_marker;
+use novomodelo_io::validate_case_with_artifacts;
+use novomodelo_io::write_fixed_delivery;
+use novomodelo_io::write_generic_constraint_echo;
+use novomodelo_io::write_hydro_model_summary;
+use novomodelo_io::write_provenance_report;
+use novomodelo_io::write_row_selection_records;
+use novomodelo_io::write_scaling_report;
+use novomodelo_io::write_simulation_results;
+use novomodelo_io::write_simulation_solver_stats;
+use novomodelo_io::write_skipped_simulation_results;
+use novomodelo_io::write_solver_stats;
+use novomodelo_io::write_success_marker;
+use novomodelo_io::write_training_results;
+use novomodelo_sddp::HydroFitTimings;
+use novomodelo_sddp::SddpError;
+use novomodelo_sddp::SimulationWeighting;
+use novomodelo_sddp::TrainingResult;
+use novomodelo_sddp::aggregate_simulation;
+use novomodelo_sddp::aggregate_solver_stats_log;
+use novomodelo_sddp::build_deviation_summary;
+use novomodelo_sddp::build_evaporation_model_rows;
+use novomodelo_sddp::build_fixed_delivery_rows;
+use novomodelo_sddp::build_generic_constraint_echo_rows;
+use novomodelo_sddp::config::ShutdownSource;
+use novomodelo_sddp::delta_to_stats_row;
+use novomodelo_sddp::hydro_models::prepare_hydro_models_from_artifacts;
+use novomodelo_sddp::inject_boundary_cuts;
+use novomodelo_sddp::policy::full_fcf_load::FullFcfLoadError;
+use novomodelo_sddp::policy::full_fcf_load::FullFcfLoadKind;
+use novomodelo_sddp::policy::full_fcf_load::check_full_fcf_load;
+use novomodelo_sddp::policy::full_fcf_load::locate_policy_dir;
+use novomodelo_sddp::policy::orchestration::CheckpointParams;
+use novomodelo_sddp::policy::orchestration::export_stochastic_artifacts;
+use novomodelo_sddp::policy::orchestration::write_checkpoint;
+use novomodelo_sddp::reconcile_boundary_policy;
+use novomodelo_sddp::resolve_boundary_state_requirements;
+use novomodelo_sddp::setup::PostTrainingSimulation;
+use novomodelo_sddp::setup::RunPhasePlan;
+use novomodelo_sddp::solver_stats_log_to_rows;
+use novomodelo_sddp::{
     ArOrderSummary, DEFAULT_SEED, HydroModelSummary, ModelProvenanceReport, SolverStatsDelta,
     StochasticSource, StochasticSummary, StudyParams, StudySetup, build_hydro_model_summary,
     build_provenance_report, build_stochastic_summary, prepare_stochastic,
 };
-use cobre_solver::ActiveSolver;
-use cobre_solver::active_solver_metadata_id;
-use cobre_solver::active_solver_version;
-use cobre_stochastic::sampling::historical::HistoricalScenarioLibrary;
+use novomodelo_solver::ActiveSolver;
+use novomodelo_solver::active_solver_metadata_id;
+use novomodelo_solver::active_solver_version;
+use novomodelo_stochastic::sampling::historical::HistoricalScenarioLibrary;
 
 /// Error returned by [`run_via_study`].
 ///
@@ -344,7 +344,7 @@ pub(crate) fn run_training_phase_py(
     let mut solver = ActiveSolver::new().map_err(|e| {
         format!(
             "{} initialisation failed: {e}",
-            cobre_solver::active_solver_name()
+            novomodelo_solver::active_solver_name()
         )
     })?;
     let (event_tx, event_rx) = mpsc::channel();
@@ -399,7 +399,7 @@ pub(crate) fn run_training_phase_py_streaming(
     let mut solver = ActiveSolver::new().map_err(|e| {
         format!(
             "{} initialisation failed: {e}",
-            cobre_solver::active_solver_name()
+            novomodelo_solver::active_solver_name()
         )
     })?;
     let (event_tx, event_rx) = mpsc::channel::<TrainingEvent>();
@@ -517,7 +517,7 @@ fn single_process_distribution(n_threads: usize) -> DistributionInfo {
         mpi_standard: None,
         thread_level: None,
         slurm_job_id: None,
-        hosts: vec![cobre_io::HostLayout {
+        hosts: vec![novomodelo_io::HostLayout {
             hostname: get_hostname(),
             ranks: vec![0],
         }],
@@ -635,7 +635,7 @@ pub(crate) fn run_simulation_phase_py(
         .map_err(|e| {
             format!(
                 "{} initialisation failed for simulation pool: {e}",
-                cobre_solver::active_solver_name()
+                novomodelo_solver::active_solver_name()
             )
         })?;
     let (result_tx, result_rx) = mpsc::sync_channel(io_capacity.max(1));
@@ -648,7 +648,7 @@ pub(crate) fn run_simulation_phase_py(
         let mut failed: u32 = 0;
         for scenario_result in result_rx {
             if let Err(e) = writer.write_scenario(ScenarioWritePayload::from(scenario_result)) {
-                eprintln!("cobre-python: simulation write warning: {e}");
+                eprintln!("novomodelo-python: simulation write warning: {e}");
                 failed += 1;
             }
         }
@@ -702,7 +702,7 @@ pub(crate) fn run_simulation_phase_py(
 
     // The weighting rides out on the run result, resolved once from the
     // simulation Traversal inside `simulate()` (matching the CLI path in
-    // `cobre-cli`'s `run/simulation.rs`): `Census` (exact leaf-path expectation)
+    // `novomodelo-cli`'s `run/simulation.rs`): `Census` (exact leaf-path expectation)
     // when `census_weights` is `Some`, the uniform Monte-Carlo sample mean when
     // `None`.
     let weighting = match sim_run_result.census_weights.as_deref() {
@@ -818,11 +818,11 @@ pub(crate) fn write_skipped_simulation_py(
     })
 }
 
-/// Load the effective [`cobre_io::Config`] for a run.
+/// Load the effective [`novomodelo_io::Config`] for a run.
 ///
-/// With no overrides, [`cobre_io::parse_config`] reads and validates
+/// With no overrides, [`novomodelo_io::parse_config`] reads and validates
 /// `config.json`. With overrides, the file is deep-merged with them via
-/// [`cobre_io::Config::with_overrides`], which runs the same validation
+/// [`novomodelo_io::Config::with_overrides`], which runs the same validation
 /// `parse_config` performs, so the persisted metadata reflects the effective
 /// (post-override) config.
 fn load_effective_config(
@@ -883,7 +883,7 @@ fn boundary_phase_error(err: SddpError) -> PhaseError {
 /// single load path).
 ///
 /// The `warnings` carrier holds the validation-pipeline warnings captured during
-/// load (via [`cobre_io::validate_case_with_artifacts`]) so `Study::validate` can
+/// load (via [`novomodelo_io::validate_case_with_artifacts`]) so `Study::validate` can
 /// replay them without re-reading disk.
 pub(crate) struct LoadedStudy {
     /// The live, fully prepared study setup (cuts pool, templates, stochastic
@@ -904,7 +904,7 @@ pub(crate) struct LoadedStudy {
     /// Validation-pipeline warnings captured during the case load.
     pub warnings: Vec<ReportEntry>,
     /// Wall-clock setup-phase timings, mirroring the CLI's `SetupTimings`
-    /// collection in `crates/cobre-cli/src/commands/run/setup.rs`.
+    /// collection in `crates/novomodelo-cli/src/commands/run/setup.rs`.
     pub setup_timings: SetupTimings,
 }
 
@@ -1028,7 +1028,7 @@ pub(crate) fn build_study_setup(
 
     if config.exports.stochastic {
         let mut on_warning = |msg: &str| {
-            eprintln!("cobre-python: stochastic export warning: {msg}");
+            eprintln!("novomodelo-python: stochastic export warning: {msg}");
         };
         export_stochastic_artifacts(
             output_dir,
@@ -1101,7 +1101,7 @@ pub(crate) fn apply_training_policy_mode(
     if let Some(kind) = kind {
         let policy_dir = locate_policy_dir(kind, output_dir, setup)?;
         let checked = check_full_fcf_load(kind, &policy_dir, system, setup, &mut |msg| {
-            eprintln!("cobre-python: policy validation warning: {msg}");
+            eprintln!("novomodelo-python: policy validation warning: {msg}");
         })?;
         checked.apply_to_training(setup);
     }
@@ -1115,11 +1115,11 @@ pub(crate) fn apply_training_policy_mode(
         inject_boundary_cuts(setup, &recon.cuts).map_err(boundary_phase_error)?;
         let cut_count = recon.cuts.len();
         eprintln!(
-            "cobre-python: boundary cuts: {cut_count} loaded from {} (priced at {})",
+            "novomodelo-python: boundary cuts: {cut_count} loaded from {} (priced at {})",
             recon.checkpoint_path.display(),
             recon.boundary_date
         );
-        eprintln!("cobre-python: {}", recon.cuts.report().summary_line());
+        eprintln!("novomodelo-python: {}", recon.cuts.report().summary_line());
     }
 
     Ok(())
@@ -1134,7 +1134,7 @@ pub(crate) fn apply_training_policy_mode(
 ///
 /// `overrides` is the already-converted `config_overrides` map. When `Some` and
 /// non-empty, the effective config is the deep-merge of `config.json` and the
-/// overrides via [`cobre_io::Config::with_overrides`], so the persisted metadata
+/// overrides via [`novomodelo_io::Config::with_overrides`], so the persisted metadata
 /// reflects what actually ran. `None` and an empty map both reproduce the
 /// no-override path.
 #[allow(clippy::needless_pass_by_value)]
@@ -1379,7 +1379,7 @@ pub(crate) fn provenance_to_dict<'py>(
 /// `gap_percent = gap * 100`. The Python side must scale to a percentage itself.
 fn iteration_summary_to_dict<'py>(
     py: Python<'py>,
-    event: &cobre_core::TrainingEvent,
+    event: &novomodelo_core::TrainingEvent,
 ) -> PyResult<Option<Bound<'py, PyDict>>> {
     match event {
         IterationSummary {
@@ -1535,14 +1535,14 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
 
-    use cobre_sddp::config::ShutdownSource;
-    use cobre_sddp::setup::prepare_stochastic;
-    use cobre_sddp::{
+    use novomodelo_sddp::config::ShutdownSource;
+    use novomodelo_sddp::setup::prepare_stochastic;
+    use novomodelo_sddp::{
         SddpError, SolverStatsDelta, SolverStatsLogEntry, aggregate_solver_stats_log,
     };
 
-    use cobre_core::TrainingEvent;
-    use cobre_core::training_event::{WorkerPhaseTimings, WorkerTimingPhase};
+    use novomodelo_core::TrainingEvent;
+    use novomodelo_core::training_event::{WorkerPhaseTimings, WorkerTimingPhase};
     use pyo3::prelude::*;
     use pyo3::types::PyDict;
 
@@ -1556,7 +1556,7 @@ mod tests {
     fn example_case_dir(relative: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .expect("cobre-python parent")
+            .expect("novomodelo-python parent")
             .parent()
             .expect("crates parent")
             .join(relative)
@@ -1572,7 +1572,7 @@ mod tests {
         let case_dir = example_case_dir("examples/1dtoy");
 
         let output_dir =
-            std::env::temp_dir().join(format!("cobre_py_build_study_{}", std::process::id()));
+            std::env::temp_dir().join(format!("novomodelo_py_build_study_{}", std::process::id()));
         std::fs::create_dir_all(&output_dir).expect("create output dir");
 
         let loaded = build_study_setup(&case_dir, &output_dir, None)
@@ -1581,7 +1581,7 @@ mod tests {
         // 1dtoy uses the default tree seed.
         assert_eq!(
             loaded.seed,
-            cobre_sddp::DEFAULT_SEED,
+            novomodelo_sddp::DEFAULT_SEED,
             "1dtoy must resolve to the default tree seed"
         );
         // 1dtoy trains, so training is enabled in the effective config.
@@ -1606,8 +1606,10 @@ mod tests {
     fn build_study_setup_succeeds_for_d56_external_authoritative() {
         let case_dir = example_case_dir("examples/deterministic/d56-external-authoritative");
 
-        let output_dir =
-            std::env::temp_dir().join(format!("cobre_py_build_study_d56_{}", std::process::id()));
+        let output_dir = std::env::temp_dir().join(format!(
+            "novomodelo_py_build_study_d56_{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&output_dir).expect("create output dir");
 
         let loaded = build_study_setup(&case_dir, &output_dir, None)
@@ -1629,8 +1631,10 @@ mod tests {
     fn apply_training_policy_mode_default_mode_is_noop() {
         let case_dir = example_case_dir("examples/1dtoy");
 
-        let output_dir =
-            std::env::temp_dir().join(format!("cobre_py_policy_mode_noop_{}", std::process::id()));
+        let output_dir = std::env::temp_dir().join(format!(
+            "novomodelo_py_policy_mode_noop_{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&output_dir).expect("create output dir");
 
         let mut loaded = build_study_setup(&case_dir, &output_dir, None)
@@ -1846,7 +1850,7 @@ mod tests {
 
         assert_eq!((summary.n_scenarios, summary.completed), (100, 0));
         let sim_dir = output.path().join("simulation");
-        cobre_io::read_simulation_metadata(&sim_dir.join("metadata.json"))
+        novomodelo_io::read_simulation_metadata(&sim_dir.join("metadata.json"))
             .expect("simulation/metadata.json must decode");
         let metadata: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(sim_dir.join("metadata.json"))
@@ -1904,8 +1908,8 @@ mod tests {
     fn prepare_stochastic_succeeds_for_d01_case_via_python_path() {
         let case_dir = example_case_dir("examples/deterministic/d01-thermal-dispatch");
 
-        let system = cobre_io::load_case(&case_dir).expect("load_case must succeed for D01");
-        let config = cobre_io::parse_config(&case_dir.join("config.json"))
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed for D01");
+        let config = novomodelo_io::parse_config(&case_dir.join("config.json"))
             .expect("parse_config must succeed for D01");
 
         let seed = config.training.tree_seed.map_or(42_u64, i64::unsigned_abs);
@@ -1938,16 +1942,17 @@ mod tests {
         let case_dir = example_case_dir("examples/1dtoy");
 
         let output_dir =
-            std::env::temp_dir().join(format!("cobre_py_parity_{}", std::process::id()));
+            std::env::temp_dir().join(format!("novomodelo_py_parity_{}", std::process::id()));
         std::fs::create_dir_all(&output_dir).expect("create output dir");
 
         run_via_study(&case_dir, output_dir.clone(), Some(1), None, None)
             .expect("run_via_study must succeed for 1dtoy via Python path");
 
-        let training = cobre_io::read_training_metadata(&output_dir.join("training/metadata.json"))
-            .expect("read training metadata");
+        let training =
+            novomodelo_io::read_training_metadata(&output_dir.join("training/metadata.json"))
+                .expect("read training metadata");
         let simulation =
-            cobre_io::read_simulation_metadata(&output_dir.join("simulation/metadata.json"))
+            novomodelo_io::read_simulation_metadata(&output_dir.join("simulation/metadata.json"))
                 .expect("read simulation metadata");
 
         // Relative-tolerance float comparison (the test module relaxes float_cmp,
@@ -2082,8 +2087,10 @@ mod tests {
     fn override_path_equals_edited_config_for_1dtoy() {
         let case_dir = example_case_dir("examples/1dtoy");
 
-        let base =
-            std::env::temp_dir().join(format!("cobre_py_override_parity_{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!(
+            "novomodelo_py_override_parity_{}",
+            std::process::id()
+        ));
         let edited_case = base.join("edited_case");
         let edited_out = base.join("edited_out");
         let override_out = base.join("override_out");
@@ -2118,10 +2125,10 @@ mod tests {
         .expect("override run must succeed");
 
         let edited_meta =
-            cobre_io::read_training_metadata(&edited_out.join("training/metadata.json"))
+            novomodelo_io::read_training_metadata(&edited_out.join("training/metadata.json"))
                 .expect("read edited training metadata");
         let override_meta =
-            cobre_io::read_training_metadata(&override_out.join("training/metadata.json"))
+            novomodelo_io::read_training_metadata(&override_out.join("training/metadata.json"))
                 .expect("read override training metadata");
 
         // The persisted effective seed must be 7 on both paths.
@@ -2161,8 +2168,10 @@ mod tests {
     fn python_simulation_only_metadata_matches_train_then_simulate() {
         let case_dir = example_case_dir("examples/1dtoy");
 
-        let output_dir =
-            std::env::temp_dir().join(format!("cobre_py_simonly_parity_{}", std::process::id()));
+        let output_dir = std::env::temp_dir().join(format!(
+            "novomodelo_py_simonly_parity_{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&output_dir).expect("create output dir");
 
         // (a) Train + simulate into dir A; this writes the checkpoint and the
@@ -2171,7 +2180,7 @@ mod tests {
             .expect("train-then-simulate run_via_study must succeed");
 
         let train_then_sim =
-            cobre_io::read_simulation_metadata(&output_dir.join("simulation/metadata.json"))
+            novomodelo_io::read_simulation_metadata(&output_dir.join("simulation/metadata.json"))
                 .expect("read train-then-simulate simulation metadata");
         let golden_mean = train_then_sim
             .cost
@@ -2194,7 +2203,7 @@ mod tests {
         .expect("simulation-only run_via_study must succeed");
 
         let sim_only =
-            cobre_io::read_simulation_metadata(&output_dir.join("simulation/metadata.json"))
+            novomodelo_io::read_simulation_metadata(&output_dir.join("simulation/metadata.json"))
                 .expect("read simulation-only simulation metadata");
         let sim_only_cost = sim_only
             .cost
@@ -2223,8 +2232,8 @@ mod tests {
     /// Python-free (no GIL token), mirroring the CLI's own test.
     #[test]
     fn simulation_weighting_census_underivable_from_sampled_traversal() {
-        use cobre_sddp::SimulationWeighting;
-        use cobre_sddp::setup::{
+        use novomodelo_sddp::SimulationWeighting;
+        use novomodelo_sddp::setup::{
             NodeGraph, NodeId, NodeOpenings, NodeRuntime, OpeningSource, StageIdx, Traversal,
         };
 

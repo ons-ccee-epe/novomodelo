@@ -45,12 +45,12 @@
 //! ## Usage
 //!
 //! ```rust
-//! use cobre_sddp::basis_reconstruct::{
+//! use novomodelo_sddp::basis_reconstruct::{
 //!     ReconstructionStats, ReconstructionTarget, reconstruct_basis,
 //! };
-//! use cobre_sddp::setup::NodeId;
-//! use cobre_sddp::workspace::CapturedBasis;
-//! use cobre_solver::Basis;
+//! use novomodelo_sddp::setup::NodeId;
+//! use novomodelo_sddp::workspace::CapturedBasis;
+//! use novomodelo_solver::Basis;
 //!
 //! let stored = CapturedBasis::new(4, 3, 3, 0, 0, NodeId(0)); // empty — shim state
 //! let target = ReconstructionTarget { base_row_count: 3, num_cols: 4 };
@@ -67,7 +67,7 @@
 //! assert_eq!(stats, ReconstructionStats::default());
 //! ```
 
-use cobre_solver::{Basis, BasisStatus, StageTemplate};
+use novomodelo_solver::{Basis, BasisStatus, StageTemplate};
 
 use crate::error::SddpError;
 use crate::workspace::CapturedBasis;
@@ -345,8 +345,8 @@ pub fn enforce_basic_count_invariant(
 #[cfg(test)]
 #[allow(clippy::doc_markdown)]
 mod tests {
-    use cobre_solver::Basis;
-    use cobre_solver::BasisStatus::{Basic as B, Lower as L};
+    use novomodelo_solver::Basis;
+    use novomodelo_solver::BasisStatus::{Basic as B, Lower as L};
 
     use super::{
         ReconstructionStats, ReconstructionTarget, enforce_basic_count_invariant,
@@ -363,7 +363,7 @@ mod tests {
         base_rows: usize,
         num_cols: usize,
         slots: &[u32],
-        cut_statuses: &[cobre_solver::BasisStatus],
+        cut_statuses: &[novomodelo_solver::BasisStatus],
         state_at_capture: &[f64],
     ) -> CapturedBasis {
         assert_eq!(slots.len(), cut_statuses.len());

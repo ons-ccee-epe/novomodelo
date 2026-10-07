@@ -10,19 +10,19 @@ use crate::lp::builder::StageGeometry;
 use crate::lp::indexer::{AnticipatedPlants, StateSpace, ThermalSys};
 use crate::test_support;
 use crate::time_value::DeliveryCalendar;
-use cobre_stochastic::ExternalScenarioLibrary;
-use cobre_stochastic::par::precompute::PrecomputedPar;
-use cobre_stochastic::season_cast::StageCalendar;
+use novomodelo_stochastic::ExternalScenarioLibrary;
+use novomodelo_stochastic::par::precompute::PrecomputedPar;
+use novomodelo_stochastic::season_cast::StageCalendar;
 
 use chrono::{Duration, NaiveDate};
-use cobre_core::{
+use novomodelo_core::{
     BlockBoundsCountsSpec, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
     ContractBlockBounds, ContractBlockOverride, HydroBlockBounds, HydroPenalties, HydroStageBounds,
     LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
     PumpingBlockBounds, ResolvedBlockBounds, ResolvedBounds, ResolvedPenalties, ThermalBlockBounds,
     ThermalStageBounds,
 };
-use cobre_core::{
+use novomodelo_core::{
     ContractType, EnergyContract, EntityId, HorizonGraph, HydroPastDefluence, InitialConditions,
     PostStudyStage, PostStudyStages, System, SystemBuilder,
     entities::{
@@ -36,19 +36,19 @@ use cobre_core::{
         StageRiskConfig, StageStateConfig,
     },
 };
-use cobre_io::config::{
+use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
     InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
     RawClassConfigEntry, RawSamplingScheme, RawScenarioSourceConfig, RowSelectionConfig,
     SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode, StoppingRuleConfig,
     TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
-use cobre_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+use novomodelo_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
 
 /// Bounds and penalties are non-zero so the training tests below (e.g.
 /// `train_generates_cuts_in_fcf`) solve a genuinely optimized LP with real
 /// duals, not a degenerate all-zero one.
-fn minimal_system(n_stages: usize) -> cobre_core::System {
+fn minimal_system(n_stages: usize) -> novomodelo_core::System {
     minimal_system_with_policy_graph(n_stages, HorizonGraph::default())
 }
 
@@ -63,7 +63,7 @@ fn minimal_system(n_stages: usize) -> cobre_core::System {
 fn minimal_system_with_policy_graph(
     n_stages: usize,
     policy_graph: HorizonGraph,
-) -> cobre_core::System {
+) -> novomodelo_core::System {
     use chrono::NaiveDate;
 
     let bus = Bus {
@@ -295,7 +295,7 @@ fn minimal_system_with_policy_graph(
     clippy::too_many_lines,
     reason = "the fixture spells out one complete study inline so each assertion traces to a literal"
 )]
-fn minimal_fpha_misconfigured_system(n_stages: usize) -> cobre_core::System {
+fn minimal_fpha_misconfigured_system(n_stages: usize) -> novomodelo_core::System {
     use chrono::NaiveDate;
 
     let bus = Bus {
@@ -526,7 +526,7 @@ fn minimal_config(forward_passes: u32, max_iterations: u32) -> Config {
             stopping_mode: StoppingMode::Any,
             cut_selection: RowSelectionConfig::default(),
             solver: TrainingSolverConfig::default(),
-            parallelism: cobre_io::config::ParallelismConfig::default(),
+            parallelism: novomodelo_io::config::ParallelismConfig::default(),
             scenario_source: None,
             selection: Some(TrainingSelection::Sampled { forward_passes }),
         },
@@ -900,7 +900,7 @@ fn training_ctx_fields_match_study_setup() {
 #[test]
 fn simulation_ctx_propagates_dynamic_dcs_from_setup() {
     use crate::dcs::DcsParams;
-    use cobre_io::config::SelectionMethod;
+    use novomodelo_io::config::SelectionMethod;
 
     let n_stages = 3;
     let system = minimal_system(n_stages);
@@ -960,8 +960,8 @@ fn simulation_ctx_propagates_dynamic_dcs_from_setup() {
 
 #[test]
 fn train_completes_within_iteration_limit() {
-    use cobre_comm::LocalBackend;
-    use cobre_solver::ActiveSolver;
+    use novomodelo_comm::LocalBackend;
+    use novomodelo_solver::ActiveSolver;
 
     let system = minimal_system(2);
     let config = minimal_config(1, 3);
@@ -1009,8 +1009,8 @@ fn train_completes_within_iteration_limit() {
 
 #[test]
 fn train_generates_cuts_in_fcf() {
-    use cobre_comm::LocalBackend;
-    use cobre_solver::ActiveSolver;
+    use novomodelo_comm::LocalBackend;
+    use novomodelo_solver::ActiveSolver;
 
     let system = minimal_system(2);
     let config = minimal_config(1, 3);
@@ -1067,7 +1067,7 @@ fn train_generates_cuts_in_fcf() {
 /// and stay bit-for-bit pinned by the golden parity suite.
 #[test]
 fn node_native_binary_tree_loads_and_constructs_node_graph() {
-    use cobre_core::temporal::{Node, Transition};
+    use novomodelo_core::temporal::{Node, Transition};
     use std::collections::BTreeMap;
 
     let policy_graph = HorizonGraph {
@@ -1312,8 +1312,8 @@ fn simulation_config_reflects_setup_fields() {
 
 #[test]
 fn create_workspace_pool_returns_correct_size() {
-    use cobre_comm::LocalBackend;
-    use cobre_solver::ActiveSolver;
+    use novomodelo_comm::LocalBackend;
+    use novomodelo_solver::ActiveSolver;
 
     let system = minimal_system(2);
     let config = minimal_config(1, 3);
@@ -1351,8 +1351,8 @@ fn create_workspace_pool_returns_correct_size() {
 
 #[test]
 fn simulation_pool_scratch_is_sized_from_the_study_owners() {
-    use cobre_comm::LocalBackend;
-    use cobre_solver::ActiveSolver;
+    use novomodelo_comm::LocalBackend;
+    use novomodelo_solver::ActiveSolver;
 
     let system = minimal_system(2);
     let config = minimal_config(1, 3);
@@ -1409,8 +1409,8 @@ fn simulation_pool_scratch_is_sized_from_the_study_owners() {
 
 #[test]
 fn build_training_output_non_empty() {
-    use cobre_comm::LocalBackend;
-    use cobre_solver::ActiveSolver;
+    use novomodelo_comm::LocalBackend;
+    use novomodelo_solver::ActiveSolver;
 
     let system = minimal_system(2);
     let config = minimal_config(1, 2);
@@ -1452,7 +1452,7 @@ fn build_training_output_non_empty() {
         )
         .expect("train");
 
-    let events: Vec<cobre_core::TrainingEvent> = event_rx.try_iter().collect();
+    let events: Vec<novomodelo_core::TrainingEvent> = event_rx.try_iter().collect();
 
     let output = setup.build_training_output(&result.result, &events);
     assert!(
@@ -1463,8 +1463,8 @@ fn build_training_output_non_empty() {
 
 #[test]
 fn simulate_after_train_returns_nonempty_costs() {
-    use cobre_comm::LocalBackend;
-    use cobre_solver::ActiveSolver;
+    use novomodelo_comm::LocalBackend;
+    use novomodelo_solver::ActiveSolver;
 
     let mut config = minimal_config(1, 3);
     config.simulation = IoSimulationConfig {
@@ -1549,10 +1549,10 @@ fn study_params_from_config_defaults() {
             enabled: true,
             tree_seed: None,
             stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit { limit: 7 }]),
-            stopping_mode: cobre_io::config::StoppingMode::Any,
+            stopping_mode: novomodelo_io::config::StoppingMode::Any,
             cut_selection: RowSelectionConfig::default(),
             solver: TrainingSolverConfig::default(),
-            parallelism: cobre_io::config::ParallelismConfig::default(),
+            parallelism: novomodelo_io::config::ParallelismConfig::default(),
             scenario_source: None,
             selection: None,
         },
@@ -1651,10 +1651,10 @@ fn study_params_from_config_explicit() {
                 StoppingRuleConfig::IterationLimit { limit: 50 },
                 StoppingRuleConfig::TimeLimit { seconds: 60.0 },
             ]),
-            stopping_mode: cobre_io::config::StoppingMode::All,
+            stopping_mode: novomodelo_io::config::StoppingMode::All,
             cut_selection: RowSelectionConfig::default(),
             solver: TrainingSolverConfig::default(),
-            parallelism: cobre_io::config::ParallelismConfig::default(),
+            parallelism: novomodelo_io::config::ParallelismConfig::default(),
             scenario_source: None,
             selection: Some(TrainingSelection::Sampled { forward_passes: 5 }),
         },
@@ -1720,7 +1720,7 @@ fn write_minimal_case_dir(root: &std::path::Path) {
     fs::write(root.join("system/thermals.json"), b"{}").unwrap();
 }
 
-fn minimal_prepare_config() -> cobre_io::Config {
+fn minimal_prepare_config() -> novomodelo_io::Config {
     Config {
         schema: None,
         modeling: ModelingConfig {
@@ -1736,7 +1736,7 @@ fn minimal_prepare_config() -> cobre_io::Config {
             stopping_mode: StoppingMode::Any,
             cut_selection: RowSelectionConfig::default(),
             solver: TrainingSolverConfig::default(),
-            parallelism: cobre_io::config::ParallelismConfig::default(),
+            parallelism: novomodelo_io::config::ParallelismConfig::default(),
             scenario_source: None,
             selection: None,
         },
@@ -1751,8 +1751,8 @@ fn minimal_prepare_config() -> cobre_io::Config {
 #[test]
 fn prepare_stochastic_no_history_no_tree_returns_none_report_and_generated_provenance() {
     use super::prepare_stochastic;
-    use cobre_core::scenario::ScenarioSource;
-    use cobre_stochastic::provenance::ComponentProvenance;
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_stochastic::provenance::ComponentProvenance;
     use tempfile::TempDir;
 
     let dir = TempDir::new().unwrap();
@@ -1787,7 +1787,7 @@ fn prepare_stochastic_no_history_no_tree_returns_none_report_and_generated_prove
 #[test]
 fn prepare_stochastic_with_stats_file_present_skips_estimation() {
     use super::prepare_stochastic;
-    use cobre_core::scenario::ScenarioSource;
+    use novomodelo_core::scenario::ScenarioSource;
     use std::fs;
     use tempfile::TempDir;
 
@@ -1828,8 +1828,8 @@ fn prepare_stochastic_with_stats_file_present_skips_estimation() {
 #[test]
 fn prepare_stochastic_no_opening_tree_gives_non_user_supplied_provenance() {
     use super::prepare_stochastic;
-    use cobre_core::scenario::ScenarioSource;
-    use cobre_stochastic::provenance::ComponentProvenance;
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_stochastic::provenance::ComponentProvenance;
     use tempfile::TempDir;
 
     let dir = TempDir::new().unwrap();
@@ -1864,7 +1864,7 @@ fn prepare_stochastic_no_opening_tree_gives_non_user_supplied_provenance() {
 fn test_prepare_stochastic_historical_residuals_noise_method() {
     use super::prepare_stochastic;
     use chrono::NaiveDate;
-    use cobre_core::scenario::ScenarioSource;
+    use novomodelo_core::scenario::ScenarioSource;
     use tempfile::TempDir;
 
     let n_stages = 2usize;
@@ -2315,7 +2315,7 @@ fn minimal_system_2_hydros_with_history(
     n_stages: usize,
     season_map: Option<SeasonMap>,
     inflow_history: Vec<InflowHistoryRow>,
-) -> cobre_core::System {
+) -> novomodelo_core::System {
     use chrono::NaiveDate;
 
     let bus = Bus {
@@ -2542,7 +2542,7 @@ fn minimal_system_2_hydros_with_history(
             nodes: Vec::new(),
             season_map,
         })
-        .initial_conditions(cobre_core::InitialConditions {
+        .initial_conditions(novomodelo_core::InitialConditions {
             storage: vec![],
             filling_storage: vec![],
             past_anticipated_commitments: vec![],
@@ -2604,7 +2604,7 @@ fn validate_par_shape_stage_count_mismatch_is_err() {
 /// convention.
 fn monthly_season_map_for_lag_seed_test() -> SeasonMap {
     let seasons = (0..12u32)
-        .map(|i| cobre_core::temporal::SeasonDefinition {
+        .map(|i| novomodelo_core::temporal::SeasonDefinition {
             id: i as usize,
             label: format!("Month{}", i + 1),
             month_start: i + 1,
@@ -2614,7 +2614,7 @@ fn monthly_season_map_for_lag_seed_test() -> SeasonMap {
         })
         .collect();
     SeasonMap {
-        cycle_type: cobre_core::temporal::SeasonCycleType::Monthly,
+        cycle_type: novomodelo_core::temporal::SeasonCycleType::Monthly,
         seasons,
     }
 }
@@ -2699,7 +2699,7 @@ fn build_initial_state_zero_derived_lag_values_leaves_zero_lags() {
 #[test]
 fn build_initial_state_derived_lags_match_positional_seed() {
     use super::build_initial_state;
-    use cobre_stochastic::derive_inflow_seeds;
+    use novomodelo_stochastic::derive_inflow_seeds;
 
     let inflow_history = vec![
         InflowHistoryRow {
@@ -2797,8 +2797,8 @@ fn build_initial_state_derived_lags_match_positional_seed() {
 )]
 fn staggered_dates_system_2_hydros(
     n_stages: usize,
-    initial_conditions: cobre_core::InitialConditions,
-) -> cobre_core::System {
+    initial_conditions: novomodelo_core::InitialConditions,
+) -> novomodelo_core::System {
     use chrono::NaiveDate;
 
     let bus = Bus {
@@ -3054,13 +3054,13 @@ fn test_initial_state_seeds_correctly_under_staggered_commissioning_dates() {
     let h1_past = [11.0_f64, 12.0_f64];
     let h2_past = [21.0_f64, 22.0_f64];
 
-    let ic = cobre_core::InitialConditions {
+    let ic = novomodelo_core::InitialConditions {
         storage: vec![
-            cobre_core::HydroStorage {
+            novomodelo_core::HydroStorage {
                 hydro_id: EntityId(1),
                 value_hm3: h1_storage,
             },
-            cobre_core::HydroStorage {
+            novomodelo_core::HydroStorage {
                 hydro_id: EntityId(2),
                 value_hm3: h2_storage,
             },
@@ -3135,8 +3135,8 @@ fn test_initial_state_seeds_correctly_under_staggered_commissioning_dates() {
 fn filling_system_2_hydros(
     n_stages: usize,
     start_stage_id: i32,
-    initial_conditions: cobre_core::InitialConditions,
-) -> cobre_core::System {
+    initial_conditions: novomodelo_core::InitialConditions,
+) -> novomodelo_core::System {
     use chrono::NaiveDate;
 
     let bus = Bus {
@@ -3150,7 +3150,7 @@ fn filling_system_2_hydros(
         excess_cost: 0.0,
     };
 
-    let make_hydro = |id: i32, name: &str, filling: Option<cobre_core::FillingConfig>| {
+    let make_hydro = |id: i32, name: &str, filling: Option<novomodelo_core::FillingConfig>| {
         let mut hydro = Hydro {
             unit_groups: Vec::new(),
             id: EntityId(id),
@@ -3347,7 +3347,7 @@ fn filling_system_2_hydros(
         },
     );
 
-    let filling = Some(cobre_core::FillingConfig {
+    let filling = Some(novomodelo_core::FillingConfig {
         start_stage_id,
         filling_min_rate_m3s: 50.0,
     });
@@ -3374,9 +3374,9 @@ fn build_initial_state_seeds_filling_storage() {
     use super::build_initial_state;
 
     let seed = 120.0_f64;
-    let ic = cobre_core::InitialConditions {
+    let ic = novomodelo_core::InitialConditions {
         storage: vec![],
-        filling_storage: vec![cobre_core::HydroStorage {
+        filling_storage: vec![novomodelo_core::HydroStorage {
             hydro_id: EntityId(2),
             value_hm3: seed,
         }],
@@ -3407,9 +3407,9 @@ fn build_initial_state_seeds_filling_storage() {
 fn build_initial_state_filling_empty_pit_is_zero() {
     use super::build_initial_state;
 
-    let ic = cobre_core::InitialConditions {
+    let ic = novomodelo_core::InitialConditions {
         storage: vec![],
-        filling_storage: vec![cobre_core::HydroStorage {
+        filling_storage: vec![novomodelo_core::HydroStorage {
             hydro_id: EntityId(2),
             value_hm3: 0.0,
         }],
@@ -3436,7 +3436,7 @@ fn build_initial_state_unknown_filling_hydro_skipped() {
     let layout = layout_for_lag_test(2, 2);
     let study_dims = test_support::study_dims();
 
-    let baseline_ic = cobre_core::InitialConditions {
+    let baseline_ic = novomodelo_core::InitialConditions {
         storage: vec![],
         filling_storage: vec![],
         past_anticipated_commitments: vec![],
@@ -3446,9 +3446,9 @@ fn build_initial_state_unknown_filling_hydro_skipped() {
     let baseline_system = filling_system_2_hydros(1, 0, baseline_ic);
     let baseline = build_initial_state(&baseline_system, &study_dims, &layout, &[0.0; 4]);
 
-    let ic = cobre_core::InitialConditions {
+    let ic = novomodelo_core::InitialConditions {
         storage: vec![],
-        filling_storage: vec![cobre_core::HydroStorage {
+        filling_storage: vec![novomodelo_core::HydroStorage {
             hydro_id: EntityId(99),
             value_hm3: 150.0,
         }],
@@ -3472,12 +3472,12 @@ fn build_initial_state_mixed_operating_and_filling_seeds() {
 
     let operating_seed = 175.0_f64;
     let filling_seed = 90.0_f64;
-    let ic = cobre_core::InitialConditions {
-        storage: vec![cobre_core::HydroStorage {
+    let ic = novomodelo_core::InitialConditions {
+        storage: vec![novomodelo_core::HydroStorage {
             hydro_id: EntityId(1),
             value_hm3: operating_seed,
         }],
-        filling_storage: vec![cobre_core::HydroStorage {
+        filling_storage: vec![novomodelo_core::HydroStorage {
             hydro_id: EntityId(2),
             value_hm3: filling_seed,
         }],
@@ -3693,8 +3693,8 @@ fn anticipated_stage_window(i: usize) -> (chrono::NaiveDate, chrono::NaiveDate) 
 )]
 fn system_with_anticipated_thermals(
     k_values: &[u32],
-    past_commits: Vec<cobre_core::AnticipatedCommitmentHistory>,
-) -> cobre_core::System {
+    past_commits: Vec<novomodelo_core::AnticipatedCommitmentHistory>,
+) -> novomodelo_core::System {
     use chrono::NaiveDate;
 
     let bus = Bus {
@@ -3924,7 +3924,7 @@ fn system_with_anticipated_thermals(
         .load_models(load_models)
         .bounds(bounds)
         .penalties(penalties)
-        .initial_conditions(cobre_core::InitialConditions {
+        .initial_conditions(novomodelo_core::InitialConditions {
             storage: vec![],
             filling_storage: vec![],
             past_anticipated_commitments: past_commits,
@@ -3948,8 +3948,8 @@ fn system_with_anticipated_thermals(
     reason = "the fixture spells out one complete study inline so each assertion traces to a literal, and fixture-local helper items sit beside the entities that use them"
 )]
 fn system_with_two_anticipated_thermals_staggered_dates(
-    past_commits: Vec<cobre_core::AnticipatedCommitmentHistory>,
-) -> cobre_core::System {
+    past_commits: Vec<novomodelo_core::AnticipatedCommitmentHistory>,
+) -> novomodelo_core::System {
     use chrono::NaiveDate;
 
     let bus = Bus {
@@ -4189,7 +4189,7 @@ fn system_with_two_anticipated_thermals_staggered_dates(
         .load_models(load_models)
         .bounds(bounds)
         .penalties(penalties)
-        .initial_conditions(cobre_core::InitialConditions {
+        .initial_conditions(novomodelo_core::InitialConditions {
             storage: vec![],
             filling_storage: vec![],
             past_anticipated_commitments: past_commits,
@@ -4219,7 +4219,7 @@ fn system_with_two_anticipated_thermals_staggered_dates(
 #[test]
 fn build_initial_state_anticipated_seed_correct_under_staggered_commissioning_dates() {
     use super::build_initial_state;
-    use cobre_core::AnticipatedCommitmentHistory;
+    use novomodelo_core::AnticipatedCommitmentHistory;
 
     let (s0_start, s0_end) = anticipated_stage_window(0);
     let (s1_start, s1_end) = anticipated_stage_window(1);
@@ -4343,7 +4343,7 @@ fn build_initial_state_no_anticipated_state_unchanged() {
 #[test]
 fn build_initial_state_single_anticipated_thermal_k2() {
     use super::build_initial_state;
-    use cobre_core::AnticipatedCommitmentHistory;
+    use novomodelo_core::AnticipatedCommitmentHistory;
 
     // Thermal ID 10 is the first (and only) anticipated plant.
     // The system thermals() sorts by ID, so global_idx == 0 for ID 10.
@@ -4402,7 +4402,7 @@ fn build_initial_state_single_anticipated_thermal_k2() {
 #[test]
 fn build_initial_state_two_anticipated_thermals_mixed_k() {
     use super::build_initial_state;
-    use cobre_core::AnticipatedCommitmentHistory;
+    use novomodelo_core::AnticipatedCommitmentHistory;
 
     // Thermal IDs 10 (K=2) and 11 (K=3); sorted ascending so global order
     // in system.thermals() is idx 0 → ID 10, idx 1 → ID 11.
@@ -4522,7 +4522,7 @@ fn build_initial_state_empty_past_commitments_leaves_zeros() {
 #[test]
 fn build_initial_state_unknown_thermal_id_silently_skipped() {
     use super::build_initial_state;
-    use cobre_core::AnticipatedCommitmentHistory;
+    use novomodelo_core::AnticipatedCommitmentHistory;
 
     let (s0_start, s0_end) = anticipated_stage_window(0);
     let past_commits = vec![AnticipatedCommitmentHistory {
@@ -4560,7 +4560,7 @@ fn build_initial_state_unknown_thermal_id_silently_skipped() {
 /// `past_anticipated_commitments` carries one window `100.0` for plant 0
 /// (`K_0=1`, tiling its single leading stage) and two windows `[50.0, 75.0]`
 /// for plant 1 (`K_1=2`, one per leading stage) — each plant's windows tile
-/// its leading `K_i` stages exactly (the contract cobre-io's validator
+/// its leading `K_i` stages exactly (the contract novomodelo-io's validator
 /// enforces in production).
 ///
 /// Expected layout (`n_ant = 2`, slot-major):
@@ -4574,7 +4574,7 @@ fn build_initial_state_unknown_thermal_id_silently_skipped() {
 #[test]
 fn build_initial_state_anticipated_seed_padding_slot_stays_zero() {
     use super::build_initial_state;
-    use cobre_core::AnticipatedCommitmentHistory;
+    use novomodelo_core::AnticipatedCommitmentHistory;
 
     let (s0_start, s0_end) = anticipated_stage_window(0);
     let (s1_start, s1_end) = anticipated_stage_window(1);
@@ -4647,8 +4647,8 @@ fn build_initial_state_anticipated_seed_padding_slot_stays_zero() {
 /// [`minimal_system_with_anticipated_and_commitments`]'s `[168.0, 168.0, 168.0,
 /// 648.0]`-hour calendar (`2024-01-01` cursor) at distinct values
 /// `100/200/300/400`.
-fn bug_doc_reproduction_past_commits() -> Vec<cobre_core::AnticipatedCommitmentHistory> {
-    use cobre_core::AnticipatedCommitmentHistory;
+fn bug_doc_reproduction_past_commits() -> Vec<novomodelo_core::AnticipatedCommitmentHistory> {
+    use novomodelo_core::AnticipatedCommitmentHistory;
 
     vec![
         AnticipatedCommitmentHistory {
@@ -4682,7 +4682,7 @@ fn bug_doc_reproduction_past_commits() -> Vec<cobre_core::AnticipatedCommitmentH
 /// resolves all four study deliveries pre-study, plus one post-study month —
 /// [`resolve_anticipated_commitments_widens_lead_time_plant_lead_to_the_ring_depth`]
 /// pins `resolution.anchored_depth() == 4` and `lead_stages == [4]` for this exact shape.
-fn bug_doc_reproduction_system() -> cobre_core::System {
+fn bug_doc_reproduction_system() -> novomodelo_core::System {
     let post_study = PostStudyStages {
         stages: vec![PostStudyStage {
             start_date: NaiveDate::from_ymd_opt(2024, 2, 18).unwrap(),
@@ -4740,7 +4740,7 @@ fn initial_state_seeds_every_leading_commitment_under_the_widened_ring_depth() {
 #[test]
 fn initial_state_leaves_padding_slots_zero() {
     use super::build_initial_state;
-    use cobre_core::AnticipatedCommitmentHistory;
+    use novomodelo_core::AnticipatedCommitmentHistory;
 
     let (s0_start, s0_end) = anticipated_stage_window(0);
     let (s1_start, s1_end) = anticipated_stage_window(1);
@@ -4811,14 +4811,14 @@ fn initial_state_leaves_padding_slots_zero() {
 
 /// The seed walk's covered-stage cross-check: a layout whose `anticipated_lead_stages`
 /// is deliberately narrower than a covered stage in `past_anticipated_commitments`
-/// simulates a resolver/validator desync — never reachable through cobre-io's own
+/// simulates a resolver/validator desync — never reachable through novomodelo-io's own
 /// coverage rule — and the `debug_assert!` guarding the silent-drop replacement
 /// fires in a debug build.
 #[test]
 #[should_panic(expected = "covered stage beyond plant's own lead")]
 fn initial_state_rejects_a_covered_stage_beyond_the_plants_own_lead() {
     use super::build_initial_state;
-    use cobre_core::AnticipatedCommitmentHistory;
+    use novomodelo_core::AnticipatedCommitmentHistory;
 
     let (s0_start, s0_end) = anticipated_stage_window(0);
     let (s1_start, s1_end) = anticipated_stage_window(1);
@@ -4923,7 +4923,7 @@ fn historical_library_none_for_insample() {
     clippy::too_many_lines,
     reason = "the fixture spells out one complete study inline so each assertion traces to a literal"
 )]
-fn system_with_historical_inflow(n_stages: usize) -> cobre_core::System {
+fn system_with_historical_inflow(n_stages: usize) -> novomodelo_core::System {
     use chrono::NaiveDate;
 
     fn default_hydro_bounds() -> HydroStageBounds {
@@ -5218,8 +5218,8 @@ fn historical_library_built_when_scheme_is_historical() {
 )]
 fn external_inflow_library_built_when_scheme_is_external() {
     use chrono::NaiveDate;
-    use cobre_core::scenario::ExternalScenarioRow;
-    use cobre_core::scenario::InflowModel as CoreInflowModel;
+    use novomodelo_core::scenario::ExternalScenarioRow;
+    use novomodelo_core::scenario::InflowModel as CoreInflowModel;
 
     let hydro_id = EntityId(3);
     let mut external_rows: Vec<ExternalScenarioRow> = Vec::new();
@@ -5489,8 +5489,8 @@ fn external_inflow_library_built_when_scheme_is_external() {
 )]
 fn external_load_library_built_when_scheme_is_external() {
     use chrono::NaiveDate;
-    use cobre_core::scenario::ExternalLoadRow;
-    use cobre_core::scenario::InflowModel as CoreInflowModel;
+    use novomodelo_core::scenario::ExternalLoadRow;
+    use novomodelo_core::scenario::InflowModel as CoreInflowModel;
 
     let bus = Bus {
         id: EntityId(1),
@@ -5762,8 +5762,8 @@ fn external_load_library_built_when_scheme_is_external() {
 )]
 fn zero_sigma_external_load_system() -> System {
     use chrono::NaiveDate;
-    use cobre_core::scenario::ExternalLoadRow;
-    use cobre_core::scenario::InflowModel as CoreInflowModel;
+    use novomodelo_core::scenario::ExternalLoadRow;
+    use novomodelo_core::scenario::InflowModel as CoreInflowModel;
 
     let bus = Bus {
         id: EntityId(1),
@@ -6017,8 +6017,8 @@ fn zero_sigma_external_load_system() -> System {
 /// external load rows; setup must succeed and the library must carry both.
 #[test]
 fn external_load_library_includes_zero_sigma_bus_when_scheme_is_external() {
-    use cobre_comm::LocalBackend;
-    use cobre_solver::ActiveSolver;
+    use novomodelo_comm::LocalBackend;
+    use novomodelo_solver::ActiveSolver;
 
     let system = zero_sigma_external_load_system();
     let config = minimal_config_with_schemes(1, 5, None, Some(RawSamplingScheme::External), None);
@@ -6136,8 +6136,8 @@ fn sim_external_load_with_sigma_zero_bus_rejects_width_mismatch() {
 )]
 fn external_ncs_library_built_when_scheme_is_external() {
     use chrono::NaiveDate;
-    use cobre_core::scenario::InflowModel as CoreInflowModel;
-    use cobre_core::{
+    use novomodelo_core::scenario::InflowModel as CoreInflowModel;
+    use novomodelo_core::{
         NonControllableSource,
         scenario::{ExternalNcsRow, NcsModel},
     };
@@ -6827,7 +6827,7 @@ fn minimal_system_with_anticipated(
     anticipated_config: AnticipatedConfig,
     k_max_bounds: usize,
     post_study_stages: Option<PostStudyStages>,
-) -> cobre_core::System {
+) -> novomodelo_core::System {
     minimal_system_with_anticipated_and_commitments(
         stage_hours,
         anticipated_config,
@@ -6853,8 +6853,8 @@ fn minimal_system_with_anticipated_and_commitments(
     anticipated_config: AnticipatedConfig,
     k_max_bounds: usize,
     post_study_stages: Option<PostStudyStages>,
-    past_commits: Vec<cobre_core::AnticipatedCommitmentHistory>,
-) -> cobre_core::System {
+    past_commits: Vec<novomodelo_core::AnticipatedCommitmentHistory>,
+) -> novomodelo_core::System {
     use chrono::NaiveDate;
 
     let n_stages = stage_hours.len();
@@ -7101,7 +7101,7 @@ fn minimal_system_with_anticipated_and_commitments(
 fn minimal_system_with_anticipated_lead_stages(
     n_stages: usize,
     lead_stages: u32,
-) -> cobre_core::System {
+) -> novomodelo_core::System {
     minimal_system_with_anticipated(
         &vec![744.0; n_stages],
         AnticipatedConfig::LeadStages(lead_stages),
@@ -7648,16 +7648,16 @@ fn resolve_state_layout_floors_declared_depth_at_ar_order() {
     );
 }
 
-/// Cross-crate coherence: cobre-io's seed lag depth
-/// (`cobre_io::seed_lag_state_depth`, the formula `max_seed_lag_depth` uses) and
-/// cobre-sddp's `resolve_state_layout` dense stride (`state.max_par_order`) must
+/// Cross-crate coherence: novomodelo-io's seed lag depth
+/// (`novomodelo_io::seed_lag_state_depth`, the formula `max_seed_lag_depth` uses) and
+/// novomodelo-sddp's `resolve_state_layout` dense stride (`state.max_par_order`) must
 /// return the identical `L_state` for a study with no loaded boundary — both are
 /// the PAR-derived depth. A drift desyncs the load-time seed derivation from the
 /// runtime state layout. A loaded boundary may widen the runtime deeper (its own
 /// lags are supplied by the boundary cuts, not seeded), so this coherence is the
 /// no-boundary case. The fixture's fitted AR order is 2 with no annual component.
 #[test]
-fn cobre_io_seed_depth_matches_resolve_state_layout_depth() {
+fn novomodelo_io_seed_depth_matches_resolve_state_layout_depth() {
     const FIXTURE_AR_ORDER: usize = 2;
 
     let system = minimal_system_2_hydros_with_history(3, None, vec![]);
@@ -7687,15 +7687,15 @@ fn cobre_io_seed_depth_matches_resolve_state_layout_depth() {
     )
     .expect("setup");
 
-    let io_depth = cobre_io::seed_lag_state_depth(FIXTURE_AR_ORDER, false);
+    let io_depth = novomodelo_io::seed_lag_state_depth(FIXTURE_AR_ORDER, false);
     assert_eq!(
         setup.inputs.stage_data.state.max_par_order, io_depth,
-        "cobre-io seed depth and resolve_state_layout dense stride must agree \
+        "novomodelo-io seed depth and resolve_state_layout dense stride must agree \
          (both the PAR-derived depth) without a loaded boundary"
     );
 }
 
-/// Cross-crate coherence: a `StageIdResolver` built (via the cobre-io
+/// Cross-crate coherence: a `StageIdResolver` built (via the novomodelo-io
 /// constructor) from a `System`'s study stages agrees, in both directions, with
 /// the canonical `study_stage_ids` slice `StudySetup` carries. Fails if the
 /// resolver's index semantics ever diverge from that slice.
@@ -7734,7 +7734,7 @@ fn stage_id_resolver_agrees_with_study_stage_ids() {
         .filter(|s| s.id >= 0)
         .map(|s| s.id)
         .collect();
-    let resolver = cobre_io::StageIdResolver::from_study_stage_ids(&ids);
+    let resolver = novomodelo_io::StageIdResolver::from_study_stage_ids(&ids);
 
     assert_eq!(
         resolver.study_stage_ids(),
@@ -7753,7 +7753,7 @@ fn stage_id_resolver_agrees_with_study_stage_ids() {
     clippy::items_after_statements,
     reason = "the fixture spells out one complete study inline so each assertion traces to a literal, and fixture-local helper items sit beside the entities that use them"
 )]
-fn system_with_travel_time_arc(n_stages: usize) -> cobre_core::System {
+fn system_with_travel_time_arc(n_stages: usize) -> novomodelo_core::System {
     use chrono::NaiveDate;
 
     let bus = Bus {
@@ -8213,7 +8213,7 @@ fn cut_row_from_state_matches_reference_loop() {
 
     // Mirror of `build_cut_row_batch_into`'s mask-driven body; a disagreement
     // means the cut-path repoint changed the emitted row.
-    let mut from_state = cobre_solver::RowBatch {
+    let mut from_state = novomodelo_solver::RowBatch {
         num_rows: 0,
         row_starts: Vec::new(),
         col_indices: Vec::new(),
@@ -8279,7 +8279,7 @@ fn cut_row_from_state_matches_reference_loop() {
     clippy::too_many_lines,
     reason = "the fixture spells out one complete study inline so each assertion traces to a literal"
 )]
-fn par2_system_with_state_configs(state_configs: &[StageStateConfig]) -> cobre_core::System {
+fn par2_system_with_state_configs(state_configs: &[StageStateConfig]) -> novomodelo_core::System {
     use chrono::NaiveDate;
 
     const PHI_1: f64 = 0.5;
@@ -8508,7 +8508,7 @@ fn par2_system_with_state_configs(state_configs: &[StageStateConfig]) -> cobre_c
         .expect("par2_system_with_state_configs: valid")
 }
 
-fn setup_from_system(system: &cobre_core::System) -> StudySetup {
+fn setup_from_system(system: &novomodelo_core::System) -> StudySetup {
     let config = minimal_config(1, 10);
     let stochastic = build_stochastic_context(
         system,
@@ -9024,7 +9024,7 @@ fn warn_on_boundary_absent_post_study_delivery_silent_when_boundary_present() {
 /// exactly one advisory fires and names it.
 #[test]
 fn warn_on_boundary_absent_fires_for_nonzero_fixed_value_without_boundary() {
-    use cobre_core::AnticipatedCommitmentHistory;
+    use novomodelo_core::AnticipatedCommitmentHistory;
 
     let system = minimal_system_with_anticipated_and_commitments(
         &[744.0, 744.0],
@@ -9077,7 +9077,7 @@ fn warn_on_boundary_absent_fires_for_nonzero_fixed_value_without_boundary() {
 /// a zero value is provably inert, so no advisory fires.
 #[test]
 fn warn_on_boundary_absent_silent_for_all_zero_stub_without_boundary() {
-    use cobre_core::AnticipatedCommitmentHistory;
+    use novomodelo_core::AnticipatedCommitmentHistory;
 
     let system = minimal_system_with_anticipated_and_commitments(
         &[744.0, 744.0],
@@ -9121,7 +9121,7 @@ fn warn_on_boundary_absent_silent_for_all_zero_stub_without_boundary() {
 /// names it exactly once in the one emitted event, never a duplicate.
 #[test]
 fn warn_on_boundary_absent_names_dual_cause_plant_once() {
-    use cobre_core::AnticipatedCommitmentHistory;
+    use novomodelo_core::AnticipatedCommitmentHistory;
 
     let post_study = PostStudyStages {
         stages: vec![PostStudyStage {
@@ -9264,7 +9264,7 @@ fn lead_time_fanout_rejected_at_setup() {
     clippy::too_many_lines,
     reason = "the fixture spells out one complete study inline so each assertion traces to a literal"
 )]
-fn system_with_two_thermals_one_fanning() -> cobre_core::System {
+fn system_with_two_thermals_one_fanning() -> novomodelo_core::System {
     use chrono::NaiveDate;
 
     let bus = Bus {
@@ -9495,7 +9495,7 @@ fn lead_time_fanout_rejection_is_declaration_order_invariant() {
     clippy::too_many_lines,
     reason = "the fixture spells out one complete study inline so each assertion traces to a literal"
 )]
-fn system_with_interleaved_anticipated_thermals() -> cobre_core::System {
+fn system_with_interleaved_anticipated_thermals() -> novomodelo_core::System {
     use chrono::NaiveDate;
 
     let bus = Bus {
@@ -9685,7 +9685,10 @@ fn anticipated_plants_build_returns_canonical_order_of_anticipated_thermals() {
 /// Two-contract, no-hydro/thermal system for exercising
 /// `build_contract_prices_per_stage` directly, with a caller-supplied `bounds`
 /// table (its contract/stage counts must match `blocks_per_stage`).
-fn system_with_contracts(blocks_per_stage: &[usize], bounds: ResolvedBounds) -> cobre_core::System {
+fn system_with_contracts(
+    blocks_per_stage: &[usize],
+    bounds: ResolvedBounds,
+) -> novomodelo_core::System {
     use chrono::NaiveDate;
 
     let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
@@ -9919,7 +9922,7 @@ fn scenario_libraries_with_inflow(inflow: Option<ExternalScenarioLibrary>) -> Sc
 /// `noise_entity_order` block width is rejected naming the class and both widths.
 #[test]
 fn g2_rejects_external_library_width_mismatch() {
-    use cobre_core::scenario::ScenarioSource;
+    use novomodelo_core::scenario::ScenarioSource;
 
     // minimal_system has one hydro, so the inflow block width is 1.
     let system = minimal_system(1);
@@ -9943,7 +9946,7 @@ fn g2_rejects_external_library_width_mismatch() {
 /// the entity order used is `noise_entity_order`'s, not a re-derivation.
 #[test]
 fn g2_accepts_matching_external_library_width() {
-    use cobre_core::scenario::ScenarioSource;
+    use novomodelo_core::scenario::ScenarioSource;
 
     let system = minimal_system(1);
     let libs = scenario_libraries_with_inflow(Some(ExternalScenarioLibrary::new(
@@ -10741,7 +10744,7 @@ fn bucket_seed_build_system(
     hydros: Vec<Hydro>,
     stages: Vec<Stage>,
     past_defluences: Vec<HydroPastDefluence>,
-) -> cobre_core::System {
+) -> novomodelo_core::System {
     let bus = Bus {
         id: EntityId(1),
         name: "B1".to_string(),
@@ -11094,8 +11097,8 @@ fn study_horizon_end_ignores_pre_study_stages() {
 /// plain and on an injected terminal pool, on a chain and on a terminal fan.
 #[test]
 fn terminal_boundary_flag_formulas_agree_on_chain_and_terminal_fan() {
-    fn boundary_record(state_dimension: usize) -> cobre_io::OwnedPolicyCutRecord {
-        cobre_io::OwnedPolicyCutRecord {
+    fn boundary_record(state_dimension: usize) -> novomodelo_io::OwnedPolicyCutRecord {
+        novomodelo_io::OwnedPolicyCutRecord {
             cut_id: 0,
             slot_index: 0,
             coefficients: vec![0.0; state_dimension],

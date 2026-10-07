@@ -25,7 +25,7 @@
 //!
 //! Most entity tables share a uniform flat entity/stage layout; [`ResolvedBounds`]
 //! documents the exact stride for each family, including thermal's extended one.
-//! Populated by `cobre-io` after base bounds are overlaid with stage-specific
+//! Populated by `novomodelo-io` after base bounds are overlaid with stage-specific
 //! overrides; never modified after construction.
 
 use super::{ResolvedBlockBounds, ResolvedHydroUnitGroupBounds};
@@ -40,7 +40,7 @@ use super::{ResolvedBlockBounds, ResolvedHydroUnitGroupBounds};
 /// # Examples
 ///
 /// ```
-/// use cobre_core::resolved::HydroStageBounds;
+/// use novomodelo_core::resolved::HydroStageBounds;
 ///
 /// let b = HydroStageBounds {
 ///     min_storage_hm3: 10.0,
@@ -71,7 +71,7 @@ pub struct HydroStageBounds {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::resolved::HydroBlockBounds;
+/// use novomodelo_core::resolved::HydroBlockBounds;
 ///
 /// let b = HydroBlockBounds {
 ///     min_turbined_m3s: 0.0,
@@ -150,7 +150,7 @@ struct HydroCell {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::resolved::ThermalBlockBounds;
+/// use novomodelo_core::resolved::ThermalBlockBounds;
 ///
 /// let b = ThermalBlockBounds { min_generation_mw: 50.0, max_generation_mw: 400.0 };
 /// let c = b; // Copy
@@ -174,7 +174,7 @@ pub struct ThermalBlockBounds {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::resolved::ThermalStageBounds;
+/// use novomodelo_core::resolved::ThermalStageBounds;
 ///
 /// let b = ThermalStageBounds { cost_per_mwh: 120.0 };
 /// let c = b; // Copy
@@ -210,7 +210,7 @@ struct ThermalCell {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::resolved::LineBlockBounds;
+/// use novomodelo_core::resolved::LineBlockBounds;
 ///
 /// let b = LineBlockBounds { direct_mw: 1000.0, reverse_mw: 800.0 };
 /// let c = b; // Copy
@@ -235,7 +235,7 @@ pub struct LineBlockBounds {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::resolved::PumpingBlockBounds;
+/// use novomodelo_core::resolved::PumpingBlockBounds;
 ///
 /// let b = PumpingBlockBounds { min_flow_m3s: 0.0, max_flow_m3s: 50.0 };
 /// let c = b; // Copy
@@ -263,7 +263,7 @@ pub struct PumpingBlockBounds {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::resolved::ContractBlockBounds;
+/// use novomodelo_core::resolved::ContractBlockBounds;
 ///
 /// let b = ContractBlockBounds { min_mw: 0.0, max_mw: 200.0, price_per_mwh: 80.0 };
 /// let c = b; // Copy
@@ -293,7 +293,7 @@ pub struct ContractBlockBounds {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::resolved::{
+/// use novomodelo_core::resolved::{
 ///     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds, HydroStageBounds,
 ///     LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
 ///     ThermalStageBounds,
@@ -447,7 +447,7 @@ impl ResolvedBounds {
     /// # Examples
     ///
     /// ```
-    /// use cobre_core::ResolvedBounds;
+    /// use novomodelo_core::ResolvedBounds;
     ///
     /// let empty = ResolvedBounds::empty();
     /// assert_eq!(empty.n_stages(), 0);
@@ -522,7 +522,7 @@ impl ResolvedBounds {
     /// [`hydro_block_base`](Self::hydro_block_base):
     ///
     /// ```compile_fail
-    /// use cobre_core::ResolvedBounds;
+    /// use novomodelo_core::ResolvedBounds;
     ///
     /// let bounds = ResolvedBounds::empty();
     /// let _ = bounds.hydro_bounds(0, 0).max_turbined_m3s;
@@ -533,7 +533,7 @@ impl ResolvedBounds {
     /// and compiles:
     ///
     /// ```
-    /// use cobre_core::resolved::{
+    /// use novomodelo_core::resolved::{
     ///     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds, HydroStageBounds,
     ///     LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
     ///     ThermalStageBounds,
@@ -595,7 +595,7 @@ impl ResolvedBounds {
     /// [`thermal_block_base`](Self::thermal_block_base):
     ///
     /// ```compile_fail
-    /// use cobre_core::ResolvedBounds;
+    /// use novomodelo_core::ResolvedBounds;
     ///
     /// let bounds = ResolvedBounds::empty();
     /// let _ = bounds.thermal_bounds(0, 0).max_generation_mw;
@@ -606,7 +606,7 @@ impl ResolvedBounds {
     /// and compiles:
     ///
     /// ```
-    /// use cobre_core::resolved::{
+    /// use novomodelo_core::resolved::{
     ///     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds, HydroStageBounds,
     ///     LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
     ///     ThermalStageBounds,
@@ -844,7 +844,7 @@ impl ResolvedBounds {
     /// [`line_block_base`](Self::line_block_base):
     ///
     /// ```compile_fail
-    /// use cobre_core::ResolvedBounds;
+    /// use novomodelo_core::ResolvedBounds;
     ///
     /// let bounds = ResolvedBounds::empty();
     /// let _ = bounds.line_bounds(0, 0).direct_mw;
@@ -854,7 +854,7 @@ impl ResolvedBounds {
     /// capacity through this method and compiles:
     ///
     /// ```
-    /// use cobre_core::resolved::{
+    /// use novomodelo_core::resolved::{
     ///     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds, HydroStageBounds,
     ///     LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
     ///     ThermalStageBounds,
@@ -917,7 +917,7 @@ impl ResolvedBounds {
     /// accessor or [`pumping_block_base`](Self::pumping_block_base):
     ///
     /// ```compile_fail
-    /// use cobre_core::ResolvedBounds;
+    /// use novomodelo_core::ResolvedBounds;
     ///
     /// let bounds = ResolvedBounds::empty();
     /// let _ = bounds.pumping_bounds(0, 0).max_flow_m3s;
@@ -927,7 +927,7 @@ impl ResolvedBounds {
     /// pumping flow limit through this method and compiles:
     ///
     /// ```
-    /// use cobre_core::resolved::{
+    /// use novomodelo_core::resolved::{
     ///     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds, HydroStageBounds,
     ///     LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
     ///     ThermalStageBounds,
@@ -993,7 +993,7 @@ impl ResolvedBounds {
     /// accessor or [`contract_block_base`](Self::contract_block_base):
     ///
     /// ```compile_fail
-    /// use cobre_core::ResolvedBounds;
+    /// use novomodelo_core::ResolvedBounds;
     ///
     /// let bounds = ResolvedBounds::empty();
     /// let _ = bounds.contract_bounds(0, 0).price_per_mwh;
@@ -1003,7 +1003,7 @@ impl ResolvedBounds {
     /// contract price through this method and compiles:
     ///
     /// ```
-    /// use cobre_core::resolved::{
+    /// use novomodelo_core::resolved::{
     ///     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds, HydroStageBounds,
     ///     LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
     ///     ThermalStageBounds,
@@ -1478,7 +1478,7 @@ mod tests {
     // ─── Thermal-bounds padding boundary tests ───────────────────────────────
     //
     // This module verifies only the uniform `BoundsDefaults.thermal` fill; the
-    // per-thermal base-fill semantics are owned by `cobre-io`'s resolution tests,
+    // per-thermal base-fill semantics are owned by `novomodelo-io`'s resolution tests,
     // which construct `Thermal` entities.
 
     /// Sentinel defaults used by the thermal-padding boundary tests. Values are

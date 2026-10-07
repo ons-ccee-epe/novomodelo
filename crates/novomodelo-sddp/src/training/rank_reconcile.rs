@@ -1,7 +1,7 @@
 //! Deterministic cross-rank reconciliation of error flags before lockstep
 //! collectives, and of the rank-variant stop inputs at the iteration boundary.
 
-use cobre_comm::{CommError, Communicator, ReduceOp};
+use novomodelo_comm::{CommError, Communicator, ReduceOp};
 
 use crate::SddpError;
 use crate::config::ShutdownSource;
@@ -152,7 +152,7 @@ mod tests {
     use crate::convergence::convergence::ConvergenceMonitor;
     use crate::forward::{ForwardResult, SyncResult};
     use crate::stopping_rule::{StopMask, StoppingMode, StoppingRule, StoppingRuleSet};
-    use cobre_comm::{CommData, CommError, Communicator, ReduceOp};
+    use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
 
     enum Mode {
         Reduce,

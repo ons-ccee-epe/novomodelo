@@ -5,8 +5,8 @@
 //! the same chokepoint both the CLI and Python write paths assemble through, so
 //! record-content parity is structural rather than duplicated.
 
-use cobre_core::{AnticipatedCommitmentHistory, System};
-use cobre_io::FixedDeliveryRow;
+use novomodelo_core::{AnticipatedCommitmentHistory, System};
+use novomodelo_io::FixedDeliveryRow;
 
 use crate::StudySetup;
 
@@ -41,7 +41,7 @@ fn fixed_delivery_rows_from_windows(
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use cobre_core::EntityId;
+    use novomodelo_core::EntityId;
 
     fn window(
         thermal_id: i32,

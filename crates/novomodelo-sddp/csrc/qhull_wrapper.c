@@ -24,10 +24,10 @@
 /* Dimension of the hull this shim computes. The flat point stride and the
  * per-facet output width (4 = 3 normal components + 1 offset) are derived from
  * it; only DIM == 3 is supported by the fixed [nx,ny,nz,d] output layout. */
-#define COBRE_QHULL_DIM 3
+#define NOVOMODELO_QHULL_DIM 3
 
 /* Per-facet output width: nx, ny, nz, d. */
-#define COBRE_QHULL_PLANE_STRIDE 4
+#define NOVOMODELO_QHULL_PLANE_STRIDE 4
 
 /* Fixed qhull option string. "qhull" is the conventional command prefix; "Qt"
  * triangulates the hull into simplicial facets so each facet has one
@@ -38,15 +38,15 @@
  * the hull geometry (the determinism gate verifies the facet output stays
  * bit-identical). Joggle ("QJ") is deliberately omitted — no randomized
  * perturbation. See the header's determinism contract. */
-static const char COBRE_QHULL_FLAGS[] = "qhull Qt Pp";
+static const char NOVOMODELO_QHULL_FLAGS[] = "qhull Qt Pp";
 
 /* Map a qhull errexit code (qh_ERR*, libqhull_r.h) to a shim status code.
  * Called only on the error path (exitcode != 0). */
-static int cobre_qhull_map_error(int exitcode) {
+static int novomodelo_qhull_map_error(int exitcode) {
     switch (exitcode) {
         case qh_ERRmem:
             /* Insufficient memory inside qhull. */
-            return COBRE_QHULL_ERR_ALLOC;
+            return NOVOMODELO_QHULL_ERR_ALLOC;
         case qh_ERRsingular:
         case qh_ERRprec:
         case qh_ERRtopology:
@@ -54,17 +54,17 @@ static int cobre_qhull_map_error(int exitcode) {
             /* Singular / precision / nearly-degenerate input: too few
              * affinely-independent points to form a full 3-D hull, or a
              * geometry too thin for qhull to resolve. */
-            return COBRE_QHULL_ERR_DEGENERATE;
+            return NOVOMODELO_QHULL_ERR_DEGENERATE;
         case qh_ERRinput:
         case qh_ERRqhull:
         case qh_ERRother:
         default:
             /* Bad input dimensions, internal qhull error, or anything else. */
-            return COBRE_QHULL_ERR_COMPUTE;
+            return NOVOMODELO_QHULL_ERR_COMPUTE;
     }
 }
 
-int cobre_qhull_convex_hull_3d(
+int novomodelo_qhull_convex_hull_3d(
     const double* points,
     int           n_points,
     double**      out_planes,
@@ -80,15 +80,15 @@ int cobre_qhull_convex_hull_3d(
     }
 
     if (points == NULL || out_planes == NULL || out_n_facets == NULL) {
-        return COBRE_QHULL_ERR_COMPUTE;
+        return NOVOMODELO_QHULL_ERR_COMPUTE;
     }
 
     /* A 3-D hull needs at least DIM+1 = 4 points; reject smaller clouds before
      * calling qhull so the caller gets the degenerate status without paying for
      * a guaranteed-failing qhull run. (qhull would also reject these, mapped to
      * the same code, but this keeps the contract explicit.) */
-    if (n_points < COBRE_QHULL_DIM + 1) {
-        return COBRE_QHULL_ERR_DEGENERATE;
+    if (n_points < NOVOMODELO_QHULL_DIM + 1) {
+        return NOVOMODELO_QHULL_ERR_DEGENERATE;
     }
 
     /* Verify the linked libqhull_r matches the headers this shim compiled
@@ -133,7 +133,7 @@ int cobre_qhull_convex_hull_3d(
     qh_zero(qh, err_stream);
 
     double* planes = NULL;
-    int     status = COBRE_QHULL_OK;
+    int     status = NOVOMODELO_QHULL_OK;
 
     /* Install qhull's longjmp error target. A qhull error (degenerate input,
      * precision failure, OOM, internal error) jumps back here with a non-zero
@@ -154,11 +154,11 @@ int cobre_qhull_convex_hull_3d(
          * text qhull emits outside the hard errexit path. */
         int qhull_exit = qh_new_qhull(
             qh,
-            COBRE_QHULL_DIM,
+            NOVOMODELO_QHULL_DIM,
             n_points,
             (coordT*)points,
             False,
-            (char*)COBRE_QHULL_FLAGS,
+            (char*)NOVOMODELO_QHULL_FLAGS,
             NULL,
             err_stream
         );
@@ -190,15 +190,15 @@ int cobre_qhull_convex_hull_3d(
             /* No usable hyperplane facet. If qhull reported an error, surface its
              * mapped code; otherwise the cloud is degenerate (too thin to hull). */
             status = (qhull_exit != 0)
-                ? cobre_qhull_map_error(qhull_exit)
-                : COBRE_QHULL_ERR_DEGENERATE;
+                ? novomodelo_qhull_map_error(qhull_exit)
+                : NOVOMODELO_QHULL_ERR_DEGENERATE;
         } else {
             /* Allocate the output buffer with the shim's allocator so the Rust
-             * side releases it via cobre_qhull_free (same allocator). */
-            size_t count = (size_t)n_facets * (size_t)COBRE_QHULL_PLANE_STRIDE;
+             * side releases it via novomodelo_qhull_free (same allocator). */
+            size_t count = (size_t)n_facets * (size_t)NOVOMODELO_QHULL_PLANE_STRIDE;
             planes = (double*)malloc(count * sizeof(double));
             if (planes == NULL) {
-                status = COBRE_QHULL_ERR_ALLOC;
+                status = NOVOMODELO_QHULL_ERR_ALLOC;
             } else {
                 /* Second pass: write [nx, ny, nz, d] per facet. qhull's
                  * facet->normal is already unit-length and facet->offset is d
@@ -210,7 +210,7 @@ int cobre_qhull_convex_hull_3d(
                     if (facet->upperdelaunay || facet->normal == NULL) {
                         continue;
                     }
-                    double* dst = planes + (size_t)idx * COBRE_QHULL_PLANE_STRIDE;
+                    double* dst = planes + (size_t)idx * NOVOMODELO_QHULL_PLANE_STRIDE;
                     dst[0] = (double)facet->normal[0];
                     dst[1] = (double)facet->normal[1];
                     dst[2] = (double)facet->normal[2];
@@ -225,7 +225,7 @@ int cobre_qhull_convex_hull_3d(
     } else {
         /* An error from a qhull call OTHER than qh_new_qhull (e.g. resource
          * teardown) long-jumped here; map its exit code to a status. */
-        status = cobre_qhull_map_error(exitcode);
+        status = novomodelo_qhull_map_error(exitcode);
     }
 
     /* Block further longjmp-based error handling while we tear down: any error
@@ -245,7 +245,7 @@ int cobre_qhull_convex_hull_3d(
      * not leak and so the out-params stay NULL/0 (set above). With the current
      * control flow `planes` is only non-NULL on the success path, but free the
      * buffer defensively if a future edit allocates before a later failure. */
-    if (status != COBRE_QHULL_OK && planes != NULL) {
+    if (status != NOVOMODELO_QHULL_OK && planes != NULL) {
         free(planes);
         *out_planes = NULL;
         *out_n_facets = 0;
@@ -264,7 +264,7 @@ int cobre_qhull_convex_hull_3d(
     return status;
 }
 
-void cobre_qhull_free(double* planes) {
+void novomodelo_qhull_free(double* planes) {
     /* free(NULL) is a no-op, so no NULL guard is needed; the same allocator
      * (malloc) that produced the buffer releases it here. */
     free(planes);

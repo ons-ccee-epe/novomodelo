@@ -10,7 +10,7 @@
 
 use std::time::Instant;
 
-use cobre_solver::{
+use novomodelo_solver::{
     Basis, ProfiledSolver, RowBatch, SolutionView, SolverError, SolverInterface, StageTemplate,
 };
 
@@ -762,7 +762,7 @@ pub fn build_initial_resident_set(
 #[cfg(test)]
 #[allow(clippy::doc_markdown)]
 mod tests {
-    use cobre_solver::{
+    use novomodelo_solver::{
         ActiveProfile, ActiveSolver, Basis, ProfiledSolver, RowBatch, SolverError, SolverInterface,
         SolverStatistics, StageTemplate,
     };
@@ -772,7 +772,7 @@ mod tests {
         build_initial_resident_set, lazy_solve_preloaded, reconstruct_basis_uniform_basic,
         score_violated_candidates,
     };
-    use cobre_core::temporal::StageStateConfig;
+    use novomodelo_core::temporal::StageStateConfig;
 
     use crate::cut::row::append_slots_to_lp;
     use crate::cut::{CutPool, CutRowMap};
@@ -2575,7 +2575,7 @@ mod tests {
         fn solve(
             &mut self,
             _basis: Option<&Basis>,
-        ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+        ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
             // Always behave as a cold solve: ignore any passed basis.
             let src = if self.call_count == 0 {
                 &self.first
@@ -2584,7 +2584,7 @@ mod tests {
             };
             self.call_count += 1;
             self.buf.clone_from(src);
-            Ok(cobre_solver::SolutionView {
+            Ok(novomodelo_solver::SolutionView {
                 objective: self.buf[LAZY_THETA_COL],
                 primal: &self.buf,
                 dual: &self.empty,

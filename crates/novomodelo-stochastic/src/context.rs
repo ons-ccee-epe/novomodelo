@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId, LoadModel, System,
     scenario::{ExternalLoadRow, ExternalNcsRow, ExternalScenarioRow, InflowModel, SamplingScheme},
     temporal::Stage,
@@ -32,7 +32,7 @@ pub struct OpeningTreeInputs<'a> {
     /// `historical_library` and `external_scenario_counts` fields are ignored.
     pub user_tree: Option<OpeningTree>,
     /// Historical library, required when any study stage uses
-    /// [`NoiseMethod::HistoricalResiduals`](cobre_core::temporal::NoiseMethod::HistoricalResiduals)
+    /// [`NoiseMethod::HistoricalResiduals`](novomodelo_core::temporal::NoiseMethod::HistoricalResiduals)
     /// and `user_tree` is `None`.
     pub historical_library: Option<&'a HistoricalScenarioLibrary>,
     /// Pre-padding external scenario count per stage, clamping openings for
@@ -140,7 +140,7 @@ pub fn noise_entity_order(system: &System, schemes: &ClassSchemes) -> NoiseEntit
 ///
 /// ```
 /// use std::collections::BTreeMap;
-/// use cobre_core::{
+/// use novomodelo_core::{
 ///     Bus, DeficitSegment, EntityId, SystemBuilder,
 ///     scenario::{
 ///         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile,
@@ -152,7 +152,7 @@ pub fn noise_entity_order(system: &System, schemes: &ClassSchemes) -> NoiseEntit
 ///     },
 ///     entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties},
 /// };
-/// use cobre_stochastic::context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+/// use novomodelo_stochastic::context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
 /// use chrono::NaiveDate;
 ///
 /// # fn make_bus(id: i32) -> Bus {
@@ -413,9 +413,9 @@ impl StochasticContext {
 
 /// Map each study stage's declared `Stage.id` to its 0-based position in
 /// `study_stages` — the declared-domain-id -> canonical-study-index
-/// resolution `cobre-io`'s `StageIdResolver` performs for the σ=0 validator
-/// (rule 47), replicated here because `cobre-stochastic` cannot depend on
-/// `cobre-io` (`cobre-io` depends on `cobre-stochastic`).
+/// resolution `novomodelo-io`'s `StageIdResolver` performs for the σ=0 validator
+/// (rule 47), replicated here because `novomodelo-stochastic` cannot depend on
+/// `novomodelo-io` (`novomodelo-io` depends on `novomodelo-stochastic`).
 /// `ExternalScenarioRow`/`ExternalLoadRow`/`ExternalNcsRow::stage_id` is
 /// documented as a declared domain id, "not a 0-based index" — every
 /// External-row consumer below resolves through this map, never casts
@@ -646,7 +646,7 @@ pub fn build_inflow_par(
 /// - [`StochasticError::InvalidCorrelation`]: the correlation model is empty,
 ///   ambiguous, or contains an invalid matrix.
 ///
-/// [`LoadModel`]: cobre_core::scenario::LoadModel
+/// [`LoadModel`]: novomodelo_core::scenario::LoadModel
 // Rationale: extracting sub-steps would thread the same partially-built context
 // state through every helper, obscuring the build dependency order without
 // reducing real complexity.
@@ -824,7 +824,7 @@ pub fn build_stochastic_context(
 mod tests {
     use std::collections::BTreeMap;
 
-    use cobre_core::{
+    use novomodelo_core::{
         Bus, DeficitSegment, EntityId, Hydro, SystemBuilder,
         scenario::{
             CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile,
@@ -841,7 +841,7 @@ mod tests {
     use crate::StochasticError;
 
     fn make_stage(index: usize, id: i32, branching_factor: usize) -> Stage {
-        cobre_core::test_support::make_stage(StageSpec {
+        novomodelo_core::test_support::make_stage(StageSpec {
             id,
             index: Some(index),
             season_id: Some(0),
@@ -855,7 +855,7 @@ mod tests {
     }
 
     fn make_bus(id: i32) -> Bus {
-        cobre_core::test_support::make_bus(BusSpec {
+        novomodelo_core::test_support::make_bus(BusSpec {
             id,
             name: format!("Bus{id}"),
             deficit_segments: vec![DeficitSegment {
@@ -867,7 +867,7 @@ mod tests {
     }
 
     fn make_hydro(id: i32) -> Hydro {
-        cobre_core::test_support::make_hydro(HydroSpec {
+        novomodelo_core::test_support::make_hydro(HydroSpec {
             id,
             name: format!("H{id}"),
             max_storage_hm3: 100.0,
@@ -2199,7 +2199,7 @@ mod tests {
     }
 
     /// Regression: a GAPPED (non-0-based) declared study-stage id must
-    /// resolve to its canonical position — the same resolution cobre-io's
+    /// resolve to its canonical position — the same resolution novomodelo-io's
     /// rule-47 validator performs — never be treated as already being that
     /// position. Study stages are declared `2, 5` (not `0, 1`); under the
     /// pre-fix bug, `stage_idx = declared_id` always exceeds `n_stages` here,

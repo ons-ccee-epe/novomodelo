@@ -47,7 +47,7 @@ pub struct HorizonGraph {
 }
 
 impl Default for HorizonGraph {
-    /// A finite-horizon graph with no transitions and no discounting; `cobre-io`
+    /// A finite-horizon graph with no transitions and no discounting; `novomodelo-io`
     /// replaces it with the graph loaded from `stages.json`.
     fn default() -> Self {
         Self {

@@ -1,8 +1,8 @@
 //! [`SolveInputs`]: the resolved study inputs the stage, training, and
 //! simulation contexts all borrow from.
 
-use cobre_core::scenario::SamplingScheme;
-use cobre_stochastic::StochasticContext;
+use novomodelo_core::scenario::SamplingScheme;
+use novomodelo_stochastic::StochasticContext;
 
 use crate::{
     config::CutManagementConfig,

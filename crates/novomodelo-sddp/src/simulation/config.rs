@@ -4,7 +4,7 @@
 //! pipeline: number of scenarios to evaluate, the bounded channel capacity
 //! that throttles the background I/O thread, and the resolved solver profile.
 
-use cobre_solver::ActiveProfile;
+use novomodelo_solver::ActiveProfile;
 
 /// Parameters controlling the SDDP simulation pipeline.
 ///
@@ -14,8 +14,8 @@ use cobre_solver::ActiveProfile;
 /// # Examples
 ///
 /// ```rust
-/// use cobre_sddp::simulation::SimulationConfig;
-/// use cobre_sddp::Phase;
+/// use novomodelo_sddp::simulation::SimulationConfig;
+/// use novomodelo_sddp::Phase;
 ///
 /// let config = SimulationConfig {
 ///     n_scenarios: 500,

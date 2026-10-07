@@ -1,7 +1,7 @@
 //! Assembly logic for scenario pipeline data.
 //!
 //! This module joins the flat row types produced by individual parsers into the
-//! assembled types expected by [`cobre_core::System`]:
+//! assembled types expected by [`novomodelo_core::System`]:
 //!
 //! - [`assemble_inflow_models`] — joins [`InflowSeasonalStatsRow`] with
 //!   [`InflowArCoefficientRow`] by `(hydro_id, stage_id)` to produce
@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId,
     scenario::{AnnualComponent, InflowModel, LoadModel},
 };
@@ -64,9 +64,9 @@ use crate::scenarios::{
 /// # Examples
 ///
 /// ```
-/// use cobre_core::EntityId;
-/// use cobre_io::scenarios::{InflowSeasonalStatsRow, InflowArCoefficientRow};
-/// use cobre_io::scenarios::assembly::assemble_inflow_models;
+/// use novomodelo_core::EntityId;
+/// use novomodelo_io::scenarios::{InflowSeasonalStatsRow, InflowArCoefficientRow};
+/// use novomodelo_io::scenarios::assembly::assemble_inflow_models;
 ///
 /// let stats = vec![
 ///     InflowSeasonalStatsRow { hydro_id: EntityId(1), stage_id: 0, mean_m3s: 100.0, std_m3s: 10.0 },
@@ -198,9 +198,9 @@ where
 /// # Examples
 ///
 /// ```
-/// use cobre_core::EntityId;
-/// use cobre_io::scenarios::LoadSeasonalStatsRow;
-/// use cobre_io::scenarios::assembly::assemble_load_models;
+/// use novomodelo_core::EntityId;
+/// use novomodelo_io::scenarios::LoadSeasonalStatsRow;
+/// use novomodelo_io::scenarios::assembly::assemble_load_models;
 ///
 /// let stats = vec![
 ///     LoadSeasonalStatsRow { bus_id: EntityId(1), stage_id: 0, mean_mw: 300.0, std_mw: 30.0 },
@@ -235,7 +235,7 @@ pub fn assemble_load_models(stats: Vec<LoadSeasonalStatsRow>) -> Vec<LoadModel> 
 )]
 mod tests {
     use super::*;
-    use cobre_core::EntityId;
+    use novomodelo_core::EntityId;
 
     #[test]
     fn test_assemble_inflow_models_matching_join() {

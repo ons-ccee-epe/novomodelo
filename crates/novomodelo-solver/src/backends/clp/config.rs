@@ -15,7 +15,7 @@ pub enum ClpAlgorithm {
 /// CLP-specific solver profile carrying the tunable option surface.
 ///
 /// The field defaults are tuned for deterministic, warm-started repeated
-/// re-solves: perturbation off, scaling off (the cobre prescaler conditions the
+/// re-solves: perturbation off, scaling off (the novomodelo prescaler conditions the
 /// matrix), feasibility tolerances matching `HighsProfile` bit-for-bit.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClpProfile {
@@ -34,13 +34,13 @@ pub struct ClpProfile {
     pub simplex_iteration_limit: u32,
     /// Simplex algorithm `solve` dispatches on.
     pub algorithm: ClpAlgorithm,
-    /// Dual-simplex row-pricing mode (drives `cobre_clp_set_dual_row_steepest`).
+    /// Dual-simplex row-pricing mode (drives `novomodelo_clp_set_dual_row_steepest`).
     /// `1` pins full dual steepest-edge pricing; the default `3` is CLP's own
     /// steepest-edge constructor default and is the "issue no shim call"
     /// sentinel, keeping the default profile byte-identical to a build that
     /// never set pricing.
     pub dual_pricing_mode: i32,
-    /// Refactorization cadence (drives `cobre_clp_set_factorization_frequency`).
+    /// Refactorization cadence (drives `novomodelo_clp_set_factorization_frequency`).
     /// The sentinel `0` leaves CLP's internal default in place — do not
     /// override; any non-zero value sets the cadence through the shim.
     pub factorization_frequency: i32,

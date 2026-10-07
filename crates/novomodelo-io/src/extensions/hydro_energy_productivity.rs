@@ -49,7 +49,7 @@
 use std::path::Path;
 
 use arrow::array::{Array, Float64Array};
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 
 use crate::LoadError;
 use crate::parquet_helpers::{

@@ -8,7 +8,7 @@
     clippy::cast_possible_truncation
 )]
 
-use cobre_io::{
+use novomodelo_io::{
     CheckpointManifest, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, FORMAT_VERSION, GraphManifest,
     ProducerBlock, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, SeasonManifest, StageCutsPayload,
     read_policy_checkpoint, write_policy_checkpoint,
@@ -17,7 +17,7 @@ use cobre_io::{
 fn metadata() -> CheckpointManifest {
     CheckpointManifest {
         format_version: FORMAT_VERSION,
-        software: Some("cobre".to_string()),
+        software: Some("novomodelo".to_string()),
         software_version: "0.13.0".to_string(),
         created_at: "2026-08-11T00:00:00Z".to_string(),
         num_stages: 1,

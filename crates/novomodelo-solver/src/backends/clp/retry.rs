@@ -49,12 +49,12 @@ impl ClpSolver {
                 // basis was just installed via the per-element setters.
                 // `if_values_pass = 0` requests a cold solve. The returned int is
                 // the CLP solve status.
-                unsafe { clp_ffi::cobre_clp_dual(self.handle, 0) }
+                unsafe { clp_ffi::novomodelo_clp_dual(self.handle, 0) }
             }
             ClpAlgorithm::Primal => {
                 // SAFETY: as the dual arm — valid handle, model loaded, cold
                 // basis installed. `if_values_pass = 0` requests a cold solve.
-                unsafe { clp_ffi::cobre_clp_primal(self.handle, 0) }
+                unsafe { clp_ffi::novomodelo_clp_primal(self.handle, 0) }
             }
         }
     }
@@ -97,8 +97,8 @@ impl ClpSolver {
             // loaded (asserted via `has_model` in `solve`). Both setters accept
             // any i32, retain no pointer, and cannot fail on a valid handle.
             unsafe {
-                clp_ffi::cobre_clp_set_perturbation(self.handle, perturbation);
-                clp_ffi::cobre_clp_scaling(self.handle, scaling);
+                clp_ffi::novomodelo_clp_set_perturbation(self.handle, perturbation);
+                clp_ffi::novomodelo_clp_scaling(self.handle, scaling);
             }
 
             let status = self.escalate_run(algorithm);
@@ -109,10 +109,10 @@ impl ClpSolver {
                 // is safe.
                 #[allow(clippy::cast_sign_loss)]
                 let iterations =
-                    unsafe { clp_ffi::cobre_clp_number_iterations(self.handle) } as u64;
+                    unsafe { clp_ffi::novomodelo_clp_number_iterations(self.handle) } as u64;
                 // SAFETY: `self.handle` is a valid, non-null CLP pointer just
                 // solved to optimality; objective is in minimize sense.
-                let objective = unsafe { clp_ffi::cobre_clp_objective_value(self.handle) };
+                let objective = unsafe { clp_ffi::novomodelo_clp_objective_value(self.handle) };
 
                 // Copy before any further CLP call — pointers are valid only
                 // until the next solve.

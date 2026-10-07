@@ -20,7 +20,7 @@
 )]
 #![cfg(feature = "highs")]
 
-use cobre_solver::{HighsSolver, RowBatch, SolverInterface, StageTemplate};
+use novomodelo_solver::{HighsSolver, RowBatch, SolverInterface, StageTemplate};
 
 #[test]
 fn fixed_column_reduced_cost_matches_equality_row_dual() {

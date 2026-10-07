@@ -1,5 +1,5 @@
-use cobre_core::commissioning::Phase;
-use cobre_core::{BlockMode, CoefficientRef, ContractType, Stage};
+use novomodelo_core::commissioning::Phase;
+use novomodelo_core::{BlockMode, CoefficientRef, ContractType, Stage};
 
 use super::generic_constraints::resolve_variable_ref;
 use crate::hydro_models::EvaporationModel;
@@ -1511,7 +1511,7 @@ mod assemble_csc_tests {
     reason = "the test reads non-negative CSC offsets"
 )]
 mod parameter_resolution_tests {
-    use cobre_core::{
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties, CoefficientRef,
         ConstraintExpression, ContractBlockBounds, DeficitSegment, EntityId, GenericConstraint,
         HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds, LineStagePenalties,
@@ -1520,9 +1520,9 @@ mod parameter_resolution_tests {
         ScalarParameter, SlackConfig, StageId, SystemBuilder, ThermalBlockBounds,
         ThermalStageBounds,
     };
-    use cobre_core::{LinearTerm, VariableRef};
-    use cobre_stochastic::normal::precompute::PrecomputedNormal;
-    use cobre_stochastic::par::precompute::PrecomputedPar;
+    use novomodelo_core::{LinearTerm, VariableRef};
+    use novomodelo_stochastic::normal::precompute::PrecomputedNormal;
+    use novomodelo_stochastic::par::precompute::PrecomputedPar;
     use std::collections::HashMap;
 
     use crate::build_stage_templates_resolving_layout;
@@ -1540,7 +1540,7 @@ mod parameter_resolution_tests {
     }
 
     /// Return all CSC values stored at `(col, row)` in the template.
-    fn csc_entries_at(t: &cobre_solver::StageTemplate, col: usize, row: usize) -> Vec<f64> {
+    fn csc_entries_at(t: &novomodelo_solver::StageTemplate, col: usize, row: usize) -> Vec<f64> {
         let start = t.col_starts[col] as usize;
         let end = t.col_starts[col + 1] as usize;
         t.row_indices[start..end]
@@ -1595,11 +1595,11 @@ mod parameter_resolution_tests {
         thermal_entity_id: EntityId,
         constraints: Vec<GenericConstraint>,
         bounds: ResolvedGenericConstraintBounds,
-    ) -> cobre_core::System {
+    ) -> novomodelo_core::System {
         use chrono::NaiveDate;
-        use cobre_core::entities::thermal::Thermal;
-        use cobre_core::scenario::LoadModel;
-        use cobre_core::temporal::{
+        use novomodelo_core::entities::thermal::Thermal;
+        use novomodelo_core::scenario::LoadModel;
+        use novomodelo_core::temporal::{
             Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
             StageStateConfig,
         };
@@ -1728,9 +1728,9 @@ mod parameter_resolution_tests {
 
     /// Build templates for the given system using the supplied `ResolvedParameters`.
     fn make_templates(
-        system: &cobre_core::System,
+        system: &novomodelo_core::System,
         resolved_params: &ResolvedParameters,
-    ) -> Vec<cobre_solver::StageTemplate> {
+    ) -> Vec<novomodelo_solver::StageTemplate> {
         let production = PrepareHydroModelsResult::default_from_system(system).production;
         let evaporation = PrepareHydroModelsResult::default_from_system(system).evaporation;
         build_stage_templates_resolving_layout(
@@ -2025,7 +2025,7 @@ mod parameter_resolution_tests {
 mod zero_cost_tests {
 
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
         HydroStageBounds, LineBlockBounds, PumpingBlockBounds, ResolvedBounds, Stage, Thermal,
         ThermalBlockBounds, ThermalStageBounds,
@@ -2175,8 +2175,8 @@ mod zero_cost_tests {
     /// objective on thermal 0).
     #[test]
     fn fill_thermal_columns_skips_objective_for_anticipated_plants() {
-        use cobre_core::entities::thermal::AnticipatedConfig;
-        use cobre_core::{EntityId, Thermal};
+        use novomodelo_core::entities::thermal::AnticipatedConfig;
+        use novomodelo_core::{EntityId, Thermal};
 
         const ANT_COST: f64 = 30.0;
         const STD_COST: f64 = 40.0;
@@ -3254,7 +3254,7 @@ mod zero_cost_tests {
 mod pumping_water_tests {
     use std::collections::{BTreeMap, HashMap};
 
-    use cobre_core::{
+    use novomodelo_core::{
         BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties, CascadeTopology,
         CoefficientRef, ConstraintExpression, ContractBlockBounds, ContractType, DeficitSegment,
         EnergyContract, EntityId, GenericConstraint, Hydro, HydroBlockBounds, HydroGenerationModel,
@@ -3264,7 +3264,7 @@ mod pumping_water_tests {
         ResolvedPenalties, SlackConfig, Stage, Thermal, ThermalBlockBounds, ThermalStageBounds,
         VariableRef,
     };
-    use cobre_stochastic::par::precompute::PrecomputedPar;
+    use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
     use crate::block_clock::{BlockClock, M3S_TO_HM3};
     use crate::hydro_models::{
@@ -4792,7 +4792,7 @@ mod pumping_water_tests {
     /// production constant.
     #[test]
     fn cascade_upstream_tau_and_z_inflow_land_on_downstream_water_row() {
-        use cobre_core::scenario::InflowModel;
+        use novomodelo_core::scenario::InflowModel;
 
         // Assemble the production water-row fill into a CSC. The generic-constraint
         // fill is omitted (no generic constraints here); the water row is reached
@@ -5621,7 +5621,7 @@ mod pumping_water_tests {
     /// exercise.
     #[test]
     fn test_plant_total_release_is_invariant_to_cell_partition() {
-        use cobre_solver::{ActiveSolver, SolverInterface};
+        use novomodelo_solver::{ActiveSolver, SolverInterface};
 
         fn solve_pinned_release(
             hydros: Vec<Hydro>,
@@ -6357,7 +6357,7 @@ mod pumping_water_tests {
     /// stage, not a coefficient on a column pinned to zero.
     #[test]
     fn filling_upstream_spillage_still_deposits_into_transit_bucket() {
-        use cobre_core::entities::hydro::FillingConfig;
+        use novomodelo_core::entities::hydro::FillingConfig;
 
         let up = 1;
         let down = 2;
@@ -6818,7 +6818,7 @@ mod pumping_water_tests {
         stage.blocks = block_hours
             .iter()
             .enumerate()
-            .map(|(i, &h)| cobre_core::Block {
+            .map(|(i, &h)| novomodelo_core::Block {
                 index: i,
                 name: format!("B{i}"),
                 duration_hours: h,
@@ -7196,7 +7196,7 @@ mod pumping_water_tests {
     /// never a false heterogeneous-confluence panic (debug) nor a wrong uniform
     /// split (release). The plain tributary sorts first in `cascade.upstream`
     /// (id 0 < id 1), so the pre-fix code would seed `chosen` with the uniform
-    /// fallback before the travel-time arc disagrees. The `cobre-io`
+    /// fallback before the travel-time arc disagrees. The `novomodelo-io`
     /// `check_chronological_confluence_heterogeneous_travel_time` gate cannot
     /// catch this: it counts travel-time arcs only, so one arc plus one plain
     /// tributary is `< 2` and passes config validation.
@@ -7550,7 +7550,7 @@ mod pumping_water_tests {
 
     // ── Filling-cascade test helpers (shared by the filling-row tests below) ─────
 
-    use cobre_core::entities::hydro::FillingConfig;
+    use novomodelo_core::entities::hydro::FillingConfig;
 
     const RET_START_STAGE_ID: i32 = 2;
     const RET_ENTRY_STAGE_ID: i32 = 4;
@@ -8593,7 +8593,7 @@ mod pumping_water_tests {
     /// (`β_{H2}` stale-nonzero).
     #[test]
     fn prefilling_incoming_storage_reduced_cost_is_zero() {
-        use cobre_solver::{ActiveSolver, SolverInterface};
+        use novomodelo_solver::{ActiveSolver, SolverInterface};
 
         let mut fixtures = PumpFixtures::new(
             vec![
@@ -9402,7 +9402,7 @@ mod pumping_water_tests {
     #[test]
     fn chronological_k1_prefilling_byte_identical() {
         let withdrawal_h = 11.0_f64;
-        let build = |block_mode: cobre_core::BlockMode| {
+        let build = |block_mode: novomodelo_core::BlockMode| {
             let mut fixtures = PumpFixtures::new(
                 vec![
                     ret_hydro(1, Some(2), None, false),
@@ -9595,7 +9595,7 @@ mod pumping_water_tests {
         reason = "each case returns the raw build tuple its assertions destructure"
     )]
     fn build_fpha_evap_case(
-        block_mode: cobre_core::BlockMode,
+        block_mode: novomodelo_core::BlockMode,
         durations: &[f64],
     ) -> (
         (Vec<i32>, Vec<i32>, Vec<f64>),

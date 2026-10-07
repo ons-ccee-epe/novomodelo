@@ -2,7 +2,7 @@
 //! [`EnergyConversion`], the indexed grid [`EnergyConversionSet`], and the
 //! [`EnergyConversionError`] enum raised by the builder.
 
-use cobre_core::{EntityId, Hydro};
+use novomodelo_core::{EntityId, Hydro};
 use thiserror::Error;
 
 /// Per-`(hydro, stage)` scalars used for inflow-energy / stored-energy accounting.

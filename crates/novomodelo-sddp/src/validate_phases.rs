@@ -1,24 +1,24 @@
-//! The pre-solver validation pipeline behind `cobre validate` and
-//! `cobre.io.validate`, and the metadata that names the phase a failure came from.
+//! The pre-solver validation pipeline behind `novomodelo validate` and
+//! `novomodelo.io.validate`, and the metadata that names the phase a failure came from.
 //!
 //! [`validate_study`] is the single pipeline both front ends present: it builds the
-//! study the way `cobre run` does and loads the policy the run would load, so every
+//! study the way `novomodelo run` does and loads the policy the run would load, so every
 //! refusal that the run reaches while constructing the study or loading a
 //! configured policy is reached here too. [`PrepPhase`] and
 //! [`prep_phase_metadata`] derive the human-readable file label and the structured
 //! error-kind string from a [`SddpError`].
 //!
-//! # Why this lives in `cobre-sddp`
+//! # Why this lives in `novomodelo-sddp`
 //!
 //! The pipeline and the mapping touch [`SddpError`] variants and the study
-//! constructors, which are defined here. `cobre-io` cannot import from `cobre-sddp`
-//! (that would create a cycle), so the shared logic must live in `cobre-sddp` or
+//! constructors, which are defined here. `novomodelo-io` cannot import from `novomodelo-sddp`
+//! (that would create a cycle), so the shared logic must live in `novomodelo-sddp` or
 //! above it in the dependency graph.
 
 use std::path::{Path, PathBuf};
 
-use cobre_core::System;
-use cobre_io::{CaseArtifacts, Config, ErrorKind, LoadError, PolicyMode, ReportEntry};
+use novomodelo_core::System;
+use novomodelo_io::{CaseArtifacts, Config, ErrorKind, LoadError, PolicyMode, ReportEntry};
 
 use crate::hydro_models::prepare_hydro_models_from_artifacts;
 use crate::policy::full_fcf_load::{
@@ -36,7 +36,7 @@ use crate::{
 /// Which pre-solver preparation phase produced an error.
 ///
 /// Each variant corresponds to the SDDP preparation steps that
-/// follow the six-layer cobre-io loading pipeline:
+/// follow the six-layer novomodelo-io loading pipeline:
 ///
 /// | Phase                | Function called                            | Typical trigger file                  |
 /// |----------------------|--------------------------------------------|---------------------------------------|
@@ -229,7 +229,7 @@ fn policy_load_warning(load: FullFcfLoadKind, policy_dir: &Path, message: &str) 
 
 /// Check the policy `config` asks the run to load, without applying it.
 ///
-/// The load is selected the way `cobre run` selects it, from the training flag,
+/// The load is selected the way `novomodelo run` selects it, from the training flag,
 /// the simulation scenario count and `config.policy.mode`, and the policy is read
 /// from `output_dir` joined with the study's policy path. Nothing is written and
 /// `setup` is not changed.
@@ -273,7 +273,7 @@ pub fn check_configured_policy_load(
     }))
 }
 
-/// Run every pre-solver check `cobre run` reaches before it starts solving, in
+/// Run every pre-solver check `novomodelo run` reaches before it starts solving, in
 /// the order the run reaches them, stopping at the first failure.
 ///
 /// A deck without a boundary policy runs the generic-constraint parameter guard
@@ -383,8 +383,8 @@ pub fn validate_study(request: ValidateRequest<'_>) -> Result<ValidatedStudy, Va
 /// # Examples
 ///
 /// ```rust
-/// use cobre_sddp::validate_phases::{PrepPhase, prep_phase_metadata};
-/// use cobre_sddp::SddpError;
+/// use novomodelo_sddp::validate_phases::{PrepPhase, prep_phase_metadata};
+/// use novomodelo_sddp::SddpError;
 ///
 /// let err = SddpError::Validation("unsupported stopping rule".to_string());
 /// let (kind, file) = prep_phase_metadata(PrepPhase::Config, &err);
@@ -423,8 +423,8 @@ mod tests {
     use std::fs;
     use std::io;
 
-    use cobre_io::OutputError;
-    use cobre_stochastic::StochasticError;
+    use novomodelo_io::OutputError;
+    use novomodelo_stochastic::StochasticError;
     use serde_json::{Value, json};
     use tempfile::TempDir;
 
@@ -456,8 +456,8 @@ mod tests {
             case.path(),
         );
         mutate(case.path());
-        let (loaded, _) = cobre_io::validate_case_with_artifacts(case.path()).unwrap();
-        let config = cobre_io::parse_config(&case.path().join("config.json")).unwrap();
+        let (loaded, _) = novomodelo_io::validate_case_with_artifacts(case.path()).unwrap();
+        let config = novomodelo_io::parse_config(&case.path().join("config.json")).unwrap();
         validate_study(ValidateRequest {
             case_dir: case.path(),
             config: &config,

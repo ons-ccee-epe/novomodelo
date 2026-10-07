@@ -52,7 +52,7 @@
 //! `StagedCut` buffer, sorted by `trial_state_idx` after the parallel region for
 //! deterministic FCF insertion regardless of thread completion order.
 
-use cobre_solver::{RowBatch, StageTemplate};
+use novomodelo_solver::{RowBatch, StageTemplate};
 
 use crate::{
     context::{StageContext, TrainingContext},
@@ -105,7 +105,7 @@ pub type StageWorkerOpeningDelta = (i32, i32, usize, SolverStatsDelta);
 ///
 /// The per-worker timing data carried inside `stage_stats` is keyed
 /// by the `WORKER_TIMING_SLOT_*` constants exported from
-/// `cobre-core`. New per-worker timing slots should be added to
+/// `novomodelo-core`. New per-worker timing slots should be added to
 /// that constant set (and the `WORKER_TIMING_SLOT_COUNT` updated)
 /// rather than as standalone fields on this struct, so the parquet
 /// timing schema picks them up automatically.

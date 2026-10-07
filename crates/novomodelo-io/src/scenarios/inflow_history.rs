@@ -3,7 +3,7 @@
 //!
 //! [`parse_inflow_history`] reads `scenarios/inflow_history.parquet` and
 //! returns a sorted `Vec<InflowHistoryRow>`. These windows are the
-//! default-seeding record [`cobre_stochastic::derive_inflow_seeds`] casts
+//! default-seeding record [`novomodelo_stochastic::derive_inflow_seeds`] casts
 //! from, layered under `recent_observations` conditioning.
 //!
 //! ## Parquet schema (spec SS2.4)
@@ -44,7 +44,7 @@ use std::path::Path;
 
 use arrow::temporal_conversions::date32_to_datetime;
 use chrono::NaiveDate;
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 
 use crate::LoadError;
 use crate::parquet_helpers::{
@@ -53,7 +53,7 @@ use crate::parquet_helpers::{
 };
 use crate::windowed_history::{WindowedRecord, validate_windowed_records};
 
-pub use cobre_core::scenario::InflowHistoryRow;
+pub use novomodelo_core::scenario::InflowHistoryRow;
 
 const LEGACY_LAYOUT_MESSAGE: &str = "scenarios/inflow_history.parquet uses the legacy \
     point-dated layout; re-emit windowed columns \"start_date\"/\"end_date\" in place of \"date\"";
@@ -75,7 +75,7 @@ const LEGACY_LAYOUT_MESSAGE: &str = "scenarios/inflow_history.parquet uses the l
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::scenarios::parse_inflow_history;
+/// use novomodelo_io::scenarios::parse_inflow_history;
 /// use std::path::Path;
 ///
 /// let rows = parse_inflow_history(Path::new("scenarios/inflow_history.parquet"))
@@ -185,7 +185,7 @@ mod tests {
     use arrow::array::{Date32Array, Float64Array, Int32Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
-    use cobre_core::temporal::{
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
@@ -548,7 +548,7 @@ mod tests {
         history.extend(full_coverage_monthly_history(hydro2, 1990, 2010));
 
         let stages = twelve_monthly_stages(2024);
-        let windows = cobre_stochastic::discover_historical_windows(
+        let windows = novomodelo_stochastic::discover_historical_windows(
             &history,
             &[hydro1, hydro2],
             &stages,

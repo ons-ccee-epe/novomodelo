@@ -3,11 +3,11 @@ paths:
   - "**/*.rs"
 ---
 
-# Cobre Import Style Rules
+# Novomodelo Import Style Rules
 
 Governs how every `.rs` file in this workspace refers to an item defined
 outside the current module: `use` import vs. an inline fully-qualified path
-(`crate::indexer::HydroSys`, `cobre_core::temporal::StageStateConfig`). Auto-loads
+(`crate::indexer::HydroSys`, `novomodelo_core::temporal::StageStateConfig`). Auto-loads
 on the `**/*.rs` glob, sibling to `.claude/rules/comments.md`.
 
 ## 1. The default-import rule
@@ -79,7 +79,7 @@ happens to also resolve:
 
 ```rust
 // A curated re-export exists at crate root or a curated module:
-use cobre_core::StageId;             // not cobre_core::model::temporal::StageId
+use novomodelo_core::StageId;             // not novomodelo_core::model::temporal::StageId
 use crate::indexer::HydroSys;        // crate::indexer re-exports it; not the
                                       // deeper file path that defines it
 ```

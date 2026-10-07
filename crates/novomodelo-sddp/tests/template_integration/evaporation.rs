@@ -6,13 +6,14 @@ use super::common::build_setup_in_code_with_models;
 use super::common::in_code_studies::parallel_multiblock_evaporation_study;
 
 fn load_template_with_no_cuts(
-    template: &cobre_solver::StageTemplate,
-) -> cobre_solver::ActiveSolver {
-    use cobre_solver::SolverInterface;
+    template: &novomodelo_solver::StageTemplate,
+) -> novomodelo_solver::ActiveSolver {
+    use novomodelo_solver::SolverInterface;
 
-    let mut solver = cobre_solver::ActiveSolver::new().expect("ActiveSolver::new must succeed");
+    let mut solver =
+        novomodelo_solver::ActiveSolver::new().expect("ActiveSolver::new must succeed");
     solver.load_model(template);
-    let empty_cuts = cobre_solver::RowBatch {
+    let empty_cuts = novomodelo_solver::RowBatch {
         num_rows: 0,
         row_starts: vec![0_i32],
         col_indices: vec![],
@@ -568,9 +569,9 @@ fn evap_water_balance_one_hydro_coefficient_is_zeta() {
 #[allow(clippy::cast_sign_loss, clippy::too_many_lines)]
 fn evap_water_balance_only_second_hydro_has_evap() {
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage as CStage, StageRiskConfig,
         StageStateConfig,
     };
@@ -924,7 +925,7 @@ fn evap_outflow_objective_is_zero() {
 
 #[test]
 fn evap_lp_solvable_and_outflow_positive_coefficients() {
-    use cobre_solver::SolverInterface;
+    use novomodelo_solver::SolverInterface;
 
     let system = evap_hydro_system_with_violation_cost(730.0, 500.0);
     let evap = evap_set_with_volume_slope(&system, &[0], 1.0, 0.02);
@@ -969,7 +970,7 @@ fn evap_lp_solvable_and_outflow_positive_coefficients() {
 
 #[test]
 fn evap_violation_slacks_near_zero_feasible_constraint() {
-    use cobre_solver::SolverInterface;
+    use novomodelo_solver::SolverInterface;
 
     let system = evap_hydro_system_with_violation_cost(730.0, 500.0);
     let evap = evap_set_with_volume_slope(&system, &[0], 1.0, 0.02);
@@ -1014,7 +1015,7 @@ fn evap_violation_slacks_near_zero_feasible_constraint() {
 
 #[test]
 fn evap_incoming_storage_reduced_cost_differs_from_no_evaporation() {
-    use cobre_solver::SolverInterface;
+    use novomodelo_solver::SolverInterface;
 
     // System with evaporation violation cost (so slacks are penalised).
     let system_evap = evap_hydro_system_with_violation_cost(730.0, 500.0);
@@ -1046,7 +1047,7 @@ fn evap_incoming_storage_reduced_cost_differs_from_no_evaporation() {
 
     // Storage is pinned via column bounds: col 0 = storage_out, 1 = z_inflow, 2 = storage_in.
     let col_storage_in = 2_usize;
-    let solve_and_get_storage_reduced_cost = |template: &cobre_solver::StageTemplate| -> f64 {
+    let solve_and_get_storage_reduced_cost = |template: &novomodelo_solver::StageTemplate| -> f64 {
         let mut solver = load_template_with_no_cuts(template);
         let v_in = 1_000.0_f64;
         solver.set_col_bounds(&[col_storage_in], &[v_in], &[v_in]);
@@ -1069,7 +1070,7 @@ fn evap_incoming_storage_reduced_cost_differs_from_no_evaporation() {
 
 #[test]
 fn evap_bound_prevents_dump_valve() {
-    use cobre_solver::SolverInterface;
+    use novomodelo_solver::SolverInterface;
 
     let system = evap_hydro_system_with_violation_cost(730.0, 500.0);
     let evap = evap_set_with_volume_slope(&system, &[0], 2.0, 0.0001);
@@ -1152,12 +1153,12 @@ fn evap_bound_prevents_dump_valve() {
 #[test]
 fn parallel_multiblock_evaporation_study_has_one_priced_stage_slot() {
     const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
-    use cobre_sddp::indexer::Boundary;
-    use cobre_sddp::indexer::HydroSys;
+    use novomodelo_sddp::indexer::Boundary;
+    use novomodelo_sddp::indexer::HydroSys;
 
     let (system, config, hydro_models) = parallel_multiblock_evaporation_study();
     let setup = build_setup_in_code_with_models(system, &config, hydro_models);
-    let state = cobre_sddp::test_support::state_space(&setup);
+    let state = novomodelo_sddp::test_support::state_space(&setup);
     let templates = &setup.inputs.stage_data.stage_templates;
     let total_stage_hours = 744.0_f64;
 
@@ -1236,7 +1237,7 @@ fn parallel_evaporation_fixture_evaporates_on_a_multiblock_parallel_stage() {
     let setup = build_setup_in_code_with_models(system, &config, hydro_models);
 
     let geometry = &setup.inputs.stage_data.stage_templates.geometry_per_stage[0];
-    assert_eq!(geometry.block_mode, cobre_core::BlockMode::Parallel);
+    assert_eq!(geometry.block_mode, novomodelo_core::BlockMode::Parallel);
     assert_eq!(geometry.n_blks, 3);
     assert!(
         !geometry.evap_hydro_indices.is_empty(),

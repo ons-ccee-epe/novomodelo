@@ -1,6 +1,6 @@
-//! # cobre-comm
+//! # novomodelo-comm
 //!
-//! Pluggable communication backend abstraction for the [Cobre](https://github.com/cobre-rs/cobre)
+//! Pluggable communication backend abstraction for the [Novomodelo](https://github.com/ons-ccee-epe/novomodelo)
 //! ecosystem.
 //!
 //! This crate defines the [`Communicator`] trait that decouples distributed
@@ -40,7 +40,7 @@
 //!
 //! This crate is in early development. The API **will** change.
 //!
-//! See the [repository](https://github.com/cobre-rs/cobre) for the current status.
+//! See the [repository](https://github.com/ons-ccee-epe/novomodelo) for the current status.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 

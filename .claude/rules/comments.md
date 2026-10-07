@@ -3,11 +3,11 @@ paths:
   - "**/*.rs"
 ---
 
-# Cobre Comment & Documentation Rules
+# Novomodelo Comment & Documentation Rules
 
 Governs every comment in any `.rs` file in this workspace. Auto-loads on the
-`**/*.rs` glob — including infra crates (`cobre-core`, `cobre-io`, `cobre-solver`,
-`cobre-stochastic`, `cobre-comm`) bound by the genericity hard rule. Keep all
+`**/*.rs` glob — including infra crates (`novomodelo-core`, `novomodelo-io`, `novomodelo-solver`,
+`novomodelo-stochastic`, `novomodelo-comm`) bound by the genericity hard rule. Keep all
 directive statements free of algorithm names.
 
 **Default is silence.** A comment is a liability — it costs reader attention and
@@ -178,7 +178,7 @@ These are the _survivors_ of the Deletion Test, not a menu of things you may add
 A present-tense invariant **+ the wrong-but-compiling alternative it forbids +** a
 citation of the owning symbol. `.claude/rules/sddp.md` is the gold standard.
 
-> _Exemplar (`crates/cobre-sddp/src/backward.rs`):_ the subgradient coefficient is
+> _Exemplar (`crates/novomodelo-sddp/src/backward.rs`):_ the subgradient coefficient is
 > `rc_scaled / col_scale[col]` — **divided, not multiplied** — because the pin sets
 > `v_scaled = v_orig / col_scale`. Stating the forbidden alternative (`* col_scale`)
 > is what makes it load-bearing.
@@ -189,7 +189,7 @@ _Why_ a non-obvious choice was made; what regresses if a maintainer "simplifies"
 it. The `X instead of Y` form **is** rationale and is kept **only while Y is a
 still-plausible wrong simplification**. One clause, not a paragraph.
 
-> _Exemplar (`crates/cobre-sddp/src/forward.rs`):_ "Welford's online algorithm
+> _Exemplar (`crates/novomodelo-sddp/src/forward.rs`):_ "Welford's online algorithm
 > instead of the two-pass naive formula to avoid catastrophic cancellation when
 > sum_sq ≈ n·mean²."
 
@@ -313,7 +313,7 @@ stay. The lints above _extend_ them from "banned tokens" to "low-value shapes".
 
 Reference only things that cannot rot: a symbol name (`Mod::symbol`) or intra-doc
 link (`[Symbol]`); a named regression **test**; a stable external spec anchor
-(`output-schemas.md §5.1`) in a declared source-of-truth root (`cobre-docs`).
+(`output-schemas.md §5.1`) in a declared source-of-truth root (`novomodelo-docs`).
 **Never** `file.rs:NNN`, commit hash, dead path, or `MEMORY.md` / `.claude/`. For a
 `Symbol at file.rs:NNN` hybrid, keep the symbol, strip the `:NNN`. If a fact can
 rot and cannot be made un-rottable, delete it.
@@ -416,7 +416,7 @@ would do.
 The exemplars above (Voices 1/2) defend _keeping_ the load-bearing few. These show
 the common case: **deleting and tightening.**
 
-### A — Verbose load-bearing comment → one clause (`crates/cobre-io/src/constraints/bounds.rs`)
+### A — Verbose load-bearing comment → one clause (`crates/novomodelo-io/src/constraints/bounds.rs`)
 
 ```rust
 // BEFORE — 8 lines, two drift-prone formula copies
@@ -536,7 +536,7 @@ compatibility. Each must carry **both** tests:
 | Format                                   | Authoritative owner symbol                                                          | Reject-test note                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ---------------------------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `cut/wire.rs`                            | `serialize_cut` / `deserialize_cut`                                                 | Own format tag; direct reject test.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `policy/codec.rs`                        | policy encode/decode entry points in `policy/codec.rs`                              | No version byte — FlatBuffers uses schema-evolution FORWARD-COMPAT; the reject role is the legacy-slot-ignored test in `crates/cobre-io/tests/flatbuffers_schema_conformance.rs`. The boundary-cut load path layers its own CLEAN-BREAK reject on top: a resolved pool whose `cost_scale_factor` reads `None` (a pre-`id:8` buffer) fails loudly instead of tolerating the absence, pinned by `boundary_load_rejects_pre_self_describing_checkpoint` in `crates/cobre-sddp/tests/boundary_self_describing_clean_break.rs`. The `CheckpointManifest` root (`manifest.bin`, the `metadata.json` replacement) is the exception to the forward-compat pattern above: it carries its own `format_version` field and a DIRECT version reject (like `cut/wire.rs`), so `deserialize_checkpoint_manifest` fails a version mismatch before any payload parse — pinned by `checkpoint_manifest_rejects_stale_format_version` (conformance suite) and `read_policy_checkpoint_rejects_stale_manifest_version_before_parsing_payloads` (read path). |
+| `policy/codec.rs`                        | policy encode/decode entry points in `policy/codec.rs`                              | No version byte — FlatBuffers uses schema-evolution FORWARD-COMPAT; the reject role is the legacy-slot-ignored test in `crates/novomodelo-io/tests/flatbuffers_schema_conformance.rs`. The boundary-cut load path layers its own CLEAN-BREAK reject on top: a resolved pool whose `cost_scale_factor` reads `None` (a pre-`id:8` buffer) fails loudly instead of tolerating the absence, pinned by `boundary_load_rejects_pre_self_describing_checkpoint` in `crates/novomodelo-sddp/tests/boundary_self_describing_clean_break.rs`. The `CheckpointManifest` root (`manifest.bin`, the `metadata.json` replacement) is the exception to the forward-compat pattern above: it carries its own `format_version` field and a DIRECT version reject (like `cut/wire.rs`), so `deserialize_checkpoint_manifest` fails a version mismatch before any payload parse — pinned by `checkpoint_manifest_rejects_stale_format_version` (conformance suite) and `read_policy_checkpoint_rejects_stale_manifest_version_before_parsing_payloads` (read path). |
 | `workspace/workspace.rs` `CapturedBasis` | `CapturedBasis::to_broadcast_payload` / `CapturedBasis::try_from_broadcast_payload` | Own format tag; direct reject test.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `cut_sync`                               | `cut_sync` serialisation entry points                                               | No own format tag — the reject is DELEGATED to `cut::wire` (it serialises via `cut::wire`'s `CUT_WIRE_FORMAT_TAG`); `cut::wire`'s reject test discharges it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 

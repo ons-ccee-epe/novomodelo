@@ -3,9 +3,9 @@
 //! [`TrainingSession`] owns all scratch buffers for a single [`crate::training::train`] call.
 //! No hot-path allocations; forward and backward passes encapsulated in their own state structs.
 
-use cobre_comm::CommError::CollectiveFailed;
-use cobre_solver::SolverError;
-use cobre_solver::freeze_rows_into_template;
+use novomodelo_comm::CommError::CollectiveFailed;
+use novomodelo_solver::SolverError;
+use novomodelo_solver::freeze_rows_into_template;
 
 use crate::lp::indexer::CutSlot;
 
@@ -29,9 +29,9 @@ use self::runtime::RuntimeHandles;
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
-use cobre_comm::{Communicator, ReduceOp, per_rank_counts};
-use cobre_core::{StageRowSelectionRecord, TrainingEvent};
-use cobre_solver::SolverInterface;
+use novomodelo_comm::{Communicator, ReduceOp, per_rank_counts};
+use novomodelo_core::{StageRowSelectionRecord, TrainingEvent};
+use novomodelo_solver::SolverInterface;
 
 use crate::{
     SddpError, SolverProfiles, TrainingConfig,
@@ -145,7 +145,7 @@ pub(crate) struct TrainingSession<'a, S: SolverInterface + Send, C: Communicator
 
 impl<'a, S, C: Communicator> TrainingSession<'a, S, C>
 where
-    S: SolverInterface<Profile = cobre_solver::ActiveProfile> + Send,
+    S: SolverInterface<Profile = novomodelo_solver::ActiveProfile> + Send,
 {
     /// Allocate all per-training-run scratch and emit the `TrainingStarted` event.
     ///
@@ -1592,8 +1592,8 @@ mod tests {
     use std::sync::mpsc;
 
     use chrono::NaiveDate;
-    use cobre_comm::{CommData, CommError, Communicator, ReduceOp};
-    use cobre_core::{
+    use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
+    use novomodelo_core::{
         Bus, EntityId, SystemBuilder, TrainingEvent, WorkerTimingPhase,
         scenario::{
             CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
@@ -1604,11 +1604,11 @@ mod tests {
             StageStateConfig,
         },
     };
-    use cobre_io::OwnedPolicyCutRecord;
-    use cobre_solver::{
+    use novomodelo_io::OwnedPolicyCutRecord;
+    use novomodelo_solver::{
         Basis, RowBatch, SolverError, SolverInterface, SolverStatistics, StageTemplate,
     };
-    use cobre_stochastic::{
+    use novomodelo_stochastic::{
         ClassSchemes, OpeningTreeInputs, StochasticContext, build_stochastic_context,
     };
 
@@ -1673,9 +1673,9 @@ mod tests {
     }
 
     impl SolverInterface for MockSolver {
-        type Profile = cobre_solver::ActiveProfile;
+        type Profile = novomodelo_solver::ActiveProfile;
 
-        fn apply_profile(&mut self, _profile: &cobre_solver::ActiveProfile) {}
+        fn apply_profile(&mut self, _profile: &novomodelo_solver::ActiveProfile) {}
 
         fn solver_name_version(&self) -> String {
             "MockSolver 0.0.0".to_string()
@@ -1688,11 +1688,11 @@ mod tests {
         fn solve(
             &mut self,
             _basis: Option<&Basis>,
-        ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+        ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
             let call = self.call_count;
             self.call_count += 1;
             let obj = self.objectives[call % self.objectives.len()];
-            Ok(cobre_solver::SolutionView {
+            Ok(novomodelo_solver::SolutionView {
                 objective: obj,
                 primal: &[0.0, 0.0, 0.0, 0.0],
                 dual: &[0.0, 0.0],
@@ -1766,13 +1766,13 @@ mod tests {
 
     #[allow(clippy::cast_possible_wrap)]
     fn make_stochastic_context(n_stages: usize, n_openings: usize) -> StochasticContext {
-        use cobre_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+        use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
 
         let bus = Bus {
             id: EntityId(0),
             name: "B0".to_string(),
             operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![cobre_core::DeficitSegment {
+            deficit_segments: vec![novomodelo_core::DeficitSegment {
                 depth_mw: None,
                 cost_per_mwh: 1000.0,
             }],

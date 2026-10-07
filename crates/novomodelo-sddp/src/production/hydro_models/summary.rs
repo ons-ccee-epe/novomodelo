@@ -1,11 +1,11 @@
 //! Display-summary builder for the hydro model preprocessing pipeline.
 //!
 //! Aggregates the resolved production and evaporation models plus their
-//! provenance into a `HydroModelSummary` consumed by `cobre-cli` for display.
+//! provenance into a `HydroModelSummary` consumed by `novomodelo-cli` for display.
 //! All counts are derived from the already-validated pipeline result; summary
 //! construction is infallible.
 
-use cobre_core::{EntityId, System};
+use novomodelo_core::{EntityId, System};
 
 use super::types::{
     EvaporationReferenceSource, EvaporationSource, FphaHydroDetail, HydroModelSummary,
@@ -133,7 +133,7 @@ fn hydro_name(system: &System, entity_id: EntityId) -> String {
 )]
 mod tests {
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         Bus, DeficitSegment, EntityId, Hydro, SystemBuilder,
         entities::hydro::{HydroGenerationModel, HydroPenalties},
         scenario::CorrelationModel,
@@ -209,7 +209,7 @@ mod tests {
     /// Build a minimal single-bus `System` with the given hydros and one study stage.
     ///
     /// Uses bus `EntityId(10)` to match the `make_hydro` helper's `bus_id`.
-    fn make_system_for_summary(hydros: Vec<Hydro>) -> cobre_core::System {
+    fn make_system_for_summary(hydros: Vec<Hydro>) -> novomodelo_core::System {
         let bus = Bus {
             id: EntityId(10),
             name: "B10".to_string(),

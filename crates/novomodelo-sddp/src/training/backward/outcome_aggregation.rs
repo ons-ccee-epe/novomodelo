@@ -3,7 +3,7 @@
 //! binding-cut slot increments (frozen-order or, for the DCS lazy layout,
 //! row-map-correct), and capture the first-solved opening's basis.
 
-use cobre_solver::{SolverInterface, SolverStatistics};
+use novomodelo_solver::{SolverInterface, SolverStatistics};
 
 use crate::{
     cut::{CutRowMap, pool::CutPool},

@@ -46,9 +46,9 @@ pub use yw_matrices::{
 // `#[cfg(test)]` re-imports reachable by the child `mod tests` via `super::`;
 // they add no public path.
 #[cfg(test)]
-use cobre_core::scenario::CorrelationGroup;
-#[cfg(test)]
 use correlation::compute_pearson_correlation_matrix;
+#[cfg(test)]
+use novomodelo_core::scenario::CorrelationGroup;
 #[cfg(test)]
 use partitioned_covariance::assemble_partitioned_covariance;
 #[cfg(test)]

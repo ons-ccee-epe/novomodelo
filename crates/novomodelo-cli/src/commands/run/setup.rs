@@ -1,4 +1,4 @@
-//! Case-load, communicator setup, broadcast, and pre-training phases for `cobre run`.
+//! Case-load, communicator setup, broadcast, and pre-training phases for `novomodelo run`.
 //!
 //! Rank 0 loads from disk; `System` and config are broadcast to all ranks, which
 //! then build `StudySetup` from the shared data. Hydro model preprocessing is the
@@ -11,37 +11,37 @@ use std::path::Path;
 
 use console::Term;
 
-use cobre_comm::{Communicator, TopologyProvider, create_communicator};
-use cobre_core::ScalarParameter;
-use cobre_core::System;
-use cobre_io::BroadcastScalarParameter;
-use cobre_io::Config;
-use cobre_io::PolicyMode;
-use cobre_io::SetupTimings;
-use cobre_io::load_case_with_artifacts;
-use cobre_io::parse_config;
-use cobre_io::remove_conditional_training_outputs;
-use cobre_io::remove_simulation_outputs;
-use cobre_io::remove_success_marker;
-use cobre_io::write_hydro_model_summary;
-use cobre_io::write_provenance_report;
-use cobre_io::write_scaling_report;
-use cobre_sddp::EstimationPath;
-use cobre_sddp::HydroFitTimings;
-use cobre_sddp::build_provenance_report;
-use cobre_sddp::hydro_models::prepare_hydro_models_from_artifacts;
-use cobre_sddp::policy::orchestration::export_stochastic_artifacts;
-use cobre_sddp::reconcile_global_ok;
-use cobre_sddp::{
+use novomodelo_comm::{Communicator, TopologyProvider, create_communicator};
+use novomodelo_core::ScalarParameter;
+use novomodelo_core::System;
+use novomodelo_io::BroadcastScalarParameter;
+use novomodelo_io::Config;
+use novomodelo_io::PolicyMode;
+use novomodelo_io::SetupTimings;
+use novomodelo_io::load_case_with_artifacts;
+use novomodelo_io::parse_config;
+use novomodelo_io::remove_conditional_training_outputs;
+use novomodelo_io::remove_simulation_outputs;
+use novomodelo_io::remove_success_marker;
+use novomodelo_io::write_hydro_model_summary;
+use novomodelo_io::write_provenance_report;
+use novomodelo_io::write_scaling_report;
+use novomodelo_sddp::EstimationPath;
+use novomodelo_sddp::HydroFitTimings;
+use novomodelo_sddp::build_provenance_report;
+use novomodelo_sddp::hydro_models::prepare_hydro_models_from_artifacts;
+use novomodelo_sddp::policy::orchestration::export_stochastic_artifacts;
+use novomodelo_sddp::reconcile_global_ok;
+use novomodelo_sddp::{
     EstimationReport, PrepareHydroModelsResult, PrepareStochasticResult, StudySetup,
     build_hydro_model_summary, build_stochastic_context_for_study, prepare_hydro_models,
     prepare_stochastic, resolve_boundary_state_requirements, setup::StudyParams,
 };
-use cobre_solver::active_solver_name;
-use cobre_solver::active_solver_version;
-use cobre_stochastic::HistoricalScenarioLibrary;
-use cobre_stochastic::context::OpeningTree;
-use cobre_stochastic::provenance::ComponentProvenance;
+use novomodelo_solver::active_solver_name;
+use novomodelo_solver::active_solver_version;
+use novomodelo_stochastic::HistoricalScenarioLibrary;
+use novomodelo_stochastic::context::OpeningTree;
+use novomodelo_stochastic::provenance::ComponentProvenance;
 
 use crate::error::CliError;
 
@@ -67,7 +67,7 @@ pub(super) fn resolve_thread_count(cli_threads: Option<u32>) -> usize {
 }
 
 /// Values loaded on rank 0 by [`load_case_and_config`]. The trailing
-/// [`cobre_io::SetupTimings`] leaves `broadcast_seconds` zero;
+/// [`novomodelo_io::SetupTimings`] leaves `broadcast_seconds` zero;
 /// [`broadcast_and_build_setup`] fills it after the broadcast region runs.
 type LoadedCase = (
     PrepareStochasticResult,
@@ -100,7 +100,7 @@ fn load_case_and_config(
     let mut timings = SetupTimings::default();
 
     let load_start = std::time::Instant::now();
-    let cobre_io::LoadedCase { system, artifacts } = load_case_with_artifacts(&args.case_dir)?;
+    let novomodelo_io::LoadedCase { system, artifacts } = load_case_with_artifacts(&args.case_dir)?;
     let config_path = args.case_dir.join("config.json");
     let config = parse_config(&config_path)?;
     config
@@ -404,10 +404,10 @@ fn reconstruct_stochastic_context_non_root(
     user_tree: Option<OpeningTree>,
     seed: u64,
     case_dir: &Path,
-) -> Result<cobre_stochastic::StochasticContext, CliError> {
+) -> Result<novomodelo_stochastic::StochasticContext, CliError> {
     // Non-root ranks receive the estimated system + user tree over the wire and
     // pass None external-scenario counts; the stochastic-context derivation is
-    // owned by cobre_sddp (shared with the rank-0 prepare_stochastic path), so the
+    // owned by novomodelo_sddp (shared with the rank-0 prepare_stochastic path), so the
     // non-root rebuild cannot drift from it across the crate boundary.
     build_stochastic_context_for_study(
         system,
@@ -428,7 +428,7 @@ fn reconstruct_stochastic_context_non_root(
 fn build_study_setup(
     system: &System,
     bcast_config: &mut BroadcastConfig,
-    stochastic: cobre_stochastic::StochasticContext,
+    stochastic: novomodelo_stochastic::StochasticContext,
     hydro_models: PrepareHydroModelsResult,
     scalar_parameters: Vec<ScalarParameter>,
 ) -> Result<StudySetup, CliError> {
@@ -625,15 +625,15 @@ mod tests {
     use serde::Serialize;
     use serde::de::DeserializeOwned;
 
-    use cobre_core::ScalarParameter;
-    use cobre_io::BroadcastScalarParameter;
-    use cobre_sddp::PrepareStochasticResult;
-    use cobre_sddp::prepare_hydro_models;
-    use cobre_sddp::setup::study_stage_noise_group_ids;
-    use cobre_sddp::test_support::decks::{Deck, SLOW_DECKS, committed_decks};
-    use cobre_sddp::test_support::template_fact_groups;
-    use cobre_stochastic::context::OpeningTree;
-    use cobre_stochastic::provenance::ComponentProvenance;
+    use novomodelo_core::ScalarParameter;
+    use novomodelo_io::BroadcastScalarParameter;
+    use novomodelo_sddp::PrepareStochasticResult;
+    use novomodelo_sddp::prepare_hydro_models;
+    use novomodelo_sddp::setup::study_stage_noise_group_ids;
+    use novomodelo_sddp::test_support::decks::{Deck, SLOW_DECKS, committed_decks};
+    use novomodelo_sddp::test_support::template_fact_groups;
+    use novomodelo_stochastic::context::OpeningTree;
+    use novomodelo_stochastic::provenance::ComponentProvenance;
 
     use super::{build_study_setup, load_case_and_config, reconstruct_stochastic_context_non_root};
     use crate::commands::broadcast::BroadcastOpeningTree;

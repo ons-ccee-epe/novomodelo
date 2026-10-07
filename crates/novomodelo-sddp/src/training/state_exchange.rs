@@ -23,13 +23,13 @@
 //!
 //! ## Single-rank mode
 //!
-//! When `num_ranks == 1`, [`LocalBackend`](cobre_comm::LocalBackend)'s
+//! When `num_ranks == 1`, [`LocalBackend`](novomodelo_comm::LocalBackend)'s
 //! `allgatherv` performs an identity copy. No special-casing is needed in this
 //! module.
 //!
-//! [`Communicator::allgatherv`]: cobre_comm::Communicator::allgatherv
+//! [`Communicator::allgatherv`]: novomodelo_comm::Communicator::allgatherv
 
-use cobre_comm::Communicator;
+use novomodelo_comm::Communicator;
 
 use crate::{
     error::SddpError, lp::indexer::StateSpace, setup::node_graph::StageIdx,
@@ -69,13 +69,13 @@ use crate::{
 /// # Examples
 ///
 /// ```rust
-/// use cobre_comm::LocalBackend;
-/// use cobre_sddp::ExchangeBuffers;
-/// use cobre_sddp::TrajectoryRecord;
-/// use cobre_sddp::indexer::StateSpace;
-/// use cobre_sddp::lead_time::AnticipatedResolution;
-/// use cobre_sddp::setup::NodeId;
-/// use cobre_sddp::setup::StageIdx;
+/// use novomodelo_comm::LocalBackend;
+/// use novomodelo_sddp::ExchangeBuffers;
+/// use novomodelo_sddp::TrajectoryRecord;
+/// use novomodelo_sddp::indexer::StateSpace;
+/// use novomodelo_sddp::lead_time::AnticipatedResolution;
+/// use novomodelo_sddp::setup::NodeId;
+/// use novomodelo_sddp::setup::StageIdx;
 ///
 /// // Three scenarios, two-element state vectors, single rank.
 /// let state = StateSpace::new(
@@ -386,7 +386,7 @@ impl ExchangeBuffers {
 
 #[cfg(test)]
 mod tests {
-    use cobre_comm::{CommData, CommError, Communicator, LocalBackend, ReduceOp};
+    use novomodelo_comm::{CommData, CommError, Communicator, LocalBackend, ReduceOp};
 
     use super::ExchangeBuffers;
     use crate::lp::indexer::StateSpace;

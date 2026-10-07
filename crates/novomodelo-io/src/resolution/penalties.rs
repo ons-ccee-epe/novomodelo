@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId, HydroPenalties,
     entities::{Bus, Hydro, Line, NonControllableSource},
     resolved::{BusStagePenalties, LineStagePenalties, NcsStagePenalties, ResolvedPenalties},
@@ -18,7 +18,7 @@ use crate::constraints::{
 };
 
 /// Entity slices for penalties resolution. Each must be in the order
-/// [`SystemBuilder::build`](cobre_core::SystemBuilder::build) establishes;
+/// [`SystemBuilder::build`](novomodelo_core::SystemBuilder::build) establishes;
 /// slice position becomes the entity index.
 pub struct PenaltiesEntitySlices<'a> {
     /// Hydro plants.
@@ -56,10 +56,10 @@ pub struct PenaltiesOverrides<'a> {
 ///
 /// ```
 /// use chrono::NaiveDate;
-/// use cobre_core::EntityId;
-/// use cobre_core::entities::{Bus, DeficitSegment, Hydro, HydroPenalties, HydroGenerationModel, Line, NonControllableSource};
-/// use cobre_io::constraints::HydroPenaltyOverrideRow;
-/// use cobre_io::resolution::{resolve_penalties, PenaltiesEntitySlices, PenaltiesOverrides};
+/// use novomodelo_core::EntityId;
+/// use novomodelo_core::entities::{Bus, DeficitSegment, Hydro, HydroPenalties, HydroGenerationModel, Line, NonControllableSource};
+/// use novomodelo_io::constraints::HydroPenaltyOverrideRow;
+/// use novomodelo_io::resolution::{resolve_penalties, PenaltiesEntitySlices, PenaltiesOverrides};
 ///
 /// // Two hydros with the same entity-level spillage_cost.
 /// let penalties = HydroPenalties {
@@ -238,14 +238,14 @@ pub fn resolve_penalties(
     let alloc_stages = if n_stages == 0 { 1 } else { n_stages };
 
     let mut table = ResolvedPenalties::new(
-        &cobre_core::PenaltiesCountsSpec {
+        &novomodelo_core::PenaltiesCountsSpec {
             n_hydros: hydros.len(),
             n_buses: buses.len(),
             n_lines: lines.len(),
             n_ncs: ncs_sources.len(),
             n_stages: alloc_stages,
         },
-        &cobre_core::PenaltiesDefaults {
+        &novomodelo_core::PenaltiesDefaults {
             hydro: hydro_default,
             bus: bus_default,
             line: line_default,
@@ -415,7 +415,7 @@ pub fn resolve_penalties(
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use cobre_core::entities::{
+    use novomodelo_core::entities::{
         Bus, DeficitSegment, HydroGenerationModel, HydroPenalties, Line, NonControllableSource,
     };
 

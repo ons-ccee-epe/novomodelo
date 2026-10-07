@@ -7,7 +7,7 @@ evaporation, instead of the single stage pair repeated across every block. The
 per-block values are populated during shared simulation extraction, not in the
 output writer; both the CLI (`write_simulation_outputs`) and all Python surfaces
 (`run_via_study`, `Study.simulate`) converge on the same
-`cobre_io::write_simulation_results` path and neither re-reads storage from the
+`novomodelo_io::write_simulation_results` path and neither re-reads storage from the
 LP. The Python-parity hard rule (`CLAUDE.md`) requires the per-block values to
 reach the Python-written parquet identically to the CLI; this module pins that
 end-to-end.
@@ -22,11 +22,11 @@ The durable contracts asserted here:
   evaporation are identical across block rows, so a regression that leaked
   per-block resolution into parallel mode fails loudly.
 - The `hydros` parquet schema is unchanged: its column-name set equals exactly
-  the known field set (owned by `hydros_schema()` in cobre-io's simulation
+  the known field set (owned by `hydros_schema()` in novomodelo-io's simulation
   writer), so per-block resolution added no column.
 
 Run with (from the repo root):
-    pytest crates/cobre-python/tests/test_chronological_storage_parity.py -v
+    pytest crates/novomodelo-python/tests/test_chronological_storage_parity.py -v
 """
 
 from __future__ import annotations
@@ -37,20 +37,20 @@ import tempfile
 
 import pyarrow.parquet as pq
 
-from _cobre_cli import run_cli
+from _novomodelo_cli import run_cli
 
-# Fixtures live under the cobre-sddp test tree (the convention topology fixtures
+# Fixtures live under the novomodelo-sddp test tree (the convention topology fixtures
 # use), resolved against the repo root so the test is independent of pytest's
 # working directory. Both are single-reservoir, single-hydro, three-block,
 # two-stage studies with an evaporating hydro and asymmetric per-block load
 # factors; they differ only in stages.json `block_mode`.
 _REPO_ROOT = pathlib.Path(__file__).parents[3]
-_FIXTURES = _REPO_ROOT / "crates" / "cobre-sddp" / "tests" / "fixtures"
+_FIXTURES = _REPO_ROOT / "crates" / "novomodelo-sddp" / "tests" / "fixtures"
 CHRONOLOGICAL_CASE = _FIXTURES / "chronological_storage"
 PARALLEL_CASE = _FIXTURES / "parallel_storage"
 
 # The exact field set of the `hydros` output schema, owned by `hydros_schema()`
-# in cobre-io's simulation writer. Per-block storage/evaporation resolution reuses
+# in novomodelo-io's simulation writer. Per-block storage/evaporation resolution reuses
 # the existing columns with block-resolved values; the node axis adds the
 # `node_id` and `scenario_id` axis columns on every entity row. A mismatch here
 # (added/removed/renamed column beyond these) is a regression, not expected.
@@ -147,10 +147,10 @@ def _all_close(values: list[float]) -> bool:
 
 
 def _run_chronological(output_dir: pathlib.Path) -> list[dict[str, object]]:
-    """Train + simulate the chronological fixture via cobre.run.run; read hydros."""
-    import cobre.run  # noqa: PLC0415
+    """Train + simulate the chronological fixture via novomodelo.run.run; read hydros."""
+    import novomodelo.run  # noqa: PLC0415
 
-    cobre.run.run(str(CHRONOLOGICAL_CASE), output_dir=str(output_dir))
+    novomodelo.run.run(str(CHRONOLOGICAL_CASE), output_dir=str(output_dir))
     return _read_hydro_rows(output_dir)
 
 
@@ -248,13 +248,13 @@ def test_chronological_hydros_schema_is_unchanged() -> None:
 
 
 def test_chronological_study_surface_matches_run_module() -> None:
-    """The cobre.Study surface emits the same per-block storage variation.
+    """The novomodelo.Study surface emits the same per-block storage variation.
 
-    Study.train().simulate() and cobre.run.run both converge on
+    Study.train().simulate() and novomodelo.run.run both converge on
     run_simulation_phase_py, so a multi-block group's storage must vary across
     block rows through the Study surface too.
     """
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     assert CHRONOLOGICAL_CASE.is_dir(), (
         f"the chronological fixture must exist at {CHRONOLOGICAL_CASE}"
@@ -262,7 +262,7 @@ def test_chronological_study_surface_matches_run_module() -> None:
 
     with tempfile.TemporaryDirectory() as out_dir:
         out = pathlib.Path(out_dir)
-        study = cobre.Study(str(CHRONOLOGICAL_CASE), output_dir=out_dir)
+        study = novomodelo.Study(str(CHRONOLOGICAL_CASE), output_dir=out_dir)
         policy = study.train()
         study.simulate(policy)
         rows = _read_hydro_rows(out)
@@ -276,7 +276,7 @@ def test_chronological_study_surface_matches_run_module() -> None:
     ]
     assert varied, (
         "the Study surface must produce per-block storage variation identical to "
-        "cobre.run.run (both reach run_simulation_phase_py)"
+        "novomodelo.run.run (both reach run_simulation_phase_py)"
     )
 
 
@@ -300,9 +300,9 @@ def test_chronological_hydros_values_match_cli(
     py_out = tmp_path / "python"
     run_cli(CHRONOLOGICAL_CASE, cli_out, cli_binary)
 
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
-    cobre.run.run(str(CHRONOLOGICAL_CASE), output_dir=str(py_out))
+    novomodelo.run.run(str(CHRONOLOGICAL_CASE), output_dir=str(py_out))
 
     cli_rows = _read_hydro_rows(cli_out)
     py_rows = _read_hydro_rows(py_out)
@@ -340,11 +340,11 @@ def test_parallel_per_block_storage_and_evaporation_are_constant() -> None:
     """
     assert PARALLEL_CASE.is_dir(), f"the parallel fixture must exist at {PARALLEL_CASE}"
 
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     with tempfile.TemporaryDirectory() as out_dir:
         out = pathlib.Path(out_dir)
-        cobre.run.run(str(PARALLEL_CASE), output_dir=out_dir)
+        novomodelo.run.run(str(PARALLEL_CASE), output_dir=out_dir)
         rows = _read_hydro_rows(out)
 
     groups = _multi_block_groups(_group_by_hydro_stage(rows))

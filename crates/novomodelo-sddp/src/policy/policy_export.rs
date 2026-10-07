@@ -2,7 +2,7 @@
 //!
 //! Shared conversion logic for extracting active cuts and basis data from a
 //! trained [`FutureCostFunction`] and its captured basis cache into the
-//! `cobre-io` policy types needed by [`cobre_io::write_policy_checkpoint`].
+//! `novomodelo-io` policy types needed by [`novomodelo_io::write_policy_checkpoint`].
 
 // Rationale: harvested counts/indices are small non-negative values bounded far below FlatBuffers field widths; narrowing casts are pervasive.
 #![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -11,11 +11,11 @@ use std::collections::{HashMap, HashSet};
 
 use crate::visited_states::VisitedStatesArchive;
 use chrono::NaiveDate;
-use cobre_core::Stage;
-use cobre_core::System;
-use cobre_core::Thermal;
-use cobre_core::commissioning::{commissioning_active, hydro_operating_active};
-use cobre_io::output::policy::{
+use novomodelo_core::Stage;
+use novomodelo_core::System;
+use novomodelo_core::Thermal;
+use novomodelo_core::commissioning::{commissioning_active, hydro_operating_active};
+use novomodelo_io::output::policy::{
     ENTITY_SLOT_DATE_SENTINEL, EntitySlot, GraphManifest, ManifestEdge, ManifestNode,
     OwnedPolicyCutRecord, PolicyBasisRecord, PolicyCutRecord, STAGE_CUTS_GRAPH_STAGE_ID_SENTINEL,
     STAGE_CUTS_NODE_ID_SENTINEL, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, StageCutsPayload,
@@ -238,7 +238,7 @@ pub struct ReservedInflowLagLayout {
 }
 
 /// Reserve the canonical `HydroInflowLag` state slots in a boundary checkpoint
-/// authored outside cobre (the DECOMP-bridge bootstrap), so cobre — never the
+/// authored outside novomodelo (the DECOMP-bridge bootstrap), so novomodelo — never the
 /// caller — owns the lag-block layout.
 ///
 /// The caller supplies a `manifest` whose leading contiguous block is one
@@ -774,9 +774,9 @@ mod tests {
     use crate::test_support::{self, anticipated_slot};
     use crate::time_value::post_study_delivery_calendar;
     use crate::visited_states::VisitedStatesArchive;
-    use cobre_core::commissioning::hydro_operating_active;
-    use cobre_core::temporal::StageStateConfig;
-    use cobre_core::{
+    use novomodelo_core::commissioning::hydro_operating_active;
+    use novomodelo_core::temporal::StageStateConfig;
+    use novomodelo_core::{
         AnticipatedConfig, Block, BlockMode, Bus, DeficitSegment, EntityId, Hydro,
         HydroGenerationModel, HydroPenalties, NoiseMethod, PostStudyStage, PostStudyStages,
         ScenarioSourceConfig, Stage, StageRiskConfig, System, SystemBuilder, Thermal,
@@ -786,7 +786,7 @@ mod tests {
             ThermalBlockBounds, ThermalStageBounds,
         },
     };
-    use cobre_io::{ENTITY_SLOT_DATE_SENTINEL, encode_slot_date};
+    use novomodelo_io::{ENTITY_SLOT_DATE_SENTINEL, encode_slot_date};
 
     const ALL_ENABLED: StageStateConfig = StageStateConfig {
         storage: true,
@@ -2885,7 +2885,7 @@ mod tests {
         use crate::TrainingResult;
         use crate::cut::FutureCostFunction;
         use crate::workspace::CapturedBasis;
-        use cobre_solver::{Basis, BasisStatus};
+        use novomodelo_solver::{Basis, BasisStatus};
 
         let node_graph = binary_tree_node_graph(); // 7 nodes; pools 0/1/2 + shared 3
 

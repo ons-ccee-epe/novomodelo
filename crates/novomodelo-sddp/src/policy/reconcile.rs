@@ -20,12 +20,12 @@
 use std::collections::HashMap;
 
 use chrono::NaiveDate;
-use cobre_core::AnticipatedCommitmentHistory;
-use cobre_io::ENTITY_SLOT_DATE_SENTINEL;
-use cobre_io::EntitySlot;
-use cobre_io::OwnedPolicyCutRecord;
-use cobre_io::StateFamily;
-use cobre_io::decode_slot_date;
+use novomodelo_core::AnticipatedCommitmentHistory;
+use novomodelo_io::ENTITY_SLOT_DATE_SENTINEL;
+use novomodelo_io::EntitySlot;
+use novomodelo_io::OwnedPolicyCutRecord;
+use novomodelo_io::StateFamily;
+use novomodelo_io::decode_slot_date;
 use serde::Serialize;
 
 use crate::SddpError;
@@ -898,8 +898,8 @@ mod tests {
         anticipated_slot, anticipated_slot_at, inflow_lag_slot, storage_slot, transit_bucket_slot,
         transit_bucket_slot_over, ymd,
     };
-    use cobre_core::{AnticipatedCommitmentHistory, EntityId};
-    use cobre_io::{EntitySlot, OwnedPolicyCutRecord, encode_slot_date};
+    use novomodelo_core::{AnticipatedCommitmentHistory, EntityId};
+    use novomodelo_io::{EntitySlot, OwnedPolicyCutRecord, encode_slot_date};
 
     /// The two-step index-then-rebind call `load_boundary_cuts` performs,
     /// collapsed into one.
@@ -2150,7 +2150,7 @@ mod tests {
     }
 
     /// `summary_line()`'s reconciled-path wording is a correctness contract for
-    /// `cobre validate` (asserted byte-exact by `cli_validate.rs`).
+    /// `novomodelo validate` (asserted byte-exact by `cli_validate.rs`).
     #[test]
     fn summary_line_reconciled_wording_is_byte_exact() {
         let report = BoundaryReconciliationReport {

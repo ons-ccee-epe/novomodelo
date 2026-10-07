@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use cobre_core::{BlockMode, EntityId, Hydro, Stage, System, window_period_overlaps};
+use novomodelo_core::{BlockMode, EntityId, Hydro, Stage, System, window_period_overlaps};
 
 use crate::lead_time::{SpreadResolution, resolve_arrival_density_at, resolve_spread};
 use crate::lp::indexer::HydroSys;
@@ -101,7 +101,7 @@ fn resolve_travel_time_arcs(hydros: &[Hydro]) -> Vec<TravelTimeArc> {
             let Some(&downstream_idx) = positions.get(&downstream_id) else {
                 debug_assert!(
                     false,
-                    "downstream_id must resolve to a declared hydro position; cobre-io's \
+                    "downstream_id must resolve to a declared hydro position; novomodelo-io's \
                      referential validation guarantees this"
                 );
                 return None;
@@ -434,7 +434,7 @@ fn arrival_frame_density(
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         Block, BlockMode, Bus, DeficitSegment, Hydro, HydroGenerationModel, HydroPenalties,
         NoiseMethod, PostStudyStage, PostStudyStages, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig, SystemBuilder,
@@ -559,7 +559,7 @@ mod tests {
         }
     }
 
-    fn build_system(hydros: Vec<Hydro>, stages: Vec<Stage>) -> cobre_core::System {
+    fn build_system(hydros: Vec<Hydro>, stages: Vec<Stage>) -> novomodelo_core::System {
         SystemBuilder::new()
             .buses(vec![test_bus()])
             .hydros(hydros)
@@ -575,7 +575,7 @@ mod tests {
         hydros: Vec<Hydro>,
         stages: Vec<Stage>,
         post_study: PostStudyStages,
-    ) -> cobre_core::System {
+    ) -> novomodelo_core::System {
         SystemBuilder::new()
             .buses(vec![test_bus()])
             .hydros(hydros)

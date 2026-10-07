@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use arrow::array::{Float64Builder, Int8Builder, Int32Builder, RecordBatch};
 use arrow::datatypes::DataType;
-use cobre_core::System;
+use novomodelo_core::System;
 
 use crate::output::atomic::{write_bytes_atomic, write_parquet_atomic};
 use crate::output::error::OutputError;
@@ -2034,7 +2034,7 @@ mod tests {
     use crate::test_support::output::read_first_batch;
     use arrow::array::Array;
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         Block, BlockMode, Bus, ContractType, DeficitSegment, EnergyContract, EntityId, Hydro,
         HydroGenerationModel, HydroPenalties, HydroUnitGroup, Line, NoiseMethod, PumpingStation,
         ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, SystemBuilder, Thermal,

@@ -1,16 +1,18 @@
-//! Error types for the `cobre-sddp` crate.
+//! Error types for the `novomodelo-sddp` crate.
 
-use cobre_comm::CommError;
-use cobre_io::scenarios::estimation::EstimationError;
-use cobre_io::{LoadError, OutputError, SOFTWARE_NAME, SOFTWARE_VERSION, policy_checkpoint_remedy};
-use cobre_solver::SolverError;
-use cobre_stochastic::StochasticError;
+use novomodelo_comm::CommError;
+use novomodelo_io::scenarios::estimation::EstimationError;
+use novomodelo_io::{
+    LoadError, OutputError, SOFTWARE_NAME, SOFTWARE_VERSION, policy_checkpoint_remedy,
+};
+use novomodelo_solver::SolverError;
+use novomodelo_stochastic::StochasticError;
 
 use crate::fpha_fitting::FphaFittingError;
 
 /// Unified error type for SDDP algorithm operations.
 ///
-/// All fallible methods in `cobre-sddp` return `Result<T, SddpError>`.
+/// All fallible methods in `novomodelo-sddp` return `Result<T, SddpError>`.
 /// The type is `Send + Sync + 'static` so it can be propagated across
 /// thread boundaries and wrapped by `anyhow` or `Box<dyn Error>` in
 /// application-level code.
@@ -18,7 +20,7 @@ use crate::fpha_fitting::FphaFittingError;
 /// # Examples
 ///
 /// ```rust
-/// use cobre_sddp::SddpError;
+/// use novomodelo_sddp::SddpError;
 ///
 /// fn assert_send_sync_static<E: std::error::Error + Send + Sync + 'static>() {}
 /// assert_send_sync_static::<SddpError>();
@@ -27,7 +29,7 @@ use crate::fpha_fitting::FphaFittingError;
 pub enum SddpError {
     /// An LP subproblem solve failed in the forward or backward pass.
     ///
-    /// Wraps a [`cobre_solver::SolverError`] that persisted through all retries.
+    /// Wraps a [`novomodelo_solver::SolverError`] that persisted through all retries.
     #[error("solver error: {0}")]
     Solver(#[from] SolverError),
 
@@ -218,10 +220,10 @@ impl From<FphaFittingError> for SddpError {
 #[cfg(test)]
 mod tests {
     use super::{ErrorClass, SddpError};
-    use cobre_comm::CommError;
-    use cobre_io::{LoadError, OutputError, SOFTWARE_NAME, SOFTWARE_VERSION};
-    use cobre_solver::SolverError;
-    use cobre_stochastic::StochasticError;
+    use novomodelo_comm::CommError;
+    use novomodelo_io::{LoadError, OutputError, SOFTWARE_NAME, SOFTWARE_VERSION};
+    use novomodelo_solver::SolverError;
+    use novomodelo_stochastic::StochasticError;
     use std::path::PathBuf;
 
     use crate::fpha_fitting::FphaFittingError;
@@ -348,9 +350,9 @@ mod tests {
     fn display_policy_software_mismatch_names_an_unrecorded_name_or_version() {
         let cases = [
             (
-                Some("cobre"),
+                Some("novomodelo"),
                 "",
-                "policy was written by cobre, which recorded no version, but this is ",
+                "policy was written by novomodelo, which recorded no version, but this is ",
             ),
             (
                 None,

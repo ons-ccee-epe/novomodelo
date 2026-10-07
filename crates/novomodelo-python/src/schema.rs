@@ -1,12 +1,12 @@
-//! JSON Schema export helper for the `cobre.schema` sub-module.
+//! JSON Schema export helper for the `novomodelo.schema` sub-module.
 //!
-//! [`export`] delegates to the same `cobre-io` writer as the `cobre schema
+//! [`export`] delegates to the same `novomodelo-io` writer as the `novomodelo schema
 //! export` CLI, but returns the count of files written rather than printing a
 //! confirmation line.
 
 use std::path::PathBuf;
 
-use cobre_io::schema::SchemaExportError;
+use novomodelo_io::schema::SchemaExportError;
 use pyo3::exceptions::{PyOSError, PyValueError};
 use pyo3::prelude::*;
 
@@ -25,15 +25,15 @@ use pyo3::prelude::*;
 /// # Examples
 ///
 /// ```python
-/// import cobre.schema
-/// count = cobre.schema.export("schemas")
+/// import novomodelo.schema
+/// count = novomodelo.schema.export("schemas")
 /// print(f"wrote {count} schema files")
 /// ```
 #[allow(clippy::needless_pass_by_value)]
 #[pyfunction]
 #[pyo3(signature = (output_dir=PathBuf::from(".")))]
 pub fn export(output_dir: PathBuf) -> PyResult<usize> {
-    cobre_io::schema::export_schemas(&output_dir).map_err(|err| match err {
+    novomodelo_io::schema::export_schemas(&output_dir).map_err(|err| match err {
         SchemaExportError::Generation(e) => {
             PyValueError::new_err(format!("schema generation failed: {e}"))
         }

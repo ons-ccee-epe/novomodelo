@@ -1,9 +1,9 @@
-#ifndef COBRE_HIGHS_WRAPPER_H
-#define COBRE_HIGHS_WRAPPER_H
+#ifndef NOVOMODELO_HIGHS_WRAPPER_H
+#define NOVOMODELO_HIGHS_WRAPPER_H
 
-/* Thin C wrapper around the HiGHS C API for use by cobre-solver FFI bindings.
+/* Thin C wrapper around the HiGHS C API for use by novomodelo-solver FFI bindings.
  *
- * All functions use the `cobre_highs_` prefix and fixed-width types (int32_t,
+ * All functions use the `novomodelo_highs_` prefix and fixed-width types (int32_t,
  * double) for FFI safety.  Each function maps 1:1 to the corresponding
  * HiGHS C API call with no additional logic.
  *
@@ -24,11 +24,11 @@ extern "C" {
 
 /** Create a HiGHS instance.  Returns an opaque pointer; caller owns it.
  *  Wraps Highs_create(). */
-void* cobre_highs_create(void);
+void* novomodelo_highs_create(void);
 
 /** Destroy a HiGHS instance and free all associated memory.
  *  Wraps Highs_destroy(). */
-void cobre_highs_destroy(void* highs);
+void novomodelo_highs_destroy(void* highs);
 
 /* =========================================================================
  * Model Loading
@@ -37,7 +37,7 @@ void cobre_highs_destroy(void* highs);
 /** Pass a complete LP to HiGHS in a single call.
  *  Wraps Highs_passLp().
  *  Returns a kHighsStatus constant (0 = OK, -1 = Error, 1 = Warning). */
-int32_t cobre_highs_pass_lp(
+int32_t novomodelo_highs_pass_lp(
     void*           highs,
     int32_t         num_col,
     int32_t         num_row,
@@ -62,7 +62,7 @@ int32_t cobre_highs_pass_lp(
 /** Add rows to the incumbent model.
  *  Wraps Highs_addRows().
  *  Returns a kHighsStatus constant. */
-int32_t cobre_highs_add_rows(
+int32_t novomodelo_highs_add_rows(
     void*           highs,
     int32_t         num_new_row,
     const double*   lower,
@@ -76,7 +76,7 @@ int32_t cobre_highs_add_rows(
 /** Change bounds of rows identified by an index set.
  *  Wraps Highs_changeRowsBoundsBySet().
  *  Returns a kHighsStatus constant. */
-int32_t cobre_highs_change_rows_bounds_by_set(
+int32_t novomodelo_highs_change_rows_bounds_by_set(
     void*           highs,
     int32_t         num_set_entries,
     const int32_t*  set,
@@ -87,7 +87,7 @@ int32_t cobre_highs_change_rows_bounds_by_set(
 /** Change bounds of columns identified by an index set.
  *  Wraps Highs_changeColsBoundsBySet().
  *  Returns a kHighsStatus constant. */
-int32_t cobre_highs_change_cols_bounds_by_set(
+int32_t novomodelo_highs_change_cols_bounds_by_set(
     void*           highs,
     int32_t         num_set_entries,
     const int32_t*  set,
@@ -102,7 +102,7 @@ int32_t cobre_highs_change_cols_bounds_by_set(
 /** Run the solver on the incumbent model.
  *  Wraps Highs_run().
  *  Returns a kHighsStatus constant. */
-int32_t cobre_highs_run(void* highs);
+int32_t novomodelo_highs_run(void* highs);
 
 /* =========================================================================
  * Solution Extraction
@@ -111,7 +111,7 @@ int32_t cobre_highs_run(void* highs);
 /** Get the primal and dual solution arrays.
  *  Wraps Highs_getSolution().
  *  Returns a kHighsStatus constant. */
-int32_t cobre_highs_get_solution(
+int32_t novomodelo_highs_get_solution(
     const void* highs,
     double*     col_value,
     double*     col_dual,
@@ -122,17 +122,17 @@ int32_t cobre_highs_get_solution(
 /** Get the primal objective value.
  *  Wraps Highs_getObjectiveValue().
  *  Returns the primal objective function value. */
-double cobre_highs_get_objective_value(const void* highs);
+double novomodelo_highs_get_objective_value(const void* highs);
 
 /** Get the model status after solving.
  *  Wraps Highs_getModelStatus().
  *  Returns a kHighsModelStatus constant. */
-int32_t cobre_highs_get_model_status(const void* highs);
+int32_t novomodelo_highs_get_model_status(const void* highs);
 
 /** Get the simplex iteration count from the most recent solve.
  *  Wraps Highs_getSimplexIterationCount().
  *  Returns the iteration count. */
-int32_t cobre_highs_get_simplex_iteration_count(const void* highs);
+int32_t novomodelo_highs_get_simplex_iteration_count(const void* highs);
 
 /* =========================================================================
  * Basis Management
@@ -145,7 +145,7 @@ int32_t cobre_highs_get_simplex_iteration_count(const void* highs);
  *  Returns a kHighsStatus constant. kError indicates basis rejection
  *  (isBasisConsistent failed); caller should fall back to the alien
  *  path. */
-int32_t cobre_highs_set_basis_non_alien(
+int32_t novomodelo_highs_set_basis_non_alien(
     void*           highs,
     const int32_t*  col_status,
     const int32_t*  row_status
@@ -154,7 +154,7 @@ int32_t cobre_highs_set_basis_non_alien(
 /** Get the current basis into caller-allocated column and row status arrays.
  *  Wraps Highs_getBasis().
  *  Returns a kHighsStatus constant. */
-int32_t cobre_highs_get_basis(
+int32_t novomodelo_highs_get_basis(
     const void* highs,
     int32_t*    col_status,
     int32_t*    row_status
@@ -167,7 +167,7 @@ int32_t cobre_highs_get_basis(
 /** Clear the solver state while preserving the model.
  *  Wraps Highs_clearSolver().
  *  Returns a kHighsStatus constant. */
-int32_t cobre_highs_clear_solver(void* highs);
+int32_t novomodelo_highs_clear_solver(void* highs);
 
 /* =========================================================================
  * Configuration
@@ -176,7 +176,7 @@ int32_t cobre_highs_clear_solver(void* highs);
 /** Set a string-valued HiGHS option.
  *  Wraps Highs_setStringOptionValue().
  *  Returns a kHighsStatus constant. */
-int32_t cobre_highs_set_string_option(
+int32_t novomodelo_highs_set_string_option(
     void*       highs,
     const char* option,
     const char* value
@@ -185,7 +185,7 @@ int32_t cobre_highs_set_string_option(
 /** Set a boolean-valued HiGHS option.
  *  Wraps Highs_setBoolOptionValue().
  *  Returns a kHighsStatus constant. */
-int32_t cobre_highs_set_bool_option(
+int32_t novomodelo_highs_set_bool_option(
     void*       highs,
     const char* option,
     int32_t     value
@@ -194,7 +194,7 @@ int32_t cobre_highs_set_bool_option(
 /** Set an integer-valued HiGHS option.
  *  Wraps Highs_setIntOptionValue().
  *  Returns a kHighsStatus constant. */
-int32_t cobre_highs_set_int_option(
+int32_t novomodelo_highs_set_int_option(
     void*       highs,
     const char* option,
     int32_t     value
@@ -203,7 +203,7 @@ int32_t cobre_highs_set_int_option(
 /** Set a double-valued HiGHS option.
  *  Wraps Highs_setDoubleOptionValue().
  *  Returns a kHighsStatus constant. */
-int32_t cobre_highs_set_double_option(
+int32_t novomodelo_highs_set_double_option(
     void*       highs,
     const char* option,
     double      value
@@ -212,7 +212,7 @@ int32_t cobre_highs_set_double_option(
 /** Get an integer-valued HiGHS option.
  *  Wraps Highs_getIntOptionValue().
  *  Returns a kHighsStatus constant. */
-int32_t cobre_highs_get_int_option(
+int32_t novomodelo_highs_get_int_option(
     const void* highs,
     const char* option,
     int32_t*    value
@@ -221,7 +221,7 @@ int32_t cobre_highs_get_int_option(
 /** Get a double-valued HiGHS option.
  *  Wraps Highs_getDoubleOptionValue().
  *  Returns a kHighsStatus constant. */
-int32_t cobre_highs_get_double_option(
+int32_t novomodelo_highs_get_double_option(
     const void* highs,
     const char* option,
     double*     value
@@ -234,7 +234,7 @@ int32_t cobre_highs_get_double_option(
 /** Check whether a dual ray (certificate of primal infeasibility) exists, and
  *  retrieve it.  Wraps Highs_getDualRay().
  *  Returns a kHighsStatus constant. */
-int32_t cobre_highs_get_dual_ray(
+int32_t novomodelo_highs_get_dual_ray(
     const void* highs,
     int32_t*    has_dual_ray,
     double*     dual_ray_value
@@ -243,7 +243,7 @@ int32_t cobre_highs_get_dual_ray(
 /** Check whether a primal ray (certificate of primal unboundedness) exists, and
  *  retrieve it.  Wraps Highs_getPrimalRay().
  *  Returns a kHighsStatus constant. */
-int32_t cobre_highs_get_primal_ray(
+int32_t novomodelo_highs_get_primal_ray(
     const void* highs,
     int32_t*    has_primal_ray,
     double*     primal_ray_value
@@ -255,11 +255,11 @@ int32_t cobre_highs_get_primal_ray(
 
 /** Return the number of columns in the incumbent model.
  *  Wraps Highs_getNumCol(). */
-int32_t cobre_highs_get_num_col(const void* highs);
+int32_t novomodelo_highs_get_num_col(const void* highs);
 
 /** Return the number of rows in the incumbent model.
  *  Wraps Highs_getNumRow(). */
-int32_t cobre_highs_get_num_row(const void* highs);
+int32_t novomodelo_highs_get_num_row(const void* highs);
 
 /* =========================================================================
  * Version query (no instance required)
@@ -267,18 +267,18 @@ int32_t cobre_highs_get_num_row(const void* highs);
 
 /** Return the HiGHS major version number.
  *  Wraps Highs_versionMajor(). */
-int32_t cobre_highs_version_major(void);
+int32_t novomodelo_highs_version_major(void);
 
 /** Return the HiGHS minor version number.
  *  Wraps Highs_versionMinor(). */
-int32_t cobre_highs_version_minor(void);
+int32_t novomodelo_highs_version_minor(void);
 
 /** Return the HiGHS patch version number.
  *  Wraps Highs_versionPatch(). */
-int32_t cobre_highs_version_patch(void);
+int32_t novomodelo_highs_version_patch(void);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* COBRE_HIGHS_WRAPPER_H */
+#endif /* NOVOMODELO_HIGHS_WRAPPER_H */

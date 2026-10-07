@@ -1,7 +1,7 @@
 # The stage-LP builder contract
 
 **Status:** Live spec (normative). This page states what the stage-LP builder in
-`cobre-sddp` is for and what every change to it must satisfy. Where the code falls
+`novomodelo-sddp` is for and what every change to it must satisfy. Where the code falls
 short of it, the gap is a defect to fix, not a reason to change the contract.
 
 The builder is the code that turns a study into the linear programs the SDDP
@@ -153,7 +153,7 @@ description, its tests, or its review):
 
 These consume the builder's outputs and are not part of this contract:
 
-- solving the LPs (the `cobre-solver` backends);
+- solving the LPs (the `novomodelo-solver` backends);
 - cut generation, cut selection and the forward and backward passes;
 - scenario sampling and MPI work distribution;
-- loading and validating input (`cobre-io`).
+- loading and validating input (`novomodelo-io`).

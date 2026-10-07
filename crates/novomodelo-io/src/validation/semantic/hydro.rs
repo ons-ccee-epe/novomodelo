@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cobre_core::{EntityId, Hydro};
+use novomodelo_core::{EntityId, Hydro};
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
 use super::envelope_tolerance;
@@ -770,7 +770,7 @@ mod tests {
     use crate::test_support::*;
     use crate::validation::{ErrorKind, ValidationContext};
     use chrono::NaiveDate;
-    use cobre_core::DiversionChannel;
+    use novomodelo_core::DiversionChannel;
 
     // ── Cascade acyclicity tests ───────────────────────────────────────────────
 
@@ -1184,10 +1184,10 @@ mod tests {
 
     // ── Commissioning hygiene: ordering parity + applied-window silence ────────
 
-    use cobre_core::entities::{
+    use novomodelo_core::entities::{
         ContractType, EnergyContract, NonControllableSource, PumpingStation,
     };
-    use cobre_core::{EntityId, Line, Thermal};
+    use novomodelo_core::{EntityId, Line, Thermal};
 
     /// Build a `PumpingStation` with the given entry/exit commissioning window.
     fn make_pumping_lc(id: i32, entry: Option<i32>, exit: Option<i32>) -> PumpingStation {
@@ -1509,8 +1509,8 @@ mod tests {
 
     // ── Filling guard tests ───────────────────────────────────────────────────
 
-    use cobre_core::HydroStorage;
-    use cobre_core::entities::{FillingConfig, Hydro};
+    use novomodelo_core::HydroStorage;
+    use novomodelo_core::entities::{FillingConfig, Hydro};
 
     /// Build a well-formed filling hydro: `start < entry < horizon`, an inflow
     /// cap of `inflow`, and an entry stage paired with the filling config.

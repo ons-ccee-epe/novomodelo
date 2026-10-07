@@ -14,7 +14,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use cobre_core::{
+use novomodelo_core::{
     DeficitSegment, EntityId, SystemBuilder,
     entities::hydro::{Hydro, HydroPenalties},
     scenario::{
@@ -23,7 +23,7 @@ use cobre_core::{
     },
     temporal::{Block, NoiseMethod, ScenarioSourceConfig, Stage},
 };
-use cobre_stochastic::{
+use novomodelo_stochastic::{
     ForwardNoiseTables, ForwardSamplerConfig, SampleRequest, build_forward_sampler,
     context::{ClassSchemes, OpeningTreeInputs, StochasticContext, build_stochastic_context},
 };
@@ -168,7 +168,7 @@ fn correlated_correlation(ids: &[i32], rho: f64) -> CorrelationModel {
 fn build_test_system(
     methods: [NoiseMethod; 3],
     correlation: CorrelationModel,
-) -> cobre_core::System {
+) -> novomodelo_core::System {
     let hydros: Vec<Hydro> = (1..=70)
         .map(|id| make_hydro(EntityId(id), make_hydro_spec(id)))
         .collect();
@@ -190,7 +190,10 @@ fn build_test_system(
         .unwrap()
 }
 
-fn build_test_ctx(system: &cobre_core::System, forward_seed: Option<u64>) -> StochasticContext {
+fn build_test_ctx(
+    system: &novomodelo_core::System,
+    forward_seed: Option<u64>,
+) -> StochasticContext {
     build_stochastic_context(
         system,
         42,
@@ -207,7 +210,7 @@ fn build_test_ctx(system: &cobre_core::System, forward_seed: Option<u64>) -> Sto
     .unwrap()
 }
 
-fn stages_from_system(system: &cobre_core::System) -> Vec<Stage> {
+fn stages_from_system(system: &novomodelo_core::System) -> Vec<Stage> {
     system
         .stages()
         .iter()

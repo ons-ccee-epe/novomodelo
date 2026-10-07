@@ -751,7 +751,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId,
         scenario::{AnnualComponent, InflowModel},
         temporal::{

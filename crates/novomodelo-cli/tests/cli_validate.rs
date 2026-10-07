@@ -1,4 +1,4 @@
-//! Integration tests for the `cobre validate` subcommand.
+//! Integration tests for the `novomodelo validate` subcommand.
 
 #![allow(clippy::unwrap_used)]
 
@@ -16,8 +16,8 @@ use common::{PENALTIES_JSON, copy_dir_recursive, write_supplied_opening_tree_cas
 
 // ── fixture helpers ───────────────────────────────────────────────────────────
 
-fn cobre() -> Command {
-    Command::new(assert_cmd::cargo::cargo_bin!("cobre"))
+fn novomodelo() -> Command {
+    Command::new(assert_cmd::cargo::cargo_bin!("novomodelo"))
 }
 
 fn write_file(root: &Path, relative: &str, content: &str) {
@@ -85,7 +85,7 @@ fn make_valid_case(dir: &TempDir) {
 fn valid_case_exits_0() {
     let dir = TempDir::new().unwrap();
     make_valid_case(&dir);
-    cobre()
+    novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])
         .assert()
         .success();
@@ -95,7 +95,7 @@ fn valid_case_exits_0() {
 fn valid_case_stdout_contains_buses_count() {
     let dir = TempDir::new().unwrap();
     make_valid_case(&dir);
-    cobre()
+    novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])
         .assert()
         .success()
@@ -107,7 +107,7 @@ fn missing_buses_json_exits_1() {
     let dir = TempDir::new().unwrap();
     make_valid_case(&dir);
     fs::remove_file(dir.path().join("system/buses.json")).unwrap();
-    cobre()
+    novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])
         .assert()
         .failure()
@@ -119,7 +119,7 @@ fn missing_buses_json_stdout_contains_error() {
     let dir = TempDir::new().unwrap();
     make_valid_case(&dir);
     fs::remove_file(dir.path().join("system/buses.json")).unwrap();
-    cobre()
+    novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])
         .assert()
         .failure()
@@ -132,7 +132,7 @@ fn missing_buses_json_stdout_mentions_file() {
     let dir = TempDir::new().unwrap();
     make_valid_case(&dir);
     fs::remove_file(dir.path().join("system/buses.json")).unwrap();
-    cobre()
+    novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])
         .assert()
         .failure()
@@ -151,7 +151,7 @@ fn missing_buses_json_json_mode_emits_parseable_error_object() {
     make_valid_case(&dir);
     fs::remove_file(dir.path().join("system/buses.json")).unwrap();
 
-    let output = cobre()
+    let output = novomodelo()
         .args(["validate", dir.path().to_str().unwrap(), "--json"])
         .output()
         .unwrap();
@@ -188,21 +188,21 @@ fn missing_buses_json_json_mode_emits_parseable_error_object() {
     );
 }
 
-/// stderr must NOT carry the "run `cobre validate`" hint — that would point the
+/// stderr must NOT carry the "run `novomodelo validate`" hint — that would point the
 /// user back at the very command they just ran.
 #[test]
 fn validate_failure_report_in_stdout_not_stderr() {
     let dir = TempDir::new().unwrap();
     make_valid_case(&dir);
     fs::remove_file(dir.path().join("system/buses.json")).unwrap();
-    cobre()
+    novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])
         .assert()
         .failure()
         .code(1)
         .stdout(predicate::str::contains("error"))
         .stderr(predicate::str::contains("buses.json").not())
-        .stderr(predicate::str::contains("run `cobre validate`").not());
+        .stderr(predicate::str::contains("run `novomodelo validate`").not());
 }
 
 /// The offending path must surface exactly once: the relative prefix and the
@@ -217,7 +217,7 @@ fn validate_schema_failure_path_appears_once() {
         r#"{ "buses": [{ "id": 1, "name": "BUS_1", "operational_start_date": "2024-01-01" }, { "id": 1, "name": "BUS_2", "operational_start_date": "2024-01-01" }] }"#,
     );
 
-    let output = cobre()
+    let output = novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])
         .output()
         .unwrap();
@@ -232,7 +232,7 @@ fn validate_schema_failure_path_appears_once() {
 
 /// A duplicate bus id is collected by the six-layer pipeline into a single
 /// `LoadError::ConstraintError`; under `--json` its `phase` must be the shared
-/// `cobre-io` kind vocabulary, not a CLI-only classifier string.
+/// `novomodelo-io` kind vocabulary, not a CLI-only classifier string.
 #[test]
 fn duplicate_bus_id_json_mode_reports_constraint_error_kind() {
     let dir = TempDir::new().unwrap();
@@ -243,7 +243,7 @@ fn duplicate_bus_id_json_mode_reports_constraint_error_kind() {
         r#"{ "buses": [{ "id": 1, "name": "BUS_1", "operational_start_date": "2024-01-01" }, { "id": 1, "name": "BUS_2", "operational_start_date": "2024-01-01" }] }"#,
     );
 
-    let output = cobre()
+    let output = novomodelo()
         .args(["validate", dir.path().to_str().unwrap(), "--json"])
         .output()
         .unwrap();
@@ -254,7 +254,7 @@ fn duplicate_bus_id_json_mode_reports_constraint_error_kind() {
     assert_eq!(
         value["error"]["phase"],
         serde_json::json!("ConstraintError"),
-        "kind must be the shared cobre-io vocabulary: {value}"
+        "kind must be the shared novomodelo-io vocabulary: {value}"
     );
 }
 
@@ -266,7 +266,7 @@ fn config_parse_failure_json_mode_emits_error_object() {
     make_valid_case(&dir);
     write_file(dir.path(), "config.json", "{ not valid json");
 
-    let output = cobre()
+    let output = novomodelo()
         .args(["validate", dir.path().to_str().unwrap(), "--json"])
         .output()
         .unwrap();
@@ -288,7 +288,7 @@ fn config_parse_failure_json_mode_emits_error_object() {
 
 #[test]
 fn nonexistent_path_exits_2() {
-    cobre()
+    novomodelo()
         .args(["validate", "/nonexistent/path/that/does/not/exist"])
         .assert()
         .failure()
@@ -297,7 +297,7 @@ fn nonexistent_path_exits_2() {
 
 #[test]
 fn nonexistent_path_stderr_mentions_path() {
-    cobre()
+    novomodelo()
         .args(["validate", "/nonexistent/path/that/does/not/exist"])
         .assert()
         .failure()
@@ -310,7 +310,7 @@ fn valid_case_piped_stdout_has_no_ansi_escapes() {
     let dir = TempDir::new().unwrap();
     make_valid_case(&dir);
     // `console` strips ANSI codes when stdout is not a terminal, as it is here.
-    let output = cobre()
+    let output = novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])
         .output()
         .unwrap();
@@ -340,7 +340,7 @@ fn removed_cut_selection_field_fails_validate() {
     }"#;
     write_file(dir.path(), "config.json", removed_field_config);
 
-    cobre()
+    novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])
         .assert()
         .failure();
@@ -362,13 +362,13 @@ fn invalid_simulation_scenario_source_fails_validate_and_run() {
     });
     write_file(dir.path(), "config.json", &config.to_string());
 
-    cobre()
+    novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])
         .assert()
         .failure()
         .stdout(predicate::str::contains(MSG));
 
-    cobre()
+    novomodelo()
         .args(["run", dir.path().to_str().unwrap()])
         .assert()
         .failure()
@@ -396,13 +396,13 @@ fn simulation_out_of_sample_with_its_own_seed_passes_validate_and_run() {
     });
     fs::write(&config_path, config.to_string()).unwrap();
 
-    cobre()
+    novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])
         .assert()
         .success();
 
     let output = TempDir::new().unwrap();
-    cobre()
+    novomodelo()
         .args([
             "run",
             dir.path().to_str().unwrap(),
@@ -423,7 +423,7 @@ fn checkpointing_enabled_without_interval_exits_1() {
     config["policy"] = serde_json::json!({ "checkpointing": { "enabled": true } });
     write_file(dir.path(), "config.json", &config.to_string());
 
-    cobre()
+    novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])
         .assert()
         .failure()
@@ -494,7 +494,7 @@ fn fpha_hydro_without_production_models_json_fails_validate() {
     let dir = TempDir::new().unwrap();
     write_fpha_hydro_without_production_models_case(&dir);
 
-    cobre()
+    novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])
         .assert()
         .failure()
@@ -658,7 +658,7 @@ fn write_boundary_case(dir: &Path, hydro_id: i64) {
 /// Materializes the policy checkpoint at `dir/output/policy` that the
 /// boundary tests point `policy.boundary.path` at.
 fn run_case(dir: &Path) {
-    cobre()
+    novomodelo()
         .args(["run", dir.to_str().unwrap()])
         .assert()
         .success();
@@ -762,7 +762,7 @@ fn snapshot_files(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 }
 
 fn validate_json(dir: &Path) -> (std::process::Output, serde_json::Value) {
-    let output = cobre()
+    let output = novomodelo()
         .args(["validate", dir.to_str().unwrap(), "--json"])
         .output()
         .unwrap();
@@ -781,7 +781,7 @@ fn boundary_report_summary_prints_and_exits_0() {
     run_case(dir.path());
     append_boundary_policy(dir.path(), &dir.path().join("output/policy"));
 
-    let output = cobre()
+    let output = novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])
         .output()
         .unwrap();
@@ -806,7 +806,7 @@ fn boundary_relative_path_resolves_against_case_dir_not_output_dir() {
     run_case(dir.path());
     append_boundary_policy(dir.path(), Path::new("output/policy"));
 
-    cobre()
+    novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])
         .assert()
         .success()
@@ -822,7 +822,7 @@ fn boundary_json_mode_emits_parseable_object_with_tallies() {
     run_case(dir.path());
     append_boundary_policy(dir.path(), &dir.path().join("output/policy"));
 
-    let output = cobre()
+    let output = novomodelo()
         .args(["validate", dir.path().to_str().unwrap(), "--json"])
         .output()
         .unwrap();
@@ -841,7 +841,7 @@ fn boundary_absent_json_marks_absent_marker() {
     let dir = TempDir::new().unwrap();
     make_valid_case(&dir);
 
-    let output = cobre()
+    let output = novomodelo()
         .args(["validate", dir.path().to_str().unwrap(), "--json"])
         .output()
         .unwrap();
@@ -867,7 +867,7 @@ fn boundary_mismatched_hydro_set_exits_nonzero_and_names_hydro() {
 
     append_boundary_policy(target_dir.path(), &source_dir.path().join("output/policy"));
 
-    cobre()
+    novomodelo()
         .args(["validate", target_dir.path().to_str().unwrap()])
         .assert()
         .failure()
@@ -891,7 +891,7 @@ fn boundary_mismatched_hydro_set_json_mode_reports_boundary_reconciliation_error
 
     append_boundary_policy(target_dir.path(), &source_dir.path().join("output/policy"));
 
-    let output = cobre()
+    let output = novomodelo()
         .args(["validate", target_dir.path().to_str().unwrap(), "--json"])
         .output()
         .unwrap();
@@ -913,7 +913,7 @@ fn boundary_mismatched_hydro_set_json_mode_reports_boundary_reconciliation_error
 }
 
 /// A SOURCE boundary that prices an extra hydro the target does not model is
-/// a superset, not a mismatch: `cobre validate` still exits 0, and `--json`
+/// a superset, not a mismatch: `novomodelo validate` still exits 0, and `--json`
 /// reports the extra hydro's storage slot under `dropped_source_slots`.
 #[test]
 fn boundary_superset_source_exits_zero_and_reports_the_drop_in_json() {
@@ -927,7 +927,7 @@ fn boundary_superset_source_exits_zero_and_reports_the_drop_in_json() {
 
     append_boundary_policy(target_dir.path(), &source_dir.path().join("output/policy"));
 
-    let output = cobre()
+    let output = novomodelo()
         .args(["validate", target_dir.path().to_str().unwrap()])
         .output()
         .unwrap();
@@ -942,7 +942,7 @@ fn boundary_superset_source_exits_zero_and_reports_the_drop_in_json() {
         "stdout={stdout:?} stderr={stderr:?}"
     );
 
-    let json_output = cobre()
+    let json_output = novomodelo()
         .args(["validate", target_dir.path().to_str().unwrap(), "--json"])
         .output()
         .unwrap();
@@ -959,7 +959,7 @@ fn boundary_superset_source_exits_zero_and_reports_the_drop_in_json() {
 }
 
 /// The same superset under `policy.boundary.strict = true` is a reject:
-/// `cobre validate` exits 1 and names the dropping family in its message.
+/// `novomodelo validate` exits 1 and names the dropping family in its message.
 #[test]
 fn boundary_superset_source_under_strict_exits_nonzero_and_names_the_family() {
     let target_dir = TempDir::new().unwrap();
@@ -976,7 +976,7 @@ fn boundary_superset_source_under_strict_exits_nonzero_and_names_the_family() {
         true,
     );
 
-    let output = cobre()
+    let output = novomodelo()
         .args(["validate", target_dir.path().to_str().unwrap()])
         .output()
         .unwrap();
@@ -1007,7 +1007,7 @@ fn fpha_hydro_without_production_models_json_stdout_mentions_file() {
     let dir = TempDir::new().unwrap();
     write_fpha_hydro_without_production_models_case(&dir);
 
-    cobre()
+    novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])
         .assert()
         .failure()
@@ -1020,7 +1020,7 @@ fn fpha_hydro_without_production_models_json_stdout_mentions_file() {
 /// A non-boundary deck whose scalar-parameter table has a resolution gap (a
 /// `seasonal` param with no entry for the resolved season) exits 1, honoring
 /// the module contract that a clean `validate` implies a clean pre-solver `run`.
-/// The `--json` kind and message are identical to `cobre.io.validate`'s.
+/// The `--json` kind and message are identical to `novomodelo.io.validate`'s.
 #[test]
 fn non_boundary_scalar_parameter_gap_is_rejected() {
     let dir = TempDir::new().unwrap();
@@ -1031,7 +1031,7 @@ fn non_boundary_scalar_parameter_gap_is_rejected() {
         r#"{"scalar_parameters": [{"id": 1, "name": "p_gap", "kind": "seasonal", "values": [[5, 1.0]]}]}"#,
     );
 
-    let output = cobre()
+    let output = novomodelo()
         .args(["validate", dir.path().to_str().unwrap(), "--json"])
         .output()
         .unwrap();
@@ -1041,14 +1041,14 @@ fn non_boundary_scalar_parameter_gap_is_rejected() {
     assert_eq!(
         value["error"]["phase"],
         serde_json::json!("GenericConstraintValidationError"),
-        "kind must match cobre.io.validate: {value}"
+        "kind must match novomodelo.io.validate: {value}"
     );
     assert_eq!(
         value["error"]["message"],
         serde_json::json!(
             "constraints/: configuration validation error: parameter 'p_gap': no seasonal value for season_id=0 (needed by stage 0)"
         ),
-        "message must match cobre.io.validate byte-for-byte: {value}"
+        "message must match novomodelo.io.validate byte-for-byte: {value}"
     );
 }
 
@@ -1064,13 +1064,13 @@ fn non_boundary_resolved_scalar_parameter_validates() {
         r#"{"scalar_parameters": [{"id": 1, "name": "p_ok", "kind": "constant", "value": 1.0}]}"#,
     );
 
-    cobre()
+    novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])
         .assert()
         .success();
 }
 
-/// A checkpoint written by another cobre version is refused at warm-start
+/// A checkpoint written by another novomodelo version is refused at warm-start
 /// load, naming both versions and ending with the re-run remedy.
 #[test]
 fn warm_start_refuses_a_policy_written_by_another_version() {
@@ -1079,25 +1079,25 @@ fn warm_start_refuses_a_policy_written_by_another_version() {
     run_case(dir.path());
     append_warm_start_policy(dir.path());
 
-    cobre()
+    novomodelo()
         .args(["run", dir.path().to_str().unwrap()])
         .assert()
         .success();
 
     common::restamp_policy_version(&dir.path().join("output/policy"), "0.0.1");
 
-    cobre()
+    novomodelo()
         .args(["run", dir.path().to_str().unwrap()])
         .assert()
         .failure()
         .code(1)
-        .stderr(predicate::str::contains("written by cobre 0.0.1"))
+        .stderr(predicate::str::contains("written by novomodelo 0.0.1"))
         .stderr(predicate::str::contains(format!(
-            "this is cobre {}",
+            "this is novomodelo {}",
             env!("CARGO_PKG_VERSION")
         )))
         .stderr(predicate::str::contains(
-            "re-run the program that produced it with cobre",
+            "re-run the program that produced it with novomodelo",
         ))
         .stderr(predicate::str::contains(
             "for a converted boundary policy, convert it again",
@@ -1116,7 +1116,7 @@ fn warm_start_refuses_a_policy_written_by_other_software() {
 
     common::restamp_policy_software(&dir.path().join("output/policy"), "another-program");
 
-    cobre()
+    novomodelo()
         .args(["run", dir.path().to_str().unwrap()])
         .assert()
         .failure()
@@ -1127,7 +1127,7 @@ fn warm_start_refuses_a_policy_written_by_other_software() {
         )));
 }
 
-/// A boundary source written by another cobre version is refused at run,
+/// A boundary source written by another novomodelo version is refused at run,
 /// naming both versions.
 #[test]
 fn boundary_policy_written_by_another_version_is_refused_at_run() {
@@ -1137,7 +1137,7 @@ fn boundary_policy_written_by_another_version_is_refused_at_run() {
     let boundary_policy_dir = dir.path().join("output/policy");
     append_boundary_policy(dir.path(), &boundary_policy_dir);
 
-    cobre()
+    novomodelo()
         .args([
             "run",
             dir.path().to_str().unwrap(),
@@ -1149,7 +1149,7 @@ fn boundary_policy_written_by_another_version_is_refused_at_run() {
 
     common::restamp_policy_version(&boundary_policy_dir, "0.0.1");
 
-    cobre()
+    novomodelo()
         .args([
             "run",
             dir.path().to_str().unwrap(),
@@ -1159,14 +1159,14 @@ fn boundary_policy_written_by_another_version_is_refused_at_run() {
         .assert()
         .failure()
         .code(1)
-        .stderr(predicate::str::contains("written by cobre 0.0.1"))
+        .stderr(predicate::str::contains("written by novomodelo 0.0.1"))
         .stderr(predicate::str::contains(format!(
-            "this is cobre {}",
+            "this is novomodelo {}",
             env!("CARGO_PKG_VERSION")
         )));
 }
 
-/// A policy stamped by another program is refused by `cobre run`, and `cobre
+/// A policy stamped by another program is refused by `novomodelo run`, and `novomodelo
 /// validate` reproduces the refusal without touching the policy directory.
 #[test]
 fn validate_refuses_a_warm_start_policy_written_by_other_software() {
@@ -1176,13 +1176,15 @@ fn validate_refuses_a_warm_start_policy_written_by_other_software() {
     append_warm_start_policy(dir.path());
     common::restamp_policy_software(&dir.path().join("output/policy"), "another-program");
 
-    cobre()
+    novomodelo()
         .args(["run", dir.path().to_str().unwrap()])
         .assert()
         .failure()
         .code(1)
         .stderr(predicate::str::contains("written by another-program"))
-        .stderr(predicate::str::contains("run `cobre validate <CASE_DIR>`"));
+        .stderr(predicate::str::contains(
+            "run `novomodelo validate <CASE_DIR>`",
+        ));
 
     let before = snapshot_files(&dir.path().join("output/policy"));
     let (output, value) = validate_json(dir.path());
@@ -1198,7 +1200,7 @@ fn validate_refuses_a_warm_start_policy_written_by_other_software() {
     assert_eq!(snapshot_files(&dir.path().join("output/policy")), before);
 }
 
-/// A checkpoint written by another cobre version is refused by `validate` at
+/// A checkpoint written by another novomodelo version is refused by `validate` at
 /// resume load, under the resume kind.
 #[test]
 fn validate_refuses_a_resume_policy_written_by_another_version() {
@@ -1215,7 +1217,7 @@ fn validate_refuses_a_resume_policy_written_by_another_version() {
         value["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("written by cobre 0.0.1"),
+            .contains("written by novomodelo 0.0.1"),
         "got: {value}"
     );
 }
@@ -1236,7 +1238,7 @@ fn validate_refuses_a_simulation_only_policy_under_the_warm_start_kind() {
         value["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("written by cobre 0.0.1"),
+            .contains("written by novomodelo 0.0.1"),
         "got: {value}"
     );
 }
@@ -1318,7 +1320,7 @@ fn validate_accepts_a_supplied_opening_tree_with_historical_residuals_stages() {
     let case = TempDir::new().unwrap();
     write_supplied_opening_tree_case(case.path());
 
-    cobre()
+    novomodelo()
         .args(["validate", case.path().to_str().unwrap()])
         .assert()
         .success()
@@ -1328,7 +1330,7 @@ fn validate_accepts_a_supplied_opening_tree_with_historical_residuals_stages() {
         .stderr(predicate::str::contains("V2.").not());
 }
 
-/// `cobre validate --output <DIR>` checks the policy `cobre run --output <DIR>`
+/// `novomodelo validate --output <DIR>` checks the policy `novomodelo run --output <DIR>`
 /// loads, where the default `<CASE_DIR>/output/` holds none.
 #[test]
 fn validate_output_flag_checks_the_policy_run_loads_from_that_directory() {
@@ -1336,21 +1338,21 @@ fn validate_output_flag_checks_the_policy_run_loads_from_that_directory() {
     let case = dir.path().to_str().unwrap();
     let custom = dir.path().join("custom");
     write_boundary_case(dir.path(), 0);
-    cobre()
+    novomodelo()
         .args(["run", case, "--output", custom.to_str().unwrap()])
         .assert()
         .success();
     append_warm_start_policy(dir.path());
     common::restamp_policy_software(&custom.join("policy"), "another-program");
 
-    cobre()
+    novomodelo()
         .args(["run", case, "--output", custom.to_str().unwrap()])
         .assert()
         .failure()
         .code(1)
         .stderr(predicate::str::contains("written by another-program"));
 
-    let output = cobre()
+    let output = novomodelo()
         .args([
             "validate",
             case,
@@ -1390,7 +1392,7 @@ fn validate_output_flag_never_creates_the_directory() {
     make_valid_case(&dir);
     let absent = dir.path().join("absent");
 
-    cobre()
+    novomodelo()
         .args([
             "validate",
             dir.path().to_str().unwrap(),
@@ -1402,7 +1404,7 @@ fn validate_output_flag_never_creates_the_directory() {
     assert!(!absent.exists());
 
     append_warm_start_policy(dir.path());
-    cobre()
+    novomodelo()
         .args([
             "validate",
             dir.path().to_str().unwrap(),
@@ -1424,7 +1426,7 @@ fn validate_output_relative_path_resolves_against_the_working_directory() {
     let cwd = TempDir::new().unwrap();
     let case_arg = case.path().to_str().unwrap();
     write_boundary_case(case.path(), 0);
-    cobre()
+    novomodelo()
         .current_dir(cwd.path())
         .args(["run", case_arg, "--output", "rel_out"])
         .assert()
@@ -1432,7 +1434,7 @@ fn validate_output_relative_path_resolves_against_the_working_directory() {
     append_warm_start_policy(case.path());
     common::restamp_policy_software(&cwd.path().join("rel_out/policy"), "another-program");
 
-    let output = cobre()
+    let output = novomodelo()
         .current_dir(cwd.path())
         .args(["validate", case_arg, "--output", "rel_out", "--json"])
         .output()
@@ -1450,7 +1452,7 @@ fn validate_output_relative_path_resolves_against_the_working_directory() {
 
 #[test]
 fn validate_help_lists_the_output_flag() {
-    cobre()
+    novomodelo()
         .args(["validate", "--help"])
         .assert()
         .success()

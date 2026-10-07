@@ -9,8 +9,10 @@
     clippy::cast_possible_truncation
 )]
 
-use cobre_core::{NoiseMethod, SamplingScheme};
-use cobre_stochastic::{SampleRequest, StochasticError, build_forward_sampler, sample_forward};
+use novomodelo_core::{NoiseMethod, SamplingScheme};
+use novomodelo_stochastic::{
+    SampleRequest, StochasticError, build_forward_sampler, sample_forward,
+};
 
 mod common;
 use common::{

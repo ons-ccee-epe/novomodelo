@@ -16,15 +16,15 @@
 //!   This avoids `clock_gettime` syscall overhead on the hot path. The single
 //!   exception is [`TrainingEvent::TrainingStarted::timestamp`], which records the
 //!   run-level start time once at entry.
-//! - **Consumer-agnostic.** This module is defined in `cobre-core` (not in the
-//!   algorithm crate) so that interface crates (`cobre-cli`, `cobre-tui`,
-//!   `cobre-mcp`) can consume events without depending on the algorithm crate.
+//! - **Consumer-agnostic.** This module is defined in `novomodelo-core` (not in the
+//!   algorithm crate) so that interface crates (`novomodelo-cli`, `novomodelo-tui`,
+//!   `novomodelo-mcp`) can consume events without depending on the algorithm crate.
 //!
 //! ## Event channel pattern
 //!
 //! ```rust
 //! use std::sync::mpsc;
-//! use cobre_core::TrainingEvent;
+//! use novomodelo_core::TrainingEvent;
 //!
 //! let (tx, rx) = mpsc::channel::<TrainingEvent>();
 //! // Pass `Some(tx)` to the training loop; pass `rx` to the consumer thread.
@@ -43,7 +43,7 @@ pub enum WorkerTimingPhase {
     Backward,
 }
 
-/// Slot count of the `cobre_io::WorkerTimingRecord` `[u64; 16]` writer record.
+/// Slot count of the `novomodelo_io::WorkerTimingRecord` `[u64; 16]` writer record.
 ///
 /// The `WORKER_TIMING_SLOT_*` constants are the canonical bridge between the
 /// named [`WorkerPhaseTimings`] fields and the writer-record slot positions.

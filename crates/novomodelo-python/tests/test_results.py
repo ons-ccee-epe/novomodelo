@@ -1,10 +1,10 @@
-"""Integration tests for cobre.results — result loading and inspection.
+"""Integration tests for novomodelo.results — result loading and inspection.
 
 These tests verify that, after a completed run, the result loading functions
 return correctly-shaped Python objects.
 
 Run with (from the repo root):
-    pytest crates/cobre-python/tests/test_results.py
+    pytest crates/novomodelo-python/tests/test_results.py
 
 Note: tests that invoke run() write to a temporary directory created by
 pytest's tmp_path fixture. The 1dtoy case is small enough that tests complete
@@ -27,7 +27,7 @@ _REPO_ROOT = pathlib.Path(__file__).parents[3]
 # make the four families a hardcoded reader list historically omitted
 # (in_transit, transit_seed, anticipated_lanes, hydro_bus_generation) present.
 TRAVEL_TIME_CASE = (
-    _REPO_ROOT / "crates" / "cobre-sddp" / "tests" / "fixtures" / "travel_time_arc"
+    _REPO_ROOT / "crates" / "novomodelo-sddp" / "tests" / "fixtures" / "travel_time_arc"
 )
 POST_STUDY_CASE = (
     _REPO_ROOT / "examples" / "deterministic" / "d55-post-study-anticipated-lanes"
@@ -45,10 +45,10 @@ def run_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
 
     Module-scoped so the solver only runs once per test session.
     """
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     output_dir = tmp_path_factory.mktemp("results_output")
-    cobre.run.run(VALID_CASE, output_dir=str(output_dir))
+    novomodelo.run.run(VALID_CASE, output_dir=str(output_dir))
     return output_dir
 
 
@@ -59,9 +59,9 @@ def run_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
 
 def test_load_results_after_run(run_output: pathlib.Path) -> None:
     """load_results() returns a dict with training.complete == True."""
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    result = cobre.results.load_results(str(run_output))
+    result = novomodelo.results.load_results(str(run_output))
 
     assert isinstance(result, dict), "load_results must return a dict"
     assert "training" in result, "result must have 'training' key"
@@ -70,13 +70,13 @@ def test_load_results_after_run(run_output: pathlib.Path) -> None:
 
 def test_load_results_manifest_keys(run_output: pathlib.Path) -> None:
     """result['training']['manifest'] contains required top-level keys."""
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    result = cobre.results.load_results(str(run_output))
+    result = novomodelo.results.load_results(str(run_output))
     manifest = result["training"]["manifest"]
 
     assert isinstance(manifest, dict), "manifest must be a dict"
-    assert manifest["software"] == "cobre", "manifest must name the software"
+    assert manifest["software"] == "novomodelo", "manifest must name the software"
     assert "software_version" in manifest, "manifest must contain 'software_version'"
     assert "status" in manifest, "manifest must contain 'status'"
     assert "convergence" in manifest, "manifest must contain 'convergence'"
@@ -84,9 +84,9 @@ def test_load_results_manifest_keys(run_output: pathlib.Path) -> None:
 
 def test_load_results_metadata_present(run_output: pathlib.Path) -> None:
     """result['training']['metadata'] is a non-empty dict."""
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    result = cobre.results.load_results(str(run_output))
+    result = novomodelo.results.load_results(str(run_output))
     metadata = result["training"]["metadata"]
 
     assert isinstance(metadata, dict), "metadata must be a dict"
@@ -95,9 +95,9 @@ def test_load_results_metadata_present(run_output: pathlib.Path) -> None:
 
 def test_load_results_convergence_path_is_file(run_output: pathlib.Path) -> None:
     """result['training']['convergence_path'] points to an existing file."""
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    result = cobre.results.load_results(str(run_output))
+    result = novomodelo.results.load_results(str(run_output))
     convergence_path = result["training"]["convergence_path"]
 
     assert isinstance(convergence_path, str), "convergence_path must be a str"
@@ -108,9 +108,9 @@ def test_load_results_convergence_path_is_file(run_output: pathlib.Path) -> None
 
 def test_load_results_timing_path_is_file(run_output: pathlib.Path) -> None:
     """result['training']['timing_path'] points to an existing file."""
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    result = cobre.results.load_results(str(run_output))
+    result = novomodelo.results.load_results(str(run_output))
     timing_path = result["training"]["timing_path"]
 
     assert isinstance(timing_path, str), "timing_path must be a str"
@@ -121,9 +121,9 @@ def test_load_results_timing_path_is_file(run_output: pathlib.Path) -> None:
 
 def test_load_results_simulation_section_present(run_output: pathlib.Path) -> None:
     """result['simulation'] is a dict with 'manifest' and 'complete' keys."""
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    result = cobre.results.load_results(str(run_output))
+    result = novomodelo.results.load_results(str(run_output))
 
     assert "simulation" in result, "result must have 'simulation' key"
     sim = result["simulation"]
@@ -136,9 +136,9 @@ def test_load_results_simulation_ran(
     run_output: pathlib.Path,
 ) -> None:
     """1dtoy has simulation.enabled=true, so simulation results should exist."""
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    result = cobre.results.load_results(str(run_output))
+    result = novomodelo.results.load_results(str(run_output))
     sim = result["simulation"]
     assert sim["complete"] is True, "simulation must be complete after a successful run"
     assert isinstance(sim["manifest"], dict), "simulation manifest must be a dict"
@@ -146,18 +146,18 @@ def test_load_results_simulation_ran(
 
 def test_load_results_no_success_raises(tmp_path: pathlib.Path) -> None:
     """load_results() raises FileNotFoundError when training/_SUCCESS is absent."""
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
     with pytest.raises(FileNotFoundError):
-        cobre.results.load_results(str(tmp_path))
+        novomodelo.results.load_results(str(tmp_path))
 
 
 def test_load_results_nonexistent_dir_raises() -> None:
     """load_results() raises FileNotFoundError for a non-existent directory."""
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
     with pytest.raises(FileNotFoundError):
-        cobre.results.load_results("/tmp/nonexistent_cobre_output_xzy123")
+        novomodelo.results.load_results("/tmp/nonexistent_novomodelo_output_xzy123")
 
 
 # ---------------------------------------------------------------------------
@@ -167,9 +167,9 @@ def test_load_results_nonexistent_dir_raises() -> None:
 
 def test_load_convergence_returns_list(run_output: pathlib.Path) -> None:
     """load_convergence() returns a non-empty list of dicts."""
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    rows = cobre.results.load_convergence(str(run_output))
+    rows = novomodelo.results.load_convergence(str(run_output))
 
     assert isinstance(rows, list), "load_convergence must return a list"
     assert len(rows) > 0, "convergence list must be non-empty after a real run"
@@ -177,9 +177,9 @@ def test_load_convergence_returns_list(run_output: pathlib.Path) -> None:
 
 def test_load_convergence_dict_keys(run_output: pathlib.Path) -> None:
     """Each dict in the convergence list has the required keys."""
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    rows = cobre.results.load_convergence(str(run_output))
+    rows = novomodelo.results.load_convergence(str(run_output))
     required_keys = {
         "iteration",
         "lower_bound",
@@ -214,7 +214,7 @@ def test_load_convergence_keys_equal_written_schema_fields(
     """
     import pyarrow.parquet as pq  # noqa: PLC0415
 
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
     convergence_path = run_output / "training" / "convergence.parquet"
     written_fields = pq.read_schema(convergence_path).names
@@ -224,7 +224,7 @@ def test_load_convergence_keys_equal_written_schema_fields(
         "regression does not exercise the dropped-column fix"
     )
 
-    rows = cobre.results.load_convergence(str(run_output))
+    rows = novomodelo.results.load_convergence(str(run_output))
     assert rows, "convergence list must be non-empty after a real run"
     for i, row in enumerate(rows):
         assert list(row.keys()) == written_fields, (
@@ -235,9 +235,9 @@ def test_load_convergence_keys_equal_written_schema_fields(
 
 def test_load_convergence_value_types(run_output: pathlib.Path) -> None:
     """Convergence rows have correct Python types for key columns."""
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    rows = cobre.results.load_convergence(str(run_output))
+    rows = novomodelo.results.load_convergence(str(run_output))
     assert rows, "must have at least one row"
 
     row = rows[0]
@@ -260,26 +260,26 @@ def test_load_convergence_value_types(run_output: pathlib.Path) -> None:
 
 def test_load_convergence_iteration_is_one_based(run_output: pathlib.Path) -> None:
     """The first iteration row has iteration == 1."""
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    rows = cobre.results.load_convergence(str(run_output))
+    rows = novomodelo.results.load_convergence(str(run_output))
     assert rows, "must have at least one row"
     assert rows[0]["iteration"] == 1, "first iteration must be 1-based"
 
 
 def test_load_convergence_empty_dir_raises(tmp_path: pathlib.Path) -> None:
     """load_convergence() raises FileNotFoundError for a directory without Parquet."""
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
     with pytest.raises(FileNotFoundError):
-        cobre.results.load_convergence(str(tmp_path))
+        novomodelo.results.load_convergence(str(tmp_path))
 
 
 def test_convergence_path_is_readable(run_output: pathlib.Path) -> None:
     """The convergence_path from load_results() is a valid, non-empty Parquet path."""
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    result = cobre.results.load_results(str(run_output))
+    result = novomodelo.results.load_results(str(run_output))
     path = pathlib.Path(result["training"]["convergence_path"])
 
     assert path.exists(), "convergence_path must exist"
@@ -298,9 +298,9 @@ def test_load_policy_reads_real_run_output(run_output: pathlib.Path) -> None:
     "./policy"), so the default policy_subdir="policy" must resolve it. The
     returned dict must carry per-stage cut pools with non-empty stage-0 cuts.
     """
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    policy = cobre.results.load_policy(str(run_output))
+    policy = novomodelo.results.load_policy(str(run_output))
 
     assert isinstance(policy, dict), "load_policy must return a dict"
     assert "stage_cuts" in policy, "policy dict must have a 'stage_cuts' key"
@@ -312,10 +312,10 @@ def test_load_policy_reads_real_run_output(run_output: pathlib.Path) -> None:
 
 def test_load_policy_missing_dir_raises(tmp_path: pathlib.Path) -> None:
     """load_policy() raises FileNotFoundError when the policy dir is absent."""
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
     with pytest.raises(FileNotFoundError):
-        cobre.results.load_policy(str(tmp_path))
+        novomodelo.results.load_policy(str(tmp_path))
 
 
 def _tree_snapshot(root: pathlib.Path) -> list[tuple[str, bytes | None]]:
@@ -332,13 +332,13 @@ def test_load_policy_reads_a_staged_copy_when_the_policy_dir_is_absent(
     run_output: pathlib.Path, tmp_path: pathlib.Path
 ) -> None:
     """load_policy() reads <policy>.staging when <policy> is absent, changing nothing."""
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
     shutil.copytree(run_output / "policy", tmp_path / "policy.staging")
     before = _tree_snapshot(tmp_path)
 
-    staged = cobre.results.load_policy(str(tmp_path))
-    committed = cobre.results.load_policy(str(run_output))
+    staged = novomodelo.results.load_policy(str(tmp_path))
+    committed = novomodelo.results.load_policy(str(run_output))
 
     assert (
         staged["metadata"]["producer"]["completed_iterations"]
@@ -363,10 +363,10 @@ def stochastic_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     and ``stochastic/noise_openings.parquet``. Module-scoped so the solver runs
     only once per session.
     """
-    import cobre  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
 
     output_dir = tmp_path_factory.mktemp("stochastic_output")
-    cobre.Study(
+    novomodelo.Study(
         VALID_CASE,
         output_dir=str(output_dir),
         config_overrides={"exports.stochastic": True},
@@ -379,9 +379,9 @@ def test_load_stochastic_par_coefficients_shape(
 ) -> None:
     """par_coefficients() returns a 2-D (n_rows, 4) float64 array."""
     numpy = pytest.importorskip("numpy")
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    arr = cobre.results.load_stochastic(str(stochastic_output)).par_coefficients()
+    arr = novomodelo.results.load_stochastic(str(stochastic_output)).par_coefficients()
 
     assert arr.ndim == 2, "par_coefficients must be 2-D"
     assert arr.shape[1] == 4, "par_coefficients must have 4 columns"
@@ -393,9 +393,9 @@ def test_load_stochastic_opening_tree_shape(
 ) -> None:
     """opening_tree(0) returns a 2-D float64 array; shape[1] == stage-0 noise dim."""
     numpy = pytest.importorskip("numpy")
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    stoch = cobre.results.load_stochastic(str(stochastic_output))
+    stoch = novomodelo.results.load_stochastic(str(stochastic_output))
     arr = stoch.opening_tree(0)
 
     assert arr.ndim == 2, "opening_tree must be 2-D"
@@ -413,13 +413,13 @@ def test_load_stochastic_missing_artifacts_raises(tmp_path: pathlib.Path) -> Non
     ``stochastic/`` artifacts are absent and the error message must point the
     caller at the required export flag.
     """
-    import cobre  # noqa: PLC0415
-    import cobre.results  # noqa: PLC0415
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    cobre.Study(VALID_CASE, output_dir=str(tmp_path)).train()
+    novomodelo.Study(VALID_CASE, output_dir=str(tmp_path)).train()
 
     with pytest.raises(FileNotFoundError, match="exports.stochastic"):
-        cobre.results.load_stochastic(str(tmp_path))
+        novomodelo.results.load_stochastic(str(tmp_path))
 
 
 def test_load_stochastic_opening_tree_bad_stage_raises(
@@ -427,9 +427,9 @@ def test_load_stochastic_opening_tree_bad_stage_raises(
 ) -> None:
     """opening_tree(999) raises IndexError for an absent stage."""
     pytest.importorskip("numpy")
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    stoch = cobre.results.load_stochastic(str(stochastic_output))
+    stoch = novomodelo.results.load_stochastic(str(stochastic_output))
 
     with pytest.raises(IndexError):
         stoch.opening_tree(999)
@@ -437,11 +437,13 @@ def test_load_stochastic_opening_tree_bad_stage_raises(
 
 def test_load_stochastic_reexport_identity() -> None:
     """load_stochastic is present and is the compiled function (identity)."""
-    import cobre._native.results  # noqa: PLC0415
-    import cobre.results  # noqa: PLC0415
+    import novomodelo._native.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
-    assert hasattr(cobre.results, "load_stochastic")
-    assert cobre.results.load_stochastic is cobre._native.results.load_stochastic
+    assert hasattr(novomodelo.results, "load_stochastic")
+    assert (
+        novomodelo.results.load_stochastic is novomodelo._native.results.load_stochastic
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -456,7 +458,7 @@ def _run_with_simulation(src: pathlib.Path, work: pathlib.Path) -> pathlib.Path:
     flipped on so the simulation write path is exercised (mirrors the parity
     suite's ``_make_case_with_simulation``).
     """
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     case_dir = work / "case"
     case_dir.mkdir()
@@ -471,7 +473,7 @@ def _run_with_simulation(src: pathlib.Path, work: pathlib.Path) -> pathlib.Path:
     (case_dir / "config.json").write_text(json.dumps(config))
 
     output_dir = work / "output"
-    cobre.run.run(str(case_dir), output_dir=str(output_dir))
+    novomodelo.run.run(str(case_dir), output_dir=str(output_dir))
     return output_dir
 
 
@@ -520,7 +522,7 @@ def test_load_simulation_keys_cover_every_present_family(
     deck ``anticipated_lanes``, and on each deck no present family directory may
     be missing from the returned mapping.
     """
-    import cobre.results  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
 
     for output_dir, must_include in (
         (travel_time_output, "in_transit"),
@@ -533,7 +535,7 @@ def test_load_simulation_keys_cover_every_present_family(
             f"present families: {sorted(present)}"
         )
 
-        data = cobre.results.load_simulation(str(output_dir))
+        data = novomodelo.results.load_simulation(str(output_dir))
         assert isinstance(data, dict), "no-argument load must return a dict"
 
         missing = present - set(data.keys())

@@ -18,7 +18,7 @@
 //! - `trajectory` — `TrajectoryRecord`: the forward→backward data unit.
 //! - `visited_states` — archived trial-point states for dominated cut selection.
 //! - `training_output` — converts the training summary plus event log into the
-//!   structured output the `cobre-io` writers consume.
+//!   structured output the `novomodelo-io` writers consume.
 
 // Rationale: renaming this submodule out of its parent's `training` name would
 // break the `crate::training::{train, TrainingResult, TrainingOutcome}`

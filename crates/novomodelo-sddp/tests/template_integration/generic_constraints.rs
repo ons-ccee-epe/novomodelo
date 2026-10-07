@@ -2,23 +2,23 @@
 
 use super::*;
 
-use cobre_sddp::test_support::assert_all_templates_byte_identical;
+use novomodelo_sddp::test_support::assert_all_templates_byte_identical;
 
 /// Parse `json` (a `generic_constraints.json` body) through the real
-/// `cobre_io::constraints::parse_generic_constraints` path — the same loader the
+/// `novomodelo_io::constraints::parse_generic_constraints` path — the same loader the
 /// CLI uses — into the flat `Vec<GenericConstraint>`. `name_to_id` is empty (these
 /// fixtures carry no `@param` coefficients) and the line topology is empty (no
 /// `line_exchange(source_bus=…, target_bus=…)` form).
-fn parse_generic_from_str(json: &str) -> Vec<cobre_core::GenericConstraint> {
+fn parse_generic_from_str(json: &str) -> Vec<novomodelo_core::GenericConstraint> {
     use std::collections::HashMap;
     use std::io::Write;
 
     let mut file = tempfile::NamedTempFile::new().expect("create tempfile");
     file.write_all(json.as_bytes()).expect("write json fixture");
-    cobre_io::constraints::parse_generic_constraints(
+    novomodelo_io::constraints::parse_generic_constraints(
         file.path(),
         &HashMap::new(),
-        &cobre_io::constraints::LineBusPairIndex::default(),
+        &novomodelo_io::constraints::LineBusPairIndex::default(),
     )
     .expect("parse generic constraints")
 }
@@ -33,7 +33,7 @@ fn assert_lp_byte_identical(
     sugared_json: &str,
     flat_json: &str,
     n_blks: usize,
-    bounds: &cobre_core::ResolvedGenericConstraintBounds,
+    bounds: &novomodelo_core::ResolvedGenericConstraintBounds,
 ) {
     let sugared = parse_generic_from_str(sugared_json);
     let flat = parse_generic_from_str(flat_json);
@@ -60,7 +60,7 @@ fn assert_lp_byte_identical(
 /// hand-flattened twin desugar identically and build the same LP.
 #[test]
 fn desugared_named_expression_lp_matches_hand_flattened_twin() {
-    use cobre_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::ResolvedGenericConstraintBounds;
     use std::collections::HashMap;
 
     let sugared = r#"{
@@ -98,7 +98,7 @@ fn desugared_named_expression_lp_matches_hand_flattened_twin() {
 /// every write order to one; that is what this test pins.
 #[test]
 fn declaration_order_permutation_is_invariant_in_lp() {
-    use cobre_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::ResolvedGenericConstraintBounds;
     use std::collections::HashMap;
 
     let defs = [
@@ -119,7 +119,7 @@ fn declaration_order_permutation_is_invariant_in_lp() {
     let rows = vec![(1_i32, 0_i32, None::<i32>, None, Some(500.0_f64))];
     let bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter());
 
-    let digest = |perm: &[usize; 3]| -> Vec<cobre_solver::StageTemplate> {
+    let digest = |perm: &[usize; 3]| -> Vec<novomodelo_solver::StageTemplate> {
         let expressions: Vec<serde_json::Value> = perm
             .iter()
             .map(|&i| serde_json::json!({ "name": defs[i].0, "expression": defs[i].1 }))
@@ -172,7 +172,7 @@ fn generic_constraints_zero_does_not_change_layout() {
 
 #[test]
 fn generic_constraint_no_slack_block_id_none_3_blocks_collapses() {
-    use cobre_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::ResolvedGenericConstraintBounds;
     use std::collections::HashMap;
 
     let n_blks = 3_usize;
@@ -202,7 +202,7 @@ fn generic_constraint_no_slack_block_id_none_3_blocks_collapses() {
 
 #[test]
 fn generic_constraint_no_slack_block_id_none_3_blocks_block_level_per_block() {
-    use cobre_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::ResolvedGenericConstraintBounds;
     use std::collections::HashMap;
 
     let n_blks = 3_usize;
@@ -232,7 +232,7 @@ fn generic_constraint_no_slack_block_id_none_3_blocks_block_level_per_block() {
 
 #[test]
 fn generic_constraint_le_slack_enabled_2_blocks_collapses() {
-    use cobre_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::ResolvedGenericConstraintBounds;
     use std::collections::HashMap;
 
     let n_blks = 2_usize;
@@ -263,7 +263,7 @@ fn generic_constraint_le_slack_enabled_2_blocks_collapses() {
 
 #[test]
 fn generic_constraint_le_slack_enabled_2_blocks_block_level_per_block() {
-    use cobre_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::ResolvedGenericConstraintBounds;
     use std::collections::HashMap;
 
     let n_blks = 2_usize;
@@ -294,7 +294,7 @@ fn generic_constraint_le_slack_enabled_2_blocks_block_level_per_block() {
 
 #[test]
 fn generic_constraint_degenerate_band_two_slacks_collapses() {
-    use cobre_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::ResolvedGenericConstraintBounds;
     use std::collections::HashMap;
 
     let n_blks = 2_usize;
@@ -325,7 +325,7 @@ fn generic_constraint_degenerate_band_two_slacks_collapses() {
 
 #[test]
 fn generic_constraint_two_sided_two_slacks_collapses() {
-    use cobre_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::ResolvedGenericConstraintBounds;
     use std::collections::HashMap;
 
     let n_blks = 2_usize;
@@ -356,7 +356,7 @@ fn generic_constraint_two_sided_two_slacks_collapses() {
 
 #[test]
 fn generic_constraint_degenerate_band_two_slacks_block_level_per_block() {
-    use cobre_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::ResolvedGenericConstraintBounds;
     use std::collections::HashMap;
 
     let n_blks = 2_usize;
@@ -387,7 +387,7 @@ fn generic_constraint_degenerate_band_two_slacks_block_level_per_block() {
 
 #[test]
 fn generic_constraint_two_sided_two_slacks_block_level_per_block() {
-    use cobre_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::ResolvedGenericConstraintBounds;
     use std::collections::HashMap;
 
     let n_blks = 2_usize;
@@ -418,7 +418,7 @@ fn generic_constraint_two_sided_two_slacks_block_level_per_block() {
 
 #[test]
 fn generic_constraint_collapsed_slack_priced_by_total_stage_hours() {
-    use cobre_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::ResolvedGenericConstraintBounds;
     use std::collections::HashMap;
 
     let n_blks = 3_usize;
@@ -469,7 +469,7 @@ fn generic_constraint_collapsed_slack_priced_by_total_stage_hours() {
 
 #[test]
 fn generic_constraint_specific_block_id_generates_one_row() {
-    use cobre_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::ResolvedGenericConstraintBounds;
     use std::collections::HashMap;
 
     let n_blks = 3_usize;
@@ -499,7 +499,7 @@ fn generic_constraint_specific_block_id_generates_one_row() {
 
 #[test]
 fn generic_constraint_inactive_does_not_contribute_rows() {
-    use cobre_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::ResolvedGenericConstraintBounds;
     use std::collections::HashMap;
 
     let n_blks = 2_usize;
@@ -529,8 +529,8 @@ fn generic_constraint_inactive_does_not_contribute_rows() {
 
 #[test]
 fn generic_constraint_thermal_le_row_bounds_and_csc_entry() {
-    use cobre_core::ResolvedGenericConstraintBounds;
-    use cobre_core::{
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::{
         ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
     };
     use std::collections::HashMap;
@@ -595,8 +595,8 @@ fn generic_constraint_thermal_le_row_bounds_and_csc_entry() {
 
 #[test]
 fn generic_constraint_thermal_le_slack_column_and_csc_entry() {
-    use cobre_core::ResolvedGenericConstraintBounds;
-    use cobre_core::{
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::{
         ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
     };
     use std::collections::HashMap;
@@ -674,8 +674,8 @@ fn generic_constraint_thermal_le_slack_column_and_csc_entry() {
 
 #[test]
 fn generic_constraint_thermal_ge_row_bounds() {
-    use cobre_core::ResolvedGenericConstraintBounds;
-    use cobre_core::{
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::{
         ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
     };
     use std::collections::HashMap;
@@ -728,8 +728,8 @@ fn generic_constraint_thermal_ge_row_bounds() {
 /// the generic row — the mirror image of the upper-only `-1.0` case above.
 #[test]
 fn generic_constraint_thermal_ge_slack_column_and_csc_entry() {
-    use cobre_core::ResolvedGenericConstraintBounds;
-    use cobre_core::{
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::{
         ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
     };
     use std::collections::HashMap;
@@ -801,8 +801,8 @@ fn generic_constraint_thermal_ge_slack_column_and_csc_entry() {
 
 #[test]
 fn generic_constraint_two_sided_thermal_row_bounds_and_csc_entry() {
-    use cobre_core::ResolvedGenericConstraintBounds;
-    use cobre_core::{
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::{
         ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
     };
     use std::collections::HashMap;
@@ -866,8 +866,8 @@ fn generic_constraint_two_sided_thermal_row_bounds_and_csc_entry() {
 
 #[test]
 fn generic_constraint_degenerate_band_thermal_two_slacks() {
-    use cobre_core::ResolvedGenericConstraintBounds;
-    use cobre_core::{ConstraintExpression, GenericConstraint, SlackConfig};
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::{ConstraintExpression, GenericConstraint, SlackConfig};
     use std::collections::HashMap;
 
     let thermal_entity_id = EntityId(2);
@@ -956,8 +956,8 @@ fn generic_constraint_degenerate_band_thermal_two_slacks() {
 
 #[test]
 fn generic_constraint_two_sided_thermal_two_slacks() {
-    use cobre_core::ResolvedGenericConstraintBounds;
-    use cobre_core::{ConstraintExpression, GenericConstraint, SlackConfig};
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::{ConstraintExpression, GenericConstraint, SlackConfig};
     use std::collections::HashMap;
 
     let thermal_entity_id = EntityId(2);
@@ -1051,8 +1051,8 @@ fn generic_constraint_two_sided_thermal_two_slacks() {
 /// one-sided row.
 #[test]
 fn generic_constraint_degenerate_band_gets_equality_row_and_two_slacks() {
-    use cobre_core::ResolvedGenericConstraintBounds;
-    use cobre_core::{ConstraintExpression, GenericConstraint, SlackConfig};
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::{ConstraintExpression, GenericConstraint, SlackConfig};
     use std::collections::HashMap;
 
     let thermal_entity_id = EntityId(2);
@@ -1097,13 +1097,13 @@ fn generic_constraint_degenerate_band_gets_equality_row_and_two_slacks() {
 #[allow(clippy::cast_possible_wrap)]
 fn generic_constraint_two_hydros_sum_csc_entries() {
     use chrono::NaiveDate;
-    use cobre_core::ResolvedGenericConstraintBounds;
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
     };
     use std::collections::HashMap;
@@ -1431,14 +1431,14 @@ fn generic_constraint_two_hydros_sum_csc_entries() {
 #[allow(clippy::cast_possible_wrap)]
 fn one_hydro_system(
     n_blks: usize,
-    block_mode: cobre_core::BlockMode,
-    constraint: Option<cobre_core::GenericConstraint>,
-    bounds: cobre_core::ResolvedGenericConstraintBounds,
-) -> cobre_core::System {
+    block_mode: novomodelo_core::BlockMode,
+    constraint: Option<novomodelo_core::GenericConstraint>,
+    bounds: novomodelo_core::ResolvedGenericConstraintBounds,
+) -> novomodelo_core::System {
     use chrono::NaiveDate;
-    use cobre_core::HydroGenerationModel;
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::HydroGenerationModel;
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
 
@@ -1589,8 +1589,8 @@ fn one_hydro_system(
 #[test]
 #[allow(clippy::cast_possible_wrap)]
 fn generic_constraint_chronological_stage_net_storage_one_row() {
-    use cobre_core::ResolvedGenericConstraintBounds;
-    use cobre_core::{
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::{
         BlockMode, ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
     };
     use std::collections::HashMap;
@@ -1671,8 +1671,8 @@ fn generic_constraint_chronological_stage_net_storage_one_row() {
 #[test]
 #[allow(clippy::cast_possible_wrap)]
 fn generic_constraint_chronological_specific_block_ramp_one_row() {
-    use cobre_core::ResolvedGenericConstraintBounds;
-    use cobre_core::{
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::{
         BlockMode, ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
     };
     use std::collections::HashMap;
@@ -1774,16 +1774,18 @@ fn generic_constraint_chronological_specific_block_ramp_one_row() {
 /// column identically to one built with [`ResolvedParameters::default`].
 fn resolved_params_single_stage(
     n_blks: usize,
-    params: &[cobre_core::ScalarParameter],
+    params: &[novomodelo_core::ScalarParameter],
 ) -> ResolvedParameters {
-    use cobre_core::StageId;
-    use cobre_sddp::build_resolved_parameters;
-    use cobre_sddp::energy_conversion::{EnergyConversionSet, HydroEnergyProductivityOverride};
+    use novomodelo_core::StageId;
+    use novomodelo_sddp::build_resolved_parameters;
+    use novomodelo_sddp::energy_conversion::{
+        EnergyConversionSet, HydroEnergyProductivityOverride,
+    };
 
     let n_stages = 1_usize;
     let ec = EnergyConversionSet::new(vec![], vec![], &[], n_stages);
     let overrides = HydroEnergyProductivityOverride::default();
-    let hydros: Vec<cobre_core::Hydro> = Vec::new();
+    let hydros: Vec<novomodelo_core::Hydro> = Vec::new();
     build_resolved_parameters(
         params,
         &ec,
@@ -1800,9 +1802,9 @@ fn resolved_params_single_stage(
 /// Build the stage templates for `system` under `resolved` — the `build_templates_for`
 /// path with a caller-supplied parameter table instead of the default empty one.
 fn build_templates_with_params(
-    system: &cobre_core::System,
+    system: &novomodelo_core::System,
     resolved: &ResolvedParameters,
-) -> Vec<cobre_solver::StageTemplate> {
+) -> Vec<novomodelo_solver::StageTemplate> {
     build_stage_templates_resolving_layout(
         system,
         no_penalty_config(),
@@ -1822,11 +1824,11 @@ fn build_templates_with_params(
 #[allow(clippy::too_many_arguments)]
 fn assert_desugaring_twin_builds_identical_lp(
     n_blks: usize,
-    sugared_constraints: Vec<cobre_core::GenericConstraint>,
-    sugared_bounds: cobre_core::ResolvedGenericConstraintBounds,
+    sugared_constraints: Vec<novomodelo_core::GenericConstraint>,
+    sugared_bounds: novomodelo_core::ResolvedGenericConstraintBounds,
     sugared_params: &ResolvedParameters,
-    flat_constraints: Vec<cobre_core::GenericConstraint>,
-    flat_bounds: cobre_core::ResolvedGenericConstraintBounds,
+    flat_constraints: Vec<novomodelo_core::GenericConstraint>,
+    flat_bounds: novomodelo_core::ResolvedGenericConstraintBounds,
     flat_params: &ResolvedParameters,
 ) {
     let sugared_tpl = build_templates_with_params(
@@ -1849,7 +1851,7 @@ fn assert_desugaring_twin_builds_identical_lp(
 /// block-confined constraint per block, and must build the identical LP.
 #[test]
 fn per_stage_block_coefficient_twin_matches_hand_flattened_literals() {
-    use cobre_core::{
+    use novomodelo_core::{
         ConstraintExpression, GenericConstraint, LinearTerm, ParameterKind,
         ResolvedGenericConstraintBounds, ScalarParameter, SlackConfig, VariableRef,
     };
@@ -1962,7 +1964,7 @@ fn per_stage_block_coefficient_twin_matches_hand_flattened_literals() {
 /// reference keeps the rows per-block on both sides.
 #[test]
 fn symbolic_upper_bound_ref_twin_matches_literal_per_block_bounds() {
-    use cobre_core::{
+    use novomodelo_core::{
         AffineBound, ConstraintExpression, GenericConstraint, LinearTerm, ParameterKind,
         ResolvedGenericConstraintBounds, ScalarParameter, SlackConfig, VariableRef,
     };
@@ -2046,7 +2048,7 @@ fn symbolic_upper_bound_ref_twin_matches_literal_per_block_bounds() {
 /// and no reference.
 #[test]
 fn symbolic_lower_bound_ref_stage_level_collapse_twin() {
-    use cobre_core::{
+    use novomodelo_core::{
         AffineBound, ConstraintExpression, GenericConstraint, ParameterKind,
         ResolvedGenericConstraintBounds, ScalarParameter, SlackConfig,
     };
@@ -2114,16 +2116,16 @@ fn symbolic_lower_bound_ref_stage_level_collapse_twin() {
 /// exercises, unlike [`parse_generic_from_str`]'s empty table.
 fn parse_generic_from_str_with_params(
     json: &str,
-    name_to_id: &std::collections::HashMap<String, cobre_core::EntityId>,
-) -> Vec<cobre_core::GenericConstraint> {
+    name_to_id: &std::collections::HashMap<String, novomodelo_core::EntityId>,
+) -> Vec<novomodelo_core::GenericConstraint> {
     use std::io::Write;
 
     let mut file = tempfile::NamedTempFile::new().expect("create tempfile");
     file.write_all(json.as_bytes()).expect("write json fixture");
-    cobre_io::constraints::parse_generic_constraints(
+    novomodelo_io::constraints::parse_generic_constraints(
         file.path(),
         name_to_id,
-        &cobre_io::constraints::LineBusPairIndex::default(),
+        &novomodelo_io::constraints::LineBusPairIndex::default(),
     )
     .expect("parse generic constraints")
 }
@@ -2134,7 +2136,7 @@ fn parse_generic_from_str_with_params(
 /// the already-normalized inequality by hand.
 #[test]
 fn decision_variable_rhs_normalizes_to_hand_flattened_form() {
-    use cobre_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::ResolvedGenericConstraintBounds;
     use std::collections::HashMap;
 
     let sugared = r#"{
@@ -2161,7 +2163,7 @@ fn decision_variable_rhs_normalizes_to_hand_flattened_form() {
 /// separate columns.
 #[test]
 fn same_variable_repeat_merges_to_summed_coefficient() {
-    use cobre_core::{CoefficientRef, ResolvedGenericConstraintBounds};
+    use novomodelo_core::{CoefficientRef, ResolvedGenericConstraintBounds};
     use std::collections::HashMap;
 
     let sugared = r#"{
@@ -2195,7 +2197,7 @@ fn same_variable_repeat_merges_to_summed_coefficient() {
 /// expression terms at all, would produce.
 #[test]
 fn full_cancellation_drops_net_zero_column() {
-    use cobre_core::{
+    use novomodelo_core::{
         ConstraintExpression, GenericConstraint, ResolvedGenericConstraintBounds, SlackConfig,
     };
     use std::collections::HashMap;
@@ -2247,7 +2249,7 @@ fn full_cancellation_drops_net_zero_column() {
 /// the two ASTs differ but must build the identical LP.
 #[test]
 fn paren_distribution_normalizes_to_hand_flattened_terms() {
-    use cobre_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::ResolvedGenericConstraintBounds;
     use std::collections::HashMap;
 
     let sugared = r#"{
@@ -2282,7 +2284,7 @@ fn paren_distribution_normalizes_to_hand_flattened_terms() {
 /// resolve_affine` arm, not the base or the remainder alone.
 #[test]
 fn parquet_base_folds_with_inline_affine_remainder() {
-    use cobre_core::{
+    use novomodelo_core::{
         ConstraintExpression, GenericConstraint, LinearTerm, ResolvedGenericConstraintBounds,
         SlackConfig, VariableRef,
     };
@@ -2347,7 +2349,7 @@ fn parquet_base_folds_with_inline_affine_remainder() {
 /// this twin is sensitive to both terms' values, not merely their count.
 #[test]
 fn parameter_rhs_places_two_distinct_terms_on_one_column() {
-    use cobre_core::{
+    use novomodelo_core::{
         ConstraintExpression, GenericConstraint, LinearTerm, ParameterKind,
         ResolvedGenericConstraintBounds, ScalarParameter, SlackConfig, VariableRef,
     };
@@ -2431,7 +2433,7 @@ fn parameter_rhs_places_two_distinct_terms_on_one_column() {
 /// authoring order.
 #[test]
 fn declaration_order_and_rhs_term_order_are_invariant_in_lp() {
-    use cobre_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::ResolvedGenericConstraintBounds;
     use std::collections::HashMap;
 
     let doc_a = r#"{

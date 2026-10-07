@@ -8,7 +8,7 @@
 //! whereas `lp/builder/` sits below `training/` in the crate layering — hosting it
 //! there would invert the dependency direction.
 
-use cobre_solver::SolverInterface;
+use novomodelo_solver::SolverInterface;
 
 use crate::{
     context::{StageContext, TrainingContext},

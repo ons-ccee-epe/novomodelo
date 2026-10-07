@@ -1,5 +1,5 @@
 [package]
-name = "cobre-core"
+name = "novomodelo-core"
 description = "Power system data model — buses, branches, generators, loads, and network topology"
 version.workspace = true
 edition.workspace = true
@@ -17,7 +17,7 @@ default = []
 ## Enable `serde::Serialize`/`serde::Deserialize` for all public types.
 ##
 ## When enabled, activates `chrono/serde` so that `NaiveDate` fields also
-## implement the serde traits. Required by `cobre-io` for JSON input loading
+## implement the serde traits. Required by `novomodelo-io` for JSON input loading
 ## and by MPI broadcast via `postcard`.
 serde = ["dep:serde", "chrono/serde"]
 ## Enable `schemars::JsonSchema` for public types that are referenced from
@@ -37,7 +37,7 @@ serde = { version = "1", features = ["derive"], optional = true }
 schemars = { version = "1", optional = true }
 
 [dev-dependencies]
-cobre-core = { path = ".", features = ["test-support"] }
+novomodelo-core = { path = ".", features = ["test-support"] }
 postcard = { version = "1", features = ["alloc"] }
 proptest = "1"
 serde_json = { version = "1", optional = false }

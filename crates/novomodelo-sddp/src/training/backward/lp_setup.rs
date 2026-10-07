@@ -2,8 +2,8 @@
 //! structural template, append delta cuts, and patch the noise-dependent
 //! row/column bounds for one opening.
 
-use cobre_solver::SolverInterface;
-use cobre_stochastic::{ClassDimensions, ExternalScenarioLibrary};
+use novomodelo_solver::SolverInterface;
+use novomodelo_stochastic::{ClassDimensions, ExternalScenarioLibrary};
 
 use crate::{
     context::{StageContext, TrainingContext},
@@ -168,7 +168,7 @@ pub(crate) fn resolve_backward_basis<'a>(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
-    use cobre_stochastic::{ClassDimensions, ExternalScenarioLibrary};
+    use novomodelo_stochastic::{ClassDimensions, ExternalScenarioLibrary};
 
     use super::{NodeId, assemble_external_opening_noise, fill_external_class};
     use crate::SddpError;

@@ -1,4 +1,4 @@
 {
-  "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/thermals.schema.json",
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/thermals.schema.json",
   "thermals": []
 }

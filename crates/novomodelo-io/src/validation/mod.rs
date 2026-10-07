@@ -1,4 +1,4 @@
-//! Validation infrastructure for the cobre-io loading pipeline.
+//! Validation infrastructure for the novomodelo-io loading pipeline.
 //!
 //! This module provides the [`ValidationContext`] collector that every validation layer
 //! reports into, the [`ErrorKind`] and [`Severity`] enums, and the [`rules`] table. A layer
@@ -7,11 +7,11 @@
 //!
 //! ## Design
 //!
-//! Validation in Cobre collects **all** errors before failing rather than stopping on the
+//! Validation in Novomodelo collects **all** errors before failing rather than stopping on the
 //! first problem.  This lets users see and fix every issue in a single iteration.
 //!
 //! ```
-//! use cobre_io::validation::{ValidationContext, rules::RULES};
+//! use novomodelo_io::validation::{ValidationContext, rules::RULES};
 //!
 //! let missing_file = RULES
 //!     .iter()
@@ -131,7 +131,7 @@ pub struct ValidationEntry {
 /// # Examples
 ///
 /// ```
-/// use cobre_io::validation::ValidationContext;
+/// use novomodelo_io::validation::ValidationContext;
 ///
 /// let mut ctx = ValidationContext::new();
 /// assert!(!ctx.has_errors());
@@ -215,7 +215,7 @@ impl ValidationContext {
     /// # Examples
     ///
     /// ```
-    /// use cobre_io::validation::{ValidationContext, rules::RULES};
+    /// use novomodelo_io::validation::{ValidationContext, rules::RULES};
     ///
     /// let stub_term = RULES
     ///     .iter()

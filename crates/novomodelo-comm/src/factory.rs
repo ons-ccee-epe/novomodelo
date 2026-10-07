@@ -33,7 +33,7 @@ use crate::ReduceOp;
 /// # Examples
 ///
 /// ```rust
-/// use cobre_comm::BackendKind;
+/// use novomodelo_comm::BackendKind;
 ///
 /// let kind = BackendKind::Local;
 /// let copy = kind;
@@ -187,7 +187,7 @@ impl crate::TopologyProvider for CommBackend {
 /// # Examples
 ///
 /// ```rust
-/// use cobre_comm::available_backends;
+/// use novomodelo_comm::available_backends;
 ///
 /// let backends = available_backends();
 /// assert!(backends.contains(&"local".to_string()));
@@ -244,11 +244,11 @@ fn auto_detect() -> Result<CommBackend, BackendError> {
 /// ```rust
 /// # #[cfg(not(feature = "mpi"))]
 /// # {
-/// use cobre_comm::{create_communicator, BackendKind};
+/// use novomodelo_comm::{create_communicator, BackendKind};
 ///
 /// // With no distributed features, only the local backend is constructible.
 /// let backend = create_communicator(BackendKind::Local).expect("local backend must succeed");
-/// # use cobre_comm::Communicator;
+/// # use novomodelo_comm::Communicator;
 /// assert_eq!(backend.rank(), 0);
 /// assert_eq!(backend.size(), 1);
 /// # }
@@ -276,7 +276,7 @@ pub fn create_communicator(kind: BackendKind) -> Result<LocalBackend, BackendErr
 /// ```rust
 /// # #[cfg(feature = "mpi")]
 /// # {
-/// use cobre_comm::{create_communicator, BackendKind, Communicator};
+/// use novomodelo_comm::{create_communicator, BackendKind, Communicator};
 ///
 /// // The local backend is selected explicitly.
 /// let backend = create_communicator(BackendKind::Local).expect("local backend must succeed");

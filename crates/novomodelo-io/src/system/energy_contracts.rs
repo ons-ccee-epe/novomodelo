@@ -11,7 +11,7 @@
 //!
 //! ```json
 //! {
-//!   "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/energy_contracts.schema.json",
+//!   "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/energy_contracts.schema.json",
 //!   "contracts": [
 //!     {
 //!       "id": 0,
@@ -54,7 +54,7 @@
 //! Cross-reference validation (e.g., checking that `bus_id` exists in the bus
 //! registry) is deferred to Layer 3.
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId,
     entities::{ContractType, EnergyContract},
 };
@@ -105,7 +105,7 @@ pub(crate) struct RawContract {
     limits: RawContractLimits,
 }
 
-// cobre_core::ContractType has no snake_case rename, so the input needs its own enum.
+// novomodelo_core::ContractType has no snake_case rename, so the input needs its own enum.
 /// Direction of energy flow of a contract.
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -135,7 +135,7 @@ pub(crate) struct RawContractLimits {
 /// `Vec<EnergyContract>`. The result is sorted by `id` ascending, so parser
 /// output is deterministic regardless of file row order (declaration-order
 /// invariance); canonical order is
-/// [`SystemBuilder::build`](cobre_core::SystemBuilder::build)'s to establish.
+/// [`SystemBuilder::build`](novomodelo_core::SystemBuilder::build)'s to establish.
 ///
 /// # Errors
 ///
@@ -151,7 +151,7 @@ pub(crate) struct RawContractLimits {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::system::parse_energy_contracts;
+/// use novomodelo_io::system::parse_energy_contracts;
 /// use std::path::Path;
 ///
 /// let contracts = parse_energy_contracts(
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn test_parse_valid_contracts() {
         let json = r#"{
-          "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/energy_contracts.schema.json",
+          "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/energy_contracts.schema.json",
           "contracts": [
             {
               "id": 0,

@@ -7,8 +7,8 @@
 
 use std::ops::Range;
 
-use cobre_core::ResolvedBounds;
-use cobre_solver::StageTemplate;
+use novomodelo_core::ResolvedBounds;
+use novomodelo_solver::StageTemplate;
 
 use crate::indexer::{
     AnticipatedLocal, AnticipatedPlants, StateSpace, anticipated_resolution_for,

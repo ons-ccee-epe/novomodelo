@@ -1,7 +1,7 @@
 //! DHAT heap-allocation baseline for the backward-pass hot path (D19 case).
 //!
 //! ```text
-//! cargo run --example dhat_baseline --features dhat-heap -p cobre-sddp --profile profiling
+//! cargo run --example dhat_baseline --features dhat-heap -p novomodelo-sddp --profile profiling
 //! ```
 //!
 //! The `profiling` profile (not plain `--release`) is mandatory: a `release`
@@ -20,7 +20,7 @@
 )]
 
 #[cfg(feature = "highs")]
-use cobre_io::config::TrainingSelection;
+use novomodelo_io::config::TrainingSelection;
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
@@ -29,15 +29,15 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 use std::path::Path;
 
 #[cfg(feature = "highs")]
-use cobre_comm::{CommData, CommError, Communicator, ReduceOp};
+use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
 #[cfg(feature = "highs")]
-use cobre_core::scenario::ScenarioSource;
+use novomodelo_core::scenario::ScenarioSource;
 #[cfg(feature = "highs")]
-use cobre_io::{config::StoppingRuleConfig, parse_config};
+use novomodelo_io::{config::StoppingRuleConfig, parse_config};
 #[cfg(feature = "highs")]
-use cobre_sddp::{StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic};
+use novomodelo_sddp::{StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic};
 #[cfg(feature = "highs")]
-use cobre_solver::highs::HighsSolver;
+use novomodelo_solver::highs::HighsSolver;
 
 /// Single-rank stub communicator (mirrors `tests/deterministic.rs`).
 #[cfg(feature = "highs")]
@@ -107,9 +107,9 @@ fn main() {
     config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 3 });
     config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
 
-    let system = cobre_io::load_case(case_dir).expect("load_case must succeed");
+    let system = novomodelo_io::load_case(case_dir).expect("load_case must succeed");
 
-    let cobre_sddp::PrepareStochasticResult {
+    let novomodelo_sddp::PrepareStochasticResult {
         system, stochastic, ..
     } = prepare_stochastic(
         system,

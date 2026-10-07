@@ -1,8 +1,8 @@
-# Cobre Validation Error Demo
+# Novomodelo Validation Error Demo
 # Generates: validation-error.gif
-# Shows cobre validate stopping at a schema error before the reference layer runs.
+# Shows novomodelo validate stopping at a schema error before the reference layer runs.
 
-Require cobre
+Require novomodelo
 
 Set Shell "bash"
 Set FontFamily "JetBrains Mono"
@@ -18,7 +18,7 @@ Set MarginFill "#2D3440"
 
 Output validation-error.gif
 
-Type "cobre init --template 1dtoy demo/"
+Type "novomodelo init --template 1dtoy demo/"
 Enter
 Sleep 5s
 
@@ -32,7 +32,7 @@ Type "jq '.thermals[0].bus_id = 99' demo/system/thermals.json > tmp.json && mv t
 Enter
 Sleep 5s
 
-Type "cobre validate demo/"
+Type "novomodelo validate demo/"
 Enter
 Sleep 5s
 

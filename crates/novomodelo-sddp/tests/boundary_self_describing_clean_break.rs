@@ -11,16 +11,16 @@ use std::path::Path;
 use std::process::Command;
 
 use chrono::NaiveDate;
-use cobre_io::{
+use novomodelo_io::{
     ENTITY_SLOT_DATE_SENTINEL, FORMAT_VERSION, GraphManifest, PolicyCutRecord, ProducerBlock,
     StageCutsPayload, encode_slot_date, write_policy_checkpoint,
 };
-use cobre_sddp::test_support::ymd;
-use cobre_sddp::{BoundaryLoadRequest, SddpError, load_boundary_cuts};
+use novomodelo_sddp::test_support::ymd;
+use novomodelo_sddp::{BoundaryLoadRequest, SddpError, load_boundary_cuts};
 use serde_json::json;
 
 fn fixture_priced_date(pool: u32) -> NaiveDate {
-    cobre_sddp::test_support::fixture_priced_date(ymd(2030, 1, 1), pool)
+    novomodelo_sddp::test_support::fixture_priced_date(ymd(2030, 1, 1), pool)
 }
 
 /// A minimal producer block for artifact-writing test helpers. Its own
@@ -32,7 +32,7 @@ fn producer_block() -> ProducerBlock {
         completed_iterations: 1,
         max_iterations: 1,
         forward_passes: 1,
-        ..cobre_sddp::test_support::producer_block()
+        ..novomodelo_sddp::test_support::producer_block()
     }
 }
 
@@ -73,7 +73,7 @@ fn boundary_load_reads_cost_scale_from_bin() {
         graph_stage_id: 0,
         priced_state_date: encode_slot_date(fixture_priced_date(0)),
     };
-    let metadata = cobre_sddp::test_support::checkpoint_metadata(
+    let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
         1,
         GraphManifest::default(),
         producer_block(),
@@ -114,10 +114,10 @@ fn boundary_load_reads_cost_scale_from_bin() {
 /// identical to the current `StageCuts`/`AffinePiece`/`EntitySlot` tables up to
 /// `entity_manifest (id: 7)`, stopping there — matches the forward-compat
 /// fixture in
-/// `crates/cobre-io/tests/flatbuffers_schema_conformance.rs`
+/// `crates/novomodelo-io/tests/flatbuffers_schema_conformance.rs`
 /// (`pre_self_describing_stage_cuts_reads_as_absent_and_sentinels`).
 const PRE_SELF_DESCRIBING_SCHEMA: &str = r#"
-namespace Cobre.IO.Policy;
+namespace Novomodelo.IO.Policy;
 
 file_identifier "CBVF";
 
@@ -212,7 +212,7 @@ fn build_pre_self_describing_stage_cuts_bin(
     let status = Command::new(&flatc)
         .arg("-b")
         .arg("--root-type")
-        .arg("Cobre.IO.Policy.StageCuts")
+        .arg("Novomodelo.IO.Policy.StageCuts")
         .arg("-o")
         .arg(dir.path())
         .arg(&schema_path)
@@ -243,7 +243,7 @@ fn boundary_load_rejects_pre_self_describing_checkpoint() {
 
     // A normal, self-describing checkpoint first, so `metadata.json` and the
     // `basis/` directory exist — then overwrite `cuts/000.bin` with the
-    // pre-self-describing buffer, reproducing an artifact this Cobre never
+    // pre-self-describing buffer, reproducing an artifact this Novomodelo never
     // writes but must still detect on load.
     let placeholder_coeff = [1.0_f64];
     let cut = PolicyCutRecord {
@@ -269,7 +269,7 @@ fn boundary_load_rejects_pre_self_describing_checkpoint() {
         graph_stage_id: 0,
         priced_state_date: encode_slot_date(fixture_priced_date(0)),
     };
-    let metadata = cobre_sddp::test_support::checkpoint_metadata(
+    let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
         1,
         GraphManifest::default(),
         producer_block(),
@@ -294,7 +294,7 @@ fn boundary_load_rejects_pre_self_describing_checkpoint() {
     );
     let msg = err.to_string();
     assert!(
-        msg.ends_with(&cobre_io::policy_checkpoint_remedy()),
+        msg.ends_with(&novomodelo_io::policy_checkpoint_remedy()),
         "message must end with the shared remedy: {msg}"
     );
     assert!(
@@ -335,7 +335,7 @@ fn boundary_load_rejects_pre_format_version_checkpoint() {
         graph_stage_id: 0,
         priced_state_date: encode_slot_date(fixture_priced_date(0)),
     };
-    let mut metadata = cobre_sddp::test_support::checkpoint_metadata(
+    let mut metadata = novomodelo_sddp::test_support::checkpoint_metadata(
         1,
         GraphManifest::default(),
         producer_block(),
@@ -366,7 +366,7 @@ fn boundary_load_rejects_pre_format_version_checkpoint() {
         "message must name the version field: {msg}"
     );
     assert!(
-        msg.ends_with(&cobre_io::policy_checkpoint_remedy()),
+        msg.ends_with(&novomodelo_io::policy_checkpoint_remedy()),
         "message must end with the shared remedy: {msg}"
     );
 }

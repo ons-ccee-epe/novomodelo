@@ -20,10 +20,10 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use chrono::NaiveDate;
-use cobre_core::BlockMode;
-use cobre_core::ContractType;
-use cobre_core::EntityId;
-use cobre_core::HydroPastDefluence;
+use novomodelo_core::BlockMode;
+use novomodelo_core::ContractType;
+use novomodelo_core::EntityId;
+use novomodelo_core::HydroPastDefluence;
 
 use crate::energy_conversion::EnergyConversionSet;
 use crate::horizon_mode::HorizonMode;
@@ -379,7 +379,7 @@ fn extract_transit_buckets(
 }
 
 /// One declared travel-time arc's upstream hydro identity, resolved once at
-/// setup time from [`cobre_core::System::hydros`] and threaded into the
+/// setup time from [`novomodelo_core::System::hydros`] and threaded into the
 /// simulation pipeline — the rolling-seed emitter never re-derives it from
 /// `System`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -545,7 +545,7 @@ pub struct EntityCounts {
 /// # Examples
 ///
 /// ```
-/// use cobre_sddp::simulation::extraction::assign_scenarios;
+/// use novomodelo_sddp::simulation::extraction::assign_scenarios;
 ///
 /// // 10 scenarios, 3 ranks:
 /// //   10 % 3 = 1  → rank 0 gets ceil(10/3) = 4 scenarios
@@ -1844,8 +1844,8 @@ fn extract_stub_collections(
 /// # Examples
 ///
 /// ```
-/// use cobre_sddp::simulation::types::{ScenarioCategoryCosts, SimulationCostResult};
-/// use cobre_sddp::simulation::extraction::accumulate_category_costs;
+/// use novomodelo_sddp::simulation::types::{ScenarioCategoryCosts, SimulationCostResult};
+/// use novomodelo_sddp::simulation::extraction::accumulate_category_costs;
 ///
 /// let cost = SimulationCostResult {
 ///     stage_id: 0,
@@ -1910,7 +1910,7 @@ pub fn accumulate_category_costs(cost: &SimulationCostResult, accum: &mut Scenar
 #[cfg(test)]
 mod transit_seed_tests {
     use chrono::NaiveDate;
-    use cobre_core::{EntityId, HydroPastDefluence};
+    use novomodelo_core::{EntityId, HydroPastDefluence};
 
     use super::{
         SimulationHydroResult, SimulationStageResult, SimulationTransitSeedResult, TransitSeedArc,

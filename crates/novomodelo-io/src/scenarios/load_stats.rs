@@ -12,7 +12,7 @@
 //!
 //! Entity-ID existence is deferred to Layer 3 referential validation.
 
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
@@ -23,13 +23,13 @@ use crate::parquet_helpers::{
 /// A single row from `scenarios/load_seasonal_stats.parquet`.
 ///
 /// Assembled by [`crate::scenarios::assembly::assemble_load_models`] into
-/// [`cobre_core::scenario::LoadModel`] entries.
+/// [`novomodelo_core::scenario::LoadModel`] entries.
 ///
 /// # Examples
 ///
 /// ```
-/// use cobre_io::scenarios::LoadSeasonalStatsRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::scenarios::LoadSeasonalStatsRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = LoadSeasonalStatsRow {
 ///     bus_id: EntityId::from(1),
@@ -69,7 +69,7 @@ pub struct LoadSeasonalStatsRow {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::scenarios::parse_load_seasonal_stats;
+/// use novomodelo_io::scenarios::parse_load_seasonal_stats;
 /// use std::path::Path;
 ///
 /// let rows = parse_load_seasonal_stats(Path::new("scenarios/load_seasonal_stats.parquet"))

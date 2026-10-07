@@ -75,7 +75,7 @@
 //! - Semantic cross-validation (e.g., penalty ordering constraints) — deferred.
 
 use arrow::array::{Array, Float64Array};
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
@@ -101,8 +101,8 @@ fn optional_value(col: Option<&Float64Array>, row: usize) -> Option<f64> {
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::BusPenaltyOverrideRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::constraints::BusPenaltyOverrideRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = BusPenaltyOverrideRow {
 ///     bus_id: EntityId::from(1),
@@ -131,8 +131,8 @@ pub struct BusPenaltyOverrideRow {
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::LinePenaltyOverrideRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::constraints::LinePenaltyOverrideRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = LinePenaltyOverrideRow {
 ///     line_id: EntityId::from(10),
@@ -163,8 +163,8 @@ pub struct LinePenaltyOverrideRow {
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::HydroPenaltyOverrideRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::constraints::HydroPenaltyOverrideRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = HydroPenaltyOverrideRow {
 ///     hydro_id: EntityId::from(5),
@@ -240,8 +240,8 @@ pub struct HydroPenaltyOverrideRow {
 /// # Examples
 ///
 /// ```
-/// use cobre_io::constraints::NcsPenaltyOverrideRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::constraints::NcsPenaltyOverrideRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = NcsPenaltyOverrideRow {
 ///     source_id: EntityId::from(3),
@@ -314,7 +314,7 @@ fn validate_optional_positive(
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::constraints::parse_penalty_overrides_bus;
+/// use novomodelo_io::constraints::parse_penalty_overrides_bus;
 /// use std::path::Path;
 ///
 /// let rows = parse_penalty_overrides_bus(Path::new("constraints/penalty_overrides_bus.parquet"))
@@ -391,7 +391,7 @@ pub fn parse_penalty_overrides_bus(path: &Path) -> Result<Vec<BusPenaltyOverride
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::constraints::parse_penalty_overrides_line;
+/// use novomodelo_io::constraints::parse_penalty_overrides_line;
 /// use std::path::Path;
 ///
 /// let rows = parse_penalty_overrides_line(Path::new("constraints/penalty_overrides_line.parquet"))
@@ -469,7 +469,7 @@ pub fn parse_penalty_overrides_line(path: &Path) -> Result<Vec<LinePenaltyOverri
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::constraints::parse_penalty_overrides_hydro;
+/// use novomodelo_io::constraints::parse_penalty_overrides_hydro;
 /// use std::path::Path;
 ///
 /// let rows = parse_penalty_overrides_hydro(Path::new("constraints/penalty_overrides_hydro.parquet"))
@@ -722,7 +722,7 @@ pub fn parse_penalty_overrides_hydro(
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::constraints::parse_penalty_overrides_ncs;
+/// use novomodelo_io::constraints::parse_penalty_overrides_ncs;
 /// use std::path::Path;
 ///
 /// let rows = parse_penalty_overrides_ncs(Path::new("constraints/penalty_overrides_ncs.parquet"))

@@ -72,10 +72,10 @@ pub struct GenericConstraintEchoRow {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::{GenericConstraintEchoRow, write_generic_constraint_echo};
+/// use novomodelo_io::{GenericConstraintEchoRow, write_generic_constraint_echo};
 /// use std::path::Path;
 ///
-/// # fn main() -> Result<(), cobre_io::OutputError> {
+/// # fn main() -> Result<(), novomodelo_io::OutputError> {
 /// let rows = vec![GenericConstraintEchoRow {
 ///     stage_id: 1,
 ///     block_id: Some(0),

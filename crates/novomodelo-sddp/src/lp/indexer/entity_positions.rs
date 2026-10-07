@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use cobre_core::{EntityId, System};
+use novomodelo_core::{EntityId, System};
 
 /// Canonical `EntityId -> slot` maps for hydros, thermals, lines, buses,
 /// pumping stations, and energy contracts, each in the family's own
@@ -117,7 +117,7 @@ impl EntityPositions {
 
 #[cfg(test)]
 mod tests {
-    use cobre_core::EntityId;
+    use novomodelo_core::EntityId;
 
     use super::EntityPositions;
 

@@ -14,22 +14,22 @@
     )
 )]
 
-use cobre_solver::{RowBatch, StageTemplate};
+use novomodelo_solver::{RowBatch, StageTemplate};
 
 // Gated on either backend so a no-backend build does not import unused items.
 #[cfg(any(feature = "highs", feature = "clp"))]
-use cobre_solver::{Basis, SolverInterface};
+use novomodelo_solver::{Basis, SolverInterface};
 
 #[cfg(feature = "highs")]
-use cobre_solver::{HighsSolver, SolutionView, SolverError};
+use novomodelo_solver::{HighsSolver, SolutionView, SolverError};
 
 #[cfg(feature = "clp")]
-use cobre_solver::{ClpSolver, SolverError};
+use novomodelo_solver::{ClpSolver, SolverError};
 
 // Gated identically to its only consumers (the HiGHS option-poking tests) so the
 // clp+test-support build does not see an unused import.
 #[cfg(all(feature = "test-support", feature = "highs"))]
-use cobre_solver::test_support;
+use novomodelo_solver::test_support;
 
 fn make_fixture_stage_template() -> StageTemplate {
     StageTemplate {
@@ -861,7 +861,7 @@ fn test_solver_highs_solve_time_limit() {
     solver.load_model(&make_larger_lp_template());
 
     unsafe {
-        test_support::cobre_highs_set_double_option(
+        test_support::novomodelo_highs_set_double_option(
             solver.raw_handle(),
             c"time_limit".as_ptr(),
             0.0,
@@ -893,12 +893,12 @@ fn test_solver_highs_solve_iteration_limit() {
     solver.load_model(&make_larger_lp_template());
 
     unsafe {
-        test_support::cobre_highs_set_string_option(
+        test_support::novomodelo_highs_set_string_option(
             solver.raw_handle(),
             c"presolve".as_ptr(),
             c"off".as_ptr(),
         );
-        test_support::cobre_highs_set_int_option(
+        test_support::novomodelo_highs_set_int_option(
             solver.raw_handle(),
             c"simplex_iteration_limit".as_ptr(),
             0,
@@ -929,7 +929,7 @@ fn test_solver_highs_restore_defaults_after_limit() {
 
     solver.load_model(&make_larger_lp_template());
     unsafe {
-        test_support::cobre_highs_set_int_option(
+        test_support::novomodelo_highs_set_int_option(
             solver.raw_handle(),
             c"simplex_iteration_limit".as_ptr(),
             0,
@@ -1036,7 +1036,7 @@ fn test_solver_highs_infeasible_with_presolve() {
     let mut solver = HighsSolver::new().expect("HighsSolver::new() must succeed");
 
     unsafe {
-        test_support::cobre_highs_set_string_option(
+        test_support::novomodelo_highs_set_string_option(
             solver.raw_handle(),
             c"presolve".as_ptr(),
             c"on".as_ptr(),
@@ -1129,7 +1129,7 @@ fn test_solver_highs_unbounded_or_infeasible() {
     let mut solver = HighsSolver::new().expect("HighsSolver::new() must succeed");
 
     unsafe {
-        test_support::cobre_highs_set_string_option(
+        test_support::novomodelo_highs_set_string_option(
             solver.raw_handle(),
             c"presolve".as_ptr(),
             c"on".as_ptr(),
@@ -1275,7 +1275,7 @@ fn solve_statistics_updated() {
 #[cfg(feature = "highs")]
 #[test]
 fn basis_dimensions_after_solve() {
-    use cobre_solver::BasisStatus;
+    use novomodelo_solver::BasisStatus;
 
     let mut solver = HighsSolver::new().expect("solver");
     let template = make_fixture_stage_template();
@@ -1634,7 +1634,7 @@ fn test_solver_clp_solve_rejects_undersized_row_basis() {
 #[cfg(feature = "highs")]
 #[test]
 fn test_solver_highs_solve_rejects_inconsistent_basis_status_combination() {
-    use cobre_solver::BasisStatus;
+    use novomodelo_solver::BasisStatus;
 
     let mut solver = HighsSolver::new().expect("HighsSolver::new() must succeed");
     let template = make_fixture_stage_template();
@@ -1686,7 +1686,7 @@ fn test_solver_highs_solve_rejects_inconsistent_basis_status_combination() {
 #[cfg(feature = "clp")]
 #[test]
 fn test_solver_clp_solve_accepts_inconsistent_basis_status_combination_silently() {
-    use cobre_solver::BasisStatus;
+    use novomodelo_solver::BasisStatus;
 
     let mut solver = ClpSolver::new().expect("ClpSolver::new() must succeed");
     let template = make_fixture_stage_template();

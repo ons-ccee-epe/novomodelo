@@ -1,25 +1,25 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/cobre",
-    "crates/cobre-core",
-    "crates/cobre-io",
-    "crates/cobre-stochastic",
-    "crates/cobre-solver",
-    "crates/cobre-comm",
-    "crates/cobre-sddp",
-    "crates/cobre-cli",
-    "crates/cobre-mcp",
-    "crates/cobre-tui",
-    "crates/cobre-flow",
-    "crates/cobre-uc",
-    "crates/cobre-emt",
+    "crates/novomodelo",
+    "crates/novomodelo-core",
+    "crates/novomodelo-io",
+    "crates/novomodelo-stochastic",
+    "crates/novomodelo-solver",
+    "crates/novomodelo-comm",
+    "crates/novomodelo-sddp",
+    "crates/novomodelo-cli",
+    "crates/novomodelo-mcp",
+    "crates/novomodelo-tui",
+    "crates/novomodelo-flow",
+    "crates/novomodelo-uc",
+    "crates/novomodelo-emt",
 ]
-# cobre-python requires a Python interpreter with PyO3 and is built separately
+# novomodelo-python requires a Python interpreter with PyO3 and is built separately
 # via maturin. Excluding it from the workspace prevents cargo-dist and
 # `cargo test --workspace` from requiring a compatible Python installation.
 exclude = [
-    "crates/cobre-python",
+    "crates/novomodelo-python",
 ]
 
 [workspace.package]
@@ -27,8 +27,8 @@ version = "0.18.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
-repository = "https://github.com/cobre-rs/cobre"
-homepage = "https://docs.cobre-rs.dev/"
+repository = "https://github.com/ons-ccee-epe/novomodelo"
+homepage = "https://docs.novomodelo.invalid/"
 documentation = "https://docs.rs/cobre-sddp"
 authors = ["Rogerio J. M. Alves <rogerio.alves@cobre-rs.dev>"]
 

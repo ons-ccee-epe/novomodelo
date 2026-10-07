@@ -1,4 +1,4 @@
-/* C++ shim for cobre_highs_set_basis_non_alien.
+/* C++ shim for novomodelo_highs_set_basis_non_alien.
  *
  * This file is compiled as C++17 and exposes a single function with C linkage.
  * It exists as a separate translation unit because the main wrapper
@@ -18,7 +18,7 @@
 
 extern "C" {
 
-int32_t cobre_highs_set_basis_non_alien(
+int32_t novomodelo_highs_set_basis_non_alien(
     void*           highs,
     const int32_t*  col_status,
     const int32_t*  row_status

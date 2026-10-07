@@ -1,7 +1,7 @@
-# Cobre Quick Start Demo
+# Novomodelo Quick Start Demo
 # Generates: quickstart.gif
 
-Require cobre
+Require novomodelo
 
 Set Shell "bash"
 Set FontFamily "JetBrains Mono"
@@ -17,11 +17,11 @@ Set MarginFill "#2D3440"
 
 Output quickstart.gif
 
-Type "cobre init --template 1dtoy demo/"
+Type "novomodelo init --template 1dtoy demo/"
 Enter
 Sleep 5s
 
-Type "cobre run demo/"
+Type "novomodelo run demo/"
 Enter
 Sleep 10s
 

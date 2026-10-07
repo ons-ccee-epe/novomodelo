@@ -19,7 +19,7 @@
 //!
 //! [`cut::wire`]: crate::cut::wire
 
-use cobre_comm::{Communicator, per_rank_counts, prefix_displs};
+use novomodelo_comm::{Communicator, per_rank_counts, prefix_displs};
 
 use crate::{
     FutureCostFunction, SddpError,
@@ -576,7 +576,7 @@ mod tests {
         clippy::float_cmp
     )]
 
-    use cobre_comm::{CommData, CommError, Communicator, LocalBackend, ReduceOp};
+    use novomodelo_comm::{CommData, CommError, Communicator, LocalBackend, ReduceOp};
 
     use super::CutSyncBuffers;
     use crate::{

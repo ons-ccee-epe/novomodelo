@@ -546,160 +546,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cobre"
-version = "0.18.0"
-
-[[package]]
-name = "cobre-cli"
-version = "0.18.0"
-dependencies = [
- "arrow",
- "assert_cmd",
- "chrono",
- "clap",
- "cobre-comm",
- "cobre-core",
- "cobre-io",
- "cobre-sddp",
- "cobre-solver",
- "cobre-stochastic",
- "console",
- "indicatif",
- "parquet",
- "postcard",
- "predicates",
- "rayon",
- "serde",
- "serde_json",
- "signal-hook",
- "tempfile",
- "terminal_size",
- "thiserror",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "cobre-comm"
-version = "0.18.0"
-dependencies = [
- "ferrompi",
- "gethostname",
- "thiserror",
-]
-
-[[package]]
-name = "cobre-core"
-version = "0.18.0"
-dependencies = [
- "chrono",
- "cobre-core",
- "postcard",
- "proptest",
- "schemars",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "cobre-emt"
-version = "0.18.0"
-
-[[package]]
-name = "cobre-flow"
-version = "0.18.0"
-
-[[package]]
-name = "cobre-io"
-version = "0.18.0"
-dependencies = [
- "arrow",
- "chrono",
- "cobre-core",
- "cobre-io",
- "cobre-stochastic",
- "csv",
- "flatbuffers",
- "gethostname",
- "parquet",
- "postcard",
- "proptest",
- "schemars",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tracing",
-]
-
-[[package]]
-name = "cobre-mcp"
-version = "0.18.0"
-
-[[package]]
-name = "cobre-sddp"
-version = "0.18.0"
-dependencies = [
- "arrow",
- "cc",
- "chrono",
- "cobre-comm",
- "cobre-core",
- "cobre-io",
- "cobre-solver",
- "cobre-stochastic",
- "criterion",
- "dhat",
- "matrixmultiply",
- "parquet",
- "proptest",
- "rand 0.10.3",
- "rand_distr",
- "rayon",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "cobre-solver"
-version = "0.18.0"
-dependencies = [
- "cc",
- "cmake",
- "matrixmultiply",
-]
-
-[[package]]
-name = "cobre-stochastic"
-version = "0.18.0"
-dependencies = [
- "chrono",
- "cobre-core",
- "cobre-stochastic",
- "proptest",
- "rand 0.10.3",
- "rand_distr",
- "rand_pcg",
- "rayon",
- "siphasher",
- "thiserror",
- "tracing",
-]
-
-[[package]]
-name = "cobre-tui"
-version = "0.18.0"
-
-[[package]]
-name = "cobre-uc"
-version = "0.18.0"
-
-[[package]]
 name = "cobs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1349,6 +1195,160 @@ name = "normalize-line-endings"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61807f77802ff30975e01f4f071c8ba10c022052f98b3294119f3e615d13e5be"
+
+[[package]]
+name = "novomodelo"
+version = "0.18.0"
+
+[[package]]
+name = "novomodelo-cli"
+version = "0.18.0"
+dependencies = [
+ "arrow",
+ "assert_cmd",
+ "chrono",
+ "clap",
+ "console",
+ "indicatif",
+ "novomodelo-comm",
+ "novomodelo-core",
+ "novomodelo-io",
+ "novomodelo-sddp",
+ "novomodelo-solver",
+ "novomodelo-stochastic",
+ "parquet",
+ "postcard",
+ "predicates",
+ "rayon",
+ "serde",
+ "serde_json",
+ "signal-hook",
+ "tempfile",
+ "terminal_size",
+ "thiserror",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "novomodelo-comm"
+version = "0.18.0"
+dependencies = [
+ "ferrompi",
+ "gethostname",
+ "thiserror",
+]
+
+[[package]]
+name = "novomodelo-core"
+version = "0.18.0"
+dependencies = [
+ "chrono",
+ "novomodelo-core",
+ "postcard",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "novomodelo-emt"
+version = "0.18.0"
+
+[[package]]
+name = "novomodelo-flow"
+version = "0.18.0"
+
+[[package]]
+name = "novomodelo-io"
+version = "0.18.0"
+dependencies = [
+ "arrow",
+ "chrono",
+ "csv",
+ "flatbuffers",
+ "gethostname",
+ "novomodelo-core",
+ "novomodelo-io",
+ "novomodelo-stochastic",
+ "parquet",
+ "postcard",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "novomodelo-mcp"
+version = "0.18.0"
+
+[[package]]
+name = "novomodelo-sddp"
+version = "0.18.0"
+dependencies = [
+ "arrow",
+ "cc",
+ "chrono",
+ "criterion",
+ "dhat",
+ "matrixmultiply",
+ "novomodelo-comm",
+ "novomodelo-core",
+ "novomodelo-io",
+ "novomodelo-solver",
+ "novomodelo-stochastic",
+ "parquet",
+ "proptest",
+ "rand 0.10.3",
+ "rand_distr",
+ "rayon",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "novomodelo-solver"
+version = "0.18.0"
+dependencies = [
+ "cc",
+ "cmake",
+ "matrixmultiply",
+]
+
+[[package]]
+name = "novomodelo-stochastic"
+version = "0.18.0"
+dependencies = [
+ "chrono",
+ "novomodelo-core",
+ "novomodelo-stochastic",
+ "proptest",
+ "rand 0.10.3",
+ "rand_distr",
+ "rand_pcg",
+ "rayon",
+ "siphasher",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "novomodelo-tui"
+version = "0.18.0"
+
+[[package]]
+name = "novomodelo-uc"
+version = "0.18.0"
 
 [[package]]
 name = "nu-ansi-term"

@@ -1,4 +1,4 @@
-//! Consolidated anticipated-core integration tests for `cobre-sddp`.
+//! Consolidated anticipated-core integration tests for `novomodelo-sddp`.
 //!
 //! Each anticipated-core domain group lives in its own inner `mod` so the suite
 //! links the statically-bound solver once rather than once per file. Per-`mod`
@@ -24,14 +24,14 @@
 
 mod common;
 
-use cobre_core::HydroPenalties;
-use cobre_io::config::{
+use novomodelo_core::HydroPenalties;
+use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
     InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig, RowSelectionConfig,
     SimulationConfig as IoSimulationConfig, StoppingRuleConfig, TrainingConfig,
     TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
-use cobre_io::config::{SimulationSelection, TrainingSelection};
+use novomodelo_io::config::{SimulationSelection, TrainingSelection};
 
 fn default_hydro_penalties() -> HydroPenalties {
     HydroPenalties {
@@ -74,10 +74,10 @@ fn build_config(iterations: usize) -> Config {
             stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit {
                 limit: iterations as u32,
             }]),
-            stopping_mode: cobre_io::config::StoppingMode::Any,
+            stopping_mode: novomodelo_io::config::StoppingMode::Any,
             cut_selection: RowSelectionConfig::default(),
             solver: TrainingSolverConfig::default(),
-            parallelism: cobre_io::config::ParallelismConfig::default(),
+            parallelism: novomodelo_io::config::ParallelismConfig::default(),
             scenario_source: None,
             selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
         },
@@ -99,27 +99,27 @@ mod anticipated_backward_cut {
     //! anticipated thermal across lead_stages K = 1, 2, 3. Each K's closed-form
     //! derivation lives on its test function.
 
-    use cobre_core::entities::{bus::DeficitSegment, thermal::AnticipatedConfig};
-    use cobre_core::scenario::LoadModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::{bus::DeficitSegment, thermal::AnticipatedConfig};
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
         ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
-    use cobre_io::config::TrainingSelection;
-    use cobre_io::config::{
+    use novomodelo_io::config::TrainingSelection;
+    use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
         RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
         TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
-    use cobre_solver::ActiveSolver;
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
     use super::common::build_setup_in_code;
@@ -219,7 +219,7 @@ mod anticipated_backward_cut {
     // System builder
     // ---------------------------------------------------------------------------
 
-    fn build_system(fixture: &BackwardCutFixture) -> cobre_core::System {
+    fn build_system(fixture: &BackwardCutFixture) -> novomodelo_core::System {
         use chrono::{NaiveDate, TimeDelta};
 
         let date = |d: (i32, u32, u32)| NaiveDate::from_ymd_opt(d.0, d.1, d.2).expect("valid date");
@@ -469,10 +469,10 @@ mod anticipated_backward_cut {
                 stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit {
                     limit: iterations as u32,
                 }]),
-                stopping_mode: cobre_io::config::StoppingMode::Any,
+                stopping_mode: novomodelo_io::config::StoppingMode::Any,
                 cut_selection: RowSelectionConfig::default(),
                 solver: TrainingSolverConfig::default(),
-                parallelism: cobre_io::config::ParallelismConfig::default(),
+                parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
                 selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
             },
@@ -842,27 +842,27 @@ mod hm_distribute_conservation {
     //! `anticipated_backward_cut`'s K=1 closed-form fixture, varying only the
     //! delivery stage's declared hours between a monthly and a weekly duration.
 
-    use cobre_core::entities::{bus::DeficitSegment, thermal::AnticipatedConfig};
-    use cobre_core::scenario::LoadModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::{bus::DeficitSegment, thermal::AnticipatedConfig};
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
         ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
-    use cobre_io::config::TrainingSelection;
-    use cobre_io::config::{
+    use novomodelo_io::config::TrainingSelection;
+    use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
         RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
         TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
-    use cobre_solver::ActiveSolver;
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
     use super::common::build_setup_in_code;
@@ -918,7 +918,7 @@ mod hm_distribute_conservation {
     /// except that the delivery (stage 1) block carries `delivery_stage_hours`
     /// instead of a fixed constant; the decision stage (stage 0) keeps
     /// `DECISION_STAGE_HOURS` unchanged across both fixtures.
-    fn build_system(delivery_stage_hours: f64) -> cobre_core::System {
+    fn build_system(delivery_stage_hours: f64) -> novomodelo_core::System {
         use chrono::{NaiveDate, TimeDelta};
 
         let stage_date = |offset_days: i64| {
@@ -1174,10 +1174,10 @@ mod hm_distribute_conservation {
                 enabled: true,
                 tree_seed: Some(42),
                 stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit { limit: 1 }]),
-                stopping_mode: cobre_io::config::StoppingMode::Any,
+                stopping_mode: novomodelo_io::config::StoppingMode::Any,
                 cut_selection: RowSelectionConfig::default(),
                 solver: TrainingSolverConfig::default(),
-                parallelism: cobre_io::config::ParallelismConfig::default(),
+                parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
                 selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
             },
@@ -1288,16 +1288,16 @@ mod anticipated_pre_horizon_seed_delivery {
     //! and that the observed cost stays under a per-K analytical upper bound. Each
     //! K's derivation and cost bound live on its test function.
 
-    use cobre_core::HorizonGraph;
-    use cobre_core::entities::{
+    use novomodelo_core::HorizonGraph;
+    use novomodelo_core::entities::{
         bus::DeficitSegment, hydro::HydroGenerationModel, thermal::AnticipatedConfig,
     };
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, PolicyGraphType, ScenarioSourceConfig, Stage,
         StageRiskConfig, StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
@@ -1375,14 +1375,14 @@ mod anticipated_pre_horizon_seed_delivery {
     /// `fixture.anticipated_id`, one backup at `fixture.backup_id`, a trivial hydro at
     /// `fixture.hydro_id`, load 150 MW, ring-buffer seed `fixture.seeds_mw`.
     ///
-    /// Constructing `System` directly via `SystemBuilder` bypasses the `cobre-io`
+    /// Constructing `System` directly via `SystemBuilder` bypasses the `novomodelo-io`
     /// commissioning-window validator that rejects a non-zero seed maturing outside
     /// it: the non-zero seed is the deliberate fixture; that rejection rule applies
     /// only to JSON input through `load_case`. The $10/MWh anticipated vs $5000/MWh
     /// backup asymmetry saturates anticipated dispatch at max_gen, and
     /// `annual_discount_rate = 0.0` collapses every discount factor to 1.0 so each
     /// test's analytical cost derivation is exact.
-    fn build_system(fixture: &SeedDeliveryFixture) -> cobre_core::System {
+    fn build_system(fixture: &SeedDeliveryFixture) -> novomodelo_core::System {
         use chrono::{NaiveDate, TimeDelta};
 
         let k = fixture.k;
@@ -2228,15 +2228,15 @@ mod anticipated_d_t_saturation {
     //! commitment-hold delivery `committed_at(t) ≈ decision_at(t − K)`. Each K's
     //! economic-reasoning derivation lives on its test function.
 
-    use cobre_core::entities::{
+    use novomodelo_core::entities::{
         bus::DeficitSegment, hydro::HydroGenerationModel, thermal::AnticipatedConfig,
     };
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
@@ -2311,7 +2311,7 @@ mod anticipated_d_t_saturation {
     /// thermal regime without adding an interpretable hydro state. Load is 150 MW
     /// across all stages; seeds (`fixture.seeds_mw`) are zero to isolate the
     /// in-horizon behaviour from any seeding artefact.
-    fn build_system(fixture: &SaturationFixture) -> cobre_core::System {
+    fn build_system(fixture: &SaturationFixture) -> novomodelo_core::System {
         use chrono::{NaiveDate, TimeDelta};
 
         let k = fixture.k;
@@ -2809,29 +2809,29 @@ mod anticipated_forward_pass {
     //! pass reads these outgoing columns by identity
     //! (`StateSpace::state_to_lp_column`), with no Rust-side shift step.
 
-    use cobre_core::entities::{
+    use novomodelo_core::entities::{
         bus::DeficitSegment, hydro::HydroGenerationModel, thermal::AnticipatedConfig,
     };
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
         ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
-    use cobre_io::config::TrainingSelection;
-    use cobre_io::config::{
+    use novomodelo_io::config::TrainingSelection;
+    use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
         RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
         TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
-    use cobre_solver::ActiveSolver;
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
     use super::common::build_setup_in_code;
@@ -2846,7 +2846,7 @@ mod anticipated_forward_pass {
     /// Build a 5-stage system with one anticipated thermal (K=2, seeded
     /// `[100.0, 50.0]`) and one backup thermal that alone covers the 150 MW load, so
     /// the LP is always feasible.
-    fn build_system() -> cobre_core::System {
+    fn build_system() -> novomodelo_core::System {
         use chrono::{NaiveDate, TimeDelta};
 
         // Each stage is a 744h (31-day) block; whole-day stage boundaries keep
@@ -3129,10 +3129,10 @@ mod anticipated_forward_pass {
                 enabled: true,
                 tree_seed: Some(42),
                 stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit { limit: 1 }]),
-                stopping_mode: cobre_io::config::StoppingMode::Any,
+                stopping_mode: novomodelo_io::config::StoppingMode::Any,
                 cut_selection: RowSelectionConfig::default(),
                 solver: TrainingSolverConfig::default(),
-                parallelism: cobre_io::config::ParallelismConfig::default(),
+                parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
                 selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
             },
@@ -3444,27 +3444,27 @@ mod anticipated_closed_form_lb_k1_single_thermal {
     //! arithmetic noise on a future libhighs upgrade, switch to the relative
     //! tolerance assertion (`rel_diff < 1e-12`).
 
-    use cobre_core::entities::{bus::DeficitSegment, thermal::AnticipatedConfig};
-    use cobre_core::scenario::LoadModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::{bus::DeficitSegment, thermal::AnticipatedConfig};
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
         ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
-    use cobre_io::config::TrainingSelection;
-    use cobre_io::config::{
+    use novomodelo_io::config::TrainingSelection;
+    use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
         RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
         TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
-    use cobre_solver::ActiveSolver;
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
     use super::common::build_setup_in_code;
@@ -3520,7 +3520,7 @@ mod anticipated_closed_form_lb_k1_single_thermal {
     // System builder
     // ---------------------------------------------------------------------------
 
-    fn build_system() -> cobre_core::System {
+    fn build_system() -> novomodelo_core::System {
         use chrono::{NaiveDate, TimeDelta};
 
         // StageCalendar requires a chronologically ordered, non-overlapping
@@ -3755,10 +3755,10 @@ mod anticipated_closed_form_lb_k1_single_thermal {
                 enabled: true,
                 tree_seed: Some(42),
                 stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit { limit: 4 }]),
-                stopping_mode: cobre_io::config::StoppingMode::Any,
+                stopping_mode: novomodelo_io::config::StoppingMode::Any,
                 cut_selection: RowSelectionConfig::default(),
                 solver: TrainingSolverConfig::default(),
-                parallelism: cobre_io::config::ParallelismConfig::default(),
+                parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
                 selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
             },
@@ -3819,7 +3819,7 @@ mod anticipated_closed_form_lb_k1_single_thermal {
     }
 }
 mod discounted_delivery_closed_form_lb {
-    use cobre_solver::ActiveSolver;
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::in_code_studies::{
         DELIVERY_ORACLE_ANNUAL_RATE, DELIVERY_ORACLE_ANTICIPATED_CAP_MW,
@@ -3939,27 +3939,27 @@ mod lead_time_single_decider_end_to_end {
     //! `T* = H·[c_b·D + c_a·D + c_b·max(0,D-D) + c_a·D + c_b·max(0,D-D)]
     //!     = H·D·(c_b + 2·c_a)`.
 
-    use cobre_core::entities::{bus::DeficitSegment, thermal::AnticipatedConfig};
-    use cobre_core::scenario::LoadModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::{bus::DeficitSegment, thermal::AnticipatedConfig};
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
         ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
-    use cobre_io::config::TrainingSelection;
-    use cobre_io::config::{
+    use novomodelo_io::config::TrainingSelection;
+    use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
         RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
         TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
-    use cobre_solver::ActiveSolver;
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
     use super::common::build_setup_in_code;
@@ -3991,7 +3991,7 @@ mod lead_time_single_decider_end_to_end {
     const THERMAL_IDX_ANT: usize = 0;
     const THERMAL_IDX_BACKUP: usize = 1;
 
-    fn build_system() -> cobre_core::System {
+    fn build_system() -> novomodelo_core::System {
         use chrono::{NaiveDate, TimeDelta};
 
         // Each stage is a 744h (31-day) block; whole-day stage boundaries keep
@@ -4221,10 +4221,10 @@ mod lead_time_single_decider_end_to_end {
                 // 2 iterations reach the closed-form LB; 2 more settle the
                 // upper-bound gap to ~0 (mirrors the K=1 2-stage fixture's margin).
                 stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit { limit: 4 }]),
-                stopping_mode: cobre_io::config::StoppingMode::Any,
+                stopping_mode: novomodelo_io::config::StoppingMode::Any,
                 cut_selection: RowSelectionConfig::default(),
                 solver: TrainingSolverConfig::default(),
-                parallelism: cobre_io::config::ParallelismConfig::default(),
+                parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
                 selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
             },
@@ -4328,16 +4328,16 @@ mod anticipated_numerical_reconciliation_k2 {
     //! The 5/6/7 entity IDs are distinct from the K=2 and K=3 saturation tests so
     //! combined nextest runs give unambiguous per-entity failure attribution.
 
-    use cobre_core::HorizonGraph;
-    use cobre_core::entities::{
+    use novomodelo_core::HorizonGraph;
+    use novomodelo_core::entities::{
         bus::DeficitSegment, hydro::HydroGenerationModel, thermal::AnticipatedConfig,
     };
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, PolicyGraphType, ScenarioSourceConfig, Stage,
         StageRiskConfig, StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
@@ -4380,7 +4380,7 @@ mod anticipated_numerical_reconciliation_k2 {
     /// `n_hydros = 1` is satisfied without adding a hydro state variable that
     /// complicates interpretation. `annual_discount_rate = 0.0` collapses all
     /// discount factors to 1.0, making the analytical cost summation exact.
-    fn build_system_reconciliation_k2() -> cobre_core::System {
+    fn build_system_reconciliation_k2() -> novomodelo_core::System {
         use chrono::{NaiveDate, TimeDelta};
 
         // Each stage is a 744h (31-day) block; whole-day stage boundaries keep
@@ -4803,16 +4803,16 @@ mod anticipated_bridge_st_cruz_nova_k1 {
     //! The 60-series entity IDs are distinct from the other anticipated tests so
     //! combined nextest runs give unambiguous per-entity failure attribution.
 
-    use cobre_core::HorizonGraph;
-    use cobre_core::entities::{
+    use novomodelo_core::HorizonGraph;
+    use novomodelo_core::entities::{
         bus::DeficitSegment, hydro::HydroGenerationModel, thermal::AnticipatedConfig,
     };
-    use cobre_core::scenario::{InflowModel, LoadModel};
-    use cobre_core::temporal::{
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, PolicyGraphType, ScenarioSourceConfig, Stage,
         StageRiskConfig, StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
@@ -4842,15 +4842,15 @@ mod anticipated_bridge_st_cruz_nova_k1 {
 
     /// Build the 5-stage K=1 ST.CRUZ NOVA fixture.
     ///
-    /// Builds the resolved `cobre_core::System` directly via `SystemBuilder::new()`,
-    /// bypassing the `cobre-io` parse-and-validate pipeline, to keep the test
+    /// Builds the resolved `novomodelo_core::System` directly via `SystemBuilder::new()`,
+    /// bypassing the `novomodelo-io` parse-and-validate pipeline, to keep the test
     /// self-contained; the 204.5647 MW seed is within bounds and would also pass
     /// `load_case`.
     ///
     /// The anticipated ($10/MWh) vs backup ($5000/MWh) 500× ratio makes the LP
     /// prefer anticipated dispatch. `annual_discount_rate = 0.0` collapses all
     /// discount factors to 1.0, making the analytical cost derivation exact.
-    fn build_system() -> cobre_core::System {
+    fn build_system() -> novomodelo_core::System {
         use chrono::{NaiveDate, TimeDelta};
 
         // Each stage is a 744h (31-day) block; whole-day stage boundaries keep
@@ -5272,29 +5272,29 @@ mod anticipated_convergence_slow {
     //! in the pure-hydro convergence test.
 
     use chrono::{NaiveDate, TimeDelta};
-    use cobre_core::entities::{
+    use novomodelo_core::entities::{
         bus::DeficitSegment, hydro::HydroGenerationModel, thermal::AnticipatedConfig,
     };
-    use cobre_core::scenario::{InflowModel, LoadModel, SamplingScheme, ScenarioSource};
-    use cobre_core::temporal::{
+    use novomodelo_core::scenario::{InflowModel, LoadModel, SamplingScheme, ScenarioSource};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
         ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
-    use cobre_sddp::{
+    use novomodelo_sddp::{
         InflowNonNegativityMethod, StoppingMode, StoppingRule, StoppingRuleSet, StudySetup,
         TrainingOutcome,
         hydro_models::PrepareHydroModelsResult,
         setup::{SimulationEnumeratedRequest, StudyParams},
     };
-    use cobre_solver::ActiveSolver;
-    use cobre_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+    use novomodelo_solver::ActiveSolver;
+    use novomodelo_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
 
     use super::common::StubComm;
     use super::common::builders::{
@@ -5308,7 +5308,7 @@ mod anticipated_convergence_slow {
     /// Build the 4-stage K=2 convergence fixture (1 hydro, 1 anticipated thermal,
     /// 1 backup). The LP is always feasible: the backup thermal alone covers the
     /// 220 MW load.
-    fn build_system(branching_factor: usize) -> cobre_core::System {
+    fn build_system(branching_factor: usize) -> novomodelo_core::System {
         // Each stage is a 744h (31-day) block; whole-day stage boundaries keep
         // StageCalendar's date-based window coverage exact (744 / 24 = 31).
         let stage_date = |index: usize| {
@@ -5582,7 +5582,7 @@ mod anticipated_convergence_slow {
     /// both the `InSample` and `OutOfSample` sampling schemes can be exercised
     /// without going through the file-based config/IO path.
     fn run_training(
-        system: &cobre_core::System,
+        system: &novomodelo_core::System,
         sampling_scheme: SamplingScheme,
         forward_seed: Option<i64>,
         inflow_method: InflowNonNegativityMethod,
@@ -5639,9 +5639,9 @@ mod anticipated_convergence_slow {
             training_solver_backward: None,
             training_solver_forward: None,
             simulation_solver: None,
-            backward_scheduler: cobre_io::config::BackwardScheduler::default(),
-            cost_scale_factor: cobre_sddp::DEFAULT_COST_SCALE_FACTOR,
-            boundary: cobre_sddp::BoundaryStateRequirements::none(),
+            backward_scheduler: novomodelo_io::config::BackwardScheduler::default(),
+            cost_scale_factor: novomodelo_sddp::DEFAULT_COST_SCALE_FACTOR,
+            boundary: novomodelo_sddp::BoundaryStateRequirements::none(),
         };
 
         let source = ScenarioSource {
@@ -5734,22 +5734,22 @@ mod a1b_value_cut_identity_anchor {
     //! anticipated-ring cuts. This module pins that equivalence end-to-end
     //! (train + simulate) as the A-1(b) value/cut-identity anchor.
 
-    use cobre_core::HorizonGraph;
-    use cobre_core::entities::{bus::DeficitSegment, thermal::AnticipatedConfig};
-    use cobre_core::scenario::LoadModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::HorizonGraph;
+    use novomodelo_core::entities::{bus::DeficitSegment, thermal::AnticipatedConfig};
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, PolicyGraphType, ScenarioSourceConfig, Stage,
         StageRiskConfig, StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
         ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
-    use cobre_sddp::{SimulationScenarioResult, StudySetup};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_sddp::{SimulationScenarioResult, StudySetup};
+    use novomodelo_solver::ActiveSolver;
 
     use std::sync::mpsc;
 
@@ -5788,7 +5788,7 @@ mod a1b_value_cut_identity_anchor {
 
     const ITERATIONS: usize = 20;
 
-    fn build_system(anticipated_config: AnticipatedConfig) -> cobre_core::System {
+    fn build_system(anticipated_config: AnticipatedConfig) -> novomodelo_core::System {
         use chrono::{NaiveDate, TimeDelta};
         let date = |m: u32, d: u32| NaiveDate::from_ymd_opt(2024, m, d).expect("valid date");
         // Each stage is a 744h (31-day) block; whole-day stage boundaries keep
@@ -6237,28 +6237,28 @@ mod a1c_stage_count_mode_anchor {
     //! Every expected decider below is hand-derived from the calendar; the
     //! cumulative stage-ends are `[730, 1460, 2190, 2910, 3654, 4374]`.
 
-    use cobre_core::entities::{bus::DeficitSegment, thermal::AnticipatedConfig};
-    use cobre_core::scenario::LoadModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::{bus::DeficitSegment, thermal::AnticipatedConfig};
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
         ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
-    use cobre_io::config::TrainingSelection;
-    use cobre_io::config::{
+    use novomodelo_io::config::TrainingSelection;
+    use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
         RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
         TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
-    use cobre_sddp::lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_sddp::lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime};
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
     use super::common::build_setup_in_code;
@@ -6429,7 +6429,7 @@ mod a1c_stage_count_mode_anchor {
     /// Some(3), Some(4)]` (`max_fanout = 1`), so it clears the fan-out setup guard;
     /// the single pre-study decider (`decider[0] == None`) fixes the
     /// `past_anticipated_commitments` history length at 1.
-    fn build_system() -> cobre_core::System {
+    fn build_system() -> novomodelo_core::System {
         use chrono::{NaiveDate, TimeDelta};
 
         // Distinct 31-day (744h) stage spans keep StageCalendar's date ordering
@@ -6664,10 +6664,10 @@ mod a1c_stage_count_mode_anchor {
                 stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit {
                     limit: ITERATIONS,
                 }]),
-                stopping_mode: cobre_io::config::StoppingMode::Any,
+                stopping_mode: novomodelo_io::config::StoppingMode::Any,
                 cut_selection: RowSelectionConfig::default(),
                 solver: TrainingSolverConfig::default(),
-                parallelism: cobre_io::config::ParallelismConfig::default(),
+                parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
                 selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
             },
@@ -6760,13 +6760,13 @@ mod anticipated_ring_axis_regressions {
     //!   onto an earlier slot when few post-study deliveries recycle the ring.
 
     use chrono::NaiveDate;
-    use cobre_core::entities::{bus::DeficitSegment, thermal::AnticipatedConfig};
-    use cobre_core::scenario::LoadModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::{bus::DeficitSegment, thermal::AnticipatedConfig};
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
@@ -6774,7 +6774,9 @@ mod anticipated_ring_axis_regressions {
         PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties,
         SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
-    use cobre_sddp::lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime, PointResolution};
+    use novomodelo_sddp::lead_time::{
+        AnticipatedResolution, DeliveryAxis, LeadTime, PointResolution,
+    };
 
     use super::common::build_setup_in_code;
     use super::common::builders::{
@@ -6854,7 +6856,7 @@ mod anticipated_ring_axis_regressions {
             .collect()
     }
 
-    fn bus() -> cobre_core::entities::bus::Bus {
+    fn bus() -> novomodelo_core::entities::bus::Bus {
         make_bus(
             BUS_ID,
             BusSpec {
@@ -6869,7 +6871,7 @@ mod anticipated_ring_axis_regressions {
         )
     }
 
-    fn anticipated_thermal(lead: AnticipatedConfig) -> cobre_core::entities::thermal::Thermal {
+    fn anticipated_thermal(lead: AnticipatedConfig) -> novomodelo_core::entities::thermal::Thermal {
         make_thermal(
             ANTICIPATED_ID,
             ThermalSpec {
@@ -6887,7 +6889,7 @@ mod anticipated_ring_axis_regressions {
         )
     }
 
-    fn backup_thermal() -> cobre_core::entities::thermal::Thermal {
+    fn backup_thermal() -> novomodelo_core::entities::thermal::Thermal {
         make_thermal(
             BACKUP_ID,
             ThermalSpec {
@@ -7034,7 +7036,7 @@ mod anticipated_ring_axis_regressions {
 
     /// Read the anticipated plant's fished commitment (MW) at study stage `t`
     /// from the one-scenario simulation result.
-    fn committed_at(scenario: &cobre_sddp::SimulationScenarioResult, t: usize) -> Option<f64> {
+    fn committed_at(scenario: &novomodelo_sddp::SimulationScenarioResult, t: usize) -> Option<f64> {
         scenario.stages[t]
             .thermals
             .iter()
@@ -7096,7 +7098,7 @@ mod anticipated_ring_axis_regressions {
         }
     }
 
-    fn build_collision_system() -> cobre_core::System {
+    fn build_collision_system() -> novomodelo_core::System {
         SystemBuilder::new()
             .buses(vec![bus()])
             .thermals(vec![
@@ -7228,7 +7230,7 @@ mod anticipated_ring_axis_regressions {
     const CLOSURE_SEEDS: [f64; N_STUDY_STAGES] = [100.0, 200.0, 300.0, 400.0];
     const CLOSURE_POST_DUR: f64 = 720.0;
 
-    fn build_closure_system() -> cobre_core::System {
+    fn build_closure_system() -> novomodelo_core::System {
         let post_study = PostStudyStages {
             stages: vec![PostStudyStage {
                 start_date: date(2026, 5, 1),
@@ -7417,7 +7419,7 @@ mod anticipated_ring_axis_regressions {
         id: EntityId,
         name: &str,
         lead: AnticipatedConfig,
-    ) -> cobre_core::entities::thermal::Thermal {
+    ) -> novomodelo_core::entities::thermal::Thermal {
         make_thermal(
             id,
             ThermalSpec {
@@ -7437,7 +7439,7 @@ mod anticipated_ring_axis_regressions {
 
     /// The two anticipated plants, id-ascending so plant A (`LeadStages`) is
     /// anticipated-local index 0 and plant B (`LeadTime`) is index 1.
-    fn bn_thermals(lead_time_hours: f64) -> Vec<cobre_core::entities::thermal::Thermal> {
+    fn bn_thermals(lead_time_hours: f64) -> Vec<novomodelo_core::entities::thermal::Thermal> {
         vec![
             bn_anticipated(
                 BN_PLANT_A_ID,
@@ -7477,7 +7479,7 @@ mod anticipated_ring_axis_regressions {
         vec![BN_STAGE_DUR_H; N_STUDY_STAGES]
     }
 
-    fn bn_with_post_study_system() -> cobre_core::System {
+    fn bn_with_post_study_system() -> novomodelo_core::System {
         let post_study = PostStudyStages {
             stages: vec![
                 PostStudyStage {
@@ -7510,7 +7512,7 @@ mod anticipated_ring_axis_regressions {
             .expect("bn_with_post_study_system: valid system")
     }
 
-    fn bn_study_only_system() -> cobre_core::System {
+    fn bn_study_only_system() -> novomodelo_core::System {
         SystemBuilder::new()
             .buses(vec![bus()])
             .thermals(bn_thermals(BN_STUDY_ONLY_LEAD_HOURS))
@@ -7753,27 +7755,27 @@ mod anticipated_no_boundary_fixed_value_inertness {
     //! deck: it directly measures the fixed value's effect on the solved cost
     //! rather than an absolute number that could coincidentally match.
 
-    use cobre_core::entities::{bus::DeficitSegment, thermal::AnticipatedConfig};
-    use cobre_core::scenario::LoadModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::{bus::DeficitSegment, thermal::AnticipatedConfig};
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
         ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
-    use cobre_io::config::TrainingSelection;
-    use cobre_io::config::{
+    use novomodelo_io::config::TrainingSelection;
+    use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
         RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
         TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
-    use cobre_solver::ActiveSolver;
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
     use super::common::build_setup_in_code;
@@ -7805,7 +7807,7 @@ mod anticipated_no_boundary_fixed_value_inertness {
 
     /// Build the deck. `class4_value_mw` is the only input that varies between
     /// the two trainings the test compares.
-    fn build_system(class4_value_mw: f64) -> cobre_core::System {
+    fn build_system(class4_value_mw: f64) -> novomodelo_core::System {
         use chrono::{NaiveDate, TimeDelta};
 
         let stage_date = |index: usize| {
@@ -8028,10 +8030,10 @@ mod anticipated_no_boundary_fixed_value_inertness {
                 enabled: true,
                 tree_seed: Some(42),
                 stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit { limit: 1 }]),
-                stopping_mode: cobre_io::config::StoppingMode::Any,
+                stopping_mode: novomodelo_io::config::StoppingMode::Any,
                 cut_selection: RowSelectionConfig::default(),
                 solver: TrainingSolverConfig::default(),
-                parallelism: cobre_io::config::ParallelismConfig::default(),
+                parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
                 selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
             },
@@ -8093,30 +8095,30 @@ mod fixed_delivery_output {
 
     use chrono::{NaiveDate, TimeDelta};
 
-    use cobre_core::entities::{bus::DeficitSegment, thermal::AnticipatedConfig};
-    use cobre_core::scenario::{LoadModel, SamplingScheme};
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::{bus::DeficitSegment, thermal::AnticipatedConfig};
+    use novomodelo_core::scenario::{LoadModel, SamplingScheme};
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
         ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
-    use cobre_io::config::TrainingSelection;
-    use cobre_io::config::{
+    use novomodelo_io::config::TrainingSelection;
+    use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
         RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
         TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
-    use cobre_io::{FixedDeliveryRow, write_fixed_delivery};
-    use cobre_sddp::hydro_models::PrepareHydroModelsResult;
-    use cobre_sddp::{StudySetup, build_fixed_delivery_rows};
-    use cobre_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+    use novomodelo_io::{FixedDeliveryRow, write_fixed_delivery};
+    use novomodelo_sddp::hydro_models::PrepareHydroModelsResult;
+    use novomodelo_sddp::{StudySetup, build_fixed_delivery_rows};
+    use novomodelo_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
     use tempfile::tempdir;
 
     use super::common::builders::{
@@ -8380,10 +8382,10 @@ mod fixed_delivery_output {
                 enabled: true,
                 tree_seed: Some(42),
                 stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit { limit: 1 }]),
-                stopping_mode: cobre_io::config::StoppingMode::Any,
+                stopping_mode: novomodelo_io::config::StoppingMode::Any,
                 cut_selection: RowSelectionConfig::default(),
                 solver: TrainingSolverConfig::default(),
-                parallelism: cobre_io::config::ParallelismConfig::default(),
+                parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
                 selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
             },

@@ -409,7 +409,7 @@ pub struct SimulationTransitBucketResult {
 }
 
 /// One rolling-seed release window for a declared travel-time arc's upstream
-/// hydro, in the same shape [`cobre_core::HydroPastDefluence`] carries.
+/// hydro, in the same shape [`novomodelo_core::HydroPastDefluence`] carries.
 ///
 /// Corresponds to one row in the `transit_seed` output partition. Reconstructed
 /// from the scenario's realized releases (never the LP's terminal bucket

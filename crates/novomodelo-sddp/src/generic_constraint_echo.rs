@@ -7,8 +7,10 @@
 //! constraint contributes a single placeholder row. Output is in canonical
 //! `(constraint, stage, block, term)` order and declaration-order invariant.
 
-use cobre_core::{CoefficientRef, EntityId, GenericConstraint, LinearTerm, System, VariableRef};
-use cobre_io::GenericConstraintEchoRow;
+use novomodelo_core::{
+    CoefficientRef, EntityId, GenericConstraint, LinearTerm, System, VariableRef,
+};
+use novomodelo_io::GenericConstraintEchoRow;
 
 use crate::ResolvedParameters;
 use crate::StudySetup;
@@ -320,7 +322,7 @@ fn bus_label(bus_id: Option<EntityId>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cobre_core::{ConstraintExpression, SlackConfig};
+    use novomodelo_core::{ConstraintExpression, SlackConfig};
 
     fn entry(
         constraint_idx: usize,

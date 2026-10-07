@@ -25,15 +25,15 @@
     clippy::cast_precision_loss
 )]
 
-use cobre_core::temporal::StageStateConfig;
-use cobre_sddp::build_cut_row_batch_into;
-use cobre_sddp::cut::fcf::FutureCostFunction;
-use cobre_sddp::indexer::{CutStateProjection, StateSpace};
-use cobre_sddp::lead_time::AnticipatedResolution;
-use cobre_sddp::setup::NodeId;
-use cobre_sddp::test_support::constant_lead_resolution;
-use cobre_solver::RowBatch;
 use criterion::{Criterion, criterion_group, criterion_main};
+use novomodelo_core::temporal::StageStateConfig;
+use novomodelo_sddp::build_cut_row_batch_into;
+use novomodelo_sddp::cut::fcf::FutureCostFunction;
+use novomodelo_sddp::indexer::{CutStateProjection, StateSpace};
+use novomodelo_sddp::lead_time::AnticipatedResolution;
+use novomodelo_sddp::setup::NodeId;
+use novomodelo_sddp::test_support::constant_lead_resolution;
+use novomodelo_solver::RowBatch;
 use std::hint::black_box;
 
 /// All-enabled per-pool projection (full storage + lags) for the bench layouts.

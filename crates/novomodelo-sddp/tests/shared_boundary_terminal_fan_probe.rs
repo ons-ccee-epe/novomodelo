@@ -20,20 +20,23 @@
 use std::path::Path;
 
 use chrono::NaiveDate;
-use cobre_io::{
+use novomodelo_io::{
     GraphManifest, PolicyCutRecord, STAGE_CUTS_NODE_ID_SENTINEL, StageCutsPayload,
     encode_slot_date, write_policy_checkpoint,
 };
-use cobre_sddp::setup::{NodeGraph, NodePos};
-use cobre_sddp::test_support::k_fan_setup;
-use cobre_sddp::{
+use novomodelo_sddp::setup::{NodeGraph, NodePos};
+use novomodelo_sddp::test_support::k_fan_setup;
+use novomodelo_sddp::{
     BoundaryLoadRequest, LEGACY_COST_SCALE_FACTOR, inject_boundary_cuts, load_boundary_cuts,
 };
 
 /// Pool `pool`'s fixture `priced_state_date`: `2030-01-01` plus `pool`
 /// months.
 fn fixture_priced_date(pool: u32) -> NaiveDate {
-    cobre_sddp::test_support::fixture_priced_date(cobre_sddp::test_support::ymd(2030, 1, 1), pool)
+    novomodelo_sddp::test_support::fixture_priced_date(
+        novomodelo_sddp::test_support::ymd(2030, 1, 1),
+        pool,
+    )
 }
 
 /// Write a synthetic single-pool policy checkpoint whose pool's own
@@ -102,10 +105,10 @@ fn write_synthetic_checkpoint(
         graph_stage_id,
         priced_state_date: encode_slot_date(fixture_priced_date(pool_id)),
     };
-    let metadata = cobre_sddp::test_support::checkpoint_metadata(
+    let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
         1,
         GraphManifest::default(),
-        cobre_sddp::test_support::producer_block(),
+        novomodelo_sddp::test_support::producer_block(),
     );
     write_policy_checkpoint(dir, &[payload], &[], &metadata, &[]).expect("write checkpoint");
 }

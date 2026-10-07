@@ -1,7 +1,7 @@
 //! [`AnticipatedPlants`]: the study-scope set of thermals carrying a declared
 //! `anticipated_config`.
 
-use cobre_core::Thermal;
+use novomodelo_core::Thermal;
 
 use super::{AnticipatedLocal, ThermalSys};
 
@@ -96,7 +96,7 @@ impl AnticipatedPlants {
 
 #[cfg(test)]
 mod tests {
-    use cobre_core::{AnticipatedConfig, EntityId, Thermal};
+    use novomodelo_core::{AnticipatedConfig, EntityId, Thermal};
 
     use super::AnticipatedPlants;
     use crate::indexer::{AnticipatedLocal, ThermalSys};

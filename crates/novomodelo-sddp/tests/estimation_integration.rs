@@ -1,6 +1,6 @@
 //! Integration tests for the estimation pipeline.
 //!
-//! Exercises [`cobre_sddp::estimate_from_history`] end-to-end with a real
+//! Exercises [`novomodelo_sddp::estimate_from_history`] end-to-end with a real
 //! temporary case directory, a synthetic `inflow_history.parquet`, and minimal
 //! supporting files. Stages span the full history period so every observation
 //! date falls within a stage's `[start_date, end_date)` range, which
@@ -26,7 +26,7 @@ use arrow::array::{Date32Array, Float64Array, Int32Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use chrono::NaiveDate;
-use cobre_core::{
+use novomodelo_core::{
     DeficitSegment, EntityId, SystemBuilder,
     entities::hydro::{HydroGenerationModel, HydroPenalties},
     temporal::{
@@ -34,8 +34,8 @@ use cobre_core::{
         StageStateConfig,
     },
 };
-use cobre_io::Config;
-use cobre_sddp::{EstimationPath, estimate_from_history};
+use novomodelo_io::Config;
+use novomodelo_sddp::{EstimationPath, estimate_from_history};
 use parquet::arrow::ArrowWriter;
 use tempfile::TempDir;
 
@@ -75,7 +75,7 @@ fn date_to_date32(date: NaiveDate) -> i32 {
 /// Write a Parquet file of synthetic inflow history: `N_YEARS * N_SEASONS`
 /// monthly observations for one hydro, each a full-coverage `[1st,
 /// 1st-of-next-month)` window so it counts as a complete occurrence under any
-/// real `SeasonMap` (the exact-coverage gate in `cobre-io`'s estimation
+/// real `SeasonMap` (the exact-coverage gate in `novomodelo-io`'s estimation
 /// reader) as well as falling inside the stage's own window. Values use a
 /// seasonal sine-wave pattern to give non-trivial autocorrelation structure
 /// for PAR(p) fitting.
@@ -187,7 +187,7 @@ fn create_minimal_case_skeleton(case_dir: &Path, order_selection: &str, max_orde
 /// (0 = January, …, 11 = December) so every observation in `inflow_history.parquet`
 /// falls within a stage's `[start_date, end_date)` window — mirroring what
 /// `load_case` produces from per-stage `season_id` fields.
-fn build_system_with_one_hydro() -> cobre_core::System {
+fn build_system_with_one_hydro() -> novomodelo_core::System {
     let bus = make_bus(
         EntityId::from(BUS_ID),
         BusSpec {
@@ -537,8 +537,8 @@ fn write_par1_inflow_history(path: &Path, n_hydros: usize) {
 /// each year a January stage (`season_id` 0) and a February stage (`season_id` 1),
 /// so every PAR(1) observation (dated the 15th) falls within a stage's
 /// `[1st, 1st-of-next)` window.
-fn build_system_for_par1(n_hydros: usize) -> cobre_core::System {
-    use cobre_core::{
+fn build_system_for_par1(n_hydros: usize) -> novomodelo_core::System {
+    use novomodelo_core::{
         DeficitSegment, EntityId, SystemBuilder,
         entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties},
         temporal::{
@@ -770,9 +770,9 @@ const USER_STD: f64 = 1_111.1;
 /// Write `inflow_seasonal_stats.parquet` with `USER_MEAN` / `USER_STD` for one
 /// hydro across all stages in `build_system_for_par1(1)`.
 fn write_user_inflow_seasonal_stats(case_dir: &Path) {
-    use cobre_core::EntityId;
-    use cobre_io::output::write_inflow_seasonal_stats;
-    use cobre_io::scenarios::InflowSeasonalStatsRow;
+    use novomodelo_core::EntityId;
+    use novomodelo_io::output::write_inflow_seasonal_stats;
+    use novomodelo_io::scenarios::InflowSeasonalStatsRow;
 
     let n_stages = N_OBS_PER_SEASON * N_SEASONS_RT;
 
@@ -795,8 +795,8 @@ fn write_user_inflow_seasonal_stats(case_dir: &Path) {
 /// `build_system_for_par1(1)` with pre-loaded inflow models carrying `USER_MEAN` /
 /// `USER_STD` and empty `ar_coefficients` — the state after `load_case` has parsed
 /// `inflow_seasonal_stats.parquet`, before estimation.
-fn build_system_for_par1_with_user_stats() -> cobre_core::System {
-    use cobre_core::scenario::InflowModel;
+fn build_system_for_par1_with_user_stats() -> novomodelo_core::System {
+    use novomodelo_core::scenario::InflowModel;
 
     let base = build_system_for_par1(1);
     let stages = base.stages();
@@ -978,8 +978,8 @@ const PARTIAL_STUDY_YEAR: i32 = 2005;
 
 /// Build a 12-season monthly `SeasonMap` (season id `m` maps to calendar month
 /// `m + 1`), required for `synthesize_prestudy_stages`'s out-of-window fallback.
-fn monthly_season_map() -> cobre_core::SeasonMap {
-    use cobre_core::{SeasonCycleType, SeasonDefinition, SeasonMap};
+fn monthly_season_map() -> novomodelo_core::SeasonMap {
+    use novomodelo_core::{SeasonCycleType, SeasonDefinition, SeasonMap};
     let seasons = (0..N_SEASONS)
         .map(|m| SeasonDefinition {
             id: m,
@@ -1001,8 +1001,8 @@ fn monthly_season_map() -> cobre_core::SeasonMap {
 /// a 12-season `SeasonMap` on `policy_graph` — the fixture
 /// `run_user_ar_estimation`'s pre-study synthesis needs to resolve out-of-window
 /// lag seasons.
-fn build_season_mapped_system(first_season: usize, n: usize) -> cobre_core::System {
-    use cobre_core::{HorizonGraph, PolicyGraphType};
+fn build_season_mapped_system(first_season: usize, n: usize) -> novomodelo_core::System {
+    use novomodelo_core::{HorizonGraph, PolicyGraphType};
 
     let bus = make_bus(
         EntityId::from(BUS_ID),
@@ -1124,8 +1124,8 @@ fn build_season_mapped_system(first_season: usize, n: usize) -> cobre_core::Syst
 /// `HYDRO_ID` across stages `0..n_stages`, driving the R=1 manifest flag for the
 /// `UserArHistoryStats` path (H=1, S=0, R=1).
 fn write_user_inflow_ar_coefficients(case_dir: &Path, n_stages: i32, max_order: i32) {
-    use cobre_io::output::write_inflow_ar_coefficients;
-    use cobre_io::scenarios::InflowArCoefficientRow;
+    use novomodelo_io::output::write_inflow_ar_coefficients;
+    use novomodelo_io::scenarios::InflowArCoefficientRow;
 
     let mut rows = Vec::with_capacity(usize::try_from(n_stages * max_order).unwrap());
     for stage_id in 0..n_stages {

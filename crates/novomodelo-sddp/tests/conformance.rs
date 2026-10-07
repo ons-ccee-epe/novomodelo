@@ -1,8 +1,8 @@
-//! Conformance test suite for `cobre-sddp` component contracts.
+//! Conformance test suite for `novomodelo-sddp` component contracts.
 //!
 //! Verifies that each abstraction point satisfies its documented contract when
 //! exercised with known inputs. This file is an integration test: it uses only
-//! the public `cobre_sddp::` API and reimplements all test helpers locally
+//! the public `novomodelo_sddp::` API and reimplements all test helpers locally
 //! (integration tests cannot access `#[cfg(test)]` items from the main crate).
 //!
 //! Test groups:
@@ -24,12 +24,12 @@
 // seam from `common::builders` — a no-op today, not dead code.
 #![allow(clippy::needless_update)]
 
-use cobre_comm::{CommData, CommError, Communicator, ReduceOp};
-use cobre_core::BlockMode;
-use cobre_sddp::indexer::{BlockRowFamily, HydroSys};
-use cobre_sddp::lp::builder::StageGeometry;
-use cobre_sddp::{FutureCostFunction, SyncResult};
-use cobre_solver::{
+use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
+use novomodelo_core::BlockMode;
+use novomodelo_sddp::indexer::{BlockRowFamily, HydroSys};
+use novomodelo_sddp::lp::builder::StageGeometry;
+use novomodelo_sddp::{FutureCostFunction, SyncResult};
+use novomodelo_solver::{
     Basis, RowBatch, SolverError, SolverInterface, SolverStatistics, StageTemplate,
 };
 
@@ -96,9 +96,9 @@ impl MockSolver {
 }
 
 impl SolverInterface for MockSolver {
-    type Profile = cobre_solver::ActiveProfile;
+    type Profile = novomodelo_solver::ActiveProfile;
 
-    fn apply_profile(&mut self, _profile: &cobre_solver::ActiveProfile) {}
+    fn apply_profile(&mut self, _profile: &novomodelo_solver::ActiveProfile) {}
 
     fn solver_name_version(&self) -> String {
         "MockSolver 0.0.0".to_string()
@@ -111,11 +111,11 @@ impl SolverInterface for MockSolver {
     fn solve(
         &mut self,
         _basis: Option<&Basis>,
-    ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+    ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
         let call = self.call_count;
         self.call_count += 1;
         let obj = self.objectives[call % self.objectives.len()];
-        Ok(cobre_solver::SolutionView {
+        Ok(novomodelo_solver::SolutionView {
             objective: obj,
             primal: &[0.0, 0.0, 0.0],
             dual: &[0.0],
@@ -126,7 +126,7 @@ impl SolverInterface for MockSolver {
     }
 
     fn get_basis(&mut self, out: &mut Basis) {
-        cobre_sddp::test_support::fill_consistent_basis(out);
+        novomodelo_sddp::test_support::fill_consistent_basis(out);
     }
 
     fn statistics(&self) -> SolverStatistics {
@@ -164,18 +164,18 @@ fn minimal_template() -> StageTemplate {
 }
 
 /// Build an `OpeningTree` with `n_openings` openings at stage 0.
-fn simple_opening_tree(n_openings: usize) -> cobre_stochastic::OpeningTree {
+fn simple_opening_tree(n_openings: usize) -> novomodelo_stochastic::OpeningTree {
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId,
         scenario::{CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile},
         temporal::{
             Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
         },
     };
-    use cobre_stochastic::correlation::resolve::DecomposedCorrelation;
-    use cobre_stochastic::generate_opening_tree;
-    use cobre_stochastic::tree::OpeningTreeGenerationInputs;
+    use novomodelo_stochastic::correlation::resolve::DecomposedCorrelation;
+    use novomodelo_stochastic::generate_opening_tree;
+    use novomodelo_stochastic::tree::OpeningTreeGenerationInputs;
     use std::collections::BTreeMap;
 
     let stage = make_stage(
@@ -224,7 +224,7 @@ fn simple_opening_tree(n_openings: usize) -> cobre_stochastic::OpeningTree {
         schedule: vec![],
     };
     let entity_order = vec![entity_id];
-    let dims = cobre_stochastic::ClassDimensions {
+    let dims = novomodelo_stochastic::ClassDimensions {
         n_hydros: 1,
         n_load_buses: 0,
         n_ncs: 0,
@@ -251,7 +251,7 @@ fn make_sync_result(global_ub_mean: f64) -> SyncResult {
     }
 }
 
-fn make_fcf(n_stages: usize, state_dimension: usize) -> cobre_sddp::FutureCostFunction {
+fn make_fcf(n_stages: usize, state_dimension: usize) -> novomodelo_sddp::FutureCostFunction {
     FutureCostFunction::new(n_stages, state_dimension, 2, 100, &vec![0; n_stages])
 }
 
@@ -262,7 +262,7 @@ fn make_fcf(n_stages: usize, state_dimension: usize) -> cobre_sddp::FutureCostFu
 mod risk_measure_conformance {
     //! Conformance tests for `RiskMeasure` aggregation and risk evaluation.
 
-    use cobre_sddp::risk_measure::{BackwardOutcome, RiskMeasure};
+    use novomodelo_sddp::risk_measure::{BackwardOutcome, RiskMeasure};
 
     fn outcome(intercept: f64, obj: f64, coefficients: Vec<f64>) -> BackwardOutcome {
         BackwardOutcome {
@@ -402,8 +402,10 @@ mod risk_measure_conformance {
 mod stopping_rule_conformance {
     //! Conformance tests for `StoppingRule` and `StoppingRuleSet` semantics.
 
-    use cobre_sddp::StopMask;
-    use cobre_sddp::stopping_rule::{MonitorState, StoppingMode, StoppingRule, StoppingRuleSet};
+    use novomodelo_sddp::StopMask;
+    use novomodelo_sddp::stopping_rule::{
+        MonitorState, StoppingMode, StoppingRule, StoppingRuleSet,
+    };
 
     fn make_state(iteration: u64, lb: f64, history: Vec<f64>, shutdown: bool) -> MonitorState {
         MonitorState {
@@ -521,11 +523,11 @@ mod stopping_rule_conformance {
 mod cut_conformance {
     //! Conformance tests for `CutPool` and `CutWireHeader` round-trip.
 
-    use cobre_sddp::cut::{
+    use novomodelo_sddp::cut::{
         CutPool,
         wire::{CutWireHeader, cut_wire_size, deserialize_cut, serialize_cut},
     };
-    use cobre_sddp::setup::NodeId;
+    use novomodelo_sddp::setup::NodeId;
 
     /// Verify `CutWireHeader` serialize/deserialize round-trip with `n_state=3`.
     #[test]
@@ -636,8 +638,8 @@ mod cut_conformance {
 mod convergence_conformance {
     //! Conformance tests for `ConvergenceMonitor` gap formula and history.
 
-    use cobre_sddp::stopping_rule::{StoppingMode, StoppingRule, StoppingRuleSet};
-    use cobre_sddp::{ConvergenceMonitor, StopMask};
+    use novomodelo_sddp::stopping_rule::{StoppingMode, StoppingRule, StoppingRuleSet};
+    use novomodelo_sddp::{ConvergenceMonitor, StopMask};
 
     use super::make_sync_result;
 
@@ -751,9 +753,9 @@ mod convergence_conformance {
 mod lb_conformance {
     //! LB monotonicity conformance: adding cuts can only increase the lower bound.
 
-    use cobre_core::SystemBuilder;
-    use cobre_core::scenario::SamplingScheme;
-    use cobre_sddp::{
+    use novomodelo_core::SystemBuilder;
+    use novomodelo_core::scenario::SamplingScheme;
+    use novomodelo_sddp::{
         context::TrainingContext,
         horizon_mode::HorizonMode,
         indexer::{StateSpace, StudyDimensions},
@@ -765,8 +767,8 @@ mod lb_conformance {
         test_support::{StageContextFixture, cut_state_projection, equipment_free_geometry},
         workspace::{ScratchBuffers, WorkspaceSizing},
     };
-    use cobre_solver::RowBatch;
-    use cobre_stochastic::{
+    use novomodelo_solver::RowBatch;
+    use novomodelo_stochastic::{
         ClassSchemes, OpeningTreeInputs, StochasticContext, build_stochastic_context,
     };
 
@@ -792,7 +794,7 @@ mod lb_conformance {
     /// so this public-API test can supply a real `&StochasticContext` in place
     /// of the retired `stochastic: None` field. `user_tree` bypasses generation
     /// entirely, so the injected tree's shape is preserved verbatim.
-    fn wrap_opening_tree(tree: cobre_stochastic::OpeningTree) -> StochasticContext {
+    fn wrap_opening_tree(tree: novomodelo_stochastic::OpeningTree) -> StochasticContext {
         let system = SystemBuilder::new().build().expect("empty system is valid");
         build_stochastic_context(
             &system,
@@ -843,7 +845,7 @@ mod lb_conformance {
         ];
         let inflow_method = InflowNonNegativityMethod::None;
         let training_ctx = TrainingContext {
-            node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state_layout,
             cut_state_layouts: &cut_state_layouts,

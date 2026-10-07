@@ -67,7 +67,7 @@ fn color_always_flag_forces_ansi_in_banner() {
     make_valid_case(&dir);
     let out = TempDir::new().unwrap();
 
-    common::cobre()
+    common::novomodelo()
         .args([
             "run",
             "--color",
@@ -92,7 +92,7 @@ fn color_never_flag_suppresses_ansi_in_banner() {
     make_valid_case(&dir);
     let out = TempDir::new().unwrap();
 
-    common::cobre()
+    common::novomodelo()
         .args([
             "run",
             "--color",
@@ -113,7 +113,7 @@ fn color_always_global_flag_before_subcommand_is_accepted() {
     make_valid_case(&dir);
     let out = TempDir::new().unwrap();
 
-    common::cobre()
+    common::novomodelo()
         .args([
             "--color",
             "always",

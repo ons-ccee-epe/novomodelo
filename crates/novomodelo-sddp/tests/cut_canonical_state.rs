@@ -21,13 +21,13 @@
     clippy::float_cmp
 )]
 
-use cobre_sddp::indexer::{CutSlot, CutStateProjection};
-use cobre_sddp::setup::{NodeId, StageIdx};
-use cobre_sddp::test_support::{
+use novomodelo_sddp::indexer::{CutSlot, CutStateProjection};
+use novomodelo_sddp::setup::{NodeId, StageIdx};
+use novomodelo_sddp::test_support::{
     CanonicalCutProbe, TrunkFanFixture, stage_state_box_bounds, trunk_fan_setup_enumerated,
     write_backward_opening_outcome_for_probe,
 };
-use cobre_solver::ActiveSolver;
+use novomodelo_solver::ActiveSolver;
 
 mod common;
 use common::StubComm;

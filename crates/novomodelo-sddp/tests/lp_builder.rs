@@ -1,5 +1,5 @@
 //! Consolidated LP-builder / indexer / stage-geometry integration tests for
-//! `cobre-sddp`.
+//! `novomodelo-sddp`.
 //!
 //! Groups the non-uniform-block extraction backstop, the indexer-slim migration
 //! rejection gate, the operational-start-date fixture-ordering guard, the policy
@@ -48,17 +48,17 @@ mod extraction_nonuniform_block_bases {
     //!    every cost category is an objective·primal·scale sum and the breakdown is
     //!    expected to reconcile to the LP objective to within floating-point round-off.
 
-    use cobre_io::config::SimulationSelection;
+    use novomodelo_io::config::SimulationSelection;
     use std::path::Path;
     use std::sync::mpsc;
 
-    use cobre_core::{TrainingEvent, scenario::ScenarioSource};
-    use cobre_sddp::{
+    use novomodelo_core::{TrainingEvent, scenario::ScenarioSource};
+    use novomodelo_sddp::{
         SimulationScenarioResult, SimulationWeighting, StudySetup, aggregate_simulation,
         hydro_models::prepare_hydro_models,
         setup::{StudyParams, prepare_stochastic},
     };
-    use cobre_solver::highs::HighsSolver;
+    use novomodelo_solver::highs::HighsSolver;
 
     use super::common::StubComm;
 
@@ -72,8 +72,8 @@ mod extraction_nonuniform_block_bases {
         let dir = case_dir(suffix);
         let config_path = dir.join("config.json");
 
-        let config = cobre_io::parse_config(&config_path).expect("config must parse");
-        let system = cobre_io::load_case(&dir).expect("load_case must succeed");
+        let config = novomodelo_io::parse_config(&config_path).expect("config must parse");
+        let system = novomodelo_io::load_case(&dir).expect("load_case must succeed");
 
         let pr = prepare_stochastic(system, &dir, &config, 42, &ScenarioSource::default(), None)
             .expect("prepare_stochastic must succeed");
@@ -557,11 +557,13 @@ mod policy_entity_manifest {
 
     use std::path::Path;
 
-    use cobre_core::scenario::ScenarioSource;
-    use cobre_io::StateFamily;
-    use cobre_sddp::policy::orchestration::{CheckpointParams, write_checkpoint};
-    use cobre_sddp::{StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic};
-    use cobre_solver::ActiveSolver;
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_io::StateFamily;
+    use novomodelo_sddp::policy::orchestration::{CheckpointParams, write_checkpoint};
+    use novomodelo_sddp::{
+        StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
+    };
+    use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
 
@@ -573,10 +575,11 @@ mod policy_entity_manifest {
 
     /// Train a case to a policy checkpoint via the shared `write_checkpoint`, then read
     /// it back. Returns `(checkpoint, per-pool cut_state_layout n_slots)`.
-    fn train_and_read_checkpoint(name: &str) -> (cobre_io::PolicyCheckpoint, Vec<usize>) {
+    fn train_and_read_checkpoint(name: &str) -> (novomodelo_io::PolicyCheckpoint, Vec<usize>) {
         let dir = case_dir(name);
-        let config = cobre_io::parse_config(&dir.join("config.json")).expect("config must parse");
-        let system = cobre_io::load_case(&dir).expect("load_case must succeed");
+        let config =
+            novomodelo_io::parse_config(&dir.join("config.json")).expect("config must parse");
+        let system = novomodelo_io::load_case(&dir).expect("load_case must succeed");
 
         let pr = prepare_stochastic(system, &dir, &config, 42, &ScenarioSource::default(), None)
             .expect("prepare_stochastic must succeed");
@@ -621,7 +624,7 @@ mod policy_entity_manifest {
         )
         .expect("write_checkpoint must succeed");
 
-        let checkpoint = cobre_io::read_policy_checkpoint(&policy_dir)
+        let checkpoint = novomodelo_io::read_policy_checkpoint(&policy_dir)
             .expect("read_policy_checkpoint must succeed");
         (checkpoint, pool_n_state)
     }
@@ -776,7 +779,7 @@ mod cell_partition_gates {
     //! zero-flow attribution gate) — both declared directly rather than fit,
     //! since [`hull_fit_emits_exactly_one_origin_plane`] and
     //! [`reduce_planes_huge_tolerance_preserves_origin_plane_both_methods`]
-    //! (`crates/cobre-sddp/src/production/fpha_fitting/tests.rs`) already pin
+    //! (`crates/novomodelo-sddp/src/production/fpha_fitting/tests.rs`) already pin
     //! that a real fit emits and preserves exactly this plane.
     //!
     //! Column/row identity is never read via hardcoded layout offsets
@@ -791,29 +794,29 @@ mod cell_partition_gates {
     //! intersection/difference against a sibling column's row set, never by
     //! number.
 
-    use cobre_core::entities::hydro::HydroGenerationModel;
-    use cobre_core::scenario::InflowModel;
-    use cobre_core::temporal::{
+    use novomodelo_core::entities::hydro::HydroGenerationModel;
+    use novomodelo_core::scenario::InflowModel;
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
-    use cobre_core::{
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties, ContractBlockBounds,
         DeficitSegment, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         HydroUnitGroup, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
         ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
-    use cobre_sddp::hydro_models::{
+    use novomodelo_sddp::hydro_models::{
         EvaporationModelSet, FphaPlane, PrepareHydroModelsResult, ProductionModelSet,
         ResolvedProductionModel,
     };
-    use cobre_sddp::inflow_method::InflowNonNegativityMethod;
-    use cobre_sddp::resolved_parameters::ResolvedParameters;
-    use cobre_sddp::test_support::{assert_templates_byte_identical, make_unit_group};
-    use cobre_sddp::{StageTemplates, build_stage_templates_resolving_layout};
-    use cobre_solver::StageTemplate;
-    use cobre_stochastic::normal::precompute::PrecomputedNormal;
-    use cobre_stochastic::par::precompute::PrecomputedPar;
+    use novomodelo_sddp::inflow_method::InflowNonNegativityMethod;
+    use novomodelo_sddp::resolved_parameters::ResolvedParameters;
+    use novomodelo_sddp::test_support::{assert_templates_byte_identical, make_unit_group};
+    use novomodelo_sddp::{StageTemplates, build_stage_templates_resolving_layout};
+    use novomodelo_solver::StageTemplate;
+    use novomodelo_stochastic::normal::precompute::PrecomputedNormal;
+    use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
     use super::common::builders::{
         BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage,
@@ -884,7 +887,7 @@ mod cell_partition_gates {
             .collect()
     }
 
-    fn other_hydro() -> cobre_core::Hydro {
+    fn other_hydro() -> novomodelo_core::Hydro {
         make_hydro(
             HYDRO_OTHER_ID,
             HydroSpec {
@@ -900,7 +903,7 @@ mod cell_partition_gates {
         )
     }
 
-    fn fpha_hydro(unit_groups: Vec<HydroUnitGroup>) -> cobre_core::Hydro {
+    fn fpha_hydro(unit_groups: Vec<HydroUnitGroup>) -> novomodelo_core::Hydro {
         make_hydro(
             HYDRO_FPHA_ID,
             HydroSpec {
@@ -1130,7 +1133,7 @@ mod cell_partition_gates {
                     planes: vec![GENERIC_PLANE, ORIGIN_PLANE],
                 }],
             ],
-            &cobre_sddp::test_support::minimal_hydros(2),
+            &novomodelo_sddp::test_support::minimal_hydros(2),
             1,
         )
     }
@@ -1484,7 +1487,7 @@ mod cell_partition_gates {
         // Independent cross-check via a totally separate code path: a
         // StateSpace built directly from (hydro_count, max_par_order) alone
         // -- unit_groups plays no role in state-layout resolution at all.
-        let independent = cobre_sddp::test_support::state_layout(2, 0);
+        let independent = novomodelo_sddp::test_support::state_layout(2, 0);
         assert_eq!(
             independent.n_state, tmpl_b.n_state,
             "an independently-built StateSpace must agree with the template's n_state"

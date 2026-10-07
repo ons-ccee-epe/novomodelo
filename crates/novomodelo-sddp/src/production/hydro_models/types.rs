@@ -12,16 +12,16 @@
 //! - `HydroModelSummary` — aggregated statistics for display after preprocessing.
 //! - `PrepareHydroModelsResult` — bundles all pipeline outputs.
 //!
-//! These types live in `cobre-sddp` because they are algorithm-specific (FPHA
+//! These types live in `novomodelo-sddp` because they are algorithm-specific (FPHA
 //! hyperplane approximation is an SDDP concept). They must not be placed in
-//! `cobre-core`.
+//! `novomodelo-core`.
 
 use std::collections::HashMap;
 
-use cobre_core::{EntityId, Hydro, StudyPos, System};
-use cobre_io::FphaDeviationPointRow;
-use cobre_io::FphaHyperplaneRow;
-use cobre_io::HydroGeometryRow;
+use novomodelo_core::{EntityId, Hydro, StudyPos, System};
+use novomodelo_io::FphaDeviationPointRow;
+use novomodelo_io::FphaHyperplaneRow;
+use novomodelo_io::HydroGeometryRow;
 use serde::{Deserialize, Serialize};
 
 use crate::energy_conversion::HydroEnergyProductivityOverride;
@@ -304,7 +304,7 @@ pub struct NoTurbineCapacityHydro {
     pub name: String,
 }
 
-/// Aggregated production- and evaporation-model counts for `cobre-cli` display.
+/// Aggregated production- and evaporation-model counts for `novomodelo-cli` display.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HydroModelSummary {
     /// Number of hydro plants using [`ResolvedProductionModel::ConstantProductivity`].
@@ -337,7 +337,7 @@ pub struct HydroModelSummary {
 ///
 /// The magnitudes are plain `f64`s rather than the `pub(crate)`
 /// `crate::fpha_fitting::FphaFitDeviation`: that crate-internal type must not cross
-/// into `cobre-io`'s generic metadata aggregate.
+/// into `novomodelo-io`'s generic metadata aggregate.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FphaFitDeviationEntry {
     /// Entity id of the hydro plant this fit belongs to.
@@ -395,7 +395,7 @@ pub struct PrepareHydroModelsResult {
     /// the override required.
     pub vha_geometry_by_hydro: HashMap<EntityId, Vec<HydroGeometryRow>>,
     /// Computed-FPHA fit deviations, one entry per distinct fit. The CLI/Python
-    /// write site rolls these into the [`cobre_io::DeviationSummary`] in
+    /// write site rolls these into the [`novomodelo_io::DeviationSummary`] in
     /// `training/metadata.json`; an empty vector yields no metadata section.
     pub fpha_fit_deviations: Vec<FphaFitDeviationEntry>,
     /// Per-sampled-point computed-FPHA deviations, one row per `(hydro, stage, V, Q)`
@@ -497,7 +497,7 @@ impl PrepareHydroModelsResult {
     clippy::panic
 )]
 mod tests {
-    use cobre_core::EntityId;
+    use novomodelo_core::EntityId;
 
     use super::*;
     use crate::HydroEnergyProductivityOverride;

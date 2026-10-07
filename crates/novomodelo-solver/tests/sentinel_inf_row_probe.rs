@@ -18,7 +18,7 @@
 )]
 #![cfg(feature = "highs")]
 
-use cobre_solver::{HighsSolver, RowBatch, SolverError, SolverInterface, StageTemplate};
+use novomodelo_solver::{HighsSolver, RowBatch, SolverError, SolverInterface, StageTemplate};
 
 /// 2-column, 2-row LP:
 /// - Col 0 (theta): free, objective 1.0; Col 1 (x): [0, 10], objective 0.0

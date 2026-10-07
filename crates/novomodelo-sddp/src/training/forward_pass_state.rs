@@ -6,14 +6,14 @@
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
-use cobre_core::WorkerPhaseTimings;
-use cobre_core::{TrainingEvent, WorkerTimingPhase};
-use cobre_solver::ActiveProfile;
-use cobre_solver::{SolverInterface, SolverStatistics, StageTemplate};
-use cobre_stochastic::context::ClassSchemes;
+use novomodelo_core::WorkerPhaseTimings;
+use novomodelo_core::{TrainingEvent, WorkerTimingPhase};
+use novomodelo_solver::ActiveProfile;
+use novomodelo_solver::{SolverInterface, SolverStatistics, StageTemplate};
+use novomodelo_stochastic::context::ClassSchemes;
 #[cfg(test)]
-use cobre_stochastic::select_transition_child;
-use cobre_stochastic::{
+use novomodelo_stochastic::select_transition_child;
+use novomodelo_stochastic::{
     ClassSampleRequest, ForwardNoiseTables, ForwardSampler, ForwardSamplerConfig, SampleRequest,
     build_forward_sampler,
 };
@@ -985,22 +985,24 @@ mod tests {
     use std::collections::BTreeMap;
 
     use chrono::NaiveDate;
-    use cobre_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::{
+    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
         SamplingScheme,
     };
-    use cobre_core::temporal::{
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
-    use cobre_core::{Bus, DeficitSegment, EntityId, SystemBuilder, WorkerPhaseTimings};
-    use cobre_solver::{
+    use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder, WorkerPhaseTimings};
+    use novomodelo_solver::{
         Basis, LpSolution, ProfiledSolver, RowBatch, SolverError, SolverInterface,
         SolverStatistics, StageTemplate,
     };
-    use cobre_stochastic::StochasticContext;
-    use cobre_stochastic::context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+    use novomodelo_stochastic::StochasticContext;
+    use novomodelo_stochastic::context::{
+        ClassSchemes, OpeningTreeInputs, build_stochastic_context,
+    };
 
     use super::*;
     use crate::{
@@ -1044,9 +1046,9 @@ mod tests {
     }
 
     impl SolverInterface for MockSolver {
-        type Profile = cobre_solver::ActiveProfile;
+        type Profile = novomodelo_solver::ActiveProfile;
 
-        fn apply_profile(&mut self, _profile: &cobre_solver::ActiveProfile) {}
+        fn apply_profile(&mut self, _profile: &novomodelo_solver::ActiveProfile) {}
 
         fn load_model(&mut self, _template: &StageTemplate) {}
         fn add_rows(&mut self, _rows: &RowBatch) {}
@@ -1055,13 +1057,13 @@ mod tests {
         fn solve(
             &mut self,
             _basis: Option<&Basis>,
-        ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+        ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
             self.stats.solve_count += 1;
             self.buf_primal.copy_from_slice(&self.solution.primal);
             self.buf_dual.copy_from_slice(&self.solution.dual);
             self.buf_reduced_costs
                 .copy_from_slice(&self.solution.reduced_costs);
-            Ok(cobre_solver::SolutionView {
+            Ok(novomodelo_solver::SolutionView {
                 objective: self.solution.objective,
                 primal: &self.buf_primal,
                 dual: &self.buf_dual,
@@ -1323,7 +1325,7 @@ mod tests {
         initial_state: Vec<f64>,
         fcf: FutureCostFunction,
         horizon: HorizonMode,
-        stochastic: cobre_stochastic::StochasticContext,
+        stochastic: novomodelo_stochastic::StochasticContext,
         stages: Vec<Stage>,
         workspaces: Vec<SolverWorkspace<MockSolver>>,
         basis_store: BasisStore,
@@ -1479,9 +1481,9 @@ mod tests {
         };
 
         let mut state = ForwardPassState::new(1, fx.n_stages, fx.n_scenarios);
-        let resolved =
-            Phase::Forward.resolve_profile(Some(&cobre_io::config::PhaseSolverProfileConfig {
-                dual_edge_weight: Some(cobre_io::config::DualEdgeWeight::Dantzig),
+        let resolved = Phase::Forward.resolve_profile(Some(
+            &novomodelo_io::config::PhaseSolverProfileConfig {
+                dual_edge_weight: Some(novomodelo_io::config::DualEdgeWeight::Dantzig),
                 scale: None,
                 price: None,
                 primal_feasibility_tolerance: None,
@@ -1493,7 +1495,8 @@ mod tests {
                 factor_pivot_threshold: None,
                 use_warm_start: None,
                 steepest_edge_devex_fallback_threshold: None,
-            }));
+            },
+        ));
         state.set_profile(resolved);
         let mut inputs = ForwardPassInputs {
             workspaces: &mut fx.workspaces,
@@ -2139,9 +2142,9 @@ mod tests {
     /// incoming state must resolve to the root's own outgoing state.
     #[test]
     fn declared_k_fan_frontier_resolves_each_leaf_own_pool_and_node_id_with_root_incoming_state() {
-        use cobre_core::HorizonGraph;
-        use cobre_core::temporal::{Node, PolicyGraphType, Transition};
-        use cobre_io::StageIdResolver;
+        use novomodelo_core::HorizonGraph;
+        use novomodelo_core::temporal::{Node, PolicyGraphType, Transition};
+        use novomodelo_io::StageIdResolver;
 
         use crate::setup::node_graph::build_node_graph;
 
@@ -2245,9 +2248,9 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     #[test]
     fn run_forward_worker_k_fan_pinned_trajectories_match_selected_transitions() {
-        use cobre_core::HorizonGraph;
-        use cobre_core::temporal::{Node, PolicyGraphType, Transition};
-        use cobre_io::StageIdResolver;
+        use novomodelo_core::HorizonGraph;
+        use novomodelo_core::temporal::{Node, PolicyGraphType, Transition};
+        use novomodelo_io::StageIdResolver;
 
         use crate::setup::node_graph::build_node_graph;
 

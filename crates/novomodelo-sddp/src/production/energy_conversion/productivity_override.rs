@@ -4,8 +4,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cobre_core::{EntityId, StageId};
-use cobre_io::{HydroEnergyProductivityRow, LoadError};
+use novomodelo_core::{EntityId, StageId};
+use novomodelo_io::{HydroEnergyProductivityRow, LoadError};
 
 /// Per-`(hydro, stage)` override table loaded from
 /// `system/hydro_energy_productivity.parquet`.
@@ -135,8 +135,8 @@ pub fn build_hydro_energy_productivity_override(
     clippy::unwrap_used
 )]
 mod tests {
-    use cobre_core::EntityId;
-    use cobre_io::HydroEnergyProductivityRow;
+    use novomodelo_core::EntityId;
+    use novomodelo_io::HydroEnergyProductivityRow;
 
     use super::*;
 

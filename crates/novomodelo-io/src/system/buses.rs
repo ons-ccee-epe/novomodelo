@@ -7,7 +7,7 @@
 //!
 //! ```json
 //! {
-//!   "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/buses.schema.json",
+//!   "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/buses.schema.json",
 //!   "buses": [
 //!     { "id": 0, "name": "South" },
 //!     {
@@ -40,7 +40,7 @@
 //! Cross-reference validation (e.g., checking that bus IDs are referenced by
 //! thermals, lines, hydros) is deferred to Layer 3.
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId,
     entities::{Bus, DeficitSegment},
     penalty::{GlobalPenaltyDefaults, resolve_bus_deficit_segments, resolve_bus_excess_cost},
@@ -100,7 +100,7 @@ pub(crate) struct RawDeficitSegment {
 /// the two-tier penalty resolution cascade (global → entity). The result is
 /// sorted by `id` ascending, so parser output is deterministic regardless of
 /// file row order (declaration-order invariance); canonical order is
-/// [`SystemBuilder::build`](cobre_core::SystemBuilder::build)'s to establish.
+/// [`SystemBuilder::build`](novomodelo_core::SystemBuilder::build)'s to establish.
 ///
 /// # Errors
 ///
@@ -116,8 +116,8 @@ pub(crate) struct RawDeficitSegment {
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::system::parse_buses;
-/// use cobre_core::penalty::GlobalPenaltyDefaults;
+/// use novomodelo_io::system::parse_buses;
+/// use novomodelo_core::penalty::GlobalPenaltyDefaults;
 /// use std::path::Path;
 ///
 /// # fn make_global() -> GlobalPenaltyDefaults { unimplemented!() }
@@ -274,7 +274,7 @@ mod tests {
     /// Canonical valid `buses.json` with 2 buses: one with entity-level deficit
     /// overrides (id=1), one without (id=0).
     const VALID_JSON: &str = r#"{
-      "$schema": "https://raw.githubusercontent.com/cobre-rs/cobre/refs/heads/main/schemas/buses.schema.json",
+      "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/buses.schema.json",
       "buses": [
         { "id": 0, "name": "South", "operational_start_date": "2024-01-01" },
         {

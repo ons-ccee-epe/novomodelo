@@ -1,4 +1,4 @@
-//! `cobre version` subcommand.
+//! `novomodelo version` subcommand.
 //!
 //! Prints the binary version, active solver backend, and build profile.
 
@@ -12,11 +12,11 @@ use crate::error::CliError;
 #[allow(clippy::unnecessary_wraps)]
 pub fn execute() -> Result<(), CliError> {
     let version = env!("CARGO_PKG_VERSION");
-    println!("cobre   v{version}");
+    println!("novomodelo   v{version}");
     println!(
         "solver: {} {}",
-        cobre_solver::active_solver_name(),
-        cobre_solver::active_solver_version()
+        novomodelo_solver::active_solver_name(),
+        novomodelo_solver::active_solver_version()
     );
     if cfg!(feature = "mpi") {
         println!("comm:   mpi");

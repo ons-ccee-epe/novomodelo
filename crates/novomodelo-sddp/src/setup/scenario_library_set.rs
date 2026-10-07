@@ -4,8 +4,8 @@
 //! optional pre-built libraries into two [`PhaseLibraries`] values — one for
 //! training and one for simulation.
 
-use cobre_core::scenario::SamplingScheme;
-use cobre_stochastic::{ExternalScenarioLibrary, HistoricalScenarioLibrary};
+use novomodelo_core::scenario::SamplingScheme;
+use novomodelo_stochastic::{ExternalScenarioLibrary, HistoricalScenarioLibrary};
 
 /// Sampling schemes and optional pre-built libraries for a single execution
 /// phase (training or simulation).

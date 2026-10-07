@@ -33,7 +33,7 @@ use serde::Deserializer;
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{CoefficientRef, EntityId};
+/// use novomodelo_core::{CoefficientRef, EntityId};
 ///
 /// // A literal coefficient of 3.6:
 /// let literal = CoefficientRef::Literal(3.6);
@@ -55,7 +55,7 @@ pub enum CoefficientRef {
     Parameter(EntityId),
 }
 
-/// A Cobre-computed quantity indexed by hydro plant.
+/// A Novomodelo-computed quantity indexed by hydro plant.
 ///
 /// Each variant names a scalar quantity that the resolver derives from hydro
 /// geometry and operational data. All variants carry a single `hydro_id` field
@@ -64,7 +64,7 @@ pub enum CoefficientRef {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{ComputedParameter, EntityId};
+/// use novomodelo_core::{ComputedParameter, EntityId};
 ///
 /// let param = ComputedParameter::EquivalentProductivity {
 ///     hydro_id: EntityId(1),
@@ -163,7 +163,7 @@ pub enum ComputedParameter {
 ///
 /// ```
 /// # #[cfg(feature = "serde")] {
-/// use cobre_core::{ComputedParameter, EntityId, ParameterKind};
+/// use novomodelo_core::{ComputedParameter, EntityId, ParameterKind};
 ///
 /// // {"kind":"constant","value":3.6}
 /// let c = ParameterKind::Constant { value: 3.6 };
@@ -210,7 +210,7 @@ pub enum ComputedParameter {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{ComputedParameter, EntityId, ParameterKind};
+/// use novomodelo_core::{ComputedParameter, EntityId, ParameterKind};
 ///
 /// let constant = ParameterKind::Constant { value: 3.6 };
 /// let per_stage = ParameterKind::PerStage { values: vec![1.0, 2.0, 3.0] };
@@ -281,7 +281,7 @@ impl ParameterKind {
     /// # Examples
     ///
     /// ```
-    /// use cobre_core::ParameterKind;
+    /// use novomodelo_core::ParameterKind;
     ///
     /// // Duplicates: key 1 appears twice; first occurrence (0.5) is kept.
     /// let seasonal = ParameterKind::new_seasonal(vec![(3, 1.5), (1, 0.5), (1, 0.9), (2, 1.0)]);
@@ -310,7 +310,7 @@ impl ParameterKind {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{EntityId, ParameterKind, ScalarParameter};
+/// use novomodelo_core::{EntityId, ParameterKind, ScalarParameter};
 ///
 /// let param = ScalarParameter {
 ///     id: EntityId(1),

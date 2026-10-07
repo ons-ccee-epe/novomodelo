@@ -28,55 +28,55 @@
 //! required) is a compile error, not a silently wrong LP column:
 //!
 //! ```compile_fail
-//! use cobre_sddp::indexer::{FphaLocal, HydroSys};
+//! use novomodelo_sddp::indexer::{FphaLocal, HydroSys};
 //!
 //! let _wrong: HydroSys = FphaLocal::new(0);
 //! ```
 //!
 //! ```compile_fail
-//! use cobre_sddp::indexer::{EvapLocal, HydroSys};
+//! use novomodelo_sddp::indexer::{EvapLocal, HydroSys};
 //!
 //! let _wrong: HydroSys = EvapLocal::new(0);
 //! ```
 //!
 //! ```compile_fail
-//! use cobre_sddp::indexer::{HydroSys, ThermalSys};
+//! use novomodelo_sddp::indexer::{HydroSys, ThermalSys};
 //!
 //! let _wrong: HydroSys = ThermalSys::new(0);
 //! ```
 //!
 //! ```compile_fail
-//! use cobre_sddp::indexer::{AnticipatedLocal, ThermalSys};
+//! use novomodelo_sddp::indexer::{AnticipatedLocal, ThermalSys};
 //!
 //! let _wrong: ThermalSys = AnticipatedLocal::new(0);
 //! ```
 //!
 //! ```compile_fail
-//! use cobre_sddp::indexer::{EvapLocal, FphaLocal};
+//! use novomodelo_sddp::indexer::{EvapLocal, FphaLocal};
 //!
 //! let _wrong: FphaLocal = EvapLocal::new(0);
 //! ```
 //!
 //! ```compile_fail
-//! use cobre_sddp::indexer::{HydroSys, LineSys};
+//! use novomodelo_sddp::indexer::{HydroSys, LineSys};
 //!
 //! let _wrong: HydroSys = LineSys::new(0);
 //! ```
 //!
 //! ```compile_fail
-//! use cobre_sddp::indexer::{HydroCell, HydroSys};
+//! use novomodelo_sddp::indexer::{HydroCell, HydroSys};
 //!
 //! let _wrong: HydroCell = HydroSys::new(0);
 //! ```
 //!
 //! ```compile_fail
-//! use cobre_sddp::indexer::{FphaCellLocal, FphaLocal};
+//! use novomodelo_sddp::indexer::{FphaCellLocal, FphaLocal};
 //!
 //! let _wrong: FphaLocal = FphaCellLocal::new(0);
 //! ```
 //!
 //! ```compile_fail
-//! use cobre_sddp::indexer::{NcsSys, PumpingSys};
+//! use novomodelo_sddp::indexer::{NcsSys, PumpingSys};
 //!
 //! let _wrong: NcsSys = PumpingSys::new(0);
 //! ```

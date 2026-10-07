@@ -12,7 +12,7 @@
 use super::{AnticipatedLocal, StateSpace};
 use crate::lead_time::PointResolution;
 
-use cobre_core::commissioning::commissioning_active;
+use novomodelo_core::commissioning::commissioning_active;
 
 /// Whether anticipated plant `local_idx` emits a decision column and an
 /// `anticipated_state_out_def` row at `stage_idx` — the single cross-module

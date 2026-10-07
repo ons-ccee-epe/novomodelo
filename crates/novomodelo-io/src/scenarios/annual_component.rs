@@ -39,7 +39,7 @@
 //!   rejected during assembly by [`crate::scenarios::assemble_inflow_models`].
 
 use arrow::array::Array;
-use cobre_core::EntityId;
+use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
@@ -57,8 +57,8 @@ use crate::parquet_helpers::{
 /// # Examples
 ///
 /// ```
-/// use cobre_io::scenarios::InflowAnnualComponentRow;
-/// use cobre_core::EntityId;
+/// use novomodelo_io::scenarios::InflowAnnualComponentRow;
+/// use novomodelo_core::EntityId;
 ///
 /// let row = InflowAnnualComponentRow {
 ///     hydro_id: EntityId::from(1),
@@ -135,7 +135,7 @@ fn check_finite(
 /// # Examples
 ///
 /// ```no_run
-/// use cobre_io::scenarios::parse_inflow_annual_component;
+/// use novomodelo_io::scenarios::parse_inflow_annual_component;
 /// use std::path::Path;
 ///
 /// let rows = parse_inflow_annual_component(Path::new("scenarios/inflow_annual_component.parquet"))

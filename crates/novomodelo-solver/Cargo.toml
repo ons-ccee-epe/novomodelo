@@ -1,5 +1,5 @@
 [package]
-name = "cobre-solver"
+name = "novomodelo-solver"
 description = "LP/MIP solver abstraction layer with HiGHS backend for power system optimization"
 version.workspace = true
 edition.workspace = true
@@ -17,7 +17,7 @@ default = ["highs"]
 # LP backend selection is mutually exclusive: enable exactly one of `highs` or
 # `clp`. Enabling both is rejected at compile time by a `compile_error!` in
 # `lib.rs`; enabling neither is likewise rejected. As a consequence, building
-# `cobre-solver` with `--all-features` fails by design.
+# `novomodelo-solver` with `--all-features` fails by design.
 #
 # Gates the HiGHS backend (build, FFI, and `HighsSolver`/`HighsProfile` exports).
 # On by default. Select CLP instead with `--no-default-features --features clp`.

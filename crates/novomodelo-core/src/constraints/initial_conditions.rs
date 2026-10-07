@@ -12,7 +12,7 @@
 //!
 //! ```
 //! use chrono::NaiveDate;
-//! use cobre_core::{AnticipatedCommitmentHistory, EntityId, HydroStorage, InitialConditions};
+//! use novomodelo_core::{AnticipatedCommitmentHistory, EntityId, HydroStorage, InitialConditions};
 //!
 //! let ic = InitialConditions {
 //!     storage: vec![
@@ -48,10 +48,10 @@ use crate::EntityId;
 /// Initial storage volume for a single hydro plant.
 ///
 /// For operating hydros, `value_hm3` must be within
-/// `[min_storage_hm3, max_storage_hm3]` (validated by `cobre-io`).
+/// `[min_storage_hm3, max_storage_hm3]` (validated by `novomodelo-io`).
 /// For filling hydros (present in [`InitialConditions::filling_storage`]),
 /// `value_hm3` must be within `[0.0, min_storage_hm3)` — strictly below the
-/// dead volume (validated by `cobre-io`). Equality with `min_storage_hm3`
+/// dead volume (validated by `novomodelo-io`). Equality with `min_storage_hm3`
 /// belongs to neither the filling range nor the operating range.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -107,8 +107,8 @@ pub struct HydroPastDefluence {
 ///
 /// # Division of responsibility
 ///
-/// `cobre-core` has no view of the entity registry or the stage calendar, so
-/// the `cobre-io` semantic validator (not `cobre-core`) enforces:
+/// `novomodelo-core` has no view of the entity registry or the stage calendar, so
+/// the `novomodelo-io` semantic validator (not `novomodelo-core`) enforces:
 /// - The plant's windows tile the delivery stages it decides before the study
 ///   at coverage `1.0` — no gap, no overlap. Those stages fall on both sides of
 ///   the study horizon: the leading in-study stages and, when the plant's lead

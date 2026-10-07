@@ -1,6 +1,6 @@
-//! Default-bearing entity builders for `cobre-sddp` integration tests.
+//! Default-bearing entity builders for `novomodelo-sddp` integration tests.
 //!
-//! The one-place field-addition invariant: a new required field on a `cobre-core`
+//! The one-place field-addition invariant: a new required field on a `novomodelo-core`
 //! entity is absorbed by editing only this module — add the field to the
 //! matching `<Entity>Spec` (with a neutral `Default`) and map it in
 //! `make_<entity>`. Call sites that spread `..Default::default()` recompile
@@ -15,14 +15,14 @@
 )]
 
 use chrono::NaiveDate;
-use cobre_core::EntityId;
-use cobre_core::entities::bus::{Bus, DeficitSegment};
-use cobre_core::entities::hydro::{
+use novomodelo_core::EntityId;
+use novomodelo_core::entities::bus::{Bus, DeficitSegment};
+use novomodelo_core::entities::hydro::{
     DiversionChannel, EfficiencyModel, FillingConfig, HydraulicLossesModel, Hydro,
     HydroGenerationModel, HydroPenalties, HydroUnitGroup, TailraceModel,
 };
-use cobre_core::entities::thermal::{AnticipatedConfig, Thermal};
-use cobre_core::temporal::{
+use novomodelo_core::entities::thermal::{AnticipatedConfig, Thermal};
+use novomodelo_core::temporal::{
     Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig,
 };
 

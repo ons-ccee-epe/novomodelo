@@ -2,7 +2,7 @@
 //!
 //! Unlike the dense entity bound tables in `bounds`, generic-constraint bounds are
 //! sparse, so absent `(constraint, stage)` pairs report inactive rather than
-//! panicking. Populated by `cobre-io`; never modified after construction.
+//! panicking. Populated by `novomodelo-io`; never modified after construction.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -15,7 +15,7 @@ use std::ops::Range;
 /// # Examples
 ///
 /// ```
-/// use cobre_core::ResolvedGenericConstraintBounds;
+/// use novomodelo_core::ResolvedGenericConstraintBounds;
 ///
 /// let empty = ResolvedGenericConstraintBounds::empty();
 /// assert!(!empty.is_active(0, 0));
@@ -121,7 +121,7 @@ impl ResolvedGenericConstraintBounds {
     /// # Examples
     ///
     /// ```
-    /// use cobre_core::ResolvedGenericConstraintBounds;
+    /// use novomodelo_core::ResolvedGenericConstraintBounds;
     ///
     /// let t = ResolvedGenericConstraintBounds::empty();
     /// assert!(!t.is_active(0, 0));
@@ -146,7 +146,7 @@ impl ResolvedGenericConstraintBounds {
     ///
     /// ```
     /// use std::collections::HashMap;
-    /// use cobre_core::ResolvedGenericConstraintBounds;
+    /// use novomodelo_core::ResolvedGenericConstraintBounds;
     ///
     /// // Two constraints with IDs 10 and 20, mapped to positions 0 and 1.
     /// let id_map: HashMap<i32, usize> = [(10, 0), (20, 1)].into_iter().collect();
@@ -222,7 +222,7 @@ impl ResolvedGenericConstraintBounds {
     /// # Examples
     ///
     /// ```
-    /// use cobre_core::ResolvedGenericConstraintBounds;
+    /// use novomodelo_core::ResolvedGenericConstraintBounds;
     ///
     /// let empty = ResolvedGenericConstraintBounds::empty();
     /// assert!(!empty.is_active(0, 0));
@@ -240,7 +240,7 @@ impl ResolvedGenericConstraintBounds {
     /// # Examples
     ///
     /// ```
-    /// use cobre_core::ResolvedGenericConstraintBounds;
+    /// use novomodelo_core::ResolvedGenericConstraintBounds;
     ///
     /// let empty = ResolvedGenericConstraintBounds::empty();
     /// assert!(empty.bounds_for_stage(0, 0).is_empty());

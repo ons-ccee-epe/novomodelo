@@ -460,7 +460,7 @@ pub enum PriceStrategy {
 /// # Examples
 ///
 /// ```
-/// use cobre_io::config::StoppingRuleConfig;
+/// use novomodelo_io::config::StoppingRuleConfig;
 ///
 /// let json = r#"{"type": "iteration_limit", "limit": 100}"#;
 /// let rule: StoppingRuleConfig = serde_json::from_str(json).unwrap();

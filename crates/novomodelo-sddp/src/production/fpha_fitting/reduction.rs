@@ -19,7 +19,7 @@ use super::grid::{GridParams, build_grid};
 use super::hull_fit::RawPlane;
 use super::production::ProductionFunction;
 use super::rng::{SplitMix64, fnv1a64};
-use cobre_io::extensions::PlaneReductionConfig;
+use novomodelo_io::extensions::PlaneReductionConfig;
 
 /// Tolerance on `γ₀` and `γ_V` for the origin-plane predicate.
 ///
@@ -344,8 +344,8 @@ pub(crate) fn reduce_planes(
     clippy::similar_names
 )]
 mod tests {
-    use cobre_core::{EfficiencyModel, EntityId, HydraulicLossesModel, TailraceModel};
-    use cobre_io::extensions::HydroGeometryRow;
+    use novomodelo_core::{EfficiencyModel, EntityId, HydraulicLossesModel, TailraceModel};
+    use novomodelo_io::extensions::HydroGeometryRow;
 
     use super::super::geometry::{FittingBounds, ForebayTable};
     use super::super::hull_fit::RawPlane;
@@ -355,7 +355,7 @@ mod tests {
         angle_deg, grid_max_gh, is_origin_plane, mean_plane, pair_seed, pair_similar_distance,
         reduce_planes, reduce_planes_angle, reduce_planes_distance,
     };
-    use cobre_io::extensions::PlaneReductionConfig;
+    use novomodelo_io::extensions::PlaneReductionConfig;
 
     /// A sign-valid plane with the given coefficients.
     fn plane(gamma_0: f64, gamma_v: f64, gamma_q: f64, gamma_s: f64) -> RawPlane {

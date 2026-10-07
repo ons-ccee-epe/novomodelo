@@ -39,7 +39,7 @@ fn constant_across(blocks: &[Block], field: impl Fn(&Block) -> f64) -> bool {
 fn solved_blocks(deck: &str) -> Vec<Vec<Vec<Block>>> {
     let (_setup, mut results) = common::parity_hash::train_and_simulate_at_dir(
         &deck_dir(deck),
-        cobre_solver::ActiveSolver::new,
+        novomodelo_solver::ActiveSolver::new,
     );
     assert!(!results.is_empty(), "{deck}: no simulated scenario");
     results.sort_by_key(|scenario| scenario.scenario_id);

@@ -1,27 +1,27 @@
-"""Type stubs for the `cobre.errors` exception hierarchy.
+"""Type stubs for the `novomodelo.errors` exception hierarchy.
 
-Every leaf subclasses both `CobreError` and the matching builtin, so existing
+Every leaf subclasses both `NovomodeloError` and the matching builtin, so existing
 `except OSError` / `except ValueError` / `except RuntimeError` code keeps
-catching while new code can catch the typed class or the common `CobreError`
-base. The qualified name of every class is `cobre.errors.<Name>`.
+catching while new code can catch the typed class or the common `NovomodeloError`
+base. The qualified name of every class is `novomodelo.errors.<Name>`.
 """
 
-class CobreError(Exception):
-    """Base class for every Cobre exception."""
+class NovomodeloError(Exception):
+    """Base class for every Novomodelo exception."""
 
-class ValidationError(CobreError, ValueError):
+class ValidationError(NovomodeloError, ValueError):
     """Case data or configuration failed validation."""
 
-class PolicyIncompatibleError(CobreError, ValueError):
+class PolicyIncompatibleError(NovomodeloError, ValueError):
     """A warm-start policy is incompatible with the current system."""
 
-class CaseIoError(CobreError, OSError):
+class CaseIoError(NovomodeloError, OSError):
     """A filesystem read or write failure while loading or writing a case."""
 
-class OutputError(CobreError, OSError):
+class OutputError(NovomodeloError, OSError):
     """An output serialization, schema, or manifest failure while writing results."""
 
-class SolverError(CobreError, RuntimeError):
+class SolverError(NovomodeloError, RuntimeError):
     """A training or solver failure.
 
     For an infeasible subproblem, the `stage`, `iteration`, and `scenario`
@@ -33,8 +33,8 @@ class SolverError(CobreError, RuntimeError):
     iteration: int | None
     scenario: int | None
 
-class SimulationError(CobreError, RuntimeError):
+class SimulationError(NovomodeloError, RuntimeError):
     """A simulation-phase failure."""
 
-class InternalError(CobreError, RuntimeError):
+class InternalError(NovomodeloError, RuntimeError):
     """An internal software or environment fault."""

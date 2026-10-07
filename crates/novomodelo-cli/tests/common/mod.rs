@@ -1,4 +1,4 @@
-//! Shared harness for `cobre-cli` run-path integration tests: spawning the
+//! Shared harness for `novomodelo-cli` run-path integration tests: spawning the
 //! binary, resolving committed example cases, and building minimal valid-case
 //! fixtures in a temp dir.
 
@@ -9,9 +9,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Spawns the `cobre` binary under test.
-pub fn cobre() -> Command {
-    Command::new(assert_cmd::cargo::cargo_bin!("cobre"))
+/// Spawns the `novomodelo` binary under test.
+pub fn novomodelo() -> Command {
+    Command::new(assert_cmd::cargo::cargo_bin!("novomodelo"))
 }
 
 /// Resolves `examples/<name>` relative to the repository root.
@@ -131,13 +131,17 @@ pub fn restamp_policy_software(policy_dir: &Path, software: &str) {
 
 fn restamp_policy_manifest(
     policy_dir: &Path,
-    edit: impl FnOnce(&mut cobre_io::CheckpointManifest),
+    edit: impl FnOnce(&mut novomodelo_io::CheckpointManifest),
 ) {
     let path = policy_dir.join("manifest.bin");
     let mut manifest =
-        cobre_io::deserialize_checkpoint_manifest(&fs::read(&path).unwrap()).unwrap();
+        novomodelo_io::deserialize_checkpoint_manifest(&fs::read(&path).unwrap()).unwrap();
     edit(&mut manifest);
-    fs::write(&path, cobre_io::serialize_checkpoint_manifest(&manifest)).unwrap();
+    fs::write(
+        &path,
+        novomodelo_io::serialize_checkpoint_manifest(&manifest),
+    )
+    .unwrap();
 }
 
 /// Writes a minimal valid case fixture under `dir`. Each `Some` override
@@ -198,7 +202,7 @@ pub fn write_supplied_opening_tree_case(case: &Path) {
     write_file(case, "config.json", &config.to_string());
 
     let export = tempfile::TempDir::new().unwrap();
-    let run = cobre()
+    let run = novomodelo()
         .args(["run", case.to_str().unwrap()])
         .args(["--output", export.path().to_str().unwrap(), "--quiet"])
         .output()

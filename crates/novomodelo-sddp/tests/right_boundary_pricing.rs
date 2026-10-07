@@ -38,20 +38,22 @@
 use std::path::Path;
 
 use chrono::NaiveDate;
-use cobre_core::entities::thermal::AnticipatedConfig;
-use cobre_core::temporal::{Node as PolicyNode, PolicyGraphType, StageStateConfig, Transition};
-use cobre_core::{
+use novomodelo_core::entities::thermal::AnticipatedConfig;
+use novomodelo_core::temporal::{
+    Node as PolicyNode, PolicyGraphType, StageStateConfig, Transition,
+};
+use novomodelo_core::{
     AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId,
     HorizonGraph, HydroBlockBounds, HydroStageBounds, InitialConditions, LineBlockBounds,
     PostStudyStage, PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds,
     System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
 };
-use cobre_sddp::indexer::{CutStateProjection, StateDim};
-use cobre_sddp::setup::{NodeGraph, NodeId, NodePos, StageIdx};
-use cobre_sddp::test_support::{patch_backward_opening_for_probe, solve_stage_for_probe};
-use cobre_sddp::workspace::SolverWorkspace;
-use cobre_sddp::{BoundaryLoadRequest, inject_boundary_cuts, load_boundary_cuts};
-use cobre_solver::{
+use novomodelo_sddp::indexer::{CutStateProjection, StateDim};
+use novomodelo_sddp::setup::{NodeGraph, NodeId, NodePos, StageIdx};
+use novomodelo_sddp::test_support::{patch_backward_opening_for_probe, solve_stage_for_probe};
+use novomodelo_sddp::workspace::SolverWorkspace;
+use novomodelo_sddp::{BoundaryLoadRequest, inject_boundary_cuts, load_boundary_cuts};
+use novomodelo_solver::{
     ActiveSolver, FreezeScratch, RowBatch, SolverInterface, StageTemplate,
     freeze_rows_into_template,
 };
@@ -95,7 +97,7 @@ fn study_end() -> NaiveDate {
 
 /// Two stages matching their real calendar span exactly (`StageCalendar`
 /// coverage): stage 0 January (744h), stage 1 the following 30 days (720h).
-fn stages() -> Vec<cobre_core::temporal::Stage> {
+fn stages() -> Vec<novomodelo_core::temporal::Stage> {
     let start = study_start();
     let stage0_end = start + chrono::TimeDelta::days(31);
     vec![
@@ -104,7 +106,7 @@ fn stages() -> Vec<cobre_core::temporal::Stage> {
             StageSpec {
                 start_date: start,
                 end_date: stage0_end,
-                blocks: vec![cobre_core::temporal::Block {
+                blocks: vec![novomodelo_core::temporal::Block {
                     index: 0,
                     name: "S0".to_string(),
                     duration_hours: 744.0,
@@ -117,7 +119,7 @@ fn stages() -> Vec<cobre_core::temporal::Stage> {
             StageSpec {
                 start_date: stage0_end,
                 end_date: study_end(),
-                blocks: vec![cobre_core::temporal::Block {
+                blocks: vec![novomodelo_core::temporal::Block {
                     index: 0,
                     name: "S1".to_string(),
                     duration_hours: 720.0,
@@ -188,9 +190,9 @@ fn bounds() -> ResolvedBounds {
     )
 }
 
-fn penalties() -> cobre_core::resolved::ResolvedPenalties {
-    use cobre_core::HydroPenalties;
-    use cobre_core::resolved::{
+fn penalties() -> novomodelo_core::resolved::ResolvedPenalties {
+    use novomodelo_core::HydroPenalties;
+    use novomodelo_core::resolved::{
         BusStagePenalties, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
         PenaltiesDefaults, ResolvedPenalties,
     };
@@ -308,8 +310,8 @@ fn build_system(with_window: bool, fanned: bool) -> System {
     builder.build().expect("fixture System must build")
 }
 
-fn config() -> cobre_io::config::Config {
-    use cobre_io::config::{
+fn config() -> novomodelo_io::config::Config {
+    use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod, ModelingConfig, ParallelismConfig, PolicyConfig,
         RowSelectionConfig, SimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig,
@@ -350,7 +352,7 @@ fn config() -> cobre_io::config::Config {
 /// post-study stage) — mirrors `StateSpace::commitment_hold_in_study_offset`
 /// byte-for-byte (`pub(crate)`, unreachable from this integration-test
 /// binary), never a hand-rolled `commit_out.end`-relative guess.
-fn post_study_ring_slot(setup: &cobre_sddp::StudySetup) -> usize {
+fn post_study_ring_slot(setup: &novomodelo_sddp::StudySetup) -> usize {
     let state = setup.stage_state();
     let m = setup.num_stages();
     state.commit_out.start + (m % state.k_max) * state.n_anticipated
@@ -359,17 +361,20 @@ fn post_study_ring_slot(setup: &cobre_sddp::StudySetup) -> usize {
 /// Pool `pool`'s fixture `priced_state_date`: `2030-01-01` plus `pool`
 /// months.
 fn fixture_priced_date(pool: u32) -> NaiveDate {
-    cobre_sddp::test_support::fixture_priced_date(cobre_sddp::test_support::ymd(2030, 1, 1), pool)
+    novomodelo_sddp::test_support::fixture_priced_date(
+        novomodelo_sddp::test_support::ymd(2030, 1, 1),
+        pool,
+    )
 }
 
 /// Load a boundary carrying `β` on [`post_study_ring_slot`] alone, zero
 /// elsewhere, intercept `α`, and inject it into `setup`'s terminal pool.
-fn inject_ring_boundary(setup: &mut cobre_sddp::StudySetup, dir: &Path) {
+fn inject_ring_boundary(setup: &mut novomodelo_sddp::StudySetup, dir: &Path) {
     let state_dimension = setup.fcf.state_dimension as u32;
     let slot = post_study_ring_slot(setup);
     let mut coefficients = vec![0.0_f64; state_dimension as usize];
     coefficients[slot] = BETA;
-    cobre_sddp::test_support::write_synthetic_boundary(
+    novomodelo_sddp::test_support::write_synthetic_boundary(
         dir,
         state_dimension,
         ALPHA,
@@ -394,7 +399,7 @@ fn inject_ring_boundary(setup: &mut cobre_sddp::StudySetup, dir: &Path) {
 /// `solve_stage_for_probe`'s `pool` argument only drives basis reconstruction
 /// on a stored warm start — it never appends cut rows to a cold solve, so
 /// pricing an injected cut requires freezing it into the loaded model first.
-fn freeze_terminal_template(setup: &cobre_sddp::StudySetup, pool_id: usize) -> StageTemplate {
+fn freeze_terminal_template(setup: &novomodelo_sddp::StudySetup, pool_id: usize) -> StageTemplate {
     let state = setup.stage_state();
     let terminal_stage = setup.num_stages() - 1;
     let ctx = setup.stage_ctx();
@@ -418,7 +423,7 @@ fn freeze_terminal_template(setup: &cobre_sddp::StudySetup, pool_id: usize) -> S
         row_lower: Vec::new(),
         row_upper: Vec::new(),
     };
-    cobre_sddp::build_cut_row_batch_into(
+    novomodelo_sddp::build_cut_row_batch_into(
         &mut batch,
         &setup.fcf,
         pool_id,
@@ -438,9 +443,9 @@ fn freeze_terminal_template(setup: &cobre_sddp::StudySetup, pool_id: usize) -> S
 /// value. `raw_noise = &[]`: `hydro_count == 0`, so the noise transform has no
 /// dimension to iterate.
 fn terminal_theta(
-    setup: &cobre_sddp::StudySetup,
+    setup: &novomodelo_sddp::StudySetup,
     template: &StageTemplate,
-    pool: &cobre_sddp::CutPool,
+    pool: &novomodelo_sddp::CutPool,
     node_id: NodeId,
     pinned_state: &[f64],
 ) -> f64 {
@@ -473,7 +478,7 @@ fn terminal_theta(
 /// Pin the state vector with `x` on [`post_study_ring_slot`] and `0.0` on
 /// every other component (the dormant padding slot carries a zero boundary
 /// coefficient, so its pinned value never reaches `θ`).
-fn ring_pin(setup: &cobre_sddp::StudySetup, x: f64) -> Vec<f64> {
+fn ring_pin(setup: &novomodelo_sddp::StudySetup, x: f64) -> Vec<f64> {
     let mut pin = vec![0.0_f64; setup.stage_state().n_state];
     pin[post_study_ring_slot(setup)] = x;
     pin

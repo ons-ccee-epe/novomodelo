@@ -29,7 +29,7 @@ mod deck_independent_fanout {
     //! rejects at setup time (pinned by `lead_time_fanout_rejected_at_setup`,
     //! not re-pinned here).
 
-    use cobre_sddp::lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime};
+    use novomodelo_sddp::lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime};
 
     /// The deck's plant carries a uniform two-week anticipation lag on a
     /// weekly calendar: one delivery stage anchors to exactly one decision
@@ -79,25 +79,25 @@ mod deck_independent_fanout {
 
 mod deck_smoke {
     //! Setup-only terminal-manifest read-back against a real converted deck.
-    //! No training solve: [`cobre_sddp::StudySetup::build_terminal_entity_manifest`]
+    //! No training solve: [`novomodelo_sddp::StudySetup::build_terminal_entity_manifest`]
     //! reads the terminal cut pool's projection directly.
 
     use std::path::PathBuf;
 
-    use cobre_io::{StateFamily, encode_slot_date};
-    use cobre_sddp::indexer::StateDim;
-    use cobre_sddp::policy_export::{
+    use novomodelo_io::{StateFamily, encode_slot_date};
+    use novomodelo_sddp::indexer::StateDim;
+    use novomodelo_sddp::policy_export::{
         build_active_indices, build_stage_cut_records, build_stage_cuts_payloads,
     };
 
     use crate::common::fresh_setup_with;
 
-    /// The GNL plant's cobre thermal id in the converted deck.
+    /// The GNL plant's novomodelo thermal id in the converted deck.
     const DECK_THERMAL_ID: i32 = 94;
 
     fn deck_dir() -> PathBuf {
         let home = std::env::var("HOME").expect("HOME must be set to resolve the converted deck");
-        PathBuf::from(home).join("git/cobre-bridge/example/cobre-mar-26-rv2")
+        PathBuf::from(home).join("git/novomodelo-bridge/example/novomodelo-mar-26-rv2")
     }
 
     /// A converted case declaring a post-horizon-reaching lead must expose a
@@ -124,7 +124,7 @@ mod deck_smoke {
 
         let setup = fresh_setup_with(&deck, |_| {});
         let system =
-            cobre_io::load_case(&deck).expect("load_case must succeed on the converted deck");
+            novomodelo_io::load_case(&deck).expect("load_case must succeed on the converted deck");
         let state = setup.stage_state();
 
         let manifest = setup.build_terminal_entity_manifest(&system);
@@ -143,7 +143,7 @@ mod deck_smoke {
             .collect();
         let stage_records = build_stage_cut_records(&setup.fcf);
         let stage_active_indices = build_active_indices(&stage_records);
-        let stage_manifests: Vec<Vec<cobre_io::EntitySlot>> =
+        let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); setup.fcf.pools.len()];
         let stage_cuts = build_stage_cuts_payloads(
             &setup.fcf,
@@ -215,16 +215,16 @@ mod anticipated_fanout_readback {
     use std::path::{Path, PathBuf};
 
     use chrono::NaiveDate;
-    use cobre_io::{
+    use novomodelo_io::{
         ENTITY_SLOT_DATE_SENTINEL, EntitySlot, PolicyCutRecord, ProducerBlock, StageCutsPayload,
         StateFamily, decode_slot_date, encode_slot_date, write_policy_checkpoint,
     };
-    use cobre_sddp::test_support::{anticipated_slot_at, chain_graph_manifest};
-    use cobre_sddp::{BoundaryLoadRequest, load_boundary_cuts};
+    use novomodelo_sddp::test_support::{anticipated_slot_at, chain_graph_manifest};
+    use novomodelo_sddp::{BoundaryLoadRequest, load_boundary_cuts};
 
     use crate::common::fresh_setup_with;
 
-    /// SANTA CRUZ's cobre thermal id in the converted deck.
+    /// SANTA CRUZ's novomodelo thermal id in the converted deck.
     const DECK_THERMAL_ID: i32 = 86;
 
     /// This test's own derived calendar-month key (day-01 truncated), for
@@ -239,14 +239,14 @@ mod anticipated_fanout_readback {
 
     fn deck_dir() -> PathBuf {
         let home = std::env::var("HOME").expect("HOME must be set to resolve the converted deck");
-        PathBuf::from(home).join("git/cobre-bridge/example/decomp-jul-26-rv3")
+        PathBuf::from(home).join("git/novomodelo-bridge/example/decomp-jul-26-rv3")
     }
 
     fn producer_block() -> ProducerBlock {
         ProducerBlock {
             max_iterations: 1,
             forward_passes: 1,
-            ..cobre_sddp::test_support::producer_block()
+            ..novomodelo_sddp::test_support::producer_block()
         }
     }
 
@@ -257,7 +257,7 @@ mod anticipated_fanout_readback {
     /// mod's fan-out assertions read) plus `pool` months.
     fn fixture_priced_date(base_anchor: i32, pool: u32) -> NaiveDate {
         let base = decode_slot_date(base_anchor).expect("base_anchor is a valid YYYYMMDD anchor");
-        cobre_sddp::test_support::fixture_priced_date(base, pool)
+        novomodelo_sddp::test_support::fixture_priced_date(base, pool)
     }
 
     /// Mirrors `boundary_reconcile_defaults.rs`'s same-named helper: a single-stage,
@@ -294,7 +294,7 @@ mod anticipated_fanout_readback {
             graph_stage_id: -1,
             priced_state_date: encode_slot_date(priced_date),
         };
-        let metadata = cobre_sddp::test_support::checkpoint_metadata(
+        let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             1,
             chain_graph_manifest(1),
             producer_block(),
@@ -324,7 +324,7 @@ mod anticipated_fanout_readback {
 
         let setup = fresh_setup_with(&deck, |_| {});
         let system =
-            cobre_io::load_case(&deck).expect("load_case must succeed on the converted deck");
+            novomodelo_io::load_case(&deck).expect("load_case must succeed on the converted deck");
 
         let manifest = setup.build_terminal_entity_manifest(&system);
 

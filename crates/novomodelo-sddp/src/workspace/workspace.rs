@@ -6,8 +6,8 @@
 
 use std::ops::Range;
 
-use cobre_core::WorkerPhaseTimings;
-use cobre_solver::{Basis, BasisStatus, ProfiledSolver, SolverInterface, SolverStatistics};
+use novomodelo_core::WorkerPhaseTimings;
+use novomodelo_solver::{Basis, BasisStatus, ProfiledSolver, SolverInterface, SolverStatistics};
 
 use crate::SddpError;
 use crate::SddpError::Validation;
@@ -716,7 +716,7 @@ pub struct SolverWorkspace<S: SolverInterface> {
     /// backward pass never touches.
     pub(crate) backward_accum: BackwardAccumulators,
 
-    /// Zero-allocation timing payload for [`cobre_core::TrainingEvent::WorkerTiming`],
+    /// Zero-allocation timing payload for [`novomodelo_core::TrainingEvent::WorkerTiming`],
     /// accumulated in the parallel region and moved into the event payload after
     /// it completes. Reset to default at each iteration boundary.
     ///
@@ -986,7 +986,7 @@ impl<S: SolverInterface> WorkspacePool<S> {
 /// and records a `basis_rejection` in [`SolverStatistics`]. Template (non-cut)
 /// row statuses remain valid.
 ///
-/// [`SolverStatistics`]: cobre_solver::SolverStatistics
+/// [`SolverStatistics`]: novomodelo_solver::SolverStatistics
 pub struct BasisStore {
     /// Flat storage: `bases[scenario * num_nodes + node]`.
     bases: Vec<Option<CapturedBasis>>,
@@ -1001,8 +1001,8 @@ impl BasisStore {
     /// # Examples
     ///
     /// ```rust
-    /// use cobre_sddp::setup::NodePos;
-    /// use cobre_sddp::workspace::BasisStore;
+    /// use novomodelo_sddp::setup::NodePos;
+    /// use novomodelo_sddp::workspace::BasisStore;
     ///
     /// let store = BasisStore::new(4, 10);
     /// assert_eq!(store.num_scenarios(), 4);
@@ -1143,7 +1143,7 @@ mod tests {
     };
     use crate::context::StageContext;
     use crate::test_support::{TrainingContextFixture, state_layout};
-    use cobre_solver::{
+    use novomodelo_solver::{
         Basis, BasisStatus, SolutionView, SolverError, SolverInterface, SolverStatistics,
         types::{RowBatch, StageTemplate},
     };
@@ -1152,9 +1152,9 @@ mod tests {
     struct MockSolver;
 
     impl SolverInterface for MockSolver {
-        type Profile = cobre_solver::ActiveProfile;
+        type Profile = novomodelo_solver::ActiveProfile;
 
-        fn apply_profile(&mut self, _profile: &cobre_solver::ActiveProfile) {}
+        fn apply_profile(&mut self, _profile: &novomodelo_solver::ActiveProfile) {}
 
         fn solver_name_version(&self) -> String {
             "MockSolver 0.0.0".to_string()
@@ -2690,7 +2690,7 @@ mod tests {
     #[cfg(all(test, feature = "highs"))]
     #[test]
     fn workspace_solver_initialised_with_default_profile() {
-        use cobre_solver::HighsProfile;
+        use novomodelo_solver::HighsProfile;
 
         let ctx = TrainingContextFixture::new(state_layout(0, 0));
         let pool = WorkspacePool::new(

@@ -1,4 +1,4 @@
-//! Shared test utilities for `cobre-sddp` integration tests.
+//! Shared test utilities for `novomodelo-sddp` integration tests.
 //!
 //! [`build_setup_for_case`] is a drop-in replacement for `StudySetup::new` that
 //! drives the same construction pipeline as the CLI.
@@ -8,18 +8,18 @@
 use std::path::Path;
 use std::sync::mpsc;
 
-use cobre_comm::{CommData, CommError, Communicator, ReduceOp};
-use cobre_core::scenario::SamplingScheme;
-use cobre_core::{BlockMode, System};
-use cobre_io::Config;
-use cobre_sddp::{
+use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
+use novomodelo_core::scenario::SamplingScheme;
+use novomodelo_core::{BlockMode, System};
+use novomodelo_io::Config;
+use novomodelo_sddp::{
     BoundaryStateRequirements, SimulationScenarioResult, StudySetup,
     hydro_models::{PrepareHydroModelsResult, prepare_hydro_models},
     setup::{StudyParams, prepare_stochastic},
     test_support::decks::{SLOW_DECKS, committed_decks},
 };
-use cobre_solver::ActiveSolver;
-use cobre_stochastic::{
+use novomodelo_solver::ActiveSolver;
+use novomodelo_stochastic::{
     ClassSchemes, OpeningTreeInputs, StochasticContext, build_stochastic_context,
 };
 
@@ -147,7 +147,7 @@ pub fn boundary_requirements(case_dir: &Path, config: &Config) -> BoundaryStateR
     if !bp.checkpoint_path(case_dir).join("manifest.bin").exists() {
         return BoundaryStateRequirements::present(0);
     }
-    cobre_sddp::resolve_boundary_state_requirements(case_dir, config)
+    novomodelo_sddp::resolve_boundary_state_requirements(case_dir, config)
         .unwrap_or_else(|_| BoundaryStateRequirements::present(0))
 }
 
@@ -157,8 +157,8 @@ pub fn boundary_requirements(case_dir: &Path, config: &Config) -> BoundaryStateR
 /// override into `hydro_models`. This helper re-loads `case_dir`'s
 /// `CaseArtifacts` (a second full parse) for `scalar_parameters`, because
 /// `StudyParams::from_config` leaves them empty (they load from disk artifacts,
-/// not `Config`) — every setup caller must patch them in itself (cobre-cli via
-/// MPI broadcast, cobre-python directly).
+/// not `Config`) — every setup caller must patch them in itself (novomodelo-cli via
+/// MPI broadcast, novomodelo-python directly).
 pub fn build_setup_for_case(
     case_dir: &Path,
     config: &Config,
@@ -177,7 +177,7 @@ pub fn build_setup_for_case(
     let mut construction = StudyParams::from_config(config, Vec::new())
         .expect("StudyParams::from_config must succeed");
     construction.boundary = boundary_requirements(case_dir, config);
-    construction.scalar_parameters = cobre_io::load_case_with_artifacts(case_dir)
+    construction.scalar_parameters = novomodelo_io::load_case_with_artifacts(case_dir)
         .expect("load_case_with_artifacts must succeed")
         .artifacts
         .scalar_parameters;
@@ -203,9 +203,9 @@ pub fn fresh_system_and_setup_with(
     mutate: impl FnOnce(&mut Config),
 ) -> (System, StudySetup) {
     let config_path = case_dir.join("config.json");
-    let mut config = cobre_io::parse_config(&config_path).expect("config must parse");
+    let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
     mutate(&mut config);
-    let system = cobre_io::load_case(case_dir).expect("load_case must succeed");
+    let system = novomodelo_io::load_case(case_dir).expect("load_case must succeed");
 
     let training_source = config
         .training_scenario_source(&config_path)
@@ -321,7 +321,7 @@ pub fn fresh_system_and_setup_in_block_mode(
     })
 }
 
-/// Deck keys whose block-mode flip is rejected by a `cobre-io` validation
+/// Deck keys whose block-mode flip is rejected by a `novomodelo-io` validation
 /// rule, paired with the rejection's expected message substring: a deck
 /// here must still fail its flip with that substring, or the entry is
 /// stale.
@@ -462,7 +462,7 @@ fn try_build_setup_in_code_with_models(
     system: System,
     config: &Config,
     hydro_models: PrepareHydroModelsResult,
-) -> Result<StudySetup, cobre_sddp::SddpError> {
+) -> Result<StudySetup, novomodelo_sddp::SddpError> {
     let stochastic = stochastic_in_code(&system);
     StudySetup::new(&system, config, stochastic, hydro_models, Vec::new())
 }
@@ -498,7 +498,7 @@ pub fn build_setup_in_code(system: System, config: &Config) -> StudySetup {
 pub fn try_build_setup_in_code(
     system: System,
     config: &Config,
-) -> Result<StudySetup, cobre_sddp::SddpError> {
+) -> Result<StudySetup, novomodelo_sddp::SddpError> {
     let hydro_models = PrepareHydroModelsResult::default_from_system(&system);
     try_build_setup_in_code_with_models(system, config, hydro_models)
 }

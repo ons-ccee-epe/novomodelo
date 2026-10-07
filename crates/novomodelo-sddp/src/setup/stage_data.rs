@@ -1,6 +1,6 @@
 //! Stage-indexed data sub-struct of [`super::SolveInputs`].
 
-use cobre_core::{ContractType, Stage, temporal::StageLagTransition};
+use novomodelo_core::{ContractType, Stage, temporal::StageLagTransition};
 
 use crate::{
     lp::builder::StageTemplates,

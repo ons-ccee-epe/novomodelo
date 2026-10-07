@@ -1,6 +1,6 @@
 """CLI/Python byte-identity parity test for ``stochastic/inflow_annual_component.parquet``.
 
-Verifies that ``cobre.run.run()`` and the ``cobre`` CLI produce byte-identical
+Verifies that ``novomodelo.run.run()`` and the ``novomodelo`` CLI produce byte-identical
 ``inflow_annual_component.parquet`` files for the same deterministic input.
 
 ## What "parity" means here
@@ -9,7 +9,7 @@ Verifies that ``cobre.run.run()`` and the ``cobre`` CLI produce byte-identical
 (annual coefficient, annual mean, and annual standard deviation per hydro per
 stage).  It carries no wall-clock timing data.  Both the CLI and Python paths
 write the file through the same Rust writer (``write_inflow_annual_component``
-in ``cobre-io``) using the crate's frozen Parquet encoding and
+in ``novomodelo-io``) using the crate's frozen Parquet encoding and
 ``write_parquet_atomic``, which is byte-deterministic by construction.
 
 Byte equality is therefore the correct and tightest correctness gate:
@@ -21,7 +21,7 @@ Byte equality is therefore the correct and tightest correctness gate:
 
 Run with (from the repo root)::
 
-    pytest crates/cobre-python/tests/test_inflow_annual_component_parity.py -v
+    pytest crates/novomodelo-python/tests/test_inflow_annual_component_parity.py -v
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ import pathlib
 
 import pytest
 
-from _cobre_cli import run_cli
+from _novomodelo_cli import run_cli
 
 D12_CASE = "examples/deterministic/d12-par-annual"
 
@@ -44,11 +44,11 @@ def test_inflow_annual_component_byte_identical(
     deterministic Parquet encoding.  Any byte-level divergence indicates a
     regression in the parity guarantee.
     """
-    cobre_run = pytest.importorskip(
-        "cobre.run",
+    novomodelo_run = pytest.importorskip(
+        "novomodelo.run",
         reason=(
-            "`cobre` Python module is not installed. "
-            "Run `maturin develop --uv -m crates/cobre-python/Cargo.toml --release` first."
+            "`novomodelo` Python module is not installed. "
+            "Run `maturin develop --uv -m crates/novomodelo-python/Cargo.toml --release` first."
         ),
     )
 
@@ -64,7 +64,7 @@ def test_inflow_annual_component_byte_identical(
     run_cli(case_dir, cli_out, cli_binary)
 
     # Run Python.
-    cobre_run.run(str(case_dir), output_dir=str(py_out))
+    novomodelo_run.run(str(case_dir), output_dir=str(py_out))
 
     cli_parquet = cli_out / "stochastic" / "inflow_annual_component.parquet"
     py_parquet = py_out / "stochastic" / "inflow_annual_component.parquet"

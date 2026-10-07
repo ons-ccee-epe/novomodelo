@@ -735,7 +735,7 @@ mod research_tests {
         let a_value: [f64; 3] = [1.0, 2.0, 1.0];
         // SAFETY: all pointers are valid, aligned, non-null, and live for the call duration.
         let status = unsafe {
-            ffi::cobre_highs_pass_lp(
+            ffi::novomodelo_highs_pass_lp(
                 highs,
                 3,
                 2,
@@ -766,34 +766,35 @@ mod research_tests {
         use crate::ffi;
 
         // SS1.1 with time_limit=0.0: presolve/crash solves before time check fires.
-        let highs = unsafe { ffi::cobre_highs_create() };
+        let highs = unsafe { ffi::novomodelo_highs_create() };
         assert!(!highs.is_null());
-        unsafe { ffi::cobre_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0) };
+        unsafe { ffi::novomodelo_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0) };
         unsafe { research_load_ss11_lp(highs) };
-        let _ = unsafe { ffi::cobre_highs_set_double_option(highs, c"time_limit".as_ptr(), 0.0) };
-        let run_status = unsafe { ffi::cobre_highs_run(highs) };
-        let model_status = unsafe { ffi::cobre_highs_get_model_status(highs) };
-        let obj = unsafe { ffi::cobre_highs_get_objective_value(highs) };
+        let _ =
+            unsafe { ffi::novomodelo_highs_set_double_option(highs, c"time_limit".as_ptr(), 0.0) };
+        let run_status = unsafe { ffi::novomodelo_highs_run(highs) };
+        let model_status = unsafe { ffi::novomodelo_highs_get_model_status(highs) };
+        let obj = unsafe { ffi::novomodelo_highs_get_objective_value(highs) };
         eprintln!(
             "SS1.1 + time_limit=0: run_status={run_status}, model_status={model_status}, obj={obj}"
         );
-        unsafe { ffi::cobre_highs_destroy(highs) };
+        unsafe { ffi::novomodelo_highs_destroy(highs) };
 
         // SS1.1 with iteration_limit=0: same result, need a larger LP.
-        let highs = unsafe { ffi::cobre_highs_create() };
+        let highs = unsafe { ffi::novomodelo_highs_create() };
         assert!(!highs.is_null());
-        unsafe { ffi::cobre_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0) };
+        unsafe { ffi::novomodelo_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0) };
         unsafe { research_load_ss11_lp(highs) };
         let _ = unsafe {
-            ffi::cobre_highs_set_int_option(highs, c"simplex_iteration_limit".as_ptr(), 0)
+            ffi::novomodelo_highs_set_int_option(highs, c"simplex_iteration_limit".as_ptr(), 0)
         };
-        let run_status = unsafe { ffi::cobre_highs_run(highs) };
-        let model_status = unsafe { ffi::cobre_highs_get_model_status(highs) };
-        let obj = unsafe { ffi::cobre_highs_get_objective_value(highs) };
+        let run_status = unsafe { ffi::novomodelo_highs_run(highs) };
+        let model_status = unsafe { ffi::novomodelo_highs_get_model_status(highs) };
+        let obj = unsafe { ffi::novomodelo_highs_get_objective_value(highs) };
         eprintln!(
             "SS1.1 + iteration_limit=0: run_status={run_status}, model_status={model_status}, obj={obj}"
         );
-        unsafe { ffi::cobre_highs_destroy(highs) };
+        unsafe { ffi::novomodelo_highs_destroy(highs) };
     }
 
     /// Load larger LP (5 vars, 4 rows) requiring multiple simplex iterations.
@@ -811,7 +812,7 @@ mod research_tests {
         let a_value: [f64; 8] = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
         // SAFETY: all pointers are valid, aligned, non-null, and live for the call duration.
         let status = unsafe {
-            ffi::cobre_highs_pass_lp(
+            ffi::novomodelo_highs_pass_lp(
                 highs,
                 5,
                 4,
@@ -841,17 +842,17 @@ mod research_tests {
     fn test_research_time_limit_zero_triggers_time_limit_status() {
         use crate::ffi;
 
-        let highs = unsafe { ffi::cobre_highs_create() };
+        let highs = unsafe { ffi::novomodelo_highs_create() };
         assert!(!highs.is_null());
-        unsafe { ffi::cobre_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0) };
+        unsafe { ffi::novomodelo_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0) };
         unsafe { research_load_larger_lp(highs) };
 
         let opt_status =
-            unsafe { ffi::cobre_highs_set_double_option(highs, c"time_limit".as_ptr(), 0.0) };
+            unsafe { ffi::novomodelo_highs_set_double_option(highs, c"time_limit".as_ptr(), 0.0) };
         assert_eq!(opt_status, ffi::HIGHS_STATUS_OK);
 
-        let run_status = unsafe { ffi::cobre_highs_run(highs) };
-        let model_status = unsafe { ffi::cobre_highs_get_model_status(highs) };
+        let run_status = unsafe { ffi::novomodelo_highs_run(highs) };
+        let model_status = unsafe { ffi::novomodelo_highs_get_model_status(highs) };
 
         eprintln!(
             "time_limit=0 on larger LP: run_status={run_status}, model_status={model_status}"
@@ -868,7 +869,7 @@ mod research_tests {
             "time_limit=0 must give MODEL_STATUS_TIME_LIMIT (13), got {model_status}"
         );
 
-        unsafe { ffi::cobre_highs_destroy(highs) };
+        unsafe { ffi::novomodelo_highs_destroy(highs) };
     }
 
     /// iteration_limit=0 with presolve=off triggers ITERATION_LIMIT (14) status.
@@ -876,20 +877,22 @@ mod research_tests {
     fn test_research_iteration_limit_zero_triggers_iteration_limit_status() {
         use crate::ffi;
 
-        let highs = unsafe { ffi::cobre_highs_create() };
+        let highs = unsafe { ffi::novomodelo_highs_create() };
         assert!(!highs.is_null());
-        unsafe { ffi::cobre_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0) };
+        unsafe { ffi::novomodelo_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0) };
         // Disable presolve so crash cannot solve LP without simplex iterations.
-        unsafe { ffi::cobre_highs_set_string_option(highs, c"presolve".as_ptr(), c"off".as_ptr()) };
+        unsafe {
+            ffi::novomodelo_highs_set_string_option(highs, c"presolve".as_ptr(), c"off".as_ptr())
+        };
         unsafe { research_load_larger_lp(highs) };
 
         let opt_status = unsafe {
-            ffi::cobre_highs_set_int_option(highs, c"simplex_iteration_limit".as_ptr(), 0)
+            ffi::novomodelo_highs_set_int_option(highs, c"simplex_iteration_limit".as_ptr(), 0)
         };
         assert_eq!(opt_status, ffi::HIGHS_STATUS_OK);
 
-        let run_status = unsafe { ffi::cobre_highs_run(highs) };
-        let model_status = unsafe { ffi::cobre_highs_get_model_status(highs) };
+        let run_status = unsafe { ffi::novomodelo_highs_run(highs) };
+        let model_status = unsafe { ffi::novomodelo_highs_get_model_status(highs) };
 
         eprintln!(
             "iteration_limit=0 on larger LP: run_status={run_status}, model_status={model_status}"
@@ -906,7 +909,7 @@ mod research_tests {
             "iteration_limit=0 must give MODEL_STATUS_ITERATION_LIMIT (14), got {model_status}"
         );
 
-        unsafe { ffi::cobre_highs_destroy(highs) };
+        unsafe { ffi::novomodelo_highs_destroy(highs) };
     }
 
     /// Observe partial solution availability after TIME_LIMIT and ITERATION_LIMIT.
@@ -916,39 +919,43 @@ mod research_tests {
 
         // TIME_LIMIT: observe objective after halting at time check
         {
-            let highs = unsafe { ffi::cobre_highs_create() };
+            let highs = unsafe { ffi::novomodelo_highs_create() };
             assert!(!highs.is_null());
-            unsafe { ffi::cobre_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0) };
+            unsafe { ffi::novomodelo_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0) };
             unsafe { research_load_larger_lp(highs) };
-            unsafe { ffi::cobre_highs_set_double_option(highs, c"time_limit".as_ptr(), 0.0) };
-            unsafe { ffi::cobre_highs_run(highs) };
+            unsafe { ffi::novomodelo_highs_set_double_option(highs, c"time_limit".as_ptr(), 0.0) };
+            unsafe { ffi::novomodelo_highs_run(highs) };
 
-            let obj = unsafe { ffi::cobre_highs_get_objective_value(highs) };
-            let model_status = unsafe { ffi::cobre_highs_get_model_status(highs) };
+            let obj = unsafe { ffi::novomodelo_highs_get_objective_value(highs) };
+            let model_status = unsafe { ffi::novomodelo_highs_get_model_status(highs) };
             assert_eq!(model_status, ffi::HIGHS_MODEL_STATUS_TIME_LIMIT);
             eprintln!("TIME_LIMIT: obj={obj}, finite={}", obj.is_finite());
-            unsafe { ffi::cobre_highs_destroy(highs) };
+            unsafe { ffi::novomodelo_highs_destroy(highs) };
         }
 
         // ITERATION_LIMIT: observe objective at crash point
         {
-            let highs = unsafe { ffi::cobre_highs_create() };
+            let highs = unsafe { ffi::novomodelo_highs_create() };
             assert!(!highs.is_null());
-            unsafe { ffi::cobre_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0) };
+            unsafe { ffi::novomodelo_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0) };
             unsafe {
-                ffi::cobre_highs_set_string_option(highs, c"presolve".as_ptr(), c"off".as_ptr())
+                ffi::novomodelo_highs_set_string_option(
+                    highs,
+                    c"presolve".as_ptr(),
+                    c"off".as_ptr(),
+                )
             };
             unsafe { research_load_larger_lp(highs) };
             unsafe {
-                ffi::cobre_highs_set_int_option(highs, c"simplex_iteration_limit".as_ptr(), 0)
+                ffi::novomodelo_highs_set_int_option(highs, c"simplex_iteration_limit".as_ptr(), 0)
             };
-            unsafe { ffi::cobre_highs_run(highs) };
+            unsafe { ffi::novomodelo_highs_run(highs) };
 
-            let obj = unsafe { ffi::cobre_highs_get_objective_value(highs) };
-            let model_status = unsafe { ffi::cobre_highs_get_model_status(highs) };
+            let obj = unsafe { ffi::novomodelo_highs_get_objective_value(highs) };
+            let model_status = unsafe { ffi::novomodelo_highs_get_model_status(highs) };
             assert_eq!(model_status, ffi::HIGHS_MODEL_STATUS_ITERATION_LIMIT);
             eprintln!("ITERATION_LIMIT: obj={obj}, finite={}", obj.is_finite());
-            unsafe { ffi::cobre_highs_destroy(highs) };
+            unsafe { ffi::novomodelo_highs_destroy(highs) };
         }
     }
 
@@ -957,23 +964,27 @@ mod research_tests {
     fn test_research_restore_defaults_allows_subsequent_optimal_solve() {
         use crate::ffi;
 
-        let highs = unsafe { ffi::cobre_highs_create() };
+        let highs = unsafe { ffi::novomodelo_highs_create() };
         assert!(!highs.is_null());
 
-        unsafe { ffi::cobre_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0) };
+        unsafe { ffi::novomodelo_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0) };
 
-        // Apply cobre defaults (mirror HighsSolver::new() configuration).
+        // Apply novomodelo defaults (mirror HighsSolver::new() configuration).
         unsafe {
-            ffi::cobre_highs_set_string_option(highs, c"solver".as_ptr(), c"simplex".as_ptr());
-            ffi::cobre_highs_set_int_option(highs, c"simplex_strategy".as_ptr(), 1);
-            ffi::cobre_highs_set_string_option(highs, c"presolve".as_ptr(), c"off".as_ptr());
-            ffi::cobre_highs_set_string_option(highs, c"parallel".as_ptr(), c"off".as_ptr());
-            ffi::cobre_highs_set_double_option(
+            ffi::novomodelo_highs_set_string_option(highs, c"solver".as_ptr(), c"simplex".as_ptr());
+            ffi::novomodelo_highs_set_int_option(highs, c"simplex_strategy".as_ptr(), 1);
+            ffi::novomodelo_highs_set_string_option(highs, c"presolve".as_ptr(), c"off".as_ptr());
+            ffi::novomodelo_highs_set_string_option(highs, c"parallel".as_ptr(), c"off".as_ptr());
+            ffi::novomodelo_highs_set_double_option(
                 highs,
                 c"primal_feasibility_tolerance".as_ptr(),
                 1e-7,
             );
-            ffi::cobre_highs_set_double_option(highs, c"dual_feasibility_tolerance".as_ptr(), 1e-7);
+            ffi::novomodelo_highs_set_double_option(
+                highs,
+                c"dual_feasibility_tolerance".as_ptr(),
+                1e-7,
+            );
         }
 
         let col_cost: [f64; 3] = [0.0, 1.0, 50.0];
@@ -987,7 +998,7 @@ mod research_tests {
 
         // First solve: with iteration_limit = 0 -> ITERATION_LIMIT.
         unsafe {
-            ffi::cobre_highs_pass_lp(
+            ffi::novomodelo_highs_pass_lp(
                 highs,
                 3,
                 2,
@@ -1004,34 +1015,42 @@ mod research_tests {
                 a_index.as_ptr(),
                 a_value.as_ptr(),
             );
-            ffi::cobre_highs_set_int_option(highs, c"simplex_iteration_limit".as_ptr(), 0);
-            ffi::cobre_highs_run(highs);
+            ffi::novomodelo_highs_set_int_option(highs, c"simplex_iteration_limit".as_ptr(), 0);
+            ffi::novomodelo_highs_run(highs);
         }
-        let status1 = unsafe { ffi::cobre_highs_get_model_status(highs) };
+        let status1 = unsafe { ffi::novomodelo_highs_get_model_status(highs) };
         assert_eq!(status1, ffi::HIGHS_MODEL_STATUS_ITERATION_LIMIT);
 
         // Restore default settings (mirror restore_default_settings()).
         unsafe {
-            ffi::cobre_highs_set_string_option(highs, c"solver".as_ptr(), c"simplex".as_ptr());
-            ffi::cobre_highs_set_int_option(highs, c"simplex_strategy".as_ptr(), 1);
-            ffi::cobre_highs_set_string_option(highs, c"presolve".as_ptr(), c"off".as_ptr());
-            ffi::cobre_highs_set_double_option(
+            ffi::novomodelo_highs_set_string_option(highs, c"solver".as_ptr(), c"simplex".as_ptr());
+            ffi::novomodelo_highs_set_int_option(highs, c"simplex_strategy".as_ptr(), 1);
+            ffi::novomodelo_highs_set_string_option(highs, c"presolve".as_ptr(), c"off".as_ptr());
+            ffi::novomodelo_highs_set_double_option(
                 highs,
                 c"primal_feasibility_tolerance".as_ptr(),
                 1e-7,
             );
-            ffi::cobre_highs_set_double_option(highs, c"dual_feasibility_tolerance".as_ptr(), 1e-7);
-            ffi::cobre_highs_set_string_option(highs, c"parallel".as_ptr(), c"off".as_ptr());
-            ffi::cobre_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0);
+            ffi::novomodelo_highs_set_double_option(
+                highs,
+                c"dual_feasibility_tolerance".as_ptr(),
+                1e-7,
+            );
+            ffi::novomodelo_highs_set_string_option(highs, c"parallel".as_ptr(), c"off".as_ptr());
+            ffi::novomodelo_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0);
             // simplex_iteration_limit is NOT in restore_default_settings -- reset explicitly.
-            ffi::cobre_highs_set_int_option(highs, c"simplex_iteration_limit".as_ptr(), i32::MAX);
+            ffi::novomodelo_highs_set_int_option(
+                highs,
+                c"simplex_iteration_limit".as_ptr(),
+                i32::MAX,
+            );
         }
 
         // Second solve on the same model: must reach OPTIMAL.
-        unsafe { ffi::cobre_highs_clear_solver(highs) };
-        unsafe { ffi::cobre_highs_run(highs) };
-        let status2 = unsafe { ffi::cobre_highs_get_model_status(highs) };
-        let obj = unsafe { ffi::cobre_highs_get_objective_value(highs) };
+        unsafe { ffi::novomodelo_highs_clear_solver(highs) };
+        unsafe { ffi::novomodelo_highs_run(highs) };
+        let status2 = unsafe { ffi::novomodelo_highs_get_model_status(highs) };
+        let obj = unsafe { ffi::novomodelo_highs_get_objective_value(highs) };
         assert_eq!(
             status2,
             ffi::HIGHS_MODEL_STATUS_OPTIMAL,
@@ -1042,7 +1061,7 @@ mod research_tests {
             "objective after restore must be 100.0, got {obj}"
         );
 
-        unsafe { ffi::cobre_highs_destroy(highs) };
+        unsafe { ffi::novomodelo_highs_destroy(highs) };
     }
 
     /// iteration_limit=1 triggers ITERATION_LIMIT (or OPTIMAL if solved in 1 iteration).
@@ -1050,10 +1069,10 @@ mod research_tests {
     fn test_research_iteration_limit_one_triggers_iteration_limit_status() {
         use crate::ffi;
 
-        let highs = unsafe { ffi::cobre_highs_create() };
+        let highs = unsafe { ffi::novomodelo_highs_create() };
         assert!(!highs.is_null());
 
-        unsafe { ffi::cobre_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0) };
+        unsafe { ffi::novomodelo_highs_set_bool_option(highs, c"output_flag".as_ptr(), 0) };
 
         let col_cost: [f64; 3] = [0.0, 1.0, 50.0];
         let col_lower: [f64; 3] = [0.0, 0.0, 0.0];
@@ -1065,7 +1084,7 @@ mod research_tests {
         let a_value: [f64; 3] = [1.0, 2.0, 1.0];
 
         unsafe {
-            ffi::cobre_highs_pass_lp(
+            ffi::novomodelo_highs_pass_lp(
                 highs,
                 3,
                 2,
@@ -1082,11 +1101,11 @@ mod research_tests {
                 a_index.as_ptr(),
                 a_value.as_ptr(),
             );
-            ffi::cobre_highs_set_int_option(highs, c"simplex_iteration_limit".as_ptr(), 1);
-            ffi::cobre_highs_run(highs);
+            ffi::novomodelo_highs_set_int_option(highs, c"simplex_iteration_limit".as_ptr(), 1);
+            ffi::novomodelo_highs_run(highs);
         }
 
-        let model_status = unsafe { ffi::cobre_highs_get_model_status(highs) };
+        let model_status = unsafe { ffi::novomodelo_highs_get_model_status(highs) };
         eprintln!("iteration_limit=1 model_status: {model_status}");
         // If the LP solves in 1 iteration it may be OPTIMAL; otherwise ITERATION_LIMIT.
         // We record both possibilities for the research document.
@@ -1096,7 +1115,7 @@ mod research_tests {
             "expected ITERATION_LIMIT or OPTIMAL, got {model_status}"
         );
 
-        unsafe { ffi::cobre_highs_destroy(highs) };
+        unsafe { ffi::novomodelo_highs_destroy(highs) };
     }
 
     /// HighsSolver maps UNBOUNDED (10) and INFEASIBLE (8) to SolverError variants.

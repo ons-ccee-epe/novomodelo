@@ -329,103 +329,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cobre-comm"
-version = "0.18.0"
-dependencies = [
- "gethostname",
- "thiserror",
-]
-
-[[package]]
-name = "cobre-core"
-version = "0.18.0"
-dependencies = [
- "chrono",
- "schemars",
- "serde",
-]
-
-[[package]]
-name = "cobre-io"
-version = "0.18.0"
-dependencies = [
- "arrow",
- "chrono",
- "cobre-core",
- "cobre-stochastic",
- "csv",
- "flatbuffers",
- "gethostname",
- "parquet",
- "postcard",
- "schemars",
- "serde",
- "serde_json",
- "thiserror",
- "tracing",
-]
-
-[[package]]
-name = "cobre-python"
-version = "0.18.0"
-dependencies = [
- "arrow",
- "chrono",
- "cobre-comm",
- "cobre-core",
- "cobre-io",
- "cobre-sddp",
- "cobre-solver",
- "cobre-stochastic",
- "parquet",
- "pyo3",
- "rayon",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "cobre-sddp"
-version = "0.18.0"
-dependencies = [
- "cc",
- "chrono",
- "cobre-comm",
- "cobre-core",
- "cobre-io",
- "cobre-solver",
- "cobre-stochastic",
- "matrixmultiply",
- "rayon",
- "serde",
- "thiserror",
- "tracing",
-]
-
-[[package]]
-name = "cobre-solver"
-version = "0.18.0"
-dependencies = [
- "cc",
- "cmake",
-]
-
-[[package]]
-name = "cobre-stochastic"
-version = "0.18.0"
-dependencies = [
- "chrono",
- "cobre-core",
- "rand",
- "rand_distr",
- "rand_pcg",
- "rayon",
- "siphasher",
- "thiserror",
- "tracing",
-]
-
-[[package]]
 name = "cobs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -865,6 +768,103 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "novomodelo-comm"
+version = "0.18.0"
+dependencies = [
+ "gethostname",
+ "thiserror",
+]
+
+[[package]]
+name = "novomodelo-core"
+version = "0.18.0"
+dependencies = [
+ "chrono",
+ "schemars",
+ "serde",
+]
+
+[[package]]
+name = "novomodelo-io"
+version = "0.18.0"
+dependencies = [
+ "arrow",
+ "chrono",
+ "csv",
+ "flatbuffers",
+ "gethostname",
+ "novomodelo-core",
+ "novomodelo-stochastic",
+ "parquet",
+ "postcard",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "novomodelo-python"
+version = "0.18.0"
+dependencies = [
+ "arrow",
+ "chrono",
+ "novomodelo-comm",
+ "novomodelo-core",
+ "novomodelo-io",
+ "novomodelo-sddp",
+ "novomodelo-solver",
+ "novomodelo-stochastic",
+ "parquet",
+ "pyo3",
+ "rayon",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "novomodelo-sddp"
+version = "0.18.0"
+dependencies = [
+ "cc",
+ "chrono",
+ "matrixmultiply",
+ "novomodelo-comm",
+ "novomodelo-core",
+ "novomodelo-io",
+ "novomodelo-solver",
+ "novomodelo-stochastic",
+ "rayon",
+ "serde",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "novomodelo-solver"
+version = "0.18.0"
+dependencies = [
+ "cc",
+ "cmake",
+]
+
+[[package]]
+name = "novomodelo-stochastic"
+version = "0.18.0"
+dependencies = [
+ "chrono",
+ "novomodelo-core",
+ "rand",
+ "rand_distr",
+ "rand_pcg",
+ "rayon",
+ "siphasher",
+ "thiserror",
+ "tracing",
+]
 
 [[package]]
 name = "num-bigint"

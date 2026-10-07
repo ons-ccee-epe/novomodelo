@@ -4,21 +4,21 @@
 use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
-use cobre_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
-use cobre_core::entities::non_controllable::NonControllableSource;
-use cobre_core::scenario::{
+use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+use novomodelo_core::entities::non_controllable::NonControllableSource;
+use novomodelo_core::scenario::{
     CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
     LoadModel, NcsModel, SamplingScheme,
 };
-use cobre_core::temporal::{
+use novomodelo_core::temporal::{
     Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig,
 };
-use cobre_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
-use cobre_solver::{
+use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
+use novomodelo_solver::{
     Basis, RowBatch, SolutionView, SolverError, SolverInterface, SolverStatistics, StageTemplate,
 };
-use cobre_stochastic::StochasticContext;
-use cobre_stochastic::context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+use novomodelo_stochastic::StochasticContext;
+use novomodelo_stochastic::context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
 
 use super::{InflowNoise, StageSolvePrep, StageSolvePrepParams, StateSource};
 use crate::{
@@ -248,7 +248,7 @@ struct RecordingSolver {
 }
 
 impl SolverInterface for RecordingSolver {
-    type Profile = cobre_solver::ActiveProfile;
+    type Profile = novomodelo_solver::ActiveProfile;
 
     fn apply_profile(&mut self, _profile: &Self::Profile) {}
 

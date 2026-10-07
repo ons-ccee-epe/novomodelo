@@ -14,14 +14,14 @@
 // seam from `common::builders` — a no-op today, not dead code.
 #![allow(clippy::needless_update)]
 
-use cobre_io::config::{SimulationSelection, StoppingRuleConfig, TrainingSelection};
+use novomodelo_io::config::{SimulationSelection, StoppingRuleConfig, TrainingSelection};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::mpsc;
 
 use chrono::NaiveDate;
-use cobre_comm::Communicator;
-use cobre_core::{
+use novomodelo_comm::Communicator;
+use novomodelo_core::{
     DeficitSegment, EntityId, SystemBuilder, TrainingEvent,
     entities::bus::Bus,
     scenario::{
@@ -33,23 +33,23 @@ use cobre_core::{
         StageStateConfig,
     },
 };
-use cobre_solver::{
+use novomodelo_solver::{
     ActiveProfile, ActiveSolver, Basis, RowBatch, SolverError, SolverInterface, SolverStatistics,
     StageTemplate,
 };
-use cobre_stochastic::{
+use novomodelo_stochastic::{
     ClassSchemes, OpeningTreeInputs, StochasticContext, build_stochastic_context,
 };
 
-use cobre_io::output::simulation_writer::{
+use novomodelo_io::output::simulation_writer::{
     ScenarioWritePayload, SimulationParquetWriter, write_scenario_summary,
 };
-use cobre_io::{
+use novomodelo_io::{
     Config, EstimationConfig, MetadataSimulationSolveStats, PolicyCutRecord, PolicyMode,
     STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, SimulationOutput, StageCutsPayload,
     read_policy_checkpoint, write_policy_checkpoint, write_results,
 };
-use cobre_sddp::{
+use novomodelo_sddp::{
     CapturedBasis, Phase, PrepareHydroModelsResult, ResolvedParameters, SimulationSummary,
     SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
     aggregate_simulation, build_basis_cache_from_checkpoint, build_training_output,
@@ -187,11 +187,11 @@ impl SolverInterface for MockSolver {
     fn solve(
         &mut self,
         _basis: Option<&Basis>,
-    ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
+    ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
         let call = self.call_count;
         self.call_count += 1;
         let obj = self.objectives[call % self.objectives.len()];
-        Ok(cobre_solver::SolutionView {
+        Ok(novomodelo_solver::SolutionView {
             objective: obj,
             primal: &[0.0; 15],
             dual: &[0.0; 7],
@@ -202,7 +202,7 @@ impl SolverInterface for MockSolver {
     }
 
     fn get_basis(&mut self, out: &mut Basis) {
-        cobre_sddp::test_support::fill_consistent_basis(out);
+        novomodelo_sddp::test_support::fill_consistent_basis(out);
     }
 
     fn statistics(&self) -> SolverStatistics {
@@ -220,8 +220,8 @@ impl SolverInterface for MockSolver {
 
 #[allow(clippy::cast_possible_wrap)]
 fn make_stochastic_context(n_stages: usize, n_openings: usize) -> StochasticContext {
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::InflowModel;
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::InflowModel;
 
     let bus = default_bus();
     let hydro = make_hydro(
@@ -410,7 +410,7 @@ fn zero_energy_conversion_set(n_stages: usize) -> EnergyConversionSet {
     EnergyConversionSet::new(
         vec![vec![zero_ec; n_stages]; 1],
         vec![vec![0.0_f64; n_stages]; 1],
-        &cobre_sddp::test_support::minimal_hydros(1),
+        &novomodelo_sddp::test_support::minimal_hydros(1),
         n_stages,
     )
 }
@@ -452,7 +452,7 @@ impl Fixture {
 }
 
 fn make_config() -> Config {
-    use cobre_io::config::{
+    use novomodelo_io::config::{
         CheckpointingConfig, ExportsConfig, InflowNonNegativityConfig, ModelingConfig,
         PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
         StoppingRuleConfig, TrainingConfig as IoTrainingConfig, TrainingSolverConfig,
@@ -468,10 +468,10 @@ fn make_config() -> Config {
             enabled: true,
             tree_seed: None,
             stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit { limit: 3 }]),
-            stopping_mode: cobre_io::config::StoppingMode::Any,
+            stopping_mode: novomodelo_io::config::StoppingMode::Any,
             cut_selection: RowSelectionConfig::default(),
             solver: TrainingSolverConfig::default(),
-            parallelism: cobre_io::config::ParallelismConfig::default(),
+            parallelism: novomodelo_io::config::ParallelismConfig::default(),
             scenario_source: None,
             selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
         },
@@ -494,9 +494,9 @@ fn make_config() -> Config {
     }
 }
 
-fn make_system() -> cobre_core::System {
-    use cobre_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
-    use cobre_core::scenario::InflowModel;
+fn make_system() -> novomodelo_core::System {
+    use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::scenario::InflowModel;
 
     let bus = default_bus();
     let hydro = make_hydro(
@@ -639,7 +639,7 @@ fn train_simulate_write_cycle() {
     let cut_state_layouts = all_enabled_cut_state_layouts(&fx.state, fx.n_stages);
     let study_dims = study_dims_for(false);
     let training_context = TrainingContext {
-        node_graph: &cobre_sddp::test_support::chain_node_graph(&fx.stochastic),
+        node_graph: &novomodelo_sddp::test_support::chain_node_graph(&fx.stochastic),
         horizon: &fx.horizon,
         state: &fx.state,
         cut_state_layouts: &cut_state_layouts,
@@ -736,10 +736,10 @@ fn train_simulate_write_cycle() {
         .collect();
 
     let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
-    let policy_metadata = cobre_sddp::test_support::checkpoint_metadata(
+    let policy_metadata = novomodelo_sddp::test_support::checkpoint_metadata(
         fx.n_stages as u32,
-        cobre_io::GraphManifest::default(),
-        cobre_io::ProducerBlock {
+        novomodelo_io::GraphManifest::default(),
+        novomodelo_io::ProducerBlock {
             completed_iterations: result.result.iterations as u32,
             final_lower_bound: result.result.final_lb,
             best_upper_bound: Some(result.result.final_ub),
@@ -801,7 +801,7 @@ fn train_simulate_write_cycle() {
         &sim_config,
         SimulationOutputSpec {
             result_tx: &result_tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &vec![vec![744.0]; fx.n_stages],
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); fx.n_stages],
@@ -844,13 +844,13 @@ fn train_simulate_write_cycle() {
     let config = make_config();
     let output_dir = tmp.path();
 
-    let output_ctx = cobre_io::OutputContext {
+    let output_ctx = novomodelo_io::OutputContext {
         hostname: "test-host".to_string(),
         solver: "highs".to_string(),
         solver_version: None,
         started_at: "2026-01-17T08:00:00Z".to_string(),
         completed_at: "2026-01-17T12:30:00Z".to_string(),
-        distribution: cobre_io::DistributionInfo {
+        distribution: novomodelo_io::DistributionInfo {
             backend: "local".to_string(),
             world_size: 1,
             ranks_participated: 1,
@@ -981,8 +981,8 @@ impl SolverInterface for SizedMockSolver {
     fn solve(
         &mut self,
         _basis: Option<&Basis>,
-    ) -> Result<cobre_solver::SolutionView<'_>, SolverError> {
-        Ok(cobre_solver::SolutionView {
+    ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
+        Ok(novomodelo_solver::SolutionView {
             objective: 1000.0,
             primal: &self.primal,
             dual: &self.dual,
@@ -993,7 +993,7 @@ impl SolverInterface for SizedMockSolver {
     }
 
     fn get_basis(&mut self, out: &mut Basis) {
-        cobre_sddp::test_support::fill_consistent_basis(out);
+        novomodelo_sddp::test_support::fill_consistent_basis(out);
     }
 
     fn statistics(&self) -> SolverStatistics {
@@ -1011,10 +1011,10 @@ impl SolverInterface for SizedMockSolver {
 
 /// Build a 1-hydro, 1-bus system with `min_outflow_m3s` > 0 for integration testing.
 #[allow(clippy::cast_possible_wrap)]
-fn make_min_outflow_system() -> cobre_core::System {
-    use cobre_core::entities::hydro::HydroGenerationModel;
-    use cobre_core::scenario::InflowModel;
-    use cobre_core::{
+fn make_min_outflow_system() -> novomodelo_core::System {
+    use novomodelo_core::entities::hydro::HydroGenerationModel;
+    use novomodelo_core::scenario::InflowModel;
+    use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, HydroBlockBounds,
         HydroPenalties, HydroStageBounds, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
@@ -1220,7 +1220,7 @@ fn make_min_outflow_system() -> cobre_core::System {
 /// to `outflow_slack_below_m3s` in the simulation output.
 #[test]
 fn simulation_min_outflow_slack_extracted_from_primal() {
-    use cobre_sddp::build_stage_templates_resolving_layout;
+    use novomodelo_sddp::build_stage_templates_resolving_layout;
 
     let system = make_min_outflow_system();
     let n_stages = 2;
@@ -1315,7 +1315,7 @@ fn simulation_min_outflow_slack_extracted_from_primal() {
 
     let cut_state_layouts = all_enabled_cut_state_layouts(&state, n_stages);
     let training_context = TrainingContext {
-        node_graph: &cobre_sddp::test_support::chain_node_graph(&stochastic),
+        node_graph: &novomodelo_sddp::test_support::chain_node_graph(&stochastic),
         horizon: &horizon,
         state: &state,
         cut_state_layouts: &cut_state_layouts,
@@ -1387,7 +1387,7 @@ fn simulation_min_outflow_slack_extracted_from_primal() {
         &sim_config,
         SimulationOutputSpec {
             result_tx: &result_tx,
-            hydro_cell_index: &cobre_sddp::test_support::identity_hydro_cell_index(256),
+            hydro_cell_index: &novomodelo_sddp::test_support::identity_hydro_cell_index(256),
             block_hours_per_stage: &block_hours_per_stage,
             entity_counts: &entity_counts,
             generic_constraint_row_entries: &vec![Vec::new(); n_stages],
@@ -1478,7 +1478,7 @@ fn enumerated_census_k1_matches_sampled_single_scenario() {
     let stage_ctx = stage_ctx_fixture.ctx();
     let cut_state_layouts = all_enabled_cut_state_layouts(&fx.state, fx.n_stages);
     let study_dims = study_dims_for(false);
-    let node_graph = cobre_sddp::test_support::chain_node_graph(&fx.stochastic);
+    let node_graph = novomodelo_sddp::test_support::chain_node_graph(&fx.stochastic);
     let training_context = TrainingContext {
         node_graph: &node_graph,
         horizon: &fx.horizon,
@@ -1513,7 +1513,7 @@ fn enumerated_census_k1_matches_sampled_single_scenario() {
     )
     .expect("train must succeed");
 
-    let derived_k = cobre_sddp::test_support::node_scenario_count(&node_graph)
+    let derived_k = novomodelo_sddp::test_support::node_scenario_count(&node_graph)
         .expect("node_scenario_count must not overflow on this trivial fixture");
     assert_eq!(
         derived_k, 1,
@@ -1528,12 +1528,12 @@ fn enumerated_census_k1_matches_sampled_single_scenario() {
         profile: Phase::Simulation.profile(),
         forward_seed: None,
     };
-    let hydro_cell_index = cobre_sddp::test_support::identity_hydro_cell_index(256);
+    let hydro_cell_index = novomodelo_sddp::test_support::identity_hydro_cell_index(256);
     let hydro_productivities_per_stage = vec![vec![1.0]; fx.n_stages];
     let block_hours_per_stage = vec![vec![1.0]; fx.n_stages];
 
     let run_sim =
-        |traversal: &Traversal| -> cobre_sddp::simulation::types::SimulationScenarioResult {
+        |traversal: &Traversal| -> novomodelo_sddp::simulation::types::SimulationScenarioResult {
             let sim_solver = MockSolver::with_fixed(100.0);
             let mut sim_workspaces = vec![SolverWorkspace::new(
                 0,
@@ -1675,7 +1675,7 @@ struct CensusRun {
 
 /// Run `setup`'s (already-census-converted) simulation under `n_threads`
 /// workers on `comm`, aggregating with the traversal-derived
-/// [`cobre_sddp::SimulationWeighting`]. Generic over the communicator so the
+/// [`novomodelo_sddp::SimulationWeighting`]. Generic over the communicator so the
 /// same path runs under a single-rank stub and the 2-rank `Rank0Of2` shape.
 fn run_census<C: Communicator>(setup: &StudySetup, comm: &C, n_threads: usize) -> CensusRun {
     let mut pool = setup
@@ -2200,14 +2200,14 @@ fn census_shared_trunk_rows_extract_once_and_solve_count_matches_dedup() {
     );
 }
 
-/// A [`cobre_core::System`] whose only purpose is driving
+/// A [`novomodelo_core::System`] whose only purpose is driving
 /// [`SimulationParquetWriter::new`]'s directory/block-hours setup for the
 /// byte-comparison — the writer reads only `system.stages()` (block hours)
 /// and entity counts, never the policy graph, so this need not reproduce a
 /// census fixture's branching structure. Mirrors the single-hydro/single-bus,
 /// one-744h-block-per-stage shape every K-fan/branching-tree/trunk-fan fixture
 /// in `test_support.rs` documents, parameterized only by stage count.
-fn writer_shape_system(n_stages: usize) -> cobre_core::System {
+fn writer_shape_system(n_stages: usize) -> novomodelo_core::System {
     let stages: Vec<_> = (0..n_stages)
         .map(|idx| {
             make_stage(

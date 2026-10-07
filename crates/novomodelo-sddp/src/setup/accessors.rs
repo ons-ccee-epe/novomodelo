@@ -2,14 +2,14 @@
 
 use std::path::Path;
 
-use cobre_core::AnticipatedCommitmentHistory;
-use cobre_core::System;
+use novomodelo_core::AnticipatedCommitmentHistory;
+use novomodelo_core::System;
 #[cfg(any(test, feature = "test-support"))]
-use cobre_core::commissioning::commissioning_active;
-use cobre_io::EntitySlot;
+use novomodelo_core::commissioning::commissioning_active;
+use novomodelo_io::EntitySlot;
 
 #[cfg(any(test, feature = "test-support"))]
-use cobre_io::config::BackwardScheduler;
+use novomodelo_io::config::BackwardScheduler;
 
 #[cfg(any(test, feature = "test-support"))]
 use crate::convergence::risk_measure::RiskMeasure;
@@ -237,7 +237,7 @@ impl StudySetup {
     /// checkpoint writer, so the manifest written into an artifact and the one
     /// the full-FCF load path validates against can never diverge.
     #[must_use]
-    pub fn build_graph_manifest(&self) -> cobre_io::GraphManifest {
+    pub fn build_graph_manifest(&self) -> novomodelo_io::GraphManifest {
         build_graph_manifest(&self.inputs.node_graph, &self.inputs.study_stage_ids)
     }
 

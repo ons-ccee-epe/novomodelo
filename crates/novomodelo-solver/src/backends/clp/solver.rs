@@ -17,7 +17,7 @@ use crate::{
 /// by `load_model` and reused across solves to avoid per-solve allocation. The
 /// retained CSC arrays and bound vectors are the canonical, declaration-ordered
 /// mirror of the loaded LP: `add_rows`/`set_*_bounds` patch them and reconcile
-/// the change into CLP natively (`cobre_clp_add_rows` / `cobre_clp_chg_*`)
+/// the change into CLP natively (`novomodelo_clp_add_rows` / `novomodelo_clp_chg_*`)
 /// without rebuilding the model, preserving CLP's factorization/basis. Bound
 /// vectors are forwarded to CLP verbatim.
 ///
@@ -26,7 +26,7 @@ use crate::{
 /// ```rust
 /// # #[cfg(feature = "clp")]
 /// # {
-/// use cobre_solver::{ClpSolver, SolverInterface};
+/// use novomodelo_solver::{ClpSolver, SolverInterface};
 ///
 /// let solver = ClpSolver::new().expect("CLP initialisation failed");
 /// assert_eq!(solver.name(), "CLP");
@@ -83,14 +83,14 @@ impl ClpSolver {
     ///
     /// # Errors
     ///
-    /// Returns `Err(SolverError::InternalError { .. })` if `cobre_clp_create()`
+    /// Returns `Err(SolverError::InternalError { .. })` if `novomodelo_clp_create()`
     /// returns a null pointer.
     pub fn new() -> Result<Self, SolverError> {
-        // SAFETY: `cobre_clp_create` is a C function with no preconditions.
+        // SAFETY: `novomodelo_clp_create` is a C function with no preconditions.
         // It allocates and returns a new CLP model pointer, or null on
         // allocation failure. The returned pointer is opaque and must be
         // passed back to CLP API functions.
-        let handle = unsafe { clp_ffi::cobre_clp_create() };
+        let handle = unsafe { clp_ffi::novomodelo_clp_create() };
 
         if handle.is_null() {
             return Err(SolverError::InternalError {
@@ -103,9 +103,9 @@ impl ClpSolver {
         // pollute CLI/Python output on every solve; force level 0.
         //
         // SAFETY: `handle` is the non-null model just returned by
-        // `cobre_clp_create`; `cobre_clp_set_log_level` only forwards the level
+        // `novomodelo_clp_create`; `novomodelo_clp_set_log_level` only forwards the level
         // to `Clp_setLogLevel` on that model and has no other preconditions.
-        unsafe { clp_ffi::cobre_clp_set_log_level(handle, 0) };
+        unsafe { clp_ffi::novomodelo_clp_set_log_level(handle, 0) };
 
         Ok(Self {
             handle,
@@ -137,21 +137,21 @@ impl ClpSolver {
     pub(super) fn copy_solution(&mut self) {
         if self.num_cols > 0 {
             // SAFETY: `self.handle` is a valid, non-null CLP pointer that has
-            // just been solved to optimality. `cobre_clp_get_col_solution`
+            // just been solved to optimality. `novomodelo_clp_get_col_solution`
             // returns a non-null pointer into CLP-owned memory of exactly
             // `num_cols` `f64`s (guarded `num_cols > 0`), valid until the next
             // solve. `self.col_value` was resized to `num_cols` in `load_model`.
             let primal = unsafe {
-                let ptr = clp_ffi::cobre_clp_get_col_solution(self.handle);
+                let ptr = clp_ffi::novomodelo_clp_get_col_solution(self.handle);
                 std::slice::from_raw_parts(ptr, self.num_cols)
             };
             self.col_value.copy_from_slice(primal);
 
-            // SAFETY: as above; `cobre_clp_get_reduced_cost` returns a non-null
+            // SAFETY: as above; `novomodelo_clp_get_reduced_cost` returns a non-null
             // pointer into CLP-owned memory of exactly `num_cols` `f64`s, valid
             // until the next solve. `self.col_dual` was resized to `num_cols`.
             let reduced = unsafe {
-                let ptr = clp_ffi::cobre_clp_get_reduced_cost(self.handle);
+                let ptr = clp_ffi::novomodelo_clp_get_reduced_cost(self.handle);
                 std::slice::from_raw_parts(ptr, self.num_cols)
             };
             self.col_dual.copy_from_slice(reduced);
@@ -159,11 +159,11 @@ impl ClpSolver {
 
         if self.num_rows > 0 {
             // SAFETY: `self.handle` is a valid, non-null CLP pointer that has
-            // just been solved to optimality. `cobre_clp_get_row_price` returns
+            // just been solved to optimality. `novomodelo_clp_get_row_price` returns
             // a non-null pointer into CLP-owned memory of exactly `num_rows`
             // `f64`s (guarded `num_rows > 0`), valid until the next solve.
             let row_price = unsafe {
-                let ptr = clp_ffi::cobre_clp_get_row_price(self.handle);
+                let ptr = clp_ffi::novomodelo_clp_get_row_price(self.handle);
                 std::slice::from_raw_parts(ptr, self.num_rows)
             };
             for (dst, &raw) in self.row_dual.iter_mut().zip(row_price) {
@@ -221,7 +221,7 @@ impl ClpSolver {
             // loaded; `c` is in `0..num_cols`, a valid column sequence index, and
             // fits in i32. The setter writes a single status byte; no aliasing.
             unsafe {
-                clp_ffi::cobre_clp_set_column_status(
+                clp_ffi::novomodelo_clp_set_column_status(
                     self.handle,
                     c as i32,
                     b.col_status[c].to_clp_code(),
@@ -235,7 +235,7 @@ impl ClpSolver {
             // sequence index, and fits in i32. The setter writes a single status
             // byte; no aliasing.
             unsafe {
-                clp_ffi::cobre_clp_set_row_status(
+                clp_ffi::novomodelo_clp_set_row_status(
                     self.handle,
                     r as i32,
                     b.row_status[r].to_clp_code(),
@@ -264,7 +264,7 @@ impl ClpSolver {
             // `0..num_cols`, a valid column sequence index, and fits in i32. The
             // setter writes a single status byte; no aliasing.
             unsafe {
-                clp_ffi::cobre_clp_set_column_status(
+                clp_ffi::novomodelo_clp_set_column_status(
                     self.handle,
                     c as i32,
                     clp_ffi::CLP_BASIS_AT_LOWER,
@@ -277,7 +277,11 @@ impl ClpSolver {
             // loaded; `r` is in `0..num_rows`, a valid row sequence index, and
             // fits in i32. The setter writes a single status byte; no aliasing.
             unsafe {
-                clp_ffi::cobre_clp_set_row_status(self.handle, r as i32, clp_ffi::CLP_BASIS_BASIC);
+                clp_ffi::novomodelo_clp_set_row_status(
+                    self.handle,
+                    r as i32,
+                    clp_ffi::CLP_BASIS_BASIC,
+                );
             }
         }
     }
@@ -308,18 +312,18 @@ impl ClpSolver {
     /// idempotent and issues no solve.
     pub(super) fn set_dual_row_steepest(&mut self, mode: i32) {
         // SAFETY: `self.handle` is a valid, non-null CLP pointer from
-        // `cobre_clp_create()`. The shim constructs a stack `ClpDualRowSteepest`
+        // `novomodelo_clp_create()`. The shim constructs a stack `ClpDualRowSteepest`
         // and installs it; it retains no pointer after the call returns and
         // cannot fail on a valid handle.
         unsafe {
-            clp_ffi::cobre_clp_set_dual_row_steepest(self.handle, mode);
+            clp_ffi::novomodelo_clp_set_dual_row_steepest(self.handle, mode);
         }
     }
 }
 
-/// Normalizes a raw CLP row price into cobre's canonical dual-sign convention.
+/// Normalizes a raw CLP row price into novomodelo's canonical dual-sign convention.
 ///
-/// Identity is correct: `cobre_clp_get_row_price` already matches the canonical
+/// Identity is correct: `novomodelo_clp_get_row_price` already matches the canonical
 /// convention. See `tests/_clp_sign_convention_probe.rs`.
 const fn normalize_row_dual(raw: f64) -> f64 {
     raw
@@ -341,7 +345,7 @@ pub(super) fn i32_from_usize(v: usize) -> i32 {
 impl Drop for ClpSolver {
     fn drop(&mut self) {
         // SAFETY: valid CLP pointer from construction, called once per instance.
-        unsafe { clp_ffi::cobre_clp_destroy(self.handle) };
+        unsafe { clp_ffi::novomodelo_clp_destroy(self.handle) };
     }
 }
 
@@ -352,7 +356,7 @@ impl Drop for ClpSolver {
 /// ```rust
 /// # #[cfg(feature = "clp")]
 /// # {
-/// let v = cobre_solver::clp_version();
+/// let v = novomodelo_solver::clp_version();
 /// assert!(v.contains('.'), "version string should be 'major.minor.patch'");
 /// # }
 /// ```
@@ -361,8 +365,8 @@ pub fn clp_version() -> String {
     // SAFETY: These are pure query functions with no arguments. The CLP C API
     // documents them as safe to call without any prior initialisation; they
     // read only compile-time constants embedded in the library.
-    let major = unsafe { clp_ffi::cobre_clp_version_major() };
-    let minor = unsafe { clp_ffi::cobre_clp_version_minor() };
-    let patch = unsafe { clp_ffi::cobre_clp_version_release() };
+    let major = unsafe { clp_ffi::novomodelo_clp_version_major() };
+    let minor = unsafe { clp_ffi::novomodelo_clp_version_minor() };
+    let patch = unsafe { clp_ffi::novomodelo_clp_version_release() };
     format!("{major}.{minor}.{patch}")
 }

@@ -11,9 +11,9 @@
 )]
 
 use super::*;
-use cobre_core::scenario::{CorrelationModel, InflowModel};
-use cobre_core::{EntityId, Hydro, HydroPenalties, SeasonMap, Stage, SystemBuilder};
-use cobre_stochastic::PrecomputedPar;
+use novomodelo_core::scenario::{CorrelationModel, InflowModel};
+use novomodelo_core::{EntityId, Hydro, HydroPenalties, SeasonMap, Stage, SystemBuilder};
+use novomodelo_stochastic::PrecomputedPar;
 
 fn minimal_system_with_inflow_models(models: Vec<InflowModel>) -> System {
     SystemBuilder::new()
@@ -24,7 +24,7 @@ fn minimal_system_with_inflow_models(models: Vec<InflowModel>) -> System {
 
 #[test]
 fn test_with_scenario_models_replaces_fields() {
-    use cobre_core::{
+    use novomodelo_core::{
         Bus, DeficitSegment,
         scenario::{CorrelationModel, InflowModel},
     };
@@ -391,8 +391,8 @@ fn write_unit_test_inflow_history(path: &std::path::Path, hydro_id: i32, n_years
 /// Precondition for `PartialEstimation` path: user stats loaded, no AR coefficients.
 #[allow(clippy::cast_possible_wrap)]
 fn build_system_with_user_stats(n_years: usize) -> System {
-    use cobre_core::scenario::InflowModel;
-    use cobre_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
+    use novomodelo_core::scenario::InflowModel;
+    use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
 
     let hydro_id = EntityId(1);
     let bus = Bus {
@@ -514,7 +514,7 @@ fn test_partial_estimation_preserves_user_stats() {
 /// `residual_std_ratio` must come from the periodic-ACF closure, not raw YW.
 #[test]
 fn test_partial_estimation_populates_closure_derived_ratio() {
-    use cobre_stochastic::par::derive_residual_std_ratios;
+    use novomodelo_stochastic::par::derive_residual_std_ratios;
     use tempfile::TempDir;
 
     const N_YEARS: usize = 30;
@@ -599,9 +599,11 @@ fn test_partial_estimation_returns_report() {
 
 /// Partial-year system (seasons 8-11) with `SeasonMap` and user stats (exercises prestudy synthesis).
 fn build_partial_year_system_with_user_stats() -> System {
-    use cobre_core::entities::hydro::HydroGenerationModel;
-    use cobre_core::scenario::InflowModel;
-    use cobre_core::{Bus, DeficitSegment, EntityId, HorizonGraph, PolicyGraphType, SystemBuilder};
+    use novomodelo_core::entities::hydro::HydroGenerationModel;
+    use novomodelo_core::scenario::InflowModel;
+    use novomodelo_core::{
+        Bus, DeficitSegment, EntityId, HorizonGraph, PolicyGraphType, SystemBuilder,
+    };
 
     let hydro_id = EntityId(1);
     let bus = Bus {
@@ -790,7 +792,7 @@ fn create_required_files(case_dir: &std::path::Path) {
 
 #[test]
 fn test_estimation_report_structure() {
-    use cobre_stochastic::par::fitting::{ContributionReduction, build_estimation_report};
+    use novomodelo_stochastic::par::fitting::{ContributionReduction, build_estimation_report};
 
     let h1 = EntityId(1);
     let h2 = EntityId(2);
@@ -854,7 +856,7 @@ fn test_estimation_report_empty_for_pacf() {
 
 fn make_expansion_stage(index: usize, id: i32, season_id: Option<usize>) -> Stage {
     use chrono::NaiveDate;
-    use cobre_core::temporal::{
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
 
@@ -1117,7 +1119,7 @@ fn make_two_season_stage(
     first_half: bool,
 ) -> Stage {
     use chrono::NaiveDate;
-    use cobre_core::temporal::{
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
 
@@ -1161,7 +1163,7 @@ fn make_two_season_stage(
 #[test]
 #[allow(clippy::cast_sign_loss)]
 fn test_ar_rows_to_estimates_groups_by_season() {
-    use cobre_core::temporal::{
+    use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
 
@@ -1321,7 +1323,7 @@ fn write_unit_test_ar_coefficients(
 /// System with empty inflow_models (UserArHistoryStats precondition).
 #[allow(clippy::cast_possible_wrap)]
 fn build_system_empty_models(n_years: usize) -> System {
-    use cobre_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
+    use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
 
     let hydro_id = EntityId(1);
     let bus = Bus {
@@ -1532,7 +1534,7 @@ fn test_user_ar_estimation_returns_user_provided_report() {
 }
 
 fn make_hydro(hydro_id: EntityId, bus_id: EntityId) -> Hydro {
-    use cobre_core::entities::hydro::HydroGenerationModel;
+    use novomodelo_core::entities::hydro::HydroGenerationModel;
     let mut hydro = Hydro {
         unit_groups: Vec::new(),
         id: hydro_id,
@@ -1589,8 +1591,8 @@ fn build_two_hydro_system_selective_stats(
     all_hydro_ids: &[EntityId],
     stats_hydro_ids: &[EntityId],
 ) -> System {
-    use cobre_core::scenario::InflowModel;
-    use cobre_core::{Bus, DeficitSegment, SystemBuilder};
+    use novomodelo_core::scenario::InflowModel;
+    use novomodelo_core::{Bus, DeficitSegment, SystemBuilder};
 
     let bus_id = EntityId(10);
     let bus = Bus {
@@ -1880,7 +1882,7 @@ fn collect_std_ratio_warnings(
     user_stds: &[f64],
     est_stds: &[f64],
 ) -> Vec<StdRatioDivergence> {
-    use cobre_core::scenario::InflowModel;
+    use novomodelo_core::scenario::InflowModel;
 
     assert_eq!(
         user_stds.len(),
@@ -1986,7 +1988,7 @@ fn test_std_ratio_divergence_wraps_last_to_first() {
 }
 
 use chrono::NaiveDate;
-use cobre_core::temporal::{
+use novomodelo_core::temporal::{
     Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
 };
 
@@ -2055,7 +2057,7 @@ fn synthetic_monthly_obs(
 /// Two-hydro 12-season monthly system (empty inflow_models for FullEstimation path).
 #[allow(clippy::cast_possible_wrap)]
 fn build_two_hydro_monthly_system(n_years: usize) -> System {
-    use cobre_core::{Bus, DeficitSegment, SystemBuilder};
+    use novomodelo_core::{Bus, DeficitSegment, SystemBuilder};
     let bus_id = EntityId(10);
     let bus = Bus {
         id: bus_id,
@@ -2229,7 +2231,7 @@ fn estimate_ar_coefficients_with_selection_classical_path_unchanged() {
     obs.extend(synthetic_monthly_obs(h2, n_years, 200.0, 3.0, 0.5));
 
     let seasonal_stats = {
-        use cobre_stochastic::par::fitting::estimate_seasonal_stats_with_season_map;
+        use novomodelo_stochastic::par::fitting::estimate_seasonal_stats_with_season_map;
         estimate_seasonal_stats_with_season_map(&obs, &stages, &[h1, h2], None).unwrap()
     };
 
@@ -2263,7 +2265,7 @@ fn estimate_ar_coefficients_with_selection_classical_path_unchanged() {
 }
 
 fn monthly_season_map() -> SeasonMap {
-    use cobre_core::temporal::{SeasonCycleType, SeasonDefinition};
+    use novomodelo_core::temporal::{SeasonCycleType, SeasonDefinition};
     let seasons = (0..12usize)
         .map(|m| SeasonDefinition {
             id: m,
@@ -2359,7 +2361,7 @@ fn partial_year_par2_synthesizes_prestudy_lag_models() {
         .collect();
 
     let seasonal_stats = {
-        use cobre_stochastic::par::fitting::estimate_seasonal_stats_with_season_map;
+        use novomodelo_stochastic::par::fitting::estimate_seasonal_stats_with_season_map;
         estimate_seasonal_stats_with_season_map(&obs, &stages, &[h1], Some(&season_map))
             .expect("seasonal stats must fit without panic")
     };
@@ -2454,7 +2456,7 @@ fn resolve_model_stage_seasons_recovers_synthesized_prestudy_gap_seasons() {
 }
 
 fn dated_stage(id: i32, start_date: NaiveDate, end_date: NaiveDate, season: usize) -> Stage {
-    cobre_core::test_support::make_stage(cobre_core::test_support::StageSpec {
+    novomodelo_core::test_support::make_stage(novomodelo_core::test_support::StageSpec {
         id,
         start_date,
         end_date,
@@ -2465,9 +2467,9 @@ fn dated_stage(id: i32, start_date: NaiveDate, end_date: NaiveDate, season: usiz
 
 #[test]
 fn lag_seasons_agree_across_the_calendar_walk_estimation_and_precompute_on_a_sparse_custom_map() {
-    use cobre_core::test_support::{date, f64_bits_eq};
-    use cobre_stochastic::season_cast::StitchedSeasonMap;
-    use cobre_stochastic::test_support::{
+    use novomodelo_core::test_support::{date, f64_bits_eq};
+    use novomodelo_stochastic::season_cast::StitchedSeasonMap;
+    use novomodelo_stochastic::test_support::{
         InflowModelSpec, make_inflow_model, sparse_ring_season_map,
     };
 
@@ -2520,8 +2522,8 @@ fn lag_seasons_agree_across_the_calendar_walk_estimation_and_precompute_on_a_spa
 
 #[test]
 fn pre_study_lags_fold_iso_week_53_on_a_weekly_map() {
-    use cobre_core::test_support::date;
-    use cobre_stochastic::test_support::weekly_season_map;
+    use novomodelo_core::test_support::date;
+    use novomodelo_stochastic::test_support::weekly_season_map;
 
     let weekly = weekly_season_map();
     let stages = vec![
@@ -2547,7 +2549,7 @@ fn pre_study_lags_fold_iso_week_53_on_a_weekly_map() {
 
 #[test]
 fn every_synthesized_lag_stage_carries_statistics_when_two_lags_share_a_season() {
-    use cobre_core::test_support::date;
+    use novomodelo_core::test_support::date;
 
     let prestudy = vec![
         dated_stage(-1, date(2020, 12, 4), date(2021, 1, 4), 51),
@@ -2712,9 +2714,9 @@ fn test_estimation_partial_does_not_affect_sigma() {
 
 fn build_monthly_system_with_conditioning(
     n_years: usize,
-    recent_observations: Vec<cobre_core::RecentObservation>,
+    recent_observations: Vec<novomodelo_core::RecentObservation>,
 ) -> System {
-    use cobre_core::{
+    use novomodelo_core::{
         Bus, DeficitSegment, HorizonGraph, InitialConditions, PolicyGraphType, SystemBuilder,
     };
 
@@ -2836,7 +2838,7 @@ fn test_conditioning_window_does_not_change_fitted_statistics() {
     // Wildly different from the record series: if it leaked into estimation,
     // it would obviously shift the fitted mean/std for whichever season it
     // resolves to.
-    let conditioning = vec![cobre_core::RecentObservation {
+    let conditioning = vec![novomodelo_core::RecentObservation {
         hydro_id: h1,
         start_date: NaiveDate::from_ymd_opt(2000, 1, 1).unwrap(),
         end_date: NaiveDate::from_ymd_opt(2000, 2, 1).unwrap(),

@@ -2,7 +2,9 @@
 //! `highs_version` free function. The warm-start `solve_inner` orchestration is
 //! determinism-sensitive.
 
-use crate::ffi::{cobre_highs_version_major, cobre_highs_version_minor, cobre_highs_version_patch};
+use crate::ffi::{
+    novomodelo_highs_version_major, novomodelo_highs_version_minor, novomodelo_highs_version_patch,
+};
 #[cfg(feature = "test-support")]
 use std::ffi::CStr;
 use std::os::raw::c_void;
@@ -23,13 +25,13 @@ use crate::{
 /// # Example
 ///
 /// ```rust
-/// use cobre_solver::{HighsSolver, SolverInterface};
+/// use novomodelo_solver::{HighsSolver, SolverInterface};
 ///
 /// let solver = HighsSolver::new().expect("HiGHS initialisation failed");
 /// assert_eq!(solver.name(), "HiGHS");
 /// ```
 pub struct HighsSolver {
-    /// Opaque pointer to the `HiGHS` C++ instance, from `cobre_highs_create()`.
+    /// Opaque pointer to the `HiGHS` C++ instance, from `novomodelo_highs_create()`.
     pub(super) handle: *mut c_void,
     /// Primal column values extracted after each solve.
     pub(super) col_value: Vec<f64>,
@@ -79,17 +81,17 @@ impl HighsSolver {
     /// # Errors
     ///
     /// Returns `Err(SolverError::InternalError { .. })` if:
-    /// - `cobre_highs_create()` returns a null pointer.
+    /// - `novomodelo_highs_create()` returns a null pointer.
     /// - Any configuration call returns `HIGHS_STATUS_ERROR`.
     ///
     /// In both failure cases the `HiGHS` handle is destroyed before returning to
     /// prevent a resource leak.
     pub fn new() -> Result<Self, SolverError> {
-        // SAFETY: `cobre_highs_create` is a C function with no preconditions.
+        // SAFETY: `novomodelo_highs_create` is a C function with no preconditions.
         // It allocates and returns a new `HiGHS` instance, or null on allocation
         // failure. The returned pointer is opaque and must be passed back to
         // `HiGHS` API functions.
-        let handle = unsafe { ffi::cobre_highs_create() };
+        let handle = unsafe { ffi::novomodelo_highs_create() };
 
         if handle.is_null() {
             return Err(SolverError::InternalError {
@@ -100,10 +102,10 @@ impl HighsSolver {
 
         if let Err(e) = Self::apply_default_config(handle) {
             // SAFETY: `handle` is a valid, non-null pointer obtained from
-            // `cobre_highs_create()` in this same function. It has not been
-            // passed to `cobre_highs_destroy()` yet. After this call, `handle`
+            // `novomodelo_highs_create()` in this same function. It has not been
+            // passed to `novomodelo_highs_destroy()` yet. After this call, `handle`
             // must not be used again -- this function returns immediately with Err.
-            unsafe { ffi::cobre_highs_destroy(handle) };
+            unsafe { ffi::novomodelo_highs_destroy(handle) };
             return Err(e);
         }
 
@@ -159,7 +161,7 @@ impl HighsSolver {
     pub(super) fn extract_solution_view(&mut self, solve_time_seconds: f64) -> SolutionView<'_> {
         // SAFETY: buffers resized in `load_model`/`add_rows`; HiGHS writes within bounds.
         let status = unsafe {
-            ffi::cobre_highs_get_solution(
+            ffi::novomodelo_highs_get_solution(
                 self.handle,
                 self.col_value.as_mut_ptr(),
                 self.col_dual.as_mut_ptr(),
@@ -171,16 +173,16 @@ impl HighsSolver {
         debug_assert_ne!(
             status,
             ffi::HIGHS_STATUS_ERROR,
-            "cobre_highs_get_solution failed after optimal solve; HiGHS invariant violation"
+            "novomodelo_highs_get_solution failed after optimal solve; HiGHS invariant violation"
         );
 
         // SAFETY: `self.handle` is a valid, non-null HiGHS pointer.
-        let objective = unsafe { ffi::cobre_highs_get_objective_value(self.handle) };
+        let objective = unsafe { ffi::novomodelo_highs_get_objective_value(self.handle) };
 
         // SAFETY: iteration count is non-negative so cast is safe.
         #[allow(clippy::cast_sign_loss)]
         let iterations =
-            unsafe { ffi::cobre_highs_get_simplex_iteration_count(self.handle) } as u64;
+            unsafe { ffi::novomodelo_highs_get_simplex_iteration_count(self.handle) } as u64;
 
         SolutionView {
             objective,
@@ -199,41 +201,41 @@ impl HighsSolver {
     /// immediately after this call.
     pub(super) fn reapply_profile(&mut self) {
         // SAFETY: `self.handle` is a valid, non-null HiGHS pointer obtained from
-        // `cobre_highs_create()`. Option names are static C string literals with no
+        // `novomodelo_highs_create()`. Option names are static C string literals with no
         // retained pointer after the call returns; `simplex_update_limit` is
         // clamped to `i32::MAX` before the u32 -> i32 cast so the cast cannot wrap.
         unsafe {
-            ffi::cobre_highs_set_double_option(
+            ffi::novomodelo_highs_set_double_option(
                 self.handle,
                 c"primal_feasibility_tolerance".as_ptr(),
                 self.current_profile.primal_feasibility_tolerance,
             );
-            ffi::cobre_highs_set_double_option(
+            ffi::novomodelo_highs_set_double_option(
                 self.handle,
                 c"dual_feasibility_tolerance".as_ptr(),
                 self.current_profile.dual_feasibility_tolerance,
             );
-            ffi::cobre_highs_set_int_option(
+            ffi::novomodelo_highs_set_int_option(
                 self.handle,
                 c"simplex_dual_edge_weight_strategy".as_ptr(),
                 self.current_profile.simplex_dual_edge_weight_strategy,
             );
-            ffi::cobre_highs_set_int_option(
+            ffi::novomodelo_highs_set_int_option(
                 self.handle,
                 c"simplex_scale_strategy".as_ptr(),
                 self.current_profile.simplex_scale_strategy,
             );
-            ffi::cobre_highs_set_int_option(
+            ffi::novomodelo_highs_set_int_option(
                 self.handle,
                 c"simplex_price_strategy".as_ptr(),
                 self.current_profile.simplex_price_strategy,
             );
-            ffi::cobre_highs_set_string_option(
+            ffi::novomodelo_highs_set_string_option(
                 self.handle,
                 c"presolve".as_ptr(),
                 self.current_profile.presolve.as_option().as_ptr(),
             );
-            ffi::cobre_highs_set_bool_option(
+            ffi::novomodelo_highs_set_bool_option(
                 self.handle,
                 c"use_warm_start".as_ptr(),
                 i32::from(self.current_profile.use_warm_start),
@@ -243,27 +245,27 @@ impl HighsSolver {
                 .current_profile
                 .simplex_update_limit
                 .min(i32::MAX as u32) as i32;
-            ffi::cobre_highs_set_int_option(
+            ffi::novomodelo_highs_set_int_option(
                 self.handle,
                 c"simplex_update_limit".as_ptr(),
                 simplex_update_limit,
             );
-            ffi::cobre_highs_set_double_option(
+            ffi::novomodelo_highs_set_double_option(
                 self.handle,
                 c"dual_simplex_cost_perturbation_multiplier".as_ptr(),
                 self.current_profile.cost_perturbation,
             );
-            ffi::cobre_highs_set_double_option(
+            ffi::novomodelo_highs_set_double_option(
                 self.handle,
                 c"rebuild_refactor_solution_error_tolerance".as_ptr(),
                 self.current_profile.refactor_error_tolerance,
             );
-            ffi::cobre_highs_set_double_option(
+            ffi::novomodelo_highs_set_double_option(
                 self.handle,
                 c"factor_pivot_threshold".as_ptr(),
                 self.current_profile.factor_pivot_threshold,
             );
-            ffi::cobre_highs_set_double_option(
+            ffi::novomodelo_highs_set_double_option(
                 self.handle,
                 c"dual_steepest_edge_weight_log_error_threshold".as_ptr(),
                 self.current_profile.steepest_edge_devex_fallback_threshold,
@@ -293,12 +295,12 @@ impl HighsSolver {
     /// Runs the solver once and returns the raw `HiGHS` model status.
     pub(super) fn run_once(&mut self) -> i32 {
         // SAFETY: `self.handle` is a valid, non-null HiGHS pointer.
-        let run_status = unsafe { ffi::cobre_highs_run(self.handle) };
+        let run_status = unsafe { ffi::novomodelo_highs_run(self.handle) };
         if run_status == ffi::HIGHS_STATUS_ERROR {
             return ffi::HIGHS_MODEL_STATUS_SOLVE_ERROR;
         }
         // SAFETY: same.
-        unsafe { ffi::cobre_highs_get_model_status(self.handle) }
+        unsafe { ffi::novomodelo_highs_get_model_status(self.handle) }
     }
 
     /// Sets per-solve iteration limits before a `run_once()` call.
@@ -350,12 +352,12 @@ impl HighsSolver {
         // SAFETY: handle is valid non-null HiGHS pointer; option names are
         // static C strings with no retained pointers.
         unsafe {
-            ffi::cobre_highs_set_int_option(
+            ffi::novomodelo_highs_set_int_option(
                 self.handle,
                 c"simplex_iteration_limit".as_ptr(),
                 simplex_iter_limit,
             );
-            ffi::cobre_highs_set_int_option(
+            ffi::novomodelo_highs_set_int_option(
                 self.handle,
                 c"ipm_iteration_limit".as_ptr(),
                 ipm_iter_limit,
@@ -369,12 +371,16 @@ impl HighsSolver {
     pub(super) fn restore_iteration_limits(&mut self) {
         // SAFETY: handle is valid non-null HiGHS pointer.
         unsafe {
-            ffi::cobre_highs_set_int_option(
+            ffi::novomodelo_highs_set_int_option(
                 self.handle,
                 c"simplex_iteration_limit".as_ptr(),
                 i32::MAX,
             );
-            ffi::cobre_highs_set_int_option(self.handle, c"ipm_iteration_limit".as_ptr(), i32::MAX);
+            ffi::novomodelo_highs_set_int_option(
+                self.handle,
+                c"ipm_iteration_limit".as_ptr(),
+                i32::MAX,
+            );
         }
     }
 
@@ -399,7 +405,7 @@ impl HighsSolver {
                 // `terminal_status_dual_scratch` has been resized to at least
                 // `self.num_rows` elements; HiGHS writes exactly `num_rows` values.
                 let dual_status = unsafe {
-                    ffi::cobre_highs_get_dual_ray(
+                    ffi::novomodelo_highs_get_dual_ray(
                         self.handle,
                         &raw mut has_dual_ray,
                         self.terminal_status_dual_scratch.as_mut_ptr(),
@@ -415,7 +421,7 @@ impl HighsSolver {
                 // `terminal_status_primal_scratch` has been resized to at least
                 // `self.num_cols` elements; HiGHS writes exactly `num_cols` values.
                 let primal_status = unsafe {
-                    ffi::cobre_highs_get_primal_ray(
+                    ffi::novomodelo_highs_get_primal_ray(
                         self.handle,
                         &raw mut has_primal_ray,
                         self.terminal_status_primal_scratch.as_mut_ptr(),
@@ -434,7 +440,8 @@ impl HighsSolver {
                 // SAFETY: handle is valid non-null pointer; iteration count is non-negative.
                 #[allow(clippy::cast_sign_loss)]
                 let iterations =
-                    unsafe { ffi::cobre_highs_get_simplex_iteration_count(self.handle) } as u64;
+                    unsafe { ffi::novomodelo_highs_get_simplex_iteration_count(self.handle) }
+                        as u64;
                 Some(SolverError::IterationLimit { iterations })
             }
             // None = retryable, not terminal — do not fold into the `other` arm.
@@ -490,7 +497,7 @@ impl HighsSolver {
             // SAFETY: handle is valid non-null HiGHS pointer.
             #[allow(clippy::cast_sign_loss)]
             let iterations =
-                unsafe { ffi::cobre_highs_get_simplex_iteration_count(self.handle) } as u64;
+                unsafe { ffi::novomodelo_highs_get_simplex_iteration_count(self.handle) } as u64;
             self.stats.success_count += 1;
             self.stats.first_try_successes += 1;
             self.stats.total_iterations += iterations;
@@ -543,7 +550,7 @@ impl HighsSolver {
 impl Drop for HighsSolver {
     fn drop(&mut self) {
         // SAFETY: valid HiGHS pointer from construction, called once per instance.
-        unsafe { ffi::cobre_highs_destroy(self.handle) };
+        unsafe { ffi::novomodelo_highs_destroy(self.handle) };
     }
 }
 
@@ -554,7 +561,7 @@ impl Drop for HighsSolver {
 /// ```rust
 /// # #[cfg(feature = "highs")]
 /// # {
-/// let v = cobre_solver::highs_version();
+/// let v = novomodelo_solver::highs_version();
 /// assert!(v.contains('.'), "version string should be 'major.minor.patch'");
 /// # }
 /// ```
@@ -563,9 +570,9 @@ pub fn highs_version() -> String {
     // SAFETY: These are pure query functions with no arguments. The HiGHS C API
     // documents them as safe to call without any prior initialisation; they read
     // only compile-time constants embedded in the library.
-    let major = unsafe { cobre_highs_version_major() };
-    let minor = unsafe { cobre_highs_version_minor() };
-    let patch = unsafe { cobre_highs_version_patch() };
+    let major = unsafe { novomodelo_highs_version_major() };
+    let minor = unsafe { novomodelo_highs_version_minor() };
+    let patch = unsafe { novomodelo_highs_version_patch() };
     format!("{major}.{minor}.{patch}")
 }
 
@@ -582,7 +589,7 @@ impl HighsSolver {
     ///
     /// The returned pointer is valid for the lifetime of `self`. The caller must
     /// not store the pointer beyond that lifetime, must not call
-    /// `cobre_highs_destroy` on it, and must not alias it across threads.
+    /// `novomodelo_highs_destroy` on it, and must not alias it across threads.
     #[must_use]
     pub fn raw_handle(&self) -> *mut c_void {
         self.handle
@@ -619,7 +626,7 @@ impl HighsSolver {
         // null-terminated C string borrowed for the duration of the call;
         // `out` is stack-allocated and written by HiGHS on success.
         let status = unsafe {
-            ffi::cobre_highs_get_double_option(self.handle, option.as_ptr(), &raw mut out)
+            ffi::novomodelo_highs_get_double_option(self.handle, option.as_ptr(), &raw mut out)
         };
         if status == ffi::HIGHS_STATUS_ERROR {
             None
@@ -638,8 +645,9 @@ impl HighsSolver {
         // SAFETY: handle is valid non-null HiGHS pointer; option is a valid
         // null-terminated C string borrowed for the duration of the call;
         // `out` is stack-allocated and written by HiGHS on success.
-        let status =
-            unsafe { ffi::cobre_highs_get_int_option(self.handle, option.as_ptr(), &raw mut out) };
+        let status = unsafe {
+            ffi::novomodelo_highs_get_int_option(self.handle, option.as_ptr(), &raw mut out)
+        };
         if status == ffi::HIGHS_STATUS_ERROR {
             None
         } else {

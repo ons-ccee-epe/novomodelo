@@ -1,7 +1,7 @@
-//! Result loading functions exposed as `cobre.results`.
+//! Result loading functions exposed as `novomodelo.results`.
 //!
 //! Provides lightweight inspection of output artifacts written by
-//! `cobre.run.run()`. JSON manifest and metadata files are read in Rust
+//! `novomodelo.run.run()`. JSON manifest and metadata files are read in Rust
 //! and returned as Python dicts. Parquet file paths are returned as strings
 //! so that callers can load them with `polars` or `pandas`.
 
@@ -127,9 +127,9 @@ fn open_parquet_file(path: &Path, missing_label: &str) -> PyResult<fs::File> {
 /// # Examples (Python)
 ///
 /// ```python
-/// import cobre.results
+/// import novomodelo.results
 ///
-/// result = cobre.results.load_results("output/")
+/// result = novomodelo.results.load_results("output/")
 /// print(result["training"]["manifest"]["status"])
 /// df = polars.read_parquet(result["training"]["convergence_path"])
 /// ```
@@ -226,9 +226,9 @@ pub fn load_results(py: Python<'_>, output_dir: PathBuf) -> PyResult<Py<PyAny>> 
 /// # Examples (Python)
 ///
 /// ```python
-/// import cobre.results
+/// import novomodelo.results
 ///
-/// rows = cobre.results.load_convergence("output/")
+/// rows = novomodelo.results.load_convergence("output/")
 /// for row in rows:
 ///     print(row["iteration"], row["lower_bound"], row["upper_bound"])
 /// ```
@@ -301,7 +301,7 @@ pub fn load_convergence(py: Python<'_>, output_dir: PathBuf) -> PyResult<Py<PyAn
 /// # Schema
 ///
 /// The returned table carries the convergence Parquet schema written by the
-/// solver (`convergence_schema` in `cobre-io`): its columns, types, and
+/// solver (`convergence_schema` in `novomodelo-io`): its columns, types, and
 /// nullability are exactly the fields that schema declares, so a schema change
 /// flows through without editing this doc.
 ///
@@ -315,10 +315,10 @@ pub fn load_convergence(py: Python<'_>, output_dir: PathBuf) -> PyResult<Py<PyAn
 /// # Examples (Python)
 ///
 /// ```python
-/// import cobre.results
+/// import novomodelo.results
 /// import polars as pl
 ///
-/// table = cobre.results.load_convergence_arrow("output/")
+/// table = novomodelo.results.load_convergence_arrow("output/")
 /// df = pl.from_arrow(table)
 /// print(df.head())
 /// ```
@@ -365,7 +365,7 @@ pub fn load_convergence_arrow(py: Python<'_>, output_dir: PathBuf) -> PyResult<P
     Ok(table.unbind())
 }
 
-// ── Stochastic-model introspection (`cobre.results.load_stochastic`) ───────────
+// ── Stochastic-model introspection (`novomodelo.results.load_stochastic`) ───────────
 
 /// Number of columns in the flat `par_coefficients()` table:
 /// `[hydro_id, stage_id, lag, coefficient]`.
@@ -547,7 +547,7 @@ fn is_opening_order_sorted(rows: &OpeningRows) -> bool {
 /// Construct with [`load_stochastic`]; the two accessor methods lazily import
 /// `numpy` and return `float64` arrays. Constructing the handle does **not**
 /// require `numpy`.
-#[pyclass(name = "Stochastic", frozen, module = "cobre.results")]
+#[pyclass(name = "Stochastic", frozen, module = "novomodelo.results")]
 pub struct Stochastic {
     par_rows: ParRows,
     opening_rows: OpeningRows,
@@ -676,9 +676,9 @@ fn stage_range_message(rows: &OpeningRows) -> String {
 /// # Examples (Python)
 ///
 /// ```python
-/// import cobre.results
+/// import novomodelo.results
 ///
-/// stoch = cobre.results.load_stochastic("output/")
+/// stoch = novomodelo.results.load_stochastic("output/")
 /// par = stoch.par_coefficients()        # (n_rows, 4) float64
 /// tree = stoch.opening_tree(0)          # (n_openings, dim) float64 at stage 0
 /// ```
@@ -764,12 +764,12 @@ where
         .map(|b| b.into_any().unbind())
 }
 
-/// Build the `metadata` dict field-by-field from a [`cobre_io::CheckpointManifest`],
+/// Build the `metadata` dict field-by-field from a [`novomodelo_io::CheckpointManifest`],
 /// mirroring the `stage_cuts` surface in [`load_policy`] so the emitted dict shape
 /// does not depend on a whole-struct serde path.
 fn metadata_to_py<'py>(
     py: Python<'py>,
-    metadata: &cobre_io::CheckpointManifest,
+    metadata: &novomodelo_io::CheckpointManifest,
 ) -> PyResult<Bound<'py, PyDict>> {
     let dict = PyDict::new(py);
     dict.set_item("format_version", into_py(py, metadata.format_version)?)?;
@@ -994,7 +994,7 @@ fn load_entity_type(py: Python<'_>, entity_dir: &Path) -> PyResult<Py<PyList>> {
 ///
 /// ## Parameters
 ///
-/// - `output_dir` — root output directory (same as passed to `cobre.run.run()`).
+/// - `output_dir` — root output directory (same as passed to `novomodelo.run.run()`).
 /// - `entity_type` — optional entity type name (`"costs"`, `"buses"`, `"hydros"`,
 ///   `"thermals"`, `"exchanges"`, `"pumping_stations"`, `"contracts"`,
 ///   `"non_controllables"`, `"inflow_lags"`, or `"violations/generic"`). When
@@ -1016,15 +1016,15 @@ fn load_entity_type(py: Python<'_>, entity_dir: &Path) -> PyResult<Py<PyList>> {
 /// ## Examples (Python)
 ///
 /// ```python
-/// import cobre.results
+/// import novomodelo.results
 ///
 /// # Load one entity type as a list of dicts
-/// rows = cobre.results.load_simulation("output/", entity_type="costs")
+/// rows = novomodelo.results.load_simulation("output/", entity_type="costs")
 /// for row in rows:
 ///     print(row["scenario_id"], row["stage_id"], row["total_cost"])
 ///
 /// # Load all entity types as a dict of lists
-/// data = cobre.results.load_simulation("output/")
+/// data = novomodelo.results.load_simulation("output/")
 /// hydro_rows = data["hydros"]
 /// ```
 #[pyfunction]
@@ -1051,7 +1051,7 @@ pub fn load_simulation(
         load_entity_type(py, &entity_dir).map(Py::from)
     } else {
         let result = PyDict::new(py);
-        for et in cobre_io::simulation_family_subpaths() {
+        for et in novomodelo_io::simulation_family_subpaths() {
             let entity_dir = simulation_dir.join(et);
             if entity_dir.exists() {
                 let rows = load_entity_type(py, &entity_dir)?;
@@ -1221,7 +1221,7 @@ fn ipc_bytes_to_py_table<'py>(
 ///
 /// ## Parameters
 ///
-/// - `output_dir` — root output directory (same as passed to `cobre.run.run()`).
+/// - `output_dir` — root output directory (same as passed to `novomodelo.run.run()`).
 /// - `entity_type` — optional entity type name (`"costs"`, `"buses"`, `"hydros"`,
 ///   `"thermals"`, `"exchanges"`, `"pumping_stations"`, `"contracts"`,
 ///   `"non_controllables"`, `"inflow_lags"`, or `"violations/generic"`). When
@@ -1252,16 +1252,16 @@ fn ipc_bytes_to_py_table<'py>(
 /// ## Examples (Python)
 ///
 /// ```python
-/// import cobre.results
+/// import novomodelo.results
 /// import polars as pl
 ///
 /// # Load one entity type as a pyarrow.Table
-/// table = cobre.results.load_simulation_arrow("output/", entity_type="costs")
+/// table = novomodelo.results.load_simulation_arrow("output/", entity_type="costs")
 /// df = pl.from_arrow(table)
 /// print(df.head())
 ///
 /// # Load all entity types as a dict of pyarrow.Tables
-/// tables = cobre.results.load_simulation_arrow("output/")
+/// tables = novomodelo.results.load_simulation_arrow("output/")
 /// hydro_df = pl.from_arrow(tables["hydros"])
 /// ```
 #[pyfunction]
@@ -1293,7 +1293,7 @@ pub fn load_simulation_arrow(
     } else {
         let result = PyDict::new(py);
 
-        for et in cobre_io::simulation_family_subpaths() {
+        for et in novomodelo_io::simulation_family_subpaths() {
             let entity_dir = simulation_dir.join(et);
             if !entity_dir.exists() {
                 continue;
@@ -1312,7 +1312,7 @@ pub fn load_simulation_arrow(
 /// Load a `FlatBuffers` policy checkpoint from `<output_dir>/<policy_subdir>`.
 ///
 /// Reads the policy metadata, per-stage cut pools, and per-stage solver bases
-/// written by `cobre-io`'s policy checkpoint writer and returns them as a
+/// written by `novomodelo-io`'s policy checkpoint writer and returns them as a
 /// nested Python dict.
 ///
 /// `policy_subdir` selects the checkpoint sub-directory under `output_dir` and
@@ -1326,7 +1326,7 @@ pub fn load_simulation_arrow(
 /// {
 ///     "metadata": {
 ///         "format_version": 3,
-///         "software": "cobre",
+///         "software": "novomodelo",
 ///         "software_version": "1.0.0",
 ///         "created_at": "2026-01-15T12:00:00Z",
 ///         "num_stages": 60,
@@ -1398,14 +1398,14 @@ pub fn load_simulation_arrow(
 /// ## Examples (Python)
 ///
 /// ```python
-/// import cobre.results
+/// import novomodelo.results
 ///
-/// policy = cobre.results.load_policy("output/")
+/// policy = novomodelo.results.load_policy("output/")
 /// print(policy["metadata"]["producer"]["completed_iterations"])
 /// first_stage_cuts = policy["stage_cuts"][0]["cuts"]
 ///
 /// # Non-default policy_path: pass the sub-directory explicitly.
-/// policy = cobre.results.load_policy("output/", policy_subdir="my_policy")
+/// policy = novomodelo.results.load_policy("output/", policy_subdir="my_policy")
 /// ```
 #[pyfunction]
 #[pyo3(signature = (output_dir, policy_subdir = "policy"))]
@@ -1419,16 +1419,16 @@ pub fn load_policy(
 
     let policy_dir = output_dir.join(policy_subdir);
 
-    let resolved = cobre_io::resolve_policy_checkpoint(&policy_dir)
+    let resolved = novomodelo_io::resolve_policy_checkpoint(&policy_dir)
         .map_err(|e| convert_error(ErrorSource::Output(&e)))?;
-    if resolved == cobre_io::ResolvedCheckpoint::NoDirectory {
+    if resolved == novomodelo_io::ResolvedCheckpoint::NoDirectory {
         return Err(PyFileNotFoundError::new_err(format!(
             "policy directory not found: {}",
             policy_dir.display()
         )));
     }
 
-    let checkpoint = cobre_io::read_policy_checkpoint(&policy_dir)
+    let checkpoint = novomodelo_io::read_policy_checkpoint(&policy_dir)
         .map_err(|e| convert_error(ErrorSource::Output(&e)))?;
 
     let metadata_py = metadata_to_py(py, &checkpoint.metadata)?;

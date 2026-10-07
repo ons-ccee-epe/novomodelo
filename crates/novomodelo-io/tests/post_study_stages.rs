@@ -3,7 +3,7 @@
 //! `None`, additive), the semantic rejection paths (contiguity, first-start,
 //! Rule 1 missing bound cell, the fixed post-horizon coverage rules (V2/V3/V5),
 //! lead-exceeds-horizon), and declaration-order invariance — all through the
-//! public `cobre_io::load_case` pipeline. Post-study deliveries are driven by
+//! public `novomodelo_io::load_case` pipeline. Post-study deliveries are driven by
 //! an anticipated thermal whose `LeadTime` reaches the post-study calendar, not
 //! by a declared window.
 
@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use cobre_io::{load_case, validate_case};
+use novomodelo_io::{load_case, validate_case};
 use tempfile::TempDir;
 
 mod helpers;

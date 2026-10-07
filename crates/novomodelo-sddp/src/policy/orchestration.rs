@@ -10,22 +10,22 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
-use cobre_io::config::CheckpointSchedule;
-use cobre_io::output::policy::{
+use novomodelo_io::config::CheckpointSchedule;
+use novomodelo_io::output::policy::{
     CheckpointManifest, FORMAT_VERSION, GraphManifest, HydroSeasonOrders, ProducerBlock,
     SEASON_CYCLE_CODE_ABSENT, SEASON_CYCLE_CODE_CUSTOM, SEASON_CYCLE_CODE_MONTHLY,
     SEASON_CYCLE_CODE_WEEKLY, SeasonManifest, write_policy_checkpoint,
 };
-use cobre_io::output::{
+use novomodelo_io::output::{
     OutputError, write_correlation_json, write_fitting_report, write_inflow_annual_component,
     write_inflow_ar_coefficients, write_inflow_seasonal_stats, write_load_seasonal_stats,
     write_noise_openings,
 };
-use cobre_io::scenarios::LoadSeasonalStatsRow;
-use cobre_io::scenarios::estimation::EstimationReport;
-use cobre_io::scenarios::resolve_model_stage_seasons;
-use cobre_io::{EntitySlot, SOFTWARE_NAME, SOFTWARE_VERSION};
-use cobre_stochastic::StochasticContext;
+use novomodelo_io::scenarios::LoadSeasonalStatsRow;
+use novomodelo_io::scenarios::estimation::EstimationReport;
+use novomodelo_io::scenarios::resolve_model_stage_seasons;
+use novomodelo_io::{EntitySlot, SOFTWARE_NAME, SOFTWARE_VERSION};
+use novomodelo_stochastic::StochasticContext;
 
 use crate::TrainingResult;
 use crate::cut::FutureCostFunction;
@@ -42,7 +42,7 @@ use crate::stochastic_summary::{
 use crate::visited_states::VisitedStatesArchive;
 use crate::workspace::CapturedBasis;
 
-use cobre_core::{BlockMode, InflowModel, SeasonCycleType, System};
+use novomodelo_core::{BlockMode, InflowModel, SeasonCycleType, System};
 
 // ── Policy checkpoint ─────────────────────────────────────────────────────────
 
@@ -367,7 +367,7 @@ impl CheckpointLayout {
             format_version: FORMAT_VERSION,
             software: Some(SOFTWARE_NAME.to_string()),
             software_version: SOFTWARE_VERSION.to_string(),
-            created_at: cobre_io::now_iso8601(),
+            created_at: novomodelo_io::now_iso8601(),
             num_stages: self.n_stages as u32,
             graph_manifest: self.graph_manifest.clone(),
             producer: ProducerBlock {
@@ -416,7 +416,7 @@ impl CheckpointLayout {
 /// # Errors
 ///
 /// Propagates [`OutputError`] from
-/// [`cobre_io::output::policy::write_policy_checkpoint`] if any of the
+/// [`novomodelo_io::output::policy::write_policy_checkpoint`] if any of the
 /// `FlatBuffers` files cannot be written.
 pub fn write_checkpoint(
     policy_dir: &Path,
@@ -569,11 +569,13 @@ mod tests {
     use std::collections::HashMap;
 
     use chrono::NaiveDate;
-    use cobre_core::temporal::{
+    use novomodelo_core::temporal::{
         Block, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
-    use cobre_core::{EntityId, HorizonGraph, SeasonDefinition, SeasonMap, Stage, SystemBuilder};
-    use cobre_io::output::policy::SEASON_CYCLE_CODE_ABSENT;
+    use novomodelo_core::{
+        EntityId, HorizonGraph, SeasonDefinition, SeasonMap, Stage, SystemBuilder,
+    };
+    use novomodelo_io::output::policy::SEASON_CYCLE_CODE_ABSENT;
 
     use super::{
         BlockMode, InflowModel, SEASON_CYCLE_CODE_WEEKLY, SeasonCycleType, System,

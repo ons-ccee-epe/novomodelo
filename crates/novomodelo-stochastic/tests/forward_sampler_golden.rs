@@ -8,8 +8,8 @@
     clippy::float_cmp
 )]
 
-use cobre_core::{EntityId, NoiseMethod, SamplingScheme};
-use cobre_stochastic::{
+use novomodelo_core::{EntityId, NoiseMethod, SamplingScheme};
+use novomodelo_stochastic::{
     ClassDimensions, DecomposedCorrelation, SampleRequest, build_forward_sampler,
     generate_opening_tree, tree::OpeningTreeGenerationInputs,
 };

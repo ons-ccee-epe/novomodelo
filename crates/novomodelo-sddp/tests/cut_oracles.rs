@@ -9,10 +9,10 @@
 
 mod common;
 
-use cobre_core::System;
-use cobre_io::Config;
-use cobre_sddp::StudySetup;
-use cobre_sddp::test_support::decks::committed_decks;
+use novomodelo_core::System;
+use novomodelo_io::Config;
+use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::test_support::decks::committed_decks;
 
 use common::cut_oracles::{apply_oracle_config, run_cut_oracles};
 use common::in_code_studies::{
@@ -81,8 +81,8 @@ fn cut_oracles_hold_on_the_chronological_pumping_study() {
 fn cut_oracles_hold_on_the_chronological_and_parallel_storage_decks() {
     let decks = committed_decks();
     for key in [
-        "crates/cobre-sddp/tests/fixtures/chronological_storage",
-        "crates/cobre-sddp/tests/fixtures/parallel_storage",
+        "crates/novomodelo-sddp/tests/fixtures/chronological_storage",
+        "crates/novomodelo-sddp/tests/fixtures/parallel_storage",
     ] {
         let deck = decks
             .iter()

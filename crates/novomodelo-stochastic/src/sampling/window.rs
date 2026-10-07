@@ -11,7 +11,7 @@
 use std::collections::HashSet;
 
 use chrono::{Datelike, NaiveDate};
-use cobre_core::{
+use novomodelo_core::{
     EntityId,
     scenario::{HistoricalYears, InflowHistoryRow},
     temporal::{SeasonMap, Stage},
@@ -44,8 +44,8 @@ use crate::{
 ///
 /// ```
 /// use chrono::NaiveDate;
-/// use cobre_core::{EntityId, scenario::InflowHistoryRow, temporal::Stage};
-/// use cobre_stochastic::sampling::discover_historical_windows;
+/// use novomodelo_core::{EntityId, scenario::InflowHistoryRow, temporal::Stage};
+/// use novomodelo_stochastic::sampling::discover_historical_windows;
 ///
 /// // Build a minimal monthly history for one hydro, 1990-01 through 1991-12.
 /// let hydro_id = EntityId(1);
@@ -65,7 +65,7 @@ use crate::{
 ///
 /// let stages: Vec<Stage> = (0_usize..12)
 ///     .map(|i| {
-///         use cobre_core::temporal::{Block, BlockMode, NoiseMethod, ScenarioSourceConfig,
+///         use novomodelo_core::temporal::{Block, BlockMode, NoiseMethod, ScenarioSourceConfig,
 ///             StageRiskConfig, StageStateConfig};
 ///         Stage {
 ///             index: i,
@@ -203,7 +203,7 @@ fn is_window_complete(
 )]
 mod tests {
     use chrono::{Datelike, NaiveDate};
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId,
         scenario::{HistoricalYears, InflowHistoryRow},
         temporal::{

@@ -1,4 +1,4 @@
-//! Integration tests for the `cobre run` subcommand: fixtures are built
+//! Integration tests for the `novomodelo run` subcommand: fixtures are built
 //! programmatically in temp dirs or point at committed example cases.
 //! Shared harness helpers live in `common`.
 
@@ -14,15 +14,15 @@ use std::path::Path;
 
 use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, StringArray};
 use assert_cmd::prelude::*;
-use cobre_io::scenarios::parse_inflow_annual_component;
-use cobre_io::{EntitySlot, StateFamily, deserialize_stage_cuts};
+use novomodelo_io::scenarios::parse_inflow_annual_component;
+use novomodelo_io::{EntitySlot, StateFamily, deserialize_stage_cuts};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
 mod common;
 use common::{
-    case_dir, cobre, copy_dir_recursive, make_valid_case, restamp_policy_version, write_file,
+    case_dir, copy_dir_recursive, make_valid_case, novomodelo, restamp_policy_version, write_file,
     write_supplied_opening_tree_case,
 };
 
@@ -32,7 +32,7 @@ fn valid_case_exits_0() {
     make_valid_case(dir.path(), None, None, None, None);
     let out = TempDir::new().unwrap();
 
-    cobre()
+    novomodelo()
         .args([
             "run",
             dir.path().to_str().unwrap(),
@@ -50,7 +50,7 @@ fn valid_case_creates_training_metadata() {
     make_valid_case(dir.path(), None, None, None, None);
     let out = TempDir::new().unwrap();
 
-    cobre()
+    novomodelo()
         .args([
             "run",
             dir.path().to_str().unwrap(),
@@ -70,7 +70,7 @@ fn valid_case_creates_convergence_parquet() {
     make_valid_case(dir.path(), None, None, None, None);
     let out = TempDir::new().unwrap();
 
-    cobre()
+    novomodelo()
         .args([
             "run",
             dir.path().to_str().unwrap(),
@@ -90,7 +90,7 @@ fn disabled_simulation_does_not_produce_manifest() {
     make_valid_case(dir.path(), None, None, None, None);
     let out = TempDir::new().unwrap();
 
-    cobre()
+    novomodelo()
         .args([
             "run",
             dir.path().to_str().unwrap(),
@@ -111,7 +111,7 @@ fn custom_output_dir_receives_training_artifacts() {
     let custom_out = TempDir::new().unwrap();
     assert_ne!(dir.path(), custom_out.path());
 
-    cobre()
+    novomodelo()
         .args([
             "run",
             dir.path().to_str().unwrap(),
@@ -132,7 +132,7 @@ fn missing_required_file_exits_1() {
     make_valid_case(dir.path(), None, None, None, None);
     fs::remove_file(dir.path().join("system/buses.json")).unwrap();
 
-    cobre()
+    novomodelo()
         .args(["run", dir.path().to_str().unwrap(), "--quiet"])
         .assert()
         .failure()
@@ -145,7 +145,7 @@ fn missing_required_file_stderr_contains_validation_error() {
     make_valid_case(dir.path(), None, None, None, None);
     fs::remove_file(dir.path().join("system/buses.json")).unwrap();
 
-    cobre()
+    novomodelo()
         .args(["run", dir.path().to_str().unwrap()])
         .assert()
         .failure()
@@ -153,7 +153,7 @@ fn missing_required_file_stderr_contains_validation_error() {
         .stderr(predicate::str::contains("error"));
 }
 
-/// On the `run` path the "run `cobre validate`" hint is non-circular and
+/// On the `run` path the "run `novomodelo validate`" hint is non-circular and
 /// actionable, so it is kept on stderr — unlike the `validate` path, which
 /// suppresses it. Removing it here breaks the run-path UX contract.
 #[test]
@@ -162,20 +162,20 @@ fn missing_required_file_stderr_contains_report_and_hint() {
     make_valid_case(dir.path(), None, None, None, None);
     fs::remove_file(dir.path().join("system/buses.json")).unwrap();
 
-    cobre()
+    novomodelo()
         .args(["run", dir.path().to_str().unwrap()])
         .assert()
         .failure()
         .code(1)
         .stderr(predicate::str::contains("buses.json"))
         .stderr(predicate::str::contains(
-            "run `cobre validate <CASE_DIR>` for a full diagnostic report",
+            "run `novomodelo validate <CASE_DIR>` for a full diagnostic report",
         ));
 }
 
 #[test]
 fn nonexistent_path_exits_2() {
-    cobre()
+    novomodelo()
         .args(["run", "/nonexistent/path/that/does/not/exist", "--quiet"])
         .assert()
         .failure()
@@ -184,7 +184,7 @@ fn nonexistent_path_exits_2() {
 
 #[test]
 fn nonexistent_path_stderr_contains_io_error() {
-    cobre()
+    novomodelo()
         .args(["run", "/nonexistent/path/that/does/not/exist"])
         .assert()
         .failure()
@@ -197,7 +197,7 @@ fn test_run_quiet_suppresses_banner_and_summary() {
     let dir = TempDir::new().unwrap();
     make_valid_case(dir.path(), None, None, None, None);
     let out = TempDir::new().unwrap();
-    cobre()
+    novomodelo()
         .args([
             "run",
             dir.path().to_str().unwrap(),
@@ -207,7 +207,7 @@ fn test_run_quiet_suppresses_banner_and_summary() {
         ])
         .assert()
         .success()
-        .stderr(predicate::str::contains("COBRE v").not())
+        .stderr(predicate::str::contains("NOVOMODELO v").not())
         .stderr(predicate::str::contains("Training complete in").not());
 }
 
@@ -238,7 +238,7 @@ fn cli_run_writes_inflow_annual_component_when_par_a_active() {
 
     let out = TempDir::new().unwrap();
 
-    cobre()
+    novomodelo()
         .args([
             "run",
             dir.path().to_str().unwrap(),
@@ -432,7 +432,7 @@ fn cli_run_populates_anticipated_thermal_columns() {
         Some(THERMALS_ANTICIPATED_JSON),
     );
 
-    cobre()
+    novomodelo()
         .args([
             "run",
             case.to_str().expect("case path is valid UTF-8"),
@@ -706,7 +706,7 @@ fn cli_run_k2_populates_anticipated_columns_and_manifest() {
         Some(THERMALS_ANTICIPATED_K2_JSON),
     );
 
-    cobre()
+    novomodelo()
         .args([
             "run",
             case.to_str().expect("case path is valid UTF-8"),
@@ -952,7 +952,7 @@ fn cli_run_k2_populates_anticipated_columns_and_manifest() {
 
 /// The CLI writes `hydro_models/evaporation_models.parquet` whose coefficient
 /// rows equal the resolved evaporation models. Because the CLI and Python write
-/// sites both serialize the identical `cobre_sddp::build_evaporation_model_rows`
+/// sites both serialize the identical `novomodelo_sddp::build_evaporation_model_rows`
 /// output, asserting the written file matches that builder output establishes
 /// CLI⇄Python file parity without launching a Python interpreter (the builder is
 /// the single source both consume).
@@ -968,7 +968,7 @@ fn cli_writes_evaporation_models_matching_resolver() {
     // Temp output dir so the committed `output/` tree is untouched.
     let out = TempDir::new().expect("create temp output dir");
 
-    cobre()
+    novomodelo()
         .args([
             "run",
             case.to_str().expect("D08 path is valid UTF-8"),
@@ -991,17 +991,17 @@ fn cli_writes_evaporation_models_matching_resolver() {
 
     // The reader returns rows sorted by `(hydro_id, stage_id)`, matching the
     // builder's canonical order — the row-for-row zip below depends on it.
-    let written =
-        cobre_io::parse_evaporation_models(&evaporation_path).expect("parse evaporation_models");
+    let written = novomodelo_io::parse_evaporation_models(&evaporation_path)
+        .expect("parse evaporation_models");
     assert!(
         !written.is_empty(),
         "D08 must produce at least one evaporation row"
     );
 
-    let system = cobre_io::load_case(&case).expect("load D08 system");
-    let result = cobre_sddp::prepare_hydro_models(&system, &case, false)
+    let system = novomodelo_io::load_case(&case).expect("load D08 system");
+    let result = novomodelo_sddp::prepare_hydro_models(&system, &case, false)
         .expect("prepare hydro models for D08");
-    let expected = cobre_sddp::build_evaporation_model_rows(&result, &system);
+    let expected = novomodelo_sddp::build_evaporation_model_rows(&result, &system);
 
     assert_eq!(
         written.len(),
@@ -1044,7 +1044,7 @@ fn cli_writes_evaporation_models_matching_resolver() {
 // ── Generic constraint resolved-echo sidecar ──────────────────────────────────
 
 fn run_case(case: &Path, out: &Path) {
-    cobre()
+    novomodelo()
         .args([
             "run",
             case.to_str().expect("case path is valid UTF-8"),
@@ -1056,7 +1056,7 @@ fn run_case(case: &Path, out: &Path) {
         .success();
 }
 
-/// `cobre run` emits `generic_constraints/resolved_echo.parquet` for a study
+/// `novomodelo run` emits `generic_constraints/resolved_echo.parquet` for a study
 /// with generic constraints; the echo is a training-side sidecar carrying the
 /// 13-column echo schema and the resolved interval a reader can compare
 /// against the deck.
@@ -1148,7 +1148,12 @@ fn cli_writes_no_echo_without_generic_constraints() {
 // ── Deterministic end-to-end golden (examples/1dtoy) ──────────────────────────
 
 fn run_ok(args: &[&str]) -> (String, String) {
-    let output = cobre().args(args).assert().success().get_output().clone();
+    let output = novomodelo()
+        .args(args)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
     (
         String::from_utf8(output.stdout).unwrap(),
         String::from_utf8(output.stderr).unwrap(),
@@ -1342,7 +1347,7 @@ const CONFIG_SIMULATION_ONLY_JSON: &str = r#"{
 /// columns, identical state) loads for simulation-only into the original 1dtoy:
 /// each stored basis whose column count no longer matches its node's LP is left
 /// out, one warning reports them, and the simulation runs. Ends with the
-/// ordering assertion: the same policy, restamped to another cobre version, is
+/// ordering assertion: the same policy, restamped to another novomodelo version, is
 /// refused by the version check instead, before any basis is examined.
 #[test]
 fn simulation_only_loads_a_policy_with_a_wider_stored_basis_and_warns() {
@@ -1356,7 +1361,7 @@ fn simulation_only_loads_a_policy_with_a_wider_stored_basis_and_warns() {
     write_file(variant_dir.path(), "config.json", CONFIG_VARIANT_TRAIN_JSON);
 
     let output = TempDir::new().unwrap();
-    cobre()
+    novomodelo()
         .args([
             "run",
             variant_dir.path().to_str().unwrap(),
@@ -1375,7 +1380,7 @@ fn simulation_only_loads_a_policy_with_a_wider_stored_basis_and_warns() {
         CONFIG_SIMULATION_ONLY_JSON,
     );
 
-    let run = cobre()
+    let run = novomodelo()
         .args([
             "run",
             sim_only_dir.path().to_str().unwrap(),
@@ -1394,7 +1399,7 @@ fn simulation_only_loads_a_policy_with_a_wider_stored_basis_and_warns() {
 
     restamp_policy_version(&output.path().join("policy"), "0.0.1");
 
-    cobre()
+    novomodelo()
         .args([
             "run",
             sim_only_dir.path().to_str().unwrap(),
@@ -1405,7 +1410,7 @@ fn simulation_only_loads_a_policy_with_a_wider_stored_basis_and_warns() {
         .assert()
         .failure()
         .code(1)
-        .stderr(predicate::str::contains("written by cobre 0.0.1"))
+        .stderr(predicate::str::contains("written by novomodelo 0.0.1"))
         .stderr(predicate::str::contains("stored bases not used").not());
 }
 
@@ -1430,7 +1435,7 @@ fn simulation_only_validate_warns_about_unused_stored_bases_and_exits_0() {
         "config.json",
         CONFIG_SIMULATION_ONLY_JSON,
     );
-    cobre()
+    novomodelo()
         .args([
             "run",
             variant_dir.path().to_str().unwrap(),
@@ -1441,7 +1446,7 @@ fn simulation_only_validate_warns_about_unused_stored_bases_and_exits_0() {
         .assert()
         .success();
 
-    let human = cobre()
+    let human = novomodelo()
         .args(["validate", sim_only_dir.path().to_str().unwrap()])
         .assert()
         .success();
@@ -1458,7 +1463,7 @@ fn simulation_only_validate_warns_about_unused_stored_bases_and_exits_0() {
         .unwrap_or_else(|| panic!("no count in: {line}"));
     assert!(count > 0, "{line}");
 
-    let json = cobre()
+    let json = novomodelo()
         .args(["validate", sim_only_dir.path().to_str().unwrap(), "--json"])
         .assert()
         .success();
@@ -1510,7 +1515,7 @@ fn missing_policy_directory_is_reported_for_each_load_kind() {
         copy_dir_recursive(&case_dir("1dtoy"), case.path());
         write_file(case.path(), "config.json", &config);
         let output = TempDir::new().unwrap();
-        cobre()
+        novomodelo()
             .args([
                 "run",
                 case.path().to_str().unwrap(),
@@ -1524,7 +1529,7 @@ fn missing_policy_directory_is_reported_for_each_load_kind() {
             .stderr(predicate::str::contains("Policy directory not found: "))
             .stderr(predicate::str::contains(sentence))
             .stderr(predicate::str::contains(
-                "run `cobre validate <CASE_DIR>` for a full diagnostic report",
+                "run `novomodelo validate <CASE_DIR>` for a full diagnostic report",
             ))
             .stderr(predicate::str::contains("report this at").not());
     }
@@ -1536,7 +1541,7 @@ fn unreadable_policy_checkpoint_is_reported_as_a_read_failure() {
     copy_dir_recursive(&case_dir("1dtoy"), case.path());
     write_file(case.path(), "config.json", &policy_mode_config("fresh"));
     let output = TempDir::new().unwrap();
-    cobre()
+    novomodelo()
         .args([
             "run",
             case.path().to_str().unwrap(),
@@ -1554,7 +1559,7 @@ fn unreadable_policy_checkpoint_is_reported_as_a_read_failure() {
         "config.json",
         &policy_mode_config("warm_start"),
     );
-    cobre()
+    novomodelo()
         .args([
             "run",
             case.path().to_str().unwrap(),
@@ -1586,7 +1591,7 @@ fn warm_start_case_with_output_policy_dir() -> (TempDir, TempDir, std::path::Pat
 #[test]
 fn policy_directory_without_manifest_exits_1() {
     let (case, output, _policy) = warm_start_case_with_output_policy_dir();
-    cobre()
+    novomodelo()
         .args([
             "run",
             case.path().to_str().unwrap(),
@@ -1619,7 +1624,7 @@ fn policy_manifest_the_process_cannot_open_exits_2() {
         return;
     }
 
-    let assertion = cobre()
+    let assertion = novomodelo()
         .args([
             "run",
             case.path().to_str().unwrap(),
@@ -1654,7 +1659,7 @@ fn stochastic_data_refusal_exits_1_without_a_bug_report_request() {
             serde_json::json!({ "scheme": "historical" });
     });
 
-    cobre()
+    novomodelo()
         .args(["run", dir.path().to_str().unwrap()])
         .assert()
         .failure()
@@ -1663,7 +1668,7 @@ fn stochastic_data_refusal_exits_1_without_a_bug_report_request() {
             "stochastic error: insufficient data: no valid historical windows found",
         ))
         .stderr(predicate::str::contains(
-            "run `cobre validate <CASE_DIR>` for a full diagnostic report",
+            "run `novomodelo validate <CASE_DIR>` for a full diagnostic report",
         ))
         .stderr(predicate::str::contains("report this at").not());
 }
@@ -1685,7 +1690,7 @@ fn infeasible_training_lp_exits_3_naming_stage_iteration_and_scenario() {
         thermals["thermals"][0]["generation"]["min_mw"] = serde_json::json!(20.0);
     });
 
-    cobre()
+    novomodelo()
         .args(["run", dir.path().to_str().unwrap()])
         .assert()
         .failure()
@@ -1711,7 +1716,7 @@ fn assert_empty_file(path: &Path) {
 fn run_1dtoy_with_a_directory_at(blocked: &str) -> TempDir {
     let out = TempDir::new().unwrap();
     fs::create_dir_all(out.path().join(blocked)).unwrap();
-    cobre()
+    novomodelo()
         .args([
             "run",
             case_dir("1dtoy").to_str().unwrap(),
@@ -1779,7 +1784,7 @@ fn run_clears_stale_markers_of_planned_phases_before_writing() {
     )
     .unwrap();
 
-    cobre()
+    novomodelo()
         .args([
             "run",
             case_dir("1dtoy").to_str().unwrap(),
@@ -1888,7 +1893,7 @@ fn run_clears_stale_simulation_outputs_before_training() {
     seed_stale_simulation_outputs(out.path());
     write_file(out.path(), "training/solver", "");
 
-    cobre()
+    novomodelo()
         .args([
             "run",
             case_dir("1dtoy").to_str().unwrap(),
@@ -1908,7 +1913,7 @@ fn run_clears_stale_simulation_outputs_before_training() {
     for relative in FOREIGN_SIMULATION_FILES {
         assert!(
             out.path().join(relative).is_file(),
-            "{relative} is not a cobre output and must be kept"
+            "{relative} is not a novomodelo output and must be kept"
         );
     }
 }
@@ -2005,7 +2010,7 @@ fn run_clears_stale_conditional_training_outputs_before_training() {
     )
     .unwrap();
 
-    cobre()
+    novomodelo()
         .args([
             "run",
             case_dir("1dtoy").to_str().unwrap(),
@@ -2100,7 +2105,7 @@ fn run_accepts_a_supplied_opening_tree_with_historical_residuals_stages() {
     write_supplied_opening_tree_case(case.path());
     let out = TempDir::new().unwrap();
 
-    cobre()
+    novomodelo()
         .args(["run", case.path().to_str().unwrap()])
         .args(["--output", out.path().to_str().unwrap(), "--quiet"])
         .assert()

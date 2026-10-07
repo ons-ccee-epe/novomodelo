@@ -7,7 +7,7 @@
 //! `gatherv`): every rank receives all data and computes stats locally, avoiding
 //! a subsequent broadcast.
 
-use cobre_comm::Communicator;
+use novomodelo_comm::Communicator;
 
 use crate::risk_measure::RiskMeasure;
 use crate::simulation::{
@@ -64,10 +64,10 @@ pub enum SimulationWeighting<'a> {
 /// # Examples
 ///
 /// ```rust
-/// use cobre_comm::LocalBackend;
-/// use cobre_sddp::Phase;
-/// use cobre_sddp::simulation::aggregation::{SimulationWeighting, aggregate_simulation};
-/// use cobre_sddp::simulation::{ScenarioCategoryCosts, SimulationConfig};
+/// use novomodelo_comm::LocalBackend;
+/// use novomodelo_sddp::Phase;
+/// use novomodelo_sddp::simulation::aggregation::{SimulationWeighting, aggregate_simulation};
+/// use novomodelo_sddp::simulation::{ScenarioCategoryCosts, SimulationConfig};
 ///
 /// let zero_cats = ScenarioCategoryCosts {
 ///     resource_cost: 0.0,
@@ -264,7 +264,7 @@ mod tests {
         clippy::cast_lossless
     )]
 
-    use cobre_comm::LocalBackend;
+    use novomodelo_comm::LocalBackend;
 
     use super::{SimulationWeighting, aggregate_simulation};
     use crate::simulation::{config::SimulationConfig, types::ScenarioCategoryCosts};

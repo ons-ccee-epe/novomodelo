@@ -1,4 +1,4 @@
-//! Error types for the `cobre-stochastic` crate.
+//! Error types for the `novomodelo-stochastic` crate.
 
 /// Errors that can occur during stochastic model construction or scenario generation.
 #[derive(Debug, thiserror::Error)]

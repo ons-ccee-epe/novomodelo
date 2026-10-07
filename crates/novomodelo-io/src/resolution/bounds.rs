@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use cobre_core::{
+use novomodelo_core::{
     EntityId,
     entities::{EnergyContract, Hydro, Line, PumpingStation, Thermal},
     resolved::{
@@ -22,7 +22,7 @@ use crate::constraints::{
 };
 
 /// Entity slices for bounds resolution. Each must be in the order
-/// [`SystemBuilder::build`](cobre_core::SystemBuilder::build) establishes;
+/// [`SystemBuilder::build`](novomodelo_core::SystemBuilder::build) establishes;
 /// slice position becomes the entity index.
 pub struct BoundsEntitySlices<'a> {
     /// Hydro plants.
@@ -96,13 +96,13 @@ pub struct BoundsOverrides<'a> {
 ///
 /// ```
 /// use chrono::NaiveDate;
-/// use cobre_core::EntityId;
-/// use cobre_core::entities::{
+/// use novomodelo_core::EntityId;
+/// use novomodelo_core::entities::{
 ///     EnergyContract, ContractType, Hydro, HydroGenerationModel, HydroPenalties,
 ///     Line, PumpingStation, Thermal,
 /// };
-/// use cobre_io::constraints::HydroBoundsRow;
-/// use cobre_io::resolution::{resolve_bounds, BoundsEntitySlices, BoundsOverrides};
+/// use novomodelo_io::constraints::HydroBoundsRow;
+/// use novomodelo_io::resolution::{resolve_bounds, BoundsEntitySlices, BoundsOverrides};
 ///
 /// let penalties = HydroPenalties {
 ///     spillage_cost: 0.01,
@@ -323,7 +323,7 @@ pub fn resolve_bounds(
     let alloc_stages = n_stages.max(1);
 
     let mut table = ResolvedBounds::new(
-        &cobre_core::BoundsCountsSpec {
+        &novomodelo_core::BoundsCountsSpec {
             n_hydros: entities.hydros.len(),
             n_thermals: entities.thermals.len(),
             n_lines: entities.lines.len(),
@@ -332,7 +332,7 @@ pub fn resolve_bounds(
             n_stages: alloc_stages,
             k_max,
         },
-        &cobre_core::BoundsDefaults {
+        &novomodelo_core::BoundsDefaults {
             hydro: hydro_default,
             hydro_block: hydro_block_default,
             thermal: thermal_default,
@@ -411,7 +411,7 @@ pub fn resolve_bounds(
         || pumping_overrides.iter().any(|row| row.block_id.is_some())
         || contract_overrides.iter().any(|row| row.block_id.is_some());
     let mut block_overlay = (any_block_row && max_blocks > 0).then(|| {
-        cobre_core::ResolvedBlockBounds::new(&cobre_core::BlockBoundsCountsSpec {
+        novomodelo_core::ResolvedBlockBounds::new(&novomodelo_core::BlockBoundsCountsSpec {
             n_hydros: entities.hydros.len(),
             n_thermals: entities.thermals.len(),
             n_lines: entities.lines.len(),
@@ -836,7 +836,7 @@ mod tests {
     use chrono::NaiveDate;
     use std::collections::HashMap;
 
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId,
         entities::{
             ContractType, DiversionChannel, EnergyContract, FillingConfig, Hydro,
@@ -1931,7 +1931,7 @@ mod tests {
     // These tests pin down the per-thermal base-fill semantics of the resolver
     // at the four boundary stage indices that LP-template consumers exercise.
     // The accessor-only invariants (uniform-default fill, `n_stages()`
-    // unchanged, `thermal_stage_axis_len()` extended) live in `cobre-core`'s
+    // unchanged, `thermal_stage_axis_len()` extended) live in `novomodelo-core`'s
     // `ResolvedBounds` tests.
 
     /// Two thermals with distinct `(min, max, cost)` bases, `n_stages = 4`,

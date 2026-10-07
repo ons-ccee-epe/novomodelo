@@ -2,9 +2,9 @@
 # the main release.yml (cargo-dist).  Triggered by the same version tags.
 #
 # Produces one archive per platform:
-#   cobre-mpi-<version>-<target>.tar.gz
+#   novomodelo-mpi-<version>-<target>.tar.gz
 #
-# The archive contains the `cobre-mpi` binary and a README.
+# The archive contains the `novomodelo-mpi` binary and a README.
 #
 # Linux targets build MPICH from source (cached) to link against `libmpi.so`
 # (the upstream/universal name). Ubuntu's apt `libmpich-dev` package renames
@@ -16,7 +16,7 @@
 #
 # x86_64-apple-darwin is omitted: the macos-13 Intel runner was deprecated and
 # cross-compiling MPI on ARM runners is non-trivial. Intel Mac users can build
-# from source with `cargo build --release --features mpi -p cobre-cli`.
+# from source with `cargo build --release --features mpi -p novomodelo-cli`.
 
 name: Release MPI
 
@@ -103,22 +103,22 @@ jobs:
         if: matrix.mpi_source == 'brew'
         run: brew install mpich
 
-      - name: Build cobre with MPI
-        run: cargo build --release --features mpi -p cobre-cli
+      - name: Build novomodelo with MPI
+        run: cargo build --release --features mpi -p novomodelo-cli
 
       - name: Package archive
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          ARCHIVE="cobre-mpi-${VERSION}-${{ matrix.target }}.tar.gz"
+          ARCHIVE="novomodelo-mpi-${VERSION}-${{ matrix.target }}.tar.gz"
 
           mkdir -p staging
-          cp target/release/cobre staging/cobre-mpi
+          cp target/release/novomodelo staging/novomodelo-mpi
           # Third-party attribution travels with the statically-linked binary.
           cp LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.md staging/
 
           cat > staging/README.txt << 'EOF'
-          cobre-mpi — Cobre SDDP solver with MPI communication backend.
+          novomodelo-mpi — Novomodelo SDDP solver with MPI communication backend.
 
           This binary links against libmpi.so.12 (MPICH 4.x ABI).
           Compatible runtimes:
@@ -128,24 +128,24 @@ jobs:
 
           Ensure libmpi.so.12 is discoverable at runtime:
             export LD_LIBRARY_PATH=/path/to/mpich/lib:$LD_LIBRARY_PATH
-            mpiexec -n <nprocs> ./cobre-mpi run <case-dir>
+            mpiexec -n <nprocs> ./novomodelo-mpi run <case-dir>
 
           With SLURM:
-            srun --mpi=pmi2 -n <nprocs> ./cobre-mpi run <case-dir>
+            srun --mpi=pmi2 -n <nprocs> ./novomodelo-mpi run <case-dir>
 
           For hybrid MPI + threads on SLURM:
             srun --mpi=pmi2 --cpus-per-task=8 --cpu-bind=cores \
-                 ./cobre-mpi run <case-dir> --threads 8
+                 ./novomodelo-mpi run <case-dir> --threads 8
 
           Or use your cluster's module system (e.g. `module load mpich`).
 
           For the single-process variant (no MPI dependency), download
-          the standard 'cobre' binary from the same GitHub release.
+          the standard 'novomodelo' binary from the same GitHub release.
 
           Stopping before a SLURM time limit
           ----------------------------------
 
-          A SIGTERM during training makes cobre-mpi stop at the next iteration
+          A SIGTERM during training makes novomodelo-mpi stop at the next iteration
           boundary on every rank, write the training outputs and the policy
           checkpoint, and exit with code 5. The configured simulation is then
           skipped: simulation/metadata.json is written with status "partial" and
@@ -162,7 +162,7 @@ jobs:
             #SBATCH --time=<walltime>
             #SBATCH --signal=TERM@<lead>
 
-            srun --mpi=pmix -n <nprocs> ./cobre-mpi run <case-dir>
+            srun --mpi=pmix -n <nprocs> ./novomodelo-mpi run <case-dir>
 
           Do not use the B: prefix (--signal=B:TERM@<lead>): it signals only the
           batch shell, not the ranks.
@@ -230,9 +230,9 @@ jobs:
             This error is caused by an incompatibility between SLURM 24.05's
             PMI2 plugin and MPICH's PMI2 wire protocol. Use mpiexec as a
             fallback launcher, which bypasses PMI2 entirely:
-              mpiexec -n <nprocs> ./cobre-mpi run <case-dir>
+              mpiexec -n <nprocs> ./novomodelo-mpi run <case-dir>
             Alternatively, if PMIx is available on the cluster:
-              srun --mpi=pmix -n <nprocs> ./cobre-mpi run <case-dir>
+              srun --mpi=pmix -n <nprocs> ./novomodelo-mpi run <case-dir>
 
           Multi-node job hangs at MPI_Init (MPICH 4.3.x clusters):
             MPICH 4.3.0 introduced a PMI2 client regression that causes a

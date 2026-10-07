@@ -1,7 +1,7 @@
 //! The per-hydro stage state that the builder's fills share.
 
-use cobre_core::commissioning::{Phase, filling_phase};
-use cobre_core::{
+use novomodelo_core::commissioning::{Phase, filling_phase};
+use novomodelo_core::{
     CascadeTopology, Hydro, HydroBlockBounds, HydroUnitGroup, ResolvedHydroUnitGroupBounds,
 };
 
@@ -228,7 +228,7 @@ pub(super) fn cell_min_generation(
 
 #[cfg(test)]
 mod tests {
-    use cobre_core::{CascadeTopology, EntityId, Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::{CascadeTopology, EntityId, Hydro, HydroGenerationModel, HydroPenalties};
 
     use crate::indexer::EntityPositions;
 

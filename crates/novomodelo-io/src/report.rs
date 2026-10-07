@@ -7,8 +7,8 @@
 //! # Examples
 //!
 //! ```
-//! use cobre_io::validation::{ValidationContext, rules::RULES};
-//! use cobre_io::{generate_report};
+//! use novomodelo_io::validation::{ValidationContext, rules::RULES};
+//! use novomodelo_io::{generate_report};
 //!
 //! let [missing_file, stub_term] = ["structural.2", "referential.11"]
 //!     .map(|id| RULES.iter().find(|rule| rule.id == id).expect("rule is listed"));
@@ -82,8 +82,8 @@ impl ValidationReport {
     /// # Examples
     ///
     /// ```
-    /// use cobre_io::validation::ValidationContext;
-    /// use cobre_io::generate_report;
+    /// use novomodelo_io::validation::ValidationContext;
+    /// use novomodelo_io::generate_report;
     ///
     /// let ctx = ValidationContext::new();
     /// let report = generate_report(&ctx);
@@ -108,8 +108,8 @@ impl ValidationReport {
 /// # Examples
 ///
 /// ```
-/// use cobre_io::validation::{ValidationContext, rules::RULES};
-/// use cobre_io::generate_report;
+/// use novomodelo_io::validation::{ValidationContext, rules::RULES};
+/// use novomodelo_io::generate_report;
 ///
 /// let [missing_file, unparsable, stub_term] = ["structural.2", "schema.2", "referential.11"]
 ///     .map(|id| RULES.iter().find(|rule| rule.id == id).expect("rule is listed"));

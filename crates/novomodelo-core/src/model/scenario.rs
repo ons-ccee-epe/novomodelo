@@ -20,7 +20,7 @@
 //!   and correlation matrices
 //!
 //! Performance-adapted views (`PrecomputedPar`, spectrally decomposed matrices)
-//! belong in downstream solver crates (`cobre-stochastic`).
+//! belong in downstream solver crates (`novomodelo-stochastic`).
 //!
 //! ## Declaration-order invariance
 //!
@@ -53,7 +53,7 @@ use chrono::NaiveDate;
 /// # Examples
 ///
 /// ```
-/// use cobre_core::scenario::SamplingScheme;
+/// use novomodelo_core::scenario::SamplingScheme;
 ///
 /// let scheme = SamplingScheme::InSample;
 /// // SamplingScheme is Copy
@@ -78,7 +78,7 @@ pub enum SamplingScheme {
 /// Top-level scenario source configuration, parsed from `stages.json`.
 ///
 /// Groups the sampling scheme and random seed that govern how forward-pass
-/// scenarios are produced. Populated during case loading by `cobre-io` from
+/// scenarios are produced. Populated during case loading by `novomodelo-io` from
 /// the `scenario_source` field in `stages.json`. Distinct from
 /// [`ScenarioSourceConfig`](crate::temporal::ScenarioSourceConfig),
 /// which also holds the branching factor (`num_scenarios`).
@@ -92,7 +92,7 @@ pub enum SamplingScheme {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::scenario::{SamplingScheme, ScenarioSource};
+/// use novomodelo_core::scenario::{SamplingScheme, ScenarioSource};
 ///
 /// let source = ScenarioSource {
 ///     inflow_scheme: SamplingScheme::InSample,
@@ -130,7 +130,7 @@ pub struct ScenarioSource {
 ///
 /// Preserves user intent (list vs range) so that validation and error messages
 /// can reference the original specification form. Expansion into a concrete
-/// year list is deferred to `cobre-io` validation (Tier 1) and scenario library
+/// year list is deferred to `novomodelo-io` validation (Tier 1) and scenario library
 /// construction.
 ///
 /// When absent (represented as `Option<HistoricalYears>::None` at the
@@ -140,7 +140,7 @@ pub struct ScenarioSource {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::scenario::HistoricalYears;
+/// use novomodelo_core::scenario::HistoricalYears;
 ///
 /// // Explicit list of years
 /// let list = HistoricalYears::List(vec![1940, 1953, 1971]);
@@ -158,7 +158,7 @@ pub enum HistoricalYears {
 
     /// Inclusive range shorthand (e.g., years 1940 through 2010).
     /// `from` and `to` are both inclusive. Validation of `from <= to`
-    /// is performed by `cobre-io`.
+    /// is performed by `novomodelo-io`.
     Range {
         /// First year of the range (inclusive).
         from: i32,
@@ -176,7 +176,7 @@ impl HistoricalYears {
     /// # Examples
     ///
     /// ```
-    /// use cobre_core::scenario::HistoricalYears;
+    /// use novomodelo_core::scenario::HistoricalYears;
     ///
     /// let list = HistoricalYears::List(vec![1995, 2000, 2005]);
     /// assert_eq!(list.to_years(), vec![1995, 2000, 2005]);
@@ -262,7 +262,7 @@ pub struct AnnualComponent {
 /// Classical PAR(p) model (no annual component):
 ///
 /// ```
-/// use cobre_core::{EntityId, scenario::InflowModel};
+/// use novomodelo_core::{EntityId, scenario::InflowModel};
 ///
 /// let model = InflowModel {
 ///     hydro_id: EntityId(1),
@@ -282,7 +282,7 @@ pub struct AnnualComponent {
 /// PAR(p)-A model with annual component:
 ///
 /// ```
-/// use cobre_core::{EntityId, scenario::{AnnualComponent, InflowModel}};
+/// use novomodelo_core::{EntityId, scenario::{AnnualComponent, InflowModel}};
 ///
 /// let model = InflowModel {
 ///     hydro_id: EntityId(1),
@@ -353,7 +353,7 @@ impl InflowModel {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{EntityId, scenario::LoadModel};
+/// use novomodelo_core::{EntityId, scenario::LoadModel};
 ///
 /// let model = LoadModel {
 ///     bus_id: EntityId(5),
@@ -406,7 +406,7 @@ impl LoadModel {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{EntityId, scenario::NcsModel};
+/// use novomodelo_core::{EntityId, scenario::NcsModel};
 ///
 /// let model = NcsModel {
 ///     ncs_id: EntityId(3),
@@ -436,13 +436,13 @@ pub struct NcsModel {
 ///
 /// Carries one historical inflow observation window for a hydro: the mean
 /// inflow measured over `[start_date, end_date)`. These rows constitute the
-/// raw historical record used by PAR(p) fitting routines in `cobre-stochastic`
+/// raw historical record used by PAR(p) fitting routines in `novomodelo-stochastic`
 /// and by the historical scenario library constructed during solver setup.
 ///
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{EntityId, scenario::InflowHistoryRow};
+/// use novomodelo_core::{EntityId, scenario::InflowHistoryRow};
 /// use chrono::NaiveDate;
 ///
 /// let row = InflowHistoryRow {
@@ -475,7 +475,7 @@ pub struct InflowHistoryRow {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{EntityId, scenario::ExternalScenarioRow};
+/// use novomodelo_core::{EntityId, scenario::ExternalScenarioRow};
 ///
 /// let row = ExternalScenarioRow {
 ///     stage_id: 0,
@@ -510,7 +510,7 @@ pub struct ExternalScenarioRow {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{EntityId, scenario::ExternalLoadRow};
+/// use novomodelo_core::{EntityId, scenario::ExternalLoadRow};
 ///
 /// let row = ExternalLoadRow {
 ///     stage_id: 0,
@@ -546,7 +546,7 @@ pub struct ExternalLoadRow {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{EntityId, scenario::ExternalNcsRow};
+/// use novomodelo_core::{EntityId, scenario::ExternalNcsRow};
 ///
 /// let row = ExternalNcsRow {
 ///     stage_id: 1,
@@ -599,14 +599,14 @@ pub struct CorrelationEntity {
 
 /// A named group of correlated entities and their correlation matrix.
 ///
-/// Decomposition is NOT performed here; that belongs to `cobre-stochastic`.
+/// Decomposition is NOT performed here; that belongs to `novomodelo-stochastic`.
 ///
 /// See [Input Scenarios §5](input-scenarios.md).
 ///
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{EntityId, scenario::{CorrelationEntity, CorrelationGroup}};
+/// use novomodelo_core::{EntityId, scenario::{CorrelationEntity, CorrelationGroup}};
 ///
 /// let group = CorrelationGroup {
 ///     name: "Southeast".to_string(),
@@ -647,7 +647,7 @@ pub struct CorrelationGroup {
 /// # Examples
 ///
 /// ```
-/// use cobre_core::{EntityId, scenario::{CorrelationEntity, CorrelationGroup, CorrelationProfile}};
+/// use novomodelo_core::{EntityId, scenario::{CorrelationEntity, CorrelationGroup, CorrelationProfile}};
 ///
 /// let profile = CorrelationProfile {
 ///     groups: vec![CorrelationGroup {
@@ -710,7 +710,7 @@ pub struct CorrelationScheduleEntry {
 ///
 /// ```
 /// use std::collections::BTreeMap;
-/// use cobre_core::{EntityId, scenario::{
+/// use novomodelo_core::{EntityId, scenario::{
 ///     CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile,
 ///     CorrelationScheduleEntry,
 /// }};

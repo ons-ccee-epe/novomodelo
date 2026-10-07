@@ -4,8 +4,8 @@
 //! feature. Compiles only under `cfg(test)` or that feature; must never be
 //! enabled in a production build.
 
-use cobre_core::scenario::AnnualComponent;
-use cobre_core::{EntityId, InflowModel, SeasonCycleType, SeasonDefinition, SeasonMap};
+use novomodelo_core::scenario::AnnualComponent;
+use novomodelo_core::{EntityId, InflowModel, SeasonCycleType, SeasonDefinition, SeasonMap};
 
 use crate::OpeningTree;
 

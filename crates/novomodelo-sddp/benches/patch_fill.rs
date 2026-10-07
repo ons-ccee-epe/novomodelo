@@ -5,11 +5,11 @@
 
 #![allow(missing_docs, clippy::unwrap_used, clippy::expect_used)]
 
-use cobre_sddp::indexer::{BlockGrid, BlockRowFamily, StateSpace};
-use cobre_sddp::lead_time::AnticipatedResolution;
-use cobre_sddp::lp::builder::PatchBuffer;
-use cobre_sddp::test_support::equipment_free_geometry;
 use criterion::{Criterion, criterion_group, criterion_main};
+use novomodelo_sddp::indexer::{BlockGrid, BlockRowFamily, StateSpace};
+use novomodelo_sddp::lead_time::AnticipatedResolution;
+use novomodelo_sddp::lp::builder::PatchBuffer;
+use novomodelo_sddp::test_support::equipment_free_geometry;
 use std::hint::black_box;
 
 const SHAPES: &[(&str, usize, usize, usize)] =

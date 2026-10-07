@@ -738,7 +738,7 @@ mod tests {
         // Serializes as a bare snake_case string, not internally-tagged
         // (#[serde(tag = "model")]): postcard, used for MPI broadcast, does not
         // support internally-tagged enums. The {"model": "..."} input shape lives
-        // on the `RawGeneration` mirror in cobre-io that owns the JSON contract.
+        // on the `RawGeneration` mirror in novomodelo-io that owns the JSON contract.
         let cp_json =
             serde_json::to_string(&HydroGenerationModel::ConstantProductivity).expect("serialize");
         assert_eq!(cp_json, r#""constant_productivity""#);

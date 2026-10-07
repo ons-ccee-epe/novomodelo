@@ -25,8 +25,8 @@
 //! # Usage
 //!
 //! ```rust
-//! use cobre_sddp::cut::CutPool;
-//! use cobre_sddp::cut_selection::{
+//! use novomodelo_sddp::cut::CutPool;
+//! use novomodelo_sddp::cut_selection::{
 //!     CutActivityUpdates, CutMetadata, CutSelectionStrategy,
 //! };
 //!
@@ -48,7 +48,7 @@ use crate::cut::CutPool;
 use crate::gemm::gemm_block;
 use crate::setup::NodeId;
 
-use cobre_io::config::RowSelectionConfig;
+use novomodelo_io::config::RowSelectionConfig;
 
 /// Number of trial points evaluated per `crate::gemm::gemm_block` call.
 ///
@@ -207,7 +207,7 @@ impl CutSelectionStrategy {
     /// # Examples
     ///
     /// ```rust
-    /// use cobre_sddp::cut_selection::CutSelectionStrategy;
+    /// use novomodelo_sddp::cut_selection::CutSelectionStrategy;
     ///
     /// let s = CutSelectionStrategy::Level1 { check_frequency: 5, tie_tolerance: 1e-10 };
     /// assert!(!s.should_run(0));
@@ -240,9 +240,9 @@ impl CutSelectionStrategy {
     /// # Examples
     ///
     /// ```rust
-    /// use cobre_sddp::cut::{CutPool};
-    /// use cobre_sddp::cut_selection::{CutMetadata, CutSelectionStrategy};
-    /// use cobre_sddp::setup::NodeId;
+    /// use novomodelo_sddp::cut::{CutPool};
+    /// use novomodelo_sddp::cut_selection::{CutMetadata, CutSelectionStrategy};
+    /// use novomodelo_sddp::setup::NodeId;
     ///
     /// let strategy = CutSelectionStrategy::Level1 { check_frequency: 5, tie_tolerance: 1e-10 };
     /// let mut pool = CutPool::new(2, 1, 1, 0);
@@ -525,11 +525,11 @@ fn validate_check_frequency(check_frequency: u32) -> Result<u32, String> {
 /// `start_iteration = 0`, `candidate_recency = Some(0)`,
 /// `max_added_per_round = 0`, or `violation_tolerance <= 0`.
 ///
-/// [`SelectionMethod`]: cobre_io::config::SelectionMethod
+/// [`SelectionMethod`]: novomodelo_io::config::SelectionMethod
 pub fn parse_cut_selection_config(
     config: &RowSelectionConfig,
 ) -> Result<Option<CutSelectionStrategy>, String> {
-    use cobre_io::config::SelectionMethod;
+    use novomodelo_io::config::SelectionMethod;
 
     let Some(selection) = config.selection.as_ref() else {
         return Ok(None);
@@ -612,7 +612,7 @@ mod tests {
     use super::parse_cut_selection_config;
     use super::{CutActivityUpdates, CutMetadata, CutSelectionStrategy, NodeId};
     use crate::cut::CutPool;
-    use cobre_io::config::{RowSelectionConfig, SelectionMethod};
+    use novomodelo_io::config::{RowSelectionConfig, SelectionMethod};
 
     fn make_meta(active_count: u64, last_active_iter: u64) -> CutMetadata {
         CutMetadata {
@@ -1233,7 +1233,7 @@ mod tests {
         // 3 slots total: slot 0 (warm-start, intercept=10), slot 1 (eligible, =1), slot 2 (eligible, =3).
         // max=10 (slot 0). Cutoff=10. Eligible cuts 1,2 both below cutoff → deactivated.
         // Slot 0 is not eligible (warm-start) → not deactivated.
-        let warm_start_records = vec![cobre_io::OwnedPolicyCutRecord {
+        let warm_start_records = vec![novomodelo_io::OwnedPolicyCutRecord {
             cut_id: 0,
             slot_index: 0,
             iteration: 1,

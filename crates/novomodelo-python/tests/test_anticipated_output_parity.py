@@ -3,16 +3,16 @@
 The anticipated refactor does NOT add a new output file: the anticipated result
 is two nullable columns on the existing `thermals` table
 (`anticipated_committed_mw`, `anticipated_decision_mw`), owned by
-`thermals_schema()` in cobre-io's schemas.rs. The Python-parity hard rule
+`thermals_schema()` in novomodelo-io's schemas.rs. The Python-parity hard rule
 (`CLAUDE.md`) requires every output the CLI writes to also be written by the
-`cobre-python` bindings, so those two columns must be confirmed to flow through
+`novomodelo-python` bindings, so those two columns must be confirmed to flow through
 the Python paths identically to the CLI.
 
-cobre-python has no anticipated-specific output code: it writes the thermals
+novomodelo-python has no anticipated-specific output code: it writes the thermals
 table through the same shared `SimulationParquetWriter` the CLI uses, so Python
 parity holds by construction. This module is the guard that proves it
 end-to-end: it runs an anticipated deterministic case through both the compiled
-`cobre` CLI (`cobre run --output`) and `cobre.run.run`, reads both thermals
+`novomodelo` CLI (`novomodelo run --output`) and `novomodelo.run.run`, reads both thermals
 parquets, and asserts the two anticipated columns are element-wise equal
 INCLUDING null positions.
 
@@ -23,7 +23,7 @@ convention `test_contract_output_parity.py` established for deterministic cases
 that ship simulation disabled.
 
 Run with (from the repo root):
-    pytest crates/cobre-python/tests/test_anticipated_output_parity.py -v
+    pytest crates/novomodelo-python/tests/test_anticipated_output_parity.py -v
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ import shutil
 
 import pyarrow.parquet as pq
 
-from _cobre_cli import run_cli
+from _novomodelo_cli import run_cli
 
 # d37 (commissioning windows) is the anticipated deterministic case whose
 # decision column carries a mix of null and non-null positions — commissioning
@@ -124,13 +124,13 @@ def test_cli_python_anticipated_column_parity(
     """The CLI and the Python surface emit identical anticipated columns.
 
     Runs the anticipated case (simulation enabled) through both the compiled
-    `cobre` CLI (`cobre run --output`) and `cobre.run.run`, reads both thermals
+    `novomodelo` CLI (`novomodelo run --output`) and `novomodelo.run.run`, reads both thermals
     parquets, sorts each by `(stage_id, block_id, thermal_id)`, and asserts the
     `anticipated_committed_mw` and `anticipated_decision_mw` columns are
     element-wise equal INCLUDING null positions. If the CLI and Python paths
     diverge between the LP solve and the Parquet write, this fails.
     """
-    import cobre.run  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
 
     assert ANTICIPATED_CASE.is_dir(), (
         f"the anticipated fixture must exist at {ANTICIPATED_CASE}"
@@ -144,7 +144,7 @@ def test_cli_python_anticipated_column_parity(
     run_cli(case_dir, out_cli, cli_binary)
 
     out_py = tmp_path / "py_out"
-    cobre.run.run(str(case_dir), output_dir=str(out_py))
+    novomodelo.run.run(str(case_dir), output_dir=str(out_py))
 
     cli_parquets = _thermals_parquets(out_cli)
     py_parquets = _thermals_parquets(out_py)

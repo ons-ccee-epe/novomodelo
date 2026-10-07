@@ -37,7 +37,7 @@
 //!
 //! The crate-local [`ScenarioWritePayload`] mirrors the caller's result layout
 //! so this crate need not depend on the calling crate (which already depends on
-//! `cobre-io`); conversion is the caller's responsibility.
+//! `novomodelo-io`); conversion is the caller's responsibility.
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -51,7 +51,7 @@ use arrow::array::{
 use chrono::NaiveDate;
 
 use super::date32_days;
-use cobre_core::System;
+use novomodelo_core::System;
 
 use crate::MetadataSimulationSolveStats;
 use crate::output::SimulationOutput;
@@ -537,10 +537,10 @@ pub struct SimulationPathRecord {
 /// # Construction
 ///
 /// ```no_run
-/// use cobre_io::output::simulation_writer::SimulationParquetWriter;
+/// use novomodelo_io::output::simulation_writer::SimulationParquetWriter;
 /// use std::path::Path;
 ///
-/// # fn main() -> Result<(), cobre_io::OutputError> {
+/// # fn main() -> Result<(), novomodelo_io::OutputError> {
 /// # let system = unimplemented!();
 /// let writer = SimulationParquetWriter::new(Path::new("/tmp/out"), system)?;
 /// # Ok(())
@@ -2311,7 +2311,7 @@ mod tests {
     use super::*;
     use crate::test_support::output::read_first_batch;
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         Block, BlockMode, Bus, DeficitSegment, EntityId, Hydro, HydroGenerationModel,
         HydroPenalties, Line, NoiseMethod, PumpingStation, ScenarioSourceConfig, Stage,
         StageRiskConfig, StageStateConfig, SystemBuilder, Thermal,

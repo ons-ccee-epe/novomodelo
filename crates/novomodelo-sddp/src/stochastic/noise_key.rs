@@ -29,8 +29,8 @@
 
 use std::ops::Range;
 
-use cobre_core::{EntityId, System};
-use cobre_stochastic::{OpeningTreeView, StochasticContext};
+use novomodelo_core::{EntityId, System};
+use novomodelo_stochastic::{OpeningTreeView, StochasticContext};
 
 use crate::error::SddpError;
 
@@ -286,12 +286,12 @@ fn apply_chain_order(
 #[cfg(test)]
 mod tests {
     use chrono::NaiveDate;
-    use cobre_core::{
+    use novomodelo_core::{
         Block, BlockMode, Bus, DeficitSegment, EntityId, Hydro, HydroGenerationModel,
         HydroPenalties, InflowModel, NoiseMethod, SamplingScheme, ScenarioSourceConfig, Stage,
         StageRiskConfig, StageStateConfig, System, SystemBuilder,
     };
-    use cobre_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+    use novomodelo_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
 
     use super::{StochasticContext, build_noise_key_table, noise_key};
 

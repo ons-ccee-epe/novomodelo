@@ -1,6 +1,6 @@
 //! Smoke test for the warm-start basis path in `HighsSolver`.
 //!
-//! `cobre_highs_set_basis_non_alien` is the sole basis setter used at runtime; it
+//! `novomodelo_highs_set_basis_non_alien` is the sole basis setter used at runtime; it
 //! rejects bases where `col_basic + row_basic != num_row`, which
 //! `solve(Some(&basis))` maps to `SolverError::BasisInconsistent`. No alien
 //! fallback exists.
@@ -8,7 +8,7 @@
 //! This exercises the warm-start loop on a well-formed fixture and asserts the
 //! self-extracted basis is accepted (near-zero `basis_consistency_failures`).
 //! Driving it through `HighsSolver` directly avoids a circular dev-dep on
-//! `cobre-sddp`.
+//! `novomodelo-sddp`.
 #![cfg_attr(
     test,
     allow(
@@ -21,7 +21,7 @@
 )]
 #![cfg(feature = "highs")]
 
-use cobre_solver::{Basis, HighsSolver, SolverInterface, StageTemplate};
+use novomodelo_solver::{Basis, HighsSolver, SolverInterface, StageTemplate};
 
 /// The SS1.1 fixture: 3 variables, 2 equality constraints. Duplicated from the
 /// `src/highs.rs` `#[cfg(test)]` module, which is not accessible from integration

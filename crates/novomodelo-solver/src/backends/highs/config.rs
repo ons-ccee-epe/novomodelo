@@ -83,7 +83,7 @@ pub enum PresolveKind {
     Off,
     /// `HiGHS` decides whether to presolve.
     Choose,
-    /// `HiGHS` presolve enabled (cobre baseline).
+    /// `HiGHS` presolve enabled (novomodelo baseline).
     On,
 }
 
@@ -101,13 +101,13 @@ impl PresolveKind {
 
 /// A typed `HiGHS` option value for the configuration table.
 pub(super) enum OptionValue {
-    /// String option (`cobre_highs_set_string_option`).
+    /// String option (`novomodelo_highs_set_string_option`).
     Str(&'static CStr),
-    /// Integer option (`cobre_highs_set_int_option`).
+    /// Integer option (`novomodelo_highs_set_int_option`).
     Int(i32),
-    /// Boolean option (`cobre_highs_set_bool_option`).
+    /// Boolean option (`novomodelo_highs_set_bool_option`).
     Bool(i32),
-    /// Double option (`cobre_highs_set_double_option`).
+    /// Double option (`novomodelo_highs_set_double_option`).
     Double(f64),
 }
 
@@ -122,21 +122,23 @@ impl DefaultOption {
     ///
     /// # Safety
     ///
-    /// `handle` must be a valid, non-null pointer from `cobre_highs_create()`.
+    /// `handle` must be a valid, non-null pointer from `novomodelo_highs_create()`.
     pub(super) unsafe fn apply(&self, handle: *mut c_void) -> i32 {
         unsafe {
             match &self.value {
-                OptionValue::Str(val) => {
-                    ffi::cobre_highs_set_string_option(handle, self.name.as_ptr(), val.as_ptr())
-                }
+                OptionValue::Str(val) => ffi::novomodelo_highs_set_string_option(
+                    handle,
+                    self.name.as_ptr(),
+                    val.as_ptr(),
+                ),
                 OptionValue::Int(val) => {
-                    ffi::cobre_highs_set_int_option(handle, self.name.as_ptr(), *val)
+                    ffi::novomodelo_highs_set_int_option(handle, self.name.as_ptr(), *val)
                 }
                 OptionValue::Bool(val) => {
-                    ffi::cobre_highs_set_bool_option(handle, self.name.as_ptr(), *val)
+                    ffi::novomodelo_highs_set_bool_option(handle, self.name.as_ptr(), *val)
                 }
                 OptionValue::Double(val) => {
-                    ffi::cobre_highs_set_double_option(handle, self.name.as_ptr(), *val)
+                    ffi::novomodelo_highs_set_double_option(handle, self.name.as_ptr(), *val)
                 }
             }
         }
@@ -148,7 +150,7 @@ impl DefaultOption {
 /// Tuned for master LPs dominated by many slack rows that are warm-started
 /// across consecutive solves.
 ///
-/// `simplex_scale_strategy` is set to 0 (Off): cobre's offline prescaler
+/// `simplex_scale_strategy` is set to 0 (Off): novomodelo's offline prescaler
 /// (`lp_builder/scaling.rs`, applied in `setup/template_postprocess`) conditions
 /// every stage template via the per-column / per-row geometric-mean factors
 /// stored in `StageTemplate.col_scale` / `row_scale`, so `HiGHS`'s internal

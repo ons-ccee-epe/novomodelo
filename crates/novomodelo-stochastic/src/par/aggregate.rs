@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 
 use chrono::{Datelike, Months, NaiveDate};
-use cobre_core::{
+use novomodelo_core::{
     EntityId,
     temporal::{SeasonMap, Stage},
 };
@@ -41,8 +41,8 @@ use crate::season_cast::observation_occurrence_year;
 ///
 /// ```
 /// use chrono::NaiveDate;
-/// use cobre_core::{EntityId, temporal::{SeasonMap, SeasonCycleType, SeasonDefinition, Stage}};
-/// use cobre_stochastic::par::aggregate_observations_to_season;
+/// use novomodelo_core::{EntityId, temporal::{SeasonMap, SeasonCycleType, SeasonDefinition, Stage}};
+/// use novomodelo_stochastic::par::aggregate_observations_to_season;
 ///
 /// // Quarterly SeasonMap: season 0 spans Jan–Mar.
 /// let season_map = SeasonMap {
@@ -158,7 +158,7 @@ fn days_in_month(date: NaiveDate) -> u32 {
 #[allow(clippy::unwrap_used, clippy::float_cmp, clippy::panic)]
 mod tests {
     use chrono::{Datelike, NaiveDate};
-    use cobre_core::{
+    use novomodelo_core::{
         EntityId,
         temporal::{SeasonCycleType, SeasonDefinition, SeasonMap, Stage},
         test_support::{StageSpec, date, f64_bits_eq, single_block},
@@ -181,7 +181,7 @@ mod tests {
         month_end: u32,
         season_id: Option<usize>,
     ) -> Stage {
-        cobre_core::test_support::make_stage(StageSpec {
+        novomodelo_core::test_support::make_stage(StageSpec {
             id,
             index: Some(index),
             start_date: date(year_start, month_start, 1),

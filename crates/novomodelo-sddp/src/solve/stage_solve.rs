@@ -5,8 +5,8 @@
 //! apply that skips slot-identity reconciliation because the terminal
 //! template's shape never changes after priming).
 
-use cobre_core::temporal::StageLagTransition;
-use cobre_solver::{SolutionView, SolverError, SolverInterface};
+use novomodelo_core::temporal::StageLagTransition;
+use novomodelo_solver::{SolutionView, SolverError, SolverInterface};
 
 use crate::{
     basis_reconstruct::{ReconstructionTarget, enforce_basic_count_invariant, reconstruct_basis},
@@ -340,9 +340,9 @@ fn debug_assert_bucket_copy_gap_intact(
 
 #[cfg(test)]
 mod tests {
-    use cobre_core::temporal::StageLagTransition;
-    use cobre_solver::BasisStatus::{Basic as B, Lower as L};
-    use cobre_solver::{ActiveSolver, SolverError, SolverInterface, StageTemplate};
+    use novomodelo_core::temporal::StageLagTransition;
+    use novomodelo_solver::BasisStatus::{Basic as B, Lower as L};
+    use novomodelo_solver::{ActiveSolver, SolverError, SolverInterface, StageTemplate};
 
     use super::{
         StageInputs, assemble_outgoing_state, run_stage_solve, run_stage_solve_terminal_static,
@@ -365,7 +365,7 @@ mod tests {
     // Shared fixtures
     // -----------------------------------------------------------------------
 
-    /// Minimal LP: 3 columns, 2 rows (same fixture used in cobre-solver tests).
+    /// Minimal LP: 3 columns, 2 rows (same fixture used in novomodelo-solver tests).
     ///
     ///   min  0*x0 + 1*x1 + 50*x2
     ///   s.t. x0            = 6   (pins x0)

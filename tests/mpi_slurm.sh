@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# End-to-end SLURM MPI integration test for `cobre run`.
+# End-to-end SLURM MPI integration test for `novomodelo run`.
 #
 # Single-script entrypoint that:
-#   1. Builds the cobre binary with --features mpi
+#   1. Builds the novomodelo binary with --features mpi
 #   2. Builds and starts a 2-node Docker SLURM cluster
 #   3. Copies the binary, test case, and test script into the cluster
 #   4. Runs the 5-test suite inside the cluster
@@ -44,11 +44,11 @@ trap cleanup EXIT
 cd "${REPO_ROOT}"
 
 # ---------------------------------------------------------------------------
-# Step 1: Build the cobre binary
+# Step 1: Build the novomodelo binary
 # ---------------------------------------------------------------------------
 if [[ "${NO_BUILD}" == "false" ]]; then
-    echo "INFO: Building cobre with --features mpi ..."
-    cargo build --release --features mpi -p cobre-cli
+    echo "INFO: Building novomodelo with --features mpi ..."
+    cargo build --release --features mpi -p novomodelo-cli
     echo ""
     echo "INFO: Building Docker SLURM cluster image..."
     docker compose -f "${COMPOSE_FILE}" build
@@ -60,14 +60,14 @@ fi
 # Step 2: Find the binary
 # ---------------------------------------------------------------------------
 if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
-    COBRE_BIN="${CARGO_TARGET_DIR}/release/cobre"
-elif [[ -f "${REPO_ROOT}/target/release/cobre" ]]; then
-    COBRE_BIN="${REPO_ROOT}/target/release/cobre"
+    NOVOMODELO_BIN="${CARGO_TARGET_DIR}/release/novomodelo"
+elif [[ -f "${REPO_ROOT}/target/release/novomodelo" ]]; then
+    NOVOMODELO_BIN="${REPO_ROOT}/target/release/novomodelo"
 else
-    echo "FAIL: Cannot find cobre binary. Set CARGO_TARGET_DIR or build first."
+    echo "FAIL: Cannot find novomodelo binary. Set CARGO_TARGET_DIR or build first."
     exit 1
 fi
-echo "INFO: Binary: ${COBRE_BIN}"
+echo "INFO: Binary: ${NOVOMODELO_BIN}"
 
 # ---------------------------------------------------------------------------
 # Step 3: Start the SLURM cluster
@@ -82,13 +82,13 @@ echo "INFO: Cluster is healthy."
 # ---------------------------------------------------------------------------
 echo "INFO: Copying artifacts into cluster..."
 mkdir -p "${STAGING_DIR}"
-cp "${COBRE_BIN}" "${STAGING_DIR}/cobre-mpi"
+cp "${NOVOMODELO_BIN}" "${STAGING_DIR}/novomodelo-mpi"
 cp -r "${REPO_ROOT}/examples/4ree" "${STAGING_DIR}/4ree"
 
-docker compose -f "${COMPOSE_FILE}" cp "${STAGING_DIR}/cobre-mpi" controller:/shared/cobre-mpi
+docker compose -f "${COMPOSE_FILE}" cp "${STAGING_DIR}/novomodelo-mpi" controller:/shared/novomodelo-mpi
 docker compose -f "${COMPOSE_FILE}" cp "${STAGING_DIR}/4ree" controller:/shared/4ree
 docker compose -f "${COMPOSE_FILE}" cp "${REPO_ROOT}/tests/slurm/run-tests.sh" controller:/shared/run-tests.sh
-docker compose -f "${COMPOSE_FILE}" exec controller chmod +x /shared/cobre-mpi /shared/run-tests.sh
+docker compose -f "${COMPOSE_FILE}" exec controller chmod +x /shared/novomodelo-mpi /shared/run-tests.sh
 
 # ---------------------------------------------------------------------------
 # Step 5: Run the test suite

@@ -8,12 +8,14 @@ use std::collections::HashMap;
 use std::sync::mpsc::{Sender, SyncSender};
 
 use chrono::NaiveDate;
-use cobre_comm::Communicator;
-use cobre_core::commissioning::commissioning_active;
-use cobre_core::{ContractType, EntityId, HydroPastDefluence, TrainingEvent};
-use cobre_solver::ActiveProfile;
-use cobre_solver::{SolverInterface, StageTemplate};
-use cobre_stochastic::{ClassSampleRequest, ForwardNoiseTables, ForwardSampler, SampleRequest};
+use novomodelo_comm::Communicator;
+use novomodelo_core::commissioning::commissioning_active;
+use novomodelo_core::{ContractType, EntityId, HydroPastDefluence, TrainingEvent};
+use novomodelo_solver::ActiveProfile;
+use novomodelo_solver::{SolverInterface, StageTemplate};
+use novomodelo_stochastic::{
+    ClassSampleRequest, ForwardNoiseTables, ForwardSampler, SampleRequest,
+};
 
 use crate::energy_conversion::EnergyConversionSet;
 use crate::error::SddpError::Infeasible;

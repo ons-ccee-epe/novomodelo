@@ -1,18 +1,18 @@
-//! Smoke tests for the `cobre` binary using `assert_cmd`.
+//! Smoke tests for the `novomodelo` binary using `assert_cmd`.
 
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
 use std::process::Command;
 
-fn cobre() -> Command {
-    // `cargo_bin!` honors custom build directories via CARGO_BIN_EXE_cobre, unlike
+fn novomodelo() -> Command {
+    // `cargo_bin!` honors custom build directories via CARGO_BIN_EXE_novomodelo, unlike
     // the deprecated `Command::cargo_bin`.
-    Command::new(assert_cmd::cargo::cargo_bin!("cobre"))
+    Command::new(assert_cmd::cargo::cargo_bin!("novomodelo"))
 }
 
 #[test]
 fn help_exits_0_and_lists_subcommands() {
-    cobre()
+    novomodelo()
         .arg("--help")
         .assert()
         .success()
@@ -25,7 +25,7 @@ fn help_exits_0_and_lists_subcommands() {
 
 #[test]
 fn run_help_exits_0_and_lists_flags() {
-    cobre()
+    novomodelo()
         .args(["run", "--help"])
         .assert()
         .success()
@@ -39,7 +39,7 @@ fn run_help_exits_0_and_lists_flags() {
 /// the case path is never touched.
 #[test]
 fn run_threads_zero_exits_with_clap_error() {
-    cobre()
+    novomodelo()
         .args(["run", "--threads", "0", "/some/path"])
         .assert()
         .failure()
@@ -50,7 +50,7 @@ fn run_threads_zero_exits_with_clap_error() {
 /// proving execution proceeded past argument parsing.
 #[test]
 fn run_threads_positive_is_accepted_by_clap() {
-    cobre()
+    novomodelo()
         .args(["run", "--threads", "2", "/nonexistent/path"])
         .assert()
         .failure()
@@ -60,27 +60,29 @@ fn run_threads_positive_is_accepted_by_clap() {
 #[test]
 fn version_exits_0_and_contains_version_string() {
     let version = env!("CARGO_PKG_VERSION");
-    cobre()
+    novomodelo()
         .arg("version")
         .assert()
         .success()
         .stdout(predicate::str::contains(version))
-        .stdout(predicate::str::contains(cobre_solver::active_solver_name()));
+        .stdout(predicate::str::contains(
+            novomodelo_solver::active_solver_name(),
+        ));
 }
 
 #[test]
-fn version_exits_0_and_stdout_contains_cobre_prefix() {
-    cobre()
+fn version_exits_0_and_stdout_contains_novomodelo_prefix() {
+    novomodelo()
         .arg("version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("cobre "));
+        .stdout(predicate::str::contains("novomodelo "));
 }
 
 #[test]
 fn version_stdout_contains_active_solver() {
-    let expected = format!("solver: {}", cobre_solver::active_solver_name());
-    cobre()
+    let expected = format!("solver: {}", novomodelo_solver::active_solver_name());
+    novomodelo()
         .arg("version")
         .assert()
         .success()
@@ -89,7 +91,7 @@ fn version_stdout_contains_active_solver() {
 
 #[test]
 fn run_nonexistent_path_exits_2_with_io_error() {
-    cobre()
+    novomodelo()
         .args(["run", "/nonexistent/path"])
         .assert()
         .failure()
@@ -99,7 +101,7 @@ fn run_nonexistent_path_exits_2_with_io_error() {
 
 #[test]
 fn validate_nonexistent_path_exits_2() {
-    cobre()
+    novomodelo()
         .args(["validate", "/nonexistent/path"])
         .assert()
         .failure()
@@ -108,5 +110,5 @@ fn validate_nonexistent_path_exits_2() {
 
 #[test]
 fn unknown_subcommand_exits_nonzero() {
-    cobre().arg("unknown-subcommand").assert().failure();
+    novomodelo().arg("unknown-subcommand").assert().failure();
 }
