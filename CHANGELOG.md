@@ -15,6 +15,8 @@ Cobre's.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-07
+
 ### Changed
 
 - **BREAKING:** the product is renamed. The CLI is `novomodelo`
@@ -1568,7 +1570,8 @@ target_bus)`.
 
 <!-- next-url -->
 
-[Unreleased]: https://github.com/ons-ccee-epe/novomodelo/compare/fork-point...HEAD
+[Unreleased]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/ons-ccee-epe/novomodelo/compare/fork-point...v0.18.0
 [Cobre 0.18.0]: https://github.com/cobre-rs/cobre/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/cobre-rs/cobre/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/cobre-rs/cobre/compare/v0.15.0...v0.16.0
