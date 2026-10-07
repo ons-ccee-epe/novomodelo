@@ -26,7 +26,6 @@ keep_files = [
   "THIRD_PARTY_NOTICES.md",
   "THIRD_PARTY_LICENSES.md",
   "CHANGELOG.md",
-  ".mailmap",
   "CITATION.cff",
   "TRADEMARKS.md",
   "docs/internal/BRAND-GUIDELINES.md",
