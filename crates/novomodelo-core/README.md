@@ -91,7 +91,6 @@ no API surface change.
 | Resource   | URL                                                      |
 | ---------- | -------------------------------------------------------- |
 | Docs site  | <https://docs.novomodelo.invalid/>                             |
-| API Docs   | https://docs.rs/cobre-core/latest/cobre_core/            |
 | Repository | https://github.com/ons-ccee-epe/novomodelo                        |
 | CHANGELOG  | https://github.com/ons-ccee-epe/novomodelo/blob/main/CHANGELOG.md |
 

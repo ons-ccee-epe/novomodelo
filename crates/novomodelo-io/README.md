@@ -136,7 +136,6 @@ assembly.
 | Resource   | URL                                                      |
 | ---------- | -------------------------------------------------------- |
 | Docs site  | <https://docs.novomodelo.invalid/>                             |
-| API Docs   | https://docs.rs/cobre-io/latest/cobre_io/                |
 | Repository | https://github.com/ons-ccee-epe/novomodelo                        |
 | CHANGELOG  | https://github.com/ons-ccee-epe/novomodelo/blob/main/CHANGELOG.md |
 

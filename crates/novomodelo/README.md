@@ -9,12 +9,12 @@ For most use cases, depend on the specific crates you need:
 
 | Crate                                                           | Purpose                      |
 | --------------------------------------------------------------- | ---------------------------- |
-| [`novomodelo-core`](https://crates.io/crates/cobre-core)             | Power system data model      |
-| [`novomodelo-io`](https://crates.io/crates/cobre-io)                 | File parsers and serializers |
-| [`novomodelo-stochastic`](https://crates.io/crates/cobre-stochastic) | Stochastic process models    |
-| [`novomodelo-solver`](https://crates.io/crates/cobre-solver)         | LP/MIP solver abstraction    |
-| [`novomodelo-sddp`](https://crates.io/crates/cobre-sddp)             | SDDP algorithm               |
-| [`novomodelo-cli`](https://crates.io/crates/cobre-cli)               | Command-line interface       |
+| [`novomodelo-core`](https://github.com/ons-ccee-epe/novomodelo/tree/main/crates/novomodelo-core)             | Power system data model      |
+| [`novomodelo-io`](https://github.com/ons-ccee-epe/novomodelo/tree/main/crates/novomodelo-io)                 | File parsers and serializers |
+| [`novomodelo-stochastic`](https://github.com/ons-ccee-epe/novomodelo/tree/main/crates/novomodelo-stochastic) | Stochastic process models    |
+| [`novomodelo-solver`](https://github.com/ons-ccee-epe/novomodelo/tree/main/crates/novomodelo-solver)         | LP/MIP solver abstraction    |
+| [`novomodelo-sddp`](https://github.com/ons-ccee-epe/novomodelo/tree/main/crates/novomodelo-sddp)             | SDDP algorithm               |
+| [`novomodelo-cli`](https://github.com/ons-ccee-epe/novomodelo/tree/main/crates/novomodelo-cli)               | Command-line interface       |
 
 ## When to Use
 

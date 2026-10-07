@@ -203,7 +203,6 @@ contract, verified against `LocalBackend` through the public API only) and
 | Resource   | URL                                                        |
 | ---------- | ---------------------------------------------------------- |
 | Docs site  | <https://docs.novomodelo.invalid/>                               |
-| API Docs   | <https://docs.rs/cobre-comm/latest/cobre_comm/>            |
 | Repository | <https://github.com/ons-ccee-epe/novomodelo>                        |
 | CHANGELOG  | <https://github.com/ons-ccee-epe/novomodelo/blob/main/CHANGELOG.md> |
 

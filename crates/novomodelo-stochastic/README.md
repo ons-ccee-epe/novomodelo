@@ -103,7 +103,6 @@ and doc-tests for all public types.
 | Resource   | URL                                                       |
 | ---------- | --------------------------------------------------------- |
 | Docs site  | <https://docs.novomodelo.invalid/>                              |
-| API Docs   | https://docs.rs/cobre-stochastic/latest/cobre_stochastic/ |
 | Repository | https://github.com/ons-ccee-epe/novomodelo                         |
 | CHANGELOG  | https://github.com/ons-ccee-epe/novomodelo/blob/main/CHANGELOG.md  |
 

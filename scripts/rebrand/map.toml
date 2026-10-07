@@ -40,6 +40,11 @@ keep_files = [
 files = ["README.md"]
 pattern = '(?s)```bibtex\n@software\{cobre,.*?\n```'
 
+# The fork's credit to Cobre, which names it on purpose.
+[[keep_span]]
+files = ["README.md"]
+pattern = '(?s)## Origin and credits\n.*?(?=\n## )'
+
 # Address rules, tried before the name rule. At a given position the first
 # listed rule that matches wins, so specific addresses come before general ones.
 # Each rule takes exactly one action:
