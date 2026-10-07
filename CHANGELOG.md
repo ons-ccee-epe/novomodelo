@@ -5,11 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+Novomodelo is a fork of [Cobre](https://github.com/cobre-rs/cobre), and its
+version numbers continue Cobre's: Novomodelo 0.18.0 is Cobre 0.18.0 under the
+new name. Cobre's release history up to the fork point follows under
+"Cobre history" as Cobre published it, so its names, commands and links are
+Cobre's.
+
 <!-- next-header -->
 
 ## [Unreleased]
 
-## [0.18.0] - 2026-10-07
+### Changed
+
+- **BREAKING:** the product is renamed. The CLI is `novomodelo`
+  (`novomodelo-mpi` for the MPI build), the Rust crates are `novomodelo-*`, the
+  Python package is `novomodelo-python` (`import novomodelo`), and environment
+  variables such as `COBRE_TCP_COORDINATOR` are now `NOVOMODELO_TCP_COORDINATOR`.
+  Everything else behaves as in Cobre 0.18.0.
+- **BREAKING:** outputs and policy checkpoints record `software` as
+  `novomodelo`. A policy loads only in the software that wrote it, so policies
+  written by Cobre are refused, and Cobre refuses this fork's.
+- The `$schema` URLs in examples, `init` templates and the schemas point at this
+  repository's `schemas/` directory.
+
+# Cobre history
+
+## [Cobre 0.18.0] - 2026-10-07
 
 ### Added
 
@@ -1547,8 +1568,8 @@ target_bus)`.
 
 <!-- next-url -->
 
-[Unreleased]: https://github.com/cobre-rs/cobre/compare/v0.18.0...HEAD
-[0.18.0]: https://github.com/cobre-rs/cobre/compare/v0.17.0...v0.18.0
+[Unreleased]: https://github.com/ons-ccee-epe/novomodelo/compare/fork-point...HEAD
+[Cobre 0.18.0]: https://github.com/cobre-rs/cobre/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/cobre-rs/cobre/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/cobre-rs/cobre/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/cobre-rs/cobre/compare/v0.14.3...v0.15.0
