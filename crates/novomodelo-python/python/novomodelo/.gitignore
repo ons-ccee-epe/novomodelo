@@ -1,0 +1,4 @@
+# Compiled extension dropped here by `maturin develop` (editable install).
+# The real artifact is built from src/lib.rs; never commit it.
+_native*.so
+__pycache__/

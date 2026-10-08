@@ -1,0 +1,9 @@
+{
+  "venvPath": "../..",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
+  "include": ["tests"],
+  "stubPath": "stubs",
+  "reportMissingTypeStubs": "none",
+  "reportMissingModuleSource": "none"
+}

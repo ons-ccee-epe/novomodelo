@@ -1,0 +1,75 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/novomodelo",
+    "crates/novomodelo-core",
+    "crates/novomodelo-io",
+    "crates/novomodelo-stochastic",
+    "crates/novomodelo-solver",
+    "crates/novomodelo-comm",
+    "crates/novomodelo-sddp",
+    "crates/novomodelo-cli",
+    "crates/novomodelo-mcp",
+    "crates/novomodelo-tui",
+    "crates/novomodelo-flow",
+    "crates/novomodelo-uc",
+    "crates/novomodelo-emt",
+]
+# novomodelo-python requires a Python interpreter with PyO3 and is built separately
+# via maturin. Excluding it from the workspace prevents cargo-dist and
+# `cargo test --workspace` from requiring a compatible Python installation.
+exclude = [
+    "crates/novomodelo-python",
+]
+
+[workspace.package]
+version = "0.18.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://github.com/ons-ccee-epe/novomodelo"
+homepage = "https://docs.modelossetoreletrico.org.br/"
+documentation = "https://docs.rs/cobre-sddp"
+authors = ["Rogerio J. M. Alves <rogerio.alves@cobre-rs.dev>"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+# Dev/test builds (the `test` profile inherits these). `line-tables-only` keeps
+# backtraces and panic line numbers while dropping the heavy variable/type DWARF
+# that dominates a binary statically linking the HiGHS/CLP/qhull C++ solver, and
+# `unpacked` split-debuginfo keeps that debug data out of the linked test
+# executables — together they shrink each solver-linked test binary several-fold.
+# Full debug info is still available via `--profile profiling`.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+[profile.release]
+strip = "symbols"
+
+# Opt-in profile for flamegraph/DHAT — keeps line-number debug info so samples
+# resolve to source locations. Use with `cargo build --profile profiling` or
+# `cargo flamegraph --profile profiling`.
+[profile.profiling]
+inherits = "release"
+debug = 1
+strip = "none"
+
+[profile.dist]
+inherits = "release"
+lto = "thin"
+strip = "symbols"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "warn"
+too_many_arguments = "deny"
+
+[workspace.dependencies]
+matrixmultiply = { version = "= 0.3.10", default-features = false }
+rayon = "1"

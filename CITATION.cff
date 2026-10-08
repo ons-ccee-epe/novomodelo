@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use Cobre, please cite it as below."
+type: software
+title: "Cobre: Open Infrastructure for Power System Computation"
+authors:
+  - family-names: Alves
+    given-names: "Rogerio J. M."
+repository-code: "https://github.com/cobre-rs/cobre"
+url: "https://docs.cobre-rs.dev/"
+license: Apache-2.0
+doi: 10.5281/zenodo.23202161
+keywords:
+  - SDDP
+  - hydrothermal dispatch
+  - stochastic optimization
+  - power systems
+  - Rust
+# No `version` / `date-released`: they would go stale between releases.
+# `doi` is the Zenodo concept DOI, which always resolves to the latest release.

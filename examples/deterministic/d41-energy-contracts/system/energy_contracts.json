@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/energy_contracts.schema.json",
+  "contracts": [
+    {
+      "id": 0,
+      "name": "Import (always active; take-or-pay floor + price override at stage 2)",
+      "operational_start_date": "2020-01-01",
+      "bus_id": 0,
+      "type": "import",
+      "price_per_mwh": 200.0,
+      "limits": { "min_mw": 0.0, "max_mw": 50.0 }
+    },
+    {
+      "id": 1,
+      "name": "Export revenue (commissioned stage 1 only)",
+      "operational_start_date": "2020-01-02",
+      "bus_id": 0,
+      "type": "export",
+      "entry_stage_id": 1,
+      "exit_stage_id": 2,
+      "price_per_mwh": -150.0,
+      "limits": { "min_mw": 0.0, "max_mw": 30.0 }
+    }
+  ]
+}

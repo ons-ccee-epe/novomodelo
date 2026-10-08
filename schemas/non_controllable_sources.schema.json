@@ -1,0 +1,97 @@
+{
+  "$defs": {
+    "RawNcs": {
+      "additionalProperties": false,
+      "description": "A single non-controllable source entry.",
+      "properties": {
+        "allow_curtailment": {
+          "default": true,
+          "description": "Whether the LP is allowed to curtail this source.\n\n`true` (default) — the LP may curtail dispatch within\n`[0, max_generation_mw × availability]` at `curtailment_cost`.\n\n`false` — must-run: dispatch is pinned to the realized availability\nevery scenario (`col_lower = col_upper`). Use this for non-simulated\naggregate generation (small hydro, biomass, wind, solar, distributed\ngeneration) that the source model pre-nets from load before the\ndispatch LP runs.",
+          "type": "boolean"
+        },
+        "bus_id": {
+          "description": "Bus to which this source's generation is injected.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "curtailment_cost": {
+          "default": null,
+          "description": "Optional entity-level curtailment cost override ($/`MWh`).\nWhen absent, falls back to `non_controllable_source.curtailment_cost` in `penalties.json`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "entry_stage_id": {
+          "default": null,
+          "description": "Stage index when the source enters service. Absent or null = always exists.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "exit_stage_id": {
+          "default": null,
+          "description": "Stage index when the source is decommissioned. Absent or null = never.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Source identifier. Must be unique within the file.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "max_generation_mw": {
+          "description": "Maximum generation (installed capacity) (MW).",
+          "format": "double",
+          "type": "number"
+        },
+        "name": {
+          "description": "Human-readable source name.",
+          "type": "string"
+        },
+        "operational_start_date": {
+          "description": "Date the entity enters service (ISO 8601 `YYYY-MM-DD`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "operational_start_date",
+        "bus_id",
+        "max_generation_mw"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Root object of `non_controllable_sources.json`.",
+  "properties": {
+    "$schema": {
+      "description": "`$schema` field — informational, not validated.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "non_controllable_sources": {
+      "description": "Array of non-controllable source entries.",
+      "items": {
+        "$ref": "#/$defs/RawNcs"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "non_controllable_sources"
+  ],
+  "title": "RawNcsFile",
+  "type": "object"
+}

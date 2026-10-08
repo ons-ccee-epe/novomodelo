@@ -1,0 +1,27 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/buses.schema.json",
+  "buses": [
+    {
+      "id": 0,
+      "name": "B0",
+      "operational_start_date": "2020-01-01",
+      "deficit_segments": [
+        {
+          "depth_mw": null,
+          "cost": 1000.0
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "name": "B1",
+      "operational_start_date": "2020-01-02",
+      "deficit_segments": [
+        {
+          "depth_mw": null,
+          "cost": 1000.0
+        }
+      ]
+    }
+  ]
+}

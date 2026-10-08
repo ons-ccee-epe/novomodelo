@@ -1,0 +1,96 @@
+{
+  "$defs": {
+    "RawPostStudyStage": {
+      "additionalProperties": false,
+      "description": "One post-horizon calendar stage: a `[start_date, start_date + duration_hours)`\nsegment. `end_date` is not declared; it is derived downstream.",
+      "properties": {
+        "duration_hours": {
+          "description": "Stage duration (h). Must be finite and `> 0.0`.",
+          "format": "double",
+          "type": "number"
+        },
+        "start_date": {
+          "description": "Stage start date (inclusive), as an ISO 8601 date (YYYY-MM-DD).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start_date",
+        "duration_hours"
+      ],
+      "type": "object"
+    },
+    "RawPostStudyThermalBound": {
+      "additionalProperties": false,
+      "description": "Cost and generation bounds for one `(thermal, post-study stage)` cell.",
+      "properties": {
+        "cost_per_mwh": {
+          "description": "Fuel cost (`$/MWh`) at this cell. Must be finite.",
+          "format": "double",
+          "type": "number"
+        },
+        "max_mw": {
+          "description": "Upper bound of the delivered MW rate at this cell. Must be finite and\n`>= min_mw`.",
+          "format": "double",
+          "type": "number"
+        },
+        "min_mw": {
+          "description": "Lower bound of the delivered MW rate at this cell. Must be finite.",
+          "format": "double",
+          "type": "number"
+        },
+        "post_study_stage_index": {
+          "description": "Index into `stages`. Must be `< stages.len()`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "thermal_id": {
+          "description": "Thermal plant identifier. Must reference an anticipated thermal.",
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "thermal_id",
+        "post_study_stage_index",
+        "cost_per_mwh",
+        "min_mw",
+        "max_mw"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Root object of `post_study_stages.json`.",
+  "properties": {
+    "$schema": {
+      "description": "JSON schema URI — informational, not validated.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stages": {
+      "description": "Ordered post-horizon calendar stages.",
+      "items": {
+        "$ref": "#/$defs/RawPostStudyStage"
+      },
+      "type": "array"
+    },
+    "thermal_bounds": {
+      "description": "Per-`(thermal, post-study stage)` cost and generation bounds.",
+      "items": {
+        "$ref": "#/$defs/RawPostStudyThermalBound"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "stages",
+    "thermal_bounds"
+  ],
+  "title": "RawPostStudyStagesFile",
+  "type": "object"
+}

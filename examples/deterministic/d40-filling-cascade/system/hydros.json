@@ -1,0 +1,137 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/hydros.schema.json",
+  "hydros": [
+    {
+      "id": 0,
+      "name": "H_up",
+      "operational_start_date": "2020-01-01",
+      "downstream_id": 1,
+      "entry_stage_id": 4,
+      "filling": { "start_stage_id": 1, "filling_min_rate_m3s": 12.0 },
+      "reservoir": {
+        "min_storage_hm3": 60.0,
+        "max_storage_hm3": 200.0
+      },
+      "outflow": {
+        "min_outflow_m3s": 0.0,
+        "max_outflow_m3s": 150.0
+      },
+      "generation": {
+        "model": "constant_productivity",
+        "min_turbined_m3s": 0.0,
+        "max_turbined_m3s": 60.0,
+        "min_generation_mw": 0.0,
+        "max_generation_mw": 60.0
+      },
+      "unit_groups": [
+        {
+          "id": 0,
+          "name": "H_up",
+          "bus_id": 0,
+          "min_generation_mw": 0.0,
+          "max_generation_mw": 60.0,
+          "min_turbined_m3s": 0.0,
+          "max_turbined_m3s": 60.0
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "name": "H_down",
+      "operational_start_date": "2020-01-02",
+      "downstream_id": 2,
+      "entry_stage_id": 4,
+      "filling": { "start_stage_id": 1, "filling_min_rate_m3s": 12.0 },
+      "reservoir": {
+        "min_storage_hm3": 60.0,
+        "max_storage_hm3": 300.0
+      },
+      "outflow": {
+        "min_outflow_m3s": 0.0,
+        "max_outflow_m3s": 200.0
+      },
+      "generation": {
+        "model": "constant_productivity",
+        "min_turbined_m3s": 0.0,
+        "max_turbined_m3s": 80.0,
+        "min_generation_mw": 0.0,
+        "max_generation_mw": 80.0
+      },
+      "unit_groups": [
+        {
+          "id": 0,
+          "name": "H_down",
+          "bus_id": 0,
+          "min_generation_mw": 0.0,
+          "max_generation_mw": 80.0,
+          "min_turbined_m3s": 0.0,
+          "max_turbined_m3s": 80.0
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "H_sink",
+      "operational_start_date": "2020-01-03",
+      "downstream_id": null,
+      "reservoir": {
+        "min_storage_hm3": 0.0,
+        "max_storage_hm3": 500.0
+      },
+      "outflow": {
+        "min_outflow_m3s": 0.0,
+        "max_outflow_m3s": 300.0
+      },
+      "generation": {
+        "model": "constant_productivity",
+        "min_turbined_m3s": 0.0,
+        "max_turbined_m3s": 20.0,
+        "min_generation_mw": 0.0,
+        "max_generation_mw": 20.0
+      },
+      "unit_groups": [
+        {
+          "id": 0,
+          "name": "H_sink",
+          "bus_id": 0,
+          "min_generation_mw": 0.0,
+          "max_generation_mw": 20.0,
+          "min_turbined_m3s": 0.0,
+          "max_turbined_m3s": 20.0
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "H_ctrl",
+      "operational_start_date": "2020-01-04",
+      "downstream_id": null,
+      "reservoir": {
+        "min_storage_hm3": 0.0,
+        "max_storage_hm3": 200.0
+      },
+      "outflow": {
+        "min_outflow_m3s": 0.0,
+        "max_outflow_m3s": 100.0
+      },
+      "generation": {
+        "model": "constant_productivity",
+        "min_turbined_m3s": 0.0,
+        "max_turbined_m3s": 60.0,
+        "min_generation_mw": 0.0,
+        "max_generation_mw": 60.0
+      },
+      "unit_groups": [
+        {
+          "id": 0,
+          "name": "H_ctrl",
+          "bus_id": 0,
+          "min_generation_mw": 0.0,
+          "max_generation_mw": 60.0,
+          "min_turbined_m3s": 0.0,
+          "max_turbined_m3s": 60.0
+        }
+      ]
+    }
+  ]
+}

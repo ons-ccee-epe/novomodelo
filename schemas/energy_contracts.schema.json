@@ -1,0 +1,129 @@
+{
+  "$defs": {
+    "RawContract": {
+      "additionalProperties": false,
+      "description": "A single energy contract entry.",
+      "properties": {
+        "bus_id": {
+          "description": "Bus at which the contracted power is injected or withdrawn.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "entry_stage_id": {
+          "default": null,
+          "description": "Stage index when the contract enters service. Absent or null = always active.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "exit_stage_id": {
+          "default": null,
+          "description": "Stage index when the contract expires. Absent or null = never expires.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Contract identifier. Must be unique within the file.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "limits": {
+          "$ref": "#/$defs/RawContractLimits",
+          "description": "Nested limits object with min and max MW bounds."
+        },
+        "name": {
+          "description": "Human-readable contract name.",
+          "type": "string"
+        },
+        "operational_start_date": {
+          "description": "Date the entity enters service (ISO 8601 `YYYY-MM-DD`).",
+          "type": "string"
+        },
+        "price_per_mwh": {
+          "description": "Contract price per `MWh`. May be negative for export revenue ($/`MWh`).",
+          "format": "double",
+          "type": "number"
+        },
+        "type": {
+          "$ref": "#/$defs/RawContractType",
+          "description": "Direction of energy flow."
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "operational_start_date",
+        "bus_id",
+        "type",
+        "price_per_mwh",
+        "limits"
+      ],
+      "type": "object"
+    },
+    "RawContractLimits": {
+      "additionalProperties": false,
+      "description": "The nested limits sub-object.",
+      "properties": {
+        "max_mw": {
+          "description": "Maximum contracted power (MW).",
+          "format": "double",
+          "type": "number"
+        },
+        "min_mw": {
+          "description": "Minimum contracted power (MW).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "min_mw",
+        "max_mw"
+      ],
+      "type": "object"
+    },
+    "RawContractType": {
+      "description": "Direction of energy flow of a contract.",
+      "oneOf": [
+        {
+          "const": "import",
+          "description": "External energy flows into the modeled system.",
+          "type": "string"
+        },
+        {
+          "const": "export",
+          "description": "System energy flows out to an external entity.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Root object of `energy_contracts.json`.",
+  "properties": {
+    "$schema": {
+      "description": "`$schema` field — informational, not validated.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "contracts": {
+      "description": "Array of contract entries.",
+      "items": {
+        "$ref": "#/$defs/RawContract"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "contracts"
+  ],
+  "title": "RawContractFile",
+  "type": "object"
+}

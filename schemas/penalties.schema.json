@@ -1,0 +1,231 @@
+{
+  "$defs": {
+    "RawBusPenalties": {
+      "additionalProperties": false,
+      "description": "The `bus` section.",
+      "properties": {
+        "deficit_segments": {
+          "description": "Piecewise-linear deficit cost segments.",
+          "items": {
+            "$ref": "#/$defs/RawDeficitSegment"
+          },
+          "type": "array"
+        },
+        "excess_cost": {
+          "description": "Excess generation cost ($/`MWh`).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "deficit_segments",
+        "excess_cost"
+      ],
+      "type": "object"
+    },
+    "RawDeficitSegment": {
+      "additionalProperties": false,
+      "description": "One deficit segment entry.",
+      "properties": {
+        "cost": {
+          "description": "Cost per `MWh` of deficit in this segment ($/`MWh`).",
+          "format": "double",
+          "type": "number"
+        },
+        "depth_mw": {
+          "description": "MW depth of this segment. `null` means the segment is unbounded (last segment).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "cost"
+      ],
+      "type": "object"
+    },
+    "RawHydroPenalties": {
+      "additionalProperties": false,
+      "description": "The `hydro` section: the default penalty costs of every hydro plant.",
+      "properties": {
+        "diversion_cost": {
+          "description": "Diversion flow penalty ($/(m³/s·h)).",
+          "format": "double",
+          "type": "number"
+        },
+        "evaporation_violation_cost": {
+          "description": "Symmetric evaporation violation penalty, the default of both directional\nevaporation costs ($/(m³/s·h)).",
+          "format": "double",
+          "type": "number"
+        },
+        "evaporation_violation_neg_cost": {
+          "description": "Under-evaporation penalty ($/(m³/s·h)). Defaults to `evaporation_violation_cost`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "evaporation_violation_pos_cost": {
+          "description": "Over-evaporation penalty ($/(m³/s·h)). Defaults to `evaporation_violation_cost`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "filling_target_violation_cost": {
+          "description": "Filling-target violation penalty ($/hm³).",
+          "format": "double",
+          "type": "number"
+        },
+        "generation_violation_below_cost": {
+          "description": "Generation below-minimum violation penalty ($/`MWh`).",
+          "format": "double",
+          "type": "number"
+        },
+        "inflow_nonnegativity_cost": {
+          "description": "Inflow non-negativity penalty ($/(m³/s·h)). Defaults to 1000.0.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "outflow_violation_above_cost": {
+          "description": "Outflow above-maximum violation penalty ($/(m³/s·h)).",
+          "format": "double",
+          "type": "number"
+        },
+        "outflow_violation_below_cost": {
+          "description": "Outflow below-minimum violation penalty ($/(m³/s·h)).",
+          "format": "double",
+          "type": "number"
+        },
+        "spillage_cost": {
+          "description": "Spillage penalty ($/(m³/s·h)).",
+          "format": "double",
+          "type": "number"
+        },
+        "storage_violation_below_cost": {
+          "description": "Storage below-minimum violation penalty ($/hm³).",
+          "format": "double",
+          "type": "number"
+        },
+        "turbined_cost": {
+          "description": "Turbined-flow regularization cost ($/(m³/s·h)).",
+          "format": "double",
+          "type": "number"
+        },
+        "turbined_violation_below_cost": {
+          "description": "Turbined-flow below-minimum violation penalty ($/(m³/s·h)).",
+          "format": "double",
+          "type": "number"
+        },
+        "water_withdrawal_violation_cost": {
+          "description": "Symmetric water withdrawal violation penalty, the default of both\ndirectional withdrawal costs ($/(m³/s·h)).",
+          "format": "double",
+          "type": "number"
+        },
+        "water_withdrawal_violation_neg_cost": {
+          "description": "Under-withdrawal penalty ($/(m³/s·h)). Defaults to `water_withdrawal_violation_cost`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "water_withdrawal_violation_pos_cost": {
+          "description": "Over-withdrawal penalty ($/(m³/s·h)). Defaults to `water_withdrawal_violation_cost`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "spillage_cost",
+        "turbined_cost",
+        "diversion_cost",
+        "storage_violation_below_cost",
+        "filling_target_violation_cost",
+        "turbined_violation_below_cost",
+        "outflow_violation_below_cost",
+        "outflow_violation_above_cost",
+        "generation_violation_below_cost",
+        "evaporation_violation_cost",
+        "water_withdrawal_violation_cost"
+      ],
+      "type": "object"
+    },
+    "RawLinePenalties": {
+      "additionalProperties": false,
+      "description": "The `line` section.",
+      "properties": {
+        "exchange_cost": {
+          "description": "Exchange cost ($/`MWh`).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "exchange_cost"
+      ],
+      "type": "object"
+    },
+    "RawNcsPenalties": {
+      "additionalProperties": false,
+      "description": "The `non_controllable_source` section.",
+      "properties": {
+        "curtailment_cost": {
+          "description": "Curtailment cost ($/`MWh`).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "curtailment_cost"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Root object of `penalties.json`.",
+  "properties": {
+    "$schema": {
+      "description": "`$schema` field — informational, not validated.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "bus": {
+      "$ref": "#/$defs/RawBusPenalties",
+      "description": "Bus penalty defaults."
+    },
+    "hydro": {
+      "$ref": "#/$defs/RawHydroPenalties",
+      "description": "Hydro penalty defaults."
+    },
+    "line": {
+      "$ref": "#/$defs/RawLinePenalties",
+      "description": "Line penalty defaults."
+    },
+    "non_controllable_source": {
+      "$ref": "#/$defs/RawNcsPenalties",
+      "description": "Non-controllable source penalty defaults."
+    }
+  },
+  "required": [
+    "bus",
+    "line",
+    "hydro",
+    "non_controllable_source"
+  ],
+  "title": "RawPenalties",
+  "type": "object"
+}

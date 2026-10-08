@@ -1,0 +1,171 @@
+{
+  "$defs": {
+    "RawAnticipatedCommitmentHistory": {
+      "additionalProperties": false,
+      "description": "One past committed MW window for an anticipated thermal plant.\n\nA self-describing `[start_date, end_date)` window (ISO 8601, `end_date`\nexclusive and after `start_date`) carrying `value_mw`, the MW rate held\nconstant over the window. A plant's windows must tile the delivery stages it\ndecides before the study exactly — those may fall on either side of the\nstudy horizon (leading in-study stages, or post-horizon stages the plant\ndecides ahead of the study), never a stage the study itself decides\n(validated semantically). The values are sunk cost: they do not enter the\nstudy objective. Each in-study `value_mw` must lie within that delivery\nstage's resolved generation bounds; a purely post-horizon `value_mw` must\nlie within the plant's static `[min_generation_mw, max_generation_mw]`\nbounds instead. Either way, if the plant has a commissioning window, the\nvalue must mature inside it (both validated semantically).",
+      "properties": {
+        "end_date": {
+          "description": "End of the commitment window (exclusive), as an ISO 8601 date\n(YYYY-MM-DD). Must be after `start_date`.",
+          "type": "string"
+        },
+        "start_date": {
+          "description": "Start of the commitment window (inclusive), as an ISO 8601 date\n(YYYY-MM-DD).",
+          "type": "string"
+        },
+        "thermal_id": {
+          "description": "Thermal plant identifier. Must reference an anticipated thermal.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "value_mw": {
+          "description": "Committed MW rate over the window, held constant.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "thermal_id",
+        "start_date",
+        "end_date",
+        "value_mw"
+      ],
+      "type": "object"
+    },
+    "RawHydroPastDefluence": {
+      "additionalProperties": false,
+      "description": "Past defluence (release) for the arc fed by a single upstream hydro over a\nspecific date range.\n\nSame window form as a `recent_observations` entry: a self-describing\n`[start_date, end_date)`\nwindow (ISO 8601, `end_date` exclusive and after `start_date`) carrying the\naverage release rate over the window. Multiple windows per hydro are allowed;\ndate ranges for the same hydro must not overlap, though adjacent ranges\n(`start_date == previous end_date`) are accepted.",
+      "properties": {
+        "end_date": {
+          "description": "End of the release window (exclusive), as an ISO 8601 date (YYYY-MM-DD).\nMust be after `start_date`.",
+          "type": "string"
+        },
+        "hydro_id": {
+          "description": "Upstream hydro plant identifier whose release feeds the arc.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "start_date": {
+          "description": "Start of the release window (inclusive), as an ISO 8601 date\n(YYYY-MM-DD).",
+          "type": "string"
+        },
+        "value_m3s": {
+          "description": "Average release rate over the window (m³/s). Must be finite and\nnon-negative.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "hydro_id",
+        "start_date",
+        "end_date",
+        "value_m3s"
+      ],
+      "type": "object"
+    },
+    "RawHydroStorage": {
+      "additionalProperties": false,
+      "description": "Initial reservoir volume for one hydro plant, in hm³.",
+      "properties": {
+        "hydro_id": {
+          "description": "Hydro plant identifier. Must be unique within its array.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "value_hm3": {
+          "description": "Reservoir volume (hm³). Must be >= 0.0.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "hydro_id",
+        "value_hm3"
+      ],
+      "type": "object"
+    },
+    "RawRecentObservation": {
+      "additionalProperties": false,
+      "description": "Observed inflow for a single hydro plant over a specific date range.\n\nUsed to seed the lag accumulator when a study begins mid-season (before the\nfirst lag-period boundary). Each entry covers one hydro over one\nobservation period. Multiple entries per hydro are allowed for rolling\nrevisions.",
+      "properties": {
+        "end_date": {
+          "description": "End of the observation period (exclusive), as an ISO 8601 date\n(YYYY-MM-DD). Must be after `start_date`.",
+          "type": "string"
+        },
+        "hydro_id": {
+          "description": "Hydro plant identifier. Must reference a hydro entity in the system.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "start_date": {
+          "description": "Start of the observation period (inclusive), as an ISO 8601 date\n(YYYY-MM-DD).",
+          "type": "string"
+        },
+        "value_m3s": {
+          "description": "Average inflow observed during the period (m³/s). Must be finite;\nnegative values are accepted (the quantity is incremental inflow).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "hydro_id",
+        "start_date",
+        "end_date",
+        "value_m3s"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Root object of `initial_conditions.json`.",
+  "properties": {
+    "$schema": {
+      "description": "JSON schema URI — informational, not validated.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "filling_storage": {
+      "description": "Initial reservoir volumes for filling hydros (hm³).\nA filling hydro may not also appear in `storage`.",
+      "items": {
+        "$ref": "#/$defs/RawHydroStorage"
+      },
+      "type": "array"
+    },
+    "past_anticipated_commitments": {
+      "description": "Past committed MW windows per anticipated thermal plant, each a\nself-describing `[start_date, end_date)` window carrying a `value_mw`\nrate. Present only when the study includes at least one anticipated\nthermal. Windows for the same thermal must not overlap; adjacent ranges\n(start == previous end) are accepted. Optional; defaults to empty.",
+      "items": {
+        "$ref": "#/$defs/RawAnticipatedCommitmentHistory"
+      },
+      "type": "array"
+    },
+    "past_defluences": {
+      "description": "Past defluence (release) windows per arc (m³/s per date range), keyed by\nthe upstream hydro whose release feeds the arc. Each entry is a\nself-describing `[start_date, end_date)` window on the pre-study calendar.\nWindows for the same hydro must not overlap; adjacent ranges\n(start == previous end) are accepted. Optional; defaults to empty.",
+      "items": {
+        "$ref": "#/$defs/RawHydroPastDefluence"
+      },
+      "type": "array"
+    },
+    "recent_observations": {
+      "description": "Observed inflow data for partial periods before the study start\n(m³/s per date range per hydro). Used to seed the lag accumulator when\na study begins mid-season. Date ranges for the same hydro must not\noverlap; adjacent ranges (start == previous end) are accepted.\nOptional; defaults to empty.",
+      "items": {
+        "$ref": "#/$defs/RawRecentObservation"
+      },
+      "type": "array"
+    },
+    "storage": {
+      "description": "Initial reservoir volumes for operating hydros (hm³).",
+      "items": {
+        "$ref": "#/$defs/RawHydroStorage"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "storage",
+    "filling_storage"
+  ],
+  "title": "RawInitialConditions",
+  "type": "object"
+}

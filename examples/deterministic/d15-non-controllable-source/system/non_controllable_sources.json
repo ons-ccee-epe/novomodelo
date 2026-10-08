@@ -1,0 +1,12 @@
+{
+  "non_controllable_sources": [
+    {
+      "id": 0,
+      "name": "NCS0",
+      "operational_start_date": "2020-01-01",
+      "bus_id": 0,
+      "max_generation_mw": 100.0,
+      "curtailment_cost": 0.001
+    }
+  ]
+}

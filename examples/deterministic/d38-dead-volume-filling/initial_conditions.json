@@ -1,0 +1,23 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/initial_conditions.schema.json",
+  "storage": [
+    {
+      "hydro_id": 0,
+      "value_hm3": 0.0
+    },
+    {
+      "hydro_id": 2,
+      "value_hm3": 80.0
+    },
+    {
+      "hydro_id": 3,
+      "value_hm3": 100.0
+    }
+  ],
+  "filling_storage": [
+    {
+      "hydro_id": 1,
+      "value_hm3": 0.0
+    }
+  ]
+}
