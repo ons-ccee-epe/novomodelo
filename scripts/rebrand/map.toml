@@ -34,11 +34,15 @@ keep_files = [
   "scripts/rebrand/*",
 ]
 
-# Spans inside edited files that stay verbatim: the fork's credit to Cobre,
-# which names it on purpose.
+# Spans inside edited files that stay verbatim: the fork's credit to Cobre and
+# its upstream citation entry, which name it on purpose.
 [[keep_span]]
 files = ["README.md"]
 pattern = '(?s)## Origin and credits\n.*?(?=\n## )'
+
+[[keep_span]]
+files = ["README.md"]
+pattern = '(?s)### Upstream reference\n.*?(?=\n## )'
 
 # Address rules, tried before the name rule. At a given position the first
 # listed rule that matches wins, so specific addresses come before general ones.

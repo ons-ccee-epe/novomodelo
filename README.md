@@ -82,10 +82,32 @@ APA and other formats.
 
 ## Citing
 
-If you use Novomodelo in published work, cite the version you used. GitHub's
-**Cite this repository** button exports [`CITATION.cff`](CITATION.cff) as APA or
-BibTeX. [Origin and credits](#origin-and-credits) says when to also cite the
-upstream release the fork derives from.
+If you use Novomodelo in published work, please cite Novomodelo:
+
+```bibtex
+@software{novomodelo,
+  author = {{Operador Nacional do Sistema Elétrico - ONS} and {Câmara de Comercialização de Energia Elétrica - CCEE} and {Empresa de Pesquisa Energética - EPE}},
+  title = {Novomodelo},
+  url = {https://github.com/ons-ccee-epe/novomodelo},
+  license = {Apache-2.0}
+}
+```
+
+### Upstream reference
+
+Novomodelo is derived from Cobre. The reference below is provided for
+information only; citing it is not required when using Novomodelo.
+Attribution obligations under the Apache-2.0 license are covered in
+`NOTICE` and `LICENSE`.
+
+```bibtex
+@software{cobre,
+  author = {Alves, Rogerio J. M.},
+  title = {Cobre: Open Infrastructure for Power System Computation},
+  url = {https://github.com/cobre-rs/cobre},
+  license = {Apache-2.0}
+}
+```
 
 ## License
 
