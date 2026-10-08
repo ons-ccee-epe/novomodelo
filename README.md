@@ -104,7 +104,9 @@ Attribution obligations under the Apache-2.0 license are covered in
 @software{cobre,
   author = {Alves, Rogerio J. M.},
   title = {Cobre: Open Infrastructure for Power System Computation},
+  version = {0.18.0},
   url = {https://github.com/cobre-rs/cobre},
+  doi = {10.5281/zenodo.23202162},
   license = {Apache-2.0}
 }
 ```
