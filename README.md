@@ -75,38 +75,17 @@ Cobre's and is preserved unchanged here.
 References to "Cobre" in this repository describe the origin of the work only;
 "Cobre" is not the name of this project.
 
-Cite Cobre v0.18.0 as well (the second entry under [Citing](#citing)) when your
-work discusses the origin of Novomodelo, the architecture or methodology it
-inherits, or results obtained with Cobre itself.
+Cite Cobre v0.18.0 as well when your work discusses the origin of Novomodelo,
+the architecture or methodology it inherits, or results obtained with Cobre
+itself. The DOI above resolves to a record that exports the citation as BibTeX,
+APA and other formats.
 
 ## Citing
 
-If you use Novomodelo in published work, cite the version you used. The
-canonical metadata is in [`CITATION.cff`](CITATION.cff); GitHub's **Cite this
-repository** button exports it as APA or BibTeX. The second entry is the
-upstream release the fork derives from; [Origin and credits](#origin-and-credits)
-says when to add it.
-
-```bibtex
-@software{novomodelo,
-  author = {{Operador Nacional do Sistema Elétrico - ONS} and {Câmara de Comercialização de Energia Elétrica - CCEE} and {Empresa de Pesquisa Energética - EPE}},
-  title = {Novomodelo},
-  url = {https://github.com/ons-ccee-epe/novomodelo},
-  license = {Apache-2.0}
-}
-```
-
-```bibtex
-@software{cobre,
-  author = {Alves, Rogerio J. M.},
-  title = {Cobre: Open Infrastructure for Power System Computation},
-  version = {0.18.0},
-  year = {2026},
-  url = {https://github.com/cobre-rs/cobre},
-  doi = {10.5281/zenodo.23202162},
-  license = {Apache-2.0}
-}
-```
+If you use Novomodelo in published work, cite the version you used. GitHub's
+**Cite this repository** button exports [`CITATION.cff`](CITATION.cff) as APA or
+BibTeX. [Origin and credits](#origin-and-credits) says when to also cite the
+upstream release the fork derives from.
 
 ## License
 

@@ -34,12 +34,8 @@ keep_files = [
   "scripts/rebrand/*",
 ]
 
-# Spans inside edited files that stay verbatim.
-[[keep_span]]
-files = ["README.md"]
-pattern = '(?s)```bibtex\n@software\{cobre,.*?\n```'
-
-# The fork's credit to Cobre, which names it on purpose.
+# Spans inside edited files that stay verbatim: the fork's credit to Cobre,
+# which names it on purpose.
 [[keep_span]]
 files = ["README.md"]
 pattern = '(?s)## Origin and credits\n.*?(?=\n## )'
