@@ -43,13 +43,13 @@ GitHub releases.
 
 | Resource      | Link                                                                    |
 | ------------- | ----------------------------------------------------------------------- |
-| Documentation | [docs.novomodelo.invalid](https://docs.novomodelo.invalid/)                         |
+| Documentation | [docs.modelossetoreletrico.org.br](https://docs.modelossetoreletrico.org.br/)                         |
 
 ## Getting Started
 
-- **Coming from other software?** -- See the [novomodelo-bridge guide](https://docs.novomodelo.invalid/running/case-conversion/)
-- **New to SDDP?** -- Read [What Novomodelo Solves](https://docs.novomodelo.invalid/overview/what-novomodelo-solves/)
-- **Python user?** -- Try the [Python Quickstart](https://docs.novomodelo.invalid/getting-started/python-quickstart/)
+- **Coming from other software?** -- See the [novomodelo-bridge guide](https://docs.modelossetoreletrico.org.br/running/case-conversion/)
+- **New to SDDP?** -- Read [What Novomodelo Solves](https://docs.modelossetoreletrico.org.br/overview/what-novomodelo-solves/)
+- **Python user?** -- Try the [Python Quickstart](https://docs.modelossetoreletrico.org.br/getting-started/python-quickstart/)
 
 ## Current Status
 
