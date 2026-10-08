@@ -1,11 +1,25 @@
 cff-version: 1.2.0
-message: "If you use this software, please cite it and the Cobre project it derives from."
+message: >-
+  If you use Novomodelo, please cite the version you used. Novomodelo is a
+  fork of Cobre; when your work discusses its origin, the architecture or
+  methodology it inherits, or results obtained with Cobre itself, please also
+  cite Cobre at the version listed under "references".
 type: software
 title: "Novomodelo"
+abstract: >-
+  Rust ecosystem for power system optimization: a distributed SDDP solver for
+  hydrothermal dispatch, with a CLI and Python bindings. A fork of Cobre
+  v0.18.0.
 authors:
   - name: "Operador Nacional do Sistema Elétrico - ONS"
+    country: BR
+    website: "https://www.ons.org.br"
   - name: "Câmara de Comercialização de Energia Elétrica - CCEE"
+    country: BR
+    website: "https://www.ccee.org.br"
   - name: "Empresa de Pesquisa Energética - EPE"
+    country: BR
+    website: "https://www.epe.gov.br"
 repository-code: "https://github.com/ons-ccee-epe/novomodelo"
 license: Apache-2.0
 keywords:
@@ -14,12 +28,20 @@ keywords:
   - stochastic optimization
   - power systems
   - Rust
+# No `version` / `date-released`: they would go stale between releases.
 references:
   - type: software
     title: "Cobre: Open Infrastructure for Power System Computation"
     authors:
       - family-names: Alves
         given-names: "Rogerio J. M."
+    version: "0.18.0"
+    date-released: 2026-10-07
+    commit: "3ab1f748814a87ffd08585096ca9cbe810320cb6"
+    doi: 10.5281/zenodo.23202162
     repository-code: "https://github.com/cobre-rs/cobre"
     license: Apache-2.0
-    version: "0.18.0"
+    scope: "The fork point: Novomodelo is a fork of this Cobre release."
+    notes: >-
+      The name "Cobre" is used here only to describe the origin of the work
+      (Apache License 2.0, Section 6).

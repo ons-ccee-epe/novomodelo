@@ -67,13 +67,25 @@ Energética - EPE, with other contributors, as a fork of
 [Cobre](https://github.com/cobre-rs/cobre), the open-source Rust ecosystem for
 power system optimization created by Rogerio J. M. Alves and the Cobre
 contributors. The fork was created from the Cobre v0.18.0 release (commit
-`3ab1f748`, tagged `fork-point` in this repository); every commit up to and
-including it is Cobre's and is preserved unchanged here.
+[`3ab1f748`](https://github.com/cobre-rs/cobre/tree/3ab1f748814a87ffd08585096ca9cbe810320cb6),
+DOI [10.5281/zenodo.23202162](https://doi.org/10.5281/zenodo.23202162), tagged
+`fork-point` in this repository); every commit up to and including it is
+Cobre's and is preserved unchanged here.
+
+References to "Cobre" in this repository describe the origin of the work only;
+"Cobre" is not the name of this project.
+
+Cite Cobre v0.18.0 as well (the second entry under [Citing](#citing)) when your
+work discusses the origin of Novomodelo, the architecture or methodology it
+inherits, or results obtained with Cobre itself.
 
 ## Citing
 
-If you use Novomodelo in published work, cite it and the upstream release it
-derives from; `CITATION.cff` carries the same two references.
+If you use Novomodelo in published work, cite the version you used. The
+canonical metadata is in [`CITATION.cff`](CITATION.cff); GitHub's **Cite this
+repository** button exports it as APA or BibTeX. The second entry is the
+upstream release the fork derives from; [Origin and credits](#origin-and-credits)
+says when to add it.
 
 ```bibtex
 @software{novomodelo,
@@ -88,11 +100,19 @@ derives from; `CITATION.cff` carries the same two references.
 @software{cobre,
   author = {Alves, Rogerio J. M.},
   title = {Cobre: Open Infrastructure for Power System Computation},
+  version = {0.18.0},
+  year = {2026},
   url = {https://github.com/cobre-rs/cobre},
+  doi = {10.5281/zenodo.23202162},
   license = {Apache-2.0}
 }
 ```
 
 ## License
 
-Licensed under [Apache-2.0](LICENSE).
+Licensed under [Apache-2.0](LICENSE). The appendix of `LICENSE` carries the
+copyright lines of the upstream project and of the fork's maintainers;
+[`NOTICE`](NOTICE) carries the fork's attribution notice followed by the
+upstream NOTICE verbatim. Redistributions must keep both files (Apache License
+2.0, Section 4). Contributors must not remove or alter existing copyright or
+attribution notices; new copyright lines are added alongside them.
