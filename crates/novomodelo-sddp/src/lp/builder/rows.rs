@@ -430,20 +430,26 @@ fn fill_z_inflow_rows(
     }
 }
 
-/// Fill row bounds for the 4 operational violation constraint families.
+/// Fill row bounds for the 6 operational violation constraint families.
 ///
 /// The two flow families are per-hydro per-block; RHS is in rate units
 /// (m3/s). The two power families (min-turbine, min-generation) are per-hydro
 /// CELL per-block: each cell's RHS is the PLAIN SUM of its own member groups'
 /// resolved minimum (`cell_min_turbined`/`cell_min_generation`), never the
 /// plant's declared `min_turbined_m3s`/`min_generation_mw` — see the
-/// min-floor contract.
+/// min-floor contract
+///
+/// The two plant-level families (min-turbine-plant, min-generation-plant) are
+/// per-hydro per-block ADDITIVE floors on the plant's total: RHS is the
+/// plant's resolved `min_turbined_m3s`/`min_generation_mw` from `hydro_bounds`.
 ///
 /// - **Min outflow** (`>=`): `row_lower = min_outflow_m3s`, `row_upper = +INF`.
 /// - **Max outflow** (`<=`): `row_lower = -INF`, `row_upper = max_outflow_m3s`
 ///   (or `+INF` when the bound is absent, making the row non-binding).
 /// - **Min turbine** (`>=`, per cell): `row_lower = cell_min_turbined`, `row_upper = +INF`.
 /// - **Min generation** (`>=`, per cell): `row_lower = cell_min_generation`, `row_upper = +INF`.
+/// - **Min turbine plant** (`>=`): `row_lower = min_turbined_m3s`, `row_upper = +INF`.
+/// - **Min generation plant** (`>=`): `row_lower = min_generation_mw`, `row_upper = +INF`.
 pub(super) fn fill_operational_violation_rows(
     ctx: &TemplateBuildCtx<'_>,
     stage_idx: usize,
@@ -497,6 +503,18 @@ pub(super) fn fill_operational_violation_rows(
                 row_lower[row_g] = cell_min_generation(&hydro.unit_groups, positions, lookup);
                 row_upper[row_g] = f64::INFINITY;
             }
+
+            let hb = ctx
+                .resolved
+                .bounds
+                .hydro_bounds_at_block(h_idx, stage_idx, blk);
+            let row_t_plant = layout.min_turbine_plant_row(hydro_sys, b);
+            row_lower[row_t_plant] = hb.min_turbined_m3s;
+            row_upper[row_t_plant] = f64::INFINITY;
+
+            let row_g_plant = layout.min_generation_plant_row(hydro_sys, b);
+            row_lower[row_g_plant] = hb.min_generation_mw;
+            row_upper[row_g_plant] = f64::INFINITY;
         }
     }
 }

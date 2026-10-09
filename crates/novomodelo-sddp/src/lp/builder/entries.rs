@@ -1273,7 +1273,7 @@ pub(super) fn fill_z_inflow_entries(
     }
 }
 
-/// Fill entries for the 4 operational-violation families, linking decision
+/// Fill entries for the 6 operational-violation families, linking decision
 /// variables to their slack columns:
 ///
 /// Both outflow rows bind the NON-DIVERTED river-remnant flow `q + s`; the
@@ -1291,10 +1291,15 @@ pub(super) fn fill_z_inflow_entries(
 ///   is `rho * q_c` for constant-productivity hydros, the cell's own generation
 ///   column `g_c` for FPHA, or absent (`sigma_below_c` alone absorbs the floor)
 ///   for a commissioning-dormant FPHA plant.
+/// - **Min turbine plant** (`>=`, per hydro): `Σ_c q_c + sigma_plant`
+/// - **Min generation plant** (`>=`, per hydro): `Σ_c var_c + sigma_plant`
 ///
-/// The two power-side families couple only the CELL's own columns to the
+/// The two per-cell power-side families couple only the CELL's own columns to the
 /// CELL's own slack — never summed across a plant's cells the way the two
 /// flow families above are — see the min-floor contract.
+///
+/// The two plant-level power-side families sum all cells' columns (turbine or
+/// generation) onto a single plant-keyed row, additive to the per-cell floors.
 pub(super) fn fill_operational_violation_entries(
     ctx: &TemplateBuildCtx<'_>,
     stage_idx: usize,
@@ -1389,6 +1394,57 @@ pub(super) fn fill_operational_violation_entries(
                         let col_slack = geom.generation_below_col(cell, blk);
                         col_entries[col_slack].push((row, 1.0));
                     }
+                }
+            }
+        }
+
+        // Plant-level min-turbine row: sum all cells' turbine columns + plant slack.
+        // Additive to the per-cell group floors above; RHS is the plant's own
+        // `hydro_bounds.min_turbined_m3s`.
+        for blk in (0..n_blks).map(BlockIdx::new) {
+            let row = layout.min_turbine_plant_row(hydro, blk);
+            for c in ctx.hydro_cell_index.cells_of(hydro) {
+                let col_q = geom.turbine_col(HydroCell::new(c), blk);
+                col_entries[col_q].push((row, 1.0));
+            }
+            let col_slack = geom.turbine_below_plant_col(hydro, blk);
+            col_entries[col_slack].push((row, 1.0));
+        }
+
+        // Plant-level min-generation row: FPHA sums all cells' generation columns;
+        // ConstantProductivity sums all cells' turbine columns at rho; Dormant
+        // couples only the slack (the plant's frozen turbine/generation contributes
+        // zero, so the slack alone absorbs any nonzero floor).
+        match layout.stage_production_role(ctx.production_models, h_idx, stage_idx) {
+            StageProductionRole::Fpha(local_fpha_idx) => {
+                let fpha_base = layout.fpha_local_first_cell(local_fpha_idx).get();
+                for blk in (0..n_blks).map(BlockIdx::new) {
+                    let row = layout.min_generation_plant_row(hydro, blk);
+                    for (offset, _c) in ctx.hydro_cell_index.cells_of(hydro).enumerate() {
+                        let col_g =
+                            geom.generation_col(FphaCellLocal::new(fpha_base + offset), blk);
+                        col_entries[col_g].push((row, 1.0));
+                    }
+                    let col_slack = geom.generation_below_plant_col(hydro, blk);
+                    col_entries[col_slack].push((row, 1.0));
+                }
+            }
+            StageProductionRole::Constant(rho) => {
+                for blk in (0..n_blks).map(BlockIdx::new) {
+                    let row = layout.min_generation_plant_row(hydro, blk);
+                    for c in ctx.hydro_cell_index.cells_of(hydro) {
+                        let col_q = geom.turbine_col(HydroCell::new(c), blk);
+                        col_entries[col_q].push((row, rho));
+                    }
+                    let col_slack = geom.generation_below_plant_col(hydro, blk);
+                    col_entries[col_slack].push((row, 1.0));
+                }
+            }
+            StageProductionRole::Dormant => {
+                for blk in (0..n_blks).map(BlockIdx::new) {
+                    let row = layout.min_generation_plant_row(hydro, blk);
+                    let col_slack = geom.generation_below_plant_col(hydro, blk);
+                    col_entries[col_slack].push((row, 1.0));
                 }
             }
         }

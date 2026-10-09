@@ -3129,6 +3129,8 @@ mod transit_seed_round_trip_tests {
                 outflow_slack_below_m3s: 0.0,
                 outflow_slack_above_m3s: 0.0,
                 generation_slack_mw: 0.0,
+                turbined_slack_plant_m3s: 0.0,
+                generation_slack_plant_mw: 0.0,
                 storage_violation_below_hm3: 0.0,
                 filling_target_violation_hm3: 0.0,
                 evaporation_violation_pos_m3s: 0.0,

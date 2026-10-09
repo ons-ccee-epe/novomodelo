@@ -744,19 +744,22 @@ fn sum_cell_slack(
 /// `(turbined_slack, outflow_slack_below, outflow_slack_above, generation_slack)`.
 /// `turbine_below_slack`/`generation_below_slack` are CELL-keyed, so those two
 /// sum `h`'s own cells via [`sum_cell_slack`]; the two outflow families stay
-/// hydro-keyed.
+/// hydro-keyed. The plant-level slacks are read directly (hydro-keyed, no cell sum).
 fn hydro_operational_slacks(
     view: &SolutionView<'_>,
     spec: &StageExtractionSpec<'_>,
     h: usize,
     b: usize,
-) -> (f64, f64, f64, f64) {
+) -> (f64, f64, f64, f64, f64, f64) {
     let blk = BlockIdx::new(b);
+    let hydro = HydroSys::new(h);
     (
         sum_cell_slack(view, spec, StageGeometry::turbine_below_col, h, b),
-        view.primal[spec.geometry.outflow_below_col(HydroSys::new(h), blk)],
-        view.primal[spec.geometry.outflow_above_col(HydroSys::new(h), blk)],
+        view.primal[spec.geometry.outflow_below_col(hydro, blk)],
+        view.primal[spec.geometry.outflow_above_col(hydro, blk)],
         sum_cell_slack(view, spec, StageGeometry::generation_below_col, h, b),
+        view.primal[spec.geometry.turbine_below_plant_col(hydro, blk)],
+        view.primal[spec.geometry.generation_below_plant_col(hydro, blk)],
     )
 }
 
@@ -942,8 +945,14 @@ fn extract_hydro_per_block<'a>(
             turbined * spec.hydro_productivities[h]
         };
 
-        let (turbined_slack, outflow_slack_below, outflow_slack_above, generation_slack) =
-            hydro_operational_slacks(view, spec, h, b);
+        let (
+            turbined_slack,
+            outflow_slack_below,
+            outflow_slack_above,
+            generation_slack,
+            turbined_slack_plant,
+            generation_slack_plant,
+        ) = hydro_operational_slacks(view, spec, h, b);
 
         // Chronological block `b` reports its own boundary pair `(Sᵇ, Sᵇ⁺¹)` via the
         // accessor (interior columns stride `n_blks − 1`, so the read cannot go
@@ -1033,6 +1042,8 @@ fn extract_hydro_per_block<'a>(
             outflow_slack_below_m3s: outflow_slack_below,
             outflow_slack_above_m3s: outflow_slack_above,
             generation_slack_mw: generation_slack,
+            turbined_slack_plant_m3s: turbined_slack_plant,
+            generation_slack_plant_mw: generation_slack_plant,
             storage_violation_below_hm3: ctx.storage_violation_below,
             filling_target_violation_hm3: ctx.filling_target_violation,
             evaporation_violation_pos_m3s,
@@ -1384,6 +1395,8 @@ struct HydroViolationCosts {
     outflow_above: f64,
     turbined: f64,
     generation: f64,
+    turbined_plant: f64,
+    generation_plant: f64,
 }
 
 impl HydroViolationCosts {
@@ -1394,10 +1407,12 @@ impl HydroViolationCosts {
             + self.outflow_above
             + self.turbined
             + self.generation
+            + self.turbined_plant
+            + self.generation_plant
     }
 }
 
-/// Compute the 6 per-constraint hydro violation costs from a solution view.
+/// Compute the 8 per-constraint hydro violation costs from a solution view.
 fn compute_hydro_violation_costs(
     equipment: &StageGeometry,
     col_cost: impl Fn(usize) -> f64,
@@ -1431,6 +1446,15 @@ fn compute_hydro_violation_costs(
             )
         };
 
+    let (turbined_plant, generation_plant) = if equipment.turbine_below_plant_slack.is_empty() {
+        (0.0, 0.0)
+    } else {
+        (
+            range_sum(equipment.turbine_below_plant_slack.clone()) * cost_scale_factor,
+            range_sum(equipment.generation_below_plant_slack.clone()) * cost_scale_factor,
+        )
+    };
+
     HydroViolationCosts {
         evaporation,
         withdrawal,
@@ -1438,6 +1462,8 @@ fn compute_hydro_violation_costs(
         outflow_above,
         turbined,
         generation,
+        turbined_plant,
+        generation_plant,
     }
 }
 
@@ -1544,6 +1570,8 @@ fn compute_cost_result(
         outflow_violation_above_cost: hv.outflow_above,
         turbined_violation_cost: hv.turbined,
         generation_violation_cost: hv.generation,
+        turbined_violation_plant_cost: hv.turbined_plant,
+        generation_violation_plant_cost: hv.generation_plant,
         evaporation_violation_cost: hv.evaporation,
         withdrawal_violation_cost: hv.withdrawal,
         inflow_penalty_cost,
@@ -1861,6 +1889,8 @@ fn extract_stub_collections(
 ///     outflow_violation_above_cost: 0.0,
 ///     turbined_violation_cost: 0.0,
 ///     generation_violation_cost: 0.0,
+///     turbined_violation_plant_cost: 0.0,
+///     generation_violation_plant_cost: 0.0,
 ///     evaporation_violation_cost: 0.0,
 ///     withdrawal_violation_cost: 0.0,
 ///     inflow_penalty_cost: 3.0,
@@ -1961,6 +1991,8 @@ mod transit_seed_tests {
             outflow_slack_below_m3s: 0.0,
             outflow_slack_above_m3s: 0.0,
             generation_slack_mw: 0.0,
+            turbined_slack_plant_m3s: 0.0,
+            generation_slack_plant_mw: 0.0,
             storage_violation_below_hm3: 0.0,
             filling_target_violation_hm3: 0.0,
             evaporation_violation_pos_m3s: 0.0,

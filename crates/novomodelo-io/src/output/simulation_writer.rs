@@ -115,6 +115,10 @@ pub struct CostWriteRecord {
     pub turbined_violation_cost: f64,
     /// Cost of minimum generation violations.
     pub generation_violation_cost: f64,
+    /// Cost of plant-level minimum turbining violations.
+    pub turbined_violation_plant_cost: f64,
+    /// Cost of plant-level minimum generation violations.
+    pub generation_violation_plant_cost: f64,
     /// Cost of evaporation constraint violations.
     pub evaporation_violation_cost: f64,
     /// Cost of water withdrawal constraint violations.
@@ -195,6 +199,10 @@ pub struct HydroWriteRecord {
     pub outflow_slack_above_m3s: f64,
     /// Generation capacity violation slack in MW.
     pub generation_slack_mw: f64,
+    /// Plant-level turbining minimum violation slack in m³/s.
+    pub turbined_slack_plant_m3s: f64,
+    /// Plant-level generation minimum violation slack in MW.
+    pub generation_slack_plant_mw: f64,
     /// Storage below minimum bound violation in hm³.
     pub storage_violation_below_hm3: f64,
     /// Filling target violation in hm³.
@@ -1354,6 +1362,8 @@ fn build_costs_batch<'a>(
     let mut outflow_violation_above_cost = Float64Builder::with_capacity(n);
     let mut turbined_violation_cost = Float64Builder::with_capacity(n);
     let mut generation_violation_cost = Float64Builder::with_capacity(n);
+    let mut turbined_violation_plant_cost = Float64Builder::with_capacity(n);
+    let mut generation_violation_plant_cost = Float64Builder::with_capacity(n);
     let mut evaporation_violation_cost = Float64Builder::with_capacity(n);
     let mut withdrawal_violation_cost = Float64Builder::with_capacity(n);
     let mut inflow_penalty_cost = Float64Builder::with_capacity(n);
@@ -1385,6 +1395,8 @@ fn build_costs_batch<'a>(
         outflow_violation_above_cost.append_value(r.outflow_violation_above_cost);
         turbined_violation_cost.append_value(r.turbined_violation_cost);
         generation_violation_cost.append_value(r.generation_violation_cost);
+        turbined_violation_plant_cost.append_value(r.turbined_violation_plant_cost);
+        generation_violation_plant_cost.append_value(r.generation_violation_plant_cost);
         evaporation_violation_cost.append_value(r.evaporation_violation_cost);
         withdrawal_violation_cost.append_value(r.withdrawal_violation_cost);
         inflow_penalty_cost.append_value(r.inflow_penalty_cost);
@@ -1419,6 +1431,8 @@ fn build_costs_batch<'a>(
             Arc::new(outflow_violation_above_cost.finish()),
             Arc::new(turbined_violation_cost.finish()),
             Arc::new(generation_violation_cost.finish()),
+            Arc::new(turbined_violation_plant_cost.finish()),
+            Arc::new(generation_violation_plant_cost.finish()),
             Arc::new(evaporation_violation_cost.finish()),
             Arc::new(withdrawal_violation_cost.finish()),
             Arc::new(inflow_penalty_cost.finish()),
@@ -1466,6 +1480,8 @@ struct HydroBuilders {
     outflow_slack_below_m3s: Float64Builder,
     outflow_slack_above_m3s: Float64Builder,
     generation_slack_mw: Float64Builder,
+    turbined_slack_plant_m3s: Float64Builder,
+    generation_slack_plant_mw: Float64Builder,
     storage_violation_below_hm3: Float64Builder,
     filling_target_violation_hm3: Float64Builder,
     evaporation_violation_pos_m3s: Float64Builder,
@@ -1512,6 +1528,8 @@ impl HydroBuilders {
             outflow_slack_below_m3s: Float64Builder::with_capacity(n),
             outflow_slack_above_m3s: Float64Builder::with_capacity(n),
             generation_slack_mw: Float64Builder::with_capacity(n),
+            turbined_slack_plant_m3s: Float64Builder::with_capacity(n),
+            generation_slack_plant_mw: Float64Builder::with_capacity(n),
             storage_violation_below_hm3: Float64Builder::with_capacity(n),
             filling_target_violation_hm3: Float64Builder::with_capacity(n),
             evaporation_violation_pos_m3s: Float64Builder::with_capacity(n),
@@ -1577,6 +1595,10 @@ fn fill_hydro_builders<'a>(
         b.outflow_slack_above_m3s
             .append_value(r.outflow_slack_above_m3s);
         b.generation_slack_mw.append_value(r.generation_slack_mw);
+        b.turbined_slack_plant_m3s
+            .append_value(r.turbined_slack_plant_m3s);
+        b.generation_slack_plant_mw
+            .append_value(r.generation_slack_plant_mw);
         b.storage_violation_below_hm3
             .append_value(r.storage_violation_below_hm3);
         b.filling_target_violation_hm3
@@ -1646,6 +1668,8 @@ fn build_hydros_batch<'a>(
             Arc::new(b.outflow_slack_below_m3s.finish()),
             Arc::new(b.outflow_slack_above_m3s.finish()),
             Arc::new(b.generation_slack_mw.finish()),
+            Arc::new(b.turbined_slack_plant_m3s.finish()),
+            Arc::new(b.generation_slack_plant_mw.finish()),
             Arc::new(b.storage_violation_below_hm3.finish()),
             Arc::new(b.filling_target_violation_hm3.finish()),
             Arc::new(b.evaporation_violation_pos_m3s.finish()),

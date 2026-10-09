@@ -233,6 +233,12 @@ pub(crate) struct EquipmentColumns {
 /// column. See the min-floor contract. Their paired slack columns live on
 /// [`StageGeometry`]; see [`allocate_oper_violation_slack_columns`] for why
 /// the two halves are allocated separately.
+///
+/// The two plant-level families (`min_turbine_plant`, `min_generation_plant`)
+/// are additive soft floors on the plant total (`Σ_c q_c` / `Σ_c gen_c`),
+/// sized `n_h * n_blks`, and use the plant's `hydro_bounds` RHS
+/// (`min_turbined_m3s` / `min_generation_mw`) rather than the group-summed
+/// cell floor.
 pub(crate) struct OperViolationRanges {
     /// Row range for min-outflow constraints (one per hydro per block).
     pub(crate) min_outflow: Range<usize>,
@@ -242,39 +248,55 @@ pub(crate) struct OperViolationRanges {
     pub(crate) min_turbine: Range<usize>,
     /// Row range for min-generation constraints (one per hydro CELL per block).
     pub(crate) min_generation: Range<usize>,
+    /// Row range for plant-level min-turbine constraints (one per hydro per block).
+    pub(crate) min_turbine_plant: Range<usize>,
+    /// Row range for plant-level min-generation constraints (one per hydro per block).
+    pub(crate) min_generation_plant: Range<usize>,
 }
 
 impl OperViolationRanges {
-    /// Allocate the four row families, contiguously in this order: reordering
+    /// Allocate the six row families, contiguously in this order: reordering
     /// these `alloc` calls would shift every downstream row. `n_op_hydro`
-    /// sizes the two flow families; `n_op_cell` sizes the two power
-    /// families — they diverge the moment any plant declares groups on more
-    /// than one bus. The caller allocates the paired slack columns
-    /// (`allocate_oper_violation_slack_columns`) immediately before this, in
-    /// the same order.
+    /// sizes the two flow families and the two plant-level power families;
+    /// `n_op_cell` sizes the two cell-level power families — they diverge
+    /// the moment any plant declares groups on more than one bus. The caller
+    /// allocates the paired slack columns (`allocate_oper_violation_slack_columns`)
+    /// immediately before this, in the same order.
     fn new(row: &mut RangeCursor, n_op_hydro: usize, n_op_cell: usize) -> Self {
         Self {
             min_outflow: row.alloc(n_op_hydro),
             max_outflow: row.alloc(n_op_hydro),
             min_turbine: row.alloc(n_op_cell),
             min_generation: row.alloc(n_op_cell),
+            min_turbine_plant: row.alloc(n_op_hydro),
+            min_generation_plant: row.alloc(n_op_hydro),
         }
     }
 }
 
-/// Allocate the four operational-violation slack columns (below-min-outflow,
-/// above-max-outflow, below-min-turbine, below-min-generation), in the order
-/// their paired rows follow in [`OperViolationRanges::new`].
+/// Allocate the six operational-violation slack columns (below-min-outflow,
+/// above-max-outflow, below-min-turbine, below-min-generation,
+/// below-min-turbine-plant, below-min-generation-plant), in the order their
+/// paired rows follow in [`OperViolationRanges::new`].
 fn allocate_oper_violation_slack_columns(
     col: &mut RangeCursor,
     n_op_hydro: usize,
     n_op_cell: usize,
-) -> (Range<usize>, Range<usize>, Range<usize>, Range<usize>) {
+) -> (
+    Range<usize>,
+    Range<usize>,
+    Range<usize>,
+    Range<usize>,
+    Range<usize>,
+    Range<usize>,
+) {
     (
         col.alloc(n_op_hydro),
         col.alloc(n_op_hydro),
         col.alloc(n_op_cell),
         col.alloc(n_op_cell),
+        col.alloc(n_op_hydro),
+        col.alloc(n_op_hydro),
     )
 }
 
@@ -1239,6 +1261,8 @@ impl StageGeometry {
             outflow_above_slack: 0..0,
             turbine_below_slack: 0..0,
             generation_below_slack: 0..0,
+            turbine_below_plant_slack: 0..0,
+            generation_below_plant_slack: 0..0,
             contract_import: 0..0,
             contract_export: 0..0,
             water_balance: BlockRowFamily::one_per_entity(0..0),
@@ -1359,6 +1383,8 @@ impl<'a> StageLayout<'a> {
             geometry.outflow_above_slack,
             geometry.turbine_below_slack,
             geometry.generation_below_slack,
+            geometry.turbine_below_plant_slack,
+            geometry.generation_below_plant_slack,
         ) = allocate_oper_violation_slack_columns(&mut col, n_h * n_blks, n_cells * n_blks);
         let oper_violation = OperViolationRanges::new(&mut row, n_h * n_blks, n_cells * n_blks);
 
@@ -1524,6 +1550,16 @@ impl StageLayout<'_> {
     #[inline]
     pub(crate) fn min_generation_row(&self, c: HydroCell, blk: BlockIdx) -> usize {
         self.block_flat(self.oper_violation.min_generation.start, c.get(), blk)
+    }
+
+    #[inline]
+    pub(crate) fn min_turbine_plant_row(&self, h: HydroSys, blk: BlockIdx) -> usize {
+        self.block_flat(self.oper_violation.min_turbine_plant.start, h.get(), blk)
+    }
+
+    #[inline]
+    pub(crate) fn min_generation_plant_row(&self, h: HydroSys, blk: BlockIdx) -> usize {
+        self.block_flat(self.oper_violation.min_generation_plant.start, h.get(), blk)
     }
 
     /// Anticipated-local `local`'s commitment-maturity row, or `None` when no
@@ -1765,6 +1801,10 @@ pub struct StageGeometry {
     pub turbine_below_slack: Range<usize>,
     /// Generation-below-minimum slack column range (one per hydro CELL per block).
     pub generation_below_slack: Range<usize>,
+    /// Plant-level turbine-below-minimum slack column range (one per hydro per block).
+    pub turbine_below_plant_slack: Range<usize>,
+    /// Plant-level generation-below-minimum slack column range (one per hydro per block).
+    pub generation_below_plant_slack: Range<usize>,
     /// Import-contract column range (one per import contract per block); empty
     /// `start..start` (not `0..0`) at the pumping-end column when there are none.
     pub contract_import: Range<usize>,
@@ -1952,6 +1992,20 @@ impl StageGeometry {
     #[must_use]
     pub fn generation_below_col(&self, c: HydroCell, blk: BlockIdx) -> usize {
         self.block_flat(&self.generation_below_slack, c.get(), blk)
+    }
+
+    /// Plant-level turbine-below-minimum slack column for hydro `h`, block `blk`.
+    #[inline]
+    #[must_use]
+    pub fn turbine_below_plant_col(&self, h: HydroSys, blk: BlockIdx) -> usize {
+        self.block_flat(&self.turbine_below_plant_slack, h.get(), blk)
+    }
+
+    /// Plant-level generation-below-minimum slack column for hydro `h`, block `blk`.
+    #[inline]
+    #[must_use]
+    pub fn generation_below_plant_col(&self, h: HydroSys, blk: BlockIdx) -> usize {
+        self.block_flat(&self.generation_below_plant_slack, h.get(), blk)
     }
 
     /// `contract_type`'s contract column at per-direction slot `family_slot`

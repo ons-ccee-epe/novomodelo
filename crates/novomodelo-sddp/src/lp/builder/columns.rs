@@ -798,10 +798,22 @@ enum CellSlackFamily {
     GenerationBelow,
 }
 
+/// The two plant-keyed operational-violation slack families for plant-total
+/// floors, addressing a disjoint `n_h * n_blks` column range. The plant floor
+/// uses `hydro_bounds.min_turbined_m3s` / `min_generation_mw` as RHS — additive
+/// to the per-cell group floors in [`CellSlackFamily`].
+#[derive(Clone, Copy)]
+enum PlantSlackFamily {
+    /// Active iff the plant's resolved `min_turbined_m3s > 0.0`.
+    TurbineBelowPlant,
+    /// Active iff the plant's resolved `min_generation_mw > 0.0`.
+    GenerationBelowPlant,
+}
+
 /// Operational violation slack columns: the two hydro-keyed flow families
-/// (`n_h * n_blks` each) and the two cell-keyed power families (`n_cells *
-/// n_blks` each), all four disjoint ranges so call order does not affect the
-/// result.
+/// (`n_h * n_blks` each), the two cell-keyed power families (`n_cells *
+/// n_blks` each), and the two plant-keyed power families (`n_h * n_blks` each),
+/// all six disjoint ranges so call order does not affect the result.
 fn fill_operational_slack_columns(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
@@ -820,6 +832,12 @@ fn fill_operational_slack_columns(
         CellSlackFamily::GenerationBelow,
     ] {
         fill_cell_block_family(ctx, stage, stage_idx, layout, bufs, family);
+    }
+    for family in [
+        PlantSlackFamily::TurbineBelowPlant,
+        PlantSlackFamily::GenerationBelowPlant,
+    ] {
+        fill_plant_block_family(ctx, stage, stage_idx, layout, bufs, family);
     }
 }
 
@@ -908,6 +926,49 @@ fn fill_cell_block_family(
                 bufs.col_upper[col] = if cell_min > 0.0 { f64::INFINITY } else { 0.0 };
                 bufs.objective[col] = cost * block_hours;
             }
+        }
+    }
+}
+
+/// Fill one plant-keyed operational-violation slack family's `n_h * n_blks`
+/// columns; `col_lower` stays at the `0.0` vec default. The plant floor uses
+/// `hydro_bounds.min_turbined_m3s` / `min_generation_mw` as the activation
+/// threshold and RHS source — additive to the per-cell group floors.
+fn fill_plant_block_family(
+    ctx: &TemplateBuildCtx<'_>,
+    stage: &Stage,
+    stage_idx: usize,
+    layout: &StageLayout,
+    bufs: &mut ColumnBufs<'_>,
+    family: PlantSlackFamily,
+) {
+    for h_idx in 0..layout.state.hydro_count {
+        let hp = ctx.resolved.penalties.hydro_penalties(h_idx, stage_idx);
+        let cost = match family {
+            PlantSlackFamily::TurbineBelowPlant => hp.turbined_violation_below_cost,
+            PlantSlackFamily::GenerationBelowPlant => hp.generation_violation_below_cost,
+        };
+        for blk in 0..layout.clock.n_blks() {
+            let hb = ctx
+                .resolved
+                .bounds
+                .hydro_bounds_at_block(h_idx, stage_idx, blk);
+            let (active, col) = match family {
+                PlantSlackFamily::TurbineBelowPlant => (
+                    hb.min_turbined_m3s > 0.0,
+                    layout
+                        .geometry
+                        .turbine_below_plant_col(HydroSys::new(h_idx), BlockIdx::new(blk)),
+                ),
+                PlantSlackFamily::GenerationBelowPlant => (
+                    hb.min_generation_mw > 0.0,
+                    layout
+                        .geometry
+                        .generation_below_plant_col(HydroSys::new(h_idx), BlockIdx::new(blk)),
+                ),
+            };
+            bufs.col_upper[col] = if active { f64::INFINITY } else { 0.0 };
+            bufs.objective[col] = cost * stage.blocks[blk].duration_hours;
         }
     }
 }

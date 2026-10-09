@@ -52,6 +52,8 @@ fn build_costs_schema() -> Schema {
         Field::new("outflow_violation_above_cost", DataType::Float64, false),
         Field::new("turbined_violation_cost", DataType::Float64, false),
         Field::new("generation_violation_cost", DataType::Float64, false),
+        Field::new("turbined_violation_plant_cost", DataType::Float64, false),
+        Field::new("generation_violation_plant_cost", DataType::Float64, false),
         Field::new("evaporation_violation_cost", DataType::Float64, false),
         Field::new("withdrawal_violation_cost", DataType::Float64, false),
         Field::new("inflow_penalty_cost", DataType::Float64, false),
@@ -112,6 +114,8 @@ fn build_hydros_schema() -> Schema {
         Field::new("outflow_slack_below_m3s", DataType::Float64, false),
         Field::new("outflow_slack_above_m3s", DataType::Float64, false),
         Field::new("generation_slack_mw", DataType::Float64, false),
+        Field::new("turbined_slack_plant_m3s", DataType::Float64, false),
+        Field::new("generation_slack_plant_mw", DataType::Float64, false),
         Field::new("storage_violation_below_hm3", DataType::Float64, false),
         Field::new("filling_target_violation_hm3", DataType::Float64, false),
         Field::new("evaporation_violation_pos_m3s", DataType::Float64, false),
@@ -961,8 +965,8 @@ mod tests {
         let schema = costs_schema();
         assert_eq!(
             schema.fields().len(),
-            29,
-            "costs schema must have 29 fields"
+            31,
+            "costs schema must have 31 fields"
         );
         let names = field_names(&schema);
         assert_eq!(
@@ -988,6 +992,8 @@ mod tests {
                 "outflow_violation_above_cost",
                 "turbined_violation_cost",
                 "generation_violation_cost",
+                "turbined_violation_plant_cost",
+                "generation_violation_plant_cost",
                 "evaporation_violation_cost",
                 "withdrawal_violation_cost",
                 "inflow_penalty_cost",
@@ -1057,8 +1063,8 @@ mod tests {
         let schema = hydros_schema();
         assert_eq!(
             schema.fields().len(),
-            41,
-            "hydros schema must have 41 fields"
+            43,
+            "hydros schema must have 43 fields"
         );
         let names = field_names(&schema);
         assert_eq!(
@@ -1094,6 +1100,8 @@ mod tests {
                 "outflow_slack_below_m3s",
                 "outflow_slack_above_m3s",
                 "generation_slack_mw",
+                "turbined_slack_plant_m3s",
+                "generation_slack_plant_mw",
                 "storage_violation_below_hm3",
                 "filling_target_violation_hm3",
                 "evaporation_violation_pos_m3s",
@@ -1147,6 +1155,8 @@ mod tests {
             "outflow_slack_below_m3s",
             "outflow_slack_above_m3s",
             "generation_slack_mw",
+            "turbined_slack_plant_m3s",
+            "generation_slack_plant_mw",
             "storage_violation_below_hm3",
             "filling_target_violation_hm3",
             "evaporation_violation_pos_m3s",

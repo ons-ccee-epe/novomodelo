@@ -75,6 +75,10 @@ pub struct SimulationCostResult {
     pub turbined_violation_cost: f64,
     /// Cost of minimum generation violations: sum of `generation_below_slack` * penalty.
     pub generation_violation_cost: f64,
+    /// Cost of plant-level minimum turbining violations.
+    pub turbined_violation_plant_cost: f64,
+    /// Cost of plant-level minimum generation violations.
+    pub generation_violation_plant_cost: f64,
     /// Cost of evaporation constraint violations.
     pub evaporation_violation_cost: f64,
     /// Cost of water withdrawal constraint violations.
@@ -167,6 +171,10 @@ pub struct SimulationHydroResult {
     pub outflow_slack_above_m3s: f64,
     /// Generation capacity violation slack in MW.
     pub generation_slack_mw: f64,
+    /// Plant-level turbining minimum violation slack in m³/s.
+    pub turbined_slack_plant_m3s: f64,
+    /// Plant-level generation minimum violation slack in MW.
+    pub generation_slack_plant_mw: f64,
     /// Storage below minimum bound violation in hm³.
     pub storage_violation_below_hm3: f64,
     /// Filling target violation in hm³.
@@ -637,6 +645,8 @@ mod tests {
             outflow_violation_above_cost: 0.0,
             turbined_violation_cost: 0.0,
             generation_violation_cost: 0.0,
+            turbined_violation_plant_cost: 0.0,
+            generation_violation_plant_cost: 0.0,
             evaporation_violation_cost: 0.0,
             withdrawal_violation_cost: 0.0,
             inflow_penalty_cost: 3.0,
@@ -700,6 +710,8 @@ mod tests {
             outflow_slack_below_m3s: 0.0,
             outflow_slack_above_m3s: 0.0,
             generation_slack_mw: 0.0,
+            turbined_slack_plant_m3s: 0.0,
+            generation_slack_plant_mw: 0.0,
             storage_violation_below_hm3: 0.0,
             filling_target_violation_hm3: 0.0,
             evaporation_violation_pos_m3s: 0.0,
@@ -758,6 +770,8 @@ mod tests {
             outflow_slack_below_m3s: 0.0,
             outflow_slack_above_m3s: 0.0,
             generation_slack_mw: 0.0,
+            turbined_slack_plant_m3s: 0.0,
+            generation_slack_plant_mw: 0.0,
             storage_violation_below_hm3: 0.0,
             filling_target_violation_hm3: 0.0,
             evaporation_violation_pos_m3s: 0.0,
