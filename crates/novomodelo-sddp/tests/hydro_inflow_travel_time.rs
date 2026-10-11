@@ -696,12 +696,14 @@ fn build_exited_plant_system() -> System {
 }
 
 fn config() -> Config {
+    config_with(InflowNonNegativityMethod::Penalty)
+}
+
+fn config_with(method: InflowNonNegativityMethod) -> Config {
     Config {
         schema: None,
         modeling: ModelingConfig {
-            inflow_non_negativity: InflowNonNegativityConfig {
-                method: InflowNonNegativityMethod::Penalty,
-            },
+            inflow_non_negativity: InflowNonNegativityConfig { method },
             cost_scale_factor: Some(1.0),
         },
         training: TrainingConfig {
@@ -1139,6 +1141,77 @@ fn hydro_inflow_rows_count_a_two_plant_prefilling_chain_on_a_parallel_stage() {
         &[DIVERSION_SOURCE_POS_CHAIN],
     );
     assert_hydro_inflow_matches_water_balance(&setup, 1, DOWNSTREAM_POS, &columns);
+}
+
+/// The truncation methods count each plant's inflow-slack column on `hydro_inflow` exactly
+/// as the water balance does (a pre-filling plant's on its short-circuit target); `penalty`
+/// leaves it out, so its unbounded slack cannot buy water for the user's constraint.
+#[test]
+fn hydro_inflow_counts_the_truncation_correction_only_under_truncation_methods() {
+    for mode in [BlockMode::Parallel, BlockMode::Chronological] {
+        for method in [
+            InflowNonNegativityMethod::Penalty,
+            InflowNonNegativityMethod::Truncation,
+            InflowNonNegativityMethod::TruncationWithPenalty,
+        ] {
+            println!("cell: {mode:?} / {method:?}");
+            let setup = build_setup_in_code(
+                build_prefilling_system(false, Some(TRAVEL_TIME_HOURS), mode),
+                &config_with(method),
+            );
+            let templates = &setup.inputs.stage_data.stage_templates;
+            let tpl = &templates.templates[1];
+            let geom = &templates.geometry_per_stage[1];
+            let w_row = geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(0));
+            let slacks = [DOWNSTREAM_POS, PREFILLING_UPSTREAM_A_POS]
+                .map(|p| geom.inflow_slack_col(HydroSys::new(p)));
+            for slack in slacks {
+                assert!(
+                    matrix_entry(tpl, w_row, slack) != 0.0,
+                    "power guard: slack column {slack} must reach the downstream water balance"
+                );
+            }
+
+            let mut columns = inflow_columns(
+                geom,
+                setup.stage_state(),
+                &[DOWNSTREAM_POS, PREFILLING_UPSTREAM_A_POS],
+                &[PREFILLING_UPSTREAM_A_POS, UPSTREAM_POS],
+                &[PREFILLING_UPSTREAM_A_POS, UPSTREAM_POS],
+                &[DIVERSION_SOURCE_POS_NO_CHAIN],
+            );
+            let truncates = matches!(
+                method,
+                InflowNonNegativityMethod::Truncation
+                    | InflowNonNegativityMethod::TruncationWithPenalty
+            );
+            if truncates {
+                columns.extend(slacks);
+            } else {
+                for g_row in generic_row_start(templates, 1)..tpl.num_rows {
+                    for slack in slacks {
+                        assert!(
+                            matrix_entry(tpl, g_row, slack) == 0.0,
+                            "generic row {g_row} must not count penalty slack column {slack}"
+                        );
+                    }
+                }
+            }
+            match mode {
+                BlockMode::Parallel => {
+                    assert_hydro_inflow_matches_water_balance(&setup, 1, DOWNSTREAM_POS, &columns);
+                }
+                BlockMode::Chronological => {
+                    assert_hydro_inflow_matches_each_chronological_water_balance_row(
+                        &setup,
+                        1,
+                        DOWNSTREAM_POS,
+                        &columns,
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]
