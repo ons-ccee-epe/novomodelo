@@ -602,8 +602,8 @@ pub(crate) fn extract_sim_stage_result(
         let theta_contribution = unscaled_primal[training_ctx.state.theta] * theta_obj_coeff;
         (view_objective - theta_contribution) * ctx.cost_scale_factor
     };
-    // Realized inflow Z_t from the z_h primal: total natural inflow (PAR lag
-    // included), gross of withdrawal.
+    // Incremental inflow: the raw z_h primal, gross of withdrawal and never z plus the
+    // inflow slack, which is reported on its own (`simulated_water_balance_closes_from_outputs`).
     inflow_m3s_buf.clear();
     inflow_m3s_buf.extend_from_slice(&unscaled_primal[training_ctx.state.z_inflow.clone()]);
     debug_assert_eq!(inflow_m3s_buf.len(), training_ctx.state.hydro_count);

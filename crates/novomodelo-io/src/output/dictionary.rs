@@ -448,12 +448,13 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "hydros",
         "incremental_inflow_m3s",
-        "Incremental (local) inflow",
+        "Incremental (local) inflow as the inflow model gives it: it may be negative, \
+         excludes inflow_nonnegativity_slack_m3s, and is gross of water withdrawal.",
     ),
     (
         "hydros",
         "inflow_m3s",
-        "Incremental (local) inflow, the same value as incremental_inflow_m3s",
+        "Incremental (local) inflow, the same value as incremental_inflow_m3s; it may be negative",
     ),
     (
         "hydros",
@@ -490,7 +491,7 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "hydros",
         "incremental_inflow_energy_mw",
-        "Incremental natural energy inflow (`ρ_acum` · incremental inflow)",
+        "Incremental natural energy inflow (`ρ_acum` · incremental inflow); it may be negative",
     ),
     (
         "hydros",
@@ -561,7 +562,11 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "hydros",
         "inflow_nonnegativity_slack_m3s",
-        "Inflow non-negativity slack",
+        "Water added to the incremental inflow in the water balance: the truncation \
+         correction under truncation and truncation_with_penalty, the penalty slack under \
+         penalty, 0 under none. For a PreFilling plant, this water and the plant's \
+         incremental inflow both enter the water balance of the first downstream plant \
+         that is not PreFilling, if any.",
     ),
     (
         "hydros",
@@ -740,7 +745,9 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "inflow_lags",
         "inflow_m3s",
-        "Historical inflow for this lag",
+        "Incremental inflow at this lag as the stage receives it: from the inflow history at \
+         the start of the horizon, from the simulated incremental inflow of earlier stages \
+         afterwards. It may be negative.",
     ),
     ("in_transit", "stage_id", "Stage index"),
     (
