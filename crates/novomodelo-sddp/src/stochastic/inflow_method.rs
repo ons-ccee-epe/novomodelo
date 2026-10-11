@@ -13,6 +13,11 @@ use novomodelo_io::config::InflowNonNegativityMethod::TruncationWithPenalty;
 /// The variant must be the same across all stages (set once at solver
 /// initialisation from the loaded case config).
 ///
+/// The truncation amount of a solve is `max(-r, 0)` for that solve's raw PAR value
+/// `r`. Under `Truncation` and `TruncationWithPenalty` the lower bound is not
+/// guaranteed to stay below the upper bound (Larroyd et al. (2022), the paper's §2.5),
+/// so a `gap` stopping rule can report convergence that has not occurred.
+///
 /// # Examples
 ///
 /// ```rust
@@ -28,24 +33,17 @@ use novomodelo_io::config::InflowNonNegativityMethod::TruncationWithPenalty;
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum InflowNonNegativityMethod {
-    /// No enforcement: no slack columns; a sufficiently negative PAR(p)
-    /// realisation may make the LP infeasible.
+    /// No slack column; a negative realisation can make the LP infeasible.
     None,
 
-    /// The PAR value stays raw, and the hydro's inflow-slack column is fixed per
-    /// solve at the truncation amount (`max(-r, 0)` for the raw PAR value `r`), at
-    /// cost 0.
+    /// The PAR value stays raw; the slack is fixed per solve at the truncation amount, at cost 0.
     Truncation,
 
-    /// Appends `N` slack columns (`sigma_inf_h >= 0`); each enters hydro `h`'s
-    /// water-balance row with coefficient `tau_total * M3S_TO_HM3`
-    /// (`tau_total` = total stage hours). Objective coefficient from
-    /// `penalties.json → hydro.inflow_nonnegativity_cost` (default 1000.0).
+    /// Slack `[0, ∞)` at `inflow_nonnegativity_cost` times the stage hours.
     Penalty,
 
-    /// The PAR value stays raw, and the hydro's slack column, bounded per solve to
-    /// `[0, max(-r, 0)]` for that solve's raw PAR value `r`, is priced at
-    /// `inflow_nonnegativity_cost`.
+    /// The PAR value stays raw; the slack is capped per solve at the truncation amount
+    /// and priced like `Penalty`.
     TruncationWithPenalty,
 }
 
