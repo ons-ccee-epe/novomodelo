@@ -28,8 +28,8 @@ use novomodelo_core::{
     BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, DeficitSegment,
     EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
     LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
-    PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
-    ThermalStageBounds,
+    PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, System, SystemBuilder,
+    ThermalBlockBounds, ThermalStageBounds,
     scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, SamplingScheme,
     },
@@ -745,11 +745,9 @@ fn truncation_with_penalty_training_completes() {
     );
 }
 
-/// Per-plant `inflow_nonnegativity_cost` (H1 = 100, H2 = 5000 $/(m³/s·h)) produces
-/// distinct inflow-slack objective coefficients in the LP template: H1's equals
-/// `100 * block_hours`, H2's `5000 * block_hours` (justifies the magic asserts).
-#[test]
-fn per_plant_inflow_penalty_differentiates_objective_coefficients() {
+/// The two-hydro system with per-plant `inflow_nonnegativity_cost` (H1 = 100,
+/// H2 = 5000 $/(m³/s·h)).
+fn per_plant_inflow_penalty_system() -> System {
     let hydro_penalties_default = HydroPenalties {
         spillage_cost: 0.0,
         diversion_cost: 0.0,
@@ -792,7 +790,7 @@ fn per_plant_inflow_penalty_differentiates_objective_coefficients() {
     }
 
     let base_system = build_system();
-    let system = SystemBuilder::new()
+    SystemBuilder::new()
         .buses(base_system.buses().to_vec())
         .hydros(base_system.hydros().to_vec())
         .stages(base_system.stages().to_vec())
@@ -801,7 +799,15 @@ fn per_plant_inflow_penalty_differentiates_objective_coefficients() {
         .bounds(base_system.bounds().clone())
         .penalties(resolved_penalties)
         .build()
-        .unwrap();
+        .unwrap()
+}
+
+/// Per-plant `inflow_nonnegativity_cost` (H1 = 100, H2 = 5000 $/(m³/s·h)) produces
+/// distinct inflow-slack objective coefficients in the LP template: H1's equals
+/// `100 * block_hours`, H2's `5000 * block_hours` (justifies the magic asserts).
+#[test]
+fn per_plant_inflow_penalty_differentiates_objective_coefficients() {
+    let system = per_plant_inflow_penalty_system();
 
     let inflow_method = InflowNonNegativityMethod::Penalty;
     let par_lp = PrecomputedPar::build(
@@ -858,6 +864,74 @@ fn per_plant_inflow_penalty_differentiates_objective_coefficients() {
         "H2/H1 objective ratio must be 50 (5000/100), got {}",
         h2_obj / h1_obj
     );
+}
+
+/// Stage-0 inflow-slack objective and template bounds per method: priced methods
+/// carry `c_h * hours / cost_scale` on `[0, +inf)`; an unpriced truncation slack
+/// costs 0 and is fixed at `[0, 0]`; `None` has no slack family.
+#[test]
+fn inflow_slack_objective_and_template_bounds_follow_the_method() {
+    let system = per_plant_inflow_penalty_system();
+    let par_lp = PrecomputedPar::build(
+        system.inflow_models(),
+        &system
+            .stages()
+            .iter()
+            .filter(|s| s.id >= 0)
+            .cloned()
+            .collect::<Vec<_>>(),
+        &system.hydros().iter().map(|h| h.id).collect::<Vec<_>>(),
+        None,
+    )
+    .unwrap();
+    let hydro_models = PrepareHydroModelsResult::default_from_system(&system);
+    let costs = [100.0_f64, 5000.0];
+    let cost_scale = 1_000_000.0_f64;
+    let block_hours = 744.0_f64;
+
+    for method in [
+        InflowNonNegativityMethod::None,
+        InflowNonNegativityMethod::Penalty,
+        InflowNonNegativityMethod::Truncation,
+        InflowNonNegativityMethod::TruncationWithPenalty,
+    ] {
+        let templates = build_stage_templates_resolving_layout(
+            &system,
+            method,
+            &par_lp,
+            &PrecomputedNormal::default(),
+            &hydro_models.production,
+            &hydro_models.evaporation,
+            &ResolvedParameters::default(),
+        )
+        .expect("build_stage_templates_resolving_layout must succeed");
+        let tmpl0 = &templates.templates[0];
+        let slack = &templates.geometry_per_stage[0].inflow_slack;
+
+        if method == InflowNonNegativityMethod::None {
+            assert!(slack.is_empty(), "{method:?}: no slack family");
+            continue;
+        }
+        assert_eq!(slack.len(), N_HYDROS, "{method:?}: one slack per hydro");
+        for (h, c_h) in costs.iter().enumerate() {
+            let col = slack.start + h;
+            let (expected_obj, expected_upper) = if method == InflowNonNegativityMethod::Truncation
+            {
+                (0.0, 0.0)
+            } else {
+                (c_h * block_hours / cost_scale, f64::INFINITY)
+            };
+            assert_eq!(
+                tmpl0.objective[col], expected_obj,
+                "{method:?} h{h} objective"
+            );
+            assert_eq!(tmpl0.col_lower[col], 0.0, "{method:?} h{h} lower bound");
+            assert_eq!(
+                tmpl0.col_upper[col], expected_upper,
+                "{method:?} h{h} upper bound"
+            );
+        }
+    }
 }
 
 /// External test crate cannot see parent's `#[cfg(test)]` surface; mirrors
