@@ -218,32 +218,32 @@
         "method": {
           "$ref": "#/$defs/InflowNonNegativityMethod",
           "default": "penalty",
-          "description": "Method: `\"none\"`, `\"truncation\"`, `\"penalty\"`, or `\"truncation_with_penalty\"`.\n\nDefault: `\"penalty\"`. The penalty objective coefficient is always sourced from\n`penalties.json → hydro.inflow_nonnegativity_cost` (default 1000.0 when absent)."
+          "description": "Method: `\"none\"`, `\"truncation\"`, `\"penalty\"`, or `\"truncation_with_penalty\"`.\n\nDefault: `\"penalty\"`. Under `\"penalty\"` and `\"truncation_with_penalty\"` the\nadded water is priced at the hydro's `inflow_nonnegativity_cost`, whose\nstudy-wide default is `penalties.json → hydro.inflow_nonnegativity_cost`;\nthe cost has no effect under `\"none\"` and `\"truncation\"`."
         }
       },
       "type": "object"
     },
     "InflowNonNegativityMethod": {
-      "description": "Method string for inflow non-negativity enforcement.\n\nAccepted values in `config.json → modeling.inflow_non_negativity.method`:\n\n- `\"none\"` — no enforcement; PAR(p) inflows may be negative.\n- `\"truncation\"` — clamp negative PAR(p) inflows to zero before LP patching.\n- `\"penalty\"` — add slack columns with `inflow_nonnegativity_cost` objective\n  coefficient (sourced from `penalties.json → hydro.inflow_nonnegativity_cost`).\n- `\"truncation_with_penalty\"` — combine both: clamp noise *and* add slack columns.",
+      "description": "Method string for inflow non-negativity enforcement.\n\nAccepted values in `config.json → modeling.inflow_non_negativity.method`.\nUnder every method a hydro's incremental inflow keeps the value the inflow\nmodel gives it, which may be negative, and the next stage's inflow lags carry\nthat value. The methods differ in the water that may be added to it in the\nhydro's water balance:\n\n- `\"none\"` — none; a negative inflow can make a stage infeasible.\n- `\"truncation\"` — exactly `max(-inflow, 0)`, at no cost, so the water\n  balance receives `max(inflow, 0)`.\n- `\"penalty\"` — any non-negative amount, priced at the hydro's\n  `inflow_nonnegativity_cost`.\n- `\"truncation_with_penalty\"` — any amount from 0 to `max(-inflow, 0)`,\n  priced at the hydro's `inflow_nonnegativity_cost`.\n\nKnown limitation of `\"truncation\"` and `\"truncation_with_penalty\"`\n(Larroyd et al. (2022), the paper's §2.5): the lower bound can exceed the\nupper bound, and a `gap` stopping rule (admissible only under enumerated\nforward selection) can then report convergence that has not occurred.",
       "oneOf": [
         {
           "const": "none",
-          "description": "No inflow non-negativity enforcement.",
+          "description": "No water is added; a negative incremental inflow can make a stage infeasible.",
           "type": "string"
         },
         {
           "const": "truncation",
-          "description": "Truncation-based enforcement only (no slack columns).",
+          "description": "Adds exactly `max(-inflow, 0)` to the hydro's water balance, at no cost.",
           "type": "string"
         },
         {
           "const": "penalty",
-          "description": "Penalty-based enforcement via slack columns.\n\nObjective coefficient is `penalties.json → hydro.inflow_nonnegativity_cost`.",
+          "description": "Adds any non-negative amount of water to the hydro's water balance, priced\nat the hydro's `inflow_nonnegativity_cost`.",
           "type": "string"
         },
         {
           "const": "truncation_with_penalty",
-          "description": "Combined truncation and penalty enforcement.",
+          "description": "Adds at most `max(-inflow, 0)` to the hydro's water balance, priced at the\nhydro's `inflow_nonnegativity_cost`.",
           "type": "string"
         }
       ]
