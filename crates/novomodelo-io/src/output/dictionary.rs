@@ -563,10 +563,10 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "hydros",
         "inflow_nonnegativity_slack_m3s",
         "Water added to the incremental inflow in the water balance: the truncation \
-         correction under truncation and truncation_with_penalty, the penalty slack under \
-         penalty, 0 under none. For a PreFilling plant, this water and the plant's \
-         incremental inflow both enter the water balance of the first downstream plant \
-         that is not PreFilling, if any.",
+         correction under truncation, at most the truncation correction under \
+         truncation_with_penalty, the penalty slack under penalty, 0 under none. For a \
+         PreFilling plant, this water and the plant's incremental inflow both enter the \
+         water balance of the first downstream plant that is not PreFilling, if any.",
     ),
     (
         "hydros",
@@ -746,8 +746,9 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "inflow_lags",
         "inflow_m3s",
         "Incremental inflow at this lag as the stage receives it: from the inflow history at \
-         the start of the horizon, from the simulated incremental inflow of earlier stages \
-         afterwards. It may be negative.",
+         the start of the horizon, built afterwards from the simulated incremental inflow of \
+         earlier stages (aggregated over the lag's period when the period spans several \
+         stages). It may be negative.",
     ),
     ("in_transit", "stage_id", "Stage index"),
     (

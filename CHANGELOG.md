@@ -13,18 +13,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **BREAKING:** `truncation` and `truncation_with_penalty` follow
   Larroyd et al. (2022): a negative inflow is no longer raised to zero.
-  `incremental_inflow_m3s` and the inflow lags report the inflow model's value,
-  which can be negative, and `inflow_nonnegativity_slack_m3s` reports the water
-  added to it. `truncation` adds exactly the amount that lifts the inflow to
-  zero, at no cost; `truncation_with_penalty` adds at most that amount, priced
-  at `inflow_nonnegativity_cost`. Results change for studies using either
+  `incremental_inflow_m3s` reports the inflow model's value, which can be
+  negative, the inflow lags are built from it, and
+  `inflow_nonnegativity_slack_m3s` reports the water added to it. `truncation`
+  adds exactly the amount that lifts the inflow to zero, at no cost;
+  `truncation_with_penalty` adds at most that amount, priced at
+  `inflow_nonnegativity_cost`. Results change for studies using either
   method when an inflow draw is negative. Retrain policies trained with either
   method. Known limitation (the paper's §2.5): the lower bound can exceed the
   upper bound, and a `gap` stopping rule, admitted only under enumerated
   forward selection, can then report convergence that has not occurred.
 - Under `penalty`, the `inflow_nonnegativity_slack_m3s` of a PreFilling plant
-  adds water at the downstream plant that receives its inflow. It added none
-  before, so results can change for `penalty` studies with PreFilling plants.
+  adds water at the downstream plant that receives its inflow, if there is
+  one. It added none before, so results can change for `penalty` studies with
+  PreFilling plants.
 
 ### Fixed
 

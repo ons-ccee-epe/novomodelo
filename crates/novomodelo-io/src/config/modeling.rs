@@ -6,9 +6,10 @@ use serde::{Deserialize, Serialize};
 ///
 /// Accepted values in `config.json → modeling.inflow_non_negativity.method`.
 /// Under every method a hydro's incremental inflow keeps the value the inflow
-/// model gives it, which may be negative, and the next stage's inflow lags carry
-/// that value. The methods differ in the water that may be added to it in the
-/// hydro's water balance:
+/// model gives it, which may be negative, and the inflow lags of later stages
+/// are built from that value (aggregated over the lag's period when the period
+/// spans several stages). The methods differ in the water that may be added to
+/// the inflow in the hydro's water balance:
 ///
 /// - `"none"` — none; a negative inflow can make a stage infeasible.
 /// - `"truncation"` — exactly `max(-inflow, 0)`, at no cost, so the water
