@@ -42,9 +42,9 @@ pub enum InflowNonNegativityMethod {
     /// `penalties.json → hydro.inflow_nonnegativity_cost` (default 1000.0).
     Penalty,
 
-    /// Both `Truncation` and `Penalty`: the noise is clamped and slack columns
-    /// let the solver undo part of the clamping if cost-effective. Matches
-    /// `SPTcpp`'s `truncamento_penalizacao` mode.
+    /// The PAR value stays raw, and the hydro's slack column, bounded per solve to
+    /// `[0, max(-r, 0)]` for that solve's raw PAR value `r`, is priced at
+    /// `inflow_nonnegativity_cost`.
     TruncationWithPenalty,
 }
 

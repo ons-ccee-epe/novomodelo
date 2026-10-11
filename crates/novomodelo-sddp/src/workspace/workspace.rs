@@ -639,6 +639,17 @@ pub struct ScratchBuffers {
     // `ncs_col_upper_buf`. `ncs_col_upper_buf` (slot order) cannot be consumed
     // directly because extraction indexes by active-local column.
     pub(crate) ncs_col_upper_extract_buf: Vec<f64>,
+    // Per-hydro physical slack bounds (m3/s) written by `transform_inflow_noise`;
+    // the `_col_*` buffers are `apply_inflow_slack_col_bounds`'s dense-column
+    // targets, divided by `col_scale`.
+    pub(crate) inflow_slack_lower_buf: Vec<f64>,
+    pub(crate) inflow_slack_upper_buf: Vec<f64>,
+    pub(crate) inflow_slack_col_indices_buf: Vec<usize>,
+    pub(crate) inflow_slack_col_lower_scaled_buf: Vec<f64>,
+    pub(crate) inflow_slack_col_upper_scaled_buf: Vec<f64>,
+    /// Stage slack-column start `inflow_slack_col_indices_buf` was last built for;
+    /// `usize::MAX` initially. Keyed on the start, not the length (always `hydro_count`).
+    pub(crate) last_inflow_slack_col_start: usize,
     pub(crate) load_rhs_buf: Vec<f64>,
     pub(crate) row_lower_buf: Vec<f64>,
     pub(crate) z_inflow_rhs_buf: Vec<f64>,
@@ -799,6 +810,12 @@ impl ScratchBuffers {
             ncs_col_upper_active_buf: Vec::new(),
             last_ncs_col_start: usize::MAX,
             ncs_col_upper_extract_buf: Vec::new(),
+            inflow_slack_lower_buf: Vec::with_capacity(hydro_count),
+            inflow_slack_upper_buf: Vec::with_capacity(hydro_count),
+            inflow_slack_col_indices_buf: Vec::with_capacity(hydro_count),
+            inflow_slack_col_lower_scaled_buf: Vec::with_capacity(hydro_count),
+            inflow_slack_col_upper_scaled_buf: Vec::with_capacity(hydro_count),
+            last_inflow_slack_col_start: usize::MAX,
             load_rhs_buf: Vec::with_capacity(load_row_capacity),
             row_lower_buf: Vec::new(),
             z_inflow_rhs_buf: Vec::with_capacity(hydro_count),
@@ -1150,6 +1167,12 @@ impl ScratchBuffers {
             ncs_col_upper_active_buf: Vec::new(),
             last_ncs_col_start: usize::MAX,
             ncs_col_upper_extract_buf: Vec::new(),
+            inflow_slack_lower_buf: Vec::with_capacity(hydro_count),
+            inflow_slack_upper_buf: Vec::with_capacity(hydro_count),
+            inflow_slack_col_indices_buf: Vec::with_capacity(hydro_count),
+            inflow_slack_col_lower_scaled_buf: Vec::with_capacity(hydro_count),
+            inflow_slack_col_upper_scaled_buf: Vec::with_capacity(hydro_count),
+            last_inflow_slack_col_start: usize::MAX,
             load_rhs_buf: Vec::new(),
             row_lower_buf: Vec::new(),
             z_inflow_rhs_buf: Vec::with_capacity(hydro_count),

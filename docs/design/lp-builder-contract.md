@@ -36,6 +36,8 @@ per-solve edits are:
 - the right-hand sides of the inflow-definition rows (`fill_z_inflow_patches`) and of
   the load-balance rows (`fill_load_patches`);
 - the column bounds of stochastic non-controllable sources (`apply_ncs_col_bounds`);
+- the column bounds of the inflow-slack columns under the truncation methods
+  (`apply_inflow_slack_col_bounds`), divided by the column scale;
 - the future-cost column θ, pinned to zero at the terminal stage;
 - the cut rows appended to, or toggled on, a solver instance (owned by the cut layer,
   which reads the builder's row count, θ column and column scales).
@@ -119,8 +121,8 @@ depends on. Their full statements, with the regression tests that pin them, are 
   - a stage's base row count is fixed and cut rows are appended after it, the
     boundary that basis reconstruction (`ReconstructionTarget`) and cut-dual
     extraction read;
-  - a column scale has one meaning: state pins and reduced costs are divided by it,
-    and commitment columns are left unscaled;
+  - a column scale has one meaning: state pins, inflow-slack bounds and reduced costs
+    are divided by it, and commitment columns are left unscaled;
   - state boxes are built from physical bounds before column scaling is applied;
   - θ is the same column at every stage, and its objective coefficient is the
     stage's one-step discount factor.

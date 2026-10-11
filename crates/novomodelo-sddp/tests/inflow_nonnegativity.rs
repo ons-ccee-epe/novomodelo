@@ -716,8 +716,8 @@ fn test_simulation_slack_output_populated() {
     );
 }
 
-/// `TruncationWithPenalty` (clamping + penalty slack) trains end-to-end and the
-/// LP template carries inflow slack columns.
+/// `TruncationWithPenalty` (raw PAR value, slack capped per solve and priced)
+/// trains end-to-end and the LP template carries inflow slack columns.
 #[test]
 fn truncation_with_penalty_training_completes() {
     let fx = build_fixture_with_method(InflowNonNegativityMethod::TruncationWithPenalty);
@@ -866,9 +866,10 @@ fn per_plant_inflow_penalty_differentiates_objective_coefficients() {
     );
 }
 
-/// Stage-0 inflow-slack objective and template bounds per method: priced methods
-/// carry `c_h * hours / cost_scale` on `[0, +inf)`; an unpriced truncation slack
-/// costs 0 and is fixed at `[0, 0]`; `None` has no slack family.
+/// Stage-0 inflow-slack objective and template bounds per method: `Penalty`
+/// carries `c_h * hours / cost_scale` on `[0, +inf)`; the truncation methods are
+/// fixed at `[0, 0]` in the template (patched per solve), priced only under
+/// `TruncationWithPenalty`; `None` has no slack family.
 #[test]
 fn inflow_slack_objective_and_template_bounds_follow_the_method() {
     let system = per_plant_inflow_penalty_system();
@@ -915,11 +916,19 @@ fn inflow_slack_objective_and_template_bounds_follow_the_method() {
         assert_eq!(slack.len(), N_HYDROS, "{method:?}: one slack per hydro");
         for (h, c_h) in costs.iter().enumerate() {
             let col = slack.start + h;
-            let (expected_obj, expected_upper) = if method == InflowNonNegativityMethod::Truncation
-            {
-                (0.0, 0.0)
+            let expected_obj = if method == InflowNonNegativityMethod::Truncation {
+                0.0
             } else {
-                (c_h * block_hours / cost_scale, f64::INFINITY)
+                c_h * block_hours / cost_scale
+            };
+            let expected_upper = if matches!(
+                method,
+                InflowNonNegativityMethod::Truncation
+                    | InflowNonNegativityMethod::TruncationWithPenalty
+            ) {
+                0.0
+            } else {
+                f64::INFINITY
             };
             assert_eq!(
                 tmpl0.objective[col], expected_obj,

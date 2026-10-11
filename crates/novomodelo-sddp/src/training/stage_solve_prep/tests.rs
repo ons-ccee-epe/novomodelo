@@ -754,3 +754,88 @@ fn run_patches_the_load_row_and_the_z_row_from_the_raw_noise() {
         "the z-inflow row must match the direct transform_inflow_noise reference"
     );
 }
+
+/// `StageSolvePrep::run` patches the inflow-slack column bounds once, after the
+/// state pin, under the truncation methods only. PAR(0) mean 100, sigma 30 and
+/// eta -5 give `r = -50`: `TruncationWithPenalty` caps the slack at 50 with z
+/// left raw; `Truncation` keeps the eta clamp and a `[0, 0]` slack.
+#[test]
+fn run_patches_the_inflow_slack_bounds_only_under_the_truncation_methods() {
+    let state = state_layout(1, 0);
+    let stochastic = make_stochastic_context(None);
+    let templates = vec![minimal_forward_template()];
+    let state_boxes = vec![unbounded_state_box(state.n_state)];
+    let geometry = vec![StageGeometry {
+        inflow_slack: 4..5,
+        ..equipment_free_geometry(&[1]).remove(0)
+    }];
+    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let ctx = fixture.ctx();
+    let horizon = HorizonMode::Finite { num_stages: 1 };
+    let study_dims = study_dims();
+    let current_state = vec![42.0_f64];
+    let raw_noise = vec![-5.0_f64];
+
+    let run = |method: InflowNonNegativityMethod| {
+        let training_ctx = TrainingContext {
+            node_graph: &crate::test_support::chain_node_graph(&stochastic),
+            horizon: &horizon,
+            state: &state,
+            cut_state_layouts: &all_enabled_cut_state_layouts(&state, 1),
+            study_dims: &study_dims,
+            inflow_method: &method,
+            stochastic: &stochastic,
+            initial_state: &[],
+            inflow_scheme: SamplingScheme::InSample,
+            load_scheme: SamplingScheme::InSample,
+            ncs_scheme: SamplingScheme::InSample,
+            stages: &[],
+            historical_library: None,
+            external_inflow_library: None,
+            external_load_library: None,
+            external_ncs_library: None,
+            lag_accum_seed: &[],
+            lag_weight_seed: &[],
+            dcs: None,
+        };
+        let mut scratch = ScratchBuffers::new(&training_ctx, &ctx, minimal_sizing());
+        let mut solver = RecordingSolver::default();
+        let mut patch_buf = PatchBuffer::new(&state, &[], &[]);
+        let params = StageSolvePrepParams {
+            state_source: StateSource(&current_state),
+            raw_noise: &raw_noise,
+        };
+        StageSolvePrep::run(
+            &mut solver,
+            &mut patch_buf,
+            &mut scratch,
+            &ctx,
+            &training_ctx,
+            StageIdx(0),
+            &params,
+        );
+        solver
+    };
+
+    let twp = run(InflowNonNegativityMethod::TruncationWithPenalty);
+    assert_eq!(twp.col_bounds_calls.len(), 2);
+    assert_eq!(
+        twp.col_bounds_calls.last(),
+        Some(&(vec![4_usize], vec![0.0], vec![50.0]))
+    );
+    assert_eq!(twp.row_bounds_calls.last().map(|c| c.1[0]), Some(-50.0));
+
+    let truncation = run(InflowNonNegativityMethod::Truncation);
+    assert_eq!(truncation.col_bounds_calls.len(), 2);
+    assert_eq!(
+        truncation.col_bounds_calls.last(),
+        Some(&(vec![4_usize], vec![0.0], vec![0.0]))
+    );
+
+    for method in [
+        InflowNonNegativityMethod::None,
+        InflowNonNegativityMethod::Penalty,
+    ] {
+        assert_eq!(run(method).col_bounds_calls.len(), 1, "{method:?}");
+    }
+}
