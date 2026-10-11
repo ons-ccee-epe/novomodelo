@@ -1,13 +1,21 @@
 //! Cut-validity, mask-soundness, and tightness oracles for stored Benders cuts, run over an in-code or committed study.
+//!
+//! Validity compares each cut with the successor value whose inflow-slack bounds
+//! are frozen at that cut's own trial state; when the study's inflow method does
+//! not truncate, that is the plain successor value.
 
 #![allow(clippy::expect_used, clippy::panic, clippy::cast_precision_loss)]
 
 use novomodelo_io::Config;
 use novomodelo_io::config::{RowSelectionConfig, StoppingRuleConfig};
+use novomodelo_sddp::context::TrainingContext;
+use novomodelo_sddp::cut::CutPool;
 use novomodelo_sddp::indexer::CutSlot;
 use novomodelo_sddp::setup::{NodePos, StageIdx};
 use novomodelo_sddp::test_support::{
-    stage_state_box_bounds, write_backward_opening_outcome_at_canonical_state_for_probe,
+    inflow_slack_bounds_for_probe, stage_state_box_bounds,
+    write_backward_opening_outcome_at_canonical_state_for_probe,
+    write_backward_opening_outcome_with_inflow_slack_bounds_for_probe,
 };
 use novomodelo_sddp::workspace::StageContext;
 use novomodelo_sddp::{SddpError, StudySetup};
@@ -49,9 +57,15 @@ pub struct CutOracleReport {
     pub off_mask_slots_checked: usize,
     /// The minimum, over every checked pool, of its own feasible-point count.
     pub min_feasible_points: usize,
+    /// (Point, cut-signature) pairs re-solved with the inflow-slack bounds frozen
+    /// at the cut's own trial state, because they differ from the point's own.
+    pub frozen_resolves: usize,
+    /// Of [`Self::frozen_resolves`], the ones infeasible on some opening (the cut
+    /// is trivially valid there).
+    pub frozen_infeasible: usize,
     /// Cut-validity violations.
     pub validity: Vec<String>,
-    /// Tightness violations at a final-iteration trial point.
+    /// Under-tightness violations at a final-iteration trial point.
     pub tightness: Vec<String>,
     /// Mask-soundness violations.
     pub mask: Vec<String>,
@@ -66,6 +80,8 @@ impl Default for CutOracleReport {
             infeasible_sample_points: 0,
             off_mask_slots_checked: 0,
             min_feasible_points: usize::MAX,
+            frozen_resolves: 0,
+            frozen_infeasible: 0,
             validity: Vec::new(),
             tightness: Vec::new(),
             mask: Vec::new(),
@@ -80,13 +96,16 @@ impl CutOracleReport {
     pub fn assert_sound(&self, label: &str) {
         eprintln!(
             "{label}: pools_checked={} cuts_checked={} points_checked={} \
-             infeasible_sample_points={} off_mask_slots_checked={} min_feasible_points={}",
+             infeasible_sample_points={} off_mask_slots_checked={} min_feasible_points={} \
+             frozen_resolves={} frozen_infeasible={}",
             self.pools_checked,
             self.cuts_checked,
             self.points_checked,
             self.infeasible_sample_points,
             self.off_mask_slots_checked,
             self.min_feasible_points,
+            self.frozen_resolves,
+            self.frozen_infeasible,
         );
         assert!(
             self.pools_checked > 0,
@@ -213,10 +232,45 @@ fn check_mask(
     }
 }
 
+/// One cut's inflow-slack bounds `(lower, upper)` per opening of the successor
+/// stage, at the cut's trial state; empty bounds when the method does not truncate.
+type SlackSignature = Vec<(Vec<f64>, Vec<f64>)>;
+
+fn signatures_equal(a: &SlackSignature, b: &SlackSignature) -> bool {
+    let same_bits = |u: &[f64], v: &[f64]| {
+        u.len() == v.len() && u.iter().zip(v).all(|(p, q)| p.to_bits() == q.to_bits())
+    };
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| same_bits(&x.0, &y.0) && same_bits(&x.1, &y.1))
+}
+
+fn slack_signature_at(
+    occ: &OracleCtx<'_>,
+    ws: &mut novomodelo_sddp::workspace::SolverWorkspace<ActiveSolver>,
+    training_ctx: &TrainingContext<'_>,
+    s: usize,
+    state: &[f64],
+) -> SlackSignature {
+    (0..occ.tree_view.n_openings(s))
+        .map(|o| {
+            inflow_slack_bounds_for_probe(
+                ws,
+                training_ctx,
+                StageIdx(s),
+                state,
+                occ.tree_view.opening(s, o),
+            )
+        })
+        .collect()
+}
+
 /// Probe every opening of stage `s = t + 1` at sample point `x` (stage `t`'s
 /// outgoing state), aggregating the equal-weighted successor value `Q̂(x̃)` and
 /// collecting each opening's raw (unaggregated) cut coefficients for the mask
-/// child-side check.
+/// child-side check. With `frozen`, each opening's inflow-slack bounds are
+/// overwritten by the signature's instead of recomputed at `x`.
 fn evaluate_point(
     label: &str,
     occ: &OracleCtx<'_>,
@@ -224,6 +278,7 @@ fn evaluate_point(
     t: usize,
     s: usize,
     x: &[f64],
+    frozen: Option<&SlackSignature>,
 ) -> Result<PointEval, SddpError> {
     let stage_ctx = StageContext {
         templates: occ.frozen_templates,
@@ -242,17 +297,35 @@ fn evaluate_point(
 
     for o in 0..n_openings {
         let raw_noise = occ.tree_view.opening(s, o);
-        let probe = write_backward_opening_outcome_at_canonical_state_for_probe(
-            ws,
-            &stage_ctx,
-            &training_ctx,
-            successor_pool,
-            cut_state,
-            StageIdx(s),
-            node_id,
-            x,
-            raw_noise,
-        )?;
+        let probe = match frozen {
+            None => write_backward_opening_outcome_at_canonical_state_for_probe(
+                ws,
+                &stage_ctx,
+                &training_ctx,
+                successor_pool,
+                cut_state,
+                StageIdx(s),
+                node_id,
+                x,
+                raw_noise,
+            )?,
+            Some(signature) => {
+                write_backward_opening_outcome_with_inflow_slack_bounds_for_probe(
+                    ws,
+                    &stage_ctx,
+                    &training_ctx,
+                    successor_pool,
+                    cut_state,
+                    StageIdx(s),
+                    node_id,
+                    x,
+                    raw_noise,
+                    &signature[o].0,
+                    &signature[o].1,
+                )?
+                .0
+            }
+        };
         assert_eq!(
             probe.outcome.coefficients.len(),
             occ.setup.fcf.pools[t].state_dimension,
@@ -273,8 +346,9 @@ fn evaluate_point(
 }
 
 // Rationale (too_many_arguments): bundles the per-run oracle context, this
-// pool's own trial/box points, the solver workspace, and the accumulating
-// report; a second wrapper struct would just relocate the same values.
+// pool's own trial/box points and per-cut trial states, the solver workspace,
+// and the accumulating report; a second wrapper struct would just relocate the
+// same values.
 #[allow(clippy::too_many_arguments)]
 fn check_pool(
     label: &str,
@@ -283,6 +357,7 @@ fn check_pool(
     occ: &OracleCtx<'_>,
     trial_points: &[Vec<f64>],
     box_points: &[Vec<f64>],
+    cut_trial_states: &[(usize, Vec<f64>)],
     ws: &mut novomodelo_sddp::workspace::SolverWorkspace<ActiveSolver>,
     report: &mut CutOracleReport,
 ) {
@@ -302,12 +377,27 @@ fn check_pool(
         .collect();
     report.off_mask_slots_checked += off_mask.len();
 
+    let mut cut_signatures: Vec<SlackSignature> = Vec::new();
+    let cut_signature_index: Vec<usize> = cut_trial_states
+        .iter()
+        .map(|(_, x_hat)| {
+            let signature = slack_signature_at(occ, ws, &training_ctx, s, x_hat);
+            cut_signatures
+                .iter()
+                .position(|known| signatures_equal(known, &signature))
+                .unwrap_or_else(|| {
+                    cut_signatures.push(signature);
+                    cut_signatures.len() - 1
+                })
+        })
+        .collect();
+
     let n_trial = trial_points.len();
     let mut feasible_count = 0usize;
 
     for (idx, x) in trial_points.iter().chain(box_points).enumerate() {
         let is_trial = idx < n_trial;
-        match evaluate_point(label, occ, ws, t, s, x) {
+        match evaluate_point(label, occ, ws, t, s, x, None) {
             Ok(eval) => {
                 feasible_count += 1;
                 report.points_checked += 1;
@@ -321,25 +411,49 @@ fn check_pool(
                     *slot = eval.canonical_x[cut_state_t.global_state_index(CutSlot::new(j)).get()];
                 }
 
-                for (_, intercept, beta) in pool_t.active_cuts() {
-                    let lhs = intercept + dot(beta, &proj);
-                    let bound = q_tol(eval.q_hat, lhs);
-                    if lhs > eval.q_hat + bound {
+                let point_signature = slack_signature_at(occ, ws, &training_ctx, s, x);
+                let frozen_q_hat: Vec<f64> = cut_signatures
+                    .iter()
+                    .map(|signature| {
+                        if signatures_equal(signature, &point_signature) {
+                            return eval.q_hat;
+                        }
+                        report.frozen_resolves += 1;
+                        match evaluate_point(label, occ, ws, t, s, x, Some(signature)) {
+                            Ok(frozen) => frozen.q_hat,
+                            Err(SddpError::Infeasible { .. }) => {
+                                report.frozen_infeasible += 1;
+                                f64::INFINITY
+                            }
+                            Err(other) => panic!(
+                                "{label}: pool {t} point {idx} frozen probe failed unexpectedly: {other}"
+                            ),
+                        }
+                    })
+                    .collect();
+
+                for ((slot, _), &sig) in cut_trial_states.iter().zip(&cut_signature_index) {
+                    let q_hat = frozen_q_hat[sig];
+                    let lhs = pool_t.intercept(*slot) + dot(pool_t.coefficient_row(*slot), &proj);
+                    let bound = q_tol(q_hat, lhs);
+                    if lhs > q_hat + bound {
                         report.validity.push(format!(
-                            "{label}: pool {t} point {idx}: cut value {lhs} exceeds \
-                             Q_hat={} + tol={bound}",
-                            eval.q_hat
+                            "{label}: pool {t} point {idx}: slot {slot} cut value {lhs} exceeds \
+                             frozen Q_hat={q_hat} + tol={bound}",
                         ));
                     }
                 }
 
+                // Under-tightness only: a cut frozen at another trial state may sit above
+                // this point's own successor value (the paper's §2.5 gap); the frozen
+                // comparator above is what bounds the cuts from above.
                 if is_trial {
                     let evaluated = pool_t.evaluate_at_state(&proj);
                     let bound = q_tol(evaluated, eval.q_hat);
-                    if (evaluated - eval.q_hat).abs() > bound {
+                    if evaluated < eval.q_hat - bound {
                         report.tightness.push(format!(
                             "{label}: pool {t} trial point {idx}: evaluate_at_state={evaluated} \
-                             Q_hat={} tol={bound}",
+                             below Q_hat={} tol={bound}",
                             eval.q_hat
                         ));
                     }
@@ -376,10 +490,63 @@ fn check_pool(
     report.min_feasible_points = report.min_feasible_points.min(feasible_count);
 }
 
+/// Pairs every active cut slot `j` of pool `t` with the state it was generated
+/// at: archive position `j - warm_start_count` of the pool's node, which holds
+/// every iteration's trial states in slot order.
+///
+/// # Panics
+///
+/// Panics if the archive layout does not match the slot formula (a loaded
+/// policy, a trimmed archive, or `visit_stride != forward_passes`), or if a
+/// cut's recorded `(iteration, forward pass)` disagrees with its slot.
+fn recover_cut_trial_states(
+    label: &str,
+    t: usize,
+    pool: &CutPool,
+    flat: &[f64],
+    n_state: usize,
+    count: usize,
+    forward_passes: usize,
+) -> Vec<(usize, Vec<f64>)> {
+    let visit_stride = pool.visit_stride as usize;
+    let warm_start = pool.warm_start_count as usize;
+    assert_eq!(warm_start, 0, "{label}: pool {t}: warm_start_count");
+    assert_eq!(
+        count,
+        ORACLE_ITERATIONS as usize * visit_stride,
+        "{label}: pool {t}: archived states != ORACLE_ITERATIONS * visit_stride"
+    );
+    assert_eq!(
+        visit_stride, forward_passes,
+        "{label}: pool {t}: visit_stride != forward_passes"
+    );
+    pool.active_cuts()
+        .map(|(j, _, _)| {
+            let pos = j - warm_start;
+            assert!(
+                pos < count,
+                "{label}: pool {t}: slot {j} has no archived state"
+            );
+            let meta = pool.metadata(j);
+            assert_eq!(
+                meta.forward_pass_index as usize,
+                pos % visit_stride,
+                "{label}: pool {t}: slot {j} forward_pass_index"
+            );
+            assert_eq!(
+                meta.iteration_generated.checked_sub(pool.iteration_base),
+                Some((pos / visit_stride) as u64),
+                "{label}: pool {t}: slot {j} iteration_generated"
+            );
+            (j, flat[pos * n_state..(pos + 1) * n_state].to_vec())
+        })
+        .collect()
+}
+
 /// Trains `setup` with `HiGHS` on a single rank/thread under
 /// [`apply_oracle_config`]'s settings, then gates every stored cut on the
-/// validity, tightness, and mask-soundness oracles over each producer stage
-/// `t` whose pool has at least one active cut.
+/// validity, under-tightness, and mask-soundness oracles over each producer
+/// stage `t` whose pool has at least one active cut.
 ///
 /// # Panics
 ///
@@ -479,6 +646,16 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
             box_points.push(box_random(&lo, &hi, &trial_points[0], &mut rng));
         }
 
+        let cut_trial_states = recover_cut_trial_states(
+            label,
+            t,
+            &setup.fcf.pools[t],
+            flat,
+            n_state,
+            count,
+            forward_passes,
+        );
+
         check_pool(
             label,
             t,
@@ -486,6 +663,7 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
             &occ,
             &trial_points,
             &box_points,
+            &cut_trial_states,
             ws,
             &mut report,
         );

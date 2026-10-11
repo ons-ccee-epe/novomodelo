@@ -11,15 +11,33 @@ mod common;
 
 use novomodelo_core::System;
 use novomodelo_io::Config;
+use novomodelo_io::config::InflowNonNegativityMethod;
 use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::setup::{NodePos, StageIdx};
 use novomodelo_sddp::test_support::decks::committed_decks;
+use novomodelo_sddp::test_support::{
+    inflow_slack_bounds_for_probe, stage_state_box_bounds,
+    write_backward_opening_outcome_with_inflow_slack_bounds_for_probe,
+};
+use novomodelo_solver::ActiveSolver;
 
 use common::cut_oracles::{apply_oracle_config, run_cut_oracles};
 use common::in_code_studies::{
     ChronologicalNoiseSpec, chronological_noise_study, discounted_anticipated_study,
     mixed_lead_anticipated_study, parallel_multiblock_evaporation_study, stochastic_parallel_study,
 };
-use common::{build_setup_in_code, build_setup_in_code_with_models, fresh_setup_with};
+use common::{StubComm, build_setup_in_code, build_setup_in_code_with_models, fresh_setup_with};
+
+const D19: &str = "examples/deterministic/d19-multi-hydro-par";
+
+fn d19_setup(mutate: impl FnOnce(&mut Config)) -> StudySetup {
+    let decks = committed_decks();
+    let deck = decks
+        .iter()
+        .find(|deck| deck.key == D19)
+        .unwrap_or_else(|| panic!("committed deck {D19} is absent"));
+    fresh_setup_with(&deck.dir, mutate)
+}
 
 fn oracle_setup(system: System, mut config: Config) -> StudySetup {
     apply_oracle_config(&mut config);
@@ -140,4 +158,117 @@ fn cut_oracles_hold_on_every_committed_deck_with_lag_or_anticipated_state() {
         any_max_par_order,
         "at least one selected deck must have max_par_order > 0"
     );
+}
+
+#[test]
+fn inflow_slack_bounds_for_probe_evaluates_the_given_state() {
+    let setup = d19_setup(|config| {
+        apply_oracle_config(config);
+        config.modeling.inflow_non_negativity.method =
+            InflowNonNegativityMethod::TruncationWithPenalty;
+    });
+    let training_ctx = setup.training_ctx();
+    let state = setup.stage_state();
+    let par = training_ctx.stochastic.par();
+    let tree_view = training_ctx.stochastic.tree_view();
+    let raw_noise = tree_view.opening(1, 0);
+
+    let psi_sum: Vec<f64> = (0..state.hydro_count)
+        .map(|h| par.psi_slice(1, h).iter().sum())
+        .collect();
+    let guarded: Vec<usize> = (0..state.hydro_count)
+        .filter(|&h| psi_sum[h].abs() > 1e-6)
+        .collect();
+    assert!(
+        !guarded.is_empty(),
+        "vacuity guard: no hydro has a lag-sensitive PAR(1) model at stage 1"
+    );
+
+    let state_with_lag_term = |term: f64| {
+        let mut x = training_ctx.initial_state.to_vec();
+        for &h in &guarded {
+            for lag in 0..state.max_par_order {
+                x[state.inflow_lags.start + lag * state.hydro_count + h] = term / psi_sum[h];
+            }
+        }
+        x
+    };
+    let x_lo = state_with_lag_term(-1.0e6);
+    let x_hi = state_with_lag_term(1.0e6);
+
+    let comm = StubComm;
+    let mut workspace_pool = setup
+        .create_workspace_pool(&comm, 1, ActiveSolver::new)
+        .expect("create_workspace_pool must succeed");
+    let ws = &mut workspace_pool.workspaces[0];
+
+    let (lo_lower, lo_upper) =
+        inflow_slack_bounds_for_probe(ws, &training_ctx, StageIdx(1), &x_lo, raw_noise);
+    let (_, hi_upper) =
+        inflow_slack_bounds_for_probe(ws, &training_ctx, StageIdx(1), &x_hi, raw_noise);
+    for &h in &guarded {
+        assert!(
+            lo_upper[h] > 0.0,
+            "hydro {h}: x_lo upper bound {}",
+            lo_upper[h]
+        );
+        assert_eq!(lo_lower[h], 0.0, "hydro {h}: x_lo lower bound");
+        assert_eq!(
+            hi_upper[h].to_bits(),
+            0.0_f64.to_bits(),
+            "hydro {h}: x_hi upper bound {}",
+            hi_upper[h]
+        );
+    }
+}
+
+#[test]
+fn frozen_inflow_slack_bounds_reach_the_successor_lp() {
+    let setup = d19_setup(|_| {});
+    let training_ctx = setup.training_ctx();
+    let stage_ctx = setup.stage_ctx();
+    let initial = training_ctx.initial_state;
+    let (lo, hi) = stage_state_box_bounds(&setup, 1);
+    let canonical_x: Vec<f64> = (0..initial.len())
+        .map(|j| {
+            if lo[j].is_finite() && hi[j].is_finite() {
+                f64::midpoint(lo[j], hi[j])
+            } else {
+                initial[j]
+            }
+        })
+        .collect();
+    let tree_view = training_ctx.stochastic.tree_view();
+    let raw_noise = tree_view.opening(2, 0);
+    let node_id = setup.inputs.node_graph.node_ids[NodePos(2)];
+
+    let comm = StubComm;
+    let mut workspace_pool = setup
+        .create_workspace_pool(&comm, 1, ActiveSolver::new)
+        .expect("create_workspace_pool must succeed");
+    let ws = &mut workspace_pool.workspaces[0];
+
+    for bounds in [[1.0, 2.0], [0.0, 0.0]] {
+        let (_, slack_primal) = write_backward_opening_outcome_with_inflow_slack_bounds_for_probe(
+            ws,
+            &stage_ctx,
+            &training_ctx,
+            &setup.fcf.pools[2],
+            &training_ctx.cut_state_layouts[1],
+            StageIdx(2),
+            node_id,
+            &canonical_x,
+            raw_noise,
+            &bounds,
+            &bounds,
+        )
+        .expect("the successor LP must be feasible with the slack pinned");
+        assert_eq!(slack_primal.len(), bounds.len());
+        for (v, expected) in slack_primal.iter().zip(bounds) {
+            assert!(
+                (v - expected).abs() <= 1e-9 * 1.0_f64.max(v.abs()),
+                "slack primal {v} != pinned {expected}"
+            );
+        }
+    }
 }

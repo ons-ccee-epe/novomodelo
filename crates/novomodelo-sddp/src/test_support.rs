@@ -69,7 +69,9 @@ use crate::lp::indexer::{
     AnticipatedPlants, BlockRowFamily, CutStateProjection, EntityPositions, HydroCellIndex,
     HydroSys, StateDim, StateSpace, StudyDimensions,
 };
-use crate::noise::{DownstreamAccumState, LagAccumState};
+use crate::noise::{
+    DownstreamAccumState, LagAccumState, apply_inflow_slack_col_bounds, transform_inflow_noise,
+};
 use crate::policy::policy_load::{
     FullFcf, PolicyLoadProof, PolicyStageManifest, validate_policy_load,
 };
@@ -1818,6 +1820,107 @@ pub fn write_backward_opening_outcome_at_canonical_state_for_probe<S: SolverInte
     canonical_x_hat: &[f64],
     raw_noise: &[f64],
 ) -> Result<CanonicalCutProbe, SddpError> {
+    probe_backward_opening(
+        ws,
+        ctx,
+        training_ctx,
+        cut_pool,
+        cut_state,
+        stage,
+        node_id,
+        canonical_x_hat,
+        raw_noise,
+        None,
+    )
+    .map(|(probe, _)| probe)
+}
+
+/// The per-hydro inflow-slack column bounds `(lower, upper)`, in physical m³/s,
+/// that a solve of `stage` pinned at `pinned_state` under `raw_noise` patches; both
+/// are empty when the inflow method does not truncate. Touches no LP.
+pub fn inflow_slack_bounds_for_probe<S: SolverInterface>(
+    ws: &mut SolverWorkspace<S>,
+    training_ctx: &TrainingContext<'_>,
+    stage: StageIdx,
+    pinned_state: &[f64],
+    raw_noise: &[f64],
+) -> (Vec<f64>, Vec<f64>) {
+    transform_inflow_noise(
+        raw_noise,
+        stage,
+        pinned_state,
+        training_ctx,
+        &mut ws.scratch,
+    );
+    (
+        ws.scratch.inflow_slack_lower_buf.clone(),
+        ws.scratch.inflow_slack_upper_buf.clone(),
+    )
+}
+
+/// [`write_backward_opening_outcome_at_canonical_state_for_probe`] with the
+/// inflow-slack column bounds overwritten by `inflow_slack_lower` /
+/// `inflow_slack_upper` (physical m³/s, one per hydro) after the production
+/// patch and before the solve. The second value is the solved slack primal per
+/// hydro, unscaled; empty when the stage has no slack family.
+///
+/// # Panics
+///
+/// Panics if `canonical_x_hat.len() != StateSpace::n_state` or either bound
+/// slice's length differs from the stage's slack-column count.
+///
+/// # Errors
+///
+/// Propagates [`SddpError`] from the stage solve.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the canonical-state probe's nine solve inputs plus the slack-bound override; a bundling struct would only relocate them"
+)]
+pub fn write_backward_opening_outcome_with_inflow_slack_bounds_for_probe<
+    S: SolverInterface + Send,
+>(
+    ws: &mut SolverWorkspace<S>,
+    ctx: &StageContext<'_>,
+    training_ctx: &TrainingContext<'_>,
+    cut_pool: &CutPool,
+    cut_state: &CutStateProjection,
+    stage: StageIdx,
+    node_id: NodeId,
+    canonical_x_hat: &[f64],
+    raw_noise: &[f64],
+    inflow_slack_lower: &[f64],
+    inflow_slack_upper: &[f64],
+) -> Result<(CanonicalCutProbe, Vec<f64>), SddpError> {
+    probe_backward_opening(
+        ws,
+        ctx,
+        training_ctx,
+        cut_pool,
+        cut_state,
+        stage,
+        node_id,
+        canonical_x_hat,
+        raw_noise,
+        Some((inflow_slack_lower, inflow_slack_upper)),
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the canonical-state probe's nine solve inputs plus the slack-bound override; a bundling struct would only relocate them"
+)]
+fn probe_backward_opening<S: SolverInterface + Send>(
+    ws: &mut SolverWorkspace<S>,
+    ctx: &StageContext<'_>,
+    training_ctx: &TrainingContext<'_>,
+    cut_pool: &CutPool,
+    cut_state: &CutStateProjection,
+    stage: StageIdx,
+    node_id: NodeId,
+    canonical_x_hat: &[f64],
+    raw_noise: &[f64],
+    slack_override: Option<(&[f64], &[f64])>,
+) -> Result<(CanonicalCutProbe, Vec<f64>), SddpError> {
     let layout = training_ctx.state;
     assert_eq!(
         canonical_x_hat.len(),
@@ -1830,19 +1933,38 @@ pub fn write_backward_opening_outcome_at_canonical_state_for_probe<S: SolverInte
     ws.solver.load_model(template);
     patch_backward_opening_for_probe(ws, ctx, training_ctx, stage, canonical_x_hat, raw_noise);
 
+    let geometry = &ctx.geometry_per_stage[stage.0];
+    let col_scale = &template.col_scale;
+    if let Some((lower, upper)) = slack_override {
+        assert_eq!(
+            lower.len(),
+            geometry.inflow_slack.len(),
+            "override lower length"
+        );
+        assert_eq!(
+            upper.len(),
+            geometry.inflow_slack.len(),
+            "override upper length"
+        );
+        ws.scratch.inflow_slack_lower_buf.clear();
+        ws.scratch.inflow_slack_lower_buf.extend_from_slice(lower);
+        ws.scratch.inflow_slack_upper_buf.clear();
+        ws.scratch.inflow_slack_upper_buf.extend_from_slice(upper);
+        apply_inflow_slack_col_bounds(&mut ws.solver, &mut ws.scratch, geometry, col_scale);
+    }
+
     let mut stats_before = SolverStatistics::default();
     ws.solver.statistics_into(&mut stats_before);
     let mut state_duals = std::mem::take(&mut ws.backward_accum.state_duals_buf);
     let view = solve_stage_for_probe(ws, ctx, cut_pool, None, stage, 0, node_id)?;
 
-    let col_scale = &template.col_scale;
     let objective = extract_state_duals_only(&view, cut_state, col_scale, &mut state_duals);
+    let unscaled_primal =
+        |col: usize| view.primal[col] * col_scale.get(col).copied().unwrap_or(1.0);
     let pinned_x_hat: Vec<f64> = (0..layout.n_state)
-        .map(|j| {
-            let col = layout.state_to_lp_incoming_column(StateDim::new(j)).get();
-            view.primal[col] * col_scale.get(col).copied().unwrap_or(1.0)
-        })
+        .map(|j| unscaled_primal(layout.state_to_lp_incoming_column(StateDim::new(j)).get()))
         .collect();
+    let slack_primal: Vec<f64> = geometry.inflow_slack.clone().map(unscaled_primal).collect();
     ws.backward_accum.state_duals_buf = state_duals;
 
     let mut stats_after = SolverStatistics::default();
@@ -1875,11 +1997,14 @@ pub fn write_backward_opening_outcome_at_canonical_state_for_probe<S: SolverInte
         &stats_after,
     );
 
-    Ok(CanonicalCutProbe {
-        outcome: ws.backward_accum.outcomes[0].clone(),
-        canonical_x_hat: canonical_x_hat.to_vec(),
-        pinned_x_hat,
-    })
+    Ok((
+        CanonicalCutProbe {
+            outcome: ws.backward_accum.outcomes[0].clone(),
+            canonical_x_hat: canonical_x_hat.to_vec(),
+            pinned_x_hat,
+        },
+        slack_primal,
+    ))
 }
 
 /// Trial-point states in the flat shape the passes index, `records[m * n_stages + stage]`.
