@@ -88,9 +88,7 @@ use crate::time_value::{PostStudyResolved, TimeValue};
 use crate::training::backward::{
     extract_state_duals_only, fill_external_opening_noise, write_opening_outcome,
 };
-use crate::training::stage_solve_prep::{
-    InflowNoise, StageSolvePrep, StageSolvePrepParams, StateSource,
-};
+use crate::training::stage_solve_prep::{StageSolvePrep, StageSolvePrepParams, StateSource};
 use crate::trajectory::TrajectoryRecord;
 use crate::workspace::{CapturedBasis, ScratchBuffers, SolverWorkspace, WorkspaceSizing};
 use novomodelo_core::scenario::{ExternalLoadRow, ExternalScenarioRow};
@@ -1592,8 +1590,7 @@ pub fn anticipated_slot_over(thermal_id: i32, ring_slot: u32, start: i32, end: i
 
 /// Patch one stage-LP solve exactly as the production backward pass's
 /// `patch_opening_bounds` does (`training/backward/lp_setup.rs`): delegates
-/// verbatim to `StageSolvePrep::run` with the backward-opening variation
-/// point (`InflowNoise::Transform`) — no probe-side reimplementation of the
+/// verbatim to `StageSolvePrep::run` — no probe-side reimplementation of the
 /// patch pipeline (the z-inflow column's RHS, NCS availability).
 pub fn patch_backward_opening_for_probe<S: SolverInterface + Send>(
     ws: &mut SolverWorkspace<S>,
@@ -1605,7 +1602,6 @@ pub fn patch_backward_opening_for_probe<S: SolverInterface + Send>(
 ) {
     let prep_params = StageSolvePrepParams {
         state_source: StateSource(pinned_state),
-        inflow_noise: InflowNoise::Transform,
         raw_noise,
     };
     StageSolvePrep::run(
@@ -1634,7 +1630,6 @@ pub fn patch_backward_opening_for_counterfactual_probe<S: SolverInterface + Send
 ) {
     let prep_params = StageSolvePrepParams {
         state_source: StateSource(pinned_state),
-        inflow_noise: InflowNoise::Transform,
         raw_noise,
     };
     StageSolvePrep::run_ignoring_producer_box(
@@ -3144,7 +3139,6 @@ fn capture_patched_node_template_with_raw_noise(
     let mut scratch = ScratchBuffers::new(&training_ctx, &ctx, WorkspaceSizing::default());
     let params = StageSolvePrepParams {
         state_source: StateSource(incoming_state),
-        inflow_noise: InflowNoise::Transform,
         raw_noise,
     };
     StageSolvePrep::run(

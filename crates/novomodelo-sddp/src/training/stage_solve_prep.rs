@@ -27,17 +27,6 @@ use crate::{
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct StateSource<'a>(pub &'a [f64]);
 
-/// How the water-balance noise buffer this solve reads
-/// (`scratch.z_inflow_rhs_buf`) is populated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum InflowNoise {
-    /// Fill the buffers from `raw_noise` (forward, backward, simulation).
-    Transform,
-    /// The caller has already filled the buffers (the lower bound's PAR-batch
-    /// precompute).
-    PreBuilt,
-}
-
 /// Per-call variation points for [`StageSolvePrep::run`] — the divergences
 /// among the four solve sites.
 ///
@@ -47,8 +36,6 @@ pub(crate) enum InflowNoise {
 pub(crate) struct StageSolvePrepParams<'a> {
     /// Which slice this solve pins as incoming state.
     pub state_source: StateSource<'a>,
-    /// How the inflow-noise buffers are populated.
-    pub inflow_noise: InflowNoise,
     /// This solve's realized noise draw, laid out `[hydro | load-bus | NCS]`.
     pub raw_noise: &'a [f64],
 }
@@ -134,9 +121,7 @@ impl StageSolvePrep {
     {
         let pinned_state = params.state_source.0;
 
-        if params.inflow_noise == InflowNoise::Transform {
-            transform_inflow_noise(params.raw_noise, stage, pinned_state, training_ctx, scratch);
-        }
+        transform_inflow_noise(params.raw_noise, stage, pinned_state, training_ctx, scratch);
 
         let load_blocks = if ctx.load_bus_indices.is_empty() {
             0

@@ -12,7 +12,7 @@ use crate::{
     error::SddpError,
     noise::{DownstreamAccumState, LagAccumState},
     stage_solve::{StageInputs, assemble_outgoing_state, fill_unscaled, run_stage_solve},
-    training::stage_solve_prep::{InflowNoise, StageSolvePrep, StageSolvePrepParams, StateSource},
+    training::stage_solve_prep::{StageSolvePrep, StageSolvePrepParams, StateSource},
     trajectory::TrajectoryRecord,
     workspace::{BasisStoreSliceMut, CapturedBasis, SolverWorkspace},
 };
@@ -69,7 +69,6 @@ pub(crate) fn run_forward_stage<S: SolverInterface + Send>(
 
     let prep_params = StageSolvePrepParams {
         state_source: StateSource(&ws.current_state),
-        inflow_noise: InflowNoise::Transform,
         raw_noise,
     };
     StageSolvePrep::run(

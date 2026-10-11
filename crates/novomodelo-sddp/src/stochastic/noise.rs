@@ -88,35 +88,37 @@ pub(crate) fn transform_inflow_noise(
     match inflow_method {
         InflowNonNegativityMethod::Truncation
         | InflowNonNegativityMethod::TruncationWithPenalty => {
-            let max_order = state.max_par_order;
-            scratch.lag_matrix_buf.clear();
-            scratch
-                .lag_matrix_buf
-                .extend_from_slice(&current_state[state.inflow_lags.clone()]);
-            debug_assert_eq!(scratch.lag_matrix_buf.len(), max_order * n_hydros);
+            if has_par {
+                let max_order = state.max_par_order;
+                scratch.lag_matrix_buf.clear();
+                scratch
+                    .lag_matrix_buf
+                    .extend_from_slice(&current_state[state.inflow_lags.clone()]);
+                debug_assert_eq!(scratch.lag_matrix_buf.len(), max_order * n_hydros);
 
-            scratch.par_inflow_buf.clear();
-            scratch.par_inflow_buf.resize(n_hydros, 0.0);
-            evaluate_par_batch(
-                par_lp,
-                stage.0,
-                &scratch.lag_matrix_buf,
-                hydro_noise,
-                &mut scratch.par_inflow_buf,
-            );
-
-            let has_negative = scratch.par_inflow_buf.iter().any(|&a| a < 0.0);
-            if has_negative {
-                scratch.eta_floor_buf.clear();
-                scratch.eta_floor_buf.resize(n_hydros, f64::NEG_INFINITY);
-                let zero_targets = &scratch.zero_targets_buf[..n_hydros];
-                solve_par_noise_batch(
+                scratch.par_inflow_buf.clear();
+                scratch.par_inflow_buf.resize(n_hydros, 0.0);
+                evaluate_par_batch(
                     par_lp,
                     stage.0,
                     &scratch.lag_matrix_buf,
-                    zero_targets,
-                    &mut scratch.eta_floor_buf,
+                    hydro_noise,
+                    &mut scratch.par_inflow_buf,
                 );
+
+                let has_negative = scratch.par_inflow_buf.iter().any(|&a| a < 0.0);
+                if has_negative {
+                    scratch.eta_floor_buf.clear();
+                    scratch.eta_floor_buf.resize(n_hydros, f64::NEG_INFINITY);
+                    let zero_targets = &scratch.zero_targets_buf[..n_hydros];
+                    solve_par_noise_batch(
+                        par_lp,
+                        stage.0,
+                        &scratch.lag_matrix_buf,
+                        zero_targets,
+                        &mut scratch.eta_floor_buf,
+                    );
+                }
             }
         }
         InflowNonNegativityMethod::None | InflowNonNegativityMethod::Penalty => {}
