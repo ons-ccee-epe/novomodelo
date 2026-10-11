@@ -1134,6 +1134,44 @@ impl BasisStoreSliceMut<'_> {
 }
 
 #[cfg(test)]
+impl ScratchBuffers {
+    #[must_use]
+    pub(crate) fn for_test(hydro_count: usize) -> Self {
+        Self {
+            inflow_m3s_buf: Vec::with_capacity(hydro_count),
+            lag_matrix_buf: Vec::new(),
+            par_inflow_buf: Vec::with_capacity(hydro_count),
+            eta_floor_buf: Vec::with_capacity(hydro_count),
+            zero_targets_buf: vec![0.0_f64; hydro_count],
+            ncs_col_upper_buf: Vec::new(),
+            ncs_col_lower_buf: Vec::new(),
+            ncs_col_indices_buf: Vec::new(),
+            ncs_col_lower_active_buf: Vec::new(),
+            ncs_col_upper_active_buf: Vec::new(),
+            last_ncs_col_start: usize::MAX,
+            ncs_col_upper_extract_buf: Vec::new(),
+            load_rhs_buf: Vec::new(),
+            row_lower_buf: Vec::new(),
+            z_inflow_rhs_buf: Vec::with_capacity(hydro_count),
+            effective_eta_buf: Vec::with_capacity(hydro_count),
+            unscaled_primal: Vec::new(),
+            unscaled_dual: Vec::new(),
+            lag_accumulator: Vec::new(),
+            lag_weight_accum: Vec::new(),
+            downstream_accumulator: Vec::new(),
+            downstream_weight_accum: 0.0,
+            downstream_completed_lags: Vec::new(),
+            downstream_n_completed: 0,
+            recon_slot_lookup: Vec::new(),
+            trajectory_costs_buf: Vec::new(),
+            raw_noise_buf: Vec::new(),
+            corr_scratch: Vec::new(),
+            current_node_buf: Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     #[cfg(feature = "highs")]
     use super::PatchBuffer;

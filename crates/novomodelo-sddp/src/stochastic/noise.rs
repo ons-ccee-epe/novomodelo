@@ -597,41 +597,6 @@ mod tests {
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
-    /// Build a `ScratchBuffers` with the given pre-filled `zero_targets_buf`.
-    fn make_scratch(n_hydros: usize) -> ScratchBuffers {
-        ScratchBuffers {
-            inflow_m3s_buf: Vec::new(),
-            lag_matrix_buf: Vec::new(),
-            par_inflow_buf: Vec::new(),
-            eta_floor_buf: Vec::new(),
-            zero_targets_buf: vec![0.0_f64; n_hydros],
-            ncs_col_upper_buf: Vec::new(),
-            ncs_col_lower_buf: Vec::new(),
-            ncs_col_indices_buf: Vec::new(),
-            ncs_col_lower_active_buf: Vec::new(),
-            ncs_col_upper_active_buf: Vec::new(),
-            last_ncs_col_start: usize::MAX,
-            ncs_col_upper_extract_buf: Vec::new(),
-            load_rhs_buf: Vec::new(),
-            row_lower_buf: Vec::new(),
-            z_inflow_rhs_buf: Vec::new(),
-            effective_eta_buf: Vec::with_capacity(n_hydros),
-            unscaled_primal: Vec::new(),
-            unscaled_dual: Vec::new(),
-            lag_accumulator: Vec::new(),
-            lag_weight_accum: Vec::new(),
-            downstream_accumulator: Vec::new(),
-            downstream_weight_accum: 0.0,
-            downstream_completed_lags: Vec::new(),
-            downstream_n_completed: 0,
-            recon_slot_lookup: Vec::new(),
-            trajectory_costs_buf: Vec::new(),
-            raw_noise_buf: Vec::new(),
-            corr_scratch: Vec::new(),
-            current_node_buf: Vec::new(),
-        }
-    }
-
     /// One-hydro, one-stage `StochasticContext` with AR(0) (white noise).
     ///
     /// PAR(0): inflow = `std_m3s` * eta (no autoregressive term).
@@ -970,7 +935,7 @@ mod tests {
             lag_weight_seed: &[],
             dcs: None,
         };
-        let mut scratch = make_scratch(1);
+        let mut scratch = ScratchBuffers::for_test(1);
 
         transform_inflow_noise(
             &raw_noise,
@@ -1024,7 +989,7 @@ mod tests {
             lag_weight_seed: &[],
             dcs: None,
         };
-        let mut scratch = make_scratch(1);
+        let mut scratch = ScratchBuffers::for_test(1);
 
         transform_inflow_noise(
             &raw_noise,
@@ -1078,7 +1043,7 @@ mod tests {
             lag_weight_seed: &[],
             dcs: None,
         };
-        let mut scratch = make_scratch(1);
+        let mut scratch = ScratchBuffers::for_test(1);
 
         transform_inflow_noise(
             &raw_noise,
@@ -2471,7 +2436,7 @@ mod tests {
 
         // ---- reference: transform, then the pre-collapse gather+set called
         // directly (independent of `apply_ncs_col_bounds`) ----
-        let mut reference_scratch = make_scratch(0);
+        let mut reference_scratch = ScratchBuffers::for_test(0);
         transform_ncs_noise(
             &raw_noise,
             &stoch,
@@ -2505,7 +2470,7 @@ mod tests {
 
         // ---- owner: transform (unchanged), then the collapsed
         // `apply_ncs_col_bounds` ----
-        let mut owner_scratch = make_scratch(0);
+        let mut owner_scratch = ScratchBuffers::for_test(0);
         transform_ncs_noise(
             &raw_noise,
             &stoch,
