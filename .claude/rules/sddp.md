@@ -62,8 +62,11 @@ Read: `lp/indexer/state_space.rs`.
 
 ## Inflow noise enters only through the z rows
 
-The inflow-noise patch touches only hydro `h`'s z-inflow row. Every
-water-balance row instead reads the deterministic column `z_h` through
+The inflow-noise patch touches hydro `h`'s z-inflow row and, under `truncation`
+and `truncation_with_penalty` (the truncation methods), only the column bounds
+of hydro `h`'s own inflow-slack column (`apply_inflow_slack_col_bounds`,
+divided by `col_scale`), never a water-balance row. Every water-balance row
+instead reads the deterministic column `z_h` through
 `push_local_inflow_coupling`: at `−ζ` on a parallel stage, and at `−τ_k` (block
 `k`'s duration hours times `M3S_TO_HM3`) on each chronological block row — on
 the hydro's own water-balance row(s), or its `PreFilling` short-circuit
@@ -77,10 +80,11 @@ row.
 Read: `lp/builder/entries.rs` (`push_local_inflow_coupling`),
 `stochastic/noise.rs` (`transform_inflow_noise`). Pinned by
 `chronological_inflow_noise_moves_only_its_own_hydro`
-(`tests/chronological_inflow_noise.rs`) and
+(`tests/chronological_inflow_noise.rs`, the z-row part: method `none`) and
 `every_noise_dimension_patches_only_its_own_entity`
 (`tests/patch_ownership_sweep.rs`), whose inflow ownership set is the z row
-alone, and `inflow_slack_follows_z_routing_for_prefilling`
+under `none`/`penalty` and the z row plus that column's bounds under the
+truncation methods, and `inflow_slack_follows_z_routing_for_prefilling`
 (`lp/builder/entries.rs`) for the slack route.
 
 ## FPHA uses average storage

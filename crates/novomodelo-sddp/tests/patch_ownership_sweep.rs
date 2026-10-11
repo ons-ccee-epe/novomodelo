@@ -20,6 +20,8 @@ use std::ops::Range;
 use std::path::Path;
 
 use novomodelo_core::{BlockMode, EntityId};
+use novomodelo_io::config::InflowNonNegativityMethod as CfgInflowMethod;
+use novomodelo_sddp::InflowNonNegativityMethod;
 use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::indexer::{BlockIdx, BusSys, HydroSys, NcsSys, StateSpace};
 use novomodelo_sddp::lp::StageGeometry;
@@ -158,14 +160,17 @@ fn check_inflow(
     dim: usize,
     h: usize,
     state: &StateSpace,
+    own_slack: Option<usize>,
     changed: &ChangedIndices,
     violations: &mut Vec<String>,
 ) {
-    if !changed.cols.is_empty() {
-        violations.push(format!(
-            "{deck} node={pos} dim={dim} (inflow h={h}): unexpected column changes {:?}",
-            changed.cols
-        ));
+    for &col in &changed.cols {
+        if Some(col) != own_slack {
+            violations.push(format!(
+                "{deck} node={pos} dim={dim} (inflow h={h}): column {col} outside own slack \
+                 column {own_slack:?}"
+            ));
+        }
     }
     let z = z_row(state, h);
     for &row in &changed.rows {
@@ -243,6 +248,10 @@ fn sweep_setup(
     let n_dims = dims.total();
     let initial_state = oracle_initial_state(setup);
     let zero_noise = vec![0.0_f64; n_dims];
+    let truncates = matches!(
+        *setup.training_ctx().inflow_method,
+        InflowNonNegativityMethod::Truncation | InflowNonNegativityMethod::TruncationWithPenalty
+    );
 
     for pos in (0..setup.inputs.node_graph.nodes.len()).map(NodePos) {
         let stage = setup.inputs.node_graph.nodes[pos].stage.0;
@@ -270,12 +279,18 @@ fn sweep_setup(
 
             if dims.hydro_range().contains(&dim) {
                 *vacuity.entry((mode_tag, "inflow")).or_insert(0) += 1;
+                let own_slack = (truncates && !geom.inflow_slack.is_empty())
+                    .then(|| geom.inflow_slack_col(HydroSys::new(dim)));
+                if own_slack.is_some_and(|c| changed.cols.contains(&c)) {
+                    *vacuity.entry((mode_tag, "inflow_slack")).or_insert(0) += 1;
+                }
                 check_inflow(
                     deck_key,
                     pos,
                     dim,
                     dim,
                     state_space(setup),
+                    own_slack,
                     &changed,
                     violations,
                 );
@@ -302,7 +317,9 @@ fn sweep_setup(
 /// On every deck, each noise dimension, on its own, changes only the bounds
 /// the layout assigns to that dimension's entity. Ownership is defined by
 /// row/column families (`z_row`/`load_chunk`/`ncs_chunk`
-/// above), never by the patch buffers themselves.
+/// above), never by the patch buffers themselves. A hydro's inflow-noise
+/// ownership is its z row, plus its own inflow-slack column under the
+/// truncation methods.
 #[test]
 fn every_noise_dimension_patches_only_its_own_entity() {
     let slow_tests_enabled = cfg!(feature = "slow-tests");
@@ -373,6 +390,24 @@ fn every_noise_dimension_patches_only_its_own_entity() {
         &mut vacuity,
     );
 
+    for (label, block_mode) in [
+        (
+            "in-code/twp-negative-inflow-chronological",
+            BlockMode::Chronological,
+        ),
+        ("in-code/twp-negative-inflow-parallel", BlockMode::Parallel),
+    ] {
+        let (system, config) = chronological_noise_study(&ChronologicalNoiseSpec {
+            block_modes: [block_mode; 2],
+            inflow_method: CfgInflowMethod::TruncationWithPenalty,
+            inflow_mean_m3s: -30.0,
+            ..ChronologicalNoiseSpec::default()
+        });
+        let setup = build_setup_in_code(system, &config);
+        swept.push(label.to_string());
+        sweep_setup(label, &setup, &[], &mut violations, &mut vacuity);
+    }
+
     eprintln!("swept labels: {swept:?}");
     eprintln!("patch-ownership vacuity counts, (block_mode, family) -> nonvacuous triples:");
     for (&(mode, family), count) in &vacuity {
@@ -396,6 +431,14 @@ fn every_noise_dimension_patches_only_its_own_entity() {
         "vacuity guard: (Chronological, inflow) has no nonvacuous (deck, node, dimension) \
          triple — the sweep has no power on this family"
     );
+    for mode in ["Parallel", "Chronological"] {
+        let count = vacuity.get(&(mode, "inflow_slack")).copied().unwrap_or(0);
+        assert!(
+            count >= 1,
+            "vacuity guard: ({mode}, inflow_slack) has no nonvacuous (deck, node, dimension) \
+             triple — the sweep has no power on the own-slack-bound family"
+        );
+    }
 
     assert!(
         violations.is_empty(),
