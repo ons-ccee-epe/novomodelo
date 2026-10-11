@@ -1211,6 +1211,10 @@ fn truncation_handles_zero_sigma() {
     let fcf = FutureCostFunction::new(N_STAGES, fx.state.n_state, 1, 20, &[0; N_STAGES]);
 
     let results = simulate_fixture(&fx, &fcf).expect("a zero-sigma lagged hydro must simulate");
+    assert!(
+        !results.is_empty(),
+        "the zero-sigma simulation returned no scenario"
+    );
 
     let mut checked = 0;
     for scenario_result in &results {
@@ -1278,8 +1282,7 @@ fn truncation_keeps_the_raw_par_value_as_the_next_lag() {
     let scenario = &results[0];
     assert_eq!(scenario.stages.len(), raw.len());
 
-    let within =
-        |actual: f64, expected: f64| (actual - expected).abs() <= 1e-6 * expected.abs().max(1.0);
+    let within = |actual: f64, expected: f64| (actual - expected).abs() <= tol(expected);
     let lag_0_values = |stage: usize, hydro_id: i32| -> Vec<f64> {
         scenario
             .stages
@@ -1349,7 +1352,7 @@ fn truncation_keeps_the_raw_par_value_as_the_next_lag() {
     }
     for (stage, raw_stage) in raw.iter().enumerate() {
         for (h, &hydro_id) in hydro_ids.iter().enumerate() {
-            let expected_slack = (-raw_stage[h]).max(0.0);
+            let expected_slack = truncation_amount(raw_stage[h]);
             for (_, slack) in hydro_rows(stage, hydro_id) {
                 assert!(
                     within(slack, expected_slack),
