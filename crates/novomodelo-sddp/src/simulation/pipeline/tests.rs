@@ -1289,12 +1289,8 @@ fn make_stochastic_1h_1s(mean_m3s: f64, std_m3s: f64) -> StochasticContext {
     .unwrap()
 }
 
-/// Build a workspace with `zero_targets_buf` pre-populated to `hydro_count` zeros.
-///
-/// The standard `single_workspace` helper leaves `zero_targets_buf` empty because
-/// existing tests do not reach the truncation branch.  The truncation tests use
-/// 1 hydro and must have `zero_targets_buf[..1]` accessible, so they use this
-/// helper instead.
+/// Like `single_workspace`, but sizes the patch buffer, the current state and the scratch
+/// buffers for `hydro_count` hydros.
 fn single_workspace_with_hydros(
     solver: MockSolver,
     hydro_count: usize,
@@ -1312,20 +1308,16 @@ fn single_workspace_with_hydros(
     }]
 }
 
-/// Truncation clamps negative inflow noise in the simulation pipeline.
+/// Truncation keeps the raw PAR value in the simulation pipeline and fixes the
+/// inflow-slack bounds at the truncation amount.
 ///
 /// Set `mean_m3s = -1000.0` and `std_m3s = 1.0` so that the deterministic
 /// PAR base alone would produce a hugely negative inflow for any sample.
-///
-/// With `InflowNonNegativityMethod::Truncation` active, the simulation pipeline
-/// must clamp `eta` to the floor that produces zero inflow.  As a result,
-/// `z_inflow_rhs_buf[0] = mean + sigma * eta_clamped >= 0.0` for all
-/// scenarios processed.
-///
-/// `eta_floor` = (0 - mean) / sigma = 1000. So `z_inflow_rhs_buf`\[0\] =
-/// -1000 + 1\*1000 = 0.
+/// With `InflowNonNegativityMethod::Truncation` active, `z_inflow_rhs_buf[0]`
+/// stays negative and both slack bounds equal `-z_inflow_rhs_buf[0]`, exactly
+/// for PAR(0).
 #[test]
-fn simulation_truncation_clamps_negative_inflow_noise() {
+fn simulation_truncation_keeps_the_raw_rhs_and_fixes_the_slack_bounds() {
     let mean_m3s = -1000.0_f64;
     let sigma = 1.0_f64;
 
@@ -1414,18 +1406,15 @@ fn simulation_truncation_clamps_negative_inflow_noise() {
     )
     .unwrap();
 
-    // z_inflow_rhs_buf holds the last scenario-stage's value; truncation clamps
-    // it >= 0.
-    assert_eq!(
-        workspaces[0].scratch.z_inflow_rhs_buf.len(),
-        1,
-        "z_inflow_rhs_buf must have exactly 1 entry for 1 hydro"
-    );
-    assert!(
-        workspaces[0].scratch.z_inflow_rhs_buf[0] >= 0.0,
-        "after truncation, z_inflow_rhs_buf[0] must be >= 0 (inflow cannot be negative), got {}",
-        workspaces[0].scratch.z_inflow_rhs_buf[0]
-    );
+    // The buffers hold the last scenario-stage's values.
+    let scratch = &workspaces[0].scratch;
+    assert_eq!(scratch.z_inflow_rhs_buf.len(), 1);
+    assert_eq!(scratch.inflow_slack_lower_buf.len(), 1);
+    assert_eq!(scratch.inflow_slack_upper_buf.len(), 1);
+    let z = scratch.z_inflow_rhs_buf[0];
+    assert!(z < 0.0, "the RHS stays raw (negative), got {z}");
+    assert_eq!(scratch.inflow_slack_lower_buf[0].to_bits(), (-z).to_bits());
+    assert_eq!(scratch.inflow_slack_upper_buf[0].to_bits(), (-z).to_bits());
 }
 
 /// `InflowNonNegativityMethod::None` in the simulation pipeline produces

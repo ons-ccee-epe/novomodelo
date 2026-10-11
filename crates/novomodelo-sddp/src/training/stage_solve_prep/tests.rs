@@ -758,7 +758,7 @@ fn run_patches_the_load_row_and_the_z_row_from_the_raw_noise() {
 /// `StageSolvePrep::run` patches the inflow-slack column bounds once, after the
 /// state pin, under the truncation methods only. PAR(0) mean 100, sigma 30 and
 /// eta -5 give `r = -50`: `TruncationWithPenalty` caps the slack at 50 with z
-/// left raw; `Truncation` keeps the eta clamp and a `[0, 0]` slack.
+/// left raw; `Truncation` also leaves z raw and fixes the slack at `[50, 50]`.
 #[test]
 fn run_patches_the_inflow_slack_bounds_only_under_the_truncation_methods() {
     let state = state_layout(1, 0);
@@ -829,7 +829,7 @@ fn run_patches_the_inflow_slack_bounds_only_under_the_truncation_methods() {
     assert_eq!(truncation.col_bounds_calls.len(), 2);
     assert_eq!(
         truncation.col_bounds_calls.last(),
-        Some(&(vec![4_usize], vec![0.0], vec![0.0]))
+        Some(&(vec![4_usize], vec![50.0], vec![50.0]))
     );
 
     for method in [

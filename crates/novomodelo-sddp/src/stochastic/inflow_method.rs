@@ -32,8 +32,9 @@ pub enum InflowNonNegativityMethod {
     /// realisation may make the LP infeasible.
     None,
 
-    /// Clamps negative PAR(p) inflows to zero by adjusting the noise vector
-    /// before LP patching.
+    /// The PAR value stays raw, and the hydro's inflow-slack column is fixed per
+    /// solve at the truncation amount (`max(-r, 0)` for the raw PAR value `r`), at
+    /// cost 0.
     Truncation,
 
     /// Appends `N` slack columns (`sigma_inf_h >= 0`); each enters hydro `h`'s
