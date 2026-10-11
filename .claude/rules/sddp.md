@@ -180,7 +180,44 @@ Pinned by:
   patched slack bounds reach the solved LP;
 - `cut_oracles_hold_on_every_committed_deck_with_lag_or_anticipated_state`
   (`tests/cut_oracles.rs`): each stored cut is a minorant of its own
-  frozen-correction successor value.
+  frozen-correction successor value;
+- `simulation_truncation_keeps_the_raw_rhs_and_fixes_the_slack_bounds`
+  (`simulation/pipeline/tests.rs`): the simulation solve site writes the raw RHS
+  and fixes the slack bounds at `l*`;
+- `truncation_keeps_the_raw_par_value_as_the_next_lag`
+  (`tests/inflow_nonnegativity.rs`): the next stage's incoming lag 0 is the raw,
+  negative PAR value of the stage before — forbids clamping η;
+- `truncation_slack_is_fixed_at_the_negated_raw_inflow`
+  (`tests/inflow_nonnegativity.rs`): in a solved LP the `truncation` slack equals
+  `max(−z, 0)` on every record;
+- `truncation_handles_zero_sigma` (`tests/inflow_nonnegativity.rs`): with `σ = 0`
+  the slack still equals `−z` for a negative deterministic PAR value;
+- `truncation_with_penalty_slack_is_capped_by_the_truncation_amount`
+  (`tests/inflow_nonnegativity.rs`): the solved slack never exceeds `l*`, and
+  stays below it where stored water is cheaper than the penalty — forbids an
+  unbounded slack;
+- `truncation_with_penalty_slack_is_zero_for_non_negative_inflow`
+  (`tests/inflow_nonnegativity.rs`): the slack is zero where `z ≥ 0`, while the
+  uncapped `penalty` twin buys water there — forbids an unbounded slack;
+- `truncation_slack_bounds_are_identical_across_solve_sites`
+  (`tests/patch_ownership_sweep.rs`): the lower-bound and forward root LPs carry
+  the same slack bounds, and a later stage's bounds follow the lags pinned for
+  that solve, not the initial state — forbids a precomputed scenario path;
+- `truncation_out_of_lp_par_value_matches_the_z_row` (`tests/hydro_sim.rs`): `r`
+  from `evaluate_par_batch` equals the solved z, including under the
+  multi-resolution lag accumulator;
+- `truncation_lag_sequence_is_order_invariant`
+  (`tests/template_permutation.rs`): the patched bounds, the slack, the inflow
+  and the lags are bit-identical under a permuted hydro declaration order and
+  across runs;
+- `simulated_water_balance_closes_from_outputs` and
+  `simulated_water_balance_closes_with_a_nonzero_release` (`tests/hydro_sim.rs`):
+  the written hydros columns close the water balance with the raw inflow plus
+  the slack as water added;
+- `cut_oracles_resolve_frozen_corrections_on_the_negative_draw_par1_study` and
+  `cut_oracles_hold_with_sloped_cuts_on_the_negative_draw_water_value_study`
+  (`tests/cut_oracles.rs`): the frozen-correction comparison runs its re-solve
+  branch, which needs a negative draw, and holds on sloped cuts.
 
 ## FPHA uses average storage
 
