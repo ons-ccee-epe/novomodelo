@@ -2105,30 +2105,20 @@ fn truncation_writes_the_raw_rhs_and_fixes_the_slack_at_the_correction() {
     assert_eq!(upper[0].to_bits(), (-z[0]).to_bits());
 }
 
-/// Truncation does not clamp when inflow is positive.
-///
-/// With a very large positive mean (`mean_m3s = 1000.0`) and small sigma,
-/// the PAR inflow is always positive for any sampled noise. The z-inflow
-/// buffer must be identical to the no-truncation path.
 #[test]
-fn truncation_no_clamp_when_inflow_positive() {
+fn truncation_fixes_the_slack_at_zero_when_inflow_is_positive() {
     let mean_m3s = 1000.0_f64;
     let sigma = 1.0_f64;
 
     let stochastic = make_stochastic_1h_1s(mean_m3s, sigma);
 
-    let (z_inflow_truncation, _, _) =
+    let (z, lower, upper) =
         run_single_stage_forward(&stochastic, InflowNonNegativityMethod::Truncation);
-    let (z_inflow_none, _, _) =
-        run_single_stage_forward(&stochastic, InflowNonNegativityMethod::None);
 
-    assert_eq!(z_inflow_truncation.len(), 1);
-    assert_eq!(z_inflow_none.len(), 1);
-    assert_eq!(
-        z_inflow_truncation[0].to_bits(),
-        z_inflow_none[0].to_bits(),
-        "when inflow is positive, truncation must not alter the z-inflow buffer (expected identical bits)"
-    );
+    assert_eq!((z.len(), lower.len(), upper.len()), (1, 1, 1));
+    assert!(z[0] > 0.0, "the PAR value is positive, got {}", z[0]);
+    assert_eq!(lower[0].to_bits(), 0.0_f64.to_bits());
+    assert_eq!(upper[0].to_bits(), 0.0_f64.to_bits());
 }
 
 #[test]

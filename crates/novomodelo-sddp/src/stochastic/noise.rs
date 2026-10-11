@@ -16,14 +16,6 @@ use crate::{
     workspace::ScratchBuffers,
 };
 
-/// Returns `true` when `stochastic` carries a PAR model — the shared guard
-/// for the water-balance patch. Its shape is validated once at setup
-/// (`validate_par_shape`); every reader here checks presence only.
-#[inline]
-pub(crate) fn has_par_model(stochastic: &StochasticContext) -> bool {
-    stochastic.par().n_stages() > 0
-}
-
 /// Transform raw inflow noise `η` into the raw PAR value for every method
 /// (`z_inflow_rhs_buf`, never clamped).
 ///
@@ -55,7 +47,8 @@ pub(crate) fn transform_inflow_noise(
     scratch.inflow_slack_upper_buf.clear();
 
     let par_lp = stochastic.par();
-    let has_par = has_par_model(stochastic);
+    // Presence only: the PAR shape is validated once at setup (`validate_par_shape`).
+    let has_par = par_lp.n_stages() > 0;
 
     for (h, &eta) in hydro_noise.iter().enumerate() {
         // Z-inflow RHS in m3/s: no zeta, no withdrawal.
@@ -75,16 +68,13 @@ pub(crate) fn transform_inflow_noise(
     scratch.par_inflow_buf.clear();
     scratch.par_inflow_buf.resize(n_hydros, 0.0);
     if has_par {
-        scratch.lag_matrix_buf.clear();
-        scratch
-            .lag_matrix_buf
-            .extend_from_slice(&current_state[state.inflow_lags.clone()]);
-        debug_assert_eq!(scratch.lag_matrix_buf.len(), state.max_par_order * n_hydros);
+        let pinned_lags = &current_state[state.inflow_lags.clone()];
+        debug_assert_eq!(pinned_lags.len(), state.max_par_order * n_hydros);
 
         evaluate_par_batch(
             par_lp,
             stage.0,
-            &scratch.lag_matrix_buf,
+            pinned_lags,
             hydro_noise,
             &mut scratch.par_inflow_buf,
         );
@@ -1071,7 +1061,7 @@ mod tests {
     }
 
     /// `TruncationWithPenalty` keeps the raw PAR value in the z RHS and caps the
-    /// slack at the truncation amount `max(-r, 0)`; no eta clamp applies.
+    /// slack at the truncation amount `max(-r, 0)`.
     ///
     /// AR(0), sigma = 1, base = 0: `r = eta`.
     #[test]

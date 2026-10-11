@@ -248,10 +248,11 @@ fn resolve_hydro_storage_boundary(
 }
 
 /// Resolve `HydroInflow` to the cascade total-inflow expression at `blk`: the
-/// incremental (local) `z_inflow` column, plants diverting into `h`, each
-/// upstream release weighted — for an operating reservoir — by the share the
-/// downstream balance row credits to this block, and the maturing transit water
-/// entering as a rate.
+/// incremental (local) `z_inflow` column, the same plant's inflow-slack column
+/// under the truncation methods only ([`push_local_inflow_rate`]), plants
+/// diverting into `h`, each upstream release weighted — for an operating
+/// reservoir — by the share the downstream balance row credits to this block,
+/// and the maturing transit water entering as a rate.
 ///
 /// Each hydro `u` whose `PreFilling` short-circuit targets `h`
 /// ([`resolve_shortcircuit_target`]) also adds its own local inflow, diverted

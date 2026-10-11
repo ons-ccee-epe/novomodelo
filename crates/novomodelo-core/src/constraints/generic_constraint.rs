@@ -256,7 +256,10 @@ pub enum VariableRef {
     ///
     /// Local natural inflow PLUS the immediately-upstream cascade releases
     /// (turbined + spilled + diverted) routed down — the inflow side of the water
-    /// balance, not the `z_inflow` column alone. For an operating reservoir, an
+    /// balance, not the `z_inflow` column alone. Where the inflow non-negativity
+    /// method adds a bounded correction to a negative local inflow (`truncation`,
+    /// `truncation_with_penalty`), the local inflow counts it; the unbounded
+    /// `penalty` slack is not counted. For an operating reservoir, an
     /// upstream release enters with the share of it that the water balance credits
     /// to this block. That is the whole release when the arc has no water travel
     /// time. The upstream transit water that matures into this block also enters,

@@ -125,6 +125,10 @@ fn cut_oracles_resolve_frozen_corrections_on_the_negative_draw_par1_study() {
             report.frozen_resolves > 0,
             "{label}: the frozen-correction re-solve branch never ran"
         );
+        assert!(
+            report.frozen_resolves > report.frozen_infeasible,
+            "{label}: every frozen-correction re-solve was infeasible, so no cut was compared"
+        );
         report.assert_sound(label);
     }
 }
@@ -188,6 +192,10 @@ fn cut_oracles_hold_with_sloped_cuts_on_the_negative_draw_water_value_study() {
         assert!(
             report.frozen_resolves > 0,
             "{label}: the frozen-correction re-solve branch never ran"
+        );
+        assert!(
+            report.frozen_resolves > report.frozen_infeasible,
+            "{label}: every frozen-correction re-solve was infeasible, so no cut was compared"
         );
         report.assert_sound(label);
         assert_eq!(

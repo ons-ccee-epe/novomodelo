@@ -1289,25 +1289,6 @@ fn make_stochastic_1h_1s(mean_m3s: f64, std_m3s: f64) -> StochasticContext {
     .unwrap()
 }
 
-/// Like `single_workspace`, but sizes the patch buffer, the current state and the scratch
-/// buffers for `hydro_count` hydros.
-fn single_workspace_with_hydros(
-    solver: MockSolver,
-    hydro_count: usize,
-) -> Vec<SolverWorkspace<MockSolver>> {
-    vec![SolverWorkspace {
-        rank: 0,
-        worker_id: 0,
-        solver: ProfiledSolver::new(solver),
-        patch_buf: PatchBuffer::new(&test_support::state_layout(hydro_count, 0), &[], &[]),
-        current_state: Vec::with_capacity(hydro_count),
-        scratch: ScratchBuffers::for_test(hydro_count),
-        scratch_basis: Basis::new(0, 0),
-        backward_accum: BackwardAccumulators::default(),
-        worker_timing_buf: WorkerPhaseTimings::default(),
-    }]
-}
-
 /// Truncation keeps the raw PAR value in the simulation pipeline and fixes the
 /// inflow-slack bounds at the truncation amount.
 ///
@@ -1347,7 +1328,7 @@ fn simulation_truncation_keeps_the_raw_rhs_and_fixes_the_slack_bounds() {
 
     let hprod = hydro_productivities_1hydro(n_stages);
     let ec = zero_energy_conversion(1, n_stages);
-    let mut workspaces = single_workspace_with_hydros(solver, 1);
+    let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, templates.len());
     run_simulate(
         &mut workspaces,
@@ -1454,7 +1435,7 @@ fn simulation_none_method_produces_raw_negative_noise() {
 
     let hprod = hydro_productivities_1hydro(n_stages);
     let ec = zero_energy_conversion(1, n_stages);
-    let mut workspaces = single_workspace_with_hydros(solver, 1);
+    let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, templates.len());
     run_simulate(
         &mut workspaces,

@@ -36,9 +36,9 @@ use novomodelo_sddp::test_support::{
 use novomodelo_solver::{ActiveSolver, StageTemplate};
 
 use common::in_code_studies::{
-    ChronologicalNoiseSpec, NEGATIVE_DRAW_LAG_SEED_M3S, chronological_noise_study,
-    mixed_lead_anticipated_study, negative_draw_par1_spec, negative_draw_raw_inflow,
-    stochastic_parallel_study,
+    ChronologicalNoiseSpec, NEGATIVE_DRAW_INFLOW_MEAN_M3S, NEGATIVE_DRAW_LAG_SEED_M3S,
+    chronological_noise_study, mixed_lead_anticipated_study, negative_draw_par1_spec,
+    negative_draw_raw_inflow, stochastic_parallel_study,
 };
 use common::{build_setup_in_code, fresh_setup_with, run_simulation};
 
@@ -336,7 +336,7 @@ fn sweep_negative_inflow_cells(
             let (system, config) = chronological_noise_study(&ChronologicalNoiseSpec {
                 block_modes: [block_mode; 2],
                 inflow_method: method,
-                inflow_mean_m3s: -30.0,
+                inflow_mean_m3s: NEGATIVE_DRAW_INFLOW_MEAN_M3S,
                 ..ChronologicalNoiseSpec::default()
             });
             let setup = build_setup_in_code(system, &config);
