@@ -39,6 +39,7 @@ use novomodelo_core::{
         StageStateConfig,
     },
 };
+use novomodelo_io::config::{InflowNonNegativityMethod as CfgInflowMethod, SimulationSelection};
 use novomodelo_sddp::{
     Phase, ResolvedParameters, SimulationHydroResult, SimulationScenarioResult, SolverProfiles,
     StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
@@ -54,10 +55,10 @@ use novomodelo_sddp::{
     lead_time::AnticipatedResolution,
     lp::builder::{PatchBuffer, StageGeometry, StateBox},
     risk_measure::RiskMeasure,
-    setup::{NodeId, node_graph::Traversal},
+    setup::{NodeId, NodePos, node_graph::Traversal},
     simulate,
     simulation::{EntityCounts, SimulationConfig, SimulationOutputSpec},
-    test_support::permissive_state_boxes,
+    test_support::{node_opening_noise, permissive_state_boxes},
     train,
     workspace::{SolverWorkspace, WorkspaceSizing},
 };
@@ -68,8 +69,12 @@ use novomodelo_stochastic::{
 };
 
 mod common;
-use common::StubComm;
 use common::builders::{BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage};
+use common::in_code_studies::{
+    CHRONOLOGICAL_NOISE_BLOCK_HOURS, NEGATIVE_DRAW_LAG_SEED_M3S, chronological_noise_study,
+    negative_draw_par1_spec, negative_draw_raw_inflow,
+};
+use common::{StubComm, build_setup_in_code, run_simulation};
 
 /// External test crate cannot see parent's `test-support` surface; constructs
 /// from explicit dimensions.
@@ -1237,4 +1242,120 @@ fn truncation_handles_zero_sigma() {
         }
     }
     assert_eq!(checked, results.len() * N_STAGES * N_HYDROS);
+}
+
+#[test]
+fn truncation_keeps_the_raw_par_value_as_the_next_lag() {
+    let spec = negative_draw_par1_spec(CfgInflowMethod::Truncation);
+    let (system, mut config) = chronological_noise_study(&spec);
+    config.simulation.enabled = true;
+    config.simulation.selection = Some(SimulationSelection::Sampled { num_scenarios: 1 });
+    let hydro_ids: Vec<i32> = system.hydros().iter().map(|hydro| hydro.id.0).collect();
+    let mut setup = build_setup_in_code(system, &config);
+
+    let hydro_range = setup.inputs.stochastic.class_dimensions().hydro_range();
+    let eta_0 = node_opening_noise(&setup, NodePos(0), 0)[hydro_range.clone()].to_vec();
+    let eta_1 = node_opening_noise(&setup, NodePos(1), 0)[hydro_range].to_vec();
+    assert_eq!(eta_0.len(), hydro_ids.len());
+    assert_eq!(eta_1.len(), hydro_ids.len());
+    let raw_0: Vec<f64> = (0..hydro_ids.len())
+        .map(|h| negative_draw_raw_inflow(h, NEGATIVE_DRAW_LAG_SEED_M3S[h], eta_0[h]))
+        .collect();
+    let raw_1: Vec<f64> = (0..hydro_ids.len())
+        .map(|h| negative_draw_raw_inflow(h, raw_0[h], eta_1[h]))
+        .collect();
+    for (h, (r_0, r_1)) in raw_0.iter().zip(&raw_1).enumerate() {
+        assert!(
+            *r_0 < -1.0 && *r_1 < -1.0,
+            "hydro {h}: raw PAR values {r_0} and {r_1} are not both below -1 \
+             (eta_0 = {eta_0:?}, eta_1 = {eta_1:?})"
+        );
+    }
+    let raw = [raw_0, raw_1];
+
+    let results = run_simulation(&mut setup, 1);
+    assert_eq!(results.len(), 1);
+    let scenario = &results[0];
+    assert_eq!(scenario.stages.len(), raw.len());
+
+    let within =
+        |actual: f64, expected: f64| (actual - expected).abs() <= 1e-6 * expected.abs().max(1.0);
+    let lag_0_values = |stage: usize, hydro_id: i32| -> Vec<f64> {
+        scenario
+            .stages
+            .iter()
+            .filter(|stage_result| stage_result.stage_id as usize == stage)
+            .flat_map(|stage_result| stage_result.inflow_lags.iter())
+            .filter(|record| record.hydro_id == hydro_id && record.lag_index == 0)
+            .map(|record| record.inflow_m3s)
+            .collect()
+    };
+    let hydro_rows = |stage: usize, hydro_id: i32| -> Vec<(f64, f64)> {
+        scenario
+            .stages
+            .iter()
+            .filter(|stage_result| stage_result.stage_id as usize == stage)
+            .flat_map(|stage_result| stage_result.hydros.iter())
+            .filter(|record| record.hydro_id == hydro_id)
+            .map(|record| {
+                (
+                    record.incremental_inflow_m3s,
+                    record.inflow_nonnegativity_slack_m3s,
+                )
+            })
+            .collect()
+    };
+
+    for (h, &hydro_id) in hydro_ids.iter().enumerate() {
+        let lags = lag_0_values(1, hydro_id);
+        assert_eq!(
+            lags.len(),
+            1,
+            "stage 1 hydro {hydro_id}: lag-0 records {lags:?}"
+        );
+        assert!(
+            within(lags[0], raw[0][h]),
+            "stage 1 hydro {hydro_id}: incoming lag 0 is {}, expected the raw stage-0 PAR value {}",
+            lags[0],
+            raw[0][h],
+        );
+    }
+    for (h, &hydro_id) in hydro_ids.iter().enumerate() {
+        let lags = lag_0_values(0, hydro_id);
+        assert_eq!(
+            lags.len(),
+            1,
+            "stage 0 hydro {hydro_id}: lag-0 records {lags:?}"
+        );
+        assert!(
+            within(lags[0], NEGATIVE_DRAW_LAG_SEED_M3S[h]),
+            "stage 0 hydro {hydro_id}: incoming lag 0 is {}, expected the lag seed {}",
+            lags[0],
+            NEGATIVE_DRAW_LAG_SEED_M3S[h],
+        );
+    }
+    for (stage, raw_stage) in raw.iter().enumerate() {
+        for (h, &hydro_id) in hydro_ids.iter().enumerate() {
+            let rows = hydro_rows(stage, hydro_id);
+            assert_eq!(rows.len(), CHRONOLOGICAL_NOISE_BLOCK_HOURS.len());
+            for (z, _) in rows {
+                assert!(
+                    within(z, raw_stage[h]),
+                    "stage {stage} hydro {hydro_id}: z is {z}, expected the raw PAR value {}",
+                    raw_stage[h],
+                );
+            }
+        }
+    }
+    for (stage, raw_stage) in raw.iter().enumerate() {
+        for (h, &hydro_id) in hydro_ids.iter().enumerate() {
+            let expected_slack = (-raw_stage[h]).max(0.0);
+            for (_, slack) in hydro_rows(stage, hydro_id) {
+                assert!(
+                    within(slack, expected_slack),
+                    "stage {stage} hydro {hydro_id}: slack is {slack}, expected {expected_slack}",
+                );
+            }
+        }
+    }
 }
