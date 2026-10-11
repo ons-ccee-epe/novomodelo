@@ -24,7 +24,8 @@ use novomodelo_solver::ActiveSolver;
 use common::cut_oracles::{apply_oracle_config, run_cut_oracles};
 use common::in_code_studies::{
     ChronologicalNoiseSpec, chronological_noise_study, discounted_anticipated_study,
-    mixed_lead_anticipated_study, parallel_multiblock_evaporation_study, stochastic_parallel_study,
+    mixed_lead_anticipated_study, negative_draw_par1_spec, parallel_multiblock_evaporation_study,
+    stochastic_parallel_study,
 };
 use common::{StubComm, build_setup_in_code, build_setup_in_code_with_models, fresh_setup_with};
 
@@ -93,6 +94,33 @@ fn cut_oracles_hold_on_the_chronological_pumping_study() {
     let setup = oracle_setup(system, config);
     run_cut_oracles("chronological_pumping_study", setup)
         .assert_sound("chronological_pumping_study");
+}
+
+#[test]
+fn cut_oracles_resolve_frozen_corrections_on_the_negative_draw_par1_study() {
+    for (label, method) in [
+        (
+            "negative_draw_par1/truncation",
+            InflowNonNegativityMethod::Truncation,
+        ),
+        (
+            "negative_draw_par1/truncation_with_penalty",
+            InflowNonNegativityMethod::TruncationWithPenalty,
+        ),
+    ] {
+        let spec = ChronologicalNoiseSpec {
+            branching_factor: 4,
+            ..negative_draw_par1_spec(method)
+        };
+        let (system, config) = chronological_noise_study(&spec);
+        let setup = oracle_setup(system, config);
+        let report = run_cut_oracles(label, setup);
+        assert!(
+            report.frozen_resolves > 0,
+            "{label}: the frozen-correction re-solve branch never ran"
+        );
+        report.assert_sound(label);
+    }
 }
 
 #[test]
