@@ -1470,6 +1470,8 @@ pub struct ChronologicalNoiseSpec {
     pub reverse_declaration_order: bool,
     /// Withdrawal \[m³/s\] on hydro id 1's stage-0 water-balance row only.
     pub water_withdrawal_m3s: f64,
+    /// Over-withdrawal violation cost, shared by both hydros and stages.
+    pub over_withdrawal_cost: f64,
     /// The config's inflow non-negativity method.
     pub inflow_method: CfgInflowMethod,
     /// Mean inflow \[m³/s\], shared by both hydros and stages.
@@ -1487,6 +1489,7 @@ impl Default for ChronologicalNoiseSpec {
             pumping_station: false,
             reverse_declaration_order: false,
             water_withdrawal_m3s: 0.0,
+            over_withdrawal_cost: 0.0,
             inflow_method: CfgInflowMethod::None,
             inflow_mean_m3s: CHRONOLOGICAL_NOISE_INFLOW_MEAN_M3S,
             par1: None,
@@ -1511,11 +1514,12 @@ fn monthly_season_map() -> SeasonMap {
     }
 }
 
-fn chronological_noise_hydro_penalties() -> HydroPenalties {
+fn chronological_noise_hydro_penalties(over_withdrawal_cost: f64) -> HydroPenalties {
     HydroPenalties {
         spillage_cost: CHRONOLOGICAL_NOISE_RELEASE_COST,
         turbined_cost: CHRONOLOGICAL_NOISE_RELEASE_COST,
         inflow_nonnegativity_cost: 0.0,
+        water_withdrawal_violation_pos_cost: over_withdrawal_cost,
         ..hydro_penalties()
     }
 }
@@ -1555,7 +1559,7 @@ fn build_chronological_noise_system(spec: &ChronologicalNoiseSpec) -> novomodelo
                     generation_model: HydroGenerationModel::ConstantProductivity,
                     specific_productivity_mw_per_m3s_per_m: Some(0.5),
                     max_generation_mw: 250.0,
-                    penalties: chronological_noise_hydro_penalties(),
+                    penalties: chronological_noise_hydro_penalties(spec.over_withdrawal_cost),
                     ..Default::default()
                 },
             )
@@ -1688,7 +1692,7 @@ fn build_chronological_noise_system(spec: &ChronologicalNoiseSpec) -> novomodelo
             n_stages: CHRONOLOGICAL_NOISE_N_STAGES,
         },
         &PenaltiesDefaults {
-            hydro: chronological_noise_hydro_penalties(),
+            hydro: chronological_noise_hydro_penalties(spec.over_withdrawal_cost),
             bus: BusStagePenalties { excess_cost: 0.0 },
             line: LineStagePenalties { exchange_cost: 0.0 },
             ncs: NcsStagePenalties {

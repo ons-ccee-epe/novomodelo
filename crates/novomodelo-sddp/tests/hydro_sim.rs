@@ -3780,3 +3780,364 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
         );
     }
 }
+
+mod water_balance_from_written_outputs {
+    //! Recomputes the water balance of simulated studies from the written
+    //! `simulation/hydros` parquet columns alone. The results go through
+    //! `SimulationParquetWriter`, the writer the CLI and the Python bindings
+    //! share; this is not evidence about the Python bindings, since no Python
+    //! test runs a truncation study's `simulation/hydros` output.
+
+    use std::collections::BTreeMap;
+    use std::path::Path;
+
+    use arrow::array::{Array, Float64Array, Int32Array, RecordBatch};
+    use novomodelo_core::{BlockMode, System};
+    use novomodelo_io::config::{InflowNonNegativityMethod, SimulationSelection};
+    use novomodelo_io::output::simulation_writer::{ScenarioWritePayload, SimulationParquetWriter};
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    use super::common::in_code_studies::{
+        CHRONOLOGICAL_NOISE_BLOCK_HOURS, ChronologicalNoiseSpec, chronological_noise_study,
+        negative_draw_par1_spec,
+    };
+    use super::common::{build_setup_in_code, run_simulation};
+
+    const BLOCK_MODE_ASSIGNMENTS: [[BlockMode; 2]; 2] = [
+        [BlockMode::Parallel, BlockMode::Chronological],
+        [BlockMode::Chronological, BlockMode::Parallel],
+    ];
+    const METHOD_MEANS: [(InflowNonNegativityMethod, f64); 4] = [
+        (InflowNonNegativityMethod::None, -30.0),
+        (InflowNonNegativityMethod::Penalty, -1000.0),
+        (InflowNonNegativityMethod::Truncation, -1000.0),
+        (InflowNonNegativityMethod::TruncationWithPenalty, -1000.0),
+    ];
+    const NUM_SCENARIOS: usize = 4;
+    const N_STAGES: usize = 2;
+    const N_HYDROS: usize = 2;
+    const ROWS_PER_SCENARIO: usize = N_STAGES * N_HYDROS * CHRONOLOGICAL_NOISE_BLOCK_HOURS.len();
+    const WITHDRAWAL_M3S: f64 = 2.0;
+    /// At zero cost the over-withdrawal column drains the reservoir for free, and a
+    /// backend that lands on that vertex leaves the next stage infeasible under `none`.
+    const OVER_WITHDRAWAL_COST: f64 = 1.0;
+    const WITHDRAWN_HYDRO_ID: i32 = 1;
+    const HM3_PER_M3S_HOUR: f64 = 0.0036;
+    const CLOSURE_RELATIVE_TOLERANCE: f64 = 1e-6;
+
+    struct HydroRow {
+        stage_id: usize,
+        block_id: usize,
+        hydro_id: i32,
+        outflow_m3s: f64,
+        evaporation_m3s: f64,
+        diverted_inflow_m3s: f64,
+        diverted_outflow_m3s: f64,
+        incremental_inflow_m3s: f64,
+        storage_initial_hm3: f64,
+        storage_final_hm3: f64,
+        inflow_nonnegativity_slack_m3s: f64,
+        water_withdrawal_violation_pos_m3s: f64,
+        water_withdrawal_violation_neg_m3s: f64,
+    }
+
+    fn assert_isolated_hydros(system: &System) {
+        for hydro in system.hydros() {
+            assert!(
+                hydro.downstream_id.is_none()
+                    && hydro.travel_time_hours.is_none()
+                    && hydro.diversion.is_none()
+                    && hydro.filling.is_none()
+                    && hydro.entry_stage_id.is_none()
+                    && hydro.exit_stage_id.is_none(),
+                "hydro {} must have no downstream plant, travel time, diversion, filling \
+                 phase or entry/exit stage",
+                hydro.id.0
+            );
+        }
+    }
+
+    fn column<'a, T: Array + 'static>(batch: &'a RecordBatch, name: &str) -> &'a T {
+        batch
+            .column_by_name(name)
+            .unwrap_or_else(|| panic!("hydros parquet has no {name} column"))
+            .as_any()
+            .downcast_ref::<T>()
+            .unwrap_or_else(|| panic!("hydros parquet column {name} has an unexpected type"))
+    }
+
+    fn or_zero(column: &Float64Array, row: usize) -> f64 {
+        if column.is_null(row) {
+            0.0
+        } else {
+            column.value(row)
+        }
+    }
+
+    fn read_hydro_rows(path: &Path) -> Vec<HydroRow> {
+        let file = std::fs::File::open(path).expect("hydros parquet must exist");
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .expect("hydros parquet must have a valid footer")
+            .build()
+            .expect("hydros parquet reader must build");
+        let mut rows = Vec::new();
+        for batch in reader {
+            let batch = batch.expect("hydros parquet batch must decode");
+            let stage_id = column::<Int32Array>(&batch, "stage_id");
+            let block_id = column::<Int32Array>(&batch, "block_id");
+            let hydro_id = column::<Int32Array>(&batch, "hydro_id");
+            let float = |name: &str| column::<Float64Array>(&batch, name);
+            let outflow = float("outflow_m3s");
+            let evaporation = float("evaporation_m3s");
+            let diverted_inflow = float("diverted_inflow_m3s");
+            let diverted_outflow = float("diverted_outflow_m3s");
+            let incremental_inflow = float("incremental_inflow_m3s");
+            let storage_initial = float("storage_initial_hm3");
+            let storage_final = float("storage_final_hm3");
+            let slack = float("inflow_nonnegativity_slack_m3s");
+            let withdrawal_pos = float("water_withdrawal_violation_pos_m3s");
+            let withdrawal_neg = float("water_withdrawal_violation_neg_m3s");
+            assert_eq!(
+                block_id.null_count(),
+                0,
+                "block_id must be populated on every hydros row"
+            );
+            for i in 0..batch.num_rows() {
+                rows.push(HydroRow {
+                    stage_id: usize::try_from(stage_id.value(i)).expect("stage_id is non-negative"),
+                    block_id: usize::try_from(block_id.value(i)).expect("block_id is non-negative"),
+                    hydro_id: hydro_id.value(i),
+                    outflow_m3s: outflow.value(i),
+                    evaporation_m3s: or_zero(evaporation, i),
+                    diverted_inflow_m3s: or_zero(diverted_inflow, i),
+                    diverted_outflow_m3s: or_zero(diverted_outflow, i),
+                    incremental_inflow_m3s: incremental_inflow.value(i),
+                    storage_initial_hm3: storage_initial.value(i),
+                    storage_final_hm3: storage_final.value(i),
+                    inflow_nonnegativity_slack_m3s: slack.value(i),
+                    water_withdrawal_violation_pos_m3s: withdrawal_pos.value(i),
+                    water_withdrawal_violation_neg_m3s: withdrawal_neg.value(i),
+                });
+            }
+        }
+        rows
+    }
+
+    fn simulate_and_read_hydros(spec: &ChronologicalNoiseSpec) -> Vec<(u32, Vec<HydroRow>)> {
+        let (system, mut config) = chronological_noise_study(spec);
+        let (writer_system, _) = chronological_noise_study(spec);
+        assert_isolated_hydros(&system);
+        assert_isolated_hydros(&writer_system);
+        config.simulation.enabled = true;
+        config.simulation.selection = Some(SimulationSelection::Sampled {
+            num_scenarios: u32::try_from(NUM_SCENARIOS).expect("scenario count fits u32"),
+        });
+
+        let mut setup = build_setup_in_code(system, &config);
+        let results = run_simulation(&mut setup, 1);
+        assert_eq!(results.len(), NUM_SCENARIOS, "simulated scenario count");
+        let scenario_ids: Vec<u32> = results.iter().map(|result| result.scenario_id).collect();
+
+        let tmp = tempfile::tempdir().expect("tempdir must succeed");
+        let mut writer = SimulationParquetWriter::new(tmp.path(), &writer_system)
+            .expect("SimulationParquetWriter::new must succeed");
+        for result in results {
+            writer
+                .write_scenario(ScenarioWritePayload::from(result))
+                .expect("write_scenario must succeed");
+        }
+        let _ = writer.finalize(0);
+
+        let hydros_dir = tmp.path().join("simulation/hydros");
+        let partitions = std::fs::read_dir(&hydros_dir)
+            .expect("simulation/hydros must exist")
+            .count();
+        assert_eq!(partitions, NUM_SCENARIOS, "scenario partitions written");
+        scenario_ids
+            .into_iter()
+            .map(|id| {
+                let path = hydros_dir.join(format!("scenario_id={id:04}/data.parquet"));
+                (id, read_hydro_rows(&path))
+            })
+            .collect()
+    }
+
+    fn stage_level_terms(row: &HydroRow, withdrawal_m3s: f64, hours: f64) -> [f64; 6] {
+        let hm3_per_m3s = HM3_PER_M3S_HOUR * hours;
+        [
+            hm3_per_m3s * row.incremental_inflow_m3s,
+            hm3_per_m3s * row.inflow_nonnegativity_slack_m3s,
+            -hm3_per_m3s * row.evaporation_m3s,
+            -hm3_per_m3s * withdrawal_m3s,
+            hm3_per_m3s * row.water_withdrawal_violation_neg_m3s,
+            -hm3_per_m3s * row.water_withdrawal_violation_pos_m3s,
+        ]
+    }
+
+    fn block_level_terms(row: &HydroRow, hours: f64) -> [f64; 3] {
+        let hm3_per_m3s = HM3_PER_M3S_HOUR * hours;
+        [
+            hm3_per_m3s * row.diverted_inflow_m3s,
+            -hm3_per_m3s * row.outflow_m3s,
+            -hm3_per_m3s * row.diverted_outflow_m3s,
+        ]
+    }
+
+    fn assert_closes(location: &str, storage_initial: f64, storage_final: f64, terms: &[f64]) {
+        let storage_change = storage_final - storage_initial;
+        let flow_sum: f64 = terms.iter().sum();
+        let magnitude = storage_initial.abs()
+            + storage_final.abs()
+            + terms.iter().map(|term| term.abs()).sum::<f64>();
+        let tolerance = CLOSURE_RELATIVE_TOLERANCE * (1.0 + magnitude);
+        assert!(
+            (storage_change - flow_sum).abs() <= tolerance,
+            "{location}: storage change {storage_change} != flow sum {flow_sum} \
+             (residual {}, tolerance {tolerance})",
+            (storage_change - flow_sum).abs()
+        );
+    }
+
+    fn assert_scenario_closes(
+        case: &str,
+        spec: &ChronologicalNoiseSpec,
+        scenario_id: u32,
+        rows: &[HydroRow],
+    ) {
+        let block_hours = CHRONOLOGICAL_NOISE_BLOCK_HOURS;
+        let stage_hours: f64 = block_hours.iter().sum();
+
+        let mut groups: BTreeMap<(usize, i32), Vec<&HydroRow>> = BTreeMap::new();
+        for row in rows {
+            groups
+                .entry((row.stage_id, row.hydro_id))
+                .or_default()
+                .push(row);
+        }
+        assert_eq!(
+            groups.len(),
+            N_STAGES * N_HYDROS,
+            "{case} scenario {scenario_id}: (stage, hydro) groups"
+        );
+
+        for ((stage_id, hydro_id), mut blocks) in groups {
+            blocks.sort_by_key(|row| row.block_id);
+            let block_ids: Vec<usize> = blocks.iter().map(|row| row.block_id).collect();
+            assert_eq!(
+                block_ids,
+                (0..block_hours.len()).collect::<Vec<_>>(),
+                "{case} scenario {scenario_id} stage {stage_id} hydro {hydro_id}: block ids"
+            );
+            let withdrawal_m3s = if stage_id == 0 && hydro_id == WITHDRAWN_HYDRO_ID {
+                spec.water_withdrawal_m3s
+            } else {
+                0.0
+            };
+            let location =
+                format!("{case} scenario {scenario_id} stage {stage_id} hydro {hydro_id}");
+
+            match spec.block_modes[stage_id] {
+                BlockMode::Parallel => {
+                    let stage_row = blocks[0];
+                    let mut terms =
+                        stage_level_terms(stage_row, withdrawal_m3s, stage_hours).to_vec();
+                    for (row, hours) in blocks.iter().zip(block_hours) {
+                        terms.extend(block_level_terms(row, hours));
+                    }
+                    assert_closes(
+                        &format!("{location} blocks 0..{}", block_hours.len()),
+                        stage_row.storage_initial_hm3,
+                        stage_row.storage_final_hm3,
+                        &terms,
+                    );
+                }
+                BlockMode::Chronological => {
+                    for (row, hours) in blocks.iter().zip(block_hours) {
+                        let mut terms = stage_level_terms(row, withdrawal_m3s, hours).to_vec();
+                        terms.extend(block_level_terms(row, hours));
+                        assert_closes(
+                            &format!("{location} block {}", row.block_id),
+                            row.storage_initial_hm3,
+                            row.storage_final_hm3,
+                            &terms,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn assert_guards(
+        case: &str,
+        method: InflowNonNegativityMethod,
+        spec: &ChronologicalNoiseSpec,
+        scenarios: &[(u32, Vec<HydroRow>)],
+    ) {
+        for mode in [BlockMode::Parallel, BlockMode::Chronological] {
+            let rows: Vec<&HydroRow> = scenarios
+                .iter()
+                .flat_map(|(_, rows)| rows)
+                .filter(|row| spec.block_modes[row.stage_id] == mode)
+                .collect();
+            assert_eq!(
+                rows.len(),
+                NUM_SCENARIOS * ROWS_PER_SCENARIO / N_STAGES,
+                "{case} {mode:?}: rows read back"
+            );
+            let negative_inflow = rows
+                .iter()
+                .filter(|row| row.incremental_inflow_m3s < 0.0)
+                .count();
+            let positive_slack = rows
+                .iter()
+                .filter(|row| row.inflow_nonnegativity_slack_m3s > 0.0)
+                .count();
+            let nonzero_slack = rows
+                .iter()
+                .filter(|row| row.inflow_nonnegativity_slack_m3s != 0.0)
+                .count();
+            assert!(
+                negative_inflow > 0,
+                "{case} {mode:?}: no row has a negative incremental inflow"
+            );
+            if method == InflowNonNegativityMethod::None {
+                assert_eq!(
+                    nonzero_slack, 0,
+                    "{case} {mode:?}: rows with a non-zero slack under method none"
+                );
+            } else {
+                assert!(
+                    positive_slack > 0,
+                    "{case} {mode:?}: no row has a positive inflow slack"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn simulated_water_balance_closes_from_outputs() {
+        for block_modes in BLOCK_MODE_ASSIGNMENTS {
+            for (method, mean_m3s) in METHOD_MEANS {
+                let spec = ChronologicalNoiseSpec {
+                    block_modes,
+                    branching_factor: 3,
+                    water_withdrawal_m3s: WITHDRAWAL_M3S,
+                    over_withdrawal_cost: OVER_WITHDRAWAL_COST,
+                    inflow_mean_m3s: mean_m3s,
+                    ..negative_draw_par1_spec(method)
+                };
+                let case = format!("{method:?} {block_modes:?}");
+                let scenarios = simulate_and_read_hydros(&spec);
+                for (scenario_id, rows) in &scenarios {
+                    assert_eq!(
+                        rows.len(),
+                        ROWS_PER_SCENARIO,
+                        "{case} scenario {scenario_id}: rows read back"
+                    );
+                    assert_scenario_closes(&case, &spec, *scenario_id, rows);
+                }
+                assert_guards(&case, method, &spec, &scenarios);
+            }
+        }
+    }
+}
