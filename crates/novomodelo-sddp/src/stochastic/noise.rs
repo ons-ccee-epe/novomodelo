@@ -57,27 +57,6 @@ pub(crate) fn transform_inflow_noise(
     let par_lp = stochastic.par();
     let has_par = has_par_model(stochastic);
 
-    if inflow_method.truncates() {
-        scratch.par_inflow_buf.clear();
-        scratch.par_inflow_buf.resize(n_hydros, 0.0);
-        if has_par {
-            let max_order = state.max_par_order;
-            scratch.lag_matrix_buf.clear();
-            scratch
-                .lag_matrix_buf
-                .extend_from_slice(&current_state[state.inflow_lags.clone()]);
-            debug_assert_eq!(scratch.lag_matrix_buf.len(), max_order * n_hydros);
-
-            evaluate_par_batch(
-                par_lp,
-                stage.0,
-                &scratch.lag_matrix_buf,
-                hydro_noise,
-                &mut scratch.par_inflow_buf,
-            );
-        }
-    }
-
     for (h, &eta) in hydro_noise.iter().enumerate() {
         // Z-inflow RHS in m3/s: no zeta, no withdrawal.
         if has_par {
@@ -89,15 +68,35 @@ pub(crate) fn transform_inflow_noise(
         }
     }
 
-    if inflow_method.truncates() {
-        let fixed = *inflow_method == InflowNonNegativityMethod::Truncation;
-        for &r in &scratch.par_inflow_buf {
-            let truncation_amount = if r < 0.0 { -r } else { 0.0 };
-            scratch
-                .inflow_slack_lower_buf
-                .push(if fixed { truncation_amount } else { 0.0 });
-            scratch.inflow_slack_upper_buf.push(truncation_amount);
-        }
+    if !inflow_method.truncates() {
+        return;
+    }
+
+    scratch.par_inflow_buf.clear();
+    scratch.par_inflow_buf.resize(n_hydros, 0.0);
+    if has_par {
+        scratch.lag_matrix_buf.clear();
+        scratch
+            .lag_matrix_buf
+            .extend_from_slice(&current_state[state.inflow_lags.clone()]);
+        debug_assert_eq!(scratch.lag_matrix_buf.len(), state.max_par_order * n_hydros);
+
+        evaluate_par_batch(
+            par_lp,
+            stage.0,
+            &scratch.lag_matrix_buf,
+            hydro_noise,
+            &mut scratch.par_inflow_buf,
+        );
+    }
+
+    let fixed = *inflow_method == InflowNonNegativityMethod::Truncation;
+    for &r in &scratch.par_inflow_buf {
+        let truncation_amount = if r < 0.0 { -r } else { 0.0 };
+        scratch
+            .inflow_slack_lower_buf
+            .push(if fixed { truncation_amount } else { 0.0 });
+        scratch.inflow_slack_upper_buf.push(truncation_amount);
     }
 }
 
