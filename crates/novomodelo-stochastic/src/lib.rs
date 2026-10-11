@@ -50,8 +50,7 @@ pub use normal::precompute::{BlockFactorPair, EntityFactorEntry, PrecomputedNorm
 #[allow(deprecated)]
 pub use par::{
     ArCoefficientEstimate, PrecomputedPar, SeasonalStats, evaluate_par, evaluate_par_batch,
-    evaluate_par_inflow, evaluate_par_inflows, solve_par_noise, solve_par_noise_batch,
-    solve_par_noises, validate_par_parameters,
+    evaluate_par_inflow, evaluate_par_inflows, solve_par_noise, validate_par_parameters,
 };
 pub use provenance::{ComponentProvenance, StochasticProvenance};
 pub use sampling::insample::sample_forward;
