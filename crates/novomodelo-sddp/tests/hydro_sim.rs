@@ -666,10 +666,17 @@ mod multi_resolution_integration {
     use std::sync::mpsc;
 
     use novomodelo_core::temporal::SeasonCycleType;
-    use novomodelo_sddp::{
-        StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
+    use novomodelo_sddp::setup::{NodePos, StageIdx};
+    use novomodelo_sddp::test_support::{
+        node_opening_noise, oracle_initial_state, patch_backward_opening_for_probe,
+        solve_stage_for_probe, state_space,
     };
-    use novomodelo_solver::ActiveSolver;
+    use novomodelo_sddp::{
+        InflowNonNegativityMethod, StudySetup, hydro_models::prepare_hydro_models,
+        setup::prepare_stochastic,
+    };
+    use novomodelo_solver::{ActiveSolver, SolverInterface};
+    use novomodelo_stochastic::evaluate_par_batch;
 
     use super::common::StubComm;
 
@@ -894,6 +901,168 @@ mod multi_resolution_integration {
             "D30: expected 1 simulation scenario result; got {}",
             scenario_results.len()
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test: out-of-LP PAR value against the z row
+    // ---------------------------------------------------------------------------
+
+    fn trained_incoming_states(case_dir: &Path, config: &novomodelo_io::Config) -> Vec<Vec<f64>> {
+        let mut trained = build_setup(case_dir, config);
+        trained.set_export_states(true);
+        let mut solver = ActiveSolver::new().expect("solver");
+        let outcome = trained
+            .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
+            .expect("D30: train must not return Err");
+        assert!(
+            outcome.error.is_none(),
+            "D30: training outcome must have no error; got: {:?}",
+            outcome.error
+        );
+        let archive = outcome
+            .result
+            .visited_archive
+            .expect("set_export_states(true) must keep the visited-states archive");
+        let stride = archive.packing_stride();
+
+        (0..trained.num_stages())
+            .map(|t| {
+                if t == 0 {
+                    return oracle_initial_state(&trained);
+                }
+                archive
+                    .states_for_node(NodePos(t - 1))
+                    .chunks_exact(stride)
+                    .next_back()
+                    .unwrap_or_else(|| panic!("D30: node {} archived no state", t - 1))
+                    .to_vec()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn truncation_out_of_lp_par_value_matches_the_z_row() {
+        let case_dir = d30_case_dir();
+        let config = novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config");
+        let incoming_states = trained_incoming_states(&case_dir, &config);
+
+        let probe = build_setup(&case_dir, &config);
+        assert_eq!(
+            *probe.training_ctx().inflow_method,
+            InflowNonNegativityMethod::Truncation,
+            "D30 must run the truncation method"
+        );
+        let ctx = probe.stage_ctx();
+        let first_quarterly = 6;
+        assert_eq!(
+            ctx.stage_lag_transitions
+                .iter()
+                .position(|transition| transition.rebuild_from_downstream),
+            Some(first_quarterly),
+            "D30: stage {first_quarterly} must be the first to rebuild its lag from the monthly stages"
+        );
+
+        let training_ctx = probe.training_ctx();
+        let layout = state_space(&probe);
+        let par = probe.inputs.stochastic.par();
+        let hydro_range = probe.inputs.stochastic.class_dimensions().hydro_range();
+        let n_hydros = par.n_hydros();
+        let n_stages = probe.num_stages();
+
+        for t in 0..n_stages {
+            for h in 0..n_hydros {
+                let order = par.psi_slice(t, h).len();
+                assert!(
+                    order <= layout.max_par_order,
+                    "stage {t} hydro {h}: PAR order {order} exceeds the lag state depth {} \
+                     the z row reads",
+                    layout.max_par_order
+                );
+            }
+        }
+
+        let mut workspace_pool = probe
+            .create_workspace_pool(&StubComm, 1, ActiveSolver::new)
+            .expect("create_workspace_pool");
+        let ws = &mut workspace_pool.workspaces[0];
+        let mut r = vec![0.0_f64; n_hydros];
+        let mut solves = [0_usize; 2];
+        let mut negative_r = [0_usize; 2];
+        let mut max_lag_term = [0.0_f64; 2];
+
+        assert_eq!(
+            incoming_states.len(),
+            n_stages,
+            "one trained incoming state per stage"
+        );
+        for (t, incoming) in incoming_states.iter().enumerate() {
+            let class = usize::from(t >= first_quarterly);
+            let lags = &incoming[layout.inflow_lags.clone()];
+            let node = NodePos(t);
+            let node_id = probe.inputs.node_graph.node_ids[node];
+            let template = &ctx.templates[t];
+
+            for opening in 0..probe.inputs.node_graph.nodes[node].openings.len {
+                let raw_noise = node_opening_noise(&probe, node, opening);
+                ws.solver.reset_solver_state();
+                ws.solver.load_model(template);
+                patch_backward_opening_for_probe(
+                    ws,
+                    &ctx,
+                    &training_ctx,
+                    StageIdx(t),
+                    incoming,
+                    &raw_noise,
+                );
+                let view = solve_stage_for_probe(
+                    ws,
+                    &ctx,
+                    &probe.fcf.pools[t],
+                    None,
+                    StageIdx(t),
+                    0,
+                    node_id,
+                )
+                .unwrap_or_else(|err| panic!("stage {t} opening {opening}: probe failed: {err}"));
+                evaluate_par_batch(par, t, lags, &raw_noise[hydro_range.clone()], &mut r);
+
+                solves[class] += 1;
+                for (h, &r_h) in r.iter().enumerate() {
+                    let col = layout.z_inflow.start + h;
+                    let z_h =
+                        view.primal[col] * template.col_scale.get(col).copied().unwrap_or(1.0);
+                    assert!(
+                        (z_h - r_h).abs() <= 1e-6 * r_h.abs().max(1.0),
+                        "stage {t} opening {opening} hydro {h}: the z row solved {z_h}, \
+                         the PAR value computed outside the LP is {r_h}"
+                    );
+                    negative_r[class] += usize::from(r_h < 0.0);
+                    let lag_term: f64 = par
+                        .psi_slice(t, h)
+                        .iter()
+                        .enumerate()
+                        .map(|(lag, psi)| psi * lags[lag * layout.hydro_count + h])
+                        .sum();
+                    max_lag_term[class] = max_lag_term[class].max(lag_term.abs());
+                }
+            }
+        }
+
+        eprintln!(
+            "d30 out-of-LP check: solves={} negative_r_monthly={} negative_r_quarterly={}",
+            solves[0] + solves[1],
+            negative_r[0],
+            negative_r[1]
+        );
+        for (class, name) in ["monthly", "quarterly"].into_iter().enumerate() {
+            assert!(solves[class] > 0, "no probe was checked on a {name} stage");
+            assert!(
+                max_lag_term[class] > 1.0,
+                "no checked {name} (stage, hydro) has a lag term above 1.0 m3/s; \
+                 the largest is {}",
+                max_lag_term[class]
+            );
+        }
     }
 }
 
