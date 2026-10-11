@@ -745,7 +745,11 @@ pub fn geometry(
         evaporation_models,
         anticipated_lead_stages,
         anticipated_plants: dims.anticipated_plants.clone(),
-        has_penalty: dims.has_inflow_penalty,
+        inflow_method: if dims.has_inflow_penalty {
+            crate::InflowNonNegativityMethod::Penalty
+        } else {
+            crate::InflowNonNegativityMethod::None
+        },
         bounds,
         time_value,
         ..CtxFixture::default()

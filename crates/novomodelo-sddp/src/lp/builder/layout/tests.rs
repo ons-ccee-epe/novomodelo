@@ -3816,7 +3816,7 @@ fn column_address_pins_cover_every_family() {
     let mut totals = ColumnAddressCounts::default();
 
     let mut filling_fixtures = FillingMembershipFixtures::new();
-    filling_fixtures.base.has_penalty = true;
+    filling_fixtures.base.inflow_method = crate::InflowNonNegativityMethod::Penalty;
     let ctx = filling_fixtures.make_ctx();
 
     let filling_stage = stage_with_id(1);
