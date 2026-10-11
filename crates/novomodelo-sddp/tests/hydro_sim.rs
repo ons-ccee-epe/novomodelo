@@ -3798,10 +3798,10 @@ mod water_balance_from_written_outputs {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
     use super::common::in_code_studies::{
-        CHRONOLOGICAL_NOISE_BLOCK_HOURS, ChronologicalNoiseSpec, chronological_noise_study,
-        negative_draw_par1_spec,
+        CHRONOLOGICAL_NOISE_BLOCK_HOURS, ChronologicalNoiseSpec, chronological_noise_hydro_models,
+        chronological_noise_study, negative_draw_par1_spec, negative_draw_water_value_spec,
     };
-    use super::common::{build_setup_in_code, run_simulation};
+    use super::common::{build_setup_in_code_with_models, run_simulation};
 
     const BLOCK_MODE_ASSIGNMENTS: [[BlockMode; 2]; 2] = [
         [BlockMode::Parallel, BlockMode::Chronological],
@@ -3824,6 +3824,12 @@ mod water_balance_from_written_outputs {
     const WITHDRAWN_HYDRO_ID: i32 = 1;
     const HM3_PER_M3S_HOUR: f64 = 0.0036;
     const CLOSURE_RELATIVE_TOLERANCE: f64 = 1e-6;
+    const RELEASE_METHODS: [InflowNonNegativityMethod; 2] = [
+        InflowNonNegativityMethod::Truncation,
+        InflowNonNegativityMethod::TruncationWithPenalty,
+    ];
+    /// Share of the initial storage each hydro must release on the loaded stage.
+    const MIN_RELEASED_SHARE: f64 = 0.5;
 
     struct HydroRow {
         stage_id: usize,
@@ -3933,7 +3939,8 @@ mod water_balance_from_written_outputs {
             num_scenarios: u32::try_from(NUM_SCENARIOS).expect("scenario count fits u32"),
         });
 
-        let mut setup = build_setup_in_code(system, &config);
+        let hydro_models = chronological_noise_hydro_models(spec, &system);
+        let mut setup = build_setup_in_code_with_models(system, &config, hydro_models);
         let results = run_simulation(&mut setup, 1);
         assert_eq!(results.len(), NUM_SCENARIOS, "simulated scenario count");
         let scenario_ids: Vec<u32> = results.iter().map(|result| result.scenario_id).collect();
@@ -4137,6 +4144,76 @@ mod water_balance_from_written_outputs {
                     assert_scenario_closes(&case, &spec, *scenario_id, rows);
                 }
                 assert_guards(&case, method, &spec, &scenarios);
+            }
+        }
+    }
+
+    fn assert_release_guards(
+        case: &str,
+        spec: &ChronologicalNoiseSpec,
+        scenarios: &[(u32, Vec<HydroRow>)],
+    ) {
+        let mut releases_checked = 0;
+        let mut withheld_withdrawals = 0;
+        for (scenario_id, rows) in scenarios {
+            let mut released_hm3: BTreeMap<i32, f64> = BTreeMap::new();
+            for row in rows {
+                if spec.load_mw[row.stage_id] > 0.0 {
+                    *released_hm3.entry(row.hydro_id).or_default() += HM3_PER_M3S_HOUR
+                        * CHRONOLOGICAL_NOISE_BLOCK_HOURS[row.block_id]
+                        * row.outflow_m3s;
+                }
+                if row.stage_id == 0
+                    && row.hydro_id == WITHDRAWN_HYDRO_ID
+                    && row.water_withdrawal_violation_neg_m3s > 0.5 * spec.water_withdrawal_m3s
+                {
+                    withheld_withdrawals += 1;
+                }
+            }
+            for (hydro_id, volume_hm3) in released_hm3 {
+                assert!(
+                    volume_hm3 > MIN_RELEASED_SHARE * spec.initial_storage_hm3,
+                    "{case} scenario {scenario_id} hydro {hydro_id}: released {volume_hm3} hm3 \
+                     on the loaded stage"
+                );
+                releases_checked += 1;
+            }
+        }
+        assert_eq!(
+            releases_checked,
+            NUM_SCENARIOS * N_HYDROS,
+            "{case}: (scenario, hydro) releases checked"
+        );
+        assert_eq!(
+            withheld_withdrawals,
+            NUM_SCENARIOS * CHRONOLOGICAL_NOISE_BLOCK_HOURS.len(),
+            "{case}: stage-0 rows of the withdrawn hydro that withhold the withdrawal"
+        );
+    }
+
+    #[test]
+    fn simulated_water_balance_closes_with_a_nonzero_release() {
+        for block_modes in BLOCK_MODE_ASSIGNMENTS {
+            for method in RELEASE_METHODS {
+                let spec = ChronologicalNoiseSpec {
+                    block_modes,
+                    branching_factor: 3,
+                    water_withdrawal_m3s: WITHDRAWAL_M3S,
+                    over_withdrawal_cost: OVER_WITHDRAWAL_COST,
+                    ..negative_draw_water_value_spec(method)
+                };
+                let case = format!("water value {method:?} {block_modes:?}");
+                let scenarios = simulate_and_read_hydros(&spec);
+                for (scenario_id, rows) in &scenarios {
+                    assert_eq!(
+                        rows.len(),
+                        ROWS_PER_SCENARIO,
+                        "{case} scenario {scenario_id}: rows read back"
+                    );
+                    assert_scenario_closes(&case, &spec, *scenario_id, rows);
+                }
+                assert_guards(&case, method, &spec, &scenarios);
+                assert_release_guards(&case, &spec, &scenarios);
             }
         }
     }

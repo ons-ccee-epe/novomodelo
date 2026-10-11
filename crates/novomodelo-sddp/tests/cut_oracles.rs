@@ -12,24 +12,30 @@ mod common;
 use novomodelo_core::System;
 use novomodelo_io::Config;
 use novomodelo_io::config::InflowNonNegativityMethod;
-use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::setup::{NodePos, StageIdx};
 use novomodelo_sddp::test_support::decks::committed_decks;
 use novomodelo_sddp::test_support::{
     inflow_slack_bounds_for_probe, stage_state_box_bounds,
     write_backward_opening_outcome_with_inflow_slack_bounds_for_probe,
 };
+use novomodelo_sddp::{DEFAULT_COST_SCALE_FACTOR, StudySetup};
 use novomodelo_solver::ActiveSolver;
 
 use common::cut_oracles::{apply_oracle_config, run_cut_oracles};
 use common::in_code_studies::{
-    ChronologicalNoiseSpec, chronological_noise_study, discounted_anticipated_study,
-    mixed_lead_anticipated_study, negative_draw_par1_spec, parallel_multiblock_evaporation_study,
+    ChronologicalNoiseSpec, chronological_noise_hydro_models, chronological_noise_study,
+    discounted_anticipated_study, mixed_lead_anticipated_study, negative_draw_par1_spec,
+    negative_draw_water_value_spec, parallel_multiblock_evaporation_study,
     stochastic_parallel_study,
 };
 use common::{StubComm, build_setup_in_code, build_setup_in_code_with_models, fresh_setup_with};
 
 const D19: &str = "examples/deterministic/d19-multi-hydro-par";
+/// Magnitude, in $ per hm³ or per m³/s, that a stored coefficient times
+/// `DEFAULT_COST_SCALE_FACTOR` must exceed to count as sloped.
+const SLOPED_CUT_MARGIN: f64 = 1_000.0;
+/// Two storages and two inflow lags.
+const WATER_VALUE_STATE_DIMENSION: usize = 4;
 
 fn d19_setup(mutate: impl FnOnce(&mut Config)) -> StudySetup {
     let decks = committed_decks();
@@ -120,6 +126,75 @@ fn cut_oracles_resolve_frozen_corrections_on_the_negative_draw_par1_study() {
             "{label}: the frozen-correction re-solve branch never ran"
         );
         report.assert_sound(label);
+    }
+}
+
+fn water_value_oracle_setup(spec: &ChronologicalNoiseSpec) -> StudySetup {
+    let (system, mut config) = chronological_noise_study(spec);
+    apply_oracle_config(&mut config);
+    let hydro_models = chronological_noise_hydro_models(spec, &system);
+    build_setup_in_code_with_models(system, &config, hydro_models)
+}
+
+/// `run_cut_oracles` consumes its setup, so the stored cuts are read from a twin trained the
+/// same way; returns their count after asserting every coefficient is below `-SLOPED_CUT_MARGIN`.
+fn count_sloped_stored_cuts(label: &str, spec: &ChronologicalNoiseSpec) -> usize {
+    let mut twin = water_value_oracle_setup(spec);
+    let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+    let outcome = twin
+        .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
+        .expect("training must return Ok");
+    assert!(
+        outcome.error.is_none(),
+        "{label}: training must not error: {:?}",
+        outcome.error
+    );
+    let mut cuts = 0;
+    for (slot, _, coefficients) in twin.fcf.pools[0].active_cuts() {
+        assert_eq!(
+            coefficients.len(),
+            WATER_VALUE_STATE_DIMENSION,
+            "{label}: slot {slot} coefficient count"
+        );
+        for (dimension, coefficient) in coefficients.iter().enumerate() {
+            let slope = coefficient * DEFAULT_COST_SCALE_FACTOR;
+            assert!(
+                slope < -SLOPED_CUT_MARGIN,
+                "{label}: slot {slot} dimension {dimension} has slope {slope}, a flat cut"
+            );
+        }
+        cuts += 1;
+    }
+    cuts
+}
+
+#[test]
+fn cut_oracles_hold_with_sloped_cuts_on_the_negative_draw_water_value_study() {
+    for (label, method) in [
+        (
+            "negative_draw_water_value/truncation",
+            InflowNonNegativityMethod::Truncation,
+        ),
+        (
+            "negative_draw_water_value/truncation_with_penalty",
+            InflowNonNegativityMethod::TruncationWithPenalty,
+        ),
+    ] {
+        let spec = ChronologicalNoiseSpec {
+            branching_factor: 4,
+            ..negative_draw_water_value_spec(method)
+        };
+        let report = run_cut_oracles(label, water_value_oracle_setup(&spec));
+        assert!(
+            report.frozen_resolves > 0,
+            "{label}: the frozen-correction re-solve branch never ran"
+        );
+        report.assert_sound(label);
+        assert_eq!(
+            count_sloped_stored_cuts(label, &spec),
+            report.cuts_checked,
+            "{label}: the second training run stored a different number of cuts than the oracle checked"
+        );
     }
 }
 
