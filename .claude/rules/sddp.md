@@ -64,20 +64,24 @@ Read: `lp/indexer/state_space.rs`.
 
 The inflow-noise patch touches only hydro `h`'s z-inflow row. Every
 water-balance row instead reads the deterministic column `z_h` through
-`push_z_inflow_coupling`: at `−ζ` on a parallel stage, and at `−τ_k` (block
+`push_local_inflow_coupling`: at `−ζ` on a parallel stage, and at `−τ_k` (block
 `k`'s duration hours times `M3S_TO_HM3`) on each chronological block row — on
 the hydro's own water-balance row(s), or its `PreFilling` short-circuit
-target's. The water rows themselves carry no lag, base, or patch of their
-own; re-encoding the inflow there routes a chronological hydro's noise onto
-another hydro's block row.
+target's. The same router gives the hydro's inflow-slack column, when the
+method has one, exactly `z_h`'s water-row entries: the target's rows for a
+`PreFilling` hydro, no row at a sink, never a frozen identity row. The water
+rows themselves carry no lag, base, or patch of their own; re-encoding the
+inflow there routes a chronological hydro's noise onto another hydro's block
+row.
 
-Read: `lp/builder/entries.rs` (`push_z_inflow_coupling`), `stochastic/noise.rs`
-(`transform_inflow_noise`). Pinned by
+Read: `lp/builder/entries.rs` (`push_local_inflow_coupling`),
+`stochastic/noise.rs` (`transform_inflow_noise`). Pinned by
 `chronological_inflow_noise_moves_only_its_own_hydro`
 (`tests/chronological_inflow_noise.rs`) and
 `every_noise_dimension_patches_only_its_own_entity`
 (`tests/patch_ownership_sweep.rs`), whose inflow ownership set is the z row
-alone.
+alone, and `inflow_slack_follows_z_routing_for_prefilling`
+(`lp/builder/entries.rs`) for the slack route.
 
 ## FPHA uses average storage
 

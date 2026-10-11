@@ -1195,7 +1195,7 @@ fn chronological_water_balance_row_count() {
     );
 }
 
-/// In parallel mode `push_z_inflow_coupling` loops
+/// In parallel mode `push_local_inflow_coupling` loops
 /// `0..water_balance.rows_per_entity(n_blks) == 1`, so `z_h`'s column carries
 /// exactly one WATER-ROW entry per target hydro regardless of `n_blks` — a
 /// `Σ_k` per-block loop would inflate the routed-entry count instead. `z_h`

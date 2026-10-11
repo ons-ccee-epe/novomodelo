@@ -328,7 +328,7 @@ fn resolve_hydro_inflow(
 
 /// Push plant `plant_idx`'s own local inflow rate onto `out`: its `z_inflow`
 /// column, then each `diversion_upstream` source into it, both at `1.0`
-/// (mirrors `push_z_inflow_coupling`'s z coupling and the diversion-inflow
+/// (mirrors `push_local_inflow_coupling`'s z coupling and the diversion-inflow
 /// loop in `fill_state_and_water_entries`, both `lp/builder/entries.rs`).
 fn push_local_inflow_rate(
     plant_idx: usize,

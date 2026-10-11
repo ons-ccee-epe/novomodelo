@@ -478,7 +478,6 @@ fn water_row_ok(
             d.get() == source || d.get() == destination
         }
         ColOwner::Evaporation { hydro, .. }
-        | ColOwner::InflowSlack { hydro }
         | ColOwner::WithdrawalNeg { hydro }
         | ColOwner::WithdrawalPos { hydro } => d == hydro,
         ColOwner::Thermal { .. }
@@ -491,6 +490,7 @@ fn water_row_ok(
         | ColOwner::Contract { .. } => false,
         ColOwner::Storage { .. }
         | ColOwner::ZInflow { .. }
+        | ColOwner::InflowSlack { .. }
         | ColOwner::InflowLag { .. }
         | ColOwner::Bucket { .. }
         | ColOwner::AnticipatedIn { .. } => true,
