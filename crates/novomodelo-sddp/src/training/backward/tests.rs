@@ -3,7 +3,6 @@ use crate::SddpError;
 /// Test-only backward-pass shim that owns per-call scratch, so the tests in
 /// this module can exercise the backward pass without threading a full
 /// `TrainingSession` through every fixture.
-#[cfg(test)]
 fn run_backward_pass<S, C: Communicator>(
     inputs: &mut BackwardPassInputs<'_, S, C>,
 ) -> Result<BackwardResult, SddpError>
@@ -14,7 +13,6 @@ where
 }
 
 /// [`run_backward_pass`] with `configure` applied to the state before the run.
-#[cfg(test)]
 fn run_backward_pass_configured<S, C: Communicator>(
     inputs: &mut BackwardPassInputs<'_, S, C>,
     configure: impl FnOnce(&mut BackwardPassState),
@@ -3186,9 +3184,6 @@ fn backward_iteration_3_over_three_old_cuts<C: Communicator>(
     let mut csb = CutSyncBuffers::new(n_state, forward_passes as usize, 1);
     let state_boxes = permissive_state_boxes(n_state, n_stages);
 
-    // Run a single backward iteration, number 3. The backward loop visits t=1
-    // (cuts go to pool[1]), then t=0 (cuts go to pool[0], binding
-    // checked against pool[1]).
     let result = run_backward_pass_configured(
         &mut BackwardPassInputs {
             workspaces: &mut workspaces,

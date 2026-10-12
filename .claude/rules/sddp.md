@@ -1258,8 +1258,8 @@ from the active cuts (`score_violated_candidates` iterates
 loop reactivates a cut and one the budget deactivates is never a candidate again.
 The enumerated backward records no binding activity (`sync_stage_metadata`, the
 only caller of `record_binding`, runs in the sampled level driver only), so every
-cut keeps `active_count = 0` and its generating iteration as `last_active_iter`,
-and the eviction key reduces to generation order.
+cut this run generates keeps `active_count = 0` and its generating iteration as
+`last_active_iter`, and the eviction key reduces to generation order.
 
 The wrong-but-compiling alternatives:
 

@@ -173,8 +173,8 @@ fn resume_apply_installs_the_checkpoint_cuts_and_the_start_iteration() {
 #[test]
 fn loaded_activity_clock_follows_the_load_kind() {
     let trained = train_and_write_checkpoint();
-    let mut latest_loaded_iteration = 0;
     for kind in [FullFcfLoadKind::Resume, FullFcfLoadKind::WarmStart] {
+        let mut latest_loaded_iteration = 0;
         let (mut setup, system) = build_setup();
         let policy_dir = locate_policy_dir(kind, trained.output.path(), &setup).expect("locate");
         check_full_fcf_load(kind, &policy_dir, &system, &setup, &mut |_| {})
@@ -195,11 +195,11 @@ fn loaded_activity_clock_follows_the_load_kind() {
                 latest_loaded_iteration = latest_loaded_iteration.max(meta.iteration_generated);
             }
         }
+        assert!(
+            latest_loaded_iteration >= 1,
+            "{kind:?}: a loaded cut must carry a generating iteration, or the two kinds are not told apart"
+        );
     }
-    assert!(
-        latest_loaded_iteration >= 1,
-        "a loaded cut must carry a generating iteration, or the two kinds are not told apart"
-    );
 }
 
 #[test]

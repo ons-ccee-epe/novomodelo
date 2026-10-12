@@ -2186,11 +2186,8 @@ fn build_risk_measures(system: &System) -> Vec<RiskMeasure> {
 
 /// The setup-time admission gate: the permanent arms that survive the
 /// node-native collapse, evaluated once from
-/// [`StudySetup::from_broadcast_params`]. Absent the gated features (no `gap`
-/// stopping rule, an expectation measure at every stage, no dynamic cut
-/// selection under enumerated forwards, and no active-cut budget together with
-/// dynamic cut selection or enumerated forwards) it returns `Ok(())`
-/// unconditionally, so a default study is byte-neutral.
+/// [`StudySetup::from_broadcast_params`]. Absent every gated feature it returns
+/// `Ok(())`, so a default study is byte-neutral.
 ///
 /// # Errors
 ///

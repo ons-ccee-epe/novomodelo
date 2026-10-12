@@ -280,11 +280,8 @@ pub struct BackwardPassState {
     /// before the first `run()` call.
     hardest_first_claim_order: bool,
 
-    /// Whether cut binding activity is recorded. Must hold the same value on
-    /// every rank, because `false` skips the metadata `allreduce` (sddp.md
-    /// "Binding activity is recorded only for a configured reader"). Defaults
-    /// to `true`; override with [`Self::set_binding_tracking`] before the
-    /// first `run()` call.
+    /// Whether cut binding activity is recorded; set through
+    /// [`Self::set_binding_tracking`], which states the rank contract.
     binding_tracking: bool,
 
     /// Maximum local forward-pass count across the run; with
