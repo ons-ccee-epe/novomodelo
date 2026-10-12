@@ -370,6 +370,10 @@ pub enum NoisePreallocation {
 /// exclusive [`SolverWorkspace`] and therefore an exclusive instance, so the
 /// per-worker fields need no synchronisation; the sequential merge phase after
 /// the parallel region sums their contributions.
+///
+/// `slot_increments`, `metadata_sync_contribution` and `cut_duals_buf` are
+/// grown, zeroed and filled only while the pass records binding activity (the
+/// successor view's `cut_activity_tolerance` is `Some`).
 #[derive(Default)]
 pub(crate) struct BackwardAccumulators {
     /// Per-opening backward outcomes, grown to the maximum `n_openings` seen.
