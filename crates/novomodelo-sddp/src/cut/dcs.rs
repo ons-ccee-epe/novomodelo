@@ -1774,6 +1774,18 @@ mod tests {
         }
     }
 
+    /// `core_template()` with the state column free in `[0, 10]` and cost 1, and
+    /// theta bounded below by 0 with cost 1: `min x + theta`, so the primal moves
+    /// between rounds of a lazy solve.
+    fn free_state_template() -> StageTemplate {
+        StageTemplate {
+            col_lower: vec![0.0, 0.0, 0.0, 0.0],
+            col_upper: vec![10.0, 0.0, 0.0, 1.0e6],
+            objective: vec![1.0, 0.0, 0.0, 1.0],
+            ..core_template()
+        }
+    }
+
     /// Three cuts (state_dim = 1), floors at x0 = 2.0:
     ///   slot 0: intercept 1, coeff [0]   → floor 1.0
     ///   slot 1: intercept 0, coeff [1]   → floor 2.0
@@ -1834,9 +1846,12 @@ mod tests {
 
     /// Reference all-cuts optimum: load core, append every active slot, solve.
     fn solve_all_cuts(pool: &CutPool, state: &StateSpace) -> (f64, f64) {
+        solve_all_cuts_on(&core_template(), pool, state)
+    }
+
+    fn solve_all_cuts_on(core: &StageTemplate, pool: &CutPool, state: &StateSpace) -> (f64, f64) {
         let mut solver = active_profiled();
-        let core = core_template();
-        solver.load_model(&core);
+        solver.load_model(core);
         let mut row_map = CutRowMap::new(pool.populated(), core.num_rows);
         let mut batch = RowBatch {
             num_rows: 0,
@@ -1860,6 +1875,122 @@ mod tests {
         );
         let view = solver.solve(None).expect("all-cuts solve must succeed");
         (view.objective, view.primal[LAZY_THETA_COL])
+    }
+
+    fn cuts_pool(cuts: &[(f64, f64)]) -> CutPool {
+        let mut pool = CutPool::new(16, 1, 16, 0);
+        for (slot, &(intercept, slope)) in cuts.iter().enumerate() {
+            pool.add_cut(NodeId(0), 0, slot as u32, intercept, &[slope]);
+            pool.set_iteration_generated_for_test(slot, 1);
+        }
+        pool
+    }
+
+    /// Cuts `theta >= intercept + slope * x` as (intercept, slope): A (10, -2),
+    /// B (6, -0.5), C (1, 0), in slots 0 to 2, on `min x + theta`, `x` in `[0, 10]`.
+    ///
+    /// derived: with no cut the optimum is `x = 0`, where A is the most violated
+    /// (10); with A the optimum is `x = 5`, `theta = 0`, where B is violated by 3.5;
+    /// with A and B the optimum is their intersection `x = 8/3`, `theta = 14/3`,
+    /// objective `22/3`; C is worth 1 there, below `14/3`.
+    #[test]
+    fn lazy_solve_follows_a_moving_primal_to_the_all_cuts_optimum() {
+        let indexer = lazy_indexer();
+        let pool = cuts_pool(&[(10.0, -2.0), (6.0, -0.5), (1.0, 0.0)]);
+        let core = free_state_template();
+        let (all_obj, _) = solve_all_cuts_on(&core, &pool, &indexer);
+
+        let mut solver = active_profiled();
+        let mut scratch = DcsSolveScratch::default();
+        solver.load_model(&core);
+        let solves_before = solver.statistics().solve_count;
+        lazy_solve_preloaded(
+            &mut solver,
+            &core,
+            &pool,
+            &indexer,
+            &cut_state(&indexer),
+            &[],
+            None,
+            &[],
+            &lazy_params(1, DcsParams::default().max_inner_iterations),
+            &mut scratch,
+            ctx(),
+        )
+        .expect("lazy_solve_preloaded must succeed");
+        let solve_delta = solver.statistics().solve_count - solves_before;
+        let view = scratch.result_view();
+
+        assert!(
+            (view.objective - 22.0 / 3.0).abs() < 1e-9,
+            "{}",
+            view.objective
+        );
+        assert!(
+            (view.primal[0] - 8.0 / 3.0).abs() < 1e-9,
+            "{}",
+            view.primal[0]
+        );
+        assert!(
+            (view.primal[LAZY_THETA_COL] - 14.0 / 3.0).abs() < 1e-9,
+            "{}",
+            view.primal[LAZY_THETA_COL]
+        );
+        let resident: Vec<bool> = (0..3)
+            .map(|slot| scratch.row_map.lp_row_for_slot(slot).is_some())
+            .collect();
+        assert_eq!(resident, [true, true, false]);
+        assert_eq!(solve_delta, 3);
+        assert!((view.objective - all_obj).abs() < 1e-9);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: 64,
+            rng_seed: proptest::test_runner::RngSeed::Fixed(42),
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        #[test]
+        fn lazy_objective_equals_the_all_cuts_objective(
+            cuts in proptest::collection::vec((0..=20i32, -4..=0i32), 1..=12),
+            seed_mask in proptest::collection::vec(proptest::bool::ANY, 12),
+            nadic in 1..=3u32,
+        ) {
+            let cuts: Vec<(f64, f64)> =
+                cuts.iter().map(|&(i, s)| (f64::from(i), f64::from(s))).collect();
+            let seed: Vec<u32> = (0..cuts.len() as u32)
+                .filter(|&slot| seed_mask[slot as usize])
+                .collect();
+            let indexer = lazy_indexer();
+            let pool = cuts_pool(&cuts);
+            let core = free_state_template();
+            let (all_obj, _) = solve_all_cuts_on(&core, &pool, &indexer);
+
+            let mut solver = active_profiled();
+            let mut scratch = DcsSolveScratch::default();
+            solver.load_model(&core);
+            lazy_solve_preloaded(
+                &mut solver,
+                &core,
+                &pool,
+                &indexer,
+                &cut_state(&indexer),
+                &[],
+                None,
+                &seed,
+                &lazy_params(nadic, DcsParams::default().max_inner_iterations),
+                &mut scratch,
+                ctx(),
+            )
+            .expect("lazy_solve_preloaded must succeed");
+
+            let objective = scratch.result_view().objective;
+            proptest::prop_assert!(
+                (objective - all_obj).abs() <= 1e-9 * all_obj.abs().max(1.0),
+                "lazy {objective} != all-cuts {all_obj}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
