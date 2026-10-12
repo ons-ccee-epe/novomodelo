@@ -200,7 +200,7 @@ impl CutSyncBuffers {
 
         let mut n_cuts = 0usize;
         for slot in 0..cut_pool.populated() {
-            if !cut_pool.is_active(slot) {
+            if !cut_pool.is_active(slot) || cut_pool.is_prefix_slot(slot) {
                 continue;
             }
             let meta = cut_pool.metadata(slot);
@@ -923,6 +923,36 @@ mod tests {
             2,
             "local cuts must not be re-inserted"
         );
+    }
+
+    #[test]
+    fn a_loaded_cut_is_never_packed_as_a_new_cut() {
+        use crate::cut::pool::CutPool;
+        use novomodelo_io::OwnedPolicyCutRecord;
+
+        let n_state = 1usize;
+        let loaded = OwnedPolicyCutRecord {
+            cut_id: 0,
+            slot_index: 0,
+            iteration: 1,
+            forward_pass_index: 0,
+            intercept: 5.0,
+            coefficients: vec![1.0],
+            is_active: true,
+        };
+        let mut fcf = FutureCostFunction::new(1, n_state, 1, 4, &[0]);
+        fcf.pools[0] = CutPool::new_with_warm_start(n_state, 1, 4, &[loaded]);
+        fcf.set_iteration_base(1);
+        fcf.add_cut(NodeId(0), 0, 1, 0, 10.0, &[2.0]);
+        let mut bufs = CutSyncBuffers::new(n_state, 2, 1);
+
+        let (local, remote) = bufs
+            .sync_level_records(&[0], &[], &mut fcf, 1, &LocalBackend)
+            .unwrap();
+
+        assert_eq!(local, 1, "only the cut generated this iteration is packed");
+        assert_eq!(remote, 0);
+        assert_eq!(fcf.pools[0].active_count(), 2);
     }
 
     /// Rank 0 of 2; `allgatherv` writes only rank 0's own segment

@@ -42,12 +42,3 @@ pub use fcf::FutureCostFunction;
 pub use pool::{CutPool, SparsityReport};
 pub use row_map::CutRowMap;
 pub use wire::CutWireHeader;
-
-/// Sentinel value stored in [`crate::cut_selection::CutMetadata::iteration_generated`]
-/// for warm-start cuts loaded from a policy checkpoint.
-///
-/// Set to [`u64::MAX`] so that `WARM_START_ITERATION != current_iteration` is
-/// always true for any valid training iteration, allowing cut selection
-/// strategies to distinguish warm-start cuts from training-generated cuts
-/// without special casing.
-pub const WARM_START_ITERATION: u64 = u64::MAX;

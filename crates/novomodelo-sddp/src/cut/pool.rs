@@ -42,7 +42,6 @@
 //! assert_eq!(pool.cuts_in_lp(), 1);
 //! ```
 
-use crate::cut::WARM_START_ITERATION;
 use crate::cut_selection::CutActivityUpdates;
 use crate::cut_selection::CutMetadata;
 use crate::setup::NodeId;
@@ -314,9 +313,9 @@ impl CutPool {
     /// Iterate over active cuts whose `iteration_generated == current_iteration`,
     /// in insertion order (declaration-order invariance).
     ///
-    /// Warm-start cuts ([`WARM_START_ITERATION`]) are always excluded — the
-    /// explicit guard prevents them being repacked as new training cuts in cut
-    /// sync even if `current_iteration` collided with the sentinel.
+    /// A loaded cut ([`is_prefix_slot`](CutPool::is_prefix_slot)) is never a
+    /// delta cut: a restarted iteration counter can equal its generating
+    /// iteration.
     pub(crate) fn active_delta_cuts(
         &self,
         current_iteration: u64,
@@ -338,8 +337,8 @@ impl CutPool {
             })
             .flatten()
             .filter(move |&slot| {
-                self.metadata[slot].iteration_generated == current_iteration
-                    && self.metadata[slot].iteration_generated != WARM_START_ITERATION
+                !self.is_prefix_slot(slot)
+                    && self.metadata[slot].iteration_generated == current_iteration
             })
             .map(|i| {
                 let start = i * self.state_dimension;
@@ -389,6 +388,14 @@ impl CutPool {
     #[inline]
     pub fn has_warm_start_cuts(&self) -> bool {
         self.warm_start_count > 0
+    }
+
+    /// Whether `slot` is in the loaded prefix: the cuts the pool held before the
+    /// run started.
+    #[must_use]
+    #[inline]
+    pub fn is_prefix_slot(&self, slot: usize) -> bool {
+        slot < self.warm_start_count as usize
     }
 
     /// Return the populated-slot count — the LP-row metric, independent of
@@ -930,14 +937,11 @@ impl CutPool {
             if record.is_active {
                 cached_active_count += 1;
             }
-            // WARM_START_ITERATION sentinel keeps warm-start cuts out of
-            // pack_local_cuts (filters on current iteration), so cut sync never
-            // double-counts them as new training cuts.
             metadata[i] = CutMetadata {
-                iteration_generated: WARM_START_ITERATION,
+                iteration_generated: u64::from(record.iteration),
                 forward_pass_index: record.forward_pass_index,
-                // Warm-start cuts are WARM_START_ITERATION-filtered out of cut-sync
-                // packing, so their generating node never reaches the wire; 0 is inert.
+                // Prefix slots are never packed for cut sync, so their generating
+                // node never reaches the wire; 0 is inert.
                 node: NodeId(0),
                 active_count: 0,
                 last_active_iter: u64::from(record.iteration),
@@ -1044,7 +1048,9 @@ impl CutPool {
     /// `(last_active_iter ASC, active_count ASC)` — stalest, least-used first.
     ///
     /// Cuts generated in `current_iteration` are **never** evicted; if they alone
-    /// exceed `budget`, `active_count()` may remain above it after the call.
+    /// exceed `budget`, `active_count()` may remain above it after the call. A
+    /// loaded cut ([`is_prefix_slot`](CutPool::is_prefix_slot)) is always an
+    /// eviction candidate, whatever its generating iteration.
     ///
     /// # Parameters
     ///
@@ -1072,15 +1078,14 @@ impl CutPool {
 
         self.candidates_buf.clear();
         #[allow(clippy::cast_possible_truncation)]
-        self.candidates_buf.extend(
-            self.active[..self.populated_count]
-                .iter()
-                .enumerate()
-                .filter(|&(slot, &is_active)| {
-                    is_active && self.metadata[slot].iteration_generated != current_iteration
-                })
-                .map(|(slot, _)| slot as u32),
-        );
+        for (slot, &is_active) in self.active[..self.populated_count].iter().enumerate() {
+            if is_active
+                && (self.is_prefix_slot(slot)
+                    || self.metadata[slot].iteration_generated != current_iteration)
+            {
+                self.candidates_buf.push(slot as u32);
+            }
+        }
 
         if self.candidates_buf.is_empty() {
             return BudgetEnforcementResult {
@@ -1539,8 +1544,7 @@ mod tests {
     }
 
     #[test]
-    fn warm_start_cuts_have_sentinel_iteration() {
-        use crate::cut::WARM_START_ITERATION;
+    fn warm_start_cuts_keep_their_generating_iteration() {
         use novomodelo_io::OwnedPolicyCutRecord;
 
         let records = vec![
@@ -1567,13 +1571,50 @@ mod tests {
         let pool = CutPool::new_with_warm_start(2, 4, 100, &records);
         assert_eq!(pool.warm_start_count, 2);
         assert_eq!(pool.populated_count, 2);
-        // Both warm-start cuts must use the sentinel value.
-        assert_eq!(pool.metadata[0].iteration_generated, WARM_START_ITERATION);
-        assert_eq!(pool.metadata[1].iteration_generated, WARM_START_ITERATION);
-        // The original iteration is preserved in last_active_iter for
-        // informational purposes (checkpoint round-trip).
+        assert_eq!(pool.metadata[0].iteration_generated, 5);
+        assert_eq!(pool.metadata[1].iteration_generated, 7);
         assert_eq!(pool.metadata[0].last_active_iter, 5);
         assert_eq!(pool.metadata[1].last_active_iter, 7);
+        assert!(pool.is_prefix_slot(0));
+        assert!(pool.is_prefix_slot(1));
+        assert!(!pool.is_prefix_slot(2));
+    }
+
+    fn loaded_cut(iteration: u32) -> novomodelo_io::OwnedPolicyCutRecord {
+        novomodelo_io::OwnedPolicyCutRecord {
+            cut_id: 0,
+            slot_index: 0,
+            iteration,
+            forward_pass_index: 0,
+            intercept: 1.0,
+            coefficients: vec![1.0],
+            is_active: true,
+        }
+    }
+
+    #[test]
+    fn a_loaded_cut_sharing_the_current_iteration_number_is_not_a_delta_cut() {
+        let mut pool = CutPool::new_with_warm_start(1, 1, 4, &[loaded_cut(2)]);
+        pool.set_iteration_base(2);
+        pool.add_cut(NodeId(0), 2, 0, 3.0, &[1.0]);
+
+        let delta: Vec<usize> = pool.active_delta_cuts(2).map(|(slot, _, _)| slot).collect();
+
+        assert_eq!(delta, vec![1]);
+    }
+
+    #[test]
+    fn a_loaded_cut_stays_a_budget_candidate_when_iteration_numbers_collide() {
+        let mut pool = CutPool::new_with_warm_start(1, 1, 4, &[loaded_cut(2)]);
+        pool.set_iteration_base(2);
+        pool.add_cut(NodeId(0), 2, 0, 3.0, &[1.0]);
+        assert_eq!(pool.active_count(), 2);
+
+        let result = pool.enforce_budget(1, 2, 1);
+
+        assert_eq!(result.evicted_count, 1);
+        assert!(!pool.is_active(0), "the loaded cut is the candidate");
+        assert!(pool.is_active(1), "the current-iteration cut stays");
     }
 
     #[test]

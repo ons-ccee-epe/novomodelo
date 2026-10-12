@@ -198,8 +198,9 @@ impl DcsScoringScratch {
 /// Applied first. A cut at slot `s` is eligible only when `params.k1` is `None`
 /// (∞, the exactness path) or its age
 /// `current_iteration.saturating_sub(pool.metadata(s).iteration_generated)` is
-/// `< k1`. Warm-start cuts (`iteration_generated == u64::MAX`) saturate to age 0
-/// and stay inside any finite window. Out-of-window cuts are never scored.
+/// `< k1`. A loaded cut ([`CutPool::is_prefix_slot`]) has age 0 whatever its
+/// generating iteration and stays inside any finite window. Out-of-window cuts
+/// are never scored.
 ///
 /// # Selection & determinism
 ///
@@ -282,7 +283,11 @@ pub fn score_violated_candidates(
 
     for (slot, _intercept, coefficients) in pool.active_cuts() {
         if let Some(k1) = params.k1 {
-            let age = current_iteration.saturating_sub(pool.metadata(slot).iteration_generated);
+            let age = if pool.is_prefix_slot(slot) {
+                0
+            } else {
+                current_iteration.saturating_sub(pool.metadata(slot).iteration_generated)
+            };
             if age >= u64::from(k1) {
                 continue;
             }
@@ -722,12 +727,14 @@ pub fn lazy_solve_preloaded<S: SolverInterface>(
 /// Exactness makes the converged optimum independent of the seed, but the seed
 /// MUST be a deterministic function of pool metadata only — never of any solve
 /// trace, worker id, or MPI rank — so results stay invariant to the rank count
-/// (D5). It reads only `last_active_iter` and `iteration_generated`, both
-/// maintained deterministically, and emits slots in ascending order.
+/// (D5). It reads only `last_active_iter`, `iteration_generated` and
+/// [`CutPool::is_prefix_slot`], all maintained deterministically, and emits
+/// slots in ascending order.
 ///
 /// A populated slot `s` is included iff `pool.is_active(s)` AND it was active within
 /// the last `k2` iterations OR generated in the current iteration (current-iter
-/// cuts are untested, always seeded — mirroring `cut_selection`'s protection).
+/// cuts are untested, always seeded — mirroring `cut_selection`'s protection; a
+/// loaded cut ([`CutPool::is_prefix_slot`]) is never one).
 /// `saturating_sub` guards the underflow when `last_active_iter` exceeds
 /// `current_iteration` for current-iteration cuts.
 pub fn build_initial_resident_set(
@@ -752,7 +759,8 @@ pub fn build_initial_resident_set(
         }
         let meta = pool.metadata(s);
         let within_window = current_iteration.saturating_sub(meta.last_active_iter) <= window;
-        let is_current_iter = meta.iteration_generated == current_iteration;
+        let is_current_iter =
+            !pool.is_prefix_slot(s) && meta.iteration_generated == current_iteration;
         if within_window || is_current_iter {
             out.push(s as u32);
         }
@@ -1167,13 +1175,26 @@ mod tests {
         assert_eq!(out, vec![0, 1]);
     }
 
-    /// k1 window keeps warm-start cuts (iteration_generated == u64::MAX) inside
-    /// any finite window via saturating_sub (age 0).
+    /// k1 window keeps a loaded cut inside any finite window whatever its real
+    /// generating iteration (age 0), while a trained cut of the same iteration
+    /// is outside it.
     #[test]
     fn k1_window_keeps_warm_start_cuts() {
+        use novomodelo_io::OwnedPolicyCutRecord;
+
         let idx = indexer();
-        let mut pool = empty_pool();
-        add(&mut pool, 0, 5.0, &[0.0, 0.0], u64::MAX); // warm-start sentinel
+        let loaded = OwnedPolicyCutRecord {
+            cut_id: 0,
+            slot_index: 0,
+            iteration: 2,
+            forward_pass_index: 0,
+            intercept: 5.0,
+            coefficients: vec![0.0, 0.0],
+            is_active: true,
+        };
+        let mut pool = CutPool::new_with_warm_start(N_STATE, 16, 1, &[loaded]);
+        pool.add_cut(NodeId(0), 0, 0, 7.0, &[0.0, 0.0]);
+        pool.set_iteration_generated_for_test(1, 2);
         let primal = vec![0.0_f64; PRIMAL_LEN];
         let resident = empty_resident();
         let p = params(10, 1e-10, Some(1)); // tightest finite window
@@ -1193,7 +1214,7 @@ mod tests {
             &mut out,
         );
 
-        assert_eq!(count, 1, "warm-start cut (age 0) is always in window");
+        assert_eq!(count, 1, "only the loaded cut is inside the window");
         assert_eq!(out, vec![0]);
     }
 
@@ -2848,6 +2869,43 @@ mod tests {
             vec![0, 1],
             "current-iteration slot 0 seeded despite stale last_active_iter"
         );
+    }
+
+    /// A loaded cut whose real generating iteration equals the current one is
+    /// not a current-iteration cut: with its binding recency out of the k2
+    /// window it is left out, while a trained cut of the same iteration is
+    /// seeded.
+    #[test]
+    fn a_loaded_slot_is_not_seeded_as_a_current_iteration_cut() {
+        use novomodelo_io::OwnedPolicyCutRecord;
+
+        let loaded = OwnedPolicyCutRecord {
+            cut_id: 0,
+            slot_index: 0,
+            iteration: 10,
+            forward_pass_index: 0,
+            intercept: 0.0,
+            coefficients: vec![0.0],
+            is_active: true,
+        };
+        let mut pool = CutPool::new_with_warm_start(1, 1, 4, &[loaded]);
+        pool.set_iteration_base(10);
+        pool.add_cut(NodeId(0), 10, 0, 0.0, &[0.0]);
+        pool.set_metadata_for_test(
+            0,
+            CutMetadata {
+                iteration_generated: 10,
+                forward_pass_index: 0,
+                node: NodeId(0),
+                active_count: 0,
+                last_active_iter: 1,
+            },
+        );
+        let mut out = Vec::new();
+
+        build_initial_resident_set(&pool, 10, 2, &mut out);
+
+        assert_eq!(out, vec![1]);
     }
 
     /// An inactive slot within the k2 window is never included.

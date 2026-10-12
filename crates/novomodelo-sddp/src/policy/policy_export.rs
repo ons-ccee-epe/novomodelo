@@ -426,6 +426,9 @@ fn splice_reserved_state_block(
 ///
 /// Both active and inactive cuts are included so the checkpoint preserves the
 /// full training history. Use [`build_active_indices`] for the active subset.
+///
+/// `cut_id` labels a cut among the cuts one run generated; it is not an identity
+/// across runs.
 #[must_use]
 pub fn build_stage_cut_records(fcf: &FutureCostFunction) -> Vec<Vec<PolicyCutRecord<'_>>> {
     fcf.pools
@@ -2955,6 +2958,29 @@ mod tests {
                  not its pool's {pool_populated} populated cuts"
             );
         }
+    }
+
+    #[test]
+    fn exported_loaded_cut_keeps_its_generating_iteration() {
+        use super::{OwnedPolicyCutRecord, build_stage_cut_records};
+        use crate::cut::{CutPool, FutureCostFunction};
+
+        let loaded = OwnedPolicyCutRecord {
+            cut_id: 0,
+            slot_index: 0,
+            iteration: 5,
+            forward_pass_index: 1,
+            intercept: 3.0,
+            coefficients: vec![1.0],
+            is_active: true,
+        };
+        let mut fcf = FutureCostFunction::new(1, 1, 2, 4, &[0]);
+        fcf.pools[0] = CutPool::new_with_warm_start(1, 2, 4, &[loaded]);
+
+        let records = build_stage_cut_records(&fcf);
+
+        assert_eq!(records[0][0].iteration, 5);
+        assert_eq!(records[0][0].cut_id, 11);
     }
 
     // -- build_stage_cuts_payloads: priced_state_date stamping --

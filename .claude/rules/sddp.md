@@ -540,6 +540,40 @@ basis's slot-identity match. Each cut record also carries its generating
 the cut lands in — the append-only, slot-identity contract is independent of
 `node_id`.
 
+**A loaded cut keeps its real generating iteration; the loaded prefix is
+positional.** A cut loaded from a checkpoint (`warm_start` or `resume`) is stored
+with the `iteration` its record carries, in `CutMetadata.iteration_generated`.
+Whether a slot held a cut before the run started is answered by position alone —
+`CutPool::is_prefix_slot` (`slot < warm_start_count`) — never by a value of
+`iteration_generated`. Under `warm_start` the run's iteration counter restarts
+at 1, so a loaded cut's generating iteration can equal the current one; every
+reader that separates a loaded cut from a cut of this run tests the predicate
+before the iteration. `cut_id` is a per-run label,
+`iteration_generated * visit_stride + forward_pass_index`, recomputed from the
+real iteration — not an identity across runs.
+
+A sentinel in `iteration_generated` (a value no iteration reaches) is the
+wrong-but-compiling alternative: it keeps loaded cuts out of the per-iteration
+sets, but the field reaches the checkpoint writer, which writes it as the cut's
+`iteration` and multiplies it into `cut_id`, so every loaded cut is exported with
+a corrupted iteration and, with two or more forward passes, an overflowing
+`cut_id`. Comparing `iteration_generated` to the current iteration without the
+predicate is the second: a loaded cut whose generating iteration equals the
+current one is taken for a cut of this iteration, appended to the LP a second
+time as a delta row and packed for the cut exchange as a new cut.
+Read: `cut/pool.rs` (`CutPool::new_with_warm_start`, `is_prefix_slot`,
+`active_delta_cuts`, `enforce_budget`), `cut/cut_sync.rs` (`pack_pool_into`),
+`cut/dcs.rs` (`score_violated_candidates`, `build_initial_resident_set`),
+`policy/policy_export.rs` (`build_stage_cut_records`). Pinned by
+`exported_loaded_cut_keeps_its_generating_iteration` (`policy/policy_export.rs`:
+a loaded cut is exported at its record's iteration) and
+`a_loaded_cut_sharing_the_current_iteration_number_is_not_a_delta_cut`
+(`cut/pool.rs`), with one pin per other reader:
+`a_loaded_cut_is_never_packed_as_a_new_cut` (`cut/cut_sync.rs`),
+`a_loaded_cut_stays_a_budget_candidate_when_iteration_numbers_collide`
+(`cut/pool.rs`), `k1_window_keeps_warm_start_cuts` and
+`a_loaded_slot_is_not_seeded_as_a_current_iteration_cut` (`cut/dcs.rs`).
+
 **Basis matches by slot, never by count or column.** Warm-start basis
 reconstruction matches stored cut rows to current LP rows by **`CutPool` slot
 identity**, never by row count and never by absolute column index. On the
