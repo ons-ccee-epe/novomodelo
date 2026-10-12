@@ -3041,35 +3041,49 @@ mod branching_gate_roster {
 }
 
 mod selection_on_determinism {
-    //! Selection-on determinism gates: train with `level1` at 1, 2 and 4
-    //! threads under `StubComm` and assert the cut pools, their provenance and
-    //! binding counters, and the reported bounds are bit-identical.
+    //! Selection-on determinism gates: train with `level1` and assert the cut
+    //! pools, their provenance and binding counters, and the reported bounds are
+    //! bit-identical across 1, 2 and 4 threads, between a single rank and the
+    //! `Rank0Of2` two-rank stub, and across permuted declaration orders.
     //!
     //! Power statement: a bitwise comparison proves nothing on a run that never
     //! deactivates a cut, so each gate asserts `deactivations > 0` for every
-    //! shape before comparing. The uniform gate trains `examples/1dtoy`.
+    //! run before comparing. The uniform gates train `examples/1dtoy`.
     //! `d43-storage-only-cut` disables `inflow_lags` on one interior stage, so
-    //! its pools project different cut-state dimensions, which its gate asserts;
-    //! it trains a copy with five openings per stage, because as shipped (one
+    //! its pools project different cut-state dimensions, which its gates assert;
+    //! they train a copy with five openings per stage, because as shipped (one
     //! opening) every later cut duplicates the first and `level1` keeps ties.
+    //!
+    //! The rank gates train one forward pass, the only count at which
+    //! `Rank0Of2` is faithful: rank 0 owns that pass, so the stub exercises the
+    //! two-rank buffer layout and collectives, never a cut or a trial state
+    //! received from a peer. The declaration gates assert that every
+    //! `permute_case` copy declares its stages in another order than the deck.
 
     use std::collections::BTreeSet;
     use std::path::Path;
     use std::sync::mpsc;
 
+    use novomodelo_comm::Communicator;
     use novomodelo_core::TrainingEvent;
     use novomodelo_io::config::{SelectionMethod, StoppingRuleConfig, TrainingSelection};
     use novomodelo_sddp::StudySetup;
     use novomodelo_solver::ActiveSolver;
 
+    use crate::common::permute::permute_case;
     use crate::common::selection_fingerprint::{SelectionFingerprint, SelectionPower};
-    use crate::common::{StubComm, fresh_setup_with, fresh_setup_with_openings};
+    use crate::common::{Rank0Of2, StubComm, fresh_setup_with, fresh_setup_with_openings};
 
     const THREAD_SHAPES: [usize; 3] = [1, 2, 4];
+    const PERMUTATION_SEEDS: [u64; 2] = [1, 2];
+    const UNIFORM_CASE: &str = "../../examples/1dtoy";
+    const NON_UNIFORM_CASE: &str = "../../examples/deterministic/d43-storage-only-cut";
+    const NON_UNIFORM_OPENINGS: u32 = 5;
 
     fn run_shape(
         build: &impl Fn() -> StudySetup,
         n_threads: usize,
+        comm: &impl Communicator,
     ) -> (SelectionFingerprint, SelectionPower) {
         let mut setup = build();
         let (tx, rx) = mpsc::channel();
@@ -3077,7 +3091,7 @@ mod selection_on_determinism {
         let outcome = setup
             .train(
                 &mut solver,
-                &StubComm,
+                comm,
                 n_threads,
                 ActiveSolver::new,
                 Some(tx),
@@ -3099,7 +3113,7 @@ mod selection_on_determinism {
     fn assert_thread_shapes_agree(build: impl Fn() -> StudySetup) {
         let runs: Vec<_> = THREAD_SHAPES
             .iter()
-            .map(|&n_threads| (n_threads, run_shape(&build, n_threads)))
+            .map(|&n_threads| (n_threads, run_shape(&build, n_threads, &StubComm)))
             .collect();
 
         for (n_threads, (_, power)) in &runs {
@@ -3119,6 +3133,59 @@ mod selection_on_determinism {
         }
     }
 
+    fn assert_non_uniform_projection(setup: &StudySetup) {
+        let dimensions: BTreeSet<usize> = setup
+            .fcf
+            .pools
+            .iter()
+            .map(|pool| pool.state_dimension)
+            .collect();
+        assert!(
+            dimensions.len() > 1,
+            "the fixture must project different cut-state dimensions across pools, \
+             got {dimensions:?}"
+        );
+    }
+
+    fn declared_stage_ids(case_dir: &Path) -> Vec<i64> {
+        let path = case_dir.join("stages.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let document: serde_json::Value =
+            serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+        document["stages"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{} has no \"stages\" array", path.display()))
+            .iter()
+            .map(|stage| {
+                stage["id"]
+                    .as_i64()
+                    .unwrap_or_else(|| panic!("{} stage without an integer id", path.display()))
+            })
+            .collect()
+    }
+
+    /// Trains `case_dir` as declared, then one `permute_case` copy per
+    /// [`PERMUTATION_SEEDS`] entry, returning the runs in that order.
+    fn declaration_order_runs(
+        case_dir: &Path,
+        build_at: impl Fn(&Path) -> StudySetup,
+    ) -> Vec<(SelectionFingerprint, SelectionPower)> {
+        let declared_order = declared_stage_ids(case_dir);
+        let mut runs = vec![run_shape(&|| build_at(case_dir), 1, &StubComm)];
+        for seed in PERMUTATION_SEEDS {
+            let permuted = permute_case(case_dir, seed);
+            assert_ne!(
+                declared_stage_ids(permuted.path()),
+                declared_order,
+                "permutation seed {seed} left the stage declaration order unchanged — the \
+                 gate is powerless on this copy"
+            );
+            runs.push(run_shape(&|| build_at(permuted.path()), 1, &StubComm));
+        }
+        runs
+    }
+
     #[test]
     #[cfg_attr(
         not(feature = "slow-tests"),
@@ -3126,7 +3193,7 @@ mod selection_on_determinism {
     )]
     fn level1_thread_shapes_agree_on_the_uniform_fixture() {
         assert_thread_shapes_agree(|| {
-            fresh_setup_with(Path::new("../../examples/1dtoy"), |config| {
+            fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
                 config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
                 config.training.stopping_rules =
                     Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
@@ -3146,8 +3213,8 @@ mod selection_on_determinism {
     fn level1_thread_shapes_agree_on_the_non_uniform_projection_fixture() {
         let build = || {
             fresh_setup_with_openings(
-                Path::new("../../examples/deterministic/d43-storage-only-cut"),
-                5,
+                Path::new(NON_UNIFORM_CASE),
+                NON_UNIFORM_OPENINGS,
                 |config| {
                     config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
                         tie_tolerance: 1e-10,
@@ -3156,19 +3223,152 @@ mod selection_on_determinism {
                 },
             )
         };
-
-        let dimensions: BTreeSet<usize> = build()
-            .fcf
-            .pools
-            .iter()
-            .map(|pool| pool.state_dimension)
-            .collect();
-        assert!(
-            dimensions.len() > 1,
-            "the fixture must project different cut-state dimensions across pools, \
-             got {dimensions:?}"
-        );
+        assert_non_uniform_projection(&build());
 
         assert_thread_shapes_agree(build);
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn level1_two_rank_stub_matches_single_rank_on_the_uniform_fixture() {
+        let build = || {
+            fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
+                config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 1 });
+                config.training.stopping_rules =
+                    Some(vec![StoppingRuleConfig::IterationLimit { limit: 12 }]);
+                config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+                    tie_tolerance: 1e-10,
+                    check_frequency: 1,
+                });
+            })
+        };
+        assert_eq!(
+            build().loop_params.forward_passes,
+            1,
+            "`Rank0Of2` is faithful only with one forward pass"
+        );
+
+        let (single_rank, single_rank_power) = run_shape(&build, 1, &StubComm);
+        let (two_rank, two_rank_power) = run_shape(&build, 1, &Rank0Of2);
+        assert!(
+            single_rank_power.deactivations > 0 && two_rank_power.deactivations > 0,
+            "level1 deactivated no cut (single rank: {single_rank_power:?}, two-rank stub: \
+             {two_rank_power:?}) — the gate is powerless on this fixture"
+        );
+        assert_eq!(
+            two_rank, single_rank,
+            "the two-rank stub fingerprint must be bit-identical to the single-rank one"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn level1_two_rank_stub_matches_single_rank_on_the_non_uniform_projection_fixture() {
+        let build = || {
+            fresh_setup_with_openings(
+                Path::new(NON_UNIFORM_CASE),
+                NON_UNIFORM_OPENINGS,
+                |config| {
+                    config.training.selection =
+                        Some(TrainingSelection::Sampled { forward_passes: 1 });
+                    config.training.stopping_rules =
+                        Some(vec![StoppingRuleConfig::IterationLimit { limit: 12 }]);
+                    config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+                        tie_tolerance: 1e-10,
+                        check_frequency: 1,
+                    });
+                },
+            )
+        };
+        let probe = build();
+        assert_eq!(
+            probe.loop_params.forward_passes, 1,
+            "`Rank0Of2` is faithful only with one forward pass"
+        );
+        assert_non_uniform_projection(&probe);
+
+        let (single_rank, single_rank_power) = run_shape(&build, 1, &StubComm);
+        let (two_rank, two_rank_power) = run_shape(&build, 1, &Rank0Of2);
+        assert!(
+            single_rank_power.deactivations > 0 && two_rank_power.deactivations > 0,
+            "level1 deactivated no cut (single rank: {single_rank_power:?}, two-rank stub: \
+             {two_rank_power:?}) — the gate is powerless on this fixture"
+        );
+        assert_eq!(
+            two_rank, single_rank,
+            "the two-rank stub fingerprint must be bit-identical to the single-rank one"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn level1_declaration_order_is_invariant_on_the_uniform_fixture() {
+        let runs = declaration_order_runs(Path::new(UNIFORM_CASE), |case_dir| {
+            fresh_setup_with(case_dir, |config| {
+                config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
+                config.training.stopping_rules =
+                    Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
+                config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+                    tie_tolerance: 1e-10,
+                    check_frequency: 1,
+                });
+            })
+        });
+
+        assert!(
+            runs.iter().all(|(_, power)| power.deactivations > 0),
+            "level1 deactivated no cut in some declaration order ({:?}) — the gate is \
+             powerless on this fixture",
+            runs.iter().map(|(_, power)| power).collect::<Vec<_>>()
+        );
+        let (declared, _) = &runs[0];
+        for (seed, (fingerprint, _)) in PERMUTATION_SEEDS.iter().zip(&runs[1..]) {
+            assert_eq!(
+                fingerprint, declared,
+                "permutation seed {seed} fingerprint must be bit-identical to the declared order"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn level1_declaration_order_is_invariant_on_the_non_uniform_projection_fixture() {
+        let build_at = |case_dir: &Path| {
+            fresh_setup_with_openings(case_dir, NON_UNIFORM_OPENINGS, |config| {
+                config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+                    tie_tolerance: 1e-10,
+                    check_frequency: 1,
+                });
+            })
+        };
+        assert_non_uniform_projection(&build_at(Path::new(NON_UNIFORM_CASE)));
+
+        let runs = declaration_order_runs(Path::new(NON_UNIFORM_CASE), build_at);
+
+        assert!(
+            runs.iter().all(|(_, power)| power.deactivations > 0),
+            "level1 deactivated no cut in some declaration order ({:?}) — the gate is \
+             powerless on this fixture",
+            runs.iter().map(|(_, power)| power).collect::<Vec<_>>()
+        );
+        let (declared, _) = &runs[0];
+        for (seed, (fingerprint, _)) in PERMUTATION_SEEDS.iter().zip(&runs[1..]) {
+            assert_eq!(
+                fingerprint, declared,
+                "permutation seed {seed} fingerprint must be bit-identical to the declared order"
+            );
+        }
     }
 }
