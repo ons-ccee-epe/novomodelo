@@ -335,22 +335,24 @@ pub struct BackwardPassState {
     /// visits to `level[i]` from strictly-lower ranks, so a cut's node-relative
     /// slot stays globally unique across ranks at the pool's own `visit_bound`
     /// stride. `fwd_offset` on a single-node level (every trial visits it), `0`
-    /// on a single rank; the allgathered per-node prefix otherwise. Reused across
-    /// levels alongside the buffers below (never a hot-path `Vec::new`).
+    /// on a single rank; the lower ranks' rows of [`Self::rank_node_visits`]
+    /// summed otherwise.
     node_visit_offsets: Vec<usize>,
 
-    /// This rank's per-node local visit counts, the send buffer for the per-node
-    /// count `allgatherv` (`u64`; `usize` is not an `MpiDatatype`). Reused.
-    bwd_visit_send: Vec<u64>,
+    // The per-trial node `allgatherv` of a multi-node level: `max_local_fwd`
+    // entries per rank (`u64`; `usize` is not an `MpiDatatype`), sized in `new`.
+    /// Level index of the node each local trial slot was routed to; [`NO_TRIAL`]
+    /// from `local_work` on.
+    trial_node_send: Vec<u64>,
+    /// Every rank's `trial_node_send`, rank-major. Starts as [`NO_TRIAL`], so a
+    /// segment a communicator leaves unwritten reads as a rank with no trial.
+    trial_node_recv: Vec<u64>,
+    trial_node_counts: Vec<usize>,
+    trial_node_displs: Vec<usize>,
 
-    /// Gathered per-`(rank, node)` visit counts for the current level, rank-major.
-    /// Reused.
-    bwd_visit_recv: Vec<u64>,
-
-    /// Per-rank `counts`/`displs` for the per-node count `allgatherv` (uniform
-    /// `n_nodes` per rank). Reused.
-    bwd_visit_counts: Vec<usize>,
-    bwd_visit_displs: Vec<usize>,
+    /// Visits per `(rank, level node)` of the current multi-node level, rank-major,
+    /// counted from `trial_node_recv`.
+    rank_node_visits: Vec<usize>,
 
     /// Scratch for the enumerated backward's replicated per-node solve
     /// (`run_backward_node_replicated`). Empty (zero footprint) under
@@ -364,6 +366,9 @@ pub struct BackwardPassState {
     /// `Traversal::Sampled`.
     enumerated_stage_stats: Vec<SolverStatsDelta>,
 }
+
+/// Entry of the per-trial node exchange for a trial slot with no real trial.
+const NO_TRIAL: u64 = u64::MAX;
 
 /// One successor child's cut-pool binding-metadata region: which pool, the base
 /// offset of its slots in the per-worker `metadata_sync_contribution` buffer, and
@@ -441,10 +446,11 @@ impl BackwardPassState {
             routed_trials_scratch: Vec::new(),
             routed_offsets_scratch: Vec::new(),
             node_visit_offsets: Vec::new(),
-            bwd_visit_send: Vec::new(),
-            bwd_visit_recv: Vec::new(),
-            bwd_visit_counts: Vec::new(),
-            bwd_visit_displs: Vec::new(),
+            trial_node_send: vec![NO_TRIAL; max_local_fwd],
+            trial_node_recv: vec![NO_TRIAL; n_ranks * max_local_fwd],
+            trial_node_counts: vec![max_local_fwd; n_ranks],
+            trial_node_displs: (0..n_ranks).map(|r| r * max_local_fwd).collect(),
+            rank_node_visits: Vec::new(),
             level_pool_regions_scratch: Vec::new(),
             replicated_scratch: ReplicatedScratch::default(),
             enumerated_stage_stats: (0..num_stages)
@@ -923,21 +929,27 @@ impl BackwardPassState {
     /// Degenerate by construction, not by shape dispatch: a single-node level's
     /// one node is visited by every trial, so lower ranks contribute exactly their
     /// full trial counts — `fwd_offset` — and no exchange is needed (the chain hot
-    /// path stays collective-free and byte-identical). A multi-node level
-    /// allgathers each rank's per-node local visit count (from `routed_offsets`)
-    /// and prefix-sums the strictly-lower ranks; on a single rank that prefix is
-    /// `0`, leaving the slot derivation `compacted` — the pre-change single-rank
-    /// branching layout, byte-for-byte.
+    /// path stays collective-free and touches no buffer). A multi-node level
+    /// allgathers the level index of the node each trial slot was routed to and
+    /// counts [`Self::rank_node_visits`] from the gathered positions; the offset
+    /// sums the strictly-lower ranks' rows, `0` on a single rank. Per-node counts
+    /// would give the same offsets and lose which gathered state a peer's cut was
+    /// computed at. Every rank sends `max_local_fwd` entries whatever its
+    /// `local_work` (sddp.md "Per-level exchange in the backward pass").
     ///
     /// # Errors
     ///
     /// Returns `Err(SddpError::Communication(_))` if the `allgatherv` fails, or
-    /// `Err(SddpError::Validation(_))` if a gathered count exceeds `usize`.
+    /// `Err(SddpError::Validation(_))` if a gathered entry is neither
+    /// [`NO_TRIAL`] nor a level index, or the gathered trials do not total
+    /// `real_trials`.
     fn compute_node_visit_offsets<C: Communicator>(
         &mut self,
+        routed_trials: &[usize],
         routed_offsets: &[usize],
         n_nodes: usize,
         fwd_offset: usize,
+        real_trials: usize,
         comm: &C,
     ) -> Result<(), SddpError> {
         self.node_visit_offsets.clear();
@@ -946,45 +958,62 @@ impl BackwardPassState {
             return Ok(());
         }
 
-        let my_rank = comm.rank();
-        let num_ranks = comm.size();
+        let n_ranks = self.trial_node_counts.len();
+        debug_assert_eq!(
+            comm.size(),
+            n_ranks,
+            "the state was built for another rank count"
+        );
 
-        self.bwd_visit_send.clear();
-        for i in 0..n_nodes {
-            self.bwd_visit_send
-                .push((routed_offsets[i + 1] - routed_offsets[i]) as u64);
+        self.trial_node_send.fill(NO_TRIAL);
+        for (node, bounds) in routed_offsets.windows(2).enumerate() {
+            for &trial in &routed_trials[bounds[0]..bounds[1]] {
+                self.trial_node_send[trial] = node as u64;
+            }
         }
-        let total = num_ranks * n_nodes;
-        if self.bwd_visit_recv.len() < total {
-            self.bwd_visit_recv.resize(total, 0);
-        }
-        self.bwd_visit_counts.clear();
-        self.bwd_visit_counts
-            .extend((0..num_ranks).map(|_| n_nodes));
-        self.bwd_visit_displs.clear();
-        self.bwd_visit_displs
-            .extend((0..num_ranks).map(|r| r * n_nodes));
 
         comm.allgatherv(
-            &self.bwd_visit_send,
-            &mut self.bwd_visit_recv[..total],
-            &self.bwd_visit_counts,
-            &self.bwd_visit_displs,
+            &self.trial_node_send,
+            &mut self.trial_node_recv,
+            &self.trial_node_counts,
+            &self.trial_node_displs,
         )?;
 
-        for node_i in 0..n_nodes {
-            let mut offset = 0usize;
-            for r in 0..my_rank {
-                offset +=
-                    usize::try_from(self.bwd_visit_recv[r * n_nodes + node_i]).map_err(|_| {
-                        SddpError::Validation(format!(
-                            "node-visit count exchange: rank {r}'s count for level node {node_i} \
-                         exceeds usize"
-                        ))
-                    })?;
+        self.rank_node_visits.clear();
+        self.rank_node_visits.resize(n_ranks * n_nodes, 0);
+        let mut gathered_trials = 0_usize;
+        for (flat, &entry) in self.trial_node_recv.iter().enumerate() {
+            if entry == NO_TRIAL {
+                continue;
             }
-            self.node_visit_offsets.push(offset);
+            let rank = flat / self.max_local_fwd;
+            let node = usize::try_from(entry)
+                .ok()
+                .filter(|&node| node < n_nodes)
+                .ok_or_else(|| {
+                    SddpError::Validation(format!(
+                        "trial-node exchange: rank {rank} sent {entry} for trial slot {}, which \
+                         is neither a level index below {n_nodes} nor the no-trial padding",
+                        flat % self.max_local_fwd
+                    ))
+                })?;
+            self.rank_node_visits[rank * n_nodes + node] += 1;
+            gathered_trials += 1;
         }
+        if gathered_trials != real_trials {
+            return Err(SddpError::Validation(format!(
+                "trial-node exchange: {gathered_trials} routed trials gathered, but the level's \
+                 real trial count is {real_trials}"
+            )));
+        }
+
+        let lower_ranks = &self.rank_node_visits[..comm.rank() * n_nodes];
+        self.node_visit_offsets.extend((0..n_nodes).map(|node| {
+            lower_ranks
+                .chunks_exact(n_nodes)
+                .map(|visits| visits[node])
+                .sum::<usize>()
+        }));
         Ok(())
     }
 
@@ -1461,11 +1490,11 @@ fn build_trial_routing(
 /// A single-node level's total is `total_fwd` — every local trial routes to
 /// that sole node on every rank, so the level-wide real forward-pass count
 /// already equals it, with no extra collective. A multi-node level's per-node
-/// total is summed from `bwd_visit_recv`'s `(rank, node)` counts, gathered by
-/// the immediately-preceding [`BackwardPassState::compute_node_visit_offsets`]
-/// call for the SAME purpose — reading it here adds no collective either. A
-/// chain or `derived_count == 1` enumerated pool's reach probability is
-/// exactly `1`, so `pool_cut_stride`'s variance term is exactly `0` and its
+/// total is summed over the ranks of `rank_node_visits`, counted by the
+/// immediately-preceding [`BackwardPassState::compute_node_visit_offsets`]
+/// call from the positions it gathered — reading it here adds no collective
+/// either. A chain or `derived_count == 1` enumerated pool's reach probability
+/// is exactly `1`, so `pool_cut_stride`'s variance term is exactly `0` and its
 /// stride equals `total_fwd` bit-for-bit: the comparison below can only ever
 /// see equality on that shape, never an overflow — no shape predicate needed.
 ///
@@ -1482,8 +1511,7 @@ fn check_visit_bound(
     iteration: u64,
     fcf: &FutureCostFunction,
     total_fwd: usize,
-    bwd_visit_recv: &[u64],
-    num_ranks: usize,
+    rank_node_visits: &[usize],
 ) -> Result<(), SddpError> {
     let n_nodes = level.len();
     for (level_idx, &node_pos) in level.iter().enumerate() {
@@ -1491,8 +1519,9 @@ fn check_visit_bound(
         let routed: u64 = if n_nodes == 1 {
             total_fwd as u64
         } else {
-            (0..num_ranks)
-                .map(|r| bwd_visit_recv[r * n_nodes + level_idx])
+            rank_node_visits
+                .chunks_exact(n_nodes)
+                .map(|visits| visits[level_idx] as u64)
                 .sum()
         };
         let stride = u64::from(fcf.pools[pool_id].visit_stride);
@@ -1580,9 +1609,11 @@ fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
     // Base slot offset per level node so a cut's node-relative slot index stays
     // globally unique across ranks at the pool's own `visit_bound` stride.
     state.compute_node_visit_offsets(
+        &routed_trials,
         &routed_offsets,
         level.len(),
         inputs.fwd_offset,
+        total_fwd,
         inputs.comm,
     )?;
 
@@ -1595,8 +1626,7 @@ fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
         inputs.iteration,
         inputs.fcf,
         total_fwd,
-        &state.bwd_visit_recv,
-        inputs.comm.size(),
+        &state.rank_node_visits,
     )?;
 
     let node_visit_offsets = std::mem::take(&mut state.node_visit_offsets);
@@ -2223,6 +2253,86 @@ mod tests {
         }
     }
 
+    /// Rank 1's view of the collective [`Rank0Of2`] shows from rank 0:
+    /// `allgatherv` writes only `recv[displs[1]..displs[1] + send.len()]`.
+    struct Rank1Of2;
+
+    impl Communicator for Rank1Of2 {
+        fn allgatherv<T: CommData>(
+            &self,
+            send: &[T],
+            recv: &mut [T],
+            _counts: &[usize],
+            displs: &[usize],
+        ) -> Result<(), CommError> {
+            let start = displs[1];
+            recv[start..start + send.len()].copy_from_slice(send);
+            Ok(())
+        }
+        fn allreduce<T: CommData>(
+            &self,
+            send: &[T],
+            recv: &mut [T],
+            _op: ReduceOp,
+        ) -> Result<(), CommError> {
+            recv[..send.len()].copy_from_slice(send);
+            Ok(())
+        }
+        fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
+            Ok(())
+        }
+        fn barrier(&self) -> Result<(), CommError> {
+            Ok(())
+        }
+        fn rank(&self) -> usize {
+            1
+        }
+        fn size(&self) -> usize {
+            2
+        }
+        fn abort(&self, code: i32) -> ! {
+            std::process::exit(code)
+        }
+    }
+
+    /// Rank 1 of 2 on which every collective panics.
+    struct NoCollective;
+
+    impl Communicator for NoCollective {
+        fn allgatherv<T: CommData>(
+            &self,
+            _send: &[T],
+            _recv: &mut [T],
+            _counts: &[usize],
+            _displs: &[usize],
+        ) -> Result<(), CommError> {
+            panic!("allgatherv issued where no collective is allowed")
+        }
+        fn allreduce<T: CommData>(
+            &self,
+            _send: &[T],
+            _recv: &mut [T],
+            _op: ReduceOp,
+        ) -> Result<(), CommError> {
+            panic!("allreduce issued where no collective is allowed")
+        }
+        fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
+            panic!("broadcast issued where no collective is allowed")
+        }
+        fn barrier(&self) -> Result<(), CommError> {
+            panic!("barrier issued where no collective is allowed")
+        }
+        fn rank(&self) -> usize {
+            1
+        }
+        fn size(&self) -> usize {
+            2
+        }
+        fn abort(&self, code: i32) -> ! {
+            std::process::exit(code)
+        }
+    }
+
     struct MockSolver {
         solution: LpSolution,
         call_count: usize,
@@ -2587,6 +2697,193 @@ mod tests {
             state.bwd_stats_unpack_buf.len(),
             n_ranks * n_workers_local * bwd_max_openings
         );
+    }
+
+    // ── per-trial node exchange of a multi-node level ───────────────────────
+
+    /// The level of the two-rank exchange tests: three nodes, at most three
+    /// trials per rank, five real trials. Rank 0's trials visit `RANK0_NODES`
+    /// and rank 1's `RANK1_NODES`, which leaves rank 1's third slot as padding.
+    const LEVEL_NODES: usize = 3;
+    const MAX_LOCAL_FWD: usize = 3;
+    const REAL_TRIALS: usize = 5;
+    const RANK0_NODES: [usize; 3] = [2, 0, 2];
+    const RANK1_NODES: [usize; 2] = [0, 1];
+    const RANK0_SEGMENT: [u64; 3] = [2, 0, 2];
+    const RANK1_SEGMENT: [u64; 3] = [0, 1, NO_TRIAL];
+
+    fn two_rank_state(max_local_fwd: usize) -> BackwardPassState {
+        BackwardPassState::new(
+            1,
+            2,
+            1,
+            0,
+            max_local_fwd,
+            &state_layout(1, 0),
+            &HorizonMode::Finite { num_stages: 2 },
+        )
+    }
+
+    /// The CSR `build_trial_routing` produces for local trials visiting
+    /// `node_of_trial`: `(routed_trials, routed_offsets)`.
+    fn routing_of(node_of_trial: &[usize], n_nodes: usize) -> (Vec<usize>, Vec<usize>) {
+        let mut routed = Vec::new();
+        let mut offsets = vec![0];
+        for node in 0..n_nodes {
+            routed.extend((0..node_of_trial.len()).filter(|&trial| node_of_trial[trial] == node));
+            offsets.push(routed.len());
+        }
+        (routed, offsets)
+    }
+
+    /// The state one rank holds after the exchange on the level above: its own
+    /// trials go through `comm`, which writes this rank's segment only, and
+    /// `peer_segment` is what the other rank sent.
+    fn rank_view<C: Communicator>(
+        comm: &C,
+        node_of_trial: &[usize],
+        peer_segment: &[u64; MAX_LOCAL_FWD],
+    ) -> Result<BackwardPassState, SddpError> {
+        let mut state = two_rank_state(MAX_LOCAL_FWD);
+        let peer_start = (1 - comm.rank()) * MAX_LOCAL_FWD;
+        state.trial_node_recv[peer_start..peer_start + MAX_LOCAL_FWD].copy_from_slice(peer_segment);
+        let (routed, offsets) = routing_of(node_of_trial, LEVEL_NODES);
+        state.compute_node_visit_offsets(
+            &routed,
+            &offsets,
+            LEVEL_NODES,
+            comm.rank() * MAX_LOCAL_FWD,
+            REAL_TRIALS,
+            comm,
+        )?;
+        Ok(state)
+    }
+
+    fn both_rank_views() -> [Result<BackwardPassState, SddpError>; 2] {
+        [
+            rank_view(&Rank0Of2, &RANK0_NODES, &RANK1_SEGMENT),
+            rank_view(&Rank1Of2, &RANK1_NODES, &RANK0_SEGMENT),
+        ]
+    }
+
+    /// derived: by counting, rank 0 visits node 0 once and node 2 twice, rank 1
+    /// visits nodes 0 and 1 once each; rank 1's offsets are rank 0's counts.
+    #[test]
+    fn node_positions_give_every_rank_the_same_visit_counts() {
+        let offsets_of_rank = [[0, 0, 0], [1, 0, 2]];
+
+        for (rank, view) in both_rank_views().into_iter().enumerate() {
+            let view = view.unwrap_or_else(|e| panic!("rank {rank}'s view: {e}"));
+            assert_eq!(
+                view.trial_node_recv,
+                [2, 0, 2, 0, 1, NO_TRIAL],
+                "rank {rank}"
+            );
+            assert_eq!(view.rank_node_visits, [1, 0, 2, 1, 1, 0], "rank {rank}");
+            assert_eq!(
+                view.node_visit_offsets, offsets_of_rank[rank],
+                "rank {rank}"
+            );
+        }
+    }
+
+    /// The index a cut carries (`node_visit_offsets[node] + compacted`) is its
+    /// trial's rank among the trials of the same node in the gathered order,
+    /// rank-major then local.
+    #[test]
+    fn node_relative_indices_enumerate_each_node_without_collision() {
+        let views = both_rank_views().map(|view| view.expect("a well-formed exchange"));
+
+        let mut carried = Vec::new();
+        for (rank, node_of_trial) in [&RANK0_NODES[..], &RANK1_NODES[..]].iter().enumerate() {
+            let (routed, offsets) = routing_of(node_of_trial, LEVEL_NODES);
+            for node in 0..LEVEL_NODES {
+                let trials = &routed[offsets[node]..offsets[node + 1]];
+                for (compacted, &trial) in trials.iter().enumerate() {
+                    let index = views[rank].node_visit_offsets[node] + compacted;
+                    carried.push((rank, trial, node, index));
+                }
+            }
+        }
+        carried.sort_unstable();
+
+        let mut seen = [0_usize; LEVEL_NODES];
+        let mut walked = Vec::new();
+        for (flat, &entry) in views[0].trial_node_recv.iter().enumerate() {
+            if entry != NO_TRIAL {
+                let node = entry as usize;
+                walked.push((flat / MAX_LOCAL_FWD, flat % MAX_LOCAL_FWD, node, seen[node]));
+                seen[node] += 1;
+            }
+        }
+
+        assert_eq!(carried, walked);
+        assert_eq!(seen, [2, 1, 2]);
+        for (node, &visits) in seen.iter().enumerate() {
+            let mut indices: Vec<usize> = carried
+                .iter()
+                .filter(|&&(_, _, of_node, _)| of_node == node)
+                .map(|&(_, _, _, index)| index)
+                .collect();
+            indices.sort_unstable();
+            assert_eq!(indices, (0..visits).collect::<Vec<_>>(), "node {node}");
+        }
+    }
+
+    #[test]
+    fn a_single_node_level_issues_no_collective() {
+        let mut state = two_rank_state(MAX_LOCAL_FWD);
+        let (routed, offsets) = routing_of(&[0, 0], 1);
+
+        state
+            .compute_node_visit_offsets(&routed, &offsets, 1, 3, REAL_TRIALS, &NoCollective)
+            .expect("a single-node level needs no exchange");
+
+        assert_eq!(state.node_visit_offsets, [3]);
+        assert!(state.trial_node_send.iter().all(|&entry| entry == NO_TRIAL));
+        assert!(state.trial_node_recv.iter().all(|&entry| entry == NO_TRIAL));
+        assert!(state.rank_node_visits.is_empty());
+    }
+
+    #[test]
+    fn a_malformed_node_position_exchange_is_rejected() {
+        let rejection = |peer_segment: &[u64; MAX_LOCAL_FWD]| match rank_view(
+            &Rank0Of2,
+            &RANK0_NODES,
+            peer_segment,
+        ) {
+            Err(SddpError::Validation(message)) => message,
+            Err(other) => panic!("expected a validation error, got {other:?}"),
+            Ok(_) => panic!("{peer_segment:?} must be rejected"),
+        };
+
+        let not_a_level_index = rejection(&[7, 1, NO_TRIAL]);
+        assert!(
+            not_a_level_index.contains("rank 1 sent 7 for trial slot 0"),
+            "{not_a_level_index}"
+        );
+
+        let one_trial_too_many = rejection(&[0, 1, 2]);
+        assert!(
+            one_trial_too_many
+                .contains("6 routed trials gathered, but the level's real trial count is 5"),
+            "{one_trial_too_many}"
+        );
+    }
+
+    /// derived: rank 0's one trial visits node 1 and rank 1's segment is never
+    /// written, so the level's one real trial is all that is counted.
+    #[test]
+    fn an_unwritten_peer_segment_reads_as_a_rank_with_no_trial() {
+        let mut state = two_rank_state(1);
+        let (routed, offsets) = routing_of(&[1], 2);
+
+        state
+            .compute_node_visit_offsets(&routed, &offsets, 2, 0, 1, &Rank0Of2)
+            .expect("one real trial in the level");
+
+        assert_eq!(state.rank_node_visits, [0, 1, 0, 0]);
+        assert_eq!(state.node_visit_offsets, [0, 0]);
     }
 
     /// Verify that `BackwardPassState::run` on a minimal 2-stage, 1-hydro,

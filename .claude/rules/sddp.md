@@ -888,6 +888,81 @@ exchange and the one batched cut exchange per level; a per-node collective
 would scale the collective count with node count.
 Read: `training/backward_pass_state.rs` (`run_one_backward_level`).
 
+### A multi-node level exchanges the node of each trial
+
+A level with more than one node issues one `allgatherv` between the state
+exchange and the node solves (`BackwardPassState::compute_node_visit_offsets`).
+Each rank sends one `u64` per local trial slot, `max_local_fwd` entries: entry
+`m` is the level index (the position in the level list, not the node's declared
+id or its `NodePos`) of the node local trial `m` was routed to, and `NO_TRIAL`
+for a slot with no real trial (`m >= local_work`). The gathered buffer holds
+`num_ranks * max_local_fwd` entries, rank-major, with the same count and
+displacement stride for every rank: the layout of the state exchange
+(`ExchangeBuffers::state_at`), so entry `r * max_local_fwd + m` names the node
+of the gathered trial state of rank `r`, local trial `m`. A level with one node
+issues no such collective and touches none of its buffers: every trial visits
+the sole node, and the offset is `fwd_offset`.
+
+A cut's node-relative index (its `forward_pass_index` on a multi-node level) is
+the number of trials routed to the same node that precede its trial in
+rank-major, then local, order: the visits to the node from lower ranks
+(`node_visit_offsets`) plus the cut's position among this rank's own trials for
+the node. Each rank counts the per-`(rank, node)` visits (`rank_node_visits`)
+from the gathered positions in one pass; the offsets and `check_visit_bound`
+read that table, so the counts are not exchanged and have one source. A
+gathered entry that is neither `NO_TRIAL` nor below the level's node count, or
+a number of routed trials other than the level's real trial count
+(`ExchangeBuffers::real_total_scenarios`), fails with `SddpError::Validation`.
+
+Every rank enters the collective under the same condition and with the same
+length. The condition is `level.len() > 1`, and the level list is
+`NodeGraph::backward_cut_levels` of the graph every rank builds from the same
+broadcast system (`StudySetup::from_broadcast_params`). The length is
+`max_local_fwd`, which `RankDistribution::new` computes from the forward-pass
+count and the rank count; a rank with no real trial sends `max_local_fwd`
+padding entries. No config value, strategy, pool content or local trial count
+decides whether or how much a rank sends. The buffers are sized in
+`BackwardPassState::new` and the receive buffer starts filled with `NO_TRIAL`,
+so a segment an in-process communicator leaves unwritten reads as a rank with
+no trial.
+
+The wrong-but-compiling alternatives:
+
+- exchanging per-node counts: the offsets are right and no rank can tell which
+  gathered state a peer's cut was computed at. Counts sent through the position
+  buffer are read as positions: the visit counts and the indices come out
+  wrong, or the level is rejected for its total;
+- padding with a valid level index: the padded slots of a rank with fewer
+  trials are counted as visits to that node, and the level is rejected for one
+  routed trial too many per padded slot;
+- starting the receive buffer at a valid level index: a segment left unwritten
+  is counted as trials of that node;
+- deciding the exchange, or its length, from a value a rank computes locally
+  (its trial count, sending only its real trials): one rank skips a collective
+  its peers enter, or the uniform counts and displacements no longer describe
+  what was sent, and a multi-rank run blocks or gathers misaligned segments. No
+  single-process test sees it; the rank symmetry holds by the derivation above.
+
+Read: `training/backward_pass_state.rs` (`compute_node_visit_offsets`,
+`check_visit_bound`, `build_trial_routing`, `NO_TRIAL`,
+`BackwardPassState::new`), `training/state_exchange.rs` (`ExchangeBuffers`),
+`training/session/rank_distribution.rs` (`RankDistribution::new`),
+`setup/node_graph.rs` (`NodeGraph::backward_cut_levels`),
+`training/backward/by_scenario.rs` (`process_by_scenario_backward`),
+`training/backward/by_node.rs` (`by_node_finish`). Pinned by, in
+`training/backward_pass_state.rs`:
+`node_positions_give_every_rank_the_same_visit_counts` (two ranks' views of one
+level hold the same gathered positions and visit counts; the higher rank's
+offsets are the lower rank's counts),
+`node_relative_indices_enumerate_each_node_without_collision` (the index a cut
+carries is its trial's rank among the gathered positions of its node, and the
+two ranks' indices cover each node's range once),
+`a_single_node_level_issues_no_collective`,
+`a_malformed_node_position_exchange_is_rejected` and
+`an_unwritten_peer_segment_reads_as_a_rank_with_no_trial`. Every test is one
+rank's view through a communicator that writes that rank's segment only; no
+in-process test runs two cooperating ranks.
+
 ## Binding activity is recorded only for a configured reader
 
 A cut's binding activity (`CutMetadata::active_count`,
