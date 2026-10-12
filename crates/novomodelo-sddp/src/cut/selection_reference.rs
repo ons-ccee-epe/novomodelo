@@ -103,12 +103,12 @@ pub(crate) fn active_after(cuts: &[RefCut], states: &[Vec<f64>]) -> BTreeSet<usi
     active
 }
 
-mod tests {
+pub(crate) mod tests {
     use std::collections::BTreeSet;
 
     use super::{RefCut, RefRole, active_after, owners, selected, value};
 
-    type Fixture = (Vec<RefCut>, Vec<Vec<f64>>);
+    pub(crate) type Fixture = (Vec<RefCut>, Vec<Vec<f64>>);
 
     fn line(intercept: f64, slope: f64, role: RefRole) -> RefCut {
         RefCut {
@@ -212,6 +212,31 @@ mod tests {
         )
     }
 
+    pub(crate) fn fixtures() -> Vec<(&'static str, Fixture)> {
+        vec![
+            ("ties", ties()),
+            ("figure_four", figure_four()),
+            (
+                "figure_four_with_a_new_state",
+                figure_four_with_a_new_state(),
+            ),
+            ("figure_four_windowed", figure_four_windowed()),
+            ("active_stateless_prefix_tie", active_stateless_prefix_tie()),
+            ("inactive_stateless_prefix", inactive_stateless_prefix()),
+            (
+                "scored_prefix_below_the_envelope",
+                scored_prefix_below_the_envelope(),
+            ),
+            (
+                "scored_prefix_alone_at_the_top",
+                scored_prefix_alone_at_the_top(),
+            ),
+            ("scored_prefix_tie", scored_prefix_tie()),
+            ("vacant_slot", vacant_slot()),
+            ("two_dimensions", two_dimensions()),
+        ]
+    }
+
     fn slots(expected: &[usize]) -> BTreeSet<usize> {
         expected.iter().copied().collect()
     }
@@ -305,6 +330,18 @@ mod tests {
     }
 
     #[test]
+    fn no_live_cut_leaves_a_state_unowned() {
+        let cuts = vec![
+            line(1.0, 0.0, RefRole::Vacant),
+            line(2.0, 0.0, RefRole::StatelessPrefix { active: false }),
+        ];
+        let states = points(&[0.0]);
+        assert_eq!(owners(&cuts, &states), vec![None]);
+        assert!(selected(&cuts, &states).is_empty());
+        assert!(active_after(&cuts, &states).is_empty());
+    }
+
+    #[test]
     fn paper_figure_four_loses_the_middle_cut_at_an_unvisited_state() {
         let (cuts, states) = figure_four();
         let unvisited = [2.0];
@@ -317,20 +354,7 @@ mod tests {
 
     #[test]
     fn selected_set_reproduces_the_live_envelope_at_every_state() {
-        let fixtures = [
-            ties(),
-            figure_four(),
-            figure_four_with_a_new_state(),
-            figure_four_windowed(),
-            active_stateless_prefix_tie(),
-            inactive_stateless_prefix(),
-            scored_prefix_below_the_envelope(),
-            scored_prefix_alone_at_the_top(),
-            scored_prefix_tie(),
-            vacant_slot(),
-            two_dimensions(),
-        ];
-        for (cuts, states) in &fixtures {
+        for (_, (cuts, states)) in &fixtures() {
             let active = active_after(cuts, states);
             for state in states {
                 let live = (0..cuts.len()).filter(|&slot| {

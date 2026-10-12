@@ -42,6 +42,7 @@
 //! assert_eq!(pool.cuts_in_lp(), 1);
 //! ```
 
+use super::ownership::Ownership;
 use super::trial_states::TrialStates;
 use crate::cut_selection::CutActivityUpdates;
 use crate::cut_selection::CutMetadata;
@@ -66,7 +67,7 @@ pub enum SlotOrigin {
 pub struct SlotRole {
     /// Where the slot's cut came from.
     pub origin: SlotOrigin,
-    /// Whether a run scored the slot's cut.
+    /// Whether the pool stored trial states when the slot was written; a loaded slot is unscored.
     pub scored: bool,
 }
 
@@ -113,6 +114,9 @@ pub struct CutPool {
     /// The trial state of each scored cut, by slot; `None` while the pool
     /// stores no states.
     trial_states: Option<TrialStates>,
+
+    /// The per-state ownership record, allocated with the trial states.
+    ownership: Option<Ownership>,
 
     /// Per-slot activity flags. `false` excludes the cut from LP construction and
     /// evaluation; the slot is retained so the layout stays deterministic.
@@ -194,6 +198,7 @@ impl CutPool {
             metadata: vec![unwritten_metadata(); capacity],
             roles: vec![VACANT_ROLE; capacity],
             trial_states: None,
+            ownership: None,
             active: vec![false; capacity],
             populated_count: 0,
             capacity,
@@ -439,11 +444,14 @@ impl CutPool {
     /// that every cut written afterwards is scored. Idempotent.
     ///
     /// Memory: `capacity * state_dimension * 8` bytes reserved, of which
-    /// `stored_trial_states() * state_dimension * 8` hold a state.
+    /// `stored_trial_states() * state_dimension * 8` hold a state, and one `f64` and
+    /// two `u32` per slot for the ownership record.
     pub fn enable_trial_states(&mut self) {
         let (capacity, dimension) = (self.capacity, self.state_dimension);
         self.trial_states
             .get_or_insert_with(|| TrialStates::new(capacity, dimension));
+        self.ownership
+            .get_or_insert_with(|| Ownership::new(capacity));
     }
 
     /// Whether the pool stores the trial state of each cut written.
@@ -497,6 +505,49 @@ impl CutPool {
         self.trial_states
             .as_ref()
             .map_or(0, TrialStates::stored_count)
+    }
+
+    /// Bring the ownership record up to date with the slots written since the
+    /// last call. A no-op for a pool that stores no trial states.
+    pub fn update_ownership(&mut self) {
+        if let Some(mut ownership) = self.ownership.take() {
+            ownership.update(self);
+            self.ownership = Some(ownership);
+        }
+    }
+
+    /// Recompute the ownership record from every slot, role and stored state.
+    ///
+    /// Cost: about the pool's cut count squared times its dimension in
+    /// multiply-adds, on every rank. A no-op for a pool that stores no trial
+    /// states.
+    pub fn rebuild_ownership(&mut self) {
+        if let Some(ownership) = self.ownership.as_mut() {
+            ownership.reset();
+        }
+        self.update_ownership();
+    }
+
+    /// The slot owning the state stored at `slot`; `None` when no state is
+    /// stored there or the record is not up to date for it.
+    #[must_use]
+    pub fn state_owner(&self, slot: usize) -> Option<usize> {
+        self.ownership.as_ref()?.owner_of(slot)
+    }
+
+    /// The owner's value at the state stored at `slot`; `None` as for
+    /// [`state_owner`](CutPool::state_owner).
+    #[must_use]
+    pub fn state_best_value(&self, slot: usize) -> Option<f64> {
+        self.ownership.as_ref()?.best_of(slot)
+    }
+
+    /// Number of stored states the cut at `slot` owns.
+    #[must_use]
+    pub fn owned_states(&self, slot: usize) -> usize {
+        self.ownership
+            .as_ref()
+            .map_or(0, |ownership| ownership.owned_by(slot))
     }
 
     /// Return the slot bound — one past the highest written slot, independent of
@@ -608,6 +659,45 @@ impl CutPool {
                 meta.last_active_iter = 0;
             }
         }
+    }
+
+    /// Test-only: overwrite a written slot's role, keeping `prefix_len` in step.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `slot >= populated_count` or the role is a scored vacant slot.
+    #[cfg(test)]
+    pub(crate) fn set_role_for_test(&mut self, slot: usize, role: SlotRole) {
+        assert!(
+            slot < self.populated_count,
+            "set_role_for_test: slot {slot} out of populated range"
+        );
+        assert!(
+            role.origin != SlotOrigin::Vacant || !role.scored,
+            "set_role_for_test: a vacant slot is not scored"
+        );
+        self.prefix_len -= usize::from(self.roles[slot].origin == SlotOrigin::Prefix);
+        self.prefix_len += usize::from(role.origin == SlotOrigin::Prefix);
+        self.roles[slot] = role;
+    }
+
+    /// Test-only: store `state` at a scored slot, bypassing the projection.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the pool stores no trial states, `slot` is not a scored written
+    /// slot, or it already holds a state.
+    #[cfg(test)]
+    pub(crate) fn set_trial_state_for_test(&mut self, slot: usize, state: &[f64]) {
+        assert!(
+            slot < self.populated_count && self.roles[slot].scored,
+            "set_trial_state_for_test: slot {slot} is not a scored written slot"
+        );
+        self.trial_states
+            .as_mut()
+            .expect("set_trial_state_for_test: the pool stores no trial states")
+            .claim(slot)
+            .copy_from_slice(state);
     }
 
     /// Test-only: overwrite one slot's metadata directly, bypassing
@@ -978,6 +1068,7 @@ impl CutPool {
             metadata,
             roles: vec![PREFIX_ROLE; capacity],
             trial_states: None,
+            ownership: None,
             active,
             populated_count: capacity,
             capacity,
@@ -1070,6 +1161,7 @@ impl CutPool {
             metadata,
             roles,
             trial_states: None,
+            ownership: None,
             active,
             populated_count: prefix_len,
             capacity,
@@ -1136,6 +1228,9 @@ impl CutPool {
         self.roles.resize(new_capacity, VACANT_ROLE);
         if let Some(trial_states) = self.trial_states.as_mut() {
             trial_states.grow(new_capacity);
+        }
+        if let Some(ownership) = self.ownership.as_mut() {
+            ownership.grow(new_capacity);
         }
         self.active.resize(new_capacity, false);
         self.capacity = new_capacity;

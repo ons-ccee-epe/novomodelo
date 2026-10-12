@@ -2,8 +2,9 @@
 //!
 //! The single entry point [`gemm_block`] is the only call site in
 //! `novomodelo-sddp` for [`matrixmultiply::dgemm`]. The wrapper isolates the
-//! one `unsafe` block that cut selection (`cut_selection.rs`) and `dynamic`
-//! scoring (`dcs.rs`) need so both call sites stay in safe code.
+//! one `unsafe` block that cut selection (`cut_selection.rs`), `dynamic`
+//! scoring (`dcs.rs`) and the ownership record (`ownership.rs`) need so the
+//! call sites stay in safe code.
 
 /// Compute `v_block` (`k_rows × m_len`, row-major) = `coef` · `state_blockᵀ`.
 ///
@@ -114,13 +115,25 @@ pub(crate) fn gemm_block(
     }
 }
 
+/// derived: the `f64` kernel an `x86_64` build without target features resolves
+/// (`KernelSse2` in `dgemm_kernel.rs`) takes its blocking from
+/// `archparam_defaults.rs` of `matrixmultiply` 0.3.10: output rows in blocks of
+/// `D_MC = 64`, inner dimension in blocks of `D_KC = 256`. 80 cuts cross the row
+/// block. A `matrixmultiply` version bump must re-run the block-shape property.
+#[cfg(test)]
+pub(crate) const PINNED_MAX_ROWS: usize = 80;
+
+/// derived: below the kernel's column block, `D_NC = 1024`.
+#[cfg(test)]
+pub(crate) const PINNED_MAX_COLUMNS: usize = 20;
+
 #[cfg(test)]
 #[allow(clippy::cast_precision_loss)]
 mod tests {
     use proptest::prelude::*;
     use proptest::test_runner::RngSeed;
 
-    use super::gemm_block;
+    use super::{PINNED_MAX_COLUMNS, PINNED_MAX_ROWS, gemm_block};
 
     #[test]
     fn gemm_block_matches_naive_reference_small() {
@@ -213,12 +226,6 @@ mod tests {
         }
     }
 
-    /// derived: the `f64` kernel an `x86_64` build without target features resolves
-    /// (`KernelSse2` in `dgemm_kernel.rs`) takes its blocking from
-    /// `archparam_defaults.rs` of `matrixmultiply` 0.3.10: output rows in blocks of
-    /// `D_MC = 64`, inner dimension in blocks of `D_KC = 256`. 80 cuts cross the row
-    /// block. A `matrixmultiply` version bump must re-run this property.
-    const MAX_CUTS: usize = 80;
     /// derived: straddles `D_KC = 256` (`archparam_defaults.rs`), so 257 and above
     /// sum the inner dimension in two blocks.
     const INNER_DIMS: [usize; 5] = [255, 256, 257, 300, 513];
@@ -232,8 +239,8 @@ mod tests {
 
     fn problem() -> impl Strategy<Value = (usize, usize, usize, Vec<f64>, Vec<f64>)> {
         (
-            1..=MAX_CUTS,
-            1..=20_usize,
+            1..=PINNED_MAX_ROWS,
+            1..=PINNED_MAX_COLUMNS,
             prop_oneof![1..=8_usize, prop::sample::select(INNER_DIMS.to_vec())],
         )
             .prop_flat_map(|(k_rows, m_len, d)| {

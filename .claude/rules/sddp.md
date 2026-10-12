@@ -662,13 +662,14 @@ leaves the tail of its block unwritten and the next iteration's block starts abo
 it; and a `CutPool::new` pool with a non-zero `slot_base` leaves its
 leading slots unwritten. `populated()` and `cuts_in_lp()` are one past the highest
 written slot: they bound slot-indexed reads and do not count cuts, which
-`generated()` does. Two readers skip a vacant slot. The selection kernel
+`generated()` does. Readers skip a vacant slot. The selection kernel
 (`CutSelectionStrategy::select_for_stage`) makes a slot eligible only when its
 origin is `Generated` and its generating iteration is earlier than the current
 one, and overwrites a vacant slot's values with `f64::NEG_INFINITY` after the
 intercept add, so its zero is never a per-state maximum. The checkpoint writer
 (`build_stage_cut_records`) writes no record for it, and `build_stage_cuts_payloads`
-writes `populated_count` as the number of records. A debug build refuses to
+writes `populated_count` as the number of records. The ownership record treats
+it as not live (`is_live`), so its zero owns no state. A debug build refuses to
 activate a vacant slot (`CutPool::set_active`).
 
 Treating `populated()` as a cut count is the wrong-but-compiling alternative: the
@@ -687,7 +688,9 @@ reactivation), `a_never_written_slot_is_not_exported` (`policy/policy_export.rs`
 records at slots 0, 2 and 3 and a `populated_count` of 3) and
 `sampled_fan_checkpoint_holds_no_never_written_slot`
 (`tests/branching_value_oracle.rs`: on a trained sampled fan, one record per
-written slot), with `activating_a_vacant_slot_panics_in_debug` (`cut/pool.rs`) for
+written slot) and the `vacant_slot` fixture of
+`the_record_reproduces_every_reference_fixture` (`cut/ownership.rs`: the vacant
+zero owns no state), with `activating_a_vacant_slot_panics_in_debug` (`cut/pool.rs`) for
 the debug assertion.
 
 **Basis matches by slot, never by count or column.** Warm-start basis
@@ -978,7 +981,8 @@ written (`add_cut` writes it); enabling the store afterwards does not change the
 flag of a cut already written, and a loaded (`Prefix`) cut is never scored and
 has no state. A pool that does not store states allocates nothing. Enabling
 reserves `capacity * state_dimension * 8` bytes, of which
-`stored_trial_states() * state_dimension * 8` hold a state.
+`stored_trial_states() * state_dimension * 8` hold a state, and one `f64` and two
+`u32` per slot for the ownership record.
 
 **Who enables it.** `TrainingSession::new` enables the store on every rank, on
 the pool of every node of `interior_cut_nodes` (stage 1 or later, with a
@@ -1030,12 +1034,13 @@ The wrong-but-compiling alternatives:
   level names a trial routed to another node. Pinned by
   `a_rank_stores_the_state_of_a_peers_cut_at_a_sibling_node`, which fails under
   it while the single-node test passes;
-- storing a state only for the cuts this rank generated (in `by_scenario_finish`
-  or `by_node_finish`, or by filling only this rank's trials): a peer's cut has
-  no state. Pinned by `a_rank_stores_the_state_of_a_peers_cut_at_a_sibling_node`
-  and `a_single_node_level_stores_each_trial_state_at_its_cut`, which fail on the
-  peer's cuts when only rank 0's trials are filled. That the ranks then select
-  different cuts is not demonstrable in-process;
+- storing a state only for the cuts this rank generated: a peer's cut has no
+  state. The mutation shown is a fill that walks rank 0's trials only, which
+  `a_rank_stores_the_state_of_a_peers_cut_at_a_sibling_node` and
+  `a_single_node_level_stores_each_trial_state_at_its_cut` fail on the peer's
+  cuts (`None` for `Some`). Storing inside `by_scenario_finish` or
+  `by_node_finish` is the same alternative and is not itself pinned by a test.
+  That the ranks then select different cuts is not demonstrable in-process;
 - reading the gathered positions on a single-node level: the buffer is padding or
   an earlier level's content, so the index is out of bounds or names another
   node. A training run fails at the fill, in
@@ -1076,6 +1081,140 @@ and, in `tests/cut_basis.rs` against the archive,
 `an_enumerated_level1_run_stores_one_trial_state_per_cut`,
 `a_sampled_fan_stores_only_each_nodes_own_trial_states` and
 `a_run_without_level1_stores_no_trial_state`.
+
+## A cut's value at a state is canonical
+
+A cut's value at a stored state is the `gemm_block` element plus the cut's
+intercept, added once, and the ownership record (`cut/ownership.rs`) computes it
+no other way. Every call passes at most `ROW_BLOCK` slots and `M_BLOCK` states.
+An incremental update evaluates a few new cuts against many old states and a
+rebuild evaluates every cut against every state, so the two agree bit for bit
+only because an element of `gemm_block` does not depend on which other rows and
+columns share its call. That independence is a property of one build of the
+`matrixmultiply` kernel, single-threaded and unfused (`gemm_block`'s
+determinism section), not of the arithmetic.
+
+The independence is pinned for up to `PINNED_MAX_ROWS` rows,
+`PINNED_MAX_COLUMNS` columns and an inner dimension up to the largest of
+`INNER_DIMS` (`gemm.rs`), and nowhere else. The kernel's column block (`D_NC`)
+is never reached, because a call passes at most `M_BLOCK` states. An inner
+dimension above the largest of `INNER_DIMS` is summed in further blocks of
+`D_KC` and is drawn by no property; the inexact property draws 3, 257 and 300.
+
+The wrong-but-compiling alternatives:
+
+- a hand-written dot product in one of the two paths: for an inner dimension
+  above `D_KC` it rounds differently from the blocked kernel, so a state taken
+  over by a later cut carries another best value than the rebuilt record's. The
+  mutation shown computes the second step's value as a plain left-to-right dot
+  product, which `incremental_record_equals_rebuild_on_inexact_values` fails on
+  a case of dimension 300. The integer-valued property cannot show it, since
+  every summation order is exact there;
+- more rows or columns than the pinned ones in one call, such as all slots in
+  one block: the shape is outside what the block-shape property draws. The
+  mutation shown raises `ROW_BLOCK` above `PINNED_MAX_ROWS`: only
+  `ownership_blocks_stay_inside_the_pinned_gemm_envelope` fails and no
+  comparison of values does, so that test and the single value function are the
+  guard. More states than the column block in one call is not demonstrated.
+
+Read: `cut/ownership.rs` (`scan_block`, `ROW_BLOCK`), `gemm.rs` (`gemm_block`,
+`PINNED_MAX_ROWS`, `PINNED_MAX_COLUMNS`), `cut/cut_selection.rs` (`M_BLOCK`).
+Pinned by `gemm_block_element_is_independent_of_the_block_shape` (`gemm.rs`: an
+element equals the same element alone, in column chunks and in row chunks),
+`resolved_kernel_is_the_unfused_baseline` (`gemm.rs`: the kernel the build
+resolves rounds each product), `ownership_blocks_stay_inside_the_pinned_gemm_envelope`,
+`incremental_record_equals_rebuild_and_reference` (structure, on values every
+summation order computes exactly) and
+`incremental_record_equals_rebuild_on_inexact_values` (`cut/ownership.rs`).
+
+## The ownership record is a cache of the ownership function
+
+Under the Level 1 rule of de Matos, Philpott and Finardi (2015), a stored trial
+state has one owner: the lowest live slot whose value at the state equals the
+maximum over the live set, compared exactly, with no tolerance. A slot is live
+when it is scored, or when it is an unscored loaded (`Prefix`) slot whose
+activity flag is set; a `Vacant` slot and an unscored `Generated` slot are not
+live. `is_live` owns the predicate. The activity flag of a scored slot is never
+read: it is an output of selection, derived from this record, and a deactivated
+scored cut still owns the states it wins. `selection_reference::owners` is the
+brute-force statement of the rule that the record is compared with.
+
+`CutPool` keeps, with the trial-state store, a record with one `f64` and two
+`u32` per slot: the best value and the owning slot of the state stored at the
+slot, and the number of states the slot's cut owns, plus the number of slots
+already scanned. It is
+allocated by `enable_trial_states`, extended by `grow`, and a pool without a
+store has no record, so `update_ownership` and `rebuild_ownership` are no-ops
+there. It is never written to a checkpoint and never exchanged between ranks:
+each rank derives it from its own pool.
+
+`update_ownership` takes the slots written since the last call in two steps,
+each state block being at most `M_BLOCK` states: each new stored state against
+every live slot below `populated()`, giving its owner and best value, then each
+new live slot against every state stored before the call, taking a state over
+only when `takes_over` says so. It then adjusts the counts and moves the
+scanned mark to `populated()`. The state blocks run in parallel with each
+state's result written to its own position, and the results are committed
+sequentially in slot order, so the record does not depend on the thread count.
+`rebuild_ownership` resets the record and runs the same update from slot 0; it
+costs about the pool's cut count squared times its dimension in multiply-adds
+on every rank. `state_owner` and `state_best_value` are `None` for a slot with
+no stored state or one the record has not scanned; bound slot-indexed reads by
+`populated()`, since like `trial_state` they panic at a slot at or above the
+capacity.
+
+`takes_over` is the only comparison of two cut values in the module, used by
+every scan in ascending slot order: a later cut takes a state only when
+strictly higher, so ties stay with the lowest slot. Reversing the tie direction
+is a change to `takes_over` and to the reference rule, nothing else. The
+update relies on every slot written since the last call lying at or above the
+scanned mark, which holds while every `forward_pass_index` is below the pool's
+`visit_stride` (the append-only section above), and on a state being stored
+before the update that passes its slot. A slot written or a state stored below
+the mark is not seen until `rebuild_ownership`.
+
+The wrong-but-compiling alternatives:
+
+- `>=` in the takeover: ties then go to the highest slot among those scanned,
+  so the outcome follows arrival order and differs from the reference. Pinned
+  by `the_record_reproduces_every_reference_fixture` (on `ties`),
+  `a_new_cut_takes_a_state_only_when_strictly_higher` and
+  `incremental_record_equals_rebuild_and_reference`, which fail under it;
+- reading the activity flag of a scored cut in the live predicate: a
+  deactivated cut can never win a new state. Pinned by
+  `an_inactive_scored_cut_wins_a_new_state`, which fails under it, as does the
+  property through the update's assertion that a stored state's own slot is
+  live;
+- skipping the second step: states stored before a call never meet the cuts
+  written after it, and the record differs from a rebuild. Pinned by
+  `a_new_cut_takes_a_state_only_when_strictly_higher`,
+  `an_inactive_scored_cut_wins_a_new_state`, both properties and, through its
+  rebuild comparison, `ownership_record_is_identical_across_thread_counts`,
+  which fail under it;
+- counting a vacant slot as live: its zero intercept and coefficients compete
+  in the maximum and the vacant slot owns states. Pinned by the `vacant_slot`
+  fixture of `the_record_reproduces_every_reference_fixture` and by
+  `incremental_record_equals_rebuild_and_reference`, whose draws leave vacant
+  holes below the highest written slot, which fail under it;
+- a thread-count dependence in the commit (committing in arrival order): not
+  demonstrated, since no mutation of the shipped code depends on the thread
+  count; `ownership_record_is_identical_across_thread_counts` compares 1, 4 and
+  8 threads on a pool wider than `ROW_BLOCK` and with more states than
+  `M_BLOCK`.
+
+Read: `cut/ownership.rs` (`Ownership::update`, `is_live`, `takes_over`,
+`scan`), `cut/pool.rs` (`CutPool::enable_trial_states`, `grow`,
+`update_ownership`, `rebuild_ownership`, `state_owner`, `state_best_value`,
+`owned_states`), `cut/selection_reference.rs` (`owners`). Pinned by
+`the_record_reproduces_every_reference_fixture`,
+`an_inactive_scored_cut_wins_a_new_state`,
+`a_new_cut_takes_a_state_only_when_strictly_higher`,
+`incremental_record_equals_rebuild_and_reference`,
+`incremental_record_equals_rebuild_on_inexact_values` and
+`ownership_record_is_identical_across_thread_counts` (`cut/ownership.rs`), and
+`no_live_cut_leaves_a_state_unowned` (`cut/selection_reference.rs`: the rule
+leaves a state unowned when no slot is live, which a stored state's scored slot
+rules out in the record).
 
 ## Binding activity is recorded only for a configured reader
 

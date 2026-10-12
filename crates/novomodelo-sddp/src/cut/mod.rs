@@ -23,12 +23,17 @@
 //! - [`cut_sync`] — [`CutSyncBuffers`]: MPI cut-synchronization scratch space.
 //! - [`basis_reconstruct`] — warm-start basis reconstruction for the frozen
 //!   hot path and the DCS path.
+//! - `trial_states` — the per-slot rows of the state each scored cut was
+//!   computed at, reached through [`CutPool`].
+//! - `ownership` — the per-state record of the Level 1 owner, a cache of the
+//!   ownership function, reached through [`CutPool`].
 
 pub mod basis_reconstruct;
 pub mod cut_selection;
 pub mod cut_sync;
 pub mod dcs;
 pub mod fcf;
+mod ownership;
 pub mod pool;
 pub mod row;
 pub mod row_map;
