@@ -133,6 +133,18 @@ impl Communicator for Rank0Of2 {
     }
 }
 
+/// Three-stage cascade hydrothermal dispatch (2 hydros in series).
+/// Combined capacity 70 MW < demand 75 MW. Cascade coupling: H1 receives H0's
+/// discharge. Terminal stages: full capacity (thermal = 5 MW). Stage 0 binding
+/// storage constraints yield thermal ≈ 28.09 MW.
+///
+/// derived: analytical thermal + deficit cost is `4_171_000 / 3 ≈ 1_390_333.33`.
+/// With `turbined_cost` applied to every hydro's turbine column,
+/// the deterministic LB adds a fixed regularization contribution that lifts
+/// the total by `+1_364.4333…` (= `turbined_cost` × turbined `MWh` summed over
+/// stages and blocks for both hydros).
+pub const D03_EXPECTED_COST: f64 = 1_391_697.766_666_667_3;
+
 /// Resolve the boundary state requirements for a test case, tolerating a
 /// placeholder boundary path: a test that installs a fake `policy.boundary` and
 /// injects cuts manually must not trigger a read of the missing checkpoint. The

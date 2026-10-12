@@ -32,7 +32,7 @@ use novomodelo_sddp::{
 use novomodelo_solver::{ActiveSolver, SolverInterface};
 
 mod common;
-use common::{StubComm, build_setup_for_case, fresh_setup_with};
+use common::{D03_EXPECTED_COST, StubComm, build_setup_for_case, fresh_setup_with};
 
 /// Train a case (`StubComm`, `ActiveSolver`, seed 42, 1 thread) and return the
 /// setup, the canonicalized system, the training result, and the live solver.
@@ -455,18 +455,6 @@ fn d02_single_hydro_cost_scale_invariant() {
         );
     }
 }
-
-/// Three-stage cascade hydrothermal dispatch (2 hydros in series).
-/// Combined capacity 70 MW < demand 75 MW. Cascade coupling: H1 receives H0's
-/// discharge. Terminal stages: full capacity (thermal = 5 MW). Stage 0 binding
-/// storage constraints yield thermal ≈ 28.09 MW.
-///
-/// Analytical thermal + deficit cost is `4_171_000 / 3 ≈ 1_390_333.33`. With
-/// `turbined_cost` applied to every hydro's turbine column,
-/// the deterministic LB adds a fixed regularization contribution that lifts
-/// the total by `+1_364.4333…` (= turbined_cost × turbined MWh summed over
-/// stages and blocks for both hydros).
-pub const D03_EXPECTED_COST: f64 = 1_391_697.766_666_667_3;
 
 #[cfg_attr(
     not(feature = "slow-tests"),

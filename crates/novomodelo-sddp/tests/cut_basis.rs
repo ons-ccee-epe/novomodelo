@@ -902,7 +902,7 @@ mod basis_reconstruct_churn {
     use std::path::Path;
     use std::sync::mpsc;
 
-    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_core::{TrainingEvent, scenario::ScenarioSource};
     use novomodelo_io::config::{SelectionMethod, StoppingRuleConfig};
     use novomodelo_sddp::{
         CutPool, FutureCostFunction, SolverStatsDelta, SolverStatsLogEntry, StudySetup,
@@ -910,7 +910,7 @@ mod basis_reconstruct_churn {
     };
     use novomodelo_solver::ActiveSolver;
 
-    use super::common::StubComm;
+    use super::common::{D03_EXPECTED_COST, StubComm};
 
     // ---------------------------------------------------------------------------
     // Path helpers
@@ -950,24 +950,11 @@ mod basis_reconstruct_churn {
     // Test 1: Cross-churn — LML1 + budget + new cuts
     // ---------------------------------------------------------------------------
 
-    /// All three churn types active at once; the simplex-iteration pin catches a
-    /// `padding_state = x_hat` regression (it raises the count beyond the ±5 % band).
+    /// All three churn types active at once: selection deactivation, budget
+    /// eviction and new cuts. Zero basis rejections and the d03 optimum are
+    /// asserted only once the run is shown to have churned.
     #[test]
     fn basis_reconstruct_churn() {
-        // Simplex pin and lower-bound pin are calibrated against HiGHS's simplex path
-        // and last-ULP accumulation, so they gate to the `highs` backend; the
-        // structural checks below run on both. Regenerate the pin only if the HiGHS
-        // major version or the fixture parameters change.
-        #[cfg(feature = "highs")]
-        const PINNED_SIMPLEX_ITERS: u64 = 30;
-        #[cfg(feature = "highs")]
-        const LO_SIMPLEX: u64 = PINNED_SIMPLEX_ITERS * 95 / 100;
-        #[cfg(feature = "highs")]
-        const HI_SIMPLEX: u64 = PINNED_SIMPLEX_ITERS * 105 / 100;
-
-        #[cfg(feature = "highs")]
-        const PINNED_FINAL_LB: f64 = 1_391_697.766_666_666_8;
-
         let case_dir = d03_case_dir();
         let config_path = case_dir.join("config.json");
         let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
@@ -1006,8 +993,9 @@ mod basis_reconstruct_churn {
         let comm = StubComm;
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
 
+        let (tx, rx) = mpsc::channel();
         let outcome = setup
-            .train(&mut solver, &comm, 1, ActiveSolver::new, None, None)
+            .train(&mut solver, &comm, 1, ActiveSolver::new, Some(tx), None)
             .expect("train must return Ok");
         assert!(
             outcome.error.is_none(),
@@ -1021,6 +1009,48 @@ mod basis_reconstruct_churn {
             result.iterations
         );
 
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+        let interior_rows_deactivated: u32 = events
+            .iter()
+            .filter_map(|event| match event {
+                TrainingEvent::PolicySelectionComplete { per_stage, .. } => Some(&per_stage[1..]),
+                _ => None,
+            })
+            .flatten()
+            .map(|record| record.rows_deactivated)
+            .sum();
+        let rows_evicted: u32 = events
+            .iter()
+            .filter_map(|event| match event {
+                TrainingEvent::PolicyBudgetEnforcementComplete { rows_evicted, .. } => {
+                    Some(*rows_evicted)
+                }
+                _ => None,
+            })
+            .sum();
+        let pools = &setup.fcf.pools;
+        let mixed_interior_pools = pools[1..pools.len() - 1]
+            .iter()
+            .filter(|pool| 0 < pool.active_count() && pool.active_count() < pool.populated())
+            .count();
+        let churn = format!(
+            "deactivated={interior_rows_deactivated}, evicted={rows_evicted}, \
+             mixed pools={mixed_interior_pools}"
+        );
+        assert!(
+            interior_rows_deactivated > 0,
+            "basis_reconstruct_churn: selection deactivated no interior row ({churn})"
+        );
+        assert!(
+            rows_evicted > 0,
+            "basis_reconstruct_churn: the budget evicted no row ({churn})"
+        );
+        assert!(
+            mixed_interior_pools > 0,
+            "basis_reconstruct_churn: no interior pool holds both active and inactive rows \
+             ({churn})"
+        );
+
         let fwd = sum_forward_deltas(&result.solver_stats_log);
 
         // basis_reconstructions is excluded from forward-log MPI packing, so it is
@@ -1029,34 +1059,17 @@ mod basis_reconstruct_churn {
         assert_eq!(
             fwd.basis_consistency_failures, 0,
             "basis_reconstruct_churn: expected 0 basis rejections, got {} \
-             (reconstructed bases must always be accepted by HiGHS)",
+             (reconstructed bases must always be accepted by the solver)",
             fwd.basis_consistency_failures
         );
 
-        #[cfg(feature = "highs")]
-        {
-            let observed_simplex = fwd.simplex_iterations;
-            assert!(
-                (LO_SIMPLEX..=HI_SIMPLEX).contains(&observed_simplex),
-                "basis_reconstruct_churn: simplex_iterations={observed_simplex} is outside \
-                 the ±5 % band [{LO_SIMPLEX}, {HI_SIMPLEX}] around pin={PINNED_SIMPLEX_ITERS}"
-            );
-        }
-
-        // final_lb is deterministic for a fixed seed and scenario count; its last ULP
-        // shifts with the HiGHS build, so pin to a relative tolerance that catches
-        // real drift (~9 significant figures) while absorbing float noise.
-        #[cfg(feature = "highs")]
-        {
-            let lb_rel_err = (result.final_lb - PINNED_FINAL_LB).abs() / PINNED_FINAL_LB.abs();
-            assert!(
-                lb_rel_err <= 1e-9,
-                "basis_reconstruct_churn: final_lb={} deviates from pin={PINNED_FINAL_LB:.15e} \
-                 by relative error {lb_rel_err:.3e} (> 1e-9); the lower bound must be \
-                 deterministic for a fixed seed and scenario count",
-                result.final_lb
-            );
-        }
+        let lb_rel_err = (result.final_lb - D03_EXPECTED_COST).abs() / D03_EXPECTED_COST;
+        assert!(
+            lb_rel_err <= 1e-9,
+            "basis_reconstruct_churn: final_lb={} deviates from the d03 optimum \
+             {D03_EXPECTED_COST} by relative error {lb_rel_err:.3e} (> 1e-9)",
+            result.final_lb
+        );
     }
 
     // ---------------------------------------------------------------------------
