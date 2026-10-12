@@ -1424,6 +1424,176 @@ mod basis_reconstruct_churn {
     }
 }
 
+mod selection_in_a_training_run {
+    use std::path::Path;
+    use std::sync::mpsc;
+
+    use novomodelo_core::{StageRowSelectionRecord, TrainingEvent, scenario::ScenarioSource};
+    use novomodelo_io::config::{SelectionMethod, StoppingRuleConfig, TrainingSelection};
+    use novomodelo_sddp::{
+        StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
+    };
+    use novomodelo_solver::ActiveSolver;
+
+    use super::common::StubComm;
+
+    const FORWARD_PASSES: u32 = 2;
+    const ITERATIONS: u32 = 10;
+    const CHECK_FREQUENCY: u32 = 2;
+
+    fn train_collecting_selection_runs() -> (StudySetup, Vec<(u64, Vec<StageRowSelectionRecord>)>) {
+        let case_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/<crate> must have a parent")
+            .parent()
+            .expect("crates/ must have a parent (repo root)")
+            .join("examples/1dtoy");
+        let mut config =
+            novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
+        config.training.selection = Some(TrainingSelection::Sampled {
+            forward_passes: FORWARD_PASSES,
+        });
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: ITERATIONS,
+        }]);
+        config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+            tie_tolerance: 1e-10,
+            check_frequency: CHECK_FREQUENCY,
+        });
+
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
+        let prepared = prepare_stochastic(
+            system,
+            &case_dir,
+            &config,
+            42,
+            &ScenarioSource::default(),
+            None,
+        )
+        .expect("prepare_stochastic must succeed");
+        let system = prepared.system;
+        let hydro_models = prepare_hydro_models(&system, &case_dir, false)
+            .expect("prepare_hydro_models must succeed");
+        let mut setup = StudySetup::new(
+            &system,
+            &config,
+            prepared.stochastic,
+            hydro_models,
+            Vec::new(),
+        )
+        .expect("StudySetup must build");
+
+        let (tx, rx) = mpsc::channel();
+        let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+        let outcome = setup
+            .train(&mut solver, &StubComm, 1, ActiveSolver::new, Some(tx), None)
+            .expect("train must return Ok");
+        assert!(
+            outcome.error.is_none(),
+            "expected no training error, got: {:?}",
+            outcome.error
+        );
+        assert_eq!(outcome.result.iterations, u64::from(ITERATIONS));
+
+        let runs = rx
+            .try_iter()
+            .filter_map(|event| match event {
+                TrainingEvent::PolicySelectionComplete {
+                    iteration,
+                    per_stage,
+                    ..
+                } => Some((iteration, per_stage)),
+                _ => None,
+            })
+            .collect();
+        (setup, runs)
+    }
+
+    #[test]
+    fn level1_deactivates_and_reactivates_cuts_in_a_training_run() {
+        let (setup, runs) = train_collecting_selection_runs();
+        let pools = &setup.fcf.pools;
+        let interior_pools = 1..pools.len() - 1;
+        let final_iteration = u64::from(ITERATIONS);
+
+        let run_iterations: Vec<u64> = runs.iter().map(|(iteration, _)| *iteration).collect();
+        let scheduled_iterations: Vec<u64> = (1..=final_iteration)
+            .filter(|iteration| iteration % u64::from(CHECK_FREQUENCY) == 0)
+            .collect();
+        assert_eq!(
+            run_iterations, scheduled_iterations,
+            "selection must run at every multiple of check_frequency, the last at the final iteration"
+        );
+
+        for (iteration, per_stage) in &runs {
+            assert_eq!(
+                per_stage.len(),
+                interior_pools.len() + 1,
+                "iteration {iteration}: one root record, then one per interior node"
+            );
+            assert_eq!(
+                per_stage[0].rows_deactivated, 0,
+                "iteration {iteration}: the root must not be deactivated"
+            );
+            assert_eq!(
+                per_stage[0].rows_reactivated, 0,
+                "iteration {iteration}: the root must not be reactivated"
+            );
+        }
+        let (_, last_run) = runs.last().expect("selection must have run");
+        assert!(
+            last_run[0].rows_populated >= 2,
+            "the root must hold cuts to judge, got {}",
+            last_run[0].rows_populated
+        );
+        assert_eq!(
+            pools[0].active_count(),
+            pools[0].populated(),
+            "every root cut must stay active"
+        );
+
+        let interior_records = || runs.iter().flat_map(|(_, per_stage)| &per_stage[1..]);
+        assert!(
+            interior_records().any(|record| record.rows_deactivated > 0),
+            "no interior node deactivated a cut"
+        );
+        assert!(
+            interior_records().any(|record| record.rows_reactivated > 0),
+            "no interior node reactivated a cut"
+        );
+
+        for pool_id in interior_pools {
+            let pool = &pools[pool_id];
+            assert_eq!(
+                pool.populated(),
+                (ITERATIONS * FORWARD_PASSES) as usize,
+                "pool {pool_id}: selection must deactivate cuts, never delete them"
+            );
+
+            let final_iteration_slots: Vec<usize> = (0..pool.populated())
+                .filter(|&slot| pool.metadata(slot).iteration_generated == final_iteration)
+                .collect();
+            assert!(
+                !final_iteration_slots.is_empty(),
+                "pool {pool_id}: the final iteration generated no cut"
+            );
+            assert!(
+                final_iteration_slots
+                    .iter()
+                    .all(|&slot| pool.is_active(slot)),
+                "pool {pool_id}: a cut generated in the final iteration was deactivated"
+            );
+            assert!(
+                (0..pool.populated()).any(|slot| {
+                    pool.metadata(slot).iteration_generated < final_iteration
+                        && !pool.is_active(slot)
+                }),
+                "pool {pool_id}: no cut of an earlier iteration is inactive"
+            );
+        }
+    }
+}
+
 mod hybrid_reconstruction {
     //! Integration smoke for the slot-identity basis-reconstruction path.
 
