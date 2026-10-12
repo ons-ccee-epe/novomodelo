@@ -2350,6 +2350,25 @@ impl StorageSpec {
     }
 }
 
+const FAN_OR_CHAIN_BUS_ID: EntityId = EntityId(1);
+
+/// The fan/chain bus: deficit costs 500 $/`MWh` without limit, after
+/// `first_deficit_tier` when one is given.
+fn fan_or_chain_bus(first_deficit_tier: Option<DeficitSegment>) -> Bus {
+    let mut deficit_segments: Vec<DeficitSegment> = first_deficit_tier.into_iter().collect();
+    deficit_segments.push(DeficitSegment {
+        depth_mw: None,
+        cost_per_mwh: 500.0,
+    });
+    Bus {
+        id: FAN_OR_CHAIN_BUS_ID,
+        name: "B".to_string(),
+        operational_start_date: ymd(2024, 1, 1),
+        deficit_segments,
+        excess_cost: 0.0,
+    }
+}
+
 /// [`fan_or_chain_system`] with explicit inflow/load standard deviations, reservoir
 /// sizing, external inflow + load scenario rows, and per-stage `state_config`
 /// overrides — the seam the External-openings fixtures and the non-uniform
@@ -2363,10 +2382,6 @@ impl StorageSpec {
 /// (empty leaves the PAR-free `vec![]`, byte-identical to every caller predating it);
 /// a non-empty slice with a near-zero `inflow_std` builds a deterministic PAR series,
 /// mirroring `d16_par1_lag_shift`.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one linear entity/bounds/penalties assembly shared by every fan/chain fixture in this file; splitting the newest knob into a struct would cost a one-off type for a single call site, while every existing caller already reads as a flat parameter list at its call site"
-)]
 #[expect(
     clippy::expect_used,
     reason = "the fixed study built here is valid and internally consistent by construction"
@@ -2382,19 +2397,39 @@ fn fan_or_chain_system_ext(
     stage_state_configs: Option<&[StageStateConfig]>,
     inflow_ar_coefficients: &[f64],
 ) -> System {
-    let bus_id = EntityId(1);
-    let hydro_id = EntityId(2);
+    fan_or_chain_system_builder(
+        n_stages,
+        policy_graph,
+        inflow_std,
+        load_std,
+        storage,
+        external_rows,
+        external_load_rows,
+        stage_state_configs,
+        inflow_ar_coefficients,
+    )
+    .build()
+    .expect("fan_or_chain_system: valid study")
+}
 
-    let bus = Bus {
-        id: bus_id,
-        name: "B".to_string(),
-        operational_start_date: ymd(2024, 1, 1),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: None,
-            cost_per_mwh: 500.0,
-        }],
-        excess_cost: 0.0,
-    };
+/// [`fan_or_chain_system_ext`] before `build`, so a caller can replace an entity.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear entity/bounds/penalties assembly shared by every fan/chain fixture in this file; splitting the newest knob into a struct would cost a one-off type for a single call site, while every existing caller already reads as a flat parameter list at its call site"
+)]
+fn fan_or_chain_system_builder(
+    n_stages: usize,
+    policy_graph: HorizonGraph,
+    inflow_std: f64,
+    load_std: f64,
+    storage: StorageSpec,
+    external_rows: Vec<ExternalScenarioRow>,
+    external_load_rows: Vec<ExternalLoadRow>,
+    stage_state_configs: Option<&[StageStateConfig]>,
+    inflow_ar_coefficients: &[f64],
+) -> SystemBuilder {
+    let bus_id = FAN_OR_CHAIN_BUS_ID;
+    let hydro_id = EntityId(2);
 
     let mut hydro = Hydro {
         unit_groups: Vec::new(),
@@ -2589,7 +2624,7 @@ fn fan_or_chain_system_ext(
     };
 
     SystemBuilder::new()
-        .buses(vec![bus])
+        .buses(vec![fan_or_chain_bus(None)])
         .hydros(vec![hydro])
         .stages(stages)
         .inflow_models(inflow_models)
@@ -2600,8 +2635,6 @@ fn fan_or_chain_system_ext(
         .policy_graph(policy_graph)
         .external_scenarios(external_rows)
         .external_load_scenarios(external_load_rows)
-        .build()
-        .expect("fan_or_chain_system: valid study")
 }
 
 /// The `sampled`-mode training [`Config`] for [`k_fan_setup`]: `forward_passes`
@@ -3396,14 +3429,202 @@ const TERMINAL_FAN_STAGES: usize = 2;
 /// # Panics
 ///
 /// Never in practice — as [`k_fan_setup`].
-#[expect(
-    clippy::expect_used,
-    reason = "build_stochastic_context/StudySetup::new never error on this fixture's fixed, internally consistent inputs"
-)]
 #[must_use]
 pub fn oracle_chain_setup(max_iterations: u32) -> StudySetup {
-    let system = fan_or_chain_system(3, HorizonGraph::default());
-    let config = k_fan_config_enumerated(max_iterations);
+    enumerated_oracle_setup(
+        HorizonGraph::default(),
+        OracleSystem::ZeroWaterValue,
+        max_iterations,
+        None,
+    )
+}
+
+/// [`oracle_chain_setup`]'s graph on [`OracleSystem::Kinked`], with `selection`
+/// as the cut-selection method.
+///
+/// # Panics
+///
+/// Never in practice — as [`k_fan_setup`].
+#[must_use]
+pub fn oracle_chain_setup_with_selection(
+    max_iterations: u32,
+    selection: SelectionMethod,
+) -> StudySetup {
+    enumerated_oracle_setup(
+        HorizonGraph::default(),
+        OracleSystem::Kinked,
+        max_iterations,
+        Some(selection),
+    )
+}
+
+/// The single-hydro system an `enumerated` 3-stage oracle fixture runs on.
+#[derive(Debug, Clone, Copy)]
+enum OracleSystem {
+    /// [`fan_or_chain_system`]: its `0.0` productivity makes every cut of a
+    /// pool the same constant, so cut selection has nothing to choose between.
+    ZeroWaterValue,
+    /// [`fan_or_chain_system`] with a successor value of storage that has
+    /// breakpoints. Productivity is [`KINKED_PRODUCTIVITY`] and the deficit
+    /// costs [`KINKED_FIRST_DEFICIT_TIER`] before its 500 $/`MWh`.
+    ///
+    /// A leaf with inflow `a` m³/s and incoming storage `v` hm³ turbines
+    /// `q = min(100, a + v/ζ)` m³/s, `ζ = 744·3600/10⁶` hm³ per m³/s, against
+    /// a deficit of `80 − 0.75·q` MW. Its cost falls by `500·0.75·744/ζ` $/hm³
+    /// while the deficit exceeds the first tier (`q < (80 − 20)/0.75 = 80`), by
+    /// `400·0.75·744/ζ` while `80 ≤ q < 100`, and is flat at the turbining
+    /// limit: three linear pieces with breakpoints `v = ζ·(80 − a)` and
+    /// `v = ζ·(100 − a)`.
+    ///
+    /// Stage 1's own water is worth `500·0.5·744/ζ` $/hm³, less than either
+    /// sloped piece, so it stores water while its cuts price it higher. The
+    /// first forward pass has no cuts and leaves stage 1 with no storage, below
+    /// every breakpoint; the second stores against one extrapolated cut and
+    /// lands past a breakpoint.
+    ///
+    /// On a declared graph every node pins an External inflow column
+    /// ([`pin_kinked_branch_inflows`]), so a pool's cut averages leaves whose
+    /// breakpoints differ; an undeclared chain keeps the generated 60 m³/s.
+    Kinked,
+}
+
+/// Hydro productivity (MW per m³/s) at stages 0, 1 and 2 of
+/// [`OracleSystem::Kinked`]. It rises, so stored water is worth strictly more at
+/// each later stage and no stage LP ties using water now against keeping it.
+const KINKED_PRODUCTIVITY: [f64; 3] = [0.25, 0.5, 0.75];
+
+/// First deficit tier of [`OracleSystem::Kinked`].
+const KINKED_FIRST_DEFICIT_TIER: DeficitSegment = DeficitSegment {
+    depth_mw: Some(20.0),
+    cost_per_mwh: 400.0,
+};
+
+/// Inflow (m³/s) of a node's first and second child on [`OracleSystem::Kinked`].
+const KINKED_BRANCH_INFLOWS_M3S: [f64; 2] = [30.0, 70.0];
+
+/// Pins every declared node of `policy_graph` to an External inflow column and
+/// returns the columns: the root at the 60 m³/s inflow mean, a node's `i`-th
+/// child at [`KINKED_BRANCH_INFLOWS_M3S`]`[i]`. Empty for an undeclared graph.
+fn pin_kinked_branch_inflows(policy_graph: &mut HorizonGraph) -> Vec<ExternalScenarioRow> {
+    let mut children: BTreeMap<i32, Vec<i32>> = BTreeMap::new();
+    for transition in &policy_graph.transitions {
+        children
+            .entry(transition.source_id)
+            .or_default()
+            .push(transition.target_id);
+    }
+    let mut column_of: BTreeMap<i32, (i32, f64)> = BTreeMap::new();
+    for siblings in children.values() {
+        debug_assert!(
+            siblings.len() <= KINKED_BRANCH_INFLOWS_M3S.len(),
+            "pin_kinked_branch_inflows: one inflow per child"
+        );
+        for (&child, column) in siblings
+            .iter()
+            .zip((0_i32..).zip(KINKED_BRANCH_INFLOWS_M3S))
+        {
+            column_of.insert(child, column);
+        }
+    }
+    let mut columns: BTreeMap<(i32, i32), f64> = BTreeMap::new();
+    for node in &mut policy_graph.nodes {
+        let (column, value_m3s) = column_of.get(&node.id).copied().unwrap_or((0, 60.0));
+        node.scenario_id = Some(column);
+        columns.insert((node.stage_id, column), value_m3s);
+    }
+    columns
+        .into_iter()
+        .map(|((stage_id, scenario_id), value_m3s)| ExternalScenarioRow {
+            stage_id,
+            scenario_id,
+            hydro_id: EntityId(2),
+            value_m3s,
+        })
+        .collect()
+}
+
+/// What [`enumerated_oracle_setup`] builds its [`StudySetup`] from.
+struct OracleStudy {
+    system: System,
+    config: Config,
+    class_schemes: ClassSchemes,
+    /// Per-stage productivity replacing `default_from_system`'s `0.0`.
+    productivity: Option<[f64; 3]>,
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "the fixed study built here is valid and internally consistent by construction"
+)]
+fn kinked_oracle_study(mut policy_graph: HorizonGraph, max_iterations: u32) -> OracleStudy {
+    let external_rows = pin_kinked_branch_inflows(&mut policy_graph);
+    let (inflow_std, config, class_schemes) = if external_rows.is_empty() {
+        (
+            0.0,
+            k_fan_config_enumerated(max_iterations),
+            in_sample_class_schemes(),
+        )
+    } else {
+        // An External column is standardized by the inflow std, which must then be positive.
+        (
+            20.0,
+            water_binding_fan_config_enumerated(max_iterations),
+            ClassSchemes {
+                inflow: Some(SamplingScheme::External),
+                ..in_sample_class_schemes()
+            },
+        )
+    };
+    let system = fan_or_chain_system_builder(
+        3,
+        policy_graph,
+        inflow_std,
+        0.0,
+        StorageSpec::wide(),
+        external_rows,
+        Vec::new(),
+        None,
+        &[],
+    )
+    .buses(vec![fan_or_chain_bus(Some(KINKED_FIRST_DEFICIT_TIER))])
+    .build()
+    .expect("kinked_oracle_study: valid study");
+    OracleStudy {
+        system,
+        config,
+        class_schemes,
+        productivity: Some(KINKED_PRODUCTIVITY),
+    }
+}
+
+/// Shared build for the `enumerated` 3-stage oracle fixtures over
+/// `policy_graph` (empty: the chain), with `selection` as the cut-selection
+/// method (`None`: selection off).
+#[expect(
+    clippy::expect_used,
+    reason = "build_stochastic_context/StudySetup::new never error on these fixtures' fixed, internally consistent inputs"
+)]
+fn enumerated_oracle_setup(
+    policy_graph: HorizonGraph,
+    system: OracleSystem,
+    max_iterations: u32,
+    selection: Option<SelectionMethod>,
+) -> StudySetup {
+    let OracleStudy {
+        system,
+        mut config,
+        class_schemes,
+        productivity,
+    } = match system {
+        OracleSystem::ZeroWaterValue => OracleStudy {
+            system: fan_or_chain_system(3, policy_graph),
+            config: k_fan_config_enumerated(max_iterations),
+            class_schemes: in_sample_class_schemes(),
+            productivity: None,
+        },
+        OracleSystem::Kinked => kinked_oracle_study(policy_graph, max_iterations),
+    };
+    config.training.cut_selection.selection = selection;
     let stochastic = build_stochastic_context(
         &system,
         K_FAN_SEED,
@@ -3411,12 +3632,20 @@ pub fn oracle_chain_setup(max_iterations: u32) -> StudySetup {
         &[],
         &[],
         OpeningTreeInputs::default(),
-        in_sample_class_schemes(),
+        class_schemes,
     )
-    .expect("oracle_chain_setup: build_stochastic_context must succeed");
-    let hydro_models = PrepareHydroModelsResult::default_from_system(&system);
+    .expect("enumerated_oracle_setup: build_stochastic_context must succeed");
+    let mut hydro_models = PrepareHydroModelsResult::default_from_system(&system);
+    if let Some(productivity) = productivity {
+        let per_stage = productivity
+            .iter()
+            .map(|&productivity| ResolvedProductionModel::ConstantProductivity { productivity })
+            .collect();
+        hydro_models.production =
+            ProductionModelSet::new(vec![per_stage], system.hydros(), productivity.len());
+    }
     StudySetup::new(&system, &config, stochastic, hydro_models, Vec::new())
-        .expect("oracle_chain_setup: StudySetup::new must succeed")
+        .expect("enumerated_oracle_setup: StudySetup::new must succeed")
 }
 
 /// Declared graph for the terminal-Generated fan control: root (id `0`,
@@ -4202,27 +4431,33 @@ fn build_non_uniform_branching_setup(
 /// # Panics
 ///
 /// Never in practice — as [`k_fan_setup`].
-#[expect(
-    clippy::expect_used,
-    reason = "build_stochastic_context/StudySetup::new never error on this fixture's fixed, internally consistent inputs"
-)]
 #[must_use]
 pub fn branching_tree_setup_enumerated(max_iterations: u32) -> StudySetup {
-    let system = fan_or_chain_system(3, branching_tree_policy_graph(false));
-    let config = k_fan_config_enumerated(max_iterations);
-    let stochastic = build_stochastic_context(
-        &system,
-        K_FAN_SEED,
+    enumerated_oracle_setup(
+        branching_tree_policy_graph(false),
+        OracleSystem::ZeroWaterValue,
+        max_iterations,
         None,
-        &[],
-        &[],
-        OpeningTreeInputs::default(),
-        in_sample_class_schemes(),
     )
-    .expect("branching_tree_setup_enumerated: build_stochastic_context must succeed");
-    let hydro_models = PrepareHydroModelsResult::default_from_system(&system);
-    StudySetup::new(&system, &config, stochastic, hydro_models, Vec::new())
-        .expect("branching_tree_setup_enumerated: StudySetup::new must succeed")
+}
+
+/// [`branching_tree_setup_enumerated`]'s graph on [`OracleSystem::Kinked`], with
+/// `selection` as the cut-selection method.
+///
+/// # Panics
+///
+/// Never in practice — as [`k_fan_setup`].
+#[must_use]
+pub fn branching_tree_setup_enumerated_with_selection(
+    max_iterations: u32,
+    selection: SelectionMethod,
+) -> StudySetup {
+    enumerated_oracle_setup(
+        branching_tree_policy_graph(false),
+        OracleSystem::Kinked,
+        max_iterations,
+        Some(selection),
+    )
 }
 
 /// Per-pool cut-state dimension (`CutStateProjection::n_slots`), pool-id-indexed
