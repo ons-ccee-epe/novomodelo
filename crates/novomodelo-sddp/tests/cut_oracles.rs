@@ -249,17 +249,12 @@ fn cut_oracles_hold_with_sloped_cuts_on_the_negative_draw_water_value_study() {
 
 #[test]
 fn cut_oracles_hold_on_the_chronological_and_parallel_storage_decks() {
-    let decks = committed_decks();
     for key in [
         "crates/novomodelo-sddp/tests/fixtures/chronological_storage",
         "crates/novomodelo-sddp/tests/fixtures/parallel_storage",
     ] {
-        let deck = decks
-            .iter()
-            .find(|deck| deck.key == key)
-            .unwrap_or_else(|| panic!("committed deck {key} is absent"));
-        let setup = fresh_setup_with(&deck.dir, apply_oracle_config);
-        run_cut_oracles(&deck.key, setup).assert_sound(&deck.key);
+        let setup = deck_setup(key, apply_oracle_config);
+        run_cut_oracles(key, setup).assert_sound(key);
     }
 }
 

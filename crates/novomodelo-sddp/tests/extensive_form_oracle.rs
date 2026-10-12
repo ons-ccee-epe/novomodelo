@@ -341,10 +341,10 @@ fn chain_with_level1_stays_below_and_closes_to_the_extensive_form() {
     let setup = oracle_chain_setup_with_selection(LEVEL1_MAX_ITERATIONS, level1_every_iteration());
     assert_reachable_prefixes_match(&setup.inputs.node_graph);
     let optimum = extensive_form_optimum(&setup);
+    let closed_form = kinked_chain_optimum();
     assert!(
-        close(optimum, kinked_chain_optimum()),
-        "chain extensive-form optimum {optimum} must equal the closed form {}",
-        kinked_chain_optimum()
+        close(optimum, closed_form),
+        "chain extensive-form optimum {optimum} must equal the closed form {closed_form}"
     );
     assert_selection_stays_below_and_closes(setup, optimum, "chain");
 }

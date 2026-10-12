@@ -764,10 +764,8 @@ mod tests {
             check_frequency: 5,
             tie_tolerance: 0.5,
         };
-        // cut0: value=1, cut1: value=3, cut2: value=2 at state [0.0].
-        // max=3, cutoff=3-0.5=2.5; only cut1(3>=2.5) and cut2(2<2.5→no) wait:
-        // cut2=2 < 2.5 → not selected. cut0=1 < 2.5 → not selected. cut1=3 >= 2.5 → selected.
-        // Deactivate: cut0, cut2.
+        // Values at [0.0]: 1, 3, 2. max=3, cutoff=2.5: only cut1 is selected;
+        // cut0 and cut2 fall below the band and are deactivated.
         let mut pool = CutPool::new(3, 1, 1, 0);
         pool.add_cut(NodeId(0), 0, 0, 1.0, &[0.0]);
         pool.add_cut(NodeId(0), 1, 0, 3.0, &[0.0]);

@@ -3477,10 +3477,7 @@ enum OracleSystem {
     /// `v = ζ·(100 − a)`.
     ///
     /// Stage 1's own water is worth `500·0.5·744/ζ` $/hm³, less than either
-    /// sloped piece, so it stores water while its cuts price it higher. The
-    /// first forward pass has no cuts and leaves stage 1 with no storage, below
-    /// every breakpoint; the second stores against one extrapolated cut and
-    /// lands past a breakpoint.
+    /// sloped piece, so it stores water while its cuts price it higher.
     ///
     /// On a declared graph every node pins an External inflow column
     /// ([`pin_kinked_branch_inflows`]), so a pool's cut averages leaves whose

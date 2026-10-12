@@ -229,6 +229,7 @@ fn failed_periodic_write_ends_training_with_the_failing_iteration() {
 /// Bound on two solves of one LP that start from different solver states.
 const LOWER_BOUND_REL_TOL: f64 = 1e-6;
 const RESUMED_ITERATIONS: std::ops::RangeInclusive<u64> = 4..=6;
+const POWER_OF_TWO_COST_SCALE: f64 = 1_048_576.0;
 
 struct RunOutcome {
     fingerprint: SelectionFingerprint,
@@ -368,9 +369,12 @@ fn assert_same_run(resumed: &RunOutcome, uninterrupted: &RunOutcome) {
 
 #[test]
 fn resumed_run_equals_the_uninterrupted_run_with_one_forward_pass() {
-    let (resumed, uninterrupted) = resumed_and_uninterrupted(1, Some(1_048_576.0));
-    assert_eq!(resumed.resolved_cost_scale_factor, 1_048_576.0);
-    assert_eq!(uninterrupted.resolved_cost_scale_factor, 1_048_576.0);
+    let (resumed, uninterrupted) = resumed_and_uninterrupted(1, Some(POWER_OF_TWO_COST_SCALE));
+    assert_eq!(resumed.resolved_cost_scale_factor, POWER_OF_TWO_COST_SCALE);
+    assert_eq!(
+        uninterrupted.resolved_cost_scale_factor,
+        POWER_OF_TWO_COST_SCALE
+    );
     assert_same_run(&resumed, &uninterrupted);
 }
 
@@ -384,6 +388,6 @@ fn resumed_run_equals_the_uninterrupted_run_at_the_default_cost_scale() {
 #[test]
 #[ignore = "resume restores one stored basis per node; forward passes beyond the first restart from it"]
 fn resumed_run_equals_the_uninterrupted_run_with_several_forward_passes() {
-    let (resumed, uninterrupted) = resumed_and_uninterrupted(3, Some(1_048_576.0));
+    let (resumed, uninterrupted) = resumed_and_uninterrupted(3, Some(POWER_OF_TWO_COST_SCALE));
     assert_same_run(&resumed, &uninterrupted);
 }
