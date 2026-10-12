@@ -30,6 +30,7 @@ pub mod in_code_studies;
 pub mod parity_hash;
 pub mod parquet_fixtures;
 pub mod permute;
+pub mod selection_fingerprint;
 
 /// Single-rank `Communicator` stub: broadcasts/reductions copy data locally;
 /// other collectives are no-ops.
@@ -249,6 +250,19 @@ pub fn fresh_setup_with(case_dir: &Path, mutate: impl FnOnce(&mut Config)) -> St
     fresh_system_and_setup_with(case_dir, mutate).1
 }
 
+/// Like [`fresh_setup_with`], on a temporary copy of `case_dir` whose
+/// `stages.json` gives every stage `num_openings` openings. The copy is
+/// dropped once the setup is built; `case_dir` is never modified.
+pub fn fresh_setup_with_openings(
+    case_dir: &Path,
+    num_openings: u32,
+    mutate: impl FnOnce(&mut Config),
+) -> StudySetup {
+    let tmp =
+        copy_case_with_stage_field(case_dir, "num_openings", &serde_json::json!(num_openings));
+    fresh_setup_with(tmp.path(), mutate)
+}
+
 /// Recursively copies `src` into `dst`, skipping any `output` subdirectory
 /// (`permute.rs`'s own copy discipline for that gitignored generated tree).
 fn copy_dir_recursive(src: &Path, dst: &Path) {
@@ -276,27 +290,22 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
     }
 }
 
-/// Builds `case_dir` with every `stages.json` stage forced to `mode`: copies
-/// the case into a temporary directory, rewrites its `"block_mode"` fields,
-/// and builds through [`fresh_system_and_setup_with`] under `catch_unwind`,
-/// turning a build panic into `Err(message)`.
-pub fn fresh_system_and_setup_in_block_mode(
+/// Copies `case_dir` into a temporary directory and sets `field` to `value` on
+/// every `stages.json` stage.
+fn copy_case_with_stage_field(
     case_dir: &Path,
-    mode: BlockMode,
-) -> Result<(System, StudySetup), String> {
+    field: &str,
+    value: &serde_json::Value,
+) -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir: {e}"));
     copy_dir_recursive(case_dir, tmp.path());
 
     let stages_path = tmp.path().join("stages.json");
     let text = std::fs::read_to_string(&stages_path)
         .unwrap_or_else(|e| panic!("read {}: {e}", stages_path.display()));
-    let mut value: serde_json::Value = serde_json::from_str(&text)
+    let mut document: serde_json::Value = serde_json::from_str(&text)
         .unwrap_or_else(|e| panic!("parse {}: {e}", stages_path.display()));
-    let mode_str = match mode {
-        BlockMode::Parallel => "parallel",
-        BlockMode::Chronological => "chronological",
-    };
-    let stages = value
+    let stages = document
         .get_mut("stages")
         .and_then(serde_json::Value::as_array_mut)
         .unwrap_or_else(|| {
@@ -309,15 +318,32 @@ pub fn fresh_system_and_setup_in_block_mode(
         stage
             .as_object_mut()
             .unwrap_or_else(|| panic!("{} stage entry is not a JSON object", stages_path.display()))
-            .insert(
-                "block_mode".to_string(),
-                serde_json::Value::String(mode_str.to_string()),
-            );
+            .insert(field.to_string(), value.clone());
     }
-    let rendered = serde_json::to_string_pretty(&value)
+    let rendered = serde_json::to_string_pretty(&document)
         .unwrap_or_else(|e| panic!("serialize {}: {e}", stages_path.display()));
     std::fs::write(&stages_path, rendered)
         .unwrap_or_else(|e| panic!("write {}: {e}", stages_path.display()));
+    tmp
+}
+
+/// Builds `case_dir` with every `stages.json` stage forced to `mode`: copies
+/// the case into a temporary directory, rewrites its `"block_mode"` fields,
+/// and builds through [`fresh_system_and_setup_with`] under `catch_unwind`,
+/// turning a build panic into `Err(message)`.
+pub fn fresh_system_and_setup_in_block_mode(
+    case_dir: &Path,
+    mode: BlockMode,
+) -> Result<(System, StudySetup), String> {
+    let mode_str = match mode {
+        BlockMode::Parallel => "parallel",
+        BlockMode::Chronological => "chronological",
+    };
+    let tmp = copy_case_with_stage_field(
+        case_dir,
+        "block_mode",
+        &serde_json::Value::String(mode_str.to_string()),
+    );
 
     let case_path = tmp.path().to_path_buf();
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

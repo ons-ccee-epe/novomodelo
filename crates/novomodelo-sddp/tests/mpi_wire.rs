@@ -3039,3 +3039,136 @@ mod branching_gate_roster {
     //! `training/backward_pass_state.rs`, `training/forward/stats_aggregation.rs`,
     //! `simulation/aggregation.rs`) is empty — no scratch mutation survives.
 }
+
+mod selection_on_determinism {
+    //! Selection-on determinism gates: train with `level1` at 1, 2 and 4
+    //! threads under `StubComm` and assert the cut pools, their provenance and
+    //! binding counters, and the reported bounds are bit-identical.
+    //!
+    //! Power statement: a bitwise comparison proves nothing on a run that never
+    //! deactivates a cut, so each gate asserts `deactivations > 0` for every
+    //! shape before comparing. The uniform gate trains `examples/1dtoy`.
+    //! `d43-storage-only-cut` disables `inflow_lags` on one interior stage, so
+    //! its pools project different cut-state dimensions, which its gate asserts;
+    //! it trains a copy with five openings per stage, because as shipped (one
+    //! opening) every later cut duplicates the first and `level1` keeps ties.
+
+    use std::collections::BTreeSet;
+    use std::path::Path;
+    use std::sync::mpsc;
+
+    use novomodelo_core::TrainingEvent;
+    use novomodelo_io::config::{SelectionMethod, StoppingRuleConfig, TrainingSelection};
+    use novomodelo_sddp::StudySetup;
+    use novomodelo_solver::ActiveSolver;
+
+    use crate::common::selection_fingerprint::{SelectionFingerprint, SelectionPower};
+    use crate::common::{StubComm, fresh_setup_with, fresh_setup_with_openings};
+
+    const THREAD_SHAPES: [usize; 3] = [1, 2, 4];
+
+    fn run_shape(
+        build: &impl Fn() -> StudySetup,
+        n_threads: usize,
+    ) -> (SelectionFingerprint, SelectionPower) {
+        let mut setup = build();
+        let (tx, rx) = mpsc::channel();
+        let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+        let outcome = setup
+            .train(
+                &mut solver,
+                &StubComm,
+                n_threads,
+                ActiveSolver::new,
+                Some(tx),
+                None,
+            )
+            .expect("train must return Ok");
+        assert!(
+            outcome.error.is_none(),
+            "expected no training error, got: {:?}",
+            outcome.error
+        );
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+        (
+            SelectionFingerprint::capture(&setup, &outcome.result),
+            SelectionPower::from_events(&events),
+        )
+    }
+
+    fn assert_thread_shapes_agree(build: impl Fn() -> StudySetup) {
+        let runs: Vec<_> = THREAD_SHAPES
+            .iter()
+            .map(|&n_threads| (n_threads, run_shape(&build, n_threads)))
+            .collect();
+
+        for (n_threads, (_, power)) in &runs {
+            assert!(
+                power.deactivations > 0,
+                "threads={n_threads}: level1 deactivated no cut ({power:?}) — the gate is \
+                 powerless on this fixture"
+            );
+        }
+
+        let (_, (reference, _)) = &runs[0];
+        for (n_threads, (fingerprint, _)) in &runs[1..] {
+            assert_eq!(
+                fingerprint, reference,
+                "threads={n_threads} fingerprint must be bit-identical to threads=1"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn level1_thread_shapes_agree_on_the_uniform_fixture() {
+        assert_thread_shapes_agree(|| {
+            fresh_setup_with(Path::new("../../examples/1dtoy"), |config| {
+                config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
+                config.training.stopping_rules =
+                    Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
+                config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+                    tie_tolerance: 1e-10,
+                    check_frequency: 2,
+                });
+            })
+        });
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn level1_thread_shapes_agree_on_the_non_uniform_projection_fixture() {
+        let build = || {
+            fresh_setup_with_openings(
+                Path::new("../../examples/deterministic/d43-storage-only-cut"),
+                5,
+                |config| {
+                    config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+                        tie_tolerance: 1e-10,
+                        check_frequency: 1,
+                    });
+                },
+            )
+        };
+
+        let dimensions: BTreeSet<usize> = build()
+            .fcf
+            .pools
+            .iter()
+            .map(|pool| pool.state_dimension)
+            .collect();
+        assert!(
+            dimensions.len() > 1,
+            "the fixture must project different cut-state dimensions across pools, \
+             got {dimensions:?}"
+        );
+
+        assert_thread_shapes_agree(build);
+    }
+}
