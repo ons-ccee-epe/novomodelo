@@ -261,8 +261,9 @@ pub(crate) struct SuccessorChild<'a> {
     pub(crate) num_cuts_at_successor: usize,
     /// Base row count of the successor stage template (node-level; excludes cuts).
     pub(crate) template_num_rows: usize,
-    /// Minimum dual multiplier for a cut to count as binding (node-level).
-    pub(crate) cut_activity_tolerance: f64,
+    /// A cut row binds when its dual is greater than this; `None` when binding
+    /// is not tracked.
+    pub(crate) cut_activity_tolerance: Option<f64>,
     /// Ordered slot indices of the child's active cuts.
     pub(crate) successor_active_slots: &'a [usize],
     /// Populated count of the child's cut pool.
@@ -290,7 +291,8 @@ pub(crate) struct SuccessorOutcomes<'a> {
     cut_batches: &'a [RowBatch],
     pools: &'a [CutPool],
     template_num_rows: usize,
-    cut_activity_tolerance: f64,
+    /// See [`SuccessorChild::cut_activity_tolerance`].
+    pub(crate) cut_activity_tolerance: Option<f64>,
 }
 
 impl<'a> SuccessorOutcomes<'a> {
@@ -303,7 +305,7 @@ impl<'a> SuccessorOutcomes<'a> {
         cut_batches: &'a [RowBatch],
         pools: &'a [CutPool],
         template_num_rows: usize,
-        cut_activity_tolerance: f64,
+        cut_activity_tolerance: Option<f64>,
     ) -> Self {
         Self {
             entries,

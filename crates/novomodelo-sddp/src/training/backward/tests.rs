@@ -10,6 +10,18 @@ fn run_backward_pass<S, C: Communicator>(
 where
     S: SolverInterface<Profile = novomodelo_solver::ActiveProfile> + Send,
 {
+    run_backward_pass_configured(inputs, |_| {})
+}
+
+/// [`run_backward_pass`] with `configure` applied to the state before the run.
+#[cfg(test)]
+fn run_backward_pass_configured<S, C: Communicator>(
+    inputs: &mut BackwardPassInputs<'_, S, C>,
+    configure: impl FnOnce(&mut BackwardPassState),
+) -> Result<BackwardResult, SddpError>
+where
+    S: SolverInterface<Profile = novomodelo_solver::ActiveProfile> + Send,
+{
     let n_workers_local = inputs.workspaces.len();
     let n_ranks = inputs.comm.size();
     let num_stages = inputs.training_ctx.horizon.num_stages();
@@ -28,8 +40,12 @@ where
         inputs.training_ctx.state,
         inputs.training_ctx.horizon,
     );
+    configure(&mut bwd_state);
     bwd_state.run(inputs)
 }
+
+use std::any::TypeId;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
 use novomodelo_solver::{
@@ -39,6 +55,7 @@ use novomodelo_solver::{
 
 use novomodelo_core::scenario::SamplingScheme;
 use novomodelo_core::{StageStateConfig, WorkerPhaseTimings};
+use novomodelo_io::config::BackwardScheduler;
 
 use super::BackwardResult;
 use crate::{
@@ -127,7 +144,7 @@ impl SingleSuccessor {
             &self.cut_batches,
             pools,
             template_num_rows,
-            cut_activity_tolerance,
+            Some(cut_activity_tolerance),
         )
     }
 }
@@ -203,7 +220,7 @@ impl MultiSuccessor {
             &self.cut_batches,
             pools,
             template_num_rows,
-            cut_activity_tolerance,
+            Some(cut_activity_tolerance),
         )
     }
 }
@@ -3109,18 +3126,22 @@ fn per_stage_cut_sync_invariant_after_bug1_fix() {
     );
 }
 
-/// Cuts generated at iteration 1 and found binding at iteration 3 carry
-/// `last_active_iter == 3`, a value only the metadata sync can have written
-/// (`add_cut` stamps the generating iteration), and the sync accumulates
-/// `active_count`.
-///
-/// Uses `MockSolver::always_ok_with_binding_cuts` so that cut rows
-/// return positive duals, making them appear binding when evaluated.
-#[test]
-#[allow(clippy::too_many_lines)]
-fn metadata_sync_advances_last_active_iter_past_the_generating_iteration() {
-    use novomodelo_comm::LocalBackend;
+/// What [`backward_iteration_3_over_three_old_cuts`] leaves behind.
+struct BindingFixtureRun {
+    result: BackwardResult,
+    fcf: FutureCostFunction,
+    workspaces: Vec<SolverWorkspace<MockSolver>>,
+}
 
+/// One backward pass at iteration 3 over a 3-stage chain whose pool 1 already
+/// holds 3 cuts generated at iteration 1, with 3 trial points and 2 openings.
+/// `MockSolver::always_ok_with_binding_cuts` returns a positive dual on every
+/// cut row, so every cut a solve carries appears binding.
+#[allow(clippy::too_many_lines)]
+fn backward_iteration_3_over_three_old_cuts<C: Communicator>(
+    comm: &C,
+    configure: impl FnOnce(&mut BackwardPassState),
+) -> BindingFixtureRun {
     // 3-stage system: backward loop processes t=1 then t=0.
     // Pool[1] already holds 3 cuts generated at iteration 1, which the iteration-3
     // frozen LP of stage 1 carries as 3 extra rows.
@@ -3159,7 +3180,6 @@ fn metadata_sync_advances_last_active_iter_past_the_generating_iteration() {
 
     let solution = solution_1_0(100.0, -5.0);
     let solver = MockSolver::always_ok_with_binding_cuts(solution);
-    let comm = LocalBackend;
     let mut workspaces = single_workspace(solver, n_state);
     let mut basis_store = empty_basis_store(exchange.local_count(), n_stages);
 
@@ -3169,55 +3189,76 @@ fn metadata_sync_advances_last_active_iter_past_the_generating_iteration() {
     // Run a single backward iteration, number 3. The backward loop visits t=1
     // (cuts go to pool[1]), then t=0 (cuts go to pool[0], binding
     // checked against pool[1]).
-    let result = run_backward_pass(&mut BackwardPassInputs {
-        workspaces: &mut workspaces,
-        basis_store: &mut basis_store,
-        ctx: &StageContextFixture::new(
-            &templates,
-            &state_boxes,
-            &equipment_free_geometry(&vec![0; templates.len()]),
-        )
-        .ctx(),
-        frozen: &mut frozen,
-        fcf: &mut fcf,
-        cut_batches: &mut empty_cut_batches(templates.len()),
-        training_ctx: &TrainingContext {
-            node_graph: &crate::test_support::chain_node_graph(&stochastic),
-            horizon: &horizon,
-            state: &state,
-            cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
-            study_dims: &test_support::study_dims(),
-            inflow_method: &InflowNonNegativityMethod::None,
-            stochastic: &stochastic,
-            initial_state: &[],
-            inflow_scheme: SamplingScheme::InSample,
-            load_scheme: SamplingScheme::InSample,
-            ncs_scheme: SamplingScheme::InSample,
-            stages: &[],
-            historical_library: None,
-            external_inflow_library: None,
-            external_load_library: None,
-            external_ncs_library: None,
-            lag_accum_seed: &[],
-            lag_weight_seed: &[],
-            dcs: None,
-        },
-        comm: &comm,
-        records: &records,
-        iteration: 3,
-        local_work: exchange.local_count(),
-        fwd_offset: 0,
-        risk_measures: &risk_measures,
-        exchange: &mut exchange,
-        cut_activity_tolerance: 0.0,
-        cut_sync_bufs: &mut csb,
-        visited_archive: None,
-        event_sender: None,
+    let result = run_backward_pass_configured(
+        &mut BackwardPassInputs {
+            workspaces: &mut workspaces,
+            basis_store: &mut basis_store,
+            ctx: &StageContextFixture::new(
+                &templates,
+                &state_boxes,
+                &equipment_free_geometry(&vec![0; templates.len()]),
+            )
+            .ctx(),
+            frozen: &mut frozen,
+            fcf: &mut fcf,
+            cut_batches: &mut empty_cut_batches(templates.len()),
+            training_ctx: &TrainingContext {
+                node_graph: &crate::test_support::chain_node_graph(&stochastic),
+                horizon: &horizon,
+                state: &state,
+                cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
+                study_dims: &test_support::study_dims(),
+                inflow_method: &InflowNonNegativityMethod::None,
+                stochastic: &stochastic,
+                initial_state: &[],
+                inflow_scheme: SamplingScheme::InSample,
+                load_scheme: SamplingScheme::InSample,
+                ncs_scheme: SamplingScheme::InSample,
+                stages: &[],
+                historical_library: None,
+                external_inflow_library: None,
+                external_load_library: None,
+                external_ncs_library: None,
+                lag_accum_seed: &[],
+                lag_weight_seed: &[],
+                dcs: None,
+            },
+            comm,
+            records: &records,
+            iteration: 3,
+            local_work: exchange.local_count(),
+            fwd_offset: 0,
+            risk_measures: &risk_measures,
+            exchange: &mut exchange,
+            cut_activity_tolerance: 0.0,
+            cut_sync_bufs: &mut csb,
+            visited_archive: None,
+            event_sender: None,
 
-        traversal: &Traversal::default(),
-        enumerated_state: &EnumeratedForwardScratch::default(),
-    })
+            traversal: &Traversal::default(),
+            enumerated_state: &EnumeratedForwardScratch::default(),
+        },
+        configure,
+    )
     .unwrap();
+
+    BindingFixtureRun {
+        result,
+        fcf,
+        workspaces,
+    }
+}
+
+/// Cuts generated at iteration 1 and found binding at iteration 3 carry
+/// `last_active_iter == 3`, a value only the metadata sync can have written
+/// (`add_cut` stamps the generating iteration), and the sync accumulates
+/// `active_count`.
+#[test]
+fn metadata_sync_advances_last_active_iter_past_the_generating_iteration() {
+    use novomodelo_comm::LocalBackend;
+
+    let BindingFixtureRun { result, fcf, .. } =
+        backward_iteration_3_over_three_old_cuts(&LocalBackend, |_| {});
 
     // 3 stages × (n_stages-1=2 non-terminal) × 3 trial points = 6 cuts.
     assert_eq!(result.cuts_generated, 6);
@@ -3253,6 +3294,164 @@ fn metadata_sync_advances_last_active_iter_past_the_generating_iteration() {
     // Pool[2] (terminal successor) received no cuts and no binding
     // was checked against it — metadata should be at defaults.
     assert_eq!(fcf.pools[2].populated(), 0);
+}
+
+/// Single-rank communicator counting the `u64` `Sum` reductions; the binding
+/// metadata sync issues the only ones of a backward pass (the worker-count
+/// check reduces `u64` with `Min`/`Max`, every other `Sum` reduces `f64`).
+#[derive(Default)]
+struct MetadataReductionCountingComm {
+    metadata_reductions: AtomicUsize,
+}
+
+impl Communicator for MetadataReductionCountingComm {
+    fn allgatherv<T: CommData>(
+        &self,
+        send: &[T],
+        recv: &mut [T],
+        _counts: &[usize],
+        _displs: &[usize],
+    ) -> Result<(), CommError> {
+        recv[..send.len()].copy_from_slice(send);
+        Ok(())
+    }
+
+    fn allreduce<T: CommData>(
+        &self,
+        send: &[T],
+        recv: &mut [T],
+        op: ReduceOp,
+    ) -> Result<(), CommError> {
+        if matches!(op, ReduceOp::Sum) && TypeId::of::<T>() == TypeId::of::<u64>() {
+            self.metadata_reductions.fetch_add(1, Ordering::Relaxed);
+        }
+        recv[..send.len()].copy_from_slice(send);
+        Ok(())
+    }
+
+    fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
+        unreachable!("the backward pass issues no broadcast")
+    }
+
+    fn barrier(&self) -> Result<(), CommError> {
+        Ok(())
+    }
+
+    fn rank(&self) -> usize {
+        0
+    }
+
+    fn size(&self) -> usize {
+        1
+    }
+
+    fn abort(&self, error_code: i32) -> ! {
+        std::process::exit(error_code)
+    }
+}
+
+/// With binding tracking off the backward pass issues no metadata reduction,
+/// writes no binding metadata, copies no cut-row dual and never touches the
+/// workers' binding buffers, and it generates the same cuts as with tracking on;
+/// under either scheduler.
+#[test]
+fn binding_is_recorded_only_when_tracking_is_on() {
+    let cut_bits = |fcf: &FutureCostFunction| -> Vec<(Vec<u64>, Vec<u64>)> {
+        fcf.pools
+            .iter()
+            .map(|pool| {
+                (
+                    pool.intercepts_prefix()
+                        .iter()
+                        .map(|v| v.to_bits())
+                        .collect(),
+                    pool.coefficients_prefix()
+                        .iter()
+                        .map(|v| v.to_bits())
+                        .collect(),
+                )
+            })
+            .collect()
+    };
+    let binding_buffers = |workspaces: &[SolverWorkspace<MockSolver>]| -> Vec<u64> {
+        workspaces
+            .iter()
+            .flat_map(|ws| {
+                ws.backward_accum
+                    .slot_increments
+                    .iter()
+                    .chain(&ws.backward_accum.metadata_sync_contribution)
+                    .copied()
+            })
+            .collect()
+    };
+
+    for scheduler in [
+        BackwardScheduler::ByScenario {},
+        BackwardScheduler::ByNode { block_size: None },
+    ] {
+        let comm_on = MetadataReductionCountingComm::default();
+        let on = backward_iteration_3_over_three_old_cuts(&comm_on, |state| {
+            state.set_scheduler(scheduler);
+        });
+        assert!(
+            comm_on.metadata_reductions.load(Ordering::Relaxed) >= 1,
+            "{scheduler:?}"
+        );
+        for slot in 3..6 {
+            let metadata = on.fcf.pools[1].metadata(slot);
+            assert!(metadata.active_count > 0, "{scheduler:?} slot {slot}");
+            assert_eq!(metadata.last_active_iter, 3, "{scheduler:?} slot {slot}");
+        }
+        assert!(
+            binding_buffers(&on.workspaces).iter().any(|&v| v > 0),
+            "{scheduler:?}: the fixture must fill a binding buffer for the off leg to have power"
+        );
+        assert!(
+            on.workspaces
+                .iter()
+                .any(|ws| !ws.backward_accum.cut_duals_buf.is_empty()),
+            "{scheduler:?}: the fixture must copy cut-row duals for the off leg to have power"
+        );
+
+        let comm_off = MetadataReductionCountingComm::default();
+        let off = backward_iteration_3_over_three_old_cuts(&comm_off, |state| {
+            state.set_scheduler(scheduler);
+            state.set_binding_tracking(false);
+        });
+        assert_eq!(
+            comm_off.metadata_reductions.load(Ordering::Relaxed),
+            0,
+            "{scheduler:?}"
+        );
+        for (pool_id, pool) in off.fcf.pools.iter().enumerate() {
+            for slot in 0..pool.populated() {
+                let metadata = pool.metadata(slot);
+                assert_eq!(
+                    metadata.active_count, 0,
+                    "{scheduler:?} pool {pool_id} slot {slot}"
+                );
+                assert_eq!(
+                    metadata.last_active_iter, metadata.iteration_generated,
+                    "{scheduler:?} pool {pool_id} slot {slot}"
+                );
+            }
+        }
+        // The fixture's buffers start empty, so an empty buffer is an untouched one.
+        assert!(
+            binding_buffers(&off.workspaces).is_empty(),
+            "{scheduler:?}: a worker grew, scanned or folded a binding buffer with tracking off"
+        );
+        assert!(
+            off.workspaces
+                .iter()
+                .all(|ws| ws.backward_accum.cut_duals_buf.is_empty()),
+            "{scheduler:?}: cut-row duals were copied with tracking off"
+        );
+
+        assert_eq!(on.result.cuts_generated, off.result.cuts_generated);
+        assert_eq!(cut_bits(&on.fcf), cut_bits(&off.fcf), "{scheduler:?}");
+    }
 }
 
 /// One backward pass over a 3-stage chain with a single trial point and a single

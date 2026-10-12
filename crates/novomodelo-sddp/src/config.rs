@@ -163,6 +163,23 @@ impl Default for CutManagementConfig {
     }
 }
 
+impl CutManagementConfig {
+    /// Whether the backward pass records per-cut binding activity: only the
+    /// budget's eviction key and the `Dynamic` seed window read it.
+    #[must_use]
+    pub fn tracks_binding_activity(&self) -> bool {
+        match &self.cut_selection {
+            None
+            | Some(
+                CutSelectionStrategy::Level1 { .. }
+                | CutSelectionStrategy::Lml1 { .. }
+                | CutSelectionStrategy::Dominated { .. },
+            ) => self.budget.is_some(),
+            Some(CutSelectionStrategy::Dynamic { .. }) => true,
+        }
+    }
+}
+
 /// Event infrastructure for monitoring and checkpointing.
 ///
 /// # Examples
@@ -279,6 +296,7 @@ pub struct TrainingConfig {
 #[cfg(test)]
 mod tests {
     use super::{CutManagementConfig, EventConfig, LoopConfig, TrainingConfig};
+    use crate::cut_selection::CutSelectionStrategy;
     use novomodelo_core::TrainingEvent;
 
     // ── Field access ─────────────────────────────────────────────────────────
@@ -339,6 +357,50 @@ mod tests {
 
         let received = rx.recv().unwrap();
         assert!(matches!(received, TrainingEvent::TrainingFinished { .. }));
+    }
+
+    // ── Binding-activity predicate ───────────────────────────────────────────
+
+    #[test]
+    fn tracks_binding_activity_only_for_a_budget_or_the_dynamic_method() {
+        let tracks = |cut_selection: Option<CutSelectionStrategy>, budget: Option<u32>| {
+            CutManagementConfig {
+                cut_selection,
+                budget,
+                ..CutManagementConfig::default()
+            }
+            .tracks_binding_activity()
+        };
+        let value_based = [
+            CutSelectionStrategy::Level1 {
+                check_frequency: 1,
+                tie_tolerance: 0.0,
+            },
+            CutSelectionStrategy::Lml1 {
+                check_frequency: 1,
+                tie_tolerance: 0.0,
+            },
+            CutSelectionStrategy::Dominated {
+                threshold: 0.0,
+                check_frequency: 1,
+            },
+        ];
+        let dynamic = CutSelectionStrategy::Dynamic {
+            k1: None,
+            k2: 1,
+            nadic: 1,
+            epsilon_viol: 1e-6,
+            start_iteration: 1,
+        };
+
+        assert!(!tracks(None, None));
+        assert!(tracks(None, Some(1)));
+        for strategy in value_based {
+            assert!(!tracks(Some(strategy.clone()), None), "{strategy:?}");
+            assert!(tracks(Some(strategy.clone()), Some(1)), "{strategy:?}");
+        }
+        assert!(tracks(Some(dynamic.clone()), None));
+        assert!(tracks(Some(dynamic), Some(1)));
     }
 
     // ── Debug output ─────────────────────────────────────────────────────────

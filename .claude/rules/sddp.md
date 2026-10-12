@@ -774,6 +774,85 @@ exchange and the one batched cut exchange per level; a per-node collective
 would scale the collective count with node count.
 Read: `training/backward_pass_state.rs` (`run_one_backward_level`).
 
+## Binding activity is recorded only for a configured reader
+
+A cut's binding activity (`CutMetadata::active_count`,
+`CutMetadata::last_active_iter`) has two readers: the eviction key of the
+active-cut budget (`CutPool::enforce_budget`) and the seed window of a lazy
+solve under the `dynamic` method (`build_initial_resident_set`).
+`CutManagementConfig::tracks_binding_activity` owns the predicate: true when a
+budget is set or the strategy is `CutSelectionStrategy::Dynamic`. It is a method
+over the two config values, not a stored flag, and matches every strategy
+variant by name, so a new variant must be classified to compile.
+
+`TrainingSession::new` passes the predicate's value once to
+`BackwardPassState::set_binding_tracking`, on every rank. Both inputs come from
+the config every rank holds identically: the CLI broadcasts one `BroadcastConfig`
+from rank 0, every rank builds its `StudySetup` from it
+(`StudySetup::from_broadcast_params`), no `StudySetup` setter changes the
+strategy or the budget, and the training entry points of `StudySetup` copy both
+into the `TrainingConfig` the session reads. The switch is therefore the same on
+every rank for the whole run. A `BackwardPassState` built without the session
+keeps the default, which records.
+
+With the switch off a sampled backward pass does none of the recording work:
+
+- `extract_duals_from_view` copies no cut-row dual;
+- `accumulate_opening_outcome` runs no slot loop;
+- neither scheduler grows or zero-fills a worker's `slot_increments` and
+  `metadata_sync_contribution`, or calls `fold_slot_increments_into_sync`;
+- `run_one_backward_level` does not call `sync_stage_metadata`, so no per-worker
+  sum, no `allreduce` and no `CutPool::record_binding` runs.
+
+The workers read the switch from the threshold on the successor view
+(`SuccessorOutcomes`, `SuccessorChild`), an option that is `None` when binding is
+not tracked; the lazy solve reads the same option before
+`accumulate_dcs_binding_counts`. Every cut then keeps `active_count = 0` and
+`last_active_iter` at the value its slot was written with. The state duals are
+filled by the same routine in both states, so the cuts and the bounds are
+bit-identical with the switch on and off. The worker buffers stay allocated.
+The enumerated backward records no binding activity in either state.
+
+The wrong-but-compiling alternatives:
+
+- deciding at the `sync_stage_metadata` call from a value a rank computes
+  locally (this rank's trial-point count, an empty contribution buffer, a
+  pool's local content): one rank then skips a collective its peers enter and
+  a multi-rank run blocks, which no single-process test sees. The early return
+  of `sync_stage_metadata` on an empty pool is not such a decision: it rests on
+  the populated count being the same on every rank, as the method's doc states;
+- skipping only the reduction while the workers keep scanning cut-row duals
+  and folding increments: no result changes and the work per solve stays.
+
+Read: `config.rs` (`CutManagementConfig::tracks_binding_activity`),
+`training/session/mod.rs` (`TrainingSession::new`),
+`training/backward_pass_state.rs` (`BackwardPassState::set_binding_tracking`,
+`run_one_backward_level`, `compute_one_backward_node`,
+`process_stage_backward`, `sync_stage_metadata`), `training/backward/mod.rs`
+(`SuccessorOutcomes`, `SuccessorChild`),
+`training/backward/duals_extraction.rs` (`extract_duals_from_view`),
+`training/backward/outcome_aggregation.rs` (`accumulate_opening_outcome`,
+`accumulate_dcs_binding_counts`, `fold_slot_increments_into_sync`),
+`training/backward/by_scenario.rs` (`process_by_scenario_backward`),
+`training/backward/by_node.rs` (`process_stage_backward_by_node`),
+`cut/pool.rs` (`CutPool::record_binding`, `CutPool::enforce_budget`),
+`cut/dcs.rs` (`build_initial_resident_set`), `setup/mod.rs`
+(`StudySetup::from_broadcast_params`), `setup/orchestration.rs`
+(`StudySetup::train`, `StudySetup::train_with_solver_profiles`),
+`crates/novomodelo-cli/src/commands/broadcast.rs` (`BroadcastConfig`,
+`broadcast_value`). Pinned by
+`tracks_binding_activity_only_for_a_budget_or_the_dynamic_method` (`config.rs`:
+the truth table over a budget and every strategy),
+`binding_is_recorded_only_when_tracking_is_on`
+(`training/backward/tests.rs`: with the switch off, under both schedulers, the
+pass issues no `u64` sum reduction, moves no slot's metadata, copies no
+cut-row dual and touches no worker buffer, and its cuts equal those of the
+pass with the switch on) and `binding_activity_is_recorded_only_for_a_reader`
+(`tests/cut_basis.rs`: a `level1` run without a budget records nothing, a
+budget-only run and a `dynamic` run record, and a budget that evicts nothing
+gives the cuts and bounds of a run without one). No in-process test can show
+one rank skipping alone; the rank symmetry holds by the derivation above.
+
 ## Backward opening order is warm-start-only
 
 A trial point's backward openings are SOLVED in the installed `solve_order`
@@ -1137,7 +1216,7 @@ The wrong-but-compiling alternatives:
 - the two-part key `(last_active_iter, active_count)`: equal keys are then ordered
   by an unstable sort, which the language leaves unspecified, so the evicted set
   can differ between toolchains while every build agrees with itself and no
-  same-build gate sees it.
+  same-build gate sees it;
 - admitting the budget with `dynamic`: the lazy solve returns the optimum over the
   active cuts, and every cut the budget deactivates leaves the candidate set for
   good. Every remaining cut is valid, so that optimum is a valid but looser

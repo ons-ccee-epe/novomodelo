@@ -378,6 +378,7 @@ where
         bwd_state.set_profile(solver_profiles.backward);
         bwd_state.set_scheduler(solver_profiles.backward_scheduler);
         bwd_state.set_hardest_first_claim_order(solver_profiles.hardest_first_claim_order);
+        bwd_state.set_binding_tracking(config.cut_management.tracks_binding_activity());
 
         Ok(Self {
             solver,

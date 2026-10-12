@@ -258,8 +258,8 @@ impl StageOpeningSolver {
     ///   the cuts this opening additionally violates.
     ///
     /// The gradient and intercept are read from the final all-satisfied LP via
-    /// [`extract_state_duals_only`] in both cases. Binding-count metadata is
-    /// maintained slot-correct under the lazy layout via
+    /// [`extract_state_duals_only`] in both cases. Binding-count metadata, when
+    /// tracked, is maintained slot-correct under the lazy layout via
     /// [`accumulate_dcs_binding_counts`], feeding the per-stage
     /// `metadata_sync_contribution` allreduce without altering the gradient.
     ///
@@ -337,13 +337,15 @@ impl StageOpeningSolver {
         // coexist); `slot_increments` is a distinct field borrowed mutably. The
         // child's own pool region (`metadata_offset..`) keeps a fan's sibling pools
         // from colliding on a shared slot index.
-        accumulate_dcs_binding_counts(
-            view.dual,
-            &ws.backward_accum.dcs_solve.row_map,
-            child.successor_pool,
-            child.cut_activity_tolerance,
-            &mut ws.backward_accum.slot_increments[child.metadata_offset..],
-        );
+        if let Some(threshold) = child.cut_activity_tolerance {
+            accumulate_dcs_binding_counts(
+                view.dual,
+                &ws.backward_accum.dcs_solve.row_map,
+                child.successor_pool,
+                threshold,
+                &mut ws.backward_accum.slot_increments[child.metadata_offset..],
+            );
+        }
         let _ = view;
 
         ws.backward_accum.state_duals_buf = state_duals;
@@ -547,11 +549,13 @@ pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
     );
     #[allow(clippy::cast_possible_truncation)]
     let forward_pass_index = node_relative_index as u32;
-    fold_slot_increments_into_sync(
-        &ws.backward_accum.slot_increments,
-        &mut ws.backward_accum.metadata_sync_contribution,
-        outcomes.total_metadata_len(),
-    );
+    if outcomes.cut_activity_tolerance.is_some() {
+        fold_slot_increments_into_sync(
+            &ws.backward_accum.slot_increments,
+            &mut ws.backward_accum.metadata_sync_contribution,
+            outcomes.total_metadata_len(),
+        );
+    }
     Ok(StagedCut {
         trial_state_idx: m,
         intercept: agg_intercept,

@@ -1566,6 +1566,7 @@ mod selection_in_a_training_run {
     use std::sync::mpsc;
 
     use novomodelo_core::{StageRowSelectionRecord, TrainingEvent, scenario::ScenarioSource};
+    use novomodelo_io::Config;
     use novomodelo_io::config::{SelectionMethod, StoppingRuleConfig, TrainingSelection};
     use novomodelo_sddp::{
         StudySetup, TrainingResult, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
@@ -1573,16 +1574,31 @@ mod selection_in_a_training_run {
     use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
+    use super::common::selection_fingerprint::SelectionFingerprint;
 
     const FORWARD_PASSES: u32 = 2;
     const ITERATIONS: u32 = 10;
     const CHECK_FREQUENCY: u32 = 2;
+    /// derived: a pool receives `FORWARD_PASSES` cuts per iteration, so no pool
+    /// ever holds more than this and a budget at this value evicts nothing.
+    const BUDGET_NO_POOL_REACHES: u32 = ITERATIONS * FORWARD_PASSES;
 
     fn train_with(
         selection: SelectionMethod,
         export_states: bool,
         iterations: u32,
         events: Option<mpsc::Sender<TrainingEvent>>,
+    ) -> (StudySetup, TrainingResult) {
+        train_configured(iterations, events, |config| {
+            config.training.cut_selection.selection = Some(selection);
+            config.exports.states = export_states;
+        })
+    }
+
+    fn train_configured(
+        iterations: u32,
+        events: Option<mpsc::Sender<TrainingEvent>>,
+        configure: impl FnOnce(&mut Config),
     ) -> (StudySetup, TrainingResult) {
         let case_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -1598,8 +1614,7 @@ mod selection_in_a_training_run {
         config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
             limit: iterations,
         }]);
-        config.training.cut_selection.selection = Some(selection);
-        config.exports.states = export_states;
+        configure(&mut config);
 
         let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         let prepared = prepare_stochastic(
@@ -1780,6 +1795,76 @@ mod selection_in_a_training_run {
         assert!(
             result.visited_archive.is_some(),
             "level1 scores cuts at the visited states and needs the archive"
+        );
+    }
+
+    fn slots_with_recorded_binding(setup: &StudySetup) -> usize {
+        setup
+            .fcf
+            .pools
+            .iter()
+            .map(|pool| {
+                (0..pool.populated())
+                    .filter(|&slot| pool.metadata(slot).active_count > 0)
+                    .count()
+            })
+            .sum()
+    }
+
+    /// Binding activity has two readers, the budget's eviction key and the
+    /// `dynamic` seed window; a run that configures neither records none.
+    #[test]
+    fn binding_activity_is_recorded_only_for_a_reader() {
+        let (no_reader, _) = train_with(level1(), false, ITERATIONS, None);
+        let pools = &no_reader.fcf.pools;
+        assert!(
+            pools.iter().any(|pool| pool.populated() > 0),
+            "the level1 run must generate cuts"
+        );
+        assert_eq!(
+            slots_with_recorded_binding(&no_reader),
+            0,
+            "level1 without a budget has no reader, so no slot may record binding"
+        );
+        for (pool_id, pool) in pools.iter().enumerate() {
+            for slot in 0..pool.populated() {
+                let metadata = pool.metadata(slot);
+                assert_eq!(
+                    metadata.last_active_iter, metadata.iteration_generated,
+                    "pool {pool_id} slot {slot}: the activity clock must stay at the generating iteration"
+                );
+            }
+        }
+
+        let (budget_only, budget_only_result) = train_configured(ITERATIONS, None, |config| {
+            config.training.cut_selection.max_active_per_stage = Some(BUDGET_NO_POOL_REACHES);
+        });
+        for (pool_id, pool) in budget_only.fcf.pools.iter().enumerate() {
+            assert_eq!(
+                pool.active_count(),
+                pool.populated(),
+                "pool {pool_id}: the budget must evict nothing"
+            );
+        }
+        assert!(
+            slots_with_recorded_binding(&budget_only) > 0,
+            "a budget reads binding activity, so the run must record it"
+        );
+
+        // A budget that evicts nothing differs from no budget only in recording
+        // binding activity, so the two runs must produce the same cuts and bounds.
+        let (plain, plain_result) = train_configured(ITERATIONS, None, |_| {});
+        assert_eq!(slots_with_recorded_binding(&plain), 0);
+        let recording = SelectionFingerprint::capture(&budget_only, &budget_only_result);
+        let not_recording = SelectionFingerprint::capture(&plain, &plain_result);
+        assert_eq!(recording.cuts, not_recording.cuts);
+        assert_eq!(recording.provenance, not_recording.provenance);
+        assert_eq!(recording.bounds, not_recording.bounds);
+
+        let (dynamic_run, _) = train_with(dynamic(), false, ITERATIONS, None);
+        assert!(
+            slots_with_recorded_binding(&dynamic_run) > 0,
+            "the dynamic seed window reads binding activity, so the run must record it"
         );
     }
 }

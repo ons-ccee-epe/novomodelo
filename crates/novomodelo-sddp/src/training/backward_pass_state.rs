@@ -280,6 +280,13 @@ pub struct BackwardPassState {
     /// before the first `run()` call.
     hardest_first_claim_order: bool,
 
+    /// Whether cut binding activity is recorded. Must hold the same value on
+    /// every rank, because `false` skips the metadata `allreduce` (sddp.md
+    /// "Binding activity is recorded only for a configured reader"). Defaults
+    /// to `true`; override with [`Self::set_binding_tracking`] before the
+    /// first `run()` call.
+    binding_tracking: bool,
+
     /// Maximum local forward-pass count across the run; with
     /// `bwd_max_openings` and `n_state`, sizes [`Self::by_node_scratch`] when
     /// [`Self::set_scheduler`] resolves `ByNode`.
@@ -426,6 +433,7 @@ impl BackwardPassState {
             profile: Phase::Backward.profile(),
             scheduler: BackwardScheduler::default(),
             hardest_first_claim_order: true,
+            binding_tracking: true,
             max_local_fwd,
             bwd_max_openings,
             n_state,
@@ -484,6 +492,13 @@ impl BackwardPassState {
     /// block order — the byte-neutrality gate's off leg. Call before `run()`.
     pub fn set_hardest_first_claim_order(&mut self, enabled: bool) {
         self.hardest_first_claim_order = enabled;
+    }
+
+    /// Overrides whether cut binding activity is recorded (default `true`).
+    /// Pass a value every rank derives identically: `false` skips a
+    /// collective, so one rank disagreeing blocks the run. Call before `run()`.
+    pub fn set_binding_tracking(&mut self, enabled: bool) {
+        self.binding_tracking = enabled;
     }
 
     /// Execute the backward pass for one training iteration on this rank.
@@ -798,7 +813,8 @@ impl BackwardPassState {
                     &*inputs.cut_batches,
                     &inputs.fcf.pools,
                     template_num_rows,
-                    inputs.cut_activity_tolerance,
+                    self.binding_tracking
+                        .then_some(inputs.cut_activity_tolerance),
                 );
                 debug_assert_eq!(
                     outcomes.total_outcomes(),
@@ -1502,10 +1518,10 @@ fn check_visit_bound(
 /// Execute one reverse-topological cut-sharing level: one state exchange for the
 /// level, each node's backward cut computed independently over ONLY the trial
 /// points routed to its pool, ONE batched cut exchange over the level's
-/// trial-point-distributed pools, then per-node metadata/timing/stats. Absent
-/// `nodes[]` a level is one node (== stage) and every trial routes to it, so
-/// this is byte-for-byte the reversed stage loop (one state exchange, one cut
-/// exchange, one metadata/stats gather).
+/// trial-point-distributed pools, then per-node metadata (only when binding is
+/// tracked)/timing/stats. Absent `nodes[]` a level is one node (== stage) and
+/// every trial routes to it, so this is byte-for-byte the reversed stage loop
+/// (one state exchange, one cut exchange, one metadata/stats gather).
 fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
     state: &mut BackwardPassState,
     inputs: &mut BackwardPassInputs<'_, S, C>,
@@ -1640,18 +1656,24 @@ fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
     // `state.sync_stage_metadata`'s `&mut self`.
     let pool_regions = std::mem::take(&mut state.level_pool_regions_scratch);
     for nc in &nodes_out {
-        // Sync EACH successor child's own pool at its own metadata slot region, so a
-        // child's binding activity lands in its own pool (an empty pool early-returns).
-        for pr in &pool_regions[nc.pool_regions.clone()] {
-            state.sync_stage_metadata(
-                pr.pool_id,
-                pr.region_offset,
-                pr.populated_count,
-                inputs.iteration,
-                inputs.workspaces,
-                inputs.fcf,
-                inputs.comm,
-            )?;
+        // Guarded by the rank-uniform switch alone: a rank-local condition would
+        // let one rank skip a collective its peers enter (sddp.md "Binding
+        // activity is recorded only for a configured reader").
+        if state.binding_tracking {
+            // Sync EACH successor child's own pool at its own metadata slot region, so
+            // a child's binding activity lands in its own pool (an empty pool
+            // early-returns).
+            for pr in &pool_regions[nc.pool_regions.clone()] {
+                state.sync_stage_metadata(
+                    pr.pool_id,
+                    pr.region_offset,
+                    pr.populated_count,
+                    inputs.iteration,
+                    inputs.workspaces,
+                    inputs.fcf,
+                    inputs.comm,
+                )?;
+            }
         }
         setup_ms += nc.setup_ms;
         imbalance_ms += nc.imbalance_ms;
@@ -1741,8 +1763,6 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
         node_pos,
         inputs.iteration,
     );
-    // Successor binding-metadata regions; kept in this caller because the enumerated
-    // fork syncs metadata through run_backward_node_replicated instead.
     let pool_regions_start = state.level_pool_regions_scratch.len();
     for entry in &state.successor_meta_buf {
         state.level_pool_regions_scratch.push(PoolRegion {
@@ -1761,7 +1781,9 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
         &*inputs.cut_batches,
         &inputs.fcf.pools,
         template_num_rows,
-        inputs.cut_activity_tolerance,
+        state
+            .binding_tracking
+            .then_some(inputs.cut_activity_tolerance),
     );
     debug_assert_eq!(
         outcomes.total_outcomes(),
@@ -1945,6 +1967,7 @@ pub(crate) fn process_stage_backward<S: SolverInterface + Send>(
     // Sized to the max populated pool across the node's children so a child with
     // more cuts than the first cannot index the binding-metadata buffer out of bounds.
     let pop = outcomes.total_metadata_len();
+    let tracks_binding = outcomes.cut_activity_tolerance.is_some();
 
     // Opening-solve strategy, chosen once per stage. The decision depends only on
     // `iteration`, so it is constant across workers and trial points.
@@ -1972,18 +1995,20 @@ pub(crate) fn process_stage_backward<S: SolverInterface + Send>(
             for outcome in &mut ws.backward_accum.outcomes[..n_openings] {
                 outcome.coefficients.resize(cut_n_state, 0.0_f64);
             }
-            if ws.backward_accum.slot_increments.len() < pop {
-                ws.backward_accum.slot_increments.resize(pop, 0u64);
-            }
             ws.backward_accum
                 .agg_coefficients
                 .resize(cut_n_state, 0.0_f64);
-            if ws.backward_accum.metadata_sync_contribution.len() < pop {
-                ws.backward_accum
-                    .metadata_sync_contribution
-                    .resize(pop, 0u64);
+            if tracks_binding {
+                if ws.backward_accum.slot_increments.len() < pop {
+                    ws.backward_accum.slot_increments.resize(pop, 0u64);
+                }
+                if ws.backward_accum.metadata_sync_contribution.len() < pop {
+                    ws.backward_accum
+                        .metadata_sync_contribution
+                        .resize(pop, 0u64);
+                }
+                ws.backward_accum.metadata_sync_contribution[..pop].fill(0);
             }
-            ws.backward_accum.metadata_sync_contribution[..pop].fill(0);
             ws.backward_accum
                 .per_opening_stats
                 .resize_with(n_openings, SolverStatsDelta::default);
@@ -2031,7 +2056,9 @@ pub(crate) fn process_stage_backward<S: SolverInterface + Send>(
                 // the per-child loop in `process_by_scenario_backward` (a child loads a
                 // different LP, so its warm-start chain must start clean for CLP
                 // determinism).
-                ws.backward_accum.slot_increments[..pop].fill(0);
+                if tracks_binding {
+                    ws.backward_accum.slot_increments[..pop].fill(0);
+                }
                 // Call before the push to avoid a simultaneous mutable borrow of
                 // `staged_cuts_buf` (push receiver) and `ws` (function argument).
                 let arena_offset = local_i * cut_n_state;
