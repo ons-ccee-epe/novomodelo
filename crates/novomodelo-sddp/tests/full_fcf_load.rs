@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 
 use novomodelo_core::System;
 use novomodelo_core::scenario::ScenarioSource;
-use novomodelo_io::config::StoppingRuleConfig;
-use novomodelo_io::read_policy_checkpoint;
+use novomodelo_io::config::{StoppingRuleConfig, TrainingSelection};
+use novomodelo_io::{OwnedPolicyCutRecord, read_policy_checkpoint};
 use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::hydro_models::prepare_hydro_models;
 use novomodelo_sddp::policy::full_fcf_load::{
@@ -39,10 +39,15 @@ fn d01_case_dir() -> PathBuf {
 }
 
 fn build_setup() -> (StudySetup, System) {
+    build_setup_with(1, ITERATIONS)
+}
+
+fn build_setup_with(forward_passes: u32, iteration_limit: u32) -> (StudySetup, System) {
     let case_dir = d01_case_dir();
     let mut config = novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config");
+    config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
     config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
-        limit: ITERATIONS,
+        limit: iteration_limit,
     }]);
     let system = novomodelo_io::load_case(&case_dir).expect("load_case");
     let prep = prepare_stochastic(
@@ -73,8 +78,7 @@ struct Trained {
     final_lower_bound: f64,
 }
 
-fn train_and_write_checkpoint() -> Trained {
-    let (mut setup, system) = build_setup();
+fn train_and_write(setup: &mut StudySetup, system: &System) -> TempDir {
     let mut solver = ActiveSolver::new().expect("solver");
     let outcome = setup
         .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
@@ -90,10 +94,15 @@ fn train_and_write_checkpoint() -> Trained {
         seed: setup.loop_params.seed,
         export_states: false,
     };
-    write_checkpoint(&policy_dir, &setup, &system, &outcome.result, &params)
+    write_checkpoint(&policy_dir, setup, system, &outcome.result, &params)
         .expect("write_checkpoint");
+    output
+}
 
-    let producer = read_policy_checkpoint(&policy_dir)
+fn train_and_write_checkpoint() -> Trained {
+    let (mut setup, system) = build_setup();
+    let output = train_and_write(&mut setup, &system);
+    let producer = read_policy_checkpoint(&output.path().join(&setup.policy_path))
         .expect("read checkpoint")
         .metadata
         .producer;
@@ -159,6 +168,86 @@ fn resume_apply_installs_the_checkpoint_cuts_and_the_start_iteration() {
             kind == FullFcfLoadKind::Resume
         );
     }
+}
+
+#[test]
+fn warm_started_run_exports_loaded_cuts_with_their_iterations() {
+    let (mut source_setup, source_system) = build_setup_with(2, ITERATIONS);
+    let source_out = train_and_write(&mut source_setup, &source_system);
+    let source = read_policy_checkpoint(&source_out.path().join(&source_setup.policy_path))
+        .expect("read source checkpoint");
+
+    let (mut setup, system) = build_setup_with(2, 2);
+    let kind = FullFcfLoadKind::WarmStart;
+    let policy_dir = locate_policy_dir(kind, source_out.path(), &setup).expect("locate");
+    check_full_fcf_load(kind, &policy_dir, &system, &setup, &mut |_| {})
+        .expect("check")
+        .apply_to_training(&mut setup);
+    let warm_out = train_and_write(&mut setup, &system);
+    let warm = read_policy_checkpoint(&warm_out.path().join(&setup.policy_path))
+        .expect("read warm-started checkpoint");
+
+    let coefficient_bits = |cut: &OwnedPolicyCutRecord| -> Vec<u64> {
+        cut.coefficients.iter().map(|c| c.to_bits()).collect()
+    };
+    assert_eq!(source.stage_cuts.len(), setup.fcf.pools.len());
+    assert_eq!(warm.stage_cuts.len(), setup.fcf.pools.len());
+    for (pool_id, ((pool, source_pool), warm_pool)) in setup
+        .fcf
+        .pools
+        .iter()
+        .zip(&source.stage_cuts)
+        .zip(&warm.stage_cuts)
+        .enumerate()
+    {
+        let stride = u64::from(pool.visit_stride);
+        if !warm_pool.cuts.is_empty() {
+            assert_eq!(stride, 2, "pool {pool_id}: visit stride");
+        }
+        assert!(warm_pool.cuts.len() >= source_pool.cuts.len());
+        for (slot, (loaded, exported)) in source_pool.cuts.iter().zip(&warm_pool.cuts).enumerate() {
+            assert_eq!(
+                (exported.iteration, exported.forward_pass_index),
+                (loaded.iteration, loaded.forward_pass_index),
+                "pool {pool_id} slot {slot}: generating iteration and forward pass"
+            );
+            assert_eq!(
+                coefficient_bits(exported),
+                coefficient_bits(loaded),
+                "pool {pool_id} slot {slot}: coefficients"
+            );
+        }
+        for (slot, cut) in warm_pool.cuts.iter().enumerate() {
+            assert_ne!(cut.iteration, u32::MAX, "pool {pool_id} slot {slot}");
+            assert!(
+                (1..=ITERATIONS).contains(&cut.iteration),
+                "pool {pool_id} slot {slot}: iteration {}",
+                cut.iteration
+            );
+            assert_eq!(
+                cut.cut_id,
+                u64::from(cut.iteration) * stride + u64::from(cut.forward_pass_index),
+                "pool {pool_id} slot {slot}: cut id"
+            );
+        }
+    }
+
+    assert!(
+        source
+            .stage_cuts
+            .iter()
+            .flat_map(|pool| &pool.cuts)
+            .any(|cut| cut.forward_pass_index == 1),
+        "the source run must have trained a second forward pass"
+    );
+    assert!(
+        source
+            .stage_cuts
+            .iter()
+            .zip(&warm.stage_cuts)
+            .any(|(source_pool, warm_pool)| warm_pool.cuts.len() > source_pool.cuts.len()),
+        "the warm-started run must have generated cuts"
+    );
 }
 
 #[test]

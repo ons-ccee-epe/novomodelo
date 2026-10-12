@@ -250,6 +250,10 @@ impl RunOutcome {
                 .entry((entry.iteration, entry.phase, entry.stage_id))
                 .or_insert(0) += entry.delta.simplex_iterations;
         }
+        assert!(
+            !simplex_iterations.is_empty(),
+            "no forward or backward solver statistics were logged for the compared iterations"
+        );
         Self {
             fingerprint: SelectionFingerprint::capture(setup, result),
             resolved_cost_scale_factor: setup.inputs.stage_data.stage_templates.cost_scale_factor,
@@ -343,6 +347,10 @@ fn assert_same_run(resumed: &RunOutcome, uninterrupted: &RunOutcome) {
             "pool {pool}: coefficients"
         );
     }
+    assert_eq!(
+        resumed.fingerprint.provenance, uninterrupted.fingerprint.provenance,
+        "generating iteration and forward pass of every slot"
+    );
     assert_eq!(
         resumed.fingerprint.bounds.final_ub_bits, uninterrupted.fingerprint.bounds.final_ub_bits,
         "final upper bound"
