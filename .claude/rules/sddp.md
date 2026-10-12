@@ -1097,14 +1097,28 @@ skips it, so an eviction would leave the bitmap disagreeing with the LP the
 terminal node solves, and a simulation that builds its own templates would solve
 another LP.
 
+The evicted set is the lexicographic minimum of the candidates under
+`(last_active_iter, active_count, slot)`: the smallest keys go first, up to the
+excess over the cap. `add_cut` writes the generating iteration into
+`last_active_iter`, so a cut that never bound ranks by generation age, and the
+cuts of one iteration that share a key are told apart by slot. The key is total,
+so the evicted set is a function of the pool alone.
+
 The wrong-but-compiling alternatives:
 
-- enforcing on every pool: a budget below the boundary cut count deactivates
-  boundary cuts the baked terminal LP keeps, so a basis has fewer rows than that
-  LP and training aborts with `BasisRowCountMismatch`;
+- enforcing on every pool: the loop then evicts root cuts, which no solve records
+  binding for and which rank by generation age alone;
+- letting a loaded cut be a candidate in a loop that also visits the terminal
+  pool: it deactivates boundary cuts the baked terminal LP keeps, so a basis has
+  fewer rows than that LP and the next iteration fails with
+  `BasisRowCountMismatch`;
 - counting prefix cuts toward the cap without evicting them: once the prefix
   alone reaches the cap, every generated cut older than the current iteration is
-  evicted at each iteration.
+  evicted at each iteration;
+- the two-part key `(last_active_iter, active_count)`: equal keys are then ordered
+  by an unstable sort, which the language leaves unspecified, so the evicted set
+  can differ between toolchains while every build agrees with itself and no
+  same-build gate sees it.
 
 Read: `training/session/mod.rs` (`run_cut_management`, `interior_cut_nodes`,
 `freeze_active_cuts_into_templates`), `cut/pool.rs` (`CutPool::enforce_budget`,
@@ -1116,6 +1130,13 @@ Read: `training/session/mod.rs` (`run_cut_management`, `interior_cut_nodes`,
 whose generating iteration equals the current one) and
 `enforce_budget_does_not_count_loaded_cuts` (loaded cuts do not count toward the
 cap), both in `cut/pool.rs`;
+`enforce_budget_breaks_ties_by_lowest_slot` (ties go to the lowest slot, and the
+key parts rank in order, on hand-derived keys),
+`evicted_set_is_the_lexicographic_minimum` (random pools with frequent ties
+against a reference sorted from tuples; it is the pin against the two-part key,
+since a hand fixture of a few cuts sorts stably by accident) and
+`enforce_budget_tiebreaks_by_active_count` (the `active_count` part), all in
+`cut/pool.rs`;
 `budget_caps_only_interior_pools_and_templates_match_their_pools`
 (`training/session/mod.rs`: the root and terminal pools keep their cuts and
 every frozen template matches its pool); and

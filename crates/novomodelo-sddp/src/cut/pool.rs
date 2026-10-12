@@ -1044,24 +1044,18 @@ pub struct BudgetEnforcementResult {
 }
 
 impl CutPool {
-    /// Enforce a hard cap on the active cuts this run generated, evicting by
-    /// `(last_active_iter ASC, active_count ASC)` — stalest, least-used first.
+    /// Evict the active cuts this run generated down to `budget`, smallest
+    /// `(last_active_iter, active_count, slot)` first.
     ///
     /// A loaded cut ([`is_prefix_slot`](CutPool::is_prefix_slot)) neither counts
-    /// toward `budget` nor is evicted. Cuts generated in `current_iteration`
-    /// count but are **never** evicted; if they alone exceed `budget`, the
-    /// generated cuts remain above it after the call. The result's active counts
-    /// cover the whole pool, loaded cuts included.
-    ///
-    /// # Parameters
-    ///
-    /// - `forward_passes`: unused; present for call-site uniformity with the
-    ///   training loop.
+    /// toward `budget` nor is evicted. A cut generated in `current_iteration`
+    /// counts and is never evicted, so the generated cuts can stay above
+    /// `budget`. The result's active counts cover the whole pool, loaded cuts
+    /// included.
     pub fn enforce_budget(
         &mut self,
         budget: u32,
         current_iteration: u64,
-        _forward_passes: u32,
     ) -> BudgetEnforcementResult {
         #[allow(clippy::cast_possible_truncation)]
         let active_before = self.active_count() as u32;
@@ -1097,23 +1091,13 @@ impl CutPool {
 
         let evict_count = (generated - budget_usize).min(self.candidates_buf.len());
 
-        let key = |&slot: &u32| {
+        let mut candidates = std::mem::take(&mut self.candidates_buf);
+        candidates.sort_unstable_by_key(|&slot| {
             let meta = &self.metadata[slot as usize];
-            (meta.last_active_iter, meta.active_count)
-        };
-
-        // Partial sort partitions the evict_count smallest into [..evict_count]
-        // (any order); full sort when that fraction is large.
-        if evict_count < self.candidates_buf.len() / 2 {
-            self.candidates_buf
-                .select_nth_unstable_by(evict_count, |a, b| key(a).cmp(&key(b)));
-        } else {
-            self.candidates_buf.sort_unstable_by_key(|a| key(a));
-        }
-
-        // Local copy releases the candidates_buf borrow before deactivate(&mut self).
-        let to_evict: Vec<u32> = self.candidates_buf[..evict_count].to_vec();
-        self.deactivate(&to_evict);
+            (meta.last_active_iter, meta.active_count, slot)
+        });
+        self.deactivate(&candidates[..evict_count]);
+        self.candidates_buf = candidates;
 
         #[allow(clippy::cast_possible_truncation)]
         let evicted_count = evict_count as u32;
@@ -1130,8 +1114,13 @@ impl CutPool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::CutPool;
+    use crate::cut_selection::CutMetadata;
     use crate::setup::NodeId;
+    use proptest::prelude::*;
+    use proptest::test_runner::RngSeed;
 
     #[test]
     fn new_creates_pool_with_correct_capacity_and_all_inactive() {
@@ -1685,7 +1674,7 @@ mod tests {
         pool.add_cut(NodeId(0), 0, 0, 1.0, &[1.0, 2.0]);
         pool.add_cut(NodeId(0), 0, 1, 2.0, &[3.0, 4.0]);
         assert_eq!(pool.active_count(), 2);
-        let result = pool.enforce_budget(5, 1, 10);
+        let result = pool.enforce_budget(5, 1);
         assert_eq!(result.evicted_count, 0);
         assert_eq!(result.active_after, 2);
         assert_eq!(pool.active_count(), 2);
@@ -1702,7 +1691,7 @@ mod tests {
         }
         assert_eq!(pool.active_count(), 5);
         // Budget = 3, current_iteration = 5 → evict 2 oldest
-        let result = pool.enforce_budget(3, 5, 10);
+        let result = pool.enforce_budget(3, 5);
         assert_eq!(result.evicted_count, 2);
         assert_eq!(result.active_after, 3);
         assert_eq!(pool.active_count(), 3);
@@ -1725,7 +1714,7 @@ mod tests {
         pool.metadata[1].active_count = 2;
         assert_eq!(pool.active_count(), 2);
         // Budget = 1 → evict the one with lower active_count (slot 1)
-        let result = pool.enforce_budget(1, 1, 10);
+        let result = pool.enforce_budget(1, 1);
         assert_eq!(result.evicted_count, 1);
         assert!(pool.active[0], "higher active_count survives");
         assert!(!pool.active[1], "lower active_count evicted");
@@ -1743,7 +1732,7 @@ mod tests {
         pool.metadata[10].last_active_iter = 1;
         assert_eq!(pool.active_count(), 3);
         // Budget = 1, current_iteration = 1 → can only evict iter-0 cuts
-        let result = pool.enforce_budget(1, 1, 10);
+        let result = pool.enforce_budget(1, 1);
         assert_eq!(result.evicted_count, 2);
         // Current-iteration cut (slot 10) survives
         assert!(pool.active[10], "current iteration cut preserved");
@@ -1758,7 +1747,7 @@ mod tests {
         pool.add_cut(NodeId(0), 5, 2, 3.0, &[1.0, 1.0]);
         assert_eq!(pool.active_count(), 3);
         // Budget = 1, current_iteration = 5 → no candidates, no eviction
-        let result = pool.enforce_budget(1, 5, 10);
+        let result = pool.enforce_budget(1, 5);
         assert_eq!(result.evicted_count, 0);
         assert_eq!(pool.active_count(), 3);
     }
@@ -1770,7 +1759,7 @@ mod tests {
         pool.add_cut(NodeId(0), 1, 0, 2.0, &[0.0, 1.0]);
         pool.add_cut(NodeId(0), 2, 0, 3.0, &[1.0, 1.0]);
         assert_eq!(pool.active_count(), 3);
-        let result = pool.enforce_budget(1, 3, 10);
+        let result = pool.enforce_budget(1, 3);
         assert_eq!(result.active_before, 3);
         assert_eq!(result.evicted_count, 2);
         assert_eq!(result.active_after, 1);
@@ -1784,7 +1773,7 @@ mod tests {
         pool.add_cut(NodeId(0), 1, 0, 3.0, &[1.0]);
         pool.add_cut(NodeId(0), 2, 0, 3.0, &[1.0]);
 
-        let result = pool.enforce_budget(1, 3, 1);
+        let result = pool.enforce_budget(1, 3);
 
         assert_eq!(result.evicted_count, 1);
         assert_eq!(result.active_before, 5);
@@ -1804,11 +1793,139 @@ mod tests {
         pool.set_iteration_base(1);
         pool.add_cut(NodeId(0), 1, 0, 3.0, &[1.0]);
 
-        let result = pool.enforce_budget(1, 3, 1);
+        let result = pool.enforce_budget(1, 3);
 
         assert_eq!(result.evicted_count, 0);
         assert_eq!(result.active_before, 4);
         assert_eq!(result.active_after, 4);
+    }
+
+    /// `(iteration_generated, active, last_active_iter, active_count)`.
+    type CutDraw = (u64, bool, u64, u64);
+
+    /// Loaded cuts fill the first slots; the generated cuts follow, one per slot.
+    fn pool_with(loaded: &[CutDraw], generated: &[CutDraw]) -> CutPool {
+        let records: Vec<_> = loaded.iter().map(|_| loaded_cut(0)).collect();
+        let mut pool = CutPool::new_with_warm_start(1, 1, generated.len() as u64, &records);
+        pool.set_iteration_base(1);
+        for i in 0..generated.len() {
+            pool.add_cut(NodeId(0), 1 + i as u64, 0, 1.0, &[1.0]);
+        }
+        for (slot, &(iteration_generated, active, last_active_iter, active_count)) in
+            loaded.iter().chain(generated).enumerate()
+        {
+            pool.set_metadata_for_test(
+                slot,
+                CutMetadata {
+                    iteration_generated,
+                    forward_pass_index: 0,
+                    node: NodeId(0),
+                    active_count,
+                    last_active_iter,
+                },
+            );
+            pool.set_active(slot as u32, active);
+        }
+        pool
+    }
+
+    fn active_slots(pool: &CutPool) -> BTreeSet<usize> {
+        (0..pool.populated())
+            .filter(|&slot| pool.is_active(slot))
+            .collect()
+    }
+
+    /// derived: four generated cuts with the key `(2, 1)` are ordered by slot
+    /// alone, so budget 2 evicts slots 0 and 1. The keys `(3, 0)`, `(2, 5)`,
+    /// `(2, 1)`, `(2, 1)` sort to slots 2, 3, 1, 0, so budget 1 evicts the first
+    /// three of them and keeps slot 0, the one with the largest
+    /// `last_active_iter`.
+    #[test]
+    fn enforce_budget_breaks_ties_by_lowest_slot() {
+        let mut equal_keys = pool_with(&[], &[(1, true, 2, 1); 4]);
+        let result = equal_keys.enforce_budget(2, 3);
+        assert_eq!(result.evicted_count, 2);
+        assert_eq!(active_slots(&equal_keys), BTreeSet::from([2, 3]));
+
+        let mut mixed_keys = pool_with(
+            &[],
+            &[
+                (1, true, 3, 0),
+                (1, true, 2, 5),
+                (1, true, 2, 1),
+                (1, true, 2, 1),
+            ],
+        );
+        let result = mixed_keys.enforce_budget(1, 3);
+        assert_eq!(result.evicted_count, 3);
+        assert_eq!(active_slots(&mixed_keys), BTreeSet::from([0]));
+    }
+
+    const CURRENT_ITERATION: u64 = 4;
+
+    fn cut_draw() -> impl Strategy<Value = CutDraw> {
+        (
+            0..=CURRENT_ITERATION,
+            prop::bool::weighted(0.8),
+            0..=3u64,
+            0..=3u64,
+        )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            rng_seed: RngSeed::Fixed(42),
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn evicted_set_is_the_lexicographic_minimum(
+            loaded in prop::collection::vec(cut_draw(), 0..=4),
+            generated in prop::collection::vec(cut_draw(), 1..=40),
+            budget in any::<prop::sample::Index>(),
+        ) {
+            let budget = budget.index(generated.len() + 1) as u32;
+            let mut pool = pool_with(&loaded, &generated);
+            let before = active_slots(&pool);
+
+            let mut candidates: Vec<(u64, u64, usize)> = Vec::new();
+            let mut generated_active = 0usize;
+            for (i, &(iteration_generated, active, last_active_iter, active_count)) in
+                generated.iter().enumerate()
+            {
+                if active {
+                    generated_active += 1;
+                    if iteration_generated != CURRENT_ITERATION {
+                        candidates.push((last_active_iter, active_count, loaded.len() + i));
+                    }
+                }
+            }
+            candidates.sort_unstable();
+            let evict = generated_active
+                .saturating_sub(budget as usize)
+                .min(candidates.len());
+            let expected: BTreeSet<usize> =
+                candidates[..evict].iter().map(|&(_, _, slot)| slot).collect();
+
+            let result = pool.enforce_budget(budget, CURRENT_ITERATION);
+            let after = active_slots(&pool);
+
+            prop_assert_eq!(before.difference(&after).copied().collect::<BTreeSet<_>>(), expected);
+            prop_assert!(after.is_subset(&before));
+            prop_assert_eq!(result.evicted_count as usize, evict);
+            for (slot, &(iteration_generated, ..)) in
+                loaded.iter().chain(&generated).enumerate()
+            {
+                if slot < loaded.len() || iteration_generated == CURRENT_ITERATION {
+                    prop_assert_eq!(before.contains(&slot), after.contains(&slot));
+                }
+            }
+
+            let second = pool.enforce_budget(budget, CURRENT_ITERATION);
+            prop_assert_eq!(second.evicted_count, 0);
+            prop_assert_eq!(active_slots(&pool), after);
+        }
     }
 
     // ── active_cuts early-exit tests ─────────────────────────────────────────
@@ -1869,7 +1986,7 @@ mod tests {
         assert_eq!(pool.active_count(), 5);
 
         // First enforce: evicts some cuts, candidates_buf gets populated.
-        pool.enforce_budget(3, 5, 10);
+        pool.enforce_budget(3, 5);
         let cap_after_first = pool.candidates_buf.capacity();
         assert!(
             cap_after_first >= 1,
@@ -1883,7 +2000,7 @@ mod tests {
         for iter in 0..5_u64 {
             pool2.add_cut(NodeId(0), iter, 0, 1.0, &[1.0, 0.0]);
         }
-        pool2.enforce_budget(3, 5, 10);
+        pool2.enforce_budget(3, 5);
         let cap_after_first2 = pool2.candidates_buf.capacity();
 
         // Second call on the same pool2 — re-add some cuts first.
@@ -1891,7 +2008,7 @@ mod tests {
         pool2.add_cut(NodeId(0), 6, 0, 2.0, &[0.0, 1.0]);
         pool2.add_cut(NodeId(0), 7, 0, 2.0, &[0.0, 1.0]);
         pool2.add_cut(NodeId(0), 8, 0, 2.0, &[0.0, 1.0]);
-        pool2.enforce_budget(2, 9, 10);
+        pool2.enforce_budget(2, 9);
         let cap_after_second2 = pool2.candidates_buf.capacity();
 
         // The capacity must not have shrunk — Vec::clear() preserves the heap

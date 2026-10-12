@@ -1258,11 +1258,7 @@ where
             #[allow(clippy::cast_possible_truncation)]
             let stages_processed_sel = num_sel_stages as u32;
 
-            record_by_pool = Some(selection_record_index_by_pool(
-                node_graph,
-                root_pool,
-                interior_nodes,
-            ));
+            record_by_pool = Some(selection_record_index_by_pool(node_graph, interior_nodes));
 
             sel_state = Some((
                 per_stage,
@@ -1272,8 +1268,8 @@ where
             ));
         }
 
-        // Budget is a hard cap: enforced every iteration when set, never gated
-        // by `check_frequency` like selection.
+        // Enforced every iteration when set; selection's `check_frequency` does
+        // not gate it.
         if let Some(b) = self.config.cut_management.budget {
             let budget_start = Instant::now();
             let mut total_evicted = 0u32;
@@ -1281,11 +1277,7 @@ where
             // (`budget_caps_only_interior_pools_and_templates_match_their_pools`).
             for &node_pos in &self.interior_cut_nodes {
                 let pool_id = self.training_ctx.node_graph.nodes[node_pos].pool_id;
-                let result = self.fcf.pools[pool_id].enforce_budget(
-                    b,
-                    iteration,
-                    self.config.loop_config.forward_passes,
-                );
+                let result = self.fcf.pools[pool_id].enforce_budget(b, iteration);
                 total_evicted += result.evicted_count;
                 // Annotate the pool's OWN selection record via `record_by_pool`,
                 // never `per_stage[pool_id]`: the record index equals the pool id
@@ -1499,22 +1491,19 @@ fn committed_lower_bound_history(
     &history[..history.len().saturating_sub(uncommitted)]
 }
 
-/// Pool → per-iteration selection-record index, in the order
-/// [`TrainingSession::run_cut_management`] emits `per_stage`: the root pool's
-/// record first (index 0), then each interior cut-generating node's pool in
-/// canonical order (`interior_nodes`). The shared leaf pool (no selection
-/// record) stays `None`. Budget enforcement iterates the interior pools and must
-/// annotate each pool's record through THIS map, never by pool id used as a
-/// `per_stage` index — on a branching graph whose root is not the smallest-id
-/// node the two differ, so eviction stats would land on a sibling's record. On
-/// a chain `pool_id` equals the record index, so the map is the identity.
+/// Pool → selection-record index, for each interior cut-generating node's pool
+/// in canonical order (`interior_nodes`). [`TrainingSession::run_cut_management`]
+/// emits the root's record first, so these start at 1; the root pool and the
+/// shared leaf pool stay `None`. Budget enforcement iterates the interior pools
+/// and must annotate each pool's record through THIS map, never by pool id used
+/// as a `per_stage` index — on a branching graph whose root is not the
+/// smallest-id node the two differ, so eviction stats would land on a sibling's
+/// record. On a chain an interior pool's id equals its record index.
 fn selection_record_index_by_pool(
     node_graph: &NodeGraph,
-    root_pool: usize,
     interior_nodes: &[NodePos],
 ) -> Vec<Option<usize>> {
     let mut by_pool = vec![None; node_graph.n_pools];
-    by_pool[root_pool] = Some(0);
     for (record_idx, &pos) in interior_nodes.iter().enumerate() {
         by_pool[node_graph.nodes[pos].pool_id] = Some(1 + record_idx);
     }
@@ -2827,8 +2816,8 @@ mod tests {
     /// Ids 1,2 (leaves, positions 0,1), 3,7 (fan nodes, positions 2,3), 10
     /// (root, position 4). Pools: fan A→0, fan B→1, root→2, shared leaf→3. The
     /// `per_stage` record order is [root, fan A, fan B], so the correct map sends
-    /// pool 2→record 0, pool 0→record 1, pool 1→record 2, leaf pool 3→None —
-    /// deliberately NOT the identity `pool_id→pool_id` the pre-fix read assumed.
+    /// pool 0→record 1, pool 1→record 2 and the root and leaf pools to None —
+    /// deliberately NOT the `pool_id→pool_id` the pre-fix read assumed.
     #[test]
     fn selection_record_index_by_pool_maps_branching_root_not_by_pool_id() {
         let leaf = |pool_id| NodeRuntime {
@@ -2880,18 +2869,20 @@ mod tests {
             "fan nodes at canonical positions 2, 3"
         );
 
-        let map = selection_record_index_by_pool(&node_graph, root_pool, &interior_nodes);
+        let map = selection_record_index_by_pool(&node_graph, &interior_nodes);
         assert_eq!(
             map,
-            vec![Some(1), Some(2), Some(0), None],
-            "pool 0→record 1, pool 1→record 2, pool 2 (root)→record 0, leaf pool 3→None"
+            vec![Some(1), Some(2), None, None],
+            "pool 0→record 1, pool 1→record 2, root pool 2 and leaf pool 3→None"
         );
 
-        // Power: the fix genuinely differs from the pre-fix identity map.
-        let identity: Vec<Option<usize>> = (0..node_graph.n_pools).map(Some).collect();
-        assert_ne!(
-            map, identity,
-            "on a root-not-smallest-id graph the record map must NOT be the identity — \
+        // Power: no interior pool's record index is its pool id.
+        assert!(
+            interior_nodes.iter().all(|&pos| {
+                let pool_id = node_graph.nodes[pos].pool_id;
+                map[pool_id] != Some(pool_id)
+            }),
+            "on a root-not-smallest-id graph the record index must NOT be the pool id — \
              using pool id as a per_stage index misattributes eviction stats"
         );
     }
