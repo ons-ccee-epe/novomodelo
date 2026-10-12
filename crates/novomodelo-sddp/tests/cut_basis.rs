@@ -1569,7 +1569,7 @@ mod selection_in_a_training_run {
     use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
-    use super::common::selection_fingerprint::SelectionFingerprint;
+    use super::common::selection_fingerprint::{SelectionFingerprint, SelectionPower};
 
     const FORWARD_PASSES: u32 = 2;
     const ITERATIONS: u32 = 10;
@@ -1664,7 +1664,7 @@ mod selection_in_a_training_run {
     }
 
     #[test]
-    fn level1_deactivates_and_reactivates_cuts_in_a_training_run() {
+    fn level1_deactivates_cuts_in_a_training_run() {
         let (setup, runs) = train_collecting_selection_runs();
         let pools = &setup.fcf.pools;
         let interior_pools = 1..pools.len() - 1;
@@ -1706,14 +1706,11 @@ mod selection_in_a_training_run {
             "every root cut must stay active"
         );
 
-        let interior_records = || runs.iter().flat_map(|(_, per_stage)| &per_stage[1..]);
         assert!(
-            interior_records().any(|record| record.rows_deactivated > 0),
+            runs.iter()
+                .flat_map(|(_, per_stage)| &per_stage[1..])
+                .any(|record| record.rows_deactivated > 0),
             "no interior node deactivated a cut"
-        );
-        assert!(
-            interior_records().any(|record| record.rows_reactivated > 0),
-            "no interior node reactivated a cut"
         );
 
         for pool_id in interior_pools {
@@ -1724,19 +1721,17 @@ mod selection_in_a_training_run {
                 "pool {pool_id}: selection must deactivate cuts, never delete them"
             );
 
-            let final_iteration_slots: Vec<usize> = (0..pool.populated())
-                .filter(|&slot| pool.metadata(slot).iteration_generated == final_iteration)
-                .collect();
-            assert!(
-                !final_iteration_slots.is_empty(),
-                "pool {pool_id}: the final iteration generated no cut"
-            );
-            assert!(
-                final_iteration_slots
-                    .iter()
-                    .all(|&slot| pool.is_active(slot)),
-                "pool {pool_id}: a cut generated in the final iteration was deactivated"
-            );
+            // derived: the final iteration ran selection last, so each scored
+            // cut's flag is the one the ownership record implies.
+            for slot in 0..pool.populated() {
+                assert!(pool.role(slot).scored, "pool {pool_id} slot {slot}");
+                assert_eq!(
+                    pool.is_active(slot),
+                    pool.owned_states(slot) > 0,
+                    "pool {pool_id} slot {slot}: a scored cut is active exactly when it owns a \
+                     stored state"
+                );
+            }
             assert!(
                 (0..pool.populated()).any(|slot| {
                     pool.metadata(slot).iteration_generated < final_iteration
@@ -1745,6 +1740,131 @@ mod selection_in_a_training_run {
                 "pool {pool_id}: no cut of an earlier iteration is inactive"
             );
         }
+    }
+
+    /// The envelope invariant read from a run: selection ran last at the final
+    /// iteration and no budget is set, so each stored state's owner is active,
+    /// each active scored cut owns a state, and the incremental record is the
+    /// one a rebuild computes.
+    #[test]
+    fn level1_keeps_the_owner_of_every_stored_state_after_a_training_run() {
+        let (setup, _) = train_with(level1(), false, ITERATIONS, None);
+        let pools = &setup.fcf.pools;
+        assert_eq!(ITERATIONS % CHECK_FREQUENCY, 0);
+
+        let interior_pools = pools.iter().enumerate().take(pools.len() - 1).skip(1);
+        for (pool_id, pool) in interior_pools {
+            let slots = 0..pool.populated();
+            let record = |pool: &novomodelo_sddp::cut::CutPool| -> Vec<_> {
+                slots
+                    .clone()
+                    .map(|slot| {
+                        (
+                            pool.state_owner(slot),
+                            pool.state_best_value(slot).map(f64::to_bits),
+                            pool.owned_states(slot),
+                        )
+                    })
+                    .collect()
+            };
+
+            assert_eq!(
+                pool.stored_trial_states(),
+                (ITERATIONS * FORWARD_PASSES) as usize,
+                "pool {pool_id}: one stored state per generated cut"
+            );
+            assert!(
+                slots.clone().any(|slot| !pool.is_active(slot)),
+                "pool {pool_id}: no cut is inactive, so the invariant is not exercised"
+            );
+            for slot in slots.clone() {
+                let owner = pool.state_owner(slot).unwrap_or_else(|| {
+                    panic!("pool {pool_id}: the state at slot {slot} is unowned")
+                });
+                assert!(
+                    pool.is_active(owner),
+                    "pool {pool_id}: slot {owner} owns the state at slot {slot} and is inactive"
+                );
+                assert!(
+                    !pool.is_active(slot) || pool.owned_states(slot) > 0,
+                    "pool {pool_id}: slot {slot} is active and owns no state"
+                );
+            }
+
+            let mut rebuilt = pool.clone();
+            rebuilt.rebuild_ownership();
+            assert_eq!(
+                record(pool),
+                record(&rebuilt),
+                "pool {pool_id}: the run's record differs from a rebuild"
+            );
+        }
+    }
+
+    /// derived: ownership compares cut values exactly, so no step of a `level1`
+    /// run reads `tie_tolerance`.
+    #[test]
+    fn level1_tie_tolerance_no_longer_changes_a_run() {
+        let run = |tie_tolerance: f64| {
+            let (setup, result) = train_with(
+                SelectionMethod::Level1 {
+                    tie_tolerance,
+                    check_frequency: CHECK_FREQUENCY,
+                },
+                false,
+                ITERATIONS,
+                None,
+            );
+            SelectionFingerprint::capture(&setup, &result)
+        };
+        let tight = run(1e-10);
+        assert!(
+            tight.cuts.iter().any(|pool| pool.active.contains(&false)),
+            "the run deactivated no cut, so the tolerance had nothing to change"
+        );
+        assert_eq!(tight, run(1e6));
+    }
+
+    /// derived: an interior pool receives `FORWARD_PASSES` cuts per iteration,
+    /// so from iteration 4 on it has received more than this many; whether more
+    /// than this many are then active is what the eviction assertion checks.
+    const BUDGET_BELOW_THE_POOL_SIZE: u32 = 3 * FORWARD_PASSES;
+
+    /// The budget clears the flag of a cut that owns states, the next selection
+    /// run reactivates the owner, and the budget is applied again in that
+    /// iteration. The events carry counts and no slot, so the three steps are
+    /// asserted as existence over the run.
+    #[test]
+    fn level1_reactivates_an_owner_the_budget_evicted() {
+        let (tx, rx) = mpsc::channel();
+        train_configured(ITERATIONS, Some(tx), |config| {
+            config.training.cut_selection.selection = Some(level1());
+            config.training.cut_selection.max_active_per_stage = Some(BUDGET_BELOW_THE_POOL_SIZE);
+        });
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+
+        let power = SelectionPower::from_events(&events);
+        assert!(
+            power.budget_evictions > 0,
+            "the budget evicted no interior cut: {power:?}"
+        );
+        assert!(
+            power.reactivations > 0,
+            "no selection run reactivated an interior cut: {power:?}"
+        );
+        let evicted_again_after_a_reactivation = events.iter().any(|event| match event {
+            TrainingEvent::PolicySelectionComplete { per_stage, .. } => {
+                per_stage[1..].iter().any(|record| {
+                    record.rows_reactivated > 0 && record.budget_evicted.is_some_and(|n| n > 0)
+                })
+            }
+            _ => false,
+        });
+        assert!(
+            evicted_again_after_a_reactivation,
+            "no interior pool was capped again in an iteration whose selection run \
+             reactivated one of its cuts"
+        );
     }
 
     const ARCHIVE_RUN_ITERATIONS: u32 = 3;
@@ -1784,12 +1904,14 @@ mod selection_in_a_training_run {
         );
     }
 
+    /// derived: `level1` reads the states stored with its cuts, and the archive
+    /// is allocated only for a strategy that reads it or for `exports.states`.
     #[test]
-    fn a_level1_run_keeps_the_state_archive() {
+    fn a_level1_run_keeps_no_state_archive() {
         let (_, result) = train_with(level1(), false, ARCHIVE_RUN_ITERATIONS, None);
         assert!(
-            result.visited_archive.is_some(),
-            "level1 scores cuts at the visited states and needs the archive"
+            result.visited_archive.is_none(),
+            "level1 reads no archived state and must not allocate the archive"
         );
     }
 

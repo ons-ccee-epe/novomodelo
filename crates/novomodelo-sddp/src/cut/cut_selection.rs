@@ -1,26 +1,59 @@
 //! Cut selection strategies for controlling cut pool growth during SDDP
 //! training.
 //!
-//! # Determinism
+//! # Level 1
 //!
-//! `matrixmultiply`'s micro-kernel is bit-deterministic for any given input
-//! shape, and the per-task OR-merge is commutative + associative, so
-//! `RAYON_NUM_THREADS=1` and `=96` produce identical output on the same binary.
+//! `Level1` is the Level 1 strategy of de Matos, Philpott and Finardi (2015),
+//! section 4.2: each trial state has one owner, the cut with the highest value
+//! there, and a selection run keeps the cuts that own a state.
 //!
-//! # Algorithm semantics
+//! **Stored states.** For the pool of each node of stage 1 or later that has a
+//! successor: the trial state of every cut this run generated for that pool,
+//! one per cut, on every rank. A loaded cut has none. Every such state of the
+//! run is kept, so the memory of a run grows with its cut count.
 //!
-//! The value-based variants share one value-evaluation kernel,
+//! **Rule.** The live cuts of such a pool are the cuts this run generated in
+//! it, whatever their activity flag, and its active loaded cuts. The owner of a
+//! stored state is the lowest slot among the live cuts whose value at the state
+//! equals the live maximum. Values are compared exactly: there is no tolerance,
+//! and a cut of the current iteration is judged like any other. A selection run
+//! makes a generated cut active when it owns a stored state and inactive when
+//! it owns none ([`CutPool::ownership_activity_updates`]); a loaded cut keeps
+//! its flag. A later cut takes a state only when strictly higher, as in the
+//! paper's update; the paper names no rule for a tie at a new state, and the
+//! lowest slot is this implementation's choice.
+//!
+//! **Invariant.** Right after a selection run in which the active-cut budget
+//! evicts nothing, the active cuts of such a pool attain the maximum of its
+//! live cuts at every stored state. The budget can deactivate a cut that owns
+//! states; the next selection run reactivates it, and the budget is applied
+//! again in that iteration.
+//!
+//! **Departures from the paper.** The paper selects in every stage problem and
+//! updates the owners each time a cut is added. Here the root pool is never
+//! selected, and selection runs every `check_frequency` iterations.
+//!
+//! **Convergence.** The paper presents Level 1 as a heuristic for its dominance
+//! test and states no convergence result for it: a cut Level 1 does not select
+//! "might be binding at some other feasible point" (its Fig. 4). None is
+//! claimed here.
+//!
+//! # The windowed kernel
+//!
+//! `Lml1` and `Dominated` share one value-evaluation kernel,
 //! [`CutSelectionStrategy::select_for_stage`]: it evaluates ALL written cuts
 //! (active AND inactive) at each state of the retained window of trial states
 //! (`VisitedStatesArchive::trim_to_window`) and applies the method's rule:
 //!
-//! - **Level1**: retain any cut within `tie_tolerance` of the per-state maximum
-//!   at any state of the retained window.
 //! - **Lml1**: at each visited state, retain only the oldest eligible cut
 //!   within `tie_tolerance` of the maximum; the overall selected set is the
 //!   union across all visited states (Guigues & Bandarra 2019).
-//! - **Dominated**: same max-survival logic as Level1 using `threshold` as the
-//!   tolerance, applied across ALL written cuts.
+//! - **Dominated**: retain every eligible cut within `threshold` of the maximum
+//!   at some visited state.
+//!
+//! `matrixmultiply`'s micro-kernel is bit-deterministic for any given input
+//! shape, and the per-task OR-merge is commutative + associative, so
+//! `RAYON_NUM_THREADS=1` and `=96` produce identical output on the same binary.
 //!
 //! # Usage
 //!
@@ -63,8 +96,9 @@ pub(crate) const M_BLOCK: usize = 8;
 /// Per-cut tracking metadata for cut selection strategies.
 #[derive(Debug, Clone)]
 pub struct CutMetadata {
-    /// Iteration at which this cut was generated (1-based). Cuts from the
-    /// current iteration are never deactivated.
+    /// Iteration at which this cut was generated (1-based). `Lml1`, `Dominated`
+    /// and the active-cut budget leave a cut of the current iteration active;
+    /// `Level1` judges it like any other.
     pub iteration_generated: u64,
 
     /// Forward pass index that generated this cut.
@@ -130,21 +164,24 @@ impl CutActivityUpdates {
 /// migration.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum CutSelectionStrategy {
-    /// Level-1 selection: retain any cut within `tie_tolerance` of the maximum at
-    /// some state of the retained window. No convergence theorem is claimed: that
-    /// of de Matos, Philpott and Finardi (2015) assumes every trial state.
+    /// Level 1 of de Matos, Philpott and Finardi (2015): each stored trial state
+    /// has one owner, the lowest slot among the cuts with the highest value
+    /// there, compared exactly, and a selection run keeps the generated cuts
+    /// that own a state. The [module documentation](crate::cut::cut_selection)
+    /// states the rule, the stored states, the invariant, the departures from
+    /// the paper and what is said of convergence.
     Level1 {
         /// Number of iterations between selection runs. Must be > 0.
         check_frequency: u64,
 
-        /// Tie-break tolerance: a cut is active at a state when within
-        /// `tie_tolerance` of the best value there. Default: `1e-10`.
+        /// Parsed and validated; no step of a run reads it, since ownership
+        /// compares values exactly.
         tie_tolerance: f64,
     },
 
     /// Limited Memory Level-1 (LML1): retain only the oldest eligible cut within
     /// `tie_tolerance` of the maximum per visited state, unioned across states
-    /// (Guigues & Bandarra 2019). More aggressive than Level1.
+    /// (Guigues & Bandarra 2019).
     Lml1 {
         /// Number of iterations between selection runs. Must be > 0.
         check_frequency: u64,
@@ -233,12 +270,14 @@ impl CutSelectionStrategy {
         iteration > 0 && iteration.is_multiple_of(freq)
     }
 
-    /// Whether cuts are scored at the visited trial states (`Dynamic` selects inside each solve).
+    /// Whether the strategy reads the per-node archive of visited states: the
+    /// windowed kernel of `Lml1` and `Dominated`. `Level1` reads the states
+    /// stored with its cuts and `Dynamic` selects inside each solve.
     #[must_use]
     pub fn scores_visited_states(&self) -> bool {
         match self {
-            Self::Level1 { .. } | Self::Lml1 { .. } | Self::Dominated { .. } => true,
-            Self::Dynamic { .. } => false,
+            Self::Lml1 { .. } | Self::Dominated { .. } => true,
+            Self::Level1 { .. } | Self::Dynamic { .. } => false,
         }
     }
 
@@ -251,7 +290,8 @@ impl CutSelectionStrategy {
         }
     }
 
-    /// Scan the cut pool for stage 0 (a pure query: the pool is not modified).
+    /// Run the windowed kernel of `Lml1` and `Dominated` for stage 0 (a pure
+    /// query: the pool is not modified).
     ///
     /// Delegates to [`select_for_stage`](Self::select_for_stage) with
     /// `stage_index = 0`.
@@ -263,7 +303,7 @@ impl CutSelectionStrategy {
     /// use novomodelo_sddp::cut_selection::{CutMetadata, CutSelectionStrategy};
     /// use novomodelo_sddp::setup::NodeId;
     ///
-    /// let strategy = CutSelectionStrategy::Level1 { check_frequency: 5, tie_tolerance: 1e-10 };
+    /// let strategy = CutSelectionStrategy::Dominated { threshold: 0.0, check_frequency: 5 };
     /// let mut pool = CutPool::new(2, 1, 1, 0);
     /// pool.add_cut(NodeId(0), 0, 0, 1.0, &[1.0]);
     /// pool.add_cut(NodeId(0), 1, 0, 2.0, &[2.0]);
@@ -292,8 +332,9 @@ impl CutSelectionStrategy {
         )
     }
 
-    /// Scan the cut pool for a specific stage (a pure query: the pool is not
-    /// modified).
+    /// Run the windowed kernel of `Lml1` and `Dominated` for a specific stage (a
+    /// pure query: the pool is not modified). `Level1` and `Dynamic` get no
+    /// update from it.
     ///
     /// `visited_states` is a flat row-major `&[f64]`, one state per
     /// `pool.state_dimension` elements, already projected into the pool's slot
@@ -324,12 +365,15 @@ impl CutSelectionStrategy {
         current_iteration: u64,
         stage_index: u32,
     ) -> CutActivityUpdates {
-        if let CutSelectionStrategy::Dynamic { .. } = self {
-            return CutActivityUpdates {
-                stage_index,
-                updates: vec![],
-                reactivations: vec![],
-            };
+        match self {
+            Self::Level1 { .. } | Self::Dynamic { .. } => {
+                return CutActivityUpdates {
+                    stage_index,
+                    updates: vec![],
+                    reactivations: vec![],
+                };
+            }
+            Self::Lml1 { .. } | Self::Dominated { .. } => {}
         }
 
         let populated = pool.populated();
@@ -467,12 +511,9 @@ impl CutSelectionStrategy {
 /// `populated × m_len` `v_block` panel into `bitmap`.
 ///
 /// The per-column max is computed over ALL written cuts (active and inactive).
-/// Level1/Dominated mark every eligible cut within `tie_tolerance` of the max;
-/// Lml1 marks only the oldest such cut. The ascending slot walk makes Lml1's
-/// "oldest at max" deterministic (D5).
-// Rationale: each parameter is a distinct kernel dimension with no natural
-// grouping; collapsing any pair would obscure the O(populated × m_len) sweep.
-#[allow(clippy::too_many_arguments)]
+/// Dominated marks every eligible cut within `threshold` of the max; Lml1 marks
+/// only the oldest cut within `tie_tolerance` of it. The ascending slot walk
+/// makes Lml1's "oldest at max" deterministic (D5).
 #[inline]
 fn apply_column_rule(
     method: &CutSelectionStrategy,
@@ -492,12 +533,8 @@ fn apply_column_rule(
     }
 
     match method {
-        CutSelectionStrategy::Level1 { tie_tolerance, .. }
-        | CutSelectionStrategy::Dominated {
-            threshold: tie_tolerance,
-            ..
-        } => {
-            let cutoff = max_val - tie_tolerance;
+        CutSelectionStrategy::Dominated { threshold, .. } => {
+            let cutoff = max_val - threshold;
             for k in 0..populated {
                 if eligible[k] && v_block[k * m_len + col] >= cutoff {
                     bitmap[k] = true;
@@ -513,8 +550,8 @@ fn apply_column_rule(
                 }
             }
         }
-        CutSelectionStrategy::Dynamic { .. } => {
-            unreachable!("Dynamic cut selection does not run the value-evaluation kernel")
+        CutSelectionStrategy::Level1 { .. } | CutSelectionStrategy::Dynamic { .. } => {
+            unreachable!("Level1 and Dynamic do not run the windowed kernel")
         }
     }
 }
@@ -655,8 +692,9 @@ mod tests {
 
     use super::parse_cut_selection_config;
     use super::{CutActivityUpdates, CutMetadata, CutSelectionStrategy, M_BLOCK, NodeId};
-    use crate::cut::CutPool;
-    use crate::cut::selection_reference::{RefCut, RefRole, selected, value};
+    use crate::cut::selection_reference::tests::fixtures;
+    use crate::cut::selection_reference::{RefCut, RefRole, active_after};
+    use crate::cut::{CutPool, SlotOrigin, SlotRole};
     use novomodelo_io::config::{RowSelectionConfig, SelectionMethod};
     use proptest::prelude::*;
     use proptest::test_runner::RngSeed;
@@ -1881,43 +1919,53 @@ mod tests {
     // Level1 closed-form fixtures
     // -----------------------------------------------------------------------
 
-    /// One-dimensional pool of `(intercept, slope)` cuts in slot order, all
-    /// generated at iteration 1.
-    fn pool_from_lines(lines: &[(f64, f64)]) -> CutPool {
+    /// The cuts of Fig. 4 of de Matos, Philpott and Finardi (2015): slot 1 is
+    /// undominated yet never the highest at the states 1, 3 and 4, where the
+    /// values are 6, 5, 3.5, 3.5, then -2, 2, 0.5, 2.5, then -6, 0.5, -1, 2.
+    const FIGURE_FOUR: [(f64, f64); 4] = [(10.0, -4.0), (6.5, -1.5), (5.0, -1.5), (4.0, -0.5)];
+
+    /// One-dimensional pool of scored `(intercept, slope)` cuts in slot order,
+    /// with `states` stored at the first slots.
+    fn scored_pool_from_lines(lines: &[(f64, f64)], states: &[f64]) -> CutPool {
         let mut pool = CutPool::new(lines.len(), 1, 1, 0);
+        pool.enable_trial_states();
         for (slot, &(intercept, slope)) in lines.iter().enumerate() {
             pool.add_cut(NodeId(0), slot as u64, 0, intercept, &[slope]);
-            pool.set_iteration_generated_for_test(slot, 1);
+        }
+        for (slot, &state) in states.iter().enumerate() {
+            pool.set_trial_state_for_test(slot, &[state]);
         }
         pool
     }
 
-    /// The cuts of Fig. 4 of de Matos, Philpott and Finardi (2015): slot 1 is
-    /// undominated yet never the highest at a stored state.
+    /// One `level1` selection run: the record is brought up to date and the
+    /// updates it implies are applied and returned.
+    fn select_level1(pool: &mut CutPool) -> CutActivityUpdates {
+        pool.update_ownership();
+        let updates = pool.ownership_activity_updates(0);
+        pool.apply_updates(&updates);
+        updates
+    }
+
+    fn active_slots(pool: &CutPool) -> BTreeSet<usize> {
+        (0..pool.populated())
+            .filter(|&slot| pool.is_active(slot))
+            .collect()
+    }
+
     #[test]
     fn level1_selects_the_two_steep_cuts_of_paper_figure_four() {
-        let strategy = CutSelectionStrategy::Level1 {
-            check_frequency: 1,
-            tie_tolerance: 1e-10,
-        };
-        // Values at 1: 6, 5, 3.5, 3.5; at 3: -2, 2, 0.5, 2.5; at 4: -6, 0.5, -1, 2.
-        let pool = pool_from_lines(&[(10.0, -4.0), (6.5, -1.5), (5.0, -1.5), (4.0, -0.5)]);
-        let result = strategy.select_for_stage(&pool, &[1.0, 3.0, 4.0], 3, 5, 0);
+        let mut pool = scored_pool_from_lines(&FIGURE_FOUR, &[1.0, 3.0, 4.0]);
+        let result = select_level1(&mut pool);
         assert_eq!(result.updates, vec![1, 2]);
         assert_eq!(result.reactivations, Vec::<u32>::new());
     }
 
     #[test]
     fn level1_loses_the_middle_cut_of_paper_figure_four_at_an_unvisited_state() {
-        let strategy = CutSelectionStrategy::Level1 {
-            check_frequency: 1,
-            tie_tolerance: 1e-10,
-        };
-        let lines = [(10.0, -4.0), (6.5, -1.5), (5.0, -1.5), (4.0, -0.5)];
-        let mut pool = pool_from_lines(&lines);
-        let first = strategy.select_for_stage(&pool, &[1.0, 3.0, 4.0], 3, 5, 0);
-        pool.apply_updates(&first);
-        let max_of_all_four = lines
+        let mut pool = scored_pool_from_lines(&FIGURE_FOUR, &[1.0, 3.0, 4.0]);
+        select_level1(&mut pool);
+        let max_of_all_four = FIGURE_FOUR
             .iter()
             .map(|&(intercept, slope)| intercept + slope * 2.0)
             .fold(f64::NEG_INFINITY, f64::max);
@@ -1927,53 +1975,50 @@ mod tests {
 
     #[test]
     fn level1_reactivates_the_owner_of_a_new_state() {
-        let strategy = CutSelectionStrategy::Level1 {
-            check_frequency: 1,
-            tie_tolerance: 1e-10,
-        };
-        let mut pool = pool_from_lines(&[(10.0, -4.0), (6.5, -1.5), (5.0, -1.5), (4.0, -0.5)]);
-        let first = strategy.select_for_stage(&pool, &[1.0, 3.0, 4.0], 3, 5, 0);
-        pool.apply_updates(&first);
+        let mut pool = scored_pool_from_lines(&FIGURE_FOUR, &[1.0, 3.0, 4.0]);
+        select_level1(&mut pool);
         // At 2 the values are 2, 3.5, 2, 3: the inactive slot 1 owns the new state.
-        let second = strategy.select_for_stage(&pool, &[1.0, 3.0, 4.0, 2.0], 4, 5, 0);
+        pool.set_trial_state_for_test(3, &[2.0]);
+        // A state stored below the scanned mark is seen only by a rebuild.
+        pool.rebuild_ownership();
+        let second = select_level1(&mut pool);
         assert_eq!(second.updates, Vec::<u32>::new());
         assert_eq!(second.reactivations, vec![1]);
     }
 
     #[test]
     fn level1_drops_the_owner_of_a_state_that_left_the_window() {
-        let strategy = CutSelectionStrategy::Level1 {
-            check_frequency: 1,
-            tie_tolerance: 1e-10,
-        };
-        let mut pool = pool_from_lines(&[(10.0, -4.0), (6.5, -1.5), (5.0, -1.5), (4.0, -0.5)]);
-        let first = strategy.select_for_stage(&pool, &[1.0, 3.0, 4.0], 3, 5, 0);
-        pool.apply_updates(&first);
+        let mut pool = scored_pool_from_lines(&FIGURE_FOUR, &[1.0, 3.0, 4.0]);
+        select_level1(&mut pool);
+        pool.clear_trial_state_for_test(0);
+        pool.set_trial_state_for_test(3, &[2.0]);
+        pool.rebuild_ownership();
         // Slot 3 owns 3 and 4, slot 1 owns 2; slot 0 owned only the state 1.
-        let second = strategy.select_for_stage(&pool, &[3.0, 4.0, 2.0], 3, 5, 0);
+        let second = select_level1(&mut pool);
         assert_eq!(second.updates, vec![0]);
         assert_eq!(second.reactivations, vec![1]);
     }
 
+    /// derived: the values at 1 are 3, 3, 3, 2 and at 3 are 1, 7, 3, 2. Slot 0 is
+    /// the lowest of the three cuts tied at 1 and slot 1 is alone at 3, so slots 2
+    /// and 3 own no state.
     #[test]
-    fn level1_keeps_every_cut_tied_at_the_maximum() {
-        let strategy = CutSelectionStrategy::Level1 {
-            check_frequency: 1,
-            tie_tolerance: 1e-10,
-        };
-        // Values at 1: 3, 3, 3, 2; at 3: 1, 7, 3, 2.
-        let pool = pool_from_lines(&[(4.0, -1.0), (1.0, 2.0), (3.0, 0.0), (2.0, 0.0)]);
-        let result = strategy.select_for_stage(&pool, &[1.0, 3.0], 2, 5, 0);
-        assert_eq!(result.updates, vec![3]);
+    fn level1_gives_a_tied_state_to_the_lowest_slot() {
+        let mut pool = scored_pool_from_lines(
+            &[(4.0, -1.0), (1.0, 2.0), (3.0, 0.0), (2.0, 0.0)],
+            &[1.0, 3.0],
+        );
+        let result = select_level1(&mut pool);
+        assert_eq!(result.updates, vec![2, 3]);
         assert_eq!(result.reactivations, Vec::<u32>::new());
     }
 
+    /// derived: the values at 0 are 5, 5, 1 and at 7 are 5, 5, 8. The active
+    /// loaded cut at slot 0 owns the state 0 and slot 2 owns the state 7, so the
+    /// generated slot 1 owns no state; the loaded cut has no state and keeps its
+    /// flag.
     #[test]
-    fn level1_selects_a_generated_cut_tied_with_a_protected_maximum() {
-        let strategy = CutSelectionStrategy::Level1 {
-            check_frequency: 1,
-            tie_tolerance: 1e-10,
-        };
+    fn level1_deactivates_a_generated_cut_tied_with_a_lower_loaded_cut() {
         let loaded = vec![novomodelo_io::OwnedPolicyCutRecord {
             cut_id: 0,
             slot_index: 0,
@@ -1984,28 +2029,92 @@ mod tests {
             is_active: true,
         }];
         let mut pool = CutPool::new_with_warm_start(1, 1, 2, &loaded);
+        pool.enable_trial_states();
         pool.add_cut(NodeId(0), 0, 0, 5.0, &[0.0]); // slot 1
         pool.add_cut(NodeId(0), 1, 0, 1.0, &[1.0]); // slot 2
-        pool.set_iteration_generated_for_test(1, 1);
-        pool.set_iteration_generated_for_test(2, 1);
-        // Values at 0: 5, 5, 1; at 7: 5, 5, 8.
-        let result = strategy.select_for_stage(&pool, &[0.0, 7.0], 2, 5, 0);
-        assert_eq!(result.updates, Vec::<u32>::new());
+        pool.set_trial_state_for_test(1, &[0.0]);
+        pool.set_trial_state_for_test(2, &[7.0]);
+        let result = select_level1(&mut pool);
+        assert_eq!(result.updates, vec![1]);
+        assert_eq!(result.reactivations, Vec::<u32>::new());
+        assert_eq!(active_slots(&pool), BTreeSet::from([0, 2]));
+    }
+
+    /// derived: the values at 1 are 0, 3, 3 and at 3 are 0, 1, 7, so slot 1 owns
+    /// the state 1 and slot 2 the state 3. Slot 0, the only cut of the latest
+    /// iteration, owns no state.
+    #[test]
+    fn level1_deactivates_a_current_iteration_cut_that_owns_no_state() {
+        let mut pool = scored_pool_from_lines(&[(0.0, 0.0), (4.0, -1.0), (1.0, 2.0)], &[1.0, 3.0]);
+        pool.set_iteration_generated_for_test(0, 5);
+        let result = select_level1(&mut pool);
+        assert_eq!(result.updates, vec![0]);
         assert_eq!(result.reactivations, Vec::<u32>::new());
     }
 
+    /// derived: with zero slopes every state sees the intercepts 0, 7, 7, 0.
+    /// Slot 1 is the lowest maximiser of all four states, so slot 2, identical
+    /// to it, owns none.
     #[test]
-    fn level1_spares_a_current_iteration_cut_among_older_cuts() {
-        let strategy = CutSelectionStrategy::Level1 {
-            check_frequency: 1,
-            tie_tolerance: 1e-10,
-        };
-        let mut pool = pool_from_lines(&[(0.0, 0.0), (4.0, -1.0), (1.0, 2.0)]);
-        pool.set_iteration_generated_for_test(0, 5);
-        // Values at 1: 0, 3, 3; at 3: 0, 1, 7.
-        let result = strategy.select_for_stage(&pool, &[1.0, 3.0], 2, 5, 0);
-        assert_eq!(result.updates, Vec::<u32>::new());
-        assert_eq!(result.reactivations, Vec::<u32>::new());
+    fn level1_keeps_one_of_two_identical_cuts() {
+        let mut pool =
+            scored_pool_from_lines(&[(0.0, 0.0), (7.0, 0.0), (7.0, 0.0), (0.0, 0.0)], &[0.0; 4]);
+        select_level1(&mut pool);
+        assert_eq!(active_slots(&pool), BTreeSet::from([1]));
+    }
+
+    /// A pool that stores trial states with one slot per reference cut;
+    /// `scored_active` gives each scored slot's starting flag.
+    fn pool_from_reference(cuts: &[RefCut], scored_active: impl Fn(usize) -> bool) -> CutPool {
+        let mut pool = CutPool::new(cuts.len(), cuts[0].coefficients.len(), 1, 0);
+        pool.enable_trial_states();
+        for (slot, cut) in cuts.iter().enumerate() {
+            let (origin, scored, active) = match cut.role {
+                RefRole::Vacant => continue,
+                RefRole::Generated => (SlotOrigin::Generated, true, scored_active(slot)),
+                RefRole::ScoredPrefix => (SlotOrigin::Prefix, true, scored_active(slot)),
+                RefRole::StatelessPrefix { active } => (SlotOrigin::Prefix, false, active),
+            };
+            pool.add_cut(NodeId(0), slot as u64, 0, cut.intercept, &cut.coefficients);
+            pool.set_role_for_test(slot, SlotRole { origin, scored });
+            pool.set_active(slot as u32, active);
+        }
+        pool
+    }
+
+    fn scored_slots(pool: &CutPool) -> Vec<usize> {
+        (0..pool.populated())
+            .filter(|&slot| pool.role(slot).scored)
+            .collect()
+    }
+
+    /// Stores `states[i]` at `slots[i]`.
+    fn store_states(pool: &mut CutPool, slots: &[usize], states: &[Vec<f64>]) {
+        assert!(states.len() <= slots.len(), "more states than slots");
+        for (&slot, state) in slots.iter().zip(states) {
+            pool.set_trial_state_for_test(slot, state);
+        }
+    }
+
+    /// derived: `active_after` of the reference rule, whose fixtures hold scored
+    /// generated cuts, scored and stateless loaded cuts and a vacant slot. A
+    /// scored cut's starting flag is an output of the rule, so both starts give
+    /// the same set.
+    #[test]
+    fn level1_follows_the_reference_rule_on_every_fixture() {
+        for (name, (cuts, states)) in fixtures() {
+            for scored_start_active in [true, false] {
+                let mut pool = pool_from_reference(&cuts, |_| scored_start_active);
+                let slots = scored_slots(&pool);
+                store_states(&mut pool, &slots, &states);
+                select_level1(&mut pool);
+                assert_eq!(
+                    active_slots(&pool),
+                    active_after(&cuts, &states),
+                    "{name}, scored cuts starting active: {scored_start_active}"
+                );
+            }
+        }
     }
 
     /// derived: the cuts at `(iteration, pass)` `(0, 0)`, `(1, 0)`, `(1, 1)` of a
@@ -2029,15 +2138,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Level1 kernel against the reference rule
+    // Level1 against the reference rule
     // -----------------------------------------------------------------------
 
-    const LEVEL1: CutSelectionStrategy = CutSelectionStrategy::Level1 {
-        check_frequency: 1,
-        tie_tolerance: 1e-10,
-    };
-
-    const STATE_COUNTS: RangeInclusive<usize> = 1..=40;
+    const CUT_COUNTS: RangeInclusive<usize> = 2..=40;
 
     #[derive(Debug)]
     struct PoolDraw {
@@ -2049,11 +2153,11 @@ mod tests {
 
     prop_compose! {
         /// Integer-valued cuts and states: every cut value and every
-        /// power-of-two rescaling of them is exact in `f64`.
+        /// power-of-two rescaling of them is exact in `f64`. A pool stores a
+        /// state with a cut, so a draw holds at most one state per cut.
         fn pool_draw()(
-            cut_count in 2..=40usize,
+            (cut_count, state_count) in CUT_COUNTS.prop_flat_map(|cuts| (Just(cuts), 1..=cuts)),
             dimension in 1..=4usize,
-            state_count in STATE_COUNTS,
         )(
             intercepts in prop::collection::vec((-50..=50i32).prop_map(f64::from), cut_count),
             coefficients in prop::collection::vec(
@@ -2070,11 +2174,8 @@ mod tests {
         }
     }
 
-    /// Cuts generated at iteration 1, so every one is eligible for a selection
-    /// run at iteration 2.
-    fn pool_and_reference(draw: &PoolDraw, scale: f64) -> (CutPool, Vec<RefCut>) {
-        let reference: Vec<RefCut> = draw
-            .intercepts
+    fn reference_cuts(draw: &PoolDraw, scale: f64) -> Vec<RefCut> {
+        draw.intercepts
             .iter()
             .zip(&draw.coefficients)
             .map(|(intercept, coefficients)| RefCut {
@@ -2082,27 +2183,30 @@ mod tests {
                 coefficients: coefficients.iter().map(|c| c * scale).collect(),
                 role: RefRole::Generated,
             })
-            .collect();
-        let mut pool = CutPool::new(reference.len(), draw.coefficients[0].len(), 1, 0);
-        for (slot, (cut, &active)) in reference.iter().zip(&draw.active).enumerate() {
-            pool.add_cut(NodeId(0), slot as u64, 0, cut.intercept, &cut.coefficients);
-            pool.set_iteration_generated_for_test(slot, 1);
-            pool.set_active(slot as u32, active);
-        }
-        (pool, reference)
+            .collect()
     }
 
-    fn active_after_selection(pool: &mut CutPool, states: &[Vec<f64>]) -> BTreeSet<usize> {
-        let updates = LEVEL1.select_for_stage(pool, &states.concat(), states.len(), 2, 0);
-        pool.apply_updates(&updates);
-        (0..pool.populated())
-            .filter(|&slot| pool.is_active(slot))
-            .collect()
+    /// The active set after one selection run on the draw's cuts scaled by
+    /// `scale`, with `states[i]` stored at `slots[i]`.
+    fn active_after_level1(
+        draw: &PoolDraw,
+        scale: f64,
+        slots: &[usize],
+        states: &[Vec<f64>],
+    ) -> BTreeSet<usize> {
+        let mut pool = pool_from_reference(&reference_cuts(draw, scale), |slot| draw.active[slot]);
+        store_states(&mut pool, slots, states);
+        select_level1(&mut pool);
+        active_slots(&pool)
+    }
+
+    fn first_slots(draw: &PoolDraw) -> Vec<usize> {
+        (0..draw.intercepts.len()).collect()
     }
 
     #[test]
     fn property_generator_crosses_the_block_size() {
-        assert!(*STATE_COUNTS.end() > M_BLOCK);
+        assert!(*CUT_COUNTS.end() > M_BLOCK);
     }
 
     proptest! {
@@ -2113,17 +2217,10 @@ mod tests {
         })]
 
         #[test]
-        fn level1_kernel_matches_the_reference_rule_on_tie_free_states(draw in pool_draw()) {
-            let (mut pool, reference) = pool_and_reference(&draw, 1.0);
-            let unique_maximiser = draw.states.iter().all(|state| {
-                let values: Vec<f64> = reference.iter().map(|cut| value(cut, state)).collect();
-                let maximum = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-                values.iter().filter(|&&v| v == maximum).count() == 1
-            });
-            prop_assume!(unique_maximiser);
+        fn level1_matches_the_reference_rule(draw in pool_draw()) {
             prop_assert_eq!(
-                active_after_selection(&mut pool, &draw.states),
-                selected(&reference, &draw.states)
+                active_after_level1(&draw, 1.0, &first_slots(&draw), &draw.states),
+                active_after(&reference_cuts(&draw, 1.0), &draw.states)
             );
         }
 
@@ -2132,36 +2229,35 @@ mod tests {
             draw in pool_draw(),
             duplicates in prop::collection::vec(
                 any::<prop::sample::Index>(),
-                0..=*STATE_COUNTS.end(),
+                0..=*CUT_COUNTS.end(),
             ),
-            order_keys in prop::collection::vec(any::<u32>(), 2 * *STATE_COUNTS.end()),
+            slot_keys in prop::collection::vec(any::<u32>(), *CUT_COUNTS.end()),
         ) {
+            let slots = first_slots(&draw);
             let mut states = draw.states.clone();
             states.extend(
                 duplicates
                     .iter()
+                    .take(slots.len() - draw.states.len())
                     .map(|index| draw.states[index.index(draw.states.len())].clone()),
             );
-            let mut order: Vec<usize> = (0..states.len()).collect();
-            order.sort_by_key(|&i| order_keys[i]);
-            let reordered: Vec<Vec<f64>> = order.iter().map(|&i| states[i].clone()).collect();
+            let mut permuted_slots = slots.clone();
+            permuted_slots.sort_by_key(|&slot| slot_keys[slot]);
 
-            let (mut original_pool, _) = pool_and_reference(&draw, 1.0);
-            let (mut reordered_pool, _) = pool_and_reference(&draw, 1.0);
             prop_assert_eq!(
-                active_after_selection(&mut original_pool, &draw.states),
-                active_after_selection(&mut reordered_pool, &reordered)
+                active_after_level1(&draw, 1.0, &slots, &draw.states),
+                active_after_level1(&draw, 1.0, &permuted_slots, &states)
             );
         }
 
         #[test]
         fn level1_selection_is_idempotent(draw in pool_draw()) {
-            let (mut pool, _) = pool_and_reference(&draw, 1.0);
-            active_after_selection(&mut pool, &draw.states);
-            let second =
-                LEVEL1.select_for_stage(&pool, &draw.states.concat(), draw.states.len(), 2, 0);
+            let mut pool =
+                pool_from_reference(&reference_cuts(&draw, 1.0), |slot| draw.active[slot]);
+            store_states(&mut pool, &first_slots(&draw), &draw.states);
+            select_level1(&mut pool);
             prop_assert_eq!(
-                second,
+                select_level1(&mut pool),
                 CutActivityUpdates {
                     stage_index: 0,
                     updates: vec![],
@@ -2173,11 +2269,10 @@ mod tests {
         #[test]
         fn adding_a_state_never_deactivates_a_selected_cut(draw in pool_draw()) {
             prop_assume!(draw.states.len() >= 2);
+            let slots = first_slots(&draw);
             let (without_last, last) = draw.states.split_at(draw.states.len() - 1);
-            let (mut fewer_pool, _) = pool_and_reference(&draw, 1.0);
-            let (mut more_pool, _) = pool_and_reference(&draw, 1.0);
-            let fewer = active_after_selection(&mut fewer_pool, without_last);
-            let more = active_after_selection(&mut more_pool, &draw.states);
+            let fewer = active_after_level1(&draw, 1.0, &slots, without_last);
+            let more = active_after_level1(&draw, 1.0, &slots, &draw.states);
             prop_assert!(
                 fewer.is_subset(&more),
                 "adding the state {last:?} deactivated {:?}",
@@ -2190,11 +2285,10 @@ mod tests {
             draw in pool_draw(),
             exponent in -20..=20i32,
         ) {
-            let (mut unscaled_pool, _) = pool_and_reference(&draw, 1.0);
-            let (mut scaled_pool, _) = pool_and_reference(&draw, 2.0_f64.powi(exponent));
+            let slots = first_slots(&draw);
             prop_assert_eq!(
-                active_after_selection(&mut unscaled_pool, &draw.states),
-                active_after_selection(&mut scaled_pool, &draw.states)
+                active_after_level1(&draw, 1.0, &slots, &draw.states),
+                active_after_level1(&draw, 2.0_f64.powi(exponent), &slots, &draw.states)
             );
         }
     }
@@ -2206,7 +2300,7 @@ mod tests {
     /// Build a 100-cut, 1-D pool whose intercepts and coefficients are
     /// deterministic functions of the slot index — designed so that different
     /// cuts achieve the max at different trial points, exercising both
-    /// Level1's "any-max" and Lml1's "oldest-at-max" branches.
+    /// Dominated's "any-max" and Lml1's "oldest-at-max" branches.
     #[allow(clippy::cast_precision_loss)]
     fn make_determinism_pool() -> CutPool {
         const N: usize = 100;
@@ -2640,5 +2734,54 @@ mod tests {
         let via_select = strategy.select(&pool, &[0.0], 10);
         assert!(via_select.updates.is_empty());
         assert!(via_select.reactivations.is_empty());
+    }
+
+    /// derived: at the state 0 the cut values are 1, 5 and 3, so `Dominated` at a
+    /// zero threshold deactivates slots 0 and 2 of the same pool; `Level1` and
+    /// `Dynamic` are not served by the kernel.
+    #[test]
+    fn the_windowed_kernel_selects_nothing_for_level1_or_dynamic() {
+        let mut pool = CutPool::new(3, 1, 1, 0);
+        pool.add_cut(NodeId(0), 0, 0, 1.0, &[0.0]);
+        pool.add_cut(NodeId(0), 1, 0, 5.0, &[0.0]);
+        pool.add_cut(NodeId(0), 2, 0, 3.0, &[0.0]);
+        let no_update = |stage_index| CutActivityUpdates {
+            stage_index,
+            updates: vec![],
+            reactivations: vec![],
+        };
+
+        let dominated = CutSelectionStrategy::Dominated {
+            threshold: 0.0,
+            check_frequency: 1,
+        };
+        assert_eq!(
+            dominated.select_for_stage(&pool, &[0.0], 1, 10, 4).updates,
+            vec![0, 2]
+        );
+
+        let level1 = CutSelectionStrategy::Level1 {
+            check_frequency: 1,
+            tie_tolerance: 1e-10,
+        };
+        let dynamic = CutSelectionStrategy::Dynamic {
+            k1: None,
+            k2: 5,
+            nadic: 10,
+            epsilon_viol: 1e-10,
+            start_iteration: 2,
+        };
+        for strategy in [level1, dynamic] {
+            assert_eq!(
+                strategy.select_for_stage(&pool, &[0.0], 1, 10, 4),
+                no_update(4),
+                "{strategy:?}"
+            );
+            assert_eq!(
+                strategy.select(&pool, &[0.0], 10),
+                no_update(0),
+                "{strategy:?}"
+            );
+        }
     }
 }

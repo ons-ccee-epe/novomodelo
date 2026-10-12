@@ -40,7 +40,9 @@
 //! [`branching_tree_setup_enumerated_with_selection`] and
 //! [`oracle_chain_setup_with_selection`], whose pools hold cuts of several
 //! gradients, and assert that with selection on `final_lb` stays at or below
-//! the optimum, a cut is deactivated, and both bounds still close.
+//! the optimum, a cut is deactivated, both bounds still close, and of the
+//! bit-identical cuts a converged run keeps generating only the lowest slot
+//! stays active.
 //!
 //! # LP tolerance
 //!
@@ -69,6 +71,7 @@ use std::sync::mpsc::{self, Sender};
 
 use novomodelo_core::TrainingEvent;
 use novomodelo_io::config::SelectionMethod;
+use novomodelo_sddp::cut::CutPool;
 use novomodelo_sddp::setup::{
     NodeGraph, NodeId, NodeOpenings, NodePos, NodeRuntime, NodeSuccessor, OpeningSource, StageIdx,
 };
@@ -238,11 +241,70 @@ fn distinct_cut_gradients(setup: &StudySetup, pool_id: usize) -> usize {
         .len()
 }
 
+/// The intercept and coefficient bits of each populated cut, in slot order.
+fn cut_bits(pool: &CutPool) -> Vec<Vec<u64>> {
+    (0..pool.populated())
+        .map(|slot| {
+            std::iter::once(pool.intercept(slot))
+                .chain(pool.coefficient_row(slot).iter().copied())
+                .map(f64::to_bits)
+                .collect()
+        })
+        .collect()
+}
+
+/// derived: bit-identical cuts have equal values at every state, so among them
+/// only the lowest slot can own one; and selection ran last at the final
+/// iteration, so the owner of every stored state is active.
+fn assert_identical_cuts_keep_their_lowest_slot(
+    setup: &StudySetup,
+    interior_pools: &[usize],
+    fixture: &str,
+) {
+    for &pool_id in interior_pools {
+        let pool = &setup.fcf.pools[pool_id];
+        let cuts = cut_bits(pool);
+        let lowest_identical = |slot: usize| {
+            cuts.iter()
+                .position(|cut| *cut == cuts[slot])
+                .expect("a cut is identical to itself")
+        };
+        assert!(
+            (0..cuts.len()).any(|slot| lowest_identical(slot) < slot),
+            "{fixture} pool {pool_id} must hold a pair of bit-identical cuts"
+        );
+        assert!(
+            pool.stored_trial_states() > 0,
+            "{fixture} pool {pool_id} must store a trial state"
+        );
+        for slot in 0..cuts.len() {
+            assert!(
+                !pool.is_active(slot) || lowest_identical(slot) == slot,
+                "{fixture} pool {pool_id}: slot {slot} is active and identical to the lower \
+                 slot {}",
+                lowest_identical(slot)
+            );
+            if pool.trial_state(slot).is_some() {
+                let owner = pool.state_owner(slot).unwrap_or_else(|| {
+                    panic!("{fixture} pool {pool_id}: the state at slot {slot} is unowned")
+                });
+                assert!(
+                    pool.is_active(owner),
+                    "{fixture} pool {pool_id}: slot {owner} owns the state at slot {slot} and \
+                     is inactive"
+                );
+            }
+        }
+    }
+}
+
 /// Train `setup` with selection on and assert, in order: an interior node
 /// exists for selection to act on, an interior pool holds cuts of different
 /// gradients (the fixture's value function has a visited breakpoint),
 /// `final_lb` does not exceed `optimum`, selection deactivated an interior cut,
-/// and both bounds close to `optimum` within [`REL_TOL`]/[`ABS_TOL`].
+/// each interior pool keeps the lowest slot of its bit-identical cuts and the
+/// owner of every stored state, and both bounds close to `optimum` within
+/// [`REL_TOL`]/[`ABS_TOL`].
 fn assert_selection_stays_below_and_closes(mut setup: StudySetup, optimum: f64, fixture: &str) {
     let interior_pools = interior_cut_pools(&setup.inputs.node_graph);
     assert!(
@@ -287,6 +349,7 @@ fn assert_selection_stays_below_and_closes(mut setup: StudySetup, optimum: f64, 
         "{fixture} selection must deactivate an interior cut within \
          {LEVEL1_MAX_ITERATIONS} iterations: {power:?}"
     );
+    assert_identical_cuts_keep_their_lowest_slot(&setup, &interior_pools, fixture);
 
     assert!(
         close(lb, optimum),

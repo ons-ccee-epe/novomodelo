@@ -247,7 +247,7 @@ where
             total_forward_passes,
         );
 
-        // Read by value-based selection scoring and by the `exports.states`
+        // Read by the windowed selection kernel and by the `exports.states`
         // checkpoint write.
         let needs_archive = config
             .cut_management
@@ -1129,9 +1129,9 @@ where
             let root_pool = node_graph.nodes[root_node].pool_id;
             let budget_set = self.config.cut_management.budget.is_some();
 
-            // Selection scores interior cut-generating nodes only, each at the
-            // states archived for that node; terminal leaves gain no cuts. The
-            // root pool is recorded here and never scored.
+            // Selection judges interior cut-generating nodes only; terminal
+            // leaves gain no cuts. The root pool is recorded here and never
+            // selected.
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             {
                 let root_cut_pool = &self.fcf.pools[root_pool];
@@ -1156,11 +1156,11 @@ where
             // (non-leaf) node always owns its own pool, so scoring by node is
             // per-pool; the visited states are read by NODE position.
             let interior_nodes = &self.interior_cut_nodes;
-            let pools = &self.fcf.pools;
             let cut_state_layouts = self.training_ctx.cut_state_layouts;
             let n_global = archive_ref.map_or(0, VisitedStatesArchive::packing_stride);
-            // Sequential (not `into_par_iter`): the m-block kernel already
-            // saturates the cores via its inner parallelism.
+            // Sequential (not `into_par_iter`): the m-block kernel and the
+            // ownership scan already saturate the cores via their inner
+            // parallelism.
             let mut scratch = std::mem::take(&mut self.cut_selection_state_scratch);
             let mut deactivations: Vec<(usize, usize, CutActivityUpdates, f64)> =
                 Vec::with_capacity(interior_nodes.len());
@@ -1168,29 +1168,40 @@ where
             for &node_pos in interior_nodes {
                 let node = &node_graph.nodes[node_pos];
                 let pool_id = node.pool_id;
-                let pool = &pools[pool_id];
-                let proj = &cut_state_layouts[pool_id];
-                let n_slots = proj.n_slots();
-                let n_trials = archive_ref.map_or(0, |a| a.count(node_pos));
-                let global_states =
-                    archive_ref.map_or(&[] as &[f64], |a| a.states_for_node(node_pos));
-                scratch.clear();
-                scratch.resize(n_trials * n_slots, 0.0);
-                for m in 0..n_trials {
-                    proj.gather_trial_state(
-                        &global_states[m * n_global..(m + 1) * n_global],
-                        &mut scratch[m * n_slots..(m + 1) * n_slots],
-                    );
-                }
-                let start = Instant::now();
-                let deact = strategy.select_for_stage(
-                    pool,
-                    &scratch,
-                    n_trials,
-                    iteration,
-                    node.stage.0 as u32,
-                );
-                let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+                let stage_index = node.stage.0 as u32;
+                let (deact, elapsed_ms) = match strategy {
+                    Level1 { .. } => {
+                        let pool = &mut self.fcf.pools[pool_id];
+                        let start = Instant::now();
+                        pool.update_ownership();
+                        let deact = pool.ownership_activity_updates(stage_index);
+                        (deact, start.elapsed().as_secs_f64() * 1000.0)
+                    }
+                    Lml1 { .. } | Dominated { .. } | Dynamic { .. } => {
+                        let proj = &cut_state_layouts[pool_id];
+                        let n_slots = proj.n_slots();
+                        let n_trials = archive_ref.map_or(0, |a| a.count(node_pos));
+                        let global_states =
+                            archive_ref.map_or(&[] as &[f64], |a| a.states_for_node(node_pos));
+                        scratch.clear();
+                        scratch.resize(n_trials * n_slots, 0.0);
+                        for m in 0..n_trials {
+                            proj.gather_trial_state(
+                                &global_states[m * n_global..(m + 1) * n_global],
+                                &mut scratch[m * n_slots..(m + 1) * n_slots],
+                            );
+                        }
+                        let start = Instant::now();
+                        let deact = strategy.select_for_stage(
+                            &self.fcf.pools[pool_id],
+                            &scratch,
+                            n_trials,
+                            iteration,
+                            stage_index,
+                        );
+                        (deact, start.elapsed().as_secs_f64() * 1000.0)
+                    }
+                };
                 deactivations.push((node.stage.0, pool_id, deact, elapsed_ms));
             }
             self.cut_selection_state_scratch = scratch;

@@ -3042,7 +3042,7 @@ mod branching_gate_roster {
 
 mod selection_on_determinism {
     //! Selection-on determinism gates: train with `level1`, with the lazy method
-    //! `dynamic`, or with `level1` under the active-cut budget, and assert the
+    //! `dynamic`, or with the active-cut budget, alone and over `level1`, and assert the
     //! cut pools, their provenance and binding counters, and the reported bounds
     //! are bit-identical across 1, 2 and 4 threads, between a single rank and
     //! the `Rank0Of2` two-rank stub, and, for `level1` alone, across permuted
@@ -3061,8 +3061,8 @@ mod selection_on_determinism {
     //! `inflow_lags` on one interior stage, so its pools project different
     //! cut-state dimensions, which its gates assert; they train a copy with five
     //! openings per stage, because as shipped (one opening) every later cut
-    //! duplicates the first, which leaves `level1` only ties and `dynamic` one
-    //! distinct cut.
+    //! duplicates the first, which leaves `level1` and `dynamic` one distinct
+    //! cut.
     //!
     //! The rank gates train one forward pass, the only count at which
     //! `Rank0Of2` is faithful: rank 0 owns that pass, so the stub exercises the
@@ -3577,6 +3577,58 @@ mod selection_on_determinism {
                         tie_tolerance: 1e-10,
                         check_frequency: 1,
                     });
+                    config.training.cut_selection.max_active_per_stage = Some(2);
+                })
+            },
+            selection_power,
+            |power| power.budget_evictions > 0,
+            "the budget evicted no cut",
+        );
+    }
+
+    /// derived: with no selection an interior pool gains one active cut per
+    /// forward pass per iteration, so it holds 8 at iteration 2 against a cap
+    /// of 6, 4 of them from iteration 1 and free to evict.
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn budget_alone_thread_shapes_agree() {
+        assert_thread_shapes_agree(
+            || {
+                fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
+                    config.training.selection =
+                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.stopping_rules =
+                        Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
+                    config.training.cut_selection.selection = None;
+                    config.training.cut_selection.max_active_per_stage = Some(6);
+                })
+            },
+            selection_power,
+            |power| power.budget_evictions > 0,
+            "the budget evicted no cut",
+        );
+    }
+
+    /// derived: with no selection an interior pool gains one active cut per
+    /// iteration under one forward pass, so it holds 3 at iteration 3 against a
+    /// cap of 2, 2 of them from earlier iterations and free to evict.
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn budget_alone_two_rank_stub_matches_single_rank() {
+        assert_two_rank_stub_matches_single_rank(
+            || {
+                fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
+                    config.training.selection =
+                        Some(TrainingSelection::Sampled { forward_passes: 1 });
+                    config.training.stopping_rules =
+                        Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
+                    config.training.cut_selection.selection = None;
                     config.training.cut_selection.max_active_per_stage = Some(2);
                 })
             },

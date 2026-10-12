@@ -550,6 +550,30 @@ impl CutPool {
             .map_or(0, |ownership| ownership.owned_by(slot))
     }
 
+    /// The activity changes the ownership record implies: an active scored slot
+    /// that owns no stored state is a deactivation, an inactive scored slot that
+    /// owns one is a reactivation, and an unscored or vacant slot is in neither
+    /// list. Valid after [`update_ownership`](CutPool::update_ownership); the
+    /// pool is not modified.
+    #[must_use]
+    pub fn ownership_activity_updates(&self, stage_index: u32) -> CutActivityUpdates {
+        let mut updates = Vec::new();
+        let mut reactivations = Vec::new();
+        #[allow(clippy::cast_possible_truncation)]
+        for slot in (0..self.populated_count).filter(|&slot| self.roles[slot].scored) {
+            match (self.active[slot], self.owned_states(slot) > 0) {
+                (true, false) => updates.push(slot as u32),
+                (false, true) => reactivations.push(slot as u32),
+                (true, true) | (false, false) => {}
+            }
+        }
+        CutActivityUpdates {
+            stage_index,
+            updates,
+            reactivations,
+        }
+    }
+
     /// Return the slot bound — one past the highest written slot, independent of
     /// activity state. A slot below it can be vacant.
     ///
@@ -698,6 +722,27 @@ impl CutPool {
             .expect("set_trial_state_for_test: the pool stores no trial states")
             .claim(slot)
             .copy_from_slice(state);
+    }
+
+    /// Test-only: drop the trial state stored at `slot`; the ownership record is
+    /// stale until [`rebuild_ownership`](CutPool::rebuild_ownership).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `slot` holds no trial state.
+    #[cfg(test)]
+    pub(crate) fn clear_trial_state_for_test(&mut self, slot: usize) {
+        assert!(
+            self.trial_state(slot).is_some(),
+            "clear_trial_state_for_test: slot {slot} holds no trial state"
+        );
+        let mut kept = TrialStates::new(self.capacity, self.state_dimension);
+        for other in (0..self.capacity).filter(|&other| other != slot) {
+            if let Some(state) = self.trial_state(other) {
+                kept.claim(other).copy_from_slice(state);
+            }
+        }
+        self.trial_states = Some(kept);
     }
 
     /// Test-only: overwrite one slot's metadata directly, bypassing
@@ -1979,6 +2024,32 @@ mod tests {
         for slot in [0, 1, 2, 5] {
             assert_eq!(pool.trial_state(slot), None, "slot {slot}");
         }
+    }
+
+    /// derived: the flat cuts are worth 9, 1, 5 and 3 at every state. Slot 0 was
+    /// written before the pool stored states, so it is not live: slot 2 owns
+    /// both states, the scored slots 1 and 3 own none, and slot 0, the highest
+    /// cut, is in neither list whatever its flag.
+    #[test]
+    fn ownership_activity_updates_leave_an_unscored_generated_cut_alone() {
+        let mut pool = CutPool::new(4, 1, 1, 0);
+        pool.add_cut(NodeId(0), 0, 0, 9.0, &[0.0]);
+        pool.enable_trial_states();
+        pool.add_cut(NodeId(0), 1, 0, 1.0, &[0.0]);
+        pool.add_cut(NodeId(0), 2, 0, 5.0, &[0.0]);
+        pool.add_cut(NodeId(0), 3, 0, 3.0, &[0.0]);
+        pool.set_trial_state_for_test(1, &[0.0]);
+        pool.set_trial_state_for_test(2, &[1.0]);
+        pool.update_ownership();
+        let expected = CutActivityUpdates {
+            stage_index: 7,
+            updates: vec![1, 3],
+            reactivations: vec![],
+        };
+
+        assert_eq!(pool.ownership_activity_updates(7), expected);
+        pool.set_active(0, false);
+        assert_eq!(pool.ownership_activity_updates(7), expected);
     }
 
     #[test]

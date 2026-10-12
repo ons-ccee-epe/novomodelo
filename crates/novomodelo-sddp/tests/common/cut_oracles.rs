@@ -642,7 +642,10 @@ fn check_pool(
 
                 // Under-tightness only: a cut frozen at another trial state may sit above
                 // this point's own successor value (the paper's §2.5 gap); the frozen
-                // comparator above is what bounds the cuts from above.
+                // comparator above is what bounds the cuts from above. Under `level1`
+                // the active cuts reach this point's value because a final-iteration
+                // trial point is a stored state: its owner is active after a selection
+                // run and is worth at least the cut computed there.
                 if is_trial && reactivated == 0 {
                     report.under_tightness_points_checked += 1;
                     let evaluated = pool_t.evaluate_at_state(&proj);

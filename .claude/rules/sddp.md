@@ -1135,9 +1135,14 @@ maximum over the live set, compared exactly, with no tolerance. A slot is live
 when it is scored, or when it is an unscored loaded (`Prefix`) slot whose
 activity flag is set; a `Vacant` slot and an unscored `Generated` slot are not
 live. `is_live` owns the predicate. The activity flag of a scored slot is never
-read: it is an output of selection, derived from this record, and a deactivated
-scored cut still owns the states it wins. `selection_reference::owners` is the
-brute-force statement of the rule that the record is compared with.
+read: it is an output of selection, derived from this record by
+`CutPool::ownership_activity_updates`, and a deactivated scored cut still owns
+the states it wins. The flag of an unscored loaded slot is an input: a scan
+reads it once, so a flip after the scan leaves the record stale until
+`rebuild_ownership`. Nothing flips one during training: the budget skips loaded
+cuts and the derivation lists scored slots only.
+`selection_reference::owners` is the brute-force statement of the rule that the
+record is compared with.
 
 `CutPool` keeps, with the trial-state store, a record with one `f64` and two
 `u32` per slot: the best value and the owning slot of the state stored at the
@@ -1215,6 +1220,143 @@ Read: `cut/ownership.rs` (`Ownership::update`, `is_live`, `takes_over`,
 `no_live_cut_leaves_a_state_unowned` (`cut/selection_reference.rs`: the rule
 leaves a state unowned when no slot is live, which a stored state's scored slot
 rules out in the record).
+
+## `level1` keeps one owner per stored state
+
+Under `level1` a selection run sets the activity flag of every scored cut of an
+interior pool from the ownership record (the section above): active when the
+cut owns at least one stored state, inactive when it owns none.
+`CutPool::ownership_activity_updates` is the derivation. It reads each slot's
+role, its flag and `owned_states`, and compares no cut values: an active scored
+slot that owns no state is a deactivation, an inactive scored slot that owns one
+is a reactivation. No tolerance, no iteration counter and no strategy parameter
+enter it, so `level1.tie_tolerance` has no effect on a run and a cut of the
+current iteration is judged like any other.
+
+By slot role:
+
+- generated and scored (every cut a `level1` run generates in an interior
+  pool): live whatever its flag, active after a run exactly when it owns a
+  state;
+- loaded and scored: the same. No load writes this role; the test setter does;
+- loaded and stateless: live while its flag is set, and in neither list, so it
+  keeps the flag it was loaded with. While active it can own a state and keep a
+  tied generated cut above it inactive;
+- generated and stateless (written before the pool stored states): not live and
+  in neither list;
+- vacant: not live, in neither list, never activated.
+
+`run_cut_management` runs it in every iteration `should_run` holds, for the pool
+of each node of `interior_cut_nodes`: `update_ownership`, then
+`apply_updates(ownership_activity_updates(..))`. It reads no archive, and a
+`level1` run without `exports.states` allocates none
+(`CutSelectionStrategy::scores_visited_states` is false for `Level1`). The
+windowed kernel (`select_for_stage`) serves `Lml1` and `Dominated` and returns
+no update for `Level1`. The call site meets what the update relies on:
+
+- `TrainingSession::new` enabled the store on these pools before the first cut,
+  so every generated cut there is scored;
+- the backward pass has ended, so every cut of the iteration, a peer's
+  included, is written and its trial state stored;
+- every slot written since the last run lies above the slots written before it
+  (the append-only section);
+- nothing has flipped a loaded cut's flag since the last run;
+- the derivation walks slots below `populated()` and lists scored slots only,
+  so a vacant slot is never activated;
+- no collective is involved: every rank holds the same cuts and states and
+  runs selection in the same iterations, from the broadcast config.
+
+**Envelope invariant.** Right after a selection run in which the budget evicts
+nothing, each stored state's owner is active, so the active cuts of the pool
+attain the maximum of its live cuts at every stored state. Both conditions are
+needed. A state stored after the run can be owned by an inactive cut until the
+next run. And the budget, which runs after selection in the same iteration,
+clears the flag of scored cuts that own states.
+
+**Budget.** The record does not read the flag the budget clears, so an evicted
+cut still owns its states. The next selection run finds it inactive and owning a
+state and reactivates it, and the budget is applied again in that iteration; the
+template refreeze that follows encodes the flags the budget left. With no budget
+a deactivated cut returns only when it comes to own a state.
+
+The wrong-but-compiling alternatives, each shown by a mutation:
+
+- a tolerance band in the derivation (keeping a scored cut whose value is
+  within a tolerance of some state's best): duplicates and near-ties stay
+  active and the active set is no longer the set of owners. Under it
+  `level1_gives_a_tied_state_to_the_lowest_slot`,
+  `level1_deactivates_a_generated_cut_tied_with_a_lower_loaded_cut`,
+  `level1_keeps_one_of_two_identical_cuts`,
+  `level1_follows_the_reference_rule_on_every_fixture`,
+  `level1_matches_the_reference_rule`,
+  `level1_deactivates_cuts_in_a_training_run`,
+  `level1_keeps_the_owner_of_every_stored_state_after_a_training_run` and both
+  `with_level1` oracle legs fail;
+- exempting the cuts of the latest iteration: a new cut that owns no state
+  stays active. Under it
+  `level1_deactivates_a_current_iteration_cut_that_owns_no_state` fails, with
+  `level1_gives_a_tied_state_to_the_lowest_slot`,
+  `level1_keeps_one_of_two_identical_cuts`, the reference tests, the two
+  training tests above and both oracle legs;
+- reading the activity flag of a scored cut when deciding who competes: a
+  deactivated cut can never win a state again. Under it
+  `level1_reactivates_the_owner_of_a_new_state`,
+  `level1_drops_the_owner_of_a_state_that_left_the_window`,
+  `level1_follows_the_reference_rule_on_every_fixture` (which starts every
+  scored cut inactive in one of its two passes), the `level1` properties and
+  `level1_keeps_the_owner_of_every_stored_state_after_a_training_run` fail;
+- giving a tie to the highest slot (`>=` in `takes_over`): of two identical
+  cuts the newer survives. Under it
+  `level1_gives_a_tied_state_to_the_lowest_slot`,
+  `level1_keeps_one_of_two_identical_cuts` and the reference tests fail, and so
+  does the lowest-slot assertion of one `with_level1` oracle leg: the leg in
+  which an active cut has an identical twin, which is not the same leg on both
+  solver backends;
+- sending `Level1` through the windowed kernel and the per-node archive, which
+  on a multi-node level holds the siblings' states: the kernel returns no
+  update, so nothing is deactivated and the record is never brought up to
+  date. Under it `level1_deactivates_cuts_in_a_training_run`,
+  `level1_keeps_the_owner_of_every_stored_state_after_a_training_run`,
+  `level1_reactivates_an_owner_the_budget_evicted`,
+  `level1_tie_tolerance_no_longer_changes_a_run` (through its power check),
+  both oracle legs, `cut_oracles_hold_on_deactivated_cuts_under_level1` and the
+  `level1_` determinism gates fail;
+- a derivation that never emits a reactivation: an owner the budget evicted
+  stays inactive. Under it `level1_reactivates_an_owner_the_budget_evicted`,
+  `level1_reactivates_the_owner_of_a_new_state`,
+  `level1_drops_the_owner_of_a_state_that_left_the_window` and the reference
+  tests fail.
+
+Read: `cut/pool.rs` (`CutPool::ownership_activity_updates`, `update_ownership`,
+`apply_updates`, `enforce_budget`), `cut/ownership.rs` (`is_live`,
+`takes_over`), `cut/cut_selection.rs` (the module documentation,
+`CutSelectionStrategy::scores_visited_states`, `select_for_stage`),
+`training/session/mod.rs` (`run_cut_management`, `TrainingSession::new`),
+`cut/selection_reference.rs` (`active_after`). Pinned by, in
+`cut/cut_selection.rs`: `level1_selects_the_two_steep_cuts_of_paper_figure_four`,
+`level1_loses_the_middle_cut_of_paper_figure_four_at_an_unvisited_state`,
+`level1_reactivates_the_owner_of_a_new_state`,
+`level1_drops_the_owner_of_a_state_that_left_the_window`,
+`level1_gives_a_tied_state_to_the_lowest_slot`,
+`level1_deactivates_a_generated_cut_tied_with_a_lower_loaded_cut`,
+`level1_deactivates_a_current_iteration_cut_that_owns_no_state`,
+`level1_keeps_one_of_two_identical_cuts`,
+`level1_follows_the_reference_rule_on_every_fixture`,
+`level1_matches_the_reference_rule` and its sibling properties, and
+`the_windowed_kernel_selects_nothing_for_level1_or_dynamic`; in `cut/pool.rs`:
+`ownership_activity_updates_leave_an_unscored_generated_cut_alone`; in
+`tests/cut_basis.rs`: `level1_deactivates_cuts_in_a_training_run` (after a run,
+a scored cut is active exactly when it owns a stored state),
+`level1_keeps_the_owner_of_every_stored_state_after_a_training_run` (the
+envelope invariant, and the run's record against a rebuild),
+`level1_reactivates_an_owner_the_budget_evicted` (the budget paragraph, as
+existence over a run's events, which carry counts and no slot),
+`level1_tie_tolerance_no_longer_changes_a_run` and
+`a_level1_run_keeps_no_state_archive`; in `tests/extensive_form_oracle.rs`:
+`branching_tree_with_level1_stays_below_and_closes_to_the_extensive_form` and
+`chain_with_level1_stays_below_and_closes_to_the_extensive_form` (among
+bit-identical cuts only the lowest slot is active, every stored state's owner is
+active, and both bounds close).
 
 ## Binding activity is recorded only for a configured reader
 
