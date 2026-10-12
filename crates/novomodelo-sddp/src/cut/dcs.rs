@@ -1,7 +1,6 @@
 //! Dynamic Cut Selection (DCS): a per-solve lazy selection loop that grows the
 //! LP's active cut set within each solve until no candidate cut is violated by
-//! more than `epsilon_viol` (or a bounded inner-iteration cap is hit), rather
-//! than deactivating cuts at the pool level.
+//! more than `epsilon_viol`, rather than deactivating cuts at the pool level.
 //!
 //! [`DcsParams`] is a `Copy`, allocation-free carrier for the DCS
 //! hyperparameters, decoupled from the serde-stable

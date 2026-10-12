@@ -16,7 +16,7 @@
 //! - `state_exchange` — `ExchangeBuffers`: `allgatherv` of trial points between
 //!   the forward and backward passes.
 //! - `trajectory` — `TrajectoryRecord`: the forward→backward data unit.
-//! - `visited_states` — archived trial-point states for dominated cut selection.
+//! - `visited_states` — archived trial states for cut selection and state export.
 //! - `training_output` — converts the training summary plus event log into the
 //!   structured output the `novomodelo-io` writers consume.
 

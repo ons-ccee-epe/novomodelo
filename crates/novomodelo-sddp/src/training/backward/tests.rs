@@ -5306,8 +5306,8 @@ fn dcs_params_k1(start_iteration: u64, k1: Option<u32>) -> DcsParams {
 
 /// Exactness + "never spins": with `k1 = None` the DCS backward cut equals
 /// the all-cuts cut (intercept + every coefficient within 1e-9), and the
-/// lazy loop terminates — even with `max_inner_iterations = 1`, which forces
-/// the bounded TC-fallback branch — so it can never spin unbounded.
+/// lazy loop terminates — even with `max_inner_iterations = 1`, which lifts
+/// the per-round limit after one round — so it can never spin unbounded.
 #[test]
 fn backward_dcs_exactness_and_terminates() {
     let iteration = 5;
@@ -5320,8 +5320,8 @@ fn backward_dcs_exactness_and_terminates() {
         assert!((b - d).abs() < 1e-9, "coeff mismatch frozen {b} vs DCS {d}");
     }
 
-    // A 1-iteration cap forces the bounded TC fallback; the call must still
-    // return (no spin) and land on the exact all-cuts cut.
+    // A round cap of 1 lifts the per-round limit after one round; the call must
+    // still return (no spin) and land on the exact all-cuts cut.
     let tight = DcsParams {
         max_inner_iterations: 1,
         ..dcs_params(2)
@@ -5331,7 +5331,7 @@ fn backward_dcs_exactness_and_terminates() {
     for (b, d) in frozen_coefficients.iter().zip(&dcs_tc_coefficients) {
         assert!(
             (b - d).abs() < 1e-9,
-            "TC-fallback coeff mismatch frozen {b} vs DCS {d}"
+            "round-cap-1 coeff mismatch frozen {b} vs DCS {d}"
         );
     }
 }

@@ -89,7 +89,7 @@ pub struct BackwardPassInputs<'a, S: SolverInterface + Send, C: Communicator> {
     /// Pre-allocated cut synchronisation buffers for per-stage `allgatherv`.
     pub cut_sync_bufs: &'a mut CutSyncBuffers,
 
-    /// Optional visited-states archive for dominated cut selection.
+    /// Visited-states archive; `None` when the training session allocates none.
     pub visited_archive: Option<&'a mut VisitedStatesArchive>,
 
     /// Optional event channel for emitting [`TrainingEvent::WorkerTiming`] events.
@@ -204,8 +204,7 @@ pub struct BackwardPassState {
     /// increments across MPI ranks.
     pub(crate) global_increments_buf: Vec<u64>,
 
-    /// Packs real (non-padded) gathered state vectors when archiving visited
-    /// states for dominated cut selection.
+    /// Packs real (non-padded) gathered state vectors when archiving visited states.
     pub(crate) real_states_buf: Vec<f64>,
 
     /// Per-(worker, opening) gather buffer for backward-pass solver stats.

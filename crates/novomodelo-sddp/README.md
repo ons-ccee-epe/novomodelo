@@ -30,7 +30,8 @@ use, prefer `novomodelo-cli`, which wraps this crate.
   - `Lml1` — deactivates cuts that are not the oldest eligible within `tie_tolerance` at any visited state
   - `Dominated` — geometric dominance at visited states, using `threshold` as the tolerance
   - `Dynamic` — lazy incremental scheme (DCS): adds at most `nadic` cuts per inner re-solve round
-    (the inner loop repeats up to `max_inner_iterations` rounds per backward solve) that violate the
+    (after `max_inner_iterations` rounds in one solve the per-round limit is lifted and the loop
+    continues until no candidate is violated) that violate the
     current LP solution by more than `epsilon_viol` (the `CutSelectionStrategy::Dynamic` API field;
     the `config.json` key is `violation_tolerance`, which falls back to `tie_tolerance` when absent);
     never deactivates cuts from the pool

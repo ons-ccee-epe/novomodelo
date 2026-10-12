@@ -87,11 +87,6 @@ impl NodeStates {
 
 /// Multi-node archive of visited forward-pass states, one [`NodeStates`] per
 /// node.
-///
-/// Allocated when any [`CutSelectionStrategy`](crate::CutSelectionStrategy)
-/// variant is enabled (the value-evaluation kernel evaluates every populated cut
-/// at every archived state) or when state export is requested via
-/// [`EventConfig::export_states`](crate::config::EventConfig::export_states).
 #[derive(Debug, Clone)]
 pub struct VisitedStatesArchive {
     nodes: Vec<NodeStates>,

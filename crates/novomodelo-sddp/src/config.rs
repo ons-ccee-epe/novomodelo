@@ -190,9 +190,9 @@ pub struct EventConfig {
     /// and a cooperative writer never stores the signal level.
     pub shutdown_flag: Option<Arc<AtomicUsize>>,
 
-    /// Allocate the visited-states archive for state export. Also forced on when any
-    /// [`CutSelectionStrategy`] is enabled — the value-evaluation kernel scores every
-    /// cut at every archived state. Default `false`.
+    /// Allocate the visited-states archive for state export. A strategy that scores
+    /// visited states ([`CutSelectionStrategy::scores_visited_states`]) allocates it
+    /// whatever this flag says. Default `false`.
     pub export_states: bool,
 }
 

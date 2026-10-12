@@ -714,7 +714,7 @@ pub fn build_graph_manifest(node_graph: &NodeGraph, study_stage_ids: &[i32]) -> 
 
 /// Build per-stage [`StageStatesPayload`]s from the visited states archive.
 ///
-/// Returns an empty `Vec` if the archive is `None` (non-Dominated strategies).
+/// Returns an empty `Vec` if the archive is `None`.
 /// `archive` is indexed per NODE (one `NodeStates` per `node_graph` position);
 /// `stage_manifests` is indexed per POOL, one entry per `fcf.pools` slot —
 /// the same array [`build_stage_cuts_payloads`] indexes. A branching graph has
