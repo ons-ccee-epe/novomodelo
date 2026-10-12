@@ -939,10 +939,10 @@ mod cut_selection_determinism_realistic {
         );
     }
 
-    /// Exercises Level1 and Dominated to confirm determinism is not Lml1-specific;
+    /// Exercises Dominated to confirm determinism is not Lml1-specific;
     /// sized to run in <100 ms so it stays in the default (non-slow) suite.
     #[test]
-    fn select_for_stage_deterministic_level1_and_dominated_medium() {
+    fn select_for_stage_deterministic_dominated_medium() {
         const K: usize = 200;
         const D: usize = 155;
         const M: usize = 64;
@@ -950,16 +950,11 @@ mod cut_selection_determinism_realistic {
         let pool = make_pool(K, D, 0x0001_0002_0003_0004);
         let states = make_states(M, D, 0x0005_0006_0007_0008);
 
-        for strategy in [
-            CutSelectionStrategy::Level1 {
-                check_frequency: 1,
-                tie_tolerance: 1e-10,
-            },
-            CutSelectionStrategy::Dominated {
+        {
+            let strategy = CutSelectionStrategy::Dominated {
                 threshold: 0.01,
                 check_frequency: 1,
-            },
-        ] {
+            };
             let r1 = run_in_pool(1, || strategy.select(&pool, &states, 5));
             let r8 = run_in_pool(8, || strategy.select(&pool, &states, 5));
             assert_eq!(

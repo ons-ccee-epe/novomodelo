@@ -10069,9 +10069,9 @@ fn cut_selection_scores_reduced_projection_in_projected_space() {
     pool.add_cut(NodeId(0), 1, 0, 3.0, &[0.0]);
     pool.add_cut(NodeId(0), 2, 0, 0.5, &[0.0]);
 
-    let strategy = CutSelectionStrategy::Level1 {
+    let strategy = CutSelectionStrategy::Dominated {
+        threshold: 0.0,
         check_frequency: 1,
-        tie_tolerance: 0.0,
     };
 
     // Two trial points, packed at the global StateDim stride [storage, lag]:

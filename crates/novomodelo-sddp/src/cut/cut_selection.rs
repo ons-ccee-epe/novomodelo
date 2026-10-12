@@ -737,16 +737,16 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Level1 value-based kernel tests
+    // Dominated value-based kernel tests
     // -----------------------------------------------------------------------
 
     /// Pool with 3 cuts (intercepts [1,5,3], coeff all 0), state [0.0].
-    /// Level1 `tie_tolerance=0.0` → cut 1 (value 5) survives; cuts 0,2 deactivated.
+    /// Dominated `threshold=0.0` → cut 1 (value 5) survives; cuts 0,2 deactivated.
     #[test]
-    fn level1_deactivates_dominated_cuts_at_state() {
-        let strategy = CutSelectionStrategy::Level1 {
+    fn dominated_deactivates_cuts_below_the_maximum_at_a_state() {
+        let strategy = CutSelectionStrategy::Dominated {
+            threshold: 0.0,
             check_frequency: 5,
-            tie_tolerance: 0.0,
         };
         let mut pool = CutPool::new(3, 1, 1, 0);
         pool.add_cut(NodeId(0), 0, 0, 1.0, &[0.0]);
@@ -761,12 +761,12 @@ mod tests {
     }
 
     /// Pool with 3 cuts (intercepts [5,5,3]), state [0.0].
-    /// Level1 tie_tolerance=1e-10 → cuts 0 and 1 both survive (tie kept).
+    /// Dominated threshold=1e-10 → cuts 0 and 1 both survive (tie kept).
     #[test]
-    fn level1_retains_tied_cuts() {
-        let strategy = CutSelectionStrategy::Level1 {
+    fn dominated_retains_tied_cuts() {
+        let strategy = CutSelectionStrategy::Dominated {
+            threshold: 1e-10,
             check_frequency: 5,
-            tie_tolerance: 1e-10,
         };
         let mut pool = CutPool::new(3, 1, 1, 0);
         pool.add_cut(NodeId(0), 0, 0, 5.0, &[0.0]);
@@ -782,10 +782,10 @@ mod tests {
     }
 
     #[test]
-    fn level1_keeps_two_cuts_tied_at_the_maximum() {
-        let strategy = CutSelectionStrategy::Level1 {
+    fn dominated_keeps_two_cuts_tied_at_the_maximum() {
+        let strategy = CutSelectionStrategy::Dominated {
+            threshold: 0.0,
             check_frequency: 5,
-            tie_tolerance: 0.0,
         };
         // Two cuts with equal values at state [1.0]:
         // cut0: 1.0 + 2.0*1.0 = 3.0, cut1: 3.0 + 0.0*1.0 = 3.0 → tied, both survive.
@@ -800,10 +800,10 @@ mod tests {
     }
 
     #[test]
-    fn level1_deactivates_cuts_below_the_tolerance_band() {
-        let strategy = CutSelectionStrategy::Level1 {
+    fn dominated_deactivates_cuts_below_the_tolerance_band() {
+        let strategy = CutSelectionStrategy::Dominated {
+            threshold: 0.5,
             check_frequency: 5,
-            tie_tolerance: 0.5,
         };
         // Values at [0.0]: 1, 3, 2. max=3, cutoff=2.5: only cut1 is selected;
         // cut0 and cut2 fall below the band and are deactivated.
@@ -818,10 +818,10 @@ mod tests {
     }
 
     #[test]
-    fn level1_empty_metadata_returns_empty_set() {
-        let strategy = CutSelectionStrategy::Level1 {
+    fn dominated_empty_metadata_returns_empty_set() {
+        let strategy = CutSelectionStrategy::Dominated {
+            threshold: 1e-10,
             check_frequency: 5,
-            tie_tolerance: 1e-10,
         };
         let pool = CutPool::new(0, 1, 1, 0);
         let deact = strategy.select(&pool, &[], 10);
@@ -829,10 +829,10 @@ mod tests {
     }
 
     #[test]
-    fn level1_empty_states_returns_empty() {
-        let strategy = CutSelectionStrategy::Level1 {
+    fn dominated_empty_states_returns_empty() {
+        let strategy = CutSelectionStrategy::Dominated {
+            threshold: 1e-10,
             check_frequency: 5,
-            tie_tolerance: 1e-10,
         };
         let mut pool = CutPool::new(3, 1, 1, 0);
         pool.add_cut(NodeId(0), 0, 0, 1.0, &[0.0]);
@@ -847,7 +847,7 @@ mod tests {
     // Lml1 value-based kernel tests
     // -----------------------------------------------------------------------
 
-    /// Same pool as `level1_retains_tied_cuts` (intercepts [5,5,3]), state [0.0].
+    /// Same pool as `dominated_retains_tied_cuts` (intercepts [5,5,3]), state [0.0].
     /// Lml1 tie_tolerance=1e-10 → only cut 0 (the oldest by slot) survives.
     #[test]
     fn lml1_only_oldest_survives_at_each_state() {
@@ -972,10 +972,10 @@ mod tests {
     }
 
     #[test]
-    fn level1_deactivates_the_lower_of_two_cuts() {
-        let strategy = CutSelectionStrategy::Level1 {
+    fn dominated_deactivates_the_lower_of_two_cuts() {
+        let strategy = CutSelectionStrategy::Dominated {
+            threshold: 0.0,
             check_frequency: 5,
-            tie_tolerance: 0.0,
         };
         // cut0: value=1 at state [0]. cut1: value=3 at state [0].
         // max=3, cutoff=3. cut0(1<3) not selected → deactivated.
@@ -1005,9 +1005,9 @@ mod tests {
 
     #[test]
     fn select_for_stage_sets_stage_index() {
-        let strategy = CutSelectionStrategy::Level1 {
+        let strategy = CutSelectionStrategy::Dominated {
+            threshold: 1e-10,
             check_frequency: 5,
-            tie_tolerance: 1e-10,
         };
         let pool = make_pool(&[make_meta(0, 1)], &[true]);
         let deact = strategy.select_for_stage(&pool, &[], 0, 10, 7);
@@ -1021,9 +1021,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "stride mismatch")]
     fn select_for_stage_guard_fires_on_stride_mismatch() {
-        let strategy = CutSelectionStrategy::Level1 {
+        let strategy = CutSelectionStrategy::Dominated {
+            threshold: 0.0,
             check_frequency: 1,
-            tie_tolerance: 0.0,
         };
         let mut pool = CutPool::new(2, 2, 1, 0);
         pool.add_cut(NodeId(0), 0, 0, 1.0, &[0.0, 0.0]);
@@ -1035,9 +1035,9 @@ mod tests {
 
     #[test]
     fn select_sets_stage_index_to_zero() {
-        let strategy = CutSelectionStrategy::Level1 {
+        let strategy = CutSelectionStrategy::Dominated {
+            threshold: 1e-10,
             check_frequency: 5,
-            tie_tolerance: 1e-10,
         };
         let pool = CutPool::new(0, 1, 1, 0);
         let deact = strategy.select(&pool, &[], 10);
@@ -1066,13 +1066,13 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Cuts generated in the current iteration must never be deactivated by
-    /// Level1, even if they have lower values. They haven't been tested yet
+    /// Dominated, even if they have lower values. They haven't been tested yet
     /// and deactivating them would cause the lower bound to stagnate.
     #[test]
-    fn level1_spares_cuts_from_current_iteration() {
-        let strategy = CutSelectionStrategy::Level1 {
+    fn dominated_spares_cuts_from_current_iteration() {
+        let strategy = CutSelectionStrategy::Dominated {
+            threshold: 1e-10,
             check_frequency: 1,
-            tie_tolerance: 1e-10,
         };
         // cut0: iteration_generated=10 (current), value=1 at [0.0] → protected
         // cut1: iteration_generated=5 (older), value=1 at [0.0] → eligible
@@ -1132,10 +1132,10 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn level1_reactivates_inactive_cut_at_max() {
-        let strategy = CutSelectionStrategy::Level1 {
+    fn dominated_reactivates_inactive_cut_at_max() {
+        let strategy = CutSelectionStrategy::Dominated {
+            threshold: 1e-10,
             check_frequency: 1,
-            tie_tolerance: 1e-10,
         };
         // cut0: intercept=5, active=false (inactive but achieves max)
         // cut1: intercept=3, active=true
@@ -1194,9 +1194,9 @@ mod tests {
 
     #[test]
     fn select_returns_empty_when_all_cuts_from_current_iteration() {
-        let strategy = CutSelectionStrategy::Level1 {
+        let strategy = CutSelectionStrategy::Dominated {
+            threshold: 1e-10,
             check_frequency: 1,
-            tie_tolerance: 1e-10,
         };
         let mut pool = CutPool::new(3, 1, 1, 0);
         pool.add_cut(NodeId(0), 0, 0, 1.0, &[0.0]);
@@ -1218,21 +1218,20 @@ mod tests {
     // Warm-start slot protection tests
     // -----------------------------------------------------------------------
 
-    /// Warm-start cuts participate in max computation but are not candidates.
-    /// With `warm_start_count=1`: slot 0 is protected; only slots 1+ are eligible.
+    /// Loaded cuts participate in max computation but are not candidates.
+    /// With `prefix_len() == 1`: slot 0 is loaded; only slots 1+ are eligible.
     #[allow(clippy::cast_possible_truncation)]
     #[test]
-    fn level1_warm_start_cuts_not_deactivated() {
-        let strategy = CutSelectionStrategy::Level1 {
+    fn dominated_warm_start_cuts_not_deactivated() {
+        let strategy = CutSelectionStrategy::Dominated {
+            threshold: 0.0,
             check_frequency: 1,
-            tie_tolerance: 0.0,
         };
-        // warm_start_count=1 → slot 0 is warm-start (protected).
-        // Slot 0 comes from a warm-start record (add_cut cannot address it once
-        // warm_start_count > 0); slots 1,2 come from add_cut.
-        // 3 slots total: slot 0 (warm-start, intercept=10), slot 1 (eligible, =1), slot 2 (eligible, =3).
+        // Slot 0 is the loaded record; add_cut writes from `slot_base` (1), so
+        // slots 1,2 are generated cuts.
+        // 3 slots total: slot 0 (loaded, intercept=10), slot 1 (eligible, =1), slot 2 (eligible, =3).
         // max=10 (slot 0). Cutoff=10. Eligible cuts 1,2 both below cutoff → deactivated.
-        // Slot 0 is not eligible (warm-start) → not deactivated.
+        // Slot 0 is not eligible (loaded) → not deactivated.
         let warm_start_records = vec![novomodelo_io::OwnedPolicyCutRecord {
             cut_id: 0,
             slot_index: 0,
@@ -1270,13 +1269,13 @@ mod tests {
         pool.set_active(0, false);
         assert_eq!(pool.active_count(), 2);
 
-        // Level1 tie_tolerance=0: only slot 1 (value=5) is at max.
+        // Dominated threshold=0: only slot 1 (value=5) is at max.
         // slot 0: eligible, not selected, inactive → no change (not reactivated).
         // slot 1: eligible, selected, active → no change.
         // slot 2: eligible, not selected, active → deactivated.
-        let strategy = CutSelectionStrategy::Level1 {
+        let strategy = CutSelectionStrategy::Dominated {
+            threshold: 0.0,
             check_frequency: 1,
-            tie_tolerance: 0.0,
         };
         let deact = strategy.select_for_stage(&pool, &[0.0], 1, 5, 0);
         assert_eq!(
@@ -1300,9 +1299,9 @@ mod tests {
         pool.add_cut(NodeId(0), 0, 0, 1.0, &[0.0]); // value=1
         pool.add_cut(NodeId(0), 1, 0, 2.0, &[0.0]); // value=2 (max)
 
-        let strategy = CutSelectionStrategy::Level1 {
+        let strategy = CutSelectionStrategy::Dominated {
+            threshold: 0.0,
             check_frequency: 1,
-            tie_tolerance: 0.0,
         };
         let result = strategy.select_for_stage(&pool, &[0.0], 1, 10, 0);
 
@@ -1852,16 +1851,16 @@ mod tests {
     // Edge case: single eligible cut
     // -----------------------------------------------------------------------
 
-    /// Level1 with exactly one eligible cut returns empty updates (`n_eligible` < 2
+    /// Dominated with exactly one eligible cut returns empty updates (`n_eligible` < 2
     /// guard fires before any evaluation).
     ///
     /// Two slots total: slot 0 is from `current_iteration` (ineligible); slot 1 is
     /// eligible. `n_eligible=1` → empty.
     #[test]
-    fn level1_single_eligible_cut_returns_empty() {
-        let strategy = CutSelectionStrategy::Level1 {
+    fn dominated_single_eligible_cut_returns_empty() {
+        let strategy = CutSelectionStrategy::Dominated {
+            threshold: 1e-10,
             check_frequency: 1,
-            tie_tolerance: 1e-10,
         };
         let mut pool = CutPool::new(2, 1, 1, 0);
         pool.add_cut(NodeId(0), 0, 0, 10.0, &[0.0]); // higher value
@@ -2256,34 +2255,6 @@ mod tests {
         })
     }
 
-    /// Determinism: identical bit-for-bit output for 1 vs 4 vs 8 threads at
-    /// a scale that exercises many m-blocks per stage.
-    ///
-    /// 1024 trial points yields 128 m-blocks under `M_BLOCK = 8`. The
-    /// per-task OR-merge is commutative and associative, so any worker
-    /// assignment must yield the same `is_selected` bitmap and therefore
-    /// identical `CutActivityUpdates`.
-    #[test]
-    fn select_for_stage_deterministic_across_thread_counts_level1() {
-        let pool = make_determinism_pool();
-        let states = make_determinism_states(1024);
-        let strategy = CutSelectionStrategy::Level1 {
-            check_frequency: 1,
-            tie_tolerance: 1e-10,
-        };
-        let r1 = run_in_pool(&strategy, &pool, &states, 10, 1);
-        let r4 = run_in_pool(&strategy, &pool, &states, 10, 4);
-        let r8 = run_in_pool(&strategy, &pool, &states, 10, 8);
-        assert_eq!(
-            r1, r4,
-            "Level1: 1-thread vs 4-thread results must be bit-identical"
-        );
-        assert_eq!(
-            r4, r8,
-            "Level1: 4-thread vs 8-thread results must be bit-identical"
-        );
-    }
-
     /// Determinism for Lml1: per-chunk "oldest at max" picks unioned with
     /// bitwise-OR across disjoint trial-point chunks must reproduce the
     /// sequential global "oldest at max" union.
@@ -2308,7 +2279,10 @@ mod tests {
         );
     }
 
-    /// Determinism for Dominated: same proof structure as Level1.
+    /// Determinism for Dominated at a scale that exercises many m-blocks per
+    /// stage: the per-task OR-merge in `select_for_stage` is commutative and
+    /// associative, so any worker assignment yields identical
+    /// `CutActivityUpdates`.
     #[test]
     fn select_for_stage_deterministic_across_thread_counts_dominated() {
         let pool = make_determinism_pool();
@@ -2342,10 +2316,6 @@ mod tests {
         let states = make_determinism_states(n_states);
 
         for strategy in [
-            CutSelectionStrategy::Level1 {
-                check_frequency: 1,
-                tie_tolerance: 1e-10,
-            },
             CutSelectionStrategy::Lml1 {
                 check_frequency: 1,
                 tie_tolerance: 1e-10,
