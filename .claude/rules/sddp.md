@@ -1038,6 +1038,36 @@ Read: `setup/mod.rs` (`admission_gate`,
 the positive enumerated + `Dynamic` reject, plus the enumerated-only and
 dynamic-only negatives that do not reject).
 
+## A lazy solve returns only when no candidate is violated
+
+`lazy_solve_preloaded` returns only when `score_violated_candidates` reports no
+violated candidate at the point it returns, so its result is the optimum over the
+candidate set. The rounds that add a bounded number of cuts each end at a cap;
+past it the per-round limit is lifted and the score, append, solve cycle
+continues, adding every violated candidate per cycle, until none is left. Each
+solve that reaches the cap with a candidate still violated is counted. The cycle
+ends because scoring reports only non-resident candidates beyond the violation
+tolerance and every one reported is appended, so each cycle shrinks the finite
+non-resident set; a candidate inside the tolerance is neither reported nor
+appended.
+
+Appending the cuts violated at the last point and returning after one solve is
+the wrong-but-compiling alternative: the new optimum moves, and a cut that was
+satisfied before can be violated there. On the cuts `(intercept, slope)`
+`(15, -3)`, `(6, -0.5)`, `(20, -4)` seeded with the first, the optimum is 5 at
+`x = 5`, where only the second cut is violated; one solve with it gives 7.8 at
+`x = 3.6`, where the third is violated by 1.4, against 8 at `x = 4` with all
+three. The returned value is a valid but loose relaxation, so nothing fails.
+
+The claim is exact over the candidate set, which is the whole pool only when the
+candidate recency window is unset; with a finite window it holds over the cuts
+inside the window and the result is deliberately not the all-cuts optimum.
+Read: `cut/dcs.rs` (`lazy_solve_preloaded`, `score_violated_candidates`,
+`DcsSolveScratch::round_cap_hits`, `DcsParams::max_inner_iterations`). Pinned by
+`lazy_solve_is_exact_after_the_round_cap` (`cut/dcs.rs`: 8 at `x = 4`, not 7.8,
+and one cap hit), with `lazy_objective_equals_the_all_cuts_objective` (random
+cuts, caps 0 to 3) and `lazy_solve_terminates_after_the_round_cap`.
+
 ## Terminal boundary FCF is booked in the reported total cost
 
 The forward trajectory cost and the simulation per-scenario cost both reconstruct

@@ -52,8 +52,9 @@ pub struct DcsParams {
     /// First SDDP iteration (1-based) at which DCS is applied.
     pub start_iteration: u64,
 
-    /// Bounded inner-loop cap: maximum number of lazy add-and-resolve rounds
-    /// before falling back to a terminating-condition solve.
+    /// Number of add-and-resolve rounds of at most `nadic` cuts each before the
+    /// per-round limit is lifted. Not an exit: the solve still returns only when
+    /// no candidate is violated.
     pub max_inner_iterations: u32,
 }
 
@@ -212,7 +213,7 @@ impl DcsScoringScratch {
 /// # Returns
 ///
 /// The total count of violated candidates (≥ `out_selected.len()`), used to
-/// detect the no-violation stop and drive the TC fallback.
+/// detect the no-violation stop.
 ///
 /// # Allocation
 ///
@@ -412,6 +413,10 @@ pub struct DcsSolveScratch {
     /// Cumulative wall time spent in `score_violated_candidates`. A per-worker
     /// accumulator: never reset by the solve loop. Pure measurement.
     pub scoring_time_seconds: f64,
+    /// Number of solves that reached the round cap with a candidate still
+    /// violated. A per-worker accumulator: never reset by the solve loop. Pure
+    /// measurement.
+    pub round_cap_hits: u64,
     /// Cumulative sum of `row_map.total_cut_rows()`, one term per
     /// [`lazy_solve_preloaded`] completion; with [`Self::rows_in_lp_count`]
     /// yields the mean rows-in-LP. Never reset by the solve loop.
@@ -444,6 +449,7 @@ impl Default for DcsSolveScratch {
             res_iterations: 0,
             res_solve_time_seconds: 0.0,
             scoring_time_seconds: 0.0,
+            round_cap_hits: 0,
             rows_in_lp_sum: 0,
             rows_in_lp_count: 0,
             rows_in_lp_max: 0,
@@ -512,7 +518,7 @@ impl DcsSolveScratch {
         self.res_reduced_costs.extend_from_slice(view.reduced_costs);
 
         // Folded here because `store_result` is the single completion point of
-        // every lazy solve (both the exact-optimum and TC-fallback exits).
+        // every lazy solve.
         let rows_in_lp = self.row_map.total_cut_rows() as u64;
         self.rows_in_lp_sum += rows_in_lp;
         self.rows_in_lp_count += 1;
@@ -559,20 +565,19 @@ fn solve_mapped<'a, S: SolverInterface>(
 /// [`DcsSolveScratch::result_view`]. Post-solve extraction (backward = dual,
 /// forward/simulation = primal) is the caller's job.
 ///
-/// # Algorithm
+/// Returns only when [`score_violated_candidates`] reports no violated candidate at
+/// the returned point, so the result is the optimum over the candidate set (the
+/// whole pool when `params.k1` is `None`). After `params.max_inner_iterations`
+/// rounds the per-round limit is lifted and the cycle continues, counted in
+/// [`DcsSolveScratch::round_cap_hits`]; it ends because scoring reports only
+/// non-resident candidates beyond `epsilon_viol` and every one reported is
+/// appended, so each cycle shrinks the finite non-resident set.
 ///
-/// Append `initial_resident`, then run the initial solve: warm with a
-/// uniform-BASIC reconstruction of `stored_basis`
-/// ([`reconstruct_basis_uniform_basic`] + [`enforce_basic_count_invariant`]) if
-/// present, else cold. Then, up to `params.max_inner_iterations`:
-/// [`score_violated_candidates`] at the live primal; when none is violated (the
-/// exact optimum) copy the live view and return with NO re-solve, else add the
-/// top-`nadic` slots and warm-`solve(None)`. **TC fallback**: if the cap is hit
-/// with violations remaining, add ALL remaining candidates and solve once,
-/// preserving exactness.
-///
-/// A cold mid-loop re-solve (warm basis discarded by the retry ladder) is
-/// tolerated — the loop never reads a stale basis between solves.
+/// The initial solve is warm from a uniform-BASIC reconstruction of
+/// `stored_basis` ([`reconstruct_basis_uniform_basic`] +
+/// [`enforce_basic_count_invariant`]) if present, else cold. A cold mid-loop
+/// re-solve (warm basis discarded by the retry ladder) is tolerated — the loop
+/// never reads a stale basis between solves.
 ///
 /// # Errors
 ///
@@ -642,7 +647,15 @@ pub fn lazy_solve_preloaded<S: SolverInterface>(
         }
     };
 
-    for _ in 0..params.max_inner_iterations {
+    let mut lifted_params = *params;
+    lifted_params.nadic = u32::MAX;
+    let mut round = 0_u32;
+    loop {
+        let scoring_params = if round < params.max_inner_iterations {
+            params
+        } else {
+            &lifted_params
+        };
         let t0 = Instant::now();
         let violated = score_violated_candidates(
             pool,
@@ -651,7 +664,7 @@ pub fn lazy_solve_preloaded<S: SolverInterface>(
             view.primal,
             col_scale,
             &scratch.row_map,
-            params,
+            scoring_params,
             current_iteration,
             &mut scratch.scoring,
             &mut scratch.out_selected,
@@ -659,14 +672,15 @@ pub fn lazy_solve_preloaded<S: SolverInterface>(
         scratch.scoring_time_seconds += t0.elapsed().as_secs_f64();
 
         if violated == 0 {
-            // Exact: the resident subset reproduces the all-cuts optimum, already
-            // held in `view`. Copy and return with no re-solve.
             scratch.store_result(&view);
             return Ok(());
         }
+        if round == params.max_inner_iterations {
+            scratch.round_cap_hits += 1;
+        }
+        round = round.saturating_add(1);
 
-        // End the view's solver borrow before mutating the solver, then append
-        // the top-`nadic` slots and re-solve.
+        // End the view's solver borrow before mutating the solver.
         let _ = view;
         append_slots_to_lp(
             solver,
@@ -680,41 +694,6 @@ pub fn lazy_solve_preloaded<S: SolverInterface>(
         );
         view = solve_mapped(solver, None, ctx)?;
     }
-
-    // TC fallback (cap hit with violations remaining): add ALL remaining
-    // candidates (effective nadic = ∞) and solve once, preserving exactness.
-    let mut all_params = *params;
-    all_params.nadic = u32::MAX;
-    let t0 = Instant::now();
-    let remaining = score_violated_candidates(
-        pool,
-        state,
-        cut_state,
-        view.primal,
-        col_scale,
-        &scratch.row_map,
-        &all_params,
-        current_iteration,
-        &mut scratch.scoring,
-        &mut scratch.out_selected,
-    );
-    scratch.scoring_time_seconds += t0.elapsed().as_secs_f64();
-    let _ = view;
-    if remaining > 0 {
-        append_slots_to_lp(
-            solver,
-            pool,
-            &scratch.out_selected,
-            state,
-            cut_state,
-            col_scale,
-            &mut scratch.row_map,
-            &mut scratch.batch,
-        );
-    }
-    let view = solve_mapped(solver, None, ctx)?;
-    scratch.store_result(&view);
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1965,6 +1944,57 @@ mod tests {
         assert!((view.objective - all_obj).abs() < 1e-9);
     }
 
+    /// Cuts `theta >= intercept + slope * x` as (intercept, slope): (15, -3),
+    /// (6, -0.5), (20, -4), in slots 0 to 2, seed `[0]`, no round before the
+    /// per-round limit is lifted.
+    ///
+    /// derived: the seed alone gives `x = 5`, `theta = 0`, objective 5, where only
+    /// the second cut is violated (by 3.5; the third evaluates to 0). With the
+    /// first two the optimum is their intersection `x = 3.6`, `theta = 4.2`,
+    /// objective 7.8, where the third is violated by 1.4. With all three it is the
+    /// intersection of the second and third, `x = 4`, `theta = 4`, objective 8,
+    /// where the first evaluates to 3. Three solves, one cap hit.
+    #[test]
+    fn lazy_solve_is_exact_after_the_round_cap() {
+        let indexer = lazy_indexer();
+        let pool = cuts_pool(&[(15.0, -3.0), (6.0, -0.5), (20.0, -4.0)]);
+        let core = free_state_template();
+        let (all_obj, all_theta) = solve_all_cuts_on(&core, &pool, &indexer);
+
+        let mut solver = active_profiled();
+        let mut scratch = DcsSolveScratch::default();
+        solver.load_model(&core);
+        let solves_before = solver.statistics().solve_count;
+        lazy_solve_preloaded(
+            &mut solver,
+            &core,
+            &pool,
+            &indexer,
+            &cut_state(&indexer),
+            &[],
+            None,
+            &[0],
+            &lazy_params(1, 0),
+            &mut scratch,
+            ctx(),
+        )
+        .expect("lazy_solve_preloaded must succeed");
+        let solve_delta = solver.statistics().solve_count - solves_before;
+        let view = scratch.result_view();
+
+        assert!((view.objective - 8.0).abs() < 1e-9, "{}", view.objective);
+        assert!((view.primal[0] - 4.0).abs() < 1e-9, "{}", view.primal[0]);
+        assert!(
+            (view.primal[LAZY_THETA_COL] - 4.0).abs() < 1e-9,
+            "{}",
+            view.primal[LAZY_THETA_COL]
+        );
+        assert_eq!(scratch.round_cap_hits, 1);
+        assert_eq!(solve_delta, 3);
+        assert!((view.objective - all_obj).abs() < 1e-9);
+        assert!((view.primal[LAZY_THETA_COL] - all_theta).abs() < 1e-9);
+    }
+
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig {
             cases: 64,
@@ -1977,6 +2007,7 @@ mod tests {
             cuts in proptest::collection::vec((0..=20i32, -4..=0i32), 1..=12),
             seed_mask in proptest::collection::vec(proptest::bool::ANY, 12),
             nadic in 1..=3u32,
+            round_cap in 0..=3u32,
         ) {
             let cuts: Vec<(f64, f64)> =
                 cuts.iter().map(|&(i, s)| (f64::from(i), f64::from(s))).collect();
@@ -2000,7 +2031,7 @@ mod tests {
                 &[],
                 None,
                 &seed,
-                &lazy_params(nadic, DcsParams::default().max_inner_iterations),
+                &lazy_params(nadic, round_cap),
                 &mut scratch,
                 ctx(),
             )
@@ -2176,6 +2207,7 @@ mod tests {
         // Bit-identical with trivial epsilon/scale.
         assert_eq!(view.objective, all_obj);
         assert_eq!(view.primal[LAZY_THETA_COL], all_theta);
+        assert_eq!(scratch.round_cap_hits, 0);
     }
 
     /// With an initial subset that already contains the binding cut, the loop
@@ -2527,15 +2559,15 @@ mod tests {
         );
     }
 
-    /// max_inner_iterations = 1 forces the TC fallback after one inner add; it
-    /// must terminate and still return the all-cuts-equivalent optimum.
+    /// One round of one cut, then the cap: the solve returns the all-cuts optimum.
     ///
-    /// The cap-hit fallback scores the live primal, appends remaining
-    /// violated slots, and solves once to return — preserving the all-cuts
-    /// optimum. The TC path issues initial + one capped add/resolve + the final
-    /// TC solve = 3.
+    /// derived: no cut is resident, so the first solve sits at `theta = -1e6` and
+    /// all three floors (1, 2, 5) are violated; the round adds the largest (5),
+    /// the second solve gives `theta = 5`, and the other two floors are below it.
+    /// At the cap nothing is violated, so the solve returns without another solve:
+    /// two solves, no cap hit.
     #[test]
-    fn lazy_solve_tc_fallback_terminates() {
+    fn lazy_solve_terminates_after_the_round_cap() {
         let indexer = lazy_indexer();
         let pool = make_three_cut_pool();
         let (all_obj, all_theta) = solve_all_cuts(&pool, &indexer);
@@ -2543,8 +2575,6 @@ mod tests {
         let mut solver = active_profiled();
         let core = core_template();
         let mut scratch = DcsSolveScratch::default();
-        // nadic = 1 + cap = 1: the loop can add at most one slot before the cap
-        // fires, then the TC fallback adds the rest.
         let params = lazy_params(1, 1);
 
         solver.load_model(&core);
@@ -2557,22 +2587,19 @@ mod tests {
             &cut_state(&indexer),
             &[],
             None,
-            &[], // omit ALL cuts to force ≥2 inner iterations without the cap
+            &[],
             &params,
             &mut scratch,
             ctx(),
         )
-        .expect("lazy_solve_preloaded TC fallback must succeed");
+        .expect("lazy_solve_preloaded must succeed");
         let solve_delta = solver.statistics().solve_count - solves_before;
         let view = scratch.result_view();
 
         assert!((view.objective - all_obj).abs() < 1e-9);
         assert!((view.primal[LAZY_THETA_COL] - all_theta).abs() < 1e-9);
-        // TC fallback solve count is preserved (initial + capped add + final).
-        assert_eq!(
-            solve_delta, 3,
-            "TC fallback issues initial + one capped add/resolve + final TC solve = 3"
-        );
+        assert_eq!(solve_delta, 2);
+        assert_eq!(scratch.round_cap_hits, 0);
     }
 
     /// Determinism: identical inputs → identical objective across two runs.
