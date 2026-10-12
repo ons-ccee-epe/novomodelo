@@ -152,9 +152,14 @@ impl fmt::Display for StoppingMode {
 #[serde(default, deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RowSelectionConfig {
-    /// Minimum dual-multiplier magnitude for a constraint row to count as
-    /// binding at a solution point. Rows whose dual value falls below this are
-    /// treated as inactive in activity tracking. Default `0.0` when absent.
+    /// Binding threshold for activity tracking: a constraint row counts as
+    /// binding at a solution point when its dual multiplier is strictly greater
+    /// than this value (a signed comparison; a multiplier equal to the
+    /// threshold does not bind). In one solve the multipliers of a stage's pool
+    /// rows are non-negative weights whose sum is at most that stage's discount
+    /// factor, so the threshold is dimensionless. The recorded activity is read
+    /// only by `max_active_per_stage` and by the `seed_window` of the `dynamic`
+    /// method. Must be `>= 0`. Default `0.0` when absent.
     #[serde(default)]
     pub row_activity_tolerance: Option<f64>,
 

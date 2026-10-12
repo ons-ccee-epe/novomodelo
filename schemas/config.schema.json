@@ -736,7 +736,7 @@
         },
         "row_activity_tolerance": {
           "default": null,
-          "description": "Minimum dual-multiplier magnitude for a constraint row to count as\nbinding at a solution point. Rows whose dual value falls below this are\ntreated as inactive in activity tracking. Default `0.0` when absent.",
+          "description": "Binding threshold for activity tracking: a constraint row counts as\nbinding at a solution point when its dual multiplier is strictly greater\nthan this value (a signed comparison; a multiplier equal to the\nthreshold does not bind). In one solve the multipliers of a stage's pool\nrows are non-negative weights whose sum is at most that stage's discount\nfactor, so the threshold is dimensionless. The recorded activity is read\nonly by `max_active_per_stage` and by the `seed_window` of the `dynamic`\nmethod. Must be `>= 0`. Default `0.0` when absent.",
           "format": "double",
           "type": [
             "number",

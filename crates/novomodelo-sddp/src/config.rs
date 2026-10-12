@@ -143,7 +143,9 @@ pub struct CutManagementConfig {
     /// Cuts from the current iteration are never evicted.
     pub budget: Option<u32>,
 
-    /// Activity (dual-value) threshold below which a cut is a deactivation candidate.
+    /// Binding threshold: a cut row is binding at a backward solve when its dual is
+    /// strictly greater than this value (signed). Its scale is documented on
+    /// [`row_activity_tolerance`](novomodelo_io::config::RowSelectionConfig::row_activity_tolerance).
     pub cut_activity_tolerance: f64,
 
     /// Per-stage backward-pass risk measures; length must equal `num_stages`.
