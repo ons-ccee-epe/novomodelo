@@ -1024,23 +1024,28 @@ on a tree whose worst branch compounds), the `admission_gate_*` gate tests
 
 `admission_gate` (`setup/mod.rs`) rejects `Traversal::Enumerated` paired with
 `CutSelectionStrategy::Dynamic` as a hard `SddpError::Validation`, through
-`reject_dynamic_cut_selection_under_enumerated`. The enumerated engine seeds each
-cut pool at its node-native stride (`enumerated_pool_cut_stride`), whereas dynamic
-cut selection's lazy core drives `build_initial_resident_set` (`cut/dcs.rs`) and
-`CutPool::enforce_budget`'s eviction-key reader (`cut/pool.rs`) under the
-sampled-selection eviction-key discipline; the pairing would drive that reader
-down an untested eviction path. Admitting the pairing is the wrong-but-compiling
-alternative — it compiles and runs, exercising an unvalidated eviction path.
+`reject_dynamic_cut_selection_under_enumerated`. The enumerated backward never
+solves lazily: `run_backward_node_replicated` loads the frozen template of each
+successor it solves and reads state duals only, and nothing in
+`run_enumerated_backward` reaches `sync_stage_metadata`, the only caller of
+`CutPool::record_binding`, so no binding activity is recorded. The enumerated
+forward does have a lazy branch (`solve_forward_node`): it seeds its resident set
+through `build_initial_resident_set` from a window over each cut's
+`last_active_iter`, and under enumerated traversal that clock never advances past
+the cut's generating iteration. Admitting the pairing is the wrong-but-compiling
+alternative — it would run the lazy branch on a seed window whose activity clock
+nothing feeds, a path no test exercises; the reject is what makes it unreachable.
 No shipped deck pairs them, so the reject is byte-neutral. Any non-`Dynamic`
 strategy (or none) under enumerated forwards, and `Dynamic` under sampled
 forwards, are admitted — the reject discriminates on the `Dynamic` variant, not on
-any strategy being present, and does not change `enforce_budget` or
-`build_initial_resident_set`, which the gate protects.
+any strategy being present.
 
 Read: `setup/mod.rs` (`admission_gate`,
-`reject_dynamic_cut_selection_under_enumerated`), `cut/dcs.rs`
-(`build_initial_resident_set`), `cut/pool.rs` (`CutPool::enforce_budget`),
-`setup/node_graph.rs` (`enumerated_pool_cut_stride`). Pinned by
+`reject_dynamic_cut_selection_under_enumerated`), `training/forward/enumerated.rs`
+(`solve_forward_node`), `cut/dcs.rs` (`build_initial_resident_set`),
+`training/backward_pass_state.rs` (`run_enumerated_backward`,
+`sync_stage_metadata`), `training/backward/replicated.rs`
+(`run_backward_node_replicated`). Pinned by
 `admission_gate_rejects_dynamic_cut_selection_under_enumerated` (`setup/mod.rs` —
 the positive enumerated + `Dynamic` reject, plus the enumerated-only and
 dynamic-only negatives that do not reject).
@@ -1088,21 +1093,35 @@ counts and is never evicted. A pool's active count can therefore exceed the
 budget by its loaded cuts. Under `resume` every reloaded cut is in the prefix, so
 the cap counts only the cuts generated after the resume.
 
-The root pool is exempt because no solve records binding for it, so its cuts
-rank by generation age alone, and the lower-bound LP appends only the cuts active
-when it runs, so a loaded root cut evicted before the first lower-bound solve
-never enters it. The terminal
-pool is exempt because its template is baked once and the per-iteration refreeze
-skips it, so an eviction would leave the bitmap disagreeing with the LP the
-terminal node solves, and a simulation that builds its own templates would solve
-another LP.
+The root pool is exempt because no solve records binding for it (`record_binding`
+runs for successor pools only), so its generated cuts would rank by generation
+age alone, and because the lower-bound LP only appends cuts: a root cut evicted
+after an earlier lower-bound solve stays in that LP while the refrozen stage-0
+template and the bitmap no longer hold it. The terminal pool is exempt because
+its template is baked once and the per-iteration refreeze skips it, so an
+eviction would leave the bitmap disagreeing with the LP the terminal node solves,
+and a simulation that builds its own templates would solve another LP.
 
 The evicted set is the lexicographic minimum of the candidates under
 `(last_active_iter, active_count, slot)`: the smallest keys go first, up to the
 excess over the cap. `add_cut` writes the generating iteration into
 `last_active_iter`, so a cut that never bound ranks by generation age, and the
 cuts of one iteration that share a key are told apart by slot. The key is total,
-so the evicted set is a function of the pool alone.
+so the evicted set is a function of the pool, the budget and the current
+iteration.
+
+The budget is rejected at load, as `SddpError::Validation` naming
+`training.cut_selection.max_active_per_stage`, when it is set together with the
+`dynamic` method (`reject_budget_under_dynamic_cut_selection`) or with enumerated
+training (`reject_budget_under_enumerated`). A lazy solve takes its candidates
+from the active cuts (`score_violated_candidates` iterates
+`CutPool::active_cuts`) and `dynamic` runs no selection pass
+(`CutSelectionStrategy::should_run` is false for it), so no step of the training
+loop reactivates a cut and one the budget deactivates is never a candidate again.
+The enumerated backward records no binding activity (`sync_stage_metadata`, the
+only caller of `record_binding`, runs in the sampled level driver only), so every
+cut keeps `active_count = 0` and its generating iteration as `last_active_iter`,
+and the eviction key reduces to generation order.
 
 The wrong-but-compiling alternatives:
 
@@ -1119,13 +1138,21 @@ The wrong-but-compiling alternatives:
   by an unstable sort, which the language leaves unspecified, so the evicted set
   can differ between toolchains while every build agrees with itself and no
   same-build gate sees it.
+- admitting the budget with `dynamic`: the lazy solve returns the optimum over the
+  active cuts, and every cut the budget deactivates leaves the candidate set for
+  good. Every remaining cut is valid, so that optimum is a valid but looser
+  relaxation of the optimum over the whole pool, and nothing fails;
+- admitting the budget under enumerated training: the cap evicts the oldest
+  generated cuts first whatever their use, and nothing fails.
 
 Read: `training/session/mod.rs` (`run_cut_management`, `interior_cut_nodes`,
 `freeze_active_cuts_into_templates`), `cut/pool.rs` (`CutPool::enforce_budget`,
 `is_prefix_slot`), `setup/node_graph.rs` (the `node → pool` assignment),
 `training/backward_pass_state.rs` (`sync_stage_metadata`, the only caller of
-`record_binding`), `training/lower_bound.rs` (`lb_init_rank0`),
-`simulation/state.rs` (`refreeze_templates_if_needed`). Pinned by
+`record_binding`), `training/lower_bound.rs` (`lb_init_rank0`), `cut/row.rs`
+(`append_new_cuts_to_lp`), `simulation/state.rs` (`refreeze_templates_if_needed`),
+`setup/mod.rs` (`admission_gate`), `cut/dcs.rs` (`score_violated_candidates`),
+`cut/cut_selection.rs` (`CutSelectionStrategy::should_run`). Pinned by
 `enforce_budget_never_evicts_a_loaded_cut` (a loaded cut stays, including one
 whose generating iteration equals the current one) and
 `enforce_budget_does_not_count_loaded_cuts` (loaded cuts do not count toward the
@@ -1142,7 +1169,11 @@ since a hand fixture of a few cuts sorts stably by accident) and
 every frozen template matches its pool); and
 `budget_below_the_boundary_cut_count_leaves_the_boundary_run_unchanged`
 (`tests/cut_basis.rs`: a budget below the boundary cut count trains without a
-basis rejection and leaves the run unchanged).
+basis rejection and leaves the run unchanged);
+`admission_gate_rejects_a_budget_with_dynamic_cut_selection` and
+`admission_gate_rejects_a_budget_under_enumerated` (`setup/mod.rs`: each pairing
+is rejected naming the key and the setting, and the neighbouring configs are
+admitted).
 
 ## Terminal boundary FCF is booked in the reported total cost
 

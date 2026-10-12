@@ -367,6 +367,66 @@ fn validate_reports_a_negative_tie_tolerance() {
         .stdout(predicate::str::contains("tie_tolerance"));
 }
 
+/// The pairing is rejected by the admission gate every front end shares; the
+/// same selection without the budget validates.
+#[test]
+fn validate_rejects_a_budget_with_dynamic_selection() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+    config["training"]["cut_selection"] = serde_json::json!({
+        "selection": { "method": "dynamic" }
+    });
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    config["training"]["cut_selection"]["max_active_per_stage"] = serde_json::json!(5);
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("max_active_per_stage"))
+        .stdout(predicate::str::contains("dynamic"));
+}
+
+/// Enumerated training with a budget is rejected by the admission gate every
+/// front end shares; the same enumerated deck without the budget validates.
+#[test]
+fn validate_rejects_a_budget_with_enumerated_training() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+
+    let mut stages: serde_json::Value = serde_json::from_str(STAGES_JSON).unwrap();
+    for stage in stages["stages"].as_array_mut().unwrap() {
+        stage["num_openings"] = serde_json::json!(1);
+    }
+    write_file(dir.path(), "stages.json", &stages.to_string());
+
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+    config["training"]["selection"] = serde_json::json!({ "method": "enumerated" });
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    config["training"]["cut_selection"] = serde_json::json!({ "max_active_per_stage": 5 });
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("max_active_per_stage"))
+        .stdout(predicate::str::contains("enumerated"));
+}
+
 /// An invalid `simulation.scenario_source` must be rejected by both `validate`
 /// and `run`, carrying the same rule message — the training half of the
 /// config stays valid so the failure is unambiguously the simulation source.

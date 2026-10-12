@@ -433,6 +433,7 @@ impl StudySetup {
             &config.stopping_rule_set,
             config.training_enumerated,
             config.cut_selection.as_ref(),
+            config.budget,
         )?;
 
         let extended_delivery_anchors =
@@ -2186,25 +2187,30 @@ fn build_risk_measures(system: &System) -> Vec<RiskMeasure> {
 /// The setup-time admission gate: the permanent arms that survive the
 /// node-native collapse, evaluated once from
 /// [`StudySetup::from_broadcast_params`]. Absent the gated features (no `gap`
-/// stopping rule, an expectation measure at every stage, and no dynamic cut
-/// selection under enumerated forwards) it returns `Ok(())` unconditionally, so
-/// a default study is byte-neutral.
+/// stopping rule, an expectation measure at every stage, no dynamic cut
+/// selection under enumerated forwards, and no active-cut budget together with
+/// dynamic cut selection or enumerated forwards) it returns `Ok(())`
+/// unconditionally, so a default study is byte-neutral.
 ///
 /// # Errors
 ///
 /// Returns [`SddpError::Validation`] when a `gap` stopping rule is present under
 /// any stage's effective non-expectation risk measure, under sampled forward
-/// selection, or when dynamic cut selection is paired with enumerated forward
-/// traversal.
+/// selection, when dynamic cut selection is paired with enumerated forward
+/// traversal, or when `budget` is set together with dynamic cut selection or
+/// with enumerated forward traversal.
 fn admission_gate(
     risk_measures: &[RiskMeasure],
     stopping_rules: &StoppingRuleSet,
     training_enumerated: bool,
     cut_selection: Option<&CutSelectionStrategy>,
+    budget: Option<u32>,
 ) -> Result<(), SddpError> {
     reject_gap_under_effective_risk_aversion(risk_measures, stopping_rules, training_enumerated)?;
     reject_gap_under_sampled_selection(stopping_rules, training_enumerated)?;
-    reject_dynamic_cut_selection_under_enumerated(cut_selection, training_enumerated)
+    reject_dynamic_cut_selection_under_enumerated(cut_selection, training_enumerated)?;
+    reject_budget_under_dynamic_cut_selection(cut_selection, budget)?;
+    reject_budget_under_enumerated(budget, training_enumerated)
 }
 
 /// Reject a `gap` stopping rule that has no exact bound to compare against.
@@ -2306,14 +2312,16 @@ fn reject_gap_under_sampled_selection(
 }
 
 /// Reject dynamic cut selection paired with enumerated forward traversal. The
-/// enumerated engine seeds each pool at its node-native cut stride, while
-/// dynamic cut selection assumes the sampled-selection eviction-key discipline
-/// its downstream budget-eviction reader depends on; the pairing would drive
-/// that reader down an untested eviction path. Any non-[`Dynamic`] strategy (or
-/// none) under enumerated forwards, and [`Dynamic`] under sampled forwards, are
-/// admitted.
+/// enumerated backward never solves lazily and records no binding activity,
+/// while the enumerated forward has a lazy branch that would seed from a window
+/// whose clock ([`last_active_iter`]) then never advances past a cut's
+/// generating iteration. Admitting the pairing would run a path no test
+/// exercises; this reject is what makes it unreachable. Any non-[`Dynamic`]
+/// strategy (or none) under enumerated forwards, and [`Dynamic`] under sampled
+/// forwards, are admitted.
 ///
 /// [`Dynamic`]: CutSelectionStrategy::Dynamic
+/// [`last_active_iter`]: crate::cut_selection::CutMetadata::last_active_iter
 ///
 /// # Errors
 ///
@@ -2326,9 +2334,59 @@ fn reject_dynamic_cut_selection_under_enumerated(
     if training_enumerated && matches!(cut_selection, Some(CutSelectionStrategy::Dynamic { .. })) {
         return Err(SddpError::Validation(
             "dynamic cut selection is inadmissible under enumerated forward traversal; the \
-             enumerated engine seeds each cut pool at its node-native stride, whereas dynamic \
-             cut selection assumes the sampled-selection eviction-key discipline — pair \
-             enumerated forwards with a value-based cut selection strategy, or none"
+             enumerated backward never solves lazily and records no binding activity, so the \
+             seed window of the enumerated forward's lazy solve would never advance past a \
+             cut's generating iteration — pair enumerated forwards with a value-based cut \
+             selection strategy, or none"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Reject an active-cut budget paired with dynamic cut selection. A lazy solve
+/// takes its candidates from the pool's active cuts and `dynamic` runs no
+/// selection pass, so a cut the budget deactivates is never a candidate again.
+///
+/// # Errors
+///
+/// Returns [`SddpError::Validation`] naming the pairing when `budget` is set and
+/// `cut_selection` is [`CutSelectionStrategy::Dynamic`].
+fn reject_budget_under_dynamic_cut_selection(
+    cut_selection: Option<&CutSelectionStrategy>,
+    budget: Option<u32>,
+) -> Result<(), SddpError> {
+    if budget.is_some() && matches!(cut_selection, Some(CutSelectionStrategy::Dynamic { .. })) {
+        return Err(SddpError::Validation(
+            "training.cut_selection.max_active_per_stage is inadmissible with the dynamic \
+             cut selection method; a lazy solve takes its candidates from the active rows and \
+             dynamic runs no selection pass, so an evicted row never returns — remove the cap, \
+             or use a value-based method (level1, lml1 or domination)"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Reject an active-cut budget under enumerated forward traversal. The
+/// enumerated backward records no binding activity, so every cut keeps the
+/// generating iteration as its last-active iteration and the budget would evict
+/// in generation order alone.
+///
+/// # Errors
+///
+/// Returns [`SddpError::Validation`] naming the pairing when `budget` is set and
+/// `training_enumerated`.
+fn reject_budget_under_enumerated(
+    budget: Option<u32>,
+    training_enumerated: bool,
+) -> Result<(), SddpError> {
+    if budget.is_some() && training_enumerated {
+        return Err(SddpError::Validation(
+            "training.cut_selection.max_active_per_stage is inadmissible under enumerated \
+             forward traversal; enumerated traversal records no binding activity, so the cap \
+             would evict by generation order alone — remove the cap, or use sampled \
+             forward selection"
                 .to_string(),
         ));
     }
@@ -3526,7 +3584,7 @@ mod admission_gate_dcs_tests {
         let dcs = dynamic();
         let l1 = level1();
 
-        match admission_gate(&measures, &rules, true, Some(&dcs)) {
+        match admission_gate(&measures, &rules, true, Some(&dcs), None) {
             Err(SddpError::Validation(msg)) => {
                 assert!(
                     msg.contains("dynamic cut selection"),
@@ -3541,16 +3599,85 @@ mod admission_gate_dcs_tests {
         }
 
         assert!(
-            admission_gate(&measures, &rules, true, None).is_ok(),
+            admission_gate(&measures, &rules, true, None, None).is_ok(),
             "enumerated forwards without dynamic cut selection must be admitted"
         );
         assert!(
-            admission_gate(&measures, &rules, true, Some(&l1)).is_ok(),
+            admission_gate(&measures, &rules, true, Some(&l1), None).is_ok(),
             "a value-based cut selection strategy under enumerated forwards must be admitted"
         );
         assert!(
-            admission_gate(&measures, &rules, false, Some(&dcs)).is_ok(),
+            admission_gate(&measures, &rules, false, Some(&dcs), None).is_ok(),
             "dynamic cut selection under sampled forwards must be admitted"
+        );
+    }
+
+    /// A budget with `Dynamic` is rejected naming both settings; the same call
+    /// without the budget, with a value-based strategy, and with no strategy is
+    /// admitted, so the reject discriminates on the `Dynamic` variant.
+    #[test]
+    fn admission_gate_rejects_a_budget_with_dynamic_cut_selection() {
+        let measures = vec![RiskMeasure::Expectation, RiskMeasure::Expectation];
+        let rules = no_gap_rules();
+        let dcs = dynamic();
+        let l1 = level1();
+
+        match admission_gate(&measures, &rules, false, Some(&dcs), Some(5)) {
+            Err(SddpError::Validation(msg)) => {
+                assert!(
+                    msg.contains("max_active_per_stage"),
+                    "names the budget key: {msg}"
+                );
+                assert!(msg.contains("dynamic"), "names the dynamic method: {msg}");
+            }
+            other => panic!("expected a Validation reject for a budget + Dynamic, got {other:?}"),
+        }
+
+        assert!(
+            admission_gate(&measures, &rules, false, Some(&dcs), None).is_ok(),
+            "dynamic cut selection without a budget must be admitted"
+        );
+        assert!(
+            admission_gate(&measures, &rules, false, Some(&l1), Some(5)).is_ok(),
+            "a budget with a value-based cut selection strategy must be admitted"
+        );
+        assert!(
+            admission_gate(&measures, &rules, false, None, Some(5)).is_ok(),
+            "a budget with no cut selection strategy must be admitted"
+        );
+    }
+
+    /// A budget under enumerated forwards is rejected naming both settings;
+    /// enumerated forwards without the budget, and the budget under sampled
+    /// forwards, are admitted.
+    #[test]
+    fn admission_gate_rejects_a_budget_under_enumerated() {
+        let measures = vec![RiskMeasure::Expectation, RiskMeasure::Expectation];
+        let rules = no_gap_rules();
+
+        match admission_gate(&measures, &rules, true, None, Some(5)) {
+            Err(SddpError::Validation(msg)) => {
+                assert!(
+                    msg.contains("max_active_per_stage"),
+                    "names the budget key: {msg}"
+                );
+                assert!(
+                    msg.contains("enumerated"),
+                    "names enumerated traversal: {msg}"
+                );
+            }
+            other => {
+                panic!("expected a Validation reject for a budget + enumerated, got {other:?}")
+            }
+        }
+
+        assert!(
+            admission_gate(&measures, &rules, true, None, None).is_ok(),
+            "enumerated forwards without a budget must be admitted"
+        );
+        assert!(
+            admission_gate(&measures, &rules, false, None, Some(5)).is_ok(),
+            "a budget under sampled forwards must be admitted"
         );
     }
 }

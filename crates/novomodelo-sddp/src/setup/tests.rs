@@ -10062,7 +10062,7 @@ fn admission_gate_rejects_gap_under_nonuniform_risk_enumerated() {
             lambda: 0.5,
         },
     ];
-    match super::admission_gate(&measures, &rules_with_gap(), true, None) {
+    match super::admission_gate(&measures, &rules_with_gap(), true, None, None) {
         Err(SddpError::Validation(msg)) => {
             assert!(msg.contains("gap"), "names the rule: {msg}");
             assert!(msg.contains("CVaR"), "names the measure: {msg}");
@@ -10088,7 +10088,7 @@ fn admission_gate_accepts_gap_under_enumerated_uniform_cvar() {
     };
     let measures = vec![cvar, cvar, cvar];
     assert!(
-        super::admission_gate(&measures, &rules_with_gap(), true, None).is_ok(),
+        super::admission_gate(&measures, &rules_with_gap(), true, None, None).is_ok(),
         "a uniform CVaR under enumerated forwards must admit a gap rule"
     );
 }
@@ -10104,7 +10104,7 @@ fn admission_gate_rejects_gap_under_uniform_cvar_sampled() {
         lambda: 0.4,
     };
     let measures = vec![cvar, cvar];
-    match super::admission_gate(&measures, &rules_with_gap(), false, None) {
+    match super::admission_gate(&measures, &rules_with_gap(), false, None, None) {
         Err(SddpError::Validation(msg)) => {
             assert!(msg.contains("gap"), "names the rule: {msg}");
             assert!(
@@ -10126,7 +10126,7 @@ fn admission_gate_accepts_gap_under_cvar_lambda_zero() {
         lambda: 0.0,
     }];
     assert!(
-        super::admission_gate(&measures, &rules_with_gap(), true, None).is_ok(),
+        super::admission_gate(&measures, &rules_with_gap(), true, None, None).is_ok(),
         "CVaR with lambda == 0 is effectively expectation and must admit a gap rule"
     );
 }
@@ -10136,7 +10136,7 @@ fn admission_gate_accepts_gap_under_cvar_lambda_zero() {
 fn admission_gate_accepts_gap_under_all_expectation() {
     use crate::risk_measure::RiskMeasure;
     let measures = vec![RiskMeasure::Expectation, RiskMeasure::Expectation];
-    assert!(super::admission_gate(&measures, &rules_with_gap(), true, None).is_ok());
+    assert!(super::admission_gate(&measures, &rules_with_gap(), true, None, None).is_ok());
 }
 
 /// An effective `CVaR` measure with no `gap` rule present is admitted — the arm
@@ -10148,7 +10148,7 @@ fn admission_gate_accepts_cvar_without_gap() {
         alpha: 0.1,
         lambda: 0.9,
     }];
-    assert!(super::admission_gate(&measures, &rules_without_gap(), true, None).is_ok());
+    assert!(super::admission_gate(&measures, &rules_without_gap(), true, None, None).is_ok());
 }
 
 /// The default study shape (expectation everywhere, an iteration-limit rule)
@@ -10157,7 +10157,7 @@ fn admission_gate_accepts_cvar_without_gap() {
 fn admission_gate_accepts_default_shape() {
     use crate::risk_measure::RiskMeasure;
     let measures = vec![RiskMeasure::Expectation; 4];
-    assert!(super::admission_gate(&measures, &rules_without_gap(), true, None).is_ok());
+    assert!(super::admission_gate(&measures, &rules_without_gap(), true, None, None).is_ok());
 }
 
 /// A `gap` rule under sampled forward selection (`training_enumerated == false`)
@@ -10167,7 +10167,7 @@ fn admission_gate_accepts_default_shape() {
 fn admission_gate_rejects_gap_under_sampled_selection() {
     use crate::risk_measure::RiskMeasure;
     let measures = vec![RiskMeasure::Expectation, RiskMeasure::Expectation];
-    match super::admission_gate(&measures, &rules_with_gap(), false, None) {
+    match super::admission_gate(&measures, &rules_with_gap(), false, None, None) {
         Err(SddpError::Validation(msg)) => {
             assert!(msg.contains("gap"), "names the rule: {msg}");
             assert!(
@@ -10190,7 +10190,7 @@ fn admission_gate_rejects_gap_under_sampled_selection() {
 fn admission_gate_accepts_gap_under_enumerated_expectation() {
     use crate::risk_measure::RiskMeasure;
     let measures = vec![RiskMeasure::Expectation, RiskMeasure::Expectation];
-    assert!(super::admission_gate(&measures, &rules_with_gap(), true, None).is_ok());
+    assert!(super::admission_gate(&measures, &rules_with_gap(), true, None, None).is_ok());
 }
 
 /// `enumerated_scenario_count` returns Σ over root→leaf paths of Π |Ω|: for the
