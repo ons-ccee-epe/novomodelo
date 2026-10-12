@@ -609,10 +609,16 @@ pub fn parse_cut_selection_config(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::ops::RangeInclusive;
+
     use super::parse_cut_selection_config;
-    use super::{CutActivityUpdates, CutMetadata, CutSelectionStrategy, NodeId};
+    use super::{CutActivityUpdates, CutMetadata, CutSelectionStrategy, M_BLOCK, NodeId};
     use crate::cut::CutPool;
+    use crate::cut::selection_reference::{RefCut, RefRole, selected, value};
     use novomodelo_io::config::{RowSelectionConfig, SelectionMethod};
+    use proptest::prelude::*;
+    use proptest::test_runner::RngSeed;
 
     fn make_meta(active_count: u64, last_active_iter: u64) -> CutMetadata {
         CutMetadata {
@@ -2033,6 +2039,177 @@ mod tests {
         let result = strategy.select_for_stage(&pool, &[1.0, 3.0], 2, 5, 0);
         assert_eq!(result.updates, Vec::<u32>::new());
         assert_eq!(result.reactivations, Vec::<u32>::new());
+    }
+
+    // -----------------------------------------------------------------------
+    // Level1 kernel against the reference rule
+    // -----------------------------------------------------------------------
+
+    const LEVEL1: CutSelectionStrategy = CutSelectionStrategy::Level1 {
+        check_frequency: 1,
+        tie_tolerance: 1e-10,
+    };
+
+    const STATE_COUNTS: RangeInclusive<usize> = 1..=40;
+
+    #[derive(Debug)]
+    struct PoolDraw {
+        intercepts: Vec<f64>,
+        coefficients: Vec<Vec<f64>>,
+        states: Vec<Vec<f64>>,
+        active: Vec<bool>,
+    }
+
+    prop_compose! {
+        /// Integer-valued cuts and states: every cut value and every
+        /// power-of-two rescaling of them is exact in `f64`.
+        fn pool_draw()(
+            cut_count in 2..=40usize,
+            dimension in 1..=4usize,
+            state_count in STATE_COUNTS,
+        )(
+            intercepts in prop::collection::vec((-50..=50i32).prop_map(f64::from), cut_count),
+            coefficients in prop::collection::vec(
+                prop::collection::vec((-50..=50i32).prop_map(f64::from), dimension),
+                cut_count,
+            ),
+            states in prop::collection::vec(
+                prop::collection::vec((-8..=8i32).prop_map(f64::from), dimension),
+                state_count,
+            ),
+            active in prop::collection::vec(any::<bool>(), cut_count),
+        ) -> PoolDraw {
+            PoolDraw { intercepts, coefficients, states, active }
+        }
+    }
+
+    /// Cuts generated at iteration 1, so every one is eligible for a selection
+    /// run at iteration 2.
+    fn pool_and_reference(draw: &PoolDraw, scale: f64) -> (CutPool, Vec<RefCut>) {
+        let reference: Vec<RefCut> = draw
+            .intercepts
+            .iter()
+            .zip(&draw.coefficients)
+            .map(|(intercept, coefficients)| RefCut {
+                intercept: intercept * scale,
+                coefficients: coefficients.iter().map(|c| c * scale).collect(),
+                role: RefRole::Generated,
+            })
+            .collect();
+        let mut pool = CutPool::new(reference.len(), draw.coefficients[0].len(), 1, 0);
+        for (slot, (cut, &active)) in reference.iter().zip(&draw.active).enumerate() {
+            pool.add_cut(NodeId(0), slot as u64, 0, cut.intercept, &cut.coefficients);
+            pool.set_iteration_generated_for_test(slot, 1);
+            pool.set_active(slot as u32, active);
+        }
+        (pool, reference)
+    }
+
+    fn active_after_selection(pool: &mut CutPool, states: &[Vec<f64>]) -> BTreeSet<usize> {
+        let updates = LEVEL1.select_for_stage(pool, &states.concat(), states.len(), 2, 0);
+        pool.apply_updates(&updates);
+        (0..pool.populated())
+            .filter(|&slot| pool.is_active(slot))
+            .collect()
+    }
+
+    #[test]
+    fn property_generator_crosses_the_block_size() {
+        assert!(*STATE_COUNTS.end() > M_BLOCK);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            rng_seed: RngSeed::Fixed(42),
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn level1_kernel_matches_the_reference_rule_on_tie_free_states(draw in pool_draw()) {
+            let (mut pool, reference) = pool_and_reference(&draw, 1.0);
+            let unique_maximiser = draw.states.iter().all(|state| {
+                let values: Vec<f64> = reference.iter().map(|cut| value(cut, state)).collect();
+                let maximum = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                values.iter().filter(|&&v| v == maximum).count() == 1
+            });
+            prop_assume!(unique_maximiser);
+            prop_assert_eq!(
+                active_after_selection(&mut pool, &draw.states),
+                selected(&reference, &draw.states)
+            );
+        }
+
+        #[test]
+        fn level1_selection_ignores_state_order_and_duplicates(
+            draw in pool_draw(),
+            duplicates in prop::collection::vec(
+                any::<prop::sample::Index>(),
+                0..=*STATE_COUNTS.end(),
+            ),
+            order_keys in prop::collection::vec(any::<u32>(), 2 * *STATE_COUNTS.end()),
+        ) {
+            let mut states = draw.states.clone();
+            states.extend(
+                duplicates
+                    .iter()
+                    .map(|index| draw.states[index.index(draw.states.len())].clone()),
+            );
+            let mut order: Vec<usize> = (0..states.len()).collect();
+            order.sort_by_key(|&i| order_keys[i]);
+            let reordered: Vec<Vec<f64>> = order.iter().map(|&i| states[i].clone()).collect();
+
+            let (mut original_pool, _) = pool_and_reference(&draw, 1.0);
+            let (mut reordered_pool, _) = pool_and_reference(&draw, 1.0);
+            prop_assert_eq!(
+                active_after_selection(&mut original_pool, &draw.states),
+                active_after_selection(&mut reordered_pool, &reordered)
+            );
+        }
+
+        #[test]
+        fn level1_selection_is_idempotent(draw in pool_draw()) {
+            let (mut pool, _) = pool_and_reference(&draw, 1.0);
+            active_after_selection(&mut pool, &draw.states);
+            let second =
+                LEVEL1.select_for_stage(&pool, &draw.states.concat(), draw.states.len(), 2, 0);
+            prop_assert_eq!(
+                second,
+                CutActivityUpdates {
+                    stage_index: 0,
+                    updates: vec![],
+                    reactivations: vec![],
+                }
+            );
+        }
+
+        #[test]
+        fn adding_a_state_never_deactivates_a_selected_cut(draw in pool_draw()) {
+            prop_assume!(draw.states.len() >= 2);
+            let (without_last, last) = draw.states.split_at(draw.states.len() - 1);
+            let (mut fewer_pool, _) = pool_and_reference(&draw, 1.0);
+            let (mut more_pool, _) = pool_and_reference(&draw, 1.0);
+            let fewer = active_after_selection(&mut fewer_pool, without_last);
+            let more = active_after_selection(&mut more_pool, &draw.states);
+            prop_assert!(
+                fewer.is_subset(&more),
+                "adding the state {last:?} deactivated {:?}",
+                fewer.difference(&more).collect::<Vec<_>>()
+            );
+        }
+
+        #[test]
+        fn level1_selection_is_invariant_to_power_of_two_scaling(
+            draw in pool_draw(),
+            exponent in -20..=20i32,
+        ) {
+            let (mut unscaled_pool, _) = pool_and_reference(&draw, 1.0);
+            let (mut scaled_pool, _) = pool_and_reference(&draw, 2.0_f64.powi(exponent));
+            prop_assert_eq!(
+                active_after_selection(&mut unscaled_pool, &draw.states),
+                active_after_selection(&mut scaled_pool, &draw.states)
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
