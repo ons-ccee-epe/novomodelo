@@ -236,17 +236,17 @@ pub enum TrainingEvent {
         per_stage: Vec<StageRowSelectionRecord>,
     },
 
-    /// Active-row budget enforcement completed.
+    /// The active-row cap was applied to the capped row pools: every pool
+    /// except the first stage's and the last stage's.
     ///
-    /// Emitted every iteration when `budget` is set in `TrainingConfig`, never
-    /// when it is `None`. Not gated by `check_frequency` — the budget is a hard
-    /// cap maintained at all times.
+    /// Emitted once per iteration when a cap is configured, never otherwise;
+    /// the selection method's `check_frequency` does not gate it.
     PolicyBudgetEnforcementComplete {
         /// Iteration number.
         iteration: u64,
-        /// Total number of rows evicted across all stages in this iteration.
+        /// Rows evicted in this iteration, summed over the capped pools.
         rows_evicted: u32,
-        /// Number of stages processed during budget enforcement.
+        /// Number of capped pools the pass visited.
         stages_processed: u32,
         /// Wall-clock time for the budget enforcement pass, in milliseconds.
         enforcement_time_ms: u64,

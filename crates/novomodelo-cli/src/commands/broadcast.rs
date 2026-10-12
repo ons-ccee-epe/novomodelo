@@ -110,8 +110,8 @@ pub(crate) struct BroadcastConfig {
     pub(crate) export_states: bool,
     /// `policy.checkpointing`'s resolved schedule; every rank evaluates it.
     pub(crate) checkpoint_schedule: Option<CheckpointSchedule>,
-    /// Hard cap on active rows per stage; `None` means no cap. Sourced from
-    /// `config.training.cut_selection.max_active_per_stage`.
+    /// `training.cut_selection.max_active_per_stage`; `None` means no cap. Described on
+    /// [`max_active_per_stage`](novomodelo_io::config::RowSelectionConfig::max_active_per_stage).
     pub(crate) budget: Option<u32>,
     /// Scenario source for the training forward pass, broadcast so non-root
     /// ranks build the stochastic context with matching sampling schemes.

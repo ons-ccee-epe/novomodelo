@@ -163,10 +163,41 @@ pub struct RowSelectionConfig {
     #[serde(default)]
     pub row_activity_tolerance: Option<f64>,
 
-    /// Hard cap on active rows per stage LP, enforced after the selection
-    /// method runs. Rows are evicted least-recently-active first, tie-broken by
-    /// least-frequently-active; rows added in the current iteration are never
-    /// evicted. Absent (default): no cap.
+    /// Cap on the active rows that the current run has added to a stage's row
+    /// pool. Absent (default): no cap.
+    ///
+    /// The cap applies to the row pool of every stage strictly between the
+    /// first and the last; the pools of the first stage and of the last stage
+    /// are not capped. Where the policy graph has several nodes at such a
+    /// stage, each node has its own pool and the cap applies to each pool
+    /// separately. Rows loaded from a policy (`policy.mode` set to `warm_start`
+    /// or `resume`, or `policy.boundary`) are never evicted and do not count
+    /// toward the cap, so a pool can hold more active rows than the cap. Under
+    /// `resume` every reloaded row is a loaded row, so the cap counts only the
+    /// rows added after the resume.
+    ///
+    /// The cap is applied in every training iteration, after that iteration's
+    /// rows have been added, whether or not a selection method is configured;
+    /// in an iteration where the selection method runs its periodic pass, the
+    /// cap is applied after that pass. Rows added in the current iteration
+    /// count toward the cap and are never evicted, so the count stays above
+    /// the cap when those rows alone exceed it.
+    ///
+    /// When the count exceeds the cap, the excess is evicted from the rows
+    /// added in earlier iterations, in ascending order of the iteration in
+    /// which a row was last binding; ties go to the row that was binding in
+    /// fewer solves, then to the row at the lower position in the pool. A row
+    /// that has never been binding ranks by the iteration that added it.
+    /// `row_activity_tolerance` decides whether a row is binding.
+    ///
+    /// The cap is rejected at load when set together with the `dynamic`
+    /// selection method or with `training.selection.method` set to
+    /// `enumerated`.
+    ///
+    /// Eviction deactivates a row and keeps it in the pool. With no selection
+    /// method an evicted row does not become active again during training.
+    /// With a selection method, a later selection pass may reactivate it, and
+    /// the cap is then applied again in the same iteration.
     #[serde(default)]
     pub max_active_per_stage: Option<u32>,
 

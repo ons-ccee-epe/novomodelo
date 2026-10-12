@@ -139,12 +139,14 @@ pub struct CutManagementConfig {
     /// Cut selection strategy for deactivating dominated cuts; `None` keeps all cuts active.
     pub cut_selection: Option<CutSelectionStrategy>,
 
-    /// Hard cap on active cuts per stage (cut-selection stage 2); `None` is uncapped.
-    /// Cuts from the current iteration are never evicted.
+    /// `training.cut_selection.max_active_per_stage`; `None` means no cap. Described on
+    /// [`max_active_per_stage`](novomodelo_io::config::RowSelectionConfig::max_active_per_stage).
     pub budget: Option<u32>,
 
     /// Binding threshold: a cut row is binding at a backward solve when its dual is
-    /// strictly greater than this value (signed). Its scale is documented on
+    /// strictly greater than this value (signed). The backward pass reads it only while
+    /// [`tracks_binding_activity`](Self::tracks_binding_activity) holds. Its scale is
+    /// documented on
     /// [`row_activity_tolerance`](novomodelo_io::config::RowSelectionConfig::row_activity_tolerance).
     pub cut_activity_tolerance: f64,
 

@@ -142,10 +142,8 @@ pub struct StudyParams {
     pub cut_selection: Option<CutSelectionStrategy>,
     /// Minimum dual multiplier for a cut to count as binding (`0.0` if unset).
     pub cut_activity_tolerance: f64,
-    /// Maximum number of active cuts per stage (hard cap on LP size).
-    ///
-    /// `None` means no cap is enforced. Derived from
-    /// `config.training.cut_selection.max_active_per_stage`.
+    /// `training.cut_selection.max_active_per_stage`; `None` means no cap. Described on
+    /// [`max_active_per_stage`](novomodelo_io::config::RowSelectionConfig::max_active_per_stage).
     pub budget: Option<u32>,
     /// Backward-pass solver profile override (`training.solver.backward`).
     pub training_solver_backward: Option<PhaseSolverProfileConfig>,
@@ -290,8 +288,10 @@ impl StudyParams {
         {
             tracing::warn!(
                 "max_active_per_stage ({b}) is less than forward_passes \
-                 ({forward_passes}); budget enforcement will evict all \
-                 non-current-iteration cuts every iteration"
+                 ({forward_passes}): in a stage whose row pool receives \
+                 {forward_passes} rows per iteration, the cap evicts at every \
+                 iteration every row this run added in an earlier iteration; \
+                 rows loaded from a policy are not affected"
             );
         }
 
