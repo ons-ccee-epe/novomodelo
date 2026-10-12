@@ -593,7 +593,7 @@ pub fn build_stage_cuts_payloads<'a>(
                 stage_id: pool as u32,
                 state_dimension: fcf.state_dimension as u32,
                 capacity: pool_data.capacity as u32,
-                warm_start_count: pool_data.warm_start_count,
+                warm_start_count: pool_data.prefix_len() as u32,
                 cuts: &stage_records[pool],
                 active_cut_indices: &stage_active_indices[pool],
                 populated_count: stage_records[pool].len() as u32,

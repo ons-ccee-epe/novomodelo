@@ -361,7 +361,7 @@ impl CheckpointLayout {
             &basis_row_u8,
         );
 
-        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
+        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
 
         let metadata = CheckpointManifest {
             format_version: FORMAT_VERSION,

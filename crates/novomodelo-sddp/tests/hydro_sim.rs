@@ -132,7 +132,7 @@ mod simulation_only {
             &basis_row_u8,
         );
 
-        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
+        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
         let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             n_stages as u32,
             setup.build_graph_manifest(),
@@ -1232,7 +1232,7 @@ mod decomp_integration {
             &basis_col,
             &basis_row,
         );
-        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
+        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
         let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             fcf.pools.len() as u32,
             setup.build_graph_manifest(),
@@ -1475,14 +1475,14 @@ mod decomp_integration {
         let terminal_pool_id = setup_c.inputs.node_graph.terminal_pool(num_stages).unwrap();
         let terminal_pool = &setup_c.fcf.pools[terminal_pool_id];
         assert!(
-            terminal_pool.has_warm_start_cuts(),
-            "terminal pool must have boundary cuts after injection; warm_start_count == 0"
+            terminal_pool.has_prefix_cuts(),
+            "terminal pool must have boundary cuts after injection; prefix_len == 0"
         );
         assert!(
-            terminal_pool.populated() >= terminal_pool.warm_start_count as usize,
-            "populated_count ({}) must include boundary cuts (warm_start_count = {})",
+            terminal_pool.populated() >= terminal_pool.prefix_len(),
+            "populated_count ({}) must include boundary cuts (prefix_len = {})",
             terminal_pool.populated(),
-            terminal_pool.warm_start_count
+            terminal_pool.prefix_len()
         );
 
         let mut solver_c = ActiveSolver::new().expect("solver C");

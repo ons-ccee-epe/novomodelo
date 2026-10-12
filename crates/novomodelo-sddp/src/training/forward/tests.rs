@@ -2885,7 +2885,7 @@ fn test_build_delta_excludes_warm_start_cuts() {
     };
     let mut pool = CutPool::new_with_warm_start(1, 2, 10, &[warm_record]);
     // Now add a training cut at iteration=1, fwd_idx=0:
-    // slot = warm_start_count(1) + 1*2 + 0 = 3
+    // slot = slot_base(1) + 1*2 + 0 = 3
     pool.add_cut(NodeId(0), 1, 0, 7.0, &[1.0]);
 
     // Build an FCF with 2 stages (n_state=1, 2 fwd passes, 10 max iters).
@@ -3073,8 +3073,7 @@ fn build_delta_cut_row_batch_into_skips_warm_start_slots() {
         is_active: true,
     };
     let mut pool = CutPool::new_with_warm_start(1, 1, 10, &[ws_record]);
-    // One iteration-1 cut at slot 1 (warm_start_count=1, so slot = 1+1*1+0 = 2,
-    // but new_with_warm_start sets warm_start_count=1 → slot = 1+1*1+0 = 2).
+    // One iteration-1 cut: slot = slot_base(1) + 1*1 + 0 = 2.
     pool.add_cut(NodeId(0), 1, 0, 7.0, &[1.0]);
 
     let mut fcf = FutureCostFunction::new(2, 1, 1, 10, &[0; 2]);

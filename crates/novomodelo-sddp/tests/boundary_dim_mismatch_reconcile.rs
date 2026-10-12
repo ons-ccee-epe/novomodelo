@@ -719,7 +719,7 @@ fn run_injected_decomp() -> f64 {
         .terminal_pool(setup.num_stages())
         .unwrap();
     assert!(
-        setup.fcf.pools[terminal].has_warm_start_cuts(),
+        setup.fcf.pools[terminal].has_prefix_cuts(),
         "injecting the boundary must make the terminal pool boundary-loaded"
     );
 

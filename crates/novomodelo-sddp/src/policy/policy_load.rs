@@ -1469,8 +1469,8 @@ impl Deref for ValidatedBoundaryCuts {
 /// Replaces the terminal stage's [`CutPool`] with one fixed to exactly
 /// `boundary_cuts.len()` slots — a leaf never receives a new cut, so no
 /// growable training capacity is reserved. The resulting nonzero
-/// `warm_start_count` is what makes the forward pass treat the terminal
-/// stage as boundary-loaded ([`CutPool::has_warm_start_cuts`]) and skip
+/// [`CutPool::prefix_len`] is what makes the forward pass treat the terminal
+/// stage as boundary-loaded ([`CutPool::has_prefix_cuts`]) and skip
 /// theta zeroing.
 ///
 /// `boundary_cuts` must come from [`load_boundary_cuts`] or
@@ -4539,7 +4539,7 @@ mod tests {
         inject_boundary_cuts(&mut setup, &boundary_cuts).unwrap();
 
         let pool = &setup.fcf.pools[terminal_idx];
-        assert_eq!(pool.warm_start_count as usize, records.len());
+        assert_eq!(pool.prefix_len(), records.len());
         assert_eq!(
             pool.capacity,
             records.len(),
@@ -4659,11 +4659,11 @@ mod tests {
         let pool_bcast = &setup_bcast.fcf.pools[terminal_idx];
 
         assert_eq!(
-            pool_bcast.warm_start_count as usize,
+            pool_bcast.prefix_len(),
             records.len(),
             "the broadcast path must populate the terminal pool, never leave it empty"
         );
-        assert_eq!(pool_bcast.warm_start_count, pool_direct.warm_start_count);
+        assert_eq!(pool_bcast.prefix_len(), pool_direct.prefix_len());
         assert_eq!(pool_bcast.capacity, pool_direct.capacity);
 
         let active = |pool: &CutPool| -> Vec<(usize, f64, Vec<f64>)> {

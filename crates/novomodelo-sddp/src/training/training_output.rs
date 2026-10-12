@@ -328,7 +328,7 @@ pub fn build_training_output(
         rows_in_lp_total,
         rows_in_lp_solve_count,
         rows_in_lp_max,
-        total_loaded: fcf.total_warm_start_cuts() as u64,
+        total_loaded: fcf.total_loaded_cuts() as u64,
     };
 
     let mask = result.stop_decision.mask();

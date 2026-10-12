@@ -689,7 +689,7 @@ fn check_pool(
 }
 
 /// Pairs every active cut slot `j` of pool `t` with the state it was generated
-/// at: archive position `j - warm_start_count` of the pool's node, which holds
+/// at: archive position `j - slot_base` of the pool's node, which holds
 /// every iteration's trial states in slot order.
 ///
 /// # Panics
@@ -707,8 +707,8 @@ fn recover_cut_trial_states(
     forward_passes: usize,
 ) -> Vec<(usize, Vec<f64>)> {
     let visit_stride = pool.visit_stride as usize;
-    let warm_start = pool.warm_start_count as usize;
-    assert_eq!(warm_start, 0, "{label}: pool {t}: warm_start_count");
+    let slot_base = pool.slot_base as usize;
+    assert_eq!(slot_base, 0, "{label}: pool {t}: slot_base");
     assert_eq!(
         count,
         ORACLE_ITERATIONS as usize * visit_stride,
@@ -720,7 +720,7 @@ fn recover_cut_trial_states(
     );
     pool.active_cuts()
         .map(|(j, _, _)| {
-            let pos = j - warm_start;
+            let pos = j - slot_base;
             assert!(
                 pos < count,
                 "{label}: pool {t}: slot {j} has no archived state"

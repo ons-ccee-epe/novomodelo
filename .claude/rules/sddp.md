@@ -523,7 +523,7 @@ pre-node-native stage read. Sibling fan nodes at one level may share a pool.
 **Append-only within a pool.** A cut is never removed from its pool. Deactivation
 clears the slot's activity flag (`CutPool::set_active`) and keeps the slot and
 its data; every cut keeps a stable slot index for the lifetime of the run,
-placed by `slot_index`'s deterministic function of `warm_start_count`,
+placed by `slot_index`'s deterministic function of `slot_base`,
 `iteration`, `iteration_base`, `visit_stride`, and `forward_pass_index`. The
 per-iteration template refreeze encodes **only active cuts** (one row per
 `active_cuts()` entry), so a refrozen stage template holds no inactive cut. The
@@ -575,8 +575,8 @@ a corrupted iteration and, with two or more forward passes, an overflowing
 predicate is the second: a loaded cut whose generating iteration equals the
 current one is taken for a cut of this iteration, appended to the LP a second
 time as a delta row and packed for the cut exchange as a new cut. Answering by
-position (`slot < warm_start_count`) is the third: a pool built by `CutPool::new`
-with a non-zero `warm_start_count` reserves leading slots that no record fills,
+position (`slot < slot_base`) is the third: a pool built by `CutPool::new`
+with a non-zero `slot_base` reserves leading slots that no record fills,
 and the position test calls each of them a loaded cut.
 Read: `cut/pool.rs` (`SlotRole`, `CutPool::new_with_warm_start`,
 `CutPool::from_deserialized`, `is_prefix_slot`, `active_delta_cuts`,
@@ -659,7 +659,7 @@ intercept and coefficients are zero. A vacant slot lies below
 on a sampled branching graph the pool's `visit_stride` is a statistical floor
 (`NodeGraph::pool_cut_stride`), so a node visited fewer times than its stride
 leaves the tail of its block unwritten and the next iteration's block starts above
-it; and a `CutPool::new` pool with a non-zero `warm_start_count` leaves its
+it; and a `CutPool::new` pool with a non-zero `slot_base` leaves its
 leading slots unwritten. `populated()` and `cuts_in_lp()` are one past the highest
 written slot: they bound slot-indexed reads and do not count cuts, which
 `generated()` does. Two readers skip a vacant slot. The selection kernel
@@ -1375,8 +1375,8 @@ The forward trajectory cost and the simulation per-scenario cost both reconstruc
 a path total as `Σ_t cum_d(t)·stage_cost(t)`, where the interior `stage_cost(t) =
 (view.objective − d_t·θ_t)·cost_scale` subtracts the discounted epigraph `θ_t` —
 the future cost-to-go a later stage realizes as its own immediate cost. At the
-TERMINAL stage under a boundary policy (`CutPool::has_warm_start_cuts` on the
-terminal stage's pool, i.e. `warm_start_count > 0`) `θ_t` prices the
+TERMINAL stage under a boundary policy (`CutPool::has_prefix_cuts` on the
+terminal stage's pool, i.e. `prefix_len() > 0`) `θ_t` prices the
 POST-HORIZON value-to-go, which no later stage realizes, so it is KEPT in the
 reported cost (`stage_cost = view.objective·cost_scale`) — matching the lower
 bound, which already carries it through `θ_0`'s cuts (`evaluate_lower_bound`
@@ -1388,11 +1388,11 @@ Subtracting `θ_t` at the terminal boundary stage — the interior form — is t
 wrong-but-compiling alternative: it drops the post-horizon FCF from the UB /
 simulation cost alone, leaving `LB ≫ UB` (a NEGATIVE gap the stopping rule's
 `.max(0.0)` clamp then reads as "converged"). The branch is gated on
-`terminal && pool.has_warm_start_cuts()`; a non-boundary study pins terminal `θ`
+`terminal && pool.has_prefix_cuts()`; a non-boundary study pins terminal `θ`
 to `[0, 0]` (forward) or leaves the terminal pool empty with `θ`'s `0.0` lower
 bound driving it to `0` (simulation), so the fix is byte-neutral there.
 
-Read: `cut/pool.rs` (`CutPool::has_warm_start_cuts`, the flag's only formula),
+Read: `cut/pool.rs` (`CutPool::has_prefix_cuts`, the flag's only formula),
 `training/forward/enumerated.rs` (`solve_forward_node`),
 `training/forward/stage_solve.rs` (`run_forward_stage`), `simulation/pipeline.rs`
 (`extract_sim_stage_result`, flag read from the stage's pool in

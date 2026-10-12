@@ -7,7 +7,7 @@
 //! ## Slot assignment
 //!
 //! ```text
-//! slot = warm_start_count + iteration * visit_stride + forward_pass_index
+//! slot = slot_base + iteration * visit_stride + forward_pass_index
 //! ```
 //!
 //! ## Activity tracking
@@ -32,7 +32,7 @@
 //! use novomodelo_sddp::setup::NodeId;
 //!
 //! // 100-slot pool, 9-dimensional state, a per-pool visit stride of 10,
-//! // no warm-start cuts.
+//! // slot base 0.
 //! let mut pool = CutPool::new(100, 9, 10, 0);
 //! assert_eq!(pool.active_count(), 0);
 //!
@@ -133,13 +133,17 @@ pub struct CutPool {
     /// Fixed after construction.
     pub visit_stride: u32,
 
-    /// Warm-start cuts loaded before training; the base offset in the slot
-    /// formula. Fixed after construction.
-    pub warm_start_count: u32,
+    /// Slot of the first training cut: the offset of the slot formula, not a
+    /// count of loaded cuts ([`prefix_len`](CutPool::prefix_len)). Fixed after
+    /// construction.
+    pub slot_base: u32,
 
-    /// Iteration that maps to the first training slot (`warm_start_count`). The
+    /// Number of `Prefix` slots, written by the loading constructors.
+    prefix_len: usize,
+
+    /// Iteration that maps to the first training slot (`slot_base`). The
     /// slot formula subtracts it so 1-based iterations pack densely. Default 0 is
-    /// the legacy layout that leaves the block `[warm_start_count, +visit_stride)`
+    /// the legacy layout that leaves the block `[slot_base, +visit_stride)`
     /// unused; production sets `start_iteration + 1` via [`set_iteration_base`].
     /// Both are correct; dense is tighter.
     ///
@@ -166,6 +170,7 @@ pub struct CutPool {
 
 impl CutPool {
     /// Create a `CutPool` with all slots pre-allocated and zero / inactive.
+    /// `slot_base` reserves that many vacant leading slots; none is a loaded cut.
     ///
     /// # Example
     ///
@@ -179,12 +184,7 @@ impl CutPool {
     /// assert_eq!(pool.populated(), 0);
     /// ```
     #[must_use]
-    pub fn new(
-        capacity: usize,
-        state_dimension: usize,
-        visit_stride: u32,
-        warm_start_count: u32,
-    ) -> Self {
+    pub fn new(capacity: usize, state_dimension: usize, visit_stride: u32, slot_base: u32) -> Self {
         Self {
             coefficients: vec![0.0; capacity * state_dimension],
             intercepts: vec![0.0; capacity],
@@ -195,10 +195,11 @@ impl CutPool {
             capacity,
             state_dimension,
             visit_stride,
-            warm_start_count,
+            slot_base,
+            prefix_len: 0,
             iteration_base: 0,
             cached_active_count: 0,
-            generated_count: warm_start_count as usize,
+            generated_count: 0,
             candidates_buf: Vec::new(),
         }
     }
@@ -206,7 +207,7 @@ impl CutPool {
     /// Compute the deterministic slot index for a cut.
     ///
     /// ```text
-    /// slot = warm_start_count
+    /// slot = slot_base
     ///      + (iteration - iteration_base) * visit_stride
     ///      + forward_pass_index
     /// ```
@@ -220,15 +221,15 @@ impl CutPool {
         // Cast cannot truncate: SDDP runs only on 64-bit targets and capacity < usize::MAX.
         #[allow(clippy::cast_possible_truncation)]
         let iter_usize = (iteration - self.iteration_base) as usize;
-        self.warm_start_count as usize
+        self.slot_base as usize
             + iter_usize * self.visit_stride as usize
             + forward_pass_index as usize
     }
 
     /// Set the iteration that maps to the first training slot.
     ///
-    /// Pass `start_iteration + 1` for dense packing from slot `warm_start_count`;
-    /// default 0 leaves the block `[warm_start_count, +visit_stride)` unused.
+    /// Pass `start_iteration + 1` for dense packing from slot `slot_base`;
+    /// default 0 leaves the block `[slot_base, +visit_stride)` unused.
     ///
     /// Call before the first [`add_cut`](CutPool::add_cut) of a run. Changing the
     /// base while the pool still holds *active* training cuts is caught by
@@ -398,12 +399,19 @@ impl CutPool {
         self.cached_active_count
     }
 
-    /// Whether this pool carries any warm-started cuts — on the terminal
-    /// stage's pool, the boundary cuts.
+    /// Number of cuts loaded before the run, the number of `Prefix` slots.
     #[must_use]
     #[inline]
-    pub fn has_warm_start_cuts(&self) -> bool {
-        self.warm_start_count > 0
+    pub fn prefix_len(&self) -> usize {
+        self.prefix_len
+    }
+
+    /// Whether any cut was loaded before the run; on the terminal stage's pool,
+    /// the boundary flag.
+    #[must_use]
+    #[inline]
+    pub fn has_prefix_cuts(&self) -> bool {
+        self.prefix_len > 0
     }
 
     /// Whether `slot` holds a cut loaded before the run started.
@@ -893,7 +901,7 @@ impl CutPool {
         }
 
         #[allow(clippy::cast_possible_truncation)]
-        Self {
+        let pool = Self {
             coefficients,
             intercepts,
             metadata,
@@ -903,12 +911,15 @@ impl CutPool {
             capacity,
             state_dimension,
             visit_stride: 0,
-            warm_start_count: capacity as u32,
+            slot_base: capacity as u32,
+            prefix_len: capacity,
             iteration_base: 0,
             cached_active_count,
             generated_count: capacity,
             candidates_buf: Vec::new(),
-        }
+        };
+        pool.debug_assert_prefix_len_matches_roles();
+        pool
     }
 
     /// Construct a `CutPool` with warm-start cuts plus capacity for training.
@@ -931,7 +942,7 @@ impl CutPool {
     ///     },
     /// ];
     /// let pool = CutPool::new_with_warm_start(2, 4, 10, &records);
-    /// assert_eq!(pool.warm_start_count, 1);
+    /// assert_eq!(pool.prefix_len(), 1);
     /// assert_eq!(pool.capacity, 1 + 10 * 4); // 41
     /// assert_eq!(pool.populated(), 1);
     /// assert_eq!(pool.active_count(), 1);
@@ -943,9 +954,9 @@ impl CutPool {
         max_iterations: u64,
         records: &[OwnedPolicyCutRecord],
     ) -> Self {
-        let warm_start_count = records.len();
+        let prefix_len = records.len();
         #[allow(clippy::cast_possible_truncation)]
-        let capacity = warm_start_count + (max_iterations as usize) * (visit_stride as usize);
+        let capacity = prefix_len + (max_iterations as usize) * (visit_stride as usize);
 
         let mut coefficients = vec![0.0_f64; capacity * state_dimension];
         let mut intercepts = vec![0.0; capacity];
@@ -981,22 +992,36 @@ impl CutPool {
         }
 
         #[allow(clippy::cast_possible_truncation)]
-        Self {
+        let pool = Self {
             coefficients,
             intercepts,
             metadata,
             roles,
             active,
-            populated_count: warm_start_count,
+            populated_count: prefix_len,
             capacity,
             state_dimension,
             visit_stride,
-            warm_start_count: warm_start_count as u32,
+            slot_base: prefix_len as u32,
+            prefix_len,
             iteration_base: 0,
             cached_active_count,
-            generated_count: warm_start_count,
+            generated_count: prefix_len,
             candidates_buf: Vec::new(),
-        }
+        };
+        pool.debug_assert_prefix_len_matches_roles();
+        pool
+    }
+
+    fn debug_assert_prefix_len_matches_roles(&self) {
+        debug_assert_eq!(
+            self.prefix_len,
+            self.roles
+                .iter()
+                .filter(|role| role.origin == SlotOrigin::Prefix)
+                .count(),
+            "prefix_len disagrees with the slot roles"
+        );
     }
 
     /// Grow this pool's capacity in place. `Vec::resize` only appends new
@@ -1153,7 +1178,7 @@ mod tests {
         assert_eq!(pool.capacity, 100);
         assert_eq!(pool.state_dimension, 9);
         assert_eq!(pool.visit_stride, 10);
-        assert_eq!(pool.warm_start_count, 0);
+        assert_eq!(pool.slot_base, 0);
         assert_eq!(pool.populated_count, 0);
         assert_eq!(pool.active_count(), 0);
         assert!(pool.active.iter().all(|&a| !a));
@@ -1208,7 +1233,7 @@ mod tests {
     }
 
     #[test]
-    fn add_cut_warm_start_count_offsets_slot() {
+    fn add_cut_slot_base_offsets_slot() {
         // slot = 5 + 0*10 + 0 = 5
         let mut pool = CutPool::new(100, 9, 10, 5);
         let coeffs = vec![0.0; 9];
@@ -1247,7 +1272,7 @@ mod tests {
 
     #[test]
     fn set_iteration_base_packs_training_cuts_densely() {
-        // base = 1 (start_iteration 0) maps iteration 1 to slot warm_start_count
+        // base = 1 (start_iteration 0) maps iteration 1 to slot slot_base
         // (0 here), so 1-based iterations leave no reserved leading block.
         let mut pool = CutPool::new(30, 1, 3, 0);
         pool.set_iteration_base(1);
@@ -1448,7 +1473,7 @@ mod tests {
     }
 
     #[test]
-    fn ac_warm_start_count_offsets_slot() {
+    fn ac_slot_base_offsets_slot() {
         let mut pool = CutPool::new(100, 9, 10, 5);
         let coeffs = vec![0.0; 9];
         pool.add_cut(NodeId(0), 0, 0, 1.0, &coeffs);
@@ -1583,7 +1608,7 @@ mod tests {
         ];
 
         let pool = CutPool::new_with_warm_start(2, 4, 100, &records);
-        assert_eq!(pool.warm_start_count, 2);
+        assert_eq!(pool.prefix_len(), 2);
         assert_eq!(pool.populated_count, 2);
         assert_eq!(pool.metadata[0].iteration_generated, 5);
         assert_eq!(pool.metadata[1].iteration_generated, 7);
@@ -1761,16 +1786,16 @@ mod tests {
             records.len(),
             "max_iterations = 0 must leave no growable training slack"
         );
-        assert_eq!(pool.warm_start_count as usize, records.len());
+        assert_eq!(pool.prefix_len(), records.len());
         assert_eq!(pool.populated(), records.len());
     }
 
     #[test]
-    fn has_warm_start_cuts_follows_the_warm_start_records() {
+    fn has_prefix_cuts_follows_the_loaded_records() {
         use novomodelo_io::OwnedPolicyCutRecord;
 
         let empty = CutPool::new(100, 2, 10, 0);
-        assert!(!empty.has_warm_start_cuts());
+        assert!(!empty.has_prefix_cuts());
 
         let active_record = vec![OwnedPolicyCutRecord {
             cut_id: 0,
@@ -1782,7 +1807,7 @@ mod tests {
             forward_pass_index: 0,
         }];
         let active = CutPool::new_with_warm_start(1, 4, 100, &active_record);
-        assert!(active.has_warm_start_cuts());
+        assert!(active.has_prefix_cuts());
 
         let inactive_record = vec![OwnedPolicyCutRecord {
             cut_id: 0,
@@ -1794,14 +1819,20 @@ mod tests {
             forward_pass_index: 0,
         }];
         let inactive = CutPool::new_with_warm_start(1, 4, 100, &inactive_record);
-        assert!(inactive.has_warm_start_cuts());
+        assert!(inactive.has_prefix_cuts());
         assert_eq!(inactive.active_count(), 0);
     }
 
     #[test]
-    fn no_boundary_cuts_when_warm_start_count_zero() {
-        let pool = CutPool::new(100, 2, 10, 0);
-        assert_eq!(pool.warm_start_count, 0, "no boundary cuts");
+    fn no_prefix_cuts_when_no_record_is_loaded() {
+        let loaded_nothing = CutPool::new_with_warm_start(2, 10, 100, &[]);
+        assert!(!loaded_nothing.has_prefix_cuts());
+        assert_eq!(loaded_nothing.prefix_len(), 0);
+
+        let reserved_slots = CutPool::new(100, 2, 10, 5);
+        assert!(!reserved_slots.has_prefix_cuts());
+        assert_eq!(reserved_slots.prefix_len(), 0);
+        assert_eq!(reserved_slots.slot_base, 5);
     }
 
     // ── enforce_budget tests ────────────────────────────────────────────────
@@ -2164,7 +2195,7 @@ mod tests {
     /// `None` for all subsequent elements, preventing any further polling.
     #[test]
     fn active_cuts_early_exit_stops_at_cached_count() {
-        // visit_stride = 1 so slot = warm_start_count + iteration * 1 + fp_index
+        // visit_stride = 1 so slot = slot_base + iteration * 1 + fp_index
         let mut pool = CutPool::new(100, 2, 1, 0);
 
         // Add a cut at slot 0 (iteration 0, fp 0).

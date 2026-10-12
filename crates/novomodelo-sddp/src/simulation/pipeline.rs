@@ -494,7 +494,7 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
     ws.scratch.unscaled_dual = unscaled_dual;
 
     let include_terminal_theta =
-        training_ctx.horizon.is_terminal(t.next().0) && fcf.pools[pool_id].has_warm_start_cuts();
+        training_ctx.horizon.is_terminal(t.next().0) && fcf.pools[pool_id].has_prefix_cuts();
 
     let (immediate_cost, result) = extract_sim_stage_result(
         &mut ws.scratch.inflow_m3s_buf,

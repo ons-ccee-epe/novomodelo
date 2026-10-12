@@ -189,14 +189,14 @@ fn single_node_source_injects_into_the_one_pool_every_terminal_fan_leaf_shares()
         "injection must not fan out into per-leaf pools"
     );
     assert!(
-        setup.fcf.pools[terminal_idx].has_warm_start_cuts(),
+        setup.fcf.pools[terminal_idx].has_prefix_cuts(),
         "inject_boundary_cuts must write into the pool NodeGraph::terminal_pool resolves"
     );
 
     for &pool_id in &leaf_pool_ids {
         let pool = &setup.fcf.pools[pool_id];
         assert_eq!(
-            pool.warm_start_count as usize,
+            pool.prefix_len(),
             boundary_cuts.len(),
             "every terminal fan leaf's own pool must carry the injected boundary cuts"
         );

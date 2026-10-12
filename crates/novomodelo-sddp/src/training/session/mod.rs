@@ -171,7 +171,7 @@ where
         let total_forward_passes = config.loop_config.forward_passes as usize;
         let ranks = RankDistribution::new(comm, total_forward_passes);
 
-        // Map the first training iteration to slot `warm_start_count` so
+        // Map the first training iteration to slot `slot_base` so
         // training cuts pack densely with no reserved leading block.
         fcf.set_iteration_base(config.loop_config.start_iteration + 1);
 
@@ -2763,7 +2763,7 @@ mod tests {
 
     /// The fixed terminal pool [`inject_boundary_cuts`](crate::inject_boundary_cuts)
     /// builds (`CutPool::new_with_warm_start` at `max_iterations = 0`, so
-    /// `capacity == warm_start_count == populated`, `remaining == 0`) must never
+    /// `capacity == prefix_len() == populated`, `remaining == 0`) must never
     /// grow: the unguarded loop would double it the moment any realized visit
     /// count is positive, silently re-introducing the growable slack removed at
     /// injection.

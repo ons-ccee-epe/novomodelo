@@ -723,7 +723,7 @@ fn train_simulate_write_cycle() {
             stage_id: stage_idx as u32,
             state_dimension: pool.state_dimension as u32,
             capacity: pool.capacity as u32,
-            warm_start_count: pool.warm_start_count,
+            warm_start_count: pool.prefix_len() as u32,
             cuts: &cut_records_per_stage[stage_idx],
             active_cut_indices: &active_indices_per_stage[stage_idx],
             populated_count: pool.populated() as u32,
@@ -735,7 +735,7 @@ fn train_simulate_write_cycle() {
         })
         .collect();
 
-    let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
+    let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
     let policy_metadata = novomodelo_sddp::test_support::checkpoint_metadata(
         fx.n_stages as u32,
         novomodelo_io::GraphManifest::default(),

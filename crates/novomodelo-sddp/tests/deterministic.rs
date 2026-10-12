@@ -1441,7 +1441,7 @@ fn d12_checkpoint_round_trip() {
             stage_id: stage_idx as u32,
             state_dimension: pool.state_dimension as u32,
             capacity: pool.capacity as u32,
-            warm_start_count: pool.warm_start_count,
+            warm_start_count: pool.prefix_len() as u32,
             cuts: &cut_records_per_stage[stage_idx],
             active_cut_indices: &active_indices_per_stage[stage_idx],
             populated_count: pool.populated() as u32,
@@ -1454,7 +1454,7 @@ fn d12_checkpoint_round_trip() {
         .collect();
 
     let n_stages = fcf.pools.len();
-    let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
+    let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
     let policy_metadata = novomodelo_sddp::test_support::checkpoint_metadata(
         n_stages as u32,
         novomodelo_io::GraphManifest::default(),
@@ -9471,11 +9471,11 @@ mod heterogeneous_visit_bound_resume {
              forward_passes ({FORWARD_PASSES}) uniformly"
         );
 
-        // Slot-index equivalence: the resumed pool's warm_start_count is 0
+        // Slot-index equivalence: the resumed pool's slot_base is 0
         // (no warm-start cuts here) and its iteration_base defaults to 0,
         // exactly like a fresh cold pool — so a cut at (iteration=1,
         // forward_pass_index=0) must land at the documented formula's slot,
-        // `warm_start_count + iteration * stride + forward_pass_index`,
+        // `slot_base + iteration * stride + forward_pass_index`,
         // using the COLD-START run's own per-pool stride.
         for (pool_id, &stride) in cold_strides.iter().enumerate() {
             resumed.add_cut(
@@ -9490,7 +9490,7 @@ mod heterogeneous_visit_bound_resume {
             assert!(
                 resumed.pools[pool_id].is_active(expected_slot),
                 "pool {pool_id}: a cut at iteration 1, forward_pass_index 0 must land at slot \
-                 {expected_slot} (warm_start_count 0 + iteration 1 * stride {stride} + \
+                 {expected_slot} (slot_base 0 + iteration 1 * stride {stride} + \
                  forward_pass_index 0) — the cold-start run's own stride"
             );
         }
@@ -10609,7 +10609,7 @@ mod enumerated_checkpoint {
                 stage_id: pool_idx as u32,
                 state_dimension: pool.state_dimension as u32,
                 capacity: pool.capacity as u32,
-                warm_start_count: pool.warm_start_count,
+                warm_start_count: pool.prefix_len() as u32,
                 cuts: &cut_records_per_stage[pool_idx],
                 active_cut_indices: &active_indices_per_stage[pool_idx],
                 populated_count: pool.populated() as u32,
@@ -10622,7 +10622,7 @@ mod enumerated_checkpoint {
             .collect();
 
         let n_pools = fcf.pools.len();
-        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
+        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
         let policy_metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             n_pools as u32,
             GraphManifest::default(),

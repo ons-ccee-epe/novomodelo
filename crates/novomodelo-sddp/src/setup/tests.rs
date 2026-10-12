@@ -11092,7 +11092,7 @@ fn study_horizon_end_ignores_pre_study_stages() {
 // ── Terminal boundary flag: S1 vs S2/S3 formula agreement ───────────────────
 
 /// The bake's active-cut-count classification (S1, `training/session/mod.rs`)
-/// and the per-solve warm-start-count read (S2/S3, the forward pass and the
+/// and the per-solve `has_prefix_cuts` read (S2/S3, the forward pass and the
 /// simulation pipeline) must classify the terminal pool identically, on a
 /// plain and on an injected terminal pool, on a chain and on a terminal fan.
 #[test]
@@ -11141,7 +11141,7 @@ fn terminal_boundary_flag_formulas_agree_on_chain_and_terminal_fan() {
             .any_stage_node(last)
             .expect("terminal stage carries an alive node");
         let s2s3_pool = node_graph.nodes[s2s3_node].pool_id;
-        let s2s3 = setup.fcf.pools[s2s3_pool].has_warm_start_cuts();
+        let s2s3 = setup.fcf.pools[s2s3_pool].has_prefix_cuts();
 
         assert_eq!(s1, s2s3, "the S1 and S2/S3 formulas must agree");
         assert_eq!(
