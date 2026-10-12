@@ -1905,6 +1905,137 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Level1 closed-form fixtures
+    // -----------------------------------------------------------------------
+
+    /// One-dimensional pool of `(intercept, slope)` cuts in slot order, all
+    /// generated at iteration 1.
+    fn pool_from_lines(lines: &[(f64, f64)]) -> CutPool {
+        let mut pool = CutPool::new(lines.len(), 1, 1, 0);
+        for (slot, &(intercept, slope)) in lines.iter().enumerate() {
+            pool.add_cut(NodeId(0), slot as u64, 0, intercept, &[slope]);
+            pool.set_iteration_generated_for_test(slot, 1);
+        }
+        pool
+    }
+
+    /// The cuts of Fig. 4 of de Matos, Philpott and Finardi (2015): slot 1 is
+    /// undominated yet never the highest at a stored state.
+    #[test]
+    fn level1_selects_the_two_steep_cuts_of_paper_figure_four() {
+        let strategy = CutSelectionStrategy::Level1 {
+            check_frequency: 1,
+            tie_tolerance: 1e-10,
+        };
+        // Values at 1: 6, 5, 3.5, 3.5; at 3: -2, 2, 0.5, 2.5; at 4: -6, 0.5, -1, 2.
+        let pool = pool_from_lines(&[(10.0, -4.0), (6.5, -1.5), (5.0, -1.5), (4.0, -0.5)]);
+        let result = strategy.select_for_stage(&pool, &[1.0, 3.0, 4.0], 3, 5, 0);
+        assert_eq!(result.updates, vec![1, 2]);
+        assert_eq!(result.reactivations, Vec::<u32>::new());
+    }
+
+    #[test]
+    fn level1_loses_the_middle_cut_of_paper_figure_four_at_an_unvisited_state() {
+        let strategy = CutSelectionStrategy::Level1 {
+            check_frequency: 1,
+            tie_tolerance: 1e-10,
+        };
+        let lines = [(10.0, -4.0), (6.5, -1.5), (5.0, -1.5), (4.0, -0.5)];
+        let mut pool = pool_from_lines(&lines);
+        let first = strategy.select_for_stage(&pool, &[1.0, 3.0, 4.0], 3, 5, 0);
+        pool.apply_updates(&first);
+        let max_of_all_four = lines
+            .iter()
+            .map(|&(intercept, slope)| intercept + slope * 2.0)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert_eq!(max_of_all_four, 3.5);
+        assert_eq!(pool.evaluate_at_state(&[2.0]), 3.0);
+    }
+
+    #[test]
+    fn level1_reactivates_the_owner_of_a_new_state() {
+        let strategy = CutSelectionStrategy::Level1 {
+            check_frequency: 1,
+            tie_tolerance: 1e-10,
+        };
+        let mut pool = pool_from_lines(&[(10.0, -4.0), (6.5, -1.5), (5.0, -1.5), (4.0, -0.5)]);
+        let first = strategy.select_for_stage(&pool, &[1.0, 3.0, 4.0], 3, 5, 0);
+        pool.apply_updates(&first);
+        // At 2 the values are 2, 3.5, 2, 3: the inactive slot 1 owns the new state.
+        let second = strategy.select_for_stage(&pool, &[1.0, 3.0, 4.0, 2.0], 4, 5, 0);
+        assert_eq!(second.updates, Vec::<u32>::new());
+        assert_eq!(second.reactivations, vec![1]);
+    }
+
+    #[test]
+    fn level1_drops_the_owner_of_a_state_that_left_the_window() {
+        let strategy = CutSelectionStrategy::Level1 {
+            check_frequency: 1,
+            tie_tolerance: 1e-10,
+        };
+        let mut pool = pool_from_lines(&[(10.0, -4.0), (6.5, -1.5), (5.0, -1.5), (4.0, -0.5)]);
+        let first = strategy.select_for_stage(&pool, &[1.0, 3.0, 4.0], 3, 5, 0);
+        pool.apply_updates(&first);
+        // Slot 3 owns 3 and 4, slot 1 owns 2; slot 0 owned only the state 1.
+        let second = strategy.select_for_stage(&pool, &[3.0, 4.0, 2.0], 3, 5, 0);
+        assert_eq!(second.updates, vec![0]);
+        assert_eq!(second.reactivations, vec![1]);
+    }
+
+    #[test]
+    fn level1_keeps_every_cut_tied_at_the_maximum() {
+        let strategy = CutSelectionStrategy::Level1 {
+            check_frequency: 1,
+            tie_tolerance: 1e-10,
+        };
+        // Values at 1: 3, 3, 3, 2; at 3: 1, 7, 3, 2.
+        let pool = pool_from_lines(&[(4.0, -1.0), (1.0, 2.0), (3.0, 0.0), (2.0, 0.0)]);
+        let result = strategy.select_for_stage(&pool, &[1.0, 3.0], 2, 5, 0);
+        assert_eq!(result.updates, vec![3]);
+        assert_eq!(result.reactivations, Vec::<u32>::new());
+    }
+
+    #[test]
+    fn level1_selects_a_generated_cut_tied_with_a_protected_maximum() {
+        let strategy = CutSelectionStrategy::Level1 {
+            check_frequency: 1,
+            tie_tolerance: 1e-10,
+        };
+        let loaded = vec![novomodelo_io::OwnedPolicyCutRecord {
+            cut_id: 0,
+            slot_index: 0,
+            iteration: 1,
+            forward_pass_index: 0,
+            intercept: 5.0,
+            coefficients: vec![0.0],
+            is_active: true,
+        }];
+        let mut pool = CutPool::new_with_warm_start(1, 1, 2, &loaded);
+        pool.add_cut(NodeId(0), 0, 0, 5.0, &[0.0]); // slot 1
+        pool.add_cut(NodeId(0), 1, 0, 1.0, &[1.0]); // slot 2
+        pool.set_iteration_generated_for_test(1, 1);
+        pool.set_iteration_generated_for_test(2, 1);
+        // Values at 0: 5, 5, 1; at 7: 5, 5, 8.
+        let result = strategy.select_for_stage(&pool, &[0.0, 7.0], 2, 5, 0);
+        assert_eq!(result.updates, Vec::<u32>::new());
+        assert_eq!(result.reactivations, Vec::<u32>::new());
+    }
+
+    #[test]
+    fn level1_spares_a_current_iteration_cut_among_older_cuts() {
+        let strategy = CutSelectionStrategy::Level1 {
+            check_frequency: 1,
+            tie_tolerance: 1e-10,
+        };
+        let mut pool = pool_from_lines(&[(0.0, 0.0), (4.0, -1.0), (1.0, 2.0)]);
+        pool.set_iteration_generated_for_test(0, 5);
+        // Values at 1: 0, 3, 3; at 3: 0, 1, 7.
+        let result = strategy.select_for_stage(&pool, &[1.0, 3.0], 2, 5, 0);
+        assert_eq!(result.updates, Vec::<u32>::new());
+        assert_eq!(result.reactivations, Vec::<u32>::new());
+    }
+
+    // -----------------------------------------------------------------------
     // Intra-stage parallelism determinism tests
     // -----------------------------------------------------------------------
 
