@@ -3041,18 +3041,28 @@ mod branching_gate_roster {
 }
 
 mod selection_on_determinism {
-    //! Selection-on determinism gates: train with `level1` and assert the cut
-    //! pools, their provenance and binding counters, and the reported bounds are
-    //! bit-identical across 1, 2 and 4 threads, between a single rank and the
-    //! `Rank0Of2` two-rank stub, and across permuted declaration orders.
+    //! Selection-on determinism gates: train with `level1`, with the lazy method
+    //! `dynamic`, or with `level1` under the active-cut budget, and assert the
+    //! cut pools, their provenance and binding counters, and the reported bounds
+    //! are bit-identical across 1, 2 and 4 threads, between a single rank and
+    //! the `Rank0Of2` two-rank stub, and, for `level1` alone, across permuted
+    //! declaration orders.
     //!
-    //! Power statement: a bitwise comparison proves nothing on a run that never
-    //! deactivates a cut, so each gate asserts `deactivations > 0` for every
-    //! run before comparing. The uniform gates train `examples/1dtoy`.
-    //! `d43-storage-only-cut` disables `inflow_lags` on one interior stage, so
-    //! its pools project different cut-state dimensions, which its gates assert;
-    //! they train a copy with five openings per stage, because as shipped (one
-    //! opening) every later cut duplicates the first and `level1` keeps ties.
+    //! Power statement: a bitwise comparison proves nothing on a run its setting
+    //! never acted on, so each gate asserts, for every run before comparing, that
+    //! `level1` deactivated a cut, that the budget evicted one, or that the
+    //! `dynamic` backward took the lazy path and a lazy solve appended a row to
+    //! its seed. The d43 `dynamic` gate runs `seed_window: 0` because under the
+    //! default window its lazy solves append no row on CLP. A thread gate also
+    //! asserts that as many workers solve backward LPs as its shape has threads,
+    //! which takes one forward pass per thread of the largest shape.
+    //!
+    //! The uniform gates train `examples/1dtoy`. `d43-storage-only-cut` disables
+    //! `inflow_lags` on one interior stage, so its pools project different
+    //! cut-state dimensions, which its gates assert; they train a copy with five
+    //! openings per stage, because as shipped (one opening) every later cut
+    //! duplicates the first, which leaves `level1` only ties and `dynamic` one
+    //! distinct cut.
     //!
     //! The rank gates train one forward pass, the only count at which
     //! `Rank0Of2` is faithful: rank 0 owns that pass, so the stub exercises the
@@ -3061,13 +3071,14 @@ mod selection_on_determinism {
     //! `permute_case` copy declares its stages in another order than the deck.
 
     use std::collections::BTreeSet;
+    use std::fmt::Debug;
     use std::path::Path;
     use std::sync::mpsc;
 
     use novomodelo_comm::Communicator;
     use novomodelo_core::TrainingEvent;
     use novomodelo_io::config::{SelectionMethod, StoppingRuleConfig, TrainingSelection};
-    use novomodelo_sddp::StudySetup;
+    use novomodelo_sddp::{SolverStatsDelta, StudySetup, TrainingResult};
     use novomodelo_solver::ActiveSolver;
 
     use crate::common::permute::permute_case;
@@ -3079,12 +3090,14 @@ mod selection_on_determinism {
     const UNIFORM_CASE: &str = "../../examples/1dtoy";
     const NON_UNIFORM_CASE: &str = "../../examples/deterministic/d43-storage-only-cut";
     const NON_UNIFORM_OPENINGS: u32 = 5;
+    const LAZY_START_ITERATION: u32 = 2;
 
-    fn run_shape(
+    fn run_shape<P>(
         build: &impl Fn() -> StudySetup,
         n_threads: usize,
         comm: &impl Communicator,
-    ) -> (SelectionFingerprint, SelectionPower) {
+        power_of: &impl Fn(&[TrainingEvent], &TrainingResult) -> P,
+    ) -> (SelectionFingerprint, P) {
         let mut setup = build();
         let (tx, rx) = mpsc::channel();
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
@@ -3106,21 +3119,97 @@ mod selection_on_determinism {
         let events: Vec<TrainingEvent> = rx.try_iter().collect();
         (
             SelectionFingerprint::capture(&setup, &outcome.result),
-            SelectionPower::from_events(&events),
+            power_of(&events, &outcome.result),
         )
     }
 
-    fn assert_thread_shapes_agree(build: impl Fn() -> StudySetup) {
+    fn selection_power(events: &[TrainingEvent], _result: &TrainingResult) -> SelectionPower {
+        SelectionPower::from_events(events)
+    }
+
+    fn dynamic_selection(seed_window: u32) -> SelectionMethod {
+        SelectionMethod::Dynamic {
+            start_iteration: LAZY_START_ITERATION,
+            seed_window,
+            candidate_recency: None,
+            max_added_per_round: 10,
+            violation_tolerance: 1e-10,
+        }
+    }
+
+    /// Backward solver statistics and the number of lazy re-solves, both from
+    /// [`LAZY_START_ITERATION`] on. A lazy solve that ends on its seed is one LP
+    /// solve, so each solve beyond the lazy-solve count follows an appended row.
+    fn lazy_power(events: &[TrainingEvent], result: &TrainingResult) -> (SolverStatsDelta, u64) {
+        let lazy_from = u64::from(LAZY_START_ITERATION);
+        let phase_entries = |phase: &'static str| {
+            result
+                .solver_stats_log
+                .iter()
+                .filter(move |entry| entry.phase == phase && entry.iteration >= lazy_from)
+                .map(|entry| &entry.delta)
+        };
+        let backward = SolverStatsDelta::aggregate(phase_entries("backward"));
+        let forward = SolverStatsDelta::aggregate(phase_entries("forward"));
+        let lazy_solves: u64 = events
+            .iter()
+            .filter_map(|event| match event {
+                TrainingEvent::IterationSummary {
+                    iteration,
+                    rows_in_lp_count,
+                    ..
+                } if *iteration >= lazy_from => Some(*rows_in_lp_count),
+                _ => None,
+            })
+            .sum();
+        let lazy_resolves = (forward.lp_solves + backward.lp_solves).saturating_sub(lazy_solves);
+        (backward, lazy_resolves)
+    }
+
+    /// The frozen backward offers a stored basis at every trial point; the lazy
+    /// backward, which solves from a cut-free core, offers none.
+    fn appended_on_the_lazy_path((backward, lazy_resolves): &(SolverStatsDelta, u64)) -> bool {
+        backward.lp_solves > 0 && backward.basis_offered == 0 && *lazy_resolves > 0
+    }
+
+    fn backward_workers(result: &TrainingResult) -> usize {
+        result
+            .solver_stats_log
+            .iter()
+            .filter(|entry| entry.phase == "backward" && entry.delta.lp_solves > 0)
+            .filter_map(|entry| entry.worker_id)
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
+
+    fn assert_thread_shapes_agree<P: Debug>(
+        build: impl Fn() -> StudySetup,
+        power_of: impl Fn(&[TrainingEvent], &TrainingResult) -> P,
+        has_power: impl Fn(&P) -> bool,
+        powerless: &str,
+    ) {
         let runs: Vec<_> = THREAD_SHAPES
             .iter()
-            .map(|&n_threads| (n_threads, run_shape(&build, n_threads, &StubComm)))
+            .map(|&n_threads| {
+                (
+                    n_threads,
+                    run_shape(&build, n_threads, &StubComm, &|events, result| {
+                        (power_of(events, result), backward_workers(result))
+                    }),
+                )
+            })
             .collect();
 
-        for (n_threads, (_, power)) in &runs {
+        for (n_threads, (_, (power, workers))) in &runs {
             assert!(
-                power.deactivations > 0,
-                "threads={n_threads}: level1 deactivated no cut ({power:?}) — the gate is \
-                 powerless on this fixture"
+                has_power(power),
+                "threads={n_threads}: {powerless} ({power:?}) — the gate is powerless on this \
+                 fixture"
+            );
+            assert_eq!(
+                workers, n_threads,
+                "threads={n_threads}: {workers} workers solved a backward LP — the shapes must \
+                 differ in how many workers solve"
             );
         }
 
@@ -3131,6 +3220,31 @@ mod selection_on_determinism {
                 "threads={n_threads} fingerprint must be bit-identical to threads=1"
             );
         }
+    }
+
+    fn assert_two_rank_stub_matches_single_rank<P: Debug>(
+        build: impl Fn() -> StudySetup,
+        power_of: impl Fn(&[TrainingEvent], &TrainingResult) -> P,
+        has_power: impl Fn(&P) -> bool,
+        powerless: &str,
+    ) {
+        assert_eq!(
+            build().loop_params.forward_passes,
+            1,
+            "`Rank0Of2` is faithful only with one forward pass"
+        );
+
+        let (single_rank, single_rank_power) = run_shape(&build, 1, &StubComm, &power_of);
+        let (two_rank, two_rank_power) = run_shape(&build, 1, &Rank0Of2, &power_of);
+        assert!(
+            has_power(&single_rank_power) && has_power(&two_rank_power),
+            "{powerless} (single rank: {single_rank_power:?}, two-rank stub: \
+             {two_rank_power:?}) — the gate is powerless on this fixture"
+        );
+        assert_eq!(
+            two_rank, single_rank,
+            "the two-rank stub fingerprint must be bit-identical to the single-rank one"
+        );
     }
 
     fn assert_non_uniform_projection(setup: &StudySetup) {
@@ -3172,7 +3286,12 @@ mod selection_on_determinism {
         build_at: impl Fn(&Path) -> StudySetup,
     ) -> Vec<(SelectionFingerprint, SelectionPower)> {
         let declared_order = declared_stage_ids(case_dir);
-        let mut runs = vec![run_shape(&|| build_at(case_dir), 1, &StubComm)];
+        let mut runs = vec![run_shape(
+            &|| build_at(case_dir),
+            1,
+            &StubComm,
+            &selection_power,
+        )];
         for seed in PERMUTATION_SEEDS {
             let permuted = permute_case(case_dir, seed);
             assert_ne!(
@@ -3181,7 +3300,12 @@ mod selection_on_determinism {
                 "permutation seed {seed} left the stage declaration order unchanged — the \
                  gate is powerless on this copy"
             );
-            runs.push(run_shape(&|| build_at(permuted.path()), 1, &StubComm));
+            runs.push(run_shape(
+                &|| build_at(permuted.path()),
+                1,
+                &StubComm,
+                &selection_power,
+            ));
         }
         runs
     }
@@ -3192,17 +3316,23 @@ mod selection_on_determinism {
         ignore = "slow: run with --features slow-tests"
     )]
     fn level1_thread_shapes_agree_on_the_uniform_fixture() {
-        assert_thread_shapes_agree(|| {
-            fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
-                config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
-                config.training.stopping_rules =
-                    Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
-                config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
-                    tie_tolerance: 1e-10,
-                    check_frequency: 2,
-                });
-            })
-        });
+        assert_thread_shapes_agree(
+            || {
+                fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
+                    config.training.selection =
+                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.stopping_rules =
+                        Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
+                    config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+                        tie_tolerance: 1e-10,
+                        check_frequency: 2,
+                    });
+                })
+            },
+            selection_power,
+            |power| power.deactivations > 0,
+            "level1 deactivated no cut",
+        );
     }
 
     #[test]
@@ -3216,6 +3346,10 @@ mod selection_on_determinism {
                 Path::new(NON_UNIFORM_CASE),
                 NON_UNIFORM_OPENINGS,
                 |config| {
+                    config.training.selection =
+                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.stopping_rules =
+                        Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
                     config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
                         tie_tolerance: 1e-10,
                         check_frequency: 1,
@@ -3225,7 +3359,12 @@ mod selection_on_determinism {
         };
         assert_non_uniform_projection(&build());
 
-        assert_thread_shapes_agree(build);
+        assert_thread_shapes_agree(
+            build,
+            selection_power,
+            |power| power.deactivations > 0,
+            "level1 deactivated no cut",
+        );
     }
 
     #[test]
@@ -3245,22 +3384,11 @@ mod selection_on_determinism {
                 });
             })
         };
-        assert_eq!(
-            build().loop_params.forward_passes,
-            1,
-            "`Rank0Of2` is faithful only with one forward pass"
-        );
-
-        let (single_rank, single_rank_power) = run_shape(&build, 1, &StubComm);
-        let (two_rank, two_rank_power) = run_shape(&build, 1, &Rank0Of2);
-        assert!(
-            single_rank_power.deactivations > 0 && two_rank_power.deactivations > 0,
-            "level1 deactivated no cut (single rank: {single_rank_power:?}, two-rank stub: \
-             {two_rank_power:?}) — the gate is powerless on this fixture"
-        );
-        assert_eq!(
-            two_rank, single_rank,
-            "the two-rank stub fingerprint must be bit-identical to the single-rank one"
+        assert_two_rank_stub_matches_single_rank(
+            build,
+            selection_power,
+            |power| power.deactivations > 0,
+            "level1 deactivated no cut",
         );
     }
 
@@ -3286,23 +3414,13 @@ mod selection_on_determinism {
                 },
             )
         };
-        let probe = build();
-        assert_eq!(
-            probe.loop_params.forward_passes, 1,
-            "`Rank0Of2` is faithful only with one forward pass"
-        );
-        assert_non_uniform_projection(&probe);
+        assert_non_uniform_projection(&build());
 
-        let (single_rank, single_rank_power) = run_shape(&build, 1, &StubComm);
-        let (two_rank, two_rank_power) = run_shape(&build, 1, &Rank0Of2);
-        assert!(
-            single_rank_power.deactivations > 0 && two_rank_power.deactivations > 0,
-            "level1 deactivated no cut (single rank: {single_rank_power:?}, two-rank stub: \
-             {two_rank_power:?}) — the gate is powerless on this fixture"
-        );
-        assert_eq!(
-            two_rank, single_rank,
-            "the two-rank stub fingerprint must be bit-identical to the single-rank one"
+        assert_two_rank_stub_matches_single_rank(
+            build,
+            selection_power,
+            |power| power.deactivations > 0,
+            "level1 deactivated no cut",
         );
     }
 
@@ -3370,5 +3488,130 @@ mod selection_on_determinism {
                 "permutation seed {seed} fingerprint must be bit-identical to the declared order"
             );
         }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn dynamic_thread_shapes_agree() {
+        assert_thread_shapes_agree(
+            || {
+                fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
+                    config.training.selection =
+                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.stopping_rules =
+                        Some(vec![StoppingRuleConfig::IterationLimit { limit: 20 }]);
+                    config.training.cut_selection.selection = Some(dynamic_selection(5));
+                })
+            },
+            lazy_power,
+            appended_on_the_lazy_path,
+            "the dynamic backward did not append a row on the lazy path",
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn dynamic_two_rank_stub_matches_single_rank() {
+        assert_two_rank_stub_matches_single_rank(
+            || {
+                fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
+                    config.training.selection =
+                        Some(TrainingSelection::Sampled { forward_passes: 1 });
+                    config.training.stopping_rules =
+                        Some(vec![StoppingRuleConfig::IterationLimit { limit: 20 }]);
+                    config.training.cut_selection.selection = Some(dynamic_selection(5));
+                })
+            },
+            lazy_power,
+            appended_on_the_lazy_path,
+            "the dynamic backward did not append a row on the lazy path",
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn budget_thread_shapes_agree() {
+        assert_thread_shapes_agree(
+            || {
+                fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
+                    config.training.selection =
+                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.stopping_rules =
+                        Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
+                    config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+                        tie_tolerance: 1e-10,
+                        check_frequency: 1,
+                    });
+                    config.training.cut_selection.max_active_per_stage = Some(6);
+                })
+            },
+            selection_power,
+            |power| power.budget_evictions > 0,
+            "the budget evicted no cut",
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn budget_two_rank_stub_matches_single_rank() {
+        assert_two_rank_stub_matches_single_rank(
+            || {
+                fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
+                    config.training.selection =
+                        Some(TrainingSelection::Sampled { forward_passes: 1 });
+                    config.training.stopping_rules =
+                        Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
+                    config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+                        tie_tolerance: 1e-10,
+                        check_frequency: 1,
+                    });
+                    config.training.cut_selection.max_active_per_stage = Some(2);
+                })
+            },
+            selection_power,
+            |power| power.budget_evictions > 0,
+            "the budget evicted no cut",
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn dynamic_thread_shapes_agree_on_the_non_uniform_projection_fixture() {
+        let build = || {
+            fresh_setup_with_openings(
+                Path::new(NON_UNIFORM_CASE),
+                NON_UNIFORM_OPENINGS,
+                |config| {
+                    config.training.selection =
+                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.stopping_rules =
+                        Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
+                    config.training.cut_selection.selection = Some(dynamic_selection(0));
+                },
+            )
+        };
+        assert_non_uniform_projection(&build());
+
+        assert_thread_shapes_agree(
+            build,
+            lazy_power,
+            appended_on_the_lazy_path,
+            "the dynamic backward did not append a row on the lazy path",
+        );
     }
 }
