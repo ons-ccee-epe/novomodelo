@@ -32,6 +32,8 @@ pub mod fcf;
 pub mod pool;
 pub mod row;
 pub mod row_map;
+#[cfg(test)]
+pub(crate) mod selection_reference;
 pub mod wire;
 
 pub use cut_selection::CutSelectionStrategy;
