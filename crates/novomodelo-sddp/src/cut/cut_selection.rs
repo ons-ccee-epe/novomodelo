@@ -232,6 +232,15 @@ impl CutSelectionStrategy {
         iteration > 0 && iteration.is_multiple_of(freq)
     }
 
+    /// Whether cuts are scored at the visited trial states (`Dynamic` selects inside each solve).
+    #[must_use]
+    pub fn scores_visited_states(&self) -> bool {
+        match self {
+            Self::Level1 { .. } | Self::Lml1 { .. } | Self::Dominated { .. } => true,
+            Self::Dynamic { .. } => false,
+        }
+    }
+
     /// Scan the cut pool for stage 0 (a pure query: the pool is not modified).
     ///
     /// Delegates to [`select_for_stage`](Self::select_for_stage) with

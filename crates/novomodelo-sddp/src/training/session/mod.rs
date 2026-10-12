@@ -41,7 +41,7 @@ use crate::{
     convergence::convergence::ConvergenceMonitor,
     cut::fcf::FutureCostFunction,
     cut::row::build_cut_row_batch_into,
-    cut_selection::CutActivityUpdates,
+    cut_selection::{CutActivityUpdates, CutSelectionStrategy},
     cut_sync::CutSyncBuffers,
     forward::{ForwardBound, ForwardResult, SyncResult, sync_forward},
     forward_pass_state::{ForwardPassInputs, ForwardPassState},
@@ -249,10 +249,14 @@ where
             total_forward_passes,
         );
 
-        // Needed by every cut-selection strategy (the value-evaluation kernel
-        // scores cuts at these trial points) and by `export_states`.
-        let needs_archive =
-            config.cut_management.cut_selection.is_some() || config.events.export_states;
+        // Read by value-based selection scoring and by the `exports.states`
+        // checkpoint write.
+        let needs_archive = config
+            .cut_management
+            .cut_selection
+            .as_ref()
+            .is_some_and(CutSelectionStrategy::scores_visited_states)
+            || config.events.export_states;
         let visited_archive = if needs_archive {
             Some(VisitedStatesArchive::new(
                 training_ctx.node_graph.nodes.len(),

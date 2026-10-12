@@ -1444,7 +1444,7 @@ mod selection_in_a_training_run {
     use novomodelo_core::{StageRowSelectionRecord, TrainingEvent, scenario::ScenarioSource};
     use novomodelo_io::config::{SelectionMethod, StoppingRuleConfig, TrainingSelection};
     use novomodelo_sddp::{
-        StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
+        StudySetup, TrainingResult, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -1454,7 +1454,12 @@ mod selection_in_a_training_run {
     const ITERATIONS: u32 = 10;
     const CHECK_FREQUENCY: u32 = 2;
 
-    fn train_collecting_selection_runs() -> (StudySetup, Vec<(u64, Vec<StageRowSelectionRecord>)>) {
+    fn train_with(
+        selection: SelectionMethod,
+        export_states: bool,
+        iterations: u32,
+        events: Option<mpsc::Sender<TrainingEvent>>,
+    ) -> (StudySetup, TrainingResult) {
         let case_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("crates/<crate> must have a parent")
@@ -1467,12 +1472,10 @@ mod selection_in_a_training_run {
             forward_passes: FORWARD_PASSES,
         });
         config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
-            limit: ITERATIONS,
+            limit: iterations,
         }]);
-        config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
-            tie_tolerance: 1e-10,
-            check_frequency: CHECK_FREQUENCY,
-        });
+        config.training.cut_selection.selection = Some(selection);
+        config.exports.states = export_states;
 
         let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         let prepared = prepare_stochastic(
@@ -1496,18 +1499,22 @@ mod selection_in_a_training_run {
         )
         .expect("StudySetup must build");
 
-        let (tx, rx) = mpsc::channel();
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
         let outcome = setup
-            .train(&mut solver, &StubComm, 1, ActiveSolver::new, Some(tx), None)
+            .train(&mut solver, &StubComm, 1, ActiveSolver::new, events, None)
             .expect("train must return Ok");
         assert!(
             outcome.error.is_none(),
             "expected no training error, got: {:?}",
             outcome.error
         );
-        assert_eq!(outcome.result.iterations, u64::from(ITERATIONS));
+        assert_eq!(outcome.result.iterations, u64::from(iterations));
+        (setup, outcome.result)
+    }
 
+    fn train_collecting_selection_runs() -> (StudySetup, Vec<(u64, Vec<StageRowSelectionRecord>)>) {
+        let (tx, rx) = mpsc::channel();
+        let (setup, _) = train_with(level1(), false, ITERATIONS, Some(tx));
         let runs = rx
             .try_iter()
             .filter_map(|event| match event {
@@ -1604,6 +1611,52 @@ mod selection_in_a_training_run {
                 "pool {pool_id}: no cut of an earlier iteration is inactive"
             );
         }
+    }
+
+    const ARCHIVE_RUN_ITERATIONS: u32 = 3;
+
+    fn level1() -> SelectionMethod {
+        SelectionMethod::Level1 {
+            tie_tolerance: 1e-10,
+            check_frequency: CHECK_FREQUENCY,
+        }
+    }
+
+    fn dynamic() -> SelectionMethod {
+        SelectionMethod::Dynamic {
+            start_iteration: 2,
+            seed_window: 5,
+            candidate_recency: None,
+            max_added_per_round: 10,
+            violation_tolerance: 1e-10,
+        }
+    }
+
+    #[test]
+    fn a_dynamic_run_keeps_no_state_archive() {
+        let (_, result) = train_with(dynamic(), false, ARCHIVE_RUN_ITERATIONS, None);
+        assert!(
+            result.visited_archive.is_none(),
+            "dynamic selection scores no visited state and must not allocate the archive"
+        );
+    }
+
+    #[test]
+    fn a_dynamic_run_with_exported_states_keeps_the_archive() {
+        let (_, result) = train_with(dynamic(), true, ARCHIVE_RUN_ITERATIONS, None);
+        assert!(
+            result.visited_archive.is_some(),
+            "exports.states must keep the archive under dynamic selection"
+        );
+    }
+
+    #[test]
+    fn a_level1_run_keeps_the_state_archive() {
+        let (_, result) = train_with(level1(), false, ARCHIVE_RUN_ITERATIONS, None);
+        assert!(
+            result.visited_archive.is_some(),
+            "level1 scores cuts at the visited states and needs the archive"
+        );
     }
 }
 
