@@ -7,8 +7,6 @@ use novomodelo_comm::CommError::CollectiveFailed;
 use novomodelo_solver::SolverError;
 use novomodelo_solver::freeze_rows_into_template;
 
-use crate::lp::indexer::CutSlot;
-
 use crate::cut_selection::CutSelectionStrategy::Dominated;
 use crate::cut_selection::CutSelectionStrategy::Dynamic;
 use crate::cut_selection::CutSelectionStrategy::Level1;
@@ -257,16 +255,33 @@ where
             .as_ref()
             .is_some_and(CutSelectionStrategy::scores_visited_states)
             || config.events.export_states;
-        let visited_archive = if needs_archive {
-            Some(VisitedStatesArchive::new(
+        let visited_archive = needs_archive.then(|| {
+            VisitedStatesArchive::new(
                 training_ctx.node_graph.nodes.len(),
                 state.n_state,
                 config.loop_config.max_iterations,
                 total_forward_passes,
-            ))
-        } else {
-            None
+            )
+        });
+
+        let interior_cut_nodes: Vec<NodePos> = {
+            let ng = training_ctx.node_graph;
+            ng.nodes
+                .iter_indexed()
+                .filter(|&(pos, n)| n.stage >= StageIdx(1) && !ng.successors[pos].is_empty())
+                .map(|(pos, _)| pos)
+                .collect()
         };
+        if config
+            .cut_management
+            .cut_selection
+            .as_ref()
+            .is_some_and(CutSelectionStrategy::stores_trial_states)
+        {
+            for &node_pos in &interior_cut_nodes {
+                fcf.pools[training_ctx.node_graph.nodes[node_pos].pool_id].enable_trial_states();
+            }
+        }
 
         // `.take()` the non-Copy handles so `config` stays valid and can be
         // stored by value; `export_states` is Copy and read directly.
@@ -395,14 +410,7 @@ where
             cut_sync_bufs,
             visited_archive,
             cut_selection_state_scratch: Vec::new(),
-            interior_cut_nodes: {
-                let ng = training_ctx.node_graph;
-                ng.nodes
-                    .iter_indexed()
-                    .filter(|&(pos, n)| n.stage >= StageIdx(1) && !ng.successors[pos].is_empty())
-                    .map(|(pos, _)| pos)
-                    .collect()
-            },
+            interior_cut_nodes,
             scratch,
             convergence_monitor,
             fwd_state,
@@ -1146,9 +1154,7 @@ where
             let archive_ref = self.visited_archive.as_ref();
             // Interior cut-generating nodes in canonical order. A cut-generating
             // (non-leaf) node always owns its own pool, so scoring by node is
-            // per-pool; the visited states are read by NODE position (siblings at
-            // one stage own distinct visited regions). On a chain node position
-            // equals stage, reproducing the former 1..T-2 stage loop.
+            // per-pool; the visited states are read by NODE position.
             let interior_nodes = &self.interior_cut_nodes;
             let pools = &self.fcf.pools;
             let cut_state_layouts = self.training_ctx.cut_state_layouts;
@@ -1168,19 +1174,13 @@ where
                 let n_trials = archive_ref.map_or(0, |a| a.count(node_pos));
                 let global_states =
                     archive_ref.map_or(&[] as &[f64], |a| a.states_for_node(node_pos));
-                // Project the StateDim-packed archive into the pool's projected
-                // slot space through its own CutStateProjection (identity when
-                // n_slots == n_global). A positional prefix is wrong — a reduced
-                // pool's slots are not the first n_slots StateDims.
                 scratch.clear();
-                scratch.reserve(n_trials * n_slots);
+                scratch.resize(n_trials * n_slots, 0.0);
                 for m in 0..n_trials {
-                    let base = m * n_global;
-                    for s in 0..n_slots {
-                        scratch.push(
-                            global_states[base + proj.global_state_index(CutSlot::new(s)).get()],
-                        );
-                    }
+                    proj.gather_trial_state(
+                        &global_states[m * n_global..(m + 1) * n_global],
+                        &mut scratch[m * n_slots..(m + 1) * n_slots],
+                    );
                 }
                 let start = Instant::now();
                 let deact = strategy.select_for_stage(

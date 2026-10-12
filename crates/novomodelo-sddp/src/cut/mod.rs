@@ -34,6 +34,7 @@ pub mod row;
 pub mod row_map;
 #[cfg(test)]
 pub(crate) mod selection_reference;
+mod trial_states;
 pub mod wire;
 
 pub use cut_selection::CutSelectionStrategy;

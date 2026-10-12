@@ -358,6 +358,11 @@ impl ExchangeBuffers {
         self.real_total
     }
 
+    /// The real (non-padded) trial count of each rank.
+    pub(crate) fn actual_counts(&self) -> &[usize] {
+        &self.actual_counts
+    }
+
     /// Copy only the real (non-padded) state vectors from the receive buffer
     /// into `buf`.
     ///

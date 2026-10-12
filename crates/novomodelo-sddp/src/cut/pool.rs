@@ -42,8 +42,10 @@
 //! assert_eq!(pool.cuts_in_lp(), 1);
 //! ```
 
+use super::trial_states::TrialStates;
 use crate::cut_selection::CutActivityUpdates;
 use crate::cut_selection::CutMetadata;
+use crate::lp::indexer::CutStateProjection;
 use crate::setup::NodeId;
 
 use novomodelo_io::OwnedPolicyCutRecord;
@@ -76,10 +78,6 @@ const PREFIX_ROLE: SlotRole = SlotRole {
     origin: SlotOrigin::Prefix,
     scored: false,
 };
-const GENERATED_ROLE: SlotRole = SlotRole {
-    origin: SlotOrigin::Generated,
-    scored: false,
-};
 
 fn unwritten_metadata() -> CutMetadata {
     CutMetadata {
@@ -93,9 +91,10 @@ fn unwritten_metadata() -> CutMetadata {
 
 /// Pre-allocated per-stage cut pool for the Future Cost Function (FCF).
 ///
-/// All storage is allocated at construction time — no heap allocation on the
-/// training-loop hot path. Slots are addressed by a deterministic formula of the
-/// iteration counter and forward-pass index.
+/// Cut storage is allocated at construction time — no heap allocation on the
+/// training-loop hot path; the trial-state rows are reserved by
+/// [`enable_trial_states`](CutPool::enable_trial_states). Slots are addressed by
+/// a deterministic formula of the iteration counter and forward-pass index.
 #[derive(Debug, Clone)]
 pub struct CutPool {
     /// Flat coefficient storage. Slot `i` occupies
@@ -110,6 +109,10 @@ pub struct CutPool {
 
     /// Per-slot role, parallel to `metadata` and written only with the slot.
     roles: Vec<SlotRole>,
+
+    /// The trial state of each scored cut, by slot; `None` while the pool
+    /// stores no states.
+    trial_states: Option<TrialStates>,
 
     /// Per-slot activity flags. `false` excludes the cut from LP construction and
     /// evaluation; the slot is retained so the layout stays deterministic.
@@ -190,6 +193,7 @@ impl CutPool {
             intercepts: vec![0.0; capacity],
             metadata: vec![unwritten_metadata(); capacity],
             roles: vec![VACANT_ROLE; capacity],
+            trial_states: None,
             active: vec![false; capacity],
             populated_count: 0,
             capacity,
@@ -304,7 +308,10 @@ impl CutPool {
             active_count: 0,
             last_active_iter: iteration,
         };
-        self.roles[slot] = GENERATED_ROLE;
+        self.roles[slot] = SlotRole {
+            origin: SlotOrigin::Generated,
+            scored: self.stores_trial_states(),
+        };
 
         if slot >= self.populated_count {
             self.populated_count = slot + 1;
@@ -426,6 +433,70 @@ impl CutPool {
     #[inline]
     pub fn role(&self, slot: usize) -> SlotRole {
         self.roles[slot]
+    }
+
+    /// Reserve a trial-state row for each of the pool's `capacity` slots, so
+    /// that every cut written afterwards is scored. Idempotent.
+    ///
+    /// Memory: `capacity * state_dimension * 8` bytes reserved, of which
+    /// `stored_trial_states() * state_dimension * 8` hold a state.
+    pub fn enable_trial_states(&mut self) {
+        let (capacity, dimension) = (self.capacity, self.state_dimension);
+        self.trial_states
+            .get_or_insert_with(|| TrialStates::new(capacity, dimension));
+    }
+
+    /// Whether the pool stores the trial state of each cut written.
+    #[must_use]
+    #[inline]
+    pub fn stores_trial_states(&self) -> bool {
+        self.trial_states.is_some()
+    }
+
+    /// Store the state the cut at `(iteration, forward_pass_index)` was computed
+    /// at: `x_hat`, a full state vector, gathered through `projection`.
+    ///
+    /// # Panics (debug builds only)
+    ///
+    /// Panics if the pool stores no trial states, the slot is not a scored
+    /// generated slot, or the slot already holds a state.
+    pub(crate) fn store_trial_state(
+        &mut self,
+        iteration: u64,
+        forward_pass_index: u32,
+        x_hat: &[f64],
+        projection: &CutStateProjection,
+    ) {
+        let slot = self.slot_index(iteration, forward_pass_index);
+        debug_assert!(
+            self.stores_trial_states(),
+            "store_trial_state: the pool stores no trial states"
+        );
+        debug_assert_eq!(
+            self.roles[slot],
+            SlotRole {
+                origin: SlotOrigin::Generated,
+                scored: true,
+            },
+            "store_trial_state: slot {slot} is not a scored generated slot"
+        );
+        if let Some(trial_states) = self.trial_states.as_mut() {
+            projection.gather_trial_state(x_hat, trial_states.claim(slot));
+        }
+    }
+
+    /// The trial state stored for `slot`; `None` for a slot with none.
+    #[must_use]
+    pub fn trial_state(&self, slot: usize) -> Option<&[f64]> {
+        self.trial_states.as_ref()?.get(slot)
+    }
+
+    /// Number of slots that hold a trial state.
+    #[must_use]
+    pub fn stored_trial_states(&self) -> usize {
+        self.trial_states
+            .as_ref()
+            .map_or(0, TrialStates::stored_count)
     }
 
     /// Return the slot bound — one past the highest written slot, independent of
@@ -906,6 +977,7 @@ impl CutPool {
             intercepts,
             metadata,
             roles: vec![PREFIX_ROLE; capacity],
+            trial_states: None,
             active,
             populated_count: capacity,
             capacity,
@@ -997,6 +1069,7 @@ impl CutPool {
             intercepts,
             metadata,
             roles,
+            trial_states: None,
             active,
             populated_count: prefix_len,
             capacity,
@@ -1061,6 +1134,9 @@ impl CutPool {
         self.intercepts.resize(new_capacity, 0.0);
         self.metadata.resize(new_capacity, unwritten_metadata());
         self.roles.resize(new_capacity, VACANT_ROLE);
+        if let Some(trial_states) = self.trial_states.as_mut() {
+            trial_states.grow(new_capacity);
+        }
         self.active.resize(new_capacity, false);
         self.capacity = new_capacity;
     }
@@ -1168,7 +1244,10 @@ mod tests {
 
     use super::{CutPool, SlotOrigin, SlotRole};
     use crate::cut_selection::{CutActivityUpdates, CutMetadata};
+    use crate::lp::indexer::CutStateProjection;
     use crate::setup::NodeId;
+    use crate::test_support::state_layout;
+    use novomodelo_core::temporal::StageStateConfig;
     use proptest::prelude::*;
     use proptest::test_runner::RngSeed;
 
@@ -1678,6 +1757,23 @@ mod tests {
         }
     }
 
+    fn scored_generated() -> SlotRole {
+        SlotRole {
+            origin: SlotOrigin::Generated,
+            scored: true,
+        }
+    }
+
+    fn identity_projection(n_state: usize) -> CutStateProjection {
+        CutStateProjection::new(
+            &state_layout(n_state, 0),
+            StageStateConfig {
+                storage: true,
+                inflow_lags: true,
+            },
+        )
+    }
+
     fn roles_of(pool: &CutPool) -> Vec<SlotRole> {
         (0..pool.capacity).map(|slot| pool.role(slot)).collect()
     }
@@ -1700,6 +1796,7 @@ mod tests {
         );
         pool.set_iteration_base(1);
         pool.add_cut(NodeId(0), 1, 0, 3.0, &[1.0]);
+        pool.enable_trial_states();
         pool.add_cut(NodeId(0), 2, 0, 4.0, &[1.0]);
         pool.grow(12);
         let expected = [
@@ -1707,7 +1804,7 @@ mod tests {
             unscored(Prefix),
             unscored(Generated),
             unscored(Vacant),
-            unscored(Generated),
+            scored_generated(),
         ];
         assert_eq!(roles_of(&pool)[..5], expected);
         assert_eq!(roles_of(&pool)[5..], vec![unscored(Vacant); 7]);
@@ -1737,6 +1834,8 @@ mod tests {
         assert_eq!(roles_of(&pool), before, "record_binding");
         pool.restart_activity_clock();
         assert_eq!(roles_of(&pool), before, "restart_activity_clock");
+        pool.store_trial_state(2, 0, &[9.0], &identity_projection(1));
+        assert_eq!(roles_of(&pool), before, "store_trial_state");
         let evicted = pool.enforce_budget(0, 9).evicted_count;
         assert!(evicted > 0, "the budget must evict for the check to bite");
         assert_eq!(roles_of(&pool), before, "enforce_budget");
@@ -1753,6 +1852,38 @@ mod tests {
         assert_eq!(pool.role(2), unscored(SlotOrigin::Generated));
         assert_eq!(pool.role(3), unscored(SlotOrigin::Generated));
         assert!((0..4).all(|slot| !pool.is_prefix_slot(slot)));
+        assert_eq!(pool.generated(), 2);
+    }
+
+    #[test]
+    fn a_pool_that_stores_trial_states_marks_its_cuts_scored() {
+        let projection = identity_projection(1);
+        let mut pool = CutPool::new_with_warm_start(1, 2, 4, &[loaded_cut(5)]);
+        pool.set_iteration_base(1);
+        assert!(!pool.stores_trial_states());
+        assert_eq!(pool.trial_state(0), None);
+        assert_eq!(pool.stored_trial_states(), 0);
+
+        pool.add_cut(NodeId(0), 1, 0, 3.0, &[1.0]);
+        pool.enable_trial_states();
+        pool.add_cut(NodeId(0), 2, 0, 4.0, &[1.0]);
+        pool.add_cut(NodeId(0), 2, 1, 5.0, &[1.0]);
+        assert!(pool.stores_trial_states());
+        assert_eq!(pool.role(0), unscored(SlotOrigin::Prefix));
+        assert_eq!(pool.role(1), unscored(SlotOrigin::Generated));
+        assert_eq!(pool.role(3), scored_generated());
+        assert_eq!(pool.role(4), scored_generated());
+
+        pool.store_trial_state(2, 0, &[7.0], &projection);
+        pool.enable_trial_states();
+        assert_eq!(pool.stored_trial_states(), 1);
+        assert_eq!(pool.trial_state(3), Some(&[7.0][..]));
+        pool.store_trial_state(2, 1, &[8.0], &projection);
+        assert_eq!(pool.stored_trial_states(), 2);
+        assert_eq!(pool.trial_state(4), Some(&[8.0][..]));
+        for slot in [0, 1, 2, 5] {
+            assert_eq!(pool.trial_state(slot), None, "slot {slot}");
+        }
     }
 
     #[test]

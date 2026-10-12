@@ -1869,6 +1869,341 @@ mod selection_in_a_training_run {
     }
 }
 
+mod trial_state_store {
+    //! The state each scored cut was computed at, stored by slot, against the
+    //! visited-states archive as an independent source: it is written from the
+    //! gathered states before any cut exists. Every run keeps `exports.states`
+    //! on and gives `level1` a `check_frequency` above the iteration limit, so
+    //! no selection run trims the archive.
+
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    use novomodelo_io::Config;
+    use novomodelo_io::config::{SelectionMethod, StoppingRuleConfig, TrainingSelection};
+    use novomodelo_sddp::cut::SlotOrigin;
+    use novomodelo_sddp::indexer::{CutSlot, CutStateProjection};
+    use novomodelo_sddp::setup::{NodePos, StageIdx};
+    use novomodelo_sddp::test_support::{k_fan_setup, oracle_chain_setup_with_selection};
+    use novomodelo_sddp::{StudySetup, TrainingResult};
+    use novomodelo_solver::ActiveSolver;
+
+    use super::common::{StubComm, fresh_setup_with, fresh_setup_with_openings};
+
+    const ITERATIONS: u32 = 6;
+    const UNIFORM_CASE: &str = "../../examples/1dtoy";
+    const NON_UNIFORM_CASE: &str = "../../examples/deterministic/d43-storage-only-cut";
+    const NON_UNIFORM_OPENINGS: u32 = 5;
+
+    fn level1_without_a_selection_run() -> SelectionMethod {
+        SelectionMethod::Level1 {
+            tie_tolerance: 1e-10,
+            check_frequency: ITERATIONS + 1,
+        }
+    }
+
+    fn sampled(
+        forward_passes: u32,
+        selection: Option<SelectionMethod>,
+    ) -> impl FnOnce(&mut Config) {
+        move |config| {
+            config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
+            config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+                limit: ITERATIONS,
+            }]);
+            config.training.cut_selection.selection = selection;
+        }
+    }
+
+    fn train(setup: &mut StudySetup) -> TrainingResult {
+        setup.set_export_states(true);
+        let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+        let outcome = setup
+            .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
+            .expect("train must return Ok");
+        assert!(
+            outcome.error.is_none(),
+            "expected no training error, got: {:?}",
+            outcome.error
+        );
+        outcome.result
+    }
+
+    /// The nodes that own a pool selection scores: stage 1 or later, with a
+    /// successor.
+    fn interior_nodes(setup: &StudySetup) -> Vec<(NodePos, usize)> {
+        let graph = &setup.inputs.node_graph;
+        graph
+            .nodes
+            .iter_indexed()
+            .filter(|&(pos, node)| node.stage >= StageIdx(1) && !graph.successors[pos].is_empty())
+            .map(|(pos, node)| (pos, node.pool_id))
+            .collect()
+    }
+
+    /// The archive as plain data: its stride and, per node, the packed states.
+    struct Archived {
+        stride: usize,
+        per_node: Vec<Vec<f64>>,
+    }
+
+    impl Archived {
+        fn of(result: &TrainingResult) -> Self {
+            let archive = result
+                .visited_archive
+                .as_ref()
+                .expect("exports.states must keep the archive");
+            Self {
+                stride: archive.packing_stride(),
+                per_node: (0..archive.num_nodes())
+                    .map(|node| archive.states_for_node(NodePos(node)).to_vec())
+                    .collect(),
+            }
+        }
+
+        fn count(&self, node: NodePos) -> usize {
+            self.per_node[node.0].len() / self.stride
+        }
+
+        fn state(&self, node: NodePos, position: usize) -> &[f64] {
+            &self.per_node[node.0][position * self.stride..(position + 1) * self.stride]
+        }
+    }
+
+    fn bits(values: &[f64]) -> Vec<u64> {
+        values.iter().map(|value| value.to_bits()).collect()
+    }
+
+    /// `state` read at the global dimension each slot of `layout` projects.
+    fn gathered_bits(layout: &CutStateProjection, state: &[f64]) -> Vec<u64> {
+        (0..layout.n_slots())
+            .map(|j| state[layout.global_state_index(CutSlot::new(j)).get()].to_bits())
+            .collect()
+    }
+
+    /// Checks a chain run whose archive position of a cut is its slot: every
+    /// interior pool holds, at each generated slot and nowhere else, the
+    /// gather of the archived state at that position, and every other pool
+    /// stores nothing. Returns the number of stored states.
+    fn assert_stored_states_match_the_archive(
+        setup: &StudySetup,
+        result: &TrainingResult,
+    ) -> usize {
+        let archived = Archived::of(result);
+        let training_ctx = setup.training_ctx();
+        let interior = interior_nodes(setup);
+        let mut stored = 0;
+        for (pool_id, pool) in setup.fcf.pools.iter().enumerate() {
+            let Some(&(node, _)) = interior.iter().find(|&&(_, id)| id == pool_id) else {
+                assert!(
+                    !pool.stores_trial_states(),
+                    "pool {pool_id}: only an interior pool stores states"
+                );
+                continue;
+            };
+            assert!(pool.stores_trial_states(), "pool {pool_id}");
+            assert_eq!(pool.slot_base, 0, "pool {pool_id}");
+            assert_eq!(
+                archived.count(node),
+                ITERATIONS as usize * pool.visit_stride as usize,
+                "pool {pool_id}: the archive must hold every iteration's states, untrimmed"
+            );
+            let layout = &training_ctx.cut_state_layouts[pool_id];
+            assert_eq!(pool.state_dimension, layout.n_slots(), "pool {pool_id}");
+            for slot in 0..pool.capacity {
+                let role = pool.role(slot);
+                match (pool.trial_state(slot), role.origin == SlotOrigin::Generated) {
+                    (Some(row), true) => {
+                        assert!(role.scored, "pool {pool_id} slot {slot}");
+                        assert_eq!(
+                            bits(row),
+                            gathered_bits(layout, archived.state(node, slot)),
+                            "pool {pool_id} slot {slot}"
+                        );
+                    }
+                    (None, false) => {}
+                    (Some(_), false) => {
+                        panic!(
+                            "pool {pool_id} slot {slot}: a state is stored with no generated cut"
+                        )
+                    }
+                    (None, true) => {
+                        panic!("pool {pool_id} slot {slot}: a generated cut has no state")
+                    }
+                }
+            }
+            assert_eq!(
+                pool.stored_trial_states(),
+                pool.generated(),
+                "pool {pool_id}"
+            );
+            stored += pool.stored_trial_states();
+        }
+        stored
+    }
+
+    #[test]
+    fn a_level1_run_stores_the_trial_state_of_every_generated_cut() {
+        let mut setup = fresh_setup_with(
+            Path::new(UNIFORM_CASE),
+            sampled(2, Some(level1_without_a_selection_run())),
+        );
+        let result = train(&mut setup);
+
+        let stored = assert_stored_states_match_the_archive(&setup, &result);
+
+        assert!(stored > 0, "the run must generate cuts in an interior pool");
+    }
+
+    #[test]
+    fn a_level1_run_stores_states_at_each_pools_projected_dimension() {
+        let mut setup = fresh_setup_with_openings(
+            Path::new(NON_UNIFORM_CASE),
+            NON_UNIFORM_OPENINGS,
+            sampled(4, Some(level1_without_a_selection_run())),
+        );
+        let dimensions: BTreeSet<usize> = interior_nodes(&setup)
+            .iter()
+            .map(|&(_, pool_id)| setup.fcf.pools[pool_id].state_dimension)
+            .collect();
+        assert!(
+            dimensions.len() > 1,
+            "the interior pools must project different cut-state dimensions, got {dimensions:?}"
+        );
+        let result = train(&mut setup);
+
+        let stored = assert_stored_states_match_the_archive(&setup, &result);
+
+        assert!(stored > 0, "the run must generate cuts in an interior pool");
+    }
+
+    #[test]
+    fn an_enumerated_level1_run_stores_one_trial_state_per_cut() {
+        let mut setup =
+            oracle_chain_setup_with_selection(ITERATIONS, level1_without_a_selection_run());
+        let result = train(&mut setup);
+
+        let stored = assert_stored_states_match_the_archive(&setup, &result);
+
+        assert_eq!(
+            stored, ITERATIONS as usize,
+            "one interior pool, one cut per iteration"
+        );
+    }
+
+    #[test]
+    fn a_sampled_fan_stores_only_each_nodes_own_trial_states() {
+        const ITERATIONS: usize = 3;
+        let mut fixture = k_fan_setup(8, 6, ITERATIONS as u32);
+        let forward_passes = fixture.forward_passes as usize;
+        let fan = interior_nodes(&fixture.setup);
+        assert_eq!(fan.len(), fixture.k);
+        for &(_, pool_id) in &fan {
+            fixture.setup.fcf.pools[pool_id].enable_trial_states();
+        }
+        let result = train(&mut fixture.setup);
+
+        let setup = &fixture.setup;
+        let archived = Archived::of(&result);
+        let layout = &setup.training_ctx().cut_state_layouts[fan[0].1];
+        let mut stored = 0;
+        let mut some_pool_holds_fewer_than_its_archive = false;
+        let mut vacant_below_the_bound = false;
+        for &(node, pool_id) in &fan {
+            let pool = &setup.fcf.pools[pool_id];
+            assert_eq!(pool.state_dimension, layout.n_slots(), "pool {pool_id}");
+            for slot in 0..pool.capacity {
+                let origin = pool.role(slot).origin;
+                assert_eq!(
+                    pool.trial_state(slot).is_some(),
+                    origin == SlotOrigin::Generated,
+                    "pool {pool_id} slot {slot} ({origin:?})"
+                );
+                vacant_below_the_bound |= origin == SlotOrigin::Vacant && slot < pool.populated();
+            }
+            stored += pool.stored_trial_states();
+            some_pool_holds_fewer_than_its_archive |=
+                pool.stored_trial_states() < archived.count(node);
+        }
+        assert!(
+            vacant_below_the_bound,
+            "power: some fan pool must hold a vacant slot below its slot bound"
+        );
+        assert_eq!(stored, forward_passes * ITERATIONS);
+        assert!(
+            some_pool_holds_fewer_than_its_archive,
+            "every fan pool stores as many states as its node's archive holds"
+        );
+
+        for iteration in 1..=ITERATIONS as u64 {
+            let mut held: Vec<Vec<u64>> = fan
+                .iter()
+                .flat_map(|&(_, pool_id)| {
+                    let pool = &setup.fcf.pools[pool_id];
+                    (0..pool.populated())
+                        .filter(move |&slot| {
+                            pool.role(slot).origin == SlotOrigin::Generated
+                                && pool.metadata(slot).iteration_generated == iteration
+                        })
+                        .filter_map(move |slot| pool.trial_state(slot))
+                })
+                .map(bits)
+                .collect();
+            held.sort_unstable();
+            for &(node, _) in &fan {
+                let first = (iteration as usize - 1) * forward_passes;
+                let mut level: Vec<Vec<u64>> = (first..first + forward_passes)
+                    .map(|position| gathered_bits(layout, archived.state(node, position)))
+                    .collect();
+                level.sort_unstable();
+                assert_eq!(
+                    held, level,
+                    "iteration {iteration}, archive of node {node:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_run_without_level1_stores_no_trial_state() {
+        let others = [
+            None,
+            Some(SelectionMethod::Lml1 {
+                tie_tolerance: 1e-10,
+                check_frequency: 2,
+            }),
+            Some(SelectionMethod::Domination {
+                domination_tolerance: 1e-10,
+                check_frequency: 2,
+            }),
+            Some(SelectionMethod::Dynamic {
+                start_iteration: 2,
+                seed_window: 5,
+                candidate_recency: None,
+                max_added_per_round: 10,
+                violation_tolerance: 1e-10,
+            }),
+        ];
+        for selection in others {
+            let label = format!("{selection:?}");
+            let mut setup = fresh_setup_with(Path::new(UNIFORM_CASE), sampled(2, selection));
+            train(&mut setup);
+
+            let mut generated = 0;
+            for (pool_id, pool) in setup.fcf.pools.iter().enumerate() {
+                assert!(!pool.stores_trial_states(), "{label}: pool {pool_id}");
+                assert_eq!(pool.stored_trial_states(), 0, "{label}: pool {pool_id}");
+                for slot in 0..pool.populated() {
+                    let role = pool.role(slot);
+                    assert!(!role.scored, "{label}: pool {pool_id} slot {slot}");
+                    generated += usize::from(role.origin == SlotOrigin::Generated);
+                }
+            }
+            assert!(generated > 0, "{label}: the run must generate cuts");
+        }
+    }
+}
+
 mod hybrid_reconstruction {
     //! Integration smoke for the slot-identity basis-reconstruction path.
 

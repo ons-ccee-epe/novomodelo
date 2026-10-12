@@ -193,6 +193,28 @@ impl CutStateProjection {
             .sum()
     }
 
+    /// Gather the full trial-state vector `x_hat` (length
+    /// [`StateSpace::n_state`](super::StateSpace::n_state)) into `out` (length
+    /// [`Self::n_slots`]) through [`Self::global_state_index`]: the single owner
+    /// of "global state to projected state".
+    ///
+    /// The positional prefix `x_hat[..n_slots]` is the wrong-but-compiling
+    /// alternative: it holds only for the all-enabled identity projection; a
+    /// dropped leading region shifts every later slot onto the wrong dimension.
+    #[inline]
+    pub(crate) fn gather_trial_state(&self, x_hat: &[f64], out: &mut [f64]) {
+        debug_assert_eq!(
+            out.len(),
+            self.n_slots(),
+            "out length {} != n_slots {}",
+            out.len(),
+            self.n_slots()
+        );
+        for (j, value) in out.iter_mut().enumerate() {
+            *value = x_hat[self.global_state_index(CutSlot::new(j)).get()];
+        }
+    }
+
     /// Map a cut slot `s ∈ [0, n_slots())` to its LP incoming-state column,
     /// indexing the enabled subset in storage → lag → buckets → anticipated
     /// order.
@@ -433,6 +455,32 @@ mod tests {
             100.0 + 101.0 + 102.0,
             "a positional zip (the bug) would pair it with a lag value"
         );
+    }
+
+    /// `storage:false` drops the leading block, so the lag slots project global
+    /// dimensions 2 and 3, not the positional 0 and 1.
+    #[test]
+    fn gather_trial_state_follows_the_projection_not_position() {
+        let global = finalized(2, 1, &[]);
+        let x_hat = [10.0, 11.0, 12.0, 13.0];
+        assert_eq!(x_hat.len(), global.n_state);
+
+        let lags_only = CutStateProjection::new(
+            &global,
+            StageStateConfig {
+                storage: false,
+                inflow_lags: true,
+            },
+        );
+        let mut gathered = [0.0; 2];
+        lags_only.gather_trial_state(&x_hat, &mut gathered);
+        assert_eq!(gathered, [12.0, 13.0]);
+        assert_ne!(gathered, x_hat[..2], "a positional prefix is the bug");
+
+        let identity = CutStateProjection::new(&global, ALL_ENABLED);
+        let mut whole = [0.0; 4];
+        identity.gather_trial_state(&x_hat, &mut whole);
+        assert_eq!(whole, x_hat);
     }
 
     /// For an all-enabled (identity) projection `dot_trial_state` reduces to the

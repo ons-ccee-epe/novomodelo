@@ -242,6 +242,15 @@ impl CutSelectionStrategy {
         }
     }
 
+    /// Whether each interior pool stores the trial state of its generated cuts.
+    #[must_use]
+    pub fn stores_trial_states(&self) -> bool {
+        match self {
+            Self::Level1 { .. } => true,
+            Self::Lml1 { .. } | Self::Dominated { .. } | Self::Dynamic { .. } => false,
+        }
+    }
+
     /// Scan the cut pool for stage 0 (a pure query: the pool is not modified).
     ///
     /// Delegates to [`select_for_stage`](Self::select_for_stage) with

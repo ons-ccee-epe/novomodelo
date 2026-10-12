@@ -963,6 +963,120 @@ two ranks' indices cover each node's range once),
 rank's view through a communicator that writes that rank's segment only; no
 in-process test runs two cooperating ranks.
 
+## Each scored cut's trial state is stored by slot
+
+A pool that stores trial states (`CutPool::enable_trial_states`) holds, for each
+slot whose cut was written scored, the state the cut was computed at: one row at
+the pool's projected dimension (`CutPool::state_dimension`), addressed by the
+slot (`CutPool::trial_state`) and written by `CutPool::store_trial_state`
+through `CutStateProjection::gather_trial_state`, the single owner of "global
+state to projected state". A pool's rows are those of its own cuts: the
+visited-states archive appends the whole level's states to every node of a
+level, the pool holds only the states of the trials routed to its node.
+`SlotRole::scored` records that the pool stored states when the slot was
+written (`add_cut` writes it); enabling the store afterwards does not change the
+flag of a cut already written, and a loaded (`Prefix`) cut is never scored and
+has no state. A pool that does not store states allocates nothing. Enabling
+reserves `capacity * state_dimension * 8` bytes, of which
+`stored_trial_states() * state_dimension * 8` hold a state.
+
+**Who enables it.** `TrainingSession::new` enables the store on every rank, on
+the pool of every node of `interior_cut_nodes` (stage 1 or later, with a
+successor), when `CutSelectionStrategy::stores_trial_states` holds: `Level1`
+only, a total match over the variants. The session enables neither the root pool
+nor the leaf pool, `exports.states` alone enables nothing, and without
+`cut_selection` no pool allocates a row. `exports.states` and the interim
+selection kernel keep reading the archive. The strategy comes from the config
+the CLI broadcasts and the node set from the graph every rank builds from it,
+so the same pools store on every rank for the whole run.
+
+**Two fill sites.** Sampled: `run_one_backward_level` calls
+`store_level_trial_states` once per level, after
+`CutSyncBuffers::sync_level_records`, on every rank. One loop walks the level's
+real trials rank-major, then local (`ExchangeBuffers::actual_counts`), takes
+each trial's level index from the gathered node positions
+(`BackwardPassState::trial_node_recv`) and counts the trials of each node; the
+count before a trial is the node-relative index of its cut, which is the cut's
+`forward_pass_index`, and the state is `ExchangeBuffers::state_at(rank, local)`.
+A single-node level has no positions to read (the buffer holds padding or an
+earlier level's content there): every trial visits the sole node, and the count
+is the global real-trial index its cut carries. The loop is the same for this
+rank's cuts and for the cuts of peers, which arrive without a state; the
+gathered buffers are the only place the state a cut was computed at exists on a
+rank that did not compute it. Enumerated: `run_enumerated_backward` calls
+`store_trial_state` right after `add_cut`, for pass index 0, with the node's
+persisted outgoing state the cut was computed at.
+
+Every condition that decides whether the fill runs or what it reads is the same
+on every rank: the pool's `stores_trial_states` (above), `level.len() > 1`,
+`actual_counts` (the forward-pass count and the rank count), and the gathered
+states and positions. The fill issues no collective. Selection runs on each
+rank's own pools with no collective, so a rank whose pools held other states
+than its peers' would select other cuts.
+
+The wrong-but-compiling alternatives:
+
+- the positional prefix `x_hat[..n_slots]` in place of the gather: it equals the
+  gather only for a pool that projects the leading dimensions, and a pool that
+  drops a leading region stores the wrong dimensions. Pinned by
+  `gather_trial_state_follows_the_projection_not_position` and
+  `a_rank_stores_the_state_of_a_peers_cut_at_a_sibling_node` (one pool projects
+  the lag dimensions), both of which fail under it.
+  `a_level1_run_stores_states_at_each_pools_projected_dimension` does not: its
+  reduced pool drops a trailing region, so its prefix is its gather, and the
+  test pins the projected dimension and the values, not the gather index;
+- on a multi-node level, the gathered row at the cut's node-relative index: it is
+  the row of the cut's trial only on a single-node level, and on a multi-node
+  level names a trial routed to another node. Pinned by
+  `a_rank_stores_the_state_of_a_peers_cut_at_a_sibling_node`, which fails under
+  it while the single-node test passes;
+- storing a state only for the cuts this rank generated (in `by_scenario_finish`
+  or `by_node_finish`, or by filling only this rank's trials): a peer's cut has
+  no state. Pinned by `a_rank_stores_the_state_of_a_peers_cut_at_a_sibling_node`
+  and `a_single_node_level_stores_each_trial_state_at_its_cut`, which fail on the
+  peer's cuts when only rank 0's trials are filled. That the ranks then select
+  different cuts is not demonstrable in-process;
+- reading the gathered positions on a single-node level: the buffer is padding or
+  an earlier level's content, so the index is out of bounds or names another
+  node. A training run fails at the fill, in
+  `a_level1_run_stores_the_trial_state_of_every_generated_cut` among others;
+- walking the padded trial slots of a rank with fewer trials than
+  `max_local_fwd`: they have no cut, and a debug build of `store_trial_state`
+  refuses the slot. Pinned by
+  `a_single_node_level_stores_each_trial_state_at_its_cut`;
+- enabling the store for a strategy other than `Level1`, or setting `scored` on
+  the cuts already written when the store is enabled. Pinned by
+  `a_run_without_level1_stores_no_trial_state`, which fails on `lml1` under the
+  first, and by `a_slot_role_is_fixed_when_the_slot_is_written` and
+  `a_pool_that_stores_trial_states_marks_its_cuts_scored` under the second;
+- deciding the enabling or the fill from a value a rank computes locally (its
+  trial count, the cuts it generated): the ranks' stores differ. Not
+  demonstrable in-process.
+
+Read: `cut/trial_states.rs`, `cut/pool.rs` (`CutPool::enable_trial_states`,
+`CutPool::store_trial_state`, `CutPool::trial_state`, `add_cut`),
+`cut/cut_selection.rs` (`CutSelectionStrategy::stores_trial_states`),
+`lp/indexer/cut_state_projection.rs` (`gather_trial_state`),
+`training/backward_pass_state.rs` (`store_level_trial_states`,
+`run_one_backward_level`, `run_enumerated_backward`),
+`training/state_exchange.rs` (`ExchangeBuffers::actual_counts`),
+`training/session/mod.rs` (`TrainingSession::new`). Pinned by
+`a_trial_state_row_is_addressed_by_its_slot` (`cut/trial_states.rs`),
+`a_pool_that_stores_trial_states_marks_its_cuts_scored` and
+`a_slot_role_is_fixed_when_the_slot_is_written` (`cut/pool.rs`),
+`gather_trial_state_follows_the_projection_not_position`
+(`lp/indexer/cut_state_projection.rs`),
+`a_rank_stores_the_state_of_a_peers_cut_at_a_sibling_node` and
+`a_single_node_level_stores_each_trial_state_at_its_cut`
+(`training/backward_pass_state.rs`: the gathered states of two ranks, two
+sibling nodes, one pool projecting a non-leading dimension, and a padded slot),
+and, in `tests/cut_basis.rs` against the archive,
+`a_level1_run_stores_the_trial_state_of_every_generated_cut`,
+`a_level1_run_stores_states_at_each_pools_projected_dimension`,
+`an_enumerated_level1_run_stores_one_trial_state_per_cut`,
+`a_sampled_fan_stores_only_each_nodes_own_trial_states` and
+`a_run_without_level1_stores_no_trial_state`.
+
 ## Binding activity is recorded only for a configured reader
 
 A cut's binding activity (`CutMetadata::active_count`,

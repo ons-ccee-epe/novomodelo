@@ -152,10 +152,10 @@ impl VisitedStatesArchive {
         self.nodes[node.0].append(gathered, total_fwd);
     }
 
-    /// Archive the single incoming `state` a node saw on the enumerated
-    /// (node-native) path, appending exactly ONE vector — the distinct-
-    /// incoming-state count per node under enumeration is 1, so this never
-    /// replicates the state `total_forward_passes` times the way
+    /// Archive the single outgoing `state` of a node on the enumerated
+    /// (node-native) path, appending exactly ONE vector — a node's cut is
+    /// computed at one state under enumeration, so this never replicates the
+    /// state `total_forward_passes` times the way
     /// [`Self::archive_gathered_states`] does for the sampled path.
     pub fn archive_one_state(&mut self, node: NodePos, state: &[f64]) {
         self.nodes[node.0].append(state, 1);
@@ -337,7 +337,7 @@ mod tests {
         assert!(a.states_for_node(NodePos(2)).is_empty());
     }
 
-    // -- Sibling-node independence (AC 2) --------------------------------
+    // -- Sibling-node independence ---------------------------------------
 
     /// A two-sibling fan: node 0 is the parent stage's node, nodes 1 and 2 are
     /// two sibling nodes at the next stage (mirroring `NodeGraph`'s K-fan

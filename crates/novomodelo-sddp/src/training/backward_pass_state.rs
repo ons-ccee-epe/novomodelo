@@ -30,12 +30,12 @@ use crate::{
     },
     config::CutManagementConfig,
     context::{StageContext, TrainingContext},
-    cut::FutureCostFunction,
+    cut::{CutPool, FutureCostFunction},
     cut_sync::CutSyncBuffers,
     error::SddpError,
     forward::EnumeratedForwardScratch,
     horizon_mode::HorizonMode,
-    lp::indexer::StateSpace,
+    lp::indexer::{CutStateProjection, StateSpace},
     rank_reconcile::reconcile_result,
     risk_measure::RiskMeasure,
     solver_phase::Phase,
@@ -354,6 +354,10 @@ pub struct BackwardPassState {
     /// counted from `trial_node_recv`.
     rank_node_visits: Vec<usize>,
 
+    /// Trials of each level node already stored while a level is filled, reused
+    /// across levels.
+    stored_trials_per_node: Vec<usize>,
+
     /// Scratch for the enumerated backward's replicated per-node solve
     /// (`run_backward_node_replicated`). Empty (zero footprint) under
     /// `Traversal::Sampled`, which never touches it.
@@ -451,6 +455,7 @@ impl BackwardPassState {
             trial_node_counts: vec![max_local_fwd; n_ranks],
             trial_node_displs: (0..n_ranks).map(|r| r * max_local_fwd).collect(),
             rank_node_visits: Vec::new(),
+            stored_trials_per_node: Vec::new(),
             level_pool_regions_scratch: Vec::new(),
             replicated_scratch: ReplicatedScratch::default(),
             enumerated_stage_stats: (0..num_stages)
@@ -865,6 +870,10 @@ impl BackwardPassState {
                     intercept,
                     &ws0.backward_accum.agg_coefficients[..n_state],
                 );
+                let pool = &mut inputs.fcf.pools[pool_id];
+                if pool.stores_trial_states() {
+                    pool.store_trial_state(inputs.iteration, 0, x_hat, succ_spec.cut_state);
+                }
                 cuts_generated += 1;
             }
         }
@@ -1541,6 +1550,45 @@ fn check_visit_bound(
     Ok(())
 }
 
+/// Store, in every pool of the level that stores trial states, the gathered
+/// state each of its cuts was computed at, for this rank's cuts and its peers'
+/// alike. The real trials are walked rank-major, then local, so the number of
+/// trials already stored at a node is the node-relative index of the next cut.
+/// `trial_nodes` is the gathered level index of every trial slot; it is `None`
+/// on a single-node level, where every trial visits the sole node.
+fn store_level_trial_states(
+    pools: &mut [CutPool],
+    level_pools: &[usize],
+    projections: &[CutStateProjection],
+    exchange: &ExchangeBuffers,
+    trial_nodes: Option<&[u64]>,
+    stored_per_node: &mut Vec<usize>,
+    iteration: u64,
+) {
+    stored_per_node.clear();
+    stored_per_node.resize(level_pools.len(), 0);
+    let slots_per_rank = exchange.local_count();
+    for (rank, &real_trials) in exchange.actual_counts().iter().enumerate() {
+        for local in 0..real_trials {
+            #[allow(clippy::cast_possible_truncation)]
+            let node = trial_nodes.map_or(0, |nodes| nodes[rank * slots_per_rank + local] as usize);
+            let pass = stored_per_node[node];
+            stored_per_node[node] += 1;
+            let pool_id = level_pools[node];
+            let pool = &mut pools[pool_id];
+            if pool.stores_trial_states() {
+                #[allow(clippy::cast_possible_truncation)]
+                pool.store_trial_state(
+                    iteration,
+                    pass as u32,
+                    exchange.state_at(rank, local),
+                    &projections[pool_id],
+                );
+            }
+        }
+    }
+}
+
 /// Execute one reverse-topological cut-sharing level: one state exchange for the
 /// level, each node's backward cut computed independently over ONLY the trial
 /// points routed to its pool, ONE batched cut exchange over the level's
@@ -1674,6 +1722,16 @@ fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
     // rank-count invariant.
     let cuts_generated = n_local_total + remote_total;
     let cut_sync_ms = ms_elapsed(sync_start);
+
+    store_level_trial_states(
+        &mut inputs.fcf.pools,
+        &level_pools,
+        training_ctx.cut_state_layouts,
+        inputs.exchange,
+        (level.len() > 1).then_some(&state.trial_node_recv[..]),
+        &mut state.stored_trials_per_node,
+        inputs.iteration,
+    );
 
     let mut stage_entries = Vec::with_capacity(nodes_out.len());
     let mut setup_ms = 0u64;
@@ -2884,6 +2942,137 @@ mod tests {
 
         assert_eq!(state.rank_node_visits, [0, 1, 0, 0]);
         assert_eq!(state.node_visit_offsets, [0, 0]);
+    }
+
+    // ── trial states stored by slot ─────────────────────────────────────────
+
+    fn trial_records(states: &[[f64; 4]]) -> Vec<TrajectoryRecord> {
+        states
+            .iter()
+            .map(|state| TrajectoryRecord {
+                primal: Vec::new(),
+                dual: Vec::new(),
+                stage_cost: 0.0,
+                node_id: NodeId(0),
+                state: state.to_vec(),
+            })
+            .collect()
+    }
+
+    /// The exchange rank 0 holds after the level's state exchange: rank 1's
+    /// segment first, then its own.
+    fn rank0_exchange(
+        real_trials: &[usize; 2],
+        rank0: &[[f64; 4]],
+        rank1: &[[f64; 4]],
+    ) -> ExchangeBuffers {
+        let mut exchange =
+            ExchangeBuffers::with_actual_counts(&state_layout(2, 1), 2, 2, real_trials);
+        exchange
+            .exchange(&trial_records(rank1), StageIdx(0), 1, &Rank1Of2)
+            .unwrap();
+        exchange
+            .exchange(&trial_records(rank0), StageIdx(0), 1, &Rank0Of2)
+            .unwrap();
+        exchange
+    }
+
+    fn storing_pool(state_dimension: usize) -> CutPool {
+        let mut pool = CutPool::new(4, state_dimension, 4, 0);
+        pool.set_iteration_base(1);
+        pool.enable_trial_states();
+        pool
+    }
+
+    fn projection(storage: bool, inflow_lags: bool) -> CutStateProjection {
+        CutStateProjection::new(
+            &state_layout(2, 1),
+            novomodelo_core::temporal::StageStateConfig {
+                storage,
+                inflow_lags,
+            },
+        )
+    }
+
+    /// derived: the gathered trials, rank-major then local, are rank 0's trial
+    /// 0 (to B), rank 0's trial 1 (to A), rank 1's trial 0 (to A) and rank 1's
+    /// trial 1 (to B), so A's pass 0 is rank 0's trial 1, A's pass 1 is rank 1's
+    /// trial 0, B's pass 0 is rank 0's trial 0 and B's pass 1 is rank 1's trial
+    /// 1; B projects the two lag dimensions, global 2 and 3.
+    #[test]
+    fn a_rank_stores_the_state_of_a_peers_cut_at_a_sibling_node() {
+        const A: u64 = 0;
+        const B: u64 = 1;
+        let rank0 = [[10.0, 11.0, 12.0, 13.0], [20.0, 21.0, 22.0, 23.0]];
+        let rank1 = [[30.0, 31.0, 32.0, 33.0], [40.0, 41.0, 42.0, 43.0]];
+        let exchange = rank0_exchange(&[2, 2], &rank0, &rank1);
+
+        let mut state = two_rank_state(2);
+        state.trial_node_recv[2..].copy_from_slice(&[A, B]);
+        let (routed, offsets) = routing_of(&[B as usize, A as usize], 2);
+        state
+            .compute_node_visit_offsets(&routed, &offsets, 2, 0, 4, &Rank0Of2)
+            .unwrap();
+        assert_eq!(state.trial_node_recv, [B, A, A, B]);
+
+        let mut pools = [storing_pool(4), storing_pool(2)];
+        for pass in 0..2 {
+            pools[0].add_cut(NodeId(0), 1, pass, 0.0, &[0.0; 4]);
+            pools[1].add_cut(NodeId(1), 1, pass, 0.0, &[0.0; 2]);
+        }
+        let projections = [projection(true, true), projection(false, true)];
+
+        store_level_trial_states(
+            &mut pools,
+            &[0, 1],
+            &projections,
+            &exchange,
+            Some(&state.trial_node_recv),
+            &mut state.stored_trials_per_node,
+            1,
+        );
+
+        assert_eq!(pools[0].trial_state(0), Some(&rank0[1][..]));
+        assert_eq!(pools[0].trial_state(1), Some(&rank1[0][..]));
+        assert_eq!(pools[1].trial_state(0), Some(&rank0[0][2..]));
+        assert_eq!(pools[1].trial_state(1), Some(&rank1[1][2..]));
+        assert_eq!(pools[0].stored_trial_states(), 2);
+        assert_eq!(pools[1].stored_trial_states(), 2);
+    }
+
+    /// derived: with 2 and 1 real trials the level's cuts take pass indices 0, 1
+    /// and 2 in gathered order, and rank 1's second slot is padding.
+    #[test]
+    fn a_single_node_level_stores_each_trial_state_at_its_cut() {
+        let rank0 = [[10.0, 11.0, 12.0, 13.0], [20.0, 21.0, 22.0, 23.0]];
+        let rank1 = [[30.0, 31.0, 32.0, 33.0], [99.0; 4]];
+        let exchange = rank0_exchange(&[2, 1], &rank0, &rank1);
+
+        let mut pools = [storing_pool(4)];
+        for pass in 0..3 {
+            pools[0].add_cut(NodeId(0), 1, pass, 0.0, &[0.0; 4]);
+        }
+        let mut stored_per_node = vec![7, 7];
+
+        store_level_trial_states(
+            &mut pools,
+            &[0],
+            &[projection(true, true)],
+            &exchange,
+            None,
+            &mut stored_per_node,
+            1,
+        );
+
+        assert_eq!(pools[0].trial_state(0), Some(&rank0[0][..]));
+        assert_eq!(pools[0].trial_state(1), Some(&rank0[1][..]));
+        assert_eq!(pools[0].trial_state(2), Some(&rank1[0][..]));
+        assert_eq!(
+            pools[0].trial_state(3),
+            None,
+            "the padded slot stores nothing"
+        );
+        assert_eq!(pools[0].stored_trial_states(), 3);
     }
 
     /// Verify that `BackwardPassState::run` on a minimal 2-stage, 1-hydro,
