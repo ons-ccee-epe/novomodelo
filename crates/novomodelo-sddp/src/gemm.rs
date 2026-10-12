@@ -117,6 +117,9 @@ pub(crate) fn gemm_block(
 #[cfg(test)]
 #[allow(clippy::cast_precision_loss)]
 mod tests {
+    use proptest::prelude::*;
+    use proptest::test_runner::RngSeed;
+
     use super::gemm_block;
 
     #[test]
@@ -206,6 +209,102 @@ mod tests {
                     UNFUSED_DOT.to_bits(),
                     "shape ({k_rows}, {m_len}) element {i} = {x:e}, expected the unfused 0",
                 );
+            }
+        }
+    }
+
+    /// derived: the `f64` kernel an `x86_64` build without target features resolves
+    /// (`KernelSse2` in `dgemm_kernel.rs`) takes its blocking from
+    /// `archparam_defaults.rs` of `matrixmultiply` 0.3.10: output rows in blocks of
+    /// `D_MC = 64`, inner dimension in blocks of `D_KC = 256`. 80 cuts cross the row
+    /// block. A `matrixmultiply` version bump must re-run this property.
+    const MAX_CUTS: usize = 80;
+    /// derived: straddles `D_KC = 256` (`archparam_defaults.rs`), so 257 and above
+    /// sum the inner dimension in two blocks.
+    const INNER_DIMS: [usize; 5] = [255, 256, 257, 300, 513];
+
+    fn value() -> impl Strategy<Value = f64> {
+        (any::<bool>(), 1000..10_000_i32, -6..=2_i32).prop_map(|(negative, mantissa, exponent)| {
+            let magnitude = f64::from(mantissa) * 10_f64.powi(exponent);
+            if negative { -magnitude } else { magnitude }
+        })
+    }
+
+    fn problem() -> impl Strategy<Value = (usize, usize, usize, Vec<f64>, Vec<f64>)> {
+        (
+            1..=MAX_CUTS,
+            1..=20_usize,
+            prop_oneof![1..=8_usize, prop::sample::select(INNER_DIMS.to_vec())],
+        )
+            .prop_flat_map(|(k_rows, m_len, d)| {
+                (
+                    Just(k_rows),
+                    Just(m_len),
+                    Just(d),
+                    prop::collection::vec(value(), k_rows * d),
+                    prop::collection::vec(value(), m_len * d),
+                )
+            })
+    }
+
+    fn block(coef: &[f64], states: &[f64], k_rows: usize, d: usize, m_len: usize) -> Vec<f64> {
+        let mut v = vec![f64::NAN; k_rows * m_len];
+        gemm_block(coef, states, k_rows, d, m_len, &mut v);
+        v
+    }
+
+    fn same_bits(part: &str, got: &[f64], whole: &[f64]) -> Result<(), TestCaseError> {
+        prop_assert_eq!(got.len(), whole.len());
+        for (i, (g, w)) in got.iter().zip(whole).enumerate() {
+            prop_assert_eq!(
+                g.to_bits(),
+                w.to_bits(),
+                "{} element {}: {:e} against {:e} in the whole block",
+                part,
+                i,
+                g,
+                w
+            );
+        }
+        Ok(())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            rng_seed: RngSeed::Fixed(42),
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn gemm_block_element_is_independent_of_the_block_shape(
+            (k_rows, m_len, d, coef, states) in problem(),
+        ) {
+            let whole = block(&coef, &states, k_rows, d, m_len);
+
+            for k in 0..k_rows {
+                for j in 0..m_len {
+                    let alone = block(&coef[k * d..][..d], &states[j * d..][..d], 1, d, 1);
+                    same_bits("alone", &alone, &whole[k * m_len + j..][..1])?;
+                }
+            }
+
+            for (c, chunk) in states.chunks(8 * d).enumerate() {
+                let cols = chunk.len() / d;
+                let part = block(&coef, chunk, k_rows, d, cols);
+                for k in 0..k_rows {
+                    same_bits(
+                        "column chunk",
+                        &part[k * cols..][..cols],
+                        &whole[k * m_len + 8 * c..][..cols],
+                    )?;
+                }
+            }
+
+            for (r, chunk) in coef.chunks(3 * d).enumerate() {
+                let rows = chunk.len() / d;
+                let part = block(chunk, &states, rows, d, m_len);
+                same_bits("row chunk", &part, &whole[3 * r * m_len..][..rows * m_len])?;
             }
         }
     }
