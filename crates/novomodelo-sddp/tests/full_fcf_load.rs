@@ -171,6 +171,38 @@ fn resume_apply_installs_the_checkpoint_cuts_and_the_start_iteration() {
 }
 
 #[test]
+fn loaded_activity_clock_follows_the_load_kind() {
+    let trained = train_and_write_checkpoint();
+    let mut latest_loaded_iteration = 0;
+    for kind in [FullFcfLoadKind::Resume, FullFcfLoadKind::WarmStart] {
+        let (mut setup, system) = build_setup();
+        let policy_dir = locate_policy_dir(kind, trained.output.path(), &setup).expect("locate");
+        check_full_fcf_load(kind, &policy_dir, &system, &setup, &mut |_| {})
+            .expect("check")
+            .apply_to_training(&mut setup);
+        for (pool_id, pool) in setup.fcf.pools.iter().enumerate() {
+            for slot in (0..pool.populated()).filter(|&slot| pool.is_prefix_slot(slot)) {
+                let meta = pool.metadata(slot);
+                let expected_clock = match kind {
+                    FullFcfLoadKind::Resume => meta.iteration_generated,
+                    _ => 0,
+                };
+                assert_eq!(
+                    (meta.active_count, meta.last_active_iter),
+                    (0, expected_clock),
+                    "{kind:?} pool {pool_id} slot {slot}: activity clock"
+                );
+                latest_loaded_iteration = latest_loaded_iteration.max(meta.iteration_generated);
+            }
+        }
+    }
+    assert!(
+        latest_loaded_iteration >= 1,
+        "a loaded cut must carry a generating iteration, or the two kinds are not told apart"
+    );
+}
+
+#[test]
 fn warm_started_run_exports_loaded_cuts_with_their_iterations() {
     let (mut source_setup, source_system) = build_setup_with(2, ITERATIONS);
     let source_out = train_and_write(&mut source_setup, &source_system);

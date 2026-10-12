@@ -212,7 +212,7 @@ pub fn check_full_fcf_load(
     // Reuse per-pool dimensions from the current study's FCF, not the checkpoint's.
     let pool_state_dimensions: Vec<usize> =
         setup.fcf.pools.iter().map(|p| p.state_dimension).collect();
-    let fcf = match kind {
+    let mut fcf = match kind {
         FullFcfLoadKind::WarmStart | FullFcfLoadKind::Resume => {
             let visit_bounds: Vec<u64> = setup
                 .fcf
@@ -237,6 +237,11 @@ pub fn check_full_fcf_load(
         ),
     }
     .map_err(|source| FullFcfLoadError::FcfConstruction { kind, source })?;
+    if kind == FullFcfLoadKind::WarmStart {
+        for pool in &mut fcf.pools {
+            pool.restart_activity_clock();
+        }
+    }
 
     let StoredBasisLoad {
         cache: basis_cache,

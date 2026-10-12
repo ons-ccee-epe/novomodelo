@@ -1509,8 +1509,9 @@ pub fn inject_boundary_cuts(
     let fcf = &mut setup.fcf;
     let state_dimension = fcf.state_dimension;
     let forward_passes = fcf.forward_passes;
-    fcf.pools[terminal_idx] =
-        CutPool::new_with_warm_start(state_dimension, forward_passes, 0, boundary_cuts);
+    let mut pool = CutPool::new_with_warm_start(state_dimension, forward_passes, 0, boundary_cuts);
+    pool.restart_activity_clock();
+    fcf.pools[terminal_idx] = pool;
     Ok(())
 }
 
@@ -4543,6 +4544,34 @@ mod tests {
             pool.capacity,
             records.len(),
             "terminal pool must carry no growable training slack after injection"
+        );
+    }
+
+    #[test]
+    fn injected_boundary_cuts_start_on_this_runs_activity_clock() {
+        let mut setup = test_support::oracle_chain_setup(10);
+        let terminal_idx = setup
+            .inputs
+            .node_graph
+            .terminal_pool(setup.num_stages())
+            .unwrap();
+        let mut record = owned_cut(5.0, vec![1.0; setup.fcf.state_dimension]);
+        record.iteration = 9;
+        let boundary_cuts = ValidatedBoundaryCuts {
+            records: vec![record],
+            report: BoundaryReconciliationReport::default(),
+        };
+
+        inject_boundary_cuts(&mut setup, &boundary_cuts).unwrap();
+
+        let meta = setup.fcf.pools[terminal_idx].metadata(0);
+        assert_eq!(
+            (
+                meta.iteration_generated,
+                meta.active_count,
+                meta.last_active_iter
+            ),
+            (9, 0, 0)
         );
     }
 

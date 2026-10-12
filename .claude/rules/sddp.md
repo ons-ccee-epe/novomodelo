@@ -576,6 +576,64 @@ a loaded cut is exported at its record's iteration) and
 (`cut/pool.rs`), `k1_window_keeps_warm_start_cuts` and
 `a_loaded_slot_is_not_seeded_as_a_current_iteration_cut` (`cut/dcs.rs`).
 
+**The activity clock is the current run's.** `CutMetadata::last_active_iter` and
+`CutMetadata::active_count` are on the current run's iteration clock. Two readers
+use them: the eviction key of the active-cut budget (`CutPool::enforce_budget`),
+and the seed window of a lazy solve under `dynamic`, which compares
+`last_active_iter` with the run's iteration counter and seeds an active cut when
+`current_iteration.saturating_sub(last_active_iter) <= seed_window`
+(`build_initial_resident_set`). `add_cut` starts a cut of this run at
+`last_active_iter = iteration_generated` and `active_count = 0`.
+
+A warm start and a boundary injection restart both counters at 0 for the loaded
+prefix (`CutPool::restart_activity_clock`), because their records carry the
+iterations of another run or study: `check_full_fcf_load` restarts every pool
+for `FullFcfLoadKind::WarmStart`, and `inject_boundary_cuts` restarts the
+terminal pool it installs in every policy mode. A resume keeps the record's
+iteration, which is the value `add_cut` wrote when the run generated the cut; a
+simulation-only load keeps it too and reads no clock, since the simulation seeds
+at iteration 0. The restart touches the two counters of the prefix slots only:
+`iteration_generated` stays the record's iteration, as the paragraph above
+requires. A restarted active loaded cut is in the seed of iterations
+`1..=seed_window` and then of the `seed_window` iterations that follow each
+iteration in which it bound, and it is a candidate of every lazy solve
+throughout. `build_initial_resident_set` still tests `is_prefix_slot` before it
+compares `iteration_generated` with the current iteration: a restarted loaded
+cut whose generating iteration equals the current one lies outside the window
+and would otherwise be seeded as an untested cut of this iteration.
+
+Seeding a warm start from `record.iteration` is the wrong-but-compiling
+alternative: the run's counter restarts at 1, so the window's subtraction
+saturates to 0 until the new run passes the source run's iteration count, every
+loaded active cut is seeded in every lazy solve, and the window selects
+nothing. Restarting the clock under a resume is the opposite error: a reloaded
+cut the run generated would fall out of the seed window it was in before the
+checkpoint.
+
+Two limits of what a resume restores. Bindings recorded before the checkpoint
+are not restored: the checkpoint stores no counters, so a reloaded cut that had
+bound resumes at the iteration that generated it. A resumed run that was itself
+warm-started reloads its original prefix with the source's iterations: the load
+does not read the recorded `warm_start_count`, every record becomes a loaded
+cut at `last_active_iter = iteration`, and a cut originally loaded from the
+source keeps the source's iteration, so the window seeds it in every lazy solve
+until the resumed run's iteration counter exceeds that iteration by more than
+`seed_window`.
+
+Read: `cut/pool.rs` (`CutPool::restart_activity_clock`, `add_cut`,
+`enforce_budget`), `cut/dcs.rs` (`build_initial_resident_set`),
+`policy/full_fcf_load.rs` (`check_full_fcf_load`), `policy/policy_load.rs`
+(`inject_boundary_cuts`). Pinned by `loaded_activity_clock_follows_the_load_kind`
+(`tests/full_fcf_load.rs`: after the load, every prefix slot has
+`active_count = 0`; under a resume `last_active_iter` equals the record's
+iteration, under a warm start it is 0),
+`injected_boundary_cuts_start_on_this_runs_activity_clock`
+(`policy/policy_load.rs`), `restart_activity_clock_touches_only_the_loaded_prefix`
+(`cut/pool.rs`), `a_warm_started_cut_is_seeded_in_the_first_window_and_after_it_binds`
+(`cut/dcs.rs`: the window and its saturation under the stored clock) and
+`a_loaded_slot_is_not_seeded_as_a_current_iteration_cut` (`cut/dcs.rs`: the
+guard).
+
 **Basis matches by slot, never by count or column.** Warm-start basis
 reconstruction matches stored cut rows to current LP rows by **`CutPool` slot
 identity**, never by row count and never by absolute column index. On the
@@ -808,7 +866,8 @@ The workers read the switch from the threshold on the successor view
 (`SuccessorOutcomes`, `SuccessorChild`), an option that is `None` when binding is
 not tracked; the lazy solve reads the same option before
 `accumulate_dcs_binding_counts`. Every cut then keeps `active_count = 0` and
-`last_active_iter` at the value its slot was written with. The state duals are
+`last_active_iter` at the value it started with (the activity clock paragraph
+above). The state duals are
 filled by the same routine in both states, so the cuts and the bounds are
 bit-identical with the switch on and off. The worker buffers stay allocated.
 The enumerated backward records no binding activity in either state.

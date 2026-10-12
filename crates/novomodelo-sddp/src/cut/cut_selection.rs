@@ -76,14 +76,14 @@ pub struct CutMetadata {
     /// read by the value-based selection logic.
     pub node: NodeId,
 
-    /// Cumulative number of times this cut was binding at an LP solution. Used
-    /// by budget enforcement and diagnostics, NOT by the value-based selection
-    /// logic.
+    /// Binding solves counted since the slot was written or loaded; stays 0
+    /// while no reader of binding activity is configured.
     pub active_count: u64,
 
-    /// Most recent iteration at which this cut was binding. Used by budget
-    /// enforcement (staleness eviction) and diagnostics, NOT by the value-based
-    /// selection logic.
+    /// Iteration of the last recorded binding, on this run's clock. Starts at
+    /// the generating iteration for a cut of this run or of the run being
+    /// resumed, and at 0 for a cut loaded by a warm start or as a boundary
+    /// record. Read by the budget key and the `dynamic` seed window.
     pub last_active_iter: u64,
 }
 

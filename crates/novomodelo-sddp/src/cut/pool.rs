@@ -496,6 +496,16 @@ impl CutPool {
         self.metadata[slot].last_active_iter = iteration;
     }
 
+    /// Zero `active_count` and `last_active_iter` of the loaded prefix, so they
+    /// count this run from 0. `iteration_generated` keeps the record's
+    /// iteration, which the checkpoint writer exports.
+    pub(crate) fn restart_activity_clock(&mut self) {
+        for meta in &mut self.metadata[..self.warm_start_count as usize] {
+            meta.active_count = 0;
+            meta.last_active_iter = 0;
+        }
+    }
+
     /// Test-only: overwrite one slot's metadata directly, bypassing
     /// `add_cut`'s iteration/slot coupling. Metadata mutation cannot desync
     /// `active`/`cached_active_count`, so no bulk recomputation is needed.
@@ -1579,6 +1589,35 @@ mod tests {
             coefficients: vec![1.0],
             is_active: true,
         }
+    }
+
+    #[test]
+    fn restart_activity_clock_touches_only_the_loaded_prefix() {
+        let mut pool = CutPool::new_with_warm_start(1, 1, 4, &[loaded_cut(5), loaded_cut(7)]);
+        pool.set_iteration_base(1);
+        pool.add_cut(NodeId(0), 1, 0, 3.0, &[1.0]);
+        pool.record_binding(0, 3, 6);
+        pool.record_binding(1, 1, 9);
+        pool.record_binding(2, 2, 4);
+        pool.set_active(1, false);
+
+        pool.restart_activity_clock();
+
+        let clock = |slot: usize| {
+            let meta = pool.metadata(slot);
+            (
+                meta.iteration_generated,
+                meta.active_count,
+                meta.last_active_iter,
+            )
+        };
+        assert_eq!(clock(0), (5, 0, 0));
+        assert_eq!(clock(1), (7, 0, 0));
+        assert_eq!(clock(2), (1, 2, 4));
+        assert_eq!(
+            (pool.is_active(0), pool.is_active(1), pool.is_active(2)),
+            (true, false, true)
+        );
     }
 
     #[test]

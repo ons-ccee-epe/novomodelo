@@ -748,6 +748,7 @@ pub fn build_initial_resident_set(
 #[cfg(test)]
 #[allow(clippy::doc_markdown)]
 mod tests {
+    use novomodelo_io::OwnedPolicyCutRecord;
     use novomodelo_solver::{
         ActiveProfile, ActiveSolver, Basis, ProfiledSolver, RowBatch, SolverError, SolverInterface,
         SolverStatistics, StageTemplate,
@@ -2897,41 +2898,65 @@ mod tests {
         );
     }
 
-    /// A loaded cut whose real generating iteration equals the current one is
-    /// not a current-iteration cut: with its binding recency out of the k2
-    /// window it is left out, while a trained cut of the same iteration is
-    /// seeded.
-    #[test]
-    fn a_loaded_slot_is_not_seeded_as_a_current_iteration_cut() {
-        use novomodelo_io::OwnedPolicyCutRecord;
-
-        let loaded = OwnedPolicyCutRecord {
+    fn loaded_record(iteration: u32) -> OwnedPolicyCutRecord {
+        OwnedPolicyCutRecord {
             cut_id: 0,
             slot_index: 0,
-            iteration: 10,
+            iteration,
             forward_pass_index: 0,
             intercept: 0.0,
             coefficients: vec![0.0],
             is_active: true,
-        };
-        let mut pool = CutPool::new_with_warm_start(1, 1, 4, &[loaded]);
+        }
+    }
+
+    /// A loaded cut whose real generating iteration equals the current one is
+    /// not a current-iteration cut: its restarted clock leaves it outside the
+    /// window, while a cut of the same iteration is seeded.
+    #[test]
+    fn a_loaded_slot_is_not_seeded_as_a_current_iteration_cut() {
+        let mut pool = CutPool::new_with_warm_start(1, 1, 4, &[loaded_record(10)]);
+        pool.restart_activity_clock();
         pool.set_iteration_base(10);
         pool.add_cut(NodeId(0), 10, 0, 0.0, &[0.0]);
-        pool.set_metadata_for_test(
-            0,
-            CutMetadata {
-                iteration_generated: 10,
-                forward_pass_index: 0,
-                node: NodeId(0),
-                active_count: 0,
-                last_active_iter: 1,
-            },
-        );
         let mut out = Vec::new();
 
         build_initial_resident_set(&pool, 10, 2, &mut out);
 
         assert_eq!(out, vec![1]);
+    }
+
+    /// derived: `current.saturating_sub(last_active_iter) <= seed_window`, with
+    /// `seed_window = 2`. After the restart `last_active_iter` is 0, so
+    /// iterations 1 and 2 are seeded and 3 is not (3 > 2). `record_binding(0,
+    /// 1, 5)` sets it to 5: iterations 5, 6 and 7 give 0, 1 and 2 (seeded), 8
+    /// gives 3. Without the restart it stays 40: iteration 3 saturates to 0
+    /// and the cut is seeded through iteration 42, not 43.
+    #[test]
+    fn a_warm_started_cut_is_seeded_in_the_first_window_and_after_it_binds() {
+        let seeded = |pool: &CutPool, iteration: u64| {
+            let mut out = Vec::new();
+            build_initial_resident_set(pool, iteration, 2, &mut out);
+            out == vec![0]
+        };
+        let mut restarted = CutPool::new_with_warm_start(1, 1, 4, &[loaded_record(40)]);
+        let stored_clock = CutPool::new_with_warm_start(1, 1, 4, &[loaded_record(40)]);
+        restarted.restart_activity_clock();
+
+        assert!(seeded(&restarted, 1));
+        assert!(seeded(&restarted, 2));
+        assert!(!seeded(&restarted, 3));
+
+        restarted.record_binding(0, 1, 5);
+
+        assert!(seeded(&restarted, 5));
+        assert!(seeded(&restarted, 6));
+        assert!(seeded(&restarted, 7));
+        assert!(!seeded(&restarted, 8));
+
+        assert!(seeded(&stored_clock, 3));
+        assert!(seeded(&stored_clock, 42));
+        assert!(!seeded(&stored_clock, 43));
     }
 
     /// An inactive slot within the k2 window is never included.
