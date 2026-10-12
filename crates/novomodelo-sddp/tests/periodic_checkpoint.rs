@@ -1,20 +1,28 @@
 //! Checkpoints written by the training loop on the `policy.checkpointing`
 //! schedule.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp
+)]
 
 mod common;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use novomodelo_core::{System, TrainingEvent};
-use novomodelo_io::config::{CheckpointingConfig, StoppingRuleConfig};
+use novomodelo_io::config::{CheckpointingConfig, StoppingRuleConfig, TrainingSelection};
 use novomodelo_io::output::policy::{PolicyCheckpoint, read_policy_checkpoint};
+use novomodelo_sddp::policy::full_fcf_load::{FullFcfLoadKind, check_full_fcf_load};
 use novomodelo_sddp::policy::orchestration::{CheckpointParams, write_checkpoint};
 use novomodelo_sddp::{SddpError, StudySetup, TrainingResult};
 use novomodelo_solver::ActiveSolver;
 
+use common::selection_fingerprint::SelectionFingerprint;
 use common::{StubComm, fresh_system_and_setup_with};
 
 fn toy_case() -> PathBuf {
@@ -216,4 +224,166 @@ fn failed_periodic_write_ends_training_with_the_failing_iteration() {
         outcome.error
     );
     assert_eq!(outcome.result.iterations, 2);
+}
+
+/// Bound on two solves of one LP that start from different solver states.
+const LOWER_BOUND_REL_TOL: f64 = 1e-6;
+const RESUMED_ITERATIONS: std::ops::RangeInclusive<u64> = 4..=6;
+
+struct RunOutcome {
+    fingerprint: SelectionFingerprint,
+    resolved_cost_scale_factor: f64,
+    simplex_iterations: BTreeMap<(u64, &'static str, Option<i32>), u64>,
+}
+
+impl RunOutcome {
+    fn capture(setup: &StudySetup, result: &TrainingResult) -> Self {
+        let mut simplex_iterations = BTreeMap::new();
+        for entry in result
+            .solver_stats_log
+            .iter()
+            .filter(|e| RESUMED_ITERATIONS.contains(&e.iteration))
+            .filter(|e| matches!(e.phase, "forward" | "backward"))
+        {
+            *simplex_iterations
+                .entry((entry.iteration, entry.phase, entry.stage_id))
+                .or_insert(0) += entry.delta.simplex_iterations;
+        }
+        Self {
+            fingerprint: SelectionFingerprint::capture(setup, result),
+            resolved_cost_scale_factor: setup.inputs.stage_data.stage_templates.cost_scale_factor,
+            simplex_iterations,
+        }
+    }
+}
+
+fn selection_off_setup(
+    iteration_limit: u32,
+    forward_passes: u32,
+    cost_scale_factor: Option<f64>,
+) -> (System, StudySetup) {
+    fresh_system_and_setup_with(&toy_case(), |config| {
+        config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: iteration_limit,
+        }]);
+        config.modeling.cost_scale_factor = cost_scale_factor;
+    })
+}
+
+/// Returns `(resumed, uninterrupted)`: the resumed run trains 3 iterations,
+/// checkpoints, loads the checkpoint through the production resume path and
+/// trains to 6.
+fn resumed_and_uninterrupted(
+    forward_passes: u32,
+    cost_scale_factor: Option<f64>,
+) -> (RunOutcome, RunOutcome) {
+    let (_, mut full_setup) = selection_off_setup(6, forward_passes, cost_scale_factor);
+    let full_result = train(&mut full_setup, None);
+    assert_eq!(full_result.iterations, 6);
+    let uninterrupted = RunOutcome::capture(&full_setup, &full_result);
+
+    let (system, mut first_setup) = selection_off_setup(3, forward_passes, cost_scale_factor);
+    let first_result = train(&mut first_setup, None);
+    assert_eq!(first_result.iterations, 3);
+    let out = tempfile::tempdir().expect("tempdir");
+    let policy_dir = out.path().join(&first_setup.policy_path);
+    write_checkpoint(
+        &policy_dir,
+        &first_setup,
+        &system,
+        &first_result,
+        &CheckpointParams {
+            max_iterations: first_setup.loop_params.max_iterations,
+            forward_passes: first_setup.loop_params.forward_passes,
+            seed: first_setup.loop_params.seed,
+            export_states: false,
+        },
+    )
+    .expect("write_checkpoint must succeed");
+
+    let (system, mut resumed_setup) = selection_off_setup(6, forward_passes, cost_scale_factor);
+    check_full_fcf_load(
+        FullFcfLoadKind::Resume,
+        &policy_dir,
+        &system,
+        &resumed_setup,
+        &mut |_msg: &str| {},
+    )
+    .expect("the checkpoint must load")
+    .apply_to_training(&mut resumed_setup);
+    let resumed_result = train(&mut resumed_setup, None);
+    assert_eq!(resumed_result.iterations, 6);
+    (
+        RunOutcome::capture(&resumed_setup, &resumed_result),
+        uninterrupted,
+    )
+}
+
+fn assert_same_run(resumed: &RunOutcome, uninterrupted: &RunOutcome) {
+    assert_eq!(
+        resumed.fingerprint.cuts.len(),
+        uninterrupted.fingerprint.cuts.len()
+    );
+    for (pool, (r, u)) in resumed
+        .fingerprint
+        .cuts
+        .iter()
+        .zip(&uninterrupted.fingerprint.cuts)
+        .enumerate()
+    {
+        assert_eq!(r.active, u.active, "pool {pool}: activity flags");
+        assert_eq!(
+            r.intercept_bits, u.intercept_bits,
+            "pool {pool}: intercepts"
+        );
+        assert_eq!(
+            r.coefficient_bits, u.coefficient_bits,
+            "pool {pool}: coefficients"
+        );
+    }
+    assert_eq!(
+        resumed.fingerprint.bounds.final_ub_bits, uninterrupted.fingerprint.bounds.final_ub_bits,
+        "final upper bound"
+    );
+    assert_eq!(
+        resumed.simplex_iterations, uninterrupted.simplex_iterations,
+        "forward and backward simplex iterations of the resumed iterations"
+    );
+
+    let (r_lb, u_lb) = (
+        &resumed.fingerprint.bounds.lower_bound_bits,
+        &uninterrupted.fingerprint.bounds.lower_bound_bits,
+    );
+    assert_eq!(r_lb.len(), u_lb.len(), "lower-bound history length");
+    for (i, (r, u)) in r_lb.iter().zip(u_lb).enumerate() {
+        let (r, u) = (f64::from_bits(*r), f64::from_bits(*u));
+        assert!(
+            (r - u).abs() <= LOWER_BOUND_REL_TOL * 1.0_f64.max(r.abs()).max(u.abs()),
+            "lower bound of iteration {}: resumed {r}, uninterrupted {u}",
+            i + 1
+        );
+    }
+}
+
+#[test]
+fn resumed_run_equals_the_uninterrupted_run_with_one_forward_pass() {
+    let (resumed, uninterrupted) = resumed_and_uninterrupted(1, Some(1_048_576.0));
+    assert_eq!(resumed.resolved_cost_scale_factor, 1_048_576.0);
+    assert_eq!(uninterrupted.resolved_cost_scale_factor, 1_048_576.0);
+    assert_same_run(&resumed, &uninterrupted);
+}
+
+#[test]
+#[ignore = "a checkpoint stores cut values multiplied by the cost scale factor and a load divides them again; at the default factor that round trip is not exact"]
+fn resumed_run_equals_the_uninterrupted_run_at_the_default_cost_scale() {
+    let (resumed, uninterrupted) = resumed_and_uninterrupted(1, None);
+    assert_same_run(&resumed, &uninterrupted);
+}
+
+#[test]
+#[ignore = "resume restores one stored basis per node; forward passes beyond the first restart from it"]
+fn resumed_run_equals_the_uninterrupted_run_with_several_forward_passes() {
+    let (resumed, uninterrupted) = resumed_and_uninterrupted(3, Some(1_048_576.0));
+    assert_same_run(&resumed, &uninterrupted);
 }
