@@ -16,8 +16,8 @@
 //! (never removed), so the slot layout stays deterministic. Inactive cuts are
 //! excluded from LP construction and [`evaluate_at_state`]. [`set_active`] is the
 //! canonical toggle that keeps [`active_count`] consistent; [`deactivate`] wraps
-//! `set_active(slot, false)`. [`cuts_in_lp`] is the populated-slot count — the
-//! LP-row metric for append-only LP tracking.
+//! `set_active(slot, false)`. [`cuts_in_lp`] is the slot bound — the LP-row metric
+//! for append-only LP tracking.
 //!
 //! [`evaluate_at_state`]: CutPool::evaluate_at_state
 //! [`set_active`]: CutPool::set_active
@@ -48,6 +48,49 @@ use crate::setup::NodeId;
 
 use novomodelo_io::OwnedPolicyCutRecord;
 
+/// Where the cut in a pool slot came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotOrigin {
+    /// No cut was ever written to the slot.
+    Vacant,
+    /// A cut loaded before the run started.
+    Prefix,
+    /// A cut the run generated.
+    Generated,
+}
+
+/// The static facts of a pool slot, fixed when the slot is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlotRole {
+    /// Where the slot's cut came from.
+    pub origin: SlotOrigin,
+    /// Whether a run scored the slot's cut.
+    pub scored: bool,
+}
+
+const VACANT_ROLE: SlotRole = SlotRole {
+    origin: SlotOrigin::Vacant,
+    scored: false,
+};
+const PREFIX_ROLE: SlotRole = SlotRole {
+    origin: SlotOrigin::Prefix,
+    scored: false,
+};
+const GENERATED_ROLE: SlotRole = SlotRole {
+    origin: SlotOrigin::Generated,
+    scored: false,
+};
+
+fn unwritten_metadata() -> CutMetadata {
+    CutMetadata {
+        iteration_generated: 0,
+        forward_pass_index: 0,
+        node: NodeId(0),
+        active_count: 0,
+        last_active_iter: 0,
+    }
+}
+
 /// Pre-allocated per-stage cut pool for the Future Cost Function (FCF).
 ///
 /// All storage is allocated at construction time — no heap allocation on the
@@ -65,12 +108,15 @@ pub struct CutPool {
     /// Per-slot cut-selection bookkeeping.
     metadata: Vec<CutMetadata>,
 
+    /// Per-slot role, parallel to `metadata` and written only with the slot.
+    roles: Vec<SlotRole>,
+
     /// Per-slot activity flags. `false` excludes the cut from LP construction and
     /// evaluation; the slot is retained so the layout stays deterministic.
     active: Vec<bool>,
 
-    /// High-water mark of populated slots; bounds iteration so trailing
-    /// unpopulated slots are skipped.
+    /// One past the highest written slot; bounds iteration so trailing
+    /// unwritten slots are skipped.
     populated_count: usize,
 
     /// Total number of pre-allocated slots. Fixed after construction.
@@ -139,18 +185,11 @@ impl CutPool {
         visit_stride: u32,
         warm_start_count: u32,
     ) -> Self {
-        let default_meta = CutMetadata {
-            iteration_generated: 0,
-            forward_pass_index: 0,
-            node: NodeId(0),
-            active_count: 0,
-            last_active_iter: 0,
-        };
-
         Self {
             coefficients: vec![0.0; capacity * state_dimension],
             intercepts: vec![0.0; capacity],
-            metadata: vec![default_meta; capacity],
+            metadata: vec![unwritten_metadata(); capacity],
+            roles: vec![VACANT_ROLE; capacity],
             active: vec![false; capacity],
             populated_count: 0,
             capacity,
@@ -264,6 +303,7 @@ impl CutPool {
             active_count: 0,
             last_active_iter: iteration,
         };
+        self.roles[slot] = GENERATED_ROLE;
 
         if slot >= self.populated_count {
             self.populated_count = slot + 1;
@@ -320,34 +360,10 @@ impl CutPool {
         &self,
         current_iteration: u64,
     ) -> impl Iterator<Item = (usize, f64, &[f64])> {
-        let mut remaining = self.cached_active_count;
-        self.active[..self.populated_count]
-            .iter()
-            .enumerate()
-            .scan((), move |(), (slot, &is_active)| {
-                if remaining == 0 {
-                    return None;
-                }
-                if is_active {
-                    remaining -= 1;
-                    Some(Some(slot))
-                } else {
-                    Some(None)
-                }
-            })
-            .flatten()
-            .filter(move |&slot| {
-                !self.is_prefix_slot(slot)
-                    && self.metadata[slot].iteration_generated == current_iteration
-            })
-            .map(|i| {
-                let start = i * self.state_dimension;
-                (
-                    i,
-                    self.intercepts[i],
-                    &self.coefficients[start..start + self.state_dimension],
-                )
-            })
+        self.active_cuts().filter(move |&(slot, _, _)| {
+            !self.is_prefix_slot(slot)
+                && self.metadata[slot].iteration_generated == current_iteration
+        })
     }
 
     /// Count the active cuts (cached, O(1)).
@@ -390,16 +406,22 @@ impl CutPool {
         self.warm_start_count > 0
     }
 
-    /// Whether `slot` is in the loaded prefix: the cuts the pool held before the
-    /// run started.
+    /// Whether `slot` holds a cut loaded before the run started.
     #[must_use]
     #[inline]
     pub fn is_prefix_slot(&self, slot: usize) -> bool {
-        slot < self.warm_start_count as usize
+        self.roles[slot].origin == SlotOrigin::Prefix
     }
 
-    /// Return the populated-slot count — the LP-row metric, independent of
-    /// activity state.
+    /// Read a single slot's role.
+    #[must_use]
+    #[inline]
+    pub fn role(&self, slot: usize) -> SlotRole {
+        self.roles[slot]
+    }
+
+    /// Return the slot bound — one past the highest written slot, independent of
+    /// activity state. A slot below it can be vacant.
     ///
     /// # Example
     ///
@@ -423,7 +445,8 @@ impl CutPool {
         self.populated_count
     }
 
-    /// Populated-slot count — the same value as [`cuts_in_lp`](CutPool::cuts_in_lp).
+    /// The slot bound, the same value as [`cuts_in_lp`](CutPool::cuts_in_lp). A
+    /// slot below it can be vacant, so it bounds slots and does not count cuts.
     #[must_use]
     #[inline]
     pub fn populated(&self) -> usize {
@@ -500,15 +523,16 @@ impl CutPool {
     /// count this run from 0. `iteration_generated` keeps the record's
     /// iteration, which the checkpoint writer exports.
     pub(crate) fn restart_activity_clock(&mut self) {
-        for meta in &mut self.metadata[..self.warm_start_count as usize] {
-            meta.active_count = 0;
-            meta.last_active_iter = 0;
+        for (meta, role) in self.metadata.iter_mut().zip(&self.roles) {
+            if role.origin == SlotOrigin::Prefix {
+                meta.active_count = 0;
+                meta.last_active_iter = 0;
+            }
         }
     }
 
     /// Test-only: overwrite one slot's metadata directly, bypassing
-    /// `add_cut`'s iteration/slot coupling. Metadata mutation cannot desync
-    /// `active`/`cached_active_count`, so no bulk recomputation is needed.
+    /// `add_cut`'s iteration/slot coupling.
     ///
     /// # Panics
     ///
@@ -586,7 +610,6 @@ impl CutPool {
     /// silently drops reactivation entries. Idempotency follows [`set_active`].
     ///
     /// [`set_active`]: CutPool::set_active
-    /// [`CutActivityUpdates`]: CutActivityUpdates
     ///
     /// # Example
     ///
@@ -671,7 +694,7 @@ impl CutPool {
     ///
     /// # Panics (debug builds only)
     ///
-    /// Panics if `slot >= populated_count`.
+    /// Panics if `slot >= populated_count`, or if `active` is set on a vacant slot.
     ///
     /// # Example
     ///
@@ -698,6 +721,10 @@ impl CutPool {
         debug_assert!(
             i < self.populated_count,
             "set_active slot {i} out of populated range"
+        );
+        debug_assert!(
+            !active || self.roles[i].origin != SlotOrigin::Vacant,
+            "set_active: slot {i} is vacant"
         );
         if self.active[i] == active {
             return;
@@ -870,6 +897,7 @@ impl CutPool {
             coefficients,
             intercepts,
             metadata,
+            roles: vec![PREFIX_ROLE; capacity],
             active,
             populated_count: capacity,
             capacity,
@@ -919,18 +947,11 @@ impl CutPool {
         #[allow(clippy::cast_possible_truncation)]
         let capacity = warm_start_count + (max_iterations as usize) * (visit_stride as usize);
 
-        let default_meta = CutMetadata {
-            iteration_generated: 0,
-            forward_pass_index: 0,
-            node: NodeId(0),
-            active_count: 0,
-            last_active_iter: 0,
-        };
-
         let mut coefficients = vec![0.0_f64; capacity * state_dimension];
         let mut intercepts = vec![0.0; capacity];
         let mut active = vec![false; capacity];
-        let mut metadata = vec![default_meta; capacity];
+        let mut metadata = vec![unwritten_metadata(); capacity];
+        let mut roles = vec![VACANT_ROLE; capacity];
         let mut cached_active_count = 0usize;
 
         for (i, record) in records.iter().enumerate() {
@@ -956,6 +977,7 @@ impl CutPool {
                 active_count: 0,
                 last_active_iter: u64::from(record.iteration),
             };
+            roles[i] = PREFIX_ROLE;
         }
 
         #[allow(clippy::cast_possible_truncation)]
@@ -963,6 +985,7 @@ impl CutPool {
             coefficients,
             intercepts,
             metadata,
+            roles,
             active,
             populated_count: warm_start_count,
             capacity,
@@ -1011,16 +1034,8 @@ impl CutPool {
         self.coefficients
             .resize(new_capacity * self.state_dimension, 0.0);
         self.intercepts.resize(new_capacity, 0.0);
-        self.metadata.resize(
-            new_capacity,
-            CutMetadata {
-                iteration_generated: 0,
-                forward_pass_index: 0,
-                node: NodeId(0),
-                active_count: 0,
-                last_active_iter: 0,
-            },
-        );
+        self.metadata.resize(new_capacity, unwritten_metadata());
+        self.roles.resize(new_capacity, VACANT_ROLE);
         self.active.resize(new_capacity, false);
         self.capacity = new_capacity;
     }
@@ -1126,8 +1141,8 @@ impl CutPool {
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::CutPool;
-    use crate::cut_selection::CutMetadata;
+    use super::{CutPool, SlotOrigin, SlotRole};
+    use crate::cut_selection::{CutActivityUpdates, CutMetadata};
     use crate::setup::NodeId;
     use proptest::prelude::*;
     use proptest::test_runner::RngSeed;
@@ -1631,6 +1646,90 @@ mod tests {
         assert_eq!(delta, vec![1]);
     }
 
+    fn unscored(origin: SlotOrigin) -> SlotRole {
+        SlotRole {
+            origin,
+            scored: false,
+        }
+    }
+
+    fn roles_of(pool: &CutPool) -> Vec<SlotRole> {
+        (0..pool.capacity).map(|slot| pool.role(slot)).collect()
+    }
+
+    #[test]
+    fn a_slot_role_is_fixed_when_the_slot_is_written() {
+        use SlotOrigin::{Generated, Prefix, Vacant};
+
+        let fresh = CutPool::new(3, 1, 1, 0);
+        assert_eq!(roles_of(&fresh), vec![unscored(Vacant); 3]);
+
+        let records = [loaded_cut(5), loaded_cut(7)];
+        let from_records = CutPool::from_deserialized(1, &records);
+        assert_eq!(roles_of(&from_records), vec![unscored(Prefix); 2]);
+
+        let mut pool = CutPool::new_with_warm_start(1, 2, 4, &records);
+        assert_eq!(
+            roles_of(&pool)[..3],
+            [unscored(Prefix), unscored(Prefix), unscored(Vacant)]
+        );
+        pool.set_iteration_base(1);
+        pool.add_cut(NodeId(0), 1, 0, 3.0, &[1.0]);
+        pool.add_cut(NodeId(0), 2, 0, 4.0, &[1.0]);
+        pool.grow(12);
+        let expected = [
+            unscored(Prefix),
+            unscored(Prefix),
+            unscored(Generated),
+            unscored(Vacant),
+            unscored(Generated),
+        ];
+        assert_eq!(roles_of(&pool)[..5], expected);
+        assert_eq!(roles_of(&pool)[5..], vec![unscored(Vacant); 7]);
+
+        let metadata = |slot: usize| pool.metadata(slot).clone();
+        let kept: Vec<CutMetadata> = (0..pool.populated()).map(metadata).collect();
+        let mut kept_active = vec![true; pool.populated()];
+        kept_active[3] = false;
+        let before = roles_of(&pool);
+
+        pool.set_active(2, false);
+        assert_eq!(roles_of(&pool), before, "set_active");
+        pool.set_active(2, true);
+        pool.deactivate(&[4]);
+        assert_eq!(roles_of(&pool), before, "deactivate");
+        pool.apply_updates(&CutActivityUpdates {
+            stage_index: 0,
+            updates: vec![2],
+            reactivations: vec![4],
+        });
+        assert_eq!(roles_of(&pool), before, "apply_updates");
+        pool.replace_selection(&kept, &kept_active);
+        assert_eq!(roles_of(&pool), before, "replace_selection");
+        pool.set_metadata_for_test(2, kept[0].clone());
+        assert_eq!(roles_of(&pool), before, "set_metadata_for_test");
+        pool.record_binding(2, 1, 3);
+        assert_eq!(roles_of(&pool), before, "record_binding");
+        pool.restart_activity_clock();
+        assert_eq!(roles_of(&pool), before, "restart_activity_clock");
+        let evicted = pool.enforce_budget(0, 9).evicted_count;
+        assert!(evicted > 0, "the budget must evict for the check to bite");
+        assert_eq!(roles_of(&pool), before, "enforce_budget");
+    }
+
+    #[test]
+    fn a_reserved_leading_slot_is_vacant_not_loaded() {
+        let mut pool = CutPool::new(4, 1, 1, 2);
+        pool.add_cut(NodeId(0), 0, 0, 1.0, &[1.0]);
+        pool.add_cut(NodeId(0), 1, 0, 2.0, &[1.0]);
+
+        assert_eq!(pool.role(0), unscored(SlotOrigin::Vacant));
+        assert_eq!(pool.role(1), unscored(SlotOrigin::Vacant));
+        assert_eq!(pool.role(2), unscored(SlotOrigin::Generated));
+        assert_eq!(pool.role(3), unscored(SlotOrigin::Generated));
+        assert!((0..4).all(|slot| !pool.is_prefix_slot(slot)));
+    }
+
     #[test]
     fn new_with_warm_start_zero_max_iterations_yields_fixed_capacity() {
         use novomodelo_io::OwnedPolicyCutRecord;
@@ -1964,6 +2063,89 @@ mod tests {
             let second = pool.enforce_budget(budget, CURRENT_ITERATION);
             prop_assert_eq!(second.evicted_count, 0);
             prop_assert_eq!(active_slots(&pool), after);
+        }
+    }
+
+    type IterationDraw = (Vec<u32>, usize);
+
+    /// A stride and, per iteration, the pass indices inserted in a drawn order and
+    /// the extra slots to grow by before inserting.
+    fn insertion_plan() -> impl Strategy<Value = (u32, Vec<IterationDraw>)> {
+        (1..=4u32).prop_flat_map(|stride| {
+            let iteration = (
+                prop::sample::subsequence((0..stride).collect::<Vec<_>>(), 0..=stride as usize)
+                    .prop_shuffle(),
+                0..=2 * stride as usize,
+            );
+            (Just(stride), prop::collection::vec(iteration, 1..=8))
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            rng_seed: RngSeed::Fixed(42),
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn generated_slots_follow_generation_order_across_growth(
+            (stride, plan) in insertion_plan(),
+        ) {
+            let mut pool = CutPool::new(stride as usize, 1, stride, 0);
+            let mut written = BTreeSet::new();
+            let mut marker = 0.0;
+            for (iteration, (passes, extra)) in plan.iter().enumerate() {
+                let iteration = iteration as u64;
+                let needed = (iteration as usize + 1) * stride as usize;
+                if pool.capacity < needed || *extra > 0 {
+                    let snapshot = |pool: &CutPool| -> Vec<(SlotRole, f64, Vec<f64>)> {
+                        (0..pool.capacity)
+                            .map(|slot| {
+                                (pool.role(slot), pool.intercept(slot), pool.coefficient_row(slot).to_vec())
+                            })
+                            .collect()
+                    };
+                    let before = snapshot(&pool);
+                    pool.grow(pool.capacity.max(needed) + extra);
+                    let after = snapshot(&pool);
+                    prop_assert_eq!(&after[..before.len()], &before[..]);
+                    prop_assert!(after[before.len()..].iter().all(|(role, ..)| role.origin == SlotOrigin::Vacant));
+                }
+                for &pass in passes {
+                    marker += 1.0;
+                    pool.add_cut(NodeId(0), iteration, pass, marker, &[-marker]);
+                    written.insert((iteration, pass));
+                }
+            }
+
+            let mut keys = Vec::new();
+            for slot in 0..pool.populated() {
+                let meta = pool.metadata(slot);
+                let key = (meta.iteration_generated, meta.forward_pass_index);
+                match pool.role(slot).origin {
+                    SlotOrigin::Generated => {
+                        prop_assert!(written.contains(&key));
+                        keys.push((slot, key));
+                    }
+                    origin => prop_assert_eq!(origin, SlotOrigin::Vacant),
+                }
+            }
+            prop_assert_eq!(keys.len(), written.len());
+            prop_assert!(keys.windows(2).all(|pair| pair[0].1 < pair[1].1));
+
+            let mut above: Option<usize> = None;
+            for iteration in 0..plan.len() as u64 {
+                let slots: Vec<usize> = keys
+                    .iter()
+                    .filter(|(_, (generated_in, _))| *generated_in == iteration)
+                    .map(|&(slot, _)| slot)
+                    .collect();
+                if let (Some(&lowest), Some(floor)) = (slots.iter().min(), above) {
+                    prop_assert!(lowest > floor);
+                }
+                above = slots.iter().max().copied().or(above);
+            }
         }
     }
 
@@ -2421,6 +2603,15 @@ mod tests {
         assert!(pool.is_active(4));
         assert_eq!(pool.intercept(4), 9.0);
         assert_eq!(pool.coefficient_row(4), &[7.0]);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "is vacant")]
+    fn activating_a_vacant_slot_panics_in_debug() {
+        let mut pool = CutPool::new(4, 1, 2, 0);
+        pool.add_cut(NodeId(0), 1, 0, 1.0, &[1.0]);
+        pool.set_active(1, true);
     }
 
     #[cfg(debug_assertions)]

@@ -10,7 +10,7 @@
 //! # Algorithm semantics
 //!
 //! The value-based variants share one value-evaluation kernel,
-//! [`CutSelectionStrategy::select_for_stage`]: it evaluates ALL populated cuts
+//! [`CutSelectionStrategy::select_for_stage`]: it evaluates ALL written cuts
 //! (active AND inactive) at each state of the retained window of trial states
 //! (`VisitedStatesArchive::trim_to_window`) and applies the method's rule:
 //!
@@ -20,7 +20,7 @@
 //!   within `tie_tolerance` of the maximum; the overall selected set is the
 //!   union across all visited states (Guigues & Bandarra 2019).
 //! - **Dominated**: same max-survival logic as Level1 using `threshold` as the
-//!   tolerance, applied across ALL populated cuts.
+//!   tolerance, applied across ALL written cuts.
 //!
 //! # Usage
 //!
@@ -44,7 +44,7 @@
 
 use rayon::prelude::*;
 
-use crate::cut::CutPool;
+use crate::cut::{CutPool, SlotOrigin};
 use crate::gemm::gemm_block;
 use crate::setup::NodeId;
 
@@ -325,7 +325,6 @@ impl CutSelectionStrategy {
 
         let populated = pool.populated();
         let n_state = pool.state_dimension;
-        let warm_start = pool.warm_start_count as usize;
 
         // Release-active stride/count guard (never debug_assert; the misread
         // lands in release). The count check — not the exact-multiple test alone —
@@ -352,7 +351,10 @@ impl CutSelectionStrategy {
         }
 
         let eligible: Vec<bool> = (0..populated)
-            .map(|k| k >= warm_start && pool.metadata(k).iteration_generated < current_iteration)
+            .map(|k| {
+                pool.role(k).origin == SlotOrigin::Generated
+                    && pool.metadata(k).iteration_generated < current_iteration
+            })
             .collect();
         let n_eligible = eligible.iter().filter(|&&e| e).count();
         if n_eligible < 2 {
@@ -399,6 +401,11 @@ impl CutSelectionStrategy {
                         }
                     }
 
+                    // A vacant slot holds no cut: its zero must not enter the maximum.
+                    for k in (0..populated).filter(|&k| pool.role(k).origin == SlotOrigin::Vacant) {
+                        v_block_active[k * m_len..(k + 1) * m_len].fill(f64::NEG_INFINITY);
+                    }
+
                     for col in 0..m_len {
                         apply_column_rule(
                             self,
@@ -406,7 +413,6 @@ impl CutSelectionStrategy {
                             populated,
                             m_len,
                             col,
-                            warm_start,
                             &eligible,
                             &mut bitmap_local,
                         );
@@ -429,7 +435,7 @@ impl CutSelectionStrategy {
         let mut deactivations: Vec<u32> = Vec::new();
         let mut reactivations: Vec<u32> = Vec::new();
         #[allow(clippy::cast_possible_truncation)]
-        for k in warm_start..populated {
+        for k in 0..populated {
             if eligible[k] {
                 let currently_active = pool.is_active(k);
                 if is_selected[k] && !currently_active {
@@ -451,7 +457,7 @@ impl CutSelectionStrategy {
 /// Mark selected slots for column `col` of the row-major
 /// `populated × m_len` `v_block` panel into `bitmap`.
 ///
-/// The per-column max is computed over ALL populated cuts (active and inactive).
+/// The per-column max is computed over ALL written cuts (active and inactive).
 /// Level1/Dominated mark every eligible cut within `tie_tolerance` of the max;
 /// Lml1 marks only the oldest such cut. The ascending slot walk makes Lml1's
 /// "oldest at max" deterministic (D5).
@@ -465,7 +471,6 @@ fn apply_column_rule(
     populated: usize,
     m_len: usize,
     col: usize,
-    warm_start: usize,
     eligible: &[bool],
     bitmap: &mut [bool],
 ) {
@@ -484,7 +489,7 @@ fn apply_column_rule(
             ..
         } => {
             let cutoff = max_val - tie_tolerance;
-            for k in warm_start..populated {
+            for k in 0..populated {
                 if eligible[k] && v_block[k * m_len + col] >= cutoff {
                     bitmap[k] = true;
                 }
@@ -492,7 +497,7 @@ fn apply_column_rule(
         }
         CutSelectionStrategy::Lml1 { tie_tolerance, .. } => {
             let cutoff = max_val - tie_tolerance;
-            for k in warm_start..populated {
+            for k in 0..populated {
                 if eligible[k] && v_block[k * m_len + col] >= cutoff {
                     bitmap[k] = true;
                     break;
@@ -1992,6 +1997,26 @@ mod tests {
         // Values at 1: 0, 3, 3; at 3: 0, 1, 7.
         let result = strategy.select_for_stage(&pool, &[1.0, 3.0], 2, 5, 0);
         assert_eq!(result.updates, Vec::<u32>::new());
+        assert_eq!(result.reactivations, Vec::<u32>::new());
+    }
+
+    /// derived: the cuts at `(iteration, pass)` `(0, 0)`, `(1, 0)`, `(1, 1)` of a
+    /// stride-2 pool sit at slots 0, 2 and 3, so slot 1 is vacant. At the state 0
+    /// the cut values are -5, -1 and -3: the maximum is -1 at slot 2, so slots 0
+    /// and 3 are deactivated and the vacant slot's zero is neither the maximum nor
+    /// reactivated.
+    #[test]
+    fn a_vacant_slot_takes_no_part_in_selection() {
+        let strategy = CutSelectionStrategy::Dominated {
+            threshold: 0.0,
+            check_frequency: 1,
+        };
+        let mut pool = CutPool::new(4, 1, 2, 0);
+        pool.add_cut(NodeId(0), 0, 0, -5.0, &[0.0]);
+        pool.add_cut(NodeId(0), 1, 0, -1.0, &[0.0]);
+        pool.add_cut(NodeId(0), 1, 1, -3.0, &[0.0]);
+        let result = strategy.select_for_stage(&pool, &[0.0], 1, 5, 0);
+        assert_eq!(result.updates, vec![0, 3]);
         assert_eq!(result.reactivations, Vec::<u32>::new());
     }
 

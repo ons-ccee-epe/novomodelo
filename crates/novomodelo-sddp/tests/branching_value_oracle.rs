@@ -69,7 +69,9 @@ mod common;
 use novomodelo_io::config::BackwardScheduler;
 use novomodelo_sddp::CutPool;
 use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::cut::SlotOrigin;
 use novomodelo_sddp::hydro_models::ResolvedProductionModel;
+use novomodelo_sddp::policy_export::build_stage_cut_records;
 use novomodelo_sddp::setup::{NodePos, OpeningSource, StageIdx};
 use novomodelo_sddp::test_support::{
     dcs_k_fan_setup, extensive_form_optimum, external_distinct_fan_setup,
@@ -348,6 +350,43 @@ fn dcs_arm_generated_fan_value_matches_oracle() {
         "DCS-arm final_lb {lb} != extensive-form optimum {optimum} (gap {})",
         lb - optimum
     );
+}
+
+// ── Sampled fan checkpoint ───────────────────────────────────────────────────
+
+/// A node visited fewer times than its pool's visit stride leaves the tail of its
+/// iteration block unwritten; the checkpoint holds one record per written slot.
+#[test]
+fn sampled_fan_checkpoint_holds_no_never_written_slot() {
+    let mut fixture = k_fan_setup(8, 6, 3);
+    let _ = train_bounds(&mut fixture.setup);
+    let pools = &fixture.setup.fcf.pools;
+
+    let is_vacant = |pool: &CutPool, slot: usize| pool.role(slot).origin == SlotOrigin::Vacant;
+    assert!(
+        pools
+            .iter()
+            .any(|pool| (0..pool.populated()).any(|slot| is_vacant(pool, slot))),
+        "power: some pool must hold a vacant slot below its slot bound"
+    );
+
+    let records = build_stage_cut_records(&fixture.setup.fcf);
+    for (pool_id, (pool, records)) in pools.iter().zip(&records).enumerate() {
+        let written: Vec<u32> = (0..pool.populated())
+            .filter(|&slot| !is_vacant(pool, slot))
+            .map(|slot| slot as u32)
+            .collect();
+        let exported: Vec<u32> = records.iter().map(|record| record.slot_index).collect();
+        assert_eq!(
+            exported, written,
+            "pool {pool_id}: one record per written slot"
+        );
+        assert_eq!(
+            records.len(),
+            pool.generated(),
+            "pool {pool_id}: one record per cut inserted"
+        );
+    }
 }
 
 // ── All-External fan train-smoke gates ───────────────────────────────────────

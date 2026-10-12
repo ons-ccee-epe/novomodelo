@@ -542,12 +542,24 @@ basis's slot-identity match. Each cut record also carries its generating
 the cut lands in — the append-only, slot-identity contract is independent of
 `node_id`.
 
-**A loaded cut keeps its real generating iteration; the loaded prefix is
-positional.** A cut loaded from a checkpoint (`warm_start` or `resume`) is stored
+Among generated slots, slot order refines generation order, also after growth,
+while every `forward_pass_index` is below the pool's `visit_stride`:
+`(iteration_generated, forward_pass_index)` increases with the slot, and a slot
+written in an iteration lies above every slot written in an earlier one, so the
+slot tie-break of the budget's eviction key is a generation-order tie-break.
+Swapping the roles of the iteration and the pass in `slot_index` is the
+wrong-but-compiling alternative: a later iteration's cut then lands below an
+earlier one's. Pinned by `generated_slots_follow_generation_order_across_growth`
+(`cut/pool.rs`).
+
+**A loaded cut keeps its real generating iteration; the loaded prefix is a
+stored role.** A cut loaded from a checkpoint (`warm_start` or `resume`) is stored
 with the `iteration` its record carries, in `CutMetadata.iteration_generated`.
-Whether a slot held a cut before the run started is answered by position alone —
-`CutPool::is_prefix_slot` (`slot < warm_start_count`) — never by a value of
-`iteration_generated`. Under `warm_start` the run's iteration counter restarts
+Whether a slot held a cut before the run started is the slot's role:
+`CutPool::is_prefix_slot` reads `SlotRole::origin`, which the two loading
+constructors (`CutPool::new_with_warm_start`, `CutPool::from_deserialized`) write
+as `Prefix` for each record's slot and `add_cut` writes as `Generated`. It is
+never a value of `iteration_generated`. Under `warm_start` the run's iteration counter restarts
 at 1, so a loaded cut's generating iteration can equal the current one; every
 reader that separates a loaded cut from a cut of this run tests the predicate
 before the iteration. `cut_id` is a per-run label,
@@ -562,15 +574,21 @@ a corrupted iteration and, with two or more forward passes, an overflowing
 `cut_id`. Comparing `iteration_generated` to the current iteration without the
 predicate is the second: a loaded cut whose generating iteration equals the
 current one is taken for a cut of this iteration, appended to the LP a second
-time as a delta row and packed for the cut exchange as a new cut.
-Read: `cut/pool.rs` (`CutPool::new_with_warm_start`, `is_prefix_slot`,
-`active_delta_cuts`, `enforce_budget`), `cut/cut_sync.rs` (`pack_pool_into`),
+time as a delta row and packed for the cut exchange as a new cut. Answering by
+position (`slot < warm_start_count`) is the third: a pool built by `CutPool::new`
+with a non-zero `warm_start_count` reserves leading slots that no record fills,
+and the position test calls each of them a loaded cut.
+Read: `cut/pool.rs` (`SlotRole`, `CutPool::new_with_warm_start`,
+`CutPool::from_deserialized`, `is_prefix_slot`, `active_delta_cuts`,
+`enforce_budget`), `cut/cut_sync.rs` (`pack_pool_into`),
 `cut/dcs.rs` (`score_violated_candidates`, `build_initial_resident_set`),
 `policy/policy_export.rs` (`build_stage_cut_records`). Pinned by
 `exported_loaded_cut_keeps_its_generating_iteration` (`policy/policy_export.rs`:
-a loaded cut is exported at its record's iteration) and
+a loaded cut is exported at its record's iteration),
 `a_loaded_cut_sharing_the_current_iteration_number_is_not_a_delta_cut`
-(`cut/pool.rs`), with one pin per other reader:
+(`cut/pool.rs`) and `a_reserved_leading_slot_is_vacant_not_loaded` (`cut/pool.rs`:
+a reserved leading slot is vacant and no slot of the pool is a loaded cut), with
+one pin per other reader:
 `a_loaded_cut_is_never_packed_as_a_new_cut` (`cut/cut_sync.rs`),
 `enforce_budget_never_evicts_a_loaded_cut`
 (`cut/pool.rs`), `k1_window_keeps_warm_start_cuts` and
@@ -633,6 +651,44 @@ iteration, under a warm start it is 0),
 (`cut/dcs.rs`: the window and its saturation under the stored clock) and
 `a_loaded_slot_is_not_seeded_as_a_current_iteration_cut` (`cut/dcs.rs`: the
 guard).
+
+**A never-written slot is not a cut.** A slot holds a cut only once `add_cut` or a
+loading constructor has written it; until then its role origin is `Vacant` and its
+intercept and coefficients are zero. A vacant slot lies below
+`CutPool::populated()` when a pool's slot block for an iteration is not filled:
+on a sampled branching graph the pool's `visit_stride` is a statistical floor
+(`NodeGraph::pool_cut_stride`), so a node visited fewer times than its stride
+leaves the tail of its block unwritten and the next iteration's block starts above
+it; and a `CutPool::new` pool with a non-zero `warm_start_count` leaves its
+leading slots unwritten. `populated()` and `cuts_in_lp()` are one past the highest
+written slot: they bound slot-indexed reads and do not count cuts, which
+`generated()` does. Two readers skip a vacant slot. The selection kernel
+(`CutSelectionStrategy::select_for_stage`) makes a slot eligible only when its
+origin is `Generated` and its generating iteration is earlier than the current
+one, and overwrites a vacant slot's values with `f64::NEG_INFINITY` after the
+intercept add, so its zero is never a per-state maximum. The checkpoint writer
+(`build_stage_cut_records`) writes no record for it, and `build_stage_cuts_payloads`
+writes `populated_count` as the number of records. A debug build refuses to
+activate a vacant slot (`CutPool::set_active`).
+
+Treating `populated()` as a cut count is the wrong-but-compiling alternative: the
+vacant zero then competes in the maximum. It is reported as a reactivation when it
+lies within the tolerance of the maximum, it deactivates every cut more than the
+tolerance below it when it exceeds them, and the checkpoint exports it as an inactive zero record, which a
+load reads back as a loaded cut.
+Read: `cut/pool.rs` (`SlotRole`, `CutPool::role`, `CutPool::populated`),
+`cut/cut_selection.rs` (`select_for_stage`), `policy/policy_export.rs`
+(`build_stage_cut_records`, `build_stage_cuts_payloads`). Pinned by
+`a_slot_role_is_fixed_when_the_slot_is_written` and
+`a_reserved_leading_slot_is_vacant_not_loaded` (`cut/pool.rs`: a role is written
+with its slot and by nothing else), `a_vacant_slot_takes_no_part_in_selection`
+(`cut/cut_selection.rs`: the vacant zero is neither the maximum nor a
+reactivation), `a_never_written_slot_is_not_exported` (`policy/policy_export.rs`:
+records at slots 0, 2 and 3 and a `populated_count` of 3) and
+`sampled_fan_checkpoint_holds_no_never_written_slot`
+(`tests/branching_value_oracle.rs`: on a trained sampled fan, one record per
+written slot), with `activating_a_vacant_slot_panics_in_debug` (`cut/pool.rs`) for
+the debug assertion.
 
 **Basis matches by slot, never by count or column.** Warm-start basis
 reconstruction matches stored cut rows to current LP rows by **`CutPool` slot

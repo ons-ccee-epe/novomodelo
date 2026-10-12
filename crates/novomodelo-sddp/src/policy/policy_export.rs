@@ -23,7 +23,7 @@ use novomodelo_io::output::policy::{
 };
 
 use crate::SddpError;
-use crate::cut::FutureCostFunction;
+use crate::cut::{FutureCostFunction, SlotOrigin};
 use crate::lp::builder::delivery_ring::DeliveryRing;
 use crate::lp::indexer::{
     AnticipatedPlants, CutSlot, CutStateProjection, StateRegion, StateSpace,
@@ -422,7 +422,8 @@ fn splice_reserved_state_block(
     Ok((new_manifest, new_coefficients))
 }
 
-/// Build per-stage vectors of **all** populated [`PolicyCutRecord`]s from the FCF pools.
+/// Build per-stage vectors of a [`PolicyCutRecord`] for every written slot of the
+/// FCF pools, in slot order. A vacant slot below a pool's slot bound has no record.
 ///
 /// Both active and inactive cuts are included so the checkpoint preserves the
 /// full training history. Use [`build_active_indices`] for the active subset.
@@ -435,6 +436,7 @@ pub fn build_stage_cut_records(fcf: &FutureCostFunction) -> Vec<Vec<PolicyCutRec
         .iter()
         .map(|pool| {
             (0..pool.populated())
+                .filter(|&i| pool.role(i).origin != SlotOrigin::Vacant)
                 .map(|i| {
                     let meta = pool.metadata(i);
                     PolicyCutRecord {
@@ -594,7 +596,7 @@ pub fn build_stage_cuts_payloads<'a>(
                 warm_start_count: pool_data.warm_start_count,
                 cuts: &stage_records[pool],
                 active_cut_indices: &stage_active_indices[pool],
-                populated_count: pool_data.populated() as u32,
+                populated_count: stage_records[pool].len() as u32,
                 entity_manifest: &stage_manifests[pool],
                 cost_scale_factor,
                 node_id: sole_pool_owner_node_id(node_graph, pool),
@@ -2981,6 +2983,38 @@ mod tests {
 
         assert_eq!(records[0][0].iteration, 5);
         assert_eq!(records[0][0].cut_id, 11);
+    }
+
+    #[test]
+    fn a_never_written_slot_is_not_exported() {
+        use super::{build_active_indices, build_stage_cut_records, build_stage_cuts_payloads};
+        use crate::cut::{CutPool, FutureCostFunction};
+
+        let mut pool = CutPool::new(4, 1, 2, 0);
+        pool.add_cut(NodeId(0), 0, 0, -5.0, &[0.0]);
+        pool.add_cut(NodeId(0), 1, 0, -1.0, &[0.0]);
+        pool.add_cut(NodeId(0), 1, 1, -3.0, &[0.0]);
+        let mut fcf = FutureCostFunction::new(1, 1, 2, 4, &[0]);
+        fcf.pools[0] = pool;
+        let node_graph = chain_node_graph(1);
+
+        let stage_records = build_stage_cut_records(&fcf);
+        let stage_active_indices = build_active_indices(&stage_records);
+        let stage_manifests: Vec<Vec<EntitySlot>> = vec![Vec::new()];
+        let payloads = build_stage_cuts_payloads(
+            &fcf,
+            &node_graph,
+            &[0],
+            &[chrono::NaiveDate::from_ymd_opt(2030, 1, 1).unwrap()],
+            1_000_000.0,
+            &stage_records,
+            &stage_active_indices,
+            &stage_manifests,
+        );
+
+        let slots: Vec<u32> = stage_records[0].iter().map(|r| r.slot_index).collect();
+        assert_eq!(slots, vec![0, 2, 3]);
+        assert_eq!(payloads[0].populated_count, 3);
     }
 
     // -- build_stage_cuts_payloads: priced_state_date stamping --
