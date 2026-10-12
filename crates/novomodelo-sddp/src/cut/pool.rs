@@ -1044,13 +1044,14 @@ pub struct BudgetEnforcementResult {
 }
 
 impl CutPool {
-    /// Enforce a hard cap on active cuts per stage, evicting by
+    /// Enforce a hard cap on the active cuts this run generated, evicting by
     /// `(last_active_iter ASC, active_count ASC)` — stalest, least-used first.
     ///
-    /// Cuts generated in `current_iteration` are **never** evicted; if they alone
-    /// exceed `budget`, `active_count()` may remain above it after the call. A
-    /// loaded cut ([`is_prefix_slot`](CutPool::is_prefix_slot)) is always an
-    /// eviction candidate, whatever its generating iteration.
+    /// A loaded cut ([`is_prefix_slot`](CutPool::is_prefix_slot)) neither counts
+    /// toward `budget` nor is evicted. Cuts generated in `current_iteration`
+    /// count but are **never** evicted; if they alone exceed `budget`, the
+    /// generated cuts remain above it after the call. The result's active counts
+    /// cover the whole pool, loaded cuts included.
     ///
     /// # Parameters
     ///
@@ -1074,20 +1075,19 @@ impl CutPool {
             };
         }
 
-        let excess = self.cached_active_count - budget_usize;
-
         self.candidates_buf.clear();
+        let mut generated = 0usize;
         #[allow(clippy::cast_possible_truncation)]
         for (slot, &is_active) in self.active[..self.populated_count].iter().enumerate() {
-            if is_active
-                && (self.is_prefix_slot(slot)
-                    || self.metadata[slot].iteration_generated != current_iteration)
-            {
-                self.candidates_buf.push(slot as u32);
+            if is_active && !self.is_prefix_slot(slot) {
+                generated += 1;
+                if self.metadata[slot].iteration_generated != current_iteration {
+                    self.candidates_buf.push(slot as u32);
+                }
             }
         }
 
-        if self.candidates_buf.is_empty() {
+        if generated <= budget_usize || self.candidates_buf.is_empty() {
             return BudgetEnforcementResult {
                 evicted_count: 0,
                 active_before,
@@ -1095,7 +1095,7 @@ impl CutPool {
             };
         }
 
-        let evict_count = excess.min(self.candidates_buf.len());
+        let evict_count = (generated - budget_usize).min(self.candidates_buf.len());
 
         let key = |&slot: &u32| {
             let meta = &self.metadata[slot as usize];
@@ -1604,20 +1604,6 @@ mod tests {
     }
 
     #[test]
-    fn a_loaded_cut_stays_a_budget_candidate_when_iteration_numbers_collide() {
-        let mut pool = CutPool::new_with_warm_start(1, 1, 4, &[loaded_cut(2)]);
-        pool.set_iteration_base(2);
-        pool.add_cut(NodeId(0), 2, 0, 3.0, &[1.0]);
-        assert_eq!(pool.active_count(), 2);
-
-        let result = pool.enforce_budget(1, 2, 1);
-
-        assert_eq!(result.evicted_count, 1);
-        assert!(!pool.is_active(0), "the loaded cut is the candidate");
-        assert!(pool.is_active(1), "the current-iteration cut stays");
-    }
-
-    #[test]
     fn new_with_warm_start_zero_max_iterations_yields_fixed_capacity() {
         use novomodelo_io::OwnedPolicyCutRecord;
 
@@ -1788,6 +1774,41 @@ mod tests {
         assert_eq!(result.active_before, 3);
         assert_eq!(result.evicted_count, 2);
         assert_eq!(result.active_after, 1);
+    }
+
+    #[test]
+    fn enforce_budget_never_evicts_a_loaded_cut() {
+        let loaded = [loaded_cut(0), loaded_cut(0), loaded_cut(3)];
+        let mut pool = CutPool::new_with_warm_start(1, 1, 4, &loaded);
+        pool.set_iteration_base(1);
+        pool.add_cut(NodeId(0), 1, 0, 3.0, &[1.0]);
+        pool.add_cut(NodeId(0), 2, 0, 3.0, &[1.0]);
+
+        let result = pool.enforce_budget(1, 3, 1);
+
+        assert_eq!(result.evicted_count, 1);
+        assert_eq!(result.active_before, 5);
+        assert_eq!(result.active_after, 4);
+        assert!(
+            (0..3).all(|slot| pool.is_active(slot)),
+            "a loaded cut stays"
+        );
+        assert!(!pool.is_active(3), "the oldest generated cut is evicted");
+        assert!(pool.is_active(4));
+    }
+
+    #[test]
+    fn enforce_budget_does_not_count_loaded_cuts() {
+        let loaded = [loaded_cut(0), loaded_cut(0), loaded_cut(0)];
+        let mut pool = CutPool::new_with_warm_start(1, 1, 4, &loaded);
+        pool.set_iteration_base(1);
+        pool.add_cut(NodeId(0), 1, 0, 3.0, &[1.0]);
+
+        let result = pool.enforce_budget(1, 3, 1);
+
+        assert_eq!(result.evicted_count, 0);
+        assert_eq!(result.active_before, 4);
+        assert_eq!(result.active_after, 4);
     }
 
     // ── active_cuts early-exit tests ─────────────────────────────────────────

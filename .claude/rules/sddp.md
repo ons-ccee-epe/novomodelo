@@ -572,7 +572,7 @@ a loaded cut is exported at its record's iteration) and
 `a_loaded_cut_sharing_the_current_iteration_number_is_not_a_delta_cut`
 (`cut/pool.rs`), with one pin per other reader:
 `a_loaded_cut_is_never_packed_as_a_new_cut` (`cut/cut_sync.rs`),
-`a_loaded_cut_stays_a_budget_candidate_when_iteration_numbers_collide`
+`enforce_budget_never_evicts_a_loaded_cut`
 (`cut/pool.rs`), `k1_window_keeps_warm_start_cuts` and
 `a_loaded_slot_is_not_seeded_as_a_current_iteration_cut` (`cut/dcs.rs`).
 
@@ -595,8 +595,10 @@ regressions in `tests/cut_basis.rs`.
 ### The terminal stage bypasses reconstruction with a 1:1 basis apply
 
 The terminal stage solves against a baked static template whose active-cut set
-is fixed once primed — a leaf never gains or loses a cut — so the template's
-shape never changes across iterations. There the slot-identity reconstruction
+is fixed once primed — a leaf never gains or loses a cut: no backward pass adds
+to a leaf pool, selection scores interior nodes only, and the budget visits
+interior pools only — so the template's shape never changes across iterations.
+There the slot-identity reconstruction
 above is REPLACED by a plain 1:1 basis apply (`run_stage_solve_terminal_static`,
 selected only at the terminal forward solve by `solve_forward_node`'s
 `is_terminal` gate): a node-matching stored basis maps onto the current LP by
@@ -625,7 +627,10 @@ for the interior path), `training/forward/enumerated.rs` (`solve_forward_node`'s
 warm start still invokes `reconstruct_basis`), plus
 `run_stage_solve_terminal_static_cross_node_stored_basis_is_treated_as_cold` and
 `run_stage_solve_terminal_static_shape_mismatch_is_treated_as_cold` (the
-node-tag and shape guards each drop to cold), all in `solve/stage_solve.rs`.
+node-tag and shape guards each drop to cold), all in `solve/stage_solve.rs`, and
+by `budget_caps_only_interior_pools_and_templates_match_their_pools`
+(`training/session/mod.rs`: after the budget runs, every pool's frozen template
+holds exactly its pool's active cuts, the terminal pool's included).
 
 ### A stored basis records its own cut-row count
 
@@ -1069,6 +1074,54 @@ Read: `cut/dcs.rs` (`lazy_solve_preloaded`, `score_violated_candidates`,
 `lazy_solve_is_exact_after_the_round_cap` (`cut/dcs.rs`: 8 at `x = 4`, not 7.8,
 and one cap hit), with `lazy_objective_equals_the_all_cuts_objective` (random
 cuts, caps 0 to 3) and `lazy_solve_terminates_after_the_round_cap`.
+
+## The active-cut budget caps only cuts this run generated in interior pools
+
+`run_cut_management` enforces `max_active_per_stage` every iteration when it is
+set, after selection and before the template refreeze, on the pools of
+`interior_cut_nodes` only. Every non-leaf node owns its own pool and all leaves
+share one, so those pools are distinct from each other, from the root's pool and
+from the shared leaf pool. In such a pool `CutPool::enforce_budget` counts and
+evicts the active non-prefix cuts only: a loaded cut (`CutPool::is_prefix_slot`)
+neither counts toward the cap nor is evicted, and a cut of the current iteration
+counts and is never evicted. A pool's active count can therefore exceed the
+budget by its loaded cuts. Under `resume` every reloaded cut is in the prefix, so
+the cap counts only the cuts generated after the resume.
+
+The root pool is exempt because no solve records binding for it, so its cuts
+rank by generation age alone, and the lower-bound LP appends only the cuts active
+when it runs, so a loaded root cut evicted before the first lower-bound solve
+never enters it. The terminal
+pool is exempt because its template is baked once and the per-iteration refreeze
+skips it, so an eviction would leave the bitmap disagreeing with the LP the
+terminal node solves, and a simulation that builds its own templates would solve
+another LP.
+
+The wrong-but-compiling alternatives:
+
+- enforcing on every pool: a budget below the boundary cut count deactivates
+  boundary cuts the baked terminal LP keeps, so a basis has fewer rows than that
+  LP and training aborts with `BasisRowCountMismatch`;
+- counting prefix cuts toward the cap without evicting them: once the prefix
+  alone reaches the cap, every generated cut older than the current iteration is
+  evicted at each iteration.
+
+Read: `training/session/mod.rs` (`run_cut_management`, `interior_cut_nodes`,
+`freeze_active_cuts_into_templates`), `cut/pool.rs` (`CutPool::enforce_budget`,
+`is_prefix_slot`), `setup/node_graph.rs` (the `node → pool` assignment),
+`training/backward_pass_state.rs` (`sync_stage_metadata`, the only caller of
+`record_binding`), `training/lower_bound.rs` (`lb_init_rank0`),
+`simulation/state.rs` (`refreeze_templates_if_needed`). Pinned by
+`enforce_budget_never_evicts_a_loaded_cut` (a loaded cut stays, including one
+whose generating iteration equals the current one) and
+`enforce_budget_does_not_count_loaded_cuts` (loaded cuts do not count toward the
+cap), both in `cut/pool.rs`;
+`budget_caps_only_interior_pools_and_templates_match_their_pools`
+(`training/session/mod.rs`: the root and terminal pools keep their cuts and
+every frozen template matches its pool); and
+`budget_below_the_boundary_cut_count_leaves_the_boundary_run_unchanged`
+(`tests/cut_basis.rs`: a budget below the boundary cut count trains without a
+basis rejection and leaves the run unchanged).
 
 ## Terminal boundary FCF is booked in the reported total cost
 

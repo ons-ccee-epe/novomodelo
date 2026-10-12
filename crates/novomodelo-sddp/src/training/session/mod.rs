@@ -1118,12 +1118,11 @@ where
                 SddpError::Validation("training session: stage 0 carries no alive node".to_string())
             })?;
             let root_pool = node_graph.nodes[root_node].pool_id;
+            let budget_set = self.config.cut_management.budget.is_some();
 
             // Selection scores interior cut-generating nodes only, each at the
             // states archived for that node; terminal leaves gain no cuts. The
-            // root pool is recorded here and never scored. The lower-bound LP
-            // only appends rows (`append_new_cuts_to_lp`), so the lower bound
-            // stays non-decreasing even when the budget below evicts a root cut.
+            // root pool is recorded here and never scored.
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             {
                 let root_cut_pool = &self.fcf.pools[root_pool];
@@ -1137,8 +1136,8 @@ where
                     rows_reactivated: 0,
                     rows_active_after: root_active,
                     selection_time_ms: 0.0,
-                    budget_evicted: None,
-                    active_after_budget: None,
+                    budget_evicted: budget_set.then_some(0),
+                    active_after_budget: budget_set.then_some(root_active),
                     rows_in_lp: root_cut_pool.cuts_in_lp() as u32,
                 });
             }
@@ -1278,11 +1277,10 @@ where
         if let Some(b) = self.config.cut_management.budget {
             let budget_start = Instant::now();
             let mut total_evicted = 0u32;
-            // Budget is a per-POOL cap: enforce over every pool, never
-            // `nodes[stage].pool_id` (a stage-as-node-position read that misses
-            // sibling pools on a branching graph). On a chain `pool_id == stage`.
-            for pool_id in 0..self.fcf.pools.len() {
-                #[allow(clippy::cast_possible_truncation)]
+            // Interior pools only; the root and terminal pools are exempt
+            // (`budget_caps_only_interior_pools_and_templates_match_their_pools`).
+            for &node_pos in &self.interior_cut_nodes {
+                let pool_id = self.training_ctx.node_graph.nodes[node_pos].pool_id;
                 let result = self.fcf.pools[pool_id].enforce_budget(
                     b,
                     iteration,
@@ -1310,7 +1308,7 @@ where
                 TrainingEvent::PolicyBudgetEnforcementComplete {
                     iteration,
                     rows_evicted: total_evicted,
-                    stages_processed: self.training_ctx.horizon.num_stages() as u32,
+                    stages_processed: self.interior_cut_nodes.len() as u32,
                     enforcement_time_ms,
                 },
             );
@@ -1505,7 +1503,7 @@ fn committed_lower_bound_history(
 /// [`TrainingSession::run_cut_management`] emits `per_stage`: the root pool's
 /// record first (index 0), then each interior cut-generating node's pool in
 /// canonical order (`interior_nodes`). The shared leaf pool (no selection
-/// record) stays `None`. Budget enforcement iterates every pool but must
+/// record) stays `None`. Budget enforcement iterates the interior pools and must
 /// annotate each pool's record through THIS map, never by pool id used as a
 /// `per_stage` index — on a branching graph whose root is not the smallest-id
 /// node the two differ, so eviction stats would land on a sibling's record. On
@@ -2200,6 +2198,90 @@ mod tests {
             non_terminal_after_iteration.num_rows, non_terminal_after_priming.num_rows,
             "non-terminal pool must be re-baked to include the newly added cut"
         );
+    }
+
+    #[test]
+    fn budget_caps_only_interior_pools_and_templates_match_their_pools() {
+        let n_stages = 3;
+        let state = test_support::state_layout(1, 0);
+        let templates = vec![minimal_template(state.n_state); n_stages];
+        let initial_state = vec![0.0_f64; state.n_state];
+        let stochastic = make_stochastic_context(n_stages, 1);
+        let stages = make_stages(n_stages);
+        let horizon = HorizonMode::Finite {
+            num_stages: n_stages,
+        };
+        let mut fcf = make_fcf(n_stages, state.n_state, 1, 10);
+        for pool in &mut fcf.pools[..2] {
+            for iteration in 1..=3 {
+                pool.add_cut(NodeId(0), iteration, 0, 1.0, &[1.0]);
+            }
+        }
+        let boundary: Vec<OwnedPolicyCutRecord> = (0..3)
+            .map(|slot_index| OwnedPolicyCutRecord {
+                cut_id: u64::from(slot_index),
+                slot_index,
+                iteration: 0,
+                forward_pass_index: 0,
+                intercept: 1.0,
+                coefficients: vec![1.0],
+                is_active: true,
+            })
+            .collect();
+        fcf.pools[2] = CutPool::new_with_warm_start(1, 1, 0, &boundary);
+
+        let mut config = make_config(1, 10, 1, n_stages);
+        config.cut_management.budget = Some(1);
+        let mut solver = MockSolver::with_fixed(100.0);
+        let comm = StubComm;
+        let block_counts = vec![1usize; n_stages];
+        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let geometry = equipment_free_geometry(&block_counts);
+        let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
+        let stage_ctx = fixture.ctx();
+        let study_dims = test_support::study_dims();
+        let cut_state_layouts = test_support::all_enabled_cut_state_layouts(&state, n_stages);
+        let node_graph_fixture = test_support::chain_node_graph(&stochastic);
+        let training_ctx = make_training_ctx(
+            &horizon,
+            &study_dims,
+            &state,
+            &cut_state_layouts,
+            &stochastic,
+            &initial_state,
+            &stages,
+            &node_graph_fixture,
+        );
+        let mut session = TrainingSession::new(
+            &mut solver,
+            config,
+            &mut fcf,
+            &stage_ctx,
+            &training_ctx,
+            &comm,
+            || Ok(MockSolver::with_fixed(100.0)),
+            SolverProfiles::default(),
+        )
+        .unwrap();
+
+        session.prime_frozen_templates();
+        session.run_cut_management(4).unwrap();
+
+        let pools = &session.fcf.pools;
+        let active: Vec<usize> = pools.iter().map(CutPool::active_count).collect();
+        assert_eq!(active, vec![3, 1, 3], "root and terminal pools are exempt");
+        let survivors: Vec<u64> = pools[1]
+            .active_cuts()
+            .map(|(slot, _, _)| pools[1].metadata(slot).iteration_generated)
+            .collect();
+        assert_eq!(survivors, vec![3], "the freshest interior cut survives");
+        for (pool_id, pool) in pools.iter().enumerate() {
+            assert_eq!(
+                session.scratch.frozen_templates[pool_id].num_rows - templates[0].num_rows,
+                pool.active_count(),
+                "pool {pool_id}: the template must hold exactly the pool's active cuts"
+            );
+        }
     }
 
     // ── Test: training_session_finalize_emits_training_finished ───────────

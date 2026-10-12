@@ -28,17 +28,21 @@ mod boundary_cuts {
     //! bound must not degrade versus the same study without them.
 
     use std::path::Path;
+    use std::sync::mpsc;
 
+    use novomodelo_core::TrainingEvent;
     use novomodelo_core::scenario::ScenarioSource;
     use novomodelo_io::STAGE_CUTS_PRICED_STATE_DATE_SENTINEL;
     use novomodelo_io::config::StoppingRuleConfig;
     use novomodelo_io::output::policy::{read_policy_checkpoint, write_policy_checkpoint};
+    use novomodelo_sddp::setup::StageIdx;
     use novomodelo_sddp::{
         StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
     };
     use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
+    use super::common::selection_fingerprint::SelectionFingerprint;
 
     fn d01_case_dir() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -260,6 +264,125 @@ mod boundary_cuts {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), dates.len());
+    }
+
+    /// Trains a d01 consumer holding the boundary cuts of a source run, once
+    /// under a budget below the boundary cut count and once without a budget.
+    ///
+    /// derived: the budget evicts no row, because d01 has two stages and so no
+    /// interior pool exists: the cap has no pool to act on.
+    ///
+    /// derived: the cuts, provenance and bounds of the budget run equal those of
+    /// the run without a budget, for the same reason.
+    #[test]
+    fn budget_below_the_boundary_cut_count_leaves_the_boundary_run_unchanged() {
+        const ITERATIONS: u32 = 5;
+        const BUDGET: u32 = 2;
+
+        let case_dir = d01_case_dir();
+        let mut config =
+            novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config");
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: ITERATIONS,
+        }]);
+        let comm = StubComm;
+
+        let (mut source, _) = build_setup(&case_dir, &config);
+        let mut source_solver = ActiveSolver::new().expect("solver");
+        let source_outcome = source
+            .train(&mut source_solver, &comm, 1, ActiveSolver::new, None, None)
+            .expect("train source");
+        assert!(source_outcome.error.is_none());
+        let tmpdir = tempfile::tempdir().expect("tempdir");
+        let source_policy_dir = tmpdir.path().join("source_policy");
+        write_test_checkpoint(&source_policy_dir, &source, &source_outcome.result, 42);
+        let num_stages = source.fcf.pools.len();
+        let boundary_date = ascending_stage_end_dates(num_stages)[num_stages - 2];
+
+        let train_consumer = |budget: Option<u32>| {
+            let mut config = config.clone();
+            config.training.cut_selection.max_active_per_stage = budget;
+            let (mut setup, system) = build_setup(&case_dir, &config);
+            let records =
+                novomodelo_sddp::load_boundary_cuts(&novomodelo_sddp::BoundaryLoadRequest::new(
+                    &source_policy_dir,
+                    boundary_date,
+                    setup.fcf.state_dimension as u32,
+                    &setup.build_terminal_entity_manifest(&system),
+                    1_000_000.0,
+                ))
+                .expect("load_boundary_cuts");
+            assert!(records.len() > BUDGET as usize);
+            assert!(records.iter().all(|record| record.is_active));
+            novomodelo_sddp::inject_boundary_cuts(&mut setup, &records).unwrap();
+
+            let (tx, rx) = mpsc::channel();
+            let mut solver = ActiveSolver::new().expect("solver");
+            let outcome = setup
+                .train(&mut solver, &comm, 1, ActiveSolver::new, Some(tx), None)
+                .expect("train consumer");
+            assert!(
+                outcome.error.is_none(),
+                "budget {budget:?}: training error: {:?}",
+                outcome.error
+            );
+            assert_eq!(outcome.result.iterations, u64::from(ITERATIONS));
+            let events: Vec<TrainingEvent> = rx.try_iter().collect();
+            (setup, outcome.result, events)
+        };
+        let (capped, capped_result, capped_events) = train_consumer(Some(BUDGET));
+        let (uncapped, uncapped_result, _) = train_consumer(None);
+
+        let budget_evictions: Vec<u32> = capped_events
+            .iter()
+            .filter_map(|event| match event {
+                TrainingEvent::PolicyBudgetEnforcementComplete { rows_evicted, .. } => {
+                    Some(*rows_evicted)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            budget_evictions.len(),
+            ITERATIONS as usize,
+            "the budget must have been enforced every iteration"
+        );
+        let basis_failures: u64 = capped_result
+            .solver_stats_log
+            .iter()
+            .map(|entry| entry.delta.basis_consistency_failures)
+            .sum();
+        let terminal_pool = &capped.fcf.pools[capped
+            .inputs
+            .node_graph
+            .terminal_pool(num_stages)
+            .expect("terminal pool")];
+        let root_pool = &capped.fcf.pools[capped
+            .inputs
+            .node_graph
+            .pool_stage
+            .iter()
+            .position(|&stage| stage == StageIdx(0))
+            .expect("root pool")];
+        let boundary_cuts = terminal_pool.warm_start_count as usize;
+        assert_eq!(
+            terminal_pool.active_count(),
+            boundary_cuts,
+            "the budget deactivated boundary cuts (basis consistency failures: {basis_failures})"
+        );
+        assert!(root_pool.populated() > BUDGET as usize);
+        assert_eq!(root_pool.active_count(), root_pool.populated());
+        assert_eq!(basis_failures, 0);
+        assert_eq!(budget_evictions.iter().sum::<u32>(), 0);
+
+        let capped_fingerprint = SelectionFingerprint::capture(&capped, &capped_result);
+        let uncapped_fingerprint = SelectionFingerprint::capture(&uncapped, &uncapped_result);
+        assert_eq!(capped_fingerprint.cuts, uncapped_fingerprint.cuts);
+        assert_eq!(
+            capped_fingerprint.provenance,
+            uncapped_fingerprint.provenance
+        );
+        assert_eq!(capped_fingerprint.bounds, uncapped_fingerprint.bounds);
     }
 }
 
@@ -968,8 +1091,9 @@ mod basis_reconstruct_churn {
             check_frequency: 1,
         });
 
-        // Budget = 6 = 2 iters × 3 fwd-passes, so eviction first fires after iteration 2.
-        config.training.cut_selection.max_active_per_stage = Some(6);
+        // Budget = 3 = the forward passes of one iteration: at 4 to 6 selection
+        // alone keeps the interior pool under the cap and the budget evicts nothing.
+        config.training.cut_selection.max_active_per_stage = Some(3);
 
         let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         let prepare_result = prepare_stochastic(
