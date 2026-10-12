@@ -346,6 +346,27 @@ fn removed_cut_selection_field_fails_validate() {
         .failure();
 }
 
+/// The `cut_selection config error` prefix pins the path every front end shares.
+#[test]
+fn validate_reports_a_negative_tie_tolerance() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+    config["training"]["cut_selection"] = serde_json::json!({
+        "selection": { "method": "level1", "tie_tolerance": -1.0 }
+    });
+    write_file(dir.path(), "config.json", &config.to_string());
+
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("cut_selection config error"))
+        .stdout(predicate::str::contains("tie_tolerance"));
+}
+
 /// An invalid `simulation.scenario_source` must be rejected by both `validate`
 /// and `run`, carrying the same rule message — the training half of the
 /// config stays valid so the failure is unambiguously the simulation source.

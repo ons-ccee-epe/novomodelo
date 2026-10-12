@@ -520,6 +520,23 @@ fn validate_check_frequency(check_frequency: u32) -> Result<u32, String> {
     Ok(check_frequency)
 }
 
+/// Validate a selection tolerance: finite and `>= 0`, or finite and `> 0` when
+/// `strict`.
+///
+/// # Errors
+///
+/// Returns `Err(String)` naming `key` and the offending value.
+fn validate_tolerance(key: &str, value: f64, strict: bool) -> Result<f64, String> {
+    let in_range = value.is_finite() && if strict { value > 0.0 } else { value >= 0.0 };
+    if !in_range {
+        let bound = if strict { ">" } else { ">=" };
+        return Err(format!(
+            "cut_selection.{key} must be finite and {bound} 0 (got {value})"
+        ));
+    }
+    Ok(value)
+}
+
 /// Parse a [`RowSelectionConfig`] into an optional
 /// [`CutSelectionStrategy`].
 ///
@@ -529,16 +546,23 @@ fn validate_check_frequency(check_frequency: u32) -> Result<u32, String> {
 ///
 /// # Errors
 ///
-/// Returns `Err(String)` when a method's numeric constraint is violated:
-/// `check_frequency = 0` for a periodic method; or, for the dynamic method,
-/// `start_iteration = 0`, `candidate_recency = Some(0)`,
-/// `max_added_per_round = 0`, or `violation_tolerance <= 0`.
+/// Returns `Err(String)` when `row_activity_tolerance` (checked even with no
+/// method) is not finite and `>= 0`, or when a method's numeric constraint is
+/// violated: `check_frequency = 0` or a `tie_tolerance`/`domination_tolerance`
+/// that is not finite and `>= 0` for a periodic method; or, for the dynamic
+/// method, `start_iteration = 0`, `candidate_recency = Some(0)`,
+/// `max_added_per_round = 0`, or a `violation_tolerance` that is not finite
+/// and `> 0`.
 ///
 /// [`SelectionMethod`]: novomodelo_io::config::SelectionMethod
 pub fn parse_cut_selection_config(
     config: &RowSelectionConfig,
 ) -> Result<Option<CutSelectionStrategy>, String> {
     use novomodelo_io::config::SelectionMethod;
+
+    if let Some(tolerance) = config.row_activity_tolerance {
+        validate_tolerance("row_activity_tolerance", tolerance, false)?;
+    }
 
     let Some(selection) = config.selection.as_ref() else {
         return Ok(None);
@@ -550,21 +574,21 @@ pub fn parse_cut_selection_config(
             check_frequency,
         } => Ok(Some(CutSelectionStrategy::Level1 {
             check_frequency: u64::from(validate_check_frequency(check_frequency)?),
-            tie_tolerance,
+            tie_tolerance: validate_tolerance("tie_tolerance", tie_tolerance, false)?,
         })),
         SelectionMethod::Lml1 {
             tie_tolerance,
             check_frequency,
         } => Ok(Some(CutSelectionStrategy::Lml1 {
             check_frequency: u64::from(validate_check_frequency(check_frequency)?),
-            tie_tolerance,
+            tie_tolerance: validate_tolerance("tie_tolerance", tie_tolerance, false)?,
         })),
         SelectionMethod::Domination {
             domination_tolerance,
             check_frequency,
         } => Ok(Some(CutSelectionStrategy::Dominated {
-            threshold: domination_tolerance,
             check_frequency: u64::from(validate_check_frequency(check_frequency)?),
+            threshold: validate_tolerance("domination_tolerance", domination_tolerance, false)?,
         })),
         SelectionMethod::Dynamic {
             start_iteration,
@@ -594,18 +618,11 @@ pub fn parse_cut_selection_config(
                 );
             }
 
-            if violation_tolerance <= 0.0 {
-                return Err(
-                    "cut_selection.violation_tolerance must be > 0 for method='dynamic'"
-                        .to_string(),
-                );
-            }
-
             Ok(Some(CutSelectionStrategy::Dynamic {
                 k1: candidate_recency,
                 k2: seed_window,
                 nadic: max_added_per_round,
-                epsilon_viol: violation_tolerance,
+                epsilon_viol: validate_tolerance("violation_tolerance", violation_tolerance, true)?,
                 start_iteration: u64::from(start_iteration),
             }))
         }
@@ -1435,6 +1452,174 @@ mod tests {
         );
     }
 
+    /// One config per tolerance key, each carrying `value`; `tie_tolerance`
+    /// appears once per method that has it.
+    fn configs_with_tolerance(value: f64) -> Vec<(&'static str, RowSelectionConfig)> {
+        let with_method = |selection| RowSelectionConfig {
+            selection: Some(selection),
+            ..RowSelectionConfig::default()
+        };
+        vec![
+            (
+                "row_activity_tolerance",
+                RowSelectionConfig {
+                    row_activity_tolerance: Some(value),
+                    ..RowSelectionConfig::default()
+                },
+            ),
+            (
+                "tie_tolerance",
+                with_method(SelectionMethod::Level1 {
+                    tie_tolerance: value,
+                    check_frequency: 5,
+                }),
+            ),
+            (
+                "tie_tolerance",
+                with_method(SelectionMethod::Lml1 {
+                    tie_tolerance: value,
+                    check_frequency: 5,
+                }),
+            ),
+            (
+                "domination_tolerance",
+                with_method(SelectionMethod::Domination {
+                    domination_tolerance: value,
+                    check_frequency: 5,
+                }),
+            ),
+            (
+                "violation_tolerance",
+                with_method(SelectionMethod::Dynamic {
+                    start_iteration: 2,
+                    seed_window: 5,
+                    candidate_recency: None,
+                    max_added_per_round: 10,
+                    violation_tolerance: value,
+                }),
+            ),
+        ]
+    }
+
+    /// The rejection message of every config of `configs_with_tolerance(value)`
+    /// that carries `key`.
+    fn rejections(key: &str, value: f64) -> Vec<String> {
+        configs_with_tolerance(value)
+            .into_iter()
+            .filter(|(config_key, _)| *config_key == key)
+            .map(|(_, cfg)| {
+                parse_cut_selection_config(&cfg)
+                    .expect_err(&format!("{key} = {value} must be rejected"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn parse_accepts_the_default_row_selection() {
+        for row_activity_tolerance in [None, Some(0.0)] {
+            let cfg = RowSelectionConfig {
+                row_activity_tolerance,
+                ..RowSelectionConfig::default()
+            };
+            let strategy =
+                parse_cut_selection_config(&cfg).expect("the default row selection must parse");
+            assert!(
+                strategy.is_none(),
+                "no selection method means selection is off: {strategy:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_accepts_a_zero_tolerance_where_zero_is_legal() {
+        for (key, cfg) in configs_with_tolerance(0.0) {
+            if key == "violation_tolerance" {
+                continue;
+            }
+            parse_cut_selection_config(&cfg)
+                .unwrap_or_else(|msg| panic!("{key} = 0 must parse, got: {msg}"));
+        }
+    }
+
+    #[test]
+    fn parse_rejects_a_negative_tie_tolerance() {
+        let messages = rejections("tie_tolerance", -1.0);
+        assert_eq!(
+            messages.len(),
+            2,
+            "level1 and lml1 both carry tie_tolerance"
+        );
+        for msg in messages {
+            assert!(
+                msg.contains("tie_tolerance must be finite and >= 0 (got -1)"),
+                "error must name the key, the rule and the value, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_rejects_a_nan_tie_tolerance() {
+        let messages = rejections("tie_tolerance", f64::NAN);
+        assert_eq!(
+            messages.len(),
+            2,
+            "level1 and lml1 both carry tie_tolerance"
+        );
+        for msg in messages {
+            assert!(
+                msg.contains("tie_tolerance") && msg.contains("(got NaN)"),
+                "error must name the key and the value, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_rejects_a_negative_domination_tolerance() {
+        let messages = rejections("domination_tolerance", -1.0);
+        assert_eq!(messages.len(), 1);
+        assert!(
+            messages[0].contains("domination_tolerance must be finite and >= 0 (got -1)"),
+            "error must name the key, the rule and the value, got: {}",
+            messages[0]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_a_nan_violation_tolerance() {
+        let messages = rejections("violation_tolerance", f64::NAN);
+        assert_eq!(messages.len(), 1);
+        assert!(
+            messages[0].contains("violation_tolerance must be finite and > 0 (got NaN)"),
+            "error must name the key, the rule and the value, got: {}",
+            messages[0]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_a_negative_row_activity_tolerance_without_a_method() {
+        let messages = rejections("row_activity_tolerance", -1.0);
+        assert_eq!(messages.len(), 1);
+        assert!(
+            messages[0].contains("row_activity_tolerance must be finite and >= 0 (got -1)"),
+            "error must name the key, the rule and the value, got: {}",
+            messages[0]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_an_infinite_tolerance_of_every_kind() {
+        for value in [f64::INFINITY, f64::NEG_INFINITY] {
+            for (key, cfg) in configs_with_tolerance(value) {
+                let msg = parse_cut_selection_config(&cfg)
+                    .expect_err(&format!("{key} = {value} must be rejected"));
+                assert!(
+                    msg.contains(key) && msg.contains(&format!("(got {value})")),
+                    "error must name the key and the value, got: {msg}"
+                );
+            }
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Dominated algorithm tests
     // -----------------------------------------------------------------------
@@ -2262,22 +2447,24 @@ mod tests {
     /// A non-positive `violation_tolerance` is rejected for the dynamic method.
     #[test]
     fn parse_dynamic_rejects_nonpositive_violation_tolerance() {
-        let cfg = RowSelectionConfig {
-            selection: Some(SelectionMethod::Dynamic {
-                start_iteration: 2,
-                seed_window: 5,
-                candidate_recency: None,
-                max_added_per_round: 10,
-                violation_tolerance: -1.0,
-            }),
-            ..RowSelectionConfig::default()
-        };
-        let msg = parse_cut_selection_config(&cfg)
-            .expect_err("non-positive violation_tolerance must be rejected for dynamic");
-        assert!(
-            msg.contains("violation_tolerance must be > 0"),
-            "error must mention the violation_tolerance constraint, got: {msg}"
-        );
+        for violation_tolerance in [-1.0, 0.0] {
+            let cfg = RowSelectionConfig {
+                selection: Some(SelectionMethod::Dynamic {
+                    start_iteration: 2,
+                    seed_window: 5,
+                    candidate_recency: None,
+                    max_added_per_round: 10,
+                    violation_tolerance,
+                }),
+                ..RowSelectionConfig::default()
+            };
+            let msg = parse_cut_selection_config(&cfg)
+                .expect_err("non-positive violation_tolerance must be rejected for dynamic");
+            assert!(
+                msg.contains("violation_tolerance must be finite and > 0"),
+                "error must mention the violation_tolerance constraint, got: {msg}"
+            );
+        }
     }
 
     /// `candidate_recency = Some(0)` is rejected for the dynamic method.
