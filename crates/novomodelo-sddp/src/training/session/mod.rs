@@ -1087,10 +1087,7 @@ where
         Ok((backward_result, bwd_solve_time_ms))
     }
 
-    /// Apply cut selection, budget enforcement, bitmap shift, and template freeze.
-    ///
-    /// All operations are O(active cuts) and perform no heap allocation when the
-    /// cut pools have not grown since the previous iteration.
+    /// Run the periodic cut selection, the budget, and the template refreeze.
     ///
     /// # Errors
     ///
@@ -1122,11 +1119,11 @@ where
             })?;
             let root_pool = node_graph.nodes[root_node].pool_id;
 
-            // Selection covers interior cut-generating nodes only. The root's
-            // cuts are never a backward-pass successor (activity never updated);
-            // terminal leaves receive no cuts. The root (the sole stage-0 alive
-            // node) is recorded here; the loop below scores each interior
-            // cut-generating node against ITS OWN visited region.
+            // Selection scores interior cut-generating nodes only, each at the
+            // states archived for that node; terminal leaves gain no cuts. The
+            // root pool is recorded here and never scored. The lower-bound LP
+            // only appends rows (`append_new_cuts_to_lp`), so the lower bound
+            // stays non-decreasing even when the budget below evicts a root cut.
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             {
                 let root_cut_pool = &self.fcf.pools[root_pool];

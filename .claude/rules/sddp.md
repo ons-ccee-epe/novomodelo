@@ -520,13 +520,15 @@ resolved from the node graph's `node → pool` map (`NodeGraph`,
 absent) `pool_id == stage`, so every read reduces byte-for-byte to the
 pre-node-native stage read. Sibling fan nodes at one level may share a pool.
 
-**Append-only within a pool.** Cuts are never removed from the LP. Deactivation
-toggles a cut row's RHS bounds to the `±f64::INFINITY` sentinel (trivially
-satisfied); every cut keeps a stable slot index for the lifetime of the run,
+**Append-only within a pool.** A cut is never removed from its pool. Deactivation
+clears the slot's activity flag (`CutPool::set_active`) and keeps the slot and
+its data; every cut keeps a stable slot index for the lifetime of the run,
 placed by `slot_index`'s deterministic function of `warm_start_count`,
 `iteration`, `iteration_base`, `visit_stride`, and `forward_pass_index`. The
 per-iteration template refreeze encodes **only active cuts** (one row per
-`active_cuts()` entry), not inactive cuts at sentinel bounds.
+`active_cuts()` entry), so a refrozen stage template holds no inactive cut. The
+lower-bound LP only appends rows (`append_new_cuts_to_lp`) and never removes
+one, so a root cut stays in it once added.
 
 **Growth is between-iteration and append-only.** A pool's capacity may grow
 between iterations (`CutPool::grow`, when a node's realized visit rate would

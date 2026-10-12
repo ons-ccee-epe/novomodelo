@@ -255,8 +255,7 @@ impl StageOpeningSolver {
     ///   (no warm per-opening basis, but reusing the loaded cut-free core).
     /// - `continue_carry == true` (subsequent openings): warm-carry the prior
     ///   opening's LP, basis, and monotonically grown resident cut set, adding only
-    ///   the cuts this opening additionally violates (the paper's §3.4 base
-    ///   recovery, extended across the openings).
+    ///   the cuts this opening additionally violates.
     ///
     /// The gradient and intercept are read from the final all-satisfied LP via
     /// [`extract_state_duals_only`] in both cases. Binding-count metadata is

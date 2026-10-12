@@ -9,13 +9,13 @@
 //!
 //! # Algorithm semantics
 //!
-//! The value-based variants share a single value-evaluation kernel in
-//! [`CutSelectionStrategy::select_for_stage`], which evaluates ALL populated
-//! cuts (active AND inactive) at each visited forward-pass state and applies the
-//! method-specific survival rule:
+//! The value-based variants share one value-evaluation kernel,
+//! [`CutSelectionStrategy::select_for_stage`]: it evaluates ALL populated cuts
+//! (active AND inactive) at each state of the retained window of trial states
+//! (`VisitedStatesArchive::trim_to_window`) and applies the method's rule:
 //!
 //! - **Level1**: retain any cut within `tie_tolerance` of the per-state maximum
-//!   at any visited state (de Matos 2015).
+//!   at any state of the retained window.
 //! - **Lml1**: at each visited state, retain only the oldest eligible cut
 //!   within `tie_tolerance` of the maximum; the overall selected set is the
 //!   union across all visited states (Guigues & Bandarra 2019).
@@ -130,9 +130,9 @@ impl CutActivityUpdates {
 /// migration.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum CutSelectionStrategy {
-    /// Level-1 selection: retain any cut within `tie_tolerance` of the per-state
-    /// maximum at some visited state (de Matos 2015). The least aggressive
-    /// value-based strategy; preserves the convergence guarantee.
+    /// Level-1 selection: retain any cut within `tie_tolerance` of the maximum at
+    /// some state of the retained window. No convergence theorem is claimed: that
+    /// of de Matos, Philpott and Finardi (2015) assumes every trial state.
     Level1 {
         /// Number of iterations between selection runs. Must be > 0.
         check_frequency: u64,
@@ -166,12 +166,12 @@ pub enum CutSelectionStrategy {
         check_frequency: u64,
     },
 
-    /// Dynamic Cut Selection (DCS): a per-solve lazy selection loop, NOT a
-    /// pool-level deactivation pass. [`should_run`] always returns `false` and
-    /// [`select_for_stage`] always returns empty [`CutActivityUpdates`];
-    /// selection happens lazily inside each LP solve. Because exactness rests on
-    /// the `k1 = None` (∞) default, DCS is mutually exclusive with the
-    /// value-based pool passes.
+    /// DCS: lazy row generation inside each LP solve. It is Novomodelo's own method, not
+    /// the Dynamic Cut Selection of de Matos, Philpott and Finardi (2015), and NOT
+    /// a pool-level deactivation pass. [`should_run`] always returns `false` and
+    /// [`select_for_stage`] always returns empty [`CutActivityUpdates`]. Because
+    /// exactness rests on the `k1 = None` (∞) default, DCS is mutually exclusive
+    /// with the value-based pool passes.
     ///
     /// [`should_run`]: CutSelectionStrategy::should_run
     /// [`select_for_stage`]: CutSelectionStrategy::select_for_stage
@@ -182,7 +182,8 @@ pub enum CutSelectionStrategy {
         /// cuts are never added even when violated.
         k1: Option<u32>,
 
-        /// Maximum number of cuts added per lazy-solve round.
+        /// Seed window: a lazy solve starts with the active cuts whose
+        /// [`CutMetadata::last_active_iter`] is at most `k2` iterations old.
         k2: u32,
 
         /// Number of most-violated candidate cuts considered per round. Must be

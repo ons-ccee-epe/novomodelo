@@ -1,18 +1,17 @@
-//! Visited forward-pass states for dominated cut selection.
+//! Visited trial states, archived for cut selection and for state export.
 //!
-//! When [`CutSelectionStrategy::Dominated`](crate::CutSelectionStrategy::Dominated)
-//! is active, the training loop archives the trial-point state vectors produced
-//! by each forward pass so that the domination test can evaluate every cut at
-//! every visited point.
+//! The training loop allocates the archive when the strategy scores visited
+//! states ([`scores_visited_states`]) or [`EventConfig::export_states`] is set.
 //!
-//! The archive holds one [`NodeStates`] per **node**, never per stage: sibling
-//! nodes share a stage but not a future, so a cut dominated in one sibling's
-//! visited region may be the binding cut in another's — pooling siblings into
-//! one shared stage-level bucket would silently drop that cut, with no error
-//! beyond a worse policy. On a chain (`nodes[]` absent) node position equals
-//! stage index, so this degenerates byte-for-byte to the pre-node-native
-//! per-stage archive. Each `NodeStates` stores its state vectors in a single
-//! flat `Vec<f64>` for cache-friendly iteration during the domination sweep.
+//! The archive holds one [`NodeStates`] per **node**, indexed by node position,
+//! never by stage. The sampled backward pass gathers a level's states with no
+//! per-node split, so every node of a multi-node level receives the level's
+//! states; the enumerated pass appends each node's own trial state. On a chain
+//! (`nodes[]` absent) node position equals stage index. Each `NodeStates`
+//! stores its state vectors in one flat `Vec<f64>`.
+//!
+//! [`scores_visited_states`]: crate::CutSelectionStrategy::scores_visited_states
+//! [`EventConfig::export_states`]: crate::config::EventConfig::export_states
 
 use crate::setup::NodePos;
 
