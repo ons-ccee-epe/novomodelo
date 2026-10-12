@@ -1557,6 +1557,7 @@ mod basis_reconstruct_churn {
 }
 
 mod selection_in_a_training_run {
+    use std::num::NonZeroU64;
     use std::path::Path;
     use std::sync::mpsc;
 
@@ -1595,6 +1596,15 @@ mod selection_in_a_training_run {
         events: Option<mpsc::Sender<TrainingEvent>>,
         configure: impl FnOnce(&mut Config),
     ) -> (StudySetup, TrainingResult) {
+        train_adjusted(iterations, events, configure, |_| {})
+    }
+
+    fn train_adjusted(
+        iterations: u32,
+        events: Option<mpsc::Sender<TrainingEvent>>,
+        configure: impl FnOnce(&mut Config),
+        adjust: impl FnOnce(&mut StudySetup),
+    ) -> (StudySetup, TrainingResult) {
         let case_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("crates/<crate> must have a parent")
@@ -1632,6 +1642,7 @@ mod selection_in_a_training_run {
             Vec::new(),
         )
         .expect("StudySetup must build");
+        adjust(&mut setup);
 
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
         let outcome = setup
@@ -1799,6 +1810,118 @@ mod selection_in_a_training_run {
                 "pool {pool_id}: the run's record differs from a rebuild"
             );
         }
+    }
+
+    const WINDOW_RUN_ITERATIONS: u32 = 12;
+
+    fn train_level1_with_lookback(lookback: Option<u64>) -> (StudySetup, TrainingResult) {
+        train_adjusted(
+            WINDOW_RUN_ITERATIONS,
+            None,
+            |config| config.training.cut_selection.selection = Some(level1()),
+            |setup| setup.set_level1_lookback(lookback.and_then(NonZeroU64::new)),
+        )
+    }
+
+    /// derived: the last selection run is at iteration 12, so with a lookback of
+    /// 4 the states kept are those of the cuts generated in iterations 9 to 12,
+    /// `FORWARD_PASSES` per iteration. Selection is the only reader of the
+    /// states and no budget is set, so the envelope invariant holds at them.
+    #[test]
+    fn a_level1_window_keeps_only_the_states_of_the_last_iterations() {
+        const LOOKBACK: u64 = 4;
+        let (setup, _) = train_level1_with_lookback(Some(LOOKBACK));
+        let pools = &setup.fcf.pools;
+        let oldest_kept = u64::from(WINDOW_RUN_ITERATIONS) - LOOKBACK + 1;
+
+        let mut a_cut_competes_without_its_state = false;
+        for (pool_id, pool) in pools.iter().enumerate().take(pools.len() - 1).skip(1) {
+            assert_eq!(
+                pool.populated(),
+                (WINDOW_RUN_ITERATIONS * FORWARD_PASSES) as usize,
+                "pool {pool_id}: a window drops states, never cuts"
+            );
+            assert_eq!(
+                pool.stored_trial_states(),
+                (LOOKBACK as u32 * FORWARD_PASSES) as usize,
+                "pool {pool_id}"
+            );
+            for slot in 0..pool.populated() {
+                let stored = pool.trial_state(slot).is_some();
+                assert!(pool.role(slot).scored, "pool {pool_id} slot {slot}");
+                assert_eq!(
+                    stored,
+                    pool.metadata(slot).iteration_generated >= oldest_kept,
+                    "pool {pool_id} slot {slot}: a state is stored exactly when its cut was \
+                     generated in the last {LOOKBACK} iterations"
+                );
+                if stored {
+                    let owner = pool.state_owner(slot).unwrap_or_else(|| {
+                        panic!("pool {pool_id}: the state at slot {slot} is unowned")
+                    });
+                    assert!(
+                        pool.is_active(owner),
+                        "pool {pool_id}: slot {owner} owns the state at slot {slot} and is inactive"
+                    );
+                } else {
+                    assert_eq!(pool.state_owner(slot), None, "pool {pool_id} slot {slot}");
+                    a_cut_competes_without_its_state |= pool.is_active(slot);
+                }
+                assert_eq!(
+                    pool.is_active(slot),
+                    pool.owned_states(slot) > 0,
+                    "pool {pool_id} slot {slot}: a scored cut is active exactly when it owns a \
+                     stored state"
+                );
+            }
+
+            let mut rebuilt = pool.clone();
+            rebuilt.rebuild_ownership();
+            for slot in 0..pool.populated() {
+                assert_eq!(
+                    (
+                        pool.state_owner(slot),
+                        pool.state_best_value(slot).map(f64::to_bits),
+                        pool.owned_states(slot)
+                    ),
+                    (
+                        rebuilt.state_owner(slot),
+                        rebuilt.state_best_value(slot).map(f64::to_bits),
+                        rebuilt.owned_states(slot)
+                    ),
+                    "pool {pool_id} slot {slot}: the run's record differs from a rebuild"
+                );
+            }
+        }
+        assert!(
+            a_cut_competes_without_its_state,
+            "power: no cut whose state left is still active"
+        );
+    }
+
+    /// derived: at the last run `r = 12`, so a window of 12 starts at the first
+    /// slot and drops nothing.
+    #[test]
+    fn a_window_longer_than_the_run_changes_nothing() {
+        let (unwindowed, result) = train_level1_with_lookback(None);
+        let expected = SelectionFingerprint::capture(&unwindowed, &result);
+        assert!(
+            expected
+                .cuts
+                .iter()
+                .any(|pool| pool.active.contains(&false)),
+            "the run deactivated no cut, so a dropped state had nothing to change"
+        );
+
+        let (windowed, result) = train_level1_with_lookback(Some(u64::from(WINDOW_RUN_ITERATIONS)));
+
+        for pool in &windowed.fcf.pools[1..windowed.fcf.pools.len() - 1] {
+            assert_eq!(
+                pool.stored_trial_states(),
+                (WINDOW_RUN_ITERATIONS * FORWARD_PASSES) as usize
+            );
+        }
+        assert_eq!(SelectionFingerprint::capture(&windowed, &result), expected);
     }
 
     /// derived: ownership compares cut values exactly, so no step of a `level1`

@@ -1,5 +1,7 @@
 //! Accessor methods and context builders for [`StudySetup`].
 
+#[cfg(any(test, feature = "test-support"))]
+use std::num::NonZeroU64;
 use std::path::Path;
 
 use novomodelo_core::AnticipatedCommitmentHistory;
@@ -13,6 +15,8 @@ use novomodelo_io::config::BackwardScheduler;
 
 #[cfg(any(test, feature = "test-support"))]
 use crate::convergence::risk_measure::RiskMeasure;
+#[cfg(any(test, feature = "test-support"))]
+use crate::cut_selection::CutSelectionStrategy;
 use crate::{
     context::{StageContext, TrainingContext},
     cut::FutureCostFunction,
@@ -97,6 +101,20 @@ impl StudySetup {
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_risk_measures(&mut self, risk_measures: Vec<RiskMeasure>) {
         self.inputs.cut_management.risk_measures = risk_measures;
+    }
+
+    /// Test-support hook: keep only the trial states of the last `lookback`
+    /// iterations under `level1`; does nothing for any other strategy. No
+    /// configuration key sets the window.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_level1_lookback(&mut self, lookback: Option<NonZeroU64>) {
+        if let Some(CutSelectionStrategy::Level1 {
+            lookback_iterations,
+            ..
+        }) = self.inputs.cut_management.cut_selection.as_mut()
+        {
+            *lookback_iterations = lookback;
+        }
     }
 
     /// Test-support hook: override the backward-pass scheduler

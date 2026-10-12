@@ -42,6 +42,8 @@
 //! assert_eq!(pool.cuts_in_lp(), 1);
 //! ```
 
+use std::num::NonZeroU64;
+
 use super::ownership::Ownership;
 use super::trial_states::TrialStates;
 use crate::cut_selection::CutActivityUpdates;
@@ -94,8 +96,10 @@ fn unwritten_metadata() -> CutMetadata {
 ///
 /// Cut storage is allocated at construction time — no heap allocation on the
 /// training-loop hot path; the trial-state rows are reserved by
-/// [`enable_trial_states`](CutPool::enable_trial_states). Slots are addressed by
-/// a deterministic formula of the iteration counter and forward-pass index.
+/// [`enable_trial_states`](CutPool::enable_trial_states) or
+/// [`enable_trial_states_within`](CutPool::enable_trial_states_within). Slots
+/// are addressed by a deterministic formula of the iteration counter and
+/// forward-pass index.
 #[derive(Debug, Clone)]
 pub struct CutPool {
     /// Flat coefficient storage. Slot `i` occupies
@@ -117,6 +121,9 @@ pub struct CutPool {
 
     /// The per-state ownership record, allocated with the trial states.
     ownership: Option<Ownership>,
+
+    /// Iterations whose trial states are kept; `None` keeps every state.
+    lookback: Option<NonZeroU64>,
 
     /// Per-slot activity flags. `false` excludes the cut from LP construction and
     /// evaluation; the slot is retained so the layout stays deterministic.
@@ -199,6 +206,7 @@ impl CutPool {
             roles: vec![VACANT_ROLE; capacity],
             trial_states: None,
             ownership: None,
+            lookback: None,
             active: vec![false; capacity],
             populated_count: 0,
             capacity,
@@ -233,6 +241,23 @@ impl CutPool {
         self.slot_base as usize
             + iter_usize * self.visit_stride as usize
             + forward_pass_index as usize
+    }
+
+    /// The first slot whose trial state is inside a window of `lookback`
+    /// iterations at a selection run of `iteration`: slot 0 while this run has
+    /// completed fewer than `lookback` iterations, a loaded state included, and
+    /// the block of iteration `iteration - lookback + 1` after.
+    fn window_start_slot(&self, lookback: NonZeroU64, iteration: u64) -> usize {
+        debug_assert!(
+            iteration >= self.iteration_base,
+            "window_start_slot: iteration {iteration} < iteration_base {}",
+            self.iteration_base
+        );
+        let completed = iteration - self.iteration_base + 1;
+        match completed.checked_sub(lookback.get()) {
+            None => 0,
+            Some(left) => self.slot_index(self.iteration_base + left, 0),
+        }
     }
 
     /// Set the iteration that maps to the first training slot.
@@ -445,13 +470,39 @@ impl CutPool {
     ///
     /// Memory: `capacity * state_dimension * 8` bytes reserved, of which
     /// `stored_trial_states() * state_dimension * 8` hold a state, and one `f64` and
-    /// two `u32` per slot for the ownership record.
+    /// three `u32` per slot for the lookup and the ownership record.
     pub fn enable_trial_states(&mut self) {
         let (capacity, dimension) = (self.capacity, self.state_dimension);
         self.trial_states
             .get_or_insert_with(|| TrialStates::new(capacity, dimension));
         self.ownership
             .get_or_insert_with(|| Ownership::new(capacity));
+    }
+
+    /// Like [`enable_trial_states`](CutPool::enable_trial_states), for a window of
+    /// `lookback_iterations`: [`expire_trial_states`](CutPool::expire_trial_states)
+    /// drops the older states and their rows are reused. A pool that holds more
+    /// states than rows extends the store.
+    ///
+    /// Memory: `min((lookback_iterations + check_frequency) * visit_stride,
+    /// capacity) * state_dimension * 8` bytes reserved, independent of the run
+    /// length, plus 20 bytes per slot for the lookup and the ownership record.
+    pub fn enable_trial_states_within(
+        &mut self,
+        lookback_iterations: NonZeroU64,
+        check_frequency: u64,
+    ) {
+        let (capacity, dimension) = (self.capacity, self.state_dimension);
+        let iterations = lookback_iterations.get().saturating_add(check_frequency);
+        let rows = usize::try_from(iterations)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(self.visit_stride as usize)
+            .min(capacity);
+        self.trial_states
+            .get_or_insert_with(|| TrialStates::bounded(capacity, rows, dimension));
+        self.ownership
+            .get_or_insert_with(|| Ownership::new(capacity));
+        self.lookback = Some(lookback_iterations);
     }
 
     /// Whether the pool stores the trial state of each cut written.
@@ -505,6 +556,32 @@ impl CutPool {
         self.trial_states
             .as_ref()
             .map_or(0, TrialStates::stored_count)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reserved_trial_rows(&self) -> usize {
+        self.trial_states
+            .as_ref()
+            .map_or(0, TrialStates::reserved_rows)
+    }
+
+    /// Drop the trial states that left the window at a selection run of
+    /// `current_iteration`: each leaves the ownership record, its owner loses
+    /// it, and its row returns to the store. The cuts, roles and activity flags
+    /// are untouched, and a scored cut without a state still competes at the
+    /// remaining ones. A no-op for a pool without a window.
+    pub fn expire_trial_states(&mut self, current_iteration: u64) {
+        let Some(lookback) = self.lookback else {
+            return;
+        };
+        let until = self
+            .window_start_slot(lookback, current_iteration)
+            .min(self.populated_count);
+        if let (Some(states), Some(ownership)) =
+            (self.trial_states.as_mut(), self.ownership.as_mut())
+        {
+            ownership.expire(states, until);
+        }
     }
 
     /// Bring the ownership record up to date with the slots written since the
@@ -722,27 +799,6 @@ impl CutPool {
             .expect("set_trial_state_for_test: the pool stores no trial states")
             .claim(slot)
             .copy_from_slice(state);
-    }
-
-    /// Test-only: drop the trial state stored at `slot`; the ownership record is
-    /// stale until [`rebuild_ownership`](CutPool::rebuild_ownership).
-    ///
-    /// # Panics
-    ///
-    /// Panics if `slot` holds no trial state.
-    #[cfg(test)]
-    pub(crate) fn clear_trial_state_for_test(&mut self, slot: usize) {
-        assert!(
-            self.trial_state(slot).is_some(),
-            "clear_trial_state_for_test: slot {slot} holds no trial state"
-        );
-        let mut kept = TrialStates::new(self.capacity, self.state_dimension);
-        for other in (0..self.capacity).filter(|&other| other != slot) {
-            if let Some(state) = self.trial_state(other) {
-                kept.claim(other).copy_from_slice(state);
-            }
-        }
-        self.trial_states = Some(kept);
     }
 
     /// Test-only: overwrite one slot's metadata directly, bypassing
@@ -1114,6 +1170,7 @@ impl CutPool {
             roles: vec![PREFIX_ROLE; capacity],
             trial_states: None,
             ownership: None,
+            lookback: None,
             active,
             populated_count: capacity,
             capacity,
@@ -1207,6 +1264,7 @@ impl CutPool {
             roles,
             trial_states: None,
             ownership: None,
+            lookback: None,
             active,
             populated_count: prefix_len,
             capacity,
@@ -1381,6 +1439,7 @@ impl CutPool {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::num::NonZeroU64;
 
     use super::{CutPool, SlotOrigin, SlotRole};
     use crate::cut_selection::{CutActivityUpdates, CutMetadata};
@@ -2050,6 +2109,68 @@ mod tests {
         assert_eq!(pool.ownership_activity_updates(7), expected);
         pool.set_active(0, false);
         assert_eq!(pool.ownership_activity_updates(7), expected);
+    }
+
+    /// derived: two loaded records put `slot_base` at 2; with `iteration_base` 4
+    /// the run has completed `r = k - 3` iterations at a run of iteration `k`.
+    /// For `r < 2` the start is slot 0, then it is `2 + (r - 2) * 3`: 0 at
+    /// `k = 4`, then 2, 5, 8, 11 and 14.
+    #[test]
+    fn the_window_start_slot_agrees_with_the_slot_formula() {
+        let lookback = NonZeroU64::new(2).unwrap();
+        let mut pool = CutPool::new_with_warm_start(1, 3, 10, &[loaded_cut(5), loaded_cut(7)]);
+        pool.set_iteration_base(4);
+
+        for (k, start) in (4..=9).zip([0, 2, 5, 8, 11, 14]) {
+            assert_eq!(pool.window_start_slot(lookback, k), start, "start at {k}");
+            for generating in 4..=9 {
+                for pass in 0..3 {
+                    assert_eq!(
+                        pool.slot_index(generating, pass) >= start,
+                        generating > k - 2,
+                        "iteration {generating} pass {pass} at {k}"
+                    );
+                }
+            }
+            for loaded in 0..2 {
+                assert_eq!(loaded >= start, k == 4, "loaded slot {loaded} at {k}");
+            }
+        }
+    }
+
+    /// derived: with stride 2, lookback 4 and a run every 2 iterations, a pool
+    /// holds the states of all its iterations until the run of iteration 4, then
+    /// those of the last 4 iterations: at most `(4 + 2) * 2` states before a
+    /// run, which is the reserve, and `4 * 2` after it.
+    #[test]
+    fn a_windowed_pool_never_holds_more_rows_than_its_reserve() {
+        const STRIDE: u32 = 2;
+        const ITERATIONS: u64 = 12;
+        let mut pool = CutPool::new(24, 1, STRIDE, 0);
+        pool.set_iteration_base(1);
+        pool.enable_trial_states_within(NonZeroU64::new(4).unwrap(), 2);
+        let reserve = (4 + 2) * STRIDE as usize;
+        assert_eq!(pool.reserved_trial_rows(), reserve);
+
+        for iteration in 1..=ITERATIONS {
+            for pass in 0..STRIDE {
+                let slot = pool.slot_index(iteration, pass);
+                pool.add_cut(NodeId(0), iteration, pass, 1.0, &[1.0]);
+                pool.set_trial_state_for_test(slot, &[0.0]);
+            }
+            if iteration % 2 == 0 {
+                assert!(pool.stored_trial_states() <= reserve, "before the run");
+                pool.expire_trial_states(iteration);
+                pool.update_ownership();
+                assert_eq!(
+                    pool.stored_trial_states(),
+                    iteration.min(4) as usize * STRIDE as usize,
+                    "after the run of iteration {iteration}"
+                );
+            }
+            assert_eq!(pool.reserved_trial_rows(), reserve, "at {iteration}");
+        }
+        assert_eq!(pool.stored_trial_states(), 4 * STRIDE as usize);
     }
 
     #[test]

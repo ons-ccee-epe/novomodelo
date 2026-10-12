@@ -10,7 +10,16 @@
 //! **Stored states.** For the pool of each node of stage 1 or later that has a
 //! successor: the trial state of every cut this run generated for that pool,
 //! one per cut, on every rank. A loaded cut has none. Every such state of the
-//! run is kept, so the memory of a run grows with its cut count.
+//! run is kept, so the memory of a run grows with its cut count, unless the
+//! strategy carries a window of `w` iterations
+//! ([`lookback_iterations`](CutSelectionStrategy::Level1::lookback_iterations)).
+//! A selection run of iteration `k` then drops the states of the cuts generated
+//! before iteration `k - w + 1`, so the scored set is the trial states of the
+//! cuts generated in the last `w` iterations (and a loaded state while the run
+//! has completed fewer than `w` iterations), and the memory is bounded by the
+//! window ([`CutPool::enable_trial_states_within`]). Only states leave: a cut
+//! whose state left keeps its role, stays live and competes at the states that
+//! remain.
 //!
 //! **Rule.** The live cuts of such a pool are the cuts this run generated in
 //! it, whatever their activity flag, and its active loaded cuts. The owner of a
@@ -25,9 +34,9 @@
 //!
 //! **Invariant.** Right after a selection run in which the active-cut budget
 //! evicts nothing, the active cuts of such a pool attain the maximum of its
-//! live cuts at every stored state. The budget can deactivate a cut that owns
-//! states; the next selection run reactivates it, and the budget is applied
-//! again in that iteration.
+//! live cuts at every stored state, which with a window are the states inside
+//! it. The budget can deactivate a cut that owns states; the next selection run
+//! reactivates it, and the budget is applied again in that iteration.
 //!
 //! **Departures from the paper.** The paper selects in every stage problem and
 //! updates the owners each time a cut is added. Here the root pool is never
@@ -66,6 +75,7 @@
 //! let strategy = CutSelectionStrategy::Level1 {
 //!     check_frequency: 5,
 //!     tie_tolerance: 1e-10,
+//!     lookback_iterations: None,
 //! };
 //!
 //! // Should run at multiples of check_frequency (excluding 0).
@@ -74,6 +84,8 @@
 //! assert!(strategy.should_run(5));
 //! assert!(strategy.should_run(10));
 //! ```
+
+use std::num::NonZeroU64;
 
 use rayon::prelude::*;
 
@@ -169,7 +181,9 @@ pub enum CutSelectionStrategy {
     /// there, compared exactly, and a selection run keeps the generated cuts
     /// that own a state. The [module documentation](crate::cut::cut_selection)
     /// states the rule, the stored states, the invariant, the departures from
-    /// the paper and what is said of convergence.
+    /// the paper and what is said of convergence. With a window, the scored set
+    /// of each interior pool is the trial states of the cuts generated in the
+    /// last `w` iterations, and the invariant holds at those states.
     Level1 {
         /// Number of iterations between selection runs. Must be > 0.
         check_frequency: u64,
@@ -177,6 +191,10 @@ pub enum CutSelectionStrategy {
         /// Parsed and validated; no step of a run reads it, since ownership
         /// compares values exactly.
         tie_tolerance: f64,
+
+        /// `Some(w)` keeps the trial states of the last `w` iterations of the
+        /// run, `None` every one.
+        lookback_iterations: Option<NonZeroU64>,
     },
 
     /// Limited Memory Level-1 (LML1): retain only the oldest eligible cut within
@@ -247,7 +265,11 @@ impl CutSelectionStrategy {
     /// ```rust
     /// use novomodelo_sddp::cut_selection::CutSelectionStrategy;
     ///
-    /// let s = CutSelectionStrategy::Level1 { check_frequency: 5, tie_tolerance: 1e-10 };
+    /// let s = CutSelectionStrategy::Level1 {
+    ///     check_frequency: 5,
+    ///     tie_tolerance: 1e-10,
+    ///     lookback_iterations: None,
+    /// };
     /// assert!(!s.should_run(0));
     /// assert!(!s.should_run(3));
     /// assert!(s.should_run(5));
@@ -627,6 +649,7 @@ pub fn parse_cut_selection_config(
         } => Ok(Some(CutSelectionStrategy::Level1 {
             check_frequency: u64::from(validate_check_frequency(check_frequency)?),
             tie_tolerance: validate_tolerance("tie_tolerance", tie_tolerance, false)?,
+            lookback_iterations: None,
         })),
         SelectionMethod::Lml1 {
             tie_tolerance,
@@ -688,6 +711,7 @@ pub fn parse_cut_selection_config(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::num::NonZeroU64;
     use std::ops::RangeInclusive;
 
     use super::parse_cut_selection_config;
@@ -727,6 +751,7 @@ mod tests {
         let s = CutSelectionStrategy::Level1 {
             check_frequency: 5,
             tie_tolerance: 1e-10,
+            lookback_iterations: None,
         };
         assert!(!s.should_run(0));
     }
@@ -736,6 +761,7 @@ mod tests {
         let s = CutSelectionStrategy::Level1 {
             check_frequency: 5,
             tie_tolerance: 1e-10,
+            lookback_iterations: None,
         };
         assert!(!s.should_run(3));
         assert!(!s.should_run(7));
@@ -746,6 +772,7 @@ mod tests {
         let s = CutSelectionStrategy::Level1 {
             check_frequency: 5,
             tie_tolerance: 1e-10,
+            lookback_iterations: None,
         };
         assert!(s.should_run(5));
         assert!(s.should_run(10));
@@ -1390,6 +1417,7 @@ mod tests {
                 CutSelectionStrategy::Level1 {
                     check_frequency: 5,
                     tie_tolerance,
+                    lookback_iterations: None,
                 } if (tie_tolerance - 1e-8).abs() < f64::EPSILON
             ),
             "unexpected variant: {strategy:?}"
@@ -1411,6 +1439,7 @@ mod tests {
                 CutSelectionStrategy::Level1 {
                     check_frequency: 5,
                     tie_tolerance,
+                    lookback_iterations: None,
                 } if (tie_tolerance - 1e-10).abs() < 1e-20
             ),
             "unexpected variant or wrong default tie_tolerance: {strategy:?}"
@@ -1924,11 +1953,9 @@ mod tests {
     /// values are 6, 5, 3.5, 3.5, then -2, 2, 0.5, 2.5, then -6, 0.5, -1, 2.
     const FIGURE_FOUR: [(f64, f64); 4] = [(10.0, -4.0), (6.5, -1.5), (5.0, -1.5), (4.0, -0.5)];
 
-    /// One-dimensional pool of scored `(intercept, slope)` cuts in slot order,
-    /// with `states` stored at the first slots.
-    fn scored_pool_from_lines(lines: &[(f64, f64)], states: &[f64]) -> CutPool {
-        let mut pool = CutPool::new(lines.len(), 1, 1, 0);
-        pool.enable_trial_states();
+    /// Writes the `(intercept, slope)` cuts in slot order, one per iteration, and
+    /// stores `states` at the first slots of a pool that already stores states.
+    fn fill_scored_pool(mut pool: CutPool, lines: &[(f64, f64)], states: &[f64]) -> CutPool {
         for (slot, &(intercept, slope)) in lines.iter().enumerate() {
             pool.add_cut(NodeId(0), slot as u64, 0, intercept, &[slope]);
         }
@@ -1936,6 +1963,14 @@ mod tests {
             pool.set_trial_state_for_test(slot, &[state]);
         }
         pool
+    }
+
+    /// One-dimensional pool of scored `(intercept, slope)` cuts in slot order,
+    /// with `states` stored at the first slots.
+    fn scored_pool_from_lines(lines: &[(f64, f64)], states: &[f64]) -> CutPool {
+        let mut pool = CutPool::new(lines.len(), 1, 1, 0);
+        pool.enable_trial_states();
+        fill_scored_pool(pool, lines, states)
     }
 
     /// One `level1` selection run: the record is brought up to date and the
@@ -1986,17 +2021,95 @@ mod tests {
         assert_eq!(second.reactivations, vec![1]);
     }
 
+    /// derived: lookback 3, one cut per iteration, the four cuts written before the
+    /// first run. At iteration 2 (`r = 3`) the window starts at slot 0 and holds
+    /// the states 1, 3 and 4. At iteration 3 (`r = 4`) it starts at slot 1, so the
+    /// state 1 leaves: the values at 3 and 4 are won by slot 3, the values at 2 are
+    /// 2, 3.5, 2, 3 and are won by slot 1, and slot 0 owns none.
     #[test]
     fn level1_drops_the_owner_of_a_state_that_left_the_window() {
-        let mut pool = scored_pool_from_lines(&FIGURE_FOUR, &[1.0, 3.0, 4.0]);
-        select_level1(&mut pool);
-        pool.clear_trial_state_for_test(0);
+        let mut pool = CutPool::new(4, 1, 1, 0);
+        pool.enable_trial_states_within(NonZeroU64::new(3).unwrap(), 1);
+        let mut pool = fill_scored_pool(pool, &FIGURE_FOUR, &[1.0, 3.0, 4.0]);
+        pool.expire_trial_states(2);
+        let first = select_level1(&mut pool);
+        assert_eq!(first.updates, vec![1, 2]);
+        assert_eq!(first.reactivations, Vec::<u32>::new());
+
         pool.set_trial_state_for_test(3, &[2.0]);
+        // The state stored below the scanned mark needs a rebuild, run before the
+        // expiry so that the record holds the state 1 that the expiry removes.
         pool.rebuild_ownership();
-        // Slot 3 owns 3 and 4, slot 1 owns 2; slot 0 owned only the state 1.
+        assert_eq!(pool.owned_states(0), 1);
+        pool.expire_trial_states(3);
+        assert_eq!((pool.owned_states(0), pool.state_owner(0)), (0, None));
+        assert_eq!(pool.trial_state(0), None);
+        assert_eq!(pool.stored_trial_states(), 3);
         let second = select_level1(&mut pool);
         assert_eq!(second.updates, vec![0]);
         assert_eq!(second.reactivations, vec![1]);
+    }
+
+    /// derived: the two loaded cuts are worth 5 - x and 2x, the generated ones
+    /// 1 + x/2, 2 + x/2 and 0. The loaded cut of iteration 40 is read against this
+    /// run's clock: it is at iteration 0 of it, so with lookback 2 its state is
+    /// inside at iteration 1 and out from iteration 2.
+    /// - iteration 1: values at 0 are 5, 0, 1 (owner 0), at 4 are 1, 8, 3
+    ///   (owner 1);
+    /// - iteration 2 (`r = 2`, start slot 2): the loaded state leaves; values at 4
+    ///   are 1, 8, 3, 4 and at 5 are 0, 10, 3.5, 4.5 (owner 1 at both);
+    /// - iteration 3 (start slot 3): values at 5 are 0, 10, 3.5, 4.5, 0 (owner 1),
+    ///   at -10 are 15, -20, -4, -3, 0 (owner 0).
+    #[test]
+    fn a_loaded_scored_cut_competes_only_at_this_runs_states_once_its_state_left_the_window() {
+        let loaded = |intercept, slope, is_active| novomodelo_io::OwnedPolicyCutRecord {
+            cut_id: 0,
+            slot_index: 0,
+            iteration: 40,
+            forward_pass_index: 0,
+            intercept,
+            coefficients: vec![slope],
+            is_active,
+        };
+        let mut pool = CutPool::new_with_warm_start(
+            1,
+            1,
+            3,
+            &[loaded(5.0, -1.0, true), loaded(0.0, 2.0, false)],
+        );
+        pool.set_iteration_base(1);
+        pool.enable_trial_states_within(NonZeroU64::new(2).unwrap(), 1);
+        for slot in 0..2 {
+            pool.set_role_for_test(
+                slot,
+                SlotRole {
+                    origin: SlotOrigin::Prefix,
+                    scored: true,
+                },
+            );
+        }
+        pool.set_trial_state_for_test(0, &[0.0]);
+        let run = |pool: &mut CutPool, iteration, intercept, slope, state| {
+            pool.add_cut(NodeId(0), iteration, 0, intercept, &[slope]);
+            let slot = pool.populated() - 1;
+            pool.set_trial_state_for_test(slot, &[state]);
+            pool.expire_trial_states(iteration);
+            select_level1(pool)
+        };
+
+        let first = run(&mut pool, 1, 1.0, 0.5, 4.0);
+        assert_eq!(first.updates, vec![2]);
+        assert_eq!(first.reactivations, vec![1]);
+
+        let second = run(&mut pool, 2, 2.0, 0.5, 5.0);
+        assert_eq!(pool.trial_state(0), None);
+        assert_eq!(second.updates, vec![0, 3]);
+        assert_eq!(second.reactivations, Vec::<u32>::new());
+
+        let third = run(&mut pool, 3, 0.0, 0.0, -10.0);
+        assert_eq!(third.updates, vec![4]);
+        assert_eq!(third.reactivations, vec![0]);
+        assert_eq!(active_slots(&pool), BTreeSet::from([0, 1]));
     }
 
     /// derived: the values at 1 are 3, 3, 3, 2 and at 3 are 1, 7, 3, 2. Slot 0 is
@@ -2763,6 +2876,7 @@ mod tests {
         let level1 = CutSelectionStrategy::Level1 {
             check_frequency: 1,
             tie_tolerance: 1e-10,
+            lookback_iterations: None,
         };
         let dynamic = CutSelectionStrategy::Dynamic {
             k1: None,

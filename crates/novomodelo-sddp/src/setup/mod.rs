@@ -3565,6 +3565,7 @@ mod admission_gate_dcs_tests {
         CutSelectionStrategy::Level1 {
             check_frequency: 5,
             tie_tolerance: 1e-10,
+            lookback_iterations: None,
         }
     }
 

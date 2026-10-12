@@ -377,6 +377,7 @@ mod tests {
             CutSelectionStrategy::Level1 {
                 check_frequency: 1,
                 tie_tolerance: 0.0,
+                lookback_iterations: None,
             },
             CutSelectionStrategy::Lml1 {
                 check_frequency: 1,

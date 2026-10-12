@@ -10,6 +10,7 @@ use rayon::prelude::*;
 
 use super::cut_selection::M_BLOCK;
 use super::pool::{CutPool, SlotOrigin};
+use super::trial_states::TrialStates;
 use crate::gemm::gemm_block;
 
 /// Slots per `gemm_block` call, at most the rows its block-shape property pins.
@@ -26,6 +27,7 @@ pub(crate) struct Ownership {
     owner: Vec<u32>,
     owned: Vec<u32>,
     scanned: usize,
+    expired: usize,
 }
 
 struct Scratch {
@@ -41,6 +43,7 @@ impl Ownership {
             owner: vec![NO_OWNER; capacity],
             owned: vec![0; capacity],
             scanned: 0,
+            expired: 0,
         }
     }
 
@@ -71,6 +74,27 @@ impl Ownership {
         self.owned[slot] as usize
     }
 
+    /// Drops the stored states of the slots from the previous boundary up to
+    /// `until`: each takes its count from its owner and returns its row to
+    /// `states`. The boundary only moves up.
+    pub(crate) fn expire(&mut self, states: &mut TrialStates, until: usize) {
+        debug_assert!(
+            self.expired <= until,
+            "the boundary moved down from {} to {until}",
+            self.expired
+        );
+        for slot in self.expired..until {
+            if states.release(slot)
+                && let Some(owner) = self.owner_of(slot)
+            {
+                self.owned[owner] -= 1;
+                self.owner[slot] = NO_OWNER;
+                self.best[slot] = 0.0;
+            }
+        }
+        self.expired = until;
+    }
+
     /// Brings the record up to date with the slots written since the last call:
     /// each new stored state against every live slot, then each new live slot
     /// against the states stored before. A slot written or a state stored below
@@ -80,6 +104,12 @@ impl Ownership {
         debug_assert!(
             self.scanned <= populated,
             "scanned mark {} is past populated {populated}",
+            self.scanned
+        );
+        debug_assert!(
+            (0..self.scanned)
+                .all(|slot| pool.trial_state(slot).is_none() || self.owner_of(slot).is_some()),
+            "a state stored below the scanned mark {} has no owner; only `reset` brings it in",
             self.scanned
         );
 
@@ -201,6 +231,10 @@ fn scan_block(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::num::NonZeroU64;
+
+    use novomodelo_io::OwnedPolicyCutRecord;
     use proptest::prelude::*;
     use proptest::test_runner::RngSeed;
 
@@ -208,7 +242,7 @@ mod tests {
     use crate::cut::cut_selection::M_BLOCK;
     use crate::cut::pool::{CutPool, SlotOrigin, SlotRole};
     use crate::cut::selection_reference::tests::{Fixture, fixtures};
-    use crate::cut::selection_reference::{RefCut, RefRole, owners, value};
+    use crate::cut::selection_reference::{RefCut, RefRole, active_after, owners, selected, value};
     use crate::gemm::{PINNED_MAX_COLUMNS, PINNED_MAX_ROWS};
     use crate::setup::NodeId;
 
@@ -505,8 +539,9 @@ mod tests {
     }
 
     prop_compose! {
-        /// Integer-valued cuts and states from small ranges, a third of them
-        /// repeats of three palette cuts, so ties are frequent.
+        /// Integer-valued cuts and states from small ranges; each cut is a
+        /// repeat of one of three palette cuts or a fresh draw, so ties are
+        /// frequent.
         fn exact_draw()(
             dimension in 1..=3usize,
             kinds in (
@@ -556,7 +591,7 @@ mod tests {
 
     prop_compose! {
         fn inexact_draw()(
-            dimension in prop::sample::select(vec![3usize, 257, 300]),
+            dimension in prop::sample::select(vec![3usize, 257, 300, 600]),
             slots in 2..=24usize,
             batches in prop::collection::vec(1..=6usize, 1..=4),
         )(
@@ -586,12 +621,197 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct WindowedDraw {
+        draw: Draw,
+        stride: usize,
+        check_frequency: u64,
+        lookback: u64,
+    }
+
+    prop_compose! {
+        fn windowed_draw()(
+            draw in exact_draw(),
+            stride in 1..=3usize,
+            check_frequency in 1..=3u64,
+            lookback in 1..=4u64,
+        ) -> WindowedDraw {
+            WindowedDraw { draw, stride, check_frequency, lookback }
+        }
+    }
+
+    /// Reveals the draw one iteration at a time, `stride` slots each, after its
+    /// prefix kinds loaded as records of another run; every `check_frequency`
+    /// iterations the pool expires, updates and applies the derived flags, and
+    /// is compared with the reference rule on the states of the window.
+    ///
+    /// The states of the window are computed from the rule alone: a generated
+    /// state is inside at a run of iteration `k` when its generating iteration
+    /// exceeds `k - lookback`, and a loaded one while `k < lookback`.
+    #[allow(clippy::too_many_lines)]
+    fn assert_window_follows_the_reference(windowed: &WindowedDraw) {
+        let WindowedDraw {
+            draw,
+            stride,
+            check_frequency,
+            lookback,
+        } = windowed;
+        let (stride, check_frequency, lookback) = (*stride, *check_frequency, *lookback);
+        let spec = draw.spec();
+        let loaded = draw
+            .kinds
+            .iter()
+            .take_while(|kind| !matches!(kind, Kind::Generated { .. } | Kind::Vacant))
+            .count();
+        let iterations = (spec.cuts.len() - loaded).div_ceil(stride) as u64;
+        let records: Vec<OwnedPolicyCutRecord> = (0..loaded)
+            .map(|slot| OwnedPolicyCutRecord {
+                cut_id: slot as u64,
+                slot_index: slot as u32,
+                iteration: 1000,
+                forward_pass_index: 0,
+                intercept: spec.cuts[slot].intercept,
+                coefficients: spec.cuts[slot].coefficients.clone(),
+                is_active: spec.active[slot],
+            })
+            .collect();
+
+        let dimension = spec.cuts[0].coefficients.len();
+        let mut pool = CutPool::new_with_warm_start(dimension, stride as u32, iterations, &records);
+        pool.set_iteration_base(1);
+        pool.enable_trial_states_within(
+            NonZeroU64::new(lookback).expect("a lookback"),
+            check_frequency,
+        );
+        let reserve = pool.reserved_trial_rows();
+        for slot in 0..loaded {
+            if matches!(spec.cuts[slot].role, RefRole::ScoredPrefix) {
+                pool.set_role_for_test(
+                    slot,
+                    SlotRole {
+                        origin: SlotOrigin::Prefix,
+                        scored: true,
+                    },
+                );
+            }
+            if let Some(state) = &spec.states[slot] {
+                pool.set_trial_state_for_test(slot, state);
+            }
+        }
+        let loaded_states = pool.stored_trial_states();
+        let mut peak = loaded_states;
+
+        for iteration in 1..=iterations {
+            for pass in 0..stride {
+                let slot = loaded + (iteration as usize - 1) * stride + pass;
+                let Some(&Kind::Generated { active }) = draw.kinds.get(slot) else {
+                    continue;
+                };
+                pool.add_cut(
+                    NodeId(0),
+                    iteration,
+                    pass as u32,
+                    spec.cuts[slot].intercept,
+                    &spec.cuts[slot].coefficients,
+                );
+                pool.set_active(slot as u32, active);
+                let state = spec.states[slot].as_ref().expect("a generated state");
+                pool.set_trial_state_for_test(slot, state);
+                peak = peak.max(pool.stored_trial_states());
+            }
+            if iteration % check_frequency != 0 {
+                continue;
+            }
+            let inside = |slot: usize| {
+                if slot < loaded {
+                    iteration < lookback
+                } else {
+                    ((slot - loaded) / stride) as u64 + 1 + lookback > iteration
+                }
+            };
+            let revealed = (loaded + iteration as usize * stride).min(spec.cuts.len());
+            let populated = (0..revealed)
+                .rev()
+                .find(|&slot| !matches!(draw.kinds[slot], Kind::Vacant))
+                .map_or(0, |slot| slot + 1)
+                .max(loaded);
+            let window = Spec {
+                cuts: spec.cuts[..populated].to_vec(),
+                active: spec.active[..populated].to_vec(),
+                states: (0..populated)
+                    .map(|slot| spec.states[slot].clone().filter(|_| inside(slot)))
+                    .collect(),
+            };
+            let was_active: Vec<bool> = (0..populated).map(|slot| pool.is_active(slot)).collect();
+
+            pool.expire_trial_states(iteration);
+            pool.update_ownership();
+            let updates = pool.ownership_activity_updates(0);
+            let owning = selected(&window.cuts, &window.stored_states());
+            let is_scored = |slot: usize| {
+                matches!(
+                    window.cuts[slot].role,
+                    RefRole::Generated | RefRole::ScoredPrefix
+                )
+            };
+            let flagged = |wanted: bool| -> Vec<u32> {
+                (0..populated)
+                    .filter(|&slot| {
+                        is_scored(slot)
+                            && was_active[slot] != wanted
+                            && owning.contains(&slot) == wanted
+                    })
+                    .map(|slot| slot as u32)
+                    .collect()
+            };
+            assert_eq!(
+                updates.updates,
+                flagged(false),
+                "run at {iteration}: updates"
+            );
+            assert_eq!(
+                updates.reactivations,
+                flagged(true),
+                "run at {iteration}: reactivations"
+            );
+            pool.apply_updates(&updates);
+            let label = format!("run at iteration {iteration}");
+
+            assert_eq!(snapshot(&pool), snapshot(&rebuilt(&pool)), "{label}");
+            assert_matches_reference(&pool, &window, &label);
+            let active: BTreeSet<usize> = (0..pool.populated())
+                .filter(|&slot| pool.is_active(slot))
+                .collect();
+            assert_eq!(
+                active,
+                active_after(&window.cuts, &window.stored_states()),
+                "{label}: active set"
+            );
+            for slot in 0..populated {
+                assert_eq!(
+                    pool.role(slot).scored,
+                    is_scored(slot),
+                    "{label}: slot {slot}"
+                );
+            }
+            assert_eq!(pool.reserved_trial_rows(), reserve.max(peak), "{label}");
+            if loaded_states == 0 {
+                assert!(peak <= reserve, "{label}: the store extended");
+            }
+        }
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig {
             cases: 256,
             rng_seed: RngSeed::Fixed(42),
             ..ProptestConfig::default()
         })]
+
+        #[test]
+        fn windowed_record_equals_rebuild_and_reference(windowed in windowed_draw()) {
+            assert_window_follows_the_reference(&windowed);
+        }
 
         #[test]
         fn incremental_record_equals_rebuild_and_reference(draw in exact_draw()) {
@@ -608,6 +828,20 @@ mod tests {
             let pool = reveal(&spec, &batches);
             prop_assert_eq!(snapshot(&pool), snapshot(&rebuilt(&pool)));
         }
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "below the scanned mark")]
+    fn a_state_stored_below_the_scanned_mark_panics_in_debug() {
+        let mut pool = storing_pool(3, 1);
+        for iteration in 0..3 {
+            pool.add_cut(NodeId(0), iteration, 0, 1.0, &[0.0]);
+        }
+        pool.set_trial_state_for_test(0, &[0.0]);
+        pool.update_ownership();
+        pool.set_trial_state_for_test(1, &[1.0]);
+        pool.update_ownership();
     }
 
     #[test]

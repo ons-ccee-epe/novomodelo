@@ -968,31 +968,37 @@ in-process test runs two cooperating ranks.
 
 ## Each scored cut's trial state is stored by slot
 
-A pool that stores trial states (`CutPool::enable_trial_states`) holds, for each
-slot whose cut was written scored, the state the cut was computed at: one row at
-the pool's projected dimension (`CutPool::state_dimension`), addressed by the
-slot (`CutPool::trial_state`) and written by `CutPool::store_trial_state`
-through `CutStateProjection::gather_trial_state`, the single owner of "global
-state to projected state". A pool's rows are those of its own cuts: the
-visited-states archive appends the whole level's states to every node of a
-level, the pool holds only the states of the trials routed to its node.
+A pool that stores trial states (`CutPool::enable_trial_states`, or
+`CutPool::enable_trial_states_within` for a window) holds, for each slot whose
+cut was written scored, the state the cut was computed at, until a window drops
+it (the window section below; without a window every scored slot keeps its
+state): one row at the pool's projected dimension (`CutPool::state_dimension`),
+addressed by the slot (`CutPool::trial_state`) and written by
+`CutPool::store_trial_state` through `CutStateProjection::gather_trial_state`,
+the single owner of "global state to projected state". A pool's rows are those
+of its own cuts: the visited-states archive appends the whole level's states to
+every node of a level, the pool holds only the states of the trials routed to
+its node.
 `SlotRole::scored` records that the pool stored states when the slot was
 written (`add_cut` writes it); enabling the store afterwards does not change the
 flag of a cut already written, and a loaded (`Prefix`) cut is never scored and
 has no state. A pool that does not store states allocates nothing. Enabling
 reserves `capacity * state_dimension * 8` bytes, of which
-`stored_trial_states() * state_dimension * 8` hold a state, and one `f64` and two
-`u32` per slot for the ownership record.
+`stored_trial_states() * state_dimension * 8` hold a state, and per slot one
+`u32` for the slot-to-row lookup and one `f64` and two `u32` for the ownership
+record. With a window the rows reserved are those of the window section.
 
 **Who enables it.** `TrainingSession::new` enables the store on every rank, on
 the pool of every node of `interior_cut_nodes` (stage 1 or later, with a
 successor), when `CutSelectionStrategy::stores_trial_states` holds: `Level1`
-only, a total match over the variants. The session enables neither the root pool
-nor the leaf pool, `exports.states` alone enables nothing, and without
-`cut_selection` no pool allocates a row. `exports.states` and the interim
-selection kernel keep reading the archive. The strategy comes from the config
-the CLI broadcasts and the node set from the graph every rank builds from it,
-so the same pools store on every rank for the whole run.
+only, a total match over the variants, with `enable_trial_states_within` when the
+strategy carries a window and `enable_trial_states` otherwise. The session
+enables neither the root pool nor the leaf pool, `exports.states` alone enables
+nothing, and without `cut_selection` no pool allocates a row. `exports.states`
+and the interim selection kernel keep reading the archive. The strategy comes
+from the config the CLI broadcasts and the node set from the graph every rank
+builds from it, so the same pools store, with the same window, on every rank for
+the whole run.
 
 **Two fill sites.** Sampled: `run_one_backward_level` calls
 `store_level_trial_states` once per level, after
@@ -1059,7 +1065,8 @@ The wrong-but-compiling alternatives:
   demonstrable in-process.
 
 Read: `cut/trial_states.rs`, `cut/pool.rs` (`CutPool::enable_trial_states`,
-`CutPool::store_trial_state`, `CutPool::trial_state`, `add_cut`),
+`CutPool::enable_trial_states_within`, `CutPool::store_trial_state`,
+`CutPool::trial_state`, `add_cut`),
 `cut/cut_selection.rs` (`CutSelectionStrategy::stores_trial_states`),
 `lp/indexer/cut_state_projection.rs` (`gather_trial_state`),
 `training/backward_pass_state.rs` (`store_level_trial_states`,
@@ -1099,7 +1106,8 @@ The independence is pinned for up to `PINNED_MAX_ROWS` rows,
 `INNER_DIMS` (`gemm.rs`), and nowhere else. The kernel's column block (`D_NC`)
 is never reached, because a call passes at most `M_BLOCK` states. An inner
 dimension above the largest of `INNER_DIMS` is summed in further blocks of
-`D_KC` and is drawn by no property; the inexact property draws 3, 257 and 300.
+`D_KC` and is drawn by no property; the inexact property draws 3, 257, 300 and
+600.
 
 The wrong-but-compiling alternatives:
 
@@ -1147,11 +1155,11 @@ record is compared with.
 `CutPool` keeps, with the trial-state store, a record with one `f64` and two
 `u32` per slot: the best value and the owning slot of the state stored at the
 slot, and the number of states the slot's cut owns, plus the number of slots
-already scanned. It is
-allocated by `enable_trial_states`, extended by `grow`, and a pool without a
-store has no record, so `update_ownership` and `rebuild_ownership` are no-ops
-there. It is never written to a checkpoint and never exchanged between ranks:
-each rank derives it from its own pool.
+already scanned. It is allocated by `enable_trial_states` or
+`enable_trial_states_within`, extended by `grow`, and a pool without a store has
+no record, so `update_ownership` and `rebuild_ownership` are no-ops there. It is
+never written to a checkpoint and never exchanged between ranks: each rank
+derives it from its own pool.
 
 `update_ownership` takes the slots written since the last call in two steps,
 each state block being at most `M_BLOCK` states: each new stored state against
@@ -1176,7 +1184,12 @@ update relies on every slot written since the last call lying at or above the
 scanned mark, which holds while every `forward_pass_index` is below the pool's
 `visit_stride` (the append-only section above), and on a state being stored
 before the update that passes its slot. A slot written or a state stored below
-the mark is not seen until `rebuild_ownership`.
+the mark is not seen until `rebuild_ownership`. A debug build refuses the second
+case: `Ownership::update` asserts that no state stored below the mark lacks an
+owner, which `rebuild_ownership` never trips because it resets the mark first.
+Dropping a stored state, which the window section below describes, clears its
+entry and its owner's count, so `state_owner` and `state_best_value` read `None`
+for it as for a slot that never stored one.
 
 The wrong-but-compiling alternatives:
 
@@ -1215,7 +1228,10 @@ Read: `cut/ownership.rs` (`Ownership::update`, `is_live`, `takes_over`,
 `an_inactive_scored_cut_wins_a_new_state`,
 `a_new_cut_takes_a_state_only_when_strictly_higher`,
 `incremental_record_equals_rebuild_and_reference`,
-`incremental_record_equals_rebuild_on_inexact_values` and
+`incremental_record_equals_rebuild_on_inexact_values`,
+`windowed_record_equals_rebuild_and_reference` (the same comparison with states
+dropped by a window),
+`a_state_stored_below_the_scanned_mark_panics_in_debug` and
 `ownership_record_is_identical_across_thread_counts` (`cut/ownership.rs`), and
 `no_live_cut_leaves_a_state_unowned` (`cut/selection_reference.rs`: the rule
 leaves a state unowned when no slot is live, which a stored state's scored slot
@@ -1247,7 +1263,8 @@ By slot role:
 - vacant: not live, in neither list, never activated.
 
 `run_cut_management` runs it in every iteration `should_run` holds, for the pool
-of each node of `interior_cut_nodes`: `update_ownership`, then
+of each node of `interior_cut_nodes`: `expire_trial_states` (a no-op without a
+window), `update_ownership`, then
 `apply_updates(ownership_activity_updates(..))`. It reads no archive, and a
 `level1` run without `exports.states` allocates none
 (`CutSelectionStrategy::scores_visited_states` is false for `Level1`). The
@@ -1268,7 +1285,8 @@ no update for `Level1`. The call site meets what the update relies on:
 
 **Envelope invariant.** Right after a selection run in which the budget evicts
 nothing, each stored state's owner is active, so the active cuts of the pool
-attain the maximum of its live cuts at every stored state. Both conditions are
+attain the maximum of its live cuts at every stored state; with a window the
+stored states are those inside it (the section below). Both conditions are
 needed. A state stored after the run can be owned by an inactive cut until the
 next run. And the budget, which runs after selection in the same iteration,
 clears the flag of scored cuts that own states.
@@ -1313,9 +1331,11 @@ The wrong-but-compiling alternatives, each shown by a mutation:
   which an active cut has an identical twin, which is not the same leg on both
   solver backends;
 - sending `Level1` through the windowed kernel and the per-node archive, which
-  on a multi-node level holds the siblings' states: the kernel returns no
-  update, so nothing is deactivated and the record is never brought up to
-  date. Under it `level1_deactivates_cuts_in_a_training_run`,
+  on a multi-node level holds the siblings' states. The mutation shown routes
+  `Level1` to the windowed kernel, which returns no update, so nothing is
+  deactivated and the record is never brought up to date; that the archive holds
+  the siblings' states on a multi-node level is not demonstrated by any test.
+  Under the mutation `level1_deactivates_cuts_in_a_training_run`,
   `level1_keeps_the_owner_of_every_stored_state_after_a_training_run`,
   `level1_reactivates_an_owner_the_budget_evicted`,
   `level1_tie_tolerance_no_longer_changes_a_run` (through its power check),
@@ -1358,6 +1378,132 @@ existence over a run's events, which carry counts and no slot),
 bit-identical cuts only the lowest slot is active, every stored state's owner is
 active, and both bounds close).
 
+## The lookback window removes trial states, never cuts
+
+A `level1` strategy with `lookback_iterations: Some(w)` keeps the trial states of
+the last `w` iterations of the run; with `None` every state of the run is kept
+and nothing below applies. `parse_cut_selection_config` writes `None` and no
+configuration key sets the window: `StudySetup::set_level1_lookback`, under
+`test-support`, is the only way.
+
+**The boundary.** The window is a slot boundary on this run's clock.
+`CutPool::window_start_slot`, beside `slot_index`, returns the first slot whose
+state is inside the window at a selection run of iteration `k`. With
+`r = k - iteration_base + 1`, the iterations this run has completed, it is slot 0
+while `r < w`, and `slot_base + (r - w) * visit_stride` from `r = w` on: the first
+slot of iteration `k - w + 1`. A generated cut's state is therefore inside
+exactly when its generating iteration exceeds `k - w`. A loaded state is at
+iteration 0 of the run's clock, whatever iteration its record carries: it is
+inside while `r < w` and leaves at the run's iteration `w`.
+
+**The step.** `CutPool::expire_trial_states(k)` removes the states that left. For
+each slot from the previous boundary up to the new one that holds a state, it
+decrements the count of the state's owner when the record has one, clears the
+entry and returns the row to the store; the boundary only moves up, and a pool
+without a window does nothing. It removes states and nothing else: the slot's
+role, coefficients, intercept and flag are untouched and `is_live` is unchanged,
+so a scored cut whose state left stays live and competes at every state that
+remains. The derivation of the section above then deactivates it when it owns
+none and keeps it active when it owns one. With a window the scored set of a pool
+is the states inside it, and the envelope invariant holds at those.
+`rebuild_ownership` needs no change: it resets the record and scans the stored
+states, which are those inside the window. A window below `check_frequency` is
+not refused: the states of the iterations between two runs are dropped before a
+run scores them, and the record still equals a rebuild.
+
+**Where it runs.** `run_cut_management` calls `expire_trial_states` for each
+interior pool before `update_ownership`; swapping the two gives the same record
+and only scores states that are about to leave, so the order saves work and no
+test pins it. `TrainingSession::new` enables the store with
+`enable_trial_states_within(w, check_frequency)` when the strategy carries
+`Some(w)`.
+
+**Memory.** `enable_trial_states_within` reserves
+`(w + check_frequency) * visit_stride` rows, never more than one per slot: the
+`w` iterations the previous run kept plus the `check_frequency` iterations added
+since, which is what a pool holds right before a run when selection runs on
+schedule and a pool receives at most `visit_stride` cuts per iteration. The store
+is a `u32` lookup per slot, cleared when a state is dropped, over rows handed out
+from a free list; `grow` extends the lookup, and a store without a window also
+appends a row per new slot. Past the reserve the store appends a row and never
+overwrites one, and that fill allocates; the reserve counts no loaded state, so a
+loaded state held beside a full reserve extends the store too. A clone of the
+pool, such as the one the Python `Policy` object holds, carries the reserved
+rows, so the window bounds it as well.
+
+**Same on every rank.** The window is a field of the strategy, which the CLI
+broadcasts and every rank builds its setup from, so each rank enables the same
+store with the same window; a test that sets it calls the setter on every rank.
+The boundary is a function of the window, the iteration and the slot layout; no
+collective reads the window and no value derived from it crosses ranks.
+
+The wrong-but-compiling alternatives:
+
+- clearing the scored flag of a cut when its state leaves: the cut is no longer
+  live and stops competing at the states that remain, so a state it would own
+  goes to another cut. Under it
+  `a_loaded_scored_cut_competes_only_at_this_runs_states_once_its_state_left_the_window`,
+  `level1_drops_the_owner_of_a_state_that_left_the_window`,
+  `windowed_record_equals_rebuild_and_reference` and
+  `a_level1_window_keeps_only_the_states_of_the_last_iterations` fail.
+  Deactivating the cut instead is shown only at the derivation's lists, since the
+  next run recomputes the flag: the two fixtures and the property fail, and
+  neither training test does;
+- dropping a state without taking it from its owner's count: the owner keeps
+  owning a state that is gone, stays active, and the record differs from a
+  rebuild. Under it
+  `level1_drops_the_owner_of_a_state_that_left_the_window`,
+  `a_loaded_scored_cut_competes_only_at_this_runs_states_once_its_state_left_the_window`,
+  `windowed_record_equals_rebuild_and_reference` and
+  `a_level1_window_keeps_only_the_states_of_the_last_iterations` fail;
+- reading the iteration a loaded record carries against this run's counter: the
+  record holds the iteration of the run that wrote it, so its state would leave
+  when this run's counter reaches that iteration plus `w`, not at the run's
+  iteration `w`. The mutation shown keeps a loaded state for good, as a record
+  of iteration 40 does in the fixture. Under it
+  `a_loaded_scored_cut_competes_only_at_this_runs_states_once_its_state_left_the_window`
+  and `windowed_record_equals_rebuild_and_reference` fail;
+- a boundary that keeps one iteration more or one fewer than the last `w`: under
+  both, `the_window_start_slot_agrees_with_the_slot_formula`,
+  `a_windowed_pool_never_holds_more_rows_than_its_reserve`,
+  `level1_drops_the_owner_of_a_state_that_left_the_window`,
+  `a_loaded_scored_cut_competes_only_at_this_runs_states_once_its_state_left_the_window`,
+  `windowed_record_equals_rebuild_and_reference` and
+  `a_level1_window_keeps_only_the_states_of_the_last_iterations` fail, and one
+  fewer also fails `a_window_longer_than_the_run_changes_nothing`;
+- returning a row to the free list and keeping the lookup entry: a dropped slot
+  still reads its state. Under it `a_bounded_store_frees_the_row_of_a_dropped_state`,
+  `a_windowed_pool_never_holds_more_rows_than_its_reserve`, both fixtures,
+  `windowed_record_equals_rebuild_and_reference` and
+  `a_level1_window_keeps_only_the_states_of_the_last_iterations` fail;
+- overwriting a row past the reserve instead of appending one: two slots share a
+  row. Under it `a_bounded_store_extends_when_more_states_are_held_than_reserved`
+  and `windowed_record_equals_rebuild_and_reference` fail;
+- deciding the window, or whether a rank enables the bounded store, from a value
+  a rank computes locally: the ranks then hold other states and select other
+  cuts. Not demonstrable in-process.
+
+Read: `cut/pool.rs` (`CutPool::window_start_slot`, `expire_trial_states`,
+`enable_trial_states_within`, `slot_index`), `cut/ownership.rs`
+(`Ownership::expire`), `cut/trial_states.rs` (`TrialStates::claim`, `release`,
+`grow`), `cut/cut_selection.rs` (`CutSelectionStrategy::Level1`),
+`setup/accessors.rs` (`StudySetup::set_level1_lookback`),
+`training/session/mod.rs` (`run_cut_management`, `TrainingSession::new`). Pinned
+by, in `cut/trial_states.rs`: `a_bounded_store_frees_the_row_of_a_dropped_state`
+and `a_bounded_store_extends_when_more_states_are_held_than_reserved`; in
+`cut/pool.rs`: `the_window_start_slot_agrees_with_the_slot_formula` (the start
+against the slot formula, loaded slots included) and
+`a_windowed_pool_never_holds_more_rows_than_its_reserve`; in
+`cut/cut_selection.rs`: `level1_drops_the_owner_of_a_state_that_left_the_window`
+and
+`a_loaded_scored_cut_competes_only_at_this_runs_states_once_its_state_left_the_window`
+(a loaded cut deactivated when it owns none, then winning a later state); in
+`cut/ownership.rs`: `windowed_record_equals_rebuild_and_reference` (the record
+against a rebuild and the states of the window against the reference rule, under
+drawn windows, strides and run frequencies); in `tests/cut_basis.rs`:
+`a_level1_window_keeps_only_the_states_of_the_last_iterations` and
+`a_window_longer_than_the_run_changes_nothing`.
+
 ## Binding activity is recorded only for a configured reader
 
 A cut's binding activity (`CutMetadata::active_count`,
@@ -1374,9 +1520,10 @@ variant by name, so a new variant must be classified to compile.
 the config every rank holds identically: the CLI broadcasts one `BroadcastConfig`
 from rank 0, every rank builds its `StudySetup` from it
 (`StudySetup::from_broadcast_params`), no `StudySetup` setter changes the
-strategy or the budget, and the training entry points of `StudySetup` copy both
-into the `TrainingConfig` the session reads. The switch is therefore the same on
-every rank for the whole run. A `BackwardPassState` built without the session
+strategy variant or the budget (`set_level1_lookback` sets the window of a
+`Level1` strategy, which the predicate does not read), and the training entry
+points of `StudySetup` copy both into the `TrainingConfig` the session reads.
+The switch is therefore the same on every rank for the whole run. A `BackwardPassState` built without the session
 keeps the default, which records.
 
 With the switch off a sampled backward pass does none of the recording work:

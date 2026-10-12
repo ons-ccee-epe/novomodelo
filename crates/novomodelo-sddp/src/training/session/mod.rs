@@ -272,14 +272,22 @@ where
                 .map(|(pos, _)| pos)
                 .collect()
         };
-        if config
+        if let Some(strategy) = config
             .cut_management
             .cut_selection
             .as_ref()
-            .is_some_and(CutSelectionStrategy::stores_trial_states)
+            .filter(|strategy| strategy.stores_trial_states())
         {
             for &node_pos in &interior_cut_nodes {
-                fcf.pools[training_ctx.node_graph.nodes[node_pos].pool_id].enable_trial_states();
+                let pool = &mut fcf.pools[training_ctx.node_graph.nodes[node_pos].pool_id];
+                match strategy {
+                    Level1 {
+                        check_frequency,
+                        lookback_iterations: Some(lookback),
+                        ..
+                    } => pool.enable_trial_states_within(*lookback, *check_frequency),
+                    _ => pool.enable_trial_states(),
+                }
             }
         }
 
@@ -1173,6 +1181,7 @@ where
                     Level1 { .. } => {
                         let pool = &mut self.fcf.pools[pool_id];
                         let start = Instant::now();
+                        pool.expire_trial_states(iteration);
                         pool.update_ownership();
                         let deact = pool.ownership_activity_updates(stage_index);
                         (deact, start.elapsed().as_secs_f64() * 1000.0)
