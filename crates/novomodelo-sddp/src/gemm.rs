@@ -2,8 +2,8 @@
 //!
 //! The single entry point [`gemm_block`] is the only call site in
 //! `novomodelo-sddp` for [`matrixmultiply::dgemm`]. The wrapper isolates the
-//! one `unsafe` block this crate's `cut_selection.rs` needs so the call
-//! site itself stays in safe code.
+//! one `unsafe` block that cut selection (`cut_selection.rs`) and `dynamic`
+//! scoring (`dcs.rs`) need so both call sites stay in safe code.
 
 /// Compute `v_block` (`k_rows × m_len`, row-major) = `coef` · `state_blockᵀ`.
 ///
@@ -28,9 +28,13 @@
 /// # Determinism
 ///
 /// `matrixmultiply` is single-threaded (the workspace pins
-/// `default-features = false`) and uses a fixed cache-blocked algorithm.
-/// Same input → bit-identical f64 output on any IEEE-754 target compiled
-/// with `target-feature=+avx2,+fma`.
+/// `default-features = false`) and uses a fixed cache-blocked algorithm, so
+/// one build returns a bit-identical f64 output for the same input, run to
+/// run. The microkernel is chosen at compile time from the target features.
+/// No file of the repository sets one, so every `x86_64` build resolves the
+/// same unfused kernel. A build given other target features, or built for
+/// another architecture, resolves a different kernel and can differ in the
+/// last bit.
 ///
 /// # Panics
 ///
@@ -161,5 +165,48 @@ mod tests {
 
         let mut v3 = vec![2.0_f64; 0];
         gemm_block(&[], &[], 5, 3, 0, &mut v3);
+    }
+
+    // A runtime assert, not `const { assert!(..) }`: a fused build must fail this one
+    // test, not the whole test build.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    #[allow(clippy::assertions_on_constants)]
+    fn resolved_kernel_is_the_unfused_baseline() {
+        const TWO_POW_M26: f64 = 1.0 / (1_u64 << 26) as f64;
+        const TWO_POW_M27: f64 = 1.0 / (1_u64 << 27) as f64;
+        const A: f64 = 1.0 + TWO_POW_M27;
+        const ROW: [f64; 2] = [1.0, A];
+        const STATE: [f64; 2] = [-(1.0 + TWO_POW_M26), A];
+        /// derived: with `a = 1 + 2^-27`, `a·a = 1 + 2^-26 + 2^-54` exactly, so the
+        /// row `[1, a]` against the state `[-(1 + 2^-26), a]` has the exact dot
+        /// product `2^-54`. An unfused kernel rounds `a·a` to `1 + 2^-26` and
+        /// returns `0`; a fused multiply-add keeps the last term and returns `2^-54`.
+        const UNFUSED_DOT: f64 = 0.0;
+
+        assert!(
+            !cfg!(target_feature = "fma") && !cfg!(target_feature = "avx"),
+            "this build was given x86_64 target features (fma: {}, avx: {}): an exported \
+             RUSTFLAGS or a Cargo config rustflags entry with target-feature or target-cpu \
+             does this, and results are then not comparable with the official builds",
+            cfg!(target_feature = "fma"),
+            cfg!(target_feature = "avx"),
+        );
+
+        for (k_rows, m_len) in [(1, 1), (4, 1), (1, 8), (5, 9)] {
+            let coef = ROW.repeat(k_rows);
+            let state = STATE.repeat(m_len);
+            let mut v = vec![f64::NAN; k_rows * m_len];
+
+            gemm_block(&coef, &state, k_rows, ROW.len(), m_len, &mut v);
+
+            for (i, x) in v.iter().enumerate() {
+                assert_eq!(
+                    x.to_bits(),
+                    UNFUSED_DOT.to_bits(),
+                    "shape ({k_rows}, {m_len}) element {i} = {x:e}, expected the unfused 0",
+                );
+            }
+        }
     }
 }
