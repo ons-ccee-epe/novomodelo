@@ -262,9 +262,11 @@ pub fn parse_cut_selection_config(
 ) -> Result<Option<CutSelectionStrategy>, String> {
     use novomodelo_io::config::SelectionMethod;
 
-    if let Some(tolerance) = config.row_activity_tolerance {
-        validate_tolerance("row_activity_tolerance", tolerance, false)?;
-    }
+    validate_tolerance(
+        "row_activity_tolerance",
+        config.row_activity_tolerance,
+        false,
+    )?;
 
     let Some(selection) = config.selection.as_ref() else {
         return Ok(None);
@@ -491,7 +493,7 @@ mod tests {
             (
                 "row_activity_tolerance",
                 RowSelectionConfig {
-                    row_activity_tolerance: Some(value),
+                    row_activity_tolerance: value,
                     ..RowSelectionConfig::default()
                 },
             ),
@@ -523,7 +525,7 @@ mod tests {
 
     #[test]
     fn parse_accepts_the_default_row_selection() {
-        for row_activity_tolerance in [None, Some(0.0)] {
+        for row_activity_tolerance in [RowSelectionConfig::default().row_activity_tolerance, 0.0] {
             let cfg = RowSelectionConfig {
                 row_activity_tolerance,
                 ..RowSelectionConfig::default()

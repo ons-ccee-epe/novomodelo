@@ -148,7 +148,7 @@ impl fmt::Display for StoppingMode {
 ///
 /// `selection` chooses the method and carries only that method's parameters;
 /// omitting it (the default) disables row selection.
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RowSelectionConfig {
@@ -159,9 +159,9 @@ pub struct RowSelectionConfig {
     /// rows are non-negative weights whose sum is at most that stage's discount
     /// factor, so the threshold is dimensionless. The recorded activity is read
     /// only by `max_active_per_stage` and by the `seed_window` of the `dynamic`
-    /// method. Must be `>= 0`. Default `0.0` when absent.
-    #[serde(default)]
-    pub row_activity_tolerance: Option<f64>,
+    /// method. Must be `>= 0`. A value of `0` counts a multiplier at solver
+    /// rounding level as binding.
+    pub row_activity_tolerance: f64,
 
     /// Cap on the active rows that the current run has added to a stage's row
     /// pool. Absent (default): no cap.
@@ -205,6 +205,16 @@ pub struct RowSelectionConfig {
     /// disables row selection.
     #[serde(default, deserialize_with = "deserialize_selection_method")]
     pub selection: Option<SelectionMethod>,
+}
+
+impl Default for RowSelectionConfig {
+    fn default() -> Self {
+        Self {
+            row_activity_tolerance: 1e-6,
+            max_active_per_stage: None,
+            selection: None,
+        }
+    }
 }
 
 /// Methods that left the config surface; naming one is a load error that names
@@ -742,11 +752,17 @@ pub struct LipschitzConfig {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp
+)]
 mod tests {
     use super::{
         BackwardScheduler, DualEdgeWeight, NonZeroU32, NonZeroUsize, PresolveMode, PriceStrategy,
-        ScaleStrategy, SelectionMethod, StoppingRuleConfig, TrainingConfig, TrainingSelection,
+        RowSelectionConfig, ScaleStrategy, SelectionMethod, StoppingRuleConfig, TrainingConfig,
+        TrainingSelection,
     };
     use crate::config::tests::removed_selection_method_names;
 
@@ -772,7 +788,7 @@ mod tests {
         }"#;
         let cfg: TrainingConfig = serde_json::from_str(json).unwrap();
         let cs = &cfg.cut_selection;
-        assert_eq!(cs.row_activity_tolerance, Some(1e-6));
+        assert_eq!(cs.row_activity_tolerance, 1e-6);
         assert_eq!(cs.max_active_per_stage, Some(4000));
         match cs.selection.as_ref().expect("selection present") {
             SelectionMethod::Dynamic {
@@ -859,6 +875,13 @@ mod tests {
             ),
             "unexpected message: {err}"
         );
+    }
+
+    #[test]
+    fn row_selection_defaults_the_activity_tolerance_to_1e_6() {
+        let loaded: RowSelectionConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(loaded.row_activity_tolerance, 1e-6);
+        assert_eq!(RowSelectionConfig::default().row_activity_tolerance, 1e-6);
     }
 
     #[test]

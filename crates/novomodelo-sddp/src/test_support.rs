@@ -3768,8 +3768,6 @@ pub fn terminal_generated_fan_setup(k: usize, max_iterations: u32) -> StudySetup
 fn k_fan_config_dcs(forward_passes: u32, max_iterations: u32) -> Config {
     let mut config = k_fan_config(forward_passes, max_iterations);
     config.training.cut_selection = RowSelectionConfig {
-        row_activity_tolerance: None,
-        max_active_per_stage: None,
         selection: Some(SelectionMethod::Dynamic {
             start_iteration: NonZeroU32::MIN,
             seed_window: 5,
@@ -3777,6 +3775,7 @@ fn k_fan_config_dcs(forward_passes: u32, max_iterations: u32) -> Config {
             max_added_per_round: const { NonZeroU32::new(10).expect("10 is nonzero") },
             violation_tolerance: None,
         }),
+        ..RowSelectionConfig::default()
     };
     config
 }

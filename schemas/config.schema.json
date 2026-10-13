@@ -735,13 +735,10 @@
           ]
         },
         "row_activity_tolerance": {
-          "default": null,
-          "description": "Binding threshold for activity tracking: a constraint row counts as\nbinding at a solution point when its dual multiplier is strictly greater\nthan this value (a signed comparison; a multiplier equal to the\nthreshold does not bind). In one solve the multipliers of a stage's pool\nrows are non-negative weights whose sum is at most that stage's discount\nfactor, so the threshold is dimensionless. The recorded activity is read\nonly by `max_active_per_stage` and by the `seed_window` of the `dynamic`\nmethod. Must be `>= 0`. Default `0.0` when absent.",
+          "default": 1e-6,
+          "description": "Binding threshold for activity tracking: a constraint row counts as\nbinding at a solution point when its dual multiplier is strictly greater\nthan this value (a signed comparison; a multiplier equal to the\nthreshold does not bind). In one solve the multipliers of a stage's pool\nrows are non-negative weights whose sum is at most that stage's discount\nfactor, so the threshold is dimensionless. The recorded activity is read\nonly by `max_active_per_stage` and by the `seed_window` of the `dynamic`\nmethod. Must be `>= 0`. A value of `0` counts a multiplier at solver\nrounding level as binding.",
           "format": "double",
-          "type": [
-            "number",
-            "null"
-          ]
+          "type": "number"
         },
         "selection": {
           "anyOf": [
@@ -1086,7 +1083,7 @@
           "$ref": "#/$defs/RowSelectionConfig",
           "default": {
             "max_active_per_stage": null,
-            "row_activity_tolerance": null,
+            "row_activity_tolerance": 1e-6,
             "selection": null
           },
           "description": "Row-selection settings."

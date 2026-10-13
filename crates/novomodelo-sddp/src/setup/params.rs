@@ -140,7 +140,8 @@ pub struct StudyParams {
     pub inflow_method: InflowNonNegativityMethod,
     /// Optional cut selection strategy (None means cut selection is disabled).
     pub cut_selection: Option<CutSelectionStrategy>,
-    /// Minimum dual multiplier for a cut to count as binding (`0.0` if unset).
+    /// `training.cut_selection.row_activity_tolerance`. Described on
+    /// [`row_activity_tolerance`](novomodelo_io::config::RowSelectionConfig::row_activity_tolerance).
     pub cut_activity_tolerance: f64,
     /// `training.cut_selection.max_active_per_stage`; `None` means no cap. Described on
     /// [`max_active_per_stage`](novomodelo_io::config::RowSelectionConfig::max_active_per_stage).
@@ -270,11 +271,7 @@ impl StudyParams {
         let cut_selection = parse_cut_selection_config(&config.training.cut_selection)
             .map_err(|msg| SddpError::Validation(format!("cut_selection config error: {msg}")))?;
 
-        let cut_activity_tolerance = config
-            .training
-            .cut_selection
-            .row_activity_tolerance
-            .unwrap_or(0.0);
+        let cut_activity_tolerance = config.training.cut_selection.row_activity_tolerance;
 
         let budget = config.training.cut_selection.max_active_per_stage;
 
@@ -284,7 +281,7 @@ impl StudyParams {
         let backward_scheduler = config.training.parallelism.backward_scheduler;
 
         if let Some(b) = budget
-            && u64::from(b) < u64::from(forward_passes)
+            && b < forward_passes
         {
             tracing::warn!(
                 "max_active_per_stage ({b}) is less than forward_passes \
@@ -359,6 +356,7 @@ mod tests {
     use tracing::{Event, Level, Metadata, Subscriber, span};
 
     use super::{BoundaryStateRequirements, StudyParams};
+    use crate::config::CutManagementConfig;
 
     // ---------------------------------------------------------------------------
     // Minimal WARN-capturing subscriber for use in tests.
@@ -656,6 +654,23 @@ mod tests {
                 "boundary value {boundary} must not warn, got: {recorded:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_activity_tolerance_has_one_default() {
+        let default = RowSelectionConfig::default().row_activity_tolerance;
+        let params = StudyParams::from_config(&base_test_config(), Vec::new())
+            .expect("base config is valid");
+        assert_eq!(params.cut_activity_tolerance, default);
+        assert_eq!(
+            CutManagementConfig::default().cut_activity_tolerance,
+            default
+        );
+
+        let mut config = base_test_config();
+        config.training.cut_selection.row_activity_tolerance = 0.0;
+        let params = StudyParams::from_config(&config, Vec::new()).expect("0 is a valid tolerance");
+        assert_eq!(params.cut_activity_tolerance, 0.0);
     }
 
     /// `from_config` leaves `boundary` at the `none()` placeholder (the

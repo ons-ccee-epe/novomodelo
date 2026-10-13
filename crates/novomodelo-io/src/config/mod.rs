@@ -600,7 +600,8 @@ impl Config {
     clippy::expect_used,
     clippy::panic,
     clippy::too_many_lines,
-    clippy::doc_markdown
+    clippy::doc_markdown,
+    clippy::float_cmp
 )]
 mod tests {
     use super::*;
@@ -1651,7 +1652,7 @@ mod tests {
     #[test]
     fn row_selection_config_serde_roundtrip() {
         let original = RowSelectionConfig {
-            row_activity_tolerance: Some(1e-6),
+            row_activity_tolerance: 1e-6,
             max_active_per_stage: Some(100),
             selection: Some(SelectionMethod::Level1 {
                 check_frequency: NonZeroU32::new(7).unwrap(),
@@ -1661,7 +1662,7 @@ mod tests {
         let json = serde_json::to_string(&original).unwrap();
         let roundtripped: RowSelectionConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(roundtripped.max_active_per_stage, Some(100));
-        assert_eq!(roundtripped.row_activity_tolerance, Some(1e-6));
+        assert_eq!(roundtripped.row_activity_tolerance, 1e-6);
         match roundtripped.selection.expect("selection present") {
             SelectionMethod::Level1 {
                 check_frequency,
