@@ -788,17 +788,15 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
         "{label}: training must not error: {:?}",
         outcome.error
     );
-    let last_selection_pass = events
-        .try_iter()
-        .filter_map(|event| match event {
-            TrainingEvent::PolicySelectionComplete {
-                iteration,
-                per_stage,
-                ..
-            } => Some((iteration, per_stage)),
-            _ => None,
-        })
-        .last();
+    let events: Vec<TrainingEvent> = events.try_iter().collect();
+    let last_selection_pass = events.iter().rev().find_map(|event| match event {
+        TrainingEvent::PolicyPoolSummary { iteration, pools }
+            if pools.iter().any(|record| record.rows_deactivated.is_some()) =>
+        {
+            Some((*iteration, pools))
+        }
+        _ => None,
+    });
     let mut reactivated_by_final_pass = vec![0_u32; n_stages];
     match &last_selection_pass {
         None => assert_eq!(
@@ -806,14 +804,14 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
             setup.fcf.total_generated_cuts(),
             "{label}: a cut is inactive after a run with no selection pass"
         ),
-        Some((iteration, per_stage)) if *iteration == outcome.result.iterations => {
+        Some((iteration, pools)) if *iteration == outcome.result.iterations => {
             assert_eq!(
-                per_stage.len(),
-                n_stages - 1,
-                "{label}: a chain has one selection record per non-terminal pool, in pool order"
+                pools.len(),
+                n_stages,
+                "{label}: a chain has one record per pool, in pool order"
             );
-            for (pool, record) in per_stage.iter().enumerate() {
-                reactivated_by_final_pass[pool] = record.rows_reactivated;
+            for (pool, record) in pools.iter().enumerate() {
+                reactivated_by_final_pass[pool] = record.rows_reactivated.unwrap_or(0);
             }
         }
         Some(_) => {}

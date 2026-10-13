@@ -26,7 +26,7 @@ use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use novomodelo_comm::{Communicator, ReduceOp, per_rank_counts};
-use novomodelo_core::{StageRowSelectionRecord, TrainingEvent};
+use novomodelo_core::{PoolRowCounts, TrainingEvent};
 use novomodelo_solver::SolverInterface;
 
 use crate::{
@@ -483,7 +483,7 @@ where
             )
         };
 
-        self.run_cut_management(iteration)?;
+        self.run_cut_management(iteration);
 
         grow_pools_for_next_iteration(
             self.fcf,
@@ -1089,71 +1089,34 @@ where
         Ok((backward_result, bwd_solve_time_ms))
     }
 
-    /// Run the periodic cut selection, the budget, and the template refreeze.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SddpError::Validation`] if stage 0 carries no alive node.
-    // Rationale: the phases mutate `&mut self` and each reads state the prior
-    // phase wrote, so splitting into helpers would pass every field individually.
-    #[allow(clippy::too_many_lines)]
-    fn run_cut_management(&mut self, iteration: u64) -> Result<(), SddpError> {
-        // `sel_state` is `Some` only when strategy-based selection ran;
-        // `record_by_pool` (built in the same block) maps a pool id to its
-        // `per_stage` record index for the budget back-annotation below.
-        let mut sel_state: Option<(Vec<StageRowSelectionRecord>, u32, u64, u32)> = None;
-        let mut record_by_pool: Option<Vec<Option<usize>>> = None;
+    /// Run the periodic cut selection, the budget, and the template refreeze,
+    /// then report every pool's row counts.
+    fn run_cut_management(&mut self, iteration: u64) {
+        let reports_pools = self.config.cut_management.cut_selection.is_some()
+            || self.config.cut_management.budget.is_some();
+        let mut pools = if reports_pools {
+            self.pool_counts_before_row_management()
+        } else {
+            Vec::new()
+        };
+        let mut selection_complete = None;
 
         if let Some(strategy) = self.config.cut_management.cut_selection.as_ref()
             && strategy.should_run(iteration)
         {
             let sel_start = Instant::now();
-            let num_sel_stages = self.training_ctx.horizon.num_stages().saturating_sub(1);
-            let mut rows_deactivated = 0u32;
-            let mut per_stage = Vec::with_capacity(num_sel_stages);
-
             let node_graph = self.training_ctx.node_graph;
-            // Root pool resolved by STAGE (the sole stage-0 node), never by array
-            // position: nodes[0] is the smallest-id node, not necessarily the
-            // root on a branching graph (the same resolution the LB path uses).
-            let root_node = node_graph.frontier_node(StageIdx(0)).ok_or_else(|| {
-                SddpError::Validation("training session: stage 0 carries no alive node".to_string())
-            })?;
-            let root_pool = node_graph.nodes[root_node].pool_id;
-            let budget_set = self.config.cut_management.budget.is_some();
 
             // Selection judges interior cut-generating nodes only; terminal
-            // leaves gain no cuts. The root pool is recorded here and never
-            // selected.
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            {
-                let root_cut_pool = &self.fcf.pools[root_pool];
-                let root_active = root_cut_pool.active_count() as u32;
-                per_stage.push(StageRowSelectionRecord {
-                    // Domain stage_id of the root (study-stage position 0).
-                    stage: self.stage_ctx.study_stage_ids.first().copied().unwrap_or(0) as u32,
-                    rows_populated: root_cut_pool.populated() as u32,
-                    rows_active_before: root_active,
-                    rows_deactivated: 0,
-                    rows_reactivated: 0,
-                    rows_active_after: root_active,
-                    selection_time_ms: 0.0,
-                    budget_evicted: budget_set.then_some(0),
-                    active_after_budget: budget_set.then_some(root_active),
-                    rows_in_lp: root_cut_pool.populated() as u32,
-                });
-            }
-
-            // Interior cut-generating nodes in canonical order. A cut-generating
-            // (non-leaf) node always owns its own pool, so selection is per-pool.
-            let interior_nodes = &self.interior_cut_nodes;
+            // leaves gain no cuts and the root pool is never selected.
+            // A cut-generating (non-leaf) node always owns its own pool, so
+            // selection is per-pool.
             // Sequential (not `into_par_iter`): the ownership scan already
             // saturates the cores via its inner parallelism.
-            let mut deactivations: Vec<(usize, usize, CutActivityUpdates, f64)> =
-                Vec::with_capacity(interior_nodes.len());
-            for &node_pos in interior_nodes {
-                let node = &node_graph.nodes[node_pos];
-                let pool_id = node.pool_id;
+            let mut deactivations: Vec<(usize, CutActivityUpdates, f64)> =
+                Vec::with_capacity(self.interior_cut_nodes.len());
+            for &node_pos in &self.interior_cut_nodes {
+                let pool_id = node_graph.nodes[node_pos].pool_id;
                 let (deact, elapsed_ms) = match strategy {
                     Level1 { .. } => {
                         let pool = &mut self.fcf.pools[pool_id];
@@ -1169,57 +1132,36 @@ where
                         )
                     }
                 };
-                deactivations.push((node.stage.0, pool_id, deact, elapsed_ms));
+                deactivations.push((pool_id, deact, elapsed_ms));
             }
 
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            for (stage, pool_id, deact, stage_sel_time_ms) in deactivations {
+            let mut rows_deactivated = 0u32;
+            #[allow(clippy::cast_possible_truncation)]
+            let stages_processed = deactivations.len() as u32;
+            #[allow(clippy::cast_possible_truncation)]
+            for (pool_id, deact, stage_sel_time_ms) in deactivations {
                 let pool = &mut self.fcf.pools[pool_id];
-                let populated = pool.populated() as u32;
-                let active_before = pool.active_count() as u32;
                 let n_deact = deact.updates.len() as u32;
                 let n_reactivated = deact.reactivations.len() as u32;
                 rows_deactivated += n_deact;
 
                 pool.apply_updates(&deact);
 
-                let active_after = pool.active_count() as u32;
-                let rows_in_lp = pool.populated() as u32;
-                per_stage.push(StageRowSelectionRecord {
-                    // Domain stage_id by position from the ordered study ids;
-                    // falls back to the positional index for a short stub context.
-                    stage: self
-                        .stage_ctx
-                        .study_stage_ids
-                        .get(stage)
-                        .copied()
-                        .unwrap_or_else(|| i32::try_from(stage).unwrap_or(i32::MAX))
-                        as u32,
-                    rows_populated: populated,
-                    rows_active_before: active_before,
-                    rows_deactivated: n_deact,
-                    rows_reactivated: n_reactivated,
-                    rows_active_after: active_after,
-                    selection_time_ms: stage_sel_time_ms,
-                    budget_evicted: None,
-                    active_after_budget: None,
-                    rows_in_lp,
-                });
+                let counts = &mut pools[pool_id];
+                counts.rows_deactivated = Some(n_deact);
+                counts.rows_reactivated = Some(n_reactivated);
+                counts.selection_time_ms = Some(stage_sel_time_ms);
+                counts.rows_active_after = pool.active_count() as u32;
             }
 
             #[allow(clippy::cast_possible_truncation)]
             let selection_time_ms = sel_start.elapsed().as_millis() as u64;
-            #[allow(clippy::cast_possible_truncation)]
-            let stages_processed_sel = num_sel_stages as u32;
-
-            record_by_pool = Some(selection_record_index_by_pool(node_graph, interior_nodes));
-
-            sel_state = Some((
-                per_stage,
+            selection_complete = Some(TrainingEvent::PolicySelectionComplete {
+                iteration,
                 rows_deactivated,
+                stages_processed,
                 selection_time_ms,
-                stages_processed_sel,
-            ));
+            });
         }
 
         // Enforced every iteration when set; selection's `check_frequency` does
@@ -1233,18 +1175,9 @@ where
                 let pool_id = self.training_ctx.node_graph.nodes[node_pos].pool_id;
                 let result = self.fcf.pools[pool_id].enforce_budget(b, iteration);
                 total_evicted += result.evicted_count;
-                // Annotate the pool's OWN selection record via `record_by_pool`,
-                // never `per_stage[pool_id]`: the record index equals the pool id
-                // only on a chain (see `selection_record_index_by_pool`).
-                if let Some((ref mut per_stage, _, _, _)) = sel_state
-                    && let Some(rec_idx) = record_by_pool
-                        .as_ref()
-                        .and_then(|m| m.get(pool_id).copied().flatten())
-                    && let Some(rec) = per_stage.get_mut(rec_idx)
-                {
-                    rec.budget_evicted = Some(result.evicted_count);
-                    rec.active_after_budget = Some(result.active_after);
-                }
+                let counts = &mut pools[pool_id];
+                counts.budget_evicted = Some(result.evicted_count);
+                counts.active_after_budget = Some(result.active_after);
             }
             #[allow(clippy::cast_possible_truncation)]
             let enforcement_time_ms = budget_start.elapsed().as_millis() as u64;
@@ -1260,19 +1193,8 @@ where
             );
         }
 
-        // Emit after the budget loop has annotated every per-stage record.
-        if let Some((per_stage, rows_deactivated, selection_time_ms, stages_processed)) = sel_state
-        {
-            emit(
-                self.runtime.event_sender(),
-                TrainingEvent::PolicySelectionComplete {
-                    iteration,
-                    rows_deactivated,
-                    stages_processed,
-                    selection_time_ms,
-                    per_stage,
-                },
-            );
+        if let Some(event) = selection_complete {
+            emit(self.runtime.event_sender(), event);
         }
 
         let freeze_start = Instant::now();
@@ -1289,7 +1211,55 @@ where
                 freeze_time_ms,
             },
         );
-        Ok(())
+
+        if reports_pools {
+            let lazy = matches!(
+                self.config.cut_management.cut_selection,
+                Some(Dynamic { .. })
+            );
+            #[allow(clippy::cast_possible_truncation)]
+            for (counts, batch) in pools.iter_mut().zip(&self.scratch.freeze_row_batches) {
+                counts.rows_in_lp = (!lazy).then_some(batch.num_rows as u32);
+            }
+            emit(
+                self.runtime.event_sender(),
+                TrainingEvent::PolicyPoolSummary { iteration, pools },
+            );
+        }
+    }
+
+    /// One [`PoolRowCounts`] per pool id, holding the counts a pool has before
+    /// any row management of the iteration; the later phases fill the rest.
+    #[allow(clippy::cast_possible_truncation)]
+    fn pool_counts_before_row_management(&self) -> Vec<PoolRowCounts> {
+        let node_graph = self.training_ctx.node_graph;
+        (0..node_graph.n_pools)
+            .map(|pool_id| {
+                let pool = &self.fcf.pools[pool_id];
+                let stage = node_graph.pool_stage[pool_id].0;
+                let rows_active = pool.active_count() as u32;
+                PoolRowCounts {
+                    pool_id: pool_id as u32,
+                    // Falls back to the positional index for a short stub context.
+                    stage_id: self
+                        .stage_ctx
+                        .study_stage_ids
+                        .get(stage)
+                        .copied()
+                        .unwrap_or_else(|| i32::try_from(stage).unwrap_or(i32::MAX)),
+                    node_id: node_graph.sole_pool_owner(pool_id).map(|node| node.0),
+                    rows_in_pool: pool.generated() as u32,
+                    rows_active_before: rows_active,
+                    rows_deactivated: None,
+                    rows_reactivated: None,
+                    selection_time_ms: None,
+                    rows_active_after: rows_active,
+                    budget_evicted: None,
+                    active_after_budget: None,
+                    rows_in_lp: None,
+                }
+            })
+            .collect()
     }
 
     /// Rebuild every pool's frozen template from the current active cut set,
@@ -1443,25 +1413,6 @@ fn committed_lower_bound_history(
     &history[..history.len().saturating_sub(uncommitted)]
 }
 
-/// Pool → selection-record index, for each interior cut-generating node's pool
-/// in canonical order (`interior_nodes`). [`TrainingSession::run_cut_management`]
-/// emits the root's record first, so these start at 1; the root pool and the
-/// shared leaf pool stay `None`. Budget enforcement iterates the interior pools
-/// and must annotate each pool's record through THIS map, never by pool id used
-/// as a `per_stage` index — on a branching graph whose root is not the
-/// smallest-id node the two differ, so eviction stats would land on a sibling's
-/// record. On a chain an interior pool's id equals its record index.
-fn selection_record_index_by_pool(
-    node_graph: &NodeGraph,
-    interior_nodes: &[NodePos],
-) -> Vec<Option<usize>> {
-    let mut by_pool = vec![None; node_graph.n_pools];
-    for (record_idx, &pos) in interior_nodes.iter().enumerate() {
-        by_pool[node_graph.nodes[pos].pool_id] = Some(1 + record_idx);
-    }
-    by_pool
-}
-
 /// Between-iteration capacity growth: doubles a pool's capacity via
 /// [`crate::cut::CutPool::grow`] (`Vec::resize`, position-stable — the
 /// append-only/slot-identity contract survives) when `realized_visits`
@@ -1534,7 +1485,7 @@ mod tests {
     use chrono::NaiveDate;
     use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
     use novomodelo_core::{
-        Bus, EntityId, SystemBuilder, TrainingEvent, WorkerTimingPhase,
+        Bus, EntityId, PoolRowCounts, SystemBuilder, TrainingEvent, WorkerTimingPhase,
         scenario::{
             CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
             SamplingScheme,
@@ -1552,10 +1503,7 @@ mod tests {
         ClassSchemes, OpeningTreeInputs, StochasticContext, build_stochastic_context,
     };
 
-    use super::{
-        IterationOutcome, TrainingSession, grow_pools_for_next_iteration,
-        selection_record_index_by_pool,
-    };
+    use super::{IterationOutcome, TrainingSession, grow_pools_for_next_iteration};
     use crate::{
         CutPool, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
         config::{CutManagementConfig, EventConfig, LoopConfig},
@@ -2206,7 +2154,7 @@ mod tests {
         .unwrap();
 
         session.prime_frozen_templates();
-        session.run_cut_management(4).unwrap();
+        session.run_cut_management(4);
 
         let pools = &session.fcf.pools;
         let active: Vec<usize> = pools.iter().map(CutPool::active_count).collect();
@@ -2223,6 +2171,122 @@ mod tests {
                 "pool {pool_id}: the template must hold exactly the pool's active cuts"
             );
         }
+    }
+
+    /// derived: pools 0 and 1 hold `CUTS_PER_POOL` cuts of iterations
+    /// 1..=`CUTS_PER_POOL`, the terminal pool holds `CUTS_PER_POOL` boundary
+    /// cuts, and a cap of `CAP` at iteration `CUTS_PER_POOL + 1` evicts the
+    /// excess of the interior pool 1 only.
+    #[test]
+    fn a_budget_iteration_reports_every_pool() {
+        const CUTS_PER_POOL: u32 = 3;
+        const CAP: u32 = 1;
+        let n_stages = 3;
+        let state = test_support::state_layout(1, 0);
+        let templates = vec![minimal_template(state.n_state); n_stages];
+        let initial_state = vec![0.0_f64; state.n_state];
+        let stochastic = make_stochastic_context(n_stages, 1);
+        let stages = make_stages(n_stages);
+        let horizon = HorizonMode::Finite {
+            num_stages: n_stages,
+        };
+        let mut fcf = make_fcf(n_stages, state.n_state, 1, 10);
+        for pool in &mut fcf.pools[..2] {
+            for iteration in 1..=u64::from(CUTS_PER_POOL) {
+                pool.add_cut(NodeId(0), iteration, 0, 1.0, &[1.0]);
+            }
+        }
+        let boundary: Vec<OwnedPolicyCutRecord> = (0..CUTS_PER_POOL)
+            .map(|slot_index| OwnedPolicyCutRecord {
+                cut_id: u64::from(slot_index),
+                slot_index,
+                iteration: 0,
+                forward_pass_index: 0,
+                intercept: 1.0,
+                coefficients: vec![1.0],
+                is_active: true,
+            })
+            .collect();
+        fcf.pools[2] = CutPool::new_with_warm_start(1, 1, 0, &boundary);
+
+        let (tx, rx) = mpsc::channel::<TrainingEvent>();
+        let mut config = make_config(1, 10, 1, n_stages);
+        config.cut_management.budget = Some(CAP);
+        config.events.event_sender = Some(tx);
+        let mut solver = MockSolver::with_fixed(100.0);
+        let comm = StubComm;
+        let block_counts = vec![1usize; n_stages];
+        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let geometry = equipment_free_geometry(&block_counts);
+        let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
+        let stage_ctx = fixture.ctx();
+        let study_dims = test_support::study_dims();
+        let cut_state_layouts = test_support::all_enabled_cut_state_layouts(&state, n_stages);
+        let node_graph_fixture = test_support::chain_node_graph(&stochastic);
+        let training_ctx = make_training_ctx(
+            &horizon,
+            &study_dims,
+            &state,
+            &cut_state_layouts,
+            &stochastic,
+            &initial_state,
+            &stages,
+            &node_graph_fixture,
+        );
+        let mut session = TrainingSession::new(
+            &mut solver,
+            config,
+            &mut fcf,
+            &stage_ctx,
+            &training_ctx,
+            &comm,
+            || Ok(MockSolver::with_fixed(100.0)),
+            SolverProfiles::default(),
+        )
+        .unwrap();
+
+        session.prime_frozen_templates();
+        session.run_cut_management(u64::from(CUTS_PER_POOL) + 1);
+
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, TrainingEvent::PolicySelectionComplete { .. })),
+            "no selection method is set"
+        );
+        let summaries: Vec<&Vec<PoolRowCounts>> = events
+            .iter()
+            .filter_map(|event| match event {
+                TrainingEvent::PolicyPoolSummary { pools, .. } => Some(pools),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(summaries.len(), 1, "one summary for the one iteration");
+        let pools = summaries[0];
+        assert_eq!(pools.len(), n_stages);
+
+        let cuts = CUTS_PER_POOL;
+        let evicted = cuts - CAP;
+        for (pool_id, counts) in pools.iter().enumerate() {
+            assert_eq!(counts.pool_id as usize, pool_id);
+            assert_eq!(counts.stage_id, pool_id as i32, "pool {pool_id}");
+            assert_eq!(counts.node_id, Some(pool_id as i32), "pool {pool_id}");
+            assert_eq!(counts.rows_in_pool, cuts, "pool {pool_id}");
+            assert_eq!(counts.rows_active_before, cuts, "pool {pool_id}");
+            assert_eq!(counts.rows_active_after, cuts, "pool {pool_id}");
+            assert_eq!(counts.rows_deactivated, None, "pool {pool_id}");
+            assert_eq!(counts.rows_reactivated, None, "pool {pool_id}");
+            assert_eq!(counts.selection_time_ms, None, "pool {pool_id}");
+        }
+        for pool_id in [0, 2] {
+            assert_eq!(pools[pool_id].budget_evicted, None, "pool {pool_id}");
+            assert_eq!(pools[pool_id].active_after_budget, None, "pool {pool_id}");
+            assert_eq!(pools[pool_id].rows_in_lp, Some(cuts), "pool {pool_id}");
+        }
+        assert_eq!(pools[1].budget_evicted, Some(evicted));
+        assert_eq!(pools[1].active_after_budget, Some(CAP));
+        assert_eq!(pools[1].rows_in_lp, Some(CAP));
     }
 
     // ── Test: training_session_finalize_emits_training_finished ───────────
@@ -2750,27 +2814,18 @@ mod tests {
         );
     }
 
-    fn gen_openings() -> NodeOpenings {
-        NodeOpenings {
-            source: OpeningSource::Generated,
-            offset: 0,
-            len: 1,
-            q: 1.0,
-        }
-    }
-
-    /// On a branching graph whose canonical (ascending-id) order does NOT
-    /// place the root first, the cut-budget back-annotation must reach each
-    /// pool's OWN selection record through `selection_record_index_by_pool`, not
-    /// by using the pool id as a `per_stage` index.
+    /// On a branching graph whose root is not its smallest-id node, pool ids,
+    /// node positions and declared node ids all differ: each count lands at its
+    /// own pool id and carries that pool's own owner.
     ///
-    /// Ids 1,2 (leaves, positions 0,1), 3,7 (fan nodes, positions 2,3), 10
-    /// (root, position 4). Pools: fan A→0, fan B→1, root→2, shared leaf→3. The
-    /// `per_stage` record order is [root, fan A, fan B], so the correct map sends
-    /// pool 0→record 1, pool 1→record 2 and the root and leaf pools to None —
-    /// deliberately NOT the `pool_id→pool_id` the pre-fix read assumed.
+    /// Declared ids 1, 2 (leaves, positions 0, 1), 3, 7 (fan nodes, positions
+    /// 2, 3), 10 (root, position 4); pools: fan 3 -> 0, fan 7 -> 1, root -> 2,
+    /// shared leaf pool -> 3.
     #[test]
-    fn selection_record_index_by_pool_maps_branching_root_not_by_pool_id() {
+    fn pool_counts_are_indexed_by_pool_id_on_a_branching_graph() {
+        const CUTS_PER_POOL: u32 = 3;
+        const CAP: u32 = 1;
+        let n_stages = 3;
         let leaf = |pool_id| NodeRuntime {
             stage: StageIdx(2),
             pool_id,
@@ -2804,38 +2859,100 @@ mod tests {
             n_pools: 4,
             pool_stage: vec![StageIdx(1), StageIdx(1), StageIdx(0), StageIdx(2)],
         };
+        let state = test_support::state_layout(1, 0);
+        let templates = vec![minimal_template(state.n_state); n_stages];
+        let initial_state = vec![0.0_f64; state.n_state];
+        let stochastic = make_stochastic_context(n_stages, 1);
+        let stages = make_stages(n_stages);
+        let horizon = HorizonMode::Finite {
+            num_stages: n_stages,
+        };
+        let mut fcf = FutureCostFunction::new(
+            node_graph.n_pools,
+            state.n_state,
+            1,
+            10,
+            &vec![0; node_graph.n_pools],
+        );
+        for pool in &mut fcf.pools[..3] {
+            for iteration in 1..=u64::from(CUTS_PER_POOL) {
+                pool.add_cut(NodeId(0), iteration, 0, 1.0, &[1.0]);
+            }
+        }
 
-        // root_pool + interior_nodes computed exactly as run_cut_management does.
-        let root_pool = node_graph.nodes[node_graph.frontier_node(StageIdx(0)).unwrap()].pool_id;
-        let interior_nodes: Vec<NodePos> = node_graph
-            .nodes
-            .iter_indexed()
-            .filter(|&(pos, n)| n.stage >= StageIdx(1) && !node_graph.successors[pos].is_empty())
-            .map(|(pos, _)| pos)
-            .collect();
-        assert_eq!(root_pool, 2, "the root owns pool 2, not pool 0");
+        let (tx, rx) = mpsc::channel::<TrainingEvent>();
+        let mut config = make_config(1, 10, 1, n_stages);
+        config.cut_management.budget = Some(CAP);
+        config.events.event_sender = Some(tx);
+        let mut solver = MockSolver::with_fixed(100.0);
+        let comm = StubComm;
+        let block_counts = vec![1usize; n_stages];
+        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let geometry = equipment_free_geometry(&block_counts);
+        let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
+        let stage_ctx = fixture.ctx();
+        let study_dims = test_support::study_dims();
+        let cut_state_layouts =
+            test_support::all_enabled_cut_state_layouts(&state, node_graph.n_pools);
+        let training_ctx = make_training_ctx(
+            &horizon,
+            &study_dims,
+            &state,
+            &cut_state_layouts,
+            &stochastic,
+            &initial_state,
+            &stages,
+            &node_graph,
+        );
+        let mut session = TrainingSession::new(
+            &mut solver,
+            config,
+            &mut fcf,
+            &stage_ctx,
+            &training_ctx,
+            &comm,
+            || Ok(MockSolver::with_fixed(100.0)),
+            SolverProfiles::default(),
+        )
+        .unwrap();
+
+        session.prime_frozen_templates();
+        session.run_cut_management(u64::from(CUTS_PER_POOL) + 1);
+
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+        let pools = events
+            .iter()
+            .find_map(|event| match event {
+                TrainingEvent::PolicyPoolSummary { pools, .. } => Some(pools),
+                _ => None,
+            })
+            .expect("a cap is set, so the pools are reported");
+        let owners: Vec<Option<i32>> = pools.iter().map(|counts| counts.node_id).collect();
+        assert_eq!(owners, [Some(3), Some(7), Some(10), None]);
+        let stage_ids: Vec<i32> = pools.iter().map(|counts| counts.stage_id).collect();
+        assert_eq!(stage_ids, [1, 1, 0, 2]);
+        let capped: Vec<Option<u32>> = pools.iter().map(|counts| counts.budget_evicted).collect();
         assert_eq!(
-            interior_nodes,
-            vec![NodePos(2), NodePos(3)],
-            "fan nodes at canonical positions 2, 3"
+            capped,
+            [
+                Some(CUTS_PER_POOL - CAP),
+                Some(CUTS_PER_POOL - CAP),
+                None,
+                None
+            ],
+            "the cap reaches the two fan pools, not the pools at their node positions"
         );
+        let in_lp: Vec<Option<u32>> = pools.iter().map(|counts| counts.rows_in_lp).collect();
+        assert_eq!(in_lp, [Some(CAP), Some(CAP), Some(CUTS_PER_POOL), Some(0)]);
+    }
 
-        let map = selection_record_index_by_pool(&node_graph, &interior_nodes);
-        assert_eq!(
-            map,
-            vec![Some(1), Some(2), None, None],
-            "pool 0→record 1, pool 1→record 2, root pool 2 and leaf pool 3→None"
-        );
-
-        // Power: no interior pool's record index is its pool id.
-        assert!(
-            interior_nodes.iter().all(|&pos| {
-                let pool_id = node_graph.nodes[pos].pool_id;
-                map[pool_id] != Some(pool_id)
-            }),
-            "on a root-not-smallest-id graph the record index must NOT be the pool id — \
-             using pool id as a per_stage index misattributes eviction stats"
-        );
+    fn gen_openings() -> NodeOpenings {
+        NodeOpenings {
+            source: OpeningSource::Generated,
+            offset: 0,
+            len: 1,
+            q: 1.0,
+        }
     }
 
     // ── TrainingSession::new: enumerated world >= 2 interior-branching guard ─

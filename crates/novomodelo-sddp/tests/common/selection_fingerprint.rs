@@ -273,8 +273,9 @@ pub struct SelectionPower {
 }
 
 impl SelectionPower {
-    /// Sums the counters over a training run's events. The first record of
-    /// each `PolicySelectionComplete` is the root and is skipped.
+    /// Sums the counters over a training run's events. The root and terminal
+    /// pools are never selected, so their records carry no selection counts and
+    /// the sum over every record of a `PolicyPoolSummary` is the interior sum.
     pub fn from_events(events: &[TrainingEvent]) -> Self {
         let mut power = Self {
             deactivations: 0,
@@ -283,10 +284,10 @@ impl SelectionPower {
         };
         for event in events {
             match event {
-                TrainingEvent::PolicySelectionComplete { per_stage, .. } => {
-                    for record in per_stage.iter().skip(1) {
-                        power.deactivations += u64::from(record.rows_deactivated);
-                        power.reactivations += u64::from(record.rows_reactivated);
+                TrainingEvent::PolicyPoolSummary { pools, .. } => {
+                    for record in pools {
+                        power.deactivations += u64::from(record.rows_deactivated.unwrap_or(0));
+                        power.reactivations += u64::from(record.rows_reactivated.unwrap_or(0));
                     }
                 }
                 TrainingEvent::PolicyBudgetEnforcementComplete { rows_evicted, .. } => {

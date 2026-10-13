@@ -347,27 +347,22 @@ pub fn build_training_output(
     #[allow(clippy::cast_possible_truncation)]
     let iterations_completed = result.iterations as u32;
 
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let cut_selection_records: Vec<RowSelectionRecord> = events
         .iter()
         .filter_map(|event| {
-            if let TrainingEvent::PolicySelectionComplete {
-                iteration,
-                per_stage,
-                ..
-            } = event
-            {
-                Some(per_stage.iter().map(move |rec| RowSelectionRecord {
+            if let TrainingEvent::PolicyPoolSummary { iteration, pools } = event {
+                Some(pools.iter().map(move |pool| RowSelectionRecord {
                     iteration: *iteration as u32,
-                    stage: rec.stage,
-                    cuts_populated: rec.rows_populated,
-                    cuts_active_before: rec.rows_active_before,
-                    cuts_deactivated: rec.rows_deactivated,
-                    cuts_reactivated: rec.rows_reactivated,
-                    cuts_active_after: rec.rows_active_after,
-                    selection_time_ms: rec.selection_time_ms,
-                    budget_evicted: rec.budget_evicted,
-                    active_after_budget: rec.active_after_budget,
+                    stage: pool.stage_id as u32,
+                    cuts_populated: pool.rows_in_pool,
+                    cuts_active_before: pool.rows_active_before,
+                    cuts_deactivated: pool.rows_deactivated.unwrap_or(0),
+                    cuts_reactivated: pool.rows_reactivated.unwrap_or(0),
+                    cuts_active_after: pool.rows_active_after,
+                    selection_time_ms: pool.selection_time_ms.unwrap_or(0.0),
+                    budget_evicted: pool.budget_evicted,
+                    active_after_budget: pool.active_after_budget,
                 }))
             } else {
                 None
@@ -1115,7 +1110,6 @@ mod tests {
                 rows_deactivated: 3,
                 stages_processed: 2,
                 selection_time_ms: 8,
-                per_stage: vec![],
             },
         ];
         let fcf = make_empty_fcf();
@@ -1191,7 +1185,6 @@ mod tests {
                 rows_deactivated: 3,
                 stages_processed: 2,
                 selection_time_ms: 8,
-                per_stage: vec![],
             },
         ];
         let fcf = make_empty_fcf();
@@ -1240,42 +1233,43 @@ mod tests {
 
     #[test]
     fn cut_selection_records_extracted_from_events() {
-        use novomodelo_core::StageRowSelectionRecord;
+        use novomodelo_core::PoolRowCounts;
 
         let result = make_result("iteration_limit", 100.0, 110.0, 0.1, 3);
         let events = vec![
             make_iteration_summary(1, 95.0, 112.0, 0.15),
             make_iteration_summary(2, 98.0, 111.0, 0.12),
             make_iteration_summary(3, 100.0, 110.0, 0.1),
-            TrainingEvent::PolicySelectionComplete {
+            TrainingEvent::PolicyPoolSummary {
                 iteration: 2,
-                rows_deactivated: 3,
-                stages_processed: 2,
-                selection_time_ms: 10,
-                per_stage: vec![
-                    StageRowSelectionRecord {
-                        stage: 0,
-                        rows_populated: 5,
+                pools: vec![
+                    PoolRowCounts {
+                        pool_id: 0,
+                        stage_id: 0,
+                        node_id: Some(0),
+                        rows_in_pool: 5,
                         rows_active_before: 5,
-                        rows_deactivated: 0,
-                        rows_reactivated: 0,
+                        rows_deactivated: None,
+                        rows_reactivated: None,
+                        selection_time_ms: None,
                         rows_active_after: 5,
-                        selection_time_ms: 0.0,
                         budget_evicted: None,
                         active_after_budget: None,
-                        rows_in_lp: 5,
+                        rows_in_lp: Some(5),
                     },
-                    StageRowSelectionRecord {
-                        stage: 1,
-                        rows_populated: 8,
+                    PoolRowCounts {
+                        pool_id: 1,
+                        stage_id: 1,
+                        node_id: Some(1),
+                        rows_in_pool: 8,
                         rows_active_before: 8,
-                        rows_deactivated: 3,
-                        rows_reactivated: 0,
-                        rows_active_after: 5,
-                        selection_time_ms: 2.5,
-                        budget_evicted: None,
-                        active_after_budget: None,
-                        rows_in_lp: 8,
+                        rows_deactivated: Some(3),
+                        rows_reactivated: Some(1),
+                        selection_time_ms: Some(2.5),
+                        rows_active_after: 6,
+                        budget_evicted: Some(1),
+                        active_after_budget: Some(5),
+                        rows_in_lp: Some(5),
                     },
                 ],
             },
@@ -1284,12 +1278,23 @@ mod tests {
         let output = build_training_output(&result, &events, &fcf, false);
 
         assert_eq!(output.cut_selection_records.len(), 2);
-        assert_eq!(output.cut_selection_records[0].iteration, 2);
-        assert_eq!(output.cut_selection_records[0].stage, 0);
-        assert_eq!(output.cut_selection_records[0].cuts_deactivated, 0);
-        assert_eq!(output.cut_selection_records[1].stage, 1);
-        assert_eq!(output.cut_selection_records[1].cuts_deactivated, 3);
-        assert_eq!(output.cut_selection_records[1].cuts_active_after, 5);
+        let root = &output.cut_selection_records[0];
+        assert_eq!(root.iteration, 2);
+        assert_eq!(root.stage, 0);
+        assert_eq!(root.cuts_populated, 5);
+        assert_eq!(root.cuts_deactivated, 0);
+        assert_eq!(root.cuts_reactivated, 0);
+        assert_eq!(root.selection_time_ms, 0.0);
+        assert_eq!(root.budget_evicted, None);
+        let interior = &output.cut_selection_records[1];
+        assert_eq!(interior.stage, 1);
+        assert_eq!(interior.cuts_populated, 8);
+        assert_eq!(interior.cuts_deactivated, 3);
+        assert_eq!(interior.cuts_reactivated, 1);
+        assert_eq!(interior.cuts_active_after, 6);
+        assert_eq!(interior.selection_time_ms, 2.5);
+        assert_eq!(interior.budget_evicted, Some(1));
+        assert_eq!(interior.active_after_budget, Some(5));
     }
 
     #[test]

@@ -83,41 +83,48 @@ pub struct WorkerPhaseTimings {
     pub scoring_ms: f64,
 }
 
-/// Per-stage row-selection statistics for one iteration.
-///
-/// The two `Option` fields are `None` when budget enforcement is disabled.
+/// One row pool's row counts for one iteration, after the iteration's row
+/// management. A step that did not run on the pool in the iteration leaves its
+/// fields `None`.
 #[derive(Debug, Clone)]
-pub struct StageRowSelectionRecord {
-    /// 0-based stage index.
-    pub stage: u32,
-    /// Total rows ever generated at this stage (high-water mark).
-    pub rows_populated: u32,
-    /// Active rows before selection ran.
+pub struct PoolRowCounts {
+    /// Pool index.
+    pub pool_id: u32,
+    /// Declared study stage id of the pool's nodes.
+    pub stage_id: i32,
+    /// Declared id of the pool's sole owning node; `None` when several nodes
+    /// share the pool.
+    pub node_id: Option<i32>,
+    /// Rows the pool holds, loaded and generated.
+    pub rows_in_pool: u32,
+    /// Active rows when row management starts.
     pub rows_active_before: u32,
-    /// Rows deactivated by selection at this stage.
-    pub rows_deactivated: u32,
-    /// Rows reactivated at this stage during this iteration.
-    pub rows_reactivated: u32,
-    /// Active rows after selection.
+    /// Rows deactivated by the selection pass.
+    pub rows_deactivated: Option<u32>,
+    /// Rows reactivated by the selection pass.
+    pub rows_reactivated: Option<u32>,
+    /// Wall-clock time of the selection pass on the pool, in milliseconds.
+    pub selection_time_ms: Option<f64>,
+    /// Active rows after the selection pass; equal to `rows_active_before` when
+    /// none ran.
     pub rows_active_after: u32,
-    /// Wall-clock time for selection at this stage, in milliseconds.
-    pub selection_time_ms: f64,
-    /// Rows evicted by budget enforcement at this stage.
+    /// Rows evicted by the cap.
     pub budget_evicted: Option<u32>,
-    /// Active cuts after budget enforcement.
+    /// Active rows after the cap.
     pub active_after_budget: Option<u32>,
-    /// Total rows in the LP at this stage at the end of the iteration.
-    pub rows_in_lp: u32,
+    /// Rows of the pool in the template the next iteration's solves load;
+    /// `None` under a lazy method, whose solves load a resident subset.
+    pub rows_in_lp: Option<u32>,
 }
 
 /// Typed events emitted by an iterative optimization training loop and
 /// simulation runner.
 ///
-/// The enum has 16 variants: 11 per-iteration events (one per lifecycle step)
-/// and 5 lifecycle events (emitted once per training or simulation run). Every
-/// per-iteration variant's `iteration` field is 1-based.
+/// Per-iteration events are emitted once per lifecycle step; lifecycle events
+/// once per training or simulation run. Every per-iteration variant's
+/// `iteration` field is 1-based.
 ///
-/// ## Per-iteration events (steps 1–7 + 4a + 4b + 4c + per-worker)
+/// ## Per-iteration events (steps 1–7 + 4a–4d + per-worker)
 ///
 /// | Step | Variant                  | When emitted                                           |
 /// |------|--------------------------|--------------------------------------------------------|
@@ -128,6 +135,7 @@ pub struct StageRowSelectionRecord {
 /// | 4a   | [`Self::PolicySelectionComplete`] | Row-selection done (conditional on `should_run`)       |
 /// | 4b   | [`Self::PolicyBudgetEnforcementComplete`] | Budget cap enforcement done (every iteration when budget is set) |
 /// | 4c   | [`Self::PolicyTemplateFreezeComplete`] | Per-stage frozen template rebuild done (every iteration) |
+/// | 4d   | [`Self::PolicyPoolSummary`] | Per-pool row counts (every iteration when a selection method or a cap is set) |
 /// | 5    | [`Self::ConvergenceUpdate`]    | Stopping rules evaluated                               |
 /// | 6    | [`Self::IterationSummary`]     | End-of-iteration aggregated summary                    |
 /// | 7    | [`Self::CheckpointComplete`]   | Periodic checkpoint committed (scheduled iterations)   |
@@ -223,14 +231,12 @@ pub enum TrainingEvent {
     PolicySelectionComplete {
         /// Iteration number.
         iteration: u64,
-        /// Number of rows deactivated across all stages.
+        /// Number of rows deactivated across the visited pools.
         rows_deactivated: u32,
-        /// Number of stages processed during row selection.
+        /// Number of row pools the selection pass visited.
         stages_processed: u32,
         /// Wall-clock time for the local row-selection phase, in milliseconds.
         selection_time_ms: u64,
-        /// Per-stage breakdown of selection results.
-        per_stage: Vec<StageRowSelectionRecord>,
     },
 
     /// The active-row cap was applied to the capped row pools: every pool
@@ -260,6 +266,18 @@ pub enum TrainingEvent {
         total_rows_frozen: u64,
         /// Wall-clock time for the freeze pass across all stages, in milliseconds.
         freeze_time_ms: u64,
+    },
+
+    /// Row counts of every pool after the iteration's row management and
+    /// template freeze.
+    ///
+    /// Emitted every iteration when a selection method or a cap is configured,
+    /// never otherwise.
+    PolicyPoolSummary {
+        /// Iteration number.
+        iteration: u64,
+        /// One record per pool, indexed by pool id (`pools[p].pool_id == p`).
+        pools: Vec<PoolRowCounts>,
     },
 
     /// Convergence check completed: all configured stopping rules evaluated for
@@ -450,7 +468,7 @@ pub enum TrainingEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::{StageRowSelectionRecord, TrainingEvent, WorkerPhaseTimings, WorkerTimingPhase};
+    use super::{PoolRowCounts, TrainingEvent, WorkerPhaseTimings, WorkerTimingPhase};
 
     fn make_all_variants() -> Vec<TrainingEvent> {
         vec![
@@ -490,7 +508,6 @@ mod tests {
                 rows_deactivated: 15,
                 stages_processed: 12,
                 selection_time_ms: 20,
-                per_stage: vec![],
             },
             TrainingEvent::PolicyBudgetEnforcementComplete {
                 iteration: 10,
@@ -503,6 +520,10 @@ mod tests {
                 stages_processed: 12,
                 total_rows_frozen: 48,
                 freeze_time_ms: 2,
+            },
+            TrainingEvent::PolicyPoolSummary {
+                iteration: 10,
+                pools: vec![],
             },
             TrainingEvent::ConvergenceUpdate {
                 iteration: 1,
@@ -588,8 +609,8 @@ mod tests {
         let variants = make_all_variants();
         assert_eq!(
             variants.len(),
-            16,
-            "expected exactly 16 TrainingEvent variants"
+            17,
+            "expected exactly 17 TrainingEvent variants"
         );
     }
 
@@ -642,14 +663,12 @@ mod tests {
             rows_deactivated: 30,
             stages_processed: 12,
             selection_time_ms: 25,
-            per_stage: vec![],
         };
         let TrainingEvent::PolicySelectionComplete {
             iteration,
             rows_deactivated,
             stages_processed,
             selection_time_ms,
-            per_stage,
         } = event
         else {
             panic!("wrong variant")
@@ -658,7 +677,6 @@ mod tests {
         assert_eq!(rows_deactivated, 30);
         assert_eq!(stages_processed, 12);
         assert_eq!(selection_time_ms, 25);
-        assert!(per_stage.is_empty());
     }
 
     #[test]
@@ -812,28 +830,40 @@ mod tests {
     }
 
     #[test]
-    fn stage_row_selection_record_fields_accessible() {
-        let record = StageRowSelectionRecord {
-            stage: 3,
-            rows_populated: 100,
-            rows_active_before: 80,
-            rows_deactivated: 10,
-            rows_reactivated: 2,
-            rows_active_after: 70,
-            selection_time_ms: 1.5,
-            budget_evicted: Some(5),
-            active_after_budget: Some(65),
-            rows_in_lp: 100,
+    fn policy_pool_summary_fields_accessible() {
+        let event = TrainingEvent::PolicyPoolSummary {
+            iteration: 6,
+            pools: vec![PoolRowCounts {
+                pool_id: 3,
+                stage_id: 7,
+                node_id: None,
+                rows_in_pool: 100,
+                rows_active_before: 80,
+                rows_deactivated: Some(10),
+                rows_reactivated: Some(2),
+                selection_time_ms: Some(1.5),
+                rows_active_after: 72,
+                budget_evicted: Some(5),
+                active_after_budget: Some(67),
+                rows_in_lp: Some(67),
+            }],
         };
-        assert_eq!(record.stage, 3);
-        assert_eq!(record.rows_populated, 100);
+        let TrainingEvent::PolicyPoolSummary { iteration, pools } = event else {
+            panic!("wrong variant")
+        };
+        assert_eq!(iteration, 6);
+        let record = &pools[0];
+        assert_eq!(record.pool_id, 3);
+        assert_eq!(record.stage_id, 7);
+        assert_eq!(record.node_id, None);
+        assert_eq!(record.rows_in_pool, 100);
         assert_eq!(record.rows_active_before, 80);
-        assert_eq!(record.rows_deactivated, 10);
-        assert_eq!(record.rows_reactivated, 2);
-        assert_eq!(record.rows_active_after, 70);
-        assert!((record.selection_time_ms - 1.5).abs() < f64::EPSILON);
+        assert_eq!(record.rows_deactivated, Some(10));
+        assert_eq!(record.rows_reactivated, Some(2));
+        assert_eq!(record.selection_time_ms, Some(1.5));
+        assert_eq!(record.rows_active_after, 72);
         assert_eq!(record.budget_evicted, Some(5));
-        assert_eq!(record.active_after_budget, Some(65));
-        assert_eq!(record.rows_in_lp, 100);
+        assert_eq!(record.active_after_budget, Some(67));
+        assert_eq!(record.rows_in_lp, Some(67));
     }
 }

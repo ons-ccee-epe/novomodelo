@@ -377,6 +377,7 @@ impl BarRenderer {
             | TrainingEvent::PolicySelectionComplete { .. }
             | TrainingEvent::PolicyBudgetEnforcementComplete { .. }
             | TrainingEvent::PolicyTemplateFreezeComplete { .. }
+            | TrainingEvent::PolicyPoolSummary { .. }
             | TrainingEvent::ConvergenceUpdate { .. }
             | TrainingEvent::CheckpointComplete { .. }
             | TrainingEvent::WorkerTiming { .. } => {}
@@ -507,6 +508,7 @@ impl LineRenderer {
             | TrainingEvent::PolicySelectionComplete { .. }
             | TrainingEvent::PolicyBudgetEnforcementComplete { .. }
             | TrainingEvent::PolicyTemplateFreezeComplete { .. }
+            | TrainingEvent::PolicyPoolSummary { .. }
             | TrainingEvent::ConvergenceUpdate { .. }
             | TrainingEvent::CheckpointComplete { .. }
             | TrainingEvent::WorkerTiming { .. } => {}

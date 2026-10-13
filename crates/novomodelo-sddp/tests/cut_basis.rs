@@ -958,11 +958,11 @@ mod basis_reconstruct_churn {
         let interior_rows_deactivated: u32 = events
             .iter()
             .filter_map(|event| match event {
-                TrainingEvent::PolicySelectionComplete { per_stage, .. } => Some(&per_stage[1..]),
+                TrainingEvent::PolicyPoolSummary { pools, .. } => Some(pools),
                 _ => None,
             })
             .flatten()
-            .map(|record| record.rows_deactivated)
+            .filter_map(|record| record.rows_deactivated)
             .sum();
         let rows_evicted: u32 = events
             .iter()
@@ -1389,11 +1389,12 @@ mod basis_reconstruct_churn {
 }
 
 mod selection_in_a_training_run {
+    use std::collections::BTreeMap;
     use std::num::NonZeroU32;
     use std::path::Path;
     use std::sync::mpsc;
 
-    use novomodelo_core::{StageRowSelectionRecord, TrainingEvent, scenario::ScenarioSource};
+    use novomodelo_core::{PoolRowCounts, TrainingEvent, scenario::ScenarioSource};
     use novomodelo_io::Config;
     use novomodelo_io::config::{
         SelectionMethod, SimulationSelection, StoppingRuleConfig, TrainingSelection,
@@ -1488,17 +1489,39 @@ mod selection_in_a_training_run {
         (setup, outcome.result)
     }
 
-    fn train_collecting_selection_runs() -> (StudySetup, Vec<(u64, Vec<StageRowSelectionRecord>)>) {
+    /// The pool counts of each iteration, in iteration order.
+    fn pool_summaries(events: &[TrainingEvent]) -> Vec<(u64, &[PoolRowCounts])> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                TrainingEvent::PolicyPoolSummary { iteration, pools } => {
+                    Some((*iteration, pools.as_slice()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The pool counts of the iterations whose selection pass ran.
+    fn train_collecting_selection_runs() -> (StudySetup, Vec<(u64, Vec<PoolRowCounts>)>) {
         let (tx, rx) = mpsc::channel();
         let (setup, _) = train_with(level1(), false, ITERATIONS, Some(tx));
-        let runs = rx
-            .try_iter()
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+        let selection_iterations: Vec<u64> = events
+            .iter()
             .filter_map(|event| match event {
-                TrainingEvent::PolicySelectionComplete {
-                    iteration,
-                    per_stage,
-                    ..
-                } => Some((iteration, per_stage)),
+                TrainingEvent::PolicySelectionComplete { iteration, .. } => Some(*iteration),
+                _ => None,
+            })
+            .collect();
+        let runs = events
+            .into_iter()
+            .filter_map(|event| match event {
+                TrainingEvent::PolicyPoolSummary { iteration, pools }
+                    if selection_iterations.contains(&iteration) =>
+                {
+                    Some((iteration, pools))
+                }
                 _ => None,
             })
             .collect();
@@ -1521,26 +1544,26 @@ mod selection_in_a_training_run {
             "selection must run at every multiple of check_frequency, the last at the final iteration"
         );
 
-        for (iteration, per_stage) in &runs {
+        for (iteration, records) in &runs {
             assert_eq!(
-                per_stage.len(),
-                interior_pools.len() + 1,
-                "iteration {iteration}: one root record, then one per interior node"
+                records.len(),
+                pools.len(),
+                "iteration {iteration}: one record per pool"
             );
-            assert_eq!(
-                per_stage[0].rows_deactivated, 0,
-                "iteration {iteration}: the root must not be deactivated"
-            );
-            assert_eq!(
-                per_stage[0].rows_reactivated, 0,
-                "iteration {iteration}: the root must not be reactivated"
-            );
+            for record in [&records[0], &records[pools.len() - 1]] {
+                assert!(
+                    record.rows_deactivated.is_none()
+                        && record.rows_reactivated.is_none()
+                        && record.selection_time_ms.is_none(),
+                    "iteration {iteration}: the root and terminal records carry no selection fields"
+                );
+            }
         }
         let (_, last_run) = runs.last().expect("selection must have run");
         assert!(
-            last_run[0].rows_populated >= 2,
+            last_run[0].rows_in_pool >= 2,
             "the root must hold cuts to judge, got {}",
-            last_run[0].rows_populated
+            last_run[0].rows_in_pool
         );
         assert_eq!(
             pools[0].active_count(),
@@ -1550,8 +1573,8 @@ mod selection_in_a_training_run {
 
         assert!(
             runs.iter()
-                .flat_map(|(_, per_stage)| &per_stage[1..])
-                .any(|record| record.rows_deactivated > 0),
+                .flat_map(|(_, records)| records)
+                .any(|record| record.rows_deactivated.is_some_and(|rows| rows > 0)),
             "no interior node deactivated a cut"
         );
 
@@ -1783,11 +1806,10 @@ mod selection_in_a_training_run {
             "no selection run reactivated an interior cut: {power:?}"
         );
         let evicted_again_after_a_reactivation = events.iter().any(|event| match event {
-            TrainingEvent::PolicySelectionComplete { per_stage, .. } => {
-                per_stage[1..].iter().any(|record| {
-                    record.rows_reactivated > 0 && record.budget_evicted.is_some_and(|n| n > 0)
-                })
-            }
+            TrainingEvent::PolicyPoolSummary { pools, .. } => pools.iter().any(|record| {
+                record.rows_reactivated.is_some_and(|n| n > 0)
+                    && record.budget_evicted.is_some_and(|n| n > 0)
+            }),
             _ => false,
         });
         assert!(
@@ -1795,6 +1817,238 @@ mod selection_in_a_training_run {
             "no interior pool was capped again in an iteration whose selection run \
              reactivated one of its cuts"
         );
+    }
+
+    /// derived: a chain pool is owned by one node, so `node_id` is the pool's
+    /// own id. Within an iteration the active rows move by the selection pass
+    /// (`rows_active_after = before - deactivated + reactivated`), then by the
+    /// cap (`active_after_budget = after - evicted`), and the template the next
+    /// iteration loads holds the rows left active. Between iterations the active
+    /// rows grow by the rows the next backward pass generates, and the last
+    /// iteration's counts are the pools' own.
+    #[test]
+    fn pool_counts_add_up_on_every_iteration() {
+        let (tx, rx) = mpsc::channel();
+        let (setup, _) = train_configured(ITERATIONS, Some(tx), |config| {
+            config.training.cut_selection.selection = Some(level1());
+            config.training.cut_selection.max_active_per_stage = Some(BUDGET_BELOW_THE_POOL_SIZE);
+        });
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+        let summaries = pool_summaries(&events);
+        let pools = &setup.fcf.pools;
+        let interior = interior_pool_ids(&setup);
+        let generated: BTreeMap<u64, u32> = events
+            .iter()
+            .filter_map(|event| match event {
+                TrainingEvent::BackwardPassComplete {
+                    iteration,
+                    rows_generated,
+                    ..
+                } => Some((*iteration, *rows_generated)),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            summaries.len(),
+            ITERATIONS as usize,
+            "one summary per iteration"
+        );
+        let (mut deactivated, mut reactivated, mut evicted_off_schedule) = (0, 0, 0);
+        let mut final_active_before = 0_u32;
+        for (iteration, records) in &summaries {
+            assert_eq!(
+                records.len(),
+                pools.len(),
+                "iteration {iteration}: one record per pool"
+            );
+            let on_schedule = iteration % u64::from(CHECK_FREQUENCY) == 0;
+            let (mut active_before, mut final_active) = (0_u32, 0_u32);
+            for (pool_id, record) in records.iter().enumerate() {
+                let at = format!("iteration {iteration} pool {pool_id}");
+                let is_interior = interior.contains(&pool_id);
+                assert_eq!(record.pool_id as usize, pool_id, "{at}");
+                assert_eq!(record.node_id, Some(pool_id as i32), "{at}");
+
+                let selected = is_interior && on_schedule;
+                assert_eq!(record.rows_deactivated.is_some(), selected, "{at}");
+                assert_eq!(record.rows_reactivated.is_some(), selected, "{at}");
+                assert_eq!(record.selection_time_ms.is_some(), selected, "{at}");
+                assert_eq!(record.budget_evicted.is_some(), is_interior, "{at}");
+                assert_eq!(record.active_after_budget.is_some(), is_interior, "{at}");
+
+                assert_eq!(
+                    record.rows_active_after + record.rows_deactivated.unwrap_or(0),
+                    record.rows_active_before + record.rows_reactivated.unwrap_or(0),
+                    "{at}: selection moves the active rows by its two counts"
+                );
+                if let (Some(evicted), Some(after_budget)) =
+                    (record.budget_evicted, record.active_after_budget)
+                {
+                    assert_eq!(after_budget + evicted, record.rows_active_after, "{at}");
+                }
+                let active = record
+                    .active_after_budget
+                    .unwrap_or(record.rows_active_after);
+                assert_eq!(record.rows_in_lp, Some(active), "{at}");
+
+                active_before += record.rows_active_before;
+                final_active += active;
+                deactivated += u64::from(record.rows_deactivated.unwrap_or(0));
+                reactivated += u64::from(record.rows_reactivated.unwrap_or(0));
+                if !on_schedule {
+                    evicted_off_schedule += u64::from(record.budget_evicted.unwrap_or(0));
+                }
+            }
+            assert_eq!(
+                active_before,
+                final_active_before + generated[iteration],
+                "iteration {iteration}: the active rows grow by the rows its backward pass generated"
+            );
+            final_active_before = final_active;
+        }
+
+        let mut selection_passes = 0;
+        for event in &events {
+            if let TrainingEvent::PolicySelectionComplete {
+                iteration,
+                rows_deactivated,
+                stages_processed,
+                ..
+            } = event
+            {
+                selection_passes += 1;
+                let (_, records) = summaries
+                    .iter()
+                    .find(|(summary_iteration, _)| summary_iteration == iteration)
+                    .expect("a selection pass has a summary");
+                assert_eq!(
+                    *stages_processed as usize,
+                    interior.len(),
+                    "iteration {iteration}: the pass visits every interior pool"
+                );
+                assert_eq!(
+                    *rows_deactivated,
+                    records
+                        .iter()
+                        .filter_map(|record| record.rows_deactivated)
+                        .sum::<u32>(),
+                    "iteration {iteration}: the pass total is the sum over the pools"
+                );
+            }
+        }
+        assert_eq!(
+            selection_passes,
+            ITERATIONS / CHECK_FREQUENCY,
+            "one selection event per scheduled iteration"
+        );
+
+        let (_, last) = summaries.last().expect("the run has iterations");
+        for (pool_id, (record, pool)) in last.iter().zip(pools).enumerate() {
+            assert_eq!(
+                record
+                    .active_after_budget
+                    .unwrap_or(record.rows_active_after) as usize,
+                pool.active_count(),
+                "pool {pool_id}"
+            );
+            assert_eq!(
+                record.rows_in_pool as usize,
+                pool.generated(),
+                "pool {pool_id}"
+            );
+        }
+
+        assert!(
+            deactivated > 0 && reactivated > 0 && evicted_off_schedule > 0,
+            "power: deactivated {deactivated}, reactivated {reactivated}, evicted off the \
+             selection schedule {evicted_off_schedule}"
+        );
+    }
+
+    /// derived: the cap alone runs no selection pass, so no selection field is
+    /// set, and it is applied to every interior pool at every iteration.
+    #[test]
+    fn a_budget_alone_reports_every_pool_on_every_iteration() {
+        let (tx, rx) = mpsc::channel();
+        let (setup, _) = train_configured(ITERATIONS, Some(tx), |config| {
+            config.training.cut_selection.max_active_per_stage = Some(BUDGET_BELOW_THE_POOL_SIZE);
+        });
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+        let summaries = pool_summaries(&events);
+        let interior = interior_pool_ids(&setup);
+
+        assert_eq!(
+            summaries.len(),
+            ITERATIONS as usize,
+            "one summary per iteration"
+        );
+        let mut evicted = 0;
+        for (iteration, records) in &summaries {
+            assert_eq!(
+                records.len(),
+                setup.fcf.pools.len(),
+                "iteration {iteration}"
+            );
+            for (pool_id, record) in records.iter().enumerate() {
+                let at = format!("iteration {iteration} pool {pool_id}");
+                assert!(
+                    record.rows_deactivated.is_none()
+                        && record.rows_reactivated.is_none()
+                        && record.selection_time_ms.is_none(),
+                    "{at}: no selection pass ran"
+                );
+                assert_eq!(record.rows_active_after, record.rows_active_before, "{at}");
+                let is_interior = interior.contains(&pool_id);
+                assert_eq!(record.budget_evicted.is_some(), is_interior, "{at}");
+                assert_eq!(record.active_after_budget.is_some(), is_interior, "{at}");
+                assert_eq!(
+                    record.rows_in_lp,
+                    Some(
+                        record
+                            .active_after_budget
+                            .unwrap_or(record.rows_active_after)
+                    ),
+                    "{at}"
+                );
+                evicted += u64::from(record.budget_evicted.unwrap_or(0));
+            }
+        }
+        assert!(evicted > 0, "power: the cap evicted no row");
+    }
+
+    /// derived: a lazy method loads a resident subset per solve, so no template
+    /// row count is reported, and it runs no pool pass and no cap.
+    #[test]
+    fn a_dynamic_run_reports_every_pool_without_template_rows() {
+        let (tx, rx) = mpsc::channel();
+        let (setup, _) = train_with(dynamic(), false, ITERATIONS, Some(tx));
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+        let summaries = pool_summaries(&events);
+
+        assert_eq!(
+            summaries.len(),
+            ITERATIONS as usize,
+            "one summary per iteration"
+        );
+        for (iteration, records) in &summaries {
+            assert_eq!(
+                records.len(),
+                setup.fcf.pools.len(),
+                "iteration {iteration}"
+            );
+            for (pool_id, record) in records.iter().enumerate() {
+                assert!(
+                    record.rows_in_lp.is_none()
+                        && record.rows_deactivated.is_none()
+                        && record.rows_reactivated.is_none()
+                        && record.selection_time_ms.is_none()
+                        && record.budget_evicted.is_none()
+                        && record.active_after_budget.is_none(),
+                    "iteration {iteration} pool {pool_id}: {record:?}"
+                );
+            }
+        }
     }
 
     /// Pins that the solver rejects no reconstructed basis while a `level1` run

@@ -69,7 +69,7 @@ mod common;
 use std::collections::BTreeSet;
 use std::sync::mpsc::{self, Sender};
 
-use novomodelo_core::TrainingEvent;
+use novomodelo_core::{PoolRowCounts, TrainingEvent};
 use novomodelo_io::config::SelectionMethod;
 use novomodelo_sddp::setup::{
     NodeGraph, NodeId, NodeOpenings, NodePos, NodeRuntime, NodeSuccessor, OpeningSource, StageIdx,
@@ -264,8 +264,12 @@ fn assert_stored_states_have_active_owners(setup: &StudySetup, fixture: &str) {
 /// `final_lb` does not exceed `optimum`, selection deactivated an interior cut,
 /// each interior pool keeps the lowest slot of its bit-identical cuts and the
 /// owner of every stored state, and both bounds close to `optimum` within
-/// [`REL_TOL`]/[`ABS_TOL`].
-fn assert_selection_stays_below_and_closes(mut setup: StudySetup, optimum: f64, fixture: &str) {
+/// [`REL_TOL`]/[`ABS_TOL`]. Returns the pool counts of the last iteration.
+fn assert_selection_stays_below_and_closes(
+    mut setup: StudySetup,
+    optimum: f64,
+    fixture: &str,
+) -> Vec<PoolRowCounts> {
     let interior_pools = interior_pool_ids(&setup);
     assert!(
         !interior_pools.is_empty(),
@@ -293,15 +297,23 @@ fn assert_selection_stays_below_and_closes(mut setup: StudySetup, optimum: f64, 
         lb - optimum
     );
 
-    // `SelectionPower` reads every record after the first as an interior node.
-    for event in &events {
-        if let TrainingEvent::PolicySelectionComplete { per_stage, .. } = event {
-            assert_eq!(
-                per_stage.len(),
-                1 + interior_pools.len(),
-                "{fixture} selection must record the root and each interior node"
-            );
-        }
+    let summaries: Vec<&Vec<PoolRowCounts>> = events
+        .iter()
+        .filter_map(|event| match event {
+            TrainingEvent::PolicyPoolSummary { pools, .. } => Some(pools),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !summaries.is_empty(),
+        "{fixture} must report its pools every iteration"
+    );
+    for pools in &summaries {
+        assert_eq!(
+            pools.len(),
+            setup.fcf.pools.len(),
+            "{fixture} every summary must hold one record per pool"
+        );
     }
     let power = SelectionPower::from_events(&events);
     assert!(
@@ -322,8 +334,12 @@ fn assert_selection_stays_below_and_closes(mut setup: StudySetup, optimum: f64, 
         "{fixture} final_ub {ub} must equal extensive-form optimum {optimum} (gap {})",
         ub - optimum
     );
+    summaries[summaries.len() - 1].clone()
 }
 
+/// derived: the tree declares the root as node 0 at stage 0, the two fan nodes
+/// as nodes 1 and 2 at stage 1, which each own their pool, and four leaves at
+/// stage 2, which share one.
 #[test]
 fn branching_tree_with_level1_stays_below_and_closes_to_the_extensive_form() {
     let setup = branching_tree_setup_enumerated_with_selection(
@@ -332,7 +348,24 @@ fn branching_tree_with_level1_stays_below_and_closes_to_the_extensive_form() {
     );
     assert_reachable_prefixes_match(&setup.inputs.node_graph);
     let optimum = extensive_form_optimum(&setup);
-    assert_selection_stays_below_and_closes(setup, optimum, "3-stage binary tree");
+    let pools = assert_selection_stays_below_and_closes(setup, optimum, "3-stage binary tree");
+
+    let node_ids_at = |stage_id: i32| -> Vec<Option<i32>> {
+        let mut ids: Vec<Option<i32>> = pools
+            .iter()
+            .filter(|record| record.stage_id == stage_id)
+            .map(|record| record.node_id)
+            .collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(node_ids_at(0), [Some(0)], "the root owns its pool");
+    assert_eq!(
+        node_ids_at(1),
+        [Some(1), Some(2)],
+        "each fan node owns its pool"
+    );
+    assert_eq!(node_ids_at(2), [None], "the four leaves share one pool");
 }
 
 /// derived: the kinked chain's optimum. Each stage turbines against an 80 MW
