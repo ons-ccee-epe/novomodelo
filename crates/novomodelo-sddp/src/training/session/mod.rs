@@ -1270,7 +1270,6 @@ where
                     rows_deactivated,
                     stages_processed,
                     selection_time_ms,
-                    allgatherv_time_ms: 0,
                     per_stage,
                 },
             );

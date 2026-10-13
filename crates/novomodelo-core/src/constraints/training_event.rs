@@ -229,9 +229,6 @@ pub enum TrainingEvent {
         stages_processed: u32,
         /// Wall-clock time for the local row-selection phase, in milliseconds.
         selection_time_ms: u64,
-        /// Wall-clock time for the allgatherv deactivation-set exchange, in
-        /// milliseconds.
-        allgatherv_time_ms: u64,
         /// Per-stage breakdown of selection results.
         per_stage: Vec<StageRowSelectionRecord>,
     },
@@ -493,7 +490,6 @@ mod tests {
                 rows_deactivated: 15,
                 stages_processed: 12,
                 selection_time_ms: 20,
-                allgatherv_time_ms: 1,
                 per_stage: vec![],
             },
             TrainingEvent::PolicyBudgetEnforcementComplete {
@@ -646,7 +642,6 @@ mod tests {
             rows_deactivated: 30,
             stages_processed: 12,
             selection_time_ms: 25,
-            allgatherv_time_ms: 2,
             per_stage: vec![],
         };
         let TrainingEvent::PolicySelectionComplete {
@@ -654,7 +649,6 @@ mod tests {
             rows_deactivated,
             stages_processed,
             selection_time_ms,
-            allgatherv_time_ms,
             per_stage,
         } = event
         else {
@@ -664,7 +658,6 @@ mod tests {
         assert_eq!(rows_deactivated, 30);
         assert_eq!(stages_processed, 12);
         assert_eq!(selection_time_ms, 25);
-        assert_eq!(allgatherv_time_ms, 2);
         assert!(per_stage.is_empty());
     }
 

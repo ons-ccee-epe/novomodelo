@@ -39,7 +39,6 @@ struct PartialRecord {
     cut_sync_ms: u64,
     /// Local row selection time.
     cut_selection_ms: u64,
-    cut_selection_allgatherv_ms: u64,
     /// Cumulative LP solve wall-clock time for this iteration.
     solve_time_ms: f64,
     state_exchange_ms: u64,
@@ -155,12 +154,10 @@ fn accumulate_partial_records(events: &[TrainingEvent]) -> (BTreeMap<u64, Partia
                 iteration,
                 rows_deactivated,
                 selection_time_ms,
-                allgatherv_time_ms,
                 ..
             } => {
                 let record = partials.entry(*iteration).or_default();
                 record.cut_selection_ms = *selection_time_ms;
-                record.cut_selection_allgatherv_ms = *allgatherv_time_ms;
                 record.cuts_active = record.cuts_active.saturating_sub(*rows_deactivated);
             }
 
@@ -190,7 +187,6 @@ fn partial_to_iteration_record(iter: u64, partial: &PartialRecord) -> IterationR
         .forward_ms
         .saturating_add(partial.backward_ms)
         .saturating_add(partial.cut_selection_ms)
-        .saturating_add(partial.cut_selection_allgatherv_ms)
         .saturating_add(partial.forward_sync_ms)
         .saturating_add(partial.lower_bound_eval_ms);
     let overhead_ms = partial.iteration_time_ms.saturating_sub(attributed_ms);
@@ -1119,7 +1115,6 @@ mod tests {
                 rows_deactivated: 3,
                 stages_processed: 2,
                 selection_time_ms: 8,
-                allgatherv_time_ms: 2,
                 per_stage: vec![],
             },
         ];
@@ -1155,8 +1150,8 @@ mod tests {
         let result = make_result("iteration_limit", 100.0, 110.0, 0.1, 1);
         // Top-level non-overlapping phases:
         //   forward=40, backward=50, allreduce=7, selection=8,
-        //   allgatherv=2, lower_bound=3 → attributed=110
-        // total=120 → overhead=10; cut_sync(5) is a sub-component of
+        //   lower_bound=3 → attributed=108
+        // total=120 → overhead=12; cut_sync(5) is a sub-component of
         // backward(50) and is NOT in the attributed sum.
         let events = vec![
             TrainingEvent::IterationSummary {
@@ -1196,7 +1191,6 @@ mod tests {
                 rows_deactivated: 3,
                 stages_processed: 2,
                 selection_time_ms: 8,
-                allgatherv_time_ms: 2,
                 per_stage: vec![],
             },
         ];
@@ -1206,8 +1200,8 @@ mod tests {
         let rec = &output.convergence_records[0];
 
         assert_eq!(
-            rec.time_overhead_ms, 10,
-            "overhead_ms must equal total(120) - attributed(110) = 10"
+            rec.time_overhead_ms, 12,
+            "overhead_ms must equal total(120) - attributed(108) = 12"
         );
     }
 
@@ -1258,7 +1252,6 @@ mod tests {
                 rows_deactivated: 3,
                 stages_processed: 2,
                 selection_time_ms: 10,
-                allgatherv_time_ms: 0,
                 per_stage: vec![
                     StageRowSelectionRecord {
                         stage: 0,
