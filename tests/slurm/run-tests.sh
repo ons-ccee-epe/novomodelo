@@ -14,6 +14,15 @@
 # T4: sbatch -N 2 -n 2     (SLURM multi-node — catches MPICH 4.3.0 deadlock)
 # T5: sbatch -N 2 -n 4     (SLURM multi-node, multiple ranks per node)
 #
+# The L cases train a copy of the case whose config.json adds cut selection
+# (level1 every second iteration, at most 100 active cuts per stage). Each L
+# run is compared against L1 as above, and L1 must have deactivated,
+# reactivated and evicted cuts, so the comparison covers a selection that ran.
+#
+# L1: mpiexec -n 1               (selection-on baseline)
+# L2: mpiexec -n 2 --threads 2
+# L3: sbatch -N 2 -n 4           (mpiexec -n 4 --threads 1)
+#
 # The S cases run simulation only, from T1's policy, on a copy of the case
 # whose stages 4 to 7 have their single block split in two. The stored bases
 # of those stages no longer fit their LP and are not used; the others are.
@@ -29,8 +38,8 @@
 # Usage:
 #   /shared/run-tests.sh [--mode reduced|full]
 #
-#   reduced   T1, T2, S1 and S2 only (mpiexec, no sbatch / SLURM cluster required).
-#   full      every T and S case (default — preserves prior behavior).
+#   reduced   T1, T2, L1, L2, S1 and S2 only (mpiexec, no sbatch / SLURM cluster required).
+#   full      every T, L and S case (default — preserves prior behavior).
 #
 # Prerequisites (satisfied by the Docker image):
 #   - /shared/novomodelo-mpi   (novomodelo binary built with --features mpi)
@@ -65,8 +74,11 @@ usage() {
     cat <<'USAGE'
 Usage: run-tests.sh [--mode reduced|full]
 
-  reduced   Run T1, T2, S1 and S2 (mpiexec only); no sbatch.
-  full      Run T1 through T5 and S1 through S4 (default).
+  reduced   Run T1, T2, L1, L2, S1 and S2 (mpiexec only); no sbatch.
+  full      Run T1 through T5, L1 through L3 and S1 through S4 (default).
+
+  The L cases train a copy of the case with cut selection added to its
+  config.json (level1, check_frequency 2, max_active_per_stage 100).
 USAGE
 }
 
@@ -415,6 +427,68 @@ PYEOF
 }
 
 # ---------------------------------------------------------------------------
+# assert_selection_power <output_dir>
+#
+# Reads training/cut_selection/iterations.parquet under <output_dir> and
+# exits 1 unless the sums of `cuts_deactivated`, `cuts_reactivated` and
+# `budget_evicted` (nulls ignored) are each positive and some row whose
+# `cuts_deactivated` is null (an iteration without a selection run) has
+# `budget_evicted > 0`. Prints the three sums.
+# ---------------------------------------------------------------------------
+assert_selection_power() {
+    local output_dir="$1"
+    python3 - "${output_dir}" <<'PYEOF'
+import os
+import sys
+
+import pyarrow.parquet as pq
+
+REL_PATH = "training/cut_selection/iterations.parquet"
+SUMMED_COLUMNS = ("cuts_deactivated", "cuts_reactivated", "budget_evicted")
+
+
+def fail(message):
+    print(f"FAIL: {message}")
+    sys.exit(1)
+
+
+path = os.path.join(sys.argv[1], REL_PATH)
+if not os.path.isfile(path):
+    fail(f"{path}: missing")
+table = pq.ParquetFile(path).read()
+for column in SUMMED_COLUMNS:
+    if column not in table.column_names:
+        fail(f"{path}: column '{column}' missing")
+
+values = {column: table.column(column).to_pylist() for column in SUMMED_COLUMNS}
+sums = {column: sum(v for v in values[column] if v is not None) for column in SUMMED_COLUMNS}
+print("INFO: selection power: " + ", ".join(f"{c}={sums[c]}" for c in SUMMED_COLUMNS))
+
+for column in SUMMED_COLUMNS:
+    if sums[column] <= 0:
+        fail(f"{path}: '{column}' sums to {sums[column]}, expected > 0")
+
+evicted_between_selection_runs = any(
+    deactivated is None and evicted is not None and evicted > 0
+    for deactivated, evicted in zip(values["cuts_deactivated"], values["budget_evicted"])
+)
+if not evicted_between_selection_runs:
+    fail(f"{path}: no row with a null 'cuts_deactivated' has 'budget_evicted' > 0")
+sys.exit(0)
+PYEOF
+}
+
+# ---------------------------------------------------------------------------
+# assert_selection_power_of_case <baseline_dir> <case_dir>
+#
+# assert_selection_power on <case_dir>, with the two-directory signature
+# assert_compare_exit calls its comparator with; <baseline_dir> is unused.
+# ---------------------------------------------------------------------------
+assert_selection_power_of_case() {
+    assert_selection_power "$2"
+}
+
+# ---------------------------------------------------------------------------
 # assert_compare_exit <label> <baseline_dir> <case_dir> <expected_exit> [comparator]
 #
 # Runs <comparator> (default compare_outputs_bitwise) and asserts its exit
@@ -453,6 +527,8 @@ assert_compare_exit() {
 # column PASSes (the whole file is exempt). Then exercises
 # compare_solver_counters: rows differing only in `rank`, `worker_id`, a
 # `*_ms` value and row order PASS, and one differing `basis_offered` FAILs.
+# Then exercises assert_selection_power: a selection file meeting all four
+# conditions PASSes, and one whose `cuts_reactivated` sums to 0 FAILs.
 # Aborts (exit 1) if any case's exit code does not match its expectation.
 # ---------------------------------------------------------------------------
 run_self_check() {
@@ -586,6 +662,27 @@ write_simulation_solver_iterations(
     os.path.join(root, "counters_basis_diff"),
     [(0, "simulation", 0, 0, 2, 1.0), (1, "simulation", 0, 1, 0, 1.5)],
 )
+
+
+def write_selection_iterations(base, cuts_reactivated):
+    write(
+        os.path.join(base, "training", "cut_selection", "iterations.parquet"),
+        {
+            "iteration": pa.array([1, 2, 2], type=pa.int32()),
+            "pool_id": pa.array([1, 1, 2], type=pa.int32()),
+            "cuts_deactivated": pa.array([None, 2, 1], type=pa.int32()),
+            "cuts_reactivated": pa.array(cuts_reactivated, type=pa.int32()),
+            "budget_evicted": pa.array([3, None, 0], type=pa.int32()),
+        },
+    )
+
+
+# selection_power: positive sums and an eviction on an iteration without a
+# selection run -> expect PASS.
+write_selection_iterations(os.path.join(root, "selection_power"), [None, 1, 0])
+
+# selection_no_reactivation: `cuts_reactivated` sums to 0 -> expect FAIL.
+write_selection_iterations(os.path.join(root, "selection_no_reactivation"), [None, 0, 0])
 PYEOF
 
     SELF_CHECK_CASES=0
@@ -600,6 +697,10 @@ PYEOF
         "${root}/counters_layout_diff" 0 compare_solver_counters
     assert_compare_exit "counters_basis_diff" "${root}/counters_baseline" \
         "${root}/counters_basis_diff" 1 compare_solver_counters
+    assert_compare_exit "selection_power" "" "${root}/selection_power" 0 \
+        assert_selection_power_of_case
+    assert_compare_exit "selection_no_reactivation" "" "${root}/selection_no_reactivation" 1 \
+        assert_selection_power_of_case
 
     rm -rf "${root}"
 
@@ -672,6 +773,50 @@ for stage in stages["stages"]:
 if split != SPLIT_STAGE_IDS:
     fail(f"{stages_path}: stages {sorted(SPLIT_STAGE_IDS - split)} not found")
 dump(stages_path, stages)
+PYEOF
+}
+
+# ---------------------------------------------------------------------------
+# prepare_selection_case <src_case> <dst_case>
+#
+# Copies <src_case> to <dst_case> and sets training.cut_selection in the
+# copy's config.json to level1 every second iteration with at most 100
+# active cuts per stage. Exits 1 if <src_case> already sets it.
+# ---------------------------------------------------------------------------
+prepare_selection_case() {
+    local src_case="$1"
+    local dst_case="$2"
+    mkdir -p "${dst_case}"
+    cp -R "${src_case}/." "${dst_case}/"
+    python3 - "${dst_case}" <<'PYEOF'
+import json
+import os
+import sys
+
+CUT_SELECTION = {
+    "selection": {"method": "level1", "check_frequency": 2},
+    "max_active_per_stage": 100,
+}
+
+config_path = os.path.join(sys.argv[1], "config.json")
+
+
+def fail(message):
+    print(f"FAIL: {message}")
+    sys.exit(1)
+
+
+if not os.path.isfile(config_path):
+    fail(f"{config_path}: missing")
+with open(config_path) as f:
+    config = json.load(f)
+training = config.setdefault("training", {})
+if "cut_selection" in training:
+    fail(f"{config_path}: training.cut_selection already set")
+training["cut_selection"] = CUT_SELECTION
+with open(config_path, "w") as f:
+    json.dump(config, f, indent=2)
+    f.write("\n")
 PYEOF
 }
 
@@ -914,18 +1059,22 @@ SBEOF
 # print_summary
 #
 # Prints a pass/fail table of the tests attempted for the active MODE
-# (T1, T2, S1 and S2 for "reduced", every T and S case for "full") so a
-# "reduced" run is not marked FAILED merely for never attempting the sbatch
-# cases.
+# (T1, T2, L1, L2, S1 and S2 for "reduced", every T, L and S case for
+# "full") so a "reduced" run is not marked FAILED merely for never attempting
+# the sbatch cases.
 # ---------------------------------------------------------------------------
 print_summary() {
-    local tests_to_check=(T1 T2)
+    local tests_to_check=("T1" "T2")
     if [[ "${MODE}" == "full" ]]; then
-        tests_to_check+=(T3 T4 T5)
+        tests_to_check+=("T3" "T4" "T5")
     fi
-    tests_to_check+=(S1 S2)
+    tests_to_check+=("L1" "L2")
     if [[ "${MODE}" == "full" ]]; then
-        tests_to_check+=(S3 S4)
+        tests_to_check+=("L3")
+    fi
+    tests_to_check+=("S1" "S2")
+    if [[ "${MODE}" == "full" ]]; then
+        tests_to_check+=("S3" "S4")
     fi
 
     echo ""
@@ -960,6 +1109,7 @@ main() {
 
     # Case directory, baseline tag, completion marker, policy to seed.
     local training_run=("${CASE_DIR}" t1 training/convergence.parquet "")
+    local selection_run=("${WORK_DIR}/4ree-selection" l1 training/convergence.parquet "")
     local simulation_run=(
         "${WORK_DIR}/4ree-partial-misfit" s1 simulation/_SUCCESS "${WORK_DIR}/t1/policy"
     )
@@ -979,6 +1129,25 @@ main() {
 
         # T5: sbatch multi-node, 2 ranks per node
         run_sbatch_test "T5" "${training_run[@]}" 2 4 4 --threads 1
+    fi
+
+    prepare_selection_case "${CASE_DIR}" "${selection_run[0]}"
+
+    # L1: mpiexec single rank (selection-on baseline), then its power check
+    run_mpiexec_test "L1" "${selection_run[@]}" 1
+    if ! assert_selection_power "${WORK_DIR}/l1"; then
+        echo "[L1] FAIL: the selection-on run has no selection power (see above)"
+        RESULTS["L1"]="FAIL"
+        print_summary
+        exit 1
+    fi
+
+    # L2: mpiexec multi-rank single machine
+    run_mpiexec_test "L2" "${selection_run[@]}" 2 --threads 2
+
+    if [[ "${MODE}" == "full" ]]; then
+        # L3: sbatch multi-node, 2 ranks per node
+        run_sbatch_test "L3" "${selection_run[@]}" 2 4 4 --threads 1
     fi
 
     prepare_partial_misfit_case "${CASE_DIR}" "${simulation_run[0]}"
