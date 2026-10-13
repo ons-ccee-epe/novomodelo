@@ -792,8 +792,9 @@ mod tests {
             "stopping_mode": "any",
             "cut_selection": {
               "selection": {
-                "method": "domination",
-                "domination_tolerance": 1e-6
+                "method": "level1",
+                "tie_tolerance": 1e-6,
+                "check_frequency": 3
               }
             }
           },
@@ -840,14 +841,14 @@ mod tests {
         assert_eq!(rules.len(), 2);
         let cut_sel = &cfg.training.cut_selection;
         match cut_sel.selection.as_ref().expect("selection present") {
-            SelectionMethod::Domination {
-                domination_tolerance,
+            SelectionMethod::Level1 {
+                tie_tolerance,
                 check_frequency,
             } => {
-                assert!((domination_tolerance - 1e-6).abs() < f64::EPSILON);
-                assert_eq!(*check_frequency, 5);
+                assert!((tie_tolerance - 1e-6).abs() < f64::EPSILON);
+                assert_eq!(*check_frequency, 3);
             }
-            other => panic!("expected Domination, got {other:?}"),
+            other @ SelectionMethod::Dynamic { .. } => panic!("expected Level1, got {other:?}"),
         }
 
         assert_eq!(cfg.upper_bound_evaluation.enabled, Some(true));
@@ -1669,7 +1670,7 @@ mod tests {
                 assert!((tie_tolerance - 1e-9).abs() < f64::EPSILON);
                 assert_eq!(check_frequency, 7);
             }
-            other => panic!("expected Level1, got {other:?}"),
+            other @ SelectionMethod::Dynamic { .. } => panic!("expected Level1, got {other:?}"),
         }
     }
 
@@ -2137,6 +2138,57 @@ mod tests {
                 assert!(message.contains("must be a JSON object"));
             }
             other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    /// The two removed row-selection method names, spelled from characters so
+    /// that the list in `training.rs` is their only occurrence in this crate.
+    fn removed_selection_method_names() -> [String; 2] {
+        [
+            ['l', 'm', 'l', '1'].iter().collect(),
+            ['d', 'o', 'm', 'i', 'n', 'a', 't', 'i', 'o', 'n']
+                .iter()
+                .collect(),
+        ]
+    }
+
+    fn assert_names_the_removed_method(err: &LoadError, removed: &str) {
+        let message = err.to_string();
+        assert!(
+            message.contains(&format!("`{removed}` was removed"))
+                && message.contains("use `level1`")
+                && message.contains("training.cut_selection.selection.method"),
+            "unexpected message for {removed}: {message}"
+        );
+    }
+
+    #[test]
+    fn with_overrides_rejects_a_removed_selection_method() {
+        let base = base_value(OVERRIDE_BASE_CONFIG);
+        for removed in removed_selection_method_names() {
+            let overrides = override_map(&[(
+                "training.cut_selection.selection",
+                serde_json::json!({ "method": removed }),
+            )]);
+            let err = Config::with_overrides(&base, &overrides).unwrap_err();
+            assert!(
+                matches!(&err, LoadError::SchemaError { path, .. }
+                    if path == std::path::Path::new("<config_overrides>")),
+                "expected SchemaError on the override path, got: {err:?}"
+            );
+            assert_names_the_removed_method(&err, &removed);
+        }
+    }
+
+    #[test]
+    fn parse_config_rejects_a_removed_selection_method() {
+        let mut config = base_value(OVERRIDE_BASE_CONFIG);
+        for removed in removed_selection_method_names() {
+            config["training"]["cut_selection"] =
+                serde_json::json!({ "selection": { "method": removed } });
+            let f = write_config(&config.to_string());
+            let err = parse_config(f.path()).unwrap_err();
+            assert_names_the_removed_method(&err, &removed);
         }
     }
 

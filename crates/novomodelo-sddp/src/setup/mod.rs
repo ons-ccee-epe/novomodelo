@@ -2333,8 +2333,8 @@ fn reject_dynamic_cut_selection_under_enumerated(
             "dynamic cut selection is inadmissible under enumerated forward traversal; the \
              enumerated backward never solves lazily and records no binding activity, so the \
              seed window of the enumerated forward's lazy solve would never advance past a \
-             cut's generating iteration — pair enumerated forwards with a value-based cut \
-             selection strategy, or none"
+             cut's generating iteration — pair enumerated forwards with the `level1` method, \
+             or with no selection method"
                 .to_string(),
         ));
     }
@@ -2358,7 +2358,7 @@ fn reject_budget_under_dynamic_cut_selection(
             "training.cut_selection.max_active_per_stage is inadmissible with the dynamic \
              cut selection method; a lazy solve takes its candidates from the active rows and \
              dynamic runs no selection pass, so an evicted row never returns — remove the cap, \
-             or use a value-based method (level1, lml1 or domination)"
+             or use the `level1` method"
                 .to_string(),
         ));
     }

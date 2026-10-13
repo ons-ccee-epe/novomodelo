@@ -427,6 +427,36 @@ fn validate_rejects_a_budget_with_enumerated_training() {
         .stdout(predicate::str::contains("enumerated"));
 }
 
+/// A removed selection method fails at load naming `level1`; the same case with
+/// `level1` validates.
+#[test]
+fn validate_rejects_a_removed_selection_method() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+    config["training"]["cut_selection"] = serde_json::json!({
+        "selection": { "method": "level1" }
+    });
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    for removed in ["lml1", "domination"] {
+        config["training"]["cut_selection"]["selection"] = serde_json::json!({ "method": removed });
+        write_file(dir.path(), "config.json", &config.to_string());
+        novomodelo()
+            .args(["validate", dir.path().to_str().unwrap()])
+            .assert()
+            .failure()
+            .code(1)
+            .stdout(predicate::str::contains(format!("`{removed}` was removed")))
+            .stdout(predicate::str::contains("use `level1`"));
+    }
+}
+
 /// An invalid `simulation.scenario_source` must be rejected by both `validate`
 /// and `run`, carrying the same rule message — the training half of the
 /// config stays valid so the failure is unambiguously the simulation source.

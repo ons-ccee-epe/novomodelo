@@ -144,10 +144,8 @@ impl fmt::Display for StoppingMode {
 
 /// Row-selection settings (`config.json → training.cut_selection`).
 ///
-/// Row selection bounds the per-solve LP size by limiting how many constraint
-/// rows from the row pool are carried into each solve. `selection` chooses the
-/// method and carries only that method's parameters; omitting it (the default)
-/// disables row selection.
+/// `selection` chooses the method and carries only that method's parameters;
+/// omitting it (the default) disables row selection.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(default, deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -190,28 +188,55 @@ pub struct RowSelectionConfig {
     /// that has never been binding ranks by the iteration that added it.
     /// `row_activity_tolerance` decides whether a row is binding.
     ///
-    /// The cap is rejected at load when set together with the `dynamic`
-    /// selection method or with `training.selection.method` set to
-    /// `enumerated`.
+    /// The cap is rejected at load when set together with
+    /// `training.cut_selection.selection.method` = `dynamic` or with
+    /// `training.selection.method` set to `enumerated`.
     ///
     /// Eviction deactivates a row and keeps it in the pool. With no selection
     /// method an evicted row does not become active again during training.
-    /// With a selection method, a later selection pass may reactivate it, and
-    /// the cap is then applied again in the same iteration.
+    /// With `level1`, a later selection pass may reactivate it, and the cap is
+    /// then applied again in the same iteration.
     #[serde(default)]
     pub max_active_per_stage: Option<u32>,
 
     /// Active selection method and its parameters. Absent/`null` (default)
     /// disables row selection.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_selection_method")]
     pub selection: Option<SelectionMethod>,
+}
+
+/// Methods that left the config surface; naming one is a load error that names
+/// `level1`, never a silent mapping onto it.
+const REMOVED_SELECTION_METHODS: [&str; 2] = ["lml1", "domination"];
+
+/// Deserializes `selection`, rejecting a removed `method` before the derived
+/// [`SelectionMethod`] implementation reports it as an unknown variant.
+fn deserialize_selection_method<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<SelectionMethod>, D::Error> {
+    let Some(value) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    if let Some(removed) = value
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .filter(|method| REMOVED_SELECTION_METHODS.contains(method))
+    {
+        return Err(serde::de::Error::custom(format_args!(
+            "the row-selection method `{removed}` was removed: use `level1` \
+             (key `training.cut_selection.selection.method`)"
+        )));
+    }
+    SelectionMethod::deserialize(value)
+        .map(Some)
+        .map_err(serde::de::Error::custom)
 }
 
 /// Row-selection method and its method-specific parameters.
 ///
 /// The `method` key selects the method, and each method accepts only its own
-/// parameters: a parameter of another method is a load-time error, and a
-/// misspelled `method` is an `unknown variant` error at parse time.
+/// parameters: a parameter of another method, a misspelled `method` and a
+/// removed `method` are load-time errors.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -222,26 +247,6 @@ pub enum SelectionMethod {
         /// best row value there. Default `1e-10`.
         #[serde(default = "default_tie_tolerance")]
         tie_tolerance: f64,
-        /// Iterations between periodic pruning checks. Must be `> 0`. Default `5`.
-        #[serde(default = "default_check_frequency")]
-        check_frequency: u32,
-    },
-    /// Limited-memory Level-1: retain only the oldest eligible near-optimal row
-    /// per visited state.
-    Lml1 {
-        /// Tie tolerance: a row is active at a state when within this of the
-        /// best row value there. Default `1e-10`.
-        #[serde(default = "default_tie_tolerance")]
-        tie_tolerance: f64,
-        /// Iterations between periodic pruning checks. Must be `> 0`. Default `5`.
-        #[serde(default = "default_check_frequency")]
-        check_frequency: u32,
-    },
-    /// Domination: remove rows dominated at all visited states.
-    Domination {
-        /// Activity tolerance: a row survives if within this of the maximum at
-        /// any visited state. Required (no default).
-        domination_tolerance: f64,
         /// Iterations between periodic pruning checks. Must be `> 0`. Default `5`.
         #[serde(default = "default_check_frequency")]
         check_frequency: u32,
@@ -633,7 +638,7 @@ mod tests {
                 assert_eq!(*max_added_per_round, 3);
                 assert!((*violation_tolerance - 1e-9).abs() < f64::EPSILON);
             }
-            other => panic!("expected Dynamic, got {other:?}"),
+            other @ SelectionMethod::Level1 { .. } => panic!("expected Dynamic, got {other:?}"),
         }
     }
 
@@ -660,7 +665,7 @@ mod tests {
                 assert!((*tie_tolerance - 1e-10).abs() < 1e-20);
                 assert_eq!(*check_frequency, 5);
             }
-            other => panic!("expected Level1, got {other:?}"),
+            other @ SelectionMethod::Dynamic { .. } => panic!("expected Level1, got {other:?}"),
         }
     }
 
@@ -705,18 +710,66 @@ mod tests {
         assert!(result.is_err(), "an unknown method tag must be rejected");
     }
 
+    /// The two removed method names, spelled from characters so that the list
+    /// in production code is their only occurrence in this crate's source.
+    fn removed_method_names() -> [String; 2] {
+        [
+            ['l', 'm', 'l', '1'].iter().collect(),
+            ['d', 'o', 'm', 'i', 'n', 'a', 't', 'i', 'o', 'n']
+                .iter()
+                .collect(),
+        ]
+    }
+
+    fn training_json_with_selection(selection: &str) -> String {
+        format!(
+            r#"{{
+                "selection": {{ "method": "sampled", "forward_passes": 4 }},
+                "stopping_rules": [{{ "type": "iteration_limit", "limit": 100 }}],
+                "cut_selection": {{ "selection": {selection} }}
+            }}"#
+        )
+    }
+
+    /// A removed method is rejected with the message that names it and
+    /// `level1`, with or without the parameters it used to take.
     #[test]
-    fn domination_without_tolerance_is_missing_field_error() {
-        let json = r#"{
-            "selection": { "method": "sampled", "forward_passes": 4 },
-            "stopping_rules": [{ "type": "iteration_limit", "limit": 100 }],
-            "cut_selection": { "selection": { "method": "domination" } }
-        }"#;
-        let result = serde_json::from_str::<TrainingConfig>(json);
+    fn a_removed_selection_method_names_level1() {
+        for removed in removed_method_names() {
+            for selection in [
+                format!(r#"{{ "method": "{removed}" }}"#),
+                format!(r#"{{ "method": "{removed}", "check_frequency": 2 }}"#),
+            ] {
+                let err = serde_json::from_str::<TrainingConfig>(&training_json_with_selection(
+                    &selection,
+                ))
+                .expect_err("a removed method must be rejected")
+                .to_string();
+                assert!(
+                    err.contains(&format!(
+                        "the row-selection method `{removed}` was removed: use `level1` \
+                         (key `training.cut_selection.selection.method`)"
+                    )),
+                    "unexpected message for {selection}: {err}"
+                );
+            }
+        }
+    }
+
+    /// A misspelled method stays serde's unknown-variant error listing the
+    /// accepted spellings, and is not reported as a removed method.
+    #[test]
+    fn a_misspelled_selection_method_is_still_an_unknown_variant() {
+        let err = serde_json::from_str::<TrainingConfig>(&training_json_with_selection(
+            r#"{ "method": "lml2" }"#,
+        ))
+        .expect_err("a misspelled method must be rejected")
+        .to_string();
         assert!(
-            result.is_err(),
-            "domination requires domination_tolerance; absence must be rejected"
+            err.contains("unknown variant `lml2`, expected `level1` or `dynamic`"),
+            "unexpected message: {err}"
         );
+        assert!(!err.contains("was removed"), "unexpected message: {err}");
     }
 
     /// A full `training.solver.backward` block round-trips: every per-field

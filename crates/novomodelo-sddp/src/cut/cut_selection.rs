@@ -623,11 +623,10 @@ fn validate_tolerance(key: &str, value: f64, strict: bool) -> Result<f64, String
 ///
 /// Returns `Err(String)` when `row_activity_tolerance` (checked even with no
 /// method) is not finite and `>= 0`, or when a method's numeric constraint is
-/// violated: `check_frequency = 0` or a `tie_tolerance`/`domination_tolerance`
-/// that is not finite and `>= 0` for a periodic method; or, for the dynamic
-/// method, `start_iteration = 0`, `candidate_recency = Some(0)`,
-/// `max_added_per_round = 0`, or a `violation_tolerance` that is not finite
-/// and `> 0`.
+/// violated: for `level1`, `check_frequency = 0` or a `tie_tolerance` that is
+/// not finite and `>= 0`; for `dynamic`, `start_iteration = 0`,
+/// `candidate_recency = Some(0)`, `max_added_per_round = 0`, or a
+/// `violation_tolerance` that is not finite and `> 0`.
 ///
 /// [`SelectionMethod`]: novomodelo_io::config::SelectionMethod
 pub fn parse_cut_selection_config(
@@ -651,20 +650,6 @@ pub fn parse_cut_selection_config(
             check_frequency: u64::from(validate_check_frequency(check_frequency)?),
             tie_tolerance: validate_tolerance("tie_tolerance", tie_tolerance, false)?,
             lookback_iterations: None,
-        })),
-        SelectionMethod::Lml1 {
-            tie_tolerance,
-            check_frequency,
-        } => Ok(Some(CutSelectionStrategy::Lml1 {
-            check_frequency: u64::from(validate_check_frequency(check_frequency)?),
-            tie_tolerance: validate_tolerance("tie_tolerance", tie_tolerance, false)?,
-        })),
-        SelectionMethod::Domination {
-            domination_tolerance,
-            check_frequency,
-        } => Ok(Some(CutSelectionStrategy::Dominated {
-            check_frequency: u64::from(validate_check_frequency(check_frequency)?),
-            threshold: validate_tolerance("domination_tolerance", domination_tolerance, false)?,
         })),
         SelectionMethod::Dynamic {
             start_iteration,
@@ -1448,75 +1433,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_lml1() {
-        let cfg = RowSelectionConfig {
-            selection: Some(SelectionMethod::Lml1 {
-                tie_tolerance: 1e-8,
-                check_frequency: 5,
-            }),
-            ..RowSelectionConfig::default()
-        };
-        let strategy = parse_cut_selection_config(&cfg)
-            .expect("lml1 must parse")
-            .expect("must produce Some for lml1");
-        assert!(
-            matches!(
-                strategy,
-                CutSelectionStrategy::Lml1 {
-                    check_frequency: 5,
-                    tie_tolerance,
-                } if (tie_tolerance - 1e-8).abs() < f64::EPSILON
-            ),
-            "unexpected variant: {strategy:?}"
-        );
-    }
-
-    /// `lml1` with serde-default fields resolves to the default
-    /// `tie_tolerance = 1e-10`.
-    #[test]
-    fn test_parse_lml1_defaults() {
-        let json = r#"{"selection": {"method": "lml1"}}"#;
-        let cfg: RowSelectionConfig = serde_json::from_str(json).expect("lml1 defaults parse");
-        let strategy = parse_cut_selection_config(&cfg)
-            .expect("lml1 must parse")
-            .expect("must produce Some for lml1");
-        assert!(
-            matches!(
-                strategy,
-                CutSelectionStrategy::Lml1 {
-                    check_frequency: 5,
-                    tie_tolerance,
-                } if (tie_tolerance - 1e-10).abs() < 1e-20
-            ),
-            "unexpected variant or wrong default tie_tolerance: {strategy:?}"
-        );
-    }
-
-    #[test]
-    fn test_parse_domination() {
-        let cfg = RowSelectionConfig {
-            selection: Some(SelectionMethod::Domination {
-                domination_tolerance: 1e-6,
-                check_frequency: 10,
-            }),
-            ..RowSelectionConfig::default()
-        };
-        let strategy = parse_cut_selection_config(&cfg)
-            .expect("domination must parse")
-            .expect("must produce Some for domination");
-        assert!(
-            matches!(
-                strategy,
-                CutSelectionStrategy::Dominated {
-                    threshold,
-                    check_frequency: 10,
-                } if (threshold - 1e-6).abs() < f64::EPSILON
-            ),
-            "unexpected variant: {strategy:?}"
-        );
-    }
-
-    #[test]
     fn test_parse_zero_check_frequency() {
         let cfg = RowSelectionConfig {
             selection: Some(SelectionMethod::Level1 {
@@ -1534,8 +1450,7 @@ mod tests {
         );
     }
 
-    /// One config per tolerance key, each carrying `value`; `tie_tolerance`
-    /// appears once per method that has it.
+    /// One config per tolerance key, each carrying `value`.
     fn configs_with_tolerance(value: f64) -> Vec<(&'static str, RowSelectionConfig)> {
         let with_method = |selection| RowSelectionConfig {
             selection: Some(selection),
@@ -1553,20 +1468,6 @@ mod tests {
                 "tie_tolerance",
                 with_method(SelectionMethod::Level1 {
                     tie_tolerance: value,
-                    check_frequency: 5,
-                }),
-            ),
-            (
-                "tie_tolerance",
-                with_method(SelectionMethod::Lml1 {
-                    tie_tolerance: value,
-                    check_frequency: 5,
-                }),
-            ),
-            (
-                "domination_tolerance",
-                with_method(SelectionMethod::Domination {
-                    domination_tolerance: value,
                     check_frequency: 5,
                 }),
             ),
@@ -1626,42 +1527,21 @@ mod tests {
     #[test]
     fn parse_rejects_a_negative_tie_tolerance() {
         let messages = rejections("tie_tolerance", -1.0);
-        assert_eq!(
-            messages.len(),
-            2,
-            "level1 and lml1 both carry tie_tolerance"
+        assert_eq!(messages.len(), 1);
+        assert!(
+            messages[0].contains("tie_tolerance must be finite and >= 0 (got -1)"),
+            "error must name the key, the rule and the value, got: {}",
+            messages[0]
         );
-        for msg in messages {
-            assert!(
-                msg.contains("tie_tolerance must be finite and >= 0 (got -1)"),
-                "error must name the key, the rule and the value, got: {msg}"
-            );
-        }
     }
 
     #[test]
     fn parse_rejects_a_nan_tie_tolerance() {
         let messages = rejections("tie_tolerance", f64::NAN);
-        assert_eq!(
-            messages.len(),
-            2,
-            "level1 and lml1 both carry tie_tolerance"
-        );
-        for msg in messages {
-            assert!(
-                msg.contains("tie_tolerance") && msg.contains("(got NaN)"),
-                "error must name the key and the value, got: {msg}"
-            );
-        }
-    }
-
-    #[test]
-    fn parse_rejects_a_negative_domination_tolerance() {
-        let messages = rejections("domination_tolerance", -1.0);
         assert_eq!(messages.len(), 1);
         assert!(
-            messages[0].contains("domination_tolerance must be finite and >= 0 (got -1)"),
-            "error must name the key, the rule and the value, got: {}",
+            messages[0].contains("tie_tolerance") && messages[0].contains("(got NaN)"),
+            "error must name the key and the value, got: {}",
             messages[0]
         );
     }

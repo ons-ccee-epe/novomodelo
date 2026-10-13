@@ -1019,10 +1019,11 @@ mod cut_selection_determinism_realistic {
 }
 
 mod basis_reconstruct_churn {
-    //! Cross-churn regression tests for [`novomodelo_sddp::basis_reconstruct`]: guards
-    //! `state_at_capture` routing and the iteration-wide hot-path allocation
-    //! invariants against `level1` deactivation, budget eviction, and new-cut
-    //! churn. Slot pairing is pinned by `hybrid_reconstruction`, not here.
+    //! Churn regressions for [`novomodelo_sddp::basis_reconstruct`]: the solver
+    //! rejects no reconstructed basis under `level1` deactivation, budget
+    //! eviction and new cuts, with no churn, or with every earlier cut
+    //! deactivated; under the churn the lower bound reaches the d03 optimum.
+    //! Slot pairing is pinned by `hybrid_reconstruction`, not here.
 
     use novomodelo_io::config::{SimulationSelection, TrainingSelection};
     use std::path::Path;
@@ -2461,14 +2462,6 @@ mod trial_state_store {
     fn a_run_without_level1_stores_no_trial_state() {
         let others = [
             None,
-            Some(SelectionMethod::Lml1 {
-                tie_tolerance: 1e-10,
-                check_frequency: 2,
-            }),
-            Some(SelectionMethod::Domination {
-                domination_tolerance: 1e-10,
-                check_frequency: 2,
-            }),
             Some(SelectionMethod::Dynamic {
                 start_iteration: 2,
                 seed_window: 5,

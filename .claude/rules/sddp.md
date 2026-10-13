@@ -662,8 +662,9 @@ leaves the tail of its block unwritten and the next iteration's block starts abo
 it; and a `CutPool::new` pool with a non-zero `slot_base` leaves its
 leading slots unwritten. `populated()` and `cuts_in_lp()` are one past the highest
 written slot: they bound slot-indexed reads and do not count cuts, which
-`generated()` does. Readers skip a vacant slot. The selection kernel
-(`CutSelectionStrategy::select_for_stage`) makes a slot eligible only when its
+`generated()` does. Readers skip a vacant slot. The windowed selection kernel
+(`CutSelectionStrategy::select_for_stage`), which no configured method reaches,
+makes a slot eligible only when its
 origin is `Generated` and its generating iteration is earlier than the current
 one, and overwrites a vacant slot's values with `f64::NEG_INFINITY` after the
 intercept add, so its zero is never a per-state maximum. The checkpoint writer
@@ -995,8 +996,9 @@ only, a total match over the variants, as is the match that enables, with
 `enable_trial_states_within` when the strategy carries a window and
 `enable_trial_states` otherwise. The session enables neither the root pool nor
 the leaf pool, `exports.states` alone enables nothing, and without
-`cut_selection` no pool allocates a row. `exports.states` and the interim
-selection kernel keep reading the archive. The strategy comes from the config
+`cut_selection` no pool allocates a row. `exports.states` is the only configured
+reader of the archive; the windowed kernel, which reads it too, is reached by no
+configured method. The strategy comes from the config
 the CLI broadcasts and the node set from the graph every rank builds from it, so
 the same pools store, with the same window, on every rank for the whole run.
 
@@ -1057,8 +1059,10 @@ The wrong-but-compiling alternatives:
   `a_single_node_level_stores_each_trial_state_at_its_cut`;
 - enabling the store for a strategy other than `Level1`, or setting `scored` on
   the cuts already written when the store is enabled. Pinned by
-  `a_run_without_level1_stores_no_trial_state`, which fails on `lml1` under the
-  first, and by `a_slot_role_is_fixed_when_the_slot_is_written` and
+  `a_run_without_level1_stores_no_trial_state`, which fails on its `dynamic` leg
+  under the first: the mutation shown admits `Dynamic` in both
+  `stores_trial_states` and the enabling match, since `stores_trial_states`
+  alone enables nothing while that match keeps `Dynamic` out; and by `a_slot_role_is_fixed_when_the_slot_is_written` and
   `a_pool_that_stores_trial_states_marks_its_cuts_scored` under the second;
 - deciding the enabling or the fill from a value a rank computes locally (its
   trial count, the cuts it generated): the ranks' stores differ. Not
@@ -1300,8 +1304,9 @@ window), `update_ownership`, then
 `apply_updates(ownership_activity_updates(..))`. It reads no archive, and a
 `level1` run without `exports.states` allocates none
 (`CutSelectionStrategy::scores_visited_states` is false for `Level1`). The
-windowed kernel (`select_for_stage`) serves `Lml1` and `Dominated` and returns
-no update for `Level1`. The call site meets what the update relies on:
+windowed kernel (`select_for_stage`) returns no update for `Level1`; the
+strategies it serves, `Lml1` and `Dominated`, are reached by no configured
+method. The call site meets what the update relies on:
 
 - `TrainingSession::new` enabled the store on these pools before the first cut,
   so every generated cut there is scored;
