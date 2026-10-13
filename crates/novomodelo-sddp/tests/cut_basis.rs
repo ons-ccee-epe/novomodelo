@@ -22,6 +22,16 @@
 
 mod common;
 
+use novomodelo_sddp::{SolverStatsDelta, SolverStatsLogEntry};
+
+fn sum_forward_deltas(log: &[SolverStatsLogEntry]) -> SolverStatsDelta {
+    SolverStatsDelta::aggregate(
+        log.iter()
+            .filter(|e| e.phase == "forward")
+            .map(|e| &e.delta),
+    )
+}
+
 mod boundary_cuts {
     //! Terminal-stage boundary cuts: a consumer study loads boundary cuts from a
     //! source checkpoint; they must inject into the terminal pool and the lower
@@ -1010,9 +1020,9 @@ mod cut_selection_determinism_realistic {
 
 mod basis_reconstruct_churn {
     //! Cross-churn regression tests for [`novomodelo_sddp::basis_reconstruct`]: guards
-    //! slot reconciliation, `state_at_capture` routing, and the iteration-wide
-    //! hot-path allocation invariants against LML1 deactivation, budget eviction,
-    //! and new-cut churn.
+    //! `state_at_capture` routing and the iteration-wide hot-path allocation
+    //! invariants against `level1` deactivation, budget eviction, and new-cut
+    //! churn. Slot pairing is pinned by `hybrid_reconstruction`, not here.
 
     use novomodelo_io::config::{SimulationSelection, TrainingSelection};
     use std::path::Path;
@@ -1021,12 +1031,14 @@ mod basis_reconstruct_churn {
     use novomodelo_core::{TrainingEvent, scenario::ScenarioSource};
     use novomodelo_io::config::{SelectionMethod, StoppingRuleConfig};
     use novomodelo_sddp::{
-        CutPool, FutureCostFunction, SolverStatsDelta, SolverStatsLogEntry, StudySetup,
+        CutPool, FutureCostFunction, SolverStatsDelta, StudySetup,
         hydro_models::prepare_hydro_models, setup::prepare_stochastic,
     };
     use novomodelo_solver::ActiveSolver;
 
+    use super::common::selection_fingerprint::SelectionPower;
     use super::common::{D03_EXPECTED_COST, StubComm};
+    use super::sum_forward_deltas;
 
     // ---------------------------------------------------------------------------
     // Path helpers
@@ -1051,23 +1063,12 @@ mod basis_reconstruct_churn {
     }
 
     // ---------------------------------------------------------------------------
-    // Helpers
+    // Test 1: Cross-churn — level1 + budget + new cuts
     // ---------------------------------------------------------------------------
 
-    fn sum_forward_deltas(log: &[SolverStatsLogEntry]) -> SolverStatsDelta {
-        SolverStatsDelta::aggregate(
-            log.iter()
-                .filter(|e| e.phase == "forward")
-                .map(|e| &e.delta),
-        )
-    }
-
-    // ---------------------------------------------------------------------------
-    // Test 1: Cross-churn — LML1 + budget + new cuts
-    // ---------------------------------------------------------------------------
-
-    /// All three churn types active at once: selection deactivation, budget
-    /// eviction and new cuts. Zero basis rejections and the d03 optimum are
+    /// Every churn type active at once: selection deactivation and
+    /// reactivation, budget eviction and new cuts. Pins that the solver rejects
+    /// no reconstructed basis under that churn, and the d03 optimum, both
     /// asserted only once the run is shown to have churned.
     #[test]
     fn basis_reconstruct_churn() {
@@ -1079,13 +1080,13 @@ mod basis_reconstruct_churn {
         config.training.stopping_rules =
             Some(vec![StoppingRuleConfig::IterationLimit { limit: 8 }]);
 
-        config.training.cut_selection.selection = Some(SelectionMethod::Lml1 {
+        config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
             tie_tolerance: 1e-10,
-            check_frequency: 1,
+            check_frequency: 2,
         });
 
-        // Budget = 3 = the forward passes of one iteration: at 4 to 6 selection
-        // alone keeps the interior pool under the cap and the budget evicts nothing.
+        // check_frequency 1 and a cap of 4 both evict nothing on d03; 3 is the
+        // forward passes of one iteration, the floor.
         config.training.cut_selection.max_active_per_stage = Some(3);
 
         let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
@@ -1145,6 +1146,7 @@ mod basis_reconstruct_churn {
                 _ => None,
             })
             .sum();
+        let rows_reactivated = SelectionPower::from_events(&events).reactivations;
         let pools = &setup.fcf.pools;
         let mixed_interior_pools = pools[1..pools.len() - 1]
             .iter()
@@ -1166,6 +1168,11 @@ mod basis_reconstruct_churn {
             mixed_interior_pools > 0,
             "basis_reconstruct_churn: no interior pool holds both active and inactive rows \
              ({churn})"
+        );
+        assert!(
+            rows_reactivated > 0,
+            "basis_reconstruct_churn: selection reactivated no interior row \
+             (reactivated={rows_reactivated}, {churn})"
         );
 
         let fwd = sum_forward_deltas(&result.solver_stats_log);
@@ -1568,7 +1575,10 @@ mod selection_in_a_training_run {
     use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
-    use super::common::selection_fingerprint::{SelectionFingerprint, SelectionPower};
+    use super::common::selection_fingerprint::{
+        SelectionFingerprint, SelectionPower, interior_pool_ids,
+    };
+    use super::sum_forward_deltas;
 
     const FORWARD_PASSES: u32 = 2;
     const ITERATIONS: u32 = 10;
@@ -1985,6 +1995,51 @@ mod selection_in_a_training_run {
             evicted_again_after_a_reactivation,
             "no interior pool was capped again in an iteration whose selection run \
              reactivated one of its cuts"
+        );
+    }
+
+    /// Pins that the solver rejects no reconstructed basis while a `level1` run
+    /// with a budget deactivates, reactivates and evicts cuts. The pool shape is
+    /// read once training has ended: after the selection run of the final
+    /// iteration and the budget applied after it.
+    #[test]
+    fn a_level1_run_with_a_budget_rejects_no_reconstructed_basis() {
+        let (tx, rx) = mpsc::channel();
+        let (setup, result) = train_configured(ITERATIONS, Some(tx), |config| {
+            config.training.cut_selection.selection = Some(level1());
+            config.training.cut_selection.max_active_per_stage = Some(BUDGET_BELOW_THE_POOL_SIZE);
+        });
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+
+        let power = SelectionPower::from_events(&events);
+        assert!(
+            power.deactivations > 0,
+            "selection deactivated no interior cut: {power:?}"
+        );
+        assert!(
+            power.reactivations > 0,
+            "selection reactivated no interior cut: {power:?}"
+        );
+        assert!(
+            power.budget_evictions > 0,
+            "the budget evicted no interior cut: {power:?}"
+        );
+        let pools = &setup.fcf.pools;
+        assert!(
+            interior_pool_ids(&setup).into_iter().any(|pool_id| {
+                let pool = &pools[pool_id];
+                pool.active_count() >= 2 && (0..pool.populated()).any(|slot| !pool.is_active(slot))
+            }),
+            "no interior pool ends the run with two or more active cuts and an inactive \
+             populated slot: {power:?}"
+        );
+
+        let forward = sum_forward_deltas(&result.solver_stats_log);
+        assert_eq!(
+            forward.basis_consistency_failures, 0,
+            "expected 0 forward basis rejections, got {} (reconstructed bases must always be \
+             accepted by the solver)",
+            forward.basis_consistency_failures
         );
     }
 
