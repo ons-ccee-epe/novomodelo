@@ -73,6 +73,16 @@ pub struct SlotRole {
     pub scored: bool,
 }
 
+/// Which cuts of a pool a solve loads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CutSet {
+    /// The cuts whose activity flag is set.
+    Active,
+    /// Every cut a run generated, flag aside; every loaded cut that carries a
+    /// trial state, flag aside; every other loaded cut whose flag is set.
+    All,
+}
+
 const VACANT_ROLE: SlotRole = SlotRole {
     origin: SlotOrigin::Vacant,
     scored: false,
@@ -386,6 +396,45 @@ impl CutPool {
                 }
             })
             .flatten()
+    }
+
+    /// Iterate over the cuts of `set` as `(slot_index, intercept, coefficient_slice)`,
+    /// in ascending slot order. [`CutSet::Active`] yields what
+    /// [`active_cuts`](CutPool::active_cuts) yields.
+    pub fn cuts_in(&self, set: CutSet) -> impl Iterator<Item = (usize, f64, &[f64])> {
+        (0..self.populated_count)
+            .filter(move |&slot| self.is_in(slot, set))
+            .map(move |slot| {
+                let start = slot * self.state_dimension;
+                (
+                    slot,
+                    self.intercepts[slot],
+                    &self.coefficients[start..start + self.state_dimension],
+                )
+            })
+    }
+
+    /// Count the cuts of `set`.
+    #[must_use]
+    pub fn count_in(&self, set: CutSet) -> usize {
+        match set {
+            CutSet::Active => self.active_count(),
+            CutSet::All => self.cuts_in(set).count(),
+        }
+    }
+
+    fn is_in(&self, slot: usize, set: CutSet) -> bool {
+        match set {
+            CutSet::Active => self.active[slot],
+            CutSet::All => {
+                let role = self.roles[slot];
+                match role.origin {
+                    SlotOrigin::Vacant => false,
+                    SlotOrigin::Generated => true,
+                    SlotOrigin::Prefix => role.scored || self.active[slot],
+                }
+            }
+        }
     }
 
     /// Iterate over active cuts whose `iteration_generated == current_iteration`,
@@ -1389,7 +1438,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::num::NonZeroU64;
 
-    use super::{CutPool, SlotOrigin, SlotRole};
+    use super::{CutPool, CutSet, SlotOrigin, SlotRole};
     use crate::cut_selection::{CutActivityUpdates, CutMetadata};
     use crate::lp::indexer::CutStateProjection;
     use crate::setup::NodeId;
@@ -1981,6 +2030,75 @@ mod tests {
         let evicted = pool.enforce_budget(0, 9).evicted_count;
         assert!(evicted > 0, "the budget must evict for the check to bite");
         assert_eq!(roles_of(&pool), before, "enforce_budget");
+    }
+
+    fn slots_in(pool: &CutPool, set: CutSet) -> Vec<usize> {
+        pool.cuts_in(set).map(|(slot, _, _)| slot).collect()
+    }
+
+    #[test]
+    fn cuts_in_all_follows_the_slot_roles() {
+        use SlotOrigin::{Generated, Prefix};
+
+        let scored = |origin| SlotRole {
+            origin,
+            scored: true,
+        };
+        let mut pool = CutPool::new(8, 1, 1, 0);
+        for slot in 0..7_u32 {
+            pool.add_cut(NodeId(0), u64::from(slot), 0, f64::from(slot), &[1.0]);
+        }
+        let roles = [
+            (scored(Generated), true),
+            (scored(Generated), false),
+            (unscored(Generated), false),
+            (unscored(Prefix), true),
+            (unscored(Prefix), false),
+            (scored(Prefix), false),
+        ];
+        for (slot, (role, active)) in (0..).zip(roles) {
+            pool.set_role_for_test(slot as usize, role);
+            pool.set_active(slot, active);
+        }
+        pool.set_active(6, false);
+        pool.set_role_for_test(6, unscored(SlotOrigin::Vacant));
+
+        assert_eq!(slots_in(&pool, CutSet::All), vec![0, 1, 2, 3, 5]);
+        assert_eq!(pool.count_in(CutSet::All), 5);
+        assert_eq!(slots_in(&pool, CutSet::Active), vec![0, 3]);
+        assert_eq!(pool.count_in(CutSet::Active), 2);
+    }
+
+    #[test]
+    fn cuts_in_active_equals_active_cuts() {
+        let mut pool = CutPool::new(8, 2, 1, 0);
+        for slot in 0..6_u32 {
+            pool.add_cut(NodeId(0), u64::from(slot), 0, f64::from(slot), &[1.0, 2.0]);
+        }
+        pool.deactivate(&[1, 4]);
+
+        let active: Vec<_> = pool.active_cuts().collect();
+        let in_set: Vec<_> = pool.cuts_in(CutSet::Active).collect();
+
+        assert_eq!(in_set, active);
+        assert_eq!(pool.count_in(CutSet::Active), active.len());
+        assert_eq!(active.len(), 4);
+    }
+
+    /// A load that restores scored cuts changes this: those cuts join `All`
+    /// whatever their flag.
+    #[test]
+    fn a_loaded_pool_has_one_cut_set() {
+        let mut inactive = loaded_cut(3);
+        inactive.is_active = false;
+        let pool = CutPool::from_deserialized(1, &[loaded_cut(1), inactive, loaded_cut(2)]);
+
+        assert_eq!(slots_in(&pool, CutSet::All), vec![0, 2]);
+        assert_eq!(
+            pool.cuts_in(CutSet::All).collect::<Vec<_>>(),
+            pool.cuts_in(CutSet::Active).collect::<Vec<_>>()
+        );
+        assert_eq!(pool.count_in(CutSet::All), pool.active_count());
     }
 
     #[test]

@@ -28,7 +28,8 @@ use crate::{
 use super::node_graph::pool_fill_basis_cache;
 use super::{SimulationEnumeratedRequest, StudySetup, Traversal};
 use crate::build_training_output;
-use crate::simulate;
+use crate::simulation::pipeline::run_simulation;
+use crate::simulation::state::SimulationInputs;
 use crate::train;
 
 impl StudySetup {
@@ -158,8 +159,9 @@ impl StudySetup {
     /// Run simulation using the trained future cost function.
     ///
     /// The caller provides channels, event sender, and thread management.
-    /// `frozen_templates` enables the frozen-template LP load path (no `add_rows`
-    /// per stage); pass `None` for the legacy `load_model + add_rows` fallback.
+    /// `frozen_templates` is used only when it holds the cuts of
+    /// [`simulation_cut_set`](Self::simulation_cut_set); otherwise, and with
+    /// `None`, simulation builds its own templates from that set.
     /// `stage_bases` enables warm-start; pass `&[]` for cold-start.
     ///
     /// # Errors
@@ -232,18 +234,19 @@ impl StudySetup {
             study_stage_dates: &self.study_stage_dates,
         };
 
-        simulate(
+        run_simulation(&mut SimulationInputs {
             workspaces,
-            &stage_ctx,
-            &self.fcf,
-            &training_ctx,
-            self.simulation_config(),
+            ctx: &stage_ctx,
+            fcf: &self.fcf,
+            training_ctx: &training_ctx,
+            config: self.simulation_config(),
             output,
             frozen_templates,
-            stage_bases,
+            cut_set: self.simulation_cut_set,
+            node_bases: stage_bases,
             comm,
-            &traversal,
-        )
+            traversal: &traversal,
+        })
     }
 
     /// Convert [`TrainingResult`] and events into training output.

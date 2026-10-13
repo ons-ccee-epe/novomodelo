@@ -3,9 +3,12 @@
 //! [`SimulationState`] owns re-freeze scratch buffers allocated once per run.
 //! [`SimulationInputs`] bundles per-call borrowed inputs (no per-scenario allocation).
 //!
-//! The training path passes `frozen_templates: Some(..)`; the checkpoint path
-//! passes `None`, because checkpoints do not store frozen templates, so
-//! [`refreeze_templates_if_needed`] rebuilds them once at startup.
+//! The caller's `frozen_templates` are used only when they hold the chosen
+//! [`CutSet`]: always under `Active`, and under `All` when no pool has a cut
+//! outside its active cuts. Otherwise, and with `None` (the checkpoint path,
+//! because checkpoints do not store frozen templates),
+//! [`refreeze_templates_if_needed`] builds one template per pool from the chosen
+//! set once at startup.
 //!
 //! ## Hot-path allocation discipline
 //!
@@ -33,7 +36,7 @@ use crate::solver_phase::Phase::Simulation;
 use crate::{
     FutureCostFunction,
     context::{StageContext, TrainingContext},
-    cut::row::build_cut_row_batch_into,
+    cut::{CutSet, row::build_cut_set_row_batch_into},
     setup::node_graph::{NodePos, StageIdx, Traversal},
     simulation::{
         config::SimulationConfig,
@@ -68,8 +71,11 @@ pub(crate) struct SimulationInputs<'a, S: SolverInterface + Send, C> {
     pub config: &'a SimulationConfig,
     /// Output-channel and extraction metadata for streaming scenario results.
     pub output: SimulationOutputSpec<'a>,
-    /// Pre-frozen LP templates from training. `None` triggers local re-freeze.
+    /// Pre-frozen LP templates from training, used only when they hold
+    /// `cut_set`; otherwise simulation builds its own.
     pub frozen_templates: Option<&'a [StageTemplate]>,
+    /// The cuts each stage LP holds.
+    pub cut_set: CutSet,
     /// Warm-start basis captured from the training checkpoint, one entry per
     /// canonical `NodeGraph` position — never per stage, so a branching
     /// simulation warm-starts from the visited node's own basis instead of
@@ -105,6 +111,7 @@ pub(crate) struct SimWorkerParams<'w> {
     node_bases: &'w [Option<CapturedBasis>],
     /// Resolved frozen LP templates (caller-supplied or locally re-frozen).
     frozen_templates: &'w [StageTemplate],
+    cut_set: CutSet,
     /// Shared completion counter scaled to a global progress estimate.
     scenarios_complete: &'w AtomicU32,
     /// Wall-clock start of the simulation, for progress elapsed-time reporting.
@@ -129,8 +136,8 @@ pub(crate) struct SimWorkerParams<'w> {
 /// Owned scratch state for one simulation run.
 ///
 /// Typically created immediately before calling [`SimulationState::run`] and
-/// discarded afterwards. The re-freeze buffers stay empty when the caller
-/// always provides `frozen_templates`.
+/// discarded afterwards. The re-freeze buffers stay empty when the caller's
+/// `frozen_templates` hold the chosen cut set.
 pub(crate) struct SimulationState {
     /// Owned frozen templates built by the lazy re-freeze branch (when
     /// `frozen_templates` is `None`).
@@ -225,6 +232,7 @@ impl SimulationState {
         }
 
         refreeze_templates_if_needed(
+            inputs.cut_set,
             inputs.fcf,
             inputs.ctx,
             training_ctx,
@@ -235,7 +243,7 @@ impl SimulationState {
         );
 
         let frozen_templates: &[StageTemplate] =
-            match (inputs.frozen_templates, self.owned_frozen.as_deref()) {
+            match (self.owned_frozen.as_deref(), inputs.frozen_templates) {
                 (Some(b), _) | (None, Some(b)) => b,
                 (None, None) => unreachable!("owned_frozen is Some when frozen_templates is None"),
             };
@@ -389,6 +397,7 @@ fn run_sampled_simulation<S: SolverInterface + Send, C: Communicator>(
         config: inputs.config,
         node_bases: inputs.node_bases,
         frozen_templates,
+        cut_set: inputs.cut_set,
         scenarios_complete: &scenarios_complete,
         sim_start,
         local_count,
@@ -463,6 +472,7 @@ fn run_worker_scenarios<S: SolverInterface + Send>(
             frozen_templates: params.frozen_templates,
             node_bases: params.node_bases,
             solver_tolerance: params.config.profile.primal_feasibility_tolerance,
+            cut_set: params.cut_set,
         };
         // mem::take (capacity retained) so the immutable ScenarioIds borrows of
         // these slices do not conflict with the `&mut ws` passed below.
@@ -544,13 +554,15 @@ pub(crate) fn build_sim_sampler<'a>(
     })?)
 }
 
-/// Populate `owned_frozen` when the caller did not provide pre-frozen templates.
+/// Populate `owned_frozen` unless the caller's templates hold `cut_set`.
 ///
-/// No-op if `caller_frozen` is `Some`. Otherwise rebuilds `owned_frozen` — one
-/// frozen template per POOL — from the FCF, context templates, and state layout,
-/// using `freeze_batch` as scratch (its post-call contents are unspecified). Cost
-/// `O(n_pools * num_active_cuts)`.
+/// The caller's templates hold `cut_set` when it is [`CutSet::Active`] or when
+/// no pool has a cut outside its active cuts; then this is a no-op. Otherwise
+/// rebuilds `owned_frozen` — one frozen template per POOL — from the FCF, context
+/// templates, and state layout, using `freeze_batch` as scratch (its post-call
+/// contents are unspecified). Cost `O(n_pools * num_cuts_in_set)`.
 fn refreeze_templates_if_needed(
+    cut_set: CutSet,
     fcf: &FutureCostFunction,
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
@@ -559,29 +571,35 @@ fn refreeze_templates_if_needed(
     owned_frozen: &mut Option<Vec<StageTemplate>>,
     freeze_scratch: &mut FreezeScratch,
 ) {
-    if caller_frozen.is_some() {
-        *owned_frozen = None;
-        return;
-    }
-
     let state = training_ctx.state;
     let cut_state_layouts = training_ctx.cut_state_layouts;
     let node_graph = training_ctx.node_graph;
+
+    if caller_frozen.is_some()
+        && (cut_set == CutSet::Active
+            || fcf.pools[..node_graph.n_pools]
+                .iter()
+                .all(|pool| pool.count_in(cut_set) == pool.active_count()))
+    {
+        *owned_frozen = None;
+        return;
+    }
 
     // Per-POOL frozen overlay, mirroring the training freeze: pool `p`'s cuts on
     // pool `p`'s base stage template `templates[pool_stage[p]]`. A per-stage build
     // would bake one node's cuts into a sibling's LP on a branching graph.
     let mut owned = Vec::with_capacity(node_graph.n_pools);
-    // Rationale: `p` is the pool passed by value to `build_cut_row_batch_into` and
+    // Rationale: `p` is the pool passed by value to `build_cut_set_row_batch_into` and
     // mapped through `pool_stage[p]` to the base stage template; an `enumerate`
     // over one pool-keyed slice would not carry those other uses.
     #[allow(clippy::needless_range_loop)]
     for p in 0..node_graph.n_pools {
         let t = node_graph.pool_stage[p];
-        build_cut_row_batch_into(
+        build_cut_set_row_batch_into(
             freeze_batch,
             fcf,
             p,
+            cut_set,
             state,
             &cut_state_layouts[p],
             &ctx.template(t).col_scale,

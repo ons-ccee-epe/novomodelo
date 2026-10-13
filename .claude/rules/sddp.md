@@ -787,6 +787,63 @@ which hides a record this rule should have dropped. Read: `policy/policy_load.rs
 `test_load_policy_with_a_wider_stored_basis_loads_and_warns_once`
 (`crates/novomodelo-python/tests/test_policy_load_validation.py`).
 
+### Simulation loads the cuts of one chosen set
+
+Simulation builds each stage LP from the cuts of a `CutSet`, the field
+`StudySetup::simulation_cut_set`. `Active` is the cuts whose flag is set. `All` is
+decided by slot role (`CutPool::cuts_in`, `CutPool::count_in`): every `Generated`
+slot whatever its flag and whatever `SlotRole::scored` says, since a cut written
+before the pool stored trial states can be evicted by the cap too; every scored
+`Prefix` slot whatever its flag; every unscored `Prefix` slot whose flag is set;
+never a `Vacant` slot. `Active` is a subset of `All`, so equal counts mean equal
+sets. The choice changes no flag: it selects which slots a simulation LP holds
+and nothing else, and training, the lower bound, the checkpoint and the selection
+record never read it.
+
+The template, the basis reconstruction and the load read the same set.
+`refreeze_templates_if_needed` builds the template from `cuts_in(set)`, and the
+non-lazy branch of `solve_simulation_stage` reconstructs the stored basis over
+the same iterator (`run_stage_solve_over`), so a stored training basis applies by
+slot over the rows the template holds and a row training never had starts basic.
+The caller's templates are used only when they hold the chosen set: always under
+`Active`, and under `All` when `count_in(All) == active_count()` in every pool.
+The lazy branch under `dynamic` reads the active cuts and asserts that the two
+counts are equal, which holds because `dynamic` deactivates nothing.
+
+The wrong-but-compiling alternatives:
+
+- reconstructing over `active_cuts()` against a template built from `All`: the
+  basis has the rows of the active cuts and the LP those of `All`, which differ in
+  length wherever a pool holds a cut outside its active cuts, and both backends
+  reject that with `BasisRowCountMismatch`. A simulation under `All` then fails
+  outright instead of warm-starting by slot;
+- reusing training's templates under `All` when the sets differ: the LP holds the
+  rows of the active cuts and the reconstruction counts the rows of `All`, so the
+  basis and the LP disagree in length;
+- including an unscored `Prefix` slot whose flag is off: on the terminal pool it
+  is a boundary record that training's LP left out, so the post-horizon is priced
+  differently from training;
+- honouring the cap under `All`: the cap clears the flag of cuts a run generated,
+  and `All` holds them whatever the flag. A set that leaves them out is `Active`
+  under another name.
+
+Read: `cut/pool.rs` (`CutSet`, `CutPool::cuts_in`, `CutPool::count_in`),
+`cut/row.rs` (`build_cut_set_row_batch_into`), `solve/stage_solve.rs`
+(`run_stage_solve_over`), `simulation/state.rs` (`refreeze_templates_if_needed`),
+`simulation/pipeline.rs` (`solve_simulation_stage`), `setup/orchestration.rs`
+(`StudySetup::simulate`). Pinned by `cuts_in_all_follows_the_slot_roles`,
+`cuts_in_active_equals_active_cuts` and `a_loaded_pool_has_one_cut_set`
+(`cut/pool.rs`: the rule by role, and that a loaded pool has one set until a load
+restores scored cuts), `stage_solve_applies_the_basis_over_the_given_cut_rows`
+(`solve/stage_solve.rs`), `simulation_builds_its_templates_from_the_chosen_cut_set`
+(`simulation/pipeline/tests.rs`: the templates simulation owns, and when the
+caller's are used) and, in `tests/cut_basis.rs`,
+`simulating_all_cuts_matches_the_flagged_twin` (an `All` simulation with training's
+templates and bases equals an `Active` simulation of a copy of the pools with every
+cut of `All` flagged, with no basis rejection),
+`selection_off_simulates_identically_under_either_cut_set` and
+`a_dynamic_run_has_one_cut_set`.
+
 ## A stored basis warm-starts only at its own node (node-tag)
 
 A `CapturedBasis` carries the declared `node_id` it was captured at

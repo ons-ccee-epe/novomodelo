@@ -17,6 +17,7 @@ use novomodelo_stochastic::{
     ClassSampleRequest, ForwardNoiseTables, ForwardSampler, SampleRequest,
 };
 
+use crate::cut::CutSet;
 use crate::energy_conversion::EnergyConversionSet;
 use crate::error::SddpError::Infeasible;
 use crate::error::SddpError::Solver;
@@ -25,11 +26,12 @@ use crate::lp::builder::StageGeometry;
 use crate::lp::indexer::{AnticipatedPlants, BlockIdx, BlockRowFamily, StudyDimensions};
 use crate::noise::DownstreamAccumState;
 use crate::noise::LagAccumState;
+use crate::simulation::state::{SimulationInputs, SimulationState};
 use crate::stage_solve::StageInputs;
 use crate::stage_solve::assemble_outgoing_state;
 use crate::stage_solve::fill_unscaled;
 use crate::stage_solve::fill_unscaled_dual;
-use crate::stage_solve::run_stage_solve;
+use crate::stage_solve::run_stage_solve_over;
 use crate::{
     FutureCostFunction, SddpError,
     context::{StageContext, TrainingContext},
@@ -253,8 +255,8 @@ pub(crate) struct SimStageIds {
 /// Load-path inputs bundled for `solve_simulation_stage`.
 ///
 /// The LP is loaded via `load_model(frozen_template)` — the frozen template
-/// already embeds all active cut rows as structural rows. No `add_rows` call
-/// is needed.
+/// already embeds the cut rows of `cut_set` as structural rows. No `add_rows`
+/// call is needed.
 pub(crate) struct SimStageLoadSpec<'a> {
     /// Frozen template for this stage; always populated after the startup re-freeze.
     pub(crate) frozen_template: &'a StageTemplate,
@@ -265,6 +267,8 @@ pub(crate) struct SimStageLoadSpec<'a> {
     /// in simulation: the lazy solve seeds every active cut, so no candidate is
     /// left to score.
     pub(crate) solver_tolerance: f64,
+    /// The cuts `frozen_template` holds.
+    pub(crate) cut_set: CutSet,
 }
 
 /// Per-stage batched form of [`SimStageLoadSpec`] consumed by
@@ -281,6 +285,8 @@ pub(crate) struct SimScenarioLoadSpec<'a> {
     pub(crate) node_bases: &'a [Option<CapturedBasis>],
     /// See [`SimStageLoadSpec::solver_tolerance`].
     pub(crate) solver_tolerance: f64,
+    /// See [`SimStageLoadSpec::cut_set`].
+    pub(crate) cut_set: CutSet,
 }
 
 impl<'a> SimScenarioLoadSpec<'a> {
@@ -292,6 +298,7 @@ impl<'a> SimScenarioLoadSpec<'a> {
             frozen_template: &self.frozen_templates[pool_id],
             warm_basis: self.node_bases.get(node.0).and_then(Option::as_ref),
             solver_tolerance: self.solver_tolerance,
+            cut_set: self.cut_set,
         }
     }
 }
@@ -438,6 +445,11 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
     let pool_id = training_ctx.node_graph.nodes[ids.node].pool_id;
 
     let view_objective: f64 = if let Some(params) = dcs {
+        debug_assert_eq!(
+            fcf.pools[pool_id].count_in(load_spec.cut_set),
+            fcf.pools[pool_id].active_count(),
+            "the lazy solve reads the active cuts, so the chosen set must equal them"
+        );
         // Simulation has no iteration counter; seed with `current_iteration = 0`.
         build_initial_resident_set(
             &fcf.pools[pool_id],
@@ -491,7 +503,8 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
             node_id: ids.node_id,
         };
 
-        let view = run_stage_solve(ws, &inputs).map_err(|e| map_sim_solver_error(e, ids))?;
+        let view = run_stage_solve_over(ws, &inputs, fcf.pools[pool_id].cuts_in(load_spec.cut_set))
+            .map_err(|e| map_sim_solver_error(e, ids))?;
 
         let objective = view.objective;
         fill_unscaled(&mut unscaled_primal, view.primal, col_scale);
@@ -943,11 +956,10 @@ pub(crate) fn dispatch_scenario_result(
     Ok((scenario_id, total_cost, compact_category))
 }
 
-/// Evaluate the trained SDDP policy on a set of scenarios.
+/// Evaluate the trained SDDP policy on a set of scenarios, with the active cuts
+/// in every stage LP.
 ///
-/// Thin shim that delegates to `SimulationState::run`.
-/// All scheduling, freeze logic, and rayon parallelism live in
-/// `crate::simulation::state`.
+/// Thin shim that delegates to [`run_simulation`].
 ///
 /// # Errors
 ///
@@ -973,10 +985,7 @@ pub fn simulate<S, C: Communicator>(
 where
     S: SolverInterface<Profile = ActiveProfile> + Send,
 {
-    use crate::simulation::state::{SimulationInputs, SimulationState};
-    let mut state = SimulationState::new(training_ctx.horizon.num_stages());
-    state.set_profile(config.profile);
-    state.run(&mut SimulationInputs {
+    run_simulation(&mut SimulationInputs {
         workspaces,
         ctx,
         fcf,
@@ -984,10 +993,31 @@ where
         config,
         output,
         frozen_templates,
+        cut_set: CutSet::Active,
         node_bases,
         comm,
         traversal,
     })
+}
+
+/// Evaluate the trained SDDP policy with the cuts of `inputs.cut_set` in every
+/// stage LP.
+///
+/// All scheduling, freeze logic, and rayon parallelism live in
+/// `crate::simulation::state`.
+///
+/// # Errors
+///
+/// Same as [`simulate`].
+pub(crate) fn run_simulation<S, C: Communicator>(
+    inputs: &mut SimulationInputs<'_, S, C>,
+) -> Result<SimulationRunResult, SimulationError>
+where
+    S: SolverInterface<Profile = ActiveProfile> + Send,
+{
+    let mut state = SimulationState::new(inputs.training_ctx.horizon.num_stages());
+    state.set_profile(inputs.config.profile);
+    state.run(inputs)
 }
 
 #[cfg(test)]

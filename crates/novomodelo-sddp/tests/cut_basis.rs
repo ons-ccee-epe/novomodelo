@@ -4546,3 +4546,233 @@ mod range_warm_start_determinism {
         }
     }
 }
+
+mod simulation_cut_set {
+    //! Simulation builds each stage LP from the chosen cut set and applies the
+    //! training basis by slot over its rows: under `All` the LP holds the cuts
+    //! selection and the cap deactivated, and a run with nothing deactivated
+    //! has one set.
+
+    use std::path::Path;
+    use std::sync::mpsc;
+
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_io::Config;
+    use novomodelo_io::config::{
+        SelectionMethod, SimulationSelection, StoppingRuleConfig, TrainingSelection,
+    };
+    use novomodelo_sddp::cut::CutSet;
+    use novomodelo_sddp::{
+        SimulationScenarioResult, StudySetup, TrainingResult, hydro_models::prepare_hydro_models,
+        setup::prepare_stochastic,
+    };
+    use novomodelo_solver::{ActiveSolver, StageTemplate};
+
+    use super::common::{StubComm, positive};
+
+    const FORWARD_PASSES: u32 = 3;
+    const ITERATIONS: u32 = 8;
+    const SCENARIOS: u32 = 4;
+
+    fn level1() -> SelectionMethod {
+        SelectionMethod::Level1 {
+            check_frequency: positive(2),
+            lookback_iterations: None,
+        }
+    }
+
+    fn train_d03(configure: impl FnOnce(&mut Config)) -> (StudySetup, TrainingResult) {
+        let case_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/<crate> must have a parent")
+            .parent()
+            .expect("crates/ must have a parent (repo root)")
+            .join("examples/deterministic/d03-two-hydro-cascade");
+        let mut config =
+            novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
+        config.training.selection = Some(TrainingSelection::Sampled {
+            forward_passes: FORWARD_PASSES,
+        });
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: ITERATIONS,
+        }]);
+        config.simulation.enabled = true;
+        config.simulation.selection = Some(SimulationSelection::Sampled {
+            num_scenarios: SCENARIOS,
+        });
+        configure(&mut config);
+
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
+        let prepared = prepare_stochastic(
+            system,
+            &case_dir,
+            &config,
+            42,
+            &ScenarioSource::default(),
+            None,
+        )
+        .expect("prepare_stochastic must succeed");
+        let system = prepared.system;
+        let hydro_models = prepare_hydro_models(&system, &case_dir, false)
+            .expect("prepare_hydro_models must succeed");
+        let mut setup = StudySetup::new(
+            &system,
+            &config,
+            prepared.stochastic,
+            hydro_models,
+            Vec::new(),
+        )
+        .expect("StudySetup must build");
+
+        let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+        let outcome = setup
+            .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
+            .expect("train must return Ok");
+        assert!(
+            outcome.error.is_none(),
+            "expected no training error, got: {:?}",
+            outcome.error
+        );
+        assert_eq!(outcome.result.iterations, u64::from(ITERATIONS));
+        (setup, outcome.result)
+    }
+
+    /// Simulates on a fresh workspace pool with the setup's cut set and the
+    /// run's bases; returns the scenario results by id and the summed basis
+    /// rejections.
+    fn simulate_with(
+        setup: &StudySetup,
+        result: &TrainingResult,
+        frozen_templates: Option<&[StageTemplate]>,
+    ) -> (Vec<SimulationScenarioResult>, u64) {
+        let comm = StubComm;
+        let mut pool = setup
+            .create_workspace_pool(&comm, 1, ActiveSolver::new)
+            .expect("simulation workspace pool must build");
+        let (result_tx, result_rx) =
+            mpsc::sync_channel(setup.simulation_config.io_channel_capacity.max(1));
+        let drain = std::thread::spawn(move || result_rx.into_iter().collect::<Vec<_>>());
+
+        let run = setup
+            .simulate(
+                &mut pool.workspaces,
+                &comm,
+                &result_tx,
+                None,
+                frozen_templates,
+                &result.basis_cache,
+            )
+            .expect("simulate must return Ok");
+
+        drop(result_tx);
+        let mut scenarios = drain.join().expect("drain thread must not panic");
+        scenarios.sort_by_key(|scenario| scenario.scenario_id);
+        let rejections = run
+            .solver_stats
+            .iter()
+            .map(|(_, _, delta)| delta.basis_consistency_failures)
+            .sum();
+        (scenarios, rejections)
+    }
+
+    /// `Debug` prints the shortest text that parses back to the same bits, so
+    /// equal text is bitwise-equal results.
+    fn bitwise(scenarios: &[SimulationScenarioResult]) -> String {
+        format!("{scenarios:?}")
+    }
+
+    fn counts_per_pool(setup: &StudySetup) -> Vec<(usize, usize)> {
+        setup
+            .fcf
+            .pools
+            .iter()
+            .map(|pool| (pool.count_in(CutSet::All), pool.active_count()))
+            .collect()
+    }
+
+    #[test]
+    fn simulating_all_cuts_matches_the_flagged_twin() {
+        let (mut setup, result) = train_d03(|config| {
+            config.training.cut_selection.selection = Some(level1());
+            config.training.cut_selection.max_active_per_stage = Some(FORWARD_PASSES);
+        });
+        let counts = counts_per_pool(&setup);
+        let interior = &counts[1..counts.len() - 1];
+        assert!(
+            interior.iter().any(|&(all, active)| all > active),
+            "no interior pool holds a cut outside its active cuts, (all, active) per pool: \
+             {counts:?}"
+        );
+        let frozen_templates = result
+            .frozen_templates
+            .as_deref()
+            .expect("training must produce frozen templates");
+
+        setup.simulation_cut_set = CutSet::All;
+        let (all, rejections) = simulate_with(&setup, &result, Some(frozen_templates));
+        assert_eq!(all.len(), SCENARIOS as usize);
+        assert_eq!(rejections, 0, "the basis must apply over the rows of All");
+
+        let mut twin = setup.fcf.clone();
+        for (pool_id, pool) in setup.fcf.pools.iter().enumerate() {
+            for (slot, _, _) in pool.cuts_in(CutSet::All) {
+                twin.set_active(pool_id, u32::try_from(slot).expect("slot fits"), true);
+            }
+        }
+        setup.replace_fcf(twin);
+        setup.simulation_cut_set = CutSet::Active;
+        let (flagged, twin_rejections) = simulate_with(&setup, &result, None);
+
+        assert_eq!(twin_rejections, 0);
+        assert_eq!(bitwise(&all), bitwise(&flagged));
+    }
+
+    #[test]
+    fn selection_off_simulates_identically_under_either_cut_set() {
+        let (mut setup, result) = train_d03(|config| {
+            config.training.cut_selection.selection = None;
+            config.training.cut_selection.max_active_per_stage = None;
+        });
+        assert!(
+            counts_per_pool(&setup)
+                .iter()
+                .zip(&setup.fcf.pools)
+                .all(|(&(all, active), pool)| all == active && active == pool.populated()),
+            "a run without selection or a cap deactivates nothing"
+        );
+        let frozen_templates = result
+            .frozen_templates
+            .as_deref()
+            .expect("training must produce frozen templates");
+
+        setup.simulation_cut_set = CutSet::Active;
+        let (active, active_rejections) = simulate_with(&setup, &result, Some(frozen_templates));
+        setup.simulation_cut_set = CutSet::All;
+        let (all, all_rejections) = simulate_with(&setup, &result, Some(frozen_templates));
+
+        assert_eq!((active_rejections, all_rejections), (0, 0));
+        assert_eq!(all.len(), SCENARIOS as usize);
+        assert_eq!(bitwise(&all), bitwise(&active));
+    }
+
+    #[test]
+    fn a_dynamic_run_has_one_cut_set() {
+        let (setup, _) = train_d03(|config| {
+            config.training.cut_selection.selection = Some(SelectionMethod::Dynamic {
+                start_iteration: positive(2),
+                seed_window: 5,
+                candidate_recency: None,
+                max_added_per_round: positive(10),
+                violation_tolerance: None,
+            });
+        });
+
+        for (pool_id, pool) in setup.fcf.pools.iter().enumerate() {
+            assert_eq!(
+                pool.count_in(CutSet::All),
+                pool.active_count(),
+                "pool {pool_id}: no cut is deactivated under dynamic selection"
+            );
+        }
+    }
+}

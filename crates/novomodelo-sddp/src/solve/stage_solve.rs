@@ -60,6 +60,20 @@ pub fn run_stage_solve<'ws, S: SolverInterface>(
     ws: &'ws mut SolverWorkspace<S>,
     inputs: &StageInputs<'_>,
 ) -> Result<SolutionView<'ws>, SddpError> {
+    run_stage_solve_over(ws, inputs, inputs.pool.active_cuts())
+}
+
+/// [`run_stage_solve`] for an LP whose cut rows are `cut_rows`, in row order, in
+/// place of the pool's active cuts.
+///
+/// # Errors
+///
+/// Same as [`run_stage_solve`].
+pub(crate) fn run_stage_solve_over<'ws, 'c, S: SolverInterface>(
+    ws: &'ws mut SolverWorkspace<S>,
+    inputs: &StageInputs<'_>,
+    cut_rows: impl Iterator<Item = (usize, f64, &'c [f64])>,
+) -> Result<SolutionView<'ws>, SddpError> {
     // `pool.populated()` only grows, so this resize is a no-op after the
     // first few iterations.
     if ws.scratch.recon_slot_lookup.len() < inputs.pool.populated() {
@@ -79,12 +93,12 @@ pub fn run_stage_solve<'ws, S: SolverInterface>(
         let _ = reconstruct_basis(
             captured,
             target,
-            inputs.pool.active_cuts(),
+            cut_rows,
             &mut ws.scratch_basis,
             &mut ws.scratch.recon_slot_lookup,
         );
         // `num_row_for_invariant` is the reconstructed length — `target.base_row_count`
-        // plus one row per active cut, which is this LP's row count on every frozen
+        // plus one row per cut row, which is this LP's row count on every frozen
         // path (forward and simulation load `frozen[t]`; backward loads `frozen[t]`
         // then adds the delta cuts the pool has meanwhile gained). `frozen.num_rows`
         // is the wrong-but-plausible alternative: it omits those delta cuts.
@@ -342,10 +356,11 @@ fn debug_assert_bucket_copy_gap_intact(
 mod tests {
     use novomodelo_core::temporal::StageLagTransition;
     use novomodelo_solver::BasisStatus::{Basic as B, Lower as L};
-    use novomodelo_solver::{ActiveSolver, SolverError, SolverInterface, StageTemplate};
+    use novomodelo_solver::{ActiveSolver, RowBatch, SolverError, SolverInterface, StageTemplate};
 
     use super::{
-        StageInputs, assemble_outgoing_state, run_stage_solve, run_stage_solve_terminal_static,
+        StageInputs, assemble_outgoing_state, run_stage_solve, run_stage_solve_over,
+        run_stage_solve_terminal_static,
     };
     use crate::{
         SddpError,
@@ -689,6 +704,58 @@ mod tests {
             "a node-id mismatch must drop to the cold path, never attempting the \
              deficit-shaped stored basis: {result:?}"
         );
+    }
+
+    #[test]
+    fn stage_solve_applies_the_basis_over_the_given_cut_rows() {
+        let template = make_template();
+        let templates = std::slice::from_ref(&template);
+        let geometry = equipment_free_geometry(&[0]);
+        let fixture = make_context(templates, &geometry);
+        let ctx = fixture.ctx();
+        let pool = make_empty_pool();
+        let mut ws = make_workspace(&template);
+        ws.scratch.recon_slot_lookup = vec![None; 16];
+        ws.solver.add_rows(&RowBatch {
+            num_rows: 2,
+            row_starts: vec![0, 1, 2],
+            col_indices: vec![1, 1],
+            values: vec![1.0, 1.0],
+            row_lower: vec![-10.0, -20.0],
+            row_upper: vec![f64::INFINITY; 2],
+        });
+
+        let mut captured = CapturedBasis::new(
+            template.num_cols,
+            template.num_rows + 1,
+            template.num_rows,
+            1,
+            1,
+            NodeId(5),
+        );
+        captured.basis.col_status.fill(B);
+        captured.basis.row_status.fill(L);
+        captured.cut_row_slots.push(0);
+        captured.state_at_capture.push(6.0);
+
+        let inputs = StageInputs {
+            stage_context: &ctx,
+            pool: &pool,
+            stored_basis: Some(&captured),
+            stage_index: StageIdx(0),
+            scenario_index: 0,
+            iteration: None,
+            node_id: NodeId(5),
+        };
+        let given = [(0, 0.0, &[][..]), (1, 0.0, &[][..])];
+
+        let result = run_stage_solve_over(&mut ws, &inputs, given.into_iter());
+
+        assert!(result.is_ok(), "{result:?}");
+        let rows = &ws.scratch_basis.row_status;
+        assert_eq!(rows.len(), template.num_rows + given.len());
+        assert_eq!(rows[template.num_rows], L, "slot 0 keeps its stored status");
+        assert_eq!(rows[template.num_rows + 1], B, "slot 1 starts basic");
     }
 
     // -----------------------------------------------------------------------

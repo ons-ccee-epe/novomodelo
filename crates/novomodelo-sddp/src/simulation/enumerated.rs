@@ -453,6 +453,7 @@ where
         frozen_templates,
         node_bases: inputs.node_bases,
         solver_tolerance: inputs.config.profile.primal_feasibility_tolerance,
+        cut_set: inputs.cut_set,
     };
     let sim_params = EnumeratedSimParams {
         ctx: inputs.ctx,
@@ -516,7 +517,7 @@ mod tests {
     use novomodelo_comm::LocalBackend;
     use novomodelo_solver::ActiveSolver;
 
-    use crate::{setup::node_graph::Traversal, test_support};
+    use crate::{cut::CutSet, setup::node_graph::Traversal, test_support};
 
     /// A hand-built small tree (the DECOMP K-fan: one root shared by every
     /// path, `k` branch nodes, `k` leaves) drives the sweep+scatter mechanics
@@ -617,6 +618,7 @@ mod tests {
                 .simulation_config()
                 .profile
                 .primal_feasibility_tolerance,
+            cut_set: CutSet::Active,
         };
         let params = EnumeratedSimParams {
             ctx: &stage_ctx,

@@ -102,7 +102,7 @@ use crate::{
     InflowNonNegativityMethod,
     block_clock::M3S_TO_HM3,
     config::{CutManagementConfig, EventParams, ShutdownSource},
-    cut::FutureCostFunction,
+    cut::{CutSet, FutureCostFunction},
     cut_selection::CutSelectionStrategy,
     energy_conversion::{EnergyConversionSet, build_energy_conversion_set},
     error::SddpError,
@@ -205,6 +205,9 @@ pub struct StudySetup {
     /// [`crate::simulation::SimulationWeighting::Uniform`] for
     /// `aggregate_simulation`.
     pub simulation_enumerated: SimulationEnumeratedRequest,
+
+    /// The cuts simulation loads into each stage LP.
+    pub simulation_cut_set: CutSet,
 
     /// Relative path to the policy output directory (e.g. `"training/policy"`).
     pub policy_path: String,
@@ -475,6 +478,7 @@ impl StudySetup {
             loop_params,
             simulation_config,
             simulation_enumerated: config.simulation_enumerated,
+            simulation_cut_set: CutSet::Active,
             policy_path: config.policy_path,
             events: EventParams {
                 export_states: config.export_states,
