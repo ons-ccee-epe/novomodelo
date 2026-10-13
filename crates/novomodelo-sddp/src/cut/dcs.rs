@@ -837,7 +837,6 @@ mod tests {
     fn from_strategy_non_dynamic_is_none() {
         let level1 = CutSelectionStrategy::Level1 {
             check_frequency: 5,
-            tie_tolerance: 1e-10,
             lookback_iterations: None,
         };
         assert!(DcsParams::from_strategy(&level1).is_none());

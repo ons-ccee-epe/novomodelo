@@ -346,25 +346,60 @@ fn removed_cut_selection_field_fails_validate() {
         .failure();
 }
 
-/// The `cut_selection config error` prefix pins the path every front end shares.
+/// The `cut_selection config error` prefix pins the path every front end shares;
+/// the same case with a zero tolerance validates.
 #[test]
-fn validate_reports_a_negative_tie_tolerance() {
+fn validate_reports_a_negative_row_activity_tolerance() {
     let dir = TempDir::new().unwrap();
     make_valid_case(&dir);
 
     let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
-    config["training"]["cut_selection"] = serde_json::json!({
-        "selection": { "method": "level1", "tie_tolerance": -1.0 }
-    });
+    config["training"]["cut_selection"] = serde_json::json!({ "row_activity_tolerance": 0.0 });
     write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
 
+    config["training"]["cut_selection"]["row_activity_tolerance"] = serde_json::json!(-1.0);
+    write_file(dir.path(), "config.json", &config.to_string());
     novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])
         .assert()
         .failure()
         .code(1)
         .stdout(predicate::str::contains("cut_selection config error"))
-        .stdout(predicate::str::contains("tie_tolerance"));
+        .stdout(predicate::str::contains("row_activity_tolerance"));
+}
+
+/// A `level1` selection that still sets the removed key fails at load naming
+/// it; the same selection without the key validates.
+#[test]
+fn validate_rejects_the_removed_tie_tolerance_key() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+    config["training"]["cut_selection"] = serde_json::json!({
+        "selection": { "method": "level1", "check_frequency": 2 }
+    });
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    config["training"]["cut_selection"]["selection"]["tie_tolerance"] = serde_json::json!(1e6);
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains(
+            "the key `tie_tolerance` was removed: `level1` compares row values exactly; \
+             delete the key (`training.cut_selection.selection`)",
+        ));
 }
 
 /// The pairing is rejected by the admission gate every front end shares; the

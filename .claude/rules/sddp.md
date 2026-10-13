@@ -1275,8 +1275,7 @@ cut owns at least one stored state, inactive when it owns none.
 role, its flag and `owned_states`, and compares no cut values: an active scored
 slot that owns no state is a deactivation, an inactive scored slot that owns one
 is a reactivation. No tolerance, no iteration counter and no strategy parameter
-enter it, so `level1.tie_tolerance` has no effect on a run and a cut of the
-current iteration is judged like any other.
+enter it, so a cut of the current iteration is judged like any other.
 
 By slot role:
 
@@ -1386,7 +1385,6 @@ a scored cut is active exactly when it owns a stored state),
 envelope invariant, and the run's record against a rebuild),
 `level1_reactivates_an_owner_the_budget_evicted` (the budget paragraph, as
 existence over a run's events, which carry counts and no slot),
-`level1_tie_tolerance_no_longer_changes_a_run`,
 `a_level1_run_keeps_no_state_archive` and
 `a_level1_run_with_exported_states_keeps_every_visited_state` (no selection run
 trims the archive); in `tests/cut_oracles.rs`:

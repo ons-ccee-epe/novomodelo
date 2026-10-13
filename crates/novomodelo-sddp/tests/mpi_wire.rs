@@ -3156,10 +3156,11 @@ mod selection_on_determinism {
     const WINDOW: Option<NonZeroU64> = NonZeroU64::new(4);
     const FAN_FORWARD_PASSES: u32 = 8;
     const FAN_ITERATIONS: u32 = 10;
-    const FAN_SELECTION: SelectionMethod = SelectionMethod::Level1 {
-        tie_tolerance: 1e-10,
-        check_frequency: 1,
-    };
+    const fn level1(check_frequency: u32) -> SelectionMethod {
+        SelectionMethod::Level1 { check_frequency }
+    }
+
+    const FAN_SELECTION: SelectionMethod = level1(1);
     const LAZY_START_ITERATION: u32 = 2;
     const LEVEL1_POWERLESS: &str = "level1 deactivated no cut, stored no trial state, or left \
                                     every state with the cut generated at it";
@@ -3178,8 +3179,8 @@ mod selection_on_determinism {
     }
 
     /// Trains `build`'s study inside a rayon pool of `n_threads` threads: the
-    /// ownership scan and the windowed selection kernel run on the ambient
-    /// rayon pool, so without it the thread shapes would not vary them.
+    /// ownership scan runs on the ambient rayon pool, so without it the thread
+    /// shapes would not vary it.
     fn run_shape<P>(
         build: &impl Fn() -> StudySetup,
         n_threads: usize,
@@ -3638,10 +3639,7 @@ mod selection_on_determinism {
                         Some(TrainingSelection::Sampled { forward_passes: 4 });
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
-                    config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
-                        tie_tolerance: 1e-10,
-                        check_frequency: 2,
-                    });
+                    config.training.cut_selection.selection = Some(level1(2));
                 })
             },
             level1_power,
@@ -3665,10 +3663,7 @@ mod selection_on_determinism {
                         Some(TrainingSelection::Sampled { forward_passes: 4 });
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
-                    config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
-                        tie_tolerance: 1e-10,
-                        check_frequency: 1,
-                    });
+                    config.training.cut_selection.selection = Some(level1(1));
                 },
             )
         };
@@ -3693,10 +3688,7 @@ mod selection_on_determinism {
                 config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 1 });
                 config.training.stopping_rules =
                     Some(vec![StoppingRuleConfig::IterationLimit { limit: 12 }]);
-                config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
-                    tie_tolerance: 1e-10,
-                    check_frequency: 1,
-                });
+                config.training.cut_selection.selection = Some(level1(1));
             })
         };
         assert_two_rank_stub_matches_single_rank(
@@ -3722,10 +3714,7 @@ mod selection_on_determinism {
                         Some(TrainingSelection::Sampled { forward_passes: 1 });
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 12 }]);
-                    config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
-                        tie_tolerance: 1e-10,
-                        check_frequency: 1,
-                    });
+                    config.training.cut_selection.selection = Some(level1(1));
                 },
             )
         };
@@ -3755,10 +3744,7 @@ mod selection_on_determinism {
                         Some(TrainingSelection::Sampled { forward_passes: 2 });
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
-                    config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
-                        tie_tolerance: 1e-10,
-                        check_frequency: 1,
-                    });
+                    config.training.cut_selection.selection = Some(level1(1));
                 })
             },
             level1_power,
@@ -3774,10 +3760,7 @@ mod selection_on_determinism {
     fn level1_declaration_order_is_invariant_on_the_non_uniform_projection_fixture() {
         let build_at = |case_dir: &Path| {
             fresh_setup_with_openings(case_dir, NON_UNIFORM_OPENINGS, |config| {
-                config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
-                    tie_tolerance: 1e-10,
-                    check_frequency: 1,
-                });
+                config.training.cut_selection.selection = Some(level1(1));
             })
         };
         assert_non_uniform_projection(&build_at(Path::new(NON_UNIFORM_CASE)));
@@ -3810,10 +3793,7 @@ mod selection_on_determinism {
                         Some(TrainingSelection::Sampled { forward_passes: 4 });
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 12 }]);
-                    config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
-                        tie_tolerance: 1e-10,
-                        check_frequency: 2,
-                    });
+                    config.training.cut_selection.selection = Some(level1(2));
                 }))
             },
             level1_power,
@@ -3840,10 +3820,7 @@ mod selection_on_determinism {
                         Some(TrainingSelection::Sampled { forward_passes: 4 });
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 12 }]);
-                    config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
-                        tie_tolerance: 1e-10,
-                        check_frequency: 2,
-                    });
+                    config.training.cut_selection.selection = Some(level1(2));
                 },
             ))
         };
@@ -3877,10 +3854,7 @@ mod selection_on_determinism {
                         Some(TrainingSelection::Sampled { forward_passes: 3 });
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 8 }]);
-                    config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
-                        tie_tolerance: 1e-10,
-                        check_frequency: 1,
-                    });
+                    config.training.cut_selection.selection = Some(level1(1));
                 })
             },
             two_hydro_power,
@@ -4052,10 +4026,7 @@ mod selection_on_determinism {
                         Some(TrainingSelection::Sampled { forward_passes: 4 });
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
-                    config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
-                        tie_tolerance: 1e-10,
-                        check_frequency: 1,
-                    });
+                    config.training.cut_selection.selection = Some(level1(1));
                     config.training.cut_selection.max_active_per_stage = Some(6);
                 })
             },
@@ -4078,10 +4049,7 @@ mod selection_on_determinism {
                         Some(TrainingSelection::Sampled { forward_passes: 1 });
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
-                    config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
-                        tie_tolerance: 1e-10,
-                        check_frequency: 1,
-                    });
+                    config.training.cut_selection.selection = Some(level1(1));
                     config.training.cut_selection.max_active_per_stage = Some(2);
                 })
             },

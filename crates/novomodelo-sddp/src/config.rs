@@ -370,7 +370,6 @@ mod tests {
         };
         let level1 = CutSelectionStrategy::Level1 {
             check_frequency: 1,
-            tie_tolerance: 0.0,
             lookback_iterations: None,
         };
         let dynamic = CutSelectionStrategy::Dynamic {

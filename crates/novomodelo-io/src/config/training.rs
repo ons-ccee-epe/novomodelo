@@ -3,7 +3,9 @@
 use std::fmt;
 use std::num::NonZeroUsize;
 
+use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{Map, Value};
 
 use super::scenario_source::RawScenarioSourceConfig;
 
@@ -209,27 +211,69 @@ pub struct RowSelectionConfig {
 /// `level1`, never a silent mapping onto it.
 const REMOVED_SELECTION_METHODS: [&str; 2] = ["lml1", "domination"];
 
-/// Deserializes `selection`, rejecting a removed `method` before the derived
-/// [`SelectionMethod`] implementation reports it as an unknown variant.
+/// A `level1` key that left the config surface; setting it is a load error,
+/// never a silently dropped key.
+const REMOVED_LEVEL1_KEY: &str = "tie_tolerance";
+
+/// Deserializes `selection`, rejecting a removed `method` or `level1` key
+/// before the derived [`SelectionMethod`] implementation reports it as an
+/// unknown variant or field.
 fn deserialize_selection_method<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<SelectionMethod>, D::Error> {
-    let Some(value) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+    let Some(SelectionEntries(entries)) = Option::<SelectionEntries>::deserialize(deserializer)?
+    else {
         return Ok(None);
     };
-    if let Some(removed) = value
-        .get("method")
-        .and_then(serde_json::Value::as_str)
-        .filter(|method| REMOVED_SELECTION_METHODS.contains(method))
-    {
-        return Err(serde::de::Error::custom(format_args!(
+    let method = entries.get("method").and_then(Value::as_str);
+    if let Some(removed) = method.filter(|method| REMOVED_SELECTION_METHODS.contains(method)) {
+        return Err(de::Error::custom(format_args!(
             "the row-selection method `{removed}` was removed: use `level1` \
              (key `training.cut_selection.selection.method`)"
         )));
     }
-    SelectionMethod::deserialize(value)
+    if method == Some("level1") && entries.contains_key(REMOVED_LEVEL1_KEY) {
+        return Err(de::Error::custom(format_args!(
+            "the key `{REMOVED_LEVEL1_KEY}` was removed: `level1` compares row values \
+             exactly; delete the key (`training.cut_selection.selection`)"
+        )));
+    }
+    SelectionMethod::deserialize(Value::Object(entries))
         .map(Some)
-        .map_err(serde::de::Error::custom)
+        .map_err(de::Error::custom)
+}
+
+/// The entries of a `selection` object, read one key at a time so that a
+/// repeated key is serde's `duplicate field` error: collecting into a
+/// [`Value`] would keep the last occurrence silently.
+struct SelectionEntries(Map<String, Value>);
+
+impl<'de> Deserialize<'de> for SelectionEntries {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct EntriesVisitor;
+
+        impl<'de> Visitor<'de> for EntriesVisitor {
+            type Value = SelectionEntries;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("internally tagged enum SelectionMethod")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut entries = Map::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if entries.contains_key(&key) {
+                        return Err(de::Error::custom(format_args!("duplicate field `{key}`")));
+                    }
+                    let value = map.next_value()?;
+                    entries.insert(key, value);
+                }
+                Ok(SelectionEntries(entries))
+            }
+        }
+
+        deserializer.deserialize_map(EntriesVisitor)
+    }
 }
 
 /// Row-selection method and its method-specific parameters.
@@ -241,12 +285,18 @@ fn deserialize_selection_method<'de, D: Deserializer<'de>>(
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SelectionMethod {
-    /// Level-1: retain any row near-optimal at some visited state.
+    /// Level 1: every row the run adds to the row pool of a stage strictly
+    /// between the first and the last records the trial state it was computed
+    /// at. At each stored state, the row with the highest value there owns the
+    /// state, among the rows the run added to that pool and the active rows
+    /// loaded into it; of rows whose values there are exactly equal, the one at
+    /// the lowest pool position owns it. Every `check_frequency` iterations, a
+    /// row the run added to such a pool is deactivated when it owns no stored
+    /// state and reactivated when it is inactive and owns one. Values are
+    /// compared exactly, with no tolerance, and a row of the current iteration
+    /// is judged like any other. A row loaded from a policy keeps the activity
+    /// it was loaded with.
     Level1 {
-        /// Tie tolerance: a row is active at a state when within this of the
-        /// best row value there. Default `1e-10`.
-        #[serde(default = "default_tie_tolerance")]
-        tie_tolerance: f64,
         /// Iterations between periodic pruning checks. Must be `> 0`. Default `5`.
         #[serde(default = "default_check_frequency")]
         check_frequency: u32,
@@ -276,10 +326,6 @@ pub enum SelectionMethod {
         #[serde(default = "default_violation_tolerance")]
         violation_tolerance: f64,
     },
-}
-
-fn default_tie_tolerance() -> f64 {
-    1e-10
 }
 
 fn default_check_frequency() -> u32 {
@@ -599,6 +645,7 @@ mod tests {
         BackwardScheduler, DualEdgeWeight, NonZeroUsize, PresolveMode, PriceStrategy,
         ScaleStrategy, SelectionMethod, StoppingRuleConfig, TrainingConfig, TrainingSelection,
     };
+    use crate::config::tests::removed_selection_method_names;
 
     /// A `dynamic` selection block round-trips through the tagged enum, with
     /// every method-specific field landing in the `Dynamic` variant.
@@ -658,13 +705,7 @@ mod tests {
             .as_ref()
             .expect("selection present")
         {
-            SelectionMethod::Level1 {
-                tie_tolerance,
-                check_frequency,
-            } => {
-                assert!((*tie_tolerance - 1e-10).abs() < 1e-20);
-                assert_eq!(*check_frequency, 5);
-            }
+            SelectionMethod::Level1 { check_frequency } => assert_eq!(*check_frequency, 5),
             other @ SelectionMethod::Dynamic { .. } => panic!("expected Level1, got {other:?}"),
         }
     }
@@ -710,17 +751,6 @@ mod tests {
         assert!(result.is_err(), "an unknown method tag must be rejected");
     }
 
-    /// The two removed method names, spelled from characters so that the list
-    /// in production code is their only occurrence in this crate's source.
-    fn removed_method_names() -> [String; 2] {
-        [
-            ['l', 'm', 'l', '1'].iter().collect(),
-            ['d', 'o', 'm', 'i', 'n', 'a', 't', 'i', 'o', 'n']
-                .iter()
-                .collect(),
-        ]
-    }
-
     fn training_json_with_selection(selection: &str) -> String {
         format!(
             r#"{{
@@ -735,7 +765,7 @@ mod tests {
     /// `level1`, with or without the parameters it used to take.
     #[test]
     fn a_removed_selection_method_names_level1() {
-        for removed in removed_method_names() {
+        for removed in removed_selection_method_names() {
             for selection in [
                 format!(r#"{{ "method": "{removed}" }}"#),
                 format!(r#"{{ "method": "{removed}", "check_frequency": 2 }}"#),
@@ -770,6 +800,63 @@ mod tests {
             "unexpected message: {err}"
         );
         assert!(!err.contains("was removed"), "unexpected message: {err}");
+    }
+
+    fn selection_error(selection: &str) -> String {
+        serde_json::from_str::<TrainingConfig>(&training_json_with_selection(selection))
+            .expect_err("the selection object must be rejected")
+            .to_string()
+    }
+
+    /// The removed key is rejected by name under `level1`, even when it comes
+    /// before the method tag.
+    #[test]
+    fn the_removed_tie_tolerance_key_is_rejected_by_name() {
+        let err = selection_error(
+            r#"{ "tie_tolerance": 1e6, "check_frequency": 2, "method": "level1" }"#,
+        );
+        assert!(
+            err.contains(
+                "the key `tie_tolerance` was removed: `level1` compares row values \
+                 exactly; delete the key (`training.cut_selection.selection`)"
+            ),
+            "unexpected message: {err}"
+        );
+    }
+
+    /// Any other key under `level1` stays serde's unknown-field error, whose
+    /// list of expected fields is the variant's own.
+    #[test]
+    fn a_foreign_level1_key_is_still_an_unknown_field() {
+        let err = selection_error(r#"{ "method": "level1", "tie_tolrance": 1 }"#);
+        assert!(
+            err.contains("unknown field `tie_tolrance`, expected `check_frequency`"),
+            "unexpected message: {err}"
+        );
+        assert!(!err.contains("was removed"), "unexpected message: {err}");
+    }
+
+    /// A key repeated inside the selection object is a duplicate-field error
+    /// naming the key, the method tag included.
+    #[test]
+    fn a_repeated_selection_key_is_a_duplicate_field() {
+        let [removed, _] = removed_selection_method_names();
+        for (selection, key) in [
+            (
+                r#"{ "method": "level1", "check_frequency": 2, "check_frequency": 3 }"#.to_string(),
+                "check_frequency",
+            ),
+            (
+                format!(r#"{{ "method": "{removed}", "method": "level1" }}"#),
+                "method",
+            ),
+        ] {
+            let err = selection_error(&selection);
+            assert!(
+                err.contains(&format!("duplicate field `{key}`")),
+                "unexpected message for {selection}: {err}"
+            );
+        }
     }
 
     /// A full `training.solver.backward` block round-trips: every per-field

@@ -778,7 +778,7 @@
       "oneOf": [
         {
           "additionalProperties": false,
-          "description": "Level-1: retain any row near-optimal at some visited state.",
+          "description": "Level 1: every row the run adds to the row pool of a stage strictly\nbetween the first and the last records the trial state it was computed\nat. At each stored state, the row with the highest value there owns the\nstate, among the rows the run added to that pool and the active rows\nloaded into it; of rows whose values there are exactly equal, the one at\nthe lowest pool position owns it. Every `check_frequency` iterations, a\nrow the run added to such a pool is deactivated when it owns no stored\nstate and reactivated when it is inactive and owns one. Values are\ncompared exactly, with no tolerance, and a row of the current iteration\nis judged like any other. A row loaded from a policy keeps the activity\nit was loaded with.",
           "properties": {
             "check_frequency": {
               "default": 5,
@@ -790,12 +790,6 @@
             "method": {
               "const": "level1",
               "type": "string"
-            },
-            "tie_tolerance": {
-              "default": 1e-10,
-              "description": "Tie tolerance: a row is active at a state when within this of the\nbest row value there. Default `1e-10`.",
-              "format": "double",
-              "type": "number"
             }
           },
           "required": [

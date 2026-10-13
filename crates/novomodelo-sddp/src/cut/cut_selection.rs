@@ -58,7 +58,6 @@
 //!
 //! let strategy = CutSelectionStrategy::Level1 {
 //!     check_frequency: 5,
-//!     tie_tolerance: 1e-10,
 //!     lookback_iterations: None,
 //! };
 //!
@@ -149,10 +148,6 @@ pub enum CutSelectionStrategy {
         /// Number of iterations between selection runs. Must be > 0.
         check_frequency: u64,
 
-        /// Parsed and validated; no step of a run reads it, since ownership
-        /// compares values exactly.
-        tie_tolerance: f64,
-
         /// `Some(w)` keeps the trial states of the last `w` iterations of the
         /// run, `None` every one.
         lookback_iterations: Option<NonZeroU64>,
@@ -202,7 +197,6 @@ impl CutSelectionStrategy {
     ///
     /// let s = CutSelectionStrategy::Level1 {
     ///     check_frequency: 5,
-    ///     tie_tolerance: 1e-10,
     ///     lookback_iterations: None,
     /// };
     /// assert!(!s.should_run(0));
@@ -266,8 +260,7 @@ fn validate_tolerance(key: &str, value: f64, strict: bool) -> Result<f64, String
 ///
 /// Returns `Err(String)` when `row_activity_tolerance` (checked even with no
 /// method) is not finite and `>= 0`, or when a method's numeric constraint is
-/// violated: for `level1`, `check_frequency = 0` or a `tie_tolerance` that is
-/// not finite and `>= 0`; for `dynamic`, `start_iteration = 0`,
+/// violated: for `level1`, `check_frequency = 0`; for `dynamic`, `start_iteration = 0`,
 /// `candidate_recency = Some(0)`, `max_added_per_round = 0`, or a
 /// `violation_tolerance` that is not finite and `> 0`.
 ///
@@ -286,12 +279,8 @@ pub fn parse_cut_selection_config(
     };
 
     match *selection {
-        SelectionMethod::Level1 {
-            tie_tolerance,
-            check_frequency,
-        } => Ok(Some(CutSelectionStrategy::Level1 {
+        SelectionMethod::Level1 { check_frequency } => Ok(Some(CutSelectionStrategy::Level1 {
             check_frequency: u64::from(validate_check_frequency(check_frequency)?),
-            tie_tolerance: validate_tolerance("tie_tolerance", tie_tolerance, false)?,
             lookback_iterations: None,
         })),
         SelectionMethod::Dynamic {
@@ -367,7 +356,6 @@ mod tests {
     fn should_run_false_at_zero() {
         let s = CutSelectionStrategy::Level1 {
             check_frequency: 5,
-            tie_tolerance: 1e-10,
             lookback_iterations: None,
         };
         assert!(!s.should_run(0));
@@ -377,7 +365,6 @@ mod tests {
     fn should_run_false_between_multiples() {
         let s = CutSelectionStrategy::Level1 {
             check_frequency: 5,
-            tie_tolerance: 1e-10,
             lookback_iterations: None,
         };
         assert!(!s.should_run(3));
@@ -388,7 +375,6 @@ mod tests {
     fn should_run_true_at_multiples() {
         let s = CutSelectionStrategy::Level1 {
             check_frequency: 5,
-            tie_tolerance: 1e-10,
             lookback_iterations: None,
         };
         assert!(s.should_run(5));
@@ -422,10 +408,7 @@ mod tests {
     #[test]
     fn test_parse_level1() {
         let cfg = RowSelectionConfig {
-            selection: Some(SelectionMethod::Level1 {
-                tie_tolerance: 1e-8,
-                check_frequency: 5,
-            }),
+            selection: Some(SelectionMethod::Level1 { check_frequency: 5 }),
             ..RowSelectionConfig::default()
         };
         let strategy = parse_cut_selection_config(&cfg)
@@ -436,43 +419,17 @@ mod tests {
                 strategy,
                 CutSelectionStrategy::Level1 {
                     check_frequency: 5,
-                    tie_tolerance,
                     lookback_iterations: None,
-                } if (tie_tolerance - 1e-8).abs() < f64::EPSILON
+                }
             ),
             "unexpected variant: {strategy:?}"
-        );
-    }
-
-    /// `level1` with serde-default fields resolves to the documented defaults
-    /// (`tie_tolerance = 1e-10`, `check_frequency = 5`).
-    #[test]
-    fn test_parse_level1_default_tie_tolerance() {
-        let json = r#"{"selection": {"method": "level1"}}"#;
-        let cfg: RowSelectionConfig = serde_json::from_str(json).expect("level1 defaults parse");
-        let strategy = parse_cut_selection_config(&cfg)
-            .expect("level1 must parse")
-            .expect("must produce Some for level1");
-        assert!(
-            matches!(
-                strategy,
-                CutSelectionStrategy::Level1 {
-                    check_frequency: 5,
-                    tie_tolerance,
-                    lookback_iterations: None,
-                } if (tie_tolerance - 1e-10).abs() < 1e-20
-            ),
-            "unexpected variant or wrong default tie_tolerance: {strategy:?}"
         );
     }
 
     #[test]
     fn test_parse_zero_check_frequency() {
         let cfg = RowSelectionConfig {
-            selection: Some(SelectionMethod::Level1 {
-                tie_tolerance: 1e-10,
-                check_frequency: 0,
-            }),
+            selection: Some(SelectionMethod::Level1 { check_frequency: 0 }),
             ..RowSelectionConfig::default()
         };
         let result = parse_cut_selection_config(&cfg);
@@ -497,13 +454,6 @@ mod tests {
                     row_activity_tolerance: Some(value),
                     ..RowSelectionConfig::default()
                 },
-            ),
-            (
-                "tie_tolerance",
-                with_method(SelectionMethod::Level1 {
-                    tie_tolerance: value,
-                    check_frequency: 5,
-                }),
             ),
             (
                 "violation_tolerance",
@@ -556,28 +506,6 @@ mod tests {
             parse_cut_selection_config(&cfg)
                 .unwrap_or_else(|msg| panic!("{key} = 0 must parse, got: {msg}"));
         }
-    }
-
-    #[test]
-    fn parse_rejects_a_negative_tie_tolerance() {
-        let messages = rejections("tie_tolerance", -1.0);
-        assert_eq!(messages.len(), 1);
-        assert!(
-            messages[0].contains("tie_tolerance must be finite and >= 0 (got -1)"),
-            "error must name the key, the rule and the value, got: {}",
-            messages[0]
-        );
-    }
-
-    #[test]
-    fn parse_rejects_a_nan_tie_tolerance() {
-        let messages = rejections("tie_tolerance", f64::NAN);
-        assert_eq!(messages.len(), 1);
-        assert!(
-            messages[0].contains("tie_tolerance") && messages[0].contains("(got NaN)"),
-            "error must name the key and the value, got: {}",
-            messages[0]
-        );
     }
 
     #[test]

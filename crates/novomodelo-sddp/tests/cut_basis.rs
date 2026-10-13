@@ -907,10 +907,8 @@ mod basis_reconstruct_churn {
         config.training.stopping_rules =
             Some(vec![StoppingRuleConfig::IterationLimit { limit: 8 }]);
 
-        config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
-            tie_tolerance: 1e-10,
-            check_frequency: 2,
-        });
+        config.training.cut_selection.selection =
+            Some(SelectionMethod::Level1 { check_frequency: 2 });
 
         // check_frequency 1 and a cap of 4 both evict nothing on d03; 3 is the
         // forward passes of one iteration, the floor.
@@ -1761,30 +1759,6 @@ mod selection_in_a_training_run {
         assert_eq!(SelectionFingerprint::capture(&windowed, &result), expected);
     }
 
-    /// derived: ownership compares cut values exactly, so no step of a `level1`
-    /// run reads `tie_tolerance`.
-    #[test]
-    fn level1_tie_tolerance_no_longer_changes_a_run() {
-        let run = |tie_tolerance: f64| {
-            let (setup, result) = train_with(
-                SelectionMethod::Level1 {
-                    tie_tolerance,
-                    check_frequency: CHECK_FREQUENCY,
-                },
-                false,
-                ITERATIONS,
-                None,
-            );
-            SelectionFingerprint::capture(&setup, &result)
-        };
-        let tight = run(1e-10);
-        assert!(
-            tight.cuts.iter().any(|pool| pool.active.contains(&false)),
-            "the run deactivated no cut, so the tolerance had nothing to change"
-        );
-        assert_eq!(tight, run(1e6));
-    }
-
     /// derived: an interior pool receives `FORWARD_PASSES` cuts per iteration,
     /// so from iteration 4 on it has received more than this many; whether more
     /// than this many are then active is what the eviction assertion checks.
@@ -1876,7 +1850,6 @@ mod selection_in_a_training_run {
 
     fn level1() -> SelectionMethod {
         SelectionMethod::Level1 {
-            tie_tolerance: 1e-10,
             check_frequency: CHECK_FREQUENCY,
         }
     }
@@ -2038,7 +2011,6 @@ mod trial_state_store {
 
     fn level1_without_a_selection_run() -> SelectionMethod {
         SelectionMethod::Level1 {
-            tie_tolerance: 1e-10,
             check_frequency: ITERATIONS + 1,
         }
     }

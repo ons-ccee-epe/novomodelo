@@ -793,7 +793,6 @@ mod tests {
             "cut_selection": {
               "selection": {
                 "method": "level1",
-                "tie_tolerance": 1e-6,
                 "check_frequency": 3
               }
             }
@@ -841,13 +840,7 @@ mod tests {
         assert_eq!(rules.len(), 2);
         let cut_sel = &cfg.training.cut_selection;
         match cut_sel.selection.as_ref().expect("selection present") {
-            SelectionMethod::Level1 {
-                tie_tolerance,
-                check_frequency,
-            } => {
-                assert!((tie_tolerance - 1e-6).abs() < f64::EPSILON);
-                assert_eq!(*check_frequency, 3);
-            }
+            SelectionMethod::Level1 { check_frequency } => assert_eq!(*check_frequency, 3),
             other @ SelectionMethod::Dynamic { .. } => panic!("expected Level1, got {other:?}"),
         }
 
@@ -1653,23 +1646,14 @@ mod tests {
         let original = RowSelectionConfig {
             row_activity_tolerance: Some(1e-6),
             max_active_per_stage: Some(100),
-            selection: Some(SelectionMethod::Level1 {
-                tie_tolerance: 1e-9,
-                check_frequency: 7,
-            }),
+            selection: Some(SelectionMethod::Level1 { check_frequency: 7 }),
         };
         let json = serde_json::to_string(&original).unwrap();
         let roundtripped: RowSelectionConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(roundtripped.max_active_per_stage, Some(100));
         assert_eq!(roundtripped.row_activity_tolerance, Some(1e-6));
         match roundtripped.selection.expect("selection present") {
-            SelectionMethod::Level1 {
-                tie_tolerance,
-                check_frequency,
-            } => {
-                assert!((tie_tolerance - 1e-9).abs() < f64::EPSILON);
-                assert_eq!(check_frequency, 7);
-            }
+            SelectionMethod::Level1 { check_frequency } => assert_eq!(check_frequency, 7),
             other @ SelectionMethod::Dynamic { .. } => panic!("expected Level1, got {other:?}"),
         }
     }
@@ -2143,7 +2127,7 @@ mod tests {
 
     /// The two removed row-selection method names, spelled from characters so
     /// that the list in `training.rs` is their only occurrence in this crate.
-    fn removed_selection_method_names() -> [String; 2] {
+    pub(super) fn removed_selection_method_names() -> [String; 2] {
         [
             ['l', 'm', 'l', '1'].iter().collect(),
             ['d', 'o', 'm', 'i', 'n', 'a', 't', 'i', 'o', 'n']
@@ -2189,6 +2173,79 @@ mod tests {
             let f = write_config(&config.to_string());
             let err = parse_config(f.path()).unwrap_err();
             assert_names_the_removed_method(&err, &removed);
+        }
+    }
+
+    const REMOVED_TIE_TOLERANCE_MESSAGE: &str = "the key `tie_tolerance` was removed: `level1` \
+         compares row values exactly; delete the key (`training.cut_selection.selection`)";
+
+    #[test]
+    fn with_overrides_rejects_the_removed_tie_tolerance_key() {
+        let overrides = override_map(&[(
+            "training.cut_selection.selection",
+            serde_json::json!({ "method": "level1", "tie_tolerance": 1e6 }),
+        )]);
+        let err =
+            Config::with_overrides(&base_value(OVERRIDE_BASE_CONFIG), &overrides).unwrap_err();
+        assert!(
+            matches!(&err, LoadError::SchemaError { path, message, .. }
+                if path == std::path::Path::new("<config_overrides>")
+                    && message.contains(REMOVED_TIE_TOLERANCE_MESSAGE)),
+            "expected the removed-key SchemaError on the override path, got: {err:?}"
+        );
+    }
+
+    /// The removed key is named under `level1` only; under `dynamic`, which
+    /// never took it, it stays an unknown field.
+    #[test]
+    fn parse_config_rejects_the_removed_tie_tolerance_key() {
+        let mut config = base_value(OVERRIDE_BASE_CONFIG);
+        config["training"]["cut_selection"] = serde_json::json!({
+            "selection": { "method": "level1", "tie_tolerance": 1e6 }
+        });
+        let f = write_config(&config.to_string());
+        let message = parse_config(f.path()).unwrap_err().to_string();
+        assert!(
+            message.contains(REMOVED_TIE_TOLERANCE_MESSAGE),
+            "unexpected message: {message}"
+        );
+
+        config["training"]["cut_selection"]["selection"]["method"] = serde_json::json!("dynamic");
+        let f = write_config(&config.to_string());
+        let message = parse_config(f.path()).unwrap_err().to_string();
+        assert!(
+            message.contains("unknown field `tie_tolerance`") && !message.contains("was removed"),
+            "unexpected message: {message}"
+        );
+    }
+
+    /// A key repeated inside the selection object fails to load, naming the
+    /// key. The override path takes a [`serde_json::Value`], whose object map
+    /// holds each key once, so a repeated key reaches only this entry point.
+    #[test]
+    fn parse_config_rejects_a_repeated_selection_key() {
+        let [removed, _] = removed_selection_method_names();
+        for (selection, key) in [
+            (
+                r#"{ "method": "level1", "check_frequency": 2, "check_frequency": 3 }"#.to_string(),
+                "check_frequency",
+            ),
+            (
+                format!(r#"{{ "method": "{removed}", "method": "level1" }}"#),
+                "method",
+            ),
+        ] {
+            let config = OVERRIDE_BASE_CONFIG.replacen(
+                r#""training": {"#,
+                &format!(r#""training": {{ "cut_selection": {{ "selection": {selection} }},"#),
+                1,
+            );
+            let f = write_config(&config);
+            let message = parse_config(f.path()).unwrap_err().to_string();
+            assert!(
+                message.contains(&format!("duplicate field `{key}`")),
+                "unexpected message for {selection}: {message}"
+            );
         }
     }
 
@@ -2662,7 +2719,7 @@ mod tests {
                     "row_activity_tolerance": 1e-6,
                     "max_active_per_stage": 1000,
                     "selection": {
-                        "method": "level1", "tie_tolerance": 1e-10, "check_frequency": 5
+                        "method": "level1", "check_frequency": 5
                     }
                 },
                 "solver": {
