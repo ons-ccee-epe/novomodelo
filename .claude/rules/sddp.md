@@ -1087,7 +1087,14 @@ and, in `tests/cut_basis.rs` against the archive,
 `a_level1_run_stores_states_at_each_pools_projected_dimension`,
 `an_enumerated_level1_run_stores_one_trial_state_per_cut`,
 `a_sampled_fan_stores_only_each_nodes_own_trial_states` and
-`a_run_without_level1_stores_no_trial_state`.
+`a_run_without_level1_stores_no_trial_state`; and, in `tests/mpi_wire.rs` on a
+sampled fan whose two sibling nodes receive trials with different states,
+`level1_thread_shapes_agree_on_a_branching_fan` and
+`level1_declaration_order_is_invariant_on_a_branching_fan` (each sibling pool
+stores one state per generated cut, the two pools store different states, and
+the stored states do not depend on the thread count or the declaration order)
+and, under an MPI launcher only, as the ownership section below states,
+`level1_world_size_is_invariant_on_a_branching_fan` (nor on the rank count).
 
 ## A cut's value at a state is canonical
 
@@ -1236,6 +1243,31 @@ dropped by a window),
 `no_live_cut_leaves_a_state_unowned` (`cut/selection_reference.rs`: the rule
 leaves a state unowned when no slot is live, which a stored state's scored slot
 rules out in the record).
+
+In a training run the record is pinned by the `level1_` gates of
+`selection_on_determinism` (`tests/mpi_wire.rs`), which read every slot's best
+value, owner and owned count through the public readers:
+`level1_thread_shapes_agree_on_the_uniform_fixture` and
+`level1_thread_shapes_agree_on_the_non_uniform_projection_fixture` (the record
+does not depend on the thread count),
+`level1_two_rank_stub_matches_single_rank_on_the_uniform_fixture` and
+`level1_two_rank_stub_matches_single_rank_on_the_non_uniform_projection_fixture`
+(nor on the two-rank buffer layout, with one trial on rank 0), and
+`level1_declaration_order_is_invariant_on_the_uniform_fixture`,
+`level1_declaration_order_is_invariant_on_the_non_uniform_projection_fixture`
+and `level1_declaration_order_is_invariant_on_a_two_hydro_fixture` (nor on the
+declaration order; the last on a state of two dimensions, where it also pins
+that of bit-identical cuts none above the lowest slot is active). Every run of
+those gates also asserts the rule from cut values the test sums itself: each
+stored state's owner attains the maximum of the live cuts within a rounding
+bound, and no live cut at a lower slot is bit-identical to it. No in-process
+test runs two cooperating ranks, so none shows two ranks that route trials to
+different sibling nodes deriving the same record, and no two-rank stub leg
+runs on a level with several nodes, where the stub reads a stale per-pool cut
+count. `level1_world_size_is_invariant_on_a_branching_fan` shows it only when
+its test binary, built with the `mpi` feature of `novomodelo-comm`, is launched
+under an MPI launcher with two or more ranks; under `cargo test` it is a
+single-rank pass and pins nothing here.
 
 ## `level1` keeps one owner per stored state
 
@@ -1502,7 +1534,12 @@ and
 against a rebuild and the states of the window against the reference rule, under
 drawn windows, strides and run frequencies); in `tests/cut_basis.rs`:
 `a_level1_window_keeps_only_the_states_of_the_last_iterations` and
-`a_window_longer_than_the_run_changes_nothing`.
+`a_window_longer_than_the_run_changes_nothing`; in `tests/mpi_wire.rs`:
+`level1_window_thread_shapes_agree_on_the_uniform_fixture` and
+`level1_window_thread_shapes_agree_on_the_non_uniform_projection_fixture` (with
+a window, the states kept, the record and the activity flags do not depend on
+the thread count, in runs where states left and their cuts stayed scored; the
+first also requires a reactivation).
 
 ## Binding activity is recorded only for a configured reader
 

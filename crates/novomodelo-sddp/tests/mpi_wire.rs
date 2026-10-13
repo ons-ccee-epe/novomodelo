@@ -3043,10 +3043,12 @@ mod branching_gate_roster {
 mod selection_on_determinism {
     //! Selection-on determinism gates: train with `level1`, with the lazy method
     //! `dynamic`, or with the active-cut budget, alone and over `level1`, and assert the
-    //! cut pools, their provenance and binding counters, and the reported bounds
-    //! are bit-identical across 1, 2 and 4 threads, between a single rank and
-    //! the `Rank0Of2` two-rank stub, and, for `level1` alone, across permuted
-    //! declaration orders.
+    //! run's fingerprint is bit-identical across 1, 2 and 4 threads, between a
+    //! single rank and the `Rank0Of2` two-rank stub, and, for `level1` alone,
+    //! across declaration orders. The fingerprint holds the cut pools, their
+    //! provenance and binding counters, the reported bounds and, for every slot,
+    //! its role, its stored trial state and the ownership record: the best
+    //! value, the owner and the owned count.
     //!
     //! Power statement: a bitwise comparison proves nothing on a run its setting
     //! never acted on, so each gate asserts, for every run before comparing, that
@@ -3055,7 +3057,19 @@ mod selection_on_determinism {
     //! its seed. The d43 `dynamic` gate runs `seed_window: 0` because under the
     //! default window its lazy solves append no row on CLP. A thread gate also
     //! asserts that as many workers solve backward LPs as its shape has threads,
-    //! which takes one forward pass per thread of the largest shape.
+    //! which takes one forward pass per thread of the largest shape. Each
+    //! in-process run trains inside a rayon pool of its shape's thread count, so
+    //! the shape also sets how many threads scan the ownership record.
+    //! Production sizes its pool to the configured thread count as well.
+    //!
+    //! A `level1` gate also asserts that a trial state is stored and that some
+    //! stored state is owned by another slot than its own, and it checks the
+    //! record against cut values it sums itself: the owner of every stored state
+    //! attains the maximum of the competing cuts, and without a budget the
+    //! active scored cuts are the owners. That needs selection to have run at the
+    //! last iteration, which each run asserts. The two `level1` budget gates
+    //! check the owners only, since the budget clears flags the record never
+    //! reads.
     //!
     //! The uniform gates train `examples/1dtoy`. `d43-storage-only-cut` disables
     //! `inflow_lags` on one interior stage, so its pools project different
@@ -3064,45 +3078,136 @@ mod selection_on_determinism {
     //! duplicates the first, which leaves `level1` and `dynamic` one distinct
     //! cut.
     //!
+    //! The window legs keep the trial states of the last [`WINDOW`] iterations
+    //! and assert that some scored cut holds no state; the uniform one also
+    //! requires a reactivation.
+    //!
     //! The rank gates train one forward pass, the only count at which
     //! `Rank0Of2` is faithful: rank 0 owns that pass, so the stub exercises the
     //! two-rank buffer layout and collectives, never a cut or a trial state
     //! received from a peer. The declaration gates assert that every
     //! `permute_case` copy declares its stages in another order than the deck.
+    //! Both of those decks have one hydro, so the two-hydro leg trains
+    //! `d03-two-hydro-cascade`, whose copies also declare the hydros in the
+    //! other order and whose stored states have two different coordinates.
+    //!
+    //! The fan legs train a sampled tree whose two sibling nodes form one
+    //! backward level, own a pool each and receive trials with different states.
+    //! In process they are a thread leg and a declaration leg. No `Rank0Of2` leg
+    //! runs on a level with several nodes: the stub leaves a peer's segment of a
+    //! receive buffer as it was, and the per-pool count buffer of the cut
+    //! exchange is laid out by the level's pool count, so at the one-pool root
+    //! level the stub reads a count the two-pool fan level left there. A real
+    //! communicator overwrites every rank's segment.
+    //!
+    //! No in-process test runs two cooperating ranks.
+    //! `level1_world_size_is_invariant_on_a_branching_fan` trains the fan on the
+    //! world communicator and compares each rank's fingerprint with a
+    //! single-rank run in the same process. It runs two or more cooperating
+    //! ranks only when the test binary, built with the `mpi` feature of
+    //! `novomodelo-comm`, is launched under an MPI launcher:
+    //!
+    //! ```text
+    //! mpirun -n <ranks> <mpi_wire test binary> --test-threads=1 \
+    //!     level1_world_size_is_invariant_on_a_branching_fan
+    //! ```
+    //!
+    //! The ranks then route trials to different sibling nodes and each stores
+    //! the states of its peers' cuts. Under `cargo test` its world has one rank
+    //! and it compares a run with itself, so it adds nothing to that command's
+    //! evidence. It trains on the calling thread, over the ambient rayon pool:
+    //! the communicator admits calls only from the thread that initialised it.
 
     use std::collections::BTreeSet;
     use std::fmt::Debug;
+    use std::num::NonZeroU64;
     use std::path::Path;
     use std::sync::mpsc;
 
-    use novomodelo_comm::Communicator;
+    use novomodelo_comm::{BackendKind, Communicator, LocalBackend, create_communicator};
     use novomodelo_core::TrainingEvent;
     use novomodelo_io::config::{SelectionMethod, StoppingRuleConfig, TrainingSelection};
+    use novomodelo_sddp::cut::{CutPool, SlotOrigin};
+    use novomodelo_sddp::setup::StageIdx;
+    use novomodelo_sddp::test_support::{
+        branching_tree_setup_sampled_with_selection,
+        branching_tree_setup_sampled_with_selection_reversed,
+    };
     use novomodelo_sddp::{SolverStatsDelta, StudySetup, TrainingResult};
     use novomodelo_solver::ActiveSolver;
 
     use crate::common::permute::permute_case;
-    use crate::common::selection_fingerprint::{SelectionFingerprint, SelectionPower};
+    use crate::common::selection_fingerprint::{
+        OwnershipPower, SelectionFingerprint, SelectionPower,
+        assert_active_scored_cuts_are_the_owners, assert_identical_cuts_keep_their_lowest_slot,
+        assert_owners_attain_the_maximum, interior_pool_ids, selection_ran_at_the_last_iteration,
+    };
     use crate::common::{Rank0Of2, StubComm, fresh_setup_with, fresh_setup_with_openings};
 
     const THREAD_SHAPES: [usize; 3] = [1, 2, 4];
     const PERMUTATION_SEEDS: [u64; 2] = [1, 2];
+    const STAGES: Registry = ("stages.json", "stages");
+    const HYDROS: Registry = ("system/hydros.json", "hydros");
     const UNIFORM_CASE: &str = "../../examples/1dtoy";
     const NON_UNIFORM_CASE: &str = "../../examples/deterministic/d43-storage-only-cut";
     const NON_UNIFORM_OPENINGS: u32 = 5;
+    const TWO_HYDRO_CASE: &str = "../../examples/deterministic/d03-two-hydro-cascade";
+    const TWO_HYDRO_PERMUTATION_SEEDS: [u64; 2] = [2, 8];
+    const WINDOW: Option<NonZeroU64> = NonZeroU64::new(4);
+    const FAN_FORWARD_PASSES: u32 = 8;
+    const FAN_ITERATIONS: u32 = 10;
+    const FAN_SELECTION: SelectionMethod = SelectionMethod::Level1 {
+        tie_tolerance: 1e-10,
+        check_frequency: 1,
+    };
     const LAZY_START_ITERATION: u32 = 2;
+    const LEVEL1_POWERLESS: &str = "level1 deactivated no cut, stored no trial state, or left \
+                                    every state with the cut generated at it";
+    const WINDOW_POWERLESS: &str = "level1 deactivated no cut, left every state with the cut \
+                                    generated at it, or its window dropped no state";
 
+    /// A case-relative JSON file and the top-level array of id-keyed records in it.
+    type Registry = (&'static str, &'static str);
+
+    /// A finished training run, as a power reader sees it.
+    struct TrainedRun<'a> {
+        setup: &'a StudySetup,
+        events: &'a [TrainingEvent],
+        result: &'a TrainingResult,
+        shape: String,
+    }
+
+    /// Trains `build`'s study inside a rayon pool of `n_threads` threads: the
+    /// ownership scan and the windowed selection kernel run on the ambient
+    /// rayon pool, so without it the thread shapes would not vary them.
     fn run_shape<P>(
         build: &impl Fn() -> StudySetup,
         n_threads: usize,
         comm: &impl Communicator,
-        power_of: &impl Fn(&[TrainingEvent], &TrainingResult) -> P,
+        power_of: &impl Fn(&TrainedRun<'_>) -> P,
+    ) -> (SelectionFingerprint, P) {
+        let rayon_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(n_threads)
+            .build()
+            .expect("the rayon pool must build");
+        run_in(Some(&rayon_pool), build, n_threads, comm, power_of)
+    }
+
+    /// Trains `build`'s study in `rayon_pool`, or on the calling thread over
+    /// the ambient pool for `None`: a real communicator admits calls only from
+    /// the thread that initialised it.
+    fn run_in<P>(
+        rayon_pool: Option<&rayon::ThreadPool>,
+        build: &impl Fn() -> StudySetup,
+        n_threads: usize,
+        comm: &impl Communicator,
+        power_of: &impl Fn(&TrainedRun<'_>) -> P,
     ) -> (SelectionFingerprint, P) {
         let mut setup = build();
         let (tx, rx) = mpsc::channel();
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
-        let outcome = setup
-            .train(
+        let train = || {
+            setup.train(
                 &mut solver,
                 comm,
                 n_threads,
@@ -3110,21 +3215,211 @@ mod selection_on_determinism {
                 Some(tx),
                 None,
             )
-            .expect("train must return Ok");
+        };
+        let outcome = match rayon_pool {
+            Some(pool) => pool.install(train),
+            None => train(),
+        }
+        .expect("train must return Ok");
         assert!(
             outcome.error.is_none(),
             "expected no training error, got: {:?}",
             outcome.error
         );
         let events: Vec<TrainingEvent> = rx.try_iter().collect();
+        let power = power_of(&TrainedRun {
+            setup: &setup,
+            events: &events,
+            result: &outcome.result,
+            shape: format!(
+                "threads={n_threads}, rank {} of {}",
+                comm.rank(),
+                comm.size()
+            ),
+        });
         (
             SelectionFingerprint::capture(&setup, &outcome.result),
-            power_of(&events, &outcome.result),
+            power,
         )
     }
 
-    fn selection_power(events: &[TrainingEvent], _result: &TrainingResult) -> SelectionPower {
-        SelectionPower::from_events(events)
+    fn selection_power(run: &TrainedRun<'_>) -> SelectionPower {
+        SelectionPower::from_events(run.events)
+    }
+
+    /// What a `level1` run shows before it is compared.
+    #[derive(Debug)]
+    struct Level1Power {
+        selection: SelectionPower,
+        ownership: OwnershipPower,
+    }
+
+    fn assert_the_record_is_current(run: &TrainedRun<'_>) {
+        assert!(
+            selection_ran_at_the_last_iteration(run.events, run.result),
+            "{}: selection did not run at the last iteration, so the states of the later \
+             iterations have no owner",
+            run.shape
+        );
+    }
+
+    /// Reads a `level1` run's power after asserting the envelope invariant on
+    /// it. No budget is set, so the active scored cuts are the owners.
+    fn level1_power(run: &TrainedRun<'_>) -> Level1Power {
+        assert_the_record_is_current(run);
+        assert_owners_attain_the_maximum(run.setup, &run.shape);
+        assert_active_scored_cuts_are_the_owners(run.setup, &run.shape);
+        Level1Power {
+            selection: SelectionPower::from_events(run.events),
+            ownership: OwnershipPower::of(run.setup),
+        }
+    }
+
+    /// [`selection_power`] of a `level1` run under a budget. The budget clears
+    /// flags the record never reads, so each owner still attains the maximum
+    /// while the active cuts are no longer the owners.
+    fn budgeted_level1_power(run: &TrainedRun<'_>) -> SelectionPower {
+        assert_the_record_is_current(run);
+        assert_owners_attain_the_maximum(run.setup, &run.shape);
+        selection_power(run)
+    }
+
+    /// [`level1_power`] of a run whose interior states have two coordinates
+    /// with different bits and whose interior pools hold duplicate cuts.
+    fn two_hydro_power(run: &TrainedRun<'_>) -> Level1Power {
+        let pools = &run.setup.fcf.pools;
+        let interior = interior_pool_ids(run.setup);
+        assert!(
+            interior
+                .iter()
+                .any(|&pool_id| pools[pool_id].state_dimension >= 2),
+            "{}: no interior pool has two state dimensions",
+            run.shape
+        );
+        let has_distinct_coordinates = |state: &[f64]| {
+            state
+                .iter()
+                .any(|coordinate| coordinate.to_bits() != state[0].to_bits())
+        };
+        assert!(
+            interior.iter().any(|&pool_id| {
+                let pool = &pools[pool_id];
+                (0..pool.populated())
+                    .filter_map(|slot| pool.trial_state(slot))
+                    .any(has_distinct_coordinates)
+            }),
+            "{}: every stored state repeats one coordinate, so a swapped state layout would \
+             not show",
+            run.shape
+        );
+        assert_identical_cuts_keep_their_lowest_slot(run.setup, &run.shape);
+        level1_power(run)
+    }
+
+    fn generated_slots(pool: &CutPool) -> impl Iterator<Item = usize> + '_ {
+        (0..pool.populated()).filter(|&slot| pool.role(slot).origin == SlotOrigin::Generated)
+    }
+
+    fn stored_state_bits(pool: &CutPool) -> BTreeSet<Vec<u64>> {
+        (0..pool.populated())
+            .filter_map(|slot| pool.trial_state(slot))
+            .map(|state| {
+                state
+                    .iter()
+                    .map(|coordinate| coordinate.to_bits())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The two fan pools of the sampled branching tree, after asserting that
+    /// the fan nodes share a stage and own a pool each.
+    fn fan_pools<'a>(run: &TrainedRun<'a>) -> [&'a CutPool; 2] {
+        let pool_stage = &run.setup.inputs.node_graph.pool_stage;
+        let interior = interior_pool_ids(run.setup);
+        assert!(
+            interior.len() == 2
+                && interior[0] != interior[1]
+                && interior
+                    .iter()
+                    .all(|&pool_id| pool_stage[pool_id] == StageIdx(1)),
+            "{}: the fan level must hold two nodes that own a pool each, got pools {interior:?}",
+            run.shape
+        );
+        [interior[0], interior[1]].map(|pool_id| &run.setup.fcf.pools[pool_id])
+    }
+
+    /// [`level1_power`] of a sampled fan run, after asserting that each fan pool
+    /// stores one state per generated cut, that the two pools store different
+    /// states, and that some fan pool holds two different cuts.
+    fn fan_power(run: &TrainedRun<'_>) -> Level1Power {
+        let pools = fan_pools(run);
+        for pool in pools {
+            assert!(
+                generated_slots(pool).count() > 0
+                    && (0..pool.populated()).all(|slot| {
+                        pool.trial_state(slot).is_some()
+                            == (pool.role(slot).origin == SlotOrigin::Generated)
+                    }),
+                "{}: a fan pool does not store one trial state per generated cut",
+                run.shape
+            );
+        }
+        assert_ne!(
+            stored_state_bits(pools[0]),
+            stored_state_bits(pools[1]),
+            "{}: the two fan pools store the same trial states, so a state stored in the \
+             sibling's pool would not show",
+            run.shape
+        );
+        assert!(
+            pools.iter().any(|pool| {
+                let cuts: BTreeSet<Vec<u64>> = generated_slots(pool)
+                    .map(|slot| {
+                        std::iter::once(pool.intercept(slot))
+                            .chain(pool.coefficient_row(slot).iter().copied())
+                            .map(f64::to_bits)
+                            .collect()
+                    })
+                    .collect();
+                cuts.len() > 1
+            }),
+            "{}: every cut of a fan pool is the same cut",
+            run.shape
+        );
+        level1_power(run)
+    }
+
+    /// [`fan_power`] of a run in which some iteration routed trials to both
+    /// fan nodes.
+    fn fan_power_with_both_nodes_visited(run: &TrainedRun<'_>) -> Level1Power {
+        let iterations = |pool: &CutPool| -> BTreeSet<u64> {
+            generated_slots(pool)
+                .map(|slot| pool.metadata(slot).iteration_generated)
+                .collect()
+        };
+        let [first, second] = fan_pools(run);
+        assert!(
+            !iterations(first).is_disjoint(&iterations(second)),
+            "{}: no iteration generated a cut in both fan pools",
+            run.shape
+        );
+        fan_power(run)
+    }
+
+    fn windowed(mut setup: StudySetup) -> StudySetup {
+        setup.set_level1_lookback(WINDOW);
+        setup
+    }
+
+    fn deactivates_and_reassigns(power: &Level1Power) -> bool {
+        power.selection.deactivations > 0
+            && power.ownership.stored_states > 0
+            && power.ownership.states_owned_by_another_slot > 0
+    }
+
+    fn deactivates_reassigns_and_drops(power: &Level1Power) -> bool {
+        deactivates_and_reassigns(power) && power.ownership.scored_slots_without_a_state > 0
     }
 
     fn dynamic_selection(seed_window: u32) -> SelectionMethod {
@@ -3140,7 +3435,8 @@ mod selection_on_determinism {
     /// Backward solver statistics and the number of lazy re-solves, both from
     /// [`LAZY_START_ITERATION`] on. A lazy solve that ends on its seed is one LP
     /// solve, so each solve beyond the lazy-solve count follows an appended row.
-    fn lazy_power(events: &[TrainingEvent], result: &TrainingResult) -> (SolverStatsDelta, u64) {
+    fn lazy_power(run: &TrainedRun<'_>) -> (SolverStatsDelta, u64) {
+        let TrainedRun { events, result, .. } = run;
         let lazy_from = u64::from(LAZY_START_ITERATION);
         let phase_entries = |phase: &'static str| {
             result
@@ -3184,7 +3480,7 @@ mod selection_on_determinism {
 
     fn assert_thread_shapes_agree<P: Debug>(
         build: impl Fn() -> StudySetup,
-        power_of: impl Fn(&[TrainingEvent], &TrainingResult) -> P,
+        power_of: impl Fn(&TrainedRun<'_>) -> P,
         has_power: impl Fn(&P) -> bool,
         powerless: &str,
     ) {
@@ -3193,8 +3489,8 @@ mod selection_on_determinism {
             .map(|&n_threads| {
                 (
                     n_threads,
-                    run_shape(&build, n_threads, &StubComm, &|events, result| {
-                        (power_of(events, result), backward_workers(result))
+                    run_shape(&build, n_threads, &StubComm, &|run| {
+                        (power_of(run), backward_workers(run.result))
                     }),
                 )
             })
@@ -3215,16 +3511,16 @@ mod selection_on_determinism {
 
         let (_, (reference, _)) = &runs[0];
         for (n_threads, (fingerprint, _)) in &runs[1..] {
-            assert_eq!(
-                fingerprint, reference,
-                "threads={n_threads} fingerprint must be bit-identical to threads=1"
+            fingerprint.assert_matches(
+                reference,
+                &format!("threads={n_threads} must be bit-identical to threads=1"),
             );
         }
     }
 
     fn assert_two_rank_stub_matches_single_rank<P: Debug>(
         build: impl Fn() -> StudySetup,
-        power_of: impl Fn(&[TrainingEvent], &TrainingResult) -> P,
+        power_of: impl Fn(&TrainedRun<'_>) -> P,
         has_power: impl Fn(&P) -> bool,
         powerless: &str,
     ) {
@@ -3241,9 +3537,9 @@ mod selection_on_determinism {
             "{powerless} (single rank: {single_rank_power:?}, two-rank stub: \
              {two_rank_power:?}) — the gate is powerless on this fixture"
         );
-        assert_eq!(
-            two_rank, single_rank,
-            "the two-rank stub fingerprint must be bit-identical to the single-rank one"
+        two_rank.assert_matches(
+            &single_rank,
+            "the two-rank stub must be bit-identical to the single rank",
         );
     }
 
@@ -3261,53 +3557,65 @@ mod selection_on_determinism {
         );
     }
 
-    fn declared_stage_ids(case_dir: &Path) -> Vec<i64> {
-        let path = case_dir.join("stages.json");
+    /// The ids of `registry`'s records in the order `case_dir` declares them.
+    fn declared_ids(case_dir: &Path, (file, array): Registry) -> Vec<i64> {
+        let path = case_dir.join(file);
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         let document: serde_json::Value =
             serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
-        document["stages"]
+        document[array]
             .as_array()
-            .unwrap_or_else(|| panic!("{} has no \"stages\" array", path.display()))
+            .unwrap_or_else(|| panic!("{} has no \"{array}\" array", path.display()))
             .iter()
-            .map(|stage| {
-                stage["id"]
+            .map(|record| {
+                record["id"]
                     .as_i64()
-                    .unwrap_or_else(|| panic!("{} stage without an integer id", path.display()))
+                    .unwrap_or_else(|| panic!("{} record without an integer id", path.display()))
             })
             .collect()
     }
 
-    /// Trains `case_dir` as declared, then one `permute_case` copy per
-    /// [`PERMUTATION_SEEDS`] entry, returning the runs in that order.
-    fn declaration_order_runs(
+    /// Trains `case_dir` as declared and one `permute_case` copy per seed, and
+    /// asserts every run has power, every copy declares each of `registries`
+    /// in another order than the deck, and every copy's fingerprint is that of
+    /// the declared order.
+    fn assert_declaration_orders_agree(
         case_dir: &Path,
+        seeds: &[u64],
+        registries: &[Registry],
         build_at: impl Fn(&Path) -> StudySetup,
-    ) -> Vec<(SelectionFingerprint, SelectionPower)> {
-        let declared_order = declared_stage_ids(case_dir);
-        let mut runs = vec![run_shape(
-            &|| build_at(case_dir),
-            1,
-            &StubComm,
-            &selection_power,
-        )];
-        for seed in PERMUTATION_SEEDS {
+        power_of: impl Fn(&TrainedRun<'_>) -> Level1Power,
+        has_power: impl Fn(&Level1Power) -> bool,
+    ) {
+        let train_at = |dir: &Path| run_shape(&|| build_at(dir), 1, &StubComm, &power_of);
+        let (declared, declared_power) = train_at(case_dir);
+        assert!(
+            has_power(&declared_power),
+            "declared order: {LEVEL1_POWERLESS} ({declared_power:?}) — the gate is powerless on \
+             this fixture"
+        );
+        for &seed in seeds {
             let permuted = permute_case(case_dir, seed);
-            assert_ne!(
-                declared_stage_ids(permuted.path()),
-                declared_order,
-                "permutation seed {seed} left the stage declaration order unchanged — the \
-                 gate is powerless on this copy"
+            for &registry in registries {
+                assert_ne!(
+                    declared_ids(permuted.path(), registry),
+                    declared_ids(case_dir, registry),
+                    "permutation seed {seed} left the declaration order of {registry:?} \
+                     unchanged — the gate is powerless on this copy"
+                );
+            }
+            let (fingerprint, power) = train_at(permuted.path());
+            assert!(
+                has_power(&power),
+                "permutation seed {seed}: {LEVEL1_POWERLESS} ({power:?}) — the gate is \
+                 powerless on this fixture"
             );
-            runs.push(run_shape(
-                &|| build_at(permuted.path()),
-                1,
-                &StubComm,
-                &selection_power,
-            ));
+            fingerprint.assert_matches(
+                &declared,
+                &format!("permutation seed {seed} must be bit-identical to the declared order"),
+            );
         }
-        runs
     }
 
     #[test]
@@ -3329,9 +3637,9 @@ mod selection_on_determinism {
                     });
                 })
             },
-            selection_power,
-            |power| power.deactivations > 0,
-            "level1 deactivated no cut",
+            level1_power,
+            deactivates_and_reassigns,
+            LEVEL1_POWERLESS,
         );
     }
 
@@ -3361,9 +3669,9 @@ mod selection_on_determinism {
 
         assert_thread_shapes_agree(
             build,
-            selection_power,
-            |power| power.deactivations > 0,
-            "level1 deactivated no cut",
+            level1_power,
+            deactivates_and_reassigns,
+            LEVEL1_POWERLESS,
         );
     }
 
@@ -3386,9 +3694,9 @@ mod selection_on_determinism {
         };
         assert_two_rank_stub_matches_single_rank(
             build,
-            selection_power,
-            |power| power.deactivations > 0,
-            "level1 deactivated no cut",
+            level1_power,
+            deactivates_and_reassigns,
+            LEVEL1_POWERLESS,
         );
     }
 
@@ -3418,9 +3726,9 @@ mod selection_on_determinism {
 
         assert_two_rank_stub_matches_single_rank(
             build,
-            selection_power,
-            |power| power.deactivations > 0,
-            "level1 deactivated no cut",
+            level1_power,
+            deactivates_and_reassigns,
+            LEVEL1_POWERLESS,
         );
     }
 
@@ -3430,31 +3738,25 @@ mod selection_on_determinism {
         ignore = "slow: run with --features slow-tests"
     )]
     fn level1_declaration_order_is_invariant_on_the_uniform_fixture() {
-        let runs = declaration_order_runs(Path::new(UNIFORM_CASE), |case_dir| {
-            fresh_setup_with(case_dir, |config| {
-                config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
-                config.training.stopping_rules =
-                    Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
-                config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
-                    tie_tolerance: 1e-10,
-                    check_frequency: 1,
-                });
-            })
-        });
-
-        assert!(
-            runs.iter().all(|(_, power)| power.deactivations > 0),
-            "level1 deactivated no cut in some declaration order ({:?}) — the gate is \
-             powerless on this fixture",
-            runs.iter().map(|(_, power)| power).collect::<Vec<_>>()
+        assert_declaration_orders_agree(
+            Path::new(UNIFORM_CASE),
+            &PERMUTATION_SEEDS,
+            &[STAGES],
+            |case_dir| {
+                fresh_setup_with(case_dir, |config| {
+                    config.training.selection =
+                        Some(TrainingSelection::Sampled { forward_passes: 2 });
+                    config.training.stopping_rules =
+                        Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
+                    config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+                        tie_tolerance: 1e-10,
+                        check_frequency: 1,
+                    });
+                })
+            },
+            level1_power,
+            deactivates_and_reassigns,
         );
-        let (declared, _) = &runs[0];
-        for (seed, (fingerprint, _)) in PERMUTATION_SEEDS.iter().zip(&runs[1..]) {
-            assert_eq!(
-                fingerprint, declared,
-                "permutation seed {seed} fingerprint must be bit-identical to the declared order"
-            );
-        }
     }
 
     #[test]
@@ -3473,21 +3775,217 @@ mod selection_on_determinism {
         };
         assert_non_uniform_projection(&build_at(Path::new(NON_UNIFORM_CASE)));
 
-        let runs = declaration_order_runs(Path::new(NON_UNIFORM_CASE), build_at);
+        assert_declaration_orders_agree(
+            Path::new(NON_UNIFORM_CASE),
+            &PERMUTATION_SEEDS,
+            &[STAGES],
+            build_at,
+            level1_power,
+            deactivates_and_reassigns,
+        );
+    }
+
+    /// Thread shapes under a window of [`WINDOW`] iterations. Selection runs
+    /// every second iteration of 12, so the states of the first 8 have left and
+    /// their cuts compete without one; a cut deactivated after its states left
+    /// the window later comes to own a new state, which the leg requires as a
+    /// reactivation.
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn level1_window_thread_shapes_agree_on_the_uniform_fixture() {
+        assert_thread_shapes_agree(
+            || {
+                windowed(fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
+                    config.training.selection =
+                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.stopping_rules =
+                        Some(vec![StoppingRuleConfig::IterationLimit { limit: 12 }]);
+                    config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+                        tie_tolerance: 1e-10,
+                        check_frequency: 2,
+                    });
+                }))
+            },
+            level1_power,
+            |power| deactivates_reassigns_and_drops(power) && power.selection.reactivations > 0,
+            "level1 deactivated no cut, reactivated none, left every state with the cut \
+             generated at it, or its window dropped no state",
+        );
+    }
+
+    /// [`level1_window_thread_shapes_agree_on_the_uniform_fixture`] on pools
+    /// that project different cut-state dimensions.
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn level1_window_thread_shapes_agree_on_the_non_uniform_projection_fixture() {
+        let build = || {
+            windowed(fresh_setup_with_openings(
+                Path::new(NON_UNIFORM_CASE),
+                NON_UNIFORM_OPENINGS,
+                |config| {
+                    config.training.selection =
+                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.stopping_rules =
+                        Some(vec![StoppingRuleConfig::IterationLimit { limit: 12 }]);
+                    config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+                        tie_tolerance: 1e-10,
+                        check_frequency: 2,
+                    });
+                },
+            ))
+        };
+        assert_non_uniform_projection(&build());
+
+        assert_thread_shapes_agree(
+            build,
+            level1_power,
+            deactivates_reassigns_and_drops,
+            WINDOW_POWERLESS,
+        );
+    }
+
+    /// Declaration order on a deck with two state-carrying hydros: every copy
+    /// declares its hydros in the other order, and a stored state has two
+    /// coordinates with different bits, so a swapped state layout would show in
+    /// the stored states and the coefficients.
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn level1_declaration_order_is_invariant_on_a_two_hydro_fixture() {
+        assert_declaration_orders_agree(
+            Path::new(TWO_HYDRO_CASE),
+            &TWO_HYDRO_PERMUTATION_SEEDS,
+            &[STAGES, HYDROS],
+            |case_dir| {
+                fresh_setup_with(case_dir, |config| {
+                    config.training.selection =
+                        Some(TrainingSelection::Sampled { forward_passes: 3 });
+                    config.training.stopping_rules =
+                        Some(vec![StoppingRuleConfig::IterationLimit { limit: 8 }]);
+                    config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+                        tie_tolerance: 1e-10,
+                        check_frequency: 1,
+                    });
+                })
+            },
+            two_hydro_power,
+            deactivates_and_reassigns,
+        );
+    }
+
+    /// Thread shapes on a sampled level of two sibling nodes, each storing the
+    /// states of the trials routed to it.
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn level1_thread_shapes_agree_on_a_branching_fan() {
+        assert_thread_shapes_agree(
+            || {
+                branching_tree_setup_sampled_with_selection(
+                    FAN_FORWARD_PASSES,
+                    FAN_ITERATIONS,
+                    FAN_SELECTION,
+                )
+            },
+            fan_power_with_both_nodes_visited,
+            deactivates_and_reassigns,
+            LEVEL1_POWERLESS,
+        );
+    }
+
+    /// The sampled fan against the same study with its nodes and transitions
+    /// declared in reverse.
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn level1_declaration_order_is_invariant_on_a_branching_fan() {
+        let train = |build: fn(u32, u32, SelectionMethod) -> StudySetup| {
+            run_shape(
+                &|| build(FAN_FORWARD_PASSES, FAN_ITERATIONS, FAN_SELECTION),
+                1,
+                &StubComm,
+                &fan_power_with_both_nodes_visited,
+            )
+        };
+        let (declared, declared_power) = train(branching_tree_setup_sampled_with_selection);
+        let (reversed, reversed_power) =
+            train(branching_tree_setup_sampled_with_selection_reversed);
 
         assert!(
-            runs.iter().all(|(_, power)| power.deactivations > 0),
-            "level1 deactivated no cut in some declaration order ({:?}) — the gate is \
-             powerless on this fixture",
-            runs.iter().map(|(_, power)| power).collect::<Vec<_>>()
+            deactivates_and_reassigns(&declared_power)
+                && deactivates_and_reassigns(&reversed_power),
+            "{LEVEL1_POWERLESS} (declared: {declared_power:?}, reversed: {reversed_power:?}) — \
+             the gate is powerless on this fixture"
         );
-        let (declared, _) = &runs[0];
-        for (seed, (fingerprint, _)) in PERMUTATION_SEEDS.iter().zip(&runs[1..]) {
-            assert_eq!(
-                fingerprint, declared,
-                "permutation seed {seed} fingerprint must be bit-identical to the declared order"
-            );
-        }
+        reversed.assert_matches(
+            &declared,
+            "the reversed declaration must be bit-identical to the declared order",
+        );
+    }
+
+    /// World-size invariance on the real communicator: every rank trains the
+    /// sampled fan on the world and compares its whole fingerprint with a
+    /// single-rank run of the same study built in its own process. The leg has
+    /// power only when the test binary is launched under an MPI launcher with
+    /// two or more ranks, where the ranks route trials to different fan nodes
+    /// and each stores the states of its peers' cuts; under `cargo test` the
+    /// world has one rank and the comparison is an identity.
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn level1_world_size_is_invariant_on_a_branching_fan() {
+        let world =
+            create_communicator(BackendKind::Auto).expect("communicator construction must succeed");
+        let build = || {
+            branching_tree_setup_sampled_with_selection(
+                FAN_FORWARD_PASSES,
+                FAN_ITERATIONS,
+                FAN_SELECTION,
+            )
+        };
+        assert!(
+            world.size() <= FAN_FORWARD_PASSES as usize,
+            "a world of {} ranks leaves a rank without a trial",
+            world.size()
+        );
+
+        let (on_world, world_power) =
+            run_in(None, &build, 1, &world, &fan_power_with_both_nodes_visited);
+        let (reference, reference_power) = run_in(
+            None,
+            &build,
+            1,
+            &LocalBackend,
+            &fan_power_with_both_nodes_visited,
+        );
+
+        assert!(
+            deactivates_and_reassigns(&world_power) && deactivates_and_reassigns(&reference_power),
+            "{LEVEL1_POWERLESS} (world: {world_power:?}, single rank: {reference_power:?}) — \
+             the gate is powerless on this fixture"
+        );
+        on_world.assert_matches(
+            &reference,
+            &format!(
+                "rank {} of {} must be bit-identical to the single-rank reference",
+                world.rank(),
+                world.size()
+            ),
+        );
     }
 
     #[test]
@@ -3554,7 +4052,7 @@ mod selection_on_determinism {
                     config.training.cut_selection.max_active_per_stage = Some(6);
                 })
             },
-            selection_power,
+            budgeted_level1_power,
             |power| power.budget_evictions > 0,
             "the budget evicted no cut",
         );
@@ -3580,7 +4078,7 @@ mod selection_on_determinism {
                     config.training.cut_selection.max_active_per_stage = Some(2);
                 })
             },
-            selection_power,
+            budgeted_level1_power,
             |power| power.budget_evictions > 0,
             "the budget evicted no cut",
         );
