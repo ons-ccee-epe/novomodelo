@@ -1399,9 +1399,15 @@ active, and both bounds close).
 
 A `level1` strategy with `lookback_iterations: Some(w)` keeps the trial states of
 the last `w` iterations of the run; with `None` every state of the run is kept
-and nothing below applies. `parse_cut_selection_config` writes `None` and no
-configuration key sets the window: `StudySetup::set_level1_lookback`, under
-`test-support`, is the only way.
+and nothing below applies. The key
+`training.cut_selection.selection.lookback_iterations` sets the window: its
+config type (`SelectionMethod::Level1` in `novomodelo-io`) is `Option<NonZeroU32>`, so
+a zero fails at load with a message naming the key, and
+`parse_cut_selection_config` maps it onto the strategy. The parse rejects a value
+below `check_frequency`, because the states of the iterations between two
+selection runs would then be dropped before a run scores them; a value equal to
+`check_frequency` is admitted. The window counts iterations of the current run
+under every `policy.mode` and with `policy.boundary`.
 
 **The boundary.** The window is a slot boundary on this run's clock.
 `CutPool::window_start_slot`, beside `slot_index`, returns the first slot whose
@@ -1425,9 +1431,10 @@ remains. The derivation of the section above then deactivates it when it owns
 none and keeps it active when it owns one. With a window the scored set of a pool
 is the states inside it, and the envelope invariant holds at those.
 `rebuild_ownership` needs no change: it resets the record and scans the stored
-states, which are those inside the window. A window below `check_frequency` is
-not refused: the states of the iterations between two runs are dropped before a
-run scores them, and the record still equals a rebuild.
+states, which are those inside the window. On a pool given a window below
+`check_frequency` directly, which no configuration reaches, the states of the
+iterations between two runs are dropped before a run scores them, and the record
+still equals a rebuild.
 
 **Where it runs.** `run_cut_management` calls `expire_trial_states` for each
 interior pool before `update_ownership`; swapping the two scores states that are
@@ -1451,11 +1458,12 @@ loaded state held beside a full reserve extends the store too. A clone of the
 pool, such as the one the Python `Policy` object holds, carries the reserved
 rows, so the window bounds it as well.
 
-**Same on every rank.** The window is a field of the strategy, which the CLI
-broadcasts and every rank builds its setup from, so each rank enables the same
-store with the same window; a test that sets it calls the setter on every rank.
-The boundary is a function of the window, the iteration and the slot layout; no
-collective reads the window and no value derived from it crosses ranks.
+**Same on every rank.** The window is a field of the strategy, which rank 0
+parses from the config and broadcasts in `BroadcastConfig::cut_selection`, and
+every rank builds its setup from that strategy, so each rank enables the same
+store with the same window. The boundary is a function of the window, the
+iteration and the slot layout; no collective reads the window and no value
+derived from it crosses ranks.
 
 The wrong-but-compiling alternatives:
 
@@ -1512,8 +1520,10 @@ The wrong-but-compiling alternatives:
 Read: `cut/pool.rs` (`CutPool::window_start_slot`, `expire_trial_states`,
 `enable_trial_states_within`, `slot_index`), `cut/ownership.rs`
 (`Ownership::expire`), `cut/trial_states.rs` (`TrialStates::claim`, `release`,
-`grow`), `cut/cut_selection.rs` (`CutSelectionStrategy::Level1`),
-`setup/accessors.rs` (`StudySetup::set_level1_lookback`),
+`grow`), `cut/cut_selection.rs` (`CutSelectionStrategy::Level1`,
+`parse_cut_selection_config`), `crates/novomodelo-io/src/config/training.rs`
+(`SelectionMethod::Level1`, `positive_count`),
+`crates/novomodelo-cli/src/commands/broadcast.rs` (`BroadcastConfig`),
 `training/session/mod.rs` (`run_cut_management`, `TrainingSession::new`). Pinned
 by, in `cut/trial_states.rs`: `a_bounded_store_frees_the_row_of_a_dropped_state`
 and `a_bounded_store_extends_when_more_states_are_held_than_reserved`; in
@@ -1537,7 +1547,21 @@ and updating on a clone); in `tests/cut_basis.rs`:
 `level1_window_thread_shapes_agree_on_the_non_uniform_projection_fixture` (with
 a window, the states kept, the record and the activity flags do not depend on
 the thread count, in runs where states left and their cuts stayed scored; the
-first also requires a reactivation).
+first also requires a reactivation). The two load rejects are pinned by
+`parse_level1_lookback_below_check_frequency_is_rejected` and
+`parse_level1_lookback_equal_to_check_frequency_is_admitted`
+(`cut/cut_selection.rs`), `a_zero_lookback_window_names_its_key`
+(`crates/novomodelo-io/src/config/training.rs`),
+`parse_config_rejects_a_zero_lookback_window` and
+`with_overrides_rejects_a_zero_lookback_window`
+(`crates/novomodelo-io/src/config/mod.rs`), and
+`validate_rejects_a_zero_lookback_window` and
+`validate_rejects_a_lookback_window_below_the_check_frequency`
+(`crates/novomodelo-cli/tests/cli_validate.rs`, each after a window equal to
+`check_frequency` validates); the broadcast of the window by
+`broadcast_config_carries_the_level1_window`
+(`crates/novomodelo-cli/src/commands/broadcast.rs`: a `Level1` strategy with a window
+survives the postcard round trip).
 
 ## Binding activity is recorded only for a configured reader
 
@@ -1555,8 +1579,7 @@ variant by name, so a new variant must be classified to compile.
 the config every rank holds identically: the CLI broadcasts one `BroadcastConfig`
 from rank 0, every rank builds its `StudySetup` from it
 (`StudySetup::from_broadcast_params`), no `StudySetup` setter changes the
-strategy variant or the budget (`set_level1_lookback` sets the window of a
-`Level1` strategy, which the predicate does not read), and the training entry
+strategy variant or the budget, and the training entry
 points of `StudySetup` copy both into the `TrainingConfig` the session reads.
 The switch is therefore the same on every rank for the whole run. A `BackwardPassState` built without the session
 keeps the default, which records.

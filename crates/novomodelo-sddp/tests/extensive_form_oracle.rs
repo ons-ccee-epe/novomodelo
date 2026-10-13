@@ -210,7 +210,10 @@ fn chain_matches_extensive_form() {
 const LEVEL1_MAX_ITERATIONS: u32 = 30;
 
 fn level1_every_iteration() -> SelectionMethod {
-    SelectionMethod::Level1 { check_frequency: 1 }
+    SelectionMethod::Level1 {
+        check_frequency: 1,
+        lookback_iterations: None,
+    }
 }
 
 /// Populated cuts of pool `pool_id` that differ in some coefficient bit.

@@ -1,7 +1,7 @@
 //! Training-phase configuration types for `config.json → training`.
 
 use std::fmt;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -287,19 +287,32 @@ impl<'de> Deserialize<'de> for SelectionEntries {
 pub enum SelectionMethod {
     /// Level 1: every row the run adds to the row pool of a stage strictly
     /// between the first and the last records the trial state it was computed
-    /// at. At each stored state, the row with the highest value there owns the
-    /// state, among the rows the run added to that pool and the active rows
-    /// loaded into it; of rows whose values there are exactly equal, the one at
-    /// the lowest pool position owns it. Every `check_frequency` iterations, a
-    /// row the run added to such a pool is deactivated when it owns no stored
-    /// state and reactivated when it is inactive and owns one. Values are
-    /// compared exactly, with no tolerance, and a row of the current iteration
-    /// is judged like any other. A row loaded from a policy keeps the activity
-    /// it was loaded with.
+    /// at, and keeps it for the whole run or, with `lookback_iterations`, for
+    /// the iterations that key sets. At each stored state, the row with the
+    /// highest value there owns the state, among the rows the run added to
+    /// that pool and the active rows loaded into it; of rows whose values there
+    /// are exactly equal, the one at the lowest pool position owns it. Every
+    /// `check_frequency` iterations, a row the run added to such a pool is
+    /// deactivated when it owns no stored state and reactivated when it is
+    /// inactive and owns one. Values are compared exactly, with no tolerance,
+    /// and a row of the current iteration is judged like any other. A row
+    /// loaded from a policy keeps the activity it was loaded with.
     Level1 {
         /// Iterations between periodic pruning checks. Must be `> 0`. Default `5`.
         #[serde(default = "default_check_frequency")]
         check_frequency: u32,
+        /// Iterations of the current run whose rows keep their trial states.
+        /// Absent (default): the trial state of every row the run added is
+        /// kept, and the memory of a run grows with its row count. A value `w`
+        /// keeps the trial states of the rows added in the last `w` iterations
+        /// of the current run and drops the older states, never a row: a row
+        /// whose state was dropped stays in the pool and still competes at the
+        /// states that remain. The memory holding the trial states of a pool is
+        /// then bounded by `(lookback_iterations + check_frequency)` times the
+        /// most rows the run can add to that pool in one iteration, times the
+        /// state dimension, times 8 bytes. Must be at least `check_frequency`.
+        #[serde(default, deserialize_with = "deserialize_lookback_iterations")]
+        lookback_iterations: Option<NonZeroU32>,
     },
     /// Dynamic: a per-solve lazy loop that loads only a small resident subset of
     /// rows per solve while retaining the full pool.
@@ -346,6 +359,32 @@ fn default_max_added_per_round() -> u32 {
 
 fn default_violation_tolerance() -> f64 {
     1e-10
+}
+
+/// `value` as a count of at least 1, or the load error naming `key`, the full
+/// dotted path of the config key.
+fn positive_count<E: de::Error>(key: &str, value: u32) -> Result<NonZeroU32, E> {
+    NonZeroU32::new(value)
+        .ok_or_else(|| E::custom(format_args!("{key} must be >= 1 (got {value})")))
+}
+
+/// Deserializes an optional count of at least 1 through [`positive_count`].
+fn optional_positive_count<'de, D: Deserializer<'de>>(
+    deserializer: D,
+    key: &str,
+) -> Result<Option<NonZeroU32>, D::Error> {
+    Option::<u32>::deserialize(deserializer)?
+        .map(|value| positive_count(key, value))
+        .transpose()
+}
+
+fn deserialize_lookback_iterations<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<NonZeroU32>, D::Error> {
+    optional_positive_count(
+        deserializer,
+        "training.cut_selection.selection.lookback_iterations",
+    )
 }
 
 /// LP solver settings (`config.json → training.solver`): retry policy plus
@@ -642,7 +681,7 @@ pub struct LipschitzConfig {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        BackwardScheduler, DualEdgeWeight, NonZeroUsize, PresolveMode, PriceStrategy,
+        BackwardScheduler, DualEdgeWeight, NonZeroU32, NonZeroUsize, PresolveMode, PriceStrategy,
         ScaleStrategy, SelectionMethod, StoppingRuleConfig, TrainingConfig, TrainingSelection,
     };
     use crate::config::tests::removed_selection_method_names;
@@ -705,9 +744,44 @@ mod tests {
             .as_ref()
             .expect("selection present")
         {
-            SelectionMethod::Level1 { check_frequency } => assert_eq!(*check_frequency, 5),
+            SelectionMethod::Level1 {
+                check_frequency,
+                lookback_iterations,
+            } => {
+                assert_eq!(*check_frequency, 5);
+                assert_eq!(*lookback_iterations, None);
+            }
             other @ SelectionMethod::Dynamic { .. } => panic!("expected Level1, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_level1_lookback_window_round_trips() {
+        let json = training_json_with_selection(
+            r#"{ "method": "level1", "check_frequency": 2, "lookback_iterations": 7 }"#,
+        );
+        let cfg: TrainingConfig = serde_json::from_str(&json).unwrap();
+        match cfg.cut_selection.selection.expect("selection present") {
+            SelectionMethod::Level1 {
+                check_frequency,
+                lookback_iterations,
+            } => {
+                assert_eq!(check_frequency, 2);
+                assert_eq!(lookback_iterations, NonZeroU32::new(7));
+            }
+            other @ SelectionMethod::Dynamic { .. } => panic!("expected Level1, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_zero_lookback_window_names_its_key() {
+        let err = selection_error(r#"{ "method": "level1", "lookback_iterations": 0 }"#);
+        assert!(
+            err.contains(
+                "training.cut_selection.selection.lookback_iterations must be >= 1 (got 0)"
+            ),
+            "unexpected message: {err}"
+        );
     }
 
     #[test]

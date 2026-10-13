@@ -772,6 +772,38 @@ mod tests {
     }
 
     #[test]
+    fn broadcast_config_carries_the_level1_window() {
+        use super::BroadcastConfig;
+        use novomodelo_sddp::CutSelectionStrategy;
+
+        let json = r#"{
+            "training": {
+                "stopping_rules": [{ "type": "iteration_limit", "limit": 10 }],
+                "cut_selection": {
+                    "selection": { "method": "level1", "check_frequency": 2, "lookback_iterations": 7 }
+                }
+            }
+        }"#;
+        let config: novomodelo_io::Config = serde_json::from_str(json).unwrap();
+        let original = BroadcastConfig::from_config(&config).unwrap();
+
+        let bytes = postcard::to_allocvec(&original).expect("postcard serialization must succeed");
+        let decoded: BroadcastConfig =
+            postcard::from_bytes(&bytes).expect("postcard deserialization must succeed");
+        assert!(
+            matches!(
+                decoded.cut_selection,
+                Some(CutSelectionStrategy::Level1 {
+                    check_frequency: 2,
+                    lookback_iterations: Some(window),
+                }) if window.get() == 7
+            ),
+            "expected level1 with check_frequency 2 and a window of 7, got {:?}",
+            decoded.cut_selection
+        );
+    }
+
+    #[test]
     fn broadcast_config_carries_the_checkpoint_schedule() {
         use super::BroadcastConfig;
 

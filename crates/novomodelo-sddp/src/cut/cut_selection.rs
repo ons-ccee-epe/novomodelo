@@ -149,7 +149,8 @@ pub enum CutSelectionStrategy {
         check_frequency: u64,
 
         /// `Some(w)` keeps the trial states of the last `w` iterations of the
-        /// run, `None` every one.
+        /// run, `None` every one; set from
+        /// `training.cut_selection.selection.lookback_iterations`.
         lookback_iterations: Option<NonZeroU64>,
     },
 
@@ -260,7 +261,8 @@ fn validate_tolerance(key: &str, value: f64, strict: bool) -> Result<f64, String
 ///
 /// Returns `Err(String)` when `row_activity_tolerance` (checked even with no
 /// method) is not finite and `>= 0`, or when a method's numeric constraint is
-/// violated: for `level1`, `check_frequency = 0`; for `dynamic`, `start_iteration = 0`,
+/// violated: for `level1`, `check_frequency = 0` or a `lookback_iterations`
+/// below `check_frequency`; for `dynamic`, `start_iteration = 0`,
 /// `candidate_recency = Some(0)`, `max_added_per_round = 0`, or a
 /// `violation_tolerance` that is not finite and `> 0`.
 ///
@@ -279,10 +281,26 @@ pub fn parse_cut_selection_config(
     };
 
     match *selection {
-        SelectionMethod::Level1 { check_frequency } => Ok(Some(CutSelectionStrategy::Level1 {
-            check_frequency: u64::from(validate_check_frequency(check_frequency)?),
-            lookback_iterations: None,
-        })),
+        SelectionMethod::Level1 {
+            check_frequency,
+            lookback_iterations,
+        } => {
+            let check_frequency = validate_check_frequency(check_frequency)?;
+            // A shorter window drops the states of the iterations between two
+            // selection runs before any run scores them.
+            if let Some(window) = lookback_iterations
+                && window.get() < check_frequency
+            {
+                return Err(format!(
+                    "cut_selection.lookback_iterations ({window}) must be >= \
+                     cut_selection.check_frequency ({check_frequency})"
+                ));
+            }
+            Ok(Some(CutSelectionStrategy::Level1 {
+                check_frequency: u64::from(check_frequency),
+                lookback_iterations: lookback_iterations.map(NonZeroU64::from),
+            }))
+        }
         SelectionMethod::Dynamic {
             start_iteration,
             seed_window,
@@ -329,7 +347,7 @@ pub fn parse_cut_selection_config(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
-    use std::num::NonZeroU64;
+    use std::num::{NonZeroU32, NonZeroU64};
     use std::ops::RangeInclusive;
 
     use super::parse_cut_selection_config;
@@ -408,7 +426,10 @@ mod tests {
     #[test]
     fn test_parse_level1() {
         let cfg = RowSelectionConfig {
-            selection: Some(SelectionMethod::Level1 { check_frequency: 5 }),
+            selection: Some(SelectionMethod::Level1 {
+                check_frequency: 5,
+                lookback_iterations: None,
+            }),
             ..RowSelectionConfig::default()
         };
         let strategy = parse_cut_selection_config(&cfg)
@@ -429,7 +450,10 @@ mod tests {
     #[test]
     fn test_parse_zero_check_frequency() {
         let cfg = RowSelectionConfig {
-            selection: Some(SelectionMethod::Level1 { check_frequency: 0 }),
+            selection: Some(SelectionMethod::Level1 {
+                check_frequency: 0,
+                lookback_iterations: None,
+            }),
             ..RowSelectionConfig::default()
         };
         let result = parse_cut_selection_config(&cfg);
@@ -438,6 +462,57 @@ mod tests {
         assert!(
             msg.contains("check_frequency"),
             "error message must mention check_frequency, got: {msg}"
+        );
+    }
+
+    fn level1_with_lookback(check_frequency: u32, lookback: Option<u32>) -> RowSelectionConfig {
+        RowSelectionConfig {
+            selection: Some(SelectionMethod::Level1 {
+                check_frequency,
+                lookback_iterations: lookback.and_then(NonZeroU32::new),
+            }),
+            ..RowSelectionConfig::default()
+        }
+    }
+
+    fn parsed_lookback(cfg: &RowSelectionConfig) -> Option<NonZeroU64> {
+        match parse_cut_selection_config(cfg) {
+            Ok(Some(CutSelectionStrategy::Level1 {
+                lookback_iterations,
+                ..
+            })) => lookback_iterations,
+            other => panic!("expected a level1 strategy, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_level1_lookback_absent_gives_none() {
+        assert_eq!(parsed_lookback(&level1_with_lookback(2, None)), None);
+    }
+
+    #[test]
+    fn parse_level1_lookback_value_gives_some() {
+        assert_eq!(
+            parsed_lookback(&level1_with_lookback(2, Some(7))),
+            NonZeroU64::new(7)
+        );
+    }
+
+    #[test]
+    fn parse_level1_lookback_equal_to_check_frequency_is_admitted() {
+        assert_eq!(
+            parsed_lookback(&level1_with_lookback(3, Some(3))),
+            NonZeroU64::new(3)
+        );
+    }
+
+    #[test]
+    fn parse_level1_lookback_below_check_frequency_is_rejected() {
+        let msg = parse_cut_selection_config(&level1_with_lookback(3, Some(2)))
+            .expect_err("a window below check_frequency must be rejected");
+        assert_eq!(
+            msg,
+            "cut_selection.lookback_iterations (2) must be >= cut_selection.check_frequency (3)"
         );
     }
 

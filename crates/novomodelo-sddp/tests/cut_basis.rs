@@ -907,8 +907,10 @@ mod basis_reconstruct_churn {
         config.training.stopping_rules =
             Some(vec![StoppingRuleConfig::IterationLimit { limit: 8 }]);
 
-        config.training.cut_selection.selection =
-            Some(SelectionMethod::Level1 { check_frequency: 2 });
+        config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+            check_frequency: 2,
+            lookback_iterations: None,
+        });
 
         // check_frequency 1 and a cap of 4 both evict nothing on d03; 3 is the
         // forward passes of one iteration, the floor.
@@ -1387,7 +1389,7 @@ mod basis_reconstruct_churn {
 }
 
 mod selection_in_a_training_run {
-    use std::num::NonZeroU64;
+    use std::num::NonZeroU32;
     use std::path::Path;
     use std::sync::mpsc;
 
@@ -1431,15 +1433,6 @@ mod selection_in_a_training_run {
         events: Option<mpsc::Sender<TrainingEvent>>,
         configure: impl FnOnce(&mut Config),
     ) -> (StudySetup, TrainingResult) {
-        train_adjusted(iterations, events, configure, |_| {})
-    }
-
-    fn train_adjusted(
-        iterations: u32,
-        events: Option<mpsc::Sender<TrainingEvent>>,
-        configure: impl FnOnce(&mut Config),
-        adjust: impl FnOnce(&mut StudySetup),
-    ) -> (StudySetup, TrainingResult) {
         let case_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("crates/<crate> must have a parent")
@@ -1477,7 +1470,6 @@ mod selection_in_a_training_run {
             Vec::new(),
         )
         .expect("StudySetup must build");
-        adjust(&mut setup);
 
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
         let outcome = setup
@@ -1649,13 +1641,13 @@ mod selection_in_a_training_run {
 
     const WINDOW_RUN_ITERATIONS: u32 = 12;
 
-    fn train_level1_with_lookback(lookback: Option<u64>) -> (StudySetup, TrainingResult) {
-        train_adjusted(
-            WINDOW_RUN_ITERATIONS,
-            None,
-            |config| config.training.cut_selection.selection = Some(level1()),
-            |setup| setup.set_level1_lookback(lookback.and_then(NonZeroU64::new)),
-        )
+    fn train_level1_with_lookback(lookback: Option<u32>) -> (StudySetup, TrainingResult) {
+        train_configured(WINDOW_RUN_ITERATIONS, None, |config| {
+            config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+                check_frequency: CHECK_FREQUENCY,
+                lookback_iterations: lookback.and_then(NonZeroU32::new),
+            });
+        })
     }
 
     /// derived: the last selection run is at iteration 12, so with a lookback of
@@ -1664,10 +1656,10 @@ mod selection_in_a_training_run {
     /// states and no budget is set, so the envelope invariant holds at them.
     #[test]
     fn a_level1_window_keeps_only_the_states_of_the_last_iterations() {
-        const LOOKBACK: u64 = 4;
+        const LOOKBACK: u32 = 4;
         let (setup, _) = train_level1_with_lookback(Some(LOOKBACK));
         let pools = &setup.fcf.pools;
-        let oldest_kept = u64::from(WINDOW_RUN_ITERATIONS) - LOOKBACK + 1;
+        let oldest_kept = u64::from(WINDOW_RUN_ITERATIONS - LOOKBACK + 1);
 
         let mut a_cut_competes_without_its_state = false;
         for (pool_id, pool) in pools.iter().enumerate().take(pools.len() - 1).skip(1) {
@@ -1678,7 +1670,7 @@ mod selection_in_a_training_run {
             );
             assert_eq!(
                 pool.stored_trial_states(),
-                (LOOKBACK as u32 * FORWARD_PASSES) as usize,
+                (LOOKBACK * FORWARD_PASSES) as usize,
                 "pool {pool_id}"
             );
             for slot in 0..pool.populated() {
@@ -1748,7 +1740,7 @@ mod selection_in_a_training_run {
             "the run deactivated no cut, so a dropped state had nothing to change"
         );
 
-        let (windowed, result) = train_level1_with_lookback(Some(u64::from(WINDOW_RUN_ITERATIONS)));
+        let (windowed, result) = train_level1_with_lookback(Some(WINDOW_RUN_ITERATIONS));
 
         for pool in &windowed.fcf.pools[1..windowed.fcf.pools.len() - 1] {
             assert_eq!(
@@ -1851,6 +1843,7 @@ mod selection_in_a_training_run {
     fn level1() -> SelectionMethod {
         SelectionMethod::Level1 {
             check_frequency: CHECK_FREQUENCY,
+            lookback_iterations: None,
         }
     }
 
@@ -2012,6 +2005,7 @@ mod trial_state_store {
     fn level1_without_a_selection_run() -> SelectionMethod {
         SelectionMethod::Level1 {
             check_frequency: ITERATIONS + 1,
+            lookback_iterations: None,
         }
     }
 

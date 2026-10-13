@@ -402,6 +402,47 @@ fn validate_rejects_the_removed_tie_tolerance_key() {
         ));
 }
 
+/// Writes a `level1` selection with `lookback_iterations` set to `lookback`
+/// and returns the result of `novomodelo validate` on the case.
+fn validate_level1_lookback(dir: &TempDir, lookback: u32) -> assert_cmd::assert::Assert {
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+    config["training"]["cut_selection"] = serde_json::json!({
+        "selection": { "method": "level1", "check_frequency": 2, "lookback_iterations": lookback }
+    });
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+}
+
+/// A zero window fails at load naming the key; a window equal to
+/// `check_frequency` validates.
+#[test]
+fn validate_rejects_a_zero_lookback_window() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+    validate_level1_lookback(&dir, 2).success();
+    validate_level1_lookback(&dir, 0)
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("lookback_iterations"))
+        .stdout(predicate::str::contains(">= 1"));
+}
+
+/// A window shorter than `check_frequency` fails at load naming both keys; a
+/// window equal to it validates.
+#[test]
+fn validate_rejects_a_lookback_window_below_the_check_frequency() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+    validate_level1_lookback(&dir, 2).success();
+    validate_level1_lookback(&dir, 1)
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("lookback_iterations"))
+        .stdout(predicate::str::contains("check_frequency"));
+}
+
 /// The pairing is rejected by the admission gate every front end shares; the
 /// same selection without the budget validates.
 #[test]

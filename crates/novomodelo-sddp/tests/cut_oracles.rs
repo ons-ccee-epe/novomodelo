@@ -89,7 +89,13 @@ fn cut_oracles_hold_on_the_stochastic_parallel_study() {
 #[test]
 fn cut_oracles_hold_on_deactivated_cuts_under_level1() {
     let setup = deck_setup(ONE_D_TOY, |config| {
-        apply_oracle_config_with_selection(config, SelectionMethod::Level1 { check_frequency: 1 });
+        apply_oracle_config_with_selection(
+            config,
+            SelectionMethod::Level1 {
+                check_frequency: 1,
+                lookback_iterations: None,
+            },
+        );
         config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
             limit: LEVEL1_ITERATIONS,
         }]);

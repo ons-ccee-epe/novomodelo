@@ -605,6 +605,7 @@ impl Config {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::num::NonZeroU32;
     use tempfile::NamedTempFile;
 
     fn write_config(content: &str) -> NamedTempFile {
@@ -840,7 +841,13 @@ mod tests {
         assert_eq!(rules.len(), 2);
         let cut_sel = &cfg.training.cut_selection;
         match cut_sel.selection.as_ref().expect("selection present") {
-            SelectionMethod::Level1 { check_frequency } => assert_eq!(*check_frequency, 3),
+            SelectionMethod::Level1 {
+                check_frequency,
+                lookback_iterations,
+            } => {
+                assert_eq!(*check_frequency, 3);
+                assert_eq!(*lookback_iterations, None);
+            }
             other @ SelectionMethod::Dynamic { .. } => panic!("expected Level1, got {other:?}"),
         }
 
@@ -1646,14 +1653,23 @@ mod tests {
         let original = RowSelectionConfig {
             row_activity_tolerance: Some(1e-6),
             max_active_per_stage: Some(100),
-            selection: Some(SelectionMethod::Level1 { check_frequency: 7 }),
+            selection: Some(SelectionMethod::Level1 {
+                check_frequency: 7,
+                lookback_iterations: NonZeroU32::new(9),
+            }),
         };
         let json = serde_json::to_string(&original).unwrap();
         let roundtripped: RowSelectionConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(roundtripped.max_active_per_stage, Some(100));
         assert_eq!(roundtripped.row_activity_tolerance, Some(1e-6));
         match roundtripped.selection.expect("selection present") {
-            SelectionMethod::Level1 { check_frequency } => assert_eq!(check_frequency, 7),
+            SelectionMethod::Level1 {
+                check_frequency,
+                lookback_iterations,
+            } => {
+                assert_eq!(check_frequency, 7);
+                assert_eq!(lookback_iterations, NonZeroU32::new(9));
+            }
             other @ SelectionMethod::Dynamic { .. } => panic!("expected Level1, got {other:?}"),
         }
     }
@@ -2247,6 +2263,39 @@ mod tests {
                 "unexpected message for {selection}: {message}"
             );
         }
+    }
+
+    const ZERO_LOOKBACK_MESSAGE: &str =
+        "training.cut_selection.selection.lookback_iterations must be >= 1 (got 0)";
+
+    #[test]
+    fn with_overrides_rejects_a_zero_lookback_window() {
+        let overrides = override_map(&[(
+            "training.cut_selection.selection",
+            serde_json::json!({ "method": "level1", "lookback_iterations": 0 }),
+        )]);
+        let err =
+            Config::with_overrides(&base_value(OVERRIDE_BASE_CONFIG), &overrides).unwrap_err();
+        assert!(
+            matches!(&err, LoadError::SchemaError { path, message, .. }
+                if path == std::path::Path::new("<config_overrides>")
+                    && message.contains(ZERO_LOOKBACK_MESSAGE)),
+            "expected the zero-count SchemaError on the override path, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_config_rejects_a_zero_lookback_window() {
+        let mut config = base_value(OVERRIDE_BASE_CONFIG);
+        config["training"]["cut_selection"] = serde_json::json!({
+            "selection": { "method": "level1", "lookback_iterations": 0 }
+        });
+        let f = write_config(&config.to_string());
+        let message = parse_config(f.path()).unwrap_err().to_string();
+        assert!(
+            message.contains(ZERO_LOOKBACK_MESSAGE),
+            "unexpected message: {message}"
+        );
     }
 
     // ── policy.checkpointing schedule ─────────────────────────────────────────
