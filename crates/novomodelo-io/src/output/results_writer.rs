@@ -308,6 +308,7 @@ mod tests {
             time_overhead_ms: 0,
             solve_time_ms: 0.0,
             mean_rows_in_lp: 0.0,
+            lazy_round_cap_hits: 0,
         }
     }
 
@@ -582,8 +583,8 @@ mod tests {
         assert_eq!(total_rows, 0, "empty training must produce 0 rows");
         assert_eq!(
             schema.fields().len(),
-            15,
-            "convergence schema must have 15 columns"
+            16,
+            "convergence schema must have 16 columns"
         );
     }
 

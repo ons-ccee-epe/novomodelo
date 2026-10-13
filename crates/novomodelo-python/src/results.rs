@@ -210,6 +210,7 @@ pub fn load_results(py: Python<'_>, output_dir: PathBuf) -> PyResult<Py<PyAny>> 
 /// | `forward_passes`   | `int`           | Number of forward-pass scenarios.                   |
 /// | `lp_solves`        | `int`           | Total LP solves in this iteration.                  |
 /// | `mean_rows_in_lp`  | `float`         | Mean resident rows per lazy-selection LP solve (0 if none ran). |
+/// | `lazy_round_cap_hits` | `int`        | Lazy-selection LP solves this iteration that reached the round cap with a candidate row still violated (0 if none ran). |
 ///
 /// The reader iterates the file's own schema, so the keys are exactly the
 /// columns the convergence Parquet schema declares; the rows above name the

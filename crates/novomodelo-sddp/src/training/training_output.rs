@@ -247,6 +247,7 @@ fn partial_to_iteration_record(iter: u64, partial: &PartialRecord) -> IterationR
         time_overhead_ms: overhead_ms,
         solve_time_ms: partial.solve_time_ms,
         mean_rows_in_lp,
+        lazy_round_cap_hits: partial.lazy_round_cap_hits,
     }
 }
 
@@ -368,22 +369,25 @@ pub fn build_training_output(
     #[allow(clippy::cast_possible_truncation)]
     let iterations_completed = result.iterations as u32;
 
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(clippy::cast_possible_truncation)]
     let cut_selection_records: Vec<RowSelectionRecord> = events
         .iter()
         .filter_map(|event| {
             if let TrainingEvent::PolicyPoolSummary { iteration, pools } = event {
                 Some(pools.iter().map(move |pool| RowSelectionRecord {
                     iteration: *iteration as u32,
-                    stage: pool.stage_id as u32,
-                    cuts_populated: pool.rows_in_pool,
+                    pool_id: pool.pool_id,
+                    stage_id: pool.stage_id,
+                    node_id: pool.node_id,
+                    cuts_in_pool: pool.rows_in_pool,
                     cuts_active_before: pool.rows_active_before,
-                    cuts_deactivated: pool.rows_deactivated.unwrap_or(0),
-                    cuts_reactivated: pool.rows_reactivated.unwrap_or(0),
+                    cuts_deactivated: pool.rows_deactivated,
+                    cuts_reactivated: pool.rows_reactivated,
                     cuts_active_after: pool.rows_active_after,
-                    selection_time_ms: pool.selection_time_ms.unwrap_or(0.0),
+                    selection_time_ms: pool.selection_time_ms,
                     budget_evicted: pool.budget_evicted,
                     active_after_budget: pool.active_after_budget,
+                    cuts_in_lp: pool.rows_in_lp,
                 }))
             } else {
                 None
@@ -1328,8 +1332,8 @@ mod tests {
                 pools: vec![
                     PoolRowCounts {
                         pool_id: 0,
-                        stage_id: 0,
-                        node_id: Some(0),
+                        stage_id: 10,
+                        node_id: Some(100),
                         rows_in_pool: 5,
                         rows_active_before: 5,
                         rows_deactivated: None,
@@ -1342,9 +1346,9 @@ mod tests {
                     },
                     PoolRowCounts {
                         pool_id: 1,
-                        stage_id: 1,
-                        node_id: Some(1),
-                        rows_in_pool: 8,
+                        stage_id: 20,
+                        node_id: None,
+                        rows_in_pool: 9,
                         rows_active_before: 8,
                         rows_deactivated: Some(3),
                         rows_reactivated: Some(1),
@@ -1363,21 +1367,32 @@ mod tests {
         assert_eq!(output.cut_selection_records.len(), 2);
         let root = &output.cut_selection_records[0];
         assert_eq!(root.iteration, 2);
-        assert_eq!(root.stage, 0);
-        assert_eq!(root.cuts_populated, 5);
-        assert_eq!(root.cuts_deactivated, 0);
-        assert_eq!(root.cuts_reactivated, 0);
-        assert_eq!(root.selection_time_ms, 0.0);
+        assert_eq!(root.pool_id, 0);
+        assert_eq!(root.stage_id, 10);
+        assert_eq!(root.node_id, Some(100));
+        assert_eq!(root.cuts_in_pool, 5);
+        assert_eq!(root.cuts_active_before, 5);
+        assert_eq!(root.cuts_deactivated, None);
+        assert_eq!(root.cuts_reactivated, None);
+        assert_eq!(root.cuts_active_after, 5);
+        assert_eq!(root.selection_time_ms, None);
         assert_eq!(root.budget_evicted, None);
+        assert_eq!(root.active_after_budget, None);
+        assert_eq!(root.cuts_in_lp, Some(5));
         let interior = &output.cut_selection_records[1];
-        assert_eq!(interior.stage, 1);
-        assert_eq!(interior.cuts_populated, 8);
-        assert_eq!(interior.cuts_deactivated, 3);
-        assert_eq!(interior.cuts_reactivated, 1);
+        assert_eq!(interior.iteration, 2);
+        assert_eq!(interior.pool_id, 1);
+        assert_eq!(interior.stage_id, 20);
+        assert_eq!(interior.node_id, None);
+        assert_eq!(interior.cuts_in_pool, 9);
+        assert_eq!(interior.cuts_active_before, 8);
+        assert_eq!(interior.cuts_deactivated, Some(3));
+        assert_eq!(interior.cuts_reactivated, Some(1));
         assert_eq!(interior.cuts_active_after, 6);
-        assert_eq!(interior.selection_time_ms, 2.5);
+        assert_eq!(interior.selection_time_ms, Some(2.5));
         assert_eq!(interior.budget_evicted, Some(1));
         assert_eq!(interior.active_after_budget, Some(5));
+        assert_eq!(interior.cuts_in_lp, Some(5));
     }
 
     #[test]
@@ -1420,6 +1435,7 @@ mod tests {
             lp_solves: 0,
             solve_time_ms: 0.0,
             mean_rows_in_lp: 0.0,
+            lazy_round_cap_hits: 0,
         }
     }
 
@@ -1481,7 +1497,7 @@ mod tests {
     }
 
     #[test]
-    fn round_cap_hits_reach_the_partial_record() {
+    fn round_cap_hits_reach_the_convergence_record() {
         let with_hits = |iteration, hits| {
             let mut event = make_iteration_summary(iteration, 100.0, 110.0, 0.1);
             if let TrainingEvent::IterationSummary {
@@ -1494,9 +1510,19 @@ mod tests {
             event
         };
 
-        let (partials, _) = accumulate_partial_records(&[with_hits(1, 2), with_hits(2, 0)]);
+        let events = [with_hits(1, 2), with_hits(2, 0)];
+        let (partials, _) = accumulate_partial_records(&events);
 
         assert_eq!(partials[&1].lazy_round_cap_hits, 2);
         assert_eq!(partials[&2].lazy_round_cap_hits, 0);
+
+        let result = make_result("iteration_limit", 100.0, 110.0, 0.1, 2);
+        let output = build_training_output(&result, &events, &make_empty_fcf(), false);
+        let hits: Vec<u64> = output
+            .convergence_records
+            .iter()
+            .map(|record| record.lazy_round_cap_hits)
+            .collect();
+        assert_eq!(hits, [2, 0]);
     }
 }

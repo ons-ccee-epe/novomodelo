@@ -171,6 +171,7 @@ fn build_convergence_batch(
     let mut forward_passes = Int32Builder::with_capacity(n);
     let mut lp_solves = Int64Builder::with_capacity(n);
     let mut mean_rows_in_lp = Float64Builder::with_capacity(n);
+    let mut lazy_round_cap_hits = Int64Builder::with_capacity(n);
 
     for rec in records {
         iteration.append_value(rec.iteration as i32);
@@ -192,6 +193,7 @@ fn build_convergence_batch(
         forward_passes.append_value(rec.forward_passes as i32);
         lp_solves.append_value(i64::from(rec.lp_solves));
         mean_rows_in_lp.append_value(rec.mean_rows_in_lp);
+        lazy_round_cap_hits.append_value(rec.lazy_round_cap_hits as i64);
     }
 
     RecordBatch::try_new(
@@ -212,6 +214,7 @@ fn build_convergence_batch(
             Arc::new(forward_passes.finish()),
             Arc::new(lp_solves.finish()),
             Arc::new(mean_rows_in_lp.finish()),
+            Arc::new(lazy_round_cap_hits.finish()),
         ],
     )
     .map_err(|e| OutputError::serialization("convergence", e.to_string()))
@@ -315,8 +318,10 @@ pub fn write_row_selection_records(
 
     let n = records.len();
     let mut iteration_builder = Int32Builder::with_capacity(n);
+    let mut pool_builder = Int32Builder::with_capacity(n);
     let mut stage_builder = Int32Builder::with_capacity(n);
-    let mut populated_builder = Int32Builder::with_capacity(n);
+    let mut node_builder = Int32Builder::with_capacity(n);
+    let mut in_pool_builder = Int32Builder::with_capacity(n);
     let mut active_before_builder = Int32Builder::with_capacity(n);
     let mut deactivated_builder = Int32Builder::with_capacity(n);
     let mut reactivated_builder = Int32Builder::with_capacity(n);
@@ -324,24 +329,30 @@ pub fn write_row_selection_records(
     let mut selection_time_builder = Float64Builder::with_capacity(n);
     let mut budget_evicted_builder = Int32Builder::with_capacity(n);
     let mut active_after_budget_builder = Int32Builder::with_capacity(n);
+    let mut in_lp_builder = Int32Builder::with_capacity(n);
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     for r in records {
         iteration_builder.append_value(r.iteration as i32);
-        stage_builder.append_value(r.stage as i32);
-        populated_builder.append_value(r.cuts_populated as i32);
+        pool_builder.append_value(r.pool_id as i32);
+        stage_builder.append_value(r.stage_id);
+        node_builder.append_option(r.node_id);
+        in_pool_builder.append_value(r.cuts_in_pool as i32);
         active_before_builder.append_value(r.cuts_active_before as i32);
-        deactivated_builder.append_value(r.cuts_deactivated as i32);
-        reactivated_builder.append_value(r.cuts_reactivated as i32);
+        deactivated_builder.append_option(r.cuts_deactivated.map(|v| v as i32));
+        reactivated_builder.append_option(r.cuts_reactivated.map(|v| v as i32));
         active_after_builder.append_value(r.cuts_active_after as i32);
-        selection_time_builder.append_value(r.selection_time_ms);
+        selection_time_builder.append_option(r.selection_time_ms);
         budget_evicted_builder.append_option(r.budget_evicted.map(|v| v as i32));
         active_after_budget_builder.append_option(r.active_after_budget.map(|v| v as i32));
+        in_lp_builder.append_option(r.cuts_in_lp.map(|v| v as i32));
     }
 
     let columns: Vec<ArrayRef> = vec![
         Arc::new(iteration_builder.finish()),
+        Arc::new(pool_builder.finish()),
         Arc::new(stage_builder.finish()),
-        Arc::new(populated_builder.finish()),
+        Arc::new(node_builder.finish()),
+        Arc::new(in_pool_builder.finish()),
         Arc::new(active_before_builder.finish()),
         Arc::new(deactivated_builder.finish()),
         Arc::new(reactivated_builder.finish()),
@@ -349,6 +360,7 @@ pub fn write_row_selection_records(
         Arc::new(selection_time_builder.finish()),
         Arc::new(budget_evicted_builder.finish()),
         Arc::new(active_after_budget_builder.finish()),
+        Arc::new(in_lp_builder.finish()),
     ];
 
     let batch = RecordBatch::try_new(schema, columns)
@@ -402,7 +414,7 @@ pub fn remove_conditional_training_outputs(output_dir: &Path) -> Result<(), Outp
 mod tests {
     use super::*;
     use crate::MetadataTrainingSolveStats;
-    use crate::output::{RowPoolStatistics, RunStatus, TrainingOutput};
+    use crate::output::{RowPoolStatistics, RowSelectionRecord, RunStatus, TrainingOutput};
     use crate::test_support::output::read_first_batch;
 
     fn make_record(iteration: u32, gap: Option<f64>) -> IterationRecord {
@@ -435,6 +447,7 @@ mod tests {
             lp_solves: 40,
             solve_time_ms: 0.0,
             mean_rows_in_lp: 0.0,
+            lazy_round_cap_hits: 0,
         }
     }
 
@@ -484,7 +497,7 @@ mod tests {
     fn convergence_batch_from_empty_records() {
         let batch = build_convergence_batch(&[], "statistical").expect("empty batch must succeed");
         assert_eq!(batch.num_rows(), 0, "empty records yield 0 rows");
-        assert_eq!(batch.num_columns(), 15, "convergence schema has 15 columns");
+        assert_eq!(batch.num_columns(), 16, "convergence schema has 16 columns");
     }
 
     #[test]
@@ -492,7 +505,7 @@ mod tests {
         let records: Vec<IterationRecord> = (1..=3).map(|i| make_record(i, Some(5.0))).collect();
         let batch = build_convergence_batch(&records, "statistical").expect("batch must be built");
         assert_eq!(batch.num_rows(), 3);
-        assert_eq!(batch.num_columns(), 15);
+        assert_eq!(batch.num_columns(), 16);
 
         let expected_schema = convergence_schema();
         assert_eq!(
@@ -584,6 +597,7 @@ mod tests {
                 lp_solves: 40,
                 solve_time_ms: 0.0,
                 mean_rows_in_lp: 0.0,
+                lazy_round_cap_hits: 0,
             })
             .collect();
 
@@ -676,7 +690,12 @@ mod tests {
 
     #[test]
     fn write_convergence_parquet_roundtrip() {
-        let records: Vec<IterationRecord> = (1..=5).map(|i| make_record(i, Some(1.0))).collect();
+        let records: Vec<IterationRecord> = (1..=5)
+            .map(|i| IterationRecord {
+                lazy_round_cap_hits: u64::from(i) * 3,
+                ..make_record(i, Some(1.0))
+            })
+            .collect();
         let batch = build_convergence_batch(&records, "statistical").expect("batch must be built");
 
         let tmp = tempfile::tempdir().expect("tempdir must succeed");
@@ -719,6 +738,15 @@ mod tests {
                 "lower_bound mismatch at row {i}"
             );
         }
+
+        let hits = read_batch
+            .column_by_name("lazy_round_cap_hits")
+            .expect("lazy_round_cap_hits column must exist")
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .expect("lazy_round_cap_hits must be Int64Array");
+        let hits: Vec<Option<i64>> = hits.iter().collect();
+        assert_eq!(hits, [Some(3), Some(6), Some(9), Some(12), Some(15)]);
     }
 
     #[test]
@@ -820,7 +848,7 @@ mod tests {
         let conv_path = tmp.path().join("training/convergence.parquet");
         let batch = read_first_batch(&conv_path);
         assert_eq!(batch.num_rows(), 5);
-        assert_eq!(batch.num_columns(), 15);
+        assert_eq!(batch.num_columns(), 16);
 
         let timing_path = tmp.path().join("training/timing/iterations.parquet");
         let batch = read_first_batch(&timing_path);
@@ -874,35 +902,83 @@ mod tests {
         );
     }
 
+    fn selection_record(iteration: u32, pool_id: u32) -> RowSelectionRecord {
+        RowSelectionRecord {
+            iteration,
+            pool_id,
+            stage_id: 0,
+            node_id: None,
+            cuts_in_pool: 5,
+            cuts_active_before: 5,
+            cuts_deactivated: None,
+            cuts_reactivated: None,
+            cuts_active_after: 5,
+            selection_time_ms: None,
+            budget_evicted: None,
+            active_after_budget: None,
+            cuts_in_lp: None,
+        }
+    }
+
+    fn int32_column(batch: &RecordBatch, name: &str) -> Vec<Option<i32>> {
+        batch
+            .column_by_name(name)
+            .unwrap_or_else(|| panic!("{name} column must exist"))
+            .as_any()
+            .downcast_ref::<arrow::array::Int32Array>()
+            .unwrap_or_else(|| panic!("{name} must be Int32Array"))
+            .iter()
+            .collect()
+    }
+
     #[test]
     fn write_cut_selection_roundtrip() {
-        use super::super::RowSelectionRecord;
-
         let tmp = tempfile::tempdir().unwrap();
         let records = vec![
             RowSelectionRecord {
                 iteration: 3,
-                stage: 0,
-                cuts_populated: 10,
-                cuts_active_before: 10,
-                cuts_deactivated: 0,
-                cuts_reactivated: 0,
-                cuts_active_after: 10,
-                selection_time_ms: 0.0,
+                pool_id: 0,
+                stage_id: 10,
+                node_id: Some(100),
+                cuts_in_pool: 4,
+                cuts_active_before: 4,
+                cuts_deactivated: None,
+                cuts_reactivated: None,
+                cuts_active_after: 4,
+                selection_time_ms: None,
                 budget_evicted: None,
                 active_after_budget: None,
+                cuts_in_lp: Some(4),
             },
             RowSelectionRecord {
                 iteration: 3,
-                stage: 1,
-                cuts_populated: 8,
+                pool_id: 1,
+                stage_id: 20,
+                node_id: Some(200),
+                cuts_in_pool: 9,
                 cuts_active_before: 8,
-                cuts_deactivated: 2,
-                cuts_reactivated: 0,
+                cuts_deactivated: Some(3),
+                cuts_reactivated: Some(1),
                 cuts_active_after: 6,
-                selection_time_ms: 1.5,
+                selection_time_ms: Some(1.5),
+                budget_evicted: Some(2),
+                active_after_budget: Some(4),
+                cuts_in_lp: Some(4),
+            },
+            RowSelectionRecord {
+                iteration: 4,
+                pool_id: 1,
+                stage_id: 20,
+                node_id: None,
+                cuts_in_pool: 7,
+                cuts_active_before: 5,
+                cuts_deactivated: None,
+                cuts_reactivated: None,
+                cuts_active_after: 5,
+                selection_time_ms: None,
                 budget_evicted: None,
                 active_after_budget: None,
+                cuts_in_lp: None,
             },
         ];
         write_row_selection_records(tmp.path(), &records).unwrap();
@@ -910,41 +986,62 @@ mod tests {
         assert!(path.exists());
 
         let batch = read_first_batch(&path);
-        assert_eq!(batch.num_rows(), 2);
-        assert_eq!(batch.num_columns(), 10);
+        assert_eq!(
+            batch.schema().fields(),
+            super::super::schemas::row_selection_schema().fields()
+        );
+        assert_eq!(batch.num_rows(), 3);
+        let expected: &[(&str, [Option<i32>; 3])] = &[
+            ("iteration", [Some(3), Some(3), Some(4)]),
+            ("pool_id", [Some(0), Some(1), Some(1)]),
+            ("stage_id", [Some(10), Some(20), Some(20)]),
+            ("node_id", [Some(100), Some(200), None]),
+            ("cuts_in_pool", [Some(4), Some(9), Some(7)]),
+            ("cuts_active_before", [Some(4), Some(8), Some(5)]),
+            ("cuts_deactivated", [None, Some(3), None]),
+            ("cuts_reactivated", [None, Some(1), None]),
+            ("cuts_active_after", [Some(4), Some(6), Some(5)]),
+            ("budget_evicted", [None, Some(2), None]),
+            ("active_after_budget", [None, Some(4), None]),
+            ("cuts_in_lp", [Some(4), Some(4), None]),
+        ];
+        for (name, values) in expected {
+            assert_eq!(int32_column(&batch, name), values, "column {name}");
+        }
+        let selection_time: Vec<Option<f64>> = batch
+            .column_by_name("selection_time_ms")
+            .expect("selection_time_ms column must exist")
+            .as_any()
+            .downcast_ref::<arrow::array::Float64Array>()
+            .expect("selection_time_ms must be Float64Array")
+            .iter()
+            .collect();
+        assert_eq!(selection_time, [None, Some(1.5), None]);
     }
 
     #[test]
     fn write_cut_selection_with_budget_columns_roundtrip() {
-        use super::super::RowSelectionRecord;
-
         let tmp = tempfile::tempdir().unwrap();
         let records = vec![
-            // Record with all budget columns populated (budget enabled).
             RowSelectionRecord {
-                iteration: 5,
-                stage: 0,
-                cuts_populated: 20,
+                cuts_in_pool: 20,
                 cuts_active_before: 20,
-                cuts_deactivated: 0,
-                cuts_reactivated: 0,
-                cuts_active_after: 20,
-                selection_time_ms: 0.0,
+                cuts_deactivated: Some(0),
+                cuts_reactivated: Some(0),
+                cuts_active_after: 18,
+                selection_time_ms: Some(0.0),
                 budget_evicted: Some(3),
                 active_after_budget: Some(15),
+                ..selection_record(5, 1)
             },
-            // Record with all budget columns None (budget disabled).
             RowSelectionRecord {
-                iteration: 5,
-                stage: 1,
-                cuts_populated: 15,
+                cuts_in_pool: 15,
                 cuts_active_before: 15,
-                cuts_deactivated: 2,
-                cuts_reactivated: 1,
-                cuts_active_after: 13,
-                selection_time_ms: 2.0,
-                budget_evicted: None,
-                active_after_budget: None,
+                cuts_deactivated: Some(2),
+                cuts_reactivated: Some(1),
+                cuts_active_after: 14,
+                selection_time_ms: Some(2.0),
+                ..selection_record(5, 2)
             },
         ];
         write_row_selection_records(tmp.path(), &records).unwrap();
@@ -953,39 +1050,12 @@ mod tests {
 
         let batch = read_first_batch(&path);
         assert_eq!(batch.num_rows(), 2);
-        assert_eq!(batch.num_columns(), 10);
-
-        let budget_evicted_col = batch.column_by_name("budget_evicted").unwrap();
-        assert!(
-            !budget_evicted_col.is_null(0),
-            "row 0: budget_evicted Some(3) must not be null"
+        assert_eq!(batch.num_columns(), 13);
+        assert_eq!(int32_column(&batch, "budget_evicted"), [Some(3), None]);
+        assert_eq!(
+            int32_column(&batch, "active_after_budget"),
+            [Some(15), None]
         );
-        assert!(
-            budget_evicted_col.is_null(1),
-            "row 1: budget_evicted None must be null"
-        );
-
-        let budget_col = batch.column_by_name("active_after_budget").unwrap();
-        assert!(
-            !budget_col.is_null(0),
-            "row 0: active_after_budget Some(15) must not be null"
-        );
-        assert!(
-            budget_col.is_null(1),
-            "row 1: active_after_budget None must be null"
-        );
-
-        let budget_evicted_arr = budget_evicted_col
-            .as_any()
-            .downcast_ref::<arrow::array::Int32Array>()
-            .unwrap();
-        assert_eq!(budget_evicted_arr.value(0), 3);
-
-        let budget_arr = budget_col
-            .as_any()
-            .downcast_ref::<arrow::array::Int32Array>()
-            .unwrap();
-        assert_eq!(budget_arr.value(0), 15);
     }
 
     #[test]
@@ -993,44 +1063,24 @@ mod tests {
         use arrow::datatypes::DataType;
         use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
-        use super::super::RowSelectionRecord;
-
         let tmp = tempfile::tempdir().unwrap();
-        let records = vec![RowSelectionRecord {
-            iteration: 1,
-            stage: 0,
-            cuts_populated: 5,
-            cuts_active_before: 5,
-            cuts_deactivated: 0,
-            cuts_reactivated: 0,
-            cuts_active_after: 5,
-            selection_time_ms: 0.0,
-            budget_evicted: None,
-            active_after_budget: None,
-        }];
-        write_row_selection_records(tmp.path(), &records).unwrap();
+        write_row_selection_records(tmp.path(), &[selection_record(1, 0)]).unwrap();
         let path = tmp.path().join("training/cut_selection/iterations.parquet");
 
         let file = std::fs::File::open(&path).unwrap();
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
         let schema = builder.schema().clone();
 
-        let cuts_reactivated = schema
-            .field_with_name("cuts_reactivated")
-            .expect("cuts_reactivated column must exist in schema");
-        assert_eq!(
-            cuts_reactivated.data_type(),
-            &DataType::Int32,
-            "cuts_reactivated must be Int32"
-        );
+        for name in ["cuts_reactivated", "cuts_in_lp"] {
+            let field = schema
+                .field_with_name(name)
+                .unwrap_or_else(|_| panic!("{name} column must exist in schema"));
+            assert_eq!(field.data_type(), &DataType::Int32, "{name} must be Int32");
+            assert!(field.is_nullable(), "{name} must be nullable");
+        }
         assert!(
-            !cuts_reactivated.is_nullable(),
-            "cuts_reactivated must not be nullable"
-        );
-
-        assert!(
-            schema.field_with_name("cuts_in_lp").is_err(),
-            "cuts_in_lp column must not be present in schema"
+            schema.field_with_name("cuts_populated").is_err(),
+            "cuts_populated column must not be present in schema"
         );
     }
 
@@ -1094,7 +1144,6 @@ mod tests {
     fn conditional_training_output_remover_clears_what_the_writers_wrote() {
         use chrono::NaiveDate;
 
-        use super::super::RowSelectionRecord;
         use crate::output::{
             FixedDeliveryRow, write_evaporation_models, write_fixed_delivery,
             write_fpha_deviation_points, write_fpha_hyperplanes, write_generic_constraint_echo,
@@ -1103,19 +1152,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        let record = RowSelectionRecord {
-            iteration: 3,
-            stage: 0,
-            cuts_populated: 10,
-            cuts_active_before: 10,
-            cuts_deactivated: 0,
-            cuts_reactivated: 0,
-            cuts_active_after: 10,
-            selection_time_ms: 0.0,
-            budget_evicted: None,
-            active_after_budget: None,
-        };
-        write_row_selection_records(root, &[record]).unwrap();
+        write_row_selection_records(root, &[selection_record(3, 0)]).unwrap();
         write_solver_stats(root, &[]).unwrap();
         let delivery = FixedDeliveryRow {
             thermal_id: 3,

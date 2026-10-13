@@ -885,6 +885,13 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
          (0 when no lazy selection ran)",
     ),
     (
+        "convergence",
+        "lazy_round_cap_hits",
+        "Lazy-selection LP solves of the iteration, on all ranks, that reached \
+         the round cap with a candidate row still violated (0 when no lazy \
+         selection ran)",
+    ),
+    (
         "iteration_timing",
         "iteration",
         "Iteration number (1-based)",
@@ -980,46 +987,66 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
          sub-component of the forward/backward phases.",
     ),
     ("row_selection", "iteration", "Iteration number (1-based)"),
-    ("row_selection", "stage_id", "Declared study stage id"),
+    ("row_selection", "pool_id", "Row-pool id (0-based)"),
     (
         "row_selection",
-        "cuts_populated",
-        "Total cuts ever generated at this stage",
+        "stage_id",
+        "Declared study stage id of the pool's nodes",
+    ),
+    (
+        "row_selection",
+        "node_id",
+        "Declared id of the pool's sole owning node; null when several nodes \
+         share the pool",
+    ),
+    (
+        "row_selection",
+        "cuts_in_pool",
+        "Rows the pool holds, loaded and generated",
     ),
     (
         "row_selection",
         "cuts_active_before",
-        "Active cuts before selection ran",
+        "Active rows when row management starts",
     ),
     (
         "row_selection",
         "cuts_deactivated",
-        "Cuts deactivated by selection",
+        "Rows the selection pass deactivated; null when no pass ran on the pool",
     ),
     (
         "row_selection",
         "cuts_reactivated",
-        "Cuts reactivated (previously deactivated, re-entered LP)",
+        "Rows the selection pass reactivated; null when no pass ran on the pool",
     ),
     (
         "row_selection",
         "cuts_active_after",
-        "Active cuts after selection",
+        "Active rows after the selection pass (equal to cuts_active_before \
+         when none ran)",
     ),
     (
         "row_selection",
         "selection_time_ms",
-        "Wall-clock time for selection at this stage",
+        "Wall-clock time of the selection pass on the pool; null when no pass \
+         ran on the pool",
     ),
     (
         "row_selection",
         "budget_evicted",
-        "Cuts evicted by budget enforcement (null when budget disabled)",
+        "Rows max_active_per_stage evicted; null when the cap was not applied \
+         to the pool",
     ),
     (
         "row_selection",
         "active_after_budget",
-        "Active cuts after budget enforcement (null when budget disabled)",
+        "Active rows after the cap; null when the cap was not applied to the pool",
+    ),
+    (
+        "row_selection",
+        "cuts_in_lp",
+        "Rows of the pool in the LP the next iteration's solves load; null \
+         under the dynamic method",
     ),
     (
         "solver_iterations",
@@ -2983,8 +3010,8 @@ mod tests {
 
         let row_count = rdr.records().count();
         assert_eq!(
-            row_count, 248,
-            "variables.csv must have exactly 248 data rows (one per column across all schemas)"
+            row_count, 252,
+            "variables.csv must have exactly 252 data rows (one per column across all schemas)"
         );
     }
 
@@ -4079,6 +4106,7 @@ mod tests {
                 "forward_passes",
                 "lp_solves",
                 "mean_rows_in_lp",
+                "lazy_round_cap_hits",
             ],
         ),
         ("iteration_timing", &["iteration", "rank", "worker_id"]),
@@ -4086,14 +4114,17 @@ mod tests {
             "row_selection",
             &[
                 "iteration",
+                "pool_id",
                 "stage_id",
-                "cuts_populated",
+                "node_id",
+                "cuts_in_pool",
                 "cuts_active_before",
                 "cuts_deactivated",
                 "cuts_reactivated",
                 "cuts_active_after",
                 "budget_evicted",
                 "active_after_budget",
+                "cuts_in_lp",
             ],
         ),
         (

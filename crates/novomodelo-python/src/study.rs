@@ -622,8 +622,8 @@ impl Study {
     /// `training/solver/retry_histogram.parquet`, and the four
     /// `training/dictionaries/` files (`variables.csv`, `entities.csv`,
     /// `codes.json`, `bounds.parquet`). The following are written only when the
-    /// run has rows for them: `training/cut_selection/iterations.parquet` (cut
-    /// selection),
+    /// run has rows for them: `training/cut_selection/iterations.parquet` (when
+    /// the run sets a selection method or `max_active_per_stage`),
     /// `hydro_models/fpha_hyperplanes.parquet` (FPHA planes),
     /// `hydro_models/evaporation_models.parquet` (evaporation models),
     /// `hydro_models/fpha_deviation_points.parquet` (FPHA deviation tracking,

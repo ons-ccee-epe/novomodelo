@@ -1337,6 +1337,7 @@ mod tests {
             lp_solves: 0,
             solve_time_ms: 0.0,
             mean_rows_in_lp: 0.0,
+            lazy_round_cap_hits: 0,
         }
     }
 
