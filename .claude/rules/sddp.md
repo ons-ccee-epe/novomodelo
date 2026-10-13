@@ -1930,9 +1930,9 @@ function computes, and `eps` the resolved `violation_tolerance`. Candidates are
 reported by `alpha - theta` descending, ties to the lower slot. With `z_R` the
 objective returned, `z_C` the optimum over the candidate set, `theta*` the
 future-cost value at the returned point and `d` the objective coefficient of the
-future-cost column, `z_R <= z_C <= z_R + d * eps / (1 - eps) * |theta*|`, for
-`eps < 1`. At `theta* = 0` every candidate with a positive value is appended, which
-costs rows and rounds and never exactness.
+future-cost column, `z_R <= z_C <= z_R + d * eps / (1 - eps) * |theta*|`; the load
+enforces `eps < 1`. At `theta* = 0` every candidate with a positive value is
+appended, which costs rows and rounds and never exactness.
 
 An absent `violation_tolerance` is resolved by `DcsConfig::resolve`, the only
 place that gives it a value, to the `primal_feasibility_tolerance` of the solver
@@ -1942,6 +1942,19 @@ can solve a retried LP looser than its profile, so the test is then stricter tha
 the solve's accuracy and can append a candidate that noise made look violated;
 that costs a row and cannot loop, because an appended candidate is resident.
 Simulation seeds every active cut, so its tolerance is never exercised.
+
+A present `violation_tolerance` is range-checked at load by two owners.
+`parse_cut_selection_config` rejects a value of 1 or more: the bound divides by
+`1 - eps`, and at 1 no candidate with a non-negative future cost is ever
+violated. `StudySetup::from_broadcast_params` rejects a value below the
+`primal_feasibility_tolerance` of the backward, forward or simulation profile,
+the first failing one in that order, whether or not that phase runs; it owns the
+floor because the resolved profiles exist only there (`admission_gate` receives
+none, and the config type cannot see the solver default). A value equal to a
+profile's tolerance is admitted. The wrong-but-compiling alternatives, each shown
+by a mutation: comparing only the backward profile admits a value that a forward
+or simulation override makes too small; `<=` in place of `<` rejects the equal
+value; dropping the upper bound admits a value of 1 or more.
 
 The rounds that add a bounded number of cuts each end at a cap; past it the
 per-round limit is lifted and the score, append, solve cycle continues, adding
@@ -1974,14 +1987,23 @@ candidate recency window is unset; with a finite window it holds over the cuts
 inside the window and the result is deliberately not the all-cuts optimum.
 Read: `cut/dcs.rs` (`lazy_solve_preloaded`, `score_violated_candidates`,
 `DcsConfig::resolve`, `DcsSolveScratch::round_cap_hits`,
-`DcsParams::max_inner_iterations`). Pinned by `lazy_solve_is_exact_after_the_round_cap`
+`DcsParams::max_inner_iterations`), `cut/cut_selection.rs`
+(`parse_cut_selection_config`), `setup/mod.rs`
+(`reject_violation_tolerance_below_a_phase_solver_tolerance`). Pinned by
+`lazy_solve_is_exact_after_the_round_cap`
 (`cut/dcs.rs`: 8 at `x = 4`, not 7.8, and one cap hit), with
 `lazy_objective_equals_the_all_cuts_objective` (random cuts, caps 0 to 3, the
 two-sided bound), `a_lazy_solve_stays_within_the_relative_bound` (an unappended
 candidate, 7.8 against 8 within the bound), `lazy_solve_terminates_after_the_round_cap`,
 `violation_tolerance_is_strict` (the relative boundary),
-`scoring_is_invariant_to_the_cost_scale` and
-`an_absent_violation_tolerance_resolves_to_the_phase_solver_tolerance`.
+`scoring_is_invariant_to_the_cost_scale`,
+`an_absent_violation_tolerance_resolves_to_the_phase_solver_tolerance`,
+`parse_dynamic_rejects_a_violation_tolerance_of_one` (`cut/cut_selection.rs`),
+`a_violation_tolerance_below_a_phase_solver_tolerance_is_rejected` (`setup/mod.rs`:
+the per-phase order, the equal value, the absent value and a `level1` strategy
+admitted) and `validate_rejects_a_violation_tolerance_below_the_solver_tolerance`
+(`crates/novomodelo-cli/tests/cli_validate.rs`: two controls that validate, then the
+reject).
 
 ## The active-cut budget caps only cuts this run generated in interior pools
 

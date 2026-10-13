@@ -353,6 +353,8 @@ impl StudySetup {
     /// - [`SddpError::Validation`] — a per-phase solver profile config sets a
     ///   field the compiled backend does not support (see
     ///   `validate_phase_solver_config`).
+    /// - [`SddpError::Validation`] — the `dynamic` method's `violation_tolerance`
+    ///   is below a phase's primal feasibility tolerance.
     /// - [`SddpError::Validation`] — if the template list is empty ("system
     ///   has no study stages").
     /// - [`SddpError::Validation`] — if `stochastic`'s precomputed inflow
@@ -369,6 +371,12 @@ impl StudySetup {
 
         let (backward_profile, forward_profile, simulation_profile) =
             resolve_solver_profiles(&config)?;
+        reject_violation_tolerance_below_a_phase_solver_tolerance(
+            config.cut_selection.as_ref(),
+            backward_profile.primal_feasibility_tolerance,
+            forward_profile.primal_feasibility_tolerance,
+            simulation_profile.primal_feasibility_tolerance,
+        )?;
 
         // Keys are a pure function of the synced tree + fixed σ, so every rank
         // computes the identical permutation and cuts stay bit-identical across
@@ -1073,6 +1081,44 @@ fn resolve_solver_profiles(
     let simulation_profile = Phase::Simulation.resolve_profile(config.simulation_solver.as_ref());
 
     Ok((backward_profile, forward_profile, simulation_profile))
+}
+
+/// Reject a `dynamic` `violation_tolerance` below the primal feasibility
+/// tolerance of any phase's solver profile, compared in the order backward,
+/// forward, simulation whether or not that phase runs.
+///
+/// # Errors
+///
+/// [`SddpError::Validation`] naming the first phase whose tolerance exceeds the
+/// value.
+fn reject_violation_tolerance_below_a_phase_solver_tolerance(
+    cut_selection: Option<&CutSelectionStrategy>,
+    backward: f64,
+    forward: f64,
+    simulation: f64,
+) -> Result<(), SddpError> {
+    let Some(CutSelectionStrategy::Dynamic {
+        violation_tolerance: Some(value),
+        ..
+    }) = cut_selection
+    else {
+        return Ok(());
+    };
+    for (phase, tolerance) in [
+        ("backward", backward),
+        ("forward", forward),
+        ("simulation", simulation),
+    ] {
+        if *value < tolerance {
+            return Err(SddpError::Validation(format!(
+                "training.cut_selection.selection.violation_tolerance ({value}) is a relative \
+                 factor and must be at least the primal feasibility tolerance of the {phase} \
+                 solver profile ({tolerance}); raise it, or omit it to use each phase's solver \
+                 tolerance"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// `L_state = max(computed_order, boundary_depth)` — the single widening the
@@ -3540,7 +3586,10 @@ mod scalar_parameter_construction_tests {
 
 #[cfg(test)]
 mod admission_gate_dcs_tests {
-    use super::{CutSelectionStrategy, SddpError, admission_gate};
+    use super::{
+        CutSelectionStrategy, SddpError, admission_gate,
+        reject_violation_tolerance_below_a_phase_solver_tolerance,
+    };
     use crate::risk_measure::RiskMeasure;
     use crate::stopping_rule::{StoppingMode, StoppingRule, StoppingRuleSet};
 
@@ -3552,11 +3601,15 @@ mod admission_gate_dcs_tests {
     }
 
     fn dynamic() -> CutSelectionStrategy {
+        dynamic_with(None)
+    }
+
+    fn dynamic_with(violation_tolerance: Option<f64>) -> CutSelectionStrategy {
         CutSelectionStrategy::Dynamic {
             candidate_recency: None,
             seed_window: 1,
             max_added_per_round: 1,
-            violation_tolerance: None,
+            violation_tolerance,
             start_iteration: 1,
         }
     }
@@ -3676,5 +3729,58 @@ mod admission_gate_dcs_tests {
             admission_gate(&measures, &rules, false, None, Some(5)).is_ok(),
             "a budget under sampled forwards must be admitted"
         );
+    }
+
+    /// A value below the backward, forward or simulation tolerance is rejected
+    /// naming the first such phase in that order; a value equal to a tolerance,
+    /// an absent value and a non-`dynamic` strategy are admitted.
+    #[test]
+    fn a_violation_tolerance_below_a_phase_solver_tolerance_is_rejected() {
+        let rejection = |value: f64, [backward, forward, simulation]: [f64; 3]| {
+            let strategy = dynamic_with(Some(value));
+            match reject_violation_tolerance_below_a_phase_solver_tolerance(
+                Some(&strategy),
+                backward,
+                forward,
+                simulation,
+            ) {
+                Err(SddpError::Validation(msg)) => msg,
+                other => panic!("expected a Validation reject for {value}, got {other:?}"),
+            }
+        };
+
+        assert_eq!(
+            rejection(1e-10, [1e-9; 3]),
+            format!(
+                "training.cut_selection.selection.violation_tolerance ({}) is a relative factor \
+                 and must be at least the primal feasibility tolerance of the backward solver \
+                 profile ({}); raise it, or omit it to use each phase's solver tolerance",
+                1e-10, 1e-9
+            )
+        );
+        for (tolerances, phase) in [
+            ([1e-9, 1e-7, 1e-9], "forward"),
+            ([1e-9, 1e-7, 1e-7], "forward"),
+            ([1e-9, 1e-9, 1e-7], "simulation"),
+        ] {
+            let msg = rejection(1e-8, tolerances);
+            assert!(
+                msg.contains(&format!("of the {phase} solver profile")),
+                "names the {phase} profile: {msg}"
+            );
+        }
+
+        let at_the_tolerance = dynamic_with(Some(1e-9));
+        let absent = dynamic_with(None);
+        let level1 = level1();
+        for strategy in [Some(&at_the_tolerance), Some(&absent), Some(&level1), None] {
+            assert!(
+                reject_violation_tolerance_below_a_phase_solver_tolerance(
+                    strategy, 1e-9, 1e-9, 1e-9
+                )
+                .is_ok(),
+                "{strategy:?} must be admitted"
+            );
+        }
     }
 }

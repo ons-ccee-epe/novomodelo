@@ -179,8 +179,8 @@ pub enum CutSelectionStrategy {
         /// Relative violation factor: a candidate cut is added when its value
         /// exceeds the future-cost value by more than the factor times the
         /// larger of the two magnitudes. `None` takes the primal feasibility
-        /// tolerance of each phase's solver profile; a value is finite and
-        /// `> 0`.
+        /// tolerance of each phase's solver profile; a value is finite, `> 0`
+        /// and `< 1`.
         violation_tolerance: Option<f64>,
 
         /// First training iteration at which the lazy loop becomes active.
@@ -267,7 +267,7 @@ fn validate_tolerance(key: &str, value: f64, strict: bool) -> Result<f64, String
 /// violated: for `level1`, `check_frequency = 0` or a `lookback_iterations`
 /// below `check_frequency`; for `dynamic`, `start_iteration = 0`,
 /// `candidate_recency = Some(0)`, `max_added_per_round = 0`, or a
-/// `violation_tolerance` that is not finite and `> 0`.
+/// `violation_tolerance` that is not finite and `> 0`, or is `>= 1`.
 ///
 /// [`SelectionMethod`]: novomodelo_io::config::SelectionMethod
 pub fn parse_cut_selection_config(
@@ -332,13 +332,22 @@ pub fn parse_cut_selection_config(
                 );
             }
 
+            let violation_tolerance = violation_tolerance
+                .map(|value| validate_tolerance("violation_tolerance", value, true))
+                .transpose()?;
+            if let Some(value) = violation_tolerance
+                && value >= 1.0
+            {
+                return Err(format!(
+                    "cut_selection.violation_tolerance must be < 1 (got {value})"
+                ));
+            }
+
             Ok(Some(CutSelectionStrategy::Dynamic {
                 candidate_recency,
                 seed_window,
                 max_added_per_round,
-                violation_tolerance: violation_tolerance
-                    .map(|value| validate_tolerance("violation_tolerance", value, true))
-                    .transpose()?,
+                violation_tolerance,
                 start_iteration: u64::from(start_iteration),
             }))
         }
@@ -1151,6 +1160,22 @@ mod tests {
                 msg.contains("violation_tolerance must be finite and > 0"),
                 "error must mention the violation_tolerance constraint, got: {msg}"
             );
+        }
+    }
+
+    #[test]
+    fn parse_dynamic_rejects_a_violation_tolerance_of_one() {
+        for value in [1.0, 1.5] {
+            let messages = rejections("violation_tolerance", value);
+            assert_eq!(messages.len(), 1);
+            assert_eq!(
+                messages[0],
+                format!("cut_selection.violation_tolerance must be < 1 (got {value})")
+            );
+        }
+        for (key, cfg) in configs_with_tolerance(0.5) {
+            parse_cut_selection_config(&cfg)
+                .unwrap_or_else(|msg| panic!("{key} = 0.5 must parse, got: {msg}"));
         }
     }
 

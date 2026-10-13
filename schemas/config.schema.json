@@ -848,7 +848,7 @@
             },
             "violation_tolerance": {
               "default": null,
-              "description": "A relative factor: a candidate row is added when its value exceeds\nthe future-cost value by more than the factor times the larger of\nthe two magnitudes. Absent (default): each phase uses the primal\nfeasibility tolerance of its solver profile. A value must be finite\nand greater than `0`.",
+              "description": "A relative factor: a candidate row is added when its value exceeds\nthe future-cost value by more than the factor times the larger of\nthe two magnitudes. Absent (default): each phase uses the primal\nfeasibility tolerance of its solver profile. A value must be finite\nand greater than `0`. It must also be less than 1 and at least the\nprimal feasibility tolerance of every phase's solver profile.",
               "format": "double",
               "type": [
                 "number",

@@ -351,7 +351,8 @@ pub enum SelectionMethod {
         /// the future-cost value by more than the factor times the larger of
         /// the two magnitudes. Absent (default): each phase uses the primal
         /// feasibility tolerance of its solver profile. A value must be finite
-        /// and greater than `0`.
+        /// and greater than `0`. It must also be less than 1 and at least the
+        /// primal feasibility tolerance of every phase's solver profile.
         #[serde(default)]
         violation_tolerance: Option<f64>,
     },

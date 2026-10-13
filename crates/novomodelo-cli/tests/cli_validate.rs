@@ -503,6 +503,61 @@ fn validate_rejects_a_budget_with_enumerated_training() {
         .stdout(predicate::str::contains("enumerated"));
 }
 
+/// A `dynamic` violation tolerance below a phase's primal feasibility tolerance
+/// is rejected by the setup every front end builds; the key absent and a value
+/// above the default tolerance validate. Per-phase solver overrides are
+/// `highs`-only, so the forward-phase leg is too.
+#[test]
+fn validate_rejects_a_violation_tolerance_below_the_solver_tolerance() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+    let validate = || {
+        novomodelo()
+            .args(["validate", dir.path().to_str().unwrap()])
+            .assert()
+    };
+
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+    config["training"]["cut_selection"] = serde_json::json!({
+        "selection": { "method": "dynamic" }
+    });
+    write_file(dir.path(), "config.json", &config.to_string());
+    validate().success();
+
+    config["training"]["cut_selection"]["selection"]["violation_tolerance"] =
+        serde_json::json!(1e-6);
+    write_file(dir.path(), "config.json", &config.to_string());
+    validate().success();
+
+    config["training"]["cut_selection"]["selection"]["violation_tolerance"] =
+        serde_json::json!(1e-10);
+    write_file(dir.path(), "config.json", &config.to_string());
+    validate()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("violation_tolerance"))
+        .stdout(predicate::str::contains("primal feasibility tolerance"));
+
+    #[cfg(feature = "highs")]
+    {
+        config["training"]["solver"] = serde_json::json!({
+            "forward": { "primal_feasibility_tolerance": 1e-7 }
+        });
+        config["training"]["cut_selection"]["selection"]["violation_tolerance"] =
+            serde_json::json!(1e-7);
+        write_file(dir.path(), "config.json", &config.to_string());
+        validate().success();
+
+        config["training"]["cut_selection"]["selection"]["violation_tolerance"] =
+            serde_json::json!(1e-8);
+        write_file(dir.path(), "config.json", &config.to_string());
+        validate()
+            .failure()
+            .code(1)
+            .stdout(predicate::str::contains("of the forward solver profile"));
+    }
+}
+
 /// A removed selection method fails at load naming `level1`; the same case with
 /// `level1` validates.
 #[test]
