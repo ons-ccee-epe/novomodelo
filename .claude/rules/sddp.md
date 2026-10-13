@@ -2014,8 +2014,10 @@ function computes, and `eps` the resolved `violation_tolerance`. Candidates are
 reported by `alpha - theta` descending, ties to the lower slot. With `z_R` the
 objective returned, `z_C` the optimum over the candidate set, `theta*` the
 future-cost value at the returned point and `d` the objective coefficient of the
-future-cost column, `z_R <= z_C <= z_R + d * eps / (1 - eps) * |theta*|`; the load
-enforces `eps < 1`. At `theta* = 0` every candidate with a positive value is
+future-cost column, `z_R <= z_C <= z_R + d * eps / (1 - eps) * |theta*|`, for
+`eps < 1`: the load enforces it for a present value; an absent value resolves to
+a profile's `primal_feasibility_tolerance`, which no check bounds above, and at 1
+or more no candidate is ever violated. At `theta* = 0` every candidate with a positive value is
 appended, which costs rows and rounds and never exactness.
 
 An absent `violation_tolerance` is resolved by `DcsConfig::resolve`, the only
