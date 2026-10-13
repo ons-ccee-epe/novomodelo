@@ -22,8 +22,9 @@ independent reasons make byte-level comparison guaranteed to fail:
 3. The policy checkpoint embeds `created_at: novomodelo_io::now_iso8601()`.
 
 A second leg runs the same case with `level1` row selection on and applies the
-same three comparisons with the same masks; each run must first have written at
-least one row to `training/cut_selection/iterations.parquet`.
+same three comparisons with the same masks; each run must first have written one
+row per iteration and pool to `training/cut_selection/iterations.parquet`, with
+the row identities the file's columns satisfy.
 
 Every other field and column is compared exactly. The two module-level mask
 constants name the excluded paths and columns, with the reason each is masked:
@@ -347,9 +348,37 @@ def _selection_case(root: pathlib.Path) -> pathlib.Path:
 def _assert_selection_recorded(output_dir: pathlib.Path) -> None:
     iterations = output_dir / _SELECTION_ITERATIONS
     assert iterations.is_file(), f"selection must write {_SELECTION_ITERATIONS}"
-    assert pq.ParquetFile(iterations).metadata.num_rows >= 1, (
-        f"{_SELECTION_ITERATIONS} must hold at least one row"
+    rows = pq.read_table(iterations).to_pylist()
+
+    iteration_count = pq.ParquetFile(
+        output_dir / "training" / "convergence.parquet"
+    ).metadata.num_rows
+    pool_count = len(list((output_dir / "policy" / "cuts").glob("*.bin")))
+    expected = [
+        (iteration, pool)
+        for iteration in range(1, iteration_count + 1)
+        for pool in range(pool_count)
+    ]
+    assert [(row["iteration"], row["pool_id"]) for row in rows] == expected, (
+        f"{_SELECTION_ITERATIONS} must hold one row per iteration and pool"
     )
+
+    for row in rows:
+        assert row["cuts_active_after"] == (
+            row["cuts_active_before"]
+            - (row["cuts_deactivated"] or 0)
+            + (row["cuts_reactivated"] or 0)
+        ), row
+        if row["budget_evicted"] is not None:
+            assert row["active_after_budget"] == (
+                row["cuts_active_after"] - row["budget_evicted"]
+            ), row
+        final_active = (
+            row["cuts_active_after"]
+            if row["active_after_budget"] is None
+            else row["active_after_budget"]
+        )
+        assert row["cuts_in_lp"] == final_active, row
 
 
 @pytest.fixture(scope="module")
