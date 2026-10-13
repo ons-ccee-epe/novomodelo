@@ -2173,6 +2173,83 @@ mod tests {
         assert_eq!(pool.stored_trial_states(), 4 * STRIDE as usize);
     }
 
+    /// derived: with stride 3 and a window of 1, the run of iteration `k` starts
+    /// at slot `3 * (k - 1)`. Iteration 3 writes slot 6 only, so slots 7 and 8
+    /// are never written, and iteration 4 writes none: at its run the start, 9,
+    /// lies above `populated() = 7` and the state at slot 6 goes. Iteration 5
+    /// writes slots 12 and 13 and iteration 6 slots 15 to 17, so the six runs
+    /// leave 3, 3, 1, 0, 2 and 3 states. The cuts are flat, so the written cut of
+    /// highest intercept owns every stored state: slot 1 (4.0) at the first run,
+    /// slot 4 (5.0) at the second and third, slot 12 (6.0) at the fifth and
+    /// slot 16 (7.0) at the sixth.
+    #[test]
+    fn a_window_start_above_the_populated_slots_releases_every_older_state() {
+        const STRIDE: u32 = 3;
+        let lookback = NonZeroU64::new(1).unwrap();
+        let mut pool = CutPool::new(18, 1, STRIDE, 0);
+        pool.set_iteration_base(1);
+        pool.enable_trial_states_within(lookback, 1);
+        let written: [&[(u32, f64)]; 6] = [
+            &[(0, 1.0), (1, 4.0), (2, 2.0)],
+            &[(0, 3.0), (1, 5.0), (2, 0.0)],
+            &[(0, 2.5)],
+            &[],
+            &[(0, 6.0), (1, 1.0)],
+            &[(0, 0.5), (1, 7.0), (2, 1.5)],
+        ];
+        let expected = [
+            (3, Some(1)),
+            (3, Some(4)),
+            (1, Some(4)),
+            (0, None),
+            (2, Some(12)),
+            (3, Some(16)),
+        ];
+
+        for (index, (cuts, (stored, owner))) in written.iter().zip(expected).enumerate() {
+            let iteration = index as u64 + 1;
+            for &(pass, intercept) in *cuts {
+                let slot = pool.slot_index(iteration, pass);
+                pool.add_cut(NodeId(0), iteration, pass, intercept, &[0.0]);
+                pool.set_trial_state_for_test(slot, &[0.0]);
+            }
+            if iteration == 4 {
+                assert!(pool.window_start_slot(lookback, iteration) > pool.populated());
+            }
+            pool.expire_trial_states(iteration);
+            pool.update_ownership();
+
+            let mut rebuilt = pool.clone();
+            rebuilt.rebuild_ownership();
+            assert_eq!(pool.stored_trial_states(), stored, "run of {iteration}");
+            for slot in 0..pool.capacity {
+                let label = format!("run of {iteration}, slot {slot}");
+                assert_eq!(
+                    pool.state_owner(slot),
+                    pool.trial_state(slot).and(owner),
+                    "{label}"
+                );
+                assert_eq!(
+                    pool.owned_states(slot),
+                    if owner == Some(slot) { stored } else { 0 },
+                    "{label}"
+                );
+                assert_eq!(rebuilt.state_owner(slot), pool.state_owner(slot), "{label}");
+                assert_eq!(
+                    rebuilt.state_best_value(slot).map(f64::to_bits),
+                    pool.state_best_value(slot).map(f64::to_bits),
+                    "{label}"
+                );
+                assert_eq!(
+                    rebuilt.owned_states(slot),
+                    pool.owned_states(slot),
+                    "{label}"
+                );
+            }
+        }
+        assert!((0..15).all(|slot| pool.trial_state(slot).is_none()));
+    }
+
     #[test]
     fn new_with_warm_start_zero_max_iterations_yields_fixed_capacity() {
         use novomodelo_io::OwnedPolicyCutRecord;

@@ -559,10 +559,10 @@ Whether a slot held a cut before the run started is the slot's role:
 `CutPool::is_prefix_slot` reads `SlotRole::origin`, which the two loading
 constructors (`CutPool::new_with_warm_start`, `CutPool::from_deserialized`) write
 as `Prefix` for each record's slot and `add_cut` writes as `Generated`. It is
-never a value of `iteration_generated`. Under `warm_start` the run's iteration counter restarts
-at 1, so a loaded cut's generating iteration can equal the current one; every
-reader that separates a loaded cut from a cut of this run tests the predicate
-before the iteration. `cut_id` is a per-run label,
+never a value of `iteration_generated`. Under `warm_start` the run's iteration
+counter restarts at 1, so a loaded cut's generating iteration can equal the
+current one; every reader that separates a loaded cut from a cut of this run
+tests the predicate before the iteration. `cut_id` is a per-run label,
 `iteration_generated * visit_stride + forward_pass_index`, recomputed from the
 real iteration — not an identity across runs.
 
@@ -675,8 +675,8 @@ activate a vacant slot (`CutPool::set_active`).
 Treating `populated()` as a cut count is the wrong-but-compiling alternative: the
 vacant zero then competes in the maximum. It is reported as a reactivation when it
 lies within the tolerance of the maximum, it deactivates every cut more than the
-tolerance below it when it exceeds them, and the checkpoint exports it as an inactive zero record, which a
-load reads back as a loaded cut.
+tolerance below it when it exceeds them, and the checkpoint exports it as an
+inactive zero record, which a load reads back as a loaded cut.
 Read: `cut/pool.rs` (`SlotRole`, `CutPool::role`, `CutPool::populated`),
 `cut/cut_selection.rs` (`select_for_stage`), `policy/policy_export.rs`
 (`build_stage_cut_records`, `build_stage_cuts_payloads`). Pinned by
@@ -690,8 +690,8 @@ records at slots 0, 2 and 3 and a `populated_count` of 3) and
 (`tests/branching_value_oracle.rs`: on a trained sampled fan, one record per
 written slot) and the `vacant_slot` fixture of
 `the_record_reproduces_every_reference_fixture` (`cut/ownership.rs`: the vacant
-zero owns no state), with `activating_a_vacant_slot_panics_in_debug` (`cut/pool.rs`) for
-the debug assertion.
+zero owns no state), with `activating_a_vacant_slot_panics_in_debug`
+(`cut/pool.rs`) for the debug assertion.
 
 **Basis matches by slot, never by count or column.** Warm-start basis
 reconstruction matches stored cut rows to current LP rows by **`CutPool` slot
@@ -981,8 +981,8 @@ every node of a level, the pool holds only the states of the trials routed to
 its node.
 `SlotRole::scored` records that the pool stored states when the slot was
 written (`add_cut` writes it); enabling the store afterwards does not change the
-flag of a cut already written, and a loaded (`Prefix`) cut is never scored and
-has no state. A pool that does not store states allocates nothing. Enabling
+flag of a cut already written, and a loaded (`Prefix`) cut is written unscored,
+with no state. A pool that does not store states allocates nothing. Enabling
 reserves `capacity * state_dimension * 8` bytes, of which
 `stored_trial_states() * state_dimension * 8` hold a state, and per slot one
 `u32` for the slot-to-row lookup and one `f64` and two `u32` for the ownership
@@ -991,14 +991,14 @@ record. With a window the rows reserved are those of the window section.
 **Who enables it.** `TrainingSession::new` enables the store on every rank, on
 the pool of every node of `interior_cut_nodes` (stage 1 or later, with a
 successor), when `CutSelectionStrategy::stores_trial_states` holds: `Level1`
-only, a total match over the variants, with `enable_trial_states_within` when the
-strategy carries a window and `enable_trial_states` otherwise. The session
-enables neither the root pool nor the leaf pool, `exports.states` alone enables
-nothing, and without `cut_selection` no pool allocates a row. `exports.states`
-and the interim selection kernel keep reading the archive. The strategy comes
-from the config the CLI broadcasts and the node set from the graph every rank
-builds from it, so the same pools store, with the same window, on every rank for
-the whole run.
+only, a total match over the variants, as is the match that enables, with
+`enable_trial_states_within` when the strategy carries a window and
+`enable_trial_states` otherwise. The session enables neither the root pool nor
+the leaf pool, `exports.states` alone enables nothing, and without
+`cut_selection` no pool allocates a row. `exports.states` and the interim
+selection kernel keep reading the archive. The strategy comes from the config
+the CLI broadcasts and the node set from the graph every rank builds from it, so
+the same pools store, with the same window, on every rank for the whole run.
 
 **Two fill sites.** Sampled: `run_one_backward_level` calls
 `store_level_trial_states` once per level, after
@@ -1424,9 +1424,10 @@ state is inside the window at a selection run of iteration `k`. With
 `r = k - iteration_base + 1`, the iterations this run has completed, it is slot 0
 while `r < w`, and `slot_base + (r - w) * visit_stride` from `r = w` on: the first
 slot of iteration `k - w + 1`. A generated cut's state is therefore inside
-exactly when its generating iteration exceeds `k - w`. A loaded state is at
-iteration 0 of the run's clock, whatever iteration its record carries: it is
-inside while `r < w` and leaves at the run's iteration `w`.
+exactly when its generating iteration exceeds `k - w`. A loaded state (no load
+stores one; the test setter does) is at iteration 0 of the run's clock, whatever
+iteration its record carries: it is inside while `r < w` and leaves at the run's
+iteration `w`.
 
 **The step.** `CutPool::expire_trial_states(k)` removes the states that left. For
 each slot from the previous boundary up to the new one that holds a state, it
@@ -1444,9 +1445,11 @@ not refused: the states of the iterations between two runs are dropped before a
 run scores them, and the record still equals a rebuild.
 
 **Where it runs.** `run_cut_management` calls `expire_trial_states` for each
-interior pool before `update_ownership`; swapping the two gives the same record
-and only scores states that are about to leave, so the order saves work and no
-test pins it. `TrainingSession::new` enables the store with
+interior pool before `update_ownership`; swapping the two scores states that are
+about to leave and ends in the same record, so the order is cost only.
+`windowed_record_equals_rebuild_and_reference` runs the swapped order on a clone
+at every run and compares the record, the stored states and the derived flags.
+`TrainingSession::new` enables the store with
 `enable_trial_states_within(w, check_frequency)` when the strategy carries
 `Some(w)`.
 
@@ -1508,6 +1511,12 @@ The wrong-but-compiling alternatives:
   `a_windowed_pool_never_holds_more_rows_than_its_reserve`, both fixtures,
   `windowed_record_equals_rebuild_and_reference` and
   `a_level1_window_keeps_only_the_states_of_the_last_iterations` fail;
+- doing nothing when the window start lies above `populated()`, a tail of
+  never-written slots: the states older than the window stay stored and owned.
+  Under it `a_window_start_above_the_populated_slots_releases_every_older_state`
+  and `windowed_record_equals_rebuild_and_reference` fail. The `populated()`
+  bound that `expire_trial_states` puts on the start is not itself pinned: the
+  same tests pass without it, since a slot above `populated()` holds no state;
 - overwriting a row past the reserve instead of appending one: two slots share a
   row. Under it `a_bounded_store_extends_when_more_states_are_held_than_reserved`
   and `windowed_record_equals_rebuild_and_reference` fail;
@@ -1525,14 +1534,18 @@ by, in `cut/trial_states.rs`: `a_bounded_store_frees_the_row_of_a_dropped_state`
 and `a_bounded_store_extends_when_more_states_are_held_than_reserved`; in
 `cut/pool.rs`: `the_window_start_slot_agrees_with_the_slot_formula` (the start
 against the slot formula, loaded slots included) and
-`a_windowed_pool_never_holds_more_rows_than_its_reserve`; in
+`a_windowed_pool_never_holds_more_rows_than_its_reserve` and
+`a_window_start_above_the_populated_slots_releases_every_older_state` (a start
+above `populated()` releases every older state, and the record equals a
+rebuild); in
 `cut/cut_selection.rs`: `level1_drops_the_owner_of_a_state_that_left_the_window`
 and
 `a_loaded_scored_cut_competes_only_at_this_runs_states_once_its_state_left_the_window`
 (a loaded cut deactivated when it owns none, then winning a later state); in
 `cut/ownership.rs`: `windowed_record_equals_rebuild_and_reference` (the record
 against a rebuild and the states of the window against the reference rule, under
-drawn windows, strides and run frequencies); in `tests/cut_basis.rs`:
+drawn windows, strides and run frequencies, with the swapped order of expiring
+and updating on a clone); in `tests/cut_basis.rs`:
 `a_level1_window_keeps_only_the_states_of_the_last_iterations` and
 `a_window_longer_than_the_run_changes_nothing`; in `tests/mpi_wire.rs`:
 `level1_window_thread_shapes_agree_on_the_uniform_fixture` and

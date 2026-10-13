@@ -3281,6 +3281,13 @@ mod selection_on_determinism {
     fn budgeted_level1_power(run: &TrainedRun<'_>) -> SelectionPower {
         assert_the_record_is_current(run);
         assert_owners_attain_the_maximum(run.setup, &run.shape);
+        let ownership = OwnershipPower::of(run.setup);
+        assert!(
+            ownership.stored_states > 0 && ownership.states_owned_by_another_slot > 0,
+            "{}: level1 stored no trial state, or left every state with the cut generated at \
+             it, so the owner check compares nothing ({ownership:?})",
+            run.shape
+        );
         selection_power(run)
     }
 

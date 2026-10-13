@@ -352,6 +352,15 @@ mod tests {
             .collect()
     }
 
+    fn stored_state_bits(pool: &CutPool) -> Vec<Option<Vec<u64>>> {
+        (0..pool.populated())
+            .map(|slot| {
+                pool.trial_state(slot)
+                    .map(|state| state.iter().map(|value| value.to_bits()).collect())
+            })
+            .collect()
+    }
+
     fn rebuilt(pool: &CutPool) -> CutPool {
         let mut rebuilt = pool.clone();
         rebuilt.rebuild_ownership();
@@ -643,7 +652,9 @@ mod tests {
     /// Reveals the draw one iteration at a time, `stride` slots each, after its
     /// prefix kinds loaded as records of another run; every `check_frequency`
     /// iterations the pool expires, updates and applies the derived flags, and
-    /// is compared with the reference rule on the states of the window.
+    /// is compared with the reference rule on the states of the window. A clone
+    /// that updates before it expires must end in the same record, states and
+    /// derived flags.
     ///
     /// The states of the window are computed from the rule alone: a generated
     /// state is inside at a run of iteration `k` when its generating iteration
@@ -743,10 +754,29 @@ mod tests {
                     .collect(),
             };
             let was_active: Vec<bool> = (0..populated).map(|slot| pool.is_active(slot)).collect();
+            let label = format!("run at iteration {iteration}");
 
+            let mut swapped = pool.clone();
             pool.expire_trial_states(iteration);
             pool.update_ownership();
+            swapped.update_ownership();
+            swapped.expire_trial_states(iteration);
+            assert_eq!(
+                snapshot(&swapped),
+                snapshot(&pool),
+                "{label}: swapped order"
+            );
+            assert_eq!(
+                stored_state_bits(&swapped),
+                stored_state_bits(&pool),
+                "{label}: swapped order, stored states"
+            );
             let updates = pool.ownership_activity_updates(0);
+            assert_eq!(
+                swapped.ownership_activity_updates(0),
+                updates,
+                "{label}: swapped order, activity derivation"
+            );
             let owning = selected(&window.cuts, &window.stored_states());
             let is_scored = |slot: usize| {
                 matches!(
@@ -775,7 +805,6 @@ mod tests {
                 "run at {iteration}: reactivations"
             );
             pool.apply_updates(&updates);
-            let label = format!("run at iteration {iteration}");
 
             assert_eq!(snapshot(&pool), snapshot(&rebuilt(&pool)), "{label}");
             assert_matches_reference(&pool, &window, &label);
@@ -888,8 +917,7 @@ mod tests {
         };
 
         let one = run(1);
-        let distinct_owners: std::collections::BTreeSet<_> =
-            one.iter().filter_map(|(owner, _, _)| *owner).collect();
+        let distinct_owners: BTreeSet<_> = one.iter().filter_map(|(owner, _, _)| *owner).collect();
         assert!(
             distinct_owners.len() > 1,
             "the record must have several owners"

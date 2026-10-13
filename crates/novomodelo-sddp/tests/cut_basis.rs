@@ -950,22 +950,20 @@ mod cut_selection_determinism_realistic {
         let pool = make_pool(K, D, 0x0001_0002_0003_0004);
         let states = make_states(M, D, 0x0005_0006_0007_0008);
 
-        {
-            let strategy = CutSelectionStrategy::Dominated {
-                threshold: 0.01,
-                check_frequency: 1,
-            };
-            let r1 = run_in_pool(1, || strategy.select(&pool, &states, 5));
-            let r8 = run_in_pool(8, || strategy.select(&pool, &states, 5));
-            assert_eq!(
-                r1.updates, r8.updates,
-                "deactivations differ for strategy {strategy:?}"
-            );
-            assert_eq!(
-                r1.reactivations, r8.reactivations,
-                "reactivations differ for strategy {strategy:?}"
-            );
-        }
+        let strategy = CutSelectionStrategy::Dominated {
+            threshold: 0.01,
+            check_frequency: 1,
+        };
+        let r1 = run_in_pool(1, || strategy.select(&pool, &states, 5));
+        let r8 = run_in_pool(8, || strategy.select(&pool, &states, 5));
+        assert_eq!(
+            r1.updates, r8.updates,
+            "deactivations differ for strategy {strategy:?}"
+        );
+        assert_eq!(
+            r1.reactivations, r8.reactivations,
+            "reactivations differ for strategy {strategy:?}"
+        );
     }
 
     #[test]

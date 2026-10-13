@@ -71,7 +71,6 @@ use std::sync::mpsc::{self, Sender};
 
 use novomodelo_core::TrainingEvent;
 use novomodelo_io::config::SelectionMethod;
-use novomodelo_sddp::cut::CutPool;
 use novomodelo_sddp::setup::{
     NodeGraph, NodeId, NodeOpenings, NodePos, NodeRuntime, NodeSuccessor, OpeningSource, StageIdx,
 };
@@ -84,7 +83,9 @@ use novomodelo_sddp::{StudySetup, TrainingResult};
 use novomodelo_solver::ActiveSolver;
 
 use common::StubComm;
-use common::selection_fingerprint::SelectionPower;
+use common::selection_fingerprint::{
+    SelectionPower, assert_identical_cuts_keep_their_lowest_slot, interior_pool_ids,
+};
 
 /// Relative + absolute LP tolerance for oracle-vs-engine value comparison. The
 /// backend primal/dual feasibility tolerance is `≈ 1e-9`; scaled by the objective
@@ -215,18 +216,6 @@ fn level1_every_iteration() -> SelectionMethod {
     }
 }
 
-/// Pools of the nodes whose cuts selection scores: stage 1 or later, with a
-/// successor.
-fn interior_cut_pools(graph: &NodeGraph) -> Vec<usize> {
-    graph
-        .nodes
-        .iter()
-        .zip(graph.successors.iter())
-        .filter(|(node, successors)| node.stage >= StageIdx(1) && !successors.is_empty())
-        .map(|(node, _)| node.pool_id)
-        .collect()
-}
-
 /// Populated cuts of pool `pool_id` that differ in some coefficient bit.
 fn distinct_cut_gradients(setup: &StudySetup, pool_id: usize) -> usize {
     let pool = &setup.fcf.pools[pool_id];
@@ -241,59 +230,30 @@ fn distinct_cut_gradients(setup: &StudySetup, pool_id: usize) -> usize {
         .len()
 }
 
-/// The intercept and coefficient bits of each populated cut, in slot order.
-fn cut_bits(pool: &CutPool) -> Vec<Vec<u64>> {
-    (0..pool.populated())
-        .map(|slot| {
-            std::iter::once(pool.intercept(slot))
-                .chain(pool.coefficient_row(slot).iter().copied())
-                .map(f64::to_bits)
-                .collect()
-        })
-        .collect()
-}
-
-/// derived: bit-identical cuts have equal values at every state, so among them
-/// only the lowest slot can own one; and selection ran last at the final
-/// iteration, so the owner of every stored state is active.
-fn assert_identical_cuts_keep_their_lowest_slot(
-    setup: &StudySetup,
-    interior_pools: &[usize],
-    fixture: &str,
-) {
-    for &pool_id in interior_pools {
+/// derived: selection ran last at the final iteration, so the owner of every
+/// stored state is active.
+fn assert_stored_states_have_active_owners(setup: &StudySetup, fixture: &str) {
+    for pool_id in interior_pool_ids(setup) {
         let pool = &setup.fcf.pools[pool_id];
-        let cuts = cut_bits(pool);
-        let lowest_identical = |slot: usize| {
-            cuts.iter()
-                .position(|cut| *cut == cuts[slot])
-                .expect("a cut is identical to itself")
-        };
-        assert!(
-            (0..cuts.len()).any(|slot| lowest_identical(slot) < slot),
-            "{fixture} pool {pool_id} must hold a pair of bit-identical cuts"
-        );
         assert!(
             pool.stored_trial_states() > 0,
             "{fixture} pool {pool_id} must store a trial state"
         );
-        for slot in 0..cuts.len() {
+        // `assert_identical_cuts_keep_their_lowest_slot` reads scored slots only.
+        assert!(
+            (0..pool.populated())
+                .all(|slot| pool.role(slot).scored && pool.trial_state(slot).is_some()),
+            "{fixture} pool {pool_id}: every populated slot must be scored and hold its trial state"
+        );
+        for slot in (0..pool.populated()).filter(|&slot| pool.trial_state(slot).is_some()) {
+            let owner = pool.state_owner(slot).unwrap_or_else(|| {
+                panic!("{fixture} pool {pool_id}: the state at slot {slot} is unowned")
+            });
             assert!(
-                !pool.is_active(slot) || lowest_identical(slot) == slot,
-                "{fixture} pool {pool_id}: slot {slot} is active and identical to the lower \
-                 slot {}",
-                lowest_identical(slot)
+                pool.is_active(owner),
+                "{fixture} pool {pool_id}: slot {owner} owns the state at slot {slot} and is \
+                 inactive"
             );
-            if pool.trial_state(slot).is_some() {
-                let owner = pool.state_owner(slot).unwrap_or_else(|| {
-                    panic!("{fixture} pool {pool_id}: the state at slot {slot} is unowned")
-                });
-                assert!(
-                    pool.is_active(owner),
-                    "{fixture} pool {pool_id}: slot {owner} owns the state at slot {slot} and \
-                     is inactive"
-                );
-            }
         }
     }
 }
@@ -306,7 +266,7 @@ fn assert_identical_cuts_keep_their_lowest_slot(
 /// owner of every stored state, and both bounds close to `optimum` within
 /// [`REL_TOL`]/[`ABS_TOL`].
 fn assert_selection_stays_below_and_closes(mut setup: StudySetup, optimum: f64, fixture: &str) {
-    let interior_pools = interior_cut_pools(&setup.inputs.node_graph);
+    let interior_pools = interior_pool_ids(&setup);
     assert!(
         !interior_pools.is_empty(),
         "{fixture} must have an interior cut-generating node for selection to act on"
@@ -349,7 +309,8 @@ fn assert_selection_stays_below_and_closes(mut setup: StudySetup, optimum: f64, 
         "{fixture} selection must deactivate an interior cut within \
          {LEVEL1_MAX_ITERATIONS} iterations: {power:?}"
     );
-    assert_identical_cuts_keep_their_lowest_slot(&setup, &interior_pools, fixture);
+    assert_identical_cuts_keep_their_lowest_slot(&setup, fixture);
+    assert_stored_states_have_active_owners(&setup, fixture);
 
     assert!(
         close(lb, optimum),

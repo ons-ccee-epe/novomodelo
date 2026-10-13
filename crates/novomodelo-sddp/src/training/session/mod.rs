@@ -286,7 +286,11 @@ where
                         lookback_iterations: Some(lookback),
                         ..
                     } => pool.enable_trial_states_within(*lookback, *check_frequency),
-                    _ => pool.enable_trial_states(),
+                    Level1 {
+                        lookback_iterations: None,
+                        ..
+                    } => pool.enable_trial_states(),
+                    Lml1 { .. } | Dominated { .. } | Dynamic { .. } => {}
                 }
             }
         }

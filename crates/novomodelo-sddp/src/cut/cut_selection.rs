@@ -9,25 +9,26 @@
 //!
 //! **Stored states.** For the pool of each node of stage 1 or later that has a
 //! successor: the trial state of every cut this run generated for that pool,
-//! one per cut, on every rank. A loaded cut has none. Every such state of the
-//! run is kept, so the memory of a run grows with its cut count, unless the
-//! strategy carries a window of `w` iterations
+//! one per cut, on every rank; such a cut is scored. A loaded cut is unscored
+//! and has no state: no load writes a scored role or a state. Every stored
+//! state of the run is kept, so the memory of a run grows with its cut count,
+//! unless the strategy carries a window of `w` iterations
 //! ([`lookback_iterations`](CutSelectionStrategy::Level1::lookback_iterations)).
 //! A selection run of iteration `k` then drops the states of the cuts generated
-//! before iteration `k - w + 1`, so the scored set is the trial states of the
-//! cuts generated in the last `w` iterations (and a loaded state while the run
-//! has completed fewer than `w` iterations), and the memory is bounded by the
-//! window ([`CutPool::enable_trial_states_within`]). Only states leave: a cut
-//! whose state left keeps its role, stays live and competes at the states that
+//! before iteration `k - w + 1`, a loaded cut counting as iteration 0, so the
+//! scored set is the trial states of the cuts generated in the last `w`
+//! iterations, and the memory is bounded by the window
+//! ([`CutPool::enable_trial_states_within`]). Only states leave: a cut whose
+//! state left keeps its role, stays live and competes at the states that
 //! remain.
 //!
-//! **Rule.** The live cuts of such a pool are the cuts this run generated in
-//! it, whatever their activity flag, and its active loaded cuts. The owner of a
+//! **Rule.** The live cuts of such a pool are its scored cuts, whatever their
+//! activity flag, and its unscored loaded cuts while active. The owner of a
 //! stored state is the lowest slot among the live cuts whose value at the state
 //! equals the live maximum. Values are compared exactly: there is no tolerance,
 //! and a cut of the current iteration is judged like any other. A selection run
-//! makes a generated cut active when it owns a stored state and inactive when
-//! it owns none ([`CutPool::ownership_activity_updates`]); a loaded cut keeps
+//! makes a scored cut active when it owns a stored state and inactive when it
+//! owns none ([`CutPool::ownership_activity_updates`]); an unscored cut keeps
 //! its flag. A later cut takes a state only when strictly higher, as in the
 //! paper's update; the paper names no rule for a tie at a new state, and the
 //! lowest slot is this implementation's choice.
@@ -178,7 +179,7 @@ impl CutActivityUpdates {
 pub enum CutSelectionStrategy {
     /// Level 1 of de Matos, Philpott and Finardi (2015): each stored trial state
     /// has one owner, the lowest slot among the cuts with the highest value
-    /// there, compared exactly, and a selection run keeps the generated cuts
+    /// there, compared exactly, and a selection run keeps the scored cuts
     /// that own a state. The [module documentation](crate::cut::cut_selection)
     /// states the rule, the stored states, the invariant, the departures from
     /// the paper and what is said of convergence. With a window, the scored set
