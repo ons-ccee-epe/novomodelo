@@ -1081,7 +1081,6 @@ where
                 iteration,
                 rows_distributed: backward_result.cuts_generated as u32,
                 rows_active: self.fcf.total_active_cuts() as u32,
-                rows_removed: 0,
                 sync_time_ms: backward_result.cut_sync_time_ms,
             },
         );

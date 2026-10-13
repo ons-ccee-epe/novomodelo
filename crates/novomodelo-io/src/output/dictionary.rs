@@ -850,12 +850,12 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "convergence",
         "cuts_removed",
-        "Cuts removed in this iteration",
+        "Rows deactivated in this iteration by the selection method or by max_active_per_stage",
     ),
     (
         "convergence",
         "cuts_active",
-        "Total active cuts after iteration",
+        "Active rows after selection and the cap, reactivations included",
     ),
     (
         "convergence",

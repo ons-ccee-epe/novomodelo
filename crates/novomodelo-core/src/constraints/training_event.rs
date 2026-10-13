@@ -218,8 +218,6 @@ pub enum TrainingEvent {
         rows_distributed: u32,
         /// Total number of active rows in the approximation after synchronization.
         rows_active: u32,
-        /// Number of rows removed during synchronization.
-        rows_removed: u32,
         /// Wall-clock time for the synchronization, in milliseconds.
         sync_time_ms: u64,
     },
@@ -500,7 +498,6 @@ mod tests {
                 iteration: 1,
                 rows_distributed: 48,
                 rows_active: 200,
-                rows_removed: 0,
                 sync_time_ms: 2,
             },
             TrainingEvent::PolicySelectionComplete {

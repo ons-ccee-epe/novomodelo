@@ -155,10 +155,12 @@ pub struct IterationRecord {
     /// Rows added to the pool.
     pub cuts_added: u32,
 
-    /// Rows removed from the pool.
+    /// Rows deactivated in this iteration by the selection method or by
+    /// `max_active_per_stage`.
     pub cuts_removed: u32,
 
-    /// Total number of active rows in the pool after this iteration.
+    /// Active rows after this iteration's selection and cap, reactivations
+    /// included.
     pub cuts_active: u32,
 
     /// Forward pass wall-clock time (ms).

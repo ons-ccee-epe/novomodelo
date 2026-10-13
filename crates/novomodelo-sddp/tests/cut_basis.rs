@@ -1400,7 +1400,7 @@ mod selection_in_a_training_run {
         SelectionMethod, SimulationSelection, StoppingRuleConfig, TrainingSelection,
     };
     use novomodelo_sddp::{
-        StudySetup, TrainingResult,
+        StudySetup, TrainingResult, build_training_output,
         cut::CutSet,
         hydro_models::prepare_hydro_models,
         setup::{NodePos, prepare_stochastic},
@@ -1963,6 +1963,81 @@ mod selection_in_a_training_run {
             deactivated > 0 && reactivated > 0 && evicted_off_schedule > 0,
             "power: deactivated {deactivated}, reactivated {reactivated}, evicted off the \
              selection schedule {evicted_off_schedule}"
+        );
+    }
+
+    /// derived: an iteration clears the flag of `rows_deactivated` + `budget_evicted`
+    /// rows and sets the flag of `rows_reactivated` rows, and the rows its backward
+    /// pass generates join the active rows, so
+    /// `cuts_active[i] + cuts_removed[i] == cuts_active[i - 1] + cuts_added[i] + reactivated[i]`
+    /// with `cuts_active[0]` read as 0 (1dtoy loads no cut). The cap runs on every
+    /// iteration and the selection pass on every `CHECK_FREQUENCY`-th, so an
+    /// iteration off the schedule removes rows by eviction alone.
+    #[test]
+    fn convergence_counts_follow_the_pools() {
+        let (tx, rx) = mpsc::channel();
+        let (setup, result) = train_configured(ITERATIONS, Some(tx), |config| {
+            config.training.cut_selection.selection = Some(level1());
+            config.training.cut_selection.max_active_per_stage = Some(BUDGET_BELOW_THE_POOL_SIZE);
+        });
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+        let output = build_training_output(&result, &events, &setup.fcf, false);
+        let summaries = pool_summaries(&events);
+        let records = &output.convergence_records;
+
+        assert_eq!(records.len(), ITERATIONS as usize);
+        assert_eq!(records.len(), summaries.len());
+        let mut previous_active = 0_u32;
+        let mut reactivated_in_run = 0_u32;
+        for (record, (iteration, pools)) in records.iter().zip(&summaries) {
+            let at = format!("iteration {iteration}");
+            assert_eq!(u64::from(record.iteration), *iteration, "{at}");
+            let removed: u32 = pools
+                .iter()
+                .map(|pool| pool.rows_deactivated.unwrap_or(0) + pool.budget_evicted.unwrap_or(0))
+                .sum();
+            let active: u32 = pools
+                .iter()
+                .map(|pool| pool.active_after_budget.unwrap_or(pool.rows_active_after))
+                .sum();
+            let reactivated: u32 = pools
+                .iter()
+                .map(|pool| pool.rows_reactivated.unwrap_or(0))
+                .sum();
+            assert_eq!(record.cuts_removed, removed, "{at}");
+            assert_eq!(record.cuts_active, active, "{at}");
+            assert_eq!(
+                record.cuts_active + record.cuts_removed,
+                previous_active + record.cuts_added + reactivated,
+                "{at}: active {} + removed {} against previous active {previous_active} \
+                 + added {} + reactivated {reactivated}",
+                record.cuts_active,
+                record.cuts_removed,
+                record.cuts_added
+            );
+            previous_active = record.cuts_active;
+            reactivated_in_run += reactivated;
+        }
+
+        assert_eq!(
+            u64::from(previous_active),
+            setup.fcf.total_active_cuts() as u64,
+            "the last iteration's active rows are the pools' own"
+        );
+        let removed_per_iteration: Vec<(u32, u32)> = records
+            .iter()
+            .map(|record| (record.iteration, record.cuts_removed))
+            .collect();
+        assert!(
+            records.iter().any(|record| {
+                record.iteration % CHECK_FREQUENCY != 0 && record.cuts_removed > 0
+            }),
+            "power: no iteration off the selection schedule removed a row by eviction; removed \
+             per iteration {removed_per_iteration:?}"
+        );
+        assert!(
+            reactivated_in_run > 0,
+            "power: no row was reactivated; removed per iteration {removed_per_iteration:?}"
         );
     }
 

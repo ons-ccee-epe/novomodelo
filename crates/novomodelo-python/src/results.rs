@@ -202,8 +202,8 @@ pub fn load_results(py: Python<'_>, output_dir: PathBuf) -> PyResult<Py<PyAny>> 
 /// | `upper_bound_kind` | `str`           | Bound regime: `"statistical"` or `"exact"`.         |
 /// | `gap_percent`      | `float \| None` | Relative gap as a percentage (None if ill-defined). |
 /// | `cuts_added`       | `int`           | Cuts added to the pool this iteration.              |
-/// | `cuts_removed`     | `int`           | Cuts removed from the pool this iteration.          |
-/// | `cuts_active`      | `int`           | Active cuts after this iteration.                   |
+/// | `cuts_removed`     | `int`           | Cuts deactivated this iteration by the selection method or by `max_active_per_stage`. |
+/// | `cuts_active`      | `int`           | Active cuts after this iteration's selection and cap, reactivations included. |
 /// | `time_forward_ms`  | `int`           | Forward-pass wall time (ms).                        |
 /// | `time_backward_ms` | `int`           | Backward-pass wall time (ms).                       |
 /// | `time_total_ms`    | `int`           | Total iteration wall time (ms).                     |
