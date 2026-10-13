@@ -373,10 +373,10 @@ mod tests {
             lookback_iterations: None,
         };
         let dynamic = CutSelectionStrategy::Dynamic {
-            k1: None,
-            k2: 1,
-            nadic: 1,
-            epsilon_viol: 1e-6,
+            candidate_recency: None,
+            seed_window: 1,
+            max_added_per_round: 1,
+            violation_tolerance: 1e-6,
             start_iteration: 1,
         };
 

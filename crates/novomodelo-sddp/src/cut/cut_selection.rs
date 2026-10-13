@@ -131,9 +131,8 @@ pub struct CutActivityUpdates {
 ///
 /// One strategy is active for the entire training run; all stages use it.
 ///
-/// Variant names and field names are stable wire-format identifiers (postcard
-/// MPI broadcast via the derived serde impls) — do not rename them without a
-/// migration.
+/// The strategy is sent by postcard inside the broadcast config, within one run
+/// of one binary, by variant index and field position; names are not encoded.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum CutSelectionStrategy {
     /// Level 1 of de Matos, Philpott and Finardi (2015): each stored trial state
@@ -154,31 +153,32 @@ pub enum CutSelectionStrategy {
         lookback_iterations: Option<NonZeroU64>,
     },
 
-    /// DCS: lazy row generation inside each LP solve. It is Novomodelo's own method, not
-    /// the Dynamic Cut Selection of de Matos, Philpott and Finardi (2015), and NOT
-    /// a pool-level deactivation pass: [`should_run`] always returns `false`.
-    /// Because exactness rests on the `k1 = None` (∞) default, DCS is mutually
-    /// exclusive with the value-based pool pass of `Level1`.
+    /// Lazy row generation inside each LP solve: this software's own method, not
+    /// the Dynamic Cut Selection of de Matos, Philpott and Finardi (2015). A
+    /// solve starts from a seed of active cuts and appends the candidates it
+    /// violates until none is; it never deactivates a cut, so [`should_run`]
+    /// always returns `false`.
     ///
     /// [`should_run`]: CutSelectionStrategy::should_run
     Dynamic {
-        /// Candidate-recency window. `None` ⇒ ∞ (every pool cut a candidate;
+        /// Candidate-recency window. `None` ⇒ ∞ (every active cut a candidate;
         /// exactness-preserving). `Some(n)` ⇒ only cuts generated within the
-        /// last `n` iterations are candidates — deliberately NOT exact: older
-        /// cuts are never added even when violated.
-        k1: Option<u32>,
+        /// last `n` iterations, and loaded cuts, are candidates — deliberately
+        /// NOT exact: older cuts are never added even when violated.
+        candidate_recency: Option<u32>,
 
         /// Seed window: a lazy solve starts with the active cuts whose
-        /// [`CutMetadata::last_active_iter`] is at most `k2` iterations old.
-        k2: u32,
+        /// [`CutMetadata::last_active_iter`] is at most `seed_window`
+        /// iterations old, and the cuts of the current iteration.
+        seed_window: u32,
 
         /// Number of most-violated candidate cuts considered per round. Must be
         /// `>= 1`.
-        nadic: u32,
+        max_added_per_round: u32,
 
         /// Absolute violation tolerance for accepting a candidate cut. Must be
         /// `> 0`.
-        epsilon_viol: f64,
+        violation_tolerance: f64,
 
         /// First training iteration at which the lazy loop becomes active.
         start_iteration: u64,
@@ -330,10 +330,14 @@ pub fn parse_cut_selection_config(
             }
 
             Ok(Some(CutSelectionStrategy::Dynamic {
-                k1: candidate_recency,
-                k2: seed_window,
-                nadic: max_added_per_round,
-                epsilon_viol: validate_tolerance("violation_tolerance", violation_tolerance, true)?,
+                candidate_recency,
+                seed_window,
+                max_added_per_round,
+                violation_tolerance: validate_tolerance(
+                    "violation_tolerance",
+                    violation_tolerance,
+                    true,
+                )?,
                 start_iteration: u64::from(start_iteration),
             }))
         }
@@ -1081,20 +1085,20 @@ mod tests {
             matches!(
                 strategy,
                 CutSelectionStrategy::Dynamic {
-                    k1: None,
-                    k2: 5,
-                    nadic: 10,
-                    epsilon_viol,
+                    candidate_recency: None,
+                    seed_window: 5,
+                    max_added_per_round: 10,
+                    violation_tolerance,
                     start_iteration: 2,
-                } if (epsilon_viol - 1e-10).abs() < 1e-20
+                } if (violation_tolerance - 1e-10).abs() < 1e-20
             ),
             "unexpected variant or defaults: {strategy:?}"
         );
     }
 
     /// `candidate_recency`/`seed_window`/`max_added_per_round`/
-    /// `violation_tolerance` flow into the wire-format `k1`/`k2`/`nadic`/
-    /// `epsilon_viol`; `start_iteration` keeps its default.
+    /// `violation_tolerance` flow into the `Dynamic` variant's fields of the
+    /// same names; `start_iteration` keeps its default.
     #[test]
     fn parse_dynamic_overrides() {
         let cfg = RowSelectionConfig {
@@ -1114,12 +1118,12 @@ mod tests {
             matches!(
                 strategy,
                 CutSelectionStrategy::Dynamic {
-                    k1: Some(20),
-                    k2: 7,
-                    nadic: 3,
-                    epsilon_viol,
+                    candidate_recency: Some(20),
+                    seed_window: 7,
+                    max_added_per_round: 3,
+                    violation_tolerance,
                     start_iteration: 2,
-                } if (epsilon_viol - 1e-9).abs() < f64::EPSILON
+                } if (violation_tolerance - 1e-9).abs() < f64::EPSILON
             ),
             "unexpected variant or overrides: {strategy:?}"
         );
@@ -1190,12 +1194,12 @@ mod tests {
             matches!(
                 strategy,
                 CutSelectionStrategy::Dynamic {
-                    k1: Some(20),
-                    k2: 7,
-                    nadic: 3,
-                    epsilon_viol,
+                    candidate_recency: Some(20),
+                    seed_window: 7,
+                    max_added_per_round: 3,
+                    violation_tolerance,
                     start_iteration: 5,
-                } if (epsilon_viol - 1e-9).abs() < f64::EPSILON
+                } if (violation_tolerance - 1e-9).abs() < f64::EPSILON
             ),
             "unexpected variant or explicit fields: {strategy:?}"
         );
@@ -1244,18 +1248,21 @@ mod tests {
         );
     }
 
-    /// `seed_window` feeds `k2`: `0` is valid (seeds only the current
-    /// iteration) and the absent default is `5`.
+    /// `0` is a valid `seed_window` (seeds only the current iteration) and the
+    /// absent default is `5`.
     #[test]
-    fn parse_dynamic_seed_window_sets_k2() {
+    fn parse_dynamic_seed_window_sets_the_seed_window() {
         let cfg_zero =
             dynamic_from_json(r#"{"selection": {"method": "dynamic", "seed_window": 0}}"#);
         let strategy = parse_cut_selection_config(&cfg_zero)
             .expect("seed_window = 0 must parse for dynamic (0 is valid)")
             .expect("must produce Some for dynamic");
         assert!(
-            matches!(strategy, CutSelectionStrategy::Dynamic { k2: 0, .. }),
-            "seed_window = 0 must set k2 = 0: {strategy:?}"
+            matches!(
+                strategy,
+                CutSelectionStrategy::Dynamic { seed_window: 0, .. }
+            ),
+            "seed_window = 0 must be carried: {strategy:?}"
         );
 
         let cfg_absent = dynamic_from_json(r#"{"selection": {"method": "dynamic"}}"#);
@@ -1263,8 +1270,11 @@ mod tests {
             .expect("absent seed_window must parse for dynamic")
             .expect("must produce Some for dynamic");
         assert!(
-            matches!(strategy, CutSelectionStrategy::Dynamic { k2: 5, .. }),
-            "absent seed_window must default k2 to 5: {strategy:?}"
+            matches!(
+                strategy,
+                CutSelectionStrategy::Dynamic { seed_window: 5, .. }
+            ),
+            "absent seed_window must default to 5: {strategy:?}"
         );
     }
 
@@ -1272,10 +1282,10 @@ mod tests {
     #[test]
     fn dynamic_should_run_always_false() {
         let strategy = CutSelectionStrategy::Dynamic {
-            k1: None,
-            k2: 5,
-            nadic: 10,
-            epsilon_viol: 1e-10,
+            candidate_recency: None,
+            seed_window: 5,
+            max_added_per_round: 10,
+            violation_tolerance: 1e-10,
             start_iteration: 2,
         };
         for iteration in [0_u64, 1, 2, 5, 100] {

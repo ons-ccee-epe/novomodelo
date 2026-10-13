@@ -324,7 +324,7 @@ fn solve_forward_node<S: SolverInterface + Send>(
         build_initial_resident_set(
             pool,
             params.iteration,
-            dcs_params.k2,
+            dcs_params.seed_window,
             &mut ws.backward_accum.dcs_initial_resident,
         );
         let dcs_ctx = DcsSolveContext {

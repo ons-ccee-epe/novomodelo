@@ -1742,10 +1742,10 @@ mod dcs_simulation {
 
     fn dcs_params() -> DcsParams {
         DcsParams {
-            k1: None,
-            k2: 2,
-            nadic: 10,
-            epsilon_viol: 1e-10,
+            candidate_recency: None,
+            seed_window: 2,
+            max_added_per_round: 10,
+            violation_tolerance: 1e-10,
             start_iteration: 2,
             max_inner_iterations: 50,
         }
@@ -1972,15 +1972,15 @@ mod dcs_simulation {
     fn from_strategy_gates_dynamic_dcs() {
         use crate::cut_selection::CutSelectionStrategy;
         let dynamic = CutSelectionStrategy::Dynamic {
-            k1: None,
-            k2: 5,
-            nadic: 10,
-            epsilon_viol: 1e-10,
+            candidate_recency: None,
+            seed_window: 5,
+            max_added_per_round: 10,
+            violation_tolerance: 1e-10,
             start_iteration: 2,
         };
         let params = DcsParams::from_strategy(&dynamic)
             .expect("dynamic strategy must map to Some(DcsParams)");
-        assert_eq!(params.k2, 5);
+        assert_eq!(params.seed_window, 5);
         let level1 = CutSelectionStrategy::Level1 {
             check_frequency: 10,
             lookback_iterations: None,

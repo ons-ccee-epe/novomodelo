@@ -905,7 +905,6 @@ fn simulation_ctx_propagates_dynamic_dcs_from_setup() {
     let n_stages = 3;
     let system = minimal_system(n_stages);
     let mut config = minimal_config(2, 10);
-    // A Dynamic strategy here is what makes `simulation_ctx()` populate `dcs`.
     config.training.cut_selection = RowSelectionConfig {
         selection: Some(SelectionMethod::Dynamic {
             start_iteration: 2,
@@ -941,12 +940,11 @@ fn simulation_ctx_propagates_dynamic_dcs_from_setup() {
     .expect("setup");
     let ctx = setup.simulation_ctx();
 
-    // The dynamic method with default fields maps to the spec defaults
     let expected = DcsParams {
-        k1: None,
-        k2: 5,
-        nadic: 10,
-        epsilon_viol: 1e-10,
+        candidate_recency: None,
+        seed_window: 5,
+        max_added_per_round: 10,
+        violation_tolerance: 1e-10,
         start_iteration: 2,
         max_inner_iterations: DcsParams::default().max_inner_iterations,
     };

@@ -809,11 +809,11 @@
         },
         {
           "additionalProperties": false,
-          "description": "Dynamic: a per-solve lazy loop that loads only a small resident subset of\nrows per solve while retaining the full pool.",
+          "description": "Dynamic: a per-solve lazy loop, this software's own lazy row generation.\nFrom `start_iteration` on, each training solve starts with the seed rows\ndescribed under `seed_window`, adds the candidate rows that its solution\nviolates, at most `max_added_per_round` per round, and solves again; it\nreturns when no candidate is violated. After a fixed number of rounds\nthe per-round limit is lifted. A simulation solve starts with every\nactive row, so `seed_window` and `candidate_recency` apply to training\nonly. The method never deactivates a row, and the pool keeps every row.",
           "properties": {
             "candidate_recency": {
               "default": null,
-              "description": "Only rows generated within the last `candidate_recency` iterations are\nscored. Absent (default): unbounded, so every pool row is a candidate,\nwhich preserves exactness. A value `n` (must be `>= 1`) makes the loop\ndeliberately inexact — rows older than the window are never added.",
+              "description": "Absent (default): every active row is a candidate and a solve returns\nthe optimum over them. A value `n` (must be `>= 1`) restricts the\ncandidates to the rows added in the last `n` iterations and loaded\nrows, and the result is then the optimum over those rows together\nwith the seed rows.",
               "format": "uint32",
               "minimum": 0,
               "type": [
@@ -834,7 +834,7 @@
             },
             "seed_window": {
               "default": 5,
-              "description": "Number of most-recent iterations whose rows seed the initial resident\nset. `0` is valid (seeds only the current iteration). Default `5`.",
+              "description": "A solve starts with the active rows whose last binding was at most\n`seed_window` iterations ago (a row that has not bound counts from\nthe iteration that added it), plus the rows added in the current\niteration. `row_activity_tolerance` decides whether a row binds. `0`\nseeds the rows of the current iteration and those that bound in it.\nA row loaded from a policy counts from the start of the run under\n`warm_start` and for `policy.boundary` rows, and from its recorded\niteration under `resume`. Default `5`.",
               "format": "uint32",
               "minimum": 0,
               "type": "integer"

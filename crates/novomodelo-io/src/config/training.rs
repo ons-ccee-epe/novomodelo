@@ -314,21 +314,34 @@ pub enum SelectionMethod {
         #[serde(default, deserialize_with = "deserialize_lookback_iterations")]
         lookback_iterations: Option<NonZeroU32>,
     },
-    /// Dynamic: a per-solve lazy loop that loads only a small resident subset of
-    /// rows per solve while retaining the full pool.
+    /// Dynamic: a per-solve lazy loop, this software's own lazy row generation.
+    /// From `start_iteration` on, each training solve starts with the seed rows
+    /// described under `seed_window`, adds the candidate rows that its solution
+    /// violates, at most `max_added_per_round` per round, and solves again; it
+    /// returns when no candidate is violated. After a fixed number of rounds
+    /// the per-round limit is lifted. A simulation solve starts with every
+    /// active row, so `seed_window` and `candidate_recency` apply to training
+    /// only. The method never deactivates a row, and the pool keeps every row.
     Dynamic {
         /// First 1-based iteration at which the lazy loop becomes active.
         /// Must be `>= 1`. Default `2`.
         #[serde(default = "default_start_iteration")]
         start_iteration: u32,
-        /// Number of most-recent iterations whose rows seed the initial resident
-        /// set. `0` is valid (seeds only the current iteration). Default `5`.
+        /// A solve starts with the active rows whose last binding was at most
+        /// `seed_window` iterations ago (a row that has not bound counts from
+        /// the iteration that added it), plus the rows added in the current
+        /// iteration. `row_activity_tolerance` decides whether a row binds. `0`
+        /// seeds the rows of the current iteration and those that bound in it.
+        /// A row loaded from a policy counts from the start of the run under
+        /// `warm_start` and for `policy.boundary` rows, and from its recorded
+        /// iteration under `resume`. Default `5`.
         #[serde(default = "default_seed_window")]
         seed_window: u32,
-        /// Only rows generated within the last `candidate_recency` iterations are
-        /// scored. Absent (default): unbounded, so every pool row is a candidate,
-        /// which preserves exactness. A value `n` (must be `>= 1`) makes the loop
-        /// deliberately inexact — rows older than the window are never added.
+        /// Absent (default): every active row is a candidate and a solve returns
+        /// the optimum over them. A value `n` (must be `>= 1`) restricts the
+        /// candidates to the rows added in the last `n` iterations and loaded
+        /// rows, and the result is then the optimum over those rows together
+        /// with the seed rows.
         #[serde(default)]
         candidate_recency: Option<u32>,
         /// Maximum rows added per lazy-solve round. Must be `>= 1`. Default `10`.

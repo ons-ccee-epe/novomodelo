@@ -102,7 +102,7 @@ pub(crate) fn run_forward_stage<S: SolverInterface + Send>(
         build_initial_resident_set(
             pool,
             iteration,
-            params.k2,
+            params.seed_window,
             &mut ws.backward_accum.dcs_initial_resident,
         );
         let dcs_ctx = DcsSolveContext {

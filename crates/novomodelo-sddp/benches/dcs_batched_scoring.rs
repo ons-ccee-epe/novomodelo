@@ -128,9 +128,9 @@ fn score_per_candidate_baseline(
     }
 
     for (slot, intercept, coefficients) in pool.active_cuts() {
-        if let Some(k1) = params.k1 {
+        if let Some(candidate_recency) = params.candidate_recency {
             let age = current_iteration.saturating_sub(pool.metadata(slot).iteration_generated);
-            if age >= u64::from(k1) {
+            if age >= u64::from(candidate_recency) {
                 continue;
             }
         }
@@ -141,14 +141,14 @@ fn score_per_candidate_baseline(
         gemm_block(coefficients, unscaled_state, 1, n_state, 1, &mut dot);
         let alpha = intercept + dot[0];
         let v = alpha - theta_raw;
-        if v > params.epsilon_viol {
+        if v > params.violation_tolerance {
             violations.push((v, slot as u32));
         }
     }
 
     let violated_count = violations.len();
     violations.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-    let take = (params.nadic as usize).min(violated_count);
+    let take = (params.max_added_per_round as usize).min(violated_count);
     out_selected.extend(violations[..take].iter().map(|&(_, slot)| slot));
     violated_count
 }
@@ -200,11 +200,11 @@ fn bench_one(c: &mut Criterion, k: usize, n_state: usize) {
     let pool = make_candidate_pool(k, n_state, 0xDEAD_BEEF_CAFE_F00D);
     let primal = make_primal(n_state, 0xFEED_FACE_1234_5678);
     let resident = CutRowMap::new(k.max(1), 0); // empty: every cut a candidate
-    // k1 None selects the exactness path (scores all cuts, no age cutoff).
+    // candidate_recency None selects the exactness path (scores all cuts, no age cutoff).
     let params = DcsParams {
-        k1: None,
-        nadic: 10,
-        epsilon_viol: 1e-10,
+        candidate_recency: None,
+        max_added_per_round: 10,
+        violation_tolerance: 1e-10,
         ..DcsParams::default()
     };
     let current_iteration = 10;

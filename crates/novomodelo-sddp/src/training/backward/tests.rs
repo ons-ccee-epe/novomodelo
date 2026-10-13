@@ -5114,7 +5114,7 @@ fn dcs_two_stage_fcf() -> FutureCostFunction {
     fcf.add_cut(NodeId(0), 1, 0, 1, 0.0, &[2.0]);
     fcf.add_cut(NodeId(0), 1, 0, 2, 3.0, &[0.0]);
     // Seed metadata: slots 0 and 2 are "recently active"; the binding slot 1
-    // is stale so the k2 window excludes it (forcing the lazy add). All were
+    // is stale so the seed window excludes it (forcing the lazy add). All were
     // generated before the current iteration so none is current-iteration
     // protected.
     let meta = |generated: u64, last: u64| CutMetadata {
@@ -5125,7 +5125,7 @@ fn dcs_two_stage_fcf() -> FutureCostFunction {
         last_active_iter: last,
     };
     fcf.pools[1].set_metadata_for_test(0, meta(1, 5));
-    fcf.pools[1].set_metadata_for_test(1, meta(1, 1)); // stale → outside k2=2 window at iter 5
+    fcf.pools[1].set_metadata_for_test(1, meta(1, 1)); // stale → outside seed_window=2 at iter 5
     fcf.pools[1].set_metadata_for_test(2, meta(1, 5));
     fcf
 }
@@ -5210,7 +5210,7 @@ fn run_dcs_backward_trial_state_at(
     let horizon = HorizonMode::Finite { num_stages: 2 };
     let risk_measures = vec![RiskMeasure::Expectation; 2];
 
-    let mut fcf = dcs_two_stage_fcf();
+    let fcf = dcs_two_stage_fcf();
     // All-cuts batch for the frozen path (delta == all cuts here).
     let cut_batch = build_cut_row_batch(
         &fcf,
@@ -5222,7 +5222,7 @@ fn run_dcs_backward_trial_state_at(
     let successor_active_slots: Vec<usize> = (0..fcf.pools[1].populated()).collect();
     let num_cuts = successor_active_slots.len();
 
-    let mut exchange = exchange_with_states(n_state, vec![vec![x_hat]]);
+    let exchange = exchange_with_states(n_state, vec![vec![x_hat]]);
     let mut workspaces = dcs_active_workspace();
     let mut basis_store = empty_basis_store(exchange.local_count(), 2);
     let state_boxes = permissive_state_boxes(n_state, n_stages);
@@ -5351,20 +5351,11 @@ fn run_dcs_backward_trial_state_at(
     // still in scope (the bytes the FCF merge would read).
     let coefficients = staged_cut_coefficients(&cut, &ws.backward_accum.agg_arena).to_vec();
     let meta_sync = ws.backward_accum.metadata_sync_contribution[..pop].to_vec();
-    // Touch fcf/exchange so the borrows live to here.
-    let _ = (&mut fcf, &mut exchange);
     (cut, coefficients, meta_sync)
 }
 
 fn dcs_params(start_iteration: u64) -> DcsParams {
-    DcsParams {
-        k1: None,
-        k2: 2,
-        nadic: 10,
-        epsilon_viol: 1e-10,
-        start_iteration,
-        max_inner_iterations: 50,
-    }
+    dcs_params_with_candidate_recency(start_iteration, None)
 }
 
 /// Exactness (real solver, both backends via the active solver): the
@@ -5466,10 +5457,10 @@ fn backward_dcs_binding_counts_match_frozen() {
 #[test]
 fn from_strategy_gates_the_backward_dcs_field() {
     let dynamic = CutSelectionStrategy::Dynamic {
-        k1: None,
-        k2: 5,
-        nadic: 10,
-        epsilon_viol: 1e-10,
+        candidate_recency: None,
+        seed_window: 5,
+        max_added_per_round: 10,
+        violation_tolerance: 1e-10,
         start_iteration: 2,
     };
     assert!(DcsParams::from_strategy(&dynamic).is_some());
@@ -5481,24 +5472,27 @@ fn from_strategy_gates_the_backward_dcs_field() {
 }
 
 // -----------------------------------------------------------------------
-// DCS backward validation gates (exactness / finite-k1 / determinism /
-// slow sweep). Default `k1 = None` (∞) — exactness holds only when every
-// pool cut is a candidate.
+// DCS backward validation gates (exactness / finite candidate_recency /
+// determinism / slow sweep). Default `candidate_recency = None` (∞) —
+// exactness holds only when every pool cut is a candidate.
 // -----------------------------------------------------------------------
 
-/// `DcsParams` with an explicit finite `k1` candidate-recency window.
-fn dcs_params_k1(start_iteration: u64, k1: Option<u32>) -> DcsParams {
+/// `DcsParams` with an explicit `candidate_recency` window.
+fn dcs_params_with_candidate_recency(
+    start_iteration: u64,
+    candidate_recency: Option<u32>,
+) -> DcsParams {
     DcsParams {
-        k1,
-        k2: 2,
-        nadic: 10,
-        epsilon_viol: 1e-10,
+        candidate_recency,
+        seed_window: 2,
+        max_added_per_round: 10,
+        violation_tolerance: 1e-10,
         start_iteration,
         max_inner_iterations: 50,
     }
 }
 
-/// Exactness + "never spins": with `k1 = None` the DCS backward cut equals
+/// Exactness + "never spins": with `candidate_recency = None` the DCS backward cut equals
 /// the all-cuts cut (intercept + every coefficient within 1e-9), and the
 /// lazy loop terminates — even with `max_inner_iterations = 1`, which lifts
 /// the per-round limit after one round — so it can never spin unbounded.
@@ -5530,28 +5524,31 @@ fn backward_dcs_exactness_and_terminates() {
     }
 }
 
-/// A finite `k1` window demonstrably takes effect (guards against `k1`
-/// being silently ignored): with `k1 = Some(1)` at iteration 5, the binding
-/// cut (slot 1, generated at iteration 1 → age 4 ≥ 1) is windowed out of
-/// candidacy and is also outside the `k2 = 2` initial-set window, so it is
-/// never added. The DCS optimum then differs from the all-cuts optimum —
-/// the deliberately-non-exact windowed mode.
+/// A finite `candidate_recency` window demonstrably takes effect (guards
+/// against `candidate_recency` being silently ignored): with
+/// `candidate_recency = Some(1)` at iteration 5, the binding cut (slot 1,
+/// generated at iteration 1 → age 4 ≥ 1) is windowed out of candidacy and is
+/// also outside the `seed_window = 2` initial-set window, so it is never
+/// added. The DCS optimum then differs from the all-cuts optimum — the
+/// deliberately-non-exact windowed mode.
 #[test]
-fn backward_dcs_finite_k1_window_takes_effect() {
+fn backward_dcs_finite_candidate_recency_takes_effect() {
     let iteration = 5;
     let (frozen, frozen_coefficients, _) = run_dcs_backward_trial_state(None, iteration);
-    // Sanity: the all-cuts (and k1=None DCS) gradient is the binding cut's 2.0.
+    // Sanity: the all-cuts (and candidate_recency=None DCS) gradient is the binding cut's 2.0.
     assert!((frozen_coefficients[0] - 2.0).abs() < 1e-9);
 
-    let (windowed, windowed_coefficients, _) =
-        run_dcs_backward_trial_state(Some(dcs_params_k1(2, Some(1))), iteration);
+    let (windowed, windowed_coefficients, _) = run_dcs_backward_trial_state(
+        Some(dcs_params_with_candidate_recency(2, Some(1))),
+        iteration,
+    );
     // The binding cut is windowed out, so the windowed optimum differs:
     // the surviving cuts (slots 0,2, both gradient 0) give a 0 gradient and
     // a different intercept than the all-cuts cut.
     assert!(
         (windowed_coefficients[0] - frozen_coefficients[0]).abs() > 1e-6
             || (windowed.intercept - frozen.intercept).abs() > 1e-6,
-        "finite k1 must change the cut vs all-cuts (windowed coeff {} intercept {}; \
+        "finite candidate_recency must change the cut vs all-cuts (windowed coeff {} intercept {}; \
          all-cuts coeff {} intercept {})",
         windowed_coefficients[0],
         windowed.intercept,
@@ -5589,7 +5586,7 @@ fn backward_dcs_run_to_run_determinism() {
 }
 
 /// Slow exactness sweep: across a handful of pinned incoming states (which
-/// vary the binding cut), the `k1 = None` DCS backward cut equals the
+/// vary the binding cut), the `candidate_recency = None` DCS backward cut equals the
 /// all-cuts cut within 1e-9 at every point. Gated behind `slow-tests`.
 #[test]
 #[cfg_attr(not(feature = "slow-tests"), ignore = "slow DCS exactness sweep")]
@@ -5703,7 +5700,7 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
     let horizon = HorizonMode::Finite { num_stages: 2 };
     let risk_measures = vec![RiskMeasure::Expectation; 2];
 
-    let mut fcf = dcs_two_stage_fcf();
+    let fcf = dcs_two_stage_fcf();
     // All-cuts batch (delta) for the frozen path; with frozen carrying the
     // binding cut, the delta is the remaining (non-frozen) cuts. For the DCS
     // exactness comparison we only need the all-cuts reference, computed
@@ -5718,7 +5715,7 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
     let successor_active_slots: Vec<usize> = (0..fcf.pools[1].populated()).collect();
     let num_cuts = successor_active_slots.len();
 
-    let mut exchange = exchange_with_states(n_state, vec![vec![2.0]]);
+    let exchange = exchange_with_states(n_state, vec![vec![2.0]]);
     let mut workspaces = dcs_active_workspace();
     let mut basis_store = empty_basis_store(exchange.local_count(), 2);
     let state_boxes = permissive_state_boxes(n_state, n_stages);
@@ -5847,7 +5844,6 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
     // Resolve the DCS coefficient slice from the worker arena while `ws` is
     // still in scope.
     let dcs_coefficients = staged_cut_coefficients(&dcs_cut, &ws.backward_accum.agg_arena).to_vec();
-    let _ = (&mut fcf, &mut exchange);
 
     // The all-cuts reference cut (cut-free base + full pool, no DCS).
     let (allcuts, allcuts_coefficients, _) = run_dcs_backward_trial_state(None, iteration);

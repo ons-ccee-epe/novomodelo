@@ -3223,7 +3223,7 @@ mod dcs_forward {
             last_active_iter: last,
         };
         fcf.pools[0].set_metadata_for_test(0, meta(1, 5));
-        fcf.pools[0].set_metadata_for_test(1, meta(1, 1)); // stale → outside k2=2 window at iter 5
+        fcf.pools[0].set_metadata_for_test(1, meta(1, 1)); // stale → outside seed_window=2 at iter 5
         fcf.pools[0].set_metadata_for_test(2, meta(1, 5));
         fcf
     }
@@ -3278,10 +3278,10 @@ mod dcs_forward {
 
     fn dcs_params(start_iteration: u64) -> DcsParams {
         DcsParams {
-            k1: None,
-            k2: 2,
-            nadic: 10,
-            epsilon_viol: 1e-10,
+            candidate_recency: None,
+            seed_window: 2,
+            max_added_per_round: 10,
+            violation_tolerance: 1e-10,
             start_iteration,
             max_inner_iterations: 50,
         }

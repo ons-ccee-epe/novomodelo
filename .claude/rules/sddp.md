@@ -591,7 +591,7 @@ a reserved leading slot is vacant and no slot of the pool is a loaded cut), with
 one pin per other reader:
 `a_loaded_cut_is_never_packed_as_a_new_cut` (`cut/cut_sync.rs`),
 `enforce_budget_never_evicts_a_loaded_cut`
-(`cut/pool.rs`), `k1_window_keeps_warm_start_cuts` and
+(`cut/pool.rs`), `candidate_recency_window_keeps_warm_start_cuts` and
 `a_loaded_slot_is_not_seeded_as_a_current_iteration_cut` (`cut/dcs.rs`).
 
 **The activity clock is the current run's.** `CutMetadata::last_active_iter` and

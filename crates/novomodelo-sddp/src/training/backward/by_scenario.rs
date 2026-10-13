@@ -83,7 +83,7 @@ impl StageOpeningSolver {
                 build_initial_resident_set(
                     child.successor_pool,
                     iteration,
-                    params.k2,
+                    params.seed_window,
                     &mut ws.backward_accum.dcs_initial_resident,
                 );
             }

@@ -433,13 +433,13 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
         build_initial_resident_set(
             &fcf.pools[pool_id],
             0,
-            params.k2,
+            params.seed_window,
             &mut ws.backward_accum.dcs_initial_resident,
         );
         let dcs_ctx = DcsSolveContext {
             stage_index: t,
             scenario_index: ids.scenario_id as usize,
-            iteration: None, // disables the k1 window → every cut a candidate
+            iteration: None, // disables the candidate_recency window → every cut a candidate
             // Simulation solves one LP per (stage, scenario): always fresh.
             continue_carry: false,
             node_id: ids.node_id,
