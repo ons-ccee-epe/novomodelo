@@ -99,12 +99,9 @@ harness = false
 required-features = ["test-support"]
 
 [[bench]]
-name = "cut_selection"
-harness = false
-
-[[bench]]
 name = "cut_selection_kernel"
 harness = false
+required-features = ["test-support"]
 
 [[bench]]
 name = "dcs_batched_scoring"

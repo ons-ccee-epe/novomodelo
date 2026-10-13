@@ -2,9 +2,8 @@
 //!
 //! The single entry point [`gemm_block`] is the only call site in
 //! `novomodelo-sddp` for [`matrixmultiply::dgemm`]. The wrapper isolates the
-//! one `unsafe` block that cut selection (`cut_selection.rs`), `dynamic`
-//! scoring (`dcs.rs`) and the ownership record (`ownership.rs`) need so the
-//! call sites stay in safe code.
+//! one `unsafe` block that the ownership record (`cut/ownership.rs`) and
+//! `dynamic` scoring (`cut/dcs.rs`) need so the call sites stay in safe code.
 
 /// Compute `v_block` (`k_rows × m_len`, row-major) = `coef` · `state_blockᵀ`.
 ///

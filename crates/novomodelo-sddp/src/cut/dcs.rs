@@ -92,9 +92,7 @@ impl DcsParams {
                 start_iteration: *start_iteration,
                 max_inner_iterations: Self::default().max_inner_iterations,
             }),
-            CutSelectionStrategy::Level1 { .. }
-            | CutSelectionStrategy::Lml1 { .. }
-            | CutSelectionStrategy::Dominated { .. } => None,
+            CutSelectionStrategy::Level1 { .. } => None,
         }
     }
 
@@ -843,12 +841,6 @@ mod tests {
             lookback_iterations: None,
         };
         assert!(DcsParams::from_strategy(&level1).is_none());
-
-        let dominated = CutSelectionStrategy::Dominated {
-            threshold: 1e-6,
-            check_frequency: 10,
-        };
-        assert!(DcsParams::from_strategy(&dominated).is_none());
     }
 
     #[test]
@@ -2839,26 +2831,25 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Build a pool of `n` populated, state_dim-1 cuts with explicit per-slot
-    /// `(active, iteration_generated, last_active_iter)` metadata. Local copy of
-    /// the `cut_selection` test-helper pattern (kept private to this module).
+    /// `(active, iteration_generated, last_active_iter)` metadata.
     #[allow(clippy::cast_possible_truncation)]
     fn seed_pool(specs: &[(bool, u64, u64)]) -> CutPool {
         let n = specs.len();
         let mut pool = CutPool::new(n.max(1), 1, n.max(1) as u32, 0);
-        let mut metadata = Vec::with_capacity(n);
-        let mut active = Vec::with_capacity(n);
         for (i, &(is_active, iteration_generated, last_active_iter)) in specs.iter().enumerate() {
             pool.add_cut(NodeId(0), 0, i as u32, 0.0, &[0.0]);
-            metadata.push(CutMetadata {
-                iteration_generated,
-                forward_pass_index: i as u32,
-                node: NodeId(0),
-                active_count: 0,
-                last_active_iter,
-            });
-            active.push(is_active);
+            pool.set_metadata_for_test(
+                i,
+                CutMetadata {
+                    iteration_generated,
+                    forward_pass_index: i as u32,
+                    node: NodeId(0),
+                    active_count: 0,
+                    last_active_iter,
+                },
+            );
+            pool.set_active(i as u32, is_active);
         }
-        pool.replace_selection(&metadata, &active);
         pool
     }
 

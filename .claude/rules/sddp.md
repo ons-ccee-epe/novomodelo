@@ -660,39 +660,35 @@ on a sampled branching graph the pool's `visit_stride` is a statistical floor
 (`NodeGraph::pool_cut_stride`), so a node visited fewer times than its stride
 leaves the tail of its block unwritten and the next iteration's block starts above
 it; and a `CutPool::new` pool with a non-zero `slot_base` leaves its
-leading slots unwritten. `populated()` and `cuts_in_lp()` are one past the highest
-written slot: they bound slot-indexed reads and do not count cuts, which
-`generated()` does. Readers skip a vacant slot. The windowed selection kernel
-(`CutSelectionStrategy::select_for_stage`), which no configured method reaches,
-makes a slot eligible only when its
-origin is `Generated` and its generating iteration is earlier than the current
-one, and overwrites a vacant slot's values with `f64::NEG_INFINITY` after the
-intercept add, so its zero is never a per-state maximum. The checkpoint writer
-(`build_stage_cut_records`) writes no record for it, and `build_stage_cuts_payloads`
-writes `populated_count` as the number of records. The ownership record treats
-it as not live (`is_live`), so its zero owns no state. A debug build refuses to
-activate a vacant slot (`CutPool::set_active`).
+leading slots unwritten. `populated()` is one past the highest written slot: it
+bounds slot-indexed reads and does not count cuts, which `generated()` does.
+Readers skip a vacant slot. The checkpoint writer (`build_stage_cut_records`)
+writes no record for it, and `build_stage_cuts_payloads` writes `populated_count`
+as the number of records. The ownership record treats it as not live (`is_live`),
+so its zero owns no state, and `CutPool::ownership_activity_updates` lists scored
+slots only, so it is never activated. A debug build refuses to activate a vacant
+slot (`CutPool::set_active`).
 
 Treating `populated()` as a cut count is the wrong-but-compiling alternative: the
-vacant zero then competes in the maximum. It is reported as a reactivation when it
-lies within the tolerance of the maximum, it deactivates every cut more than the
-tolerance below it when it exceeds them, and the checkpoint exports it as an
-inactive zero record, which a load reads back as a loaded cut.
+vacant zero then competes in the maximum and owns states, and the checkpoint
+exports it as an inactive zero record, which a load reads back as a loaded cut.
 Read: `cut/pool.rs` (`SlotRole`, `CutPool::role`, `CutPool::populated`),
-`cut/cut_selection.rs` (`select_for_stage`), `policy/policy_export.rs`
+`cut/ownership.rs` (`is_live`), `policy/policy_export.rs`
 (`build_stage_cut_records`, `build_stage_cuts_payloads`). Pinned by
 `a_slot_role_is_fixed_when_the_slot_is_written` and
 `a_reserved_leading_slot_is_vacant_not_loaded` (`cut/pool.rs`: a role is written
-with its slot and by nothing else), `a_vacant_slot_takes_no_part_in_selection`
-(`cut/cut_selection.rs`: the vacant zero is neither the maximum nor a
-reactivation), `a_never_written_slot_is_not_exported` (`policy/policy_export.rs`:
-records at slots 0, 2 and 3 and a `populated_count` of 3) and
-`sampled_fan_checkpoint_holds_no_never_written_slot`
+with its slot and by nothing else), `a_never_written_slot_is_not_exported`
+(`policy/policy_export.rs`: records at slots 0, 2 and 3 and a `populated_count`
+of 3) and `sampled_fan_checkpoint_holds_no_never_written_slot`
 (`tests/branching_value_oracle.rs`: on a trained sampled fan, one record per
-written slot) and the `vacant_slot` fixture of
+written slot), the `vacant_slot` fixture of
 `the_record_reproduces_every_reference_fixture` (`cut/ownership.rs`: the vacant
-zero owns no state), with `activating_a_vacant_slot_panics_in_debug`
-(`cut/pool.rs`) for the debug assertion.
+zero owns no state) and `incremental_record_equals_rebuild_and_reference`
+(`cut/ownership.rs`: its draws leave vacant holes below the highest written
+slot), and `level1_follows_the_reference_rule_on_every_fixture`
+(`cut/cut_selection.rs`: the vacant slot of a fixture is in neither update list),
+with `activating_a_vacant_slot_panics_in_debug` (`cut/pool.rs`) for the debug
+assertion.
 
 **Basis matches by slot, never by count or column.** Warm-start basis
 reconstruction matches stored cut rows to current LP rows by **`CutPool` slot
@@ -991,14 +987,13 @@ record. With a window the rows reserved are those of the window section.
 
 **Who enables it.** `TrainingSession::new` enables the store on every rank, on
 the pool of every node of `interior_cut_nodes` (stage 1 or later, with a
-successor), when `CutSelectionStrategy::stores_trial_states` holds: `Level1`
-only, a total match over the variants, as is the match that enables, with
-`enable_trial_states_within` when the strategy carries a window and
-`enable_trial_states` otherwise. The session enables neither the root pool nor
-the leaf pool, `exports.states` alone enables nothing, and without
-`cut_selection` no pool allocates a row. `exports.states` is the only configured
-reader of the archive; the windowed kernel, which reads it too, is reached by no
-configured method. The strategy comes from the config
+successor), through one total match over the strategy variants: `Level1` only,
+with `enable_trial_states_within` when the strategy carries a window and
+`enable_trial_states` otherwise. That match is the only place that decides which
+strategy stores states. The session enables neither the root pool nor the leaf
+pool, `exports.states` alone enables nothing, and without `cut_selection` no pool
+allocates a row. `exports.states` reads the archive, which no selection run
+trims. The strategy comes from the config
 the CLI broadcasts and the node set from the graph every rank builds from it, so
 the same pools store, with the same window, on every rank for the whole run.
 
@@ -1060,9 +1055,8 @@ The wrong-but-compiling alternatives:
 - enabling the store for a strategy other than `Level1`, or setting `scored` on
   the cuts already written when the store is enabled. Pinned by
   `a_run_without_level1_stores_no_trial_state`, which fails on its `dynamic` leg
-  under the first: the mutation shown admits `Dynamic` in both
-  `stores_trial_states` and the enabling match, since `stores_trial_states`
-  alone enables nothing while that match keeps `Dynamic` out; and by `a_slot_role_is_fixed_when_the_slot_is_written` and
+  under the first: the mutation shown admits `Dynamic` in the enabling match of
+  `TrainingSession::new`; and by `a_slot_role_is_fixed_when_the_slot_is_written` and
   `a_pool_that_stores_trial_states_marks_its_cuts_scored` under the second;
 - deciding the enabling or the fill from a value a rank computes locally (its
   trial count, the cuts it generated): the ranks' stores differ. Not
@@ -1071,7 +1065,6 @@ The wrong-but-compiling alternatives:
 Read: `cut/trial_states.rs`, `cut/pool.rs` (`CutPool::enable_trial_states`,
 `CutPool::enable_trial_states_within`, `CutPool::store_trial_state`,
 `CutPool::trial_state`, `add_cut`),
-`cut/cut_selection.rs` (`CutSelectionStrategy::stores_trial_states`),
 `lp/indexer/cut_state_projection.rs` (`gather_trial_state`),
 `training/backward_pass_state.rs` (`store_level_trial_states`,
 `run_one_backward_level`, `run_enumerated_backward`),
@@ -1136,8 +1129,8 @@ The wrong-but-compiling alternatives:
   comparison of values does, so that test and the single value function are the
   guard. More states than the column block in one call is not demonstrated.
 
-Read: `cut/ownership.rs` (`scan_block`, `ROW_BLOCK`), `gemm.rs` (`gemm_block`,
-`PINNED_MAX_ROWS`, `PINNED_MAX_COLUMNS`), `cut/cut_selection.rs` (`M_BLOCK`).
+Read: `cut/ownership.rs` (`scan_block`, `ROW_BLOCK`, `M_BLOCK`), `gemm.rs`
+(`gemm_block`, `PINNED_MAX_ROWS`, `PINNED_MAX_COLUMNS`).
 Pinned by `gemm_block_element_is_independent_of_the_block_shape` (`gemm.rs`: an
 element equals the same element alone, in column chunks and in row chunks),
 `resolved_kernel_is_the_unfused_baseline` (`gemm.rs`: the kernel the build
@@ -1301,12 +1294,10 @@ By slot role:
 `run_cut_management` runs it in every iteration `should_run` holds, for the pool
 of each node of `interior_cut_nodes`: `expire_trial_states` (a no-op without a
 window), `update_ownership`, then
-`apply_updates(ownership_activity_updates(..))`. It reads no archive, and a
-`level1` run without `exports.states` allocates none
-(`CutSelectionStrategy::scores_visited_states` is false for `Level1`). The
-windowed kernel (`select_for_stage`) returns no update for `Level1`; the
-strategies it serves, `Lml1` and `Dominated`, are reached by no configured
-method. The call site meets what the update relies on:
+`apply_updates(ownership_activity_updates())`. It reads no archive: a `level1`
+run without `exports.states` allocates none, and with `exports.states` no
+selection run trims the archive, so the exported states are every visited state
+of the run. The call site meets what the update relies on:
 
 - `TrainingSession::new` enabled the store on these pools before the first cut,
   so every generated cut there is scored;
@@ -1367,17 +1358,6 @@ The wrong-but-compiling alternatives, each shown by a mutation:
   does the lowest-slot assertion of one `with_level1` oracle leg: the leg in
   which an active cut has an identical twin, which is not the same leg on both
   solver backends;
-- sending `Level1` through the windowed kernel and the per-node archive, which
-  on a multi-node level holds the siblings' states. The mutation shown routes
-  `Level1` to the windowed kernel, which returns no update, so nothing is
-  deactivated and the record is never brought up to date; that the archive holds
-  the siblings' states on a multi-node level is not demonstrated by any test.
-  Under the mutation `level1_deactivates_cuts_in_a_training_run`,
-  `level1_keeps_the_owner_of_every_stored_state_after_a_training_run`,
-  `level1_reactivates_an_owner_the_budget_evicted`,
-  `level1_tie_tolerance_no_longer_changes_a_run` (through its power check),
-  both oracle legs, `cut_oracles_hold_on_deactivated_cuts_under_level1` and the
-  `level1_` determinism gates fail;
 - a derivation that never emits a reactivation: an owner the budget evicted
   stays inactive. Under it `level1_reactivates_an_owner_the_budget_evicted`,
   `level1_reactivates_the_owner_of_a_new_state`,
@@ -1386,8 +1366,7 @@ The wrong-but-compiling alternatives, each shown by a mutation:
 
 Read: `cut/pool.rs` (`CutPool::ownership_activity_updates`, `update_ownership`,
 `apply_updates`, `enforce_budget`), `cut/ownership.rs` (`is_live`,
-`takes_over`), `cut/cut_selection.rs` (the module documentation,
-`CutSelectionStrategy::scores_visited_states`, `select_for_stage`),
+`takes_over`), `cut/cut_selection.rs` (the module documentation),
 `training/session/mod.rs` (`run_cut_management`, `TrainingSession::new`),
 `cut/selection_reference.rs` (`active_after`). Pinned by, in
 `cut/cut_selection.rs`: `level1_selects_the_two_steep_cuts_of_paper_figure_four`,
@@ -1399,8 +1378,7 @@ Read: `cut/pool.rs` (`CutPool::ownership_activity_updates`, `update_ownership`,
 `level1_deactivates_a_current_iteration_cut_that_owns_no_state`,
 `level1_keeps_one_of_two_identical_cuts`,
 `level1_follows_the_reference_rule_on_every_fixture`,
-`level1_matches_the_reference_rule` and its sibling properties, and
-`the_windowed_kernel_selects_nothing_for_level1_or_dynamic`; in `cut/pool.rs`:
+`level1_matches_the_reference_rule` and its sibling properties; in `cut/pool.rs`:
 `ownership_activity_updates_leave_an_unscored_generated_cut_alone`; in
 `tests/cut_basis.rs`: `level1_deactivates_cuts_in_a_training_run` (after a run,
 a scored cut is active exactly when it owns a stored state),
@@ -1408,8 +1386,12 @@ a scored cut is active exactly when it owns a stored state),
 envelope invariant, and the run's record against a rebuild),
 `level1_reactivates_an_owner_the_budget_evicted` (the budget paragraph, as
 existence over a run's events, which carry counts and no slot),
-`level1_tie_tolerance_no_longer_changes_a_run` and
-`a_level1_run_keeps_no_state_archive`; in `tests/extensive_form_oracle.rs`:
+`level1_tie_tolerance_no_longer_changes_a_run`,
+`a_level1_run_keeps_no_state_archive` and
+`a_level1_run_with_exported_states_keeps_every_visited_state` (no selection run
+trims the archive); in `tests/cut_oracles.rs`:
+`cut_oracles_hold_on_deactivated_cuts_under_level1` (the run leaves inactive cuts
+and the validity oracle checks them); in `tests/extensive_form_oracle.rs`:
 `branching_tree_with_level1_stays_below_and_closes_to_the_extensive_form` and
 `chain_with_level1_stays_below_and_closes_to_the_extensive_form` (among
 bit-identical cuts only the lowest slot is active, every stored state's owner is

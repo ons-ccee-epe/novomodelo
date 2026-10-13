@@ -16,14 +16,14 @@
 //! (never removed), so the slot layout stays deterministic. Inactive cuts are
 //! excluded from LP construction and [`evaluate_at_state`]. [`set_active`] is the
 //! canonical toggle that keeps [`active_count`] consistent; [`deactivate`] wraps
-//! `set_active(slot, false)`. [`cuts_in_lp`] is the slot bound — the LP-row metric
+//! `set_active(slot, false)`. [`populated`] is the slot bound — the LP-row metric
 //! for append-only LP tracking.
 //!
 //! [`evaluate_at_state`]: CutPool::evaluate_at_state
 //! [`set_active`]: CutPool::set_active
 //! [`deactivate`]: CutPool::deactivate
 //! [`active_count`]: CutPool::active_count
-//! [`cuts_in_lp`]: CutPool::cuts_in_lp
+//! [`populated`]: CutPool::populated
 //!
 //! ## Example
 //!
@@ -39,7 +39,7 @@
 //! let coeffs = vec![1.0; 9];
 //! pool.add_cut(NodeId(0), 0, 0, 5.0, &coeffs);
 //! assert_eq!(pool.active_count(), 1);
-//! assert_eq!(pool.cuts_in_lp(), 1);
+//! assert_eq!(pool.populated(), 1);
 //! ```
 
 use std::num::NonZeroU64;
@@ -633,7 +633,7 @@ impl CutPool {
     /// list. Valid after [`update_ownership`](CutPool::update_ownership); the
     /// pool is not modified.
     #[must_use]
-    pub fn ownership_activity_updates(&self, stage_index: u32) -> CutActivityUpdates {
+    pub fn ownership_activity_updates(&self) -> CutActivityUpdates {
         let mut updates = Vec::new();
         let mut reactivations = Vec::new();
         #[allow(clippy::cast_possible_truncation)]
@@ -645,14 +645,14 @@ impl CutPool {
             }
         }
         CutActivityUpdates {
-            stage_index,
             updates,
             reactivations,
         }
     }
 
     /// Return the slot bound — one past the highest written slot, independent of
-    /// activity state. A slot below it can be vacant.
+    /// activity state. A slot below it can be vacant, so it bounds slots and does
+    /// not count cuts.
     ///
     /// # Example
     ///
@@ -663,21 +663,13 @@ impl CutPool {
     /// let mut pool = CutPool::new(10, 1, 1, 0);
     /// pool.add_cut(NodeId(0), 0, 0, 1.0, &[1.0]);
     /// pool.add_cut(NodeId(0), 1, 0, 2.0, &[2.0]);
-    /// assert_eq!(pool.cuts_in_lp(), 2);
+    /// assert_eq!(pool.populated(), 2);
     ///
     /// // Deactivation does not change the LP-row count.
     /// pool.deactivate(&[0]);
-    /// assert_eq!(pool.cuts_in_lp(), 2);
+    /// assert_eq!(pool.populated(), 2);
     /// assert_eq!(pool.active_count(), 1);
     /// ```
-    #[must_use]
-    #[inline]
-    pub fn cuts_in_lp(&self) -> usize {
-        self.populated_count
-    }
-
-    /// The slot bound, the same value as [`cuts_in_lp`](CutPool::cuts_in_lp). A
-    /// slot below it can be vacant, so it bounds slots and does not count cuts.
     #[must_use]
     #[inline]
     pub fn populated(&self) -> usize {
@@ -732,10 +724,7 @@ impl CutPool {
     }
 
     /// Record that a cut was binding `increment` more times, most recently at
-    /// `iteration`. Metadata mutation cannot desync `active`/
-    /// `cached_active_count` (independent fields), so — unlike
-    /// [`replace_selection`](CutPool::replace_selection) — this touches only
-    /// the one slot's metadata.
+    /// `iteration`.
     ///
     /// # Panics (debug builds only)
     ///
@@ -788,8 +777,9 @@ impl CutPool {
     ///
     /// Panics if the pool stores no trial states, `slot` is not a scored written
     /// slot, or it already holds a state.
-    #[cfg(test)]
-    pub(crate) fn set_trial_state_for_test(&mut self, slot: usize, state: &[f64]) {
+    #[cfg(any(test, feature = "test-support"))]
+    #[allow(clippy::expect_used)]
+    pub fn set_trial_state_for_test(&mut self, slot: usize, state: &[f64]) {
         assert!(
             slot < self.populated_count && self.roles[slot].scored,
             "set_trial_state_for_test: slot {slot} is not a scored written slot"
@@ -898,7 +888,6 @@ impl CutPool {
     /// assert_eq!(pool.active_count(), 2);
     ///
     /// let updates = CutActivityUpdates {
-    ///     stage_index: 0,
     ///     updates: vec![0],          // deactivate slot 0
     ///     reactivations: vec![1],    // reactivate slot 1
     /// };
@@ -915,48 +904,6 @@ impl CutPool {
         for &slot in &updates.reactivations {
             self.set_active(slot, true);
         }
-    }
-
-    /// Overwrite `metadata` and `active` across the populated prefix in one
-    /// call, recomputing `cached_active_count` from the just-written bitmap in
-    /// the same call — the two writes stay atomic so the cache can never
-    /// desync from the bitmap it counts.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `metadata.len() != populated_count` or `active.len() !=
-    /// populated_count` (slice-length mismatch on assignment).
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use novomodelo_sddp::cut::pool::CutPool;
-    /// use novomodelo_sddp::cut_selection::CutMetadata;
-    /// use novomodelo_sddp::setup::NodeId;
-    ///
-    /// let mut pool = CutPool::new(10, 1, 1, 0);
-    /// pool.add_cut(NodeId(0), 0, 0, 1.0, &[1.0]);
-    /// pool.add_cut(NodeId(0), 1, 0, 2.0, &[2.0]);
-    ///
-    /// let meta = CutMetadata {
-    ///     iteration_generated: 0,
-    ///     forward_pass_index: 0,
-    ///     node: NodeId(0),
-    ///     active_count: 0,
-    ///     last_active_iter: 0,
-    /// };
-    /// pool.replace_selection(&[meta.clone(), meta], &[false, true]);
-    /// assert_eq!(pool.active_count(), 1);
-    /// assert!(!pool.is_active(0));
-    /// assert!(pool.is_active(1));
-    /// ```
-    pub fn replace_selection(&mut self, metadata: &[CutMetadata], active: &[bool]) {
-        self.metadata[..self.populated_count].clone_from_slice(metadata);
-        self.active[..self.populated_count].clone_from_slice(active);
-        self.cached_active_count = self.active[..self.populated_count]
-            .iter()
-            .filter(|&&a| a)
-            .count();
     }
 
     /// Toggle a single slot's activity flag, keeping `cached_active_count`
@@ -980,7 +927,7 @@ impl CutPool {
     /// pool.set_active(1, false);
     /// assert_eq!(pool.active_count(), 2);
     /// assert!(!pool.is_active(1));
-    /// assert_eq!(pool.cuts_in_lp(), 3); // populated count unchanged
+    /// assert_eq!(pool.populated(), 3); // populated count unchanged
     ///
     /// pool.set_active(1, true);
     /// assert_eq!(pool.active_count(), 3);
@@ -1296,10 +1243,11 @@ impl CutPool {
     /// (zeroed/inactive) slots when growing — it never relocates an existing
     /// element — so every populated slot keeps its index, the invariant a
     /// stored basis's slot-identity match depends on (the "Cut pool is
-    /// append-only; basis matches by slot identity" contract). Reserved
-    /// seam: the training session's between-iteration growth hook calls this
-    /// when a pool's realized visit rate would exceed its construction-time
-    /// floor.
+    /// append-only; basis matches by slot identity" contract). The training
+    /// session's between-iteration growth hook calls this when an iteration's
+    /// visits exceed a pool's free slots: on an enumerated run with two or more
+    /// paths, possibly on a sampled branching pool whose `visit_stride` is below
+    /// the forward-pass count, and never on a chain.
     ///
     /// # Panics (debug builds only)
     ///
@@ -2010,8 +1958,6 @@ mod tests {
 
         let metadata = |slot: usize| pool.metadata(slot).clone();
         let kept: Vec<CutMetadata> = (0..pool.populated()).map(metadata).collect();
-        let mut kept_active = vec![true; pool.populated()];
-        kept_active[3] = false;
         let before = roles_of(&pool);
 
         pool.set_active(2, false);
@@ -2020,13 +1966,10 @@ mod tests {
         pool.deactivate(&[4]);
         assert_eq!(roles_of(&pool), before, "deactivate");
         pool.apply_updates(&CutActivityUpdates {
-            stage_index: 0,
             updates: vec![2],
             reactivations: vec![4],
         });
         assert_eq!(roles_of(&pool), before, "apply_updates");
-        pool.replace_selection(&kept, &kept_active);
-        assert_eq!(roles_of(&pool), before, "replace_selection");
         pool.set_metadata_for_test(2, kept[0].clone());
         assert_eq!(roles_of(&pool), before, "set_metadata_for_test");
         pool.record_binding(2, 1, 3);
@@ -2101,14 +2044,13 @@ mod tests {
         pool.set_trial_state_for_test(2, &[1.0]);
         pool.update_ownership();
         let expected = CutActivityUpdates {
-            stage_index: 7,
             updates: vec![1, 3],
             reactivations: vec![],
         };
 
-        assert_eq!(pool.ownership_activity_updates(7), expected);
+        assert_eq!(pool.ownership_activity_updates(), expected);
         pool.set_active(0, false);
-        assert_eq!(pool.ownership_activity_updates(7), expected);
+        assert_eq!(pool.ownership_activity_updates(), expected);
     }
 
     /// derived: two loaded records put `slot_base` at 2; with `iteration_base` 4
@@ -2766,7 +2708,7 @@ mod tests {
         );
     }
 
-    // ── set_active / cuts_in_lp tests ────────────────────────────────────────
+    // ── set_active tests ─────────────────────────────────────────────────────
 
     #[test]
     fn set_active_false_decrements_active_count() {
@@ -2779,7 +2721,7 @@ mod tests {
 
         assert!(!pool.active[1]);
         assert_eq!(pool.active_count(), 2);
-        assert_eq!(pool.cuts_in_lp(), 3);
+        assert_eq!(pool.populated(), 3);
     }
 
     #[test]
@@ -2794,7 +2736,7 @@ mod tests {
 
         assert!(pool.active[1]);
         assert_eq!(pool.active_count(), 3);
-        assert_eq!(pool.cuts_in_lp(), 3);
+        assert_eq!(pool.populated(), 3);
     }
 
     #[test]
@@ -2830,22 +2772,6 @@ mod tests {
         assert_eq!(pool_a.cached_active_count, pool_b.cached_active_count);
     }
 
-    #[test]
-    fn cuts_in_lp_returns_populated_count() {
-        let mut pool = CutPool::new(10, 1, 1, 0);
-        pool.add_cut(NodeId(0), 0, 0, 1.0, &[1.0]);
-        pool.add_cut(NodeId(0), 1, 0, 2.0, &[2.0]);
-
-        assert_eq!(pool.cuts_in_lp(), 2);
-        assert_eq!(pool.cuts_in_lp(), pool.populated_count);
-
-        pool.deactivate(&[0]);
-
-        // Deactivation must not change the populated count.
-        assert_eq!(pool.cuts_in_lp(), 2);
-        assert_eq!(pool.active_count(), 1);
-    }
-
     // ── apply_updates tests ──────────────────────────────────────────────────
 
     /// `apply_updates` deactivates every slot in `updates.updates` and
@@ -2868,7 +2794,6 @@ mod tests {
         assert!(!pool.active[2]);
 
         let updates = CutActivityUpdates {
-            stage_index: 0,
             updates: vec![0, 3],    // deactivate slots 0 and 3
             reactivations: vec![2], // reactivate slot 2
         };
@@ -2879,8 +2804,8 @@ mod tests {
         assert!(pool.active[2], "slot 2 must be reactivated");
         assert!(!pool.active[3], "slot 3 must be deactivated");
         assert_eq!(pool.active_count(), 2);
-        // cuts_in_lp is unaffected by activity changes.
-        assert_eq!(pool.cuts_in_lp(), 4);
+        // populated is unaffected by activity changes.
+        assert_eq!(pool.populated(), 4);
     }
 
     /// `apply_updates` must be idempotent: applying the same updates twice
@@ -2901,7 +2826,6 @@ mod tests {
         assert_eq!(pool.active_count(), 2);
 
         let updates = CutActivityUpdates {
-            stage_index: 0,
             updates: vec![0],
             reactivations: vec![1],
         };
@@ -2939,7 +2863,6 @@ mod tests {
         let count_before = pool.active_count();
 
         let updates = CutActivityUpdates {
-            stage_index: 0,
             updates: vec![],
             reactivations: vec![],
         };
@@ -2967,7 +2890,6 @@ mod tests {
         };
 
         let updates = CutActivityUpdates {
-            stage_index: 0,
             updates: vec![0, 3],
             reactivations: vec![2],
         };
@@ -3033,69 +2955,6 @@ mod tests {
                 "slot {slot}"
             );
         }
-    }
-
-    // ── replace_selection tests ────────────────────────────────────────────
-
-    /// `replace_selection` writes `active` and recomputes `cached_active_count`
-    /// in the same call, so `active_count()` — whose internal `debug_assert`
-    /// re-derives the count from the bitmap — must return exactly the count of
-    /// `true` entries with no desync.
-    #[test]
-    fn replace_selection_recomputes_active_count_from_written_bitmap() {
-        use crate::cut_selection::CutMetadata;
-
-        let mut pool = CutPool::new(10, 1, 1, 0);
-        pool.add_cut(NodeId(0), 0, 0, 1.0, &[1.0]);
-        pool.add_cut(NodeId(0), 1, 0, 2.0, &[2.0]);
-        pool.add_cut(NodeId(0), 2, 0, 3.0, &[3.0]);
-        pool.add_cut(NodeId(0), 3, 0, 4.0, &[4.0]);
-
-        let meta = |iteration_generated: u64| CutMetadata {
-            iteration_generated,
-            forward_pass_index: 0,
-            node: NodeId(0),
-            active_count: 0,
-            last_active_iter: iteration_generated,
-        };
-        let metadata = vec![meta(0), meta(1), meta(2), meta(3)];
-        let active = vec![true, false, true, false];
-
-        pool.replace_selection(&metadata, &active);
-
-        assert_eq!(
-            pool.active_count(),
-            2,
-            "must equal the count of true entries"
-        );
-        assert!(pool.active[0]);
-        assert!(!pool.active[1]);
-        assert!(pool.active[2]);
-        assert!(!pool.active[3]);
-    }
-
-    /// A `replace_selection` call that flips every active slot to inactive
-    /// must recompute `cached_active_count` down to zero, not merely leave it
-    /// unset — the recompute is unconditional, not a delta.
-    #[test]
-    fn replace_selection_recomputes_to_zero_when_all_inactive() {
-        use crate::cut_selection::CutMetadata;
-
-        let mut pool = CutPool::new(10, 1, 1, 0);
-        pool.add_cut(NodeId(0), 0, 0, 1.0, &[1.0]);
-        pool.add_cut(NodeId(0), 1, 0, 2.0, &[2.0]);
-        assert_eq!(pool.active_count(), 2);
-
-        let meta = CutMetadata {
-            iteration_generated: 0,
-            forward_pass_index: 0,
-            node: NodeId(0),
-            active_count: 0,
-            last_active_iter: 0,
-        };
-        pool.replace_selection(&[meta.clone(), meta], &[false, false]);
-
-        assert_eq!(pool.active_count(), 0);
     }
 
     // ── grow ─────────────────────────────────────────────────────────────

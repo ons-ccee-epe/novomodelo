@@ -1,7 +1,7 @@
-//! Visited trial states, archived for cut selection and for state export.
+//! Visited trial states, archived for state export.
 //!
-//! The training loop allocates the archive when the strategy scores visited
-//! states ([`scores_visited_states`]) or [`EventConfig::export_states`] is set.
+//! The training loop allocates the archive when [`EventConfig::export_states`]
+//! is set, and every visited state of the run stays in it.
 //!
 //! The archive holds one [`NodeStates`] per **node**, indexed by node position,
 //! never by stage. The sampled backward pass gathers a level's states with no
@@ -10,7 +10,6 @@
 //! (`nodes[]` absent) node position equals stage index. Each `NodeStates`
 //! stores its state vectors in one flat `Vec<f64>`.
 //!
-//! [`scores_visited_states`]: crate::CutSelectionStrategy::scores_visited_states
 //! [`EventConfig::export_states`]: crate::config::EventConfig::export_states
 
 use crate::setup::NodePos;
@@ -66,23 +65,6 @@ impl NodeStates {
     pub fn states(&self) -> &[f64] {
         &self.data[..self.count * self.state_dimension]
     }
-
-    /// Retain only the most recent `window_states` state vectors; no-op when
-    /// `count <= window_states`.
-    ///
-    /// The O(retained) left-shift from `Vec::drain` is acceptable because
-    /// trimming runs at the cut-selection cadence, not per cut or per state.
-    pub fn trim_to_window(&mut self, window_states: usize) {
-        if self.count <= window_states {
-            return;
-        }
-        let to_remove = self.count - window_states;
-        let drain_len = to_remove * self.state_dimension;
-        debug_assert!(drain_len <= self.data.len());
-        self.data.drain(..drain_len);
-        self.count = window_states;
-        debug_assert_eq!(self.data.len(), self.count * self.state_dimension);
-    }
 }
 
 /// Multi-node archive of visited forward-pass states, one [`NodeStates`] per
@@ -90,7 +72,6 @@ impl NodeStates {
 #[derive(Debug, Clone)]
 pub struct VisitedStatesArchive {
     nodes: Vec<NodeStates>,
-    total_forward_passes: usize,
 }
 
 impl VisitedStatesArchive {
@@ -116,10 +97,7 @@ impl VisitedStatesArchive {
         let nodes = (0..num_nodes)
             .map(|_| NodeStates::new(state_dimension, capacity_per_node))
             .collect();
-        Self {
-            nodes,
-            total_forward_passes,
-        }
+        Self { nodes }
     }
 
     /// Returns the number of nodes in the archive.
@@ -179,23 +157,6 @@ impl VisitedStatesArchive {
     #[must_use]
     pub fn count(&self, node: NodePos) -> usize {
         self.nodes[node.0].count()
-    }
-
-    /// Trim each node to the most recent `window_iterations` iterations' worth
-    /// of forward-pass states (`window_iterations * total_forward_passes`).
-    ///
-    /// Called once per cut-selection check, so the post-trim (steady-state)
-    /// archive stays bounded regardless of training length. Because the trim
-    /// runs **after** selection has consumed the archive, the pre-trim peak is
-    /// ~`2 * window_iterations * total_forward_passes`; that ~2x is by design —
-    /// selection evaluates against the full accumulated archive for quality.
-    pub fn trim_to_window(&mut self, window_iterations: u64) {
-        let window_states = usize::try_from(window_iterations)
-            .unwrap_or(usize::MAX)
-            .saturating_mul(self.total_forward_passes);
-        for node in &mut self.nodes {
-            node.trim_to_window(window_states);
-        }
     }
 }
 
@@ -341,9 +302,8 @@ mod tests {
 
     /// A two-sibling fan: node 0 is the parent stage's node, nodes 1 and 2 are
     /// two sibling nodes at the next stage (mirroring `NodeGraph`'s K-fan
-    /// shape). Writing sibling A's (node 1) states must never appear in
-    /// sibling B's (node 2) archive, or in the parent's — each node's
-    /// dominance test must see only its own visited region.
+    /// shape). Sibling A's (node 1) states must never appear in sibling B's
+    /// (node 2) archive, or in the parent's.
     #[test]
     fn sibling_nodes_at_the_same_stage_archive_independently() {
         let mut a = VisitedStatesArchive::new(3, 2, 10, 5);
@@ -372,201 +332,5 @@ mod tests {
             a.states_for_node(NodePos(2)),
             "sibling A's states must not leak into sibling B's archive"
         );
-    }
-
-    // -- NodeStates::trim_to_window ------------------------------------
-
-    // Trimming 100 dim-2 states to window 30 keeps the LAST 30
-    // (elements 140..200 of the original flat buffer).
-    #[test]
-    fn node_states_trim_to_window_drops_oldest_states() {
-        let state_dim = 2;
-        let total = 100;
-        let mut s = NodeStates::new(state_dim, total);
-        let gathered = make_gathered(state_dim, total, 0.0);
-        s.append(&gathered, total);
-        assert_eq!(s.count(), 100);
-        assert_eq!(s.states().len(), 200);
-
-        s.trim_to_window(30);
-
-        assert_eq!(s.count(), 30);
-        assert_eq!(s.states().len(), 60);
-        // Retained slice equals the tail of the original buffer
-        // (elements 140..200, i.e. 140.0..199.0).
-        let expected: Vec<f64> = (140..200).map(f64::from).collect();
-        assert_eq!(s.states(), expected.as_slice());
-    }
-
-    #[test]
-    fn node_states_trim_to_window_noop_when_count_below_window() {
-        let state_dim = 2;
-        let total = 20;
-        let mut s = NodeStates::new(state_dim, total);
-        let gathered = make_gathered(state_dim, total, 0.0);
-        s.append(&gathered, total);
-        assert_eq!(s.count(), 20);
-        let before: Vec<f64> = s.states().to_vec();
-
-        s.trim_to_window(50);
-
-        assert_eq!(s.count(), 20);
-        assert_eq!(s.states(), before.as_slice());
-    }
-
-    #[test]
-    fn node_states_trim_to_window_count_equals_window_is_noop() {
-        let state_dim = 3;
-        let total = 7;
-        let mut s = NodeStates::new(state_dim, total);
-        let gathered = make_gathered(state_dim, total, 10.0);
-        s.append(&gathered, total);
-        let before: Vec<f64> = s.states().to_vec();
-
-        s.trim_to_window(7);
-
-        assert_eq!(s.count(), 7);
-        assert_eq!(s.states(), before.as_slice());
-    }
-
-    #[test]
-    fn node_states_trim_to_window_to_zero_clears_buffer() {
-        let state_dim = 2;
-        let total = 5;
-        let mut s = NodeStates::new(state_dim, total);
-        let gathered = make_gathered(state_dim, total, 0.0);
-        s.append(&gathered, total);
-
-        s.trim_to_window(0);
-
-        assert_eq!(s.count(), 0);
-        assert!(s.states().is_empty());
-    }
-
-    // After a trim, the retained window stays at the head and newly appended
-    // states sit at the tail.
-    #[test]
-    fn node_states_trim_then_append_preserves_data() {
-        let state_dim = 2;
-        let mut s = NodeStates::new(state_dim, 100);
-        // Initial: 10 states with base 0.0  (values 0..20).
-        s.append(&make_gathered(state_dim, 10, 0.0), 10);
-        // Trim down to last 4 states (elements 12..20 of original).
-        s.trim_to_window(4);
-        assert_eq!(s.count(), 4);
-        let retained: Vec<f64> = (12..20).map(f64::from).collect();
-        assert_eq!(s.states(), retained.as_slice());
-
-        // Append 3 new states starting at 100.0.
-        s.append(&make_gathered(state_dim, 3, 100.0), 3);
-        assert_eq!(s.count(), 7);
-
-        // Final layout = retained tail + newly appended states.
-        let mut expected = retained;
-        expected.extend((0..6).map(|i| 100.0 + f64::from(i)));
-        assert_eq!(s.states(), expected.as_slice());
-    }
-
-    // -- VisitedStatesArchive::trim_to_window ---------------------------
-
-    // 5 nodes of 100 states each, trimmed with window=3 and total_fwd=10,
-    // leaves each node with 30 states.
-    #[test]
-    fn archive_trim_to_window_trims_each_node() {
-        let num_nodes = 5;
-        let state_dim = 2;
-        let total_fwd = 10;
-        let mut a = VisitedStatesArchive::new(num_nodes, state_dim, 10, total_fwd);
-
-        // Fill each node with 100 states (10 iterations * 10 forward passes).
-        for t in 0..num_nodes {
-            for it in 0..10_i32 {
-                let base = f64::from(i32::try_from(t).unwrap()) * 1000.0 + f64::from(it) * 100.0;
-                let gathered = make_gathered(state_dim, total_fwd, base);
-                a.archive_gathered_states(NodePos(t), &gathered, total_fwd);
-            }
-            assert_eq!(a.count(NodePos(t)), 100);
-        }
-
-        a.trim_to_window(3);
-
-        for t in 0..num_nodes {
-            assert!(
-                a.count(NodePos(t)) <= 30,
-                "node {t} has count {}",
-                a.count(NodePos(t))
-            );
-            assert_eq!(a.count(NodePos(t)), 30);
-            assert_eq!(a.states_for_node(NodePos(t)).len(), 30 * state_dim);
-        }
-    }
-
-    #[test]
-    fn archive_trim_to_window_noop_when_within_window() {
-        let total_fwd = 10;
-        let mut a = VisitedStatesArchive::new(2, 2, 10, total_fwd);
-        // 2 iterations * 10 forward passes = 20 states per node.
-        for it in 0..2_i32 {
-            let gathered = make_gathered(2, total_fwd, f64::from(it) * 100.0);
-            a.archive_gathered_states(NodePos(0), &gathered, total_fwd);
-            a.archive_gathered_states(NodePos(1), &gathered, total_fwd);
-        }
-        let before_0: Vec<f64> = a.states_for_node(NodePos(0)).to_vec();
-        let before_1: Vec<f64> = a.states_for_node(NodePos(1)).to_vec();
-
-        // window=5 -> window_states = 50 > 20.
-        a.trim_to_window(5);
-
-        assert_eq!(a.count(NodePos(0)), 20);
-        assert_eq!(a.count(NodePos(1)), 20);
-        assert_eq!(a.states_for_node(NodePos(0)), before_0.as_slice());
-        assert_eq!(a.states_for_node(NodePos(1)), before_1.as_slice());
-    }
-
-    #[test]
-    fn archive_trim_to_window_retains_most_recent() {
-        let state_dim = 2;
-        let total_fwd = 5;
-        let mut a = VisitedStatesArchive::new(1, state_dim, 10, total_fwd);
-
-        // 4 iterations, each adding 5 states with a distinct base.
-        // iter 0: base 0.0   -> values 0..10
-        // iter 1: base 100.0 -> values 100..110
-        // iter 2: base 200.0 -> values 200..210
-        // iter 3: base 300.0 -> values 300..310
-        for it in 0..4_i32 {
-            let base = f64::from(it) * 100.0;
-            a.archive_gathered_states(
-                NodePos(0),
-                &make_gathered(state_dim, total_fwd, base),
-                total_fwd,
-            );
-        }
-        assert_eq!(a.count(NodePos(0)), 20);
-
-        // Keep last 2 iterations (10 states).
-        a.trim_to_window(2);
-        assert_eq!(a.count(NodePos(0)), 10);
-
-        // Expected: values from iterations 2 and 3.
-        let mut expected: Vec<f64> = (200..210).map(f64::from).collect();
-        expected.extend((300..310).map(f64::from));
-        assert_eq!(a.states_for_node(NodePos(0)), expected.as_slice());
-    }
-
-    #[test]
-    fn archive_trim_to_window_zero_clears_all_nodes() {
-        let total_fwd = 4;
-        let mut a = VisitedStatesArchive::new(3, 2, 10, total_fwd);
-        for t in 0..3 {
-            a.archive_gathered_states(NodePos(t), &make_gathered(2, total_fwd, 0.0), total_fwd);
-        }
-
-        a.trim_to_window(0);
-
-        for t in 0..3 {
-            assert_eq!(a.count(NodePos(t)), 0);
-            assert!(a.states_for_node(NodePos(t)).is_empty());
-        }
     }
 }

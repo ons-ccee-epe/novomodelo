@@ -7,10 +7,8 @@ use novomodelo_comm::CommError::CollectiveFailed;
 use novomodelo_solver::SolverError;
 use novomodelo_solver::freeze_rows_into_template;
 
-use crate::cut_selection::CutSelectionStrategy::Dominated;
 use crate::cut_selection::CutSelectionStrategy::Dynamic;
 use crate::cut_selection::CutSelectionStrategy::Level1;
-use crate::cut_selection::CutSelectionStrategy::Lml1;
 use crate::visited_states::VisitedStatesArchive;
 use crate::workspace::CapturedBasis;
 
@@ -39,7 +37,7 @@ use crate::{
     convergence::convergence::ConvergenceMonitor,
     cut::fcf::FutureCostFunction,
     cut::row::build_cut_row_batch_into,
-    cut_selection::{CutActivityUpdates, CutSelectionStrategy},
+    cut_selection::CutActivityUpdates,
     cut_sync::CutSyncBuffers,
     forward::{ForwardBound, ForwardResult, SyncResult, sync_forward},
     forward_pass_state::{ForwardPassInputs, ForwardPassState},
@@ -121,9 +119,6 @@ pub(crate) struct TrainingSession<'a, S: SolverInterface + Send, C: Communicator
     exchange_bufs: ExchangeBuffers,
     cut_sync_bufs: CutSyncBuffers,
     visited_archive: Option<VisitedStatesArchive>,
-    /// Reusable projected trial-state buffer for cut selection; grown on first
-    /// use, reused across iterations (no per-cut/per-trial-point allocation).
-    cut_selection_state_scratch: Vec<f64>,
     /// Interior cut-generating nodes (canonical order), the loop-invariant filter
     /// cut management sweeps each cycle; the graph topology is fixed for the run,
     /// so it is resolved once here rather than re-derived per cut-selection cycle.
@@ -247,15 +242,7 @@ where
             total_forward_passes,
         );
 
-        // Read by the windowed selection kernel and by the `exports.states`
-        // checkpoint write.
-        let needs_archive = config
-            .cut_management
-            .cut_selection
-            .as_ref()
-            .is_some_and(CutSelectionStrategy::scores_visited_states)
-            || config.events.export_states;
-        let visited_archive = needs_archive.then(|| {
+        let visited_archive = config.events.export_states.then(|| {
             VisitedStatesArchive::new(
                 training_ctx.node_graph.nodes.len(),
                 state.n_state,
@@ -272,12 +259,7 @@ where
                 .map(|(pos, _)| pos)
                 .collect()
         };
-        if let Some(strategy) = config
-            .cut_management
-            .cut_selection
-            .as_ref()
-            .filter(|strategy| strategy.stores_trial_states())
-        {
+        if let Some(strategy) = config.cut_management.cut_selection.as_ref() {
             for &node_pos in &interior_cut_nodes {
                 let pool = &mut fcf.pools[training_ctx.node_graph.nodes[node_pos].pool_id];
                 match strategy {
@@ -290,7 +272,7 @@ where
                         lookback_iterations: None,
                         ..
                     } => pool.enable_trial_states(),
-                    Lml1 { .. } | Dominated { .. } | Dynamic { .. } => {}
+                    Dynamic { .. } => {}
                 }
             }
         }
@@ -421,7 +403,6 @@ where
             exchange_bufs,
             cut_sync_bufs,
             visited_archive,
-            cut_selection_state_scratch: Vec::new(),
             interior_cut_nodes,
             scratch,
             convergence_monitor,
@@ -989,11 +970,11 @@ where
                 let num_stages = self.training_ctx.horizon.num_stages();
                 let local_n = forward_result.scenario_costs.len();
                 self.scratch.ub_stage_costs.clear();
-                for i in 0..local_n * num_stages {
-                    self.scratch
-                        .ub_stage_costs
-                        .push(self.scratch.records[i].stage_cost);
-                }
+                self.scratch.ub_stage_costs.extend(
+                    self.scratch.records[..local_n * num_stages]
+                        .iter()
+                        .map(|record| record.stage_cost),
+                );
                 sync_forward(
                     forward_result,
                     self.comm,
@@ -1159,65 +1140,37 @@ where
                     selection_time_ms: 0.0,
                     budget_evicted: budget_set.then_some(0),
                     active_after_budget: budget_set.then_some(root_active),
-                    rows_in_lp: root_cut_pool.cuts_in_lp() as u32,
+                    rows_in_lp: root_cut_pool.populated() as u32,
                 });
             }
 
-            let archive_ref = self.visited_archive.as_ref();
             // Interior cut-generating nodes in canonical order. A cut-generating
-            // (non-leaf) node always owns its own pool, so scoring by node is
-            // per-pool; the visited states are read by NODE position.
+            // (non-leaf) node always owns its own pool, so selection is per-pool.
             let interior_nodes = &self.interior_cut_nodes;
-            let cut_state_layouts = self.training_ctx.cut_state_layouts;
-            let n_global = archive_ref.map_or(0, VisitedStatesArchive::packing_stride);
-            // Sequential (not `into_par_iter`): the m-block kernel and the
-            // ownership scan already saturate the cores via their inner
-            // parallelism.
-            let mut scratch = std::mem::take(&mut self.cut_selection_state_scratch);
+            // Sequential (not `into_par_iter`): the ownership scan already
+            // saturates the cores via its inner parallelism.
             let mut deactivations: Vec<(usize, usize, CutActivityUpdates, f64)> =
                 Vec::with_capacity(interior_nodes.len());
-            #[allow(clippy::cast_possible_truncation)]
             for &node_pos in interior_nodes {
                 let node = &node_graph.nodes[node_pos];
                 let pool_id = node.pool_id;
-                let stage_index = node.stage.0 as u32;
                 let (deact, elapsed_ms) = match strategy {
                     Level1 { .. } => {
                         let pool = &mut self.fcf.pools[pool_id];
                         let start = Instant::now();
                         pool.expire_trial_states(iteration);
                         pool.update_ownership();
-                        let deact = pool.ownership_activity_updates(stage_index);
+                        let deact = pool.ownership_activity_updates();
                         (deact, start.elapsed().as_secs_f64() * 1000.0)
                     }
-                    Lml1 { .. } | Dominated { .. } | Dynamic { .. } => {
-                        let proj = &cut_state_layouts[pool_id];
-                        let n_slots = proj.n_slots();
-                        let n_trials = archive_ref.map_or(0, |a| a.count(node_pos));
-                        let global_states =
-                            archive_ref.map_or(&[] as &[f64], |a| a.states_for_node(node_pos));
-                        scratch.clear();
-                        scratch.resize(n_trials * n_slots, 0.0);
-                        for m in 0..n_trials {
-                            proj.gather_trial_state(
-                                &global_states[m * n_global..(m + 1) * n_global],
-                                &mut scratch[m * n_slots..(m + 1) * n_slots],
-                            );
-                        }
-                        let start = Instant::now();
-                        let deact = strategy.select_for_stage(
-                            &self.fcf.pools[pool_id],
-                            &scratch,
-                            n_trials,
-                            iteration,
-                            stage_index,
-                        );
-                        (deact, start.elapsed().as_secs_f64() * 1000.0)
+                    Dynamic { .. } => {
+                        unreachable!(
+                            "DCS never runs as a periodic pool pass; should_run is always false"
+                        )
                     }
                 };
                 deactivations.push((node.stage.0, pool_id, deact, elapsed_ms));
             }
-            self.cut_selection_state_scratch = scratch;
 
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             for (stage, pool_id, deact, stage_sel_time_ms) in deactivations {
@@ -1231,7 +1184,7 @@ where
                 self.fcf.pools[pool_id].apply_updates(&deact);
 
                 let active_after = self.fcf.pools[pool_id].active_count() as u32;
-                let rows_in_lp = self.fcf.pools[pool_id].cuts_in_lp() as u32;
+                let rows_in_lp = self.fcf.pools[pool_id].populated() as u32;
                 per_stage.push(StageRowSelectionRecord {
                     // Domain stage_id by position from the ordered study ids;
                     // falls back to the positional index for a short stub context.
@@ -1252,30 +1205,6 @@ where
                     active_after_budget: None,
                     rows_in_lp,
                 });
-            }
-
-            // Trim AFTER the application loop so the immutable borrow held by
-            // `deactivations` is released, and AFTER selection so the kernel sees
-            // the full ~2x-peak archive before shrinking to the steady-state
-            // bound documented on [`VisitedStatesArchive::trim_to_window`].
-            if let Some(ref mut archive) = self.visited_archive {
-                let check_freq = match strategy {
-                    Level1 {
-                        check_frequency, ..
-                    }
-                    | Lml1 {
-                        check_frequency, ..
-                    }
-                    | Dominated {
-                        check_frequency, ..
-                    } => *check_frequency,
-                    Dynamic { .. } => {
-                        unreachable!(
-                            "DCS never runs as a periodic pool pass; should_run is always false"
-                        )
-                    }
-                };
-                archive.trim_to_window(check_freq);
             }
 
             #[allow(clippy::cast_possible_truncation)]
@@ -1396,8 +1325,7 @@ where
         let terminal_stage = (num_stages > 0).then(|| StageIdx(num_stages - 1));
         for p in 0..node_graph.n_pools {
             let t = node_graph.pool_stage[p];
-            let is_terminal = terminal_stage == Some(t);
-            if skip_static_terminal && is_terminal {
+            if skip_static_terminal && terminal_stage == Some(t) {
                 continue;
             }
             build_cut_row_batch_into(
@@ -1535,17 +1463,17 @@ fn selection_record_index_by_pool(
     by_pool
 }
 
-/// Between-iteration capacity growth (reserved seam): doubles a pool's
-/// capacity via [`crate::cut::CutPool::grow`] (`Vec::resize`, position-stable
-/// — the append-only/slot-identity contract survives) when
-/// `realized_visits` exceeds its remaining free slots. Runs once per
-/// iteration from [`TrainingSession::run_iteration`], never inside the
-/// forward/backward sweep. A chain pool's construction-time floor already
-/// equals exactly `forward_passes` per iteration
-/// ([`crate::setup::node_graph::NodeGraph::pool_cut_stride`]), so feeding it the
-/// same value here never triggers growth; a declared graph's realized
-/// per-pool visit source is supplied once a general-graph traversal is
-/// wired.
+/// Between-iteration capacity growth: doubles a pool's capacity via
+/// [`crate::cut::CutPool::grow`] (`Vec::resize`, position-stable — the
+/// append-only/slot-identity contract survives) when `realized_visits`
+/// exceeds its remaining free slots. Runs once per iteration from
+/// [`TrainingSession::run_iteration`], never inside the forward/backward
+/// sweep, and is fed the configured forward-pass count. A chain pool's
+/// construction-time floor equals exactly `forward_passes` per iteration
+/// ([`crate::setup::node_graph::NodeGraph::pool_cut_stride`]), so a chain never
+/// grows. An enumerated run with two or more paths grows by its final
+/// iteration, and a sampled branching pool whose stride is below
+/// `forward_passes` can grow.
 ///
 /// Skips the terminal-stage pool (`node_graph.pool_stage[p] ==
 /// StageIdx(num_stages - 1)`): a leaf's populated count never advances, so an
@@ -2764,9 +2692,8 @@ mod tests {
     #[test]
     fn grow_pools_for_next_iteration_chain_never_triggers() {
         // A chain-shaped FCF (visit_bound == forward_passes for every pool,
-        // pool_cut_stride): remaining capacity after any
-        // iteration is always >= forward_passes, so this reserved seam is
-        // inert on the only live path.
+        // pool_cut_stride): remaining capacity after any iteration is always
+        // >= forward_passes, so a chain never grows.
         let forward_passes = 4u32;
         let max_iterations = 3u64;
         let mut fcf = FutureCostFunction::new(2, 1, forward_passes, max_iterations, &[0, 0]);

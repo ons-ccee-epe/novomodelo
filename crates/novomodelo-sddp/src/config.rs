@@ -136,7 +136,9 @@ impl Default for LoopConfig {
 /// ```
 #[derive(Debug)]
 pub struct CutManagementConfig {
-    /// Cut selection strategy for deactivating dominated cuts; `None` keeps all cuts active.
+    /// Cut selection strategy: `Level1` deactivates the cuts that own no stored
+    /// trial state, `Dynamic` adds violated cuts to each solve lazily; `None` keeps
+    /// all cuts active.
     pub cut_selection: Option<CutSelectionStrategy>,
 
     /// `training.cut_selection.max_active_per_stage`; `None` means no cap. Described on
@@ -171,12 +173,7 @@ impl CutManagementConfig {
     #[must_use]
     pub fn tracks_binding_activity(&self) -> bool {
         match &self.cut_selection {
-            None
-            | Some(
-                CutSelectionStrategy::Level1 { .. }
-                | CutSelectionStrategy::Lml1 { .. }
-                | CutSelectionStrategy::Dominated { .. },
-            ) => self.budget.is_some(),
+            None | Some(CutSelectionStrategy::Level1 { .. }) => self.budget.is_some(),
             Some(CutSelectionStrategy::Dynamic { .. }) => true,
         }
     }
@@ -211,9 +208,7 @@ pub struct EventConfig {
     /// and a cooperative writer never stores the signal level.
     pub shutdown_flag: Option<Arc<AtomicUsize>>,
 
-    /// Allocate the visited-states archive for state export. A strategy that scores
-    /// visited states ([`CutSelectionStrategy::scores_visited_states`]) allocates it
-    /// whatever this flag says. Default `false`.
+    /// Allocate the visited-states archive the state export reads. Default `false`.
     pub export_states: bool,
 }
 
@@ -373,21 +368,11 @@ mod tests {
             }
             .tracks_binding_activity()
         };
-        let value_based = [
-            CutSelectionStrategy::Level1 {
-                check_frequency: 1,
-                tie_tolerance: 0.0,
-                lookback_iterations: None,
-            },
-            CutSelectionStrategy::Lml1 {
-                check_frequency: 1,
-                tie_tolerance: 0.0,
-            },
-            CutSelectionStrategy::Dominated {
-                threshold: 0.0,
-                check_frequency: 1,
-            },
-        ];
+        let level1 = CutSelectionStrategy::Level1 {
+            check_frequency: 1,
+            tie_tolerance: 0.0,
+            lookback_iterations: None,
+        };
         let dynamic = CutSelectionStrategy::Dynamic {
             k1: None,
             k2: 1,
@@ -398,10 +383,8 @@ mod tests {
 
         assert!(!tracks(None, None));
         assert!(tracks(None, Some(1)));
-        for strategy in value_based {
-            assert!(!tracks(Some(strategy.clone()), None), "{strategy:?}");
-            assert!(tracks(Some(strategy.clone()), Some(1)), "{strategy:?}");
-        }
+        assert!(!tracks(Some(level1.clone()), None), "{level1:?}");
+        assert!(tracks(Some(level1), Some(1)));
         assert!(tracks(Some(dynamic.clone()), None));
         assert!(tracks(Some(dynamic), Some(1)));
     }

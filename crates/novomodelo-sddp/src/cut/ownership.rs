@@ -8,13 +8,16 @@ use std::ops::Range;
 
 use rayon::prelude::*;
 
-use super::cut_selection::M_BLOCK;
 use super::pool::{CutPool, SlotOrigin};
 use super::trial_states::TrialStates;
 use crate::gemm::gemm_block;
 
 /// Slots per `gemm_block` call, at most the rows its block-shape property pins.
 const ROW_BLOCK: usize = 64;
+
+/// States per `gemm_block` call and per parallel task, at most the columns its
+/// block-shape property pins.
+pub(crate) const M_BLOCK: usize = 8;
 
 const NO_OWNER: u32 = u32::MAX;
 
@@ -238,8 +241,7 @@ mod tests {
     use proptest::prelude::*;
     use proptest::test_runner::RngSeed;
 
-    use super::ROW_BLOCK;
-    use crate::cut::cut_selection::M_BLOCK;
+    use super::{M_BLOCK, ROW_BLOCK};
     use crate::cut::pool::{CutPool, SlotOrigin, SlotRole};
     use crate::cut::selection_reference::tests::{Fixture, fixtures};
     use crate::cut::selection_reference::{RefCut, RefRole, active_after, owners, selected, value};
@@ -771,9 +773,9 @@ mod tests {
                 stored_state_bits(&pool),
                 "{label}: swapped order, stored states"
             );
-            let updates = pool.ownership_activity_updates(0);
+            let updates = pool.ownership_activity_updates();
             assert_eq!(
-                swapped.ownership_activity_updates(0),
+                swapped.ownership_activity_updates(),
                 updates,
                 "{label}: swapped order, activity derivation"
             );

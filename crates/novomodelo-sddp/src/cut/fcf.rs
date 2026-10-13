@@ -33,7 +33,6 @@
 //! let cuts: Vec<_> = fcf.active_cuts(1).collect();
 //! assert_eq!(cuts.len(), 1);
 //! assert_eq!(fcf.total_active_cuts(), 1);
-//! assert_eq!(fcf.cuts_in_lp(1), 1);
 //! ```
 
 use super::pool::CutPool;
@@ -459,24 +458,6 @@ impl FutureCostFunction {
             self.pools.len()
         );
         self.pools[pool].set_active(slot, active);
-    }
-
-    /// Return the slot bound for the given (0-based) pool id via
-    /// [`CutPool::cuts_in_lp`]; a slot below it can be inactive or vacant.
-    ///
-    /// # Panics (debug builds only)
-    ///
-    /// Panics if `pool >= pools.len()`.
-    ///
-    /// [`CutPool::cuts_in_lp`]: super::pool::CutPool::cuts_in_lp
-    #[must_use]
-    pub fn cuts_in_lp(&self, pool: usize) -> usize {
-        debug_assert!(
-            pool < self.pools.len(),
-            "pool id {pool} is out of bounds (num_pools = {})",
-            self.pools.len()
-        );
-        self.pools[pool].cuts_in_lp()
     }
 
     /// One [`SparsityReport`] per pool, in pool-id order.
