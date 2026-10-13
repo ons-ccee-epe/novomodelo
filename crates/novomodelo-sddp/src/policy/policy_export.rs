@@ -532,23 +532,6 @@ pub fn build_active_indices(stage_records: &[Vec<PolicyCutRecord<'_>>]) -> Vec<V
         .collect()
 }
 
-/// The declared id of `pool`'s sole owning node, or [`STAGE_CUTS_NODE_ID_SENTINEL`]
-/// when more than one node shares the pool. A shared pool is never a boundary
-/// source, so its provenance node id is deliberately undefined; a single-owner
-/// pool (every non-leaf pool, and a boundary source) yields the owner's id.
-fn sole_pool_owner_node_id(node_graph: &NodeGraph, pool: usize) -> i32 {
-    let mut owner = None;
-    for (pos, node) in node_graph.nodes.iter_indexed() {
-        if node.pool_id == pool {
-            if owner.is_some() {
-                return STAGE_CUTS_NODE_ID_SENTINEL;
-            }
-            owner = Some(node_graph.node_ids[pos].0);
-        }
-    }
-    owner.unwrap_or(STAGE_CUTS_NODE_ID_SENTINEL)
-}
-
 /// Build [`StageCutsPayload`] references from pre-built records, indices, and
 /// per-stage entity manifests, stamping the self-describing per-pool facts.
 ///
@@ -559,7 +542,7 @@ fn sole_pool_owner_node_id(node_graph: &NodeGraph, pool: usize) -> i32 {
 /// per cut-state dimension of pool `t`. Each pool's `cost_scale_factor` is the
 /// study's single resolved factor, `graph_stage_id` is
 /// `study_stage_ids[node_graph.pool_stage[pool]]`, `node_id` is the pool's
-/// sole owning node id (see [`sole_pool_owner_node_id`]), and
+/// sole owning node id (see [`NodeGraph::sole_pool_owner`]), and
 /// `priced_state_date` is [`encode_slot_date`] of
 /// `study_stage_end_dates[node_graph.pool_stage[pool]]` — the pool's owning
 /// stage's exclusive `end_date`, day-accurate: the instant the pool's priced
@@ -599,7 +582,9 @@ pub fn build_stage_cuts_payloads<'a>(
                 populated_count: stage_records[pool].len() as u32,
                 entity_manifest: &stage_manifests[pool],
                 cost_scale_factor,
-                node_id: sole_pool_owner_node_id(node_graph, pool),
+                node_id: node_graph
+                    .sole_pool_owner(pool)
+                    .map_or(STAGE_CUTS_NODE_ID_SENTINEL, |id| id.0),
                 graph_stage_id: study_stage_ids
                     .get(pool_stage)
                     .copied()
