@@ -298,9 +298,12 @@ pub enum SelectionMethod {
     /// and a row of the current iteration is judged like any other. A row
     /// loaded from a policy keeps the activity it was loaded with.
     Level1 {
-        /// Iterations between periodic pruning checks. Must be `> 0`. Default `5`.
-        #[serde(default = "default_check_frequency")]
-        check_frequency: u32,
+        /// Iterations between periodic pruning checks. Default `5`.
+        #[serde(
+            default = "default_check_frequency",
+            deserialize_with = "deserialize_check_frequency"
+        )]
+        check_frequency: NonZeroU32,
         /// Iterations of the current run whose rows keep their trial states.
         /// Absent (default): the trial state of every row the run added is
         /// kept, and the memory of a run grows with its row count. A value `w`
@@ -323,10 +326,12 @@ pub enum SelectionMethod {
     /// active row, so `seed_window` and `candidate_recency` apply to training
     /// only. The method never deactivates a row, and the pool keeps every row.
     Dynamic {
-        /// First 1-based iteration at which the lazy loop becomes active.
-        /// Must be `>= 1`. Default `2`.
-        #[serde(default = "default_start_iteration")]
-        start_iteration: u32,
+        /// First 1-based iteration at which the lazy loop becomes active. Default `2`.
+        #[serde(
+            default = "default_start_iteration",
+            deserialize_with = "deserialize_start_iteration"
+        )]
+        start_iteration: NonZeroU32,
         /// A solve starts with the active rows whose last binding was at most
         /// `seed_window` iterations ago (a row that has not bound counts from
         /// the iteration that added it), plus the rows added in the current
@@ -338,15 +343,17 @@ pub enum SelectionMethod {
         #[serde(default = "default_seed_window")]
         seed_window: u32,
         /// Absent (default): every active row is a candidate and a solve returns
-        /// the optimum over them. A value `n` (must be `>= 1`) restricts the
-        /// candidates to the rows added in the last `n` iterations and loaded
-        /// rows, and the result is then the optimum over those rows together
-        /// with the seed rows.
-        #[serde(default)]
-        candidate_recency: Option<u32>,
-        /// Maximum rows added per lazy-solve round. Must be `>= 1`. Default `10`.
-        #[serde(default = "default_max_added_per_round")]
-        max_added_per_round: u32,
+        /// the optimum over them. A value `n` restricts the candidates to the
+        /// rows added in the last `n` iterations and loaded rows, and the result
+        /// is then the optimum over those rows together with the seed rows.
+        #[serde(default, deserialize_with = "deserialize_candidate_recency")]
+        candidate_recency: Option<NonZeroU32>,
+        /// Maximum rows added per lazy-solve round. Default `10`.
+        #[serde(
+            default = "default_max_added_per_round",
+            deserialize_with = "deserialize_max_added_per_round"
+        )]
+        max_added_per_round: NonZeroU32,
         /// A relative factor: a candidate row is added when its value exceeds
         /// the future-cost value by more than the factor times the larger of
         /// the two magnitudes. Absent (default): each phase uses the primal
@@ -358,20 +365,20 @@ pub enum SelectionMethod {
     },
 }
 
-fn default_check_frequency() -> u32 {
-    5
+fn default_check_frequency() -> NonZeroU32 {
+    const { NonZeroU32::new(5).expect("5 is nonzero") }
 }
 
-fn default_start_iteration() -> u32 {
-    2
+fn default_start_iteration() -> NonZeroU32 {
+    const { NonZeroU32::new(2).expect("2 is nonzero") }
 }
 
 fn default_seed_window() -> u32 {
     5
 }
 
-fn default_max_added_per_round() -> u32 {
-    10
+fn default_max_added_per_round() -> NonZeroU32 {
+    const { NonZeroU32::new(10).expect("10 is nonzero") }
 }
 
 /// `value` as a count of at least 1, or the load error naming `key`, the full
@@ -379,6 +386,14 @@ fn default_max_added_per_round() -> u32 {
 fn positive_count<E: de::Error>(key: &str, value: u32) -> Result<NonZeroU32, E> {
     NonZeroU32::new(value)
         .ok_or_else(|| E::custom(format_args!("{key} must be >= 1 (got {value})")))
+}
+
+/// Deserializes a count of at least 1 through [`positive_count`].
+fn required_positive_count<'de, D: Deserializer<'de>>(
+    deserializer: D,
+    key: &str,
+) -> Result<NonZeroU32, D::Error> {
+    positive_count(key, u32::deserialize(deserializer)?)
 }
 
 /// Deserializes an optional count of at least 1 through [`positive_count`].
@@ -391,12 +406,48 @@ fn optional_positive_count<'de, D: Deserializer<'de>>(
         .transpose()
 }
 
+fn deserialize_check_frequency<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<NonZeroU32, D::Error> {
+    required_positive_count(
+        deserializer,
+        "training.cut_selection.selection.check_frequency",
+    )
+}
+
 fn deserialize_lookback_iterations<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<NonZeroU32>, D::Error> {
     optional_positive_count(
         deserializer,
         "training.cut_selection.selection.lookback_iterations",
+    )
+}
+
+fn deserialize_start_iteration<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<NonZeroU32, D::Error> {
+    required_positive_count(
+        deserializer,
+        "training.cut_selection.selection.start_iteration",
+    )
+}
+
+fn deserialize_candidate_recency<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<NonZeroU32>, D::Error> {
+    optional_positive_count(
+        deserializer,
+        "training.cut_selection.selection.candidate_recency",
+    )
+}
+
+fn deserialize_max_added_per_round<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<NonZeroU32, D::Error> {
+    required_positive_count(
+        deserializer,
+        "training.cut_selection.selection.max_added_per_round",
     )
 }
 
@@ -731,10 +782,10 @@ mod tests {
                 max_added_per_round,
                 violation_tolerance,
             } => {
-                assert_eq!(*start_iteration, 5);
+                assert_eq!(start_iteration.get(), 5);
                 assert_eq!(*seed_window, 0);
-                assert_eq!(*candidate_recency, Some(20));
-                assert_eq!(*max_added_per_round, 3);
+                assert_eq!(*candidate_recency, NonZeroU32::new(20));
+                assert_eq!(max_added_per_round.get(), 3);
                 assert_eq!(*violation_tolerance, Some(1e-9));
             }
             other @ SelectionMethod::Level1 { .. } => panic!("expected Dynamic, got {other:?}"),
@@ -761,7 +812,7 @@ mod tests {
                 check_frequency,
                 lookback_iterations,
             } => {
-                assert_eq!(*check_frequency, 5);
+                assert_eq!(check_frequency.get(), 5);
                 assert_eq!(*lookback_iterations, None);
             }
             other @ SelectionMethod::Dynamic { .. } => panic!("expected Level1, got {other:?}"),
@@ -792,7 +843,7 @@ mod tests {
                 check_frequency,
                 lookback_iterations,
             } => {
-                assert_eq!(check_frequency, 2);
+                assert_eq!(check_frequency.get(), 2);
                 assert_eq!(lookback_iterations, NonZeroU32::new(7));
             }
             other @ SelectionMethod::Dynamic { .. } => panic!("expected Level1, got {other:?}"),
@@ -808,6 +859,26 @@ mod tests {
             ),
             "unexpected message: {err}"
         );
+    }
+
+    #[test]
+    fn a_zero_count_names_its_key() {
+        for (method, key) in [
+            ("level1", "check_frequency"),
+            ("dynamic", "start_iteration"),
+            ("dynamic", "candidate_recency"),
+            ("dynamic", "max_added_per_round"),
+        ] {
+            let selection = |value: u32| format!(r#"{{ "method": "{method}", "{key}": {value} }}"#);
+            serde_json::from_str::<TrainingConfig>(&training_json_with_selection(&selection(1)))
+                .unwrap_or_else(|err| panic!("{key} = 1 must load: {err}"));
+            let err = selection_error(&selection(0));
+            assert!(
+                err.contains(&format!("training.cut_selection.selection.{key}"))
+                    && err.contains(">= 1"),
+                "unexpected message for {key}: {err}"
+            );
+        }
     }
 
     #[test]

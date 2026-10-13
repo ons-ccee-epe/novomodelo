@@ -874,7 +874,7 @@ mod by_node_scheduler_determinism {
     use novomodelo_solver::ActiveSolver;
 
     use crate::by_node_scratch::run_by_node_one_iteration;
-    use crate::common::{Rank0Of2, StubComm};
+    use crate::common::{Rank0Of2, StubComm, positive};
 
     fn fixture_case_dir() -> &'static Path {
         Path::new("../../examples/1dtoy")
@@ -900,10 +900,10 @@ mod by_node_scheduler_determinism {
         fresh_setup_with(case_dir, |config| {
             config.training.parallelism.backward_scheduler = scheduler;
             config.training.cut_selection.selection = Some(SelectionMethod::Dynamic {
-                start_iteration: 1,
+                start_iteration: positive(1),
                 seed_window: 5,
                 candidate_recency: None,
-                max_added_per_round: 10,
+                max_added_per_round: positive(10),
                 violation_tolerance: None,
             });
         })
@@ -3142,7 +3142,9 @@ mod selection_on_determinism {
         assert_active_scored_cuts_are_the_owners, assert_identical_cuts_keep_their_lowest_slot,
         assert_owners_attain_the_maximum, interior_pool_ids, selection_ran_at_the_last_iteration,
     };
-    use crate::common::{Rank0Of2, StubComm, fresh_setup_with, fresh_setup_with_openings};
+    use crate::common::{
+        Rank0Of2, StubComm, fresh_setup_with, fresh_setup_with_openings, positive,
+    };
 
     const THREAD_SHAPES: [usize; 3] = [1, 2, 4];
     const PERMUTATION_SEEDS: [u64; 2] = [1, 2];
@@ -3158,14 +3160,14 @@ mod selection_on_determinism {
     const FAN_ITERATIONS: u32 = 10;
     const fn level1(check_frequency: u32) -> SelectionMethod {
         SelectionMethod::Level1 {
-            check_frequency,
+            check_frequency: positive(check_frequency),
             lookback_iterations: None,
         }
     }
 
     const fn windowed_level1(check_frequency: u32) -> SelectionMethod {
         SelectionMethod::Level1 {
-            check_frequency,
+            check_frequency: positive(check_frequency),
             lookback_iterations: WINDOW,
         }
     }
@@ -3437,10 +3439,10 @@ mod selection_on_determinism {
 
     fn dynamic_selection(seed_window: u32) -> SelectionMethod {
         SelectionMethod::Dynamic {
-            start_iteration: LAZY_START_ITERATION,
+            start_iteration: positive(LAZY_START_ITERATION),
             seed_window,
             candidate_recency: None,
-            max_added_per_round: 10,
+            max_added_per_round: positive(10),
             violation_tolerance: None,
         }
     }

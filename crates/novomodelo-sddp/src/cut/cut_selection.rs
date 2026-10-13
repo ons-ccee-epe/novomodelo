@@ -68,7 +68,7 @@
 //! assert!(strategy.should_run(10));
 //! ```
 
-use std::num::NonZeroU64;
+use std::num::{NonZeroU32, NonZeroU64};
 
 use crate::setup::NodeId;
 
@@ -224,18 +224,6 @@ impl CutSelectionStrategy {
 // Config parsing
 // ---------------------------------------------------------------------------
 
-/// Validate the periodic-pruning cadence (`check_frequency`).
-///
-/// # Errors
-///
-/// Returns `Err(String)` when `check_frequency = 0`.
-fn validate_check_frequency(check_frequency: u32) -> Result<u32, String> {
-    if check_frequency == 0 {
-        return Err("cut_selection.check_frequency must be > 0".to_string());
-    }
-    Ok(check_frequency)
-}
-
 /// Validate a selection tolerance: finite and `>= 0`, or finite and `> 0` when
 /// `strict`.
 ///
@@ -264,10 +252,9 @@ fn validate_tolerance(key: &str, value: f64, strict: bool) -> Result<f64, String
 ///
 /// Returns `Err(String)` when `row_activity_tolerance` (checked even with no
 /// method) is not finite and `>= 0`, or when a method's numeric constraint is
-/// violated: for `level1`, `check_frequency = 0` or a `lookback_iterations`
-/// below `check_frequency`; for `dynamic`, `start_iteration = 0`,
-/// `candidate_recency = Some(0)`, `max_added_per_round = 0`, or a
-/// `violation_tolerance` that is not finite and `> 0`, or is `>= 1`.
+/// violated: for `level1`, a `lookback_iterations` below `check_frequency`; for
+/// `dynamic`, a `violation_tolerance` that is not finite and `> 0`, or is
+/// `>= 1`.
 ///
 /// [`SelectionMethod`]: novomodelo_io::config::SelectionMethod
 pub fn parse_cut_selection_config(
@@ -288,11 +275,10 @@ pub fn parse_cut_selection_config(
             check_frequency,
             lookback_iterations,
         } => {
-            let check_frequency = validate_check_frequency(check_frequency)?;
             // A shorter window drops the states of the iterations between two
             // selection runs before any run scores them.
             if let Some(window) = lookback_iterations
-                && window.get() < check_frequency
+                && window.get() < check_frequency.get()
             {
                 return Err(format!(
                     "cut_selection.lookback_iterations ({window}) must be >= \
@@ -300,7 +286,7 @@ pub fn parse_cut_selection_config(
                 ));
             }
             Ok(Some(CutSelectionStrategy::Level1 {
-                check_frequency: u64::from(check_frequency),
+                check_frequency: u64::from(check_frequency.get()),
                 lookback_iterations: lookback_iterations.map(NonZeroU64::from),
             }))
         }
@@ -311,27 +297,6 @@ pub fn parse_cut_selection_config(
             max_added_per_round,
             violation_tolerance,
         } => {
-            if start_iteration == 0 {
-                return Err(
-                    "cut_selection.start_iteration must be >= 1 for method='dynamic'".to_string(),
-                );
-            }
-
-            if candidate_recency == Some(0) {
-                return Err(
-                    "cut_selection.candidate_recency must be >= 1 for method='dynamic' \
-                     (omit it for the unbounded default)"
-                        .to_string(),
-                );
-            }
-
-            if max_added_per_round == 0 {
-                return Err(
-                    "cut_selection.max_added_per_round must be >= 1 for method='dynamic'"
-                        .to_string(),
-                );
-            }
-
             let violation_tolerance = violation_tolerance
                 .map(|value| validate_tolerance("violation_tolerance", value, true))
                 .transpose()?;
@@ -344,11 +309,11 @@ pub fn parse_cut_selection_config(
             }
 
             Ok(Some(CutSelectionStrategy::Dynamic {
-                candidate_recency,
+                candidate_recency: candidate_recency.map(NonZeroU32::get),
                 seed_window,
-                max_added_per_round,
+                max_added_per_round: max_added_per_round.get(),
                 violation_tolerance,
-                start_iteration: u64::from(start_iteration),
+                start_iteration: u64::from(start_iteration.get()),
             }))
         }
     }
@@ -373,6 +338,10 @@ mod tests {
     use novomodelo_io::config::{RowSelectionConfig, SelectionMethod};
     use proptest::prelude::*;
     use proptest::test_runner::RngSeed;
+
+    fn positive(n: u32) -> NonZeroU32 {
+        NonZeroU32::new(n).expect("a positive count")
+    }
 
     fn make_meta(active_count: u64, last_active_iter: u64) -> CutMetadata {
         CutMetadata {
@@ -441,7 +410,7 @@ mod tests {
     fn test_parse_level1() {
         let cfg = RowSelectionConfig {
             selection: Some(SelectionMethod::Level1 {
-                check_frequency: 5,
+                check_frequency: positive(5),
                 lookback_iterations: None,
             }),
             ..RowSelectionConfig::default()
@@ -461,28 +430,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_parse_zero_check_frequency() {
-        let cfg = RowSelectionConfig {
-            selection: Some(SelectionMethod::Level1 {
-                check_frequency: 0,
-                lookback_iterations: None,
-            }),
-            ..RowSelectionConfig::default()
-        };
-        let result = parse_cut_selection_config(&cfg);
-        assert!(result.is_err());
-        let msg = result.unwrap_err();
-        assert!(
-            msg.contains("check_frequency"),
-            "error message must mention check_frequency, got: {msg}"
-        );
-    }
-
     fn level1_with_lookback(check_frequency: u32, lookback: Option<u32>) -> RowSelectionConfig {
         RowSelectionConfig {
             selection: Some(SelectionMethod::Level1 {
-                check_frequency,
+                check_frequency: positive(check_frequency),
                 lookback_iterations: lookback.and_then(NonZeroU32::new),
             }),
             ..RowSelectionConfig::default()
@@ -547,10 +498,10 @@ mod tests {
             (
                 "violation_tolerance",
                 with_method(SelectionMethod::Dynamic {
-                    start_iteration: 2,
+                    start_iteration: positive(2),
                     seed_window: 5,
                     candidate_recency: None,
-                    max_added_per_round: 10,
+                    max_added_per_round: positive(10),
                     violation_tolerance: Some(value),
                 }),
             ),
@@ -1114,10 +1065,10 @@ mod tests {
     fn parse_dynamic_overrides() {
         let cfg = RowSelectionConfig {
             selection: Some(SelectionMethod::Dynamic {
-                start_iteration: 2,
+                start_iteration: positive(2),
                 seed_window: 7,
-                candidate_recency: Some(20),
-                max_added_per_round: 3,
+                candidate_recency: Some(positive(20)),
+                max_added_per_round: positive(3),
                 violation_tolerance: Some(1e-9),
             }),
             ..RowSelectionConfig::default()
@@ -1146,10 +1097,10 @@ mod tests {
         for violation_tolerance in [-1.0, 0.0] {
             let cfg = RowSelectionConfig {
                 selection: Some(SelectionMethod::Dynamic {
-                    start_iteration: 2,
+                    start_iteration: positive(2),
                     seed_window: 5,
                     candidate_recency: None,
-                    max_added_per_round: 10,
+                    max_added_per_round: positive(10),
                     violation_tolerance: Some(violation_tolerance),
                 }),
                 ..RowSelectionConfig::default()
@@ -1179,37 +1130,15 @@ mod tests {
         }
     }
 
-    /// `candidate_recency = Some(0)` is rejected for the dynamic method.
-    /// (Absent/`None` is valid and means the unbounded default.)
-    #[test]
-    fn parse_dynamic_rejects_zero_candidate_recency() {
-        let cfg = RowSelectionConfig {
-            selection: Some(SelectionMethod::Dynamic {
-                start_iteration: 2,
-                seed_window: 5,
-                candidate_recency: Some(0),
-                max_added_per_round: 10,
-                violation_tolerance: None,
-            }),
-            ..RowSelectionConfig::default()
-        };
-        let msg = parse_cut_selection_config(&cfg)
-            .expect_err("zero candidate_recency must be rejected for dynamic");
-        assert!(
-            msg.contains("candidate_recency must be >= 1"),
-            "error must mention the candidate_recency constraint, got: {msg}"
-        );
-    }
-
     /// Every explicit dynamic field flows into the `Dynamic` variant.
     #[test]
     fn parse_dynamic_explicit_fields() {
         let cfg = RowSelectionConfig {
             selection: Some(SelectionMethod::Dynamic {
-                start_iteration: 5,
+                start_iteration: positive(5),
                 seed_window: 7,
-                candidate_recency: Some(20),
-                max_added_per_round: 3,
+                candidate_recency: Some(positive(20)),
+                max_added_per_round: positive(3),
                 violation_tolerance: Some(1e-9),
             }),
             ..RowSelectionConfig::default()
@@ -1229,49 +1158,6 @@ mod tests {
                 } if (violation_tolerance - 1e-9).abs() < f64::EPSILON
             ),
             "unexpected variant or explicit fields: {strategy:?}"
-        );
-    }
-
-    /// `start_iteration = 0` is rejected with a message naming the field and the
-    /// `>= 1` constraint.
-    #[test]
-    fn parse_dynamic_rejects_zero_start_iteration() {
-        let cfg = RowSelectionConfig {
-            selection: Some(SelectionMethod::Dynamic {
-                start_iteration: 0,
-                seed_window: 5,
-                candidate_recency: None,
-                max_added_per_round: 10,
-                violation_tolerance: None,
-            }),
-            ..RowSelectionConfig::default()
-        };
-        let msg = parse_cut_selection_config(&cfg)
-            .expect_err("zero start_iteration must be rejected for dynamic");
-        assert!(
-            msg.contains("start_iteration") && msg.contains(">= 1"),
-            "error must mention start_iteration and '>= 1', got: {msg}"
-        );
-    }
-
-    /// A zero `max_added_per_round` is rejected with a naming message.
-    #[test]
-    fn parse_dynamic_rejects_zero_max_added_per_round() {
-        let cfg = RowSelectionConfig {
-            selection: Some(SelectionMethod::Dynamic {
-                start_iteration: 2,
-                seed_window: 5,
-                candidate_recency: None,
-                max_added_per_round: 0,
-                violation_tolerance: None,
-            }),
-            ..RowSelectionConfig::default()
-        };
-        let msg = parse_cut_selection_config(&cfg)
-            .expect_err("zero max_added_per_round must be rejected for dynamic");
-        assert!(
-            msg.contains("max_added_per_round") && msg.contains(">= 1"),
-            "error must name max_added_per_round and '>= 1', got: {msg}"
         );
     }
 

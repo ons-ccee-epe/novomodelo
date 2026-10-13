@@ -864,7 +864,7 @@ mod basis_reconstruct_churn {
     use novomodelo_solver::ActiveSolver;
 
     use super::common::selection_fingerprint::SelectionPower;
-    use super::common::{D03_EXPECTED_COST, StubComm};
+    use super::common::{D03_EXPECTED_COST, StubComm, positive};
     use super::sum_forward_deltas;
 
     // ---------------------------------------------------------------------------
@@ -908,7 +908,7 @@ mod basis_reconstruct_churn {
             Some(vec![StoppingRuleConfig::IterationLimit { limit: 8 }]);
 
         config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
-            check_frequency: 2,
+            check_frequency: positive(2),
             lookback_iterations: None,
         });
 
@@ -1403,10 +1403,10 @@ mod selection_in_a_training_run {
     };
     use novomodelo_solver::ActiveSolver;
 
-    use super::common::StubComm;
     use super::common::selection_fingerprint::{
         SelectionFingerprint, SelectionPower, interior_pool_ids,
     };
+    use super::common::{StubComm, positive};
     use super::sum_forward_deltas;
 
     const FORWARD_PASSES: u32 = 2;
@@ -1644,7 +1644,7 @@ mod selection_in_a_training_run {
     fn train_level1_with_lookback(lookback: Option<u32>) -> (StudySetup, TrainingResult) {
         train_configured(WINDOW_RUN_ITERATIONS, None, |config| {
             config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
-                check_frequency: CHECK_FREQUENCY,
+                check_frequency: positive(CHECK_FREQUENCY),
                 lookback_iterations: lookback.and_then(NonZeroU32::new),
             });
         })
@@ -1842,17 +1842,17 @@ mod selection_in_a_training_run {
 
     fn level1() -> SelectionMethod {
         SelectionMethod::Level1 {
-            check_frequency: CHECK_FREQUENCY,
+            check_frequency: positive(CHECK_FREQUENCY),
             lookback_iterations: None,
         }
     }
 
     fn dynamic() -> SelectionMethod {
         SelectionMethod::Dynamic {
-            start_iteration: 2,
+            start_iteration: positive(2),
             seed_window: 5,
             candidate_recency: None,
-            max_added_per_round: 10,
+            max_added_per_round: positive(10),
             violation_tolerance: None,
         }
     }
@@ -1995,7 +1995,7 @@ mod trial_state_store {
     use novomodelo_sddp::{StudySetup, TrainingResult};
     use novomodelo_solver::ActiveSolver;
 
-    use super::common::{StubComm, fresh_setup_with, fresh_setup_with_openings};
+    use super::common::{StubComm, fresh_setup_with, fresh_setup_with_openings, positive};
 
     const ITERATIONS: u32 = 6;
     const UNIFORM_CASE: &str = "../../examples/1dtoy";
@@ -2004,7 +2004,7 @@ mod trial_state_store {
 
     fn level1_without_a_selection_run() -> SelectionMethod {
         SelectionMethod::Level1 {
-            check_frequency: ITERATIONS + 1,
+            check_frequency: positive(ITERATIONS + 1),
             lookback_iterations: None,
         }
     }
@@ -2276,10 +2276,10 @@ mod trial_state_store {
         let others = [
             None,
             Some(SelectionMethod::Dynamic {
-                start_iteration: 2,
+                start_iteration: positive(2),
                 seed_window: 5,
                 candidate_recency: None,
-                max_added_per_round: 10,
+                max_added_per_round: positive(10),
                 violation_tolerance: None,
             }),
         ];

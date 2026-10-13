@@ -82,10 +82,10 @@ use novomodelo_sddp::test_support::{
 use novomodelo_sddp::{StudySetup, TrainingResult};
 use novomodelo_solver::ActiveSolver;
 
-use common::StubComm;
 use common::selection_fingerprint::{
     SelectionPower, assert_identical_cuts_keep_their_lowest_slot, interior_pool_ids,
 };
+use common::{StubComm, positive};
 
 /// Relative + absolute LP tolerance for oracle-vs-engine value comparison. The
 /// backend primal/dual feasibility tolerance is `≈ 1e-9`; scaled by the objective
@@ -211,7 +211,7 @@ const LEVEL1_MAX_ITERATIONS: u32 = 30;
 
 fn level1_every_iteration() -> SelectionMethod {
     SelectionMethod::Level1 {
-        check_frequency: 1,
+        check_frequency: positive(1),
         lookback_iterations: None,
     }
 }

@@ -443,6 +443,43 @@ fn validate_rejects_a_lookback_window_below_the_check_frequency() {
         .stdout(predicate::str::contains("check_frequency"));
 }
 
+/// A zero count fails at load naming its key; the same selection with `1`
+/// validates.
+#[test]
+fn validate_rejects_a_zero_selection_count() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+    for (method, key) in [
+        ("level1", "check_frequency"),
+        ("dynamic", "start_iteration"),
+        ("dynamic", "candidate_recency"),
+        ("dynamic", "max_added_per_round"),
+    ] {
+        let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+        config["training"]["cut_selection"] = serde_json::json!({
+            "selection": { "method": method, key: 1 }
+        });
+        write_file(dir.path(), "config.json", &config.to_string());
+        novomodelo()
+            .args(["validate", dir.path().to_str().unwrap()])
+            .assert()
+            .success()
+            .code(0);
+
+        config["training"]["cut_selection"]["selection"][key] = serde_json::json!(0);
+        write_file(dir.path(), "config.json", &config.to_string());
+        novomodelo()
+            .args(["validate", dir.path().to_str().unwrap()])
+            .assert()
+            .failure()
+            .code(1)
+            .stdout(predicate::str::contains(format!(
+                "training.cut_selection.selection.{key}"
+            )))
+            .stdout(predicate::str::contains(">= 1"));
+    }
+}
+
 /// The pairing is rejected by the admission gate every front end shares; the
 /// same selection without the budget validates.
 #[test]

@@ -901,16 +901,17 @@ fn training_ctx_fields_match_study_setup() {
 fn simulation_ctx_propagates_dynamic_dcs_from_setup() {
     use crate::dcs::DcsConfig;
     use novomodelo_io::config::SelectionMethod;
+    use std::num::NonZeroU32;
 
     let n_stages = 3;
     let system = minimal_system(n_stages);
     let mut config = minimal_config(2, 10);
     config.training.cut_selection = RowSelectionConfig {
         selection: Some(SelectionMethod::Dynamic {
-            start_iteration: 2,
+            start_iteration: NonZeroU32::new(2).unwrap(),
             seed_window: 5,
             candidate_recency: None,
-            max_added_per_round: 10,
+            max_added_per_round: NonZeroU32::new(10).unwrap(),
             violation_tolerance: None,
         }),
         ..RowSelectionConfig::default()

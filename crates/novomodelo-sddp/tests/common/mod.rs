@@ -5,6 +5,7 @@
 
 #![allow(clippy::expect_used, dead_code)]
 
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::mpsc;
 
@@ -31,6 +32,11 @@ pub mod parity_hash;
 pub mod parquet_fixtures;
 pub mod permute;
 pub mod selection_fingerprint;
+
+/// `n` as a positive count; panics on zero.
+pub const fn positive(n: u32) -> NonZeroU32 {
+    NonZeroU32::new(n).expect("a positive count")
+}
 
 /// Single-rank `Communicator` stub: broadcasts/reductions copy data locally;
 /// other collectives are no-ops.

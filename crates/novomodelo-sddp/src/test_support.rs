@@ -12,6 +12,7 @@
 #![deny(clippy::allow_attributes, clippy::allow_attributes_without_reason)]
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 use std::path::Path;
 
 use chrono::NaiveDate;
@@ -3770,10 +3771,10 @@ fn k_fan_config_dcs(forward_passes: u32, max_iterations: u32) -> Config {
         row_activity_tolerance: None,
         max_active_per_stage: None,
         selection: Some(SelectionMethod::Dynamic {
-            start_iteration: 1,
+            start_iteration: NonZeroU32::MIN,
             seed_window: 5,
             candidate_recency: None,
-            max_added_per_round: 10,
+            max_added_per_round: const { NonZeroU32::new(10).expect("10 is nonzero") },
             violation_tolerance: None,
         }),
     };

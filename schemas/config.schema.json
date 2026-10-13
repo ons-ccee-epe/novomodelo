@@ -782,9 +782,9 @@
           "properties": {
             "check_frequency": {
               "default": 5,
-              "description": "Iterations between periodic pruning checks. Must be `> 0`. Default `5`.",
+              "description": "Iterations between periodic pruning checks. Default `5`.",
               "format": "uint32",
-              "minimum": 0,
+              "minimum": 1,
               "type": "integer"
             },
             "lookback_iterations": {
@@ -813,9 +813,9 @@
           "properties": {
             "candidate_recency": {
               "default": null,
-              "description": "Absent (default): every active row is a candidate and a solve returns\nthe optimum over them. A value `n` (must be `>= 1`) restricts the\ncandidates to the rows added in the last `n` iterations and loaded\nrows, and the result is then the optimum over those rows together\nwith the seed rows.",
+              "description": "Absent (default): every active row is a candidate and a solve returns\nthe optimum over them. A value `n` restricts the candidates to the\nrows added in the last `n` iterations and loaded rows, and the result\nis then the optimum over those rows together with the seed rows.",
               "format": "uint32",
-              "minimum": 0,
+              "minimum": 1,
               "type": [
                 "integer",
                 "null"
@@ -823,9 +823,9 @@
             },
             "max_added_per_round": {
               "default": 10,
-              "description": "Maximum rows added per lazy-solve round. Must be `>= 1`. Default `10`.",
+              "description": "Maximum rows added per lazy-solve round. Default `10`.",
               "format": "uint32",
-              "minimum": 0,
+              "minimum": 1,
               "type": "integer"
             },
             "method": {
@@ -841,9 +841,9 @@
             },
             "start_iteration": {
               "default": 2,
-              "description": "First 1-based iteration at which the lazy loop becomes active.\nMust be `>= 1`. Default `2`.",
+              "description": "First 1-based iteration at which the lazy loop becomes active. Default `2`.",
               "format": "uint32",
-              "minimum": 0,
+              "minimum": 1,
               "type": "integer"
             },
             "violation_tolerance": {

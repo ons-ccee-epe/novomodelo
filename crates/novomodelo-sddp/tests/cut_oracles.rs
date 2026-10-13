@@ -32,7 +32,9 @@ use common::in_code_studies::{
     negative_draw_water_value_spec, parallel_multiblock_evaporation_study,
     stochastic_parallel_study,
 };
-use common::{StubComm, build_setup_in_code, build_setup_in_code_with_models, fresh_setup_with};
+use common::{
+    StubComm, build_setup_in_code, build_setup_in_code_with_models, fresh_setup_with, positive,
+};
 
 const D19: &str = "examples/deterministic/d19-multi-hydro-par";
 const ONE_D_TOY: &str = "examples/1dtoy";
@@ -92,7 +94,7 @@ fn cut_oracles_hold_on_deactivated_cuts_under_level1() {
         apply_oracle_config_with_selection(
             config,
             SelectionMethod::Level1 {
-                check_frequency: 1,
+                check_frequency: positive(1),
                 lookback_iterations: None,
             },
         );

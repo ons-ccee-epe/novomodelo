@@ -845,7 +845,7 @@ mod tests {
                 check_frequency,
                 lookback_iterations,
             } => {
-                assert_eq!(*check_frequency, 3);
+                assert_eq!(check_frequency.get(), 3);
                 assert_eq!(*lookback_iterations, None);
             }
             other @ SelectionMethod::Dynamic { .. } => panic!("expected Level1, got {other:?}"),
@@ -1654,7 +1654,7 @@ mod tests {
             row_activity_tolerance: Some(1e-6),
             max_active_per_stage: Some(100),
             selection: Some(SelectionMethod::Level1 {
-                check_frequency: 7,
+                check_frequency: NonZeroU32::new(7).unwrap(),
                 lookback_iterations: NonZeroU32::new(9),
             }),
         };
@@ -1667,7 +1667,7 @@ mod tests {
                 check_frequency,
                 lookback_iterations,
             } => {
-                assert_eq!(check_frequency, 7);
+                assert_eq!(check_frequency.get(), 7);
                 assert_eq!(lookback_iterations, NonZeroU32::new(9));
             }
             other @ SelectionMethod::Dynamic { .. } => panic!("expected Level1, got {other:?}"),
@@ -2280,6 +2280,28 @@ mod tests {
             matches!(&err, LoadError::SchemaError { path, message, .. }
                 if path == std::path::Path::new("<config_overrides>")
                     && message.contains(ZERO_LOOKBACK_MESSAGE)),
+            "expected the zero-count SchemaError on the override path, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn with_overrides_rejects_a_zero_selection_count() {
+        let overrides = override_map(&[(
+            "training.cut_selection.selection.check_frequency",
+            serde_json::json!(0),
+        )]);
+        let mut base = base_value(OVERRIDE_BASE_CONFIG);
+        base["training"]["cut_selection"] = serde_json::json!({
+            "selection": { "method": "level1", "check_frequency": 1 }
+        });
+        Config::with_overrides(&base, &override_map(&[])).expect("check_frequency = 1 must load");
+        let err = Config::with_overrides(&base, &overrides).unwrap_err();
+        assert!(
+            matches!(&err, LoadError::SchemaError { path, message, .. }
+            if path == std::path::Path::new("<config_overrides>")
+                && message.contains(
+                    "training.cut_selection.selection.check_frequency must be >= 1 (got 0)"
+                )),
             "expected the zero-count SchemaError on the override path, got: {err:?}"
         );
     }
