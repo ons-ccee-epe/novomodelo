@@ -864,6 +864,11 @@
       "additionalProperties": false,
       "description": "Post-training simulation settings (`config.json → simulation`).",
       "properties": {
+        "cut_set": {
+          "$ref": "#/$defs/SimulationRowSet",
+          "default": "all",
+          "description": "Which rows of each stage's row pool the simulation loads into the stage\nLP. `all` loads every row a training run added to the pool, including\nrows the selection method deactivated and rows `max_active_per_stage`\nevicted, so a simulation LP can be larger than the training LPs.\n`active` loads only the rows active when training ended.\n\nUnder both values a row loaded from a policy (`policy.mode`,\n`policy.boundary`, or a run with training disabled) follows the active\nflag stored with it, and the exported `is_active` flag records the last\nselection."
+        },
         "enabled": {
           "default": false,
           "description": "Enable post-training simulation.",
@@ -914,6 +919,21 @@
         }
       },
       "type": "object"
+    },
+    "SimulationRowSet": {
+      "description": "The rows of a stage's row pool a simulation loads\n(`config.json → simulation.cut_set`).",
+      "oneOf": [
+        {
+          "const": "all",
+          "description": "Every row a training run added, whatever its active flag.",
+          "type": "string"
+        },
+        {
+          "const": "active",
+          "description": "Only the rows active when training ended.",
+          "type": "string"
+        }
+      ]
     },
     "SimulationSelection": {
       "description": "Post-training scenario selection and its method-specific parameters\n(`config.json → simulation.selection`).\n\nThe `method` key selects how scenarios are chosen: `sampled` draws\n`num_scenarios` trajectories; `enumerated` walks the scenario set\nexhaustively. Each method accepts only its own parameters, so pairing a\ncount with `enumerated` is a parse error.",
@@ -1350,6 +1370,7 @@
     "simulation": {
       "$ref": "#/$defs/SimulationConfig",
       "default": {
+        "cut_set": "all",
         "enabled": false,
         "io_channel_capacity": 64,
         "scenario_source": null,

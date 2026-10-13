@@ -1395,9 +1395,12 @@ mod selection_in_a_training_run {
 
     use novomodelo_core::{StageRowSelectionRecord, TrainingEvent, scenario::ScenarioSource};
     use novomodelo_io::Config;
-    use novomodelo_io::config::{SelectionMethod, StoppingRuleConfig, TrainingSelection};
+    use novomodelo_io::config::{
+        SelectionMethod, SimulationSelection, StoppingRuleConfig, TrainingSelection,
+    };
     use novomodelo_sddp::{
         StudySetup, TrainingResult,
+        cut::CutSet,
         hydro_models::prepare_hydro_models,
         setup::{NodePos, prepare_stochastic},
     };
@@ -1407,6 +1410,7 @@ mod selection_in_a_training_run {
         SelectionFingerprint, SelectionPower, interior_pool_ids,
     };
     use super::common::{StubComm, positive};
+    use super::simulation_cut_set::{bitwise, simulate_with};
     use super::sum_forward_deltas;
 
     const FORWARD_PASSES: u32 = 2;
@@ -1835,6 +1839,35 @@ mod selection_in_a_training_run {
             "expected 0 forward basis rejections, got {} (reconstructed bases must always be \
              accepted by the solver)",
             forward.basis_consistency_failures
+        );
+    }
+
+    #[test]
+    fn simulation_follows_the_cut_set_of_the_setup() {
+        let (mut setup, result) = train_configured(ITERATIONS, None, |config| {
+            config.training.cut_selection.selection = Some(level1());
+            config.training.cut_selection.max_active_per_stage = Some(BUDGET_BELOW_THE_POOL_SIZE);
+            config.simulation.enabled = true;
+            config.simulation.selection = Some(SimulationSelection::Sampled { num_scenarios: 4 });
+        });
+        let pools = &setup.fcf.pools;
+        assert!(
+            interior_pool_ids(&setup)
+                .into_iter()
+                .any(|pool_id| pools[pool_id].count_in(CutSet::All) > pools[pool_id].active_count()),
+            "no interior pool holds a cut outside its active cuts"
+        );
+        let frozen_templates = result.frozen_templates.as_deref();
+
+        setup.simulation_cut_set = CutSet::All;
+        let (all, _) = simulate_with(&setup, &result, frozen_templates);
+        setup.simulation_cut_set = CutSet::Active;
+        let (active, _) = simulate_with(&setup, &result, frozen_templates);
+
+        assert_ne!(
+            bitwise(&all),
+            bitwise(&active),
+            "simulating every cut and simulating the active cuts gave the same results"
         );
     }
 
@@ -4640,7 +4673,7 @@ mod simulation_cut_set {
     /// Simulates on a fresh workspace pool with the setup's cut set and the
     /// run's bases; returns the scenario results by id and the summed basis
     /// rejections.
-    fn simulate_with(
+    pub(super) fn simulate_with(
         setup: &StudySetup,
         result: &TrainingResult,
         frozen_templates: Option<&[StageTemplate]>,
@@ -4677,7 +4710,7 @@ mod simulation_cut_set {
 
     /// `Debug` prints the shortest text that parses back to the same bits, so
     /// equal text is bitwise-equal results.
-    fn bitwise(scenarios: &[SimulationScenarioResult]) -> String {
+    pub(super) fn bitwise(scenarios: &[SimulationScenarioResult]) -> String {
         format!("{scenarios:?}")
     }
 

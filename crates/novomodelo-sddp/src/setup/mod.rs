@@ -478,7 +478,7 @@ impl StudySetup {
             loop_params,
             simulation_config,
             simulation_enumerated: config.simulation_enumerated,
-            simulation_cut_set: CutSet::Active,
+            simulation_cut_set: config.simulation_cut_set,
             policy_path: config.policy_path,
             events: EventParams {
                 export_states: config.export_states,

@@ -44,7 +44,9 @@ pub use scenario_source::{
     HistoricalYearRange, Openings, RawClassConfigEntry, RawHistoricalYearsConfig,
     RawSamplingScheme, RawScenarioSourceConfig,
 };
-pub use simulation::{NumScenariosResolution, SimulationConfig, SimulationSelection};
+pub use simulation::{
+    NumScenariosResolution, SimulationConfig, SimulationRowSet, SimulationSelection,
+};
 pub use training::{
     BackwardScheduler, DualEdgeWeight, ForwardPassesResolution, LipschitzConfig, ParallelismConfig,
     PhaseSolverProfileConfig, PresolveMode, PriceStrategy, RowSelectionConfig, ScaleStrategy,
@@ -2282,6 +2284,18 @@ mod tests {
                 if path == std::path::Path::new("<config_overrides>")
                     && message.contains(ZERO_LOOKBACK_MESSAGE)),
             "expected the zero-count SchemaError on the override path, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn with_overrides_names_the_simulation_cut_set_key() {
+        let overrides = override_map(&[("simulation.cut_set", serde_json::json!("every"))]);
+        let err =
+            Config::with_overrides(&base_value(OVERRIDE_BASE_CONFIG), &overrides).unwrap_err();
+        assert!(
+            matches!(&err, LoadError::SchemaError { field, message, .. }
+                if field == "simulation.cut_set" && message.contains("unknown variant `every`")),
+            "expected the unknown-value SchemaError naming the key, got: {err:?}"
         );
     }
 

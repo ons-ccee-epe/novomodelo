@@ -10,6 +10,7 @@ use novomodelo_io::config::{BackwardScheduler, CheckpointSchedule, PhaseSolverPr
 use novomodelo_sddp::{
     BoundaryStateRequirements, CutSelectionStrategy, InflowNonNegativityMethod, StoppingMode,
     StoppingRule, StoppingRuleSet, StudyParams,
+    cut::CutSet,
     setup::{
         NodeGraph, NodeId, NodeOpenings, NodePos, NodeRuntime, NodeSuccessor, OpeningSource,
         SimulationEnumeratedRequest, StageIdx, TypedVec,
@@ -98,6 +99,7 @@ pub(crate) struct BroadcastConfig {
     /// `n_scenarios` from the node graph once it exists when this is
     /// [`SimulationEnumeratedRequest::Enumerated`].
     pub(crate) simulation_enumerated: SimulationEnumeratedRequest,
+    pub(crate) simulation_cut_set: CutSet,
     pub(crate) io_channel_capacity: u32,
     pub(crate) policy_path: String,
     pub(crate) inflow_method: InflowNonNegativityMethod,
@@ -143,16 +145,12 @@ pub(crate) struct BroadcastConfig {
 
 impl BroadcastConfig {
     pub(crate) fn from_config(config: &Config) -> Result<Self, CliError> {
-        let params = StudyParams::from_config(config, Vec::new()).map_err(CliError::from)?;
+        let params = StudyParams::from_config(config, Vec::new())?;
         // Sentinel path: the scenario-source helpers use it only for historical-years
         // look-up and error messages, neither exercised here.
         let sentinel_path = std::path::Path::new("config.json");
-        let training_source = config
-            .training_scenario_source(sentinel_path)
-            .map_err(CliError::from)?;
-        let simulation_source = config
-            .simulation_scenario_source(sentinel_path)
-            .map_err(CliError::from)?;
+        let training_source = config.training_scenario_source(sentinel_path)?;
+        let simulation_source = config.simulation_scenario_source(sentinel_path)?;
 
         let stopping_rules = params
             .stopping_rule_set
@@ -195,10 +193,11 @@ impl BroadcastConfig {
             stopping_mode,
             n_scenarios: params.n_scenarios,
             simulation_enumerated: params.simulation_enumerated,
+            simulation_cut_set: params.simulation_cut_set,
             io_channel_capacity: u32::try_from(params.io_channel_capacity).unwrap_or(64),
             policy_path: params.policy_path,
             inflow_method: params.inflow_method,
-            cut_selection: params.cut_selection.clone(),
+            cut_selection: params.cut_selection,
             cut_activity_tolerance: params.cut_activity_tolerance,
             training_enabled: config.training.enabled,
             policy_mode: config.policy.mode,
@@ -801,6 +800,26 @@ mod tests {
             "expected level1 with check_frequency 2 and a window of 7, got {:?}",
             decoded.cut_selection
         );
+    }
+
+    #[test]
+    fn broadcast_config_carries_the_simulation_cut_set() {
+        use super::BroadcastConfig;
+        use novomodelo_sddp::cut::CutSet;
+
+        let json = r#"{
+            "training": {
+                "stopping_rules": [{ "type": "iteration_limit", "limit": 10 }]
+            },
+            "simulation": { "cut_set": "active" }
+        }"#;
+        let config: novomodelo_io::Config = serde_json::from_str(json).unwrap();
+        let original = BroadcastConfig::from_config(&config).unwrap();
+
+        let bytes = postcard::to_allocvec(&original).expect("postcard serialization must succeed");
+        let decoded: BroadcastConfig =
+            postcard::from_bytes(&bytes).expect("postcard deserialization must succeed");
+        assert_eq!(decoded.simulation_cut_set, CutSet::Active);
     }
 
     #[test]

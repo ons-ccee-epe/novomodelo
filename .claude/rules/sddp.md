@@ -790,7 +790,12 @@ which hides a record this rule should have dropped. Read: `policy/policy_load.rs
 ### Simulation loads the cuts of one chosen set
 
 Simulation builds each stage LP from the cuts of a `CutSet`, the field
-`StudySetup::simulation_cut_set`. `Active` is the cuts whose flag is set. `All` is
+`StudySetup::simulation_cut_set`. The key `simulation.cut_set` sets it, `all` or
+`active`, and `all` is the default (`SimulationConfig::cut_set` in `novomodelo-io`
+owns the description). `StudyParams::from_config` maps the key; the CLI carries
+it in `BroadcastConfig::simulation_cut_set`, and every rank builds its setup from
+that value (`build_study_setup`, `StudySetup::from_broadcast_params`), so every
+rank simulates the same set. `Active` is the cuts whose flag is set. `All` is
 decided by slot role (`CutPool::cuts_in`, `CutPool::count_in`): every `Generated`
 slot whatever its flag and whatever `SlotRole::scored` says, since a cut written
 before the pool stored trial states can be evicted by the cap too; every scored
@@ -819,13 +824,21 @@ The wrong-but-compiling alternatives:
   outright instead of warm-starting by slot;
 - reusing training's templates under `All` when the sets differ: the LP holds the
   rows of the active cuts and the reconstruction counts the rows of `All`, so the
-  basis and the LP disagree in length;
+  basis and the LP disagree in length. The stored basis is truncated to the LP's
+  rows, and the backends then differ: HiGHS rejects it with `BasisInconsistent`
+  and CLP accepts it;
 - including an unscored `Prefix` slot whose flag is off: on the terminal pool it
   is a boundary record that training's LP left out, so the post-horizon is priced
   differently from training;
 - honouring the cap under `All`: the cap clears the flag of cuts a run generated,
   and `All` holds them whatever the flag. A set that leaves them out is `Active`
-  under another name.
+  under another name;
+- `StudySetup::simulate` passing a fixed set instead of the field: the key then
+  changes nothing.
+
+A simulation-only run over a loaded policy sees the stored flags under both
+values: a loaded pool writes only unscored `Prefix` slots, so it has one set
+(`a_loaded_pool_has_one_cut_set`).
 
 Read: `cut/pool.rs` (`CutSet`, `CutPool::cuts_in`, `CutPool::count_in`),
 `cut/row.rs` (`build_cut_set_row_batch_into`), `solve/stage_solve.rs`
@@ -841,8 +854,21 @@ caller's are used) and, in `tests/cut_basis.rs`,
 `simulating_all_cuts_matches_the_flagged_twin` (an `All` simulation with training's
 templates and bases equals an `Active` simulation of a copy of the pools with every
 cut of `All` flagged, with no basis rejection),
-`selection_off_simulates_identically_under_either_cut_set` and
-`a_dynamic_run_has_one_cut_set`.
+`selection_off_simulates_identically_under_either_cut_set`,
+`a_dynamic_run_has_one_cut_set` and `simulation_follows_the_cut_set_of_the_setup`
+(on a run whose sets differ, `StudySetup::simulate` under `All` and under `Active`
+gives different results). The key is pinned by `simulation_cut_set_defaults_to_all`
+and `with_overrides_names_the_simulation_cut_set_key` (`novomodelo-io`: the default, the
+values, and an unknown value rejected naming the key),
+`from_config_maps_the_simulation_cut_set` (`setup/params.rs`),
+`broadcast_config_carries_the_simulation_cut_set`
+(`crates/novomodelo-cli/src/commands/broadcast.rs`: the postcard round trip),
+`non_root_rebuild_carries_the_simulation_cut_set`
+(`crates/novomodelo-cli/src/commands/run/setup.rs`: the setup a rank builds from the
+decoded config holds each value) and
+`validate_rejects_an_unknown_simulation_cut_set`
+(`crates/novomodelo-cli/tests/cli_validate.rs`: `active` validates, then an unknown
+value is rejected naming the key).
 
 ## A stored basis warm-starts only at its own node (node-tag)
 

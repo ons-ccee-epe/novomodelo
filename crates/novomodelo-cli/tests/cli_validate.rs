@@ -508,6 +508,28 @@ fn validate_rejects_a_budget_with_dynamic_selection() {
         .stdout(predicate::str::contains("dynamic"));
 }
 
+#[test]
+fn validate_rejects_an_unknown_simulation_cut_set() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+    config["simulation"]["cut_set"] = serde_json::json!("active");
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    config["simulation"]["cut_set"] = serde_json::json!("every");
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("cut_set"));
+}
+
 /// Enumerated training with a budget is rejected by the admission gate every
 /// front end shares; the same enumerated deck without the budget validates.
 #[test]
@@ -717,17 +739,7 @@ fn checkpointing_enabled_without_interval_exits_1() {
 /// `fpha_hyperplanes.parquet` is absent) and is rejected only at Phase 10 by
 /// `prepare_hydro_models_from_artifacts` → `determine_source`.
 fn write_fpha_hydro_without_production_models_case(dir: &TempDir) {
-    write_file(dir.path(), "config.json", CONFIG_JSON);
-    write_file(dir.path(), "penalties.json", PENALTIES_JSON);
-    write_file(dir.path(), "stages.json", STAGES_JSON);
-    write_file(
-        dir.path(),
-        "initial_conditions.json",
-        INITIAL_CONDITIONS_JSON,
-    );
-    write_file(dir.path(), "system/buses.json", BUSES_JSON);
-    write_file(dir.path(), "system/lines.json", LINES_JSON);
-    write_file(dir.path(), "system/thermals.json", THERMALS_JSON);
+    make_valid_case(dir);
 
     let fpha_hydros_json = r#"{
         "hydros": [

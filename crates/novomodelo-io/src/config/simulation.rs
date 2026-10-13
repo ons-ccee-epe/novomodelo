@@ -1,6 +1,6 @@
 //! Post-training simulation configuration types for `config.json → simulation`.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 
 use super::scenario_source::RawScenarioSourceConfig;
 use super::training::PhaseSolverProfileConfig;
@@ -34,6 +34,19 @@ pub struct SimulationConfig {
     /// count.
     #[serde(default)]
     pub selection: Option<SimulationSelection>,
+
+    /// Which rows of each stage's row pool the simulation loads into the stage
+    /// LP. `all` loads every row a training run added to the pool, including
+    /// rows the selection method deactivated and rows `max_active_per_stage`
+    /// evicted, so a simulation LP can be larger than the training LPs.
+    /// `active` loads only the rows active when training ended.
+    ///
+    /// Under both values a row loaded from a policy (`policy.mode`,
+    /// `policy.boundary`, or a run with training disabled) follows the active
+    /// flag stored with it, and the exported `is_active` flag records the last
+    /// selection.
+    #[serde(deserialize_with = "deserialize_cut_set")]
+    pub cut_set: SimulationRowSet,
 }
 
 impl Default for SimulationConfig {
@@ -44,8 +57,31 @@ impl Default for SimulationConfig {
             scenario_source: None,
             solver: None,
             selection: None,
+            cut_set: SimulationRowSet::All,
         }
     }
+}
+
+/// Prefixes the derived error with the key, keeping serde's `unknown variant`
+/// text: `parse_config` classifies a schema error by it and takes the first
+/// backticked word as the field.
+fn deserialize_cut_set<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<SimulationRowSet, D::Error> {
+    SimulationRowSet::deserialize(deserializer)
+        .map_err(|e| de::Error::custom(format_args!("`simulation.cut_set`: {e}")))
+}
+
+/// The rows of a stage's row pool a simulation loads
+/// (`config.json → simulation.cut_set`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum SimulationRowSet {
+    /// Every row a training run added, whatever its active flag.
+    All,
+    /// Only the rows active when training ended.
+    Active,
 }
 
 /// Post-training scenario selection and its method-specific parameters
@@ -86,8 +122,23 @@ pub enum NumScenariosResolution {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{SimulationConfig, SimulationSelection};
+    use super::{SimulationConfig, SimulationRowSet, SimulationSelection};
     use crate::config::training::{PriceStrategy, ScaleStrategy};
+
+    #[test]
+    fn simulation_cut_set_defaults_to_all() {
+        let absent: SimulationConfig = serde_json::from_str(r#"{"enabled": true}"#).unwrap();
+        assert_eq!(absent.cut_set, SimulationRowSet::All);
+
+        let active: SimulationConfig =
+            serde_json::from_str(r#"{"enabled": true, "cut_set": "active"}"#).unwrap();
+        assert_eq!(active.cut_set, SimulationRowSet::Active);
+
+        assert!(
+            serde_json::from_str::<SimulationConfig>(r#"{"enabled": true, "cut_set": "some"}"#)
+                .is_err()
+        );
+    }
 
     /// A `sampled` phase selection round-trips into the `Sampled` variant.
     #[test]

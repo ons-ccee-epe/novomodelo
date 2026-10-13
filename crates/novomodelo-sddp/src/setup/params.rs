@@ -6,12 +6,13 @@ use novomodelo_core::ScalarParameter;
 use novomodelo_io::Config;
 use novomodelo_io::config::{
     BackwardScheduler, CheckpointSchedule, ForwardPassesResolution, NumScenariosResolution,
-    PhaseSolverProfileConfig, StoppingRuleConfig,
+    PhaseSolverProfileConfig, SimulationRowSet, StoppingRuleConfig,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
     InflowNonNegativityMethod, SddpError,
+    cut::CutSet,
     cut_selection::{CutSelectionStrategy, parse_cut_selection_config},
     stopping_rule::{StoppingMode, StoppingRule, StoppingRuleSet},
 };
@@ -132,6 +133,9 @@ pub struct StudyParams {
     /// [`Self::n_scenarios`] from the node graph once it exists when this is
     /// [`SimulationEnumeratedRequest::Enumerated`].
     pub simulation_enumerated: SimulationEnumeratedRequest,
+    /// `simulation.cut_set`. Described on
+    /// [`cut_set`](novomodelo_io::config::SimulationConfig::cut_set).
+    pub simulation_cut_set: CutSet,
     /// Buffer capacity for the simulation output channel.
     pub io_channel_capacity: usize,
     /// Policy directory path string.
@@ -261,6 +265,11 @@ impl StudyParams {
             (0, SimulationEnumeratedRequest::Sampled)
         };
 
+        let simulation_cut_set = match config.simulation.cut_set {
+            SimulationRowSet::All => CutSet::All,
+            SimulationRowSet::Active => CutSet::Active,
+        };
+
         let io_channel_capacity =
             usize::try_from(config.simulation.io_channel_capacity).unwrap_or(64);
 
@@ -320,6 +329,7 @@ impl StudyParams {
             stopping_rule_set,
             n_scenarios,
             simulation_enumerated,
+            simulation_cut_set,
             io_channel_capacity,
             policy_path,
             inflow_method,
@@ -349,7 +359,7 @@ mod tests {
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, ParallelismConfig,
-        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig, SimulationRowSet,
         SimulationSelection, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
         TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
@@ -357,6 +367,7 @@ mod tests {
 
     use super::{BoundaryStateRequirements, StudyParams};
     use crate::config::CutManagementConfig;
+    use crate::cut::CutSet;
 
     // ---------------------------------------------------------------------------
     // Minimal WARN-capturing subscriber for use in tests.
@@ -905,6 +916,20 @@ mod tests {
             params.simulation_enumerated,
             super::SimulationEnumeratedRequest::Enumerated
         );
+    }
+
+    #[test]
+    fn from_config_maps_the_simulation_cut_set() {
+        for (row_set, cut_set) in [
+            (SimulationRowSet::All, CutSet::All),
+            (SimulationRowSet::Active, CutSet::Active),
+        ] {
+            let mut config = base_test_config();
+            config.simulation.cut_set = row_set;
+            let params = StudyParams::from_config(&config, Vec::new())
+                .expect("either simulation cut set is valid");
+            assert_eq!(params.simulation_cut_set, cut_set);
+        }
     }
 
     /// When `max_active_per_stage` is less than `forward_passes`, `StudyParams::from_config`

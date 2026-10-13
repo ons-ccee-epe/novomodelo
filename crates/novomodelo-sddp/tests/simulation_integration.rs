@@ -488,6 +488,7 @@ fn make_config() -> Config {
             scenario_source: None,
             solver: None,
             selection: Some(SimulationSelection::Sampled { num_scenarios: 0 }),
+            cut_set: novomodelo_io::config::SimulationRowSet::All,
         },
         exports: ExportsConfig::default(),
         estimation: EstimationConfig::default(),

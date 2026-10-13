@@ -9524,6 +9524,7 @@ mod enumerated_external {
     use novomodelo_sddp::{
         DEFAULT_COST_SCALE_FACTOR, InflowNonNegativityMethod, SimulationScenarioResult,
         StoppingMode, StoppingRule, StoppingRuleSet, StudySetup,
+        cut::CutSet,
         hydro_models::PrepareHydroModelsResult,
         setup::{SimulationEnumeratedRequest, StudyParams},
     };
@@ -9789,6 +9790,7 @@ mod enumerated_external {
             },
             n_scenarios,
             simulation_enumerated: SimulationEnumeratedRequest::Sampled,
+            simulation_cut_set: CutSet::All,
             io_channel_capacity: 0,
             policy_path: String::new(),
             inflow_method: InflowNonNegativityMethod::None,

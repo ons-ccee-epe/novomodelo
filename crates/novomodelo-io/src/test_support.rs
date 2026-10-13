@@ -1245,8 +1245,8 @@ pub mod output {
         use crate::config::{
             CheckpointingConfig, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
             ModelingConfig, ParallelismConfig, PolicyConfig, PolicyMode, RowSelectionConfig,
-            SimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
-            TrainingSolverConfig, UpperBoundEvaluationConfig,
+            SimulationConfig, SimulationRowSet, StoppingMode, StoppingRuleConfig, TrainingConfig,
+            TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
         };
         Config {
             schema: None,
@@ -1278,6 +1278,7 @@ pub mod output {
                 scenario_source: None,
                 solver: None,
                 selection: None,
+                cut_set: SimulationRowSet::All,
             },
             exports: ExportsConfig::default(),
             estimation: EstimationConfig::default(),
