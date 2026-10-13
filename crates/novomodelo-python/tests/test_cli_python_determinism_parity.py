@@ -21,6 +21,10 @@ independent reasons make byte-level comparison guaranteed to fail:
    `basis_set_time_ms`).
 3. The policy checkpoint embeds `created_at: novomodelo_io::now_iso8601()`.
 
+A second leg runs the same case with `level1` row selection on and applies the
+same three comparisons with the same masks; each run must first have written at
+least one row to `training/cut_selection/iterations.parquet`.
+
 Every other field and column is compared exactly. The two module-level mask
 constants name the excluded paths and columns, with the reason each is masked:
 
@@ -115,6 +119,7 @@ _MASKED_PARQUET_COLUMNS = frozenset(
         "fwd_scheduling_overhead_ms",  # wall-clock (per-iteration phase timing)
         "overhead_ms",  # wall-clock (per-iteration phase timing)
         "lazy_scoring_ms",  # wall-clock (per-iteration phase timing)
+        "selection_time_ms",  # wall-clock (per-iteration phase timing)
     }
 )
 
@@ -187,6 +192,98 @@ def _json_mismatches(
     return diffs
 
 
+def _assert_file_sets_equal(cli_output: pathlib.Path, py_output: pathlib.Path) -> None:
+    cli_files = _relative_files(cli_output)
+    py_files = _relative_files(py_output)
+
+    only_cli = sorted(cli_files - py_files)
+    only_py = sorted(py_files - cli_files)
+
+    if only_cli or only_py:
+        lines = ["CLI and Python output file sets diverge:"]
+        if only_cli:
+            lines.append("  present in CLI output but missing from Python:")
+            lines.extend(f"    {name}" for name in only_cli)
+        if only_py:
+            lines.append("  present in Python output but missing from CLI:")
+            lines.extend(f"    {name}" for name in only_py)
+        pytest.fail("\n".join(lines), pytrace=False)
+
+
+def _assert_json_files_match(cli_output: pathlib.Path, py_output: pathlib.Path) -> None:
+    for rel_path in _COMPARED_JSON_FILES:
+        cli_path = cli_output / rel_path
+        py_path = py_output / rel_path
+
+        assert cli_path.exists(), f"CLI must write {rel_path}"
+        assert py_path.exists(), f"Python must write {rel_path}"
+
+        cli_obj = json.loads(cli_path.read_text(encoding="utf-8"))
+        py_obj = json.loads(py_path.read_text(encoding="utf-8"))
+
+        _drop_masked(cli_obj, _MASKED_JSON_POINTERS[rel_path])
+        _drop_masked(py_obj, _MASKED_JSON_POINTERS[rel_path])
+
+        diffs = _json_mismatches(cli_obj, py_obj, rel_path)
+        if diffs:
+            pytest.fail(
+                f"{rel_path}: CLI and Python JSON objects diverge:\n"
+                + "\n".join(f"  {d}" for d in diffs),
+                pytrace=False,
+            )
+
+
+def _assert_parquet_files_match(
+    cli_output: pathlib.Path, py_output: pathlib.Path
+) -> None:
+    cli_files = _relative_files(cli_output)
+    py_files = _relative_files(py_output)
+    shared_files = cli_files & py_files
+
+    parquet_files = sorted(f for f in shared_files if f.endswith(".parquet"))
+
+    for rel_path in parquet_files:
+        cli_path = cli_output / rel_path
+        py_path = py_output / rel_path
+
+        cli_table = pq.ParquetFile(cli_path).read()
+        py_table = pq.ParquetFile(py_path).read()
+
+        if not cli_table.schema.equals(py_table.schema):
+            pytest.fail(
+                f"{rel_path}: schema mismatch\n"
+                f"  CLI: {cli_table.schema}\n"
+                f"  Python: {py_table.schema}",
+                pytrace=False,
+            )
+
+        if cli_table.num_rows != py_table.num_rows:
+            pytest.fail(
+                f"{rel_path}: row count mismatch "
+                f"(CLI={cli_table.num_rows}, Python={py_table.num_rows})",
+                pytrace=False,
+            )
+
+        mismatches: list[str] = []
+        for col_name in cli_table.schema.names:
+            if col_name in _MASKED_PARQUET_COLUMNS:
+                continue
+            cli_col = cli_table.column(col_name)
+            py_col = py_table.column(col_name)
+            if not cli_col.equals(py_col):
+                mismatches.append(
+                    f"  column '{col_name}':\n"
+                    f"    CLI first 5: {cli_col[:5].to_pylist()}\n"
+                    f"    Python first 5: {py_col[:5].to_pylist()}"
+                )
+
+        if mismatches:
+            pytest.fail(
+                f"{rel_path}: non-timing column mismatch:\n" + "\n".join(mismatches),
+                pytrace=False,
+            )
+
+
 @pytest.fixture(scope="module")
 def toy_cli_output(
     tmp_path_factory: pytest.TempPathFactory, cli_binary: pathlib.Path
@@ -227,6 +324,60 @@ def toy_python_result(
     return toy_python_run[1]
 
 
+_SELECTION_ITERATIONS = "training/cut_selection/iterations.parquet"
+
+
+def _selection_case(root: pathlib.Path) -> pathlib.Path:
+    case = root / "case"
+    shutil.copytree(TOY_CASE, case)
+    config_path = case / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["training"]["cut_selection"] = {
+        "selection": {
+            "method": "level1",
+            "check_frequency": 2,
+            "lookback_iterations": 4,
+        },
+        "max_active_per_stage": 8,
+    }
+    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    return case
+
+
+def _assert_selection_recorded(output_dir: pathlib.Path) -> None:
+    iterations = output_dir / _SELECTION_ITERATIONS
+    assert iterations.is_file(), f"selection must write {_SELECTION_ITERATIONS}"
+    assert pq.ParquetFile(iterations).metadata.num_rows >= 1, (
+        f"{_SELECTION_ITERATIONS} must hold at least one row"
+    )
+
+
+@pytest.fixture(scope="module")
+def selection_cli_output(
+    tmp_path_factory: pytest.TempPathFactory, cli_binary: pathlib.Path
+) -> pathlib.Path:
+    """Run 1dtoy with `level1` row selection through the compiled CLI binary."""
+    case = _selection_case(tmp_path_factory.mktemp("selection_cli_case"))
+    output_dir = tmp_path_factory.mktemp("selection_cli_out")
+    run_cli(case, output_dir, cli_binary)
+    _assert_selection_recorded(output_dir)
+    return output_dir
+
+
+@pytest.fixture(scope="module")
+def selection_python_output(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> pathlib.Path:
+    """Run 1dtoy with `level1` row selection through `novomodelo.run.run()`."""
+    import novomodelo.run  # noqa: PLC0415
+
+    case = _selection_case(tmp_path_factory.mktemp("selection_python_case"))
+    output_dir = tmp_path_factory.mktemp("selection_python_out")
+    novomodelo.run.run(str(case), output_dir=str(output_dir))
+    _assert_selection_recorded(output_dir)
+    return output_dir
+
+
 def test_cli_python_output_file_sets_are_equal(
     toy_cli_output: pathlib.Path, toy_python_output: pathlib.Path
 ) -> None:
@@ -236,21 +387,7 @@ def test_cli_python_output_file_sets_are_equal(
     by the JSON and Parquet tests below. A file present in one tree and absent
     from the other fails here with the exact missing/extra filename named.
     """
-    cli_files = _relative_files(toy_cli_output)
-    py_files = _relative_files(toy_python_output)
-
-    only_cli = sorted(cli_files - py_files)
-    only_py = sorted(py_files - cli_files)
-
-    if only_cli or only_py:
-        lines = ["CLI and Python output file sets diverge:"]
-        if only_cli:
-            lines.append("  present in CLI output but missing from Python:")
-            lines.extend(f"    {name}" for name in only_cli)
-        if only_py:
-            lines.append("  present in Python output but missing from CLI:")
-            lines.extend(f"    {name}" for name in only_py)
-        pytest.fail("\n".join(lines), pytrace=False)
+    _assert_file_sets_equal(toy_cli_output, toy_python_output)
 
 
 def test_cli_python_json_files_match(
@@ -264,26 +401,7 @@ def test_cli_python_json_files_match(
     the two objects are compared. A mismatch reports the file, the key path and
     both values.
     """
-    for rel_path in _COMPARED_JSON_FILES:
-        cli_path = toy_cli_output / rel_path
-        py_path = toy_python_output / rel_path
-
-        assert cli_path.exists(), f"CLI must write {rel_path}"
-        assert py_path.exists(), f"Python must write {rel_path}"
-
-        cli_obj = json.loads(cli_path.read_text(encoding="utf-8"))
-        py_obj = json.loads(py_path.read_text(encoding="utf-8"))
-
-        _drop_masked(cli_obj, _MASKED_JSON_POINTERS[rel_path])
-        _drop_masked(py_obj, _MASKED_JSON_POINTERS[rel_path])
-
-        diffs = _json_mismatches(cli_obj, py_obj, rel_path)
-        if diffs:
-            pytest.fail(
-                f"{rel_path}: CLI and Python JSON objects diverge:\n"
-                + "\n".join(f"  {d}" for d in diffs),
-                pytrace=False,
-            )
+    _assert_json_files_match(toy_cli_output, toy_python_output)
 
 
 def test_cli_python_parquet_files_match(
@@ -298,63 +416,42 @@ def test_cli_python_parquet_files_match(
     is not in `_MASKED_PARQUET_COLUMNS` must compare equal. A mismatch names the
     file, the column and the first five values from each side.
     """
-    cli_files = _relative_files(toy_cli_output)
-    py_files = _relative_files(toy_python_output)
-    shared_files = cli_files & py_files
-
-    parquet_files = sorted(f for f in shared_files if f.endswith(".parquet"))
-
-    for rel_path in parquet_files:
-        cli_path = toy_cli_output / rel_path
-        py_path = toy_python_output / rel_path
-
-        cli_table = pq.ParquetFile(cli_path).read()
-        py_table = pq.ParquetFile(py_path).read()
-
-        if not cli_table.schema.equals(py_table.schema):
-            pytest.fail(
-                f"{rel_path}: schema mismatch\n"
-                f"  CLI: {cli_table.schema}\n"
-                f"  Python: {py_table.schema}",
-                pytrace=False,
-            )
-
-        if cli_table.num_rows != py_table.num_rows:
-            pytest.fail(
-                f"{rel_path}: row count mismatch "
-                f"(CLI={cli_table.num_rows}, Python={py_table.num_rows})",
-                pytrace=False,
-            )
-
-        mismatches: list[str] = []
-        for col_name in cli_table.schema.names:
-            if col_name in _MASKED_PARQUET_COLUMNS:
-                continue
-            cli_col = cli_table.column(col_name)
-            py_col = py_table.column(col_name)
-            if not cli_col.equals(py_col):
-                mismatches.append(
-                    f"  column '{col_name}':\n"
-                    f"    CLI first 5: {cli_col[:5].to_pylist()}\n"
-                    f"    Python first 5: {py_col[:5].to_pylist()}"
-                )
-
-        if mismatches:
-            pytest.fail(
-                f"{rel_path}: non-timing column mismatch:\n" + "\n".join(mismatches),
-                pytrace=False,
-            )
+    _assert_parquet_files_match(toy_cli_output, toy_python_output)
 
 
-def test_compared_surface_is_non_vacuous(toy_python_output: pathlib.Path) -> None:
+def test_selection_on_cli_python_output_file_sets_are_equal(
+    selection_cli_output: pathlib.Path, selection_python_output: pathlib.Path
+) -> None:
+    """With `level1` row selection on, the CLI and Python write the same file set."""
+    _assert_file_sets_equal(selection_cli_output, selection_python_output)
+
+
+def test_selection_on_cli_python_json_files_match(
+    selection_cli_output: pathlib.Path, selection_python_output: pathlib.Path
+) -> None:
+    """With `level1` row selection on, the compared JSON files match."""
+    _assert_json_files_match(selection_cli_output, selection_python_output)
+
+
+def test_selection_on_cli_python_parquet_files_match(
+    selection_cli_output: pathlib.Path, selection_python_output: pathlib.Path
+) -> None:
+    """With `level1` row selection on, the Parquet files match outside the masks."""
+    _assert_parquet_files_match(selection_cli_output, selection_python_output)
+
+
+def test_compared_surface_is_non_vacuous(
+    toy_python_output: pathlib.Path, selection_python_output: pathlib.Path
+) -> None:
     """The compared surface exercises the drift-prone outputs.
 
     Non-vacuity check for the tests above: all four JSON files are present, at
     least 10 Parquet files are compared (training solver stats, hydro models,
     simulation per-entity outputs, and per-scenario Hive partitions), at least
     two `scenario_id=NNNN/` Hive partitions appear, and every name in
-    `_MASKED_PARQUET_COLUMNS` appears in at least one compared Parquet schema,
-    so neither the comparison nor the mask can pass vacuously.
+    `_MASKED_PARQUET_COLUMNS` appears in at least one compared Parquet schema
+    of the default or the selection-on output, so neither the comparison nor
+    the mask can pass vacuously.
     """
     files = _relative_files(toy_python_output)
 
@@ -375,11 +472,14 @@ def test_compared_surface_is_non_vacuous(toy_python_output: pathlib.Path) -> Non
     )
 
     found_masked_columns: set[str] = set()
-    for rel_path in parquet_files:
-        if any(rel_path.startswith(prefix) for prefix in _CONTENT_EXEMPT_PREFIXES):
-            continue
-        schema = pq.read_schema(toy_python_output / rel_path)
-        found_masked_columns.update(schema.names)
+    for output in (toy_python_output, selection_python_output):
+        for rel_path in sorted(
+            f for f in _relative_files(output) if f.endswith(".parquet")
+        ):
+            if any(rel_path.startswith(prefix) for prefix in _CONTENT_EXEMPT_PREFIXES):
+                continue
+            schema = pq.read_schema(output / rel_path)
+            found_masked_columns.update(schema.names)
 
     missing_from_mask = _MASKED_PARQUET_COLUMNS - found_masked_columns
     assert not missing_from_mask, (

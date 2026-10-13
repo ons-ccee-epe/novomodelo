@@ -275,6 +275,94 @@ def _simulation_only_policy_with_unused_stored_bases(case: pathlib.Path) -> None
     _select_simulation_only(case)
 
 
+def _set_cut_selection(case: pathlib.Path, cut_selection: dict[str, Any]) -> None:
+    def edit(config: Any) -> None:
+        config["training"]["cut_selection"] = cut_selection
+
+    _edit_json(case / "config.json", edit)
+
+
+def _removed_selection_method_lml1(case: pathlib.Path) -> None:
+    _set_cut_selection(case, {"selection": {"method": "lml1"}})
+
+
+def _removed_selection_method_domination(case: pathlib.Path) -> None:
+    _set_cut_selection(case, {"selection": {"method": "domination"}})
+
+
+def _tie_tolerance_under_level1(case: pathlib.Path) -> None:
+    _set_cut_selection(case, {"selection": {"method": "level1", "tie_tolerance": 1e-9}})
+
+
+def _zero_selection_check_frequency(case: pathlib.Path) -> None:
+    _set_cut_selection(case, {"selection": {"method": "level1", "check_frequency": 0}})
+
+
+def _lookback_window_below_the_check_frequency(case: pathlib.Path) -> None:
+    _set_cut_selection(
+        case,
+        {
+            "selection": {
+                "method": "level1",
+                "check_frequency": 2,
+                "lookback_iterations": 1,
+            }
+        },
+    )
+
+
+def _negative_row_activity_tolerance(case: pathlib.Path) -> None:
+    _set_cut_selection(case, {"row_activity_tolerance": -1})
+
+
+def _null_row_activity_tolerance(case: pathlib.Path) -> None:
+    _set_cut_selection(case, {"row_activity_tolerance": None})
+
+
+def _violation_tolerance_below_the_solver_tolerance(case: pathlib.Path) -> None:
+    _set_cut_selection(
+        case, {"selection": {"method": "dynamic", "violation_tolerance": 1e-10}}
+    )
+
+
+def _violation_tolerance_below_the_simulation_solver_tolerance(
+    case: pathlib.Path,
+) -> None:
+    def edit(config: Any) -> None:
+        config["simulation"]["solver"] = {"primal_feasibility_tolerance": 1e-7}
+
+    _edit_json(case / "config.json", edit)
+    _set_cut_selection(
+        case, {"selection": {"method": "dynamic", "violation_tolerance": 1e-8}}
+    )
+
+
+def _active_row_cap_with_dynamic_selection(case: pathlib.Path) -> None:
+    _set_cut_selection(
+        case, {"selection": {"method": "dynamic"}, "max_active_per_stage": 8}
+    )
+
+
+def _active_row_cap_with_enumerated_training(case: pathlib.Path) -> None:
+    def one_opening_per_stage(stages: Any) -> None:
+        for stage in stages["stages"]:
+            stage["num_openings"] = 1
+
+    def enumerated(config: Any) -> None:
+        config["training"]["selection"] = {"method": "enumerated"}
+
+    _edit_json(case / "stages.json", one_opening_per_stage)
+    _edit_json(case / "config.json", enumerated)
+    _set_cut_selection(case, {"max_active_per_stage": 8})
+
+
+def _unknown_simulation_cut_set(case: pathlib.Path) -> None:
+    def edit(config: Any) -> None:
+        config["simulation"]["cut_set"] = "every"
+
+    _edit_json(case / "config.json", edit)
+
+
 ROWS = [
     _row(
         name="travel_time_negative",
@@ -476,6 +564,142 @@ ROWS = [
         mutate=_simulation_only_policy_with_unused_stored_bases,
         outcome="Warning",
         fragment="stored bases not used",
+    ),
+    _row(
+        name="removed_selection_method_lml1",
+        base_case="1dtoy",
+        mutate=_removed_selection_method_lml1,
+        outcome="BracketedRefusal",
+        kind="ParseError",
+        fragment=(
+            "the row-selection method `lml1` was removed: use `level1` "
+            "(key `training.cut_selection.selection.method`)"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="removed_selection_method_domination",
+        base_case="1dtoy",
+        mutate=_removed_selection_method_domination,
+        outcome="BracketedRefusal",
+        kind="ParseError",
+        fragment=(
+            "the row-selection method `domination` was removed: use `level1` "
+            "(key `training.cut_selection.selection.method`)"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="removed_tie_tolerance_key",
+        base_case="1dtoy",
+        mutate=_tie_tolerance_under_level1,
+        outcome="BracketedRefusal",
+        kind="ParseError",
+        fragment=(
+            "the key `tie_tolerance` was removed: `level1` compares row values "
+            "exactly; delete the key (`training.cut_selection.selection`)"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="zero_selection_check_frequency",
+        base_case="1dtoy",
+        mutate=_zero_selection_check_frequency,
+        outcome="BracketedRefusal",
+        kind="ParseError",
+        fragment="training.cut_selection.selection.check_frequency must be >= 1 (got 0)",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="lookback_window_below_the_check_frequency",
+        base_case="1dtoy",
+        mutate=_lookback_window_below_the_check_frequency,
+        outcome="PlainRefusal",
+        fragment=(
+            "cut_selection config error: cut_selection.lookback_iterations (1) "
+            "must be >= cut_selection.check_frequency (2)"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="negative_row_activity_tolerance",
+        base_case="1dtoy",
+        mutate=_negative_row_activity_tolerance,
+        outcome="PlainRefusal",
+        fragment=(
+            "cut_selection config error: cut_selection.row_activity_tolerance "
+            "must be finite and >= 0 (got -1)"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="violation_tolerance_below_the_solver_tolerance",
+        base_case="1dtoy",
+        mutate=_violation_tolerance_below_the_solver_tolerance,
+        outcome="PlainRefusal",
+        fragment=(
+            "training.cut_selection.selection.violation_tolerance (0.0000000001) "
+            "is a relative factor and must be at least the primal feasibility "
+            "tolerance of the backward solver profile"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="active_row_cap_with_dynamic_selection",
+        base_case="1dtoy",
+        mutate=_active_row_cap_with_dynamic_selection,
+        outcome="PlainRefusal",
+        fragment=(
+            "training.cut_selection.max_active_per_stage is inadmissible with the "
+            "dynamic cut selection method; a lazy solve takes its candidates from "
+            "the active rows and dynamic runs no selection pass, so an evicted row "
+            "never returns — remove the cap, or use the `level1` method"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="active_row_cap_with_enumerated_training",
+        base_case="1dtoy",
+        mutate=_active_row_cap_with_enumerated_training,
+        outcome="PlainRefusal",
+        fragment=(
+            "training.cut_selection.max_active_per_stage is inadmissible under "
+            "enumerated forward traversal; enumerated traversal records no binding "
+            "activity, so the cap would evict by generation order alone — remove "
+            "the cap, or use sampled forward selection"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="unknown_simulation_cut_set",
+        base_case="1dtoy",
+        mutate=_unknown_simulation_cut_set,
+        outcome="BracketedRefusal",
+        kind="SchemaViolation",
+        fragment="`simulation.cut_set`: unknown variant `every`, expected `all` or `active`",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="violation_tolerance_below_the_simulation_solver_tolerance",
+        base_case="1dtoy",
+        mutate=_violation_tolerance_below_the_simulation_solver_tolerance,
+        outcome="PlainRefusal",
+        fragment=(
+            "training.cut_selection.selection.violation_tolerance (0.00000001) "
+            "is a relative factor and must be at least the primal feasibility "
+            "tolerance of the simulation solver profile (0.0000001); raise it, "
+            "or omit it to use each phase's solver tolerance"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="null_row_activity_tolerance",
+        base_case="1dtoy",
+        mutate=_null_row_activity_tolerance,
+        outcome="BracketedRefusal",
+        kind="ParseError",
+        fragment="invalid type: null, expected f64",
+        error_class_name="ValidationError",
     ),
 ]
 

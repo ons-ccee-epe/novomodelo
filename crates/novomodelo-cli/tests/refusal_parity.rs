@@ -249,6 +249,109 @@ const ROWS: &[ParityRow] = &[
         outcome: Outcome::Warning,
         fragment: "stored bases not used",
     },
+    ParityRow {
+        name: "removed_selection_method_lml1",
+        base_case: "1dtoy",
+        mutate: removed_selection_method_lml1,
+        outcome: Outcome::BracketedRefusal { kind: "ParseError" },
+        fragment: "the row-selection method `lml1` was removed: use `level1` \
+                   (key `training.cut_selection.selection.method`)",
+    },
+    ParityRow {
+        name: "removed_selection_method_domination",
+        base_case: "1dtoy",
+        mutate: removed_selection_method_domination,
+        outcome: Outcome::BracketedRefusal { kind: "ParseError" },
+        fragment: "the row-selection method `domination` was removed: use `level1` \
+                   (key `training.cut_selection.selection.method`)",
+    },
+    ParityRow {
+        name: "removed_tie_tolerance_key",
+        base_case: "1dtoy",
+        mutate: tie_tolerance_under_level1,
+        outcome: Outcome::BracketedRefusal { kind: "ParseError" },
+        fragment: "the key `tie_tolerance` was removed: `level1` compares row values exactly; \
+                   delete the key (`training.cut_selection.selection`)",
+    },
+    ParityRow {
+        name: "zero_selection_check_frequency",
+        base_case: "1dtoy",
+        mutate: zero_selection_check_frequency,
+        outcome: Outcome::BracketedRefusal { kind: "ParseError" },
+        fragment: "training.cut_selection.selection.check_frequency must be >= 1 (got 0)",
+    },
+    ParityRow {
+        name: "lookback_window_below_the_check_frequency",
+        base_case: "1dtoy",
+        mutate: lookback_window_below_the_check_frequency,
+        outcome: Outcome::PlainRefusal,
+        fragment: "cut_selection config error: cut_selection.lookback_iterations (1) \
+                   must be >= cut_selection.check_frequency (2)",
+    },
+    ParityRow {
+        name: "negative_row_activity_tolerance",
+        base_case: "1dtoy",
+        mutate: negative_row_activity_tolerance,
+        outcome: Outcome::PlainRefusal,
+        fragment: "cut_selection config error: cut_selection.row_activity_tolerance \
+                   must be finite and >= 0 (got -1)",
+    },
+    ParityRow {
+        name: "violation_tolerance_below_the_solver_tolerance",
+        base_case: "1dtoy",
+        mutate: violation_tolerance_below_the_solver_tolerance,
+        outcome: Outcome::PlainRefusal,
+        fragment: "training.cut_selection.selection.violation_tolerance (0.0000000001) is a \
+                   relative factor and must be at least the primal feasibility tolerance of \
+                   the backward solver profile",
+    },
+    ParityRow {
+        name: "active_row_cap_with_dynamic_selection",
+        base_case: "1dtoy",
+        mutate: active_row_cap_with_dynamic_selection,
+        outcome: Outcome::PlainRefusal,
+        fragment: "training.cut_selection.max_active_per_stage is inadmissible with the \
+                   dynamic cut selection method; a lazy solve takes its candidates from the \
+                   active rows and dynamic runs no selection pass, so an evicted row never \
+                   returns — remove the cap, or use the `level1` method",
+    },
+    ParityRow {
+        name: "active_row_cap_with_enumerated_training",
+        base_case: "1dtoy",
+        mutate: active_row_cap_with_enumerated_training,
+        outcome: Outcome::PlainRefusal,
+        fragment: "training.cut_selection.max_active_per_stage is inadmissible under \
+                   enumerated forward traversal; enumerated traversal records no binding \
+                   activity, so the cap would evict by generation order alone — remove the \
+                   cap, or use sampled forward selection",
+    },
+    ParityRow {
+        name: "unknown_simulation_cut_set",
+        base_case: "1dtoy",
+        mutate: unknown_simulation_cut_set,
+        outcome: Outcome::BracketedRefusal {
+            kind: "SchemaViolation",
+        },
+        fragment: "`simulation.cut_set`: unknown variant `every`, expected `all` or `active`",
+    },
+    #[cfg(feature = "highs")]
+    ParityRow {
+        name: "violation_tolerance_below_the_simulation_solver_tolerance",
+        base_case: "1dtoy",
+        mutate: violation_tolerance_below_the_simulation_solver_tolerance,
+        outcome: Outcome::PlainRefusal,
+        fragment: "training.cut_selection.selection.violation_tolerance (0.00000001) is a \
+                   relative factor and must be at least the primal feasibility tolerance of \
+                   the simulation solver profile (0.0000001); raise it, or omit it to use \
+                   each phase's solver tolerance",
+    },
+    ParityRow {
+        name: "null_row_activity_tolerance",
+        base_case: "1dtoy",
+        mutate: null_row_activity_tolerance,
+        outcome: Outcome::BracketedRefusal { kind: "ParseError" },
+        fragment: "invalid type: null, expected f64",
+    },
 ];
 
 fn edit_json(path: &Path, edit: impl FnOnce(&mut Value)) {
@@ -474,6 +577,92 @@ fn simulation_only_policy_with_unused_stored_bases(case: &Path) {
     train_one_iteration(case);
     fs::copy(case_dir("1dtoy").join("system/thermals.json"), thermals).unwrap();
     select_simulation_only(case);
+}
+
+fn set_cut_selection(case: &Path, cut_selection: Value) {
+    edit_json(&case.join("config.json"), |config| {
+        config["training"]["cut_selection"] = cut_selection;
+    });
+}
+
+fn removed_selection_method_lml1(case: &Path) {
+    set_cut_selection(case, json!({"selection": {"method": "lml1"}}));
+}
+
+fn removed_selection_method_domination(case: &Path) {
+    set_cut_selection(case, json!({"selection": {"method": "domination"}}));
+}
+
+fn tie_tolerance_under_level1(case: &Path) {
+    set_cut_selection(
+        case,
+        json!({"selection": {"method": "level1", "tie_tolerance": 1e-9}}),
+    );
+}
+
+fn zero_selection_check_frequency(case: &Path) {
+    set_cut_selection(
+        case,
+        json!({"selection": {"method": "level1", "check_frequency": 0}}),
+    );
+}
+
+fn lookback_window_below_the_check_frequency(case: &Path) {
+    set_cut_selection(
+        case,
+        json!({"selection": {"method": "level1", "check_frequency": 2, "lookback_iterations": 1}}),
+    );
+}
+
+fn negative_row_activity_tolerance(case: &Path) {
+    set_cut_selection(case, json!({"row_activity_tolerance": -1}));
+}
+
+fn null_row_activity_tolerance(case: &Path) {
+    set_cut_selection(case, json!({"row_activity_tolerance": null}));
+}
+
+fn violation_tolerance_below_the_solver_tolerance(case: &Path) {
+    set_cut_selection(
+        case,
+        json!({"selection": {"method": "dynamic", "violation_tolerance": 1e-10}}),
+    );
+}
+
+#[cfg(feature = "highs")]
+fn violation_tolerance_below_the_simulation_solver_tolerance(case: &Path) {
+    edit_json(&case.join("config.json"), |config| {
+        config["simulation"]["solver"] = json!({"primal_feasibility_tolerance": 1e-7});
+    });
+    set_cut_selection(
+        case,
+        json!({"selection": {"method": "dynamic", "violation_tolerance": 1e-8}}),
+    );
+}
+
+fn active_row_cap_with_dynamic_selection(case: &Path) {
+    set_cut_selection(
+        case,
+        json!({"selection": {"method": "dynamic"}, "max_active_per_stage": 8}),
+    );
+}
+
+fn active_row_cap_with_enumerated_training(case: &Path) {
+    edit_json(&case.join("stages.json"), |stages| {
+        for stage in stages["stages"].as_array_mut().unwrap() {
+            stage["num_openings"] = json!(1);
+        }
+    });
+    edit_json(&case.join("config.json"), |config| {
+        config["training"]["selection"] = json!({"method": "enumerated"});
+    });
+    set_cut_selection(case, json!({"max_active_per_stage": 8}));
+}
+
+fn unknown_simulation_cut_set(case: &Path) {
+    edit_json(&case.join("config.json"), |config| {
+        config["simulation"]["cut_set"] = json!("every");
+    });
 }
 
 struct Observed<'a> {
