@@ -111,6 +111,7 @@ pub(crate) struct SimWorkerParams<'w> {
     node_bases: &'w [Option<CapturedBasis>],
     /// Resolved frozen LP templates (caller-supplied or locally re-frozen).
     frozen_templates: &'w [StageTemplate],
+    /// See [`SimulationInputs::cut_set`].
     cut_set: CutSet,
     /// Shared completion counter scaled to a global progress estimate.
     scenarios_complete: &'w AtomicU32,
@@ -139,8 +140,8 @@ pub(crate) struct SimWorkerParams<'w> {
 /// discarded afterwards. The re-freeze buffers stay empty when the caller's
 /// `frozen_templates` hold the chosen cut set.
 pub(crate) struct SimulationState {
-    /// Owned frozen templates built by the lazy re-freeze branch (when
-    /// `frozen_templates` is `None`).
+    /// Frozen templates simulation builds itself: when the caller supplies none,
+    /// or its templates do not hold the chosen cut set.
     owned_frozen: Option<Vec<StageTemplate>>,
     /// Row-batch scratch for the lazy re-freeze loop.
     freeze_batch: RowBatch,

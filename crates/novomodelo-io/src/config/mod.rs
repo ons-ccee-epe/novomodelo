@@ -229,14 +229,10 @@ fn convert_scenario_source_config(
         return Ok(ScenarioSource::default());
     };
 
-    let inflow_scheme = convert_class_scheme_cfg(r.inflow.as_ref());
-    let load_scheme = convert_class_scheme_cfg(r.load.as_ref());
-    let ncs_scheme = convert_class_scheme_cfg(r.ncs.as_ref());
-
     let source = ScenarioSource {
-        inflow_scheme,
-        load_scheme,
-        ncs_scheme,
+        inflow_scheme: convert_class_scheme_cfg(r.inflow.as_ref()),
+        load_scheme: convert_class_scheme_cfg(r.load.as_ref()),
+        ncs_scheme: convert_class_scheme_cfg(r.ncs.as_ref()),
         seed: r.seed,
         historical_years: r.historical_years.as_ref().map(|hy| match hy {
             RawHistoricalYearsConfig::List(years) => HistoricalYears::List(years.clone()),
@@ -2862,8 +2858,7 @@ mod tests {
                     "historical_years": [1940, 1953],
                     "inflow": { "scheme": "historical" }
                 },
-                "solver": { "price": "row" },
-                "selection": { "method": "sampled", "num_scenarios": 100 }
+                "solver": { "price": "row" }
             },
             "exports": { "states": true, "stochastic": true, "fpha_deviation_points": true },
             "estimation": {

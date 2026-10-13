@@ -323,7 +323,20 @@ impl StudySetup {
         boundary: BoundaryStateRequirements,
         scalar_parameters: Vec<ScalarParameter>,
     ) -> Result<Self, SddpError> {
-        let mut params = StudyParams::from_config(config, scalar_parameters)?;
+        let params = StudyParams::from_config(config, scalar_parameters)?;
+        Self::new_from_params(system, config, stochastic, hydro_models, boundary, params)
+    }
+
+    /// [`Self::new_with_boundary_requirements`] from parameters the caller has
+    /// already extracted from `config`, so `StudyParams::from_config` runs once.
+    pub(crate) fn new_from_params(
+        system: &System,
+        config: &Config,
+        stochastic: StochasticContext,
+        hydro_models: PrepareHydroModelsResult,
+        boundary: BoundaryStateRequirements,
+        mut params: StudyParams,
+    ) -> Result<Self, SddpError> {
         params.boundary = boundary;
         // Sentinel: the scenario-source resolvers use the path only for error
         // messages and the historical-years look-up, neither exercised here with a

@@ -203,9 +203,11 @@ fn bench_one(c: &mut Criterion, k: usize, n_state: usize) {
     // candidate_recency None selects the exactness path (scores all cuts, no age cutoff).
     let params = DcsParams {
         candidate_recency: None,
+        seed_window: 5,
         max_added_per_round: 10,
         violation_tolerance: 1e-9,
-        ..DcsParams::default()
+        start_iteration: 2,
+        max_inner_iterations: 50,
     };
     let current_iteration = 10;
 

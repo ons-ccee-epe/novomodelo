@@ -647,6 +647,33 @@ fn validate_rejects_a_removed_selection_method() {
     }
 }
 
+/// A warning raised while the study parameters are extracted from `config.json`
+/// is printed once, not once per extraction.
+#[test]
+fn validate_prints_the_budget_below_forward_passes_warning_once() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+    config["training"]["cut_selection"] = serde_json::json!({ "max_active_per_stage": 5 });
+    write_file(dir.path(), "config.json", &config.to_string());
+    let output = novomodelo()
+        .env_remove("RUST_LOG")
+        .args(["validate", dir.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        stderr
+            .matches("max_active_per_stage (5) is less than forward_passes (10)")
+            .count(),
+        1,
+        "{stderr}"
+    );
+}
+
 /// An invalid `simulation.scenario_source` must be rejected by both `validate`
 /// and `run`, carrying the same rule message — the training half of the
 /// config stays valid so the failure is unambiguously the simulation source.

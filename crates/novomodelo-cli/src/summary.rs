@@ -365,7 +365,7 @@ pub struct TrainingSummary {
 
     /// Sum of resident rows-in-LP over every lazy-selection solve (reduced across
     /// ranks). Zero for pool-deactivating methods — the renderer uses zero to gate
-    /// the rows-in-LP line; only Dynamic Cut Selection populates it.
+    /// the rows-in-LP line; only the `dynamic` method populates it.
     pub rows_in_lp_total: u64,
 
     /// Number of lazy-selection solves (reduced across ranks).

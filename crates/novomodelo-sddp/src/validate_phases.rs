@@ -44,8 +44,8 @@ use crate::{
 /// | [`Stochastic`]       | `prepare_stochastic`                       | `scenarios/inflow_history.parquet`    |
 /// | [`HydroModels`]      | `prepare_hydro_models_from_artifacts`      | `system/hydro_production_models.json` |
 /// | [`GenericConstraints`] | `validate_generic_constraint_parameters` | `constraints/`                        |
-/// | [`StudySetup`]       | `StudySetup::new_with_boundary_requirements` | `scenarios/`                        |
-/// | [`Boundary`]         | `resolve_boundary_state_requirements`, `StudySetup::new_with_boundary_requirements`, `reconcile_boundary_policy` | `policy.boundary` |
+/// | [`StudySetup`]       | `StudySetup::new_from_params`              | `scenarios/`                          |
+/// | [`Boundary`]         | `resolve_boundary_state_requirements`, `StudySetup::new_from_params`, `reconcile_boundary_policy` | `policy.boundary` |
 ///
 /// [`Config`]: PrepPhase::Config
 /// [`Stochastic`]: PrepPhase::Stochastic
@@ -63,14 +63,14 @@ pub enum PrepPhase {
     HydroModels,
     /// Scalar-parameter resolution and constraint validation (no-boundary decks only; boundary decks run this inside `StudySetup::new`).
     GenericConstraints,
-    /// `StudySetup::new_with_boundary_requirements` on a deck without a boundary
+    /// `StudySetup::new_from_params` on a deck without a boundary
     /// policy, which builds the scenario libraries and runs the forward-scheme
     /// historical checks. A deck with a boundary policy reports the same failure as
     /// [`PrepPhase::Boundary`], so the kinds that deck reports do not change.
     StudySetup,
     /// The boundary-policy steps of a deck with `config.policy.boundary` set: the
     /// requirements read (`resolve_boundary_state_requirements`), study construction
-    /// (`StudySetup::new_with_boundary_requirements`) and `reconcile_boundary_policy`
+    /// (`StudySetup::new_from_params`) and `reconcile_boundary_policy`
     /// (checkpoint reconciliation against the terminal entity manifest).
     Boundary,
 }
@@ -299,7 +299,7 @@ pub fn validate_study(request: ValidateRequest<'_>) -> Result<ValidatedStudy, Va
         case_dir,
         config,
         system,
-        artifacts,
+        mut artifacts,
         output_dir,
     } = request;
 
@@ -308,7 +308,8 @@ pub fn validate_study(request: ValidateRequest<'_>) -> Result<ValidatedStudy, Va
         .policy
         .check_dir(&config_path, output_dir, config.policy_dir_intent())
         .map_err(ValidateFailure::ConfigLoad)?;
-    let params = StudyParams::from_config(config, Vec::new()).map_err(at(PrepPhase::Config))?;
+    let params = StudyParams::from_config(config, std::mem::take(&mut artifacts.scalar_parameters))
+        .map_err(at(PrepPhase::Config))?;
     let training_source = config
         .training_scenario_source(&config_path)
         .map_err(ValidateFailure::ConfigLoad)?;
@@ -334,19 +335,19 @@ pub fn validate_study(request: ValidateRequest<'_>) -> Result<ValidatedStudy, Va
         validate_generic_constraint_parameters(
             &prepared.system,
             &hydro_models,
-            &artifacts.scalar_parameters,
+            &params.scalar_parameters,
             params.cost_scale_factor,
         )
         .map_err(at(PrepPhase::GenericConstraints))?;
         PrepPhase::StudySetup
     };
-    let setup = StudySetup::new_with_boundary_requirements(
+    let setup = StudySetup::new_from_params(
         &prepared.system,
         config,
         prepared.stochastic,
         hydro_models,
         requirements,
-        artifacts.scalar_parameters,
+        params,
     )
     .map_err(at(setup_phase))?;
 

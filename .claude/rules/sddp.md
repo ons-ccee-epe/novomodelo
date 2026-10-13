@@ -1365,7 +1365,8 @@ By slot role:
 - generated and scored (every cut a `level1` run generates in an interior
   pool): live whatever its flag, active after a run exactly when it owns a
   state;
-- loaded and scored: the same. No load writes this role; the test setter does;
+- loaded and scored: the same. No load writes this role; a test writes it with
+  `CutPool::set_role_for_test`;
 - loaded and stateless: live while its flag is set, and in neither list, so it
   keeps the flag it was loaded with. While active it can own a state and keep a
   tied generated cut above it inactive;
@@ -1499,9 +1500,9 @@ state is inside the window at a selection run of iteration `k`. With
 while `r < w`, and `slot_base + (r - w) * visit_stride` from `r = w` on: the first
 slot of iteration `k - w + 1`. A generated cut's state is therefore inside
 exactly when its generating iteration exceeds `k - w`. A loaded state (no load
-stores one; the test setter does) is at iteration 0 of the run's clock, whatever
-iteration its record carries: it is inside while `r < w` and leaves at the run's
-iteration `w`.
+stores one; a test stores one with `CutPool::set_trial_state_for_test`) is at
+iteration 0 of the run's clock, whatever iteration its record carries: it is
+inside while `r < w` and leaves at the run's iteration `w`.
 
 **The step.** `CutPool::expire_trial_states(k)` removes the states that left. For
 each slot from the previous boundary up to the new one that holds a state, it
@@ -2081,6 +2082,12 @@ candidate, 7.8 against 8 within the bound), `lazy_solve_terminates_after_the_rou
 `violation_tolerance_is_strict` (the relative boundary),
 `scoring_is_invariant_to_the_cost_scale`,
 `an_absent_violation_tolerance_resolves_to_the_phase_solver_tolerance`,
+`each_phase_resolves_a_dynamic_violation_tolerance_from_its_own_profile`
+(`tests/cut_basis.rs`, `highs` only: a profile tolerance of 1 leaves a phase's
+lazy solves on their seed and a tight one re-solves, so a forward or backward
+site that read the other phase's profile swaps the two LP-solve counts; the
+enumerated forward site is unreachable under `dynamic`, and the simulation site
+is not exercised),
 `parse_dynamic_rejects_a_violation_tolerance_of_one` (`cut/cut_selection.rs`),
 `a_violation_tolerance_below_a_phase_solver_tolerance_is_rejected` (`setup/mod.rs`:
 the per-phase order, the equal value, the absent value and a `level1` strategy

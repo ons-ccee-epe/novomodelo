@@ -1101,7 +1101,6 @@ mod tests {
 
         // Reference: the pre-seam copy + lag accumulation, with no clamp step.
         let mut expected = Vec::new();
-        expected.clear();
         expected.extend_from_slice(&unscaled_primal[..layout.n_state]);
         let mut exp_lag_accumulator = vec![0.0_f64; 1];
         let mut exp_lag_weight_accum = vec![0.0_f64; 1];

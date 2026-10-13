@@ -655,7 +655,7 @@ where
         if let Err(peer_err) =
             reconcile_error_flag(Ok(()), self.comm, &mut self.fwd_state.reconcile_scratch)
         {
-            return Ok(self.finalize_without_broadcast(peer_err, "error"));
+            return Ok(self.finalize_without_broadcast(peer_err));
         }
 
         #[allow(clippy::cast_possible_truncation)]
@@ -730,7 +730,7 @@ where
                         .to_string(),
                 })
             });
-        self.finalize_without_broadcast(err, "error")
+        self.finalize_without_broadcast(err)
     }
 
     /// Build the error-exit `TrainingOutcome` WITHOUT entering
@@ -738,7 +738,7 @@ where
     /// (a rank-local or peer failure), so the basis cache is empty — no collective
     /// is safe on this path. The caller must have already reconciled the failure
     /// across ranks so every rank takes this exit in lockstep.
-    fn finalize_without_broadcast(self, err: SddpError, reason: &str) -> TrainingOutcome {
+    fn finalize_without_broadcast(self, err: SddpError) -> TrainingOutcome {
         let frozen_templates = self.scratch.frozen_templates;
         let visited_archive = self.visited_archive;
         let TrainingResults {
@@ -759,7 +759,7 @@ where
         emit(
             self.runtime.event_sender(),
             TrainingEvent::TrainingFinished {
-                reason: reason.to_string(),
+                reason: "error".to_string(),
                 iterations: completed_iterations,
                 final_lb,
                 final_ub,
@@ -774,7 +774,7 @@ where
             final_ub_std,
             final_gap,
             completed_iterations,
-            reason.to_string(),
+            "error".to_string(),
             total_time_ms,
             Vec::new(),
             solver_stats_log,
@@ -1174,17 +1174,17 @@ where
 
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             for (stage, pool_id, deact, stage_sel_time_ms) in deactivations {
-                let pool = &self.fcf.pools[pool_id];
+                let pool = &mut self.fcf.pools[pool_id];
                 let populated = pool.populated() as u32;
                 let active_before = pool.active_count() as u32;
                 let n_deact = deact.updates.len() as u32;
                 let n_reactivated = deact.reactivations.len() as u32;
                 rows_deactivated += n_deact;
 
-                self.fcf.pools[pool_id].apply_updates(&deact);
+                pool.apply_updates(&deact);
 
-                let active_after = self.fcf.pools[pool_id].active_count() as u32;
-                let rows_in_lp = self.fcf.pools[pool_id].populated() as u32;
+                let active_after = pool.active_count() as u32;
+                let rows_in_lp = pool.populated() as u32;
                 per_stage.push(StageRowSelectionRecord {
                     // Domain stage_id by position from the ordered study ids;
                     // falls back to the positional index for a short stub context.

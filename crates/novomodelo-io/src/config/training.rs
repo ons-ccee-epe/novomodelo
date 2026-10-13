@@ -198,7 +198,6 @@ pub struct RowSelectionConfig {
     /// method an evicted row does not become active again during training.
     /// With `level1`, a later selection pass may reactivate it, and the cap is
     /// then applied again in the same iteration.
-    #[serde(default)]
     pub max_active_per_stage: Option<u32>,
 
     /// Active selection method and its parameters. Absent/`null` (default)

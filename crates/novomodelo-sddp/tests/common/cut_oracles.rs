@@ -698,7 +698,7 @@ fn check_pool(
 /// # Panics
 ///
 /// Panics if the archive layout does not match the slot formula (a loaded
-/// policy, a trimmed archive, or `visit_stride != forward_passes`), or if a
+/// policy or `visit_stride != forward_passes`), or if a
 /// cut's recorded `(iteration, forward pass)` disagrees with its slot.
 fn recover_cut_trial_states(
     label: &str,

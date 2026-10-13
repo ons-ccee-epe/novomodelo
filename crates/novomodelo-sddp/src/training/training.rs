@@ -92,8 +92,7 @@ pub struct TrainingResult {
     /// `"lower_bound"` entries (rank-aggregated, no stage axis).
     pub solver_stats_log: Vec<SolverStatsLogEntry>,
 
-    /// Visited-states archive, `None` unless a strategy scores visited states or
-    /// `exports.states` is on; the caller persists it only under `exports.states`.
+    /// Visited-states archive, `None` unless `exports.states` is on.
     pub visited_archive: Option<VisitedStatesArchive>,
 
     /// Final-iteration frozen templates, one per POOL (each is a pool's base

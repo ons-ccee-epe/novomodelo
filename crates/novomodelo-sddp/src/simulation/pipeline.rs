@@ -11,8 +11,7 @@ use chrono::NaiveDate;
 use novomodelo_comm::Communicator;
 use novomodelo_core::commissioning::commissioning_active;
 use novomodelo_core::{ContractType, EntityId, HydroPastDefluence, TrainingEvent};
-use novomodelo_solver::ActiveProfile;
-use novomodelo_solver::{SolverInterface, StageTemplate};
+use novomodelo_solver::{ActiveProfile, SolverInterface, StageTemplate};
 use novomodelo_stochastic::{
     ClassSampleRequest, ForwardNoiseTables, ForwardSampler, SampleRequest,
 };
@@ -21,11 +20,9 @@ use crate::cut::CutSet;
 use crate::energy_conversion::EnergyConversionSet;
 use crate::error::SddpError::Infeasible;
 use crate::error::SddpError::Solver;
-use crate::lp::builder::GenericConstraintRowEntry;
-use crate::lp::builder::StageGeometry;
+use crate::lp::builder::{GenericConstraintRowEntry, StageGeometry};
 use crate::lp::indexer::{AnticipatedPlants, BlockIdx, BlockRowFamily, StudyDimensions};
-use crate::noise::DownstreamAccumState;
-use crate::noise::LagAccumState;
+use crate::noise::{DownstreamAccumState, LagAccumState};
 use crate::simulation::state::{SimulationInputs, SimulationState};
 use crate::stage_solve::StageInputs;
 use crate::stage_solve::assemble_outgoing_state;
@@ -280,8 +277,7 @@ pub(crate) struct SimScenarioLoadSpec<'a> {
     /// `BasisStore`'s shape) — never per stage: on a branching graph several
     /// nodes share a stage, and a stage-keyed lookup would silently warm-start
     /// from whichever node's basis happened to land at that stage index,
-    /// going cold for every other node sharing it. On a chain, node position
-    /// and stage coincide, so this is byte-identical to the pre-rekey lookup.
+    /// going cold for every other node sharing it.
     pub(crate) node_bases: &'a [Option<CapturedBasis>],
     /// See [`SimStageLoadSpec::solver_tolerance`].
     pub(crate) solver_tolerance: f64,
@@ -444,7 +440,7 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
 
     let pool_id = training_ctx.node_graph.nodes[ids.node].pool_id;
 
-    let view_objective: f64 = if let Some(params) = dcs {
+    let view_objective = if let Some(params) = dcs {
         debug_assert_eq!(
             fcf.pools[pool_id].count_in(load_spec.cut_set),
             fcf.pools[pool_id].active_count(),
@@ -629,7 +625,6 @@ pub(crate) fn extract_sim_stage_result(
     inflow_m3s_buf.clear();
     inflow_m3s_buf.extend_from_slice(&unscaled_primal[training_ctx.state.z_inflow.clone()]);
     debug_assert_eq!(inflow_m3s_buf.len(), training_ctx.state.hydro_count);
-    let blk_hrs = output.block_hours_per_stage[t.0].as_slice();
     let (load_rows, load_n_blks) = resolve_load_rows(ctx, t);
     let row_lower_ref = build_row_lower_unscaled(
         &ctx.template(t).row_lower,
@@ -693,7 +688,7 @@ pub(crate) fn extract_sim_stage_result(
         hydro_cell_index: output.hydro_cell_index,
         entity_counts: output.entity_counts,
         inflow_m3s_per_hydro: inflow_m3s_buf,
-        block_hours: blk_hrs,
+        block_hours: output.block_hours_per_stage[t.0].as_slice(),
         generic_constraint_entries: &output.generic_constraint_row_entries[t.0],
         ncs_col_upper,
         pumping_consumption_mw_per_m3s: output.pumping_consumption_mw_per_m3s,
@@ -833,7 +828,6 @@ pub(crate) fn process_scenario_stages<S: SolverInterface>(
     let mut stage_results = Vec::with_capacity(num_stages);
     let mut node = ids.root_node;
 
-    #[allow(clippy::needless_range_loop)] // t indexes load_spec, ctx arrays, and SimStageIds
     for t in (0..num_stages).map(StageIdx) {
         // Seeds key off the positional stage index `t` (unchanged — a re-key here
         // would perturb the noise/transition draws); the output stage_id is the

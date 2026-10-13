@@ -475,12 +475,7 @@ impl CutPool {
                 .iter()
                 .filter(|&&a| a)
                 .count(),
-            "cached active_count {} != computed {}",
-            self.cached_active_count,
-            self.active[..self.populated_count]
-                .iter()
-                .filter(|&&a| a)
-                .count(),
+            "cached active_count disagrees with the active flags"
         );
         self.cached_active_count
     }

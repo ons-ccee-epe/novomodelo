@@ -1890,6 +1890,68 @@ mod selection_in_a_training_run {
         }
     }
 
+    /// An absent `violation_tolerance` resolves, in each phase, to the primal
+    /// feasibility tolerance of that phase's own profile. A tolerance of 1 leaves
+    /// no candidate violated, so a lazy solve ends on its seed after one LP solve,
+    /// while a tight one appends rows and re-solves: the phase with the tight
+    /// profile makes more LP solves, and swapping the two profiles swaps the
+    /// phases. Per-phase solver overrides are `highs`-only.
+    #[cfg(feature = "highs")]
+    #[test]
+    fn each_phase_resolves_a_dynamic_violation_tolerance_from_its_own_profile() {
+        const TIGHT: f64 = 1e-9;
+        const NEVER_VIOLATED: f64 = 1.0;
+
+        let case_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/deterministic/d43-storage-only-cut");
+        let profile = |tolerance: f64| -> novomodelo_io::config::PhaseSolverProfileConfig {
+            serde_json::from_value(serde_json::json!({ "primal_feasibility_tolerance": tolerance }))
+                .expect("a profile with one tolerance parses")
+        };
+        let lp_solves = |forward: f64, backward: f64| {
+            let mut setup = super::common::fresh_setup_with_openings(&case_dir, 5, |config| {
+                config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 4 });
+                config.training.stopping_rules =
+                    Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
+                config.training.cut_selection.selection = Some(SelectionMethod::Dynamic {
+                    start_iteration: positive(2),
+                    seed_window: 0,
+                    candidate_recency: None,
+                    max_added_per_round: positive(10),
+                    violation_tolerance: None,
+                });
+                config.training.solver.forward = Some(profile(forward));
+                config.training.solver.backward = Some(profile(backward));
+            });
+            let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+            let outcome = setup
+                .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
+                .expect("train must return Ok");
+            assert!(outcome.error.is_none(), "{:?}", outcome.error);
+            let phase = |name: &str| {
+                outcome
+                    .result
+                    .solver_stats_log
+                    .iter()
+                    .filter(|entry| entry.phase == name)
+                    .map(|entry| entry.delta.lp_solves)
+                    .sum::<u64>()
+            };
+            (phase("forward"), phase("backward"))
+        };
+
+        let (forward_seed_only, backward_re_solving) = lp_solves(NEVER_VIOLATED, TIGHT);
+        let (forward_re_solving, backward_seed_only) = lp_solves(TIGHT, NEVER_VIOLATED);
+        assert!(
+            forward_seed_only < forward_re_solving,
+            "the forward phase resolves its own profile: {forward_seed_only} against {forward_re_solving}"
+        );
+        assert!(
+            backward_seed_only < backward_re_solving,
+            "the backward phase resolves its own profile: {backward_seed_only} against {backward_re_solving}"
+        );
+    }
+
     #[test]
     fn a_dynamic_run_keeps_no_state_archive() {
         let (_, result) = train_with(dynamic(), false, ARCHIVE_RUN_ITERATIONS, None);

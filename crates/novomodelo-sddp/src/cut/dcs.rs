@@ -32,9 +32,9 @@ use crate::workspace::CapturedBasis;
 /// Parameters of the `dynamic` lazy row generation, as a phase runs them.
 ///
 /// Field invariants (`max_added_per_round >= 1`, `violation_tolerance > 0`,
-/// `candidate_recency` either `None` or `Some(>= 1)`) are enforced by the
-/// config-parse step that produces [`CutSelectionStrategy::Dynamic`];
-/// `DcsParams` trusts its inputs.
+/// `candidate_recency` either `None` or `Some(>= 1)`) are enforced where
+/// [`CutSelectionStrategy::Dynamic`] is built: the counts by the config types,
+/// the tolerance by `parse_cut_selection_config`. `DcsParams` trusts its inputs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DcsParams {
     /// Candidate-recency window. `None` ⇒ ∞ (every active cut a candidate;
@@ -63,18 +63,8 @@ pub struct DcsParams {
     pub max_inner_iterations: u32,
 }
 
-impl Default for DcsParams {
-    fn default() -> Self {
-        Self {
-            candidate_recency: None,
-            seed_window: 5,
-            max_added_per_round: 10,
-            violation_tolerance: 1e-9,
-            start_iteration: 2,
-            max_inner_iterations: 50,
-        }
-    }
-}
+/// [`DcsParams::max_inner_iterations`] of every phase.
+const MAX_INNER_ITERATIONS: u32 = 50;
 
 impl DcsParams {
     /// Return whether the lazy loop is active at the given 1-based SDDP `iteration`
@@ -143,7 +133,7 @@ impl DcsConfig {
             max_added_per_round: self.max_added_per_round,
             violation_tolerance: self.violation_tolerance.unwrap_or(solver_tolerance),
             start_iteration: self.start_iteration,
-            max_inner_iterations: DcsParams::default().max_inner_iterations,
+            max_inner_iterations: MAX_INNER_ITERATIONS,
         }
     }
 }
@@ -801,8 +791,8 @@ mod tests {
 
     use super::{
         DcsConfig, DcsParams, DcsScoringScratch, DcsSolveContext, DcsSolveScratch,
-        ReconstructionTarget, build_initial_resident_set, lazy_solve_preloaded,
-        reconstruct_basis_uniform_basic, score_violated_candidates,
+        MAX_INNER_ITERATIONS, ReconstructionTarget, build_initial_resident_set,
+        lazy_solve_preloaded, reconstruct_basis_uniform_basic, score_violated_candidates,
     };
     use novomodelo_core::temporal::StageStateConfig;
 
@@ -826,21 +816,27 @@ mod tests {
         )
     }
 
+    fn base_params() -> DcsParams {
+        DcsParams {
+            candidate_recency: None,
+            seed_window: 5,
+            max_added_per_round: 10,
+            violation_tolerance: 1e-9,
+            start_iteration: 2,
+            max_inner_iterations: MAX_INNER_ITERATIONS,
+        }
+    }
+
     #[test]
-    fn default_matches_spec() {
-        let params = DcsParams::default();
-        assert_eq!(
-            params,
-            DcsParams {
-                candidate_recency: None,
-                seed_window: 5,
-                max_added_per_round: 10,
-                violation_tolerance: 1e-9,
-                start_iteration: 2,
-                max_inner_iterations: 50,
-            }
-        );
-        assert_eq!(params.candidate_recency, None);
+    fn base_params_match_a_resolved_default_config() {
+        let config = DcsConfig {
+            candidate_recency: None,
+            seed_window: 5,
+            max_added_per_round: 10,
+            violation_tolerance: None,
+            start_iteration: 2,
+        };
+        assert_eq!(base_params(), config.resolve(1e-9));
     }
 
     #[test]
@@ -942,7 +938,7 @@ mod tests {
     fn is_active_threshold() {
         let params = DcsParams {
             start_iteration: 2,
-            ..DcsParams::default()
+            ..base_params()
         };
         assert_eq!(
             [
@@ -1013,7 +1009,7 @@ mod tests {
             candidate_recency,
             max_added_per_round,
             violation_tolerance,
-            ..DcsParams::default()
+            ..base_params()
         }
     }
 
@@ -1994,7 +1990,7 @@ mod tests {
             candidate_recency: None,
             max_added_per_round,
             max_inner_iterations: max_inner,
-            ..DcsParams::default()
+            ..base_params()
         }
     }
 
@@ -2067,7 +2063,7 @@ mod tests {
             &[],
             None,
             &[],
-            &lazy_params(1, DcsParams::default().max_inner_iterations),
+            &lazy_params(1, MAX_INNER_ITERATIONS),
             &mut scratch,
             ctx(),
         )
