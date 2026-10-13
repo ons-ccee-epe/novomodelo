@@ -69,6 +69,42 @@ fn emit(sender: Option<&Sender<TrainingEvent>>, event: TrainingEvent) {
     }
 }
 
+/// A rank's cumulative lazy-solve counters, or the delta between two snapshots.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct LazySolveTotals {
+    rows_in_lp_sum: u64,
+    rows_in_lp_count: u64,
+    round_cap_hits: u64,
+}
+
+/// Sums the delta from `before` to `after` over ranks in one `Sum` reduction
+/// that every rank enters.
+///
+/// # Errors
+///
+/// [`SddpError::Communication`] when the reduction fails.
+fn reduce_lazy_totals_delta<C: Communicator>(
+    before: LazySolveTotals,
+    after: LazySolveTotals,
+    comm: &C,
+) -> Result<LazySolveTotals, SddpError> {
+    #[allow(clippy::cast_precision_loss)]
+    let local = [
+        (after.rows_in_lp_sum - before.rows_in_lp_sum) as f64,
+        (after.rows_in_lp_count - before.rows_in_lp_count) as f64,
+        (after.round_cap_hits - before.round_cap_hits) as f64,
+    ];
+    let mut global = [0.0_f64; 3];
+    comm.allreduce(&local, &mut global, ReduceOp::Sum)
+        .map_err(SddpError::Communication)?;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Ok(LazySolveTotals {
+        rows_in_lp_sum: global[0].round() as u64,
+        rows_in_lp_count: global[1].round() as u64,
+        round_cap_hits: global[2].round() as u64,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // IterationOutcome
 // ---------------------------------------------------------------------------
@@ -417,14 +453,21 @@ where
         (self.config.loop_config.start_iteration + 1)..=self.config.loop_config.max_iterations
     }
 
-    /// Sum the cumulative rows-in-LP accumulators (`(sum, count)`) across this
-    /// rank's forward-pass workspaces. Zero for non-lazy methods — only the lazy
-    /// solve path touches these accumulators.
-    fn rows_in_lp_local_totals(&self) -> (u64, u64) {
-        self.fwd_pool.workspaces.iter().fold((0, 0), |(s, c), w| {
-            let d = &w.backward_accum.dcs_solve;
-            (s + d.rows_in_lp_sum, c + d.rows_in_lp_count)
-        })
+    /// Sum the cumulative lazy-solve accumulators across this rank's
+    /// forward-pass workspaces. Zero for non-lazy methods — only the lazy solve
+    /// path touches these accumulators.
+    fn lazy_solve_local_totals(&self) -> LazySolveTotals {
+        self.fwd_pool
+            .workspaces
+            .iter()
+            .fold(LazySolveTotals::default(), |t, w| {
+                let d = &w.backward_accum.dcs_solve;
+                LazySolveTotals {
+                    rows_in_lp_sum: t.rows_in_lp_sum + d.rows_in_lp_sum,
+                    rows_in_lp_count: t.rows_in_lp_count + d.rows_in_lp_count,
+                    round_cap_hits: t.round_cap_hits + d.round_cap_hits,
+                }
+            })
     }
 
     /// Largest resident-set size observed across this rank's forward-pass
@@ -451,7 +494,7 @@ where
 
         // Snapshot before this iteration's solves so the post-backward delta
         // isolates this iteration's contribution.
-        let (rows_in_lp_sum_before, rows_in_lp_count_before) = self.rows_in_lp_local_totals();
+        let lazy_totals_before = self.lazy_solve_local_totals();
 
         let (forward_result, sync_result, fwd_solve_time_ms) = self.run_forward_phase(iteration)?;
         let (backward_result, bwd_solve_time_ms) = self.run_backward_phase(iteration)?;
@@ -459,16 +502,12 @@ where
         // Reduced across ranks so the reported figures are work-distribution
         // invariant (Sum for the per-iteration delta, Max for the running peak).
         // Forward + backward are the only lazy solves; LB is all-cuts.
-        let (rows_in_lp_sum, rows_in_lp_count, rows_in_lp_max) = {
-            let (sum_after, count_after) = self.rows_in_lp_local_totals();
-            let sum_delta = sum_after - rows_in_lp_sum_before;
-            let count_delta = count_after - rows_in_lp_count_before;
-            #[allow(clippy::cast_precision_loss)]
-            let local_sum = [sum_delta as f64, count_delta as f64];
-            let mut global_sum = [0.0_f64; 2];
-            self.comm
-                .allreduce(&local_sum, &mut global_sum, ReduceOp::Sum)
-                .map_err(SddpError::Communication)?;
+        let lazy_totals = reduce_lazy_totals_delta(
+            lazy_totals_before,
+            self.lazy_solve_local_totals(),
+            self.comm,
+        )?;
+        let rows_in_lp_max = {
             #[allow(clippy::cast_precision_loss)]
             let local_max = [self.rows_in_lp_local_max() as f64];
             let mut global_max = [0.0_f64; 1];
@@ -476,11 +515,9 @@ where
                 .allreduce(&local_max, &mut global_max, ReduceOp::Max)
                 .map_err(SddpError::Communication)?;
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            (
-                global_sum[0].round() as u64,
-                global_sum[1].round() as u64,
-                global_max[0].round() as u64,
-            )
+            {
+                global_max[0].round() as u64
+            }
         };
 
         self.run_cut_management(iteration);
@@ -567,9 +604,10 @@ where
                 fwd_setup_time_ms: forward_result.setup_time_ms,
                 fwd_load_imbalance_ms: forward_result.load_imbalance_ms,
                 fwd_scheduling_overhead_ms: forward_result.scheduling_overhead_ms,
-                rows_in_lp_sum,
-                rows_in_lp_count,
+                rows_in_lp_sum: lazy_totals.rows_in_lp_sum,
+                rows_in_lp_count: lazy_totals.rows_in_lp_count,
                 rows_in_lp_max,
+                lazy_round_cap_hits: lazy_totals.round_cap_hits,
             },
         );
 
@@ -1502,7 +1540,10 @@ mod tests {
         ClassSchemes, OpeningTreeInputs, StochasticContext, build_stochastic_context,
     };
 
-    use super::{IterationOutcome, TrainingSession, grow_pools_for_next_iteration};
+    use super::{
+        IterationOutcome, LazySolveTotals, TrainingSession, grow_pools_for_next_iteration,
+        reduce_lazy_totals_delta,
+    };
     use crate::{
         CutPool, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
         config::{CutManagementConfig, EventConfig, LoopConfig},
@@ -1649,6 +1690,103 @@ mod tests {
         fn abort(&self, error_code: i32) -> ! {
             std::process::exit(error_code)
         }
+    }
+
+    /// Two ranks that send the same values: an `f64` `Sum` reduction writes twice
+    /// the sent values.
+    struct TwoIdenticalRanks;
+
+    impl Communicator for TwoIdenticalRanks {
+        fn allgatherv<T: CommData>(
+            &self,
+            _send: &[T],
+            _recv: &mut [T],
+            _counts: &[usize],
+            _displs: &[usize],
+        ) -> Result<(), CommError> {
+            unreachable!("the lazy-totals reduction does not call allgatherv")
+        }
+
+        fn allreduce<T: CommData>(
+            &self,
+            send: &[T],
+            recv: &mut [T],
+            op: ReduceOp,
+        ) -> Result<(), CommError> {
+            use std::any::Any;
+            assert_eq!(op, ReduceOp::Sum, "the lazy-totals reduction is a Sum");
+            for (s, r) in send.iter().zip(recv.iter_mut()) {
+                let value = *(s as &dyn Any)
+                    .downcast_ref::<f64>()
+                    .expect("the lazy-totals reduction sends f64");
+                let doubled = 2.0 * value;
+                *r = *(&doubled as &dyn Any)
+                    .downcast_ref::<T>()
+                    .expect("the lazy-totals reduction sends f64");
+            }
+            Ok(())
+        }
+
+        fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
+            unreachable!("the lazy-totals reduction does not call broadcast")
+        }
+
+        fn barrier(&self) -> Result<(), CommError> {
+            unreachable!("the lazy-totals reduction does not call barrier")
+        }
+
+        fn rank(&self) -> usize {
+            0
+        }
+
+        fn size(&self) -> usize {
+            2
+        }
+
+        fn abort(&self, error_code: i32) -> ! {
+            std::process::exit(error_code)
+        }
+    }
+
+    #[test]
+    fn lazy_totals_reduce_the_iteration_delta_over_ranks() {
+        let before = LazySolveTotals {
+            rows_in_lp_sum: 10,
+            rows_in_lp_count: 2,
+            round_cap_hits: 1,
+        };
+        let after = LazySolveTotals {
+            rows_in_lp_sum: 25,
+            rows_in_lp_count: 5,
+            round_cap_hits: 4,
+        };
+        let totals = |sum, count, hits| LazySolveTotals {
+            rows_in_lp_sum: sum,
+            rows_in_lp_count: count,
+            round_cap_hits: hits,
+        };
+
+        assert_eq!(
+            reduce_lazy_totals_delta(before, after, &StubComm).unwrap(),
+            totals(15, 3, 3)
+        );
+        assert_eq!(
+            reduce_lazy_totals_delta(before, after, &TwoIdenticalRanks).unwrap(),
+            totals(30, 6, 6)
+        );
+
+        let distinct_deltas = LazySolveTotals {
+            round_cap_hits: 6,
+            ..after
+        };
+        assert_eq!(
+            reduce_lazy_totals_delta(before, distinct_deltas, &StubComm).unwrap(),
+            totals(15, 3, 5)
+        );
+        assert_eq!(
+            reduce_lazy_totals_delta(before, distinct_deltas, &TwoIdenticalRanks).unwrap(),
+            totals(30, 6, 10)
+        );
     }
 
     #[allow(clippy::cast_possible_wrap)]

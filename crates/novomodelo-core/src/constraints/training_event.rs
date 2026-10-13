@@ -350,6 +350,8 @@ pub enum TrainingEvent {
         /// a `max`-fold over iterations recovers the run-level peak with no
         /// finalize reduce. Zero when no lazy selection ran.
         rows_in_lp_max: u64,
+        /// Number of lazy-selection LP solves this iteration (all ranks) that reached the round cap with a candidate row still violated. Zero when no lazy selection ran.
+        lazy_round_cap_hits: u64,
     },
 
     // ── Lifecycle events ─────────────────────────────────────────────────────
@@ -552,6 +554,7 @@ mod tests {
                 rows_in_lp_sum: 720,
                 rows_in_lp_count: 240,
                 rows_in_lp_max: 24,
+                lazy_round_cap_hits: 3,
             },
             TrainingEvent::TrainingStarted {
                 case_name: "test_case".to_string(),
@@ -609,6 +612,20 @@ mod tests {
             17,
             "expected exactly 17 TrainingEvent variants"
         );
+    }
+
+    #[test]
+    fn iteration_summary_carries_lazy_round_cap_hits() {
+        let hits = make_all_variants()
+            .into_iter()
+            .find_map(|event| match event {
+                TrainingEvent::IterationSummary {
+                    lazy_round_cap_hits,
+                    ..
+                } => Some(lazy_round_cap_hits),
+                _ => None,
+            });
+        assert_eq!(hits, Some(3));
     }
 
     #[test]

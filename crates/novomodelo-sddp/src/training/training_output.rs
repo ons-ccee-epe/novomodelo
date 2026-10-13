@@ -56,6 +56,8 @@ struct PartialRecord {
     rows_in_lp_count: u64,
     /// Running peak resident rows-in-LP through this iteration (all ranks); `max`-folds to the run-level peak. Zero for non-lazy methods.
     rows_in_lp_max: u64,
+    /// This iteration's lazy solves (all ranks) that reached the round cap with a row still violated.
+    lazy_round_cap_hits: u64,
 }
 
 /// Accumulate per-iteration partial records from the event log, returning
@@ -82,6 +84,7 @@ fn accumulate_partial_records(events: &[TrainingEvent]) -> (BTreeMap<u64, Partia
                 rows_in_lp_sum,
                 rows_in_lp_count,
                 rows_in_lp_max,
+                lazy_round_cap_hits,
                 ..
             } => {
                 let record = partials.entry(*iteration).or_default();
@@ -99,6 +102,7 @@ fn accumulate_partial_records(events: &[TrainingEvent]) -> (BTreeMap<u64, Partia
                 record.rows_in_lp_sum = *rows_in_lp_sum;
                 record.rows_in_lp_count = *rows_in_lp_count;
                 record.rows_in_lp_max = *rows_in_lp_max;
+                record.lazy_round_cap_hits = *lazy_round_cap_hits;
             }
 
             TrainingEvent::ForwardSyncComplete {
@@ -287,6 +291,7 @@ fn partial_to_iteration_record(iter: u64, partial: &PartialRecord) -> IterationR
 ///     rows_in_lp_sum: 0,
 ///     rows_in_lp_count: 0,
 ///     rows_in_lp_max: 0,
+///     lazy_round_cap_hits: 0,
 /// }];
 ///
 /// let fcf = FutureCostFunction::new(2, 1, 4, 1, &[0; 2]);
@@ -560,7 +565,9 @@ mod tests {
     use novomodelo_core::{PoolRowCounts, TrainingEvent};
     use novomodelo_io::{IterationRecord, RunStatus};
 
-    use super::{PhaseTimingTotals, build_training_output, sum_phase_timing_ms};
+    use super::{
+        PhaseTimingTotals, accumulate_partial_records, build_training_output, sum_phase_timing_ms,
+    };
     use crate::config::ShutdownSource;
     use crate::setup::NodeId;
     use crate::stopping_rule::{
@@ -603,6 +610,7 @@ mod tests {
             rows_in_lp_sum: 0,
             rows_in_lp_count: 0,
             rows_in_lp_max: 0,
+            lazy_round_cap_hits: 0,
         }
     }
 
@@ -1167,6 +1175,7 @@ mod tests {
                 rows_in_lp_sum: 0,
                 rows_in_lp_count: 0,
                 rows_in_lp_max: 0,
+                lazy_round_cap_hits: 0,
             },
             TrainingEvent::ForwardSyncComplete {
                 iteration: 1,
@@ -1241,6 +1250,7 @@ mod tests {
                 rows_in_lp_sum: 0,
                 rows_in_lp_count: 0,
                 rows_in_lp_max: 0,
+                lazy_round_cap_hits: 0,
             },
             TrainingEvent::ForwardSyncComplete {
                 iteration: 1,
@@ -1293,6 +1303,7 @@ mod tests {
             rows_in_lp_sum: 0,
             rows_in_lp_count: 0,
             rows_in_lp_max: 0,
+            lazy_round_cap_hits: 0,
         }];
         let fcf = make_empty_fcf();
 
@@ -1467,5 +1478,25 @@ mod tests {
     fn sum_phase_timing_ms_empty_slice_returns_zero() {
         let totals = sum_phase_timing_ms(&[]);
         assert_eq!(totals, PhaseTimingTotals::default());
+    }
+
+    #[test]
+    fn round_cap_hits_reach_the_partial_record() {
+        let with_hits = |iteration, hits| {
+            let mut event = make_iteration_summary(iteration, 100.0, 110.0, 0.1);
+            if let TrainingEvent::IterationSummary {
+                lazy_round_cap_hits,
+                ..
+            } = &mut event
+            {
+                *lazy_round_cap_hits = hits;
+            }
+            event
+        };
+
+        let (partials, _) = accumulate_partial_records(&[with_hits(1, 2), with_hits(2, 0)]);
+
+        assert_eq!(partials[&1].lazy_round_cap_hits, 2);
+        assert_eq!(partials[&2].lazy_round_cap_hits, 0);
     }
 }

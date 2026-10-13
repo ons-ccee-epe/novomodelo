@@ -587,6 +587,7 @@ mod tests {
             rows_in_lp_sum: 0,
             rows_in_lp_count: 0,
             rows_in_lp_max: 0,
+            lazy_round_cap_hits: 0,
         }
     }
 
