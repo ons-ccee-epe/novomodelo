@@ -904,7 +904,7 @@ mod by_node_scheduler_determinism {
                 seed_window: 5,
                 candidate_recency: None,
                 max_added_per_round: 10,
-                violation_tolerance: 1e-10,
+                violation_tolerance: None,
             });
         })
     }
@@ -3441,7 +3441,7 @@ mod selection_on_determinism {
             seed_window,
             candidate_recency: None,
             max_added_per_round: 10,
-            violation_tolerance: 1e-10,
+            violation_tolerance: None,
         }
     }
 

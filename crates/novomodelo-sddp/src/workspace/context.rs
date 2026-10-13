@@ -8,7 +8,7 @@ use novomodelo_stochastic::{
 };
 
 use crate::{
-    dcs::DcsParams,
+    dcs::DcsConfig,
     horizon_mode::HorizonMode,
     inflow_method::InflowNonNegativityMethod,
     lp::builder::{StageGeometry, StateBox},
@@ -212,8 +212,9 @@ pub struct TrainingContext<'a> {
     /// Dynamic Cut Selection hyperparameters, `Some` only when the dynamic
     /// cut-selection method is configured. When `Some` and the iteration is at or
     /// past `start_iteration`, the backward pass solves each stage LP lazily;
-    /// otherwise the frozen all-cuts path is used.
-    pub dcs: Option<DcsParams>,
+    /// otherwise the frozen all-cuts path is used. Each phase resolves it with
+    /// [`DcsConfig::resolve`] against its own solver profile.
+    pub dcs: Option<DcsConfig>,
     /// The runtime node graph: node identity/order, the `node → pool`
     /// map, and per-node Ω views/out-edges. Absent `nodes[]` this is the
     /// byte-exact chain degeneracy (one node per stage). Discount is NOT

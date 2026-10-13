@@ -899,7 +899,7 @@ fn training_ctx_fields_match_study_setup() {
 
 #[test]
 fn simulation_ctx_propagates_dynamic_dcs_from_setup() {
-    use crate::dcs::DcsParams;
+    use crate::dcs::DcsConfig;
     use novomodelo_io::config::SelectionMethod;
 
     let n_stages = 3;
@@ -911,7 +911,7 @@ fn simulation_ctx_propagates_dynamic_dcs_from_setup() {
             seed_window: 5,
             candidate_recency: None,
             max_added_per_round: 10,
-            violation_tolerance: 1e-10,
+            violation_tolerance: None,
         }),
         ..RowSelectionConfig::default()
     };
@@ -940,18 +940,17 @@ fn simulation_ctx_propagates_dynamic_dcs_from_setup() {
     .expect("setup");
     let ctx = setup.simulation_ctx();
 
-    let expected = DcsParams {
+    let expected = DcsConfig {
         candidate_recency: None,
         seed_window: 5,
         max_added_per_round: 10,
-        violation_tolerance: 1e-10,
+        violation_tolerance: None,
         start_iteration: 2,
-        max_inner_iterations: DcsParams::default().max_inner_iterations,
     };
     assert_eq!(
         ctx.dcs,
         Some(expected),
-        "simulation_ctx().dcs must carry the configured dynamic DcsParams, got {:?}",
+        "simulation_ctx().dcs must carry the configured dynamic DcsConfig, got {:?}",
         ctx.dcs
     );
 }

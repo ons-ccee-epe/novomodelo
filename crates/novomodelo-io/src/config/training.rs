@@ -347,10 +347,13 @@ pub enum SelectionMethod {
         /// Maximum rows added per lazy-solve round. Must be `>= 1`. Default `10`.
         #[serde(default = "default_max_added_per_round")]
         max_added_per_round: u32,
-        /// Violation tolerance for accepting a candidate row. Must be `> 0`.
-        /// Default `1e-10`.
-        #[serde(default = "default_violation_tolerance")]
-        violation_tolerance: f64,
+        /// A relative factor: a candidate row is added when its value exceeds
+        /// the future-cost value by more than the factor times the larger of
+        /// the two magnitudes. Absent (default): each phase uses the primal
+        /// feasibility tolerance of its solver profile. A value must be finite
+        /// and greater than `0`.
+        #[serde(default)]
+        violation_tolerance: Option<f64>,
     },
 }
 
@@ -368,10 +371,6 @@ fn default_seed_window() -> u32 {
 
 fn default_max_added_per_round() -> u32 {
     10
-}
-
-fn default_violation_tolerance() -> f64 {
-    1e-10
 }
 
 /// `value` as a count of at least 1, or the load error naming `key`, the full
@@ -735,7 +734,7 @@ mod tests {
                 assert_eq!(*seed_window, 0);
                 assert_eq!(*candidate_recency, Some(20));
                 assert_eq!(*max_added_per_round, 3);
-                assert!((*violation_tolerance - 1e-9).abs() < f64::EPSILON);
+                assert_eq!(*violation_tolerance, Some(1e-9));
             }
             other @ SelectionMethod::Level1 { .. } => panic!("expected Dynamic, got {other:?}"),
         }
@@ -765,6 +764,19 @@ mod tests {
                 assert_eq!(*lookback_iterations, None);
             }
             other @ SelectionMethod::Dynamic { .. } => panic!("expected Level1, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_dynamic_selection_without_a_violation_tolerance_leaves_it_absent() {
+        let json = training_json_with_selection(r#"{ "method": "dynamic" }"#);
+        let cfg: TrainingConfig = serde_json::from_str(&json).unwrap();
+        match cfg.cut_selection.selection.expect("selection present") {
+            SelectionMethod::Dynamic {
+                violation_tolerance,
+                ..
+            } => assert_eq!(violation_tolerance, None),
+            other @ SelectionMethod::Level1 { .. } => panic!("expected Dynamic, got {other:?}"),
         }
     }
 

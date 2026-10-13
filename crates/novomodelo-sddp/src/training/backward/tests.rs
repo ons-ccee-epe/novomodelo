@@ -5065,7 +5065,8 @@ fn cut_coefficient_sign_convention_slot_zero_k2() {
 // -----------------------------------------------------------------------
 
 use crate::cut_selection::{CutMetadata, CutSelectionStrategy};
-use crate::dcs::DcsParams;
+use crate::dcs::{DcsConfig, DcsParams};
+use crate::solver_phase::Phase;
 use crate::workspace::{NoisePreallocation, WorkspaceSizing};
 use novomodelo_solver::ActiveSolver;
 
@@ -5250,7 +5251,7 @@ fn run_dcs_backward_trial_state_at(
         external_ncs_library: None,
         lag_accum_seed: &[],
         lag_weight_seed: &[],
-        dcs,
+        dcs: None,
     };
 
     let probabilities = vec![1.0_f64];
@@ -5452,7 +5453,7 @@ fn backward_dcs_binding_counts_match_frozen() {
 }
 
 /// `parse_cut_selection_config` for `method = "dynamic"` flows into
-/// `DcsParams::from_strategy`, so the backward context's `dcs` is `Some`
+/// `DcsConfig::from_strategy`, so the backward context's `dcs` is `Some`
 /// for the dynamic variant and `None` otherwise.
 #[test]
 fn from_strategy_gates_the_backward_dcs_field() {
@@ -5460,15 +5461,15 @@ fn from_strategy_gates_the_backward_dcs_field() {
         candidate_recency: None,
         seed_window: 5,
         max_added_per_round: 10,
-        violation_tolerance: 1e-10,
+        violation_tolerance: None,
         start_iteration: 2,
     };
-    assert!(DcsParams::from_strategy(&dynamic).is_some());
+    assert!(DcsConfig::from_strategy(&dynamic).is_some());
     let level1 = CutSelectionStrategy::Level1 {
         check_frequency: 5,
         lookback_iterations: None,
     };
-    assert!(DcsParams::from_strategy(&level1).is_none());
+    assert!(DcsConfig::from_strategy(&level1).is_none());
 }
 
 // -----------------------------------------------------------------------
@@ -5486,7 +5487,7 @@ fn dcs_params_with_candidate_recency(
         candidate_recency,
         seed_window: 2,
         max_added_per_round: 10,
-        violation_tolerance: 1e-10,
+        violation_tolerance: 1e-9,
         start_iteration,
         max_inner_iterations: 50,
     }
@@ -5743,7 +5744,13 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
         external_ncs_library: None,
         lag_accum_seed: &[],
         lag_weight_seed: &[],
-        dcs: Some(dcs_params(2)),
+        dcs: Some(DcsConfig {
+            candidate_recency: None,
+            seed_window: 2,
+            max_added_per_round: 10,
+            violation_tolerance: None,
+            start_iteration: 2,
+        }),
     };
 
     let probabilities = vec![1.0_f64];
@@ -5784,11 +5791,12 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
     let ws = &mut workspaces[0];
     // Choose the opening-solve strategy as the driver does, then issue the
     // per-child prepare/load (mirrors process_by_scenario_backward's per-child
-    // load). `dcs = Some(dcs_params(2))` with `iteration = 5` selects `Lazy`,
+    // load). A dynamic `dcs` active from iteration 2 with `iteration = 5` selects `Lazy`,
     // whose prepare loads the cut-free core + builds the metadata seed.
     let opening_solver = super::StageOpeningSolver::from_dcs_params(
         training_ctx
             .dcs
+            .map(|config| config.resolve(Phase::Backward.profile().primal_feasibility_tolerance))
             .filter(|params| params.is_active(iteration)),
     );
     opening_solver.prepare(ws, &ctx, &succ, &child0, iteration);

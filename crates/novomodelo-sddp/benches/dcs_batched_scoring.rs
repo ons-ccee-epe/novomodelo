@@ -141,7 +141,7 @@ fn score_per_candidate_baseline(
         gemm_block(coefficients, unscaled_state, 1, n_state, 1, &mut dot);
         let alpha = intercept + dot[0];
         let v = alpha - theta_raw;
-        if v > params.violation_tolerance {
+        if v > params.violation_tolerance * theta_raw.abs().max(alpha.abs()) {
             violations.push((v, slot as u32));
         }
     }
@@ -204,7 +204,7 @@ fn bench_one(c: &mut Criterion, k: usize, n_state: usize) {
     let params = DcsParams {
         candidate_recency: None,
         max_added_per_round: 10,
-        violation_tolerance: 1e-10,
+        violation_tolerance: 1e-9,
         ..DcsParams::default()
     };
     let current_iteration = 10;

@@ -462,6 +462,7 @@ fn run_worker_scenarios<S: SolverInterface + Send>(
         let load_spec = SimScenarioLoadSpec {
             frozen_templates: params.frozen_templates,
             node_bases: params.node_bases,
+            solver_tolerance: params.config.profile.primal_feasibility_tolerance,
         };
         // mem::take (capacity retained) so the immutable ScenarioIds borrows of
         // these slices do not conflict with the `&mut ws` passed below.

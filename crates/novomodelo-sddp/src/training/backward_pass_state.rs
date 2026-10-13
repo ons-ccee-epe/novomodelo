@@ -32,6 +32,7 @@ use crate::{
     context::{StageContext, TrainingContext},
     cut::{CutPool, FutureCostFunction},
     cut_sync::CutSyncBuffers,
+    dcs::DcsParams,
     error::SddpError,
     forward::EnumeratedForwardScratch,
     horizon_mode::HorizonMode,
@@ -1887,12 +1888,12 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
     // `resolve_backward_scheduler` owns the DCS fallback: its cut-free lazy
     // core is incompatible with the by-node frozen-LP load (sddp.md "By-node
     // scheduler is warm-start-only").
-    let dcs_active = training_ctx
+    let dcs_params = training_ctx
         .dcs
-        .filter(|p| p.is_active(inputs.iteration))
-        .is_some();
+        .map(|p| p.resolve(state.profile.primal_feasibility_tolerance))
+        .filter(|p| p.is_active(inputs.iteration));
     let use_by_node = matches!(
-        resolve_backward_scheduler(dcs_active, state.scheduler),
+        resolve_backward_scheduler(dcs_params.is_some(), state.scheduler),
         BackwardScheduler::ByNode { .. }
     );
 
@@ -1980,6 +1981,7 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
             inputs.fwd_offset,
             node_visit_offset,
             inputs.iteration,
+            dcs_params,
             inputs.risk_measures,
             &succ_spec,
             &outcomes,
@@ -2038,6 +2040,7 @@ pub(crate) fn process_stage_backward<S: SolverInterface + Send>(
     fwd_offset: usize,
     node_visit_offset: usize,
     iteration: u64,
+    dcs_params: Option<DcsParams>,
     risk_measures: &[RiskMeasure],
     succ: &SuccessorSpec<'_>,
     outcomes: &SuccessorOutcomes<'_>,
@@ -2056,11 +2059,7 @@ pub(crate) fn process_stage_backward<S: SolverInterface + Send>(
 
     // Opening-solve strategy, chosen once per stage. The decision depends only on
     // `iteration`, so it is constant across workers and trial points.
-    let opening_solver = StageOpeningSolver::from_dcs_params(
-        training_ctx
-            .dcs
-            .filter(|params| params.is_active(iteration)),
-    );
+    let opening_solver = StageOpeningSolver::from_dcs_params(dcs_params);
 
     workspaces
         .par_iter_mut()

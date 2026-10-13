@@ -260,6 +260,11 @@ pub(crate) struct SimStageLoadSpec<'a> {
     pub(crate) frozen_template: &'a StageTemplate,
     /// Warm-start basis captured during training at the visited node, if any.
     pub(crate) warm_basis: Option<&'a CapturedBasis>,
+    /// `primal_feasibility_tolerance` of the simulation solver profile, which
+    /// resolves an absent `violation_tolerance`. The tolerance is not exercised
+    /// in simulation: the lazy solve seeds every active cut, so no candidate is
+    /// left to score.
+    pub(crate) solver_tolerance: f64,
 }
 
 /// Per-stage batched form of [`SimStageLoadSpec`] consumed by
@@ -274,6 +279,8 @@ pub(crate) struct SimScenarioLoadSpec<'a> {
     /// going cold for every other node sharing it. On a chain, node position
     /// and stage coincide, so this is byte-identical to the pre-rekey lookup.
     pub(crate) node_bases: &'a [Option<CapturedBasis>],
+    /// See [`SimStageLoadSpec::solver_tolerance`].
+    pub(crate) solver_tolerance: f64,
 }
 
 impl<'a> SimScenarioLoadSpec<'a> {
@@ -284,6 +291,7 @@ impl<'a> SimScenarioLoadSpec<'a> {
         SimStageLoadSpec {
             frozen_template: &self.frozen_templates[pool_id],
             warm_basis: self.node_bases.get(node.0).and_then(Option::as_ref),
+            solver_tolerance: self.solver_tolerance,
         }
     }
 }
@@ -364,7 +372,8 @@ fn map_sim_solver_error(e: SddpError, ids: &SimStageIds) -> SimulationError {
 /// read-only, per-stage training artifact, so determinism is preserved. Under
 /// dynamic cut-selection the stage is solved lazily against the cut pool from the
 /// cut-free base template (the frozen cut rows are unused); the realized primal is
-/// identical at the optimum by exactness.
+/// identical at the optimum by exactness. The lazy solve seeds every active cut, so
+/// scoring finds no candidate and `dcs.violation_tolerance` is never exercised.
 // RATIONALE: the sequential per-stage steps cannot split without fragmenting the
 // per-stage invariant tracking.
 #[allow(clippy::too_many_lines)]
@@ -386,7 +395,7 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
         dcs,
         ..
     } = training_ctx;
-    let dcs = *dcs;
+    let dcs = dcs.map(|config| config.resolve(load_spec.solver_tolerance));
     let t = ids.t;
     // DCS loads the cut-free base so its fresh CutRowMap owns the resident cut
     // subset; loading the frozen template would double-append the embedded cut rows.

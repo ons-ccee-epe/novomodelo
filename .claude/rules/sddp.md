@@ -1923,14 +1923,33 @@ dynamic-only negatives that do not reject).
 
 `lazy_solve_preloaded` returns only when `score_violated_candidates` reports no
 violated candidate at the point it returns, so its result is the optimum over the
-candidate set. The rounds that add a bounded number of cuts each end at a cap;
-past it the per-round limit is lifted and the score, append, solve cycle
-continues, adding every violated candidate per cycle, until none is left. Each
-solve that reaches the cap with a candidate still violated is counted. The cycle
-ends because scoring reports only non-resident candidates beyond the violation
-tolerance and every one reported is appended, so each cycle shrinks the finite
-non-resident set; a candidate inside the tolerance is neither reported nor
-appended.
+candidate set up to the tolerance below. A candidate is violated when
+`alpha - theta > eps * max(|theta|, |alpha|)`, strict, with `alpha` the cut's value
+and `theta` the future-cost value at the point, both in the unscaled units the
+function computes, and `eps` the resolved `violation_tolerance`. Candidates are
+reported by `alpha - theta` descending, ties to the lower slot. With `z_R` the
+objective returned, `z_C` the optimum over the candidate set, `theta*` the
+future-cost value at the returned point and `d` the objective coefficient of the
+future-cost column, `z_R <= z_C <= z_R + d * eps / (1 - eps) * |theta*|`, for
+`eps < 1`. At `theta* = 0` every candidate with a positive value is appended, which
+costs rows and rounds and never exactness.
+
+An absent `violation_tolerance` is resolved by `DcsConfig::resolve`, the only
+place that gives it a value, to the `primal_feasibility_tolerance` of the solver
+profile of the phase that derives its lazy parameters: the sampled and enumerated
+forward, the backward and simulation each use their own. The HiGHS retry ladder
+can solve a retried LP looser than its profile, so the test is then stricter than
+the solve's accuracy and can append a candidate that noise made look violated;
+that costs a row and cannot loop, because an appended candidate is resident.
+Simulation seeds every active cut, so its tolerance is never exercised.
+
+The rounds that add a bounded number of cuts each end at a cap; past it the
+per-round limit is lifted and the score, append, solve cycle continues, adding
+every violated candidate per cycle, until none is left. Each solve that reaches
+the cap with a candidate still violated is counted. The cycle ends because scoring
+reports only non-resident candidates beyond the tolerance and every one reported
+is appended, so each cycle shrinks the finite non-resident set; a candidate inside
+the tolerance is neither reported nor appended.
 
 Appending the cuts violated at the last point and returning after one solve is
 the wrong-but-compiling alternative: the new optimum moves, and a cut that was
@@ -1940,14 +1959,29 @@ satisfied before can be violated there. On the cuts `(intercept, slope)`
 `x = 3.6`, where the third is violated by 1.4, against 8 at `x = 4` with all
 three. The returned value is a valid but loose relaxation, so nothing fails.
 
+The wrong-but-compiling alternatives for the test itself, each shown by a
+mutation: an absolute test `alpha - theta > eps` selects other candidates when the
+cost scale changes (`scoring_is_invariant_to_the_cost_scale` and
+`a_lazy_solve_stays_within_the_relative_bound` fail); `min` in place of `max` in
+the threshold appends a candidate the tolerance admits
+(`violation_tolerance_is_strict` and `a_lazy_solve_stays_within_the_relative_bound`
+fail); `>=` in place of `>` reports a candidate on the boundary, including one
+worth exactly `theta*` when `theta* = 0` (`violation_tolerance_is_strict` and
+`lazy_solve_is_exact_after_the_round_cap` fail).
+
 The claim is exact over the candidate set, which is the whole pool only when the
 candidate recency window is unset; with a finite window it holds over the cuts
 inside the window and the result is deliberately not the all-cuts optimum.
 Read: `cut/dcs.rs` (`lazy_solve_preloaded`, `score_violated_candidates`,
-`DcsSolveScratch::round_cap_hits`, `DcsParams::max_inner_iterations`). Pinned by
-`lazy_solve_is_exact_after_the_round_cap` (`cut/dcs.rs`: 8 at `x = 4`, not 7.8,
-and one cap hit), with `lazy_objective_equals_the_all_cuts_objective` (random
-cuts, caps 0 to 3) and `lazy_solve_terminates_after_the_round_cap`.
+`DcsConfig::resolve`, `DcsSolveScratch::round_cap_hits`,
+`DcsParams::max_inner_iterations`). Pinned by `lazy_solve_is_exact_after_the_round_cap`
+(`cut/dcs.rs`: 8 at `x = 4`, not 7.8, and one cap hit), with
+`lazy_objective_equals_the_all_cuts_objective` (random cuts, caps 0 to 3, the
+two-sided bound), `a_lazy_solve_stays_within_the_relative_bound` (an unappended
+candidate, 7.8 against 8 within the bound), `lazy_solve_terminates_after_the_round_cap`,
+`violation_tolerance_is_strict` (the relative boundary),
+`scoring_is_invariant_to_the_cost_scale` and
+`an_absent_violation_tolerance_resolves_to_the_phase_solver_tolerance`.
 
 ## The active-cut budget caps only cuts this run generated in interior pools
 

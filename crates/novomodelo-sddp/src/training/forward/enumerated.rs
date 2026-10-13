@@ -875,6 +875,7 @@ mod tests {
         indexer::StateSpace,
         lead_time::AnticipatedResolution,
         setup::{StudySetup, node_graph::Traversal},
+        solver_phase::Phase,
         test_support,
         training::forward::build_sampler_from_ctx,
         workspace::WorkspacePool,
@@ -1011,7 +1012,10 @@ mod tests {
         let total_forward_passes =
             usize::try_from(test_support::node_scenario_count(node_graph).expect("scenario count"))
                 .expect("fits usize");
-        let dcs = training_ctx.dcs.filter(|p| p.is_active(iteration));
+        let dcs = training_ctx
+            .dcs
+            .map(|p| p.resolve(Phase::Forward.profile().primal_feasibility_tolerance))
+            .filter(|p| p.is_active(iteration));
         let mut noise_tables = ForwardNoiseTables::default();
         sampler
             .rebuild_noise_tables(

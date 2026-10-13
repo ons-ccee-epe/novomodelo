@@ -3556,7 +3556,7 @@ mod admission_gate_dcs_tests {
             candidate_recency: None,
             seed_window: 1,
             max_added_per_round: 1,
-            violation_tolerance: 1e-6,
+            violation_tolerance: None,
             start_iteration: 1,
         }
     }

@@ -2846,8 +2846,7 @@ mod tests {
                         "start_iteration": 2,
                         "seed_window": 5,
                         "candidate_recency": 20,
-                        "max_added_per_round": 10,
-                        "violation_tolerance": 1e-10
+                        "max_added_per_round": 10
                     }
                 },
                 "parallelism": {

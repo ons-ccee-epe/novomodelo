@@ -1,13 +1,15 @@
 //! Lazy row generation of the `dynamic` selection method: each LP solve starts
 //! from a seed of active cuts and appends the candidates it violates by more
-//! than `violation_tolerance` until none is. It is this software's own method,
-//! not the Dynamic Cut Selection of de Matos, Philpott and Finardi (2015), and
-//! it never deactivates a cut.
+//! than `violation_tolerance` times the larger of the candidate's and the
+//! future-cost value's magnitudes, until none is. It is this software's own
+//! method, not the Dynamic Cut Selection of de Matos, Philpott and Finardi
+//! (2015), and it never deactivates a cut.
 //!
 //! [`DcsParams`] is a `Copy`, allocation-free carrier for the method's
 //! parameters, decoupled from [`CutSelectionStrategy::Dynamic`] so the hot path
-//! is not coupled to config parsing. Construct one via
-//! [`DcsParams::from_strategy`].
+//! is not coupled to config parsing. A phase builds one with
+//! [`DcsConfig::resolve`] from the [`DcsConfig`] that
+//! [`DcsConfig::from_strategy`] derives from the strategy.
 
 use std::time::Instant;
 
@@ -27,7 +29,7 @@ use crate::indexer::{CutSlot, CutStateProjection, StateSpace};
 use crate::setup::{NodeId, StageIdx};
 use crate::workspace::CapturedBasis;
 
-/// Parameters of the `dynamic` lazy row generation.
+/// Parameters of the `dynamic` lazy row generation, as a phase runs them.
 ///
 /// Field invariants (`max_added_per_round >= 1`, `violation_tolerance > 0`,
 /// `candidate_recency` either `None` or `Some(>= 1)`) are enforced by the
@@ -48,8 +50,8 @@ pub struct DcsParams {
     /// Maximum number of cuts added per inner iteration (`>= 1`).
     pub max_added_per_round: u32,
 
-    /// Violation tolerance for accepting a candidate cut (`> 0`, and at least
-    /// the LP dual-feasibility tolerance).
+    /// Relative violation factor, resolved for the phase: a candidate is
+    /// violated when `alpha - theta > violation_tolerance * max(|theta|, |alpha|)`.
     pub violation_tolerance: f64,
 
     /// First SDDP iteration (1-based) at which the lazy loop is applied.
@@ -67,7 +69,7 @@ impl Default for DcsParams {
             candidate_recency: None,
             seed_window: 5,
             max_added_per_round: 10,
-            violation_tolerance: 1e-10,
+            violation_tolerance: 1e-9,
             start_iteration: 2,
             max_inner_iterations: 50,
         }
@@ -75,10 +77,40 @@ impl Default for DcsParams {
 }
 
 impl DcsParams {
-    /// Build [`DcsParams`] from a cut-selection strategy: `Some` for the
-    /// [`Dynamic`](crate::cut_selection::CutSelectionStrategy::Dynamic) variant
-    /// (with `max_inner_iterations` from [`DcsParams::default`]), `None`
-    /// otherwise.
+    /// Return whether the lazy loop is active at the given 1-based SDDP `iteration`
+    /// (`iteration >= self.start_iteration`).
+    #[must_use]
+    pub fn is_active(&self, iteration: u64) -> bool {
+        iteration >= self.start_iteration
+    }
+}
+
+/// The `dynamic` parameters as configured: the violation tolerance is still
+/// absent when the config leaves it out, and each phase resolves it against
+/// its own solver profile through [`DcsConfig::resolve`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DcsConfig {
+    /// See [`DcsParams::candidate_recency`].
+    pub candidate_recency: Option<u32>,
+
+    /// See [`DcsParams::seed_window`].
+    pub seed_window: u32,
+
+    /// See [`DcsParams::max_added_per_round`].
+    pub max_added_per_round: u32,
+
+    /// Configured relative violation factor; `None` takes the primal
+    /// feasibility tolerance of the resolving phase's solver profile.
+    pub violation_tolerance: Option<f64>,
+
+    /// See [`DcsParams::start_iteration`].
+    pub start_iteration: u64,
+}
+
+impl DcsConfig {
+    /// Build a [`DcsConfig`] from a cut-selection strategy: `Some` for the
+    /// [`Dynamic`](crate::cut_selection::CutSelectionStrategy::Dynamic) variant,
+    /// `None` otherwise.
     #[must_use]
     pub fn from_strategy(strategy: &CutSelectionStrategy) -> Option<Self> {
         match strategy {
@@ -94,17 +126,25 @@ impl DcsParams {
                 max_added_per_round: *max_added_per_round,
                 violation_tolerance: *violation_tolerance,
                 start_iteration: *start_iteration,
-                max_inner_iterations: Self::default().max_inner_iterations,
             }),
             CutSelectionStrategy::Level1 { .. } => None,
         }
     }
 
-    /// Return whether the lazy loop is active at the given 1-based SDDP `iteration`
-    /// (`iteration >= self.start_iteration`).
+    /// The parameters a phase runs with. The only place an absent violation
+    /// tolerance takes a value: `solver_tolerance`, the
+    /// `primal_feasibility_tolerance` of the profile the resolving phase's own
+    /// solver runs with.
     #[must_use]
-    pub fn is_active(&self, iteration: u64) -> bool {
-        iteration >= self.start_iteration
+    pub fn resolve(&self, solver_tolerance: f64) -> DcsParams {
+        DcsParams {
+            candidate_recency: self.candidate_recency,
+            seed_window: self.seed_window,
+            max_added_per_round: self.max_added_per_round,
+            violation_tolerance: self.violation_tolerance.unwrap_or(solver_tolerance),
+            start_iteration: self.start_iteration,
+            max_inner_iterations: DcsParams::default().max_inner_iterations,
+        }
     }
 }
 
@@ -178,7 +218,8 @@ impl DcsScoringScratch {
 /// Cut coefficients are stored **raw** (`∂Q/∂x`); the LP solves in **scaled**
 /// space. The cut row is `−∇·x + θ ≥ intercept`, so the cut's `θ`-floor at the
 /// raw optimum is `alpha = intercept + ∇·x*_raw` and a candidate is **violated**
-/// when `v = alpha − theta_raw > violation_tolerance` (strict). Both `θ*` and every
+/// when `v = alpha − theta_raw > violation_tolerance · max(|theta_raw|, |alpha|)`
+/// (strict; at `theta_raw = 0` that is `alpha > 0`). Both `θ*` and every
 /// state column are unscaled by `col_scale` before scoring
 /// (`x_raw = col_scale[c] · x_scaled`, empty ⇒ factor 1.0) — **mixing scaled
 /// state with raw coefficients is the classic silent bug.** Reduced index → LP
@@ -320,7 +361,7 @@ pub fn score_violated_candidates(
     for (i, &slot) in scratch.cand_slots.iter().enumerate() {
         let alpha = pool.intercept(slot as usize) + scratch.alpha[i];
         let v = alpha - theta_raw;
-        if v > params.violation_tolerance {
+        if v > params.violation_tolerance * theta_raw.abs().max(alpha.abs()) {
             scratch.violations.push((v, slot));
         }
     }
@@ -572,9 +613,9 @@ fn solve_mapped<'a, S: SolverInterface>(
 /// whole pool when `params.candidate_recency` is `None`). After
 /// `params.max_inner_iterations` rounds the per-round limit is lifted and the
 /// cycle continues, counted in [`DcsSolveScratch::round_cap_hits`]; it ends
-/// because scoring reports only non-resident candidates beyond
-/// `violation_tolerance` and every one reported is appended, so each cycle
-/// shrinks the finite non-resident set.
+/// because scoring reports only non-resident candidates beyond the relative
+/// tolerance and every one reported is appended, so each cycle shrinks the
+/// finite non-resident set.
 ///
 /// The initial solve is warm from a uniform-BASIC reconstruction of
 /// `stored_basis` ([`reconstruct_basis_uniform_basic`] +
@@ -759,9 +800,9 @@ mod tests {
     };
 
     use super::{
-        DcsParams, DcsScoringScratch, DcsSolveContext, DcsSolveScratch, ReconstructionTarget,
-        build_initial_resident_set, lazy_solve_preloaded, reconstruct_basis_uniform_basic,
-        score_violated_candidates,
+        DcsConfig, DcsParams, DcsScoringScratch, DcsSolveContext, DcsSolveScratch,
+        ReconstructionTarget, build_initial_resident_set, lazy_solve_preloaded,
+        reconstruct_basis_uniform_basic, score_violated_candidates,
     };
     use novomodelo_core::temporal::StageStateConfig;
 
@@ -794,7 +835,7 @@ mod tests {
                 candidate_recency: None,
                 seed_window: 5,
                 max_added_per_round: 10,
-                violation_tolerance: 1e-10,
+                violation_tolerance: 1e-9,
                 start_iteration: 2,
                 max_inner_iterations: 50,
             }
@@ -804,39 +845,48 @@ mod tests {
 
     #[test]
     fn from_strategy_dynamic_copies_fields() {
-        // candidate_recency = Some(n)
         let strategy = CutSelectionStrategy::Dynamic {
             candidate_recency: Some(20),
             seed_window: 7,
             max_added_per_round: 3,
-            violation_tolerance: 1e-9,
+            violation_tolerance: Some(1e-8),
             start_iteration: 4,
         };
-        let params = DcsParams::from_strategy(&strategy)
+        let config = DcsConfig::from_strategy(&strategy)
             .expect("from_strategy must return Some for the Dynamic variant");
         assert_eq!(
-            params,
+            config,
+            DcsConfig {
+                candidate_recency: Some(20),
+                seed_window: 7,
+                max_added_per_round: 3,
+                violation_tolerance: Some(1e-8),
+                start_iteration: 4,
+            }
+        );
+        assert_eq!(
+            config.resolve(1e-7),
             DcsParams {
                 candidate_recency: Some(20),
                 seed_window: 7,
                 max_added_per_round: 3,
-                violation_tolerance: 1e-9,
+                violation_tolerance: 1e-8,
                 start_iteration: 4,
                 max_inner_iterations: 50,
             }
         );
 
-        // candidate_recency = None passes through as None.
         let strategy_inf = CutSelectionStrategy::Dynamic {
             candidate_recency: None,
             seed_window: 5,
             max_added_per_round: 10,
-            violation_tolerance: 1e-10,
+            violation_tolerance: None,
             start_iteration: 2,
         };
-        let params_inf = DcsParams::from_strategy(&strategy_inf)
+        let config_inf = DcsConfig::from_strategy(&strategy_inf)
             .expect("from_strategy must return Some for the Dynamic variant");
-        assert_eq!(params_inf.candidate_recency, None);
+        assert_eq!(config_inf.candidate_recency, None);
+        assert_eq!(config_inf.violation_tolerance, None);
     }
 
     #[test]
@@ -845,7 +895,47 @@ mod tests {
             check_frequency: 5,
             lookback_iterations: None,
         };
-        assert!(DcsParams::from_strategy(&level1).is_none());
+        assert!(DcsConfig::from_strategy(&level1).is_none());
+    }
+
+    #[test]
+    fn an_absent_violation_tolerance_resolves_to_the_phase_solver_tolerance() {
+        let absent = DcsConfig {
+            candidate_recency: None,
+            seed_window: 5,
+            max_added_per_round: 10,
+            violation_tolerance: None,
+            start_iteration: 2,
+        };
+        let present = DcsConfig {
+            violation_tolerance: Some(1e-6),
+            ..absent
+        };
+        assert_eq!(absent.resolve(1e-7).violation_tolerance, 1e-7);
+        assert_eq!(present.resolve(1e-7).violation_tolerance, 1e-6);
+
+        #[cfg(feature = "highs")]
+        {
+            use crate::solver_phase::Phase;
+
+            let forward_override: novomodelo_io::config::PhaseSolverProfileConfig =
+                serde_json::from_str(r#"{ "primal_feasibility_tolerance": 1e-7 }"#)
+                    .expect("a profile with one tolerance parses");
+            let forward = Phase::Forward.resolve_profile(Some(&forward_override));
+            let backward = Phase::Backward.profile();
+            assert_eq!(
+                absent
+                    .resolve(forward.primal_feasibility_tolerance)
+                    .violation_tolerance,
+                1e-7
+            );
+            assert_eq!(
+                absent
+                    .resolve(backward.primal_feasibility_tolerance)
+                    .violation_tolerance,
+                1e-9
+            );
+        }
     }
 
     #[test]
@@ -869,6 +959,7 @@ mod tests {
     fn dcs_params_is_copy() {
         fn assert_copy<T: Copy>() {}
         assert_copy::<DcsParams>();
+        assert_copy::<DcsConfig>();
     }
 
     // -----------------------------------------------------------------------
@@ -1197,20 +1288,81 @@ mod tests {
         assert_eq!(out, vec![0]);
     }
 
-    /// Violation exactly equal to violation_tolerance is NOT counted (strict >).
+    /// The violation test is strict at its relative boundary.
+    ///
+    /// derived: with `violation_tolerance = 0.5` and `theta = 0.5`, `alpha = 1`
+    /// gives `v = 0.5` against `0.5 * max(0.5, 1) = 0.5` (`0.5 > 0.5` is false)
+    /// and `alpha = 1.5` gives `v = 1` against `0.5 * 1.5 = 0.75`. Every value is
+    /// exact in binary.
     #[test]
     fn violation_tolerance_is_strict() {
+        for (alpha, violated) in [(1.0, false), (1.5, true)] {
+            let idx = indexer();
+            let mut pool = empty_pool();
+            add(&mut pool, 0, alpha, &[0.0, 0.0], 1);
+            let mut primal = vec![0.0_f64; PRIMAL_LEN];
+            primal[THETA_COL] = 0.5;
+            let resident = empty_resident();
+            let p = params(10, 0.5, None);
+            let mut scratch = DcsScoringScratch::default();
+            let mut out = Vec::new();
+
+            let count = score_violated_candidates(
+                &pool,
+                &idx,
+                &cut_state(&idx),
+                &primal,
+                &[],
+                &resident,
+                &p,
+                10,
+                &mut scratch,
+                &mut out,
+            );
+
+            assert_eq!(count, usize::from(violated), "alpha = {alpha}");
+            assert_eq!(out, if violated { vec![0] } else { Vec::new() });
+        }
+    }
+
+    /// `(intercept, [c0, c1])` of the cuts of
+    /// [`scoring_is_invariant_to_the_cost_scale`], scored at `x = (1, 2)`,
+    /// `theta = 3`.
+    const SCALE_CUTS: [(f64, [f64; 2]); 7] = [
+        (2.0, [1.0, 0.5]),
+        (1.0, [0.0, 1.0]),
+        (5.0, [1.0, 1.0]),
+        (-1.0, [0.5, 0.25]),
+        (2.0, [0.5, 0.5]),
+        (3.0 + 1.5e-9, [0.0, 0.0]),
+        (3.0 + 1.5e-8, [0.0, 0.0]),
+    ];
+
+    /// The violated slots, in selection order, of `SCALE_CUTS` with every
+    /// intercept, coefficient and `theta` multiplied by `2^k`, at
+    /// `violation_tolerance = 1e-9`.
+    fn scaled_selection(k: i32) -> Vec<u32> {
+        let scale = 2.0_f64.powi(k);
         let idx = indexer();
         let mut pool = empty_pool();
-        // alpha = 1.0, theta_raw = 0 → v = 1.0; violation_tolerance = 1.0 → v == eps.
-        add(&mut pool, 0, 1.0, &[0.0, 0.0], 1);
-        let primal = vec![0.0_f64; PRIMAL_LEN];
+        for (slot, &(intercept, [c0, c1])) in SCALE_CUTS.iter().enumerate() {
+            add(
+                &mut pool,
+                slot as u32,
+                intercept * scale,
+                &[c0 * scale, c1 * scale],
+                1,
+            );
+        }
+        let mut primal = vec![0.0_f64; PRIMAL_LEN];
+        primal[0] = 1.0;
+        primal[1] = 2.0;
+        primal[THETA_COL] = 3.0 * scale;
         let resident = empty_resident();
-        let p = params(10, 1.0, None);
+        let p = params(10, 1e-9, None);
         let mut scratch = DcsScoringScratch::default();
         let mut out = Vec::new();
-
-        let count = score_violated_candidates(
+        score_violated_candidates(
             &pool,
             &idx,
             &cut_state(&idx),
@@ -1222,9 +1374,24 @@ mod tests {
             &mut scratch,
             &mut out,
         );
+        out
+    }
 
-        assert_eq!(count, 0, "v == violation_tolerance is NOT strictly greater");
-        assert!(out.is_empty());
+    /// The violated set and its order do not depend on the cost scale.
+    ///
+    /// derived: at `x = (1, 2)` and `theta = 3` the cuts evaluate to `alpha = 4,
+    /// 3, 8, 0, 3.5, 3 + 1.5e-9, 3 + 1.5e-8`, so `v = 1, 0, 5, -3, 0.5, 1.5e-9,
+    /// 1.5e-8` against `1e-9 * max(3, alpha)`, about `3e-9` to `8e-9`: slots 2, 0,
+    /// 4 and 6 are violated, in that order. The absolute test with `1e-9` also
+    /// reports slot 5 and, at `k = -40`, reports nothing. A power of two scales
+    /// every value exactly.
+    #[test]
+    fn scoring_is_invariant_to_the_cost_scale() {
+        let expected = vec![2, 0, 4, 6];
+        assert_eq!(scaled_selection(0), expected);
+        for k in [-40, -20, 20, 40] {
+            assert_eq!(scaled_selection(k), expected, "k = {k}");
+        }
     }
 
     /// No candidate violated → empty out_selected, return 0.
@@ -1337,7 +1504,7 @@ mod tests {
             alpha_bits.push(dot[0].to_bits());
             let alpha = intercept + dot[0];
             let v = alpha - theta_raw;
-            if v > p.violation_tolerance {
+            if v > p.violation_tolerance * theta_raw.abs().max(alpha.abs()) {
                 violations.push((v, slot as u32));
             }
         }
@@ -1982,6 +2149,65 @@ mod tests {
         assert!((view.primal[LAZY_THETA_COL] - all_theta).abs() < 1e-9);
     }
 
+    /// A tolerance wide enough to leave a violated candidate unappended returns an
+    /// objective below the all-cuts optimum by at most the relative bound.
+    ///
+    /// derived: with cuts `(15, -3)` and `(6, -0.5)` resident and `(20, -4)` the
+    /// only candidate, the lazy optimum is their intersection `x = 9 / 2.5 = 3.6`,
+    /// `theta = 15 - 3 * 3.6 = 4.2`, objective `7.8`. There the candidate is worth
+    /// `20 - 4 * 3.6 = 5.6`, a violation of `1.4` against `0.3 * 5.6 = 1.68`, so it
+    /// stays out. With it the optimum is the intersection of the last two cuts,
+    /// `x = 14 / 3.5 = 4`, `theta = 4`, objective `8`. The bound is
+    /// `7.8 + 1 * 0.3 / 0.7 * 4.2 = 9.6`, with `d = 1`.
+    #[test]
+    fn a_lazy_solve_stays_within_the_relative_bound() {
+        let eps = 0.3;
+        let indexer = lazy_indexer();
+        let pool = cuts_pool(&[(15.0, -3.0), (6.0, -0.5), (20.0, -4.0)]);
+        let core = free_state_template();
+        let (all_obj, _) = solve_all_cuts_on(&core, &pool, &indexer);
+
+        let mut solver = active_profiled();
+        let mut scratch = DcsSolveScratch::default();
+        solver.load_model(&core);
+        lazy_solve_preloaded(
+            &mut solver,
+            &core,
+            &pool,
+            &indexer,
+            &cut_state(&indexer),
+            &[],
+            None,
+            &[0, 1],
+            &DcsParams {
+                violation_tolerance: eps,
+                ..lazy_params(10, 50)
+            },
+            &mut scratch,
+            ctx(),
+        )
+        .expect("lazy_solve_preloaded must succeed");
+        let view = scratch.result_view();
+
+        let x_lazy = (15.0 - 6.0) / (3.0 - 0.5);
+        let theta_lazy = 15.0 - 3.0 * x_lazy;
+        let lazy_obj = x_lazy + theta_lazy;
+        let x_all = (20.0 - 6.0) / (4.0 - 0.5);
+        let all_derived = x_all + (20.0 - 4.0 * x_all);
+        let d = core.objective[LAZY_THETA_COL];
+        let bound = lazy_obj + d * eps / (1.0 - eps) * theta_lazy;
+
+        assert!(
+            (view.objective - lazy_obj).abs() < 1e-9,
+            "{}",
+            view.objective
+        );
+        assert!((all_obj - all_derived).abs() < 1e-9, "{all_obj}");
+        assert!(scratch.row_map.lp_row_for_slot(2).is_none());
+        assert!(view.objective < all_obj - 0.1);
+        assert!(all_obj <= bound, "{all_obj} > {bound}");
+    }
+
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig {
             cases: 64,
@@ -2005,6 +2231,7 @@ mod tests {
             let pool = cuts_pool(&cuts);
             let core = free_state_template();
             let (all_obj, _) = solve_all_cuts_on(&core, &pool, &indexer);
+            let params = lazy_params(max_added_per_round, round_cap);
 
             let mut solver = active_profiled();
             let mut scratch = DcsSolveScratch::default();
@@ -2018,16 +2245,24 @@ mod tests {
                 &[],
                 None,
                 &seed,
-                &lazy_params(max_added_per_round, round_cap),
+                &params,
                 &mut scratch,
                 ctx(),
             )
             .expect("lazy_solve_preloaded must succeed");
 
-            let objective = scratch.result_view().objective;
+            let view = scratch.result_view();
+            let (objective, theta) = (view.objective, view.primal[LAZY_THETA_COL]);
+            let eps = params.violation_tolerance;
+            let d = core.objective[LAZY_THETA_COL];
+            let allowance = 1e-9 * all_obj.abs().max(1.0);
             proptest::prop_assert!(
-                (objective - all_obj).abs() <= 1e-9 * all_obj.abs().max(1.0),
-                "lazy {objective} != all-cuts {all_obj}"
+                objective <= all_obj + allowance,
+                "lazy {objective} above all-cuts {all_obj}"
+            );
+            proptest::prop_assert!(
+                all_obj <= objective + d * eps / (1.0 - eps) * theta.abs() + allowance,
+                "all-cuts {all_obj} beyond the bound of lazy {objective} at theta {theta}"
             );
         }
     }

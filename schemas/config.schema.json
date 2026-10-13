@@ -847,10 +847,13 @@
               "type": "integer"
             },
             "violation_tolerance": {
-              "default": 1e-10,
-              "description": "Violation tolerance for accepting a candidate row. Must be `> 0`.\nDefault `1e-10`.",
+              "default": null,
+              "description": "A relative factor: a candidate row is added when its value exceeds\nthe future-cost value by more than the factor times the larger of\nthe two magnitudes. Absent (default): each phase uses the primal\nfeasibility tolerance of its solver profile. A value must be finite\nand greater than `0`.",
               "format": "double",
-              "type": "number"
+              "type": [
+                "number",
+                "null"
+              ]
             }
           },
           "required": [

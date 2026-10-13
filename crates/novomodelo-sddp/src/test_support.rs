@@ -3774,7 +3774,7 @@ fn k_fan_config_dcs(forward_passes: u32, max_iterations: u32) -> Config {
             seed_window: 5,
             candidate_recency: None,
             max_added_per_round: 10,
-            violation_tolerance: 1e-10,
+            violation_tolerance: None,
         }),
     };
     config

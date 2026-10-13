@@ -176,9 +176,12 @@ pub enum CutSelectionStrategy {
         /// `>= 1`.
         max_added_per_round: u32,
 
-        /// Absolute violation tolerance for accepting a candidate cut. Must be
+        /// Relative violation factor: a candidate cut is added when its value
+        /// exceeds the future-cost value by more than the factor times the
+        /// larger of the two magnitudes. `None` takes the primal feasibility
+        /// tolerance of each phase's solver profile; a value is finite and
         /// `> 0`.
-        violation_tolerance: f64,
+        violation_tolerance: Option<f64>,
 
         /// First training iteration at which the lazy loop becomes active.
         start_iteration: u64,
@@ -333,11 +336,9 @@ pub fn parse_cut_selection_config(
                 candidate_recency,
                 seed_window,
                 max_added_per_round,
-                violation_tolerance: validate_tolerance(
-                    "violation_tolerance",
-                    violation_tolerance,
-                    true,
-                )?,
+                violation_tolerance: violation_tolerance
+                    .map(|value| validate_tolerance("violation_tolerance", value, true))
+                    .transpose()?,
                 start_iteration: u64::from(start_iteration),
             }))
         }
@@ -541,7 +542,7 @@ mod tests {
                     seed_window: 5,
                     candidate_recency: None,
                     max_added_per_round: 10,
-                    violation_tolerance: value,
+                    violation_tolerance: Some(value),
                 }),
             ),
         ]
@@ -1074,7 +1075,8 @@ mod tests {
         serde_json::from_str(body).expect("dynamic selection block must parse")
     }
 
-    /// A `dynamic` block with no parameters maps to the documented defaults.
+    /// A `dynamic` block with no parameters maps to the documented defaults; the
+    /// violation tolerance stays absent.
     #[test]
     fn parse_dynamic_defaults() {
         let cfg = dynamic_from_json(r#"{"selection": {"method": "dynamic"}}"#);
@@ -1088,9 +1090,9 @@ mod tests {
                     candidate_recency: None,
                     seed_window: 5,
                     max_added_per_round: 10,
-                    violation_tolerance,
+                    violation_tolerance: None,
                     start_iteration: 2,
-                } if (violation_tolerance - 1e-10).abs() < 1e-20
+                }
             ),
             "unexpected variant or defaults: {strategy:?}"
         );
@@ -1107,7 +1109,7 @@ mod tests {
                 seed_window: 7,
                 candidate_recency: Some(20),
                 max_added_per_round: 3,
-                violation_tolerance: 1e-9,
+                violation_tolerance: Some(1e-9),
             }),
             ..RowSelectionConfig::default()
         };
@@ -1121,7 +1123,7 @@ mod tests {
                     candidate_recency: Some(20),
                     seed_window: 7,
                     max_added_per_round: 3,
-                    violation_tolerance,
+                    violation_tolerance: Some(violation_tolerance),
                     start_iteration: 2,
                 } if (violation_tolerance - 1e-9).abs() < f64::EPSILON
             ),
@@ -1139,7 +1141,7 @@ mod tests {
                     seed_window: 5,
                     candidate_recency: None,
                     max_added_per_round: 10,
-                    violation_tolerance,
+                    violation_tolerance: Some(violation_tolerance),
                 }),
                 ..RowSelectionConfig::default()
             };
@@ -1162,7 +1164,7 @@ mod tests {
                 seed_window: 5,
                 candidate_recency: Some(0),
                 max_added_per_round: 10,
-                violation_tolerance: 1e-10,
+                violation_tolerance: None,
             }),
             ..RowSelectionConfig::default()
         };
@@ -1183,7 +1185,7 @@ mod tests {
                 seed_window: 7,
                 candidate_recency: Some(20),
                 max_added_per_round: 3,
-                violation_tolerance: 1e-9,
+                violation_tolerance: Some(1e-9),
             }),
             ..RowSelectionConfig::default()
         };
@@ -1197,7 +1199,7 @@ mod tests {
                     candidate_recency: Some(20),
                     seed_window: 7,
                     max_added_per_round: 3,
-                    violation_tolerance,
+                    violation_tolerance: Some(violation_tolerance),
                     start_iteration: 5,
                 } if (violation_tolerance - 1e-9).abs() < f64::EPSILON
             ),
@@ -1215,7 +1217,7 @@ mod tests {
                 seed_window: 5,
                 candidate_recency: None,
                 max_added_per_round: 10,
-                violation_tolerance: 1e-10,
+                violation_tolerance: None,
             }),
             ..RowSelectionConfig::default()
         };
@@ -1236,7 +1238,7 @@ mod tests {
                 seed_window: 5,
                 candidate_recency: None,
                 max_added_per_round: 0,
-                violation_tolerance: 1e-10,
+                violation_tolerance: None,
             }),
             ..RowSelectionConfig::default()
         };
@@ -1285,7 +1287,7 @@ mod tests {
             candidate_recency: None,
             seed_window: 5,
             max_added_per_round: 10,
-            violation_tolerance: 1e-10,
+            violation_tolerance: None,
             start_iteration: 2,
         };
         for iteration in [0_u64, 1, 2, 5, 100] {

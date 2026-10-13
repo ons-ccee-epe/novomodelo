@@ -452,6 +452,7 @@ where
     let load_spec = SimScenarioLoadSpec {
         frozen_templates,
         node_bases: inputs.node_bases,
+        solver_tolerance: inputs.config.profile.primal_feasibility_tolerance,
     };
     let sim_params = EnumeratedSimParams {
         ctx: inputs.ctx,
@@ -612,6 +613,10 @@ mod tests {
         let load_spec = SimScenarioLoadSpec {
             frozen_templates: &frozen_templates,
             node_bases: &[],
+            solver_tolerance: setup
+                .simulation_config()
+                .profile
+                .primal_feasibility_tolerance,
         };
         let params = EnumeratedSimParams {
             ctx: &stage_ctx,

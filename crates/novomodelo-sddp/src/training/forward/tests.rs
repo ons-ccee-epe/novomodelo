@@ -3281,7 +3281,7 @@ mod dcs_forward {
             candidate_recency: None,
             seed_window: 2,
             max_added_per_round: 10,
-            violation_tolerance: 1e-10,
+            violation_tolerance: 1e-9,
             start_iteration,
             max_inner_iterations: 50,
         }
@@ -3364,7 +3364,7 @@ mod dcs_forward {
             external_ncs_library: None,
             lag_accum_seed: &[],
             lag_weight_seed: &[],
-            dcs,
+            dcs: None,
         };
 
         // Frozen path: mirror run_forward_worker's per-scenario frozen load.

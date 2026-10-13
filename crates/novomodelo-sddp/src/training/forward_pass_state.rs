@@ -30,6 +30,7 @@ use crate::workspace::WorkspacePool;
 use crate::{
     context::{StageContext, TrainingContext},
     cut::FutureCostFunction,
+    dcs::DcsParams,
     error::SddpError,
     forward::{
         EnumeratedForwardResult, EnumeratedForwardScratch, EnumeratedParams, ForwardResult,
@@ -147,6 +148,9 @@ pub(crate) struct ForwardWorkerParams<'a> {
     /// Per-iteration scenario-invariant tables backing `sampler`'s
     /// `OutOfSample` draws.
     pub noise_tables: &'a ForwardNoiseTables,
+    /// Lazy-solve parameters for this pass: `Some` only when configured and
+    /// active at this iteration; constant across all stages and scenarios.
+    pub dcs: Option<DcsParams>,
 }
 
 /// Return bundle from [`run_forward_worker`].
@@ -487,6 +491,10 @@ impl ForwardPassState {
             training_ctx,
             sampler,
             noise_tables: &self.noise_tables,
+            dcs: training_ctx
+                .dcs
+                .map(|p| p.resolve(forward_profile.primal_feasibility_tolerance))
+                .filter(|p| p.is_active(inputs.iteration)),
         };
         let worker_results: Vec<Result<ForwardWorkerResult, SddpError>> = inputs
             .workspaces
@@ -550,7 +558,10 @@ impl ForwardPassState {
 
         Self::require_terminal_node(training_ctx)?;
 
-        let dcs_params = training_ctx.dcs.filter(|p| p.is_active(inputs.iteration));
+        let dcs_params = training_ctx
+            .dcs
+            .map(|p| p.resolve(forward_profile.primal_feasibility_tolerance))
+            .filter(|p| p.is_active(inputs.iteration));
 
         let params = EnumeratedParams {
             iteration: inputs.iteration,
@@ -815,13 +826,6 @@ pub(crate) fn run_forward_worker<S: SolverInterface + Send>(
     #[allow(clippy::cast_possible_truncation)]
     let total_scenarios_u32 = params.total_forward_passes as u32;
 
-    // DCS decision for this pass: `Some` only when configured AND active at this
-    // iteration; constant across all stages and scenarios.
-    let dcs_params = params
-        .training_ctx
-        .dcs
-        .filter(|p| p.is_active(params.iteration));
-
     // Rationale: `t` indexes several parallel per-stage collections
     // (params.frozen, params.ctx.cumulative_discount_factors) beyond
     // `per_stage_stats`, so an iterator over `per_stage_stats` alone would not
@@ -857,7 +861,7 @@ pub(crate) fn run_forward_worker<S: SolverInterface + Send>(
             // the frozen path; on the DCS path `run_forward_stage` instead loads
             // the cut-free base template (loading frozen would double-append the
             // embedded cut rows), so the frozen load is skipped.
-            if dcs_params.is_none() {
+            if params.dcs.is_none() {
                 ws.solver.load_model(&params.frozen[pool_id]);
             }
             ws.current_state.clear();
@@ -936,7 +940,7 @@ pub(crate) fn run_forward_worker<S: SolverInterface + Send>(
                 raw_noise,
                 basis_row_capacity: params.frozen[pool_id].num_rows,
                 pool: &params.fcf.pools[pool_id],
-                dcs: dcs_params,
+                dcs: params.dcs,
                 node,
             };
             let stats_before_stage = ws.solver.statistics();
@@ -1567,6 +1571,7 @@ mod tests {
             training_ctx: &training_ctx,
             sampler: &sampler,
             noise_tables: &noise_tables,
+            dcs: None,
         };
 
         // Mutable per-call state: independent allocations, not borrows of fx.
@@ -2061,6 +2066,7 @@ mod tests {
             training_ctx: &training_ctx,
             sampler: &sampler,
             noise_tables: &noise_tables,
+            dcs: None,
         };
 
         let solution = LpSolution {
@@ -2343,6 +2349,7 @@ mod tests {
             training_ctx: &training_ctx,
             sampler: &sampler,
             noise_tables: &noise_tables,
+            dcs: None,
         };
 
         let mut ws = single_workspace(MockSolver::always_ok(fixed_solution_1_0()), &state);

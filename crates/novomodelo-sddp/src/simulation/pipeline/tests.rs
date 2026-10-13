@@ -1533,10 +1533,11 @@ mod dcs_simulation {
     use crate::context::TrainingContext;
     use crate::cut::FutureCostFunction;
     use crate::cut_selection::CutMetadata;
-    use crate::dcs::DcsParams;
+    use crate::dcs::DcsConfig;
     use crate::energy_conversion::{EnergyConversion, EnergyConversionSet};
     use crate::horizon_mode::HorizonMode;
     use crate::setup::NodePos;
+    use crate::solver_phase::Phase;
     use crate::test_support::StageContextFixture;
 
     use crate::inflow_method::InflowNonNegativityMethod;
@@ -1740,14 +1741,13 @@ mod dcs_simulation {
         )
     }
 
-    fn dcs_params() -> DcsParams {
-        DcsParams {
+    fn dcs_config() -> DcsConfig {
+        DcsConfig {
             candidate_recency: None,
             seed_window: 2,
             max_added_per_round: 10,
-            violation_tolerance: 1e-10,
+            violation_tolerance: None,
             start_iteration: 2,
-            max_inner_iterations: 50,
         }
     }
 
@@ -1756,7 +1756,7 @@ mod dcs_simulation {
     // Builds the full two-branch (DCS vs frozen) stage-solve fixture inline;
     // extracting pieces would scatter the setup the branch comparison reads.
     fn run_one_sim_stage(
-        dcs: Option<DcsParams>,
+        dcs: Option<DcsConfig>,
         frozen: &StageTemplate,
     ) -> (f64, SimulationStageResult) {
         let state = test_support::state_layout(1, 0);
@@ -1864,6 +1864,7 @@ mod dcs_simulation {
         let load_spec = SimStageLoadSpec {
             frozen_template: frozen,
             warm_basis: None,
+            solver_tolerance: Phase::Simulation.profile().primal_feasibility_tolerance,
         };
         let lookups = SimLookups::build(
             &study_dims,
@@ -1901,7 +1902,7 @@ mod dcs_simulation {
     fn sim_dcs_exact_matches_all_cuts() {
         let all_cuts = sim_all_cuts_frozen();
         let (frozen_imm, frozen) = run_one_sim_stage(None, &all_cuts);
-        let (dcs_imm, dcs) = run_one_sim_stage(Some(dcs_params()), &all_cuts);
+        let (dcs_imm, dcs) = run_one_sim_stage(Some(dcs_config()), &all_cuts);
 
         assert!(
             (frozen_imm - dcs_imm).abs() < 1e-9,
@@ -1944,7 +1945,7 @@ mod dcs_simulation {
         let all_cuts_template = sim_all_cuts_frozen();
         let dominating = sim_frozen_dominating_cut();
         let (_, frozen) = run_one_sim_stage(None, &all_cuts_template);
-        let (_, dcs) = run_one_sim_stage(Some(dcs_params()), &dominating);
+        let (_, dcs) = run_one_sim_stage(Some(dcs_config()), &dominating);
 
         let ac = stage_cost(&frozen);
         let dc = stage_cost(&dcs);
@@ -1963,7 +1964,7 @@ mod dcs_simulation {
         );
     }
 
-    /// Complementary unit check of the `DcsParams::from_strategy` mapping
+    /// Complementary unit check of the `DcsConfig::from_strategy` mapping
     /// that `simulation_ctx()` applies (the end-to-end `simulation_ctx()`
     /// wiring is covered by `simulation_ctx_propagates_dynamic_dcs_from_setup`
     /// in `setup/mod.rs`): a dynamic strategy yields `Some`, any other
@@ -1975,17 +1976,17 @@ mod dcs_simulation {
             candidate_recency: None,
             seed_window: 5,
             max_added_per_round: 10,
-            violation_tolerance: 1e-10,
+            violation_tolerance: None,
             start_iteration: 2,
         };
-        let params = DcsParams::from_strategy(&dynamic)
-            .expect("dynamic strategy must map to Some(DcsParams)");
-        assert_eq!(params.seed_window, 5);
+        let config = DcsConfig::from_strategy(&dynamic)
+            .expect("dynamic strategy must map to Some(DcsConfig)");
+        assert_eq!(config.seed_window, 5);
         let level1 = CutSelectionStrategy::Level1 {
             check_frequency: 10,
             lookback_iterations: None,
         };
-        assert!(DcsParams::from_strategy(&level1).is_none());
+        assert!(DcsConfig::from_strategy(&level1).is_none());
     }
 }
 
@@ -2020,6 +2021,7 @@ mod anticipated_ring_matches_forward_propagation {
     use crate::setup::NodePos;
     use crate::setup::node_graph::StageIdx;
     use crate::simulation::extraction::EntityCounts;
+    use crate::solver_phase::Phase;
     use crate::test_support;
     use crate::test_support::{StageContextFixture, equipment_free_geometry};
     use crate::training::forward::{StageKey, run_forward_stage};
@@ -2293,6 +2295,7 @@ mod anticipated_ring_matches_forward_propagation {
             let load_spec = SimStageLoadSpec {
                 frozen_template: template,
                 warm_basis: None,
+                solver_tolerance: Phase::Simulation.profile().primal_feasibility_tolerance,
             };
             let (_immediate, _result) = solve_simulation_stage(
                 &mut ws,
