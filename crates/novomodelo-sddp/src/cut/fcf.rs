@@ -331,6 +331,79 @@ impl FutureCostFunction {
         })
     }
 
+    /// Build the FCF a checkpoint recorded through [`CutPool::new_resumed`]: each
+    /// pool takes its own `warm_start_count` and `capacity`, and its
+    /// `pool_state_dimensions[p]` and `visit_bounds[p]` as in
+    /// [`Self::new_with_warm_start`], so every record sits at its recorded slot.
+    ///
+    /// `_proof` is the same compile-time evidence
+    /// [`Self::new_with_warm_start`] takes.
+    ///
+    /// # Errors
+    ///
+    /// [`SddpError::Validation`] if `stage_results` is empty, its own per-stage
+    /// `state_dimension` field is inconsistent across stages, or a pool's records
+    /// are refused by [`CutPool::new_resumed`] (the message names the pool).
+    ///
+    /// # Panics (debug builds only)
+    ///
+    /// Panics if `pool_state_dimensions.len() != stage_results.len()` or
+    /// `visit_bounds.len() != stage_results.len()`.
+    ///
+    /// [`SddpError::Validation`]: crate::SddpError::Validation
+    pub fn new_resumed(
+        _proof: &PolicyLoadProof<FullFcf>,
+        stage_results: &[StageCutsReadResult],
+        pool_state_dimensions: &[usize],
+        visit_bounds: &[u64],
+        forward_passes: u32,
+        max_iterations: u64,
+    ) -> Result<Self, SddpError> {
+        let state_dimension = validate_consistent_state_dimension("new_resumed", stage_results)?;
+        debug_assert_eq!(
+            pool_state_dimensions.len(),
+            stage_results.len(),
+            "pool_state_dimensions.len() ({}) != stage_results.len() ({})",
+            pool_state_dimensions.len(),
+            stage_results.len()
+        );
+        debug_assert_eq!(
+            visit_bounds.len(),
+            stage_results.len(),
+            "visit_bounds.len() ({}) != stage_results.len() ({})",
+            visit_bounds.len(),
+            stage_results.len()
+        );
+
+        let pools = stage_results
+            .iter()
+            .zip(pool_state_dimensions)
+            .zip(visit_bounds)
+            .map(|((sr, &pool_dim), &visit_bound)| {
+                #[allow(clippy::cast_possible_truncation)]
+                let stride = visit_bound as u32;
+                CutPool::new_resumed(
+                    pool_dim,
+                    stride,
+                    max_iterations,
+                    sr.warm_start_count,
+                    sr.capacity,
+                    &sr.cuts,
+                )
+                .map_err(|err| match err {
+                    Validation(detail) => Validation(format!("pool {}: {detail}", sr.stage_id)),
+                    other => other,
+                })
+            })
+            .collect::<Result<_, _>>()?;
+
+        Ok(Self {
+            pools,
+            state_dimension,
+            forward_passes,
+        })
+    }
+
     /// Insert a Benders cut at the given (0-based) pool id, generated at node
     /// `node_id` (`NodeGraph::node_ids`). `coefficients` is the state gradient;
     /// length must be `state_dimension`.
@@ -422,7 +495,7 @@ impl FutureCostFunction {
     }
 
     /// Propagate [`CutPool::set_iteration_base`] to every pool. Call once before
-    /// training with `start_iteration + 1` for dense slot packing.
+    /// training with 1 for dense slot packing, on a resumed run too.
     pub fn set_iteration_base(&mut self, iteration_base: u64) {
         for pool in &mut self.pools {
             pool.set_iteration_base(iteration_base);
@@ -998,6 +1071,43 @@ mod tests {
             FutureCostFunction::new_with_warm_start(&proof, &stages, &[2], &[1], 1, 5).unwrap();
         assert_eq!(fcf.pools[0].prefix_len(), 2);
         assert_eq!(fcf.total_active_cuts(), 1); // only the active one
+    }
+
+    // ── new_resumed tests ────────────────────────────────────────────────
+
+    #[test]
+    fn new_resumed_gives_each_pool_its_own_prefix_and_capacity() {
+        let mut first = make_stage(0, 1, vec![make_record(10.0, vec![1.0], true)]);
+        first.warm_start_count = 1;
+        first.capacity = 30;
+        let mut second = make_stage(1, 1, vec![]);
+        second.capacity = 2;
+        let stages = vec![first, second];
+
+        let proof = crate::test_support::trivial_full_fcf_proof(1, 2);
+        let fcf = FutureCostFunction::new_resumed(&proof, &stages, &[1, 1], &[3, 3], 3, 5).unwrap();
+
+        assert_eq!(fcf.pools[0].capacity, 30, "the stored capacity is larger");
+        assert_eq!(fcf.pools[0].prefix_len(), 1);
+        assert_eq!(fcf.pools[0].slot_base, 1);
+        assert_eq!(fcf.pools[1].capacity, 15, "the fresh capacity is larger");
+        assert_eq!(fcf.pools[1].prefix_len(), 0);
+        assert_eq!(fcf.pools[1].slot_base, 0);
+        assert_eq!(fcf.total_active_cuts(), 1);
+    }
+
+    #[test]
+    fn new_resumed_names_the_pool_whose_records_it_refuses() {
+        let mut refused = make_stage(1, 1, vec![]);
+        refused.warm_start_count = 1;
+        let stages = vec![make_stage(0, 1, vec![]), refused];
+
+        let proof = crate::test_support::trivial_full_fcf_proof(1, 2);
+        let err =
+            FutureCostFunction::new_resumed(&proof, &stages, &[1, 1], &[1, 1], 1, 5).unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("pool 1: slot 0"), "{msg}");
     }
 
     // ── set_active tests ────────────────────────────────────────────────────

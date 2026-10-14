@@ -239,10 +239,34 @@ struct RunOutcome {
     fingerprint: SelectionFingerprint,
     resolved_cost_scale_factor: f64,
     simplex_iterations: BTreeMap<(u64, &'static str, Option<i32>), u64>,
+    final_checkpoint: PolicyCheckpoint,
+}
+
+fn write_and_read_checkpoint(
+    system: &System,
+    setup: &StudySetup,
+    result: &TrainingResult,
+) -> PolicyCheckpoint {
+    let out = tempfile::tempdir().expect("tempdir");
+    let policy_dir = out.path().join(&setup.policy_path);
+    write_checkpoint(
+        &policy_dir,
+        setup,
+        system,
+        result,
+        &CheckpointParams {
+            max_iterations: setup.loop_params.max_iterations,
+            forward_passes: setup.loop_params.forward_passes,
+            seed: setup.loop_params.seed,
+            export_states: false,
+        },
+    )
+    .expect("write_checkpoint must succeed");
+    read_policy_checkpoint(&policy_dir).expect("read_policy_checkpoint")
 }
 
 impl RunOutcome {
-    fn capture(setup: &StudySetup, result: &TrainingResult) -> Self {
+    fn capture(system: &System, setup: &StudySetup, result: &TrainingResult) -> Self {
         let mut simplex_iterations = BTreeMap::new();
         for entry in result
             .solver_stats_log
@@ -262,6 +286,7 @@ impl RunOutcome {
             fingerprint: SelectionFingerprint::capture(setup, result),
             resolved_cost_scale_factor: setup.inputs.stage_data.stage_templates.cost_scale_factor,
             simplex_iterations,
+            final_checkpoint: write_and_read_checkpoint(system, setup, result),
         }
     }
 }
@@ -279,10 +304,10 @@ fn selection_off_setup(iteration_limit: u32, forward_passes: u32) -> (System, St
 /// checkpoints, loads the checkpoint through the production resume path and
 /// trains to 6.
 fn resumed_and_uninterrupted(forward_passes: u32) -> (RunOutcome, RunOutcome) {
-    let (_, mut full_setup) = selection_off_setup(6, forward_passes);
+    let (full_system, mut full_setup) = selection_off_setup(6, forward_passes);
     let full_result = train(&mut full_setup, None);
     assert_eq!(full_result.iterations, 6);
-    let uninterrupted = RunOutcome::capture(&full_setup, &full_result);
+    let uninterrupted = RunOutcome::capture(&full_system, &full_setup, &full_result);
 
     let (system, mut first_setup) = selection_off_setup(3, forward_passes);
     let first_result = train(&mut first_setup, None);
@@ -316,7 +341,7 @@ fn resumed_and_uninterrupted(forward_passes: u32) -> (RunOutcome, RunOutcome) {
     let resumed_result = train(&mut resumed_setup, None);
     assert_eq!(resumed_result.iterations, 6);
     (
-        RunOutcome::capture(&resumed_setup, &resumed_result),
+        RunOutcome::capture(&system, &resumed_setup, &resumed_result),
         uninterrupted,
     )
 }
@@ -363,12 +388,83 @@ fn assert_same_run(resumed: &RunOutcome, uninterrupted: &RunOutcome) {
     assert_eq!(r_lb.len(), u_lb.len(), "lower-bound history length");
     for (i, (r, u)) in r_lb.iter().zip(u_lb).enumerate() {
         let (r, u) = (f64::from_bits(*r), f64::from_bits(*u));
-        assert!(
-            (r - u).abs() <= LOWER_BOUND_REL_TOL * 1.0_f64.max(r.abs()).max(u.abs()),
-            "lower bound of iteration {}: resumed {r}, uninterrupted {u}",
-            i + 1
+        assert_lower_bounds_agree(&format!("lower bound of iteration {}", i + 1), r, u);
+    }
+
+    assert_same_checkpoint(&resumed.final_checkpoint, &uninterrupted.final_checkpoint);
+}
+
+fn assert_lower_bounds_agree(what: &str, resumed: f64, uninterrupted: f64) {
+    assert!(
+        (resumed - uninterrupted).abs()
+            <= LOWER_BOUND_REL_TOL * 1.0_f64.max(resumed.abs()).max(uninterrupted.abs()),
+        "{what}: resumed {resumed}, uninterrupted {uninterrupted}"
+    );
+}
+
+fn assert_same_checkpoint(resumed: &PolicyCheckpoint, uninterrupted: &PolicyCheckpoint) {
+    let (r_producer, u_producer) = (&resumed.metadata.producer, &uninterrupted.metadata.producer);
+    assert_eq!(
+        r_producer.lower_bound_history.len(),
+        u_producer.lower_bound_history.len(),
+        "checkpoint lower-bound history length"
+    );
+    for (i, (r, u)) in r_producer
+        .lower_bound_history
+        .iter()
+        .zip(&u_producer.lower_bound_history)
+        .enumerate()
+    {
+        assert_lower_bounds_agree(
+            &format!("checkpoint lower bound of iteration {}", i + 1),
+            *r,
+            *u,
         );
     }
+    assert_lower_bounds_agree(
+        "checkpoint final lower bound",
+        r_producer.final_lower_bound,
+        u_producer.final_lower_bound,
+    );
+
+    let aligned = |checkpoint: &PolicyCheckpoint| {
+        let mut aligned = checkpoint.clone();
+        aligned.metadata.created_at.clear();
+        aligned.metadata.producer.final_lower_bound = 0.0;
+        aligned.metadata.producer.lower_bound_history.clear();
+        aligned
+    };
+    let (r, u) = (aligned(resumed), aligned(uninterrupted));
+    assert_eq!(
+        format!("{:?}", r.metadata),
+        format!("{:?}", u.metadata),
+        "checkpoint manifest"
+    );
+    assert_eq!(r.stage_cuts.len(), u.stage_cuts.len());
+    for (pool, (r, u)) in r.stage_cuts.iter().zip(&u.stage_cuts).enumerate() {
+        assert_eq!(
+            format!("{r:?}"),
+            format!("{u:?}"),
+            "checkpoint cuts of pool {pool}"
+        );
+    }
+    assert_eq!(
+        format!("{:?}", r.stage_bases),
+        format!("{:?}", u.stage_bases),
+        "checkpoint bases"
+    );
+    assert_eq!(
+        format!("{:?}", r.stage_states),
+        format!("{:?}", u.stage_states),
+        "checkpoint trial states"
+    );
+    assert!(
+        r.stage_cuts
+            .iter()
+            .chain(&u.stage_cuts)
+            .all(|pool| pool.warm_start_count == 0),
+        "neither run starts from a loaded prefix"
+    );
 }
 
 #[test]

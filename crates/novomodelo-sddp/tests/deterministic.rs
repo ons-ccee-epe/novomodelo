@@ -9327,20 +9327,30 @@ mod visit_bound_overflow_guard {
 }
 
 mod heterogeneous_visit_bound_resume {
-    //! `FutureCostFunction::new_with_warm_start` threads the study's
+    //! `FutureCostFunction::new_resumed` threads the study's
     //! per-pool state-dimension and visit-bound arrays — the same per-pool
     //! contract `new_per_pool` takes — so a resumed run's pool geometry
     //! matches the cold-start run's. Exercised on the K-fan's HETEROGENEOUS
     //! per-pool strides (declared non-uniform branch weights): the shape the
     //! pre-fix scalar substitution (every resumed pool given `forward_passes`
-    //! uniformly as its stride) silently broke.
+    //! uniformly as its stride) silently broke. A fan checkpoint also holds
+    //! vacant slots below its slot bound, which a resume leaves vacant.
 
     use novomodelo_io::{
         STAGE_CUTS_NODE_ID_SENTINEL, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, StageCutsReadResult,
+        read_policy_checkpoint, write_policy_checkpoint,
     };
-    use novomodelo_sddp::FutureCostFunction;
+    use novomodelo_sddp::cut::SlotOrigin;
+    use novomodelo_sddp::policy_export::{build_stage_cut_records, build_stage_cuts_payloads};
     use novomodelo_sddp::setup::NodeId;
-    use novomodelo_sddp::test_support::{k_fan_setup, trivial_full_fcf_proof};
+    use novomodelo_sddp::test_support::{
+        checkpoint_metadata, fixture_priced_date, k_fan_setup, producer_block,
+        trivial_full_fcf_proof, ymd,
+    };
+    use novomodelo_sddp::{CutPool, FutureCostFunction};
+    use novomodelo_solver::ActiveSolver;
+
+    use crate::common::StubComm;
 
     const K: usize = 4;
     const FORWARD_PASSES: u32 = 3;
@@ -9412,7 +9422,7 @@ mod heterogeneous_visit_bound_resume {
             .collect();
         let visit_bounds: Vec<u64> = cold_strides.iter().map(|&s| u64::from(s)).collect();
 
-        let mut resumed = FutureCostFunction::new_with_warm_start(
+        let mut resumed = FutureCostFunction::new_resumed(
             &proof,
             &stage_results,
             &cold_dims,
@@ -9420,7 +9430,7 @@ mod heterogeneous_visit_bound_resume {
             FORWARD_PASSES,
             u64::from(MAX_ITERATIONS),
         )
-        .expect("new_with_warm_start must build from the injected per-pool arrays");
+        .expect("new_resumed must build from the injected per-pool arrays");
 
         let resumed_strides: Vec<u32> = resumed.pools.iter().map(|p| p.visit_stride).collect();
         assert_eq!(
@@ -9452,6 +9462,116 @@ mod heterogeneous_visit_bound_resume {
                  {expected_slot} (slot_base 0 + iteration 1 * stride {stride} + \
                  forward_pass_index 0) — the cold-start run's own stride"
             );
+        }
+    }
+
+    #[test]
+    fn a_fan_checkpoint_resumes_every_record_at_its_slot() {
+        const FAN_ITERATIONS: u32 = 3;
+        let mut fixture = k_fan_setup(8, 6, FAN_ITERATIONS);
+        let setup = &mut fixture.setup;
+        let mut solver = ActiveSolver::new().expect("ActiveSolver::new");
+        let outcome = setup
+            .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
+            .expect("train must return Ok");
+        assert!(outcome.error.is_none(), "{:?}", outcome.error);
+
+        let trained = &setup.fcf.pools;
+        assert!(
+            trained.iter().any(|pool| (0..pool.populated())
+                .any(|slot| pool.role(slot).origin == SlotOrigin::Vacant)),
+            "power: some pool must hold a vacant slot below its slot bound"
+        );
+
+        let node_graph = &setup.inputs.node_graph;
+        let n_stages = setup.num_stages();
+        let stage_ids: Vec<i32> = (0..).take(n_stages).collect();
+        let stage_end_dates: Vec<_> = (0..)
+            .take(n_stages)
+            .map(|stage| fixture_priced_date(ymd(2030, 1, 1), stage))
+            .collect();
+        let cost_scale_factor = setup.inputs.stage_data.stage_templates.cost_scale_factor;
+        let stage_records = build_stage_cut_records(&setup.fcf).expect("export");
+        let stage_manifests = vec![Vec::new(); trained.len()];
+        let payloads = build_stage_cuts_payloads(
+            &setup.fcf,
+            node_graph,
+            &stage_ids,
+            &stage_end_dates,
+            cost_scale_factor,
+            &stage_records,
+            &stage_manifests,
+        );
+        let metadata = checkpoint_metadata(
+            n_stages as u32,
+            setup.build_graph_manifest(),
+            novomodelo_io::ProducerBlock {
+                cost_scale_factor: Some(cost_scale_factor),
+                ..producer_block()
+            },
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_policy_checkpoint(dir.path(), &payloads, &[], &metadata, &[])
+            .expect("write_policy_checkpoint");
+        let checkpoint = read_policy_checkpoint(dir.path()).expect("read_policy_checkpoint");
+        assert_eq!(checkpoint.stage_cuts.len(), trained.len());
+
+        let shared: Vec<usize> = (0..trained.len())
+            .filter(|&pool| node_graph.sole_pool_owner(pool).is_none())
+            .collect();
+        assert_eq!(shared.len(), 1, "power: the fan's leaves share one pool");
+        for (pool, read) in checkpoint.stage_cuts.iter().enumerate() {
+            let expected = match node_graph.sole_pool_owner(pool) {
+                None => STAGE_CUTS_NODE_ID_SENTINEL,
+                Some(owner) => owner.0,
+            };
+            assert_eq!(read.node_id, expected, "pool {pool}: owning node id");
+        }
+        assert_eq!(
+            checkpoint.stage_cuts[shared[0]].node_id, STAGE_CUTS_NODE_ID_SENTINEL,
+            "the shared leaf pool names no node"
+        );
+
+        for (pool_id, (read, trained)) in checkpoint.stage_cuts.iter().zip(trained).enumerate() {
+            let resumed = CutPool::new_resumed(
+                trained.state_dimension,
+                trained.visit_stride,
+                u64::from(FAN_ITERATIONS) + 1,
+                read.warm_start_count,
+                read.capacity,
+                &read.cuts,
+            )
+            .expect("a recorded pool must resume");
+            assert_eq!(resumed.capacity, trained.capacity, "pool {pool_id}");
+            assert_eq!(resumed.populated(), trained.populated(), "pool {pool_id}");
+            assert_eq!(resumed.generated(), trained.generated(), "pool {pool_id}");
+            assert_eq!(resumed.prefix_len(), trained.prefix_len(), "pool {pool_id}");
+            assert_eq!(
+                resumed.active_count(),
+                trained.active_count(),
+                "pool {pool_id}"
+            );
+            for slot in 0..trained.populated() {
+                let at = format!("pool {pool_id} slot {slot}");
+                assert_eq!(resumed.role(slot), trained.role(slot), "{at}: role");
+                assert_eq!(
+                    resumed.is_active(slot),
+                    trained.is_active(slot),
+                    "{at}: flag"
+                );
+                assert_eq!(
+                    resumed.intercept(slot).to_bits(),
+                    trained.intercept(slot).to_bits(),
+                    "{at}: intercept"
+                );
+                let bits = |pool: &CutPool| -> Vec<u64> {
+                    pool.coefficient_row(slot)
+                        .iter()
+                        .map(|c| c.to_bits())
+                        .collect()
+                };
+                assert_eq!(bits(&resumed), bits(trained), "{at}: coefficients");
+            }
         }
     }
 }

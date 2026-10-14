@@ -556,10 +556,12 @@ earlier one's. Pinned by `generated_slots_follow_generation_order_across_growth`
 stored role.** A cut loaded from a checkpoint (`warm_start` or `resume`) is stored
 with the `iteration` its record carries, in `CutMetadata.iteration_generated`.
 Whether a slot held a cut before the run started is the slot's role:
-`CutPool::is_prefix_slot` reads `SlotRole::origin`, which the two loading
-constructors (`CutPool::new_with_warm_start`, `CutPool::from_deserialized`) write
-as `Prefix` for each record's slot and `add_cut` writes as `Generated`. It is
-never a value of `iteration_generated`. Under `warm_start` the run's iteration
+`CutPool::is_prefix_slot` reads `SlotRole::origin`, which the loading
+constructors write and `add_cut` writes as `Generated`:
+`CutPool::new_with_warm_start` and `CutPool::from_deserialized` write `Prefix` for
+every record's slot, and `CutPool::new_resumed` writes `Prefix` for the slots
+below the recorded prefix length only. It is never a value of
+`iteration_generated`. Under `warm_start` the run's iteration
 counter restarts at 1, so a loaded cut's generating iteration can equal the
 current one; every reader that separates a loaded cut from a cut of this run
 tests the predicate before the iteration.
@@ -577,8 +579,8 @@ position (`slot < slot_base`) is the third: a pool built by `CutPool::new`
 with a non-zero `slot_base` reserves leading slots that no record fills,
 and the position test calls each of them a loaded cut.
 Read: `cut/pool.rs` (`SlotRole`, `CutPool::new_with_warm_start`,
-`CutPool::from_deserialized`, `is_prefix_slot`, `active_delta_cuts`,
-`enforce_budget`), `cut/cut_sync.rs` (`pack_pool_into`),
+`CutPool::from_deserialized`, `CutPool::new_resumed`, `is_prefix_slot`,
+`active_delta_cuts`, `enforce_budget`), `cut/cut_sync.rs` (`pack_pool_into`),
 `cut/dcs.rs` (`score_violated_candidates`, `build_initial_resident_set`),
 `policy/policy_export.rs` (`build_stage_cut_records`). Pinned by
 `exported_loaded_cut_keeps_its_generating_iteration` (`policy/policy_export.rs`:
@@ -630,20 +632,21 @@ Two limits of what a resume restores. Bindings recorded before the checkpoint
 are not restored: the checkpoint writes no counters (its `activity_counters` is
 unset), so a reloaded cut that had
 bound resumes at the iteration that generated it. A resumed run that was itself
-warm-started reloads its original prefix with the source's iterations: the load
-does not read the recorded `warm_start_count`, every record becomes a loaded
-cut at `last_active_iter = iteration`, and a cut originally loaded from the
-source keeps the source's iteration, so the window seeds it in every lazy solve
-until the resumed run's iteration counter exceeds that iteration by more than
-`seed_window`.
+warm-started has its prefix length restored from `warm_start_count`, but not the
+clocks of its loaded cuts: a prefix cut resumes at `last_active_iter = iteration`
+with the source's iteration, where its warm start had restarted it at 0, so the
+window seeds it in every lazy solve until the resumed run's iteration counter
+exceeds that iteration by more than `seed_window`. Both limits last until the
+checkpoint carries the counters.
 
 Read: `cut/pool.rs` (`CutPool::restart_activity_clock`, `add_cut`,
 `enforce_budget`), `cut/dcs.rs` (`build_initial_resident_set`),
 `policy/full_fcf_load.rs` (`check_full_fcf_load`), `policy/policy_load.rs`
 (`inject_boundary_cuts`). Pinned by `loaded_activity_clock_follows_the_load_kind`
-(`tests/full_fcf_load.rs`: after the load, every prefix slot has
-`active_count = 0`; under a resume `last_active_iter` equals the record's
-iteration, under a warm start it is 0),
+(`tests/full_fcf_load.rs`: after the load, every loaded slot has
+`active_count = 0`; under a resume the slots are not prefix slots and
+`last_active_iter` equals the record's iteration, under a warm start they are
+prefix slots and it is 0),
 `injected_boundary_cuts_start_on_this_runs_activity_clock`
 (`policy/policy_load.rs`), `restart_activity_clock_touches_only_the_loaded_prefix`
 (`cut/pool.rs`), `a_warm_started_cut_is_seeded_in_the_first_window_and_after_it_binds`
@@ -688,6 +691,50 @@ slot), and `level1_follows_the_reference_rule_on_every_fixture`
 (`cut/cut_selection.rs`: the vacant slot of a fixture is in neither update list),
 with `activating_a_vacant_slot_panics_in_debug` (`cut/pool.rs`) for the debug
 assertion.
+
+**A resume places each cut at its slot.** `check_full_fcf_load` builds the FCF of
+a `resume` through `FutureCostFunction::new_resumed`, which builds every pool
+through `CutPool::new_resumed`; a `warm_start` keeps `new_with_warm_start`. A
+record goes to its own `slot_index`, not to its position in the list. The slot
+base is the pool's recorded `warm_start_count`, and the capacity is the larger of
+the recorded `capacity` and `slot_base + max_iterations * visit_stride`, so a pool
+that grew keeps its slots. A slot below `warm_start_count` is `Prefix`, every
+other record is `Generated`, and each keeps the `scored` flag it was written with.
+A slot with no record stays `Vacant`, so `populated()` is one past the highest
+record and `generated()` counts records. `TrainingSession::new` sets the
+iteration base to 1 on every run, so the slot of iteration `k` and pass `p` is
+`slot_base + (k - 1) * visit_stride + p` on a resumed run as in the uninterrupted
+one; `start_iteration` only drives the loop range. A record that shares a slot,
+lies at or above the capacity, or leaves a slot of the prefix empty is refused
+with `SddpError::Validation` naming the pool and slot.
+
+The wrong-but-compiling alternatives:
+
+- packing the records into slots `0..n`, as `new_with_warm_start` does: a cut
+  after a vacant slot moves down, so the loop's cuts no longer land where the
+  uninterrupted run's did and every stored basis's slot match breaks;
+- treating every reloaded cut as `Prefix`: the cuts the recorded run generated
+  become unselectable and unevictable, so selection and the budget treat the
+  resumed run differently;
+- an iteration base of `start_iteration + 1`: the first resumed iteration maps to
+  slot `slot_base`, which a reloaded cut holds, and the window boundary shifts by
+  the iterations before the checkpoint.
+
+Read: `cut/pool.rs` (`CutPool::new_resumed`), `cut/fcf.rs`
+(`FutureCostFunction::new_resumed`), `policy/full_fcf_load.rs`
+(`check_full_fcf_load`), `training/session/mod.rs` (`TrainingSession::new`).
+Pinned by `a_resumed_pool_keeps_each_record_at_its_slot_and_a_hole_vacant`,
+`a_resumed_pool_takes_the_loop_cuts_where_the_recorded_run_put_them` and the
+`a_resumed_pool_refuses_*` tests (`cut/pool.rs`),
+`new_resumed_names_the_pool_whose_records_it_refuses` (`cut/fcf.rs`),
+`a_resume_restores_the_prefix_length_of_a_warm_started_run`
+(`tests/full_fcf_load.rs`: the prefix length and the prefix slots of a resumed
+warm-started run), `a_fan_checkpoint_resumes_every_record_at_its_slot`
+(`tests/deterministic.rs`: a trained sampled fan written by the real writer and
+read back, every slot's role, flag and value bits, vacant slots included, and the
+node id of each pool) and `resumed_run_equals_the_uninterrupted_run_with_one_forward_pass`
+(`tests/periodic_checkpoint.rs`: the final checkpoint of the resumed run equals
+the uninterrupted run's).
 
 **Basis matches by slot, never by count or column.** Warm-start basis
 reconstruction matches stored cut rows to current LP rows by **`CutPool` slot
@@ -1493,7 +1540,8 @@ a zero fails at load with a message naming the key, and
 below `check_frequency`, because the states of the iterations between two
 selection runs would then be dropped before a run scores them; a value equal to
 `check_frequency` is admitted. The window counts iterations of the current run
-under every `policy.mode` and with `policy.boundary`.
+from its first, under every `policy.mode` and with `policy.boundary`; a resumed
+run counts the iterations before its checkpoint, as the uninterrupted run does.
 
 **The boundary.** The window is a slot boundary on this run's clock.
 `CutPool::window_start_slot`, beside `slot_index`, returns the first slot whose
@@ -2109,8 +2157,9 @@ from the shared leaf pool. In such a pool `CutPool::enforce_budget` counts and
 evicts the active non-prefix cuts only: a loaded cut (`CutPool::is_prefix_slot`)
 neither counts toward the cap nor is evicted, and a cut of the current iteration
 counts and is never evicted. A pool's active count can therefore exceed the
-budget by its loaded cuts. Under `resume` every reloaded cut is in the prefix, so
-the cap counts only the cuts generated after the resume.
+budget by its loaded cuts. Under `resume` the prefix is the recorded run's own
+(`warm_start_count`), so the cap counts every cut that run generated, as in the
+uninterrupted run.
 
 The root pool is exempt because no solve records binding for it (`record_binding`
 runs for successor pools only), so its generated cuts would rank by generation

@@ -46,6 +46,8 @@ use std::num::NonZeroU64;
 
 use super::ownership::Ownership;
 use super::trial_states::TrialStates;
+use crate::SddpError;
+use crate::SddpError::Validation;
 use crate::cut_selection::CutActivityUpdates;
 use crate::cut_selection::CutMetadata;
 use crate::lp::indexer::CutStateProjection;
@@ -168,7 +170,8 @@ pub struct CutPool {
     /// Iteration that maps to the first training slot (`slot_base`). The
     /// slot formula subtracts it so 1-based iterations pack densely. Default 0 is
     /// the legacy layout that leaves the block `[slot_base, +visit_stride)`
-    /// unused; production sets `start_iteration + 1` via [`set_iteration_base`].
+    /// unused; production sets 1 via [`set_iteration_base`], on a resumed run
+    /// too, so an iteration's slots do not depend on where the run started.
     /// Both are correct; dense is tighter.
     ///
     /// [`set_iteration_base`]: CutPool::set_iteration_base
@@ -272,8 +275,10 @@ impl CutPool {
 
     /// Set the iteration that maps to the first training slot.
     ///
-    /// Pass `start_iteration + 1` for dense packing from slot `slot_base`;
-    /// default 0 leaves the block `[slot_base, +visit_stride)` unused.
+    /// Pass 1 for dense packing from slot `slot_base`, also on a resumed run:
+    /// the resumed cuts sit where the recorded run put them, so the loop's cuts
+    /// continue at the slots the uninterrupted run gives them. Default 0 leaves
+    /// the block `[slot_base, +visit_stride)` unused.
     ///
     /// Call before the first [`add_cut`](CutPool::add_cut) of a run. Changing the
     /// base while the pool still holds *active* training cuts is caught by
@@ -1282,6 +1287,145 @@ impl CutPool {
         pool
     }
 
+    /// Construct the pool a checkpoint recorded: each record at its own
+    /// `slot_index`, the first `prefix_len` slots `Prefix` and every other
+    /// record `Generated`, a record's `scored` flag as written. A slot with no
+    /// record stays vacant, so a later cut lands where the recorded run's did.
+    ///
+    /// `prefix_len` is the recorded pool's protected-prefix length and becomes
+    /// the slot base. Capacity is the larger of `stored_capacity` and
+    /// `prefix_len + max_iterations * visit_stride`, so a pool grown by
+    /// [`grow`](CutPool::grow) keeps its slots.
+    ///
+    /// # Errors
+    ///
+    /// [`SddpError::Validation`] naming the slot when two records share it, a
+    /// record's slot is not below the capacity, or a slot below `prefix_len`
+    /// holds no record.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use novomodelo_io::OwnedPolicyCutRecord;
+    /// use novomodelo_sddp::cut::pool::CutPool;
+    ///
+    /// let record = |slot_index| OwnedPolicyCutRecord {
+    ///     slot_index,
+    ///     iteration: 1,
+    ///     forward_pass_index: 0,
+    ///     intercept: 5.0,
+    ///     coefficients: vec![1.0, 2.0],
+    ///     is_active: true,
+    ///     scored: false,
+    ///     active_count: None,
+    ///     last_active_iteration: None,
+    /// };
+    /// let pool = CutPool::new_resumed(2, 4, 10, 1, 0, &[record(0), record(5)])?;
+    /// assert_eq!(pool.prefix_len(), 1);
+    /// assert_eq!(pool.capacity, 1 + 10 * 4);
+    /// assert_eq!(pool.populated(), 6);
+    /// assert_eq!(pool.generated(), 2);
+    /// # Ok::<(), novomodelo_sddp::SddpError>(())
+    /// ```
+    ///
+    /// [`SddpError::Validation`]: crate::SddpError::Validation
+    pub fn new_resumed(
+        state_dimension: usize,
+        visit_stride: u32,
+        max_iterations: u64,
+        prefix_len: u32,
+        stored_capacity: u32,
+        records: &[OwnedPolicyCutRecord],
+    ) -> Result<Self, SddpError> {
+        let prefix = prefix_len as usize;
+        #[allow(clippy::cast_possible_truncation)]
+        let capacity = (stored_capacity as usize)
+            .max(prefix + (max_iterations as usize) * (visit_stride as usize));
+
+        let mut coefficients = vec![0.0_f64; capacity * state_dimension];
+        let mut intercepts = vec![0.0; capacity];
+        let mut active = vec![false; capacity];
+        let mut metadata = vec![unwritten_metadata(); capacity];
+        let mut roles = vec![VACANT_ROLE; capacity];
+        let mut cached_active_count = 0usize;
+        let mut populated_count = 0usize;
+
+        for record in records {
+            debug_assert!(
+                record.coefficients.len() == state_dimension,
+                "new_resumed: coefficients length {} != state_dimension {}",
+                record.coefficients.len(),
+                state_dimension
+            );
+            let slot = record.slot_index as usize;
+            if slot >= capacity {
+                return Err(Validation(format!(
+                    "slot {slot} is not below the capacity {capacity}"
+                )));
+            }
+            if roles[slot].origin != SlotOrigin::Vacant {
+                return Err(Validation(format!("slot {slot} holds two records")));
+            }
+            let start = slot * state_dimension;
+            coefficients[start..start + state_dimension].copy_from_slice(&record.coefficients);
+            intercepts[slot] = record.intercept;
+            active[slot] = record.is_active;
+            if record.is_active {
+                cached_active_count += 1;
+            }
+            metadata[slot] = CutMetadata {
+                iteration_generated: u64::from(record.iteration),
+                forward_pass_index: record.forward_pass_index,
+                // A reloaded cut was generated in an earlier iteration, so it is
+                // never packed for cut sync and its generating node never reaches
+                // the wire; 0 is inert.
+                node: NodeId(0),
+                active_count: 0,
+                last_active_iter: u64::from(record.iteration),
+            };
+            roles[slot] = SlotRole {
+                origin: if slot < prefix {
+                    SlotOrigin::Prefix
+                } else {
+                    SlotOrigin::Generated
+                },
+                scored: record.scored,
+            };
+            populated_count = populated_count.max(slot + 1);
+        }
+        if let Some(slot) = roles[..prefix]
+            .iter()
+            .position(|role| role.origin == SlotOrigin::Vacant)
+        {
+            return Err(Validation(format!(
+                "slot {slot} is inside the protected prefix of {prefix} but holds no record"
+            )));
+        }
+
+        let pool = Self {
+            coefficients,
+            intercepts,
+            metadata,
+            roles,
+            trial_states: None,
+            ownership: None,
+            lookback: None,
+            active,
+            populated_count,
+            capacity,
+            state_dimension,
+            visit_stride,
+            slot_base: prefix_len,
+            prefix_len: prefix,
+            iteration_base: 0,
+            cached_active_count,
+            generated_count: records.len(),
+            candidates_buf: Vec::new(),
+        };
+        pool.debug_assert_prefix_len_matches_roles();
+        Ok(pool)
+    }
+
     fn debug_assert_prefix_len_matches_roles(&self) {
         debug_assert_eq!(
             self.prefix_len,
@@ -2036,6 +2180,146 @@ mod tests {
         let evicted = pool.enforce_budget(0, 9).evicted_count;
         assert!(evicted > 0, "the budget must evict for the check to bite");
         assert_eq!(roles_of(&pool), before, "enforce_budget");
+    }
+
+    fn record_at(slot: u32, iteration: u32) -> novomodelo_io::OwnedPolicyCutRecord {
+        novomodelo_io::OwnedPolicyCutRecord {
+            slot_index: slot,
+            iteration,
+            forward_pass_index: slot % 2,
+            intercept: f64::from(slot) + 0.5,
+            coefficients: vec![f64::from(slot) + 0.25],
+            is_active: true,
+            ..owned_piece_defaults()
+        }
+    }
+
+    #[test]
+    fn a_resumed_pool_keeps_each_record_at_its_slot_and_a_hole_vacant() {
+        use SlotOrigin::{Generated, Prefix, Vacant};
+
+        let mut records = vec![
+            record_at(0, 1),
+            record_at(1, 1),
+            record_at(3, 2),
+            record_at(6, 3),
+        ];
+        records[2].scored = true;
+        records[3].is_active = false;
+        let pool = CutPool::new_resumed(1, 3, 4, 2, 5, &records).unwrap();
+
+        assert_eq!(
+            roles_of(&pool)[..8],
+            [
+                unscored(Prefix),
+                unscored(Prefix),
+                unscored(Vacant),
+                scored_generated(),
+                unscored(Vacant),
+                unscored(Vacant),
+                unscored(Generated),
+                unscored(Vacant),
+            ]
+        );
+        assert_eq!(
+            (
+                pool.slot_base,
+                pool.prefix_len(),
+                pool.populated(),
+                pool.generated(),
+                pool.active_count()
+            ),
+            (2, 2, 7, 4, 3)
+        );
+        for slot in [2, 4, 5] {
+            assert!(!pool.is_active(slot), "slot {slot}");
+            assert_eq!(pool.intercept(slot), 0.0, "slot {slot}");
+            assert_eq!(pool.coefficient_row(slot), [0.0], "slot {slot}");
+        }
+        for record in &records {
+            let slot = record.slot_index as usize;
+            let meta = pool.metadata(slot);
+            assert_eq!(pool.intercept(slot), record.intercept, "slot {slot}");
+            assert_eq!(
+                pool.coefficient_row(slot),
+                record.coefficients,
+                "slot {slot}"
+            );
+            assert_eq!(pool.is_active(slot), record.is_active, "slot {slot}");
+            assert_eq!(
+                (
+                    meta.iteration_generated,
+                    meta.forward_pass_index,
+                    meta.last_active_iter,
+                    meta.active_count
+                ),
+                (
+                    u64::from(record.iteration),
+                    record.forward_pass_index,
+                    u64::from(record.iteration),
+                    0
+                ),
+                "slot {slot}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_resumed_pool_is_as_large_as_the_recorded_pool_or_the_fresh_formula() {
+        let recorded = [record_at(0, 1)];
+        let grown = CutPool::new_resumed(1, 3, 4, 1, 20, &recorded).unwrap();
+        assert_eq!(grown.capacity, 20);
+        let fresh = CutPool::new_resumed(1, 3, 4, 1, 5, &recorded).unwrap();
+        assert_eq!(fresh.capacity, 1 + 4 * 3);
+    }
+
+    #[test]
+    fn a_resumed_pool_takes_the_loop_cuts_where_the_recorded_run_put_them() {
+        let records = [record_at(0, 1), record_at(1, 1), record_at(2, 2)];
+        let mut pool = CutPool::new_resumed(1, 2, 4, 0, 6, &records).unwrap();
+        pool.set_iteration_base(1);
+        pool.add_cut(NodeId(0), 3, 0, 9.0, &[1.0]);
+        pool.add_cut(NodeId(0), 3, 1, 9.0, &[1.0]);
+
+        assert_eq!(pool.role(3), unscored(SlotOrigin::Vacant));
+        assert_eq!((pool.populated(), pool.generated()), (6, 5));
+        let delta: Vec<usize> = pool.active_delta_cuts(3).map(|(slot, _, _)| slot).collect();
+        assert_eq!(delta, vec![4, 5]);
+    }
+
+    fn refusal(
+        prefix_len: u32,
+        stored_capacity: u32,
+        records: &[novomodelo_io::OwnedPolicyCutRecord],
+    ) -> String {
+        CutPool::new_resumed(1, 1, 2, prefix_len, stored_capacity, records)
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[test]
+    fn a_resumed_pool_refuses_two_records_at_one_slot() {
+        let msg = refusal(0, 4, &[record_at(2, 1), record_at(2, 2)]);
+        assert!(msg.contains("slot 2 holds two records"), "{msg}");
+        assert!(CutPool::new_resumed(1, 1, 2, 0, 4, &[record_at(2, 1), record_at(3, 2)]).is_ok());
+    }
+
+    #[test]
+    fn a_resumed_pool_refuses_a_slot_at_or_above_its_capacity() {
+        let msg = refusal(0, 4, &[record_at(4, 1)]);
+        assert!(msg.contains("slot 4 is not below the capacity 4"), "{msg}");
+        assert!(CutPool::new_resumed(1, 1, 2, 0, 4, &[record_at(3, 1)]).is_ok());
+    }
+
+    #[test]
+    fn a_resumed_pool_refuses_an_empty_slot_inside_its_prefix() {
+        let msg = refusal(3, 4, &[record_at(0, 1), record_at(2, 1)]);
+        assert!(
+            msg.contains("slot 1 is inside the protected prefix of 3"),
+            "{msg}"
+        );
+        let filled = [record_at(0, 1), record_at(1, 1), record_at(2, 1)];
+        assert!(CutPool::new_resumed(1, 1, 2, 3, 4, &filled).is_ok());
     }
 
     fn slots_in(pool: &CutPool, set: CutSet) -> Vec<usize> {

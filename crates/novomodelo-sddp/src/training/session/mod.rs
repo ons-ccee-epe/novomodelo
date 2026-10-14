@@ -200,9 +200,9 @@ where
         let total_forward_passes = config.loop_config.forward_passes as usize;
         let ranks = RankDistribution::new(comm, total_forward_passes);
 
-        // Map the first training iteration to slot `slot_base` so
-        // training cuts pack densely with no reserved leading block.
-        fcf.set_iteration_base(config.loop_config.start_iteration + 1);
+        // Iteration 1 maps to slot `slot_base`, resumed run included: the loop's
+        // cuts continue at the slots the uninterrupted run gives them.
+        fcf.set_iteration_base(1);
 
         // Per-slot backward buffers (`slot_increments`, `metadata_sync_contribution`,
         // the recon lookup) are indexed by cut-pool slot, so they must cover the

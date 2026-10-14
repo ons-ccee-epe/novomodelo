@@ -15,6 +15,7 @@ use novomodelo_core::scenario::ScenarioSource;
 use novomodelo_io::config::{StoppingRuleConfig, TrainingSelection};
 use novomodelo_io::{OwnedPolicyCutRecord, read_policy_checkpoint};
 use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::cut::SlotOrigin;
 use novomodelo_sddp::hydro_models::prepare_hydro_models;
 use novomodelo_sddp::policy::full_fcf_load::{
     FullFcfLoadError, FullFcfLoadKind, check_full_fcf_load, locate_policy_dir,
@@ -181,7 +182,14 @@ fn loaded_activity_clock_follows_the_load_kind() {
             .expect("check")
             .apply_to_training(&mut setup);
         for (pool_id, pool) in setup.fcf.pools.iter().enumerate() {
-            for slot in (0..pool.populated()).filter(|&slot| pool.is_prefix_slot(slot)) {
+            for slot in
+                (0..pool.populated()).filter(|&slot| pool.role(slot).origin != SlotOrigin::Vacant)
+            {
+                assert_eq!(
+                    pool.is_prefix_slot(slot),
+                    kind == FullFcfLoadKind::WarmStart,
+                    "{kind:?} pool {pool_id} slot {slot}: prefix role"
+                );
                 let meta = pool.metadata(slot);
                 let expected_clock = match kind {
                     FullFcfLoadKind::Resume => meta.iteration_generated,
@@ -275,6 +283,74 @@ fn warm_started_run_exports_loaded_cuts_with_their_iterations() {
             .any(|(source_pool, warm_pool)| warm_pool.cuts.len() > source_pool.cuts.len()),
         "the warm-started run must have generated cuts"
     );
+}
+
+#[test]
+fn a_resume_restores_the_prefix_length_of_a_warm_started_run() {
+    let (mut source_setup, source_system) = build_setup_with(2, ITERATIONS);
+    let source_out = train_and_write(&mut source_setup, &source_system);
+
+    let (mut warm_setup, warm_system) = build_setup_with(2, 2);
+    let warm_kind = FullFcfLoadKind::WarmStart;
+    let source_dir = locate_policy_dir(warm_kind, source_out.path(), &warm_setup).expect("locate");
+    check_full_fcf_load(
+        warm_kind,
+        &source_dir,
+        &warm_system,
+        &warm_setup,
+        &mut |_| {},
+    )
+    .expect("check")
+    .apply_to_training(&mut warm_setup);
+    let warm_out = train_and_write(&mut warm_setup, &warm_system);
+
+    let (mut resumed_setup, resumed_system) = build_setup_with(2, 2);
+    let kind = FullFcfLoadKind::Resume;
+    let policy_dir = locate_policy_dir(kind, warm_out.path(), &resumed_setup).expect("locate");
+    check_full_fcf_load(
+        kind,
+        &policy_dir,
+        &resumed_system,
+        &resumed_setup,
+        &mut |_| {},
+    )
+    .expect("check")
+    .apply_to_training(&mut resumed_setup);
+
+    assert!(
+        warm_setup
+            .fcf
+            .pools
+            .iter()
+            .any(|pool| pool.prefix_len() > 0 && pool.generated() > pool.prefix_len()),
+        "the warm-started run must hold a prefix and cuts of its own"
+    );
+    for (pool_id, (resumed, warm)) in resumed_setup
+        .fcf
+        .pools
+        .iter()
+        .zip(&warm_setup.fcf.pools)
+        .enumerate()
+    {
+        assert_eq!(resumed.prefix_len(), warm.prefix_len(), "pool {pool_id}");
+        assert_eq!(resumed.slot_base, warm.slot_base, "pool {pool_id}");
+        assert_eq!(resumed.populated(), warm.populated(), "pool {pool_id}");
+        let prefix_slots: Vec<usize> = (0..resumed.populated())
+            .filter(|&slot| resumed.is_prefix_slot(slot))
+            .collect();
+        assert_eq!(
+            prefix_slots,
+            (0..warm.prefix_len()).collect::<Vec<_>>(),
+            "pool {pool_id}: the slots that are loaded"
+        );
+        for slot in 0..resumed.populated() {
+            assert_eq!(
+                resumed.role(slot),
+                warm.role(slot),
+                "pool {pool_id} slot {slot}: role"
+            );
+        }
+    }
 }
 
 #[test]

@@ -209,24 +209,31 @@ pub fn check_full_fcf_load(
     // Reuse per-pool dimensions from the current study's FCF, not the checkpoint's.
     let pool_state_dimensions: Vec<usize> =
         setup.fcf.pools.iter().map(|p| p.state_dimension).collect();
+    let visit_bounds: Vec<u64> = setup
+        .fcf
+        .pools
+        .iter()
+        .map(|p| u64::from(p.visit_stride))
+        .collect();
+    // Reserve one extra slot for cuts added in the final iteration.
+    let max_iterations = setup.loop_params.max_iterations.saturating_add(1);
     let mut fcf = match kind {
-        FullFcfLoadKind::WarmStart | FullFcfLoadKind::Resume => {
-            let visit_bounds: Vec<u64> = setup
-                .fcf
-                .pools
-                .iter()
-                .map(|p| u64::from(p.visit_stride))
-                .collect();
-            // Reserve one extra slot for cuts added in the final iteration.
-            FutureCostFunction::new_with_warm_start(
-                &proof,
-                &checkpoint.stage_cuts,
-                &pool_state_dimensions,
-                &visit_bounds,
-                setup.loop_params.forward_passes,
-                setup.loop_params.max_iterations.saturating_add(1),
-            )
-        }
+        FullFcfLoadKind::WarmStart => FutureCostFunction::new_with_warm_start(
+            &proof,
+            &checkpoint.stage_cuts,
+            &pool_state_dimensions,
+            &visit_bounds,
+            setup.loop_params.forward_passes,
+            max_iterations,
+        ),
+        FullFcfLoadKind::Resume => FutureCostFunction::new_resumed(
+            &proof,
+            &checkpoint.stage_cuts,
+            &pool_state_dimensions,
+            &visit_bounds,
+            setup.loop_params.forward_passes,
+            max_iterations,
+        ),
         FullFcfLoadKind::SimulationOnly => FutureCostFunction::from_deserialized(
             &proof,
             &checkpoint.stage_cuts,
