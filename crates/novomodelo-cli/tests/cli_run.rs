@@ -2143,14 +2143,14 @@ mod mpi {
     use super::common::mpiexec;
     use super::*;
 
-    /// The four solve counts of `training/metadata.json` after training
-    /// `examples/1dtoy` for three iterations with two forward passes, so the
-    /// forward and backward work splits across ranks under `launcher`.
-    fn training_solve_counts(launcher: Option<&Path>) -> [u64; 4] {
+    /// Trains `examples/1dtoy` for three iterations with `forward_passes`
+    /// forward passes, on two ranks under `launcher` or as a single process,
+    /// and returns the output directory.
+    fn train_1dtoy(launcher: Option<&Path>, forward_passes: u32, extra_args: &[&str]) -> TempDir {
         let case = TempDir::new().unwrap();
         copy_dir_recursive(&case_dir("1dtoy"), case.path());
         rewrite_json(&case.path().join("config.json"), |config| {
-            config["training"]["selection"]["forward_passes"] = serde_json::json!(2);
+            config["training"]["selection"]["forward_passes"] = serde_json::json!(forward_passes);
             config["training"]["stopping_rules"] =
                 serde_json::json!([{ "type": "iteration_limit", "limit": 3 }]);
             config["simulation"]["enabled"] = serde_json::json!(false);
@@ -2168,13 +2168,16 @@ mod mpi {
         command
             .args(["run", case.path().to_str().unwrap()])
             .args(["--output", out.path().to_str().unwrap(), "--quiet"])
+            .args(extra_args)
             .assert()
             .success();
+        out
+    }
 
-        let metadata: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(out.path().join("training/metadata.json")).unwrap(),
-        )
-        .unwrap();
+    fn training_solve_counts(out: &Path) -> [u64; 4] {
+        let metadata: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(out.join("training/metadata.json")).unwrap())
+                .unwrap();
         ["total_lp_solves", "first_try", "retried", "failed"].map(|key| {
             metadata["solve_stats"][key]
                 .as_u64()
@@ -2182,13 +2185,57 @@ mod mpi {
         })
     }
 
+    /// Each iteration's `[lower_bound, upper_bound]` from
+    /// `training/convergence.parquet`, as bits.
+    fn bound_bits(out: &Path) -> Vec<[u64; 2]> {
+        let file = fs::File::open(out.join("training/convergence.parquet")).unwrap();
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .unwrap()
+            .build()
+            .unwrap();
+        let mut bounds = Vec::new();
+        for batch in reader {
+            let batch = batch.unwrap();
+            let bits = |name: &str| -> Vec<u64> {
+                batch
+                    .column_by_name(name)
+                    .unwrap_or_else(|| panic!("convergence.parquet must have {name}"))
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap_or_else(|| panic!("{name} must be Float64"))
+                    .values()
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .collect()
+            };
+            let (lower, upper) = (bits("lower_bound"), bits("upper_bound"));
+            bounds.extend(lower.into_iter().zip(upper).map(|(l, u)| [l, u]));
+        }
+        bounds
+    }
+
     #[test]
     fn training_solve_counts_do_not_scale_with_the_rank_count() {
-        let single = training_solve_counts(None);
-        let two_ranks = training_solve_counts(Some(&mpiexec()));
+        let single = training_solve_counts(train_1dtoy(None, 2, &[]).path());
+        let two_ranks = training_solve_counts(train_1dtoy(Some(&mpiexec()), 2, &[]).path());
 
         assert_eq!(two_ranks, single, "[total, first_try, retried, failed]");
         let [total, first_try, retried, failed] = two_ranks;
         assert_eq!(first_try + retried + failed, total);
+    }
+
+    /// Five passes split 3 + 2, and the short rank needs two workers for its
+    /// basis-store windows to differ from its trajectory windows.
+    #[test]
+    fn training_bounds_match_a_single_rank_when_ranks_hold_unequal_forward_passes() {
+        let threads = ["--threads", "2"];
+        let single = bound_bits(train_1dtoy(None, 5, &threads).path());
+        let two_ranks = bound_bits(train_1dtoy(Some(&mpiexec()), 5, &threads).path());
+
+        assert_eq!(single.len(), 3);
+        assert_eq!(
+            two_ranks, single,
+            "[lower_bound, upper_bound] bits per iteration"
+        );
     }
 }

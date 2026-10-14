@@ -26,11 +26,21 @@
 # S3: sbatch -N 2 -n 2           (mpiexec -n 2)
 # S4: sbatch -N 2 -n 4           (mpiexec -n 4 --threads 1)
 #
+# The U cases train and simulate a copy of the case whose forward-pass and
+# simulation-scenario counts do not divide evenly by 2 or 4 ranks, so the ranks
+# hold different numbers of trajectories. Each U run is compared against U1.
+# They run with --threads 2: a rank's worker windows can only disagree with its
+# trajectory split when it has more than one worker.
+#
+# U1: mpiexec -n 1               (uneven-split baseline)
+# U2: mpiexec -n 2 --threads 2
+# U3: sbatch -N 2 -n 4           (mpiexec -n 4 --threads 2)
+#
 # Usage:
 #   /shared/run-tests.sh [--mode reduced|full]
 #
-#   reduced   T1, T2, S1 and S2 only (mpiexec, no sbatch / SLURM cluster required).
-#   full      every T and S case (default — preserves prior behavior).
+#   reduced   T1, T2, S1, S2, U1 and U2 only (mpiexec, no sbatch / SLURM cluster required).
+#   full      every T, S and U case (default — preserves prior behavior).
 #
 # Prerequisites (satisfied by the Docker image):
 #   - /shared/novomodelo-mpi   (novomodelo binary built with --features mpi)
@@ -45,6 +55,9 @@ set -euo pipefail
 readonly NOVOMODELO_BIN="/shared/novomodelo-mpi"
 readonly CASE_DIR="/shared/4ree"
 readonly TIMEOUT=120
+# Training's graceful-stop handler swallows SIGTERM, so a deadlocked job
+# outlives TIMEOUT; KILL_AFTER escalates to SIGKILL (exit 137).
+readonly KILL_AFTER=10
 readonly WORK_DIR="/shared/work"
 
 # Set by parse_mode(); read by main() and print_summary().
@@ -65,8 +78,8 @@ usage() {
     cat <<'USAGE'
 Usage: run-tests.sh [--mode reduced|full]
 
-  reduced   Run T1, T2, S1 and S2 (mpiexec only); no sbatch.
-  full      Run T1 through T5 and S1 through S4 (default).
+  reduced   Run T1, T2, S1, S2, U1 and U2 (mpiexec only); no sbatch.
+  full      Run T1 through T5, S1 through S4 and U1 through U3 (default).
 USAGE
 }
 
@@ -146,7 +159,7 @@ preflight_check() {
     echo "INFO: mpiexec: $(command -v mpiexec)"
     echo "INFO: python3: $(command -v python3)"
     echo "INFO: mode: ${MODE}"
-    echo "INFO: timeout per test: ${TIMEOUT}s"
+    echo "INFO: timeout per test: ${TIMEOUT}s (SIGKILL ${KILL_AFTER}s later)"
 }
 
 # ---------------------------------------------------------------------------
@@ -676,6 +689,39 @@ PYEOF
 }
 
 # ---------------------------------------------------------------------------
+# prepare_uneven_split_case <src_case> <dst_case>
+#
+# Copies <src_case> to <dst_case> with 9 forward passes (5 + 4 on 2 ranks,
+# 3 + 2 + 2 + 2 on 4), 7 simulation scenarios and a short iteration limit.
+# ---------------------------------------------------------------------------
+prepare_uneven_split_case() {
+    local src_case="$1"
+    local dst_case="$2"
+    mkdir -p "${dst_case}"
+    cp -R "${src_case}/." "${dst_case}/"
+    python3 - "${dst_case}" <<'PYEOF'
+import json
+import os
+import sys
+
+FORWARD_PASSES = 9
+SIMULATION_SCENARIOS = 7
+ITERATION_LIMIT = 20
+
+config_path = os.path.join(sys.argv[1], "config.json")
+with open(config_path) as f:
+    config = json.load(f)
+training = config["training"]
+training["selection"]["forward_passes"] = FORWARD_PASSES
+training["stopping_rules"] = [{"type": "iteration_limit", "limit": ITERATION_LIMIT}]
+config["simulation"]["selection"]["num_scenarios"] = SIMULATION_SCENARIOS
+with open(config_path, "w") as f:
+    json.dump(config, f, indent=2)
+    f.write("\n")
+PYEOF
+}
+
+# ---------------------------------------------------------------------------
 # seed_policy <policy_dir> <output_dir>
 #
 # Copies <policy_dir> into <output_dir>/policy, where a simulation-only run
@@ -692,7 +738,7 @@ seed_policy() {
 # check_outputs <test_name> <exit_code> <output_dir> <baseline_dir> <marker> <seeded_policy>
 #
 # Verifies:
-#   1. Exit code is 0 (or reports timeout on code 124)
+#   1. Exit code is 0 (reports a timeout on 124, or 137 once escalated to SIGKILL)
 #   2. Output directory exists
 #   3. policy/manifest.bin exists (the self-describing checkpoint commit signal)
 #   4. <marker> exists (training/convergence.parquet for a training run,
@@ -714,6 +760,11 @@ check_outputs() {
     if [[ "${exit_code}" -eq 124 ]]; then
         echo "[${test_name}] FAIL: timed out after ${TIMEOUT}s (exit 124)"
         echo "[${test_name}] NOTE: exit code 124 is the primary indicator of the MPICH 4.3.0 PMI2 deadlock"
+        return 1
+    fi
+
+    if [[ "${exit_code}" -eq 137 ]]; then
+        echo "[${test_name}] FAIL: still running ${KILL_AFTER}s after the ${TIMEOUT}s timeout; killed (exit 137)"
         return 1
     fi
 
@@ -768,7 +819,7 @@ check_outputs() {
 #                  <n_ranks> <extra_args...>
 #
 # Seeds $WORK_DIR/<test_name_lower> with <policy_src> when it is non-empty,
-# then runs: timeout $TIMEOUT mpiexec -n <n_ranks> $NOVOMODELO_BIN run <case_dir>
+# then runs: timeout -k $KILL_AFTER $TIMEOUT mpiexec -n <n_ranks> $NOVOMODELO_BIN run <case_dir>
 #              --output $WORK_DIR/<test_name_lower> --quiet [extra_args]
 # Calls check_outputs against $WORK_DIR/<baseline_tag> (none when the test
 # is the baseline itself) and updates RESULTS.
@@ -795,7 +846,7 @@ run_mpiexec_test() {
     fi
 
     local exit_code=0
-    timeout "${TIMEOUT}" mpiexec -n "${n_ranks}" \
+    timeout --kill-after="${KILL_AFTER}" "${TIMEOUT}" mpiexec -n "${n_ranks}" \
         "${NOVOMODELO_BIN}" run "${case_dir}" --output "${output_dir}" --quiet \
         "${extra_args[@]+"${extra_args[@]}"}" || exit_code=$?
 
@@ -866,7 +917,7 @@ SBEOF
     chmod +x "${batch_script}"
 
     local exit_code=0
-    timeout "${TIMEOUT}" sbatch --wait \
+    timeout --kill-after="${KILL_AFTER}" "${TIMEOUT}" sbatch --wait \
         -N "${sbatch_N}" \
         -n "${sbatch_n}" \
         --output="${slurm_out}" \
@@ -914,7 +965,7 @@ SBEOF
 # print_summary
 #
 # Prints a pass/fail table of the tests attempted for the active MODE
-# (T1, T2, S1 and S2 for "reduced", every T and S case for "full") so a
+# (T1, T2, S1, S2, U1 and U2 for "reduced", every case for "full") so a
 # "reduced" run is not marked FAILED merely for never attempting the sbatch
 # cases.
 # ---------------------------------------------------------------------------
@@ -926,6 +977,10 @@ print_summary() {
     tests_to_check+=(S1 S2)
     if [[ "${MODE}" == "full" ]]; then
         tests_to_check+=(S3 S4)
+    fi
+    tests_to_check+=(U1 U2)
+    if [[ "${MODE}" == "full" ]]; then
+        tests_to_check+=(U3)
     fi
 
     echo ""
@@ -963,6 +1018,7 @@ main() {
     local simulation_run=(
         "${WORK_DIR}/4ree-partial-misfit" s1 simulation/_SUCCESS "${WORK_DIR}/t1/policy"
     )
+    local uneven_run=("${WORK_DIR}/4ree-uneven-split" u1 training/convergence.parquet "")
 
     # T1: mpiexec single rank (baseline — no extra args)
     run_mpiexec_test "T1" "${training_run[@]}" 1
@@ -995,6 +1051,19 @@ main() {
 
         # S4: sbatch multi-node, 2 ranks per node
         run_sbatch_test "S4" "${simulation_run[@]}" 2 4 4 --threads 1
+    fi
+
+    prepare_uneven_split_case "${CASE_DIR}" "${uneven_run[0]}"
+
+    # U1: mpiexec single rank (uneven-split baseline)
+    run_mpiexec_test "U1" "${uneven_run[@]}" 1
+
+    # U2: mpiexec 2 ranks holding 5 and 4 forward passes
+    run_mpiexec_test "U2" "${uneven_run[@]}" 2 --threads 2
+
+    if [[ "${MODE}" == "full" ]]; then
+        # U3: sbatch multi-node, 4 ranks holding 3, 2, 2 and 2 forward passes
+        run_sbatch_test "U3" "${uneven_run[@]}" 2 4 4 --threads 2
     fi
 
     print_summary

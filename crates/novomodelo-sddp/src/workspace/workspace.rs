@@ -1043,37 +1043,43 @@ impl BasisStore {
         &mut self.bases[scenario * self.num_nodes + node.0]
     }
 
-    /// Split the store into `n_workers` disjoint mutable sub-views by scenario
-    /// range, one per worker.
+    /// Split the first `n_active` scenarios into `n_workers` disjoint mutable
+    /// sub-views, worker `w` receiving `partition(n_active, n_workers, w)` — the
+    /// same windows the caller's per-worker trajectory records use.
     ///
-    /// Worker `w` receives the scenarios in the range produced by
-    /// `partition(num_scenarios, n_workers, w)`. Each [`BasisStoreSliceMut`]
-    /// carries its scenario offset so that callers can index using absolute
-    /// scenario indices.
+    /// The store is sized for the largest per-rank share, so a rank holding fewer
+    /// scenarios must pass its own count: splitting the full store instead shifts
+    /// every worker window off its records. Scenarios `n_active..num_scenarios()`
+    /// belong to no slice. A worker beyond `n_active` receives an empty slice.
     ///
-    /// When `n_workers` exceeds `num_scenarios`, some workers receive empty
-    /// slices (`start == end`), which is valid — their slice covers zero
-    /// scenarios.
+    /// # Panics
     ///
-    /// # Panics (debug only)
-    ///
-    /// Panics if `n_workers == 0`.
+    /// Panics if `n_active > num_scenarios()`, and in debug builds if
+    /// `n_workers == 0`.
     #[must_use]
-    pub fn split_workers_mut(&mut self, n_workers: usize) -> Vec<BasisStoreSliceMut<'_>> {
+    pub fn split_workers_mut(
+        &mut self,
+        n_active: usize,
+        n_workers: usize,
+    ) -> Vec<BasisStoreSliceMut<'_>> {
         debug_assert!(n_workers > 0, "n_workers must be > 0");
-        let total_scenarios = self.num_scenarios();
+        assert!(
+            n_active <= self.num_scenarios(),
+            "split_workers_mut: {n_active} active scenarios exceed the store's {}",
+            self.num_scenarios()
+        );
         let mut slices = Vec::with_capacity(n_workers);
         let mut bases_rem = self.bases.as_mut_slice();
 
         for w in 0..n_workers {
-            let (start, end) = partition(total_scenarios, n_workers, w);
-            let count = end - start;
-            let chunk = count * self.num_nodes;
+            let (start, end) = partition(n_active, n_workers, w);
+            let chunk = (end - start) * self.num_nodes;
             let (bases_left, bases_rest) = bases_rem.split_at_mut(chunk);
             bases_rem = bases_rest;
             slices.push(BasisStoreSliceMut {
                 bases: bases_left,
                 scenario_offset: start,
+                scenario_end: end,
                 num_nodes: self.num_nodes,
             });
         }
@@ -1092,6 +1098,8 @@ pub struct BasisStoreSliceMut<'a> {
     bases: &'a mut [Option<CapturedBasis>],
     /// Absolute scenario index of the first scenario in this slice.
     scenario_offset: usize,
+    /// One past the absolute index of the last scenario in this slice.
+    scenario_end: usize,
     /// Node-axis length (see [`BasisStore`]).
     num_nodes: usize,
 }
@@ -1104,21 +1112,19 @@ impl BasisStoreSliceMut<'_> {
     ///
     /// # Panics
     ///
-    /// Panics if `scenario < self.scenario_offset` (scenario not in this slice).
+    /// Panics if `scenario` lies outside [`Self::scenario_window`].
     #[must_use]
     pub fn get(&self, scenario: usize, node: NodePos) -> Option<&CapturedBasis> {
-        let local = scenario - self.scenario_offset;
-        self.bases[local * self.num_nodes + node.0].as_ref()
+        self.bases[self.flat_index(scenario, node)].as_ref()
     }
 
     /// This slice's global scenario window `[start, end)` — the scenarios
-    /// `get`/`get_mut` address in-bounds. The backward trial-point router assigns
-    /// each routed scenario to the worker whose window contains it, so its
-    /// `get(m, node)` never indexes outside this slice.
+    /// `get`/`get_mut` address in-bounds. Each worker solves exactly the
+    /// scenarios in its own window, so its `get(m, node)` never indexes outside
+    /// this slice.
     #[must_use]
     pub fn scenario_window(&self) -> (usize, usize) {
-        let count = self.bases.len() / self.num_nodes;
-        (self.scenario_offset, self.scenario_offset + count)
+        (self.scenario_offset, self.scenario_end)
     }
 
     /// Get a mutable reference to the basis slot at absolute scenario index
@@ -1126,10 +1132,20 @@ impl BasisStoreSliceMut<'_> {
     ///
     /// # Panics
     ///
-    /// Panics if `scenario < self.scenario_offset` (scenario not in this slice).
+    /// Panics if `scenario` lies outside [`Self::scenario_window`].
     pub fn get_mut(&mut self, scenario: usize, node: NodePos) -> &mut Option<CapturedBasis> {
-        let local = scenario - self.scenario_offset;
-        &mut self.bases[local * self.num_nodes + node.0]
+        let idx = self.flat_index(scenario, node);
+        &mut self.bases[idx]
+    }
+
+    fn flat_index(&self, scenario: usize, node: NodePos) -> usize {
+        debug_assert!(
+            (self.scenario_offset..self.scenario_end).contains(&scenario),
+            "scenario {scenario} outside this slice's window [{}, {})",
+            self.scenario_offset,
+            self.scenario_end
+        );
+        (scenario - self.scenario_offset) * self.num_nodes + node.0
     }
 }
 
@@ -1138,10 +1154,11 @@ mod tests {
     #[cfg(feature = "highs")]
     use super::PatchBuffer;
     use super::{
-        BasisStore, ByNodeScratch, CapturedBasis, NodeId, NodePos, ScratchBuffers, SolverWorkspace,
-        WorkspacePool, WorkspaceSizing,
+        BasisStore, BasisStoreSliceMut, ByNodeScratch, CapturedBasis, NodeId, NodePos,
+        ScratchBuffers, SolverWorkspace, WorkspacePool, WorkspaceSizing,
     };
     use crate::context::StageContext;
+    use crate::solve::partition;
     use crate::test_support::{TrainingContextFixture, state_layout};
     use novomodelo_solver::{
         Basis, BasisStatus, SolutionView, SolverError, SolverInterface, SolverStatistics,
@@ -1527,7 +1544,7 @@ mod tests {
         // 4 scenarios, 3 stages, 2 workers.
         // Worker 0 covers scenarios 0..2; worker 1 covers scenarios 2..4.
         let mut store = BasisStore::new(4, 3);
-        let mut slices = store.split_workers_mut(2);
+        let mut slices = store.split_workers_mut(4, 2);
 
         // Worker 0 writes to scenario 0 stage 1.
         *slices[0].get_mut(0, NodePos(1)) = Some(CapturedBasis::new(2, 1, 0, 0, 0, NodeId(0)));
@@ -1552,7 +1569,7 @@ mod tests {
     #[test]
     fn basis_store_split_single_worker() {
         let mut store = BasisStore::new(3, 2);
-        let mut slices = store.split_workers_mut(1);
+        let mut slices = store.split_workers_mut(3, 1);
         *slices[0].get_mut(2, NodePos(1)) = Some(CapturedBasis::new(1, 0, 0, 0, 0, NodeId(0)));
         drop(slices);
         assert!(store.get(2, NodePos(1)).is_some());
@@ -1562,7 +1579,7 @@ mod tests {
     fn basis_store_split_more_workers_than_scenarios() {
         // 2 scenarios, 4 workers → workers 2 and 3 receive empty slices.
         let mut store = BasisStore::new(2, 3);
-        let slices = store.split_workers_mut(4);
+        let slices = store.split_workers_mut(2, 4);
         assert_eq!(slices.len(), 4);
         // Workers 0 and 1 cover 1 scenario each; workers 2 and 3 cover 0.
         assert_eq!(slices[0].bases.len(), 3); // 1 scenario × 3 stages
@@ -1575,7 +1592,7 @@ mod tests {
     fn basis_store_slice_offset_correct() {
         // 6 scenarios, 2 stages, 3 workers → 2 scenarios each.
         let mut store = BasisStore::new(6, 2);
-        let mut slices = store.split_workers_mut(3);
+        let mut slices = store.split_workers_mut(6, 3);
 
         // Worker 1 covers absolute scenarios 2..4.
         *slices[1].get_mut(2, NodePos(0)) = Some(CapturedBasis::new(1, 0, 0, 0, 0, NodeId(0)));
@@ -1586,6 +1603,51 @@ mod tests {
         assert!(store.get(3, NodePos(1)).is_some());
         assert!(store.get(0, NodePos(0)).is_none());
         assert!(store.get(4, NodePos(0)).is_none());
+    }
+
+    #[test]
+    fn basis_store_split_tiles_only_the_active_scenarios() {
+        // A rank with 5 of a 6-scenario store's scenarios: the windows must be
+        // the record windows `partition(5, 4, w)`, not `partition(6, 4, w)`.
+        let mut store = BasisStore::new(6, 2);
+        let mut slices = store.split_workers_mut(5, 4);
+        let windows: Vec<(usize, usize)> = slices
+            .iter()
+            .map(BasisStoreSliceMut::scenario_window)
+            .collect();
+        assert_eq!(windows, vec![(0, 2), (2, 3), (3, 4), (4, 5)]);
+        for (w, window) in windows.iter().enumerate() {
+            assert_eq!(*window, partition(5, 4, w));
+        }
+
+        for slice in &mut slices {
+            let (start, end) = slice.scenario_window();
+            for m in start..end {
+                *slice.get_mut(m, NodePos(1)) = Some(CapturedBasis::new(1, 0, 0, 0, 0, NodeId(0)));
+            }
+        }
+        drop(slices);
+
+        assert!((0..5).all(|m| store.get(m, NodePos(1)).is_some()));
+        assert!(store.get(5, NodePos(1)).is_none());
+    }
+
+    #[test]
+    fn basis_store_split_with_no_active_scenarios_yields_empty_windows() {
+        let mut store = BasisStore::new(3, 2);
+        let slices = store.split_workers_mut(0, 2);
+        assert!(
+            slices
+                .iter()
+                .all(|s| s.scenario_window() == (0, 0) && s.bases.is_empty())
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "4 active scenarios exceed the store's 3")]
+    fn basis_store_split_rejects_more_active_scenarios_than_slots() {
+        let mut store = BasisStore::new(3, 2);
+        let _ = store.split_workers_mut(4, 2);
     }
 
     #[test]

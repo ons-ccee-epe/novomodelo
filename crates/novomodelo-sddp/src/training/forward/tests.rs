@@ -3494,7 +3494,7 @@ mod dcs_forward {
             dcs,
             node: NodePos(0),
         };
-        let mut slices = basis_store.split_workers_mut(1);
+        let mut slices = basis_store.split_workers_mut(basis_store.num_scenarios(), 1);
         let stage_cost = run_forward_stage(
             &mut ws,
             &mut slices[0],
@@ -3847,7 +3847,7 @@ mod transit_bucket_copy_gap {
             dcs: None,
             node: NodePos(0),
         };
-        let mut slices = basis_store.split_workers_mut(1);
+        let mut slices = basis_store.split_workers_mut(basis_store.num_scenarios(), 1);
         run_forward_stage(
             &mut ws,
             &mut slices[0],
