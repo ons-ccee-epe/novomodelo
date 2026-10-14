@@ -1,0 +1,21 @@
+# E4 rationale-on-suppression allowlist — intentionally EMPTY.
+#
+# The E4 gate (scripts/ci/check-allow-rationale.sh) enforces comments.md directive
+# D4: every production `#[allow(...)]` of a shape/dead-code lint (too_many_lines,
+# too_many_arguments, type_complexity, dead_code, unused_*) must carry a
+# justifying comment. The gate evaluates only NEW/CHANGED suppressions, diffed
+# against the merge base.
+#
+# This file used to grandfather the pre-existing un-rationaled backlog so the
+# gate could land green. That backlog has been burned down: every production
+# suppression now carries a `// Rationale:` comment explaining why its
+# length/complexity/dead item is load-bearing. The git-diff gate is therefore
+# the sole guard, with no allowlist escape hatch.
+#
+# KEEP THIS FILE EMPTY. Add a key only as a deliberate, temporary exception —
+# a legacy site that genuinely cannot be rationaled in the same change — and
+# remove it as soon as the rationale lands. Format (one per line):
+#     path/to/file.rs::enclosing_symbol  # lint1,lint2
+# Keys are `path::symbol` (NOT path:line — line numbers drift). The optional
+# trailing `# lints` annotation scopes the exemption; adding a NEW lint to a
+# keyed site is a new suppression and needs its own rationale.

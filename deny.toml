@@ -1,0 +1,66 @@
+# cargo-deny configuration
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+targets = []
+
+# ------------------------------------------------------------------ advisories
+[advisories]
+# Deny crates with known security vulnerabilities.
+version = 2
+ignore = [
+    # atomic-polyfill via postcard -> heapless; no upgrade available for postcard 1.x
+    "RUSTSEC-2023-0089",
+    # paste via parquet (dev-dep); transitive, no upgrade available
+    "RUSTSEC-2024-0436",
+    # rand 0.10.0 unsoundness with custom logger + thread_rng reseed; not exploitable
+    # in novomodelo (we don't use a custom logger that calls rand::rng())
+    "RUSTSEC-2026-0097",
+]
+
+# ------------------------------------------------------------------ licenses
+[licenses]
+# NOTE: cargo-deny only inspects Rust crates resolved by Cargo. The vendored
+# C++ solver libraries (HiGHS MIT, Clp EPL-2.0, CoinUtils EPL-2.0) are git
+# submodules compiled by the novomodelo-solver build script and are invisible to
+# cargo-deny. Their license obligations are documented in THIRD_PARTY_NOTICES.md.
+# No EPL-2.0 entry is added to the allow list below — doing so would be
+# misleading, as no Rust crate in the dependency graph carries that license.
+version = 2
+# Allow these SPDX identifiers.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+]
+# Confidence threshold for license detection (0.0 - 1.0).
+confidence-threshold = 0.8
+
+# ------------------------------------------------------------------ bans
+[bans]
+# Deny multiple versions of the same crate.
+multiple-versions = "warn"
+# Deny crates with wildcard dependencies.
+wildcards = "deny"
+# Deny known problematic crates.
+deny = []
+# Skip duplicate version checks for these (common transitive deps with
+# multiple versions in the wild).
+skip = []
+skip-tree = []
+
+# ------------------------------------------------------------------ sources
+[sources]
+# Only allow crates from crates.io by default.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,0 +1,381 @@
+{
+  "$defs": {
+    "RawFittingWindow": {
+      "additionalProperties": false,
+      "description": "Volume fitting window restricting the range used for FPHA hyperplane\ncomputation.\n\nAbsolute bounds (`volume_min_hm3` / `volume_max_hm3`) and percentile bounds\n(`volume_min_percentile` / `volume_max_percentile`) are mutually exclusive:\nset one pair or the other, not both for the same bound.",
+      "properties": {
+        "volume_max_hm3": {
+          "description": "Explicit maximum volume for fitting (hm³). Mutually exclusive with\n`volume_max_percentile`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "volume_max_percentile": {
+          "description": "Maximum as a percentile of the operating range. Mutually exclusive\nwith `volume_max_hm3`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "volume_min_hm3": {
+          "description": "Explicit minimum volume for fitting (hm³). Mutually exclusive with\n`volume_min_percentile`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "volume_min_percentile": {
+          "description": "Minimum as a percentile of the operating range. Mutually exclusive\nwith `volume_min_hm3`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RawFphaColumnLayout": {
+      "additionalProperties": false,
+      "description": "Configuration for the FPHA production function model.",
+      "properties": {
+        "fitting_window": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawFittingWindow"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional volume fitting window for hyperplane computation. Absent or\nnull = full operating range."
+        },
+        "max_planes_per_hydro": {
+          "description": "Maximum number of planes per hydro after heuristic selection. Absent =\nalgorithm default (10).",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "Hyperplane source: `\"computed\"` (fit from topology) or\n`\"precomputed\"` (from `fpha_hyperplanes.parquet`).",
+          "type": "string"
+        },
+        "spillage_discretization_points": {
+          "description": "Number of spillage discretization points used when computing\nhyperplanes. Absent = algorithm default (5).",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "turbine_discretization_points": {
+          "description": "Number of turbine flow discretization points used when computing\nhyperplanes. Absent = algorithm default (5).",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "volume_discretization_points": {
+          "description": "Number of volume discretization points used when computing hyperplanes.\nAbsent = algorithm default (5).",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "type": "object"
+    },
+    "RawPlaneReductionConfig": {
+      "description": "File-level FPHA plane-reduction block, selected by the `method` key.\n\n`{ \"method\": \"angle\", \"tolerance_deg\": <number> }` merges planes whose\nnormals are within `tolerance_deg` degrees, while\n`{ \"method\": \"distance\", \"tolerance_pct\": <number>, \"n_samples\": <integer> }`\nmerges planes whose sampled mean-squared distance stays within\n`tolerance_pct`. A tolerance key that belongs to the other method is rejected.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Normal-vector angle method. Merges planes whose normals lie within\n`tolerance_deg` of each other.",
+          "properties": {
+            "method": {
+              "const": "angle",
+              "type": "string"
+            },
+            "tolerance_deg": {
+              "description": "Maximum angle (degrees) between plane normals to treat them as\nparallel. Must be finite and in `[0.0, 90.0]` inclusive.",
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "method",
+            "tolerance_deg"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Mean-squared-distance method. Merges planes whose sampled MSE distance\nstays within `tolerance_pct`.",
+          "properties": {
+            "method": {
+              "const": "distance",
+              "type": "string"
+            },
+            "n_samples": {
+              "description": "Number of sample points used to estimate the distance. Must be `>= 1`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "tolerance_pct": {
+              "description": "Maximum relative MSE distance (fraction) to treat two planes as\ncoincident. Must be finite and `>= 0.0`.",
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "method",
+            "tolerance_pct",
+            "n_samples"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RawProductionModel": {
+      "description": "Production model configuration for one hydro plant.\n\nThe `selection_mode` field discriminates between two layouts:\n`stage_ranges` carries a stage-range array, while `seasonal` carries a\n`default_model` plus a `seasons` override list.",
+      "oneOf": [
+        {
+          "description": "Stage-range selection: each stage maps to a model via explicit\n`[start, end]` ranges.",
+          "properties": {
+            "selection_mode": {
+              "const": "stage_ranges",
+              "type": "string"
+            },
+            "stage_ranges": {
+              "description": "Ordered list of stage range descriptors.",
+              "items": {
+                "$ref": "#/$defs/RawStageRange"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "selection_mode",
+            "stage_ranges"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Seasonal selection: each stage maps to a model via its season index.",
+          "properties": {
+            "default_model": {
+              "description": "Fallback model for seasons not listed in `seasons`. One of\n`\"constant_productivity\"`, `\"linearized_head\"`, or `\"fpha\"`.",
+              "type": "string"
+            },
+            "seasons": {
+              "description": "Season-specific model overrides.",
+              "items": {
+                "$ref": "#/$defs/RawSeasonConfig"
+              },
+              "type": "array"
+            },
+            "selection_mode": {
+              "const": "seasonal",
+              "type": "string"
+            }
+          },
+          "required": [
+            "selection_mode",
+            "default_model",
+            "seasons"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "hydro_id": {
+          "description": "Hydro plant identifier. Must be unique within the file.",
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "hydro_id"
+      ],
+      "type": "object"
+    },
+    "RawReferenceVolume": {
+      "additionalProperties": false,
+      "description": "Reference operating volume declared on a stage range or season.\n\nSet exactly one of `volume_hm3` (absolute, hm³) or `percentile` (a fraction\nof the operating range). The two are mutually exclusive; setting both, or\nneither, is rejected during validation.",
+      "properties": {
+        "percentile": {
+          "description": "Reference volume as a percentile of the operating range. Mutually\nexclusive with `volume_hm3`. When present must be finite and in\n`[0.0, 1.0]`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "volume_hm3": {
+          "description": "Absolute reference volume (hm³). Mutually exclusive with `percentile`.\nWhen present must be finite and `> 0.0`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RawSeasonConfig": {
+      "additionalProperties": false,
+      "description": "Season-specific model descriptor for the `seasonal` selection mode.",
+      "properties": {
+        "fpha_config": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawFphaColumnLayout"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "FPHA configuration. Required when `model` is `\"fpha\"`. Absent or null\notherwise."
+        },
+        "model": {
+          "description": "Model name: `\"constant_productivity\"`, `\"linearized_head\"`, or `\"fpha\"`.",
+          "type": "string"
+        },
+        "productivity_mw_per_m3s": {
+          "description": "Per-season productivity coefficient (MW/(m³/s)). Optional for\n`\"constant_productivity\"` and `\"linearized_head\"` models; when absent or\nnull the value is expected from `system/hydro_energy_productivity.parquet`.\nWhen present must be `> 0.0` and finite. Must be absent or null for `\"fpha\"`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "reference_volume": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawReferenceVolume"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Reference operating volume for this season, a sibling of `fpha_config`\n(not nested). Set exactly one of `volume_hm3` (absolute, hm³) or\n`percentile` (`[0.0, 1.0]`). Absent or null = no reference volume\ndeclared."
+        },
+        "season_id": {
+          "description": "Season index (0-based, matching the `stages.json` season map).",
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "season_id",
+        "model"
+      ],
+      "type": "object"
+    },
+    "RawStageRange": {
+      "additionalProperties": false,
+      "description": "Stage range descriptor for the `stage_ranges` selection mode.",
+      "properties": {
+        "end_stage_id": {
+          "description": "Last stage (inclusive) to which this entry applies. `null` = until end\nof horizon.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "fpha_config": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawFphaColumnLayout"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "FPHA configuration. Required when `model` is `\"fpha\"`. Absent or null\notherwise."
+        },
+        "model": {
+          "description": "Model name: `\"constant_productivity\"`, `\"linearized_head\"`, or `\"fpha\"`.",
+          "type": "string"
+        },
+        "productivity_mw_per_m3s": {
+          "description": "Per-stage productivity coefficient (MW/(m³/s)). Optional for\n`\"constant_productivity\"` and `\"linearized_head\"` models; when absent or\nnull the value is expected from `system/hydro_energy_productivity.parquet`.\nWhen present must be `> 0.0` and finite. Must be absent or null for `\"fpha\"`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "reference_volume": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawReferenceVolume"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Reference operating volume for this stage range, a sibling of\n`fpha_config` (not nested). Set exactly one of `volume_hm3` (absolute,\nhm³) or `percentile` (`[0.0, 1.0]`). Absent or null = no reference volume\ndeclared."
+        },
+        "start_stage_id": {
+          "description": "First stage (inclusive) to which this entry applies. Must be <=\n`end_stage_id` when `end_stage_id` is set.",
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start_stage_id",
+        "model"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Per-hydro production model configuration loaded from\n`system/hydro_production_models.json`.\n\nSpecifies how the hydro production function (HPF) model variant is selected\nfor each stage or season. Two selection modes are supported:\n\n- `stage_ranges`: maps each stage to a model via explicit `[start, end]`\n  intervals.\n- `seasonal`: maps each stage to a model via its season index, with a\n  fallback default.\n\nEach hydro may appear at most once. Results are sorted by `hydro_id`\nascending.",
+  "properties": {
+    "$schema": {
+      "description": "JSON schema URI — informational, not validated.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "fpha_plane_reduction": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RawPlaneReductionConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional file-level FPHA plane-reduction block, applied uniformly to\nevery plant. Absent ⇒ no reduction. Carries a `method` tag selecting\nthe `angle` or `distance` reduction method and its tolerance."
+    },
+    "production_models": {
+      "description": "Array of per-hydro production model configurations. Each `hydro_id`\nmust be unique.",
+      "items": {
+        "$ref": "#/$defs/RawProductionModel"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "production_models"
+  ],
+  "title": "RawProductionModelFile",
+  "type": "object"
+}

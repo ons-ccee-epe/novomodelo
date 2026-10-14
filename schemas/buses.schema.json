@@ -1,0 +1,86 @@
+{
+  "$defs": {
+    "RawBus": {
+      "additionalProperties": false,
+      "description": "A single bus entry.",
+      "properties": {
+        "deficit_segments": {
+          "description": "Optional entity-level deficit segment overrides.\nWhen absent, falls back to `bus.deficit_segments` in `penalties.json`.",
+          "items": {
+            "$ref": "#/$defs/RawDeficitSegment"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Bus identifier. Must be unique within the file.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Human-readable bus name.",
+          "type": "string"
+        },
+        "operational_start_date": {
+          "description": "Date the entity enters service (ISO 8601 `YYYY-MM-DD`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "operational_start_date"
+      ],
+      "type": "object"
+    },
+    "RawDeficitSegment": {
+      "additionalProperties": false,
+      "description": "A single deficit segment entry.",
+      "properties": {
+        "cost": {
+          "description": "Cost per `MWh` of deficit in this segment ($/`MWh`).",
+          "format": "double",
+          "type": "number"
+        },
+        "depth_mw": {
+          "description": "MW depth of this segment. `null` means unbounded (last segment only).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "cost"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Root object of `buses.json`.",
+  "properties": {
+    "$schema": {
+      "description": "`$schema` field — informational, not validated.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "buses": {
+      "description": "Array of bus entries.",
+      "items": {
+        "$ref": "#/$defs/RawBus"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "buses"
+  ],
+  "title": "RawBusFile",
+  "type": "object"
+}

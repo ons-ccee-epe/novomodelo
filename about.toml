@@ -1,0 +1,48 @@
+# cargo-about configuration — drives generation of THIRD_PARTY_LICENSES.md (the
+# per-crate license texts of novomodelo's Rust dependency graph, reproduced for binary
+# distribution). Regenerate with:
+#
+#   cargo about generate --all-features about.hbs -o THIRD_PARTY_LICENSES.md
+#
+# `--all-features` unions every feature-gated dependency (both the `highs` and
+# `clp` solver-backend trees, `serde`, `mpi`, …) so the file is a superset of any
+# distributed build. The two backends cannot *compile* together, but metadata
+# resolution unions them fine.
+#
+# `accepted` MUST stay in sync with the `[licenses] allow` list in deny.toml:
+# deny.toml *checks* that every crate's license is permitted; cargo-about
+# *reproduces* the chosen license text. For dual/multi-licensed crates
+# (e.g. `MIT OR Apache-2.0`) cargo-about selects the first accepted id below.
+accepted = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+]
+
+# `targets` is intentionally unset: cargo-about then unions the dependency graph
+# across ALL targets, producing a superset that covers every platform we might
+# ship a binary/wheel for (Linux, macOS, Windows). Pinning an explicit target list
+# only NARROWS this and risks omitting a crate that ships on a platform not in the
+# list — under-attribution is the real compliance risk; over-attribution is
+# harmless. This matches deny.toml, which also evaluates all targets.
+
+# Build-time-only dependencies (the `cc`/`bindgen` toolchain, proc-macro helpers)
+# are not linked into the shipped binary and carry no binary-distribution
+# attribution obligation; dev-dependencies (test/bench harnesses) likewise do not
+# ship. Scope the generated file to what actually travels with the artifacts.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# Auto-exclude any crate later marked `publish = false` (none today). novomodelo's own
+# Apache-2.0 workspace crates publish normally, so they still appear — harmless,
+# they are part of the distributed Apache-2.0 corpus.
+[private]
+ignore = true

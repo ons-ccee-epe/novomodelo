@@ -1,0 +1,46 @@
+[package]
+name = "novomodelo-core"
+description = "Power system data model — buses, branches, generators, loads, and network topology"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["power-systems", "energy", "electrical", "data-model"]
+categories = ["science", "simulation"]
+
+[features]
+default = []
+## Enable `serde::Serialize`/`serde::Deserialize` for all public types.
+##
+## When enabled, activates `chrono/serde` so that `NaiveDate` fields also
+## implement the serde traits. Required by `novomodelo-io` for JSON input loading
+## and by MPI broadcast via `postcard`.
+serde = ["dep:serde", "chrono/serde"]
+## Enable `schemars::JsonSchema` for public types that are referenced from
+## auto-generated JSON Schemas (e.g. `ComputedParameter` embedded in
+## `constraints/generic_parameters.json`). Implies the `serde` feature.
+schema = ["serde", "dep:schemars"]
+## Expose test-only fixture scaffolding (the `test_support` entity builder
+## family, mirror-unit-group declaration, uniform penalty constructors) to
+## other crates' tests. Must NOT be enabled in production builds.
+test-support = []
+
+[dependencies]
+## `NaiveDate` is used in `Stage` and `SeasonDefinition` types. Kept as a
+## mandatory dependency because date handling is core domain data.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"], optional = true }
+schemars = { version = "1", optional = true }
+
+[dev-dependencies]
+novomodelo-core = { path = ".", features = ["test-support"] }
+postcard = { version = "1", features = ["alloc"] }
+proptest = "1"
+serde_json = { version = "1", optional = false }
+
+[lints]
+workspace = true

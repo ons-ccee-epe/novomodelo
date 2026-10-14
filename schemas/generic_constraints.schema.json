@@ -1,0 +1,120 @@
+{
+  "$defs": {
+    "RawConstraint": {
+      "additionalProperties": false,
+      "description": "A single constraint entry.",
+      "properties": {
+        "description": {
+          "description": "Optional human-readable description.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expression": {
+          "description": "Expression string to be parsed. E.g. `\"2.5 * thermal_generation(5) - hydro_generation(3)\"`.\nTo constrain an anticipated thermal's commitment, use `\"anticipated_decision(5)\"` (stage-level scalar, no block index).\nTo constrain one bus of a plant split across several buses, use `\"hydro_turbined(5, bus=2)\"`\nor `\"hydro_generation(5, bus=2)\"` — the only two variables accepting a `bus=` selector.\nAn optional inline relational operator (`<=`, `>=`, `==`) followed by a\nright-hand side normalizes onto the F3 interval — see the module doc.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Constraint identifier. Must be unique within the file.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Short name used in reports and log output.",
+          "type": "string"
+        },
+        "slack": {
+          "$ref": "#/$defs/RawSlackConfig",
+          "description": "Slack variable configuration."
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "expression",
+        "slack"
+      ],
+      "type": "object"
+    },
+    "RawNamedExpression": {
+      "additionalProperties": false,
+      "description": "A named linear-expression declaration.",
+      "properties": {
+        "description": {
+          "description": "Optional human-readable description.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expression": {
+          "description": "Expression string, parsed under the variable + `@param`-coefficient grammar.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Name bound to the expression; unique in the file and distinct from every scalar-parameter name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "expression"
+      ],
+      "type": "object"
+    },
+    "RawSlackConfig": {
+      "additionalProperties": false,
+      "description": "The slack configuration.",
+      "properties": {
+        "enabled": {
+          "description": "Whether a slack variable is allowed.",
+          "type": "boolean"
+        },
+        "penalty": {
+          "description": "Penalty per unit of violation. Must be > 0.0 when `enabled` is `true`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Root object of `generic_constraints.json`.",
+  "properties": {
+    "$schema": {
+      "description": "`$schema` field — informational, not validated.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "constraints": {
+      "description": "Array of constraint entries.",
+      "items": {
+        "$ref": "#/$defs/RawConstraint"
+      },
+      "type": "array"
+    },
+    "expressions": {
+      "description": "Named linear-expression declarations sharing the `@name` namespace with\nscalar parameters. Absent ⇒ empty ⇒ no named expressions.",
+      "items": {
+        "$ref": "#/$defs/RawNamedExpression"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "constraints"
+  ],
+  "title": "RawGenericConstraintsFile",
+  "type": "object"
+}

@@ -1,0 +1,74 @@
+[package]
+name = "novomodelo-cli"
+description = "Command-line interface for Novomodelo power system studies"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["power-systems", "cli", "energy", "sddp", "simulation"]
+categories = ["command-line-utilities", "science"]
+
+[[bin]]
+name = "novomodelo"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+novomodelo-core = { version = "0.18.0", path = "../novomodelo-core", features = ["serde"] }
+novomodelo-io = { version = "0.18.0", path = "../novomodelo-io", features = ["schema"] }
+novomodelo-sddp = { version = "0.18.0", path = "../novomodelo-sddp", default-features = false }
+novomodelo-solver = { version = "0.18.0", path = "../novomodelo-solver", default-features = false }
+novomodelo-comm = { version = "0.18.0", path = "../novomodelo-comm" }
+novomodelo-stochastic = { version = "0.18.0", path = "../novomodelo-stochastic" }
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+clap = { version = "4", features = ["derive"] }
+postcard = { version = "1", features = ["alloc"] }
+console = "0.16"
+indicatif = "0.18"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+signal-hook = { version = "0.3", default-features = false }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+terminal_size = "0.4.4"
+
+[features]
+## Default feature set: build against the HiGHS solver backend.
+default = ["highs"]
+
+## Select the HiGHS LP solver backend across the dependency graph.
+##
+## Forwards to both `novomodelo-solver` and `novomodelo-sddp`; forwarding to only one
+## leaves the other on its own `highs` default and re-trips the mutually
+## exclusive `compile_error!` in `novomodelo-solver`.
+highs = ["novomodelo-solver/highs", "novomodelo-sddp/highs"]
+
+## Select the CLP/CoinUtils LP solver backend across the dependency graph.
+clp = ["novomodelo-solver/clp", "novomodelo-sddp/clp"]
+
+mpi = ["novomodelo-comm/mpi"]
+## Opt-in to the slow test suite: includes every `SLOW_DECKS` deck in the
+## non-root setup-rebuild two-constructor parity test.
+slow-tests = []
+
+[dev-dependencies]
+arrow = { version = "60", default-features = false }
+assert_cmd = "2"
+novomodelo-core = { version = "0.18.0", path = "../novomodelo-core", features = ["test-support"] }
+novomodelo-io = { version = "0.18.0", path = "../novomodelo-io" }
+novomodelo-sddp = { version = "0.18.0", path = "../novomodelo-sddp", default-features = false, features = [
+    "test-support",
+] }
+novomodelo-solver = { version = "0.18.0", path = "../novomodelo-solver", default-features = false }
+parquet = { version = "60", default-features = false, features = ["arrow"] }
+predicates = "3"
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -1,0 +1,22 @@
+[package]
+name = "novomodelo-mcp"
+description = "Reserved crate name. The Novomodelo MCP server is not yet implemented; depend on novomodelo-cli for command-line interaction with Novomodelo."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["novomodelo", "reserved"]
+categories = ["science"]
+
+[[bin]]
+name = "novomodelo-mcp"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

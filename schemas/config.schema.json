@@ -1,0 +1,1435 @@
+{
+  "$defs": {
+    "BackwardScheduler": {
+      "description": "Backward-pass scheduler and its scheduler-specific parameters\n(`config.json → training.parallelism.backward_scheduler`).\n\nThe `method` key selects the scheduler, and each scheduler accepts only its\nown parameters: a parameter of another scheduler is a load-time error.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "By-scenario backward scheduling (the default): each parallel work\nunit claims one whole trial point (a row of the backward work\nrectangle).",
+          "properties": {
+            "method": {
+              "const": "by_scenario",
+              "type": "string"
+            }
+          },
+          "required": [
+            "method"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "By-node backward scheduling: each parallel work unit claims one\n(trial point, opening-block) tile of the backward work rectangle.",
+          "properties": {
+            "block_size": {
+              "default": null,
+              "description": "Openings per block. Absent resolves per stage to `⌈|Ω_s|/2⌉` (half\nthe openings, rounded up); a set value is clamped to\n`min(|Ω_s|, block_size)`.",
+              "format": "uint",
+              "minimum": 1,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "method": {
+              "const": "by_node",
+              "type": "string"
+            }
+          },
+          "required": [
+            "method"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "BoundaryPolicy": {
+      "additionalProperties": false,
+      "description": "Boundary-row configuration for terminal-stage FCF coupling.\n\nWhen present, the solver loads rows from a source Novomodelo policy\ncheckpoint and injects them as fixed boundary conditions at the\nterminal stage of the current study. The loader selects the source pool\nwhose priced state date equals this study's last stage `end_date`.",
+      "properties": {
+        "path": {
+          "description": "Path to the source policy checkpoint directory (a different study's\noutput). Resolved relative to the case (input) directory, like every\nother input; an absolute path is used as-is. NOT relative to this run's\noutput directory.",
+          "type": "string"
+        },
+        "strict": {
+          "default": false,
+          "description": "A source slot pricing an entity or commitment this study does not\nmodel is dropped during reconciliation either way. Left `false`, the\ndrop is recorded in the reconciliation report and the load proceeds;\nset `true`, the load is rejected, naming every dropping family and\nits count.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "CheckpointingConfig": {
+      "additionalProperties": false,
+      "description": "Periodic checkpoint settings (`config.json → policy.checkpointing`). Each periodic checkpoint replaces the previous one in the policy directory, so only the latest is kept.",
+      "properties": {
+        "compress": {
+          "default": null,
+          "description": "Compress checkpoint files.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "enabled": {
+          "default": null,
+          "description": "Write periodic checkpoints during training. Off when absent. When true, `interval_iterations` must be at least 1.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "initial_iteration": {
+          "default": null,
+          "description": "Iteration that writes the first periodic checkpoint. Defaults to `interval_iterations`. Iteration numbers are absolute: a resumed run continues the numbering of the run it resumes.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "interval_iterations": {
+          "default": null,
+          "description": "Iterations between periodic checkpoints, counted from `initial_iteration`. Required, and at least 1, when `enabled` is true.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "store_basis": {
+          "default": null,
+          "description": "Include LP basis in checkpoints for warm-start.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "DualEdgeWeight": {
+      "description": "Dual simplex edge-weight (pricing) strategy.",
+      "oneOf": [
+        {
+          "const": "devex",
+          "description": "Devex approximate edge weights.",
+          "type": "string"
+        },
+        {
+          "const": "steepest_edge",
+          "description": "Exact steepest-edge weights.",
+          "type": "string"
+        },
+        {
+          "const": "dantzig",
+          "description": "Dantzig most-negative-reduced-cost rule.",
+          "type": "string"
+        }
+      ]
+    },
+    "EstimationConfig": {
+      "additionalProperties": false,
+      "description": "Time series estimation settings (`config.json → estimation`).\n\nControls automatic parameter estimation when historical inflow data is\nprovided without explicit model statistics or coefficients.",
+      "properties": {
+        "max_coefficient_magnitude": {
+          "default": null,
+          "description": "Maximum allowed absolute magnitude for any AR coefficient.\n\nWhen set, any (entity, season) pair with `|coefficient| > threshold`\nis immediately reduced to order 0 before the contribution analysis\nruns. This acts as a fast-path safety net for the most extreme\nexplosive models. Absent by default (disabled; contribution analysis\nis the primary guard).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_order": {
+          "default": 6,
+          "description": "Maximum lag order considered during autoregressive model fitting.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "min_observations_per_season": {
+          "default": 30,
+          "description": "Minimum number of observations required per (entity, season) group\nto proceed with estimation. Groups below this threshold are skipped.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "order_selection": {
+          "$ref": "#/$defs/OrderSelectionMethod",
+          "default": "pacf",
+          "description": "Order selection criterion. Accepts `\"pacf\"` (classical PACF, default)\nor `\"pacf_annual\"` (PACF augmented with an annual component, PAR(p)-A)."
+        }
+      },
+      "type": "object"
+    },
+    "ExportsConfig": {
+      "additionalProperties": false,
+      "description": "Export flags controlling which outputs are written to disk\n(`config.json → exports`).\n\nOnly the active fields below are accepted. Legacy keys (`training`, `cuts`,\n`vertices`, `simulation`, `forward_detail`, `backward_detail`,\n`compression`) must be removed from existing `config.json` files before\nloading — they are now rejected as unknown fields.",
+      "properties": {
+        "fpha_deviation_points": {
+          "default": false,
+          "description": "Export the per-sampled-point computed-FPHA fit-deviation table to\n`output/hydro_models/fpha_deviation_points.parquet`.\n\nOpt-in (default `false`) purely for size: it emits one row per\n`(hydro, stage, V, Q)` grid point at spillage = 0. Off ⇒ no file and a\nbyte-identical run; the table is additive and never enters the parity\nhash. The values are deterministic (a pure function of geometry + config),\nso the file is reproducible when emitted.",
+          "type": "boolean"
+        },
+        "states": {
+          "default": false,
+          "description": "Export visited forward-pass trial points to the policy checkpoint.",
+          "type": "boolean"
+        },
+        "stochastic": {
+          "default": false,
+          "description": "Export stochastic preprocessing artifacts to `output/stochastic/`.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "HistoricalYearRange": {
+      "additionalProperties": false,
+      "description": "Inclusive `{\"from\", \"to\"}` range form of `historical_years`.",
+      "properties": {
+        "from": {
+          "description": "First year (inclusive).",
+          "format": "int32",
+          "type": "integer"
+        },
+        "to": {
+          "description": "Last year (inclusive).",
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "InflowNonNegativityConfig": {
+      "additionalProperties": false,
+      "description": "Inflow non-negativity treatment settings.",
+      "properties": {
+        "method": {
+          "$ref": "#/$defs/InflowNonNegativityMethod",
+          "default": "penalty",
+          "description": "Method: `\"none\"`, `\"truncation\"`, `\"penalty\"`, or `\"truncation_with_penalty\"`.\n\nDefault: `\"penalty\"`. The penalty objective coefficient is always sourced from\n`penalties.json → hydro.inflow_nonnegativity_cost` (default 1000.0 when absent)."
+        }
+      },
+      "type": "object"
+    },
+    "InflowNonNegativityMethod": {
+      "description": "Method string for inflow non-negativity enforcement.\n\nAccepted values in `config.json → modeling.inflow_non_negativity.method`:\n\n- `\"none\"` — no enforcement; PAR(p) inflows may be negative.\n- `\"truncation\"` — clamp negative PAR(p) inflows to zero before LP patching.\n- `\"penalty\"` — add slack columns with `inflow_nonnegativity_cost` objective\n  coefficient (sourced from `penalties.json → hydro.inflow_nonnegativity_cost`).\n- `\"truncation_with_penalty\"` — combine both: clamp noise *and* add slack columns.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "No inflow non-negativity enforcement.",
+          "type": "string"
+        },
+        {
+          "const": "truncation",
+          "description": "Truncation-based enforcement only (no slack columns).",
+          "type": "string"
+        },
+        {
+          "const": "penalty",
+          "description": "Penalty-based enforcement via slack columns.\n\nObjective coefficient is `penalties.json → hydro.inflow_nonnegativity_cost`.",
+          "type": "string"
+        },
+        {
+          "const": "truncation_with_penalty",
+          "description": "Combined truncation and penalty enforcement.",
+          "type": "string"
+        }
+      ]
+    },
+    "LipschitzConfig": {
+      "additionalProperties": false,
+      "description": "Lipschitz constant settings for inner approximation.",
+      "properties": {
+        "fallback_value": {
+          "default": null,
+          "description": "Fallback value when automatic computation fails.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "mode": {
+          "default": null,
+          "description": "Computation mode: `\"auto\"`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scale_factor": {
+          "default": null,
+          "description": "Multiplicative safety margin applied to computed Lipschitz constants.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ModelingConfig": {
+      "additionalProperties": false,
+      "description": "Modeling options (`config.json → modeling`).",
+      "properties": {
+        "cost_scale_factor": {
+          "default": null,
+          "description": "Divisor applied to every non-theta objective coefficient at template\nbuild time, multiplied back at every cost-domain reporting boundary.\nDefault `1_000_000.0` — the value every golden parity baseline is pinned at.\n\nObjective conditioning only — results are identical in exact arithmetic;\nthis does not alter the model, unlike `modeling`'s other fields. The\neffective dual tolerance in currency units is\n`dual_feasibility_tolerance × this factor`: raising the factor without\nlowering `dual_feasibility_tolerance` proportionally loosens optimality\nin currency terms even though the configured tolerance value is\nunchanged — the inverse-direction trap a name cannot carry.\n\nAbsent uses the default. Must be finite and `> 0`; a value outside\n`[1.0, 1e12]` is accepted but logs an advisory warning.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "inflow_non_negativity": {
+          "$ref": "#/$defs/InflowNonNegativityConfig",
+          "default": {
+            "method": "penalty"
+          },
+          "description": "Strategy for handling non-negative inflow constraints."
+        }
+      },
+      "type": "object"
+    },
+    "Openings": {
+      "description": "Where a stage's openings originate (`config.json` scenario-source `source`).\n\nThe tag key is `source` and the field is `openings`, deliberately distinct\nfrom the per-class `scheme` key: `openings.source` selects where a stage's\nopenings come from, while `scheme` selects how a class's noise is modelled.\nA single word would otherwise carry both axes. An absent `openings`\ndeclaration is equivalent to `generated`.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Openings come from noise generation (the default when `openings` is absent).",
+          "properties": {
+            "source": {
+              "const": "generated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Openings come from the conventional `scenarios/noise_openings.parquet` file.",
+          "properties": {
+            "source": {
+              "const": "file",
+              "type": "string"
+            }
+          },
+          "required": [
+            "source"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "OrderSelectionMethod": {
+      "description": "Order selection criterion for autoregressive model fitting.\n\nControls how the lag order is chosen when fitting a time series model.\nTwo variants are accepted:\n\n- `\"pacf\"` — classical periodic Yule-Walker with PACF-based order\n  selection. Default.\n- `\"pacf_annual\"` — extends `\"pacf\"` with an annual component (PAR(p)-A),\n  adding one extra coefficient ψ per (entity, season) that multiplies\n  the rolling 12-month average of past observations.",
+      "oneOf": [
+        {
+          "const": "pacf",
+          "description": "Periodic Yule-Walker partial autocorrelation method (PACF).",
+          "type": "string"
+        },
+        {
+          "const": "pacf_annual",
+          "description": "Periodic Yule-Walker order selection augmented with an annual component.\n\nWhen selected, the estimation pipeline performs four steps beyond the\nclassical `pacf` path:\n\n1. **Extended Yule-Walker fitting** — the system is augmented with a\n   cross-correlation term between the current-season inflow and the\n   rolling 12-month average, yielding the annual coefficient ψ\n   alongside the classical AR coefficients.\n2. **Annual-stats computation** — per-season sample mean μ^A and\n   Bessel-corrected standard deviation σ^A of the rolling 12-month\n   average are computed for each hydro plant.\n3. **Parquet emission** — the triple (ψ, μ^A, σ^A) is written to\n   `inflow_annual_component.parquet` in the output directory.\n4. **Widened LP lag stride** — the noise-column layout in the LP is\n   extended to accommodate the annual term alongside the classical lags.",
+          "type": "string"
+        }
+      ]
+    },
+    "ParallelismConfig": {
+      "additionalProperties": false,
+      "description": "Parallel-execution settings (`config.json → training.parallelism`).\n\nGroups the result-preserving knobs that shape how training work is\nscheduled across workers, apart from the algorithm-semantics fields at the\n`training` root. Thread count itself stays a CLI concern (`--threads`).",
+      "properties": {
+        "backward_scheduler": {
+          "$ref": "#/$defs/BackwardScheduler",
+          "default": {
+            "method": "by_scenario"
+          },
+          "description": "Backward-pass scheduler selection."
+        }
+      },
+      "type": "object"
+    },
+    "PhaseSolverProfileConfig": {
+      "additionalProperties": false,
+      "description": "Per-phase LP solver profile (`config.json → training.solver.backward` /\n`.forward`, and `simulation.solver`).\n\nBackend-agnostic. Every field is optional: an absent field leaves the\ncorresponding option at the phase's built-in tuned-profile value.",
+      "properties": {
+        "cost_perturbation": {
+          "default": null,
+          "description": "Dual simplex cost-perturbation multiplier override.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "dual_edge_weight": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DualEdgeWeight"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Dual simplex edge-weight strategy override."
+        },
+        "dual_feasibility_tolerance": {
+          "default": null,
+          "description": "Dual feasibility tolerance override.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "factor_pivot_threshold": {
+          "default": null,
+          "description": "Matrix factorization pivot-threshold override.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "presolve": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PresolveMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Presolve mode override. Warm-started solves skip presolve regardless\nof this setting, so it affects only genuinely cold solves."
+        },
+        "price": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PriceStrategy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Simplex pricing strategy override."
+        },
+        "primal_feasibility_tolerance": {
+          "default": null,
+          "description": "Primal feasibility tolerance override.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "refactor_error_tolerance": {
+          "default": null,
+          "description": "Refactorization solution-error tolerance override.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "scale": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScaleStrategy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Constraint-matrix scaling strategy override."
+        },
+        "simplex_update_limit": {
+          "default": null,
+          "description": "Simplex update-count limit override before a refactorization.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "steepest_edge_devex_fallback_threshold": {
+          "default": null,
+          "description": "Dual steepest-edge weight log-error threshold override above which the\nsolver falls back to Devex pricing.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "use_warm_start": {
+          "default": null,
+          "description": "Warm-start override. By default backward solves warm-start from the\nstored basis and forward and simulation solves are cold.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "PolicyConfig": {
+      "additionalProperties": false,
+      "description": "Policy directory settings (`config.json → policy`).",
+      "properties": {
+        "boundary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BoundaryPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional boundary-row policy for terminal-stage coupling."
+        },
+        "checkpointing": {
+          "$ref": "#/$defs/CheckpointingConfig",
+          "default": {
+            "compress": null,
+            "enabled": null,
+            "initial_iteration": null,
+            "interval_iterations": null,
+            "store_basis": null
+          },
+          "description": "Checkpoint settings."
+        },
+        "mode": {
+          "$ref": "#/$defs/PolicyMode",
+          "default": "fresh",
+          "description": "Initialization mode: `\"fresh\"`, `\"warm_start\"`, or `\"resume\"`."
+        },
+        "path": {
+          "default": "./policy",
+          "description": "Policy directory, resolved against the output directory unless absolute. A checkpoint write replaces the whole directory, so an empty path, `.`, `..`, the output directory and its ancestors are refused. So is a directory that names or contains one a run clears before writing its outputs, such as `simulation/solver` or `training/solver`, or that lies inside one a run removes whole, such as `simulation/costs`.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "PolicyMode": {
+      "description": "Policy initialization mode (`config.json → policy.mode`).\n\nControls whether the training phase starts from scratch, warm-starts from\na prior policy's rows, or resumes a checkpointed training run.",
+      "oneOf": [
+        {
+          "const": "fresh",
+          "description": "Start training from an empty future-cost function.",
+          "type": "string"
+        },
+        {
+          "const": "warm_start",
+          "description": "Load rows from a prior policy checkpoint and continue training.",
+          "type": "string"
+        },
+        {
+          "const": "resume",
+          "description": "Resume a previously interrupted training run from its checkpoint.",
+          "type": "string"
+        }
+      ]
+    },
+    "PresolveMode": {
+      "description": "Presolve mode for a solver profile.",
+      "oneOf": [
+        {
+          "const": "on",
+          "description": "Presolve enabled.",
+          "type": "string"
+        },
+        {
+          "const": "off",
+          "description": "Presolve disabled.",
+          "type": "string"
+        },
+        {
+          "const": "choose",
+          "description": "Solver decides whether to presolve.",
+          "type": "string"
+        }
+      ]
+    },
+    "PriceStrategy": {
+      "description": "Simplex pricing (column-selection) strategy.",
+      "oneOf": [
+        {
+          "const": "row",
+          "description": "Row-wise pricing.",
+          "type": "string"
+        },
+        {
+          "const": "row_hyper_sparse",
+          "description": "Row-wise pricing with hyper-sparse updates.",
+          "type": "string"
+        }
+      ]
+    },
+    "RawClassConfigEntry": {
+      "additionalProperties": false,
+      "description": "A single per-class scenario scheme in `config.json`.",
+      "properties": {
+        "scheme": {
+          "$ref": "#/$defs/RawSamplingScheme",
+          "description": "Forward-pass scenario scheme for this class."
+        }
+      },
+      "required": [
+        "scheme"
+      ],
+      "type": "object"
+    },
+    "RawHistoricalYearsConfig": {
+      "anyOf": [
+        {
+          "description": "Explicit list of year integers.",
+          "items": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        {
+          "$ref": "#/$defs/HistoricalYearRange",
+          "description": "Inclusive range shorthand."
+        }
+      ],
+      "description": "`historical_years` in `config.json`: an array of years, such as\n`[1940, 1953, 1971]`, or an inclusive range, such as\n`{\"from\": 1940, \"to\": 2010}`."
+    },
+    "RawSamplingScheme": {
+      "description": "Per-class forward-pass scenario scheme (`config.json` scenario-source `scheme`).",
+      "oneOf": [
+        {
+          "const": "in_sample",
+          "description": "Reuse the backward-pass opening tree for the forward pass.",
+          "type": "string"
+        },
+        {
+          "const": "out_of_sample",
+          "description": "Draw fresh noise from the same distribution with an independent seed.",
+          "type": "string"
+        },
+        {
+          "const": "external",
+          "description": "Draw from an externally supplied scenario file.",
+          "type": "string"
+        },
+        {
+          "const": "historical",
+          "description": "Replay historical realisations.",
+          "type": "string"
+        }
+      ]
+    },
+    "RawScenarioSourceConfig": {
+      "additionalProperties": false,
+      "description": "Per-class scenario source configuration in `config.json`.\n\nUsed by `training.scenario_source` and `simulation.scenario_source`.",
+      "properties": {
+        "historical_years": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawHistoricalYearsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Historical year pool. Absent: the years are discovered at validation time."
+        },
+        "inflow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawClassConfigEntry"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Inflow class scenario config. Absent defaults to `in_sample`."
+        },
+        "load": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawClassConfigEntry"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Load class scenario config. Absent defaults to `in_sample`."
+        },
+        "ncs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawClassConfigEntry"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "NCS class scenario config. Absent defaults to `in_sample`."
+        },
+        "openings": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Openings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Where a stage's openings come from. Absent defaults to `generated`,\npreserving generation-sourced openings."
+        },
+        "seed": {
+          "default": null,
+          "description": "Required when any class uses the `out_of_sample` or `external` scheme.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RowSelectionConfig": {
+      "additionalProperties": false,
+      "description": "Row-selection settings (`config.json → training.cut_selection`).\n\nRow selection bounds the per-solve LP size by limiting how many constraint\nrows from the row pool are carried into each solve. `selection` chooses the\nmethod and carries only that method's parameters; omitting it (the default)\ndisables row selection.",
+      "properties": {
+        "max_active_per_stage": {
+          "default": null,
+          "description": "Hard cap on active rows per stage LP, enforced after the selection\nmethod runs. Rows are evicted least-recently-active first, tie-broken by\nleast-frequently-active; rows added in the current iteration are never\nevicted. Absent (default): no cap.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "row_activity_tolerance": {
+          "default": null,
+          "description": "Minimum dual-multiplier magnitude for a constraint row to count as\nbinding at a solution point. Rows whose dual value falls below this are\ntreated as inactive in activity tracking. Default `0.0` when absent.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "selection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SelectionMethod"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Active selection method and its parameters. Absent/`null` (default)\ndisables row selection."
+        }
+      },
+      "type": "object"
+    },
+    "ScaleStrategy": {
+      "description": "LP constraint-matrix scaling strategy.",
+      "oneOf": [
+        {
+          "const": "off",
+          "description": "No scaling.",
+          "type": "string"
+        },
+        {
+          "const": "solver_scaling",
+          "description": "Solver-managed scaling.",
+          "type": "string"
+        }
+      ]
+    },
+    "SelectionMethod": {
+      "description": "Row-selection method and its method-specific parameters.\n\nThe `method` key selects the method, and each method accepts only its own\nparameters: a parameter of another method is a load-time error, and a\nmisspelled `method` is an `unknown variant` error at parse time.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Level-1: retain any row near-optimal at some visited state.",
+          "properties": {
+            "check_frequency": {
+              "default": 5,
+              "description": "Iterations between periodic pruning checks. Must be `> 0`. Default `5`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "method": {
+              "const": "level1",
+              "type": "string"
+            },
+            "tie_tolerance": {
+              "default": 1e-10,
+              "description": "Tie tolerance: a row is active at a state when within this of the\nbest row value there. Default `1e-10`.",
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "method"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Limited-memory Level-1: retain only the oldest eligible near-optimal row\nper visited state.",
+          "properties": {
+            "check_frequency": {
+              "default": 5,
+              "description": "Iterations between periodic pruning checks. Must be `> 0`. Default `5`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "method": {
+              "const": "lml1",
+              "type": "string"
+            },
+            "tie_tolerance": {
+              "default": 1e-10,
+              "description": "Tie tolerance: a row is active at a state when within this of the\nbest row value there. Default `1e-10`.",
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "method"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Domination: remove rows dominated at all visited states.",
+          "properties": {
+            "check_frequency": {
+              "default": 5,
+              "description": "Iterations between periodic pruning checks. Must be `> 0`. Default `5`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "domination_tolerance": {
+              "description": "Activity tolerance: a row survives if within this of the maximum at\nany visited state. Required (no default).",
+              "format": "double",
+              "type": "number"
+            },
+            "method": {
+              "const": "domination",
+              "type": "string"
+            }
+          },
+          "required": [
+            "method",
+            "domination_tolerance"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Dynamic: a per-solve lazy loop that loads only a small resident subset of\nrows per solve while retaining the full pool.",
+          "properties": {
+            "candidate_recency": {
+              "default": null,
+              "description": "Only rows generated within the last `candidate_recency` iterations are\nscored. Absent (default): unbounded, so every pool row is a candidate,\nwhich preserves exactness. A value `n` (must be `>= 1`) makes the loop\ndeliberately inexact — rows older than the window are never added.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "max_added_per_round": {
+              "default": 10,
+              "description": "Maximum rows added per lazy-solve round. Must be `>= 1`. Default `10`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "method": {
+              "const": "dynamic",
+              "type": "string"
+            },
+            "seed_window": {
+              "default": 5,
+              "description": "Number of most-recent iterations whose rows seed the initial resident\nset. `0` is valid (seeds only the current iteration). Default `5`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "start_iteration": {
+              "default": 2,
+              "description": "First 1-based iteration at which the lazy loop becomes active.\nMust be `>= 1`. Default `2`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "violation_tolerance": {
+              "default": 1e-10,
+              "description": "Violation tolerance for accepting a candidate row. Must be `> 0`.\nDefault `1e-10`.",
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "method"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SimulationConfig": {
+      "additionalProperties": false,
+      "description": "Post-training simulation settings (`config.json → simulation`).",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Enable post-training simulation.",
+          "type": "boolean"
+        },
+        "io_channel_capacity": {
+          "default": 64,
+          "description": "Bounded channel capacity between simulation threads and the I/O writer thread.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scenario_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawScenarioSourceConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Scenario source configuration for the post-training simulation forward pass.\nWhen absent, falls back to the training scenario source."
+        },
+        "selection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SimulationSelection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Phase-level scenario selection. Absent resolves to the default sampled\ncount."
+        },
+        "solver": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PhaseSolverProfileConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Simulation solver profile. Absent leaves the phase's built-in\ntuned profile."
+        }
+      },
+      "type": "object"
+    },
+    "SimulationSelection": {
+      "description": "Post-training scenario selection and its method-specific parameters\n(`config.json → simulation.selection`).\n\nThe `method` key selects how scenarios are chosen: `sampled` draws\n`num_scenarios` trajectories; `enumerated` walks the scenario set\nexhaustively. Each method accepts only its own parameters, so pairing a\ncount with `enumerated` is a parse error.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Sampled scenarios: draw `num_scenarios` trajectories.",
+          "properties": {
+            "method": {
+              "const": "sampled",
+              "type": "string"
+            },
+            "num_scenarios": {
+              "description": "Number of simulation trajectories to draw.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "method",
+            "num_scenarios"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Exhaustive enumeration of the scenario set.",
+          "properties": {
+            "method": {
+              "const": "enumerated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "method"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "StoppingMode": {
+      "description": "How multiple stopping rules combine into a single stop decision\n(`config.json → training.stopping_mode`).",
+      "oneOf": [
+        {
+          "const": "any",
+          "description": "Stop when any configured rule triggers (OR).",
+          "type": "string"
+        },
+        {
+          "const": "all",
+          "description": "Stop when every configured rule other than `iteration_limit` triggers at\nthe same iteration (AND); the largest `iteration_limit` caps the run.",
+          "type": "string"
+        }
+      ]
+    },
+    "StoppingRuleConfig": {
+      "description": "One entry of `training.stopping_rules`. The `type` key selects the rule; a key that belongs to another rule type is a load-time error.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Stop after a fixed number of iterations. **Mandatory** — every rule set must\ncontain at least one `iteration_limit` rule.",
+          "properties": {
+            "limit": {
+              "description": "Maximum iteration count.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "iteration_limit",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "limit"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Stop after a wall-clock time limit.",
+          "properties": {
+            "seconds": {
+              "description": "Time limit in seconds.",
+              "format": "double",
+              "type": "number"
+            },
+            "type": {
+              "const": "time_limit",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "seconds"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Stop when the lower bound stalls (relative improvement falls below tolerance).",
+          "properties": {
+            "iterations": {
+              "description": "Window size (number of past iterations to compare).",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "tolerance": {
+              "description": "Relative improvement threshold.",
+              "format": "double",
+              "type": "number"
+            },
+            "type": {
+              "const": "bound_stalling",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "iterations",
+            "tolerance"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Stop when the exact upper bound is within tolerance of the lower\nbound. At least one of `tolerance` / `relative_tolerance` must be\npresent (checked at `from_config`). Admissible only under enumerated\nforward selection, where the upper bound is the exact bound a gap rule\nrequires rather than a statistical estimate.",
+          "properties": {
+            "relative_tolerance": {
+              "default": null,
+              "description": "Relative gap tolerance in percent (e.g. `0.01` means 0.01%), compared\nagainst `100·gap / max(1, |lower_bound|)` — the same convention the\nreported `gap_percent` uses.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "tolerance": {
+              "default": null,
+              "description": "Absolute gap tolerance, canonical R$.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "gap",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TrainingConfig": {
+      "additionalProperties": false,
+      "description": "Training parameters (`config.json → training`).\n\n`selection` and `stopping_rules` are required; the loader rejects a\nconfiguration that omits either.",
+      "properties": {
+        "cut_selection": {
+          "$ref": "#/$defs/RowSelectionConfig",
+          "default": {
+            "max_active_per_stage": null,
+            "row_activity_tolerance": null,
+            "selection": null
+          },
+          "description": "Row-selection settings."
+        },
+        "enabled": {
+          "default": true,
+          "description": "Enable the training phase. When `false`, skip directly to simulation.",
+          "type": "boolean"
+        },
+        "parallelism": {
+          "$ref": "#/$defs/ParallelismConfig",
+          "default": {
+            "backward_scheduler": {
+              "method": "by_scenario"
+            }
+          },
+          "description": "Parallel-execution settings."
+        },
+        "scenario_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawScenarioSourceConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Scenario source configuration for the training forward pass.\nWhen absent, all classes default to `in_sample`."
+        },
+        "selection": {
+          "description": "Phase-level scenario selection. The forward-pass count lives in the\n`sampled` arm; absent is a missing-count load error.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "description": "Sampled forward passes: `forward_passes` trajectories per iteration.",
+              "properties": {
+                "forward_passes": {
+                  "description": "Number of forward-pass trajectories per iteration.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "method": {
+                  "const": "sampled",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "method",
+                "forward_passes"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Exhaustive enumeration of the scenario openings.",
+              "properties": {
+                "method": {
+                  "const": "enumerated",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "method"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "solver": {
+          "$ref": "#/$defs/TrainingSolverConfig",
+          "default": {
+            "backward": null,
+            "forward": null,
+            "retry_max_attempts": 5,
+            "retry_time_budget_seconds": 30.0
+          },
+          "description": "LP solver retry settings and optional per-phase solver profiles."
+        },
+        "stopping_mode": {
+          "$ref": "#/$defs/StoppingMode",
+          "default": "any",
+          "description": "How multiple stopping rules combine: `any` (OR) or `all` (AND over every\nrule except `iteration_limit`, which caps the run)."
+        },
+        "stopping_rules": {
+          "contains": {
+            "properties": {
+              "type": {
+                "const": "iteration_limit"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "description": "List of stopping rule configurations.\n\n**Mandatory** — no default. Must contain at least one `iteration_limit` rule.",
+          "items": {
+            "$ref": "#/$defs/StoppingRuleConfig"
+          },
+          "type": "array"
+        },
+        "tree_seed": {
+          "default": null,
+          "description": "Random seed for the opening scenario tree (reproducible training).",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "stopping_rules",
+        "selection"
+      ],
+      "type": "object"
+    },
+    "TrainingSolverConfig": {
+      "additionalProperties": false,
+      "description": "LP solver settings (`config.json → training.solver`): retry policy plus\noptional per-phase solver profiles.",
+      "properties": {
+        "backward": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PhaseSolverProfileConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Backward-pass solver profile. Absent leaves the phase's built-in\ntuned profile."
+        },
+        "forward": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PhaseSolverProfileConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Forward-pass solver profile. Absent leaves the phase's built-in\ntuned profile."
+        },
+        "retry_max_attempts": {
+          "default": 5,
+          "description": "Maximum solver retry attempts before propagating a hard error.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "retry_time_budget_seconds": {
+          "default": 30.0,
+          "description": "Total time budget in seconds across all retry attempts for one solve.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "UpperBoundEvaluationConfig": {
+      "additionalProperties": false,
+      "description": "Upper-bound evaluation settings (`config.json → upper_bound_evaluation`).",
+      "properties": {
+        "enabled": {
+          "default": null,
+          "description": "Enable vertex-based inner approximation for upper bound computation.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "initial_iteration": {
+          "default": null,
+          "description": "First iteration to compute the upper bound.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "interval_iterations": {
+          "default": null,
+          "description": "Iterations between upper-bound evaluations.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lipschitz": {
+          "$ref": "#/$defs/LipschitzConfig",
+          "default": {
+            "fallback_value": null,
+            "mode": null,
+            "scale_factor": null
+          },
+          "description": "Lipschitz constant settings."
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Root object of `config.json`.\n\nEvery section except `training` is optional; an absent section takes its defaults.",
+  "properties": {
+    "$schema": {
+      "description": "JSON schema URI — informational, not validated.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "estimation": {
+      "$ref": "#/$defs/EstimationConfig",
+      "default": {
+        "max_coefficient_magnitude": null,
+        "max_order": 6,
+        "min_observations_per_season": 30,
+        "order_selection": "pacf"
+      },
+      "description": "Time series estimation settings for automatic model parameter fitting."
+    },
+    "exports": {
+      "$ref": "#/$defs/ExportsConfig",
+      "default": {
+        "fpha_deviation_points": false,
+        "states": false,
+        "stochastic": false
+      },
+      "description": "Export flags controlling which outputs are written to disk."
+    },
+    "modeling": {
+      "$ref": "#/$defs/ModelingConfig",
+      "default": {
+        "cost_scale_factor": null,
+        "inflow_non_negativity": {
+          "method": "penalty"
+        }
+      },
+      "description": "Modeling options (inflow non-negativity treatment)."
+    },
+    "policy": {
+      "$ref": "#/$defs/PolicyConfig",
+      "default": {
+        "boundary": null,
+        "checkpointing": {
+          "compress": null,
+          "enabled": null,
+          "initial_iteration": null,
+          "interval_iterations": null,
+          "store_basis": null
+        },
+        "mode": "fresh",
+        "path": "./policy"
+      },
+      "description": "Policy directory settings (warm-start / resume)."
+    },
+    "simulation": {
+      "$ref": "#/$defs/SimulationConfig",
+      "default": {
+        "enabled": false,
+        "io_channel_capacity": 64,
+        "scenario_source": null,
+        "selection": null,
+        "solver": null
+      },
+      "description": "Post-training simulation settings."
+    },
+    "training": {
+      "$ref": "#/$defs/TrainingConfig",
+      "description": "Training parameters — contains mandatory fields."
+    },
+    "upper_bound_evaluation": {
+      "$ref": "#/$defs/UpperBoundEvaluationConfig",
+      "default": {
+        "enabled": null,
+        "initial_iteration": null,
+        "interval_iterations": null,
+        "lipschitz": {
+          "fallback_value": null,
+          "mode": null,
+          "scale_factor": null
+        }
+      },
+      "description": "Upper-bound evaluation via inner approximation."
+    }
+  },
+  "required": [
+    "training"
+  ],
+  "title": "Config",
+  "type": "object"
+}

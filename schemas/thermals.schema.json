@@ -1,0 +1,156 @@
+{
+  "$defs": {
+    "RawAnticipatedConfig": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "description": "Stage-count lead; the calendar is never consulted. Must be ≥ 1.",
+          "properties": {
+            "lead_stages": {
+              "description": "Number of stages of dispatch anticipation. Must be ≥ 1; a negative value\nis a parse error.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "lead_stages"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Physical lead time in hours, delivery-anchored. Must be finite and > 0.0.",
+          "properties": {
+            "lead_time_hours": {
+              "description": "Physical lead time in hours. Must be finite and > 0.0.",
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "lead_time_hours"
+          ],
+          "type": "object"
+        }
+      ],
+      "description": "Anticipated dispatch configuration: `{\"lead_stages\": N}` or\n`{\"lead_time_hours\": H}`, never both."
+    },
+    "RawThermal": {
+      "additionalProperties": false,
+      "description": "A single thermal plant entry.",
+      "properties": {
+        "anticipated_config": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawAnticipatedConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Anticipated dispatch configuration. Absent = no anticipation."
+        },
+        "bus_id": {
+          "description": "Bus to which this plant's generation is injected.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "cost_per_mwh": {
+          "description": "Marginal cost of generation ($/`MWh`). Must be ≥ 0.0.",
+          "format": "double",
+          "type": "number"
+        },
+        "entry_stage_id": {
+          "default": null,
+          "description": "Stage index when the plant enters service. Absent or null = always exists.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "exit_stage_id": {
+          "default": null,
+          "description": "Stage index when the plant is decommissioned. Absent or null = never.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "generation": {
+          "$ref": "#/$defs/RawThermalGeneration",
+          "description": "Generation bounds."
+        },
+        "id": {
+          "description": "Thermal plant identifier. Must be unique within the file.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Human-readable plant name.",
+          "type": "string"
+        },
+        "operational_start_date": {
+          "description": "Date the entity enters service (ISO 8601 `YYYY-MM-DD`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "operational_start_date",
+        "bus_id",
+        "cost_per_mwh",
+        "generation"
+      ],
+      "type": "object"
+    },
+    "RawThermalGeneration": {
+      "additionalProperties": false,
+      "description": "The generation bounds sub-object.",
+      "properties": {
+        "max_mw": {
+          "description": "Maximum generation (installed capacity) (MW).",
+          "format": "double",
+          "type": "number"
+        },
+        "min_mw": {
+          "description": "Minimum generation (minimum stable load) (MW).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "min_mw",
+        "max_mw"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Root object of `thermals.json`.",
+  "properties": {
+    "$schema": {
+      "description": "`$schema` field — informational, not validated.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "thermals": {
+      "description": "Array of thermal plant entries.",
+      "items": {
+        "$ref": "#/$defs/RawThermal"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "thermals"
+  ],
+  "title": "RawThermalFile",
+  "type": "object"
+}

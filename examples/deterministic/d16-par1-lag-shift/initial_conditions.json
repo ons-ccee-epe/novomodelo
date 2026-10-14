@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/initial_conditions.schema.json",
+  "storage": [],
+  "filling_storage": [],
+  "recent_observations": [
+    {
+      "hydro_id": 0,
+      "start_date": "2023-12-01",
+      "end_date": "2024-01-01",
+      "value_m3s": 200.0
+    }
+  ]
+}

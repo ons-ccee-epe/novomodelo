@@ -1,0 +1,56 @@
+[package]
+name = "novomodelo-solver"
+description = "LP/MIP solver abstraction layer with HiGHS backend for power system optimization"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["linear-programming", "optimization", "solver", "highs", "lp"]
+categories = ["science", "mathematics"]
+
+[features]
+default = ["highs"]
+# LP backend selection is mutually exclusive: enable exactly one of `highs` or
+# `clp`. Enabling both is rejected at compile time by a `compile_error!` in
+# `lib.rs`; enabling neither is likewise rejected. As a consequence, building
+# `novomodelo-solver` with `--all-features` fails by design.
+#
+# Gates the HiGHS backend (build, FFI, and `HighsSolver`/`HighsProfile` exports).
+# On by default. Select CLP instead with `--no-default-features --features clp`.
+highs = []
+# Gates the optional CLP/CoinUtils solver backend (build, FFI, and
+# `ClpSolver`/`ClpProfile` exports). Off by default and mutually exclusive with
+# `highs`; select it with `--no-default-features --features clp`.
+clp = []
+# Exposes FFI option-setting helpers for integration tests.
+# Must NOT be enabled in production builds.
+test-support = []
+
+# Override unsafe_code to "allow" for this crate because FFI bindings to HiGHS
+# require unsafe blocks. All other workspace lints are manually replicated here
+# since Cargo does not permit combining `lints.workspace = true` with per-lint
+# overrides in the same crate manifest.
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "warn"
+too_many_arguments = "deny"
+
+[dependencies]
+
+[dev-dependencies]
+matrixmultiply = { workspace = true }
+
+[build-dependencies]
+cmake = "0.1"
+cc = "1.2"

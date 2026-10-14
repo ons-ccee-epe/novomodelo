@@ -1,0 +1,56 @@
+name: Invariance Shuffle Matrix
+
+on:
+  workflow_dispatch:
+  # Optional nightly run — uncomment to dispatch automatically.
+  # schedule:
+  #   - cron: "0 3 * * *"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  shuffle-matrix-highs:
+    name: Shuffle Matrix (HiGHS)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - name: Full shuffle matrix (HiGHS)
+        run: |
+          cargo nextest run -p novomodelo-sddp --features "slow-tests test-support" --test parity \
+            -E 'test(shuffle_matrix)' --run-ignored ignored-only
+
+  shuffle-matrix-clp:
+    name: Shuffle Matrix (CLP)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: clp
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - name: Full shuffle matrix (CLP)
+        run: |
+          cargo nextest run -p novomodelo-sddp --no-default-features --features "clp slow-tests test-support" \
+            --test parity -E 'test(shuffle_matrix)' --run-ignored ignored-only

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/stages.schema.json",
+  "policy_graph": {
+    "type": "finite_horizon",
+    "annual_discount_rate": 0.0
+  },
+  "stages": [
+    {
+      "id": 0,
+      "start_date": "2024-01-01",
+      "end_date": "2024-02-01",
+      "blocks": [
+        {
+          "id": 0,
+          "name": "PEAK",
+          "hours": 100
+        },
+        {
+          "id": 1,
+          "name": "OFFPEAK",
+          "hours": 300
+        }
+      ],
+      "num_openings": 1
+    },
+    {
+      "id": 1,
+      "start_date": "2024-02-01",
+      "end_date": "2024-03-01",
+      "blocks": [
+        {
+          "id": 0,
+          "name": "SINGLE",
+          "hours": 400
+        }
+      ],
+      "num_openings": 1
+    }
+  ]
+}

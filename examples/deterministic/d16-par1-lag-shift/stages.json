@@ -1,0 +1,136 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/stages.schema.json",
+  "policy_graph": {
+    "type": "finite_horizon",
+    "annual_discount_rate": 0.0
+  },
+  "pre_study_stages": [
+    {
+      "id": -1,
+      "start_date": "2023-12-01",
+      "end_date": "2024-01-01",
+      "season_id": 11
+    }
+  ],
+  "stages": [
+    {
+      "id": 0,
+      "start_date": "2024-01-01",
+      "end_date": "2024-02-01",
+      "season_id": 0,
+      "blocks": [
+        {
+          "id": 0,
+          "name": "SINGLE",
+          "hours": 730
+        }
+      ],
+      "state_variables": {
+        "storage": true,
+        "inflow_lags": true
+      },
+      "num_openings": 1
+    },
+    {
+      "id": 1,
+      "start_date": "2024-02-01",
+      "end_date": "2024-03-01",
+      "season_id": 1,
+      "blocks": [
+        {
+          "id": 0,
+          "name": "SINGLE",
+          "hours": 730
+        }
+      ],
+      "state_variables": {
+        "storage": true,
+        "inflow_lags": true
+      },
+      "num_openings": 1
+    },
+    {
+      "id": 2,
+      "start_date": "2024-03-01",
+      "end_date": "2024-04-01",
+      "season_id": 2,
+      "blocks": [
+        {
+          "id": 0,
+          "name": "SINGLE",
+          "hours": 730
+        }
+      ],
+      "state_variables": {
+        "storage": true,
+        "inflow_lags": true
+      },
+      "num_openings": 1
+    }
+  ],
+  "season_definitions": {
+    "cycle_type": "monthly",
+    "seasons": [
+      {
+        "id": 0,
+        "month_start": 1,
+        "label": "Month1"
+      },
+      {
+        "id": 1,
+        "month_start": 2,
+        "label": "Month2"
+      },
+      {
+        "id": 2,
+        "month_start": 3,
+        "label": "Month3"
+      },
+      {
+        "id": 3,
+        "month_start": 4,
+        "label": "Month4"
+      },
+      {
+        "id": 4,
+        "month_start": 5,
+        "label": "Month5"
+      },
+      {
+        "id": 5,
+        "month_start": 6,
+        "label": "Month6"
+      },
+      {
+        "id": 6,
+        "month_start": 7,
+        "label": "Month7"
+      },
+      {
+        "id": 7,
+        "month_start": 8,
+        "label": "Month8"
+      },
+      {
+        "id": 8,
+        "month_start": 9,
+        "label": "Month9"
+      },
+      {
+        "id": 9,
+        "month_start": 10,
+        "label": "Month10"
+      },
+      {
+        "id": 10,
+        "month_start": 11,
+        "label": "Month11"
+      },
+      {
+        "id": 11,
+        "month_start": 12,
+        "label": "Month12"
+      }
+    ]
+  }
+}

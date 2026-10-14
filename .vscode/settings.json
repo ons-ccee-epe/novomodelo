@@ -1,0 +1,14 @@
+{
+  // novomodelo-sddp's integration tests (conformance.rs, hydro_sim.rs,
+  // simulation_pipeline_integration.rs) call crate-internal fixtures in the
+  // `novomodelo_sddp::test_support` module, which is gated
+  // `#[cfg(any(test, feature = "test-support"))]`. Enable the feature so
+  // rust-analyzer resolves those calls; without it the editor reports
+  // "could not find `test_support` in `novomodelo_sddp`" even though `cargo test`
+  // (which passes --features test-support) and CI are green.
+  //
+  // Do NOT use `rust-analyzer.cargo.allFeatures` here: the `highs` and `clp`
+  // solver backends are mutually exclusive (a `compile_error!`), so enabling all
+  // features fails to build.
+  "rust-analyzer.cargo.features": ["test-support"]
+}

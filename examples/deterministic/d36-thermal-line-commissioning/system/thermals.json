@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/thermals.schema.json",
+  "thermals": [
+    {
+      "id": 0,
+      "name": "T0 (must-run, commissioned stage 1 only)",
+      "operational_start_date": "2020-01-01",
+      "bus_id": 0,
+      "entry_stage_id": 1,
+      "exit_stage_id": 2,
+      "generation": {
+        "min_mw": 10.0,
+        "max_mw": 100.0
+      },
+      "cost_per_mwh": 50.0
+    }
+  ]
+}
