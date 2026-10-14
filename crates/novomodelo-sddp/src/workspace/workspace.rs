@@ -1058,30 +1058,40 @@ impl BasisStore {
         &mut self.bases[scenario * self.num_nodes + node.0]
     }
 
-    /// Split the store into `n_workers` disjoint mutable sub-views by scenario
-    /// range, one per worker.
+    /// Split the first `n_scenarios` rows of the store into `n_workers`
+    /// disjoint mutable sub-views by scenario range, one per worker; the rows
+    /// from `n_scenarios` on belong to no slice.
     ///
     /// Worker `w` receives the scenarios in the range produced by
-    /// `partition(num_scenarios, n_workers, w)`. Each [`BasisStoreSliceMut`]
-    /// carries its scenario offset so that callers can index using absolute
-    /// scenario indices.
+    /// `partition(n_scenarios, n_workers, w)`, the same split a caller applies
+    /// to its `n_scenarios` scenarios, so every worker's scenarios fall in its
+    /// own slice. Each [`BasisStoreSliceMut`] carries its scenario offset so
+    /// that callers can index using absolute scenario indices.
     ///
-    /// When `n_workers` exceeds `num_scenarios`, some workers receive empty
+    /// When `n_workers` exceeds `n_scenarios`, some workers receive empty
     /// slices (`start == end`), which is valid — their slice covers zero
     /// scenarios.
     ///
     /// # Panics (debug only)
     ///
-    /// Panics if `n_workers == 0`.
+    /// Panics if `n_workers == 0` or `n_scenarios > num_scenarios()`.
     #[must_use]
-    pub fn split_workers_mut(&mut self, n_workers: usize) -> Vec<BasisStoreSliceMut<'_>> {
+    pub fn split_workers_mut(
+        &mut self,
+        n_workers: usize,
+        n_scenarios: usize,
+    ) -> Vec<BasisStoreSliceMut<'_>> {
         debug_assert!(n_workers > 0, "n_workers must be > 0");
-        let total_scenarios = self.num_scenarios();
+        debug_assert!(
+            n_scenarios <= self.num_scenarios(),
+            "split of {n_scenarios} scenarios exceeds the store's {} rows",
+            self.num_scenarios()
+        );
         let mut slices = Vec::with_capacity(n_workers);
         let mut bases_rem = self.bases.as_mut_slice();
 
         for w in 0..n_workers {
-            let (start, end) = partition(total_scenarios, n_workers, w);
+            let (start, end) = partition(n_scenarios, n_workers, w);
             let count = end - start;
             let chunk = count * self.num_nodes;
             let (bases_left, bases_rest) = bases_rem.split_at_mut(chunk);
@@ -1583,7 +1593,7 @@ mod tests {
         // 4 scenarios, 3 stages, 2 workers.
         // Worker 0 covers scenarios 0..2; worker 1 covers scenarios 2..4.
         let mut store = BasisStore::new(4, 3);
-        let mut slices = store.split_workers_mut(2);
+        let mut slices = store.split_workers_mut(2, 4);
 
         // Worker 0 writes to scenario 0 stage 1.
         *slices[0].get_mut(0, NodePos(1)) = Some(CapturedBasis::new(2, 1, 0, 0, 0, NodeId(0)));
@@ -1608,7 +1618,7 @@ mod tests {
     #[test]
     fn basis_store_split_single_worker() {
         let mut store = BasisStore::new(3, 2);
-        let mut slices = store.split_workers_mut(1);
+        let mut slices = store.split_workers_mut(1, 3);
         *slices[0].get_mut(2, NodePos(1)) = Some(CapturedBasis::new(1, 0, 0, 0, 0, NodeId(0)));
         drop(slices);
         assert!(store.get(2, NodePos(1)).is_some());
@@ -1618,7 +1628,7 @@ mod tests {
     fn basis_store_split_more_workers_than_scenarios() {
         // 2 scenarios, 4 workers → workers 2 and 3 receive empty slices.
         let mut store = BasisStore::new(2, 3);
-        let slices = store.split_workers_mut(4);
+        let slices = store.split_workers_mut(4, 2);
         assert_eq!(slices.len(), 4);
         // Workers 0 and 1 cover 1 scenario each; workers 2 and 3 cover 0.
         assert_eq!(slices[0].bases.len(), 3); // 1 scenario × 3 stages
@@ -1631,7 +1641,7 @@ mod tests {
     fn basis_store_slice_offset_correct() {
         // 6 scenarios, 2 stages, 3 workers → 2 scenarios each.
         let mut store = BasisStore::new(6, 2);
-        let mut slices = store.split_workers_mut(3);
+        let mut slices = store.split_workers_mut(3, 6);
 
         // Worker 1 covers absolute scenarios 2..4.
         *slices[1].get_mut(2, NodePos(0)) = Some(CapturedBasis::new(1, 0, 0, 0, 0, NodeId(0)));
@@ -1642,6 +1652,27 @@ mod tests {
         assert!(store.get(3, NodePos(1)).is_some());
         assert!(store.get(0, NodePos(0)).is_none());
         assert!(store.get(4, NodePos(0)).is_none());
+    }
+
+    #[test]
+    fn a_split_over_fewer_scenarios_than_rows_keeps_each_scenario_in_its_own_row() {
+        let mut store = BasisStore::new(3, 2);
+        let mut slices = store.split_workers_mut(2, 2);
+        assert_eq!(slices[0].scenario_window(), (0, 1));
+        assert_eq!(slices[1].scenario_window(), (1, 2));
+
+        *slices[1].get_mut(1, NodePos(1)) = Some(CapturedBasis::new(1, 0, 0, 0, 0, NodeId(0)));
+        drop(slices);
+
+        assert!(
+            store.get(1, NodePos(1)).is_some(),
+            "scenario 1 lands in row 1"
+        );
+        assert!(
+            store.get(2, NodePos(1)).is_none(),
+            "the unsplit row 2 is untouched"
+        );
+        assert!(store.get(0, NodePos(1)).is_none());
     }
 
     #[test]

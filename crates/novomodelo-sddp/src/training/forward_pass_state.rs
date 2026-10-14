@@ -432,7 +432,9 @@ impl ForwardPassState {
             record_slices.push(slice);
             remaining = rest;
         }
-        let basis_slices = inputs.basis_store.split_workers_mut(n_workers);
+        let basis_slices = inputs
+            .basis_store
+            .split_workers_mut(n_workers, forward_passes);
 
         let root_node = Self::resolve_root_node(training_ctx)?;
 
@@ -989,6 +991,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use chrono::NaiveDate;
+    use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
     use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
     use novomodelo_core::scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
@@ -1020,6 +1023,7 @@ mod tests {
             StageContextFixture, equipment_free_geometry, permissive_state_boxes, state_layout,
             study_dims,
         },
+        training::session::rank_distribution::RankDistribution,
         trajectory::TrajectoryRecord,
         workspace::{BackwardAccumulators, BasisStore, ScratchBuffers, SolverWorkspace},
     };
@@ -1577,7 +1581,7 @@ mod tests {
         // Mutable per-call state: independent allocations, not borrows of fx.
         let mut ws = single_workspace(MockSolver::always_ok(fixed_solution_1_0()), &fx.state);
         let mut basis_store = BasisStore::new(fx.n_scenarios, fx.n_stages);
-        let mut basis_slices = basis_store.split_workers_mut(1);
+        let mut basis_slices = basis_store.split_workers_mut(1, fx.n_scenarios);
         let mut basis_slice = basis_slices.remove(0);
         let mut records: Vec<TrajectoryRecord> = (0..fx.n_scenarios * fx.n_stages)
             .map(|_| TrajectoryRecord {
@@ -2079,7 +2083,7 @@ mod tests {
         };
         let mut ws = single_workspace(MockSolver::always_ok(solution), &state);
         let mut basis_store = BasisStore::new(1, 1);
-        let mut basis_slices = basis_store.split_workers_mut(1);
+        let mut basis_slices = basis_store.split_workers_mut(1, 1);
         let mut basis_slice = basis_slices.remove(0);
         let mut records: Vec<TrajectoryRecord> = vec![TrajectoryRecord {
             primal: Vec::new(),
@@ -2356,7 +2360,7 @@ mod tests {
         // Basis store axis is NODE: the K-fan visits leaf nodes at positions
         // beyond `num_stages`, so the store must span every node, not the stages.
         let mut basis_store = BasisStore::new(forward_passes, node_graph.nodes.len());
-        let mut basis_slices = basis_store.split_workers_mut(1);
+        let mut basis_slices = basis_store.split_workers_mut(1, forward_passes);
         let mut basis_slice = basis_slices.remove(0);
         let mut records: Vec<TrajectoryRecord> = (0..forward_passes * 2)
             .map(|_| TrajectoryRecord {
@@ -2521,5 +2525,125 @@ mod tests {
             ForwardPassState::require_terminal_node(&training_ctx).is_ok(),
             "a zero-stage horizon never reaches the alive-node check"
         );
+    }
+
+    /// One rank of a two-rank world: `RankDistribution::new` reads nothing else.
+    struct RankOfTwo(usize);
+
+    impl Communicator for RankOfTwo {
+        fn allgatherv<T: CommData>(
+            &self,
+            _send: &[T],
+            _recv: &mut [T],
+            _counts: &[usize],
+            _displs: &[usize],
+        ) -> Result<(), CommError> {
+            unreachable!("no collective is issued")
+        }
+
+        fn allreduce<T: CommData>(
+            &self,
+            _send: &[T],
+            _recv: &mut [T],
+            _op: ReduceOp,
+        ) -> Result<(), CommError> {
+            unreachable!("no collective is issued")
+        }
+
+        fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
+            unreachable!("no collective is issued")
+        }
+
+        fn barrier(&self) -> Result<(), CommError> {
+            unreachable!("no collective is issued")
+        }
+
+        fn rank(&self) -> usize {
+            self.0
+        }
+
+        fn size(&self) -> usize {
+            2
+        }
+
+        fn abort(&self, error_code: i32) -> ! {
+            std::process::exit(error_code)
+        }
+    }
+
+    #[test]
+    fn a_rank_with_fewer_passes_than_store_rows_keeps_each_scenario_basis_in_its_own_row() {
+        let ranks = RankDistribution::new(&RankOfTwo(1), 5);
+        assert!(
+            ranks.my_actual_fwd < ranks.max_local_fwd,
+            "the fixture must leave this rank a row with no forward pass"
+        );
+        let n_workers = 2;
+        let fx = ForwardFixture::new();
+        let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
+        let geometry = equipment_free_geometry(&vec![0; fx.templates.len()]);
+        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let ctx = fixture.ctx();
+        let study_dims = study_dims();
+        let node_graph = crate::test_support::chain_node_graph(&fx.stochastic);
+        let training_ctx = terminal_boundary_test_ctx(
+            &fx.stochastic,
+            &node_graph,
+            &fx.state,
+            &fx.stages,
+            &study_dims,
+            &fx.initial_state,
+        );
+
+        let mut workspaces: Vec<SolverWorkspace<MockSolver>> = (0..n_workers)
+            .map(|w| {
+                let mut ws =
+                    single_workspace(MockSolver::always_ok(fixed_solution_1_0()), &fx.state);
+                ws.worker_id = i32::try_from(w).expect("worker id fits i32");
+                ws
+            })
+            .collect();
+        let mut basis_store = BasisStore::new(ranks.max_local_fwd, fx.n_stages);
+        let mut records: Vec<TrajectoryRecord> = (0..ranks.my_actual_fwd * fx.n_stages)
+            .map(|_| TrajectoryRecord {
+                primal: Vec::new(),
+                dual: Vec::new(),
+                stage_cost: 0.0,
+                node_id: NodeId(0),
+                state: Vec::new(),
+            })
+            .collect();
+
+        let mut state = ForwardPassState::new(n_workers, fx.n_stages, ranks.max_local_fwd);
+        let mut inputs = ForwardPassInputs {
+            workspaces: &mut workspaces,
+            basis_store: &mut basis_store,
+            ctx: &ctx,
+            frozen: &fx.templates,
+            fcf: &fx.fcf,
+            training_ctx: &training_ctx,
+            records: &mut records,
+            local_forward_passes: ranks.my_actual_fwd,
+            total_forward_passes: ranks.num_total_forward_passes,
+            iteration: 1,
+            fwd_offset: ranks.my_fwd_offset,
+            event_sender: None,
+        };
+        let _ = state.run(&mut inputs).expect("forward pass must not error");
+
+        for t in 0..fx.n_stages {
+            for m in 0..ranks.my_actual_fwd {
+                assert!(
+                    basis_store.get(m, NodePos(t)).is_some(),
+                    "scenario {m} must store its stage-{t} basis in row {m}"
+                );
+            }
+            for m in ranks.my_actual_fwd..ranks.max_local_fwd {
+                assert!(
+                    basis_store.get(m, NodePos(t)).is_none(),
+                    "row {m} has no forward pass on this rank and must stay empty"
+                );
+            }
+        }
     }
 }
