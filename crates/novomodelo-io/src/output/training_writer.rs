@@ -17,7 +17,7 @@ use arrow::array::{
     ArrayRef, Float64Builder, Int32Builder, Int64Builder, RecordBatch, StringBuilder,
 };
 
-use super::{IterationRecord, TrainingOutput, WorkerTimingRecord};
+use super::{IterationRecord, RowSelectionRecord, TrainingOutput, WorkerTimingRecord};
 use crate::output::atomic::{write_batch_atomic, write_parquet_atomic};
 use crate::output::error::OutputError;
 use crate::output::fixed_delivery::FIXED_DELIVERIES_FILE;
@@ -25,7 +25,7 @@ use crate::output::generic_constraints_echo::GENERIC_CONSTRAINT_ECHO_FILE;
 use crate::output::hydro_models::{
     EVAPORATION_MODELS_FILE, FPHA_DEVIATION_POINTS_FILE, FPHA_HYPERPLANES_FILE,
 };
-use crate::output::schemas::{convergence_schema, iteration_timing_schema};
+use crate::output::schemas::{convergence_schema, iteration_timing_schema, row_selection_schema};
 use crate::output::simulation_writer::{remove_dir_if_empty, remove_file_if_present};
 use crate::output::solver_stats_writer::{
     SOLVER_ITERATIONS_FILE, SOLVER_RETRY_HISTOGRAM_FILE, TRAINING_SOLVER_DIR,
@@ -308,13 +308,13 @@ fn build_iteration_timing_batch(
 /// Returns [`OutputError`] on filesystem or serialization failures.
 pub fn write_row_selection_records(
     output_dir: &Path,
-    records: &[super::RowSelectionRecord],
+    records: &[RowSelectionRecord],
 ) -> Result<(), OutputError> {
     if records.is_empty() {
         return Ok(());
     }
 
-    let schema = Arc::new(super::schemas::row_selection_schema());
+    let schema = Arc::new(row_selection_schema());
 
     let n = records.len();
     let mut iteration_builder = Int32Builder::with_capacity(n);

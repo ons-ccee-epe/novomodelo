@@ -37,15 +37,7 @@ const SIMULATION_TEMPLATE: &str =
 
 /// Format a floating-point value as scientific notation (6 significant digits).
 fn fmt_sci(v: f64) -> String {
-    let raw = format!("{v:.5e}");
-    if let Some(pos) = raw.find('e') {
-        let mantissa = &raw[..pos];
-        let exp_str = &raw[pos + 1..];
-        if let Ok(exp) = exp_str.parse::<i32>() {
-            return format!("{mantissa}e{exp}");
-        }
-    }
-    raw
+    format!("{v:.5e}")
 }
 
 /// Format a millisecond count as `HH:MM:SS`.

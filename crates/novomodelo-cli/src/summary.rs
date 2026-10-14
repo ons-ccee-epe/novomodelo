@@ -364,8 +364,8 @@ pub struct TrainingSummary {
     pub total_rows_loaded: u64,
 
     /// Sum of resident rows-in-LP over every lazy-selection solve (reduced across
-    /// ranks). Zero for pool-deactivating methods — the renderer uses zero to gate
-    /// the rows-in-LP line; only the `dynamic` method populates it.
+    /// ranks). Zero for pool-deactivating methods; only the `dynamic` method
+    /// populates it.
     pub rows_in_lp_total: u64,
 
     /// Number of lazy-selection solves (reduced across ranks).
@@ -570,16 +570,11 @@ fn format_phase_solve_wait(
         return String::new();
     }
     let solve = per_worker_mean_seconds(solve_cumulative, parallelism, phase_wall);
-    let wait_pct = if phase_wall > 0.0 {
-        100.0 * wait / phase_wall
-    } else {
-        0.0
-    };
     format!(
         "   solve {} \u{b7} wait {} ({} of phase)",
         format_split_duration(solve),
         format_split_duration(wait),
-        format_pct(wait_pct)
+        format_pct(pct_of(wait, phase_wall))
     )
 }
 
@@ -748,7 +743,6 @@ fn simulation_summary_lines(sim: &SimulationSummary) -> Vec<String> {
         sim.completed, sim.failed
     ));
     if let (Some(mean), Some(std)) = (sim.mean_cost, sim.std_cost) {
-        #[allow(clippy::cast_precision_loss)]
         let ci95 = if sim.n_scenarios >= 2 {
             1.96 * std / (f64::from(sim.n_scenarios)).sqrt()
         } else {

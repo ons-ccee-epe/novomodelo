@@ -44,7 +44,7 @@ fn fixture_priced_date(pool: u32) -> NaiveDate {
 /// `graph_nodes` (`(node_id, stage_id, pool_id)` triples all naming
 /// `pool_id`): `graph_stage_id` is their shared `stage_id`; `node_id` is the
 /// sole owner's id, or [`STAGE_CUTS_NODE_ID_SENTINEL`] when more than one node
-/// owns the pool — mirroring the real writer's `sole_pool_owner_node_id`, so
+/// owns the pool — mirroring `NodeGraph::sole_pool_owner`, so
 /// `load_boundary_cuts` resolves and single-node-checks this pool exactly as
 /// it would a genuinely exported one. Carries no entity manifest (the
 /// identity check is out of this probe's scope; covered by the

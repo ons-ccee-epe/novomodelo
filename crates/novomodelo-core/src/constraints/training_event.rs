@@ -8,10 +8,12 @@
 //!
 //! ## Design principles
 //!
-//! - **Zero-overhead when unused.** The event channel uses
-//!   `Option<std::sync::mpsc::Sender<TrainingEvent>>`: when `None`, no events are
-//!   emitted and no allocation occurs. When `Some(sender)`, events are moved into
-//!   the channel at each lifecycle step boundary.
+//! - **Optional channel.** The event channel uses
+//!   `Option<std::sync::mpsc::Sender<TrainingEvent>>`: when `None`, no event is
+//!   sent. The channel allocates nothing then, but an emitting site builds the
+//!   event first unless it checks for a sender, so a `String` or `Vec` payload
+//!   allocates either way. When `Some(sender)`, events are moved into the channel
+//!   at each lifecycle step boundary.
 //! - **No per-event timestamps.** Consumers capture wall-clock time upon receipt.
 //!   This avoids `clock_gettime` syscall overhead on the hot path. The single
 //!   exception is [`TrainingEvent::TrainingStarted::timestamp`], which records the
@@ -132,8 +134,8 @@ pub struct PoolRowCounts {
 /// | 2    | [`Self::ForwardSyncComplete`]  | Global allreduce of bounds done                        |
 /// | 3    | [`Self::BackwardPassComplete`] | Backward sweep done                                    |
 /// | 4    | [`Self::PolicySyncComplete`]      | Row-sync allgatherv done                                    |
-/// | 4a   | [`Self::PolicySelectionComplete`] | Row-selection done (conditional on `should_run`)       |
-/// | 4b   | [`Self::PolicyBudgetEnforcementComplete`] | Budget cap enforcement done (every iteration when budget is set) |
+/// | 4a   | [`Self::PolicyBudgetEnforcementComplete`] | Budget cap enforcement done (every iteration when budget is set) |
+/// | 4b   | [`Self::PolicySelectionComplete`] | Row-selection done (conditional on `should_run`)       |
 /// | 4c   | [`Self::PolicyTemplateFreezeComplete`] | Per-stage frozen template rebuild done (every iteration) |
 /// | 4d   | [`Self::PolicyPoolSummary`] | Per-pool row counts (every iteration when a selection method or a cap is set) |
 /// | 5    | [`Self::ConvergenceUpdate`]    | Stopping rules evaluated                               |

@@ -245,7 +245,8 @@ pub struct RowPoolStatistics {
     /// Number of rows still active in the pool at the end of training.
     pub total_active: u64,
 
-    /// Highest number of active rows observed at any point during training.
+    /// Highest number of active rows at an iteration's row exchange or after its
+    /// selection and cap.
     pub peak_active: u64,
 
     /// Total rows currently active in the LP.

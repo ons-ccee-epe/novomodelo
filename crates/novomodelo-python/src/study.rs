@@ -291,7 +291,7 @@ impl Study {
     // converts under the GIL and `run_via_study` already holds.
     #[allow(clippy::needless_pass_by_value)]
     pub(crate) fn new_native(
-        case_dir: &std::path::Path,
+        case_dir: &Path,
         output_dir: Option<PathBuf>,
         threads: Option<u32>,
         overrides: Option<serde_json::Map<String, serde_json::Value>>,

@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use novomodelo_core::TrainingEvent;
 use novomodelo_io::{
     IterationRecord, MetadataTrainingSolveStats, RowPoolStatistics, RowSelectionRecord, RunStatus,
-    TrainingOutput,
+    TrainingOutput, WorkerTimingRecord,
 };
 
 use crate::stopping_rule::StopMask;
@@ -489,7 +489,7 @@ pub fn sum_phase_timing_ms(records: &[IterationRecord]) -> PhaseTimingTotals {
 fn build_worker_timing_records(
     events: &[TrainingEvent],
     convergence_records: &[IterationRecord],
-) -> Vec<novomodelo_io::WorkerTimingRecord> {
+) -> Vec<WorkerTimingRecord> {
     use novomodelo_core::{
         WORKER_TIMING_SLOT_BWD_SETUP, WORKER_TIMING_SLOT_BWD_WALL, WORKER_TIMING_SLOT_COUNT,
         WORKER_TIMING_SLOT_FWD_SETUP, WORKER_TIMING_SLOT_FWD_WALL, WORKER_TIMING_SLOT_SCORING,
@@ -527,7 +527,7 @@ fn build_worker_timing_records(
         }
     }
 
-    let mut out: Vec<novomodelo_io::WorkerTimingRecord> =
+    let mut out: Vec<WorkerTimingRecord> =
         Vec::with_capacity(convergence_records.len() + per_worker.len());
 
     for record in convergence_records {
@@ -543,7 +543,7 @@ fn build_worker_timing_records(
         timings[12] = record.time_fwd_load_imbalance_ms;
         timings[13] = record.time_fwd_scheduling_overhead_ms;
         timings[14] = record.time_overhead_ms;
-        out.push(novomodelo_io::WorkerTimingRecord {
+        out.push(WorkerTimingRecord {
             iteration: record.iteration,
             rank: 0,
             worker_id: None,
@@ -552,7 +552,7 @@ fn build_worker_timing_records(
     }
 
     for ((iteration, rank, worker_id), timings) in per_worker {
-        out.push(novomodelo_io::WorkerTimingRecord {
+        out.push(WorkerTimingRecord {
             iteration,
             rank,
             worker_id: Some(worker_id),

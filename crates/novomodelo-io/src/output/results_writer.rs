@@ -106,9 +106,7 @@ pub fn write_training_results(
         production_fit_deviation: ctx.production_fit_deviation.clone(),
         distribution: ctx.distribution.clone(),
     };
-    write_training_metadata(&output_dir.join("training/metadata.json"), &metadata)?;
-
-    Ok(())
+    write_training_metadata(&output_dir.join("training/metadata.json"), &metadata)
 }
 
 pub(crate) const SIMULATION_METADATA_FILE: &str = "simulation/metadata.json";
@@ -127,9 +125,7 @@ pub fn write_simulation_results(
     ctx: &OutputContext,
 ) -> Result<(), OutputError> {
     let metadata = simulation_metadata(simulation_output, RunStatus::Complete, ctx);
-    write_simulation_metadata(&output_dir.join(SIMULATION_METADATA_FILE), &metadata)?;
-
-    Ok(())
+    write_simulation_metadata(&output_dir.join(SIMULATION_METADATA_FILE), &metadata)
 }
 
 /// Write the metadata of a simulation that was skipped before any scenario

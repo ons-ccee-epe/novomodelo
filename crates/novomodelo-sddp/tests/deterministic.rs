@@ -9411,22 +9411,12 @@ mod heterogeneous_visit_bound_resume {
             u32::try_from(cold.setup.num_stages()).expect("stage count fits u32"),
         );
 
-        // Mirrors `sole_pool_owner_node_id` (the production writer's
-        // algorithm in `policy_export.rs`): every pool has exactly one
-        // owning node EXCEPT the K-fan's shared terminal leaf pool, which
-        // `k` distinct leaf nodes own jointly and must therefore keep the
-        // sentinel.
         let pool_owner_node_id = |pool: usize| -> i32 {
-            let mut owner: Option<i32> = None;
-            for (pos, node) in cold.setup.inputs.node_graph.nodes.iter_indexed() {
-                if node.pool_id == pool {
-                    if owner.is_some() {
-                        return STAGE_CUTS_NODE_ID_SENTINEL;
-                    }
-                    owner = Some(cold.setup.inputs.node_graph.node_ids[pos].0);
-                }
-            }
-            owner.unwrap_or(STAGE_CUTS_NODE_ID_SENTINEL)
+            cold.setup
+                .inputs
+                .node_graph
+                .sole_pool_owner(pool)
+                .map_or(STAGE_CUTS_NODE_ID_SENTINEL, |node| node.0)
         };
 
         // A checkpoint with no warm-start cuts: this test's concern is the
@@ -10486,21 +10476,10 @@ mod enumerated_checkpoint {
             })
             .collect();
 
-        // Mirrors `sole_pool_owner_node_id` (the production writer's
-        // algorithm in `policy_export.rs`): every non-leaf pool has exactly
-        // one owning node; the shared leaf pool the fixture doc above
-        // names keeps the sentinel.
         let pool_owner_node_id = |pool: usize| -> i32 {
-            let mut owner: Option<i32> = None;
-            for (pos, node) in node_graph.nodes.iter_indexed() {
-                if node.pool_id == pool {
-                    if owner.is_some() {
-                        return STAGE_CUTS_NODE_ID_SENTINEL;
-                    }
-                    owner = Some(node_graph.node_ids[pos].0);
-                }
-            }
-            owner.unwrap_or(STAGE_CUTS_NODE_ID_SENTINEL)
+            node_graph
+                .sole_pool_owner(pool)
+                .map_or(STAGE_CUTS_NODE_ID_SENTINEL, |node| node.0)
         };
 
         let stage_cuts_payloads: Vec<StageCutsPayload<'_>> = fcf
