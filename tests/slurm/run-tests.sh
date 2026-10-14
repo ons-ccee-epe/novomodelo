@@ -55,6 +55,9 @@ set -euo pipefail
 readonly NOVOMODELO_BIN="/shared/novomodelo-mpi"
 readonly CASE_DIR="/shared/4ree"
 readonly TIMEOUT=120
+# Training's graceful-stop handler swallows SIGTERM, so a deadlocked job
+# outlives TIMEOUT; KILL_AFTER escalates to SIGKILL (exit 137).
+readonly KILL_AFTER=10
 readonly WORK_DIR="/shared/work"
 
 # Set by parse_mode(); read by main() and print_summary().
@@ -156,7 +159,7 @@ preflight_check() {
     echo "INFO: mpiexec: $(command -v mpiexec)"
     echo "INFO: python3: $(command -v python3)"
     echo "INFO: mode: ${MODE}"
-    echo "INFO: timeout per test: ${TIMEOUT}s"
+    echo "INFO: timeout per test: ${TIMEOUT}s (SIGKILL ${KILL_AFTER}s later)"
 }
 
 # ---------------------------------------------------------------------------
@@ -735,7 +738,7 @@ seed_policy() {
 # check_outputs <test_name> <exit_code> <output_dir> <baseline_dir> <marker> <seeded_policy>
 #
 # Verifies:
-#   1. Exit code is 0 (or reports timeout on code 124)
+#   1. Exit code is 0 (reports a timeout on 124, or 137 once escalated to SIGKILL)
 #   2. Output directory exists
 #   3. policy/manifest.bin exists (the self-describing checkpoint commit signal)
 #   4. <marker> exists (training/convergence.parquet for a training run,
@@ -757,6 +760,11 @@ check_outputs() {
     if [[ "${exit_code}" -eq 124 ]]; then
         echo "[${test_name}] FAIL: timed out after ${TIMEOUT}s (exit 124)"
         echo "[${test_name}] NOTE: exit code 124 is the primary indicator of the MPICH 4.3.0 PMI2 deadlock"
+        return 1
+    fi
+
+    if [[ "${exit_code}" -eq 137 ]]; then
+        echo "[${test_name}] FAIL: still running ${KILL_AFTER}s after the ${TIMEOUT}s timeout; killed (exit 137)"
         return 1
     fi
 
@@ -811,7 +819,7 @@ check_outputs() {
 #                  <n_ranks> <extra_args...>
 #
 # Seeds $WORK_DIR/<test_name_lower> with <policy_src> when it is non-empty,
-# then runs: timeout $TIMEOUT mpiexec -n <n_ranks> $NOVOMODELO_BIN run <case_dir>
+# then runs: timeout -k $KILL_AFTER $TIMEOUT mpiexec -n <n_ranks> $NOVOMODELO_BIN run <case_dir>
 #              --output $WORK_DIR/<test_name_lower> --quiet [extra_args]
 # Calls check_outputs against $WORK_DIR/<baseline_tag> (none when the test
 # is the baseline itself) and updates RESULTS.
@@ -838,7 +846,7 @@ run_mpiexec_test() {
     fi
 
     local exit_code=0
-    timeout "${TIMEOUT}" mpiexec -n "${n_ranks}" \
+    timeout --kill-after="${KILL_AFTER}" "${TIMEOUT}" mpiexec -n "${n_ranks}" \
         "${NOVOMODELO_BIN}" run "${case_dir}" --output "${output_dir}" --quiet \
         "${extra_args[@]+"${extra_args[@]}"}" || exit_code=$?
 
@@ -909,7 +917,7 @@ SBEOF
     chmod +x "${batch_script}"
 
     local exit_code=0
-    timeout "${TIMEOUT}" sbatch --wait \
+    timeout --kill-after="${KILL_AFTER}" "${TIMEOUT}" sbatch --wait \
         -N "${sbatch_N}" \
         -n "${sbatch_n}" \
         --output="${slurm_out}" \
