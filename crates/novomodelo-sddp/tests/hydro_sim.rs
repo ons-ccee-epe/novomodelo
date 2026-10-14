@@ -28,6 +28,7 @@ mod simulation_only {
     use novomodelo_core::scenario::ScenarioSource;
     use novomodelo_io::output::policy::{read_policy_checkpoint, write_policy_checkpoint};
     use novomodelo_io::test_support::producer_block_defaults;
+    use novomodelo_sddp::policy::full_fcf_load::{FullFcfLoadKind, LoadedSlotMap};
     use novomodelo_sddp::{
         FutureCostFunction, StudySetup, build_basis_cache_from_checkpoint,
         hydro_models::prepare_hydro_models,
@@ -198,7 +199,7 @@ mod simulation_only {
 
         let load = build_basis_cache_from_checkpoint(
             &checkpoint.stage_bases,
-            &checkpoint.stage_cuts,
+            &LoadedSlotMap::for_pools(FullFcfLoadKind::SimulationOnly, &checkpoint.stage_cuts),
             &setup,
         );
         assert!(

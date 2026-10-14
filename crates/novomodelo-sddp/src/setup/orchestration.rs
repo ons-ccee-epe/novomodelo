@@ -19,7 +19,7 @@ use crate::{
         types::SimulationScenarioResult,
     },
     solve::solver_phase::SolverProfiles,
-    training::{LoadedPolicy, TrainingOutcome, TrainingResult},
+    training::{TrainingOutcome, TrainingResult},
     workspace::{
         CapturedBasis, NoisePreallocation, SolverWorkspace, WorkspacePool, WorkspaceSizing,
     },
@@ -141,11 +141,6 @@ impl StudySetup {
         let stage_ctx = self.inputs.stage_ctx();
         let training_ctx = self.inputs.training_ctx();
 
-        let loaded = LoadedPolicy {
-            basis_cache: self.warm_start_basis_cache.take(),
-            trial_states: std::mem::take(&mut self.loaded_trial_states),
-        };
-
         train(
             solver,
             training_config,
@@ -154,7 +149,7 @@ impl StudySetup {
             &training_ctx,
             comm,
             solver_factory,
-            loaded,
+            std::mem::take(&mut self.loaded),
             solver_profiles,
         )
     }

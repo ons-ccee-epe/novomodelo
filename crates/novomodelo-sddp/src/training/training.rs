@@ -187,13 +187,27 @@ impl CheckpointBasisStore {
 /// What a policy load hands to [`train`].
 #[derive(Debug, Default)]
 pub struct LoadedPolicy {
-    /// Per-node stored bases that warm-start the basis store; `None` for a
-    /// fresh start.
-    pub basis_cache: Option<Vec<Option<CapturedBasis>>>,
+    /// Per canonical node, the stored bases with their global scenario,
+    /// ascending by scenario; empty for a fresh start.
+    pub scenario_bases: Vec<Vec<(u32, CapturedBasis)>>,
 
     /// The stored trial states of the loaded pools, their slots already placed
     /// in the loaded pools.
     pub trial_states: Vec<StageStatesReadResult>,
+}
+
+impl LoadedPolicy {
+    /// The basis that seeds global scenario `scenario`'s row of the basis store
+    /// at `node`: that scenario's own stored basis, else the node's
+    /// lowest-scenario one (a source that ran fewer forward passes), else none.
+    #[must_use]
+    pub fn seed_basis(&self, node: NodePos, scenario: u32) -> Option<&CapturedBasis> {
+        let entries = self.scenario_bases.get(node.0)?;
+        entries
+            .binary_search_by_key(&scenario, |&(stored, _)| stored)
+            .map_or_else(|_| entries.first(), |i| entries.get(i))
+            .map(|(_, basis)| basis)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -521,7 +535,7 @@ fn decode_rank_segment(
 
 // Rationale: `LoopConfig::forward_passes` is a `u32`, so every global scenario fits.
 #[allow(clippy::cast_possible_truncation)]
-fn global_scenario(first_scenario: usize, row: usize) -> u32 {
+pub(crate) fn global_scenario(first_scenario: usize, row: usize) -> u32 {
     (first_scenario + row) as u32
 }
 
@@ -599,16 +613,12 @@ pub fn train<S, C: Communicator>(
     training_ctx: &TrainingContext<'_>,
     comm: &C,
     solver_factory: impl Fn() -> Result<S, SolverError>,
-    loaded: LoadedPolicy,
+    mut loaded: LoadedPolicy,
     solver_profiles: SolverProfiles,
 ) -> Result<TrainingOutcome, SddpError>
 where
     S: SolverInterface<Profile = ActiveProfile> + Send,
 {
-    let LoadedPolicy {
-        basis_cache,
-        trial_states,
-    } = loaded;
     let mut session = TrainingSession::new(
         solver,
         config,
@@ -617,14 +627,12 @@ where
         training_ctx,
         comm,
         solver_factory,
-        trial_states,
+        std::mem::take(&mut loaded.trial_states),
         solver_profiles,
     )?;
     // Must seed the basis store before `prime_frozen_templates` freezes the loaded
     // cuts into the templates.
-    if let Some(cache) = basis_cache {
-        session.seed_basis_store(&cache);
-    }
+    session.seed_basis_store(&loaded);
     session.prime_frozen_templates();
     for iteration in session.iteration_range() {
         match session.run_iteration(iteration) {

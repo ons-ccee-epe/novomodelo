@@ -3188,8 +3188,9 @@ mod warm_start {
     use novomodelo_io::config::StoppingRuleConfig;
     use novomodelo_io::output::policy::{read_policy_checkpoint, write_policy_checkpoint};
     use novomodelo_io::test_support::producer_block_defaults;
+    use novomodelo_sddp::policy::full_fcf_load::{FullFcfLoadKind, LoadedSlotMap};
     use novomodelo_sddp::{
-        FutureCostFunction, SolverStatsDelta, StoredBasisMisfit, StudySetup,
+        FutureCostFunction, LoadedPolicy, SolverStatsDelta, StoredBasisMisfit, StudySetup,
         build_basis_cache_from_checkpoint, hydro_models::prepare_hydro_models,
         setup::prepare_stochastic,
     };
@@ -3575,7 +3576,7 @@ mod warm_start {
 
         let load = build_basis_cache_from_checkpoint(
             &checkpoint.stage_bases,
-            &checkpoint.stage_cuts,
+            &LoadedSlotMap::for_pools(FullFcfLoadKind::WarmStart, &checkpoint.stage_cuts),
             &setup_warm,
         );
         let unused = load.unused.expect("the misfit record must be reported");
@@ -3585,7 +3586,10 @@ mod warm_start {
             "{:?}",
             unused.first_reason
         );
-        setup_warm.set_warm_start_basis_cache(load.cache);
+        setup_warm.set_loaded_policy(LoadedPolicy {
+            scenario_bases: load.store,
+            ..LoadedPolicy::default()
+        });
 
         let mut solver_warm = ActiveSolver::new().expect("ActiveSolver");
         let warm_outcome = setup_warm

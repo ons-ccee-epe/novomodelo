@@ -40,6 +40,7 @@ use novomodelo_solver::{Basis, BasisStatus};
 
 use crate::SddpError;
 use crate::cut::pool::CutPool;
+use crate::policy::full_fcf_load::LoadedSlotMap;
 use crate::policy::orchestration::{StudySeasonManifest, build_season_manifest};
 use crate::policy::reconcile::{
     BoundaryReconciliationReport, SlotKey, build_boundary_fold, build_identity_index, build_rebind,
@@ -396,47 +397,53 @@ pub fn compare_graph_manifest_identity(
     Ok(())
 }
 
-/// Why a stored basis record is not used for its node.
+/// Why a stored basis entry is not used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoredBasisMisfit {
-    /// The record's column count differs from the node's LP.
+    /// The entry's column count differs from the node's LP.
     Columns {
         /// Column count of the node's current LP template.
         expected: usize,
-        /// Column count the record carries.
+        /// Column count the entry carries.
         found: usize,
     },
-    /// The record's row count differs from the node's template rows plus the
+    /// The entry's row count differs from the node's template rows plus the
     /// cut rows it recorded.
     Rows {
-        /// Template rows plus the record's own recorded cut rows.
+        /// Template rows plus the entry's own recorded cut rows.
         expected: usize,
-        /// Row count the record carries.
+        /// Row count the entry carries.
         found: usize,
     },
-    /// The record's basic entries do not number one per row.
+    /// The entry's basic entries do not number one per row.
     BasicCount {
-        /// The record's row count.
+        /// The entry's row count.
         expected: usize,
-        /// Basic entries among the record's column and row statuses.
+        /// Basic entries among the entry's column and row statuses.
         found: usize,
+    },
+    /// A cut row of the entry records a slot that holds no cut of the loaded pool.
+    UnmappedSlot {
+        /// The recorded slot.
+        slot: u32,
     },
 }
 
 /// The stored bases a load did not use, summarized for one warning.
 ///
-/// `count` and `total` cover the records whose node is in the current graph.
-/// `first_node` and `first_reason` belong to the failing record with the lowest
-/// node position, not the first in record order.
+/// `count` and `total` cover the entries of the records whose node is in the
+/// current graph. `first_node` and `first_reason` belong to the failing entry
+/// with the lowest node position, then the lowest scenario, not the first in
+/// record order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnusedStoredBases {
-    /// In-graph records that failed the fit rule.
+    /// In-graph entries that failed the fit rule.
     pub count: usize,
-    /// In-graph records examined.
+    /// In-graph entries examined.
     pub total: usize,
-    /// The failing record's node with the lowest position.
+    /// The failing entry's node with the lowest position.
     pub first_node: NodeId,
-    /// Why that record failed.
+    /// Why that entry failed.
     pub first_reason: StoredBasisMisfit,
 }
 
@@ -457,47 +464,53 @@ impl fmt::Display for UnusedStoredBases {
             StoredBasisMisfit::BasicCount { expected, found } => {
                 write!(f, "{found} basic entries for {expected} rows")?;
             }
+            StoredBasisMisfit::UnmappedSlot { slot } => {
+                write!(f, "a cut row at slot {slot}, which holds no loaded cut")?;
+            }
         }
         f.write_str(
             "); a stored basis is used only when its column count equals the LP's, its row \
-             count equals the LP's template rows plus its recorded cut rows, and its basic \
-             count equals its row count; the policy was trained on a different LP",
+             count equals the LP's template rows plus its recorded cut rows, its basic \
+             count equals its row count, and every recorded cut-row slot holds a loaded cut; \
+             the policy was trained on a different LP",
         )
     }
 }
 
-/// The basis cache decoded from a checkpoint, and the records it left out.
+/// The stored bases decoded from a checkpoint, and the entries left out.
 ///
-/// A record that fails the fit rule leaves its node's slot `None`. Training
-/// cold-starts that node once, then reuses the bases it captures; a
-/// simulation-only run solves it without a stored basis in every scenario. In
-/// enumerated simulation, pool fill may warm a dropped leaf from a fitting
-/// same-pool sibling, which is valid because same-pool leaves share one
-/// template, so "dropped" means "not warm-started from its own stored basis",
-/// not always "cold".
+/// An entry that fails the fit rule is in neither `store` nor `cache`. Training
+/// cold-starts a scenario that has no entry and no fallback at a node, then
+/// reuses the bases it captures; a simulation-only run solves a node without a
+/// cached basis cold in every scenario. In enumerated simulation, pool fill may
+/// warm a node without one from a fitting same-pool sibling, which is valid
+/// because same-pool leaves share one template, so "dropped" means "not
+/// warm-started from its own stored basis", not always "cold".
 #[derive(Debug)]
 pub struct StoredBasisLoad {
-    /// One entry per canonical node position; `Some` only for a record that fits.
+    /// Per canonical node position, the lowest-scenario admitted entry: the
+    /// warm start of a simulation.
     pub cache: Vec<Option<CapturedBasis>>,
-    /// `None` exactly when no in-graph record failed.
+    /// Per canonical node position, every admitted entry with its global
+    /// scenario, ascending by scenario: the bases a training run restores.
+    pub store: Vec<Vec<(u32, CapturedBasis)>>,
+    /// `None` exactly when no in-graph entry failed.
     pub unused: Option<UnusedStoredBases>,
 }
 
-/// Build a basis cache from deserialized checkpoint basis records: one entry
-/// per canonical node position, `None` where no record matches or the record
-/// does not fit.
+/// Decode every stored basis entry of a checkpoint against `setup`'s current
+/// LP templates and the loaded pools' `slot_maps` (indexed by pool id).
 ///
-/// `node_dims[pos]` — built once per load from `setup`'s current LP
-/// templates — is `(template columns, template rows)` for node `pos`. A record
-/// is used only when its column count equals the template's, its row count
-/// equals the template rows plus its own recorded cut rows, and its basic count
-/// equals its row count. A record that fails is left out and counted in
+/// An entry is used only when its column count equals the node template's, its
+/// row count equals the template rows plus its own recorded cut rows, its basic
+/// count equals its row count, and each recorded cut-row slot maps to a loaded
+/// cut. An entry that fails is left out and counted in
 /// [`StoredBasisLoad::unused`]; the load itself never fails on a basis, which
 /// only warm-starts a solve.
 #[must_use]
 pub fn build_basis_cache_from_checkpoint(
     stage_bases: &[OwnedPolicyBasisRecord],
-    stage_cuts: &[StageCutsReadResult],
+    slot_maps: &[LoadedSlotMap],
     setup: &StudySetup,
 ) -> StoredBasisLoad {
     let node_dims: Vec<(usize, usize)> = setup
@@ -512,15 +525,15 @@ pub fn build_basis_cache_from_checkpoint(
         .collect();
     build_basis_cache_for_nodes(
         stage_bases,
-        stage_cuts,
+        slot_maps,
         &setup.inputs.node_graph.node_ids,
         &setup.inputs.node_graph.node_pool_ids(),
         &node_dims,
     )
 }
 
-/// The exact fit rule for one stored record, checked before any decoding; a
-/// pure function of the record and the node's template dimensions.
+/// The exact fit rule for one stored entry, checked before any decoding; a
+/// pure function of the entry and the node's template dimensions.
 ///
 /// The basic count is checked because `reconstruct_basis` assumes it and
 /// aborts on a deficit instead of repairing it.
@@ -561,56 +574,54 @@ fn admit_stored_basis(
     Ok(())
 }
 
+/// The slot each recorded cut row occupies in the loaded pool, through the
+/// pool's [`LoadedSlotMap`]; the first slot that holds no loaded cut otherwise.
+fn loaded_cut_row_slots(
+    piece_row_slots: &[u32],
+    slot_map: Option<&LoadedSlotMap>,
+) -> Result<Vec<u32>, StoredBasisMisfit> {
+    piece_row_slots
+        .iter()
+        .map(|&slot| {
+            slot_map
+                .and_then(|map| map.dest(slot))
+                .ok_or(StoredBasisMisfit::UnmappedSlot { slot })
+        })
+        .collect()
+}
+
 /// Each basis record is keyed by its own node ordinal (its `stage_id`), so
 /// leaves sharing a pool land in distinct node slots — no `>= num_stages` drop,
-/// no cross-node collision. Of a record's entries the one with the lowest
-/// `scenario` is used; a record with none is skipped and not counted. `u8` status codes decode via
-/// `from_discriminant_code`, the mirror of `convert_basis_cache`'s export-side
+/// no cross-node collision. Every entry of a record is decoded; `u8` status
+/// codes decode via `from_discriminant_code`, the mirror of the export-side
 /// `to_discriminant_code`; a pre-existing checkpoint (bytes `0..=4`) decodes
 /// identically, since that range means the same in the canonical and `HiGHS`
 /// code spaces.
 ///
-/// A record that fails `admit_stored_basis` leaves its node's slot `None`, is
-/// counted, and never reaches `reconstruct_basis`. The reported first failure is
-/// the one with the lowest node position, so the report does not depend on
-/// record order. A record whose node is `>= n_nodes` is skipped and not counted.
-///
-/// # Cut-slot reconstruction
-///
-/// `base_row_count` is taken from `node_dims[pos]` — the STUDY's own template row
-/// count — never from the entry's `row_status.len() - piece_row_slots.len()`. The
-/// trailing `k = row_status.len() - base_row_count` rows are matched to pool slot
-/// identity only when a node's OWN pool's [`StageCutsReadResult`]
-/// (`sc.stage_id == node_pools[node]`, never the record whose pool id happens to
-/// equal the node ordinal) reports its active `slot_index`es as exactly the
-/// unbroken prefix `0..populated` — proof that no cut was deactivated since
-/// capture, so the basis's k oldest cut rows are exactly that pool's first k
-/// slots. `reconstruct_basis` then preserves stored cut-row statuses across
-/// cut-set churn.
-///
-/// # Graceful fallback
-///
-/// When the pool's active slots are not the unbroken `0..populated` prefix, when
-/// they are fewer than `k`, or when no cut record matches the node's pool at all,
-/// slot identity cannot be proven: `row_status` is truncated to `base_row_count`
-/// and `cut_row_slots` stays empty, so every current cut row reconstructs BASIC.
-/// This changes only the warm-start solve path, never the optimum.
+/// An entry's cut rows keep the slots it recorded, translated through the
+/// node's own pool's map (`slot_maps[node_pools[node]]`); its template row
+/// count is the CURRENT study's (`node_dims`), never the entry's own split. An
+/// entry that fails `admit_stored_basis` or records a slot the map does not
+/// hold is counted and never reaches `reconstruct_basis`. The reported first
+/// failure is the one with the lowest `(node position, scenario)`, so the
+/// report does not depend on record order. A record whose node is `>= n_nodes`
+/// is skipped and not counted.
 ///
 /// `node_ids` / `node_pools` are the CURRENT study's, since a resume/warm-start
 /// continues the SAME node topology — never a value recovered from the
 /// checkpoint itself, whose wire carries no node id.
 fn build_basis_cache_for_nodes(
     stage_bases: &[OwnedPolicyBasisRecord],
-    stage_cuts: &[StageCutsReadResult],
+    slot_maps: &[LoadedSlotMap],
     node_ids: &TypedVec<NodePos, NodeId>,
     node_pools: &TypedVec<NodePos, usize>,
     node_dims: &[(usize, usize)],
 ) -> StoredBasisLoad {
     let n_nodes = node_ids.len();
-    let mut cache: Vec<Option<CapturedBasis>> = vec![None; n_nodes];
+    let mut store: Vec<Vec<(u32, CapturedBasis)>> = vec![Vec::new(); n_nodes];
     let mut total = 0;
     let mut count = 0;
-    let mut first: Option<(NodePos, StoredBasisMisfit)> = None;
+    let mut first: Option<((usize, u32), StoredBasisMisfit)> = None;
     for record in stage_bases {
         // Wire boundary: the checkpoint's `stage_id` field is a legacy name for
         // what the node-native engine writes/reads as a node position — convert
@@ -619,78 +630,63 @@ fn build_basis_cache_for_nodes(
         if node.0 >= n_nodes {
             continue;
         }
-        let Some(entry) = record.entries.iter().min_by_key(|e| e.scenario) else {
-            continue;
-        };
-
-        total += 1;
-        let (expected_cols, expected_template_rows) = node_dims[node.0];
-        if let Err(reason) = admit_stored_basis(entry, expected_cols, expected_template_rows) {
-            count += 1;
-            if first.as_ref().is_none_or(|(lowest, _)| node.0 < lowest.0) {
-                first = Some((node, reason));
-            }
-            continue;
+        let (template_cols, template_rows) = node_dims[node.0];
+        let slot_map = slot_maps.get(node_pools[node]);
+        for entry in &record.entries {
+            total += 1;
+            let admitted = admit_stored_basis(entry, template_cols, template_rows)
+                .and_then(|()| loaded_cut_row_slots(&entry.piece_row_slots, slot_map));
+            let cut_row_slots = match admitted {
+                Ok(slots) => slots,
+                Err(reason) => {
+                    count += 1;
+                    let key = (node.0, entry.scenario);
+                    if first.as_ref().is_none_or(|(lowest, _)| key < *lowest) {
+                        first = Some((key, reason));
+                    }
+                    continue;
+                }
+            };
+            store[node.0].push((
+                entry.scenario,
+                CapturedBasis {
+                    basis: Basis {
+                        col_status: decode_basis_statuses(&entry.column_status),
+                        row_status: decode_basis_statuses(&entry.row_status),
+                    },
+                    base_row_count: template_rows,
+                    cut_row_slots,
+                    state_at_capture: Vec::new(),
+                    node_id: node_ids[node],
+                },
+            ));
         }
-
-        let col_status: Vec<BasisStatus> = entry
-            .column_status
-            .iter()
-            .map(|&c| BasisStatus::from_discriminant_code(c))
-            .collect();
-        let mut row_status: Vec<BasisStatus> = entry
-            .row_status
-            .iter()
-            .map(|&r| BasisStatus::from_discriminant_code(r))
-            .collect();
-
-        let pool = node_pools[node];
-        let base_row_count = expected_template_rows;
-        let k = row_status.len() - base_row_count;
-        let cut_row_slots = stage_cuts
-            .iter()
-            .find(|sc| sc.stage_id as usize == pool)
-            .and_then(|sc| {
-                let populated = sc.cuts.len();
-                let active: Vec<u32> = sc
-                    .cuts
-                    .iter()
-                    .filter(|c| c.is_active)
-                    .map(|c| c.slot_index)
-                    .collect();
-                let is_unbroken_prefix = active.len() == populated
-                    && active.iter().enumerate().all(|(i, &s)| s as usize == i);
-                (is_unbroken_prefix && k <= active.len()).then(|| active[..k].to_vec())
-            });
-        let cut_row_slots = cut_row_slots.unwrap_or_else(|| {
-            row_status.truncate(base_row_count);
-            Vec::new()
-        });
-        debug_assert_eq!(
-            cut_row_slots.len(),
-            row_status.len() - base_row_count,
-            "build_basis_cache_for_nodes: cut_row_slots length must equal the trailing \
-             cut-row count for the CapturedBasis invariant",
-        );
-
-        cache[node.0] = Some(CapturedBasis {
-            basis: Basis {
-                col_status,
-                row_status,
-            },
-            base_row_count,
-            cut_row_slots,
-            state_at_capture: Vec::new(),
-            node_id: node_ids[node],
-        });
     }
-    let unused = first.map(|(node, first_reason)| UnusedStoredBases {
+    for entries in &mut store {
+        entries.sort_by_key(|&(scenario, _)| scenario);
+    }
+    let cache = store
+        .iter()
+        .map(|entries| entries.first().map(|(_, basis)| basis.clone()))
+        .collect();
+    let unused = first.map(|((node, _), first_reason)| UnusedStoredBases {
         count,
         total,
-        first_node: node_ids[node],
+        first_node: node_ids[NodePos(node)],
         first_reason,
     });
-    StoredBasisLoad { cache, unused }
+    StoredBasisLoad {
+        cache,
+        store,
+        unused,
+    }
+}
+
+fn decode_basis_statuses(codes: &[u8]) -> Vec<BasisStatus> {
+    codes
+        .iter()
+        .map(|&code| BasisStatus::from_discriminant_code(code))
+        .collect()
 }
 
 /// Positional identity of one state-vector slot; `was_active` is excluded —
@@ -4156,6 +4152,8 @@ mod tests {
 
     use novomodelo_io::{OwnedBasisEntry, OwnedPolicyBasisRecord, StageCutsReadResult};
 
+    use crate::policy::full_fcf_load::{FullFcfLoadKind, LoadedSlotMap};
+
     /// An active cut record at LP slot `slot`.
     fn active_cut(slot: u32) -> OwnedPolicyCutRecord {
         OwnedPolicyCutRecord {
@@ -4186,19 +4184,34 @@ mod tests {
         }
     }
 
-    /// A node-keyed basis record (`stage_id` is the node ordinal) with
-    /// `num_cut` trailing cut rows over `3` template rows, every row Basic and
-    /// every column Lower — one basic entry per row.
-    fn node_basis(node: u32, num_cut: usize) -> OwnedPolicyBasisRecord {
+    /// The slot maps of pools `0..` holding `pool_slots[pool]`, for `kind`.
+    fn slot_maps(kind: FullFcfLoadKind, pool_slots: &[&[u32]]) -> Vec<LoadedSlotMap> {
+        let pools: Vec<_> = (0_u32..)
+            .zip(pool_slots)
+            .map(|(pool, slots)| pool_cuts(pool, slots))
+            .collect();
+        LoadedSlotMap::for_pools(kind, &pools)
+    }
+
+    /// One entry of `scenario` with cut rows at `slots` over `3` template rows,
+    /// every row Basic and every column Lower — one basic entry per row.
+    fn scenario_entry(scenario: u32, slots: &[u32]) -> OwnedBasisEntry {
+        OwnedBasisEntry {
+            scenario,
+            column_status: vec![0_u8, 0_u8],
+            row_status: vec![1_u8; 3 + slots.len()],
+            piece_row_slots: slots.to_vec(),
+        }
+    }
+
+    /// A node-keyed basis record (`stage_id` is the node ordinal) of scenario 0
+    /// with cut rows at slots `0..num_cut`.
+    fn node_basis(node: u32, num_cut: u32) -> OwnedPolicyBasisRecord {
+        let slots: Vec<u32> = (0..num_cut).collect();
         OwnedPolicyBasisRecord {
             stage_id: node,
             iteration: 0,
-            entries: vec![OwnedBasisEntry {
-                scenario: 0,
-                column_status: vec![0_u8, 0_u8],
-                row_status: vec![1_u8; 3 + num_cut],
-                piece_row_slots: (0..num_cut as u32).collect(),
-            }],
+            entries: vec![scenario_entry(0, &slots)],
         }
     }
 
@@ -4206,8 +4219,8 @@ mod tests {
     /// 0/1/2 are interior (pools 0/1/2), leaves 3..=6 share pool 3. The cache is
     /// sized by `n_nodes`, every node lands in its own slot (no `>= num_stages`
     /// drop, no cross-node collision), each carries its own `node_id`, and the
-    /// cut-slot reconstruction resolves through the node's OWN pool
-    /// (`node_pools[node]`) — never the pool whose id equals the node ordinal,
+    /// cut-row slots translate through the node's OWN pool's map
+    /// (`node_pools[node]`) — never the map whose pool id equals the node ordinal,
     /// which for leaves 4/5/6 names no pool at all.
     #[test]
     fn build_basis_cache_from_checkpoint_keys_branching_graph_by_node() {
@@ -4219,37 +4232,29 @@ mod tests {
             .collect();
         let node_pools: TypedVec<NodePos, usize> = vec![0, 1, 2, 3, 3, 3, 3].into();
         let node_dims = [(2, 3); 7];
-        // Ascending per-pool active-slot counts (1/2/3/4): a node wrongly
-        // resolved to a pool with FEWER slots than its own cut-row count falls
-        // back to an empty cut_row_slots rather than coincidentally matching
-        // (a swap to a pool with equal-or-more slots shares the same [0..k)
-        // prefix and is not distinguishable by value alone).
-        let stage_cuts = vec![
-            pool_cuts(0, &[0]),
-            pool_cuts(1, &[0, 1]),
-            pool_cuts(2, &[0, 1, 2]),
-            pool_cuts(3, &[0, 1, 2, 3]),
-        ];
-        let stage_bases = vec![
+        // Each pool packs a different source slot set, so a node translated
+        // through another pool's map gets other slots or none.
+        let maps = slot_maps(
+            FullFcfLoadKind::WarmStart,
+            &[&[0, 1, 2, 3], &[1, 2, 3], &[2, 3], &[0, 1, 2, 3]],
+        );
+        let mut stage_bases = vec![
             node_basis(0, 1),
             node_basis(1, 2),
-            node_basis(2, 3),
+            node_basis(2, 2),
             node_basis(3, 4),
             node_basis(4, 4),
             node_basis(5, 4),
             node_basis(6, 4),
         ];
+        stage_bases[1].entries[0].piece_row_slots = vec![1, 3];
+        stage_bases[2].entries[0].piece_row_slots = vec![3, 2];
 
-        let load = build_basis_cache_for_nodes(
-            &stage_bases,
-            &stage_cuts,
-            &node_ids,
-            &node_pools,
-            &node_dims,
-        );
+        let load =
+            build_basis_cache_for_nodes(&stage_bases, &maps, &node_ids, &node_pools, &node_dims);
         assert!(
             load.unused.is_none(),
-            "every node's record fits its (2, 3) template"
+            "every node's entry fits its (2, 3) template and its own pool"
         );
         let cache = load.cache;
 
@@ -4264,26 +4269,21 @@ mod tests {
                 "node {node} must carry its own node_id (no cross-node collision)"
             );
         }
-
-        // Interior node 2 (pool 2) recovers pool 2's own active slots — distinct
-        // in length from pool 0's and pool 1's, so a wrong-pool lookup would fail.
-        assert_eq!(
-            cache[2].as_ref().unwrap().cut_row_slots,
-            vec![0_u32, 1_u32, 2_u32]
-        );
-        // Every leaf (nodes 3..=6) recovers the SHARED pool 3's active slots,
+        assert_eq!(cache[1].as_ref().unwrap().cut_row_slots, [0, 2]);
+        assert_eq!(cache[2].as_ref().unwrap().cut_row_slots, [1, 0]);
+        // Every leaf (nodes 3..=6) translates through the SHARED pool 3's map,
         // keyed by node_pools[node] == 3 — a node-ordinal key would drop 4/5/6.
         for (node, slot) in cache.iter().enumerate().skip(3) {
             assert_eq!(
                 slot.as_ref().unwrap().cut_row_slots,
-                vec![0_u32, 1_u32, 2_u32, 3_u32],
-                "leaf node {node} must recover shared pool 3's active slots"
+                [0, 1, 2, 3],
+                "leaf node {node} must translate through shared pool 3's map"
             );
         }
     }
 
     /// Chain degeneracy: `node_pools` is the identity (`node_pools[t] == t`), so
-    /// node-keyed sizing and pool-keyed cut matching reduce exactly to the
+    /// node-keyed sizing and pool-keyed slot translation reduce exactly to the
     /// pre-branching per-stage behavior — one basis per stage, keyed by ordinal.
     #[test]
     fn build_basis_cache_from_checkpoint_chain_is_identity_keyed() {
@@ -4292,28 +4292,14 @@ mod tests {
         let node_ids: TypedVec<NodePos, NodeId> = vec![0, 1, 2].into_iter().map(NodeId).collect();
         let node_pools: TypedVec<NodePos, usize> = vec![0, 1, 2].into();
         let node_dims = [(2, 3); 3];
-        // Ascending per-pool active-slot counts (1/2/3): a node wrongly resolved
-        // to a pool with FEWER slots than its own cut-row count falls back to an
-        // empty cut_row_slots rather than coincidentally matching (a swap to a
-        // pool with equal-or-more slots shares the same [0..k) prefix and is not
-        // distinguishable by value alone).
-        let stage_cuts = vec![
-            pool_cuts(0, &[0]),
-            pool_cuts(1, &[0, 1]),
-            pool_cuts(2, &[0, 1, 2]),
-        ];
+        let maps = slot_maps(FullFcfLoadKind::Resume, &[&[0], &[0, 1], &[0, 1, 2]]);
         let stage_bases = vec![node_basis(0, 1), node_basis(1, 2), node_basis(2, 3)];
 
-        let load = build_basis_cache_for_nodes(
-            &stage_bases,
-            &stage_cuts,
-            &node_ids,
-            &node_pools,
-            &node_dims,
-        );
+        let load =
+            build_basis_cache_for_nodes(&stage_bases, &maps, &node_ids, &node_pools, &node_dims);
         assert!(
             load.unused.is_none(),
-            "every node's record fits its (2, 3) template"
+            "every node's entry fits its (2, 3) template and its own pool"
         );
         let cache = load.cache;
 
@@ -4326,12 +4312,47 @@ mod tests {
         );
     }
 
+    /// Every entry of a record is decoded and kept with its scenario; the cache
+    /// holds the lowest-scenario entry that fits, and a misfit is counted per
+    /// entry.
+    #[test]
+    fn every_entry_of_a_record_is_kept_by_scenario_and_the_cache_takes_the_lowest_admitted() {
+        let (node_ids, node_pools) = single_node_ids_and_pools();
+        let maps = slot_maps(FullFcfLoadKind::Resume, &[&[0, 1, 2]]);
+        let mut misfit = scenario_entry(0, &[0]);
+        misfit.column_status.push(0);
+        let record = OwnedPolicyBasisRecord {
+            stage_id: 0,
+            iteration: 0,
+            entries: vec![scenario_entry(2, &[0, 2]), misfit, scenario_entry(1, &[1])],
+        };
+
+        let load =
+            super::build_basis_cache_for_nodes(&[record], &maps, &node_ids, &node_pools, &[(2, 3)]);
+
+        let kept: Vec<(u32, Vec<u32>)> = load.store[0]
+            .iter()
+            .map(|(scenario, basis)| (*scenario, basis.cut_row_slots.clone()))
+            .collect();
+        assert_eq!(kept, [(1, vec![1]), (2, vec![0, 2])]);
+        assert_eq!(load.cache[0].as_ref().unwrap().cut_row_slots, [1]);
+        let unused = load.unused.expect("the misfit entry must be reported");
+        assert_eq!((unused.count, unused.total), (1, 3));
+        assert_eq!(
+            unused.first_reason,
+            StoredBasisMisfit::Columns {
+                expected: 2,
+                found: 3
+            }
+        );
+    }
+
     // ── stored-basis fit rule ─────────────────────────────────────────────────
 
     /// A node-0 basis record with `cols` columns, `rows` total row entries, and
-    /// `num_cut` recorded cut rows, every column Lower and every row Basic — one
-    /// basic entry per row.
-    fn dim_basis_record(cols: usize, rows: usize, num_cut: usize) -> OwnedPolicyBasisRecord {
+    /// `num_cut` recorded cut rows at slots `0..num_cut`, every column Lower and
+    /// every row Basic — one basic entry per row.
+    fn dim_basis_record(cols: usize, rows: usize, num_cut: u32) -> OwnedPolicyBasisRecord {
         OwnedPolicyBasisRecord {
             stage_id: 0,
             iteration: 0,
@@ -4339,7 +4360,7 @@ mod tests {
                 scenario: 0,
                 column_status: vec![0_u8; cols],
                 row_status: vec![1_u8; rows],
-                piece_row_slots: (0..num_cut as u32).collect(),
+                piece_row_slots: (0..num_cut).collect(),
             }],
         }
     }
@@ -4349,24 +4370,25 @@ mod tests {
         (vec![NodeId(0)].into(), vec![0].into())
     }
 
-    /// Loads one record for a single node of `(4, 3)` template dimensions.
+    /// Loads one record for a single node of `(4, 3)` template dimensions whose
+    /// pool 0 is loaded through `maps`.
     fn load_single_record(
         record: OwnedPolicyBasisRecord,
-        stage_cuts: &[StageCutsReadResult],
+        maps: &[LoadedSlotMap],
     ) -> super::StoredBasisLoad {
         let (node_ids, node_pools) = single_node_ids_and_pools();
-        super::build_basis_cache_for_nodes(&[record], stage_cuts, &node_ids, &node_pools, &[(4, 3)])
+        super::build_basis_cache_for_nodes(&[record], maps, &node_ids, &node_pools, &[(4, 3)])
     }
 
     fn assert_only_record_dropped(load: &super::StoredBasisLoad, reason: StoredBasisMisfit) {
         assert!(
-            load.cache[0].is_none(),
-            "a record that fails the fit rule must leave its slot empty"
+            load.cache[0].is_none() && load.store[0].is_empty(),
+            "an entry that fails the fit rule must be left out"
         );
         let unused = load
             .unused
             .as_ref()
-            .expect("a dropped record must be reported");
+            .expect("a dropped entry must be reported");
         assert_eq!((unused.count, unused.total), (1, 1));
         assert_eq!(unused.first_node, NodeId(0));
         assert_eq!(unused.first_reason, reason);
@@ -4449,60 +4471,59 @@ mod tests {
 
     #[test]
     fn stored_basis_with_every_recorded_cut_row_loads() {
-        let load = load_single_record(dim_basis_record(4, 5, 2), &[]);
+        let maps = slot_maps(FullFcfLoadKind::Resume, &[&[0, 1]]);
+        let load = load_single_record(dim_basis_record(4, 5, 2), &maps);
 
         assert!(
             load.unused.is_none(),
-            "an exact-shape record is not reported"
+            "an exact-shape entry is not reported"
         );
         assert!(load.cache[0].is_some(), "the node's basis must be present");
     }
 
-    /// The pool holds more cuts than the basis has cut rows, so `base_row_count`
-    /// must come from the template (`node_dims`), not
-    /// `row_status.len() - piece_row_slots.len()`, and the unbroken `0..populated` prefix
-    /// resolves the single cut row to the pool's oldest slot.
+    /// Each cut row keeps the slot it recorded, translated through the pool's
+    /// map: the stored slot under a resume, its rank under a warm start. The
+    /// template rows come from `node_dims`, the cut rows stay whole even where
+    /// the recorded slots are not an unbroken prefix of the pool, and
+    /// `base_row_count` is the template's.
     #[test]
-    fn stored_basis_cut_rows_map_to_the_oldest_pool_slots() {
-        let stage_cuts = vec![pool_cuts(0, &[0, 1, 2])];
+    fn a_stored_basis_is_admitted_at_its_translated_slots() {
+        let pool_slots: &[&[u32]] = &[&[0, 2, 3, 5, 7]];
+        let mut record = dim_basis_record(4, 6, 0);
+        record.entries[0].piece_row_slots = vec![7, 2, 5];
 
-        let load = load_single_record(dim_basis_record(4, 4, 1), &stage_cuts);
+        for (kind, expected) in [
+            (FullFcfLoadKind::Resume, [7, 2, 5]),
+            (FullFcfLoadKind::WarmStart, [4, 1, 3]),
+            (FullFcfLoadKind::SimulationOnly, [4, 1, 3]),
+        ] {
+            let load = load_single_record(record.clone(), &slot_maps(kind, pool_slots));
 
-        assert!(load.unused.is_none());
-        let cb = load.cache[0]
-            .as_ref()
-            .expect("the node's basis must be present");
-        assert_eq!(
-            cb.base_row_count, 3,
-            "base_row_count must come from the template, not the entry's own row split"
-        );
-        assert_eq!(cb.cut_row_slots, vec![0_u32]);
+            assert!(load.unused.is_none(), "{kind:?}");
+            let cb = load.cache[0]
+                .as_ref()
+                .expect("the node's basis must be present");
+            assert_eq!(cb.base_row_count, 3, "{kind:?}");
+            assert_eq!(cb.basis.row_status.len(), 6, "{kind:?}: no row is dropped");
+            assert_eq!(cb.cut_row_slots, expected, "{kind:?}");
+        }
     }
 
-    /// When a cut between the captured row and the pool's populated tail was
-    /// deactivated, the active slots are no longer the unbroken `0..populated`
-    /// prefix, so slot identity cannot be proven: `row_status` is truncated to
-    /// the template rows and `cut_row_slots` stays empty.
+    /// A cut row at a slot the loaded pool holds no cut at, or of a node whose
+    /// pool has no map, is not guessed at: the entry is left out and counted.
     #[test]
-    fn stored_basis_after_cut_deactivation_drops_cut_statuses() {
-        let mut pool = pool_cuts(0, &[0, 1, 2]);
-        pool.cuts[1].is_active = false;
+    fn a_stored_basis_with_an_unmapped_slot_is_left_out_and_counted() {
+        let mut record = dim_basis_record(4, 5, 0);
+        record.entries[0].piece_row_slots = vec![0, 4];
 
-        let load = load_single_record(dim_basis_record(4, 4, 1), &[pool]);
+        let load = load_single_record(
+            record.clone(),
+            &slot_maps(FullFcfLoadKind::Resume, &[&[0, 1, 2, 3]]),
+        );
+        assert_only_record_dropped(&load, StoredBasisMisfit::UnmappedSlot { slot: 4 });
 
-        assert!(load.unused.is_none());
-        let cb = load.cache[0]
-            .as_ref()
-            .expect("the node's basis must be present");
-        assert_eq!(
-            cb.basis.row_status.len(),
-            3,
-            "row_status must be truncated to the template row count once a cut was deactivated"
-        );
-        assert!(
-            cb.cut_row_slots.is_empty(),
-            "cut_row_slots must be empty when slot identity cannot be proven"
-        );
+        let without_map = load_single_record(record, &[]);
+        assert_only_record_dropped(&without_map, StoredBasisMisfit::UnmappedSlot { slot: 0 });
     }
 
     /// Leaves 3..=6 of the branching graph share pool 3 and one template, so a
@@ -4515,12 +4536,15 @@ mod tests {
             .map(NodeId)
             .collect();
         let node_pools: TypedVec<NodePos, usize> = vec![0, 1, 2, 3, 3, 3, 3].into();
-        let mut stage_bases: Vec<_> = (0..7).map(|node| node_basis(node, 4)).collect();
+        let maps = slot_maps(FullFcfLoadKind::Resume, &[&[0], &[0], &[0], &[0, 1, 2, 3]]);
+        let mut stage_bases: Vec<_> = (0..7)
+            .map(|node| node_basis(node, if node < 3 { 0 } else { 4 }))
+            .collect();
         stage_bases[4].entries[0].column_status.push(0);
 
         let load = super::build_basis_cache_for_nodes(
             &stage_bases,
-            &[],
+            &maps,
             &node_ids,
             &node_pools,
             &[(2, 3); 7],
@@ -4553,11 +4577,17 @@ mod tests {
         columns_misfit.entries[0].column_status.push(0);
         let mut basic_count_misfit = node_basis(2, 0);
         basic_count_misfit.entries[0].row_status.fill(0);
+        let mut later_scenario_misfit = scenario_entry(1, &[]);
+        later_scenario_misfit.row_status.fill(0);
+        basic_count_misfit.entries.push(later_scenario_misfit);
         let mut records = vec![node_basis(0, 0), columns_misfit, basic_count_misfit];
 
         let forward =
             super::build_basis_cache_for_nodes(&records, &[], &node_ids, &node_pools, &[(2, 3); 3]);
         records.reverse();
+        for record in &mut records {
+            record.entries.reverse();
+        }
         let reversed =
             super::build_basis_cache_for_nodes(&records, &[], &node_ids, &node_pools, &[(2, 3); 3]);
 
@@ -4565,9 +4595,13 @@ mod tests {
             format!("{:?}", forward.cache),
             format!("{:?}", reversed.cache)
         );
+        assert_eq!(
+            format!("{:?}", forward.store),
+            format!("{:?}", reversed.store)
+        );
         let expected = UnusedStoredBases {
-            count: 2,
-            total: 3,
+            count: 3,
+            total: 4,
             first_node: NodeId(1),
             first_reason: StoredBasisMisfit::Columns {
                 expected: 2,
@@ -4598,10 +4632,21 @@ mod tests {
             "column count equals the LP's",
             "template rows plus its recorded cut rows",
             "basic count equals its row count",
+            "every recorded cut-row slot holds a loaded cut",
             "trained on a different LP",
         ] {
             assert!(warning.contains(needle), "missing {needle:?} in: {warning}");
         }
+        let unmapped = UnusedStoredBases {
+            first_reason: StoredBasisMisfit::UnmappedSlot { slot: 4 },
+            ..unused
+        };
+        assert!(
+            unmapped
+                .to_string()
+                .contains("node 1, a cut row at slot 4, which holds no loaded cut"),
+            "{unmapped}"
+        );
     }
 
     // ── inject_boundary_cuts tests ──────────────────────────────────────────────

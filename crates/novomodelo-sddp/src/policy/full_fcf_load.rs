@@ -13,7 +13,8 @@ use novomodelo_io::output::policy::{
     ResolvedCheckpoint, read_policy_checkpoint, resolve_policy_checkpoint,
 };
 use novomodelo_io::{
-    EntitySlot, OutputError, OwnedPolicyCutRecord, ProducerBlock, StageStatesReadResult,
+    EntitySlot, OutputError, OwnedPolicyCutRecord, ProducerBlock, StageCutsReadResult,
+    StageStatesReadResult,
 };
 
 use crate::cut::fcf::FutureCostFunction;
@@ -23,7 +24,7 @@ use crate::policy::policy_load::{
     build_basis_cache_from_checkpoint, convert_checkpoint_cuts_for_load, validate_policy_load,
 };
 use crate::setup::StudySetup;
-use crate::training::training::TrainingResult;
+use crate::training::training::{LoadedPolicy, TrainingResult};
 use crate::workspace::workspace::CapturedBasis;
 
 /// Which run consumes the loaded policy.
@@ -149,6 +150,15 @@ impl LoadedSlotMap {
         }
     }
 
+    /// The map of every pool of a checkpoint, in pool id order.
+    #[must_use]
+    pub fn for_pools(kind: FullFcfLoadKind, stage_cuts: &[StageCutsReadResult]) -> Vec<Self> {
+        stage_cuts
+            .iter()
+            .map(|pool| Self::new(kind, &pool.cuts))
+            .collect()
+    }
+
     /// The slot the record stored at `source_slot` occupies in the loaded pool, or
     /// `None` when no record held that slot.
     #[must_use]
@@ -171,9 +181,9 @@ pub struct CheckedFullFcfLoad {
     fcf: FutureCostFunction,
     slot_maps: Vec<LoadedSlotMap>,
     basis_cache: Vec<Option<CapturedBasis>>,
+    scenario_bases: Vec<Vec<(u32, CapturedBasis)>>,
     trial_states: Vec<StageStatesReadResult>,
     unused_stored_bases: Option<UnusedStoredBases>,
-    stored_basis_records: usize,
     producer: ProducerBlock,
 }
 
@@ -329,11 +339,7 @@ pub fn check_full_fcf_load(
         }
     }
 
-    let slot_maps: Vec<LoadedSlotMap> = checkpoint
-        .stage_cuts
-        .iter()
-        .map(|pool| LoadedSlotMap::new(kind, &pool.cuts))
-        .collect();
+    let slot_maps = LoadedSlotMap::for_pools(kind, &checkpoint.stage_cuts);
     let trial_states = match kind {
         FullFcfLoadKind::WarmStart | FullFcfLoadKind::Resume => place_trial_states(
             kind,
@@ -346,8 +352,9 @@ pub fn check_full_fcf_load(
 
     let StoredBasisLoad {
         cache: basis_cache,
+        store: scenario_bases,
         unused: unused_stored_bases,
-    } = build_basis_cache_from_checkpoint(&checkpoint.stage_bases, &checkpoint.stage_cuts, setup);
+    } = build_basis_cache_from_checkpoint(&checkpoint.stage_bases, &slot_maps, setup);
     if let Some(unused) = &unused_stored_bases {
         on_warning(&unused.to_string());
     }
@@ -357,9 +364,9 @@ pub fn check_full_fcf_load(
         fcf,
         slot_maps,
         basis_cache,
+        scenario_bases,
         trial_states,
         unused_stored_bases,
-        stored_basis_records: checkpoint.stage_bases.len(),
         producer: checkpoint.metadata.producer,
     })
 }
@@ -383,19 +390,17 @@ impl CheckedFullFcfLoad {
         self.unused_stored_bases.as_ref()
     }
 
-    /// Install the loaded FCF, the stored basis cache (when the checkpoint
-    /// holds bases), the stored trial states and, for resume, the completed
-    /// iterations and their recorded lower bounds into `setup`.
+    /// Install the loaded FCF, the stored bases of every scenario, the stored
+    /// trial states and, for resume, the completed iterations and their
+    /// recorded lower bounds into `setup`.
     pub fn apply_to_training(self, setup: &mut StudySetup) {
         debug_assert!(self.kind != FullFcfLoadKind::SimulationOnly);
         let completed = self.completed_iterations();
         setup.replace_fcf(self.fcf);
-        setup.set_loaded_trial_states(self.trial_states);
-        // No stored bases (the training run captured none) → iteration 1
-        // cold-starts.
-        if self.stored_basis_records > 0 {
-            setup.set_warm_start_basis_cache(self.basis_cache);
-        }
+        setup.set_loaded_policy(LoadedPolicy {
+            scenario_bases: self.scenario_bases,
+            trial_states: self.trial_states,
+        });
         if self.kind == FullFcfLoadKind::Resume {
             setup.set_resume_point(completed, self.producer.lower_bound_history);
         }
@@ -428,9 +433,14 @@ impl CheckedFullFcfLoad {
 mod tests {
     use std::io;
 
+    use novomodelo_comm::LocalBackend;
     use novomodelo_io::test_support::owned_piece_defaults;
+    use novomodelo_solver::{ActiveSolver, BasisStatus};
 
     use super::*;
+    use crate::policy::orchestration::{CheckpointParams, write_checkpoint};
+    use crate::setup::NodePos;
+    use crate::test_support::{k_fan_setup, k_fan_system};
 
     const KINDS: [FullFcfLoadKind; 3] = [
         FullFcfLoadKind::WarmStart,
@@ -533,6 +543,124 @@ mod tests {
         assert!(no_cut.to_string().contains("slot 2"), "{no_cut}");
         let no_pool = refusal(states_at(1, 2, &[0]), &[2, 2]);
         assert!(no_pool.to_string().contains("pool 1"), "{no_pool}");
+    }
+
+    /// Train a fan of [`k_fan_setup`] for `iterations`, from `policy` when given.
+    fn train_fan(iterations: u32, policy: Option<&Path>) -> (StudySetup, TrainingResult) {
+        let system = k_fan_system(FAN_WIDTH, false);
+        let mut setup = k_fan_setup(FAN_WIDTH, FAN_PASSES, iterations).setup;
+        if let Some(policy_dir) = policy {
+            check_full_fcf_load(
+                FullFcfLoadKind::Resume,
+                policy_dir,
+                &system,
+                &setup,
+                &mut |_: &str| {},
+            )
+            .expect("the fan checkpoint must load")
+            .apply_to_training(&mut setup);
+            assert_restores_every_stored_basis(&setup, policy_dir);
+        }
+        let mut solver = ActiveSolver::new().expect("ActiveSolver::new");
+        let outcome = setup
+            .train(&mut solver, &LocalBackend, 1, ActiveSolver::new, None, None)
+            .expect("train must return Ok");
+        assert!(outcome.error.is_none(), "{:?}", outcome.error);
+        (setup, outcome.result)
+    }
+
+    /// Every entry of the checkpoint in `policy_dir` seeds its own scenario at
+    /// its node, with the statuses and the cut-row slots it was written with.
+    fn assert_restores_every_stored_basis(setup: &StudySetup, policy_dir: &Path) {
+        let checkpoint = read_policy_checkpoint(policy_dir).expect("read_policy_checkpoint");
+        let codes = |statuses: &[BasisStatus]| -> Vec<u8> {
+            statuses.iter().map(|s| s.to_discriminant_code()).collect()
+        };
+        for record in &checkpoint.stage_bases {
+            for entry in &record.entries {
+                let node = NodePos(record.stage_id as usize);
+                let seeded = setup
+                    .loaded_policy()
+                    .seed_basis(node, entry.scenario)
+                    .expect("a stored basis seeds its scenario");
+                assert_eq!(
+                    (
+                        codes(&seeded.basis.col_status),
+                        codes(&seeded.basis.row_status),
+                        &seeded.cut_row_slots,
+                    ),
+                    (
+                        entry.column_status.clone(),
+                        entry.row_status.clone(),
+                        &entry.piece_row_slots,
+                    ),
+                    "node {}, scenario {}",
+                    node.0,
+                    entry.scenario
+                );
+            }
+        }
+    }
+
+    fn write_fan_checkpoint(dir: &Path, setup: &StudySetup, result: &TrainingResult) {
+        let params = CheckpointParams {
+            max_iterations: setup.loop_params.max_iterations,
+            forward_passes: setup.loop_params.forward_passes,
+            seed: setup.loop_params.seed,
+        };
+        write_checkpoint(dir, setup, &k_fan_system(FAN_WIDTH, false), result, &params)
+            .expect("write_checkpoint must succeed");
+    }
+
+    const FAN_WIDTH: usize = 8;
+    const FAN_PASSES: u32 = 6;
+
+    #[test]
+    fn a_resumed_fan_run_restores_every_stored_basis_and_equals_the_uninterrupted_run() {
+        let (uninterrupted, _) = train_fan(6, None);
+        let (interrupted, interrupted_result) = train_fan(3, None);
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_fan_checkpoint(dir.path(), &interrupted, &interrupted_result);
+
+        let checkpoint = read_policy_checkpoint(dir.path()).expect("read_policy_checkpoint");
+        let passes = FAN_PASSES as usize;
+        assert!(
+            checkpoint
+                .stage_bases
+                .iter()
+                .any(|record| !record.entries.is_empty() && record.entries.len() < passes),
+            "power: some node holds the bases of some scenarios only"
+        );
+
+        let (resumed, _) = train_fan(6, Some(dir.path()));
+        for (pool, (r, u)) in resumed
+            .fcf
+            .pools
+            .iter()
+            .zip(&uninterrupted.fcf.pools)
+            .enumerate()
+        {
+            assert_eq!(r.populated(), u.populated(), "pool {pool}: populated slots");
+            for slot in 0..u.populated() {
+                assert_eq!(r.role(slot), u.role(slot), "pool {pool}, slot {slot}: role");
+                assert_eq!(
+                    r.is_active(slot),
+                    u.is_active(slot),
+                    "pool {pool}, slot {slot}: activity"
+                );
+                assert_eq!(
+                    r.intercept(slot).to_bits(),
+                    u.intercept(slot).to_bits(),
+                    "pool {pool}, slot {slot}: intercept"
+                );
+                let bits = |c: &[f64]| c.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+                assert_eq!(
+                    bits(r.coefficient_row(slot)),
+                    bits(u.coefficient_row(slot)),
+                    "pool {pool}, slot {slot}: coefficients"
+                );
+            }
+        }
     }
 
     #[test]

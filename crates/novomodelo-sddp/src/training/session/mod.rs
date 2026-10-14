@@ -10,7 +10,6 @@ use novomodelo_solver::freeze_rows_into_template;
 
 use crate::cut_selection::CutSelectionStrategy::Dynamic;
 use crate::cut_selection::CutSelectionStrategy::Level1;
-use crate::workspace::CapturedBasis;
 
 use std::ops::RangeInclusive;
 pub(crate) mod iteration_scratch;
@@ -53,7 +52,7 @@ use crate::{
         aggregate_solver_statistics, pack_delta_scalars, unpack_delta_scalars,
     },
     state_exchange::ExchangeBuffers,
-    training::training::{CheckpointBasisStore, gather_basis_store},
+    training::training::{CheckpointBasisStore, LoadedPolicy, gather_basis_store, global_scenario},
     training::{TrainingOutcome, TrainingResult, broadcast_basis_cache},
     workspace::{BasisStore, NoisePreallocation, WorkspacePool, WorkspaceSizing},
 };
@@ -1348,26 +1347,17 @@ where
         total_rows_frozen
     }
 
-    /// Seed the per-scenario basis store from a checkpoint's stored bases
-    /// before the first training iteration runs.
-    ///
-    /// `cache` carries one [`CapturedBasis`]
-    /// per canonical node (built by
-    /// [`build_basis_cache_from_checkpoint`](crate::build_basis_cache_from_checkpoint)).
-    /// The load keeps a single basis per node; the forward pass keeps one
-    /// per `(worker, node)`, so each node's basis is replicated across every
-    /// worker for iteration 1's warm-start. `reconstruct_basis` reconciles the
-    /// stored cut rows against the current active set by slot identity, so a
-    /// seeded basis stays correct even if cut selection diverges. Seeds every
-    /// node (`num_nodes`), never truncated at `num_stages`, so a branching
-    /// graph's leaves warm-start too. No-op for a fresh start (no cache).
-    pub(crate) fn seed_basis_store(&mut self, cache: &[Option<CapturedBasis>]) {
-        let max_local_fwd = self.ranks.max_local_fwd;
-        let num_nodes = self.basis_store.num_nodes();
-        for (t, slot) in cache.iter().enumerate().take(num_nodes) {
-            let Some(captured) = slot else { continue };
-            for scenario in 0..max_local_fwd {
-                *self.basis_store.get_mut(scenario, NodePos(t)) = Some(captured.clone());
+    /// Seed this rank's rows of the basis store from a loaded checkpoint before
+    /// the first training iteration runs: local row `m` of every canonical node
+    /// takes [`LoadedPolicy::seed_basis`] of global scenario `fwd_offset + m`.
+    /// The padding rows `my_actual_fwd..max_local_fwd` stay empty, and so does
+    /// every row for a fresh start.
+    pub(crate) fn seed_basis_store(&mut self, loaded: &LoadedPolicy) {
+        for node in 0..self.basis_store.num_nodes() {
+            for m in 0..self.ranks.my_actual_fwd {
+                let scenario = global_scenario(self.ranks.my_fwd_offset, m);
+                *self.basis_store.get_mut(m, NodePos(node)) =
+                    loaded.seed_basis(NodePos(node), scenario).cloned();
             }
         }
     }
@@ -1573,8 +1563,10 @@ mod tests {
         IterationOutcome, LazySolveTotals, TrainingSession, grow_pools_for_next_iteration,
         reduce_lazy_totals_delta,
     };
+    use crate::workspace::CapturedBasis;
     use crate::{
-        CutPool, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
+        CutPool, LoadedPolicy, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet,
+        TrainingConfig,
         config::{CutManagementConfig, EventConfig, LoopConfig},
         context::TrainingContext,
         cut::fcf::FutureCostFunction,
@@ -3126,6 +3118,165 @@ mod tests {
             len: 1,
             q: 1.0,
         }
+    }
+
+    // ── seed_basis_store: each rank restores its own scenarios ─────────────
+
+    /// One rank of a two-rank world that issues no collective: `size()` and
+    /// `rank()` are the only load-bearing methods.
+    struct OneOfTwo(usize);
+
+    impl Communicator for OneOfTwo {
+        fn allgatherv<T: CommData>(
+            &self,
+            send: &[T],
+            recv: &mut [T],
+            _counts: &[usize],
+            displs: &[usize],
+        ) -> Result<(), CommError> {
+            let start = displs[self.0];
+            recv[start..start + send.len()].clone_from_slice(send);
+            Ok(())
+        }
+
+        fn allreduce<T: CommData>(
+            &self,
+            send: &[T],
+            recv: &mut [T],
+            _op: ReduceOp,
+        ) -> Result<(), CommError> {
+            recv.clone_from_slice(send);
+            Ok(())
+        }
+
+        fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
+            Ok(())
+        }
+
+        fn barrier(&self) -> Result<(), CommError> {
+            Ok(())
+        }
+
+        fn rank(&self) -> usize {
+            self.0
+        }
+
+        fn size(&self) -> usize {
+            2
+        }
+
+        fn abort(&self, error_code: i32) -> ! {
+            std::process::exit(error_code)
+        }
+    }
+
+    /// The local rows of the store after seeding `loaded` on `comm`, with
+    /// three forward passes on a two-stage chain: per node, each row's
+    /// `cut_row_slots`, which the fixture sets to the basis's scenario.
+    fn seeded_rows<C: Communicator>(comm: &C, loaded: &LoadedPolicy) -> Vec<Vec<Option<Vec<u32>>>> {
+        let n_stages = 2;
+        let state = test_support::state_layout(1, 0);
+        let templates = vec![minimal_template(state.n_state); n_stages];
+        let initial_state = vec![0.0_f64; state.n_state];
+        let stochastic = make_stochastic_context(n_stages, 1);
+        let stages = make_stages(n_stages);
+        let horizon = HorizonMode::Finite {
+            num_stages: n_stages,
+        };
+        let mut fcf = make_fcf(n_stages, state.n_state, 3, 10);
+        let config = make_config(3, 10, 1, n_stages);
+        let mut solver = MockSolver::with_fixed(100.0);
+        let block_counts = vec![1usize; n_stages];
+        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let geometry = equipment_free_geometry(&block_counts);
+        let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
+        let stage_ctx = fixture.ctx();
+        let study_dims = test_support::study_dims();
+        let cut_state_layouts = test_support::all_enabled_cut_state_layouts(&state, n_stages);
+        let node_graph_fixture = test_support::chain_node_graph(&stochastic);
+        let training_ctx = make_training_ctx(
+            &horizon,
+            &study_dims,
+            &state,
+            &cut_state_layouts,
+            &stochastic,
+            &initial_state,
+            &stages,
+            &node_graph_fixture,
+        );
+        let mut session = TrainingSession::new(
+            &mut solver,
+            config,
+            &mut fcf,
+            &stage_ctx,
+            &training_ctx,
+            comm,
+            || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
+            SolverProfiles::default(),
+        )
+        .unwrap();
+
+        session.seed_basis_store(loaded);
+
+        (0..n_stages)
+            .map(|node| {
+                (0..session.basis_store.num_scenarios())
+                    .map(|row| {
+                        session
+                            .basis_store
+                            .get(row, NodePos(node))
+                            .map(|basis| basis.cut_row_slots.clone())
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Node 0 holds the bases of scenarios 0, 1 and 2, node 1 that of scenario
+    /// 0 only (a source that ran one forward pass at it). Rank 0 owns scenarios
+    /// 0 and 1, rank 1 scenario 2 and one padding row.
+    #[test]
+    fn seeding_gives_each_local_row_its_global_scenario_and_leaves_padding_empty() {
+        let tagged = |node: i32, scenario: u32| {
+            (
+                scenario,
+                CapturedBasis {
+                    basis: Basis {
+                        col_status: Vec::new(),
+                        row_status: Vec::new(),
+                    },
+                    base_row_count: 0,
+                    cut_row_slots: vec![scenario],
+                    state_at_capture: Vec::new(),
+                    node_id: NodeId(node),
+                },
+            )
+        };
+        let loaded = LoadedPolicy {
+            scenario_bases: vec![
+                vec![tagged(0, 0), tagged(0, 1), tagged(0, 2)],
+                vec![tagged(1, 0)],
+            ],
+            ..LoadedPolicy::default()
+        };
+
+        assert_eq!(
+            seeded_rows(&OneOfTwo(0), &loaded),
+            [
+                vec![Some(vec![0]), Some(vec![1])],
+                vec![Some(vec![0]), Some(vec![0])],
+            ]
+        );
+        assert_eq!(
+            seeded_rows(&OneOfTwo(1), &loaded),
+            [vec![Some(vec![2]), None], vec![Some(vec![0]), None]]
+        );
+        assert_eq!(
+            seeded_rows(&OneOfTwo(1), &LoadedPolicy::default()),
+            [vec![None, None], vec![None, None]],
+            "a fresh start seeds nothing"
+        );
     }
 
     // ── TrainingSession::new: enumerated world >= 2 interior-branching guard ─

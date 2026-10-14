@@ -50,6 +50,7 @@ use novomodelo_io::{
     STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, SimulationOutput, StageCutsPayload,
     read_policy_checkpoint, write_policy_checkpoint, write_results,
 };
+use novomodelo_sddp::policy::full_fcf_load::{FullFcfLoadKind, LoadedSlotMap};
 use novomodelo_sddp::{
     CapturedBasis, LoadedPolicy, Phase, PrepareHydroModelsResult, ResolvedParameters,
     SimulationSummary, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
@@ -1922,7 +1923,9 @@ fn simulation_only_with_partly_dropped_stored_bases_is_bit_identical_across_thre
         let code = record.entries[0].column_status[0];
         record.entries[0].column_status.push(code);
     }
-    let load = build_basis_cache_from_checkpoint(&records, &checkpoint.stage_cuts, &setup);
+    let slot_maps =
+        LoadedSlotMap::for_pools(FullFcfLoadKind::SimulationOnly, &checkpoint.stage_cuts);
+    let load = build_basis_cache_from_checkpoint(&records, &slot_maps, &setup);
     let unused = load
         .unused
         .as_ref()

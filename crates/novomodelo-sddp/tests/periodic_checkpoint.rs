@@ -21,8 +21,11 @@ use novomodelo_io::config::{
 use novomodelo_io::output::policy::{PolicyCheckpoint, read_policy_checkpoint};
 use novomodelo_sddp::policy::full_fcf_load::{FullFcfLoadKind, check_full_fcf_load};
 use novomodelo_sddp::policy::orchestration::{CheckpointParams, write_checkpoint};
-use novomodelo_sddp::{DEFAULT_COST_SCALE_FACTOR, SddpError, StudySetup, TrainingResult};
-use novomodelo_solver::ActiveSolver;
+use novomodelo_sddp::setup::NodePos;
+use novomodelo_sddp::{
+    CapturedBasis, DEFAULT_COST_SCALE_FACTOR, SddpError, StudySetup, TrainingResult,
+};
+use novomodelo_solver::{ActiveSolver, BasisStatus};
 
 use common::selection_fingerprint::SelectionFingerprint;
 use common::{StubComm, fresh_system_and_setup_with, positive};
@@ -350,10 +353,66 @@ fn selection_off_setup(iteration_limit: u32, forward_passes: u32) -> (System, St
     })
 }
 
-/// Returns `(resumed, uninterrupted)`: the resumed run trains 3 iterations,
-/// checkpoints, loads the checkpoint through the production resume path and
-/// trains to 6.
-fn resumed_and_uninterrupted(forward_passes: u32) -> (RunOutcome, RunOutcome) {
+/// One stored basis as the checkpoint writes it: column and row status codes
+/// and the slot of each cut row.
+type StoredBasisView = (Vec<u8>, Vec<u8>, Vec<u32>);
+
+fn stored_view(basis: &CapturedBasis) -> StoredBasisView {
+    let codes = |statuses: &[BasisStatus]| {
+        statuses
+            .iter()
+            .map(|status| status.to_discriminant_code())
+            .collect()
+    };
+    (
+        codes(&basis.basis.col_status),
+        codes(&basis.basis.row_status),
+        basis.cut_row_slots.clone(),
+    )
+}
+
+/// The basis store a resume restores, against the one the interrupted run
+/// wrote: per `(node, scenario)`, the basis the resumed setup seeds and the
+/// checkpoint's entry.
+struct RestoredStore {
+    seeded: BTreeMap<(usize, u32), Option<StoredBasisView>>,
+    written: BTreeMap<(usize, u32), Option<StoredBasisView>>,
+}
+
+impl RestoredStore {
+    fn capture(setup: &StudySetup, interrupted: &PolicyCheckpoint, forward_passes: u32) -> Self {
+        let mut seeded = BTreeMap::new();
+        let mut written = BTreeMap::new();
+        for node in 0..setup.inputs.node_graph.nodes.len() {
+            for scenario in 0..forward_passes {
+                let seed = setup
+                    .loaded_policy()
+                    .seed_basis(NodePos(node), scenario)
+                    .map(stored_view);
+                seeded.insert((node, scenario), seed);
+                written.insert((node, scenario), None);
+            }
+        }
+        for record in &interrupted.stage_bases {
+            for entry in &record.entries {
+                written.insert(
+                    (record.stage_id as usize, entry.scenario),
+                    Some((
+                        entry.column_status.clone(),
+                        entry.row_status.clone(),
+                        entry.piece_row_slots.clone(),
+                    )),
+                );
+            }
+        }
+        Self { seeded, written }
+    }
+}
+
+/// Returns `(resumed, uninterrupted, restored)`: the resumed run trains 3
+/// iterations, checkpoints, loads the checkpoint through the production resume
+/// path and trains to 6.
+fn resumed_and_uninterrupted(forward_passes: u32) -> (RunOutcome, RunOutcome, RestoredStore) {
     let (full_system, mut full_setup) = selection_off_setup(6, forward_passes);
     let full_result = train(&mut full_setup, None);
     assert_eq!(full_result.iterations, 6);
@@ -387,15 +446,32 @@ fn resumed_and_uninterrupted(forward_passes: u32) -> (RunOutcome, RunOutcome) {
     )
     .expect("the checkpoint must load")
     .apply_to_training(&mut resumed_setup);
+    let interrupted = read_policy_checkpoint(&policy_dir).expect("read_policy_checkpoint");
+    let restored = RestoredStore::capture(&resumed_setup, &interrupted, forward_passes);
     let resumed_result = train(&mut resumed_setup, None);
     assert_eq!(resumed_result.iterations, 6);
     (
         RunOutcome::capture(&system, &resumed_setup, &resumed_result),
         uninterrupted,
+        restored,
     )
 }
 
-fn assert_same_run(resumed: &RunOutcome, uninterrupted: &RunOutcome) {
+fn assert_same_run(resumed: &RunOutcome, uninterrupted: &RunOutcome, restored: &RestoredStore) {
+    for run in [resumed, uninterrupted] {
+        assert_eq!(run.resolved_cost_scale_factor, DEFAULT_COST_SCALE_FACTOR);
+    }
+    assert!(
+        restored.written.values().any(Option::is_some),
+        "the interrupted run's checkpoint holds bases"
+    );
+    for (key, written) in &restored.written {
+        assert_eq!(
+            &restored.seeded[key], written,
+            "(node, scenario) {key:?}: the restored basis is the one the interrupted run wrote"
+        );
+    }
+
     assert_eq!(
         resumed.fingerprint.cuts.len(),
         uninterrupted.fingerprint.cuts.len()
@@ -522,21 +598,12 @@ fn assert_same_checkpoint(resumed: &PolicyCheckpoint, uninterrupted: &PolicyChec
 
 #[test]
 fn resumed_run_equals_the_uninterrupted_run_with_one_forward_pass() {
-    let (resumed, uninterrupted) = resumed_and_uninterrupted(1);
-    assert_eq!(
-        resumed.resolved_cost_scale_factor,
-        DEFAULT_COST_SCALE_FACTOR
-    );
-    assert_eq!(
-        uninterrupted.resolved_cost_scale_factor,
-        DEFAULT_COST_SCALE_FACTOR
-    );
-    assert_same_run(&resumed, &uninterrupted);
+    let (resumed, uninterrupted, restored) = resumed_and_uninterrupted(1);
+    assert_same_run(&resumed, &uninterrupted, &restored);
 }
 
 #[test]
-#[ignore = "resume restores one stored basis per node; forward passes beyond the first restart from it"]
 fn resumed_run_equals_the_uninterrupted_run_with_several_forward_passes() {
-    let (resumed, uninterrupted) = resumed_and_uninterrupted(3);
-    assert_same_run(&resumed, &uninterrupted);
+    let (resumed, uninterrupted, restored) = resumed_and_uninterrupted(3);
+    assert_same_run(&resumed, &uninterrupted, &restored);
 }

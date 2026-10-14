@@ -857,26 +857,75 @@ current LP (`node_dims`), never from the record. Read: `policy/policy_export.rs`
 (`tests/cut_basis.rs`, through `build_scenario_zero_basis_entries`, which builds
 its entries with `basis_entry` too).
 
-The load uses a stored basis for its node only when it fits that node's LP
-exactly. It reads each node record's entry with the lowest `scenario`, and
-`admit_stored_basis` checks, in order, `found_cols == template_cols`,
-`found_rows == template_rows + piece_row_slots.len()`, and a basic count (column and row
-statuses decoding to `Basic`) equal to `found_rows`. A record that fails is not
-used for its node and the load proceeds: its slot stays `None`, and
-`UnusedStoredBases` owns the one aggregated warning, `stored bases not used: …`.
-The basic count is checked because `reconstruct_basis` assumes it and a deficit
+The load decodes every entry of every node record (`build_basis_cache_for_nodes`)
+and admits each by its stored slots. An entry's cut rows keep the slots it
+recorded, each translated through its node's pool's `LoadedSlotMap`
+(`policy/full_fcf_load.rs`), the only translation from a stored slot: the stored
+slot under a resume, the record's rank under a warm start and a simulation-only
+load, which pack. Its template row count is the current LP's (`node_dims`). An
+entry is used only when it fits that node's LP exactly: `admit_stored_basis`
+checks, in order, `found_cols == template_cols`,
+`found_rows == template_rows + piece_row_slots.len()`, and a basic count (column
+and row statuses decoding to `Basic`) equal to `found_rows`; then every recorded
+slot must map to a loaded cut (`StoredBasisMisfit::UnmappedSlot` otherwise). An
+entry that fails is left out and the load proceeds: `UnusedStoredBases` owns the
+one aggregated warning, `stored bases not used: …`, which counts entries. The
+basic count is checked because `reconstruct_basis` assumes it and a deficit
 aborts the run with `BasisShapeMismatch` (`cut/basis_reconstruct.rs`, "Basic-count
-invariant"); `reconstruct_basis` is never called for a dropped node, so the
-append-only pool and slot identity are untouched. The wrong-but-compiling
-alternatives: refusing the load over a basis, which only warm-starts a solve;
-admitting on shape alone, which lets a basic-count deficit reach
-`reconstruct_basis`; and adding a cold retry after `reconstruct_basis` fails,
-which hides a record this rule should have dropped. Read: `policy/policy_load.rs`
-(`build_basis_cache_for_nodes`, `admit_stored_basis`, `StoredBasisLoad`),
-`policy/full_fcf_load.rs` (`check_full_fcf_load`). Pinned by
-`stored_basis_whose_basic_count_differs_from_its_rows_is_dropped` and
-`unused_stored_bases_report_is_independent_of_record_order`
-(`policy/policy_load.rs`),
+invariant"); `reconstruct_basis` is never called with a dropped entry, so the
+append-only pool and slot identity are untouched.
+
+Each admitted entry seeds its own scenario. `StoredBasisLoad::store` keeps, per
+node, the admitted entries with their global scenario; a training load hands them
+to `train` in `LoadedPolicy::scenario_bases`, and `TrainingSession::seed_basis_store`
+fills, on every rank and before `prime_frozen_templates`, local row
+`m < my_actual_fwd` of each node with `LoadedPolicy::seed_basis` of global scenario
+`fwd_offset + m`: that scenario's own entry, else the node's lowest-scenario entry
+(a source that ran fewer forward passes), else nothing. The padding rows
+`my_actual_fwd..max_local_fwd` stay empty. Simulation keeps one basis per node,
+the lowest-scenario admitted entry (`StoredBasisLoad::cache`).
+
+The wrong-but-compiling alternatives:
+
+- refusing the load over a basis, which only warm-starts a solve;
+- admitting on shape alone, which lets a basic-count deficit reach
+  `reconstruct_basis`;
+- adding a cold retry after `reconstruct_basis` fails, which hides an entry this
+  rule should have dropped;
+- copying one basis to every scenario: a resumed run with several forward passes
+  restarts scenarios 1 and up from scenario 0's basis, and at a degenerate optimum
+  their solves settle on other vertices than the uninterrupted run's;
+- inferring a basis's cut-row slots from the pool's active set (its first slots
+  when the active slots are an unbroken prefix, no cut rows otherwise): a pool
+  under selection is not a prefix, so every stored basis loses its cut rows;
+- keying a row by its local index instead of its global scenario: every rank
+  but rank 0 restores rank 0's scenarios.
+
+Read: `policy/policy_load.rs` (`build_basis_cache_for_nodes`,
+`admit_stored_basis`, `StoredBasisLoad`), `policy/full_fcf_load.rs`
+(`check_full_fcf_load`, `LoadedSlotMap`), `training/training.rs`
+(`LoadedPolicy::seed_basis`), `training/session/mod.rs` (`seed_basis_store`).
+Pinned by, in `policy/policy_load.rs`:
+`stored_basis_whose_basic_count_differs_from_its_rows_is_dropped`,
+`unused_stored_bases_report_is_independent_of_record_order`,
+`a_stored_basis_is_admitted_at_its_translated_slots` (cut rows at slots that are
+not a prefix of the pool, each at its translated slot under every load kind),
+`a_stored_basis_with_an_unmapped_slot_is_left_out_and_counted` and
+`every_entry_of_a_record_is_kept_by_scenario_and_the_cache_takes_the_lowest_admitted`;
+`seeding_gives_each_local_row_its_global_scenario_and_leaves_padding_empty`
+(`training/session/mod.rs`: rank 1 of 2 seeds its row from scenario 2 and leaves
+its padding row empty, a node holding scenario 0 only seeds every row from it;
+fails under the local-row key and under seeding the padding rows);
+`resumed_run_equals_the_uninterrupted_run_with_several_forward_passes`
+(`tests/periodic_checkpoint.rs`: the resumed setup seeds every scenario and node
+with the interrupted run's checkpoint entry, and the resumed run equals the
+uninterrupted one bit for bit; under copying scenario 0's basis to every row the
+cut intercepts of pool 1 differ, and under decoding only the lowest-scenario entry
+the seeded basis of scenario 1 does);
+`a_resumed_fan_run_restores_every_stored_basis_and_equals_the_uninterrupted_run`
+(`policy/full_fcf_load.rs`: on a sampled fan where some nodes hold the bases of
+some scenarios only, every entry seeds its own scenario; the run comparison passes
+under copying scenario 0's basis, so the fan's power is the seeding check);
 `warm_start_skips_a_stored_basis_with_too_few_basic_entries_instead_of_aborting`
 (`tests/cut_basis.rs`),
 `simulation_only_loads_a_policy_with_a_wider_stored_basis_and_warns`
