@@ -41,10 +41,19 @@ pub struct SimulationConfig {
     /// evicted, so a simulation LP can be larger than the training LPs.
     /// `active` loads only the rows active when training ended.
     ///
-    /// Under both values a row loaded from a policy (`policy.mode`,
-    /// `policy.boundary`, or a run with training disabled) follows the active
-    /// flag stored with it, and the exported `is_active` flag records the last
-    /// selection.
+    /// A run with training disabled loads each row of the policy with the role
+    /// it had in the run that wrote it, so `all` loads what that run's `all`
+    /// held and `active` the rows active when it ended; a `resume` does the
+    /// same. Under `warm_start` and for `policy.boundary` rows, `all` loads a
+    /// row the policy records as `scored` whatever its active flag, and any
+    /// other loaded row only when that flag is set. The exported `is_active`
+    /// flag records the last selection.
+    ///
+    /// A run with `training.cut_selection.selection.method` set to `dynamic`
+    /// that simulates under `all` is refused at load when the policy it loads
+    /// under `warm_start` or `resume`, or with training disabled, holds a row
+    /// that `all` includes and that is not active; set `active`, or use the
+    /// `level1` method.
     #[serde(deserialize_with = "deserialize_cut_set")]
     pub cut_set: SimulationRowSet,
 }

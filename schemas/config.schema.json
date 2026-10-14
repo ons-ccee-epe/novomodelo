@@ -68,7 +68,7 @@
       "properties": {
         "compress": {
           "default": null,
-          "description": "Compress checkpoint files.",
+          "description": "Reserved and not read: checkpoint files are written uncompressed whatever its value.",
           "type": [
             "boolean",
             "null"
@@ -104,7 +104,7 @@
         },
         "store_basis": {
           "default": null,
-          "description": "Include LP basis in checkpoints for warm-start.",
+          "description": "Reserved and not read: a checkpoint holds the LP bases of the run's scenarios whatever its value.",
           "type": [
             "boolean",
             "null"
@@ -179,7 +179,7 @@
         },
         "states": {
           "default": false,
-          "description": "Export visited forward-pass trial points to the policy checkpoint.",
+          "description": "Store the trial state of each row the run adds, under every selection\nmethod, and write the stored states to the policy checkpoint. Each row\npool that receives rows stores the states of its own rows, at its own\nstate dimension: the first stage's pool, which keeps every state, and\nthe pool of each stage strictly between the first and the last, which\nunder `level1` with `lookback_iterations` keeps only the states inside\nthe window. A `level1` run stores and writes the states of the pools it\nselects whether or not this is set, since a resume reads them. Storing\nthe states changes no result of the run; the policy then marks its\nrows `scored`, which a later `level1` run that loads it selects like\nits own rows.",
           "type": "boolean"
         },
         "stochastic": {
@@ -523,11 +523,11 @@
         "mode": {
           "$ref": "#/$defs/PolicyMode",
           "default": "fresh",
-          "description": "Initialization mode: `\"fresh\"`, `\"warm_start\"`, or `\"resume\"`."
+          "description": "Initialization mode: `\"fresh\"`, `\"warm_start\"`, or `\"resume\"`.\n\nA `resume` is refused at load when the checkpoint cannot continue the run as the run that wrote it would have: it was written with another number of forward passes; the run uses `level1` on a study with a stage strictly between the first and the last, and the checkpoint holds no trial-state history, or holds a window while the run keeps every trial state, or holds a shorter window than the run's `lookback_iterations`; the run sets `max_active_per_stage` or the `dynamic` method and the checkpoint holds no binding records; or the run that wrote it ended in an error, which makes it a partial policy. A `warm_start` is not refused for any of these."
         },
         "path": {
           "default": "./policy",
-          "description": "Policy directory, resolved against the output directory unless absolute. A checkpoint write replaces the whole directory, so an empty path, `.`, `..`, the output directory and its ancestors are refused. So is a directory that names or contains one a run clears before writing its outputs, such as `simulation/solver` or `training/solver`, or that lies inside one a run removes whole, such as `simulation/costs`.",
+          "description": "Policy directory, resolved against the output directory unless absolute. A checkpoint write replaces the whole directory, so an empty path, `.`, `..`, the output directory and its ancestors are refused. So is a directory that names or contains one a run clears before writing its outputs, such as `simulation/solver` or `training/solver`, or that lies inside one a run removes whole, such as `simulation/costs`.\n\nThis directory only holds whole checkpoints. A run whose training ends in an error writes its policy to the sibling directory `<path>.partial`, replacing one already there, and leaves this directory as it was; a later run leaves that sibling in place. A run reads the sibling only when `policy.path` names it, and a `resume` of it is refused.",
           "type": "string"
         }
       },
@@ -548,7 +548,7 @@
         },
         {
           "const": "resume",
-          "description": "Resume a previously interrupted training run from its checkpoint.",
+          "description": "Resume a previously interrupted training run from its checkpoint and\ncontinue it as that run would have continued: the iteration numbering,\neach row's role, binding record and stored trial state, and each\nscenario's own LP basis are restored.",
           "type": "string"
         }
       ]
@@ -726,7 +726,7 @@
       "properties": {
         "max_active_per_stage": {
           "default": null,
-          "description": "Cap on the active rows that the current run has added to a stage's row\npool. Absent (default): no cap.\n\nThe cap applies to the row pool of every stage strictly between the\nfirst and the last; the pools of the first stage and of the last stage\nare not capped. Where the policy graph has several nodes at such a\nstage, each node has its own pool and the cap applies to each pool\nseparately. Rows loaded from a policy (`policy.mode` set to `warm_start`\nor `resume`, or `policy.boundary`) are never evicted and do not count\ntoward the cap, so a pool can hold more active rows than the cap. Under\n`resume` every reloaded row is a loaded row, so the cap counts only the\nrows added after the resume.\n\nThe cap is applied in every training iteration, after that iteration's\nrows have been added, whether or not a selection method is configured;\nin an iteration where the selection method runs its periodic pass, the\ncap is applied after that pass. Rows added in the current iteration\ncount toward the cap and are never evicted, so the count stays above\nthe cap when those rows alone exceed it.\n\nWhen the count exceeds the cap, the excess is evicted from the rows\nadded in earlier iterations, in ascending order of the iteration in\nwhich a row was last binding; ties go to the row that was binding in\nfewer solves, then to the row at the lower position in the pool. A row\nthat has never been binding ranks by the iteration that added it.\n`row_activity_tolerance` decides whether a row is binding.\n\nThe cap is rejected at load when set together with\n`training.cut_selection.selection.method` = `dynamic` or with\n`training.selection.method` set to `enumerated`.\n\nEviction deactivates a row and keeps it in the pool. With no selection\nmethod an evicted row does not become active again during training.\nWith `level1`, a later selection pass may reactivate it, and the cap is\nthen applied again in the same iteration.",
+          "description": "Cap on the active rows that the current run has added to a stage's row\npool. Absent (default): no cap.\n\nThe cap applies to the row pool of every stage strictly between the\nfirst and the last; the pools of the first stage and of the last stage\nare not capped. Where the policy graph has several nodes at such a\nstage, each node has its own pool and the cap applies to each pool\nseparately. Rows loaded from a policy (`policy.mode` set to\n`warm_start`, or `policy.boundary`) are never evicted and do not count\ntoward the cap, so a pool can hold more active rows than the cap. Under\n`resume` each reloaded row keeps the role it had in the run that wrote\nthe checkpoint: the rows that run added count toward the cap and can be\nevicted, and the rows it loaded do not.\n\nThe cap is applied in every training iteration, after that iteration's\nrows have been added, whether or not a selection method is configured;\nin an iteration where the selection method runs its periodic pass, the\ncap is applied after that pass. Rows added in the current iteration\ncount toward the cap and are never evicted, so the count stays above\nthe cap when those rows alone exceed it.\n\nWhen the count exceeds the cap, the excess is evicted from the rows\nadded in earlier iterations, in ascending order of the iteration in\nwhich a row was last binding; ties go to the row that was binding in\nfewer solves, then to the row at the lower position in the pool. A row\nthat has never been binding ranks by the iteration that added it.\n`row_activity_tolerance` decides whether a row is binding.\n\nThe cap is rejected at load when set together with\n`training.cut_selection.selection.method` = `dynamic` or with\n`training.selection.method` set to `enumerated`.\n\nEviction deactivates a row and keeps it in the pool. With no selection\nmethod an evicted row does not become active again during training.\nWith `level1`, a later selection pass may reactivate it, and the cap is\nthen applied again in the same iteration.",
           "format": "uint32",
           "minimum": 0,
           "type": [
@@ -736,7 +736,7 @@
         },
         "row_activity_tolerance": {
           "default": 1e-6,
-          "description": "Binding threshold for activity tracking: a constraint row counts as\nbinding at a solution point when its dual multiplier is strictly greater\nthan this value (a signed comparison; a multiplier equal to the\nthreshold does not bind). In one solve the multipliers of a stage's pool\nrows are non-negative weights whose sum is at most that stage's discount\nfactor, so the threshold is dimensionless. The recorded activity is read\nonly by `max_active_per_stage` and by the `seed_window` of the `dynamic`\nmethod. Must be `>= 0`. A value of `0` counts a multiplier at solver\nrounding level as binding.",
+          "description": "Binding threshold for activity tracking: a constraint row counts as\nbinding at a solution point when its dual multiplier is strictly greater\nthan this value (a signed comparison; a multiplier equal to the\nthreshold does not bind). In one solve the multipliers of a stage's pool\nrows are non-negative weights whose sum is at most that stage's discount\nfactor, so the threshold is dimensionless. The recorded activity is read\nonly by `max_active_per_stage` and by the `seed_window` of the `dynamic`\nmethod, and it is recorded, and written to the policy checkpoint, only\nwhen one of them is configured. Must be `>= 0`. A value of `0` counts a\nmultiplier at solver rounding level as binding.",
           "format": "double",
           "type": "number"
         },
@@ -775,7 +775,7 @@
       "oneOf": [
         {
           "additionalProperties": false,
-          "description": "Level 1: every row the run adds to the row pool of a stage strictly\nbetween the first and the last records the trial state it was computed\nat, and keeps it for the whole run or, with `lookback_iterations`, for\nthe iterations that key sets. At each stored state, the row with the\nhighest value there owns the state, among the rows the run added to\nthat pool and the active rows loaded into it; of rows whose values there\nare exactly equal, the one at the lowest pool position owns it. Every\n`check_frequency` iterations, a row the run added to such a pool is\ndeactivated when it owns no stored state and reactivated when it is\ninactive and owns one. Values are compared exactly, with no tolerance,\nand a row of the current iteration is judged like any other. A row\nloaded from a policy keeps the activity it was loaded with.",
+          "description": "Level 1: every row the run adds to the row pool of a stage strictly\nbetween the first and the last is scored: the pool stores the trial\nstate the row was computed at, for the whole run or, with\n`lookback_iterations`, for the iterations that key sets. A row loaded\nfrom a policy is scored when the policy records it so (`scored`), which\nit does for the rows its writing run added to a pool that stored trial\nstates, under `level1` or with `exports.states`; the state the policy\nholds for such a row, if any, is stored with it. At each stored state,\nthe row with the highest value there owns the state, among the scored\nrows of that pool, active or not, and its other loaded rows that are\nactive; of rows whose values there are exactly equal, the one at the\nlowest pool position owns it. Every `check_frequency` iterations, a\nscored row of such a pool is deactivated when it owns no stored state\nand reactivated when it is inactive and owns one, also once its own\nstate has been dropped. Values are compared exactly, with no tolerance,\nand a row of the current iteration is judged like any other. A loaded\nrow that is not scored keeps the activity it was loaded with. Under\n`resume` a reloaded row is selected as it would have been in the run\nthat wrote the checkpoint.",
           "properties": {
             "check_frequency": {
               "default": 5,
@@ -786,7 +786,7 @@
             },
             "lookback_iterations": {
               "default": null,
-              "description": "Iterations of the current run whose rows keep their trial states.\nAbsent (default): the trial state of every row the run added is\nkept, and the memory of a run grows with its row count. A value `w`\nkeeps the trial states of the rows added in the last `w` iterations\nof the current run and drops the older states, never a row: a row\nwhose state was dropped stays in the pool and still competes at the\nstates that remain. The memory holding the trial states of a pool is\nthen bounded by `(lookback_iterations + check_frequency)` times the\nmost rows the run can add to that pool in one iteration, times the\nstate dimension, times 8 bytes. Must be at least `check_frequency`.",
+              "description": "Iterations of the current run whose rows keep their trial states.\nAbsent (default): the trial state of every row the run added is\nkept, and the memory of a run grows with its row count. A value `w`\nkeeps the trial states of the rows added in the last `w` iterations\nof the current run and drops the older states, never a row: a row\nwhose state was dropped stays in the pool and still competes at the\nstates that remain. A state loaded with a row under `warm_start`\ncounts as one from before the run's first iteration, so it leaves\nthe window at the run's iteration `w`; under `resume` a reloaded\nstate leaves it when it would have in the run that wrote the\ncheckpoint. The memory holding the trial states of a pool is then\nbounded by `(lookback_iterations + check_frequency)` times the most\nrows the run can add to that pool in one iteration, times the state\ndimension, times 8 bytes, plus the states loaded with its rows. Must\nbe at least `check_frequency`.",
               "format": "uint32",
               "minimum": 1,
               "type": [
@@ -810,7 +810,7 @@
           "properties": {
             "candidate_recency": {
               "default": null,
-              "description": "Absent (default): every active row is a candidate and a solve returns\nthe optimum over them. A value `n` restricts the candidates to the\nrows added in the last `n` iterations and loaded rows, and the result\nis then the optimum over those rows together with the seed rows.",
+              "description": "Absent (default): every active row is a candidate and a solve returns\nthe optimum over them. A value `n` restricts the candidates to the\nrows added in the last `n` iterations and loaded rows, and the result\nis then the optimum over those rows together with the seed rows.\nUnder `resume` a reloaded row is a loaded row only when the run that\nwrote the checkpoint loaded it.",
               "format": "uint32",
               "minimum": 1,
               "type": [
@@ -831,7 +831,7 @@
             },
             "seed_window": {
               "default": 5,
-              "description": "A solve starts with the active rows whose last binding was at most\n`seed_window` iterations ago (a row that has not bound counts from\nthe iteration that added it), plus the rows added in the current\niteration. `row_activity_tolerance` decides whether a row binds. `0`\nseeds the rows of the current iteration and those that bound in it.\nA row loaded from a policy counts from the start of the run under\n`warm_start` and for `policy.boundary` rows, and from its recorded\niteration under `resume`. Default `5`.",
+              "description": "A solve starts with the active rows whose last binding was at most\n`seed_window` iterations ago (a row that has not bound counts from\nthe iteration that added it), plus the rows added in the current\niteration. `row_activity_tolerance` decides whether a row binds. `0`\nseeds the rows of the current iteration and those that bound in it.\nA row loaded from a policy counts from the start of the run under\n`warm_start` and for `policy.boundary` rows. Under `resume` a\nreloaded row counts as it did in the run that wrote the checkpoint,\nwhich stores each row's binding record. Default `5`.",
               "format": "uint32",
               "minimum": 0,
               "type": "integer"
@@ -867,7 +867,7 @@
         "cut_set": {
           "$ref": "#/$defs/SimulationRowSet",
           "default": "all",
-          "description": "Which rows of each stage's row pool the simulation loads into the stage\nLP. `all` loads every row a training run added to the pool, including\nrows the selection method deactivated and rows `max_active_per_stage`\nevicted, so a simulation LP can be larger than the training LPs.\n`active` loads only the rows active when training ended.\n\nUnder both values a row loaded from a policy (`policy.mode`,\n`policy.boundary`, or a run with training disabled) follows the active\nflag stored with it, and the exported `is_active` flag records the last\nselection."
+          "description": "Which rows of each stage's row pool the simulation loads into the stage\nLP. `all` loads every row a training run added to the pool, including\nrows the selection method deactivated and rows `max_active_per_stage`\nevicted, so a simulation LP can be larger than the training LPs.\n`active` loads only the rows active when training ended.\n\nA run with training disabled loads each row of the policy with the role\nit had in the run that wrote it, so `all` loads what that run's `all`\nheld and `active` the rows active when it ended; a `resume` does the\nsame. Under `warm_start` and for `policy.boundary` rows, `all` loads a\nrow the policy records as `scored` whatever its active flag, and any\nother loaded row only when that flag is set. The exported `is_active`\nflag records the last selection.\n\nA run with `training.cut_selection.selection.method` set to `dynamic`\nthat simulates under `all` is refused at load when the policy it loads\nunder `warm_start` or `resume`, or with training disabled, holds a row\nthat `all` includes and that is not active; set `active`, or use the\n`level1` method."
         },
         "enabled": {
           "default": false,

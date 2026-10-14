@@ -22,7 +22,10 @@ pub enum PolicyMode {
     Fresh,
     /// Load rows from a prior policy checkpoint and continue training.
     WarmStart,
-    /// Resume a previously interrupted training run from its checkpoint.
+    /// Resume a previously interrupted training run from its checkpoint and
+    /// continue it as that run would have continued: the iteration numbering,
+    /// each row's role, binding record and stored trial state, and each
+    /// scenario's own LP basis are restored.
     Resume,
 }
 
@@ -87,9 +90,13 @@ impl BoundaryPolicy {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PolicyConfig {
     /// Policy directory, resolved against the output directory unless absolute. A checkpoint write replaces the whole directory, so an empty path, `.`, `..`, the output directory and its ancestors are refused. So is a directory that names or contains one a run clears before writing its outputs, such as `simulation/solver` or `training/solver`, or that lies inside one a run removes whole, such as `simulation/costs`.
+    ///
+    /// This directory only holds whole checkpoints. A run whose training ends in an error writes its policy to the sibling directory `<path>.partial`, replacing one already there, and leaves this directory as it was; a later run leaves that sibling in place. A run reads the sibling only when `policy.path` names it, and a `resume` of it is refused.
     pub path: String,
 
     /// Initialization mode: `"fresh"`, `"warm_start"`, or `"resume"`.
+    ///
+    /// A `resume` is refused at load when the checkpoint cannot continue the run as the run that wrote it would have: it was written with another number of forward passes; the run uses `level1` on a study with a stage strictly between the first and the last, and the checkpoint holds no trial-state history, or holds a window while the run keeps every trial state, or holds a shorter window than the run's `lookback_iterations`; the run sets `max_active_per_stage` or the `dynamic` method and the checkpoint holds no binding records; or the run that wrote it ended in an error, which makes it a partial policy. A `warm_start` is not refused for any of these.
     pub mode: PolicyMode,
 
     /// Checkpoint settings.
@@ -298,11 +305,11 @@ pub struct CheckpointingConfig {
     #[serde(default)]
     pub interval_iterations: Option<u32>,
 
-    /// Include LP basis in checkpoints for warm-start.
+    /// Reserved and not read: a checkpoint holds the LP bases of the run's scenarios whatever its value.
     #[serde(default)]
     pub store_basis: Option<bool>,
 
-    /// Compress checkpoint files.
+    /// Reserved and not read: checkpoint files are written uncompressed whatever its value.
     #[serde(default)]
     pub compress: Option<bool>,
 }

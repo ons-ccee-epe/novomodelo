@@ -159,8 +159,9 @@ pub struct RowSelectionConfig {
     /// rows are non-negative weights whose sum is at most that stage's discount
     /// factor, so the threshold is dimensionless. The recorded activity is read
     /// only by `max_active_per_stage` and by the `seed_window` of the `dynamic`
-    /// method. Must be `>= 0`. A value of `0` counts a multiplier at solver
-    /// rounding level as binding.
+    /// method, and it is recorded, and written to the policy checkpoint, only
+    /// when one of them is configured. Must be `>= 0`. A value of `0` counts a
+    /// multiplier at solver rounding level as binding.
     pub row_activity_tolerance: f64,
 
     /// Cap on the active rows that the current run has added to a stage's row
@@ -170,11 +171,12 @@ pub struct RowSelectionConfig {
     /// first and the last; the pools of the first stage and of the last stage
     /// are not capped. Where the policy graph has several nodes at such a
     /// stage, each node has its own pool and the cap applies to each pool
-    /// separately. Rows loaded from a policy (`policy.mode` set to `warm_start`
-    /// or `resume`, or `policy.boundary`) are never evicted and do not count
+    /// separately. Rows loaded from a policy (`policy.mode` set to
+    /// `warm_start`, or `policy.boundary`) are never evicted and do not count
     /// toward the cap, so a pool can hold more active rows than the cap. Under
-    /// `resume` every reloaded row is a loaded row, so the cap counts only the
-    /// rows added after the resume.
+    /// `resume` each reloaded row keeps the role it had in the run that wrote
+    /// the checkpoint: the rows that run added count toward the cap and can be
+    /// evicted, and the rows it loaded do not.
     ///
     /// The cap is applied in every training iteration, after that iteration's
     /// rows have been added, whether or not a selection method is configured;
@@ -295,17 +297,24 @@ impl<'de> Deserialize<'de> for SelectionEntries {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SelectionMethod {
     /// Level 1: every row the run adds to the row pool of a stage strictly
-    /// between the first and the last records the trial state it was computed
-    /// at, and keeps it for the whole run or, with `lookback_iterations`, for
-    /// the iterations that key sets. At each stored state, the row with the
-    /// highest value there owns the state, among the rows the run added to
-    /// that pool and the active rows loaded into it; of rows whose values there
-    /// are exactly equal, the one at the lowest pool position owns it. Every
-    /// `check_frequency` iterations, a row the run added to such a pool is
-    /// deactivated when it owns no stored state and reactivated when it is
-    /// inactive and owns one. Values are compared exactly, with no tolerance,
-    /// and a row of the current iteration is judged like any other. A row
-    /// loaded from a policy keeps the activity it was loaded with.
+    /// between the first and the last is scored: the pool stores the trial
+    /// state the row was computed at, for the whole run or, with
+    /// `lookback_iterations`, for the iterations that key sets. A row loaded
+    /// from a policy is scored when the policy records it so (`scored`), which
+    /// it does for the rows its writing run added to a pool that stored trial
+    /// states, under `level1` or with `exports.states`; the state the policy
+    /// holds for such a row, if any, is stored with it. At each stored state,
+    /// the row with the highest value there owns the state, among the scored
+    /// rows of that pool, active or not, and its other loaded rows that are
+    /// active; of rows whose values there are exactly equal, the one at the
+    /// lowest pool position owns it. Every `check_frequency` iterations, a
+    /// scored row of such a pool is deactivated when it owns no stored state
+    /// and reactivated when it is inactive and owns one, also once its own
+    /// state has been dropped. Values are compared exactly, with no tolerance,
+    /// and a row of the current iteration is judged like any other. A loaded
+    /// row that is not scored keeps the activity it was loaded with. Under
+    /// `resume` a reloaded row is selected as it would have been in the run
+    /// that wrote the checkpoint.
     Level1 {
         /// Iterations between periodic pruning checks. Default `5`.
         #[serde(
@@ -319,10 +328,15 @@ pub enum SelectionMethod {
         /// keeps the trial states of the rows added in the last `w` iterations
         /// of the current run and drops the older states, never a row: a row
         /// whose state was dropped stays in the pool and still competes at the
-        /// states that remain. The memory holding the trial states of a pool is
-        /// then bounded by `(lookback_iterations + check_frequency)` times the
-        /// most rows the run can add to that pool in one iteration, times the
-        /// state dimension, times 8 bytes. Must be at least `check_frequency`.
+        /// states that remain. A state loaded with a row under `warm_start`
+        /// counts as one from before the run's first iteration, so it leaves
+        /// the window at the run's iteration `w`; under `resume` a reloaded
+        /// state leaves it when it would have in the run that wrote the
+        /// checkpoint. The memory holding the trial states of a pool is then
+        /// bounded by `(lookback_iterations + check_frequency)` times the most
+        /// rows the run can add to that pool in one iteration, times the state
+        /// dimension, times 8 bytes, plus the states loaded with its rows. Must
+        /// be at least `check_frequency`.
         #[serde(default, deserialize_with = "deserialize_lookback_iterations")]
         lookback_iterations: Option<NonZeroU32>,
     },
@@ -347,14 +361,17 @@ pub enum SelectionMethod {
         /// iteration. `row_activity_tolerance` decides whether a row binds. `0`
         /// seeds the rows of the current iteration and those that bound in it.
         /// A row loaded from a policy counts from the start of the run under
-        /// `warm_start` and for `policy.boundary` rows, and from its recorded
-        /// iteration under `resume`. Default `5`.
+        /// `warm_start` and for `policy.boundary` rows. Under `resume` a
+        /// reloaded row counts as it did in the run that wrote the checkpoint,
+        /// which stores each row's binding record. Default `5`.
         #[serde(default = "default_seed_window")]
         seed_window: u32,
         /// Absent (default): every active row is a candidate and a solve returns
         /// the optimum over them. A value `n` restricts the candidates to the
         /// rows added in the last `n` iterations and loaded rows, and the result
         /// is then the optimum over those rows together with the seed rows.
+        /// Under `resume` a reloaded row is a loaded row only when the run that
+        /// wrote the checkpoint loaded it.
         #[serde(default, deserialize_with = "deserialize_candidate_recency")]
         candidate_recency: Option<NonZeroU32>,
         /// Maximum rows added per lazy-solve round. Default `10`.
