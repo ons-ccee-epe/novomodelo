@@ -279,13 +279,135 @@ fn check_file_identifier(buf: &[u8], ctx: &str) -> Result<(), OutputError> {
     }
 }
 
+// ── Encoded-size bounds ───────────────────────────────────────────────────────
+//
+// Each `*_size_bound` is at least the `finished_data().len()` of the matching
+// `build_*`, computed from the payload's lengths alone. A table counts every
+// vtable slot up to its last as a field at the widest scalar plus its padding,
+// and writes its own vtable (no sharing); a vector or string counts its length
+// prefix and its leading padding.
+
+/// `f64` and `u64`.
+const WIDEST_SCALAR_BYTES: usize = 8;
+const MAX_PADDING_BYTES: usize = WIDEST_SCALAR_BYTES - 1;
+const UOFFSET_BYTES: usize = 4;
+const VOFFSET_BYTES: usize = 2;
+/// The root offset and the file identifier `finish` writes, with their padding.
+const FINISH_BYTES: usize = UOFFSET_BYTES + POLICY_FILE_IDENTIFIER.len() + MAX_PADDING_BYTES;
+
+fn vector_bound(len: usize, element_bytes: usize) -> usize {
+    UOFFSET_BYTES + MAX_PADDING_BYTES + len * element_bytes
+}
+
+/// Strings carry a trailing nul byte.
+fn string_bound(value: &str) -> usize {
+    UOFFSET_BYTES + MAX_PADDING_BYTES + value.len() + 1
+}
+
+/// `last_slot` is the highest `*_FIELD_*` slot of the table.
+fn table_bound(last_slot: u16) -> usize {
+    let last_slot = usize::from(last_slot);
+    let slots = last_slot / VOFFSET_BYTES - 1;
+    let soffset = UOFFSET_BYTES + MAX_PADDING_BYTES;
+    let vtable = last_slot + VOFFSET_BYTES;
+    slots * (WIDEST_SCALAR_BYTES + MAX_PADDING_BYTES) + soffset + vtable
+}
+
+fn entity_manifest_bound(entity_manifest: &[EntitySlot]) -> usize {
+    entity_manifest.len() * table_bound(ENTITY_SLOT_FIELD_INTERVAL_END)
+        + vector_bound(entity_manifest.len(), UOFFSET_BYTES)
+}
+
+/// Upper bound in bytes of the buffer [`serialize_stage_cuts`] builds.
+pub(super) fn stage_cuts_size_bound(payload: &StageCutsPayload<'_>) -> usize {
+    let pieces: usize = payload
+        .cuts
+        .iter()
+        .map(|piece| {
+            vector_bound(piece.coefficients.len(), size_of::<f64>())
+                + table_bound(CUT_FIELD_LAST_ACTIVE_ITERATION)
+        })
+        .sum();
+    pieces
+        + vector_bound(payload.cuts.len(), UOFFSET_BYTES)
+        + entity_manifest_bound(payload.entity_manifest)
+        + table_bound(STAGE_CUTS_FIELD_PRICED_STATE_DATE)
+        + FINISH_BYTES
+}
+
+/// Upper bound in bytes of the buffer [`serialize_stage_basis`] builds.
+pub(super) fn stage_basis_size_bound(record: &PolicyBasisRecord<'_>) -> usize {
+    let entries: usize = record
+        .entries
+        .iter()
+        .map(|entry| {
+            vector_bound(entry.column_status.len(), size_of::<u8>())
+                + vector_bound(entry.row_status.len(), size_of::<u8>())
+                + vector_bound(entry.piece_row_slots.len(), size_of::<u32>())
+                + table_bound(BASIS_ENTRY_FIELD_PIECE_ROW_SLOTS)
+        })
+        .sum();
+    entries
+        + vector_bound(record.entries.len(), UOFFSET_BYTES)
+        + table_bound(BASIS_FIELD_ENTRIES)
+        + FINISH_BYTES
+}
+
+/// Upper bound in bytes of the buffer [`serialize_stage_states`] builds.
+pub(super) fn stage_states_size_bound(payload: &StageStatesPayload<'_>) -> usize {
+    vector_bound(payload.data.len(), size_of::<f64>())
+        + vector_bound(payload.slots.len(), size_of::<u32>())
+        + entity_manifest_bound(payload.entity_manifest)
+        + table_bound(STATES_FIELD_SLOTS)
+        + FINISH_BYTES
+}
+
+/// Upper bound in bytes of the buffer [`serialize_checkpoint_manifest`] builds.
+pub(super) fn checkpoint_manifest_size_bound(manifest: &CheckpointManifest) -> usize {
+    let graph = &manifest.graph_manifest;
+    let producer = &manifest.producer;
+    let hydro_orders = &manifest.season_manifest.hydro_orders;
+    let season: usize = hydro_orders
+        .iter()
+        .map(|h| {
+            vector_bound(h.orders.len(), size_of::<u32>())
+                + table_bound(HYDRO_SEASON_ORDERS_FIELD_ORDERS)
+        })
+        .sum::<usize>()
+        + vector_bound(hydro_orders.len(), UOFFSET_BYTES)
+        + table_bound(SEASON_MANIFEST_FIELD_HYDRO_ORDERS);
+    let per_stage_modes = &producer.training_block_mode_per_stage;
+    let strings: usize = manifest.software.as_deref().map_or(0, string_bound)
+        + string_bound(&manifest.software_version)
+        + string_bound(&manifest.created_at)
+        + string_bound(&producer.training_block_mode)
+        + per_stage_modes
+            .iter()
+            .map(|mode| string_bound(mode))
+            .sum::<usize>()
+        + vector_bound(per_stage_modes.len(), UOFFSET_BYTES);
+    graph.nodes.len() * table_bound(MANIFEST_NODE_FIELD_POOL_ID)
+        + vector_bound(graph.nodes.len(), UOFFSET_BYTES)
+        + graph.edges.len() * table_bound(MANIFEST_EDGE_FIELD_PROBABILITY)
+        + vector_bound(graph.edges.len(), UOFFSET_BYTES)
+        + season
+        + strings
+        + vector_bound(producer.warm_start_counts.len(), size_of::<u32>())
+        + vector_bound(producer.lower_bound_history.len(), size_of::<f64>())
+        + table_bound(MANIFEST_FIELD_BASIS_STORE_COMPLETE)
+        + FINISH_BYTES
+}
+
 // ── Serializers ───────────────────────────────────────────────────────────────
 
 /// Serialize all cuts for one stage into a root `StageCuts` `FlatBuffers` buffer,
 /// ready to write directly to a `.bin` policy file.
 ///
-/// Infallible: the builder only allocates and writes. Any I/O error is the
-/// caller's responsibility.
+/// # Panics
+///
+/// When the buffer could exceed the 2 GiB `FlatBuffers` limit;
+/// [`write_policy_checkpoint`](crate::write_policy_checkpoint) refuses such a
+/// payload with an error before building it.
 ///
 /// # Examples
 ///
@@ -326,14 +448,8 @@ pub fn serialize_stage_cuts(payload: &StageCutsPayload<'_>) -> Vec<u8> {
     build_stage_cuts(payload).finished_data().to_vec()
 }
 
-#[allow(clippy::cast_possible_truncation)]
 pub(super) fn build_stage_cuts(payload: &StageCutsPayload<'_>) -> FlatBufferBuilder<'static> {
-    let estimated = 64
-        + payload.cuts.len()
-            * (112usize + payload.state_dimension as usize * std::mem::size_of::<f64>())
-        + payload.entity_manifest.len() * 32usize;
-
-    let mut builder = FlatBufferBuilder::with_capacity(estimated);
+    let mut builder = FlatBufferBuilder::with_capacity(stage_cuts_size_bound(payload));
 
     let cut_offsets: Vec<WIPOffset<flatbuffers::TableFinishedWIPOffset>> = payload
         .cuts
@@ -378,7 +494,11 @@ pub(super) fn build_stage_cuts(payload: &StageCutsPayload<'_>) -> FlatBufferBuil
 /// Serialize one node's solver bases into a root `StageBasis` `FlatBuffers`
 /// buffer, ready to write directly to a `.bin` policy file under `basis/`.
 ///
-/// Infallible: the builder only allocates and writes.
+/// # Panics
+///
+/// When the buffer could exceed the 2 GiB `FlatBuffers` limit;
+/// [`write_policy_checkpoint`](crate::write_policy_checkpoint) refuses such a
+/// payload with an error before building it.
 ///
 /// # Examples
 ///
@@ -405,18 +525,7 @@ pub fn serialize_stage_basis(record: &PolicyBasisRecord<'_>) -> Vec<u8> {
 }
 
 pub(super) fn build_stage_basis(record: &PolicyBasisRecord<'_>) -> FlatBufferBuilder<'static> {
-    let estimated = 64
-        + record
-            .entries
-            .iter()
-            .map(|e| {
-                32 + std::mem::size_of_val(e.column_status)
-                    + std::mem::size_of_val(e.row_status)
-                    + std::mem::size_of_val(e.piece_row_slots)
-            })
-            .sum::<usize>();
-
-    let mut builder = FlatBufferBuilder::with_capacity(estimated);
+    let mut builder = FlatBufferBuilder::with_capacity(stage_basis_size_bound(record));
 
     let entry_offsets: Vec<WIPOffset<flatbuffers::TableFinishedWIPOffset>> = record
         .entries
@@ -440,18 +549,19 @@ pub(super) fn build_stage_basis(record: &PolicyBasisRecord<'_>) -> FlatBufferBui
 /// Serialize one pool's stored trial points into a root `StageStates`
 /// `FlatBuffers` buffer, ready to write directly to a `.bin` policy file under
 /// `states/`.
+///
+/// # Panics
+///
+/// When the buffer could exceed the 2 GiB `FlatBuffers` limit;
+/// [`write_policy_checkpoint`](crate::write_policy_checkpoint) refuses such a
+/// payload with an error before building it.
 #[must_use]
 pub fn serialize_stage_states(payload: &StageStatesPayload<'_>) -> Vec<u8> {
     build_stage_states(payload).finished_data().to_vec()
 }
 
-#[allow(clippy::cast_possible_truncation)]
 pub(super) fn build_stage_states(payload: &StageStatesPayload<'_>) -> FlatBufferBuilder<'static> {
-    let estimated = 64
-        + std::mem::size_of_val(payload.data)
-        + std::mem::size_of_val(payload.slots)
-        + payload.entity_manifest.len() * 32usize;
-    let mut builder = FlatBufferBuilder::with_capacity(estimated);
+    let mut builder = FlatBufferBuilder::with_capacity(stage_states_size_bound(payload));
 
     let manifest_offsets: Vec<WIPOffset<flatbuffers::TableFinishedWIPOffset>> = payload
         .entity_manifest
@@ -483,8 +593,13 @@ pub(super) fn build_stage_states(payload: &StageStatesPayload<'_>) -> FlatBuffer
 ///
 /// The two `Option<f64>` provenance fields (`best_upper_bound`,
 /// `cost_scale_factor`) are written only when `Some`, so absence round-trips as
-/// `None` rather than a spurious `0.0`. Infallible: the builder only allocates
-/// and writes.
+/// `None` rather than a spurious `0.0`.
+///
+/// # Panics
+///
+/// When the buffer could exceed the 2 GiB `FlatBuffers` limit;
+/// [`write_policy_checkpoint`](crate::write_policy_checkpoint) refuses such a
+/// payload with an error before building it.
 #[must_use]
 pub fn serialize_checkpoint_manifest(manifest: &CheckpointManifest) -> Vec<u8> {
     build_checkpoint_manifest(manifest).finished_data().to_vec()
@@ -498,27 +613,7 @@ pub(super) fn build_checkpoint_manifest(
 
     let season_manifest = &manifest.season_manifest;
 
-    let estimated = 128
-        + graph.nodes.len() * 32
-        + graph.edges.len() * 40
-        + manifest.software.as_ref().map_or(0, String::len)
-        + manifest.software_version.len()
-        + manifest.created_at.len()
-        + producer.training_block_mode.len()
-        + producer.warm_start_counts.len() * std::mem::size_of::<u32>()
-        + producer.lower_bound_history.len() * std::mem::size_of::<f64>()
-        + producer
-            .training_block_mode_per_stage
-            .iter()
-            .map(|s| s.len() + 8)
-            .sum::<usize>()
-        + season_manifest
-            .hydro_orders
-            .iter()
-            .map(|h| 16 + h.orders.len() * std::mem::size_of::<u32>())
-            .sum::<usize>();
-
-    let mut builder = FlatBufferBuilder::with_capacity(estimated);
+    let mut builder = FlatBufferBuilder::with_capacity(checkpoint_manifest_size_bound(manifest));
 
     let node_offsets: Vec<WIPOffset<flatbuffers::TableFinishedWIPOffset>> = graph
         .nodes

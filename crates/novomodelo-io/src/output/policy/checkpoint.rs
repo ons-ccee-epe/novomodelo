@@ -10,18 +10,21 @@ use std::fs::FileType;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use flatbuffers::FLATBUFFERS_MAX_BUFFER_SIZE;
+
 use super::super::atomic::{
     ensure_parent_dir, sync_dir, write_bytes_atomic_synced, write_bytes_synced,
 };
 use super::super::error::OutputError;
 use super::codec::{
     build_checkpoint_manifest, build_stage_basis, build_stage_cuts, build_stage_states,
-    deserialize_checkpoint_manifest, deserialize_stage_basis, deserialize_stage_cuts,
-    deserialize_stage_states, read_sorted_bin_files,
+    checkpoint_manifest_size_bound, deserialize_checkpoint_manifest, deserialize_stage_basis,
+    deserialize_stage_cuts, deserialize_stage_states, read_sorted_bin_files,
+    stage_basis_size_bound, stage_cuts_size_bound, stage_states_size_bound,
 };
 use super::records::{
-    CheckpointManifest, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, OwnedPolicyBasisRecord,
-    OwnedPolicyCutRecord, PolicyBasisRecord, PolicyCheckpoint, StageCutsPayload,
+    CheckpointManifest, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, ManifestNode,
+    OwnedPolicyBasisRecord, PolicyBasisRecord, PolicyCheckpoint, StageCutsPayload,
     StageCutsReadResult, StageStatesPayload, StageStatesReadResult, StateFamily, decode_slot_date,
 };
 
@@ -221,200 +224,441 @@ fn structure_error(dir: &str, id: u32, detail: &str) -> OutputError {
     )
 }
 
-fn check_pool_records(pool: &StageCutsReadResult) -> Result<(), OutputError> {
-    let fail = |detail: String| structure_error("cuts", pool.stage_id, &detail);
-    if let Some(pair) = pool
-        .cuts
-        .windows(2)
-        .find(|pair| pair[0].slot_index >= pair[1].slot_index)
-    {
+fn manifest_structure_error(detail: &str) -> OutputError {
+    OutputError::serialization(
+        "policy_checkpoint_structure",
+        format!("manifest.bin: {detail}"),
+    )
+}
+
+/// The first adjacent pair of `values` that is not strictly ascending.
+fn first_not_ascending(values: impl IntoIterator<Item = u32>) -> Option<(u32, u32)> {
+    let mut values = values.into_iter();
+    let mut previous = values.next()?;
+    for next in values {
+        if previous >= next {
+            return Some((previous, next));
+        }
+        previous = next;
+    }
+    None
+}
+
+/// One pool's record slots and its scored slots, in record order.
+struct PoolSlots {
+    pool_id: u32,
+    slots: Vec<u32>,
+    scored_slots: Vec<u32>,
+    manifest_len: usize,
+}
+
+impl PoolSlots {
+    fn new(pool_id: u32, records: impl Iterator<Item = (u32, bool)>, manifest_len: usize) -> Self {
+        let mut slots = Vec::new();
+        let mut scored_slots = Vec::new();
+        for (slot, scored) in records {
+            slots.push(slot);
+            if scored {
+                scored_slots.push(slot);
+            }
+        }
+        Self {
+            pool_id,
+            slots,
+            scored_slots,
+            manifest_len,
+        }
+    }
+}
+
+fn find_pool(pools: &[PoolSlots], pool_id: u32) -> Option<&PoolSlots> {
+    pools.iter().find(|pool| pool.pool_id == pool_id)
+}
+
+/// The pool id and record slots of the pool at graph position `node`; the
+/// slots are empty when no `cuts/` file holds that pool.
+fn node_pool<'a>(
+    nodes: &[ManifestNode],
+    pools: &'a [PoolSlots],
+    node: u32,
+) -> Option<(u32, &'a [u32])> {
+    let pool_id = nodes.get(node as usize)?.pool_id;
+    let slots = find_pool(pools, pool_id).map_or(&[][..], |pool| pool.slots.as_slice());
+    Some((pool_id, slots))
+}
+
+fn check_record_slots(
+    pool_id: u32,
+    capacity: u32,
+    populated_count: u32,
+    slots: &[u32],
+) -> Result<(), OutputError> {
+    let fail = |detail: String| structure_error("cuts", pool_id, &detail);
+    if let Some((previous, next)) = first_not_ascending(slots.iter().copied()) {
         return Err(fail(format!(
-            "records not strictly ascending by slot_index: slot {} after slot {}",
-            pair[1].slot_index, pair[0].slot_index
+            "records not strictly ascending by slot_index: slot {next} after slot {previous}"
         )));
     }
-    if let Some(record) = pool.cuts.iter().find(|r| r.slot_index >= pool.capacity) {
+    if let Some(slot) = slots.iter().find(|&&slot| slot >= capacity) {
         return Err(fail(format!(
-            "record slot_index {} not below capacity {}",
-            record.slot_index, pool.capacity
+            "record slot_index {slot} not below capacity {capacity}"
         )));
     }
-    if pool.populated_count as usize != pool.cuts.len() {
+    if populated_count as usize != slots.len() {
         return Err(fail(format!(
-            "populated_count {} differs from its {} records",
-            pool.populated_count,
-            pool.cuts.len()
+            "populated_count {populated_count} differs from its {} records",
+            slots.len()
         )));
     }
     Ok(())
 }
 
-/// The record at `slot` of the checkpoint's `pool`, if both exist. Records are
-/// strictly ascending by slot once [`check_pool_records`] passed.
-fn pool_record(
-    stage_cuts: &[StageCutsReadResult],
-    pool: u32,
-    slot: u32,
-) -> Option<&OwnedPolicyCutRecord> {
-    let pool = stage_cuts.iter().find(|p| p.stage_id == pool)?;
-    let index = pool
-        .cuts
-        .binary_search_by_key(&slot, |r| r.slot_index)
-        .ok()?;
-    pool.cuts.get(index)
-}
-
-fn check_pool_states(
-    states: &StageStatesReadResult,
-    stage_cuts: &[StageCutsReadResult],
+/// `scored_slots` ascend once [`check_record_slots`] passed for the pool.
+fn check_state_rows(
+    pool_id: u32,
+    count: u32,
+    state_dimension: u32,
+    data_len: usize,
+    slots: &[u32],
+    scored_slots: &[u32],
+    manifest_len: usize,
 ) -> Result<(), OutputError> {
-    let fail = |detail: String| structure_error("states", states.stage_id, &detail);
-    let expected = u64::from(states.count) * u64::from(states.state_dimension);
-    if states.data.len() as u64 != expected {
+    let fail = |detail: String| structure_error("states", pool_id, &detail);
+    if data_len as u64 != u64::from(count) * u64::from(state_dimension) {
         return Err(fail(format!(
-            "data holds {} values, not count {} times state_dimension {}",
-            states.data.len(),
-            states.count,
-            states.state_dimension
+            "data holds {data_len} values, not count {count} times state_dimension {state_dimension}"
         )));
     }
-    if states.slots.len() != states.count as usize {
-        return Err(fail(format!(
-            "{} slots for count {}",
-            states.slots.len(),
-            states.count
-        )));
+    if slots.len() != count as usize {
+        return Err(fail(format!("{} slots for count {count}", slots.len())));
     }
-    if let Some(&[previous, next]) = states.slots.windows(2).find(|pair| pair[0] >= pair[1]) {
+    if let Some((previous, next)) = first_not_ascending(slots.iter().copied()) {
         return Err(fail(format!(
             "slots not strictly ascending: slot {next} after slot {previous}"
         )));
     }
-    for &slot in &states.slots {
-        if !pool_record(stage_cuts, states.stage_id, slot).is_some_and(|r| r.scored) {
-            return Err(fail(format!(
-                "slot {slot} has no scored record in the pool's `cuts/` file"
-            )));
-        }
-    }
-    let manifest_len = stage_cuts
+    if let Some(slot) = slots
         .iter()
-        .find(|p| p.stage_id == states.stage_id)
-        .map_or(0, |p| p.entity_manifest.len());
-    if states.state_dimension as usize != manifest_len {
-        return Err(fail(format!(
-            "state_dimension {} differs from the pool's entity-manifest length {manifest_len}",
-            states.state_dimension
-        )));
-    }
-    Ok(())
-}
-
-fn check_node_bases(
-    basis: &OwnedPolicyBasisRecord,
-    checkpoint: &PolicyCheckpoint,
-) -> Result<(), OutputError> {
-    let fail = |detail: String| structure_error("basis", basis.stage_id, &detail);
-    if let Some(pair) = basis
-        .entries
-        .windows(2)
-        .find(|pair| pair[0].scenario >= pair[1].scenario)
+        .find(|slot| scored_slots.binary_search(slot).is_err())
     {
         return Err(fail(format!(
-            "entries not strictly ascending by scenario: scenario {} after scenario {}",
-            pair[1].scenario, pair[0].scenario
+            "slot {slot} has no scored record in the pool's `cuts/` file"
         )));
     }
-    for entry in &basis.entries {
-        if entry.row_status.len() < entry.piece_row_slots.len() {
-            return Err(fail(format!(
-                "scenario {} has {} piece-row slots but only {} rows",
-                entry.scenario,
-                entry.piece_row_slots.len(),
-                entry.row_status.len()
-            )));
-        }
-        if entry.piece_row_slots.is_empty() {
-            continue;
-        }
-        let Some(node) = checkpoint
-            .metadata
-            .graph_manifest
-            .nodes
-            .get(basis.stage_id as usize)
-        else {
-            return Err(fail(
-                "names a node position the manifest's graph does not hold".to_string(),
-            ));
-        };
-        for &slot in &entry.piece_row_slots {
-            if pool_record(&checkpoint.stage_cuts, node.pool_id, slot).is_none() {
-                return Err(fail(format!(
-                    "scenario {} piece-row slot {slot} has no record in pool {}'s `cuts/` file",
-                    entry.scenario, node.pool_id
-                )));
-            }
-        }
+    if state_dimension as usize != manifest_len {
+        return Err(fail(format!(
+            "state_dimension {state_dimension} differs from the pool's entity-manifest length {manifest_len}"
+        )));
     }
     Ok(())
 }
 
-fn check_manifest_totals(checkpoint: &PolicyCheckpoint) -> Result<(), OutputError> {
-    let fail = |detail: String| {
-        OutputError::serialization(
-            "policy_checkpoint_structure",
-            format!("manifest.bin: {detail}"),
-        )
-    };
-    let producer = &checkpoint.metadata.producer;
-    let stored: u64 = checkpoint
-        .stage_states
-        .iter()
-        .map(|s| u64::from(s.count))
-        .sum();
-    if producer.total_visited_states != stored {
+fn check_scenario_order(
+    node: u32,
+    scenarios: impl IntoIterator<Item = u32>,
+) -> Result<(), OutputError> {
+    match first_not_ascending(scenarios) {
+        Some((previous, next)) => Err(structure_error(
+            "basis",
+            node,
+            &format!(
+                "entries not strictly ascending by scenario: scenario {next} after scenario {previous}"
+            ),
+        )),
+        None => Ok(()),
+    }
+}
+
+/// `node_pool` is [`node_pool`] of the entry's node; its slots ascend once
+/// [`check_record_slots`] passed for that pool.
+fn check_basis_entry(
+    node: u32,
+    scenario: u32,
+    row_count: usize,
+    piece_row_slots: &[u32],
+    node_pool: Option<(u32, &[u32])>,
+) -> Result<(), OutputError> {
+    let fail = |detail: String| structure_error("basis", node, &detail);
+    if row_count < piece_row_slots.len() {
         return Err(fail(format!(
-            "total_visited_states {} differs from the {stored} rows of the states files",
-            producer.total_visited_states
+            "scenario {scenario} has {} piece-row slots but only {row_count} rows",
+            piece_row_slots.len()
         )));
     }
-    for pool in &checkpoint.stage_cuts {
-        if let Some(record) = pool.cuts.iter().find(|r| {
-            (r.active_count.is_some() && r.last_active_iteration.is_some())
-                != producer.activity_counters
-        }) {
-            return Err(fail(format!(
-                "activity_counters is {} but pool {} slot {} carries active_count {:?} and \
-                 last_active_iteration {:?}",
-                producer.activity_counters,
-                pool.stage_id,
-                record.slot_index,
-                record.active_count,
-                record.last_active_iteration
-            )));
-        }
+    if piece_row_slots.is_empty() {
+        return Ok(());
+    }
+    let Some((pool_id, pool_slots)) = node_pool else {
+        return Err(fail(
+            "names a node position the manifest's graph does not hold".to_string(),
+        ));
+    };
+    if let Some(slot) = piece_row_slots
+        .iter()
+        .find(|slot| pool_slots.binary_search(slot).is_err())
+    {
+        return Err(fail(format!(
+            "scenario {scenario} piece-row slot {slot} has no record in pool {pool_id}'s `cuts/` file"
+        )));
     }
     Ok(())
+}
+
+fn check_stored_row_total(total_visited_states: u64, stored_rows: u64) -> Result<(), OutputError> {
+    if total_visited_states == stored_rows {
+        Ok(())
+    } else {
+        Err(manifest_structure_error(&format!(
+            "total_visited_states {total_visited_states} differs from the {stored_rows} rows of the states files"
+        )))
+    }
+}
+
+fn check_counter_presence(
+    activity_counters: bool,
+    pool_id: u32,
+    slot: u32,
+    active_count: Option<u64>,
+    last_active_iteration: Option<u64>,
+) -> Result<(), OutputError> {
+    if (active_count.is_some() && last_active_iteration.is_some()) == activity_counters {
+        Ok(())
+    } else {
+        Err(manifest_structure_error(&format!(
+            "activity_counters is {activity_counters} but pool {pool_id} slot {slot} carries \
+             active_count {active_count:?} and last_active_iteration {last_active_iteration:?}"
+        )))
+    }
 }
 
 /// Validate that `checkpoint`'s payloads agree with each other and with the
-/// manifest, returning the first violation found.
+/// manifest, returning the first violation found. The rules are those
+/// [`check_checkpoint_payloads`] applies before a write.
 ///
 /// # Errors
 ///
 /// Returns [`OutputError::SerializationError`] naming the offending file and
 /// the check it fails.
 fn validate_checkpoint_structure(checkpoint: &PolicyCheckpoint) -> Result<(), OutputError> {
-    for pool in &checkpoint.stage_cuts {
-        check_pool_records(pool)?;
+    let pools: Vec<PoolSlots> = checkpoint
+        .stage_cuts
+        .iter()
+        .map(|pool| {
+            PoolSlots::new(
+                pool.stage_id,
+                pool.cuts.iter().map(|r| (r.slot_index, r.scored)),
+                pool.entity_manifest.len(),
+            )
+        })
+        .collect();
+    for (pool, slots) in checkpoint.stage_cuts.iter().zip(&pools) {
+        check_record_slots(
+            pool.stage_id,
+            pool.capacity,
+            pool.populated_count,
+            &slots.slots,
+        )?;
     }
     for states in &checkpoint.stage_states {
-        check_pool_states(states, &checkpoint.stage_cuts)?;
+        let pool = find_pool(&pools, states.stage_id);
+        check_state_rows(
+            states.stage_id,
+            states.count,
+            states.state_dimension,
+            states.data.len(),
+            &states.slots,
+            pool.map_or(&[], |p| p.scored_slots.as_slice()),
+            pool.map_or(0, |p| p.manifest_len),
+        )?;
     }
     for basis in &checkpoint.stage_bases {
-        check_node_bases(basis, checkpoint)?;
+        check_scenario_order(basis.stage_id, basis.entries.iter().map(|e| e.scenario))?;
+        let node_pool = node_pool(
+            &checkpoint.metadata.graph_manifest.nodes,
+            &pools,
+            basis.stage_id,
+        );
+        for entry in &basis.entries {
+            check_basis_entry(
+                basis.stage_id,
+                entry.scenario,
+                entry.row_status.len(),
+                &entry.piece_row_slots,
+                node_pool,
+            )?;
+        }
     }
-    check_manifest_totals(checkpoint)
+    let producer = &checkpoint.metadata.producer;
+    check_stored_row_total(
+        producer.total_visited_states,
+        checkpoint
+            .stage_states
+            .iter()
+            .map(|s| u64::from(s.count))
+            .sum(),
+    )?;
+    for pool in &checkpoint.stage_cuts {
+        for record in &pool.cuts {
+            check_counter_presence(
+                producer.activity_counters,
+                pool.stage_id,
+                record.slot_index,
+                record.active_count,
+                record.last_active_iteration,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// [`validate_checkpoint_structure`] over the payloads a write receives, in
+/// the read's file order so the first violation reported is the same.
+fn check_payload_structure(
+    stage_cuts: &[StageCutsPayload<'_>],
+    stage_bases: &[PolicyBasisRecord<'_>],
+    stage_states: &[StageStatesPayload<'_>],
+    metadata: &CheckpointManifest,
+) -> Result<(), OutputError> {
+    let stage_cuts = sorted_by_id(stage_cuts, |p| p.stage_id);
+    let stage_bases = sorted_by_id(stage_bases, |b| b.stage_id);
+    let stage_states = sorted_by_id(stage_states, |s| s.stage_id);
+    let pools: Vec<PoolSlots> = stage_cuts
+        .iter()
+        .map(|pool| {
+            PoolSlots::new(
+                pool.stage_id,
+                pool.cuts.iter().map(|r| (r.slot_index, r.scored)),
+                pool.entity_manifest.len(),
+            )
+        })
+        .collect();
+    for (pool, slots) in stage_cuts.iter().zip(&pools) {
+        check_record_slots(
+            pool.stage_id,
+            pool.capacity,
+            pool.populated_count,
+            &slots.slots,
+        )?;
+    }
+    for states in &stage_states {
+        let pool = find_pool(&pools, states.stage_id);
+        check_state_rows(
+            states.stage_id,
+            states.count,
+            states.state_dimension,
+            states.data.len(),
+            states.slots,
+            pool.map_or(&[], |p| p.scored_slots.as_slice()),
+            pool.map_or(0, |p| p.manifest_len),
+        )?;
+    }
+    for basis in &stage_bases {
+        check_scenario_order(basis.stage_id, basis.entries.iter().map(|e| e.scenario))?;
+        let node_pool = node_pool(&metadata.graph_manifest.nodes, &pools, basis.stage_id);
+        for entry in basis.entries {
+            check_basis_entry(
+                basis.stage_id,
+                entry.scenario,
+                entry.row_status.len(),
+                entry.piece_row_slots,
+                node_pool,
+            )?;
+        }
+    }
+    let producer = &metadata.producer;
+    check_stored_row_total(
+        producer.total_visited_states,
+        stage_states.iter().map(|s| u64::from(s.count)).sum(),
+    )?;
+    for pool in &stage_cuts {
+        for record in pool.cuts {
+            check_counter_presence(
+                producer.activity_counters,
+                pool.stage_id,
+                record.slot_index,
+                record.active_count,
+                record.last_active_iteration,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn sorted_by_id<T>(items: &[T], id: impl Fn(&T) -> u32) -> Vec<&T> {
+    let mut sorted: Vec<&T> = items.iter().collect();
+    sorted.sort_by_key(|item| id(item));
+    sorted
+}
+
+fn check_size(file: &str, bound: usize, limit: usize) -> Result<(), OutputError> {
+    if bound <= limit {
+        Ok(())
+    } else {
+        Err(OutputError::serialization(
+            "policy_checkpoint_size",
+            format!(
+                "{file}: encoded size bound {bound} bytes exceeds the FlatBuffers limit of {limit} bytes"
+            ),
+        ))
+    }
+}
+
+/// Refuse a payload whose file's encoded size bound exceeds `limit` bytes.
+///
+/// # Errors
+///
+/// [`OutputError::SerializationError`] naming the first such file, its bound
+/// and the limit.
+pub(super) fn check_encoded_sizes(
+    stage_cuts: &[StageCutsPayload<'_>],
+    stage_bases: &[PolicyBasisRecord<'_>],
+    stage_states: &[StageStatesPayload<'_>],
+    metadata: &CheckpointManifest,
+    limit: usize,
+) -> Result<(), OutputError> {
+    for payload in sorted_by_id(stage_cuts, |p| p.stage_id) {
+        let file = format!("cuts/{}", bin_file_name(payload.stage_id));
+        check_size(&file, stage_cuts_size_bound(payload), limit)?;
+    }
+    for record in sorted_by_id(stage_bases, |b| b.stage_id) {
+        let file = format!("basis/{}", bin_file_name(record.stage_id));
+        check_size(&file, stage_basis_size_bound(record), limit)?;
+    }
+    for payload in sorted_by_id(stage_states, |s| s.stage_id) {
+        let file = format!("states/{}", bin_file_name(payload.stage_id));
+        check_size(&file, stage_states_size_bound(payload), limit)?;
+    }
+    check_size(
+        "manifest.bin",
+        checkpoint_manifest_size_bound(metadata),
+        limit,
+    )
+}
+
+/// Check, before anything is written, that a checkpoint of these payloads is
+/// one [`read_policy_checkpoint`] accepts structurally, and that no file of it
+/// can exceed the 2 GiB `FlatBuffers` buffer limit. [`write_policy_checkpoint`]
+/// runs it first.
+///
+/// # Errors
+///
+/// [`OutputError::SerializationError`] naming the first offending file
+/// (`cuts/<pool>.bin`, `basis/<node>.bin`, `states/<pool>.bin` or
+/// `manifest.bin`) and the rule it breaks, or its size bound and the limit.
+pub fn check_checkpoint_payloads(
+    stage_cuts: &[StageCutsPayload<'_>],
+    stage_bases: &[PolicyBasisRecord<'_>],
+    stage_states: &[StageStatesPayload<'_>],
+    metadata: &CheckpointManifest,
+) -> Result<(), OutputError> {
+    check_payload_structure(stage_cuts, stage_bases, stage_states, metadata)?;
+    check_encoded_sizes(
+        stage_cuts,
+        stage_bases,
+        stage_states,
+        metadata,
+        FLATBUFFERS_MAX_BUFFER_SIZE,
+    )
 }
 
 /// Write a complete value-function artifact to `path`, replacing the copy
@@ -466,6 +710,8 @@ fn validate_checkpoint_structure(checkpoint: &PolicyCheckpoint) -> Result<(), Ou
 ///
 /// # Errors
 ///
+/// - [`OutputError::SerializationError`] — [`check_checkpoint_payloads`]
+///   refused the payloads. Nothing on disk is changed.
 /// - [`OutputError::ForeignEntry`] — `path`, its target or a sibling is not
 ///   a directory or holds an entry no checkpoint writer leaves there. Nothing
 ///   on disk is changed.
@@ -549,6 +795,7 @@ pub fn write_policy_checkpoint(
     metadata: &CheckpointManifest,
     stage_states: &[StageStatesPayload<'_>],
 ) -> Result<(), OutputError> {
+    check_checkpoint_payloads(stage_cuts, stage_bases, stage_states, metadata)?;
     let target = check_checkpoint_replaceable(path)?;
     let (staging, previous) = swap_siblings(&target).ok_or_else(|| without_file_name(path))?;
     finish_interrupted_swap(&target)?;

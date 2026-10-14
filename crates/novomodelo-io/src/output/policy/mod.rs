@@ -17,7 +17,8 @@ pub mod codec;
 pub mod records;
 
 pub use checkpoint::{
-    ResolvedCheckpoint, read_policy_checkpoint, resolve_policy_checkpoint, write_policy_checkpoint,
+    ResolvedCheckpoint, check_checkpoint_payloads, read_policy_checkpoint,
+    resolve_policy_checkpoint, write_policy_checkpoint,
 };
 pub(crate) use checkpoint::{check_checkpoint_replaceable, checkpoint_target};
 pub use codec::{deserialize_stage_basis, deserialize_stage_cuts, deserialize_stage_states};
@@ -1174,14 +1175,22 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
 
         let a0 = [1.0_f64, 2.0, 3.0];
-        let cuts_a = [make_cut_record(0, 1, &a0)];
+        let cuts_a = [PolicyCutRecord {
+            scored: true,
+            ..make_cut_record(0, 1, &a0)
+        }];
+        let states_data = [1.0_f64, 2.0, 3.0];
+        let states_manifest = sample_manifest();
         let stage_cuts_a = [
-            make_stage_cuts_payload(0, &cuts_a, 3),
+            StageCutsPayload {
+                entity_manifest: &states_manifest,
+                ..make_stage_cuts_payload(0, &cuts_a, 3)
+            },
             make_stage_cuts_payload(1, &cuts_a, 3),
         ];
         let basis_a = [make_basis_record(0), make_basis_record(1)];
-        let states_data = [1.0_f64, 2.0, 3.0];
-        let states_manifest = sample_manifest();
+        let mut metadata_a = make_metadata(2, 3);
+        metadata_a.producer.total_visited_states = 1;
         let states_a = [StageStatesPayload {
             stage_id: 0,
             node_id: 0,
@@ -1191,14 +1200,8 @@ mod tests {
             entity_manifest: &states_manifest,
             slots: &[0],
         }];
-        write_policy_checkpoint(
-            tmp.path(),
-            &stage_cuts_a,
-            &basis_a,
-            &make_metadata(2, 3),
-            &states_a,
-        )
-        .expect("write of checkpoint A must succeed");
+        write_policy_checkpoint(tmp.path(), &stage_cuts_a, &basis_a, &metadata_a, &states_a)
+            .expect("write of checkpoint A must succeed");
         assert!(tmp.path().join("states").is_dir());
 
         let b0 = [40.0_f64, 50.0, 60.0];
@@ -1246,10 +1249,11 @@ mod tests {
         }];
         let states_data = [1.0_f64, 2.0, 3.0];
         let states_manifest = sample_manifest();
-        let stage_cuts = [StageCutsPayload {
+        let pool = |stage_id: u32| StageCutsPayload {
             entity_manifest: &states_manifest,
-            ..make_stage_cuts_payload(0, &cuts, 3)
-        }];
+            ..make_stage_cuts_payload(stage_id, &cuts, 3)
+        };
+        let stage_cuts = [pool(0), pool(1)];
         let states_for = |stage_id: u32| StageStatesPayload {
             stage_id,
             node_id: i32::try_from(stage_id).unwrap(),
@@ -2327,8 +2331,16 @@ mod tests {
             }
         }
 
-        fn write_and_read(&self) -> Result<PolicyCheckpoint, OutputError> {
-            let tmp = tempfile::tempdir().unwrap();
+        /// Run `f` over the fixture's payloads and manifest.
+        fn with_payloads<R>(
+            &self,
+            f: impl FnOnce(
+                &[StageCutsPayload<'_>],
+                &[PolicyBasisRecord<'_>],
+                &CheckpointManifest,
+                &[StageStatesPayload<'_>],
+            ) -> R,
+        ) -> R {
             let manifest = sample_manifest();
             let pieces: Vec<PolicyCutRecord<'_>> = self
                 .pieces
@@ -2382,20 +2394,78 @@ mod tests {
             let mut metadata = make_metadata(1, 3);
             metadata.producer.total_visited_states = self.total_visited_states;
             metadata.producer.activity_counters = self.activity_counters;
-            write_policy_checkpoint(tmp.path(), &stage_cuts, &bases, &metadata, &states)?;
+            f(&stage_cuts, &bases, &metadata, &states)
+        }
+
+        fn write_to(&self, dir: &Path) -> Result<(), OutputError> {
+            self.with_payloads(|stage_cuts, bases, metadata, states| {
+                write_policy_checkpoint(dir, stage_cuts, bases, metadata, states)
+            })
+        }
+
+        /// Encode the fixture's files into `dir` without the writer's checks.
+        fn encode_into(&self, dir: &Path) {
+            self.with_payloads(|stage_cuts, bases, metadata, states| {
+                for sub in ["cuts", "basis", "states"] {
+                    std::fs::create_dir_all(dir.join(sub)).unwrap();
+                }
+                for payload in stage_cuts {
+                    std::fs::write(dir.join("cuts/000.bin"), serialize_stage_cuts(payload))
+                        .unwrap();
+                }
+                for record in bases {
+                    std::fs::write(dir.join("basis/000.bin"), serialize_stage_basis(record))
+                        .unwrap();
+                }
+                for payload in states {
+                    std::fs::write(dir.join("states/000.bin"), serialize_stage_states(payload))
+                        .unwrap();
+                }
+                std::fs::write(
+                    dir.join("manifest.bin"),
+                    codec::serialize_checkpoint_manifest(metadata),
+                )
+                .unwrap();
+            });
+        }
+
+        fn write_and_read(&self) -> Result<PolicyCheckpoint, OutputError> {
+            let tmp = tempfile::tempdir().unwrap();
+            self.write_to(tmp.path())?;
             read_policy_checkpoint(tmp.path())
         }
 
-        /// Reads the fixture expecting the structural reject naming `file` and
-        /// carrying `fragment`.
+        /// Expects both the read of the fixture's encoded files and its write
+        /// over a valid checkpoint to fail naming `file` and carrying
+        /// `fragment`, the write leaving the disk byte-identical.
         fn assert_rejected(&self, file: &str, fragment: &str) {
+            let assert_names = |err: &OutputError, direction: &str| {
+                let msg = err.to_string();
+                assert!(
+                    matches!(err, OutputError::SerializationError { .. })
+                        && msg.contains(file)
+                        && msg.contains(fragment),
+                    "the {direction} must name {file} and the check ({fragment}): {msg}"
+                );
+            };
+
+            let encoded = tempfile::tempdir().unwrap();
+            self.encode_into(encoded.path());
+            let err = read_policy_checkpoint(encoded.path())
+                .expect_err("a read must refuse a structurally invalid checkpoint");
+            assert_names(&err, "read");
+
+            let root = tempfile::tempdir().unwrap();
+            let policy = root.path().join("policy");
+            StructureFixture::valid().write_to(&policy).unwrap();
+            let before = tree_snapshot(root.path());
             let err = self
-                .write_and_read()
-                .expect_err("a structurally invalid checkpoint must be refused");
-            let msg = err.to_string();
+                .write_to(&policy)
+                .expect_err("a write must refuse a structurally invalid checkpoint");
+            assert_names(&err, "write");
             assert!(
-                msg.contains(file) && msg.contains(fragment),
-                "must name {file} and the check ({fragment}): {msg}"
+                tree_snapshot(root.path()) == before,
+                "a refused write must leave the disk unchanged"
             );
         }
     }
@@ -2528,5 +2598,165 @@ mod tests {
 
         fixture.pieces[2].last_active_iteration = None;
         fixture.assert_rejected("manifest.bin", "activity_counters is true");
+    }
+
+    #[test]
+    fn a_duplicate_state_slot_is_refused() {
+        let mut fixture = StructureFixture::valid();
+        fixture.states_slots = vec![3, 3];
+        fixture.assert_rejected("states/000.bin", "slot 3 after slot 3");
+    }
+
+    // ── encoded-size bounds ───────────────────────────────────────────────────
+
+    #[test]
+    fn every_size_bound_covers_its_built_buffer() {
+        let manifest = sample_manifest();
+        let coefficients: Vec<f64> = (0..300).map(f64::from).collect();
+        let pieces = [
+            PolicyCutRecord {
+                active_count: Some(3),
+                last_active_iteration: Some(9),
+                ..make_cut_record(0, 1, &coefficients)
+            },
+            PolicyCutRecord {
+                active_count: Some(u64::MAX),
+                last_active_iteration: Some(u64::MAX),
+                ..make_cut_record(1, 2, &coefficients[..1])
+            },
+            make_cut_record(4, 3, &[]),
+        ];
+        let stage_cuts = [
+            StageCutsPayload {
+                cuts: &[],
+                ..stage_cuts_payload_defaults()
+            },
+            StageCutsPayload {
+                state_dimension: 300,
+                capacity: 8,
+                cuts: &pieces,
+                populated_count: 3,
+                entity_manifest: &manifest,
+                ..stage_cuts_payload_defaults()
+            },
+        ];
+        for payload in &stage_cuts {
+            let built = serialize_stage_cuts(payload).len();
+            let bound = codec::stage_cuts_size_bound(payload);
+            assert!(
+                bound >= built,
+                "StageCuts bound {bound} below built {built}"
+            );
+        }
+
+        let column_status = vec![1_u8; 400];
+        let row_status = vec![0_u8; 401];
+        let piece_row_slots: Vec<u32> = (0..200).collect();
+        let entries = [
+            BasisEntry {
+                scenario: 0,
+                column_status: &column_status,
+                row_status: &row_status,
+                piece_row_slots: &piece_row_slots,
+            },
+            BasisEntry {
+                scenario: 2,
+                column_status: &[],
+                row_status: &[],
+                piece_row_slots: &[],
+            },
+        ];
+        for record in [
+            PolicyBasisRecord {
+                stage_id: 0,
+                iteration: 0,
+                entries: &[],
+            },
+            PolicyBasisRecord {
+                stage_id: 3,
+                iteration: 5,
+                entries: &entries,
+            },
+        ] {
+            let built = serialize_stage_basis(&record).len();
+            let bound = codec::stage_basis_size_bound(&record);
+            assert!(bound >= built, "basis bound {bound} below built {built}");
+        }
+
+        let data: Vec<f64> = (0..3000).map(f64::from).collect();
+        let slots: Vec<u32> = (0..1000).collect();
+        for (data, slots, entity_manifest) in [
+            (&data[..0], &slots[..0], &[][..]),
+            (&data[..], &slots[..], &manifest[..]),
+        ] {
+            let payload = StageStatesPayload {
+                stage_id: 1,
+                node_id: 1,
+                state_dimension: 3,
+                count: u32::try_from(slots.len()).unwrap(),
+                data,
+                entity_manifest,
+                slots,
+            };
+            let built = serialize_stage_states(&payload).len();
+            let bound = codec::stage_states_size_bound(&payload);
+            assert!(bound >= built, "states bound {bound} below built {built}");
+        }
+
+        let mut metadata = make_metadata(4, 3);
+        metadata.software = Some("novomodelo".to_string());
+        metadata.producer.training_block_mode_per_stage = vec!["chronological".to_string(); 400];
+        metadata.producer.lower_bound_history = vec![1.0; 500];
+        metadata.season_manifest = SeasonManifest {
+            cycle_code: SEASON_CYCLE_CODE_MONTHLY,
+            n_seasons: 12,
+            hydro_orders: vec![
+                HydroSeasonOrders {
+                    hydro_id: 1,
+                    orders: vec![2; 12],
+                },
+                HydroSeasonOrders {
+                    hydro_id: 4,
+                    orders: vec![1; 12],
+                },
+            ],
+        };
+        for manifest in [checkpoint_manifest_defaults(), metadata] {
+            let built = codec::serialize_checkpoint_manifest(&manifest).len();
+            let bound = codec::checkpoint_manifest_size_bound(&manifest);
+            assert!(bound >= built, "manifest bound {bound} below built {built}");
+        }
+    }
+
+    #[test]
+    fn a_states_file_above_the_size_limit_is_refused_naming_its_bound() {
+        let data = vec![0.5; 200];
+        let slots: Vec<u32> = (0..200).collect();
+        let payload = StageStatesPayload {
+            stage_id: 0,
+            node_id: 0,
+            state_dimension: 1,
+            count: 200,
+            data: &data,
+            entity_manifest: &[],
+            slots: &slots,
+        };
+        let bound = codec::stage_states_size_bound(&payload);
+        let err = checkpoint::check_encoded_sizes(
+            &[],
+            &[],
+            &[payload],
+            &checkpoint_manifest_defaults(),
+            1024,
+        )
+        .expect_err("a states file above the limit must be refused");
+        let msg = err.to_string();
+        assert!(
+            matches!(err, OutputError::SerializationError { .. })
+                && msg.contains("states/000.bin")
+                && msg.contains(&format!("{bound} bytes"))
+                && msg.contains("1024 bytes"),
+            "must name the file, its bound {bound} and the limit: {msg}"
+        );
     }
 }
