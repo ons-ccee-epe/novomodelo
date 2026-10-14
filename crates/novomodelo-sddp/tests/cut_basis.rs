@@ -1413,18 +1413,23 @@ mod selection_in_a_training_run {
     use std::path::Path;
     use std::sync::mpsc;
 
-    use novomodelo_core::{PoolRowCounts, TrainingEvent, scenario::ScenarioSource};
+    use novomodelo_core::{PoolRowCounts, System, TrainingEvent, scenario::ScenarioSource};
     use novomodelo_io::Config;
     use novomodelo_io::config::{
         SelectionMethod, SimulationSelection, StoppingRuleConfig, TrainingSelection,
     };
     use novomodelo_sddp::{
-        StudySetup, TrainingResult, build_training_output,
-        cut::CutSet,
+        FutureCostFunction, StudySetup, TrainingResult, build_training_output,
+        cut::{CutSet, SlotOrigin, SlotRole},
         hydro_models::prepare_hydro_models,
+        policy::full_fcf_load::{
+            CheckedFullFcfLoad, FullFcfLoadKind, check_full_fcf_load, locate_policy_dir,
+        },
+        policy::orchestration::{CheckpointParams, write_checkpoint},
         setup::{NodePos, prepare_stochastic},
     };
     use novomodelo_solver::ActiveSolver;
+    use tempfile::TempDir;
 
     use super::common::selection_fingerprint::{
         SelectionFingerprint, SelectionPower, interior_pool_ids,
@@ -1457,6 +1462,12 @@ mod selection_in_a_training_run {
         events: Option<mpsc::Sender<TrainingEvent>>,
         configure: impl FnOnce(&mut Config),
     ) -> (StudySetup, TrainingResult) {
+        let (mut setup, _) = build_setup(iterations, configure);
+        let result = train_setup(&mut setup, iterations, events);
+        (setup, result)
+    }
+
+    fn build_setup(iterations: u32, configure: impl FnOnce(&mut Config)) -> (StudySetup, System) {
         let case_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("crates/<crate> must have a parent")
@@ -1486,7 +1497,7 @@ mod selection_in_a_training_run {
         let system = prepared.system;
         let hydro_models = prepare_hydro_models(&system, &case_dir, false)
             .expect("prepare_hydro_models must succeed");
-        let mut setup = StudySetup::new(
+        let setup = StudySetup::new(
             &system,
             &config,
             prepared.stochastic,
@@ -1494,7 +1505,14 @@ mod selection_in_a_training_run {
             Vec::new(),
         )
         .expect("StudySetup must build");
+        (setup, system)
+    }
 
+    fn train_setup(
+        setup: &mut StudySetup,
+        iterations: u32,
+        events: Option<mpsc::Sender<TrainingEvent>>,
+    ) -> TrainingResult {
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
         let outcome = setup
             .train(&mut solver, &StubComm, 1, ActiveSolver::new, events, None)
@@ -1505,7 +1523,7 @@ mod selection_in_a_training_run {
             outcome.error
         );
         assert_eq!(outcome.result.iterations, u64::from(iterations));
-        (setup, outcome.result)
+        outcome.result
     }
 
     /// The pool counts of each iteration, in iteration order.
@@ -2417,6 +2435,152 @@ mod selection_in_a_training_run {
             slots_with_recorded_binding(&dynamic_run) > 0,
             "the dynamic seed window reads binding activity, so the run must record it"
         );
+    }
+
+    const SOURCE_ITERATIONS: u32 = 6;
+    const WARM_START_ITERATIONS: u32 = 4;
+
+    fn select_level1(config: &mut Config) {
+        config.training.cut_selection.selection = Some(level1());
+    }
+
+    /// Trains a source run, writes its checkpoint with the production writer and
+    /// reads it back with the production reader into the load of a fresh setup.
+    fn load_checkpoint(
+        source_configure: impl FnOnce(&mut Config),
+        kind: FullFcfLoadKind,
+    ) -> (StudySetup, CheckedFullFcfLoad, StudySetup) {
+        let (mut source, system) = build_setup(SOURCE_ITERATIONS, source_configure);
+        let result = train_setup(&mut source, SOURCE_ITERATIONS, None);
+
+        let output = TempDir::new().expect("tempdir");
+        let policy_dir = output.path().join(&source.policy_path);
+        std::fs::create_dir_all(&policy_dir).expect("policy dir");
+        let params = CheckpointParams {
+            max_iterations: source.loop_params.max_iterations,
+            forward_passes: source.loop_params.forward_passes,
+            seed: source.loop_params.seed,
+            export_states: false,
+        };
+        write_checkpoint(&policy_dir, &source, &system, &result, &params)
+            .expect("write_checkpoint must succeed");
+
+        let (setup, _) = build_setup(WARM_START_ITERATIONS, select_level1);
+        let policy_dir =
+            locate_policy_dir(kind, output.path(), &setup).expect("the policy must be found");
+        let checked = check_full_fcf_load(kind, &policy_dir, &system, &setup, &mut |_| {})
+            .expect("the checkpoint must load");
+        (source, checked, setup)
+    }
+
+    /// The role and activity flag of every loaded slot of every pool, and the
+    /// setup after a `level1` run warm-started from a `source_configure` source.
+    fn warm_start_level1_run(
+        source_configure: impl FnOnce(&mut Config),
+    ) -> (Vec<Vec<(SlotRole, bool)>>, StudySetup) {
+        let (_, checked, mut setup) = load_checkpoint(source_configure, FullFcfLoadKind::WarmStart);
+        checked.apply_to_training(&mut setup);
+        let loaded: Vec<Vec<(SlotRole, bool)>> = setup
+            .fcf
+            .pools
+            .iter()
+            .map(|pool| {
+                (0..pool.populated())
+                    .map(|slot| (pool.role(slot), pool.is_active(slot)))
+                    .collect()
+            })
+            .collect();
+        train_setup(&mut setup, WARM_START_ITERATIONS, None);
+        (loaded, setup)
+    }
+
+    #[test]
+    fn a_warm_started_scored_cut_is_selected_like_a_generated_one() {
+        let (loaded, setup) = warm_start_level1_run(select_level1);
+
+        let mut loaded_scored = 0;
+        let mut flipped = 0;
+        for (pool_id, slots) in loaded.iter().enumerate() {
+            let pool = &setup.fcf.pools[pool_id];
+            for (slot, &(role, was_active)) in slots.iter().enumerate() {
+                assert!(
+                    pool.is_prefix_slot(slot),
+                    "pool {pool_id} slot {slot}: a loaded cut stays a prefix cut"
+                );
+                loaded_scored += usize::from(role.scored);
+                flipped += usize::from(pool.is_active(slot) != was_active);
+            }
+        }
+        let loaded_in_interior_pools: usize = interior_pool_ids(&setup)
+            .into_iter()
+            .map(|pool_id| loaded[pool_id].len())
+            .sum();
+
+        assert!(loaded_in_interior_pools > 0, "the source must hold cuts");
+        assert_eq!(
+            loaded_scored, loaded_in_interior_pools,
+            "the cuts of the pools that stored states are the scored ones, as written and read back"
+        );
+        assert!(
+            flipped > 0,
+            "no loaded cut was deactivated or reactivated by the warm-started run"
+        );
+    }
+
+    #[test]
+    fn a_warm_started_unscored_cut_keeps_its_flag() {
+        let (loaded, setup) = warm_start_level1_run(|_| {});
+
+        let mut loaded_cuts = 0;
+        for (pool_id, slots) in loaded.iter().enumerate() {
+            let pool = &setup.fcf.pools[pool_id];
+            for (slot, &(role, was_active)) in slots.iter().enumerate() {
+                loaded_cuts += 1;
+                assert!(!role.scored, "pool {pool_id} slot {slot}");
+                assert!(pool.is_prefix_slot(slot), "pool {pool_id} slot {slot}");
+                assert_eq!(
+                    pool.is_active(slot),
+                    was_active,
+                    "pool {pool_id} slot {slot}: a loaded cut that was never scored keeps its flag"
+                );
+            }
+        }
+        let deactivated_generated_cuts: usize = interior_pool_ids(&setup)
+            .into_iter()
+            .map(|pool_id| {
+                let pool = &setup.fcf.pools[pool_id];
+                (0..pool.populated())
+                    .filter(|&slot| {
+                        pool.role(slot).origin == SlotOrigin::Generated && !pool.is_active(slot)
+                    })
+                    .count()
+            })
+            .sum();
+
+        assert!(loaded_cuts > 0, "the source must hold cuts");
+        assert!(
+            deactivated_generated_cuts > 0,
+            "selection deactivated no generated cut, so it had no power over the loaded ones"
+        );
+    }
+
+    #[test]
+    fn a_simulation_only_load_holds_the_cuts_training_all_held() {
+        let (source, checked, _) = load_checkpoint(select_level1, FullFcfLoadKind::SimulationOnly);
+        let (loaded, _) = checked.into_simulation_policy();
+
+        let counts = |fcf: &FutureCostFunction| -> Vec<(usize, usize)> {
+            fcf.pools
+                .iter()
+                .map(|pool| (pool.count_in(CutSet::All), pool.active_count()))
+                .collect()
+        };
+        let source_counts = counts(&source.fcf);
+        assert!(
+            source_counts.iter().any(|&(all, active)| all > active),
+            "the source must hold a deactivated cut"
+        );
+        assert_eq!(counts(&loaded), source_counts);
     }
 }
 

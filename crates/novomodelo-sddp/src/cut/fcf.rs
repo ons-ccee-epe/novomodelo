@@ -191,7 +191,8 @@ impl FutureCostFunction {
     /// via [`CutPool::from_deserialized`] (tightly sized, no training capacity),
     /// each pool sized by the study's OWN `pool_state_dimensions[p]` — the same
     /// per-pool array [`Self::new_per_pool`] takes — never a single dimension
-    /// broadcast to every pool.
+    /// broadcast to every pool. Each pool takes its recorded `warm_start_count` as
+    /// the prefix length.
     ///
     /// `_proof` is compile-time evidence from
     /// [`validate_policy_load`](crate::validate_policy_load) that
@@ -228,7 +229,9 @@ impl FutureCostFunction {
         let pools = stage_results
             .iter()
             .zip(pool_state_dimensions)
-            .map(|(sr, &pool_dim)| CutPool::from_deserialized(pool_dim, &sr.cuts))
+            .map(|(sr, &pool_dim)| {
+                CutPool::from_deserialized(pool_dim, sr.warm_start_count, &sr.cuts)
+            })
             .collect();
 
         Ok(Self {
@@ -988,6 +991,30 @@ mod tests {
         assert_eq!(fcf.total_active_cuts(), 1);
         // 7 + 1*1 + 2*2 + 3*3 = 7 + 1 + 4 + 9 = 21
         assert_eq!(fcf.evaluate_at_state(0, &[1.0, 2.0, 3.0]), 21.0);
+    }
+
+    #[test]
+    fn from_deserialized_gives_each_pool_its_recorded_prefix() {
+        let record_at = |slot_index| novomodelo_io::OwnedPolicyCutRecord {
+            slot_index,
+            coefficients: vec![1.0],
+            ..make_record(1.0, vec![1.0], true)
+        };
+        let mut first = make_stage(0, 1, vec![record_at(0), record_at(1), record_at(2)]);
+        first.warm_start_count = 2;
+        let second = make_stage(1, 1, vec![record_at(0), record_at(1)]);
+        let stages = vec![first, second];
+
+        let proof = crate::test_support::trivial_full_fcf_proof(1, 2);
+        let fcf = FutureCostFunction::from_deserialized(&proof, &stages, &[1, 1]).unwrap();
+
+        assert_eq!(fcf.pools[0].prefix_len(), 2);
+        assert_eq!(
+            fcf.pools[0].role(2).origin,
+            crate::cut::SlotOrigin::Generated
+        );
+        assert_eq!(fcf.pools[1].prefix_len(), 0);
+        assert!(!fcf.pools[1].has_prefix_cuts());
     }
 
     // ── new_with_warm_start tests ────────────────────────────────────────

@@ -71,7 +71,8 @@ pub enum SlotOrigin {
 pub struct SlotRole {
     /// Where the slot's cut came from.
     pub origin: SlotOrigin,
-    /// Whether the pool stored trial states when the slot was written; a loaded slot is unscored.
+    /// Whether the pool stored trial states when the slot was written; a loaded slot keeps the
+    /// flag its record carries.
     pub scored: bool,
 }
 
@@ -87,10 +88,6 @@ pub enum CutSet {
 
 const VACANT_ROLE: SlotRole = SlotRole {
     origin: SlotOrigin::Vacant,
-    scored: false,
-};
-const PREFIX_ROLE: SlotRole = SlotRole {
-    origin: SlotOrigin::Prefix,
     scored: false,
 };
 
@@ -1107,7 +1104,10 @@ impl CutPool {
     /// during simulation.
     ///
     /// Capacity is exactly `records.len()` with `visit_stride = 0` — this pool
-    /// takes no new training cuts.
+    /// takes no new training cuts. Record `i` sits at slot `i`. A record stored
+    /// below `prefix_len` (the recorded pool's protected-prefix length) is `Prefix`
+    /// and every other record `Generated`, each with the `scored` flag it was
+    /// written with, so [`CutSet::All`] holds what the recorded run's held.
     ///
     /// # Example
     ///
@@ -1129,19 +1129,26 @@ impl CutPool {
     ///     },
     /// ];
     ///
-    /// let pool = CutPool::from_deserialized(2, &records);
+    /// let pool = CutPool::from_deserialized(2, 1, &records);
     /// assert_eq!(pool.capacity, 1);
     /// assert_eq!(pool.populated(), 1);
+    /// assert_eq!(pool.prefix_len(), 1);
     /// assert_eq!(pool.active_count(), 1);
     /// ```
     #[must_use]
-    pub fn from_deserialized(state_dimension: usize, records: &[OwnedPolicyCutRecord]) -> Self {
+    pub fn from_deserialized(
+        state_dimension: usize,
+        prefix_len: u32,
+        records: &[OwnedPolicyCutRecord],
+    ) -> Self {
         let capacity = records.len();
         let mut coefficients = Vec::with_capacity(capacity * state_dimension);
         let mut intercepts = Vec::with_capacity(capacity);
         let mut active = Vec::with_capacity(capacity);
         let mut metadata = Vec::with_capacity(capacity);
+        let mut roles = Vec::with_capacity(capacity);
         let mut cached_active_count = 0usize;
+        let mut prefix_records = 0usize;
 
         for record in records {
             debug_assert!(
@@ -1165,6 +1172,16 @@ impl CutPool {
                 active_count: 0,
                 last_active_iter: u64::from(record.iteration),
             });
+            let origin = if record.slot_index < prefix_len {
+                prefix_records += 1;
+                SlotOrigin::Prefix
+            } else {
+                SlotOrigin::Generated
+            };
+            roles.push(SlotRole {
+                origin,
+                scored: record.scored,
+            });
         }
 
         #[allow(clippy::cast_possible_truncation)]
@@ -1172,7 +1189,7 @@ impl CutPool {
             coefficients,
             intercepts,
             metadata,
-            roles: vec![PREFIX_ROLE; capacity],
+            roles,
             trial_states: None,
             ownership: None,
             lookback: None,
@@ -1182,7 +1199,7 @@ impl CutPool {
             state_dimension,
             visit_stride: 0,
             slot_base: capacity as u32,
-            prefix_len: capacity,
+            prefix_len: prefix_records,
             iteration_base: 0,
             cached_active_count,
             generated_count: capacity,
@@ -1194,9 +1211,10 @@ impl CutPool {
 
     /// Construct a `CutPool` with warm-start cuts plus capacity for training.
     ///
-    /// Loaded cuts occupy the first `records.len()` slots; the remaining
-    /// `max_iterations * visit_stride` slots take new training cuts (offset past
-    /// the warm-start region by the slot formula).
+    /// Loaded cuts occupy the first `records.len()` slots, each `Prefix` with the
+    /// `scored` flag it was written with; the remaining `max_iterations *
+    /// visit_stride` slots take new training cuts (offset past the warm-start
+    /// region by the slot formula).
     ///
     /// # Example
     ///
@@ -1259,7 +1277,10 @@ impl CutPool {
                 active_count: 0,
                 last_active_iter: u64::from(record.iteration),
             };
-            roles[i] = PREFIX_ROLE;
+            roles[i] = SlotRole {
+                origin: SlotOrigin::Prefix,
+                scored: record.scored,
+            };
         }
 
         #[allow(clippy::cast_possible_truncation)]
@@ -2132,7 +2153,7 @@ mod tests {
         assert_eq!(roles_of(&fresh), vec![unscored(Vacant); 3]);
 
         let records = [loaded_cut(5), loaded_cut(7)];
-        let from_records = CutPool::from_deserialized(1, &records);
+        let from_records = CutPool::from_deserialized(1, 2, &records);
         assert_eq!(roles_of(&from_records), vec![unscored(Prefix); 2]);
 
         let mut pool = CutPool::new_with_warm_start(1, 2, 4, &records);
@@ -2375,20 +2396,71 @@ mod tests {
         assert_eq!(active.len(), 4);
     }
 
-    /// A load that restores scored cuts changes this: those cuts join `All`
-    /// whatever their flag.
     #[test]
-    fn a_loaded_pool_has_one_cut_set() {
-        let mut inactive = loaded_cut(3);
-        inactive.is_active = false;
-        let pool = CutPool::from_deserialized(1, &[loaded_cut(1), inactive, loaded_cut(2)]);
+    fn a_loaded_pool_keeps_the_cut_sets_of_its_run() {
+        let record = |slot, is_active, scored| novomodelo_io::OwnedPolicyCutRecord {
+            is_active,
+            scored,
+            ..record_at(slot, 1)
+        };
+        let records = [
+            record(0, true, false),
+            record(1, false, true),
+            record(2, false, false),
+            record(3, false, false),
+        ];
+        let pool = CutPool::from_deserialized(1, 3, &records);
 
-        assert_eq!(slots_in(&pool, CutSet::All), vec![0, 2]);
+        assert_eq!(pool.prefix_len(), 3);
         assert_eq!(
-            pool.cuts_in(CutSet::All).collect::<Vec<_>>(),
-            pool.cuts_in(CutSet::Active).collect::<Vec<_>>()
+            slots_in(&pool, CutSet::All),
+            vec![0, 1, 3],
+            "the inactive scored prefix cut and the inactive generated cut stay in `All`, the \
+             inactive unscored prefix cut does not"
         );
-        assert_eq!(pool.count_in(CutSet::All), pool.active_count());
+        assert_eq!(slots_in(&pool, CutSet::Active), vec![0]);
+        assert_eq!(pool.count_in(CutSet::All), 3);
+        assert_eq!(pool.count_in(CutSet::Active), pool.active_count());
+    }
+
+    #[test]
+    fn the_loading_constructors_read_each_records_scored_flag() {
+        use SlotOrigin::{Generated, Prefix};
+
+        let record = |slot, scored| novomodelo_io::OwnedPolicyCutRecord {
+            scored,
+            ..record_at(slot, 1)
+        };
+        let records = [record(0, true), record(1, false), record(2, true)];
+        let role = |origin, scored| SlotRole { origin, scored };
+
+        let warm = CutPool::new_with_warm_start(1, 2, 4, &records);
+        assert_eq!(
+            roles_of(&warm)[..3],
+            [role(Prefix, true), role(Prefix, false), role(Prefix, true)]
+        );
+        assert_eq!(warm.prefix_len(), 3);
+
+        let simulated = CutPool::from_deserialized(1, 2, &records);
+        assert_eq!(
+            roles_of(&simulated),
+            [
+                role(Prefix, true),
+                role(Prefix, false),
+                role(Generated, true)
+            ]
+        );
+        assert_eq!(
+            (
+                simulated.prefix_len(),
+                simulated.slot_base,
+                simulated.capacity
+            ),
+            (2, 3, 3)
+        );
+        let unprotected = CutPool::from_deserialized(1, 0, &records);
+        assert_eq!(unprotected.prefix_len(), 0);
+        assert!(!unprotected.has_prefix_cuts());
     }
 
     #[test]

@@ -12,7 +12,7 @@ use novomodelo_core::System;
 use novomodelo_io::output::policy::{
     ResolvedCheckpoint, read_policy_checkpoint, resolve_policy_checkpoint,
 };
-use novomodelo_io::{EntitySlot, OutputError, ProducerBlock};
+use novomodelo_io::{EntitySlot, OutputError, OwnedPolicyCutRecord, ProducerBlock};
 
 use crate::cut::fcf::FutureCostFunction;
 use crate::error::{ErrorClass, SddpError};
@@ -126,11 +126,48 @@ pub fn locate_policy_dir(
     }
 }
 
+/// Where the cuts a pool's checkpoint recorded lie once loaded: a resume keeps each
+/// record at its stored slot, and the loads that pack the records put each at its
+/// rank in ascending slot order.
+#[derive(Debug, Clone)]
+pub struct LoadedSlotMap {
+    source_slots: Vec<u32>,
+    packed: bool,
+}
+
+impl LoadedSlotMap {
+    fn new(kind: FullFcfLoadKind, records: &[OwnedPolicyCutRecord]) -> Self {
+        let packed = match kind {
+            FullFcfLoadKind::WarmStart | FullFcfLoadKind::SimulationOnly => true,
+            FullFcfLoadKind::Resume => false,
+        };
+        Self {
+            source_slots: records.iter().map(|record| record.slot_index).collect(),
+            packed,
+        }
+    }
+
+    /// The slot the record stored at `source_slot` occupies in the loaded pool, or
+    /// `None` when no record held that slot.
+    #[must_use]
+    pub fn dest(&self, source_slot: u32) -> Option<u32> {
+        let rank = self.source_slots.binary_search(&source_slot).ok()?;
+        if self.packed {
+            // Rationale: slots are strictly ascending `u32`s, so a rank never exceeds its slot.
+            #[allow(clippy::cast_possible_truncation)]
+            Some(rank as u32)
+        } else {
+            Some(source_slot)
+        }
+    }
+}
+
 /// A checkpoint that passed every check, ready to be applied.
 #[derive(Debug)]
 pub struct CheckedFullFcfLoad {
     kind: FullFcfLoadKind,
     fcf: FutureCostFunction,
+    slot_maps: Vec<LoadedSlotMap>,
     basis_cache: Vec<Option<CapturedBasis>>,
     unused_stored_bases: Option<UnusedStoredBases>,
     stored_basis_records: usize,
@@ -247,6 +284,12 @@ pub fn check_full_fcf_load(
         }
     }
 
+    let slot_maps = checkpoint
+        .stage_cuts
+        .iter()
+        .map(|pool| LoadedSlotMap::new(kind, &pool.cuts))
+        .collect();
+
     let StoredBasisLoad {
         cache: basis_cache,
         unused: unused_stored_bases,
@@ -258,6 +301,7 @@ pub fn check_full_fcf_load(
     Ok(CheckedFullFcfLoad {
         kind,
         fcf,
+        slot_maps,
         basis_cache,
         unused_stored_bases,
         stored_basis_records: checkpoint.stage_bases.len(),
@@ -270,6 +314,12 @@ impl CheckedFullFcfLoad {
     #[must_use]
     pub fn completed_iterations(&self) -> u64 {
         u64::from(self.producer.completed_iterations)
+    }
+
+    /// The slot map of each pool, in pool id order.
+    #[must_use]
+    pub fn slot_maps(&self) -> &[LoadedSlotMap] {
+        &self.slot_maps
     }
 
     /// The stored bases the load left out, when any did not fit the study.
@@ -323,6 +373,8 @@ impl CheckedFullFcfLoad {
 mod tests {
     use std::io;
 
+    use novomodelo_io::test_support::owned_piece_defaults;
+
     use super::*;
 
     const KINDS: [FullFcfLoadKind; 3] = [
@@ -337,6 +389,34 @@ mod tests {
                 path: PathBuf::from("policy/manifest.bin"),
                 source: io::Error::from(kind),
             },
+        }
+    }
+
+    fn record_at(slot_index: u32) -> OwnedPolicyCutRecord {
+        OwnedPolicyCutRecord {
+            slot_index,
+            ..owned_piece_defaults()
+        }
+    }
+
+    #[test]
+    fn a_slot_map_places_each_record_by_kind_and_leaves_a_gap_empty() {
+        let records: Vec<_> = [0, 1, 3, 4].map(record_at).into();
+        let dests = |kind| {
+            let map = LoadedSlotMap::new(kind, &records);
+            (0..6).map(|slot| map.dest(slot)).collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            dests(FullFcfLoadKind::Resume),
+            [Some(0), Some(1), None, Some(3), Some(4), None]
+        );
+        for kind in [FullFcfLoadKind::WarmStart, FullFcfLoadKind::SimulationOnly] {
+            assert_eq!(
+                dests(kind),
+                [Some(0), Some(1), None, Some(2), Some(3), None],
+                "{kind:?}"
+            );
         }
     }
 

@@ -558,10 +558,15 @@ with the `iteration` its record carries, in `CutMetadata.iteration_generated`.
 Whether a slot held a cut before the run started is the slot's role:
 `CutPool::is_prefix_slot` reads `SlotRole::origin`, which the loading
 constructors write and `add_cut` writes as `Generated`:
-`CutPool::new_with_warm_start` and `CutPool::from_deserialized` write `Prefix` for
-every record's slot, and `CutPool::new_resumed` writes `Prefix` for the slots
-below the recorded prefix length only. It is never a value of
-`iteration_generated`. Under `warm_start` the run's iteration
+`CutPool::new_with_warm_start` writes `Prefix` for every record's slot, while
+`CutPool::from_deserialized` and `CutPool::new_resumed` write `Prefix` for the
+records stored below the recorded prefix length (`warm_start_count`) and
+`Generated` for the others. Every load reads each record's `scored` flag as
+written and never infers it from the role. `LoadedSlotMap`
+(`policy/full_fcf_load.rs`) is the only translation from a stored slot to the slot
+its record occupies: the identity for a resume, the record's rank in ascending
+slot order for a warm start and a simulation-only load, which pack. The role is
+never a value of `iteration_generated`. Under `warm_start` the run's iteration
 counter restarts at 1, so a loaded cut's generating iteration can equal the
 current one; every reader that separates a loaded cut from a cut of this run
 tests the predicate before the iteration.
@@ -577,12 +582,16 @@ current one is taken for a cut of this iteration, appended to the LP a second
 time as a delta row and packed for the cut exchange as a new cut. Answering by
 position (`slot < slot_base`) is the third: a pool built by `CutPool::new`
 with a non-zero `slot_base` reserves leading slots that no record fills,
-and the position test calls each of them a loaded cut.
+and the position test calls each of them a loaded cut. Writing every loaded
+record unscored is the fourth: a cut its source scored then keeps the flag it was
+loaded with, so a warm-started `level1` run never deactivates or reactivates it,
+and a simulation-only `all` sees only the stored flags.
 Read: `cut/pool.rs` (`SlotRole`, `CutPool::new_with_warm_start`,
 `CutPool::from_deserialized`, `CutPool::new_resumed`, `is_prefix_slot`,
 `active_delta_cuts`, `enforce_budget`), `cut/cut_sync.rs` (`pack_pool_into`),
 `cut/dcs.rs` (`score_violated_candidates`, `build_initial_resident_set`),
-`policy/policy_export.rs` (`build_stage_cut_records`). Pinned by
+`policy/policy_export.rs` (`build_stage_cut_records`), `policy/full_fcf_load.rs`
+(`LoadedSlotMap`). Pinned by
 `exported_loaded_cut_keeps_its_generating_iteration` (`policy/policy_export.rs`:
 a loaded cut is exported at its record's iteration),
 `a_loaded_cut_sharing_the_current_iteration_number_is_not_a_delta_cut`
@@ -592,7 +601,14 @@ one pin per other reader:
 `a_loaded_cut_is_never_packed_as_a_new_cut` (`cut/cut_sync.rs`),
 `enforce_budget_never_evicts_a_loaded_cut`
 (`cut/pool.rs`), `candidate_recency_window_keeps_warm_start_cuts` and
-`a_loaded_slot_is_not_seeded_as_a_current_iteration_cut` (`cut/dcs.rs`).
+`a_loaded_slot_is_not_seeded_as_a_current_iteration_cut` (`cut/dcs.rs`); and,
+for the role and the flag each load writes,
+`the_loading_constructors_read_each_records_scored_flag` (`cut/pool.rs`),
+`from_deserialized_gives_each_pool_its_recorded_prefix` (`cut/fcf.rs`),
+`a_slot_map_places_each_record_by_kind_and_leaves_a_gap_empty`
+(`policy/full_fcf_load.rs`) and, through the real writer and reader in
+`tests/cut_basis.rs`, `a_warm_started_scored_cut_is_selected_like_a_generated_one`
+and `a_warm_started_unscored_cut_keeps_its_flag`.
 
 **The activity clock is the current run's.** `CutMetadata::last_active_iter` and
 `CutMetadata::active_count` are on the current run's iteration clock. Two readers
@@ -862,7 +878,9 @@ slot over the rows the template holds and a row training never had starts basic.
 The caller's templates are used only when they hold the chosen set: always under
 `Active`, and under `All` when `count_in(All) == active_count()` in every pool.
 The lazy branch under `dynamic` reads the active cuts and asserts that the two
-counts are equal, which holds because `dynamic` deactivates nothing.
+counts are equal, which holds when no cut it reads was deactivated or evicted by
+the run that wrote it; a loaded pool whose source deactivated one breaks it, and a
+debug build stops at the assert.
 
 The wrong-but-compiling alternatives:
 
@@ -885,18 +903,26 @@ The wrong-but-compiling alternatives:
 - `StudySetup::simulate` passing a fixed set instead of the field: the key then
   changes nothing.
 
-A simulation-only run over a loaded policy sees the stored flags under both
-values: a loaded pool writes only unscored `Prefix` slots, so it has one set
-(`a_loaded_pool_has_one_cut_set`).
+A simulation-only load restores each record's origin and scored flag
+(`CutPool::from_deserialized`: `Prefix` below the recorded `warm_start_count`,
+`Generated` above it, `scored` as written), so `all` over a loaded pool holds what
+training's `all` held, the cuts selection deactivated and the cap evicted
+included. Only the terminal pool's boundary records are `Prefix` there, and
+`has_prefix_cuts` still reads them. Writing every loaded record as an unscored
+`Prefix` is the wrong-but-compiling alternative: `All` then sees only the stored
+flags, and a simulation-only `all` simulates fewer cuts than the run that wrote
+the policy (`a_loaded_pool_keeps_the_cut_sets_of_its_run`).
 
 Read: `cut/pool.rs` (`CutSet`, `CutPool::cuts_in`, `CutPool::count_in`),
 `cut/row.rs` (`build_cut_set_row_batch_into`), `solve/stage_solve.rs`
 (`run_stage_solve_over`), `simulation/state.rs` (`refreeze_templates_if_needed`),
 `simulation/pipeline.rs` (`solve_simulation_stage`), `setup/orchestration.rs`
 (`StudySetup::simulate`). Pinned by `cuts_in_all_follows_the_slot_roles`,
-`cuts_in_active_equals_active_cuts` and `a_loaded_pool_has_one_cut_set`
-(`cut/pool.rs`: the rule by role, and that a loaded pool has one set until a load
-restores scored cuts), `stage_solve_applies_the_basis_over_the_given_cut_rows`
+`cuts_in_active_equals_active_cuts` (`cut/pool.rs`: the rule by role),
+`a_loaded_pool_keeps_the_cut_sets_of_its_run` (`cut/pool.rs`: an inactive scored
+prefix cut and an inactive generated cut are in `All` and not in `Active`, an
+inactive unscored prefix cut is in neither),
+`stage_solve_applies_the_basis_over_the_given_cut_rows`
 (`solve/stage_solve.rs`), `simulation_builds_its_templates_from_the_chosen_cut_set`
 (`simulation/pipeline/tests.rs`: the templates simulation owns, and when the
 caller's are used) and, in `tests/cut_basis.rs`,
@@ -904,7 +930,10 @@ caller's are used) and, in `tests/cut_basis.rs`,
 templates and bases equals an `Active` simulation of a copy of the pools with every
 cut of `All` flagged, with no basis rejection),
 `selection_off_simulates_identically_under_either_cut_set`,
-`a_dynamic_run_has_one_cut_set` and `simulation_follows_the_cut_set_of_the_setup`
+`a_dynamic_run_has_one_cut_set`,
+`a_simulation_only_load_holds_the_cuts_training_all_held` (a load through the real
+writer and reader has the source's `All` and active counts in every pool) and
+`simulation_follows_the_cut_set_of_the_setup`
 (on a run whose sets differ, `StudySetup::simulate` under `All` and under `Active`
 gives different results). The key is pinned by `simulation_cut_set_defaults_to_all`
 and `with_overrides_names_the_simulation_cut_set_key` (`novomodelo-io`: the default, the
@@ -1110,8 +1139,9 @@ every node of a level, the pool holds only the states of the trials routed to
 its node.
 `SlotRole::scored` records that the pool stored states when the slot was
 written (`add_cut` writes it); enabling the store afterwards does not change the
-flag of a cut already written, and a loaded (`Prefix`) cut is written unscored,
-with no state. A pool that does not store states allocates nothing. Enabling
+flag of a cut already written, and a loaded (`Prefix`) cut keeps the flag its
+record carries, with no state (no load stores one). A pool that does not store
+states allocates nothing. Enabling
 reserves `capacity * state_dimension * 8` bytes, of which
 `stored_trial_states() * state_dimension * 8` hold a state, and per slot one
 `u32` for the slot-to-row lookup and one `f64` and two `u32` for the ownership
@@ -1414,8 +1444,9 @@ By slot role:
 - generated and scored (every cut a `level1` run generates in an interior
   pool): live whatever its flag, active after a run exactly when it owns a
   state;
-- loaded and scored: the same. No load writes this role; a test writes it with
-  `CutPool::set_role_for_test`;
+- loaded and scored (a record written scored): the same, with no stored state: it
+  competes at each state this run stores and is active after a selection run
+  exactly when it owns one;
 - loaded and stateless: live while its flag is set, and in neither list, so it
   keeps the flag it was loaded with. While active it can own a state and keep a
   tied generated cut above it inactive;
@@ -1520,7 +1551,11 @@ envelope invariant, and the run's record against a rebuild),
 existence over a run's events, which carry counts and no slot),
 `a_level1_run_keeps_no_state_archive` and
 `a_level1_run_with_exported_states_keeps_every_visited_state` (no selection run
-trims the archive); in `tests/cut_oracles.rs`:
+trims the archive),
+`a_warm_started_scored_cut_is_selected_like_a_generated_one` (a loaded scored cut
+changes its flag in a warm-started run) and
+`a_warm_started_unscored_cut_keeps_its_flag` (a loaded unscored cut never does);
+in `tests/cut_oracles.rs`:
 `cut_oracles_hold_on_deactivated_cuts_under_level1` (the run leaves inactive cuts
 and the validity oracle checks them); in `tests/extensive_form_oracle.rs`:
 `branching_tree_with_level1_stays_below_and_closes_to_the_extensive_form` and
