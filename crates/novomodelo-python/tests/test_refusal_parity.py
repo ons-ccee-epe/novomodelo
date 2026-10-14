@@ -409,6 +409,27 @@ def _dynamic_simulation_over_deactivated_cuts(case: pathlib.Path) -> None:
     _set_cut_selection(case, {"selection": {"method": "dynamic"}})
 
 
+def _dynamic_simulation_over_deactivated_boundary_cuts(case: pathlib.Path) -> None:
+    """A `level1` run deactivates cuts; a `dynamic` simulation of the default
+    `simulation.cut_set = all` cannot read the rows of a two-stage study's
+    `policy.boundary`, which that run's pool 1 supplies."""
+    _set_cut_selection(case, {"selection": {"method": "level1", "check_frequency": 1}})
+    _train_iterations(case, 4)
+    (case / "output" / "policy").rename(case / "boundary_source")
+
+    def truncate(stages: Any) -> None:
+        del stages["stages"][2:]
+
+    def edit(config: Any) -> None:
+        config["simulation"]["enabled"] = True
+        config["simulation"]["selection"] = {"method": "sampled", "num_scenarios": 1}
+        config.setdefault("policy", {})["boundary"] = {"path": "boundary_source"}
+
+    _edit_json(case / "stages.json", truncate)
+    _set_cut_selection(case, {"selection": {"method": "dynamic"}})
+    _edit_json(case / "config.json", edit)
+
+
 def _unknown_simulation_cut_set(case: pathlib.Path) -> None:
     def edit(config: Any) -> None:
         config["simulation"]["cut_set"] = "every"
@@ -752,6 +773,17 @@ ROWS = [
             "simulation.cut_set = all over this policy: pool"
         ),
         error_class_name="PolicyIncompatibleError",
+    ),
+    _row(
+        name="dynamic_simulation_over_deactivated_boundary_cuts",
+        base_case="1dtoy",
+        mutate=_dynamic_simulation_over_deactivated_boundary_cuts,
+        outcome="PlainRefusal",
+        fragment=(
+            "training.cut_selection.selection.method = dynamic cannot simulate "
+            "simulation.cut_set = all over this policy: the policy.boundary pool holds"
+        ),
+        error_class_name="ValidationError",
     ),
     _row(
         name="unknown_simulation_cut_set",

@@ -45,15 +45,16 @@ pub struct SimulationConfig {
     /// it had in the run that wrote it, so `all` loads what that run's `all`
     /// held and `active` the rows active when it ended; a `resume` does the
     /// same. Under `warm_start` and for `policy.boundary` rows, `all` loads a
-    /// row the policy records as `scored` whatever its active flag, and any
-    /// other loaded row only when that flag is set. The exported `is_active`
-    /// flag records the last selection.
+    /// row the policy records as `scored` (its writing run stored the trial
+    /// state the row was computed at, under `exports.states` or `level1`)
+    /// whatever its active flag, and any other loaded row only when that flag
+    /// is set. The exported `is_active` flag records the last selection.
     ///
     /// A run with `training.cut_selection.selection.method` set to `dynamic`
-    /// that simulates under `all` is refused at load when the policy it loads
-    /// under `warm_start` or `resume`, or with training disabled, holds a row
-    /// that `all` includes and that is not active; set `active`, or use the
-    /// `level1` method.
+    /// that simulates under `all` is refused at load when it would hold a row
+    /// that `all` includes and that is not active, in the policy it loads under
+    /// `warm_start` or `resume` or with training disabled, or in the rows of
+    /// `policy.boundary`; set `active`, or use the `level1` method.
     #[serde(deserialize_with = "deserialize_cut_set")]
     pub cut_set: SimulationRowSet,
 }

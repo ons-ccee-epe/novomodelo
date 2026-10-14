@@ -91,7 +91,7 @@ impl BoundaryPolicy {
 pub struct PolicyConfig {
     /// Policy directory, resolved against the output directory unless absolute. A checkpoint write replaces the whole directory, so an empty path, `.`, `..`, the output directory and its ancestors are refused. So is a directory that names or contains one a run clears before writing its outputs, such as `simulation/solver` or `training/solver`, or that lies inside one a run removes whole, such as `simulation/costs`.
     ///
-    /// This directory only holds whole checkpoints. A run whose training ends in an error writes its policy to the sibling directory `<path>.partial`, replacing one already there, and leaves this directory as it was; a later run leaves that sibling in place. A run reads the sibling only when `policy.path` names it, and a `resume` of it is refused.
+    /// This directory only holds whole checkpoints. A run whose training ends in an error writes its policy to the sibling directory `<path>.partial`, replacing one already there, and leaves this directory as the last whole checkpoint left it; a later run leaves that sibling in place. A run reads the sibling only when `policy.path` names it, and a `resume` of it is refused.
     pub path: String,
 
     /// Initialization mode: `"fresh"`, `"warm_start"`, or `"resume"`.

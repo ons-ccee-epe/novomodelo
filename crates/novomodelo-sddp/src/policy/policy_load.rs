@@ -39,8 +39,9 @@ use novomodelo_io::read_policy_checkpoint;
 use novomodelo_solver::{Basis, BasisStatus};
 
 use crate::SddpError;
+use crate::cut::fcf::FutureCostFunction;
 use crate::cut::pool::CutPool;
-use crate::policy::full_fcf_load::LoadedSlotMap;
+use crate::policy::full_fcf_load::{LoadedSlotMap, check_dynamic_simulation_serves};
 use crate::policy::orchestration::{StudySeasonManifest, build_season_manifest};
 use crate::policy::reconcile::{
     BoundaryReconciliationReport, SlotKey, build_boundary_fold, build_identity_index, build_rebind,
@@ -1528,13 +1529,20 @@ pub fn inject_boundary_cuts(
                     .to_string(),
             )
         })?;
-    let fcf = &mut setup.fcf;
-    let state_dimension = fcf.state_dimension;
-    let forward_passes = fcf.forward_passes;
-    let mut pool = CutPool::new_with_warm_start(state_dimension, forward_passes, 0, boundary_cuts);
-    pool.restart_activity_clock();
-    fcf.pools[terminal_idx] = pool;
+    setup.fcf.pools[terminal_idx] = terminal_boundary_pool(&setup.fcf, boundary_cuts);
     Ok(())
+}
+
+/// The terminal pool [`inject_boundary_cuts`] installs, which
+/// [`reconcile_boundary_policy`] checks before anything is installed.
+fn terminal_boundary_pool(
+    fcf: &FutureCostFunction,
+    boundary_cuts: &ValidatedBoundaryCuts,
+) -> CutPool {
+    let mut pool =
+        CutPool::new_with_warm_start(fcf.state_dimension, fcf.forward_passes, 0, boundary_cuts);
+    pool.restart_activity_clock();
+    pool
 }
 
 /// A boundary checkpoint reconciled against a study by [`reconcile_boundary_policy`].
@@ -1554,7 +1562,11 @@ pub struct BoundaryReconciliation {
 /// # Errors
 ///
 /// Returns [`SddpError::Validation`] when the study declares no non-negative
-/// stage (so it has no boundary date), and propagates [`load_boundary_cuts`]'s
+/// stage (so it has no boundary date), when the run is `dynamic` and simulates
+/// `simulation.cut_set = all` over a boundary row that `all` includes and that
+/// is not active (the refusal
+/// [`check_full_fcf_load`](crate::policy::full_fcf_load::check_full_fcf_load)
+/// makes for a loaded policy), and propagates [`load_boundary_cuts`]'s
 /// rejections.
 pub fn reconcile_boundary_policy(
     setup: &StudySetup,
@@ -1594,6 +1606,11 @@ pub fn reconcile_boundary_policy(
         .with_inflow_lag_depth(setup.boundary_requirements().inflow_lag_depth())
         .with_study_seasons(&study_seasons)
         .with_strict(bp.strict),
+    )?;
+    check_dynamic_simulation_serves(
+        setup,
+        std::slice::from_ref(&terminal_boundary_pool(&setup.fcf, &cuts)),
+        |_| "the policy.boundary pool".to_string(),
     )?;
 
     Ok(BoundaryReconciliation {

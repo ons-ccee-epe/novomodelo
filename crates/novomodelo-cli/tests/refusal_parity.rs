@@ -349,6 +349,14 @@ const ROWS: &[ParityRow] = &[
                    simulation.cut_set = all over this policy: pool",
     },
     ParityRow {
+        name: "dynamic_simulation_over_deactivated_boundary_cuts",
+        base_case: "1dtoy",
+        mutate: dynamic_simulation_over_deactivated_boundary_cuts,
+        outcome: Outcome::PlainRefusal,
+        fragment: "training.cut_selection.selection.method = dynamic cannot simulate \
+                   simulation.cut_set = all over this policy: the policy.boundary pool holds",
+    },
+    ParityRow {
         name: "unknown_simulation_cut_set",
         base_case: "1dtoy",
         mutate: unknown_simulation_cut_set,
@@ -744,6 +752,27 @@ fn dynamic_simulation_over_deactivated_cuts(case: &Path) {
     train_iterations(case, 4);
     select_simulation_only(case);
     set_cut_selection(case, json!({"selection": {"method": "dynamic"}}));
+}
+
+/// A `level1` run deactivates cuts; a `dynamic` simulation of the default
+/// `simulation.cut_set = all` cannot read the rows of a two-stage study's
+/// `policy.boundary`, which that run's pool 1 supplies.
+fn dynamic_simulation_over_deactivated_boundary_cuts(case: &Path) {
+    set_cut_selection(
+        case,
+        json!({"selection": {"method": "level1", "check_frequency": 1}}),
+    );
+    train_iterations(case, 4);
+    fs::rename(case.join("output/policy"), case.join("boundary_source")).unwrap();
+    edit_json(&case.join("stages.json"), |stages| {
+        stages["stages"].as_array_mut().unwrap().truncate(2);
+    });
+    set_cut_selection(case, json!({"selection": {"method": "dynamic"}}));
+    edit_json(&case.join("config.json"), |config| {
+        config["simulation"]["enabled"] = json!(true);
+        config["simulation"]["selection"] = json!({"method": "sampled", "num_scenarios": 1});
+        config["policy"]["boundary"] = json!({"path": "boundary_source"});
+    });
 }
 
 fn unknown_simulation_cut_set(case: &Path) {

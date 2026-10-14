@@ -445,7 +445,8 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
             fcf.pools[pool_id].count_in(load_spec.cut_set),
             fcf.pools[pool_id].active_count(),
             "the lazy solve reads the active cuts, so the chosen set must equal them; \
-             check_full_fcf_load refuses every load where it does not"
+             check_full_fcf_load refuses every load kind, and reconcile_boundary_policy \
+             policy.boundary, where it does not"
         );
         // Simulation has no iteration counter; seed with `current_iteration = 0`.
         build_initial_resident_set(

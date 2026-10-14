@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use novomodelo_core::System;
 use novomodelo_core::scenario::ScenarioSource;
 use novomodelo_io::config::{
-    Config, SelectionMethod, SimulationRowSet, StoppingRuleConfig, TrainingSelection,
+    BoundaryPolicy, Config, SelectionMethod, SimulationRowSet, StoppingRuleConfig,
+    TrainingSelection,
 };
 use novomodelo_io::{OwnedPolicyCutRecord, read_policy_checkpoint};
 use novomodelo_sddp::cut::{CutSet, SlotOrigin};
@@ -26,7 +27,9 @@ use novomodelo_sddp::policy::orchestration::{
     CheckpointParams, partial_policy_dir, write_checkpoint,
 };
 use novomodelo_sddp::setup::prepare_stochastic;
-use novomodelo_sddp::{ErrorClass, SddpError, StudySetup};
+use novomodelo_sddp::{
+    BoundaryReconciliation, ErrorClass, SddpError, StudySetup, reconcile_boundary_policy,
+};
 use novomodelo_solver::ActiveSolver;
 use tempfile::TempDir;
 
@@ -885,4 +888,117 @@ fn a_load_is_refused_for_a_dynamic_all_simulation_over_deactivated_cuts_only() {
         )
         .unwrap_or_else(|err| panic!("{kind:?}: a dynamic policy loads: {err}"));
     }
+}
+
+fn copy_toy_case(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).expect("create dir");
+    for entry in std::fs::read_dir(src).expect("read dir") {
+        let entry = entry.expect("dir entry");
+        let target = dst.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            copy_toy_case(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).expect("copy file");
+        }
+    }
+}
+
+/// 1dtoy cut to its first `stages` stages, so its boundary date is the end of
+/// stage `stages - 1`: the date the 1dtoy pool with that index is priced at.
+fn truncated_toy_case(stages: usize) -> TempDir {
+    let case = TempDir::new().expect("tempdir");
+    copy_toy_case(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/1dtoy"),
+        case.path(),
+    );
+    let stages_file = case.path().join("stages.json");
+    let mut document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&stages_file).expect("read stages"))
+            .expect("parse stages");
+    document["stages"]
+        .as_array_mut()
+        .expect("stages array")
+        .truncate(stages);
+    std::fs::write(&stages_file, document.to_string()).expect("write stages");
+    case
+}
+
+/// What a `dynamic` run simulating `cut_set` gets from using pool `pool_id` of
+/// `policy_dir`, a 1dtoy policy, as its `policy.boundary`.
+fn reconcile_boundary_of(
+    policy_dir: &Path,
+    pool_id: usize,
+    cut_set: SimulationRowSet,
+) -> Result<BoundaryReconciliation, SddpError> {
+    let case = truncated_toy_case(pool_id + 1);
+    let boundary = BoundaryPolicy {
+        path: policy_dir.to_str().expect("utf-8 path").to_string(),
+        strict: false,
+    };
+    let (system, setup) = common::fresh_system_and_setup_with(case.path(), |config| {
+        dynamic_simulating(cut_set)(config);
+        config.policy.boundary = Some(boundary.clone());
+    });
+    reconcile_boundary_policy(&setup, &system, &boundary, case.path())
+}
+
+/// The boundary rows of a source pool keep the `scored` flag of the source, so
+/// `all` includes a scored row whatever its active flag, and a `dynamic` lazy
+/// solve cannot read it.
+#[test]
+fn a_dynamic_simulation_of_all_refuses_boundary_cuts_outside_the_active_set() {
+    let (_output, policy_dir, (pool_id, held, active)) = deactivating_checkpoint();
+
+    let loaded = reconcile_boundary_of(&policy_dir, pool_id, SimulationRowSet::Active)
+        .expect("the active rows are what a dynamic lazy solve reads");
+    assert!(
+        loaded
+            .cuts
+            .iter()
+            .any(|record| record.scored && !record.is_active),
+        "power: the boundary must hold a scored inactive row"
+    );
+
+    let err = reconcile_boundary_of(&policy_dir, pool_id, SimulationRowSet::All)
+        .expect_err("the boundary must be refused");
+    assert!(matches!(err, SddpError::Validation(_)), "{err}");
+    let message = err.to_string();
+    for fragment in [
+        "training.cut_selection.selection.method = dynamic cannot simulate \
+         simulation.cut_set = all over this policy: "
+            .to_string(),
+        format!("the policy.boundary pool holds {held} cuts of which {active} are active"),
+        "set simulation.cut_set = active or use the level1 method".to_string(),
+    ] {
+        assert!(message.contains(&fragment), "{message}");
+    }
+}
+
+/// A row a capped source evicted was never scored, so `all` leaves it out as it
+/// leaves out its flag: the boundary pool's two counts are equal and the pairing
+/// loads.
+#[test]
+fn a_dynamic_simulation_of_all_loads_boundary_cuts_a_cap_evicted() {
+    let (system, mut source) = toy_setup(1, 8, with_budget);
+    let output = train_and_write(&mut source, &system);
+    let pool_id = source
+        .fcf
+        .pools
+        .iter()
+        .position(|pool| pool.active_count() < pool.populated())
+        .expect("power: the cap must evict a cut");
+
+    let loaded = reconcile_boundary_of(
+        &output.path().join(&source.policy_path),
+        pool_id,
+        SimulationRowSet::All,
+    )
+    .expect("a boundary row outside the active set that is unscored is in neither set");
+    assert!(
+        loaded
+            .cuts
+            .iter()
+            .any(|record| !record.scored && !record.is_active),
+        "power: the boundary must hold an unscored inactive row"
+    );
 }

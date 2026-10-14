@@ -977,17 +977,29 @@ The lazy branch under `dynamic` reads the active cuts and asserts that the two
 counts are equal. A run that trains under `dynamic` deactivates nothing, so a
 pool breaks the assert only through a cut it loaded, from a source that
 deactivated or evicted one. `check_full_fcf_load` refuses that pairing for every
-load kind (`check_dynamic_simulation_serves`) when the run's strategy is
-`Dynamic`, the run simulates (`simulation_config.n_scenarios > 0`) with
-`simulation_cut_set = All`, and some loaded pool has
-`count_in(All) != active_count()`. The refusal is
-`FullFcfLoadError::Refused(SddpError::Validation(..))`, class
-`IncompatiblePolicy`, and names both settings, the first such pool with its two
-counts and the way out: `simulation.cut_set = active`, or the `level1` method.
-The assert then never meets a pool the load admitted. Under `Active` the two
-counts are equal by construction, and training under `dynamic` over loaded
+load kind, and `reconcile_boundary_policy` for `policy.boundary`
+(`check_dynamic_simulation_serves`, one function for both), when the run's
+strategy is `Dynamic`, the run simulates (`simulation_config.n_scenarios > 0`) with
+`simulation_cut_set = All`, and some loaded pool, or the terminal pool the
+boundary injection installs, has `count_in(All) != active_count()`. A load is
+refused as `FullFcfLoadError::Refused(SddpError::Validation(..))`, class
+`IncompatiblePolicy`; the boundary as `SddpError::Validation` of the boundary
+phase (`PrepPhase::Boundary`), which `novomodelo validate`, a training `novomodelo run` and
+the Python bindings reach through `reconcile_boundary_policy`. Both name both settings,
+the first such pool with its two counts (`the policy.boundary pool` for the
+boundary) and the way out: `simulation.cut_set = active`, or the `level1` method.
+The assert then never meets a pool a load or the boundary admitted. Under `Active`
+the two counts are equal by construction, and training under `dynamic` over loaded
 inactive cuts with no simulation of `All` is admitted: those cuts are valid, a
 subset of the pool.
+
+The boundary check runs on the pool `terminal_boundary_pool` builds, which
+`inject_boundary_cuts` installs, so what is checked is what is installed. Its
+rows are `Prefix` rows that keep the `scored` and active flags of their source
+records: a `level1` source of a longer horizon, whose interior pool is priced at
+the study's boundary date, supplies a scored inactive row, which `All` includes;
+a source that stored no trial states, such as a capped one, supplies an unscored
+inactive row, which `All` leaves out with its flag, and that pairing loads.
 
 The wrong-but-compiling alternatives:
 
@@ -1011,7 +1023,13 @@ The wrong-but-compiling alternatives:
   changes nothing;
 - relaxing the lazy-branch assert in place of refusing the load: a debug build no
   longer stops, and a release build simulates the active cuts of the pool under
-  the name `all`, silently, for the default value of the key.
+  the name `all`, silently, for the default value of the key;
+- checking the loaded pools only: `inject_boundary_cuts` replaces the terminal pool
+  after the load, and that pool is the one the assert meets at the last stage, so
+  a `policy.boundary` over a `level1` source breaks the assert for the default
+  value of the key;
+- refusing a boundary that holds any inactive record: an unscored inactive record
+  is in neither set, so the refusal is spurious.
 
 A simulation-only load restores each record's origin and scored flag
 (`CutPool::from_deserialized`: `Prefix` below the recorded `warm_start_count`,
@@ -1028,7 +1046,8 @@ Read: `cut/pool.rs` (`CutSet`, `CutPool::cuts_in`, `CutPool::count_in`),
 (`run_stage_solve_over`), `simulation/state.rs` (`refreeze_templates_if_needed`),
 `simulation/pipeline.rs` (`solve_simulation_stage`), `setup/orchestration.rs`
 (`StudySetup::simulate`), `policy/full_fcf_load.rs`
-(`check_dynamic_simulation_serves`). Pinned by `cuts_in_all_follows_the_slot_roles`,
+(`check_dynamic_simulation_serves`), `policy/policy_load.rs`
+(`reconcile_boundary_policy`, `terminal_boundary_pool`). Pinned by `cuts_in_all_follows_the_slot_roles`,
 `cuts_in_active_equals_active_cuts` (`cut/pool.rs`: the rule by role),
 `a_loaded_pool_keeps_the_cut_sets_of_its_run` (`cut/pool.rs`: an inactive scored
 prefix cut and an inactive generated cut are in `All` and not in `Active`, an
@@ -1060,7 +1079,16 @@ warm start and a resume of a run that does not simulate, a `level1` run and a
 (`crates/novomodelo-cli/tests/cli_validate.rs`, after a control that validates) with the
 row `dynamic_simulation_over_deactivated_cuts` of
 `crates/novomodelo-cli/tests/refusal_parity.rs` and
-`crates/novomodelo-python/tests/test_refusal_parity.py`. The key is pinned by
+`crates/novomodelo-python/tests/test_refusal_parity.py`. The boundary refusal is pinned
+by `a_dynamic_simulation_of_all_refuses_boundary_cuts_outside_the_active_set`
+(`tests/full_fcf_load.rs`: a `level1` source's pool as the boundary of a shorter
+study is refused under `All` and loads under `Active`),
+`a_dynamic_simulation_of_all_loads_boundary_cuts_a_cap_evicted` (the same with a
+capped source, whose inactive rows are unscored), and by
+`validate_rejects_a_dynamic_simulation_over_deactivated_boundary_cuts`
+(`crates/novomodelo-cli/tests/cli_validate.rs`, after a control that validates) with the
+row `dynamic_simulation_over_deactivated_boundary_cuts` of the two parity tables.
+The key is pinned by
 `simulation_cut_set_defaults_to_all` and `with_overrides_names_the_simulation_cut_set_key` (`novomodelo-io`: the default, the
 values, and an unknown value rejected naming the key),
 `from_config_maps_the_simulation_cut_set` (`setup/params.rs`),
