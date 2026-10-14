@@ -236,9 +236,7 @@ fn convert_error_with(py: Python<'_>, source: ErrorSource<'_>) -> PyErr {
                 scenario,
             } => solver_error_infeasible(py, &message, *stage, *iteration, *scenario),
             SddpError::Simulation(_) => new_leaf_err(py, &SIMULATION_ERROR, &message),
-            SddpError::CheckpointWrite { source, .. } => {
-                output_error(py, source, &error.to_string())
-            }
+            SddpError::CheckpointWrite { source, .. } => output_error(py, source, &message),
             other => exception_for_class(py, other.class(), &message),
         },
         ErrorSource::PolicyLoad(err) => {
@@ -556,8 +554,8 @@ mod tests {
         });
     }
 
-    /// A failed checkpoint write raises its `OutputError`'s class, with the SDDP
-    /// error's own text as the message.
+    /// A failed checkpoint write raises its `OutputError`'s class, with the
+    /// caller's message, which names the partial policy directory.
     #[test]
     fn convert_error_checkpoint_write_raises_its_output_error_class() {
         Python::initialize();
@@ -582,16 +580,19 @@ mod tests {
                     iteration: 2,
                     source,
                 };
+                let message = format!(
+                    "training failed after 2 iterations: {error}; the partial policy is in out/elsewhere"
+                );
                 let err = convert_error_with(
                     py,
                     ErrorSource::Sddp {
                         error: &error,
-                        message: format!("training failed after 2 iterations: {error}"),
+                        message: message.clone(),
                     },
                 );
                 assert_leaf(py, &err, leaf);
                 let rendered: String = err.value(py).str().unwrap().extract().unwrap();
-                assert_eq!(rendered, error.to_string());
+                assert_eq!(rendered, message);
             }
         });
     }

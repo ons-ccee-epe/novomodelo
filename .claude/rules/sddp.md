@@ -2602,7 +2602,10 @@ has agreed, before `broadcast_basis_cache`. A length that does not fit an `i32`
 count travels as `-1`, so every rank fails at the same node; a segment rank 0
 cannot decode ends the gather only after the last node, so no rank leaves the
 collectives early. On the periodic path either failure is reconciled like a
-failed write. The exits that skip the collectives, `finalize_with_error` and
+failed write; on the clean path `finalize` reconciles the gather result with
+`reconcile_result` before `broadcast_basis_cache`, whose length broadcast
+(`broadcast_len`) carries an oversized length as `-1` so every rank fails after
+it. The exits that skip the collectives, `finalize_with_error` and
 `finalize_without_broadcast`, gather nothing: `TrainingResult::checkpoint_bases`
 holds rank 0's own rows keyed by global scenario
 (`CheckpointBasisStore::rank_local`), marked not `complete`, which is also what a
@@ -2617,7 +2620,14 @@ The wrong-but-compiling alternatives:
   store; on several ranks the other ranks' scenarios are missing from a
   checkpoint that says it is whole;
 - gathering on an error exit: a peer that failed never enters the collective, so
-  the ranks that reach it block.
+  the ranks that reach it block;
+- returning rank 0's gather error from `finalize` before the broadcast: the other
+  ranks enter `broadcast_basis_cache` and block. Pinned by
+  `a_gather_failure_on_rank_zero_does_not_leave_a_peer_in_the_broadcast`
+  (`training/session/mod.rs`: two ranks' collective sequences, rank 0 meeting a
+  decode failure) and, for the length, by
+  `an_oversized_payload_fails_every_rank_after_the_same_broadcast`
+  (`training/training/tests.rs`).
 
 Read: `training/training.rs` (`gather_basis_store`, `CheckpointBasisStore`,
 `CheckpointBasisStore::rank_local`), `training/session/mod.rs`
@@ -2645,6 +2655,55 @@ checkpoint at the same iteration hold scenarios 0, 1 and 2 at every node with a
 basis, both whole, and are equal). No committed test runs the gather under an MPI
 launcher, and none pins the error-exit alternative, which no single-process run
 can show.
+
+## A failed run never replaces a whole checkpoint
+
+A run that ends in an error (`TrainingOutcome::error`) writes its policy to the
+sibling `partial_policy_dir(policy_dir)`, `<policy dir name>` followed by
+`.partial`, and never to the policy directory. The policy directory only ever
+holds whole checkpoints: the periodic writes, the clean end and a graceful stop
+write it, and each of them holds every rank's bases
+(`CheckpointBasisStore::complete`). A failure exit holds rank 0's own rows,
+marked not complete, and the failed iteration may be half applied: the FCF can
+hold the cuts of an iteration that `completed_iterations` does not count.
+`write_checkpoint` is the single owner of the rule and of the name, for the CLI
+and the Python bindings alike. It decides the destination from
+`TrainingResult::checkpoint_bases.complete` alone, never from the directory's
+content, and returns the directory it wrote; both front ends name that directory
+in the failure message. A second failed run replaces the sibling, as the writer
+replaces any target. No load reads the sibling by itself: it is read only when
+`policy.path` names it.
+
+The wrong-but-compiling alternatives:
+
+- writing the failure exit's policy into the policy directory: it swaps a partial
+  policy over the last periodic checkpoint, so a multi-rank run that fails
+  in-band after a periodic write loses the one checkpoint it could resume from;
+- skipping the write when the policy directory already holds a checkpoint: the
+  destination then depends on the directory's content, a failed run with no
+  earlier checkpoint writes to the policy directory again, and the partial
+  policy of the other case is lost;
+- a collective on the error path, such as gathering the other ranks' bases to
+  make the failure checkpoint whole: a rank that failed never enters it, and the
+  ranks that reach it block.
+
+Read: `policy/orchestration.rs` (`write_checkpoint`, `partial_policy_dir`),
+`training/session/mod.rs` (`finalize_without_broadcast`),
+`crates/novomodelo-cli/src/commands/run/outputs.rs` (`write_training_outputs`),
+`crates/novomodelo-python/src/run.rs` (`write_training_outputs`). Pinned by, in
+`policy/orchestration.rs`,
+`a_result_without_every_ranks_bases_is_written_beside_the_policy_directory` (the
+whole checkpoint is byte for byte unchanged),
+`a_failed_runs_partial_policy_is_written_without_a_whole_checkpoint_present` and
+`a_result_with_every_ranks_bases_is_written_to_the_policy_directory`; by
+`a_failed_periodic_write_leaves_the_last_whole_checkpoint_and_a_partial_beside_it`
+(`tests/periodic_checkpoint.rs`: an in-band periodic write failure of a run that
+resumed a whole checkpoint); and by `a_failed_run_keeps_the_last_whole_checkpoint`
+(`crates/novomodelo-cli/tests/cli_run.rs`) and
+`test_a_failed_run_keeps_the_last_whole_checkpoint`
+(`crates/novomodelo-python/tests/test_periodic_checkpoint.py`): a resumed run that
+fails in-band leaves the policy directory byte for byte and writes the sibling,
+and the next resume of the policy directory continues from the whole checkpoint.
 
 ## Policy-load compatibility validation is mandatory
 

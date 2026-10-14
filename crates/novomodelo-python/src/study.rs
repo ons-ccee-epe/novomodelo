@@ -362,7 +362,7 @@ impl Study {
         let system = self.system.as_ref();
         let config = &self.config;
 
-        let phase_result: Result<(TrainingPhaseResult, Option<PyErr>), PhaseError> =
+        let phase_result: Result<(TrainingPhaseResult, Option<PyErr>, PathBuf), PhaseError> =
             run_in_scoped_pool(threads, |n| {
                 remove_success_marker(&output_dir.join("training")).map_err(|e| {
                     format!("{OUTPUT_WRITE_ERROR_PREFIX}: stale training marker: {e}")
@@ -380,7 +380,7 @@ impl Study {
                     None => (run_training_phase_py(setup, n, shutdown_flag)?, None),
                 };
 
-                write_training_outputs(
+                let policy_dir = write_training_outputs(
                     &output_dir,
                     system,
                     config,
@@ -391,10 +391,10 @@ impl Study {
                     n,
                 )?;
 
-                Ok::<_, PhaseError>((training, callback_error))
+                Ok::<_, PhaseError>((training, callback_error, policy_dir))
             })?;
 
-        let (mut training, callback_error) = phase_result?;
+        let (mut training, callback_error, policy_dir) = phase_result?;
 
         if let Some(err) = callback_error {
             return Err(RunError::Callback(err));
@@ -402,7 +402,10 @@ impl Study {
 
         if let Some(error) = training.error.take() {
             let iterations = training.result.iterations;
-            let message = format!("training failed after {iterations} iterations: {error}");
+            let message = format!(
+                "training failed after {iterations} iterations: {error}; the partial policy is in {}",
+                policy_dir.display()
+            );
             return Err(RunError::Sddp { error, message });
         }
 

@@ -524,7 +524,8 @@ fn single_process_distribution(n_threads: usize) -> DistributionInfo {
     }
 }
 
-/// Write every training-phase output, ending with the phase marker.
+/// Write every training-phase output, ending with the phase marker, and return
+/// the directory the policy checkpoint was written to.
 pub(crate) fn write_training_outputs(
     output_dir: &Path,
     system: &System,
@@ -534,8 +535,8 @@ pub(crate) fn write_training_outputs(
     setup_timings: &SetupTimings,
     seed: u64,
     n_threads: usize,
-) -> Result<(), String> {
-    write_checkpoint(
+) -> Result<PathBuf, String> {
+    let policy_dir = write_checkpoint(
         &output_dir.join(&setup.policy_path),
         setup,
         system,
@@ -612,7 +613,7 @@ pub(crate) fn write_training_outputs(
     write_success_marker(&output_dir.join("training"))
         .map_err(|e| format!("{OUTPUT_WRITE_ERROR_PREFIX}: training success marker: {e}"))?;
 
-    Ok(())
+    Ok(policy_dir)
 }
 
 /// Run the simulation phase: workspace pool, Parquet writing, and output.

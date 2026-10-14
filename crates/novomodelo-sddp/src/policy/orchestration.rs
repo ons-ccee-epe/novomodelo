@@ -456,8 +456,23 @@ fn interior_state_history(
     Ok(first)
 }
 
-/// Write the trained policy (cuts, bases, stored trial states, metadata) to
-/// `policy_dir` as `FlatBuffers` files.
+/// The sibling of `policy_dir` that [`write_checkpoint`] writes a failed run's
+/// partial policy to: `<policy dir name>.partial`. `None` for a path with no
+/// file name, which the checkpoint writer refuses too.
+#[must_use]
+pub fn partial_policy_dir(policy_dir: &Path) -> Option<PathBuf> {
+    let mut name = policy_dir.file_name()?.to_os_string();
+    name.push(".partial");
+    Some(policy_dir.with_file_name(name))
+}
+
+/// Write the trained policy (cuts, bases, stored trial states, metadata) as
+/// `FlatBuffers` files and return the directory written.
+///
+/// The directory is `policy_dir` when `training_result` holds every rank's
+/// bases (`checkpoint_bases.complete`) and [`partial_policy_dir`] otherwise,
+/// so `policy_dir` only ever holds whole checkpoints and a failed run never
+/// replaces one. The choice reads the result alone, never the directory.
 ///
 /// The single implementation shared by the CLI and the Python bindings, so the
 /// on-disk format and write ordering cannot drift between them. `system` is
@@ -467,20 +482,33 @@ fn interior_state_history(
 ///
 /// Propagates [`OutputError`] from
 /// [`novomodelo_io::output::policy::write_policy_checkpoint`] if any of the
-/// `FlatBuffers` files cannot be written.
+/// `FlatBuffers` files cannot be written, and [`OutputError::IoError`]
+/// (`InvalidInput`) when a partial policy is due and `policy_dir` has no file
+/// name.
 pub fn write_checkpoint(
     policy_dir: &Path,
     setup: &StudySetup,
     system: &System,
     training_result: &TrainingResult,
     params: &CheckpointParams,
-) -> Result<(), OutputError> {
+) -> Result<PathBuf, OutputError> {
+    let dir = if training_result.checkpoint_bases.complete {
+        policy_dir.to_path_buf()
+    } else {
+        partial_policy_dir(policy_dir).ok_or_else(|| {
+            OutputError::io(
+                policy_dir,
+                std::io::Error::from(std::io::ErrorKind::InvalidInput),
+            )
+        })?
+    };
     CheckpointLayout::new(setup, system, *params).write(
-        policy_dir,
+        &dir,
         &setup.fcf,
         &setup.inputs.node_graph,
         CheckpointState::of(training_result),
-    )
+    )?;
+    Ok(dir)
 }
 
 /// The checkpoint a run writes on the iterations its `policy.checkpointing`
@@ -628,9 +656,12 @@ mod tests {
     use novomodelo_io::output::policy::SEASON_CYCLE_CODE_ABSENT;
 
     use super::{
-        BlockMode, InflowModel, SEASON_CYCLE_CODE_WEEKLY, SeasonCycleType, System,
-        build_season_manifest, hydro_season_orders, training_block_provenance,
+        BlockMode, CheckpointParams, InflowModel, SEASON_CYCLE_CODE_WEEKLY, SeasonCycleType,
+        System, build_season_manifest, hydro_season_orders, partial_policy_dir,
+        training_block_provenance, write_checkpoint,
     };
+    use crate::TrainingResult;
+    use crate::test_support::{k_fan_setup, k_fan_system};
 
     /// A four-stage chain: nodes 1 and 2 are the interior ones, node 0 the
     /// root and node 3 the terminal.
@@ -1053,5 +1084,141 @@ mod tests {
             orders.iter().map(|o| o.unwrap_or(0)).collect::<Vec<u32>>(),
             "the wire projection reads every None as 0, leaving the checkpoint byte-identical"
         );
+    }
+
+    fn snapshot(dir: &std::path::Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+        fn visit(
+            root: &std::path::Path,
+            dir: &std::path::Path,
+            files: &mut std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+        ) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(root, &path, files);
+                } else {
+                    files.insert(
+                        path.strip_prefix(root).unwrap().to_path_buf(),
+                        std::fs::read(&path).unwrap(),
+                    );
+                }
+            }
+        }
+        let mut files = std::collections::BTreeMap::new();
+        visit(dir, dir, &mut files);
+        files
+    }
+
+    fn try_write_fan_checkpoint(
+        policy_dir: &std::path::Path,
+        complete: bool,
+    ) -> Result<std::path::PathBuf, novomodelo_io::output::OutputError> {
+        let fixture = k_fan_setup(2, 2, 1);
+        let mut result = TrainingResult::new(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0,
+            "test".to_string(),
+            0,
+            Vec::new(),
+            Vec::new(),
+            None,
+        );
+        result.checkpoint_bases.complete = complete;
+        let params = CheckpointParams {
+            max_iterations: 1,
+            forward_passes: 2,
+            seed: 0,
+        };
+        write_checkpoint(
+            policy_dir,
+            &fixture.setup,
+            &k_fan_system(2, false),
+            &result,
+            &params,
+        )
+    }
+
+    fn write_fan_checkpoint(policy_dir: &std::path::Path, complete: bool) -> std::path::PathBuf {
+        try_write_fan_checkpoint(policy_dir, complete).expect("write_checkpoint must succeed")
+    }
+
+    #[test]
+    fn a_result_without_every_ranks_bases_is_written_beside_the_policy_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let policy = root.path().join("policy");
+        assert_eq!(write_fan_checkpoint(&policy, true), policy);
+        let whole = snapshot(&policy);
+        assert!(whole.contains_key(std::path::Path::new("manifest.bin")));
+
+        let partial = write_fan_checkpoint(&policy, false);
+
+        assert_eq!(Some(partial.clone()), partial_policy_dir(&policy));
+        assert!(partial.join("manifest.bin").is_file());
+        assert_eq!(
+            snapshot(&policy),
+            whole,
+            "a partial policy leaves the whole checkpoint byte for byte"
+        );
+        assert_eq!(write_fan_checkpoint(&policy, false), partial);
+        assert_eq!(snapshot(&policy), whole);
+    }
+
+    #[test]
+    fn a_failed_runs_partial_policy_is_written_without_a_whole_checkpoint_present() {
+        let root = tempfile::tempdir().unwrap();
+        let policy = root.path().join("policy");
+
+        let partial = write_fan_checkpoint(&policy, false);
+
+        assert!(partial.join("manifest.bin").is_file());
+        assert!(
+            !policy.exists(),
+            "the policy directory is not touched on the failure exit"
+        );
+    }
+
+    #[test]
+    fn a_result_with_every_ranks_bases_is_written_to_the_policy_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let policy = root.path().join("policy");
+
+        assert_eq!(write_fan_checkpoint(&policy, true), policy);
+
+        assert!(policy.join("manifest.bin").is_file());
+        assert!(!partial_policy_dir(&policy).unwrap().exists());
+    }
+
+    #[test]
+    fn a_partial_policy_is_refused_for_a_policy_path_with_no_file_name() {
+        let err = try_write_fan_checkpoint(std::path::Path::new(".."), false)
+            .expect_err("a sibling of a path with no file name does not exist");
+
+        assert!(
+            matches!(&err, novomodelo_io::output::OutputError::IoError { source, .. }
+                if source.kind() == std::io::ErrorKind::InvalidInput),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn the_partial_policy_directory_is_a_sibling_named_after_the_policy_directory() {
+        for policy in ["out/policy", "out/./policy", "out/policy/", "policy"] {
+            let policy = std::path::Path::new(policy);
+            let partial = partial_policy_dir(policy).expect("a path with a file name");
+            assert_ne!(partial, policy, "{policy:?}");
+            assert_eq!(partial.parent(), policy.parent(), "{policy:?}");
+            assert!(
+                partial
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("policy"),
+                "{partial:?}"
+            );
+        }
+        assert_eq!(partial_policy_dir(std::path::Path::new("..")), None);
     }
 }

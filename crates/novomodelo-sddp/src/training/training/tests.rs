@@ -2817,3 +2817,115 @@ fn a_payload_length_that_does_not_fit_an_i32_count_fails_naming_its_rank() {
         "{err:?}"
     );
 }
+
+/// One rank of a world whose only collective is a broadcast of one `i32` from
+/// rank 0; a non-root rank receives `root_sends`.
+struct LengthBroadcast {
+    rank: usize,
+    root_sends: i32,
+    broadcasts: std::sync::atomic::AtomicUsize,
+}
+
+impl LengthBroadcast {
+    fn new(rank: usize, root_sends: i32) -> Self {
+        Self {
+            rank,
+            root_sends,
+            broadcasts: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn broadcasts(&self) -> usize {
+        self.broadcasts.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Communicator for LengthBroadcast {
+    fn allgatherv<T: CommData>(
+        &self,
+        _send: &[T],
+        _recv: &mut [T],
+        _counts: &[usize],
+        _displs: &[usize],
+    ) -> Result<(), CommError> {
+        unreachable!("broadcast_len issues only a broadcast")
+    }
+
+    fn allreduce<T: CommData>(
+        &self,
+        _send: &[T],
+        _recv: &mut [T],
+        _op: ReduceOp,
+    ) -> Result<(), CommError> {
+        unreachable!("broadcast_len issues only a broadcast")
+    }
+
+    fn broadcast<T: CommData>(&self, buf: &mut [T], _root: usize) -> Result<(), CommError> {
+        use std::any::Any;
+        self.broadcasts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if self.rank != 0 {
+            let slot: &mut dyn Any = &mut buf[0];
+            *slot.downcast_mut::<i32>().unwrap() = self.root_sends;
+        }
+        Ok(())
+    }
+
+    fn barrier(&self) -> Result<(), CommError> {
+        Ok(())
+    }
+
+    fn rank(&self) -> usize {
+        self.rank
+    }
+
+    fn size(&self) -> usize {
+        2
+    }
+
+    fn abort(&self, code: i32) -> ! {
+        std::process::exit(code)
+    }
+}
+
+#[test]
+fn an_oversized_payload_fails_every_rank_after_the_same_broadcast() {
+    use super::broadcast_len;
+
+    let oversized = (i32::MAX as usize) + 1;
+    let root = LengthBroadcast::new(0, 0);
+    let err = broadcast_len(&root, oversized, "broadcast_basis_cache_i32")
+        .expect_err("a length past the i32 count limit is refused");
+    assert!(
+        matches!(
+            err,
+            SddpError::Communication(CommError::InvalidBufferSize { actual, .. })
+                if actual == oversized
+        ),
+        "{err:?}"
+    );
+    assert_eq!(root.broadcasts(), 1, "rank 0 broadcasts before it fails");
+
+    let peer = LengthBroadcast::new(1, -1);
+    let err = broadcast_len(&peer, 0, "broadcast_basis_cache_i32")
+        .expect_err("the peer reads the refusal rank 0 broadcast");
+    assert!(
+        matches!(&err, SddpError::Validation(msg) if msg.contains("does not fit an i32 count")),
+        "{err:?}"
+    );
+    assert_eq!(peer.broadcasts(), 1);
+}
+
+#[test]
+fn a_representable_payload_length_reaches_every_rank() {
+    use super::broadcast_len;
+
+    assert_eq!(
+        broadcast_len(&LengthBroadcast::new(0, 0), 7, "op").unwrap(),
+        7
+    );
+    assert_eq!(
+        broadcast_len(&LengthBroadcast::new(1, 7), 0, "op").unwrap(),
+        7
+    );
+}

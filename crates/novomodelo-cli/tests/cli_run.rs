@@ -9,8 +9,9 @@
     clippy::float_cmp
 )]
 
+use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray};
 use arrow::record_batch::RecordBatch;
@@ -2377,4 +2378,103 @@ fn run_accepts_a_supplied_opening_tree_with_historical_residuals_stages() {
         .stdout(predicate::str::contains("V2.").not())
         .stderr(predicate::str::contains("historical windows").not())
         .stderr(predicate::str::contains("V2.").not());
+}
+
+// ── A failed run keeps the last whole checkpoint ──────────────────────────────
+
+fn snapshot_files(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn walk(root: &Path, dir: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(root, &path, files);
+            } else {
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    fs::read(&path).unwrap(),
+                );
+            }
+        }
+    }
+    let mut files = BTreeMap::new();
+    walk(dir, dir, &mut files);
+    files
+}
+
+/// The deck of `infeasible_training_lp_exits_3_naming_stage_iteration_and_scenario`: with
+/// the generic constraint's slack disabled and a thermal minimum of 20 MW, every stage-0
+/// solve is infeasible.
+fn make_training_lp_infeasible(case: &Path) {
+    rewrite_json(
+        &case.join("constraints/generic_constraints.json"),
+        |constraints| {
+            constraints["constraints"][0]["slack"] = serde_json::json!({ "enabled": false });
+        },
+    );
+    rewrite_json(&case.join("system/thermals.json"), |thermals| {
+        thermals["thermals"][0]["generation"]["min_mw"] = serde_json::json!(20.0);
+    });
+}
+
+#[test]
+fn a_failed_run_keeps_the_last_whole_checkpoint() {
+    let case = TempDir::new().unwrap();
+    copy_dir_recursive(
+        &case_dir("deterministic/d13-generic-constraint"),
+        case.path(),
+    );
+    let healthy = TempDir::new().unwrap();
+    copy_dir_recursive(case.path(), healthy.path());
+    rewrite_json(&case.path().join("config.json"), |config| {
+        config["training"]["stopping_rules"] =
+            serde_json::json!([{ "type": "iteration_limit", "limit": 3 }]);
+        config["policy"] =
+            serde_json::json!({ "checkpointing": { "enabled": true, "interval_iterations": 1 } });
+    });
+    let out = TempDir::new().unwrap();
+    run_case(case.path(), out.path());
+    let policy_dir = out.path().join("policy");
+    let whole = snapshot_files(&policy_dir);
+    assert!(whole.contains_key(Path::new("manifest.bin")));
+
+    rewrite_json(&case.path().join("config.json"), |config| {
+        config["training"]["stopping_rules"] =
+            serde_json::json!([{ "type": "iteration_limit", "limit": 6 }]);
+        config["policy"]["mode"] = serde_json::json!("resume");
+    });
+    make_training_lp_infeasible(case.path());
+    novomodelo()
+        .args(["run", case.path().to_str().unwrap()])
+        .args(["--output", out.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(3)
+        .stderr(predicate::str::contains(
+            "LP infeasible at stage 0, iteration 4, scenario 0",
+        ))
+        .stderr(predicate::str::contains("policy.partial"));
+
+    assert_eq!(
+        snapshot_files(&policy_dir),
+        whole,
+        "the policy directory is byte for byte what the first run wrote"
+    );
+    assert!(out.path().join("policy.partial/manifest.bin").is_file());
+
+    fs::copy(
+        healthy.path().join("system/thermals.json"),
+        case.path().join("system/thermals.json"),
+    )
+    .unwrap();
+    fs::copy(
+        healthy.path().join("constraints/generic_constraints.json"),
+        case.path().join("constraints/generic_constraints.json"),
+    )
+    .unwrap();
+    novomodelo()
+        .args(["run", case.path().to_str().unwrap()])
+        .args(["--output", out.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("resuming from iteration 3."));
 }

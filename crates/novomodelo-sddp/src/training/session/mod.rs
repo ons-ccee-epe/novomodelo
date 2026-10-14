@@ -669,7 +669,8 @@ where
     /// # Errors
     ///
     /// Returns what [`gather_basis_store`] or `broadcast_basis_cache` returns
-    /// when either fails.
+    /// when either fails. A gather failure on one rank is agreed across ranks
+    /// before the broadcast, so every rank returns and none blocks in it.
     pub(crate) fn finalize(mut self) -> Result<TrainingOutcome, SddpError> {
         // Reconcile finalize arrival before the basis-store gather and the
         // basis-cache broadcast so both are entered by all ranks or none: a peer
@@ -710,8 +711,12 @@ where
             },
         );
 
-        let checkpoint_bases =
-            gather_basis_store(&self.basis_store, &self.ranks, self.comm)?.unwrap_or_default();
+        let checkpoint_bases = reconcile_result(
+            gather_basis_store(&self.basis_store, &self.ranks, self.comm),
+            self.comm,
+            &mut self.fwd_state.reconcile_scratch,
+        )?
+        .unwrap_or_default();
         let basis_cache = broadcast_basis_cache(&self.basis_store, self.comm)?;
 
         let mut result = TrainingResult::new(
@@ -3277,6 +3282,199 @@ mod tests {
             [vec![None, None], vec![None, None]],
             "a fresh start seeds nothing"
         );
+    }
+
+    // ── finalize: every rank leaves a failed gather together ───────────────
+
+    /// One rank of a two-rank world that records the collectives it issues.
+    /// `allgatherv` writes this rank's segment only; with `corrupt_payload` it
+    /// then corrupts the format tag of node 0's `i32` payload, which rank 0
+    /// cannot decode. The gather-status `allreduce` reads 1 from the peer when
+    /// `peer_fails_the_gather`. `broadcast` leaves the buffer as it is.
+    struct RecordingRank {
+        rank: usize,
+        corrupt_payload: bool,
+        peer_fails_the_gather: bool,
+        log: std::sync::Mutex<Vec<&'static str>>,
+    }
+
+    impl RecordingRank {
+        fn new(rank: usize, corrupt_payload: bool, peer_fails_the_gather: bool) -> Self {
+            Self {
+                rank,
+                corrupt_payload,
+                peer_fails_the_gather,
+                log: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        /// Records `op` and returns how many calls of it came before.
+        fn record(&self, op: &'static str) -> usize {
+            let mut log = self.log.lock().unwrap();
+            let before = log.iter().filter(|&&logged| logged == op).count();
+            log.push(op);
+            before
+        }
+
+        fn issued(&self) -> Vec<&'static str> {
+            self.log.lock().unwrap().clone()
+        }
+    }
+
+    impl Communicator for RecordingRank {
+        fn allgatherv<T: CommData>(
+            &self,
+            send: &[T],
+            recv: &mut [T],
+            _counts: &[usize],
+            displs: &[usize],
+        ) -> Result<(), CommError> {
+            use std::any::Any;
+            let nth = self.record("allgatherv");
+            let start = displs[self.rank];
+            recv[start..start + send.len()].clone_from_slice(send);
+            if self.corrupt_payload && nth == 1 {
+                let tag: &mut dyn Any = &mut recv[start + 1];
+                *tag.downcast_mut::<i32>().unwrap() += 1;
+            }
+            Ok(())
+        }
+
+        fn allreduce<T: CommData>(
+            &self,
+            send: &[T],
+            recv: &mut [T],
+            _op: ReduceOp,
+        ) -> Result<(), CommError> {
+            use std::any::Any;
+            let nth = self.record("allreduce");
+            recv.clone_from_slice(send);
+            if self.peer_fails_the_gather && nth == 1 {
+                let flag: &mut dyn Any = &mut recv[0];
+                *flag.downcast_mut::<i32>().unwrap() = 1;
+            }
+            Ok(())
+        }
+
+        fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
+            self.record("broadcast");
+            Ok(())
+        }
+
+        fn barrier(&self) -> Result<(), CommError> {
+            Ok(())
+        }
+
+        fn rank(&self) -> usize {
+            self.rank
+        }
+
+        fn size(&self) -> usize {
+            2
+        }
+
+        fn abort(&self, error_code: i32) -> ! {
+            std::process::exit(error_code)
+        }
+    }
+
+    /// `finalize` on one rank of a two-rank world over a two-stage chain with
+    /// three forward passes, the rank's first row holding a basis at node 0.
+    fn finalize_on(comm: &RecordingRank) -> Result<crate::TrainingOutcome, SddpError> {
+        let n_stages = 2;
+        let state = test_support::state_layout(1, 0);
+        let templates = vec![minimal_template(state.n_state); n_stages];
+        let initial_state = vec![0.0_f64; state.n_state];
+        let stochastic = make_stochastic_context(n_stages, 1);
+        let stages = make_stages(n_stages);
+        let horizon = HorizonMode::Finite {
+            num_stages: n_stages,
+        };
+        let mut fcf = make_fcf(n_stages, state.n_state, 3, 10);
+        let config = make_config(3, 10, 1, n_stages);
+        let mut solver = MockSolver::with_fixed(100.0);
+        let block_counts = vec![1usize; n_stages];
+        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let geometry = equipment_free_geometry(&block_counts);
+        let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
+        let stage_ctx = fixture.ctx();
+        let study_dims = test_support::study_dims();
+        let cut_state_layouts = test_support::all_enabled_cut_state_layouts(&state, n_stages);
+        let node_graph_fixture = test_support::chain_node_graph(&stochastic);
+        let training_ctx = make_training_ctx(
+            &horizon,
+            &study_dims,
+            &state,
+            &cut_state_layouts,
+            &stochastic,
+            &initial_state,
+            &stages,
+            &node_graph_fixture,
+        );
+        let mut session = TrainingSession::new(
+            &mut solver,
+            config,
+            &mut fcf,
+            &stage_ctx,
+            &training_ctx,
+            comm,
+            || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
+            SolverProfiles::default(),
+        )
+        .unwrap();
+        *session.basis_store.get_mut(0, NodePos(0)) = Some(CapturedBasis {
+            basis: Basis {
+                col_status: Vec::new(),
+                row_status: Vec::new(),
+            },
+            base_row_count: 0,
+            cut_row_slots: Vec::new(),
+            state_at_capture: Vec::new(),
+            node_id: NodeId(0),
+        });
+
+        session.finalize()
+    }
+
+    /// Per node, one `allgatherv` of the payload lengths and one each of the two
+    /// payloads.
+    const GATHERS_OF_TWO_NODES: usize = 6;
+
+    #[test]
+    fn a_gather_failure_on_rank_zero_does_not_leave_a_peer_in_the_broadcast() {
+        let root = RecordingRank::new(0, true, false);
+        let peer = RecordingRank::new(1, false, true);
+
+        let root_error = finalize_on(&root).expect_err("rank 0 cannot decode its own segment");
+        let peer_error = finalize_on(&peer).expect_err("the peer learns that rank 0 failed");
+
+        assert!(
+            matches!(&root_error, SddpError::Validation(msg) if msg.contains("unsupported wire version")),
+            "{root_error:?}"
+        );
+        assert!(
+            matches!(&peer_error, SddpError::Communication(_)),
+            "{peer_error:?}"
+        );
+        let mut expected = vec!["allreduce"];
+        expected.extend(["allgatherv"; GATHERS_OF_TWO_NODES]);
+        expected.push("allreduce");
+        assert_eq!(root.issued(), expected, "neither rank enters the broadcast");
+        assert_eq!(peer.issued(), expected);
+    }
+
+    #[test]
+    fn a_clean_finalize_broadcasts_the_basis_cache_after_agreeing_on_the_gather() {
+        let root = RecordingRank::new(0, false, false);
+
+        assert!(finalize_on(&root).is_ok());
+
+        let mut expected = vec!["allreduce"];
+        expected.extend(["allgatherv"; GATHERS_OF_TWO_NODES]);
+        expected.push("allreduce");
+        expected.extend(["broadcast"; 4]);
+        assert_eq!(root.issued(), expected);
     }
 
     // ── TrainingSession::new: enumerated world >= 2 interior-branching guard ─

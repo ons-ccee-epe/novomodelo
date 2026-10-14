@@ -230,6 +230,30 @@ fn checked_mpi_count(len: usize, operation: &'static str) -> Result<i32, SddpErr
     })
 }
 
+/// Broadcast rank 0's buffer length. A length past the `i32` count limit
+/// travels as `-1`, so every rank fails after the same broadcast instead of
+/// rank 0 leaving the peers blocked in it.
+///
+/// # Errors
+///
+/// Rank 0 gets `SddpError::Communication(CommError::InvalidBufferSize { .. })`
+/// for such a length; every other rank gets `SddpError::Validation`.
+fn broadcast_len<C: Communicator>(
+    comm: &C,
+    len: usize,
+    operation: &'static str,
+) -> Result<usize, SddpError> {
+    let own = checked_mpi_count(len, operation);
+    let mut buf = [own.as_ref().map_or(-1, |&count| count)];
+    comm.broadcast(&mut buf, 0).map_err(SddpError::from)?;
+    own?;
+    usize::try_from(buf[0]).map_err(|_| {
+        SddpError::Validation(format!(
+            "{operation}: rank 0's payload does not fit an i32 count"
+        ))
+    })
+}
+
 /// This rank's local scenario-0 basis at every node, metadata included
 /// (`cut_row_slots`, `state_at_capture`, `base_row_count`), so a reconstruction
 /// from it keeps full slot identity. On rank 0 it is what
@@ -266,10 +290,12 @@ fn rank_local_basis_cache(basis_store: &BasisStore) -> Vec<Option<CapturedBasis>
 ///
 /// # Errors
 ///
-/// Returns `SddpError::Communication(CommError::InvalidBufferSize { .. })` when
-/// a buffer length exceeds `i32::MAX`, `SddpError::Communication` when a
-/// `comm.broadcast` fails, or `SddpError::Validation` when a length prefix is
-/// inconsistent with the received buffer (naming the offending node).
+/// Returns `SddpError::Communication(CommError::InvalidBufferSize { .. })` on
+/// rank 0 when a buffer length exceeds `i32::MAX` (every other rank gets
+/// `SddpError::Validation` after the same broadcast, see [`broadcast_len`]),
+/// `SddpError::Communication` when a `comm.broadcast` fails, or
+/// `SddpError::Validation` when a length prefix is inconsistent with the
+/// received buffer (naming the offending node).
 pub(crate) fn broadcast_basis_cache<C: Communicator>(
     basis_store: &BasisStore,
     comm: &C,
@@ -297,31 +323,11 @@ pub(crate) fn broadcast_basis_cache<C: Communicator>(
         }
     }
 
-    let mut len_buf = [checked_mpi_count(buf.len(), "broadcast_basis_cache_i32")?];
-    comm.broadcast(&mut len_buf, 0).map_err(SddpError::from)?;
-    let total_len = usize::try_from(len_buf[0]).map_err(|_| {
-        SddpError::Validation(format!(
-            "broadcast_basis_cache_i32: received negative length {}",
-            len_buf[0]
-        ))
-    })?;
-
+    let total_len = broadcast_len(comm, buf.len(), "broadcast_basis_cache_i32")?;
     buf.resize(total_len, 0_i32);
     comm.broadcast(&mut buf, 0).map_err(SddpError::from)?;
 
-    let mut f64_len_buf = [checked_mpi_count(
-        f64_buf.len(),
-        "broadcast_basis_cache_f64",
-    )?];
-    comm.broadcast(&mut f64_len_buf, 0)
-        .map_err(SddpError::from)?;
-    let f64_total_len = usize::try_from(f64_len_buf[0]).map_err(|_| {
-        SddpError::Validation(format!(
-            "broadcast_basis_cache_f64: received negative length {}",
-            f64_len_buf[0]
-        ))
-    })?;
-
+    let f64_total_len = broadcast_len(comm, f64_buf.len(), "broadcast_basis_cache_f64")?;
     f64_buf.resize(f64_total_len, 0.0_f64);
     comm.broadcast(&mut f64_buf, 0).map_err(SddpError::from)?;
 

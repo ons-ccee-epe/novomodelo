@@ -20,7 +20,9 @@ use novomodelo_io::config::{
 };
 use novomodelo_io::output::policy::{PolicyCheckpoint, read_policy_checkpoint};
 use novomodelo_sddp::policy::full_fcf_load::{FullFcfLoadKind, check_full_fcf_load};
-use novomodelo_sddp::policy::orchestration::{CheckpointParams, write_checkpoint};
+use novomodelo_sddp::policy::orchestration::{
+    CheckpointParams, partial_policy_dir, write_checkpoint,
+};
 use novomodelo_sddp::setup::NodePos;
 use novomodelo_sddp::{
     CapturedBasis, DEFAULT_COST_SCALE_FACTOR, SddpError, StudySetup, TrainingResult,
@@ -283,6 +285,98 @@ fn failed_periodic_write_ends_training_with_the_failing_iteration() {
         outcome.error
     );
     assert_eq!(outcome.result.iterations, 2);
+}
+
+fn policy_bytes(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn visit(root: &Path, dir: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in std::fs::read_dir(dir).expect("read_dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                visit(root, &path, files);
+            } else {
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    std::fs::read(&path).expect("read"),
+                );
+            }
+        }
+    }
+    let mut files = BTreeMap::new();
+    visit(dir, dir, &mut files);
+    files
+}
+
+#[test]
+fn a_failed_periodic_write_leaves_the_last_whole_checkpoint_and_a_partial_beside_it() {
+    let out = tempfile::tempdir().expect("tempdir");
+    let (system, mut first) = checkpointing_setup(3, None, 1, 1);
+    let first_result = train(&mut first, None);
+    let policy_dir = out.path().join(&first.policy_path);
+    let params = CheckpointParams {
+        max_iterations: first.loop_params.max_iterations,
+        forward_passes: first.loop_params.forward_passes,
+        seed: first.loop_params.seed,
+    };
+    assert_eq!(
+        write_checkpoint(&policy_dir, &first, &system, &first_result, &params)
+            .expect("write_checkpoint must succeed"),
+        policy_dir
+    );
+    let whole = policy_bytes(&policy_dir);
+    std::fs::write(
+        policy_dir.join("foreign"),
+        b"no checkpoint writer leaves this",
+    )
+    .unwrap();
+
+    let (system, mut resumed) = checkpointing_setup(6, None, 1, 1);
+    check_full_fcf_load(
+        FullFcfLoadKind::Resume,
+        &policy_dir,
+        &system,
+        &resumed,
+        &mut |_msg: &str| {},
+    )
+    .expect("the checkpoint must load beside the foreign file")
+    .apply_to_training(&mut resumed);
+    resumed.enable_periodic_checkpoints(&system, out.path());
+    let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+    let outcome = resumed
+        .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
+        .expect("train must return Ok");
+    assert!(
+        matches!(
+            outcome.error,
+            Some(SddpError::CheckpointWrite { iteration: 4, .. })
+        ),
+        "{:?}",
+        outcome.error
+    );
+
+    let partial = write_checkpoint(&policy_dir, &resumed, &system, &outcome.result, &params)
+        .expect("the failure exit writes beside the policy directory");
+
+    assert_eq!(Some(partial.clone()), partial_policy_dir(&policy_dir));
+    let partial_checkpoint = read_policy_checkpoint(&partial).expect("the partial policy reads");
+    assert!(!partial_checkpoint.metadata.producer.basis_store_complete);
+    let mut kept = policy_bytes(&policy_dir);
+    assert!(kept.remove(Path::new("foreign")).is_some());
+    assert_eq!(
+        kept, whole,
+        "the whole checkpoint is byte for byte the one the first run wrote"
+    );
+
+    std::fs::remove_file(policy_dir.join("foreign")).unwrap();
+    let (system, third) = checkpointing_setup(6, None, 1, 1);
+    let load = check_full_fcf_load(
+        FullFcfLoadKind::Resume,
+        &policy_dir,
+        &system,
+        &third,
+        &mut |_msg: &str| {},
+    )
+    .expect("the policy directory still resumes");
+    assert_eq!(load.completed_iterations(), 3);
 }
 
 /// Bound on two solves of one LP that start from different solver states.
