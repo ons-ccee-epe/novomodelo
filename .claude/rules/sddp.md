@@ -974,9 +974,20 @@ slot over the rows the template holds and a row training never had starts basic.
 The caller's templates are used only when they hold the chosen set: always under
 `Active`, and under `All` when `count_in(All) == active_count()` in every pool.
 The lazy branch under `dynamic` reads the active cuts and asserts that the two
-counts are equal, which holds when no cut it reads was deactivated or evicted by
-the run that wrote it; a loaded pool whose source deactivated one breaks it, and a
-debug build stops at the assert.
+counts are equal. A run that trains under `dynamic` deactivates nothing, so a
+pool breaks the assert only through a cut it loaded, from a source that
+deactivated or evicted one. `check_full_fcf_load` refuses that pairing for every
+load kind (`check_dynamic_simulation_serves`) when the run's strategy is
+`Dynamic`, the run simulates (`simulation_config.n_scenarios > 0`) with
+`simulation_cut_set = All`, and some loaded pool has
+`count_in(All) != active_count()`. The refusal is
+`FullFcfLoadError::Refused(SddpError::Validation(..))`, class
+`IncompatiblePolicy`, and names both settings, the first such pool with its two
+counts and the way out: `simulation.cut_set = active`, or the `level1` method.
+The assert then never meets a pool the load admitted. Under `Active` the two
+counts are equal by construction, and training under `dynamic` over loaded
+inactive cuts with no simulation of `All` is admitted: those cuts are valid, a
+subset of the pool.
 
 The wrong-but-compiling alternatives:
 
@@ -997,7 +1008,10 @@ The wrong-but-compiling alternatives:
   and `All` holds them whatever the flag. A set that leaves them out is `Active`
   under another name;
 - `StudySetup::simulate` passing a fixed set instead of the field: the key then
-  changes nothing.
+  changes nothing;
+- relaxing the lazy-branch assert in place of refusing the load: a debug build no
+  longer stops, and a release build simulates the active cuts of the pool under
+  the name `all`, silently, for the default value of the key.
 
 A simulation-only load restores each record's origin and scored flag
 (`CutPool::from_deserialized`: `Prefix` below the recorded `warm_start_count`,
@@ -1013,7 +1027,8 @@ Read: `cut/pool.rs` (`CutSet`, `CutPool::cuts_in`, `CutPool::count_in`),
 `cut/row.rs` (`build_cut_set_row_batch_into`), `solve/stage_solve.rs`
 (`run_stage_solve_over`), `simulation/state.rs` (`refreeze_templates_if_needed`),
 `simulation/pipeline.rs` (`solve_simulation_stage`), `setup/orchestration.rs`
-(`StudySetup::simulate`). Pinned by `cuts_in_all_follows_the_slot_roles`,
+(`StudySetup::simulate`), `policy/full_fcf_load.rs`
+(`check_dynamic_simulation_serves`). Pinned by `cuts_in_all_follows_the_slot_roles`,
 `cuts_in_active_equals_active_cuts` (`cut/pool.rs`: the rule by role),
 `a_loaded_pool_keeps_the_cut_sets_of_its_run` (`cut/pool.rs`: an inactive scored
 prefix cut and an inactive generated cut are in `All` and not in `Active`, an
@@ -1031,8 +1046,22 @@ cut of `All` flagged, with no basis rejection),
 writer and reader has the source's `All` and active counts in every pool) and
 `simulation_follows_the_cut_set_of_the_setup`
 (on a run whose sets differ, `StudySetup::simulate` under `All` and under `Active`
-gives different results). The key is pinned by `simulation_cut_set_defaults_to_all`
-and `with_overrides_names_the_simulation_cut_set_key` (`novomodelo-io`: the default, the
+gives different results). The load refusal is pinned by
+`a_dynamic_simulation_only_run_refuses_to_simulate_all_over_deactivated_cuts`
+(`tests/full_fcf_load.rs`: a `level1` checkpoint with a deactivated cut is refused
+for a `dynamic` simulation of `All` and loads under `Active`),
+`a_dynamic_warm_start_refuses_to_simulate_all_over_deactivated_cuts` and
+`a_dynamic_resume_refuses_to_simulate_all_over_deactivated_cuts` (the same for the
+other two load kinds) and
+`a_load_is_refused_for_a_dynamic_all_simulation_over_deactivated_cuts_only` (a
+warm start and a resume of a run that does not simulate, a `level1` run and a
+`dynamic` source load), and by
+`validate_rejects_a_dynamic_simulation_over_deactivated_cuts`
+(`crates/novomodelo-cli/tests/cli_validate.rs`, after a control that validates) with the
+row `dynamic_simulation_over_deactivated_cuts` of
+`crates/novomodelo-cli/tests/refusal_parity.rs` and
+`crates/novomodelo-python/tests/test_refusal_parity.py`. The key is pinned by
+`simulation_cut_set_defaults_to_all` and `with_overrides_names_the_simulation_cut_set_key` (`novomodelo-io`: the default, the
 values, and an unknown value rejected naming the key),
 `from_config_maps_the_simulation_cut_set` (`setup/params.rs`),
 `broadcast_config_carries_the_simulation_cut_set`

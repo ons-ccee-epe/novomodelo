@@ -17,8 +17,8 @@ use novomodelo_io::{
     StageStatesReadResult, StateHistory,
 };
 
-use crate::cut::CutSelectionStrategy;
 use crate::cut::fcf::FutureCostFunction;
+use crate::cut::{CutSelectionStrategy, CutSet};
 use crate::error::{ErrorClass, SddpError};
 use crate::policy::policy_load::{
     FullFcf, PolicyStageManifest, StoredBasisLoad, UnusedStoredBases,
@@ -324,6 +324,41 @@ fn check_resume_serves(producer: &ProducerBlock, setup: &StudySetup) -> Result<(
     Ok(())
 }
 
+/// Refuse a `dynamic` run that simulates [`CutSet::All`] over a pool whose cuts
+/// are not all active.
+///
+/// # Errors
+///
+/// [`SddpError::Validation`] naming both settings, the first such pool and the
+/// way out.
+fn check_dynamic_simulation_serves(
+    fcf: &FutureCostFunction,
+    setup: &StudySetup,
+) -> Result<(), SddpError> {
+    if setup.simulation_config.n_scenarios == 0
+        || setup.simulation_cut_set != CutSet::All
+        || !matches!(
+            setup.inputs.cut_management.cut_selection,
+            Some(CutSelectionStrategy::Dynamic { .. })
+        )
+    {
+        return Ok(());
+    }
+    for (pool_id, pool) in fcf.pools.iter().enumerate() {
+        let (held, active) = (pool.count_in(CutSet::All), pool.active_count());
+        if held != active {
+            return Err(SddpError::Validation(format!(
+                "training.cut_selection.selection.method = dynamic cannot simulate \
+                 simulation.cut_set = all over this policy: pool {pool_id} holds {held} cuts of \
+                 which {active} are active (it was written by a run that deactivates cuts), and \
+                 a dynamic lazy solve reads only the active cuts; set simulation.cut_set = active \
+                 or use the level1 method"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Read, validate and decode the checkpoint in `policy_dir` against `setup`.
 ///
 /// `on_warning` receives each compatibility warning right after validation,
@@ -432,6 +467,7 @@ pub fn check_full_fcf_load(
         ),
     }
     .map_err(|source| FullFcfLoadError::FcfConstruction { kind, source })?;
+    check_dynamic_simulation_serves(&fcf, setup).map_err(FullFcfLoadError::Refused)?;
     if kind == FullFcfLoadKind::WarmStart {
         for pool in &mut fcf.pools {
             pool.restart_activity_clock();

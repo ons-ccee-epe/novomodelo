@@ -13,9 +13,11 @@ use std::path::{Path, PathBuf};
 
 use novomodelo_core::System;
 use novomodelo_core::scenario::ScenarioSource;
-use novomodelo_io::config::{Config, SelectionMethod, StoppingRuleConfig, TrainingSelection};
+use novomodelo_io::config::{
+    Config, SelectionMethod, SimulationRowSet, StoppingRuleConfig, TrainingSelection,
+};
 use novomodelo_io::{OwnedPolicyCutRecord, read_policy_checkpoint};
-use novomodelo_sddp::cut::SlotOrigin;
+use novomodelo_sddp::cut::{CutSet, SlotOrigin};
 use novomodelo_sddp::hydro_models::prepare_hydro_models;
 use novomodelo_sddp::policy::full_fcf_load::{
     FullFcfLoadError, FullFcfLoadKind, check_full_fcf_load, locate_policy_dir,
@@ -759,4 +761,128 @@ fn a_level1_resume_of_a_study_without_an_interior_pool_needs_no_history() {
         &mut |_| {},
     )
     .expect("a study without an interior pool needs no trial-state history");
+}
+
+const DEACTIVATING_ITERATIONS: u32 = 6;
+
+/// A two-pass 1dtoy `level1` run under a budget, and its checkpoint: some pool of
+/// the run holds a cut outside its active set. Returns the first such pool with
+/// its cut count and its active count.
+fn deactivating_checkpoint() -> (TempDir, PathBuf, (usize, usize, usize)) {
+    let (system, mut setup) = toy_setup(2, DEACTIVATING_ITERATIONS, |config| {
+        with_level1(None)(config);
+        with_budget(config);
+    });
+    let output = train_and_write(&mut setup, &system);
+    let policy_dir = output.path().join(&setup.policy_path);
+    let first = setup
+        .fcf
+        .pools
+        .iter()
+        .enumerate()
+        .map(|(pool_id, pool)| (pool_id, pool.count_in(CutSet::All), pool.active_count()))
+        .find(|(_, held, active)| held != active)
+        .expect("power: the run must leave a cut outside its active set");
+    (output, policy_dir, first)
+}
+
+fn load_under(
+    kind: FullFcfLoadKind,
+    policy_dir: &Path,
+    edit: impl FnOnce(&mut Config),
+) -> Result<(), FullFcfLoadError> {
+    let (system, setup) = toy_setup(2, DEACTIVATING_ITERATIONS + 2, edit);
+    check_full_fcf_load(kind, policy_dir, &system, &setup, &mut |_| {}).map(drop)
+}
+
+fn dynamic_simulating(cut_set: SimulationRowSet) -> impl FnOnce(&mut Config) {
+    move |config| {
+        with_dynamic(config);
+        config.simulation.cut_set = cut_set;
+    }
+}
+
+/// A `dynamic` run that simulates every cut refuses `kind`'s load of the
+/// deactivating checkpoint, and loads it under `simulation.cut_set = active`.
+fn assert_dynamic_all_is_refused(kind: FullFcfLoadKind) {
+    let (_output, policy_dir, (pool_id, held, active)) = deactivating_checkpoint();
+
+    load_under(
+        kind,
+        &policy_dir,
+        dynamic_simulating(SimulationRowSet::Active),
+    )
+    .expect("the active cuts are what a dynamic lazy solve reads");
+    let err = load_under(kind, &policy_dir, dynamic_simulating(SimulationRowSet::All))
+        .expect_err("the load must be refused");
+
+    assert!(
+        matches!(err, FullFcfLoadError::Refused(SddpError::Validation(_))),
+        "{kind:?}: {err}"
+    );
+    assert_eq!(err.class(), ErrorClass::IncompatiblePolicy, "{kind:?}");
+    let message = err.to_string();
+    for fragment in [
+        "training.cut_selection.selection.method = dynamic cannot simulate \
+         simulation.cut_set = all over this policy: "
+            .to_string(),
+        format!("pool {pool_id} holds {held} cuts of which {active} are active"),
+        "set simulation.cut_set = active or use the level1 method".to_string(),
+    ] {
+        assert!(message.contains(&fragment), "{kind:?}: {message}");
+    }
+}
+
+#[test]
+fn a_dynamic_simulation_only_run_refuses_to_simulate_all_over_deactivated_cuts() {
+    assert_dynamic_all_is_refused(FullFcfLoadKind::SimulationOnly);
+}
+
+#[test]
+fn a_dynamic_warm_start_refuses_to_simulate_all_over_deactivated_cuts() {
+    assert_dynamic_all_is_refused(FullFcfLoadKind::WarmStart);
+}
+
+#[test]
+fn a_dynamic_resume_refuses_to_simulate_all_over_deactivated_cuts() {
+    assert_dynamic_all_is_refused(FullFcfLoadKind::Resume);
+}
+
+/// The refusal needs all three of: the `dynamic` method, a simulation of `all`,
+/// and a pool holding a cut outside its active set.
+#[test]
+fn a_load_is_refused_for_a_dynamic_all_simulation_over_deactivated_cuts_only() {
+    let (_output, policy_dir, _) = deactivating_checkpoint();
+    for kind in [FullFcfLoadKind::WarmStart, FullFcfLoadKind::Resume] {
+        load_under(kind, &policy_dir, |config| {
+            dynamic_simulating(SimulationRowSet::All)(config);
+            config.simulation.enabled = false;
+        })
+        .unwrap_or_else(|err| panic!("{kind:?}: a run that does not simulate loads: {err}"));
+    }
+    for kind in [
+        FullFcfLoadKind::WarmStart,
+        FullFcfLoadKind::Resume,
+        FullFcfLoadKind::SimulationOnly,
+    ] {
+        load_under(kind, &policy_dir, |config| {
+            with_level1(None)(config);
+            with_budget(config);
+        })
+        .unwrap_or_else(|err| panic!("{kind:?}: a level1 simulation of all loads: {err}"));
+    }
+
+    let (_dynamic_output, dynamic_dir) = toy_checkpoint(2, with_dynamic);
+    for kind in [
+        FullFcfLoadKind::WarmStart,
+        FullFcfLoadKind::Resume,
+        FullFcfLoadKind::SimulationOnly,
+    ] {
+        load_under(
+            kind,
+            &dynamic_dir,
+            dynamic_simulating(SimulationRowSet::All),
+        )
+        .unwrap_or_else(|err| panic!("{kind:?}: a dynamic policy loads: {err}"));
+    }
 }

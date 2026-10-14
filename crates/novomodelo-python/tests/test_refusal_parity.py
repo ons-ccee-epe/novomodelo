@@ -187,10 +187,16 @@ def _time_limit_only_stopping_rules(case: pathlib.Path) -> None:
 
 
 def _train_one_iteration(case: pathlib.Path) -> None:
+    _train_iterations(case, 1)
+
+
+def _train_iterations(case: pathlib.Path, limit: int) -> None:
     import novomodelo.run  # noqa: PLC0415
 
     def edit(config: Any) -> None:
-        config["training"]["stopping_rules"] = [{"type": "iteration_limit", "limit": 1}]
+        config["training"]["stopping_rules"] = [
+            {"type": "iteration_limit", "limit": limit}
+        ]
         config["simulation"]["enabled"] = False
 
     _edit_json(case / "config.json", edit)
@@ -392,6 +398,15 @@ def _active_row_cap_with_enumerated_training(case: pathlib.Path) -> None:
     _edit_json(case / "stages.json", one_opening_per_stage)
     _edit_json(case / "config.json", enumerated)
     _set_cut_selection(case, {"max_active_per_stage": 8})
+
+
+def _dynamic_simulation_over_deactivated_cuts(case: pathlib.Path) -> None:
+    """A `level1` run deactivates cuts; a `dynamic` simulation of the default
+    `simulation.cut_set = all` cannot read them."""
+    _set_cut_selection(case, {"selection": {"method": "level1", "check_frequency": 1}})
+    _train_iterations(case, 4)
+    _select_simulation_only(case)
+    _set_cut_selection(case, {"selection": {"method": "dynamic"}})
 
 
 def _unknown_simulation_cut_set(case: pathlib.Path) -> None:
@@ -726,6 +741,17 @@ ROWS = [
             "the cap, or use sampled forward selection"
         ),
         error_class_name="ValidationError",
+    ),
+    _row(
+        name="dynamic_simulation_over_deactivated_cuts",
+        base_case="1dtoy",
+        mutate=_dynamic_simulation_over_deactivated_cuts,
+        outcome="PlainRefusal",
+        fragment=(
+            "training.cut_selection.selection.method = dynamic cannot simulate "
+            "simulation.cut_set = all over this policy: pool"
+        ),
+        error_class_name="PolicyIncompatibleError",
     ),
     _row(
         name="unknown_simulation_cut_set",

@@ -1594,6 +1594,52 @@ fn validate_rejects_a_resume_without_the_trial_state_history() {
     );
 }
 
+/// A `dynamic` simulation of every cut reads only the active cuts of a pool, so it
+/// is refused over the policy of a `level1` run that deactivated cuts; the same
+/// policy validates under `simulation.cut_set = active`.
+#[test]
+fn validate_rejects_a_dynamic_simulation_over_deactivated_cuts() {
+    let dir = TempDir::new().unwrap();
+    copy_dir_recursive(&common::case_dir("1dtoy"), dir.path());
+    let config = dir.path().join("config.json");
+    edit_json(&config, |config| {
+        config["training"]["stopping_rules"] =
+            serde_json::json!([{ "type": "iteration_limit", "limit": 4 }]);
+        config["training"]["cut_selection"] =
+            serde_json::json!({ "selection": { "method": "level1", "check_frequency": 1 } });
+        config["simulation"]["enabled"] = serde_json::json!(false);
+    });
+    run_case(dir.path());
+
+    edit_json(&config, |config| {
+        config["training"]["enabled"] = serde_json::json!(false);
+        config["training"]["cut_selection"] =
+            serde_json::json!({ "selection": { "method": "dynamic" } });
+        config["simulation"]["enabled"] = serde_json::json!(true);
+        config["simulation"]["selection"] =
+            serde_json::json!({ "method": "sampled", "num_scenarios": 1 });
+        config["simulation"]["cut_set"] = serde_json::json!("active");
+    });
+    let (output, value) = validate_json(dir.path());
+    assert_eq!(output.status.code(), Some(0), "{value}");
+
+    edit_json(&config, |config| {
+        config["simulation"]["cut_set"] = serde_json::json!("all");
+    });
+    let (output, value) = validate_json(dir.path());
+    assert_eq!(output.status.code(), Some(1), "{value}");
+    assert_eq!(value["error"]["phase"], "WarmStartIncompatible");
+    let message = value["error"]["message"].as_str().unwrap();
+    for fragment in [
+        "training.cut_selection.selection.method = dynamic cannot simulate \
+         simulation.cut_set = all over this policy: pool",
+        "a dynamic lazy solve reads only the active cuts; set simulation.cut_set = active or \
+         use the level1 method",
+    ] {
+        assert!(message.contains(fragment), "got: {value}");
+    }
+}
+
 /// A run that fails in-band writes its policy to `policy.partial`, whose bases
 /// are not whole: a resume from it is refused, while a resume from the whole
 /// checkpoint beside it validates.

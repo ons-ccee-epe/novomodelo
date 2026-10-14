@@ -341,6 +341,14 @@ const ROWS: &[ParityRow] = &[
                    cap, or use sampled forward selection",
     },
     ParityRow {
+        name: "dynamic_simulation_over_deactivated_cuts",
+        base_case: "1dtoy",
+        mutate: dynamic_simulation_over_deactivated_cuts,
+        outcome: Outcome::PlainRefusal,
+        fragment: "training.cut_selection.selection.method = dynamic cannot simulate \
+                   simulation.cut_set = all over this policy: pool",
+    },
+    ParityRow {
         name: "unknown_simulation_cut_set",
         base_case: "1dtoy",
         mutate: unknown_simulation_cut_set,
@@ -524,8 +532,12 @@ fn empty_stopping_rules(case: &Path) {
 }
 
 fn train_one_iteration(case: &Path) {
+    train_iterations(case, 1);
+}
+
+fn train_iterations(case: &Path, limit: u32) {
     edit_json(&case.join("config.json"), |config| {
-        config["training"]["stopping_rules"] = json!([{"type": "iteration_limit", "limit": 1}]);
+        config["training"]["stopping_rules"] = json!([{"type": "iteration_limit", "limit": limit}]);
         config["simulation"]["enabled"] = json!(false);
     });
     let trained = novomodelo()
@@ -720,6 +732,18 @@ fn active_row_cap_with_enumerated_training(case: &Path) {
         config["training"]["selection"] = json!({"method": "enumerated"});
     });
     set_cut_selection(case, json!({"max_active_per_stage": 8}));
+}
+
+/// A `level1` run deactivates cuts; a `dynamic` simulation of the default
+/// `simulation.cut_set = all` cannot read them.
+fn dynamic_simulation_over_deactivated_cuts(case: &Path) {
+    set_cut_selection(
+        case,
+        json!({"selection": {"method": "level1", "check_frequency": 1}}),
+    );
+    train_iterations(case, 4);
+    select_simulation_only(case);
+    set_cut_selection(case, json!({"selection": {"method": "dynamic"}}));
 }
 
 fn unknown_simulation_cut_set(case: &Path) {
