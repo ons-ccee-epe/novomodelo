@@ -37,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   divide evenly across ranks. A rank holding fewer passes than another could
   index its stored warm-start bases out of bounds, and the job then hung. Such
   a run now writes the same outputs as a single-process run.
+- A rank that panics during `cobre run` under MPI aborts the whole job
+  with exit code 101. The other ranks used to wait in a collective until the
+  job was killed.
 
 ## [0.18.0] - 2026-10-07
 

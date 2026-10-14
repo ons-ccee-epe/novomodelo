@@ -43,6 +43,10 @@ single-process run. Shells report 128 plus the signal number: 130 for SIGINT,
 143 for SIGTERM. Under MPI a repeated SIGINT only repeats the stop request, and
 aborting is left to the launcher.
 
+A panic is a defect, not a reported failure, and exits 101. Under MPI the
+panicking rank of `novomodelo run` aborts the whole job, so the launcher reports
+101 and no rank is left waiting in a collective.
+
 This contract enables `novomodelo run` to be driven from shell scripts and batch
 schedulers by inspecting the process exit code. `CliError` also carries the
 `From` conversions that route every upstream error type (`novomodelo_io::LoadError`,
