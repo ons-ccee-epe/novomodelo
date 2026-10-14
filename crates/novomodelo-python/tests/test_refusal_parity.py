@@ -243,6 +243,44 @@ def _resume_policy_from_another_version(case: pathlib.Path) -> None:
     _set_policy_mode(case, "resume")
 
 
+def _resume_without_the_trial_state_history(case: pathlib.Path) -> None:
+    _train_one_iteration(case)
+    _set_policy_mode(case, "resume")
+    _set_cut_selection(case, {"selection": {"method": "level1", "check_frequency": 1}})
+
+
+def _resume_from_a_partial_policy(case: pathlib.Path) -> None:
+    """A resume that fails in-band leaves the partial policy in `policy.partial`;
+    the healthy deck then resumes from it."""
+    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
+
+    healthy = {
+        file: (case / file).read_bytes()
+        for file in ("system/thermals.json", "constraints/generic_constraints.json")
+    }
+    _train_one_iteration(case)
+
+    def resume_two_iterations(config: Any) -> None:
+        config["training"]["stopping_rules"] = [{"type": "iteration_limit", "limit": 2}]
+
+    def disable_slack(constraints: Any) -> None:
+        constraints["constraints"][0]["slack"] = {"enabled": False}
+
+    def raise_thermal_minimum(thermals: Any) -> None:
+        thermals["thermals"][0]["generation"]["min_mw"] = 20.0
+
+    _edit_json(case / "config.json", resume_two_iterations)
+    _set_policy_mode(case, "resume")
+    _edit_json(case / "constraints" / "generic_constraints.json", disable_slack)
+    _edit_json(case / "system" / "thermals.json", raise_thermal_minimum)
+    with pytest.raises(novomodelo.errors.SolverError):
+        novomodelo.run.run(str(case), output_dir=str(case / "output"))
+    for file, data in healthy.items():
+        (case / file).write_bytes(data)
+    _set_policy_path(case, "policy.partial")
+
+
 def _simulation_only_policy_from_another_version(case: pathlib.Path) -> None:
     _train_one_iteration(case)
     _restamp_policy_version(case / "output" / "policy")
@@ -540,6 +578,25 @@ ROWS = [
         mutate=_resume_policy_from_another_version,
         outcome="PlainRefusal",
         fragment="policy was written by",
+        error_class_name="PolicyIncompatibleError",
+    ),
+    _row(
+        name="resume_without_the_trial_state_history",
+        base_case="1dtoy",
+        mutate=_resume_without_the_trial_state_history,
+        outcome="PlainRefusal",
+        fragment=(
+            "resume needs the trial-state history of "
+            "training.cut_selection.selection.method = level1"
+        ),
+        error_class_name="PolicyIncompatibleError",
+    ),
+    _row(
+        name="resume_from_a_partial_policy",
+        base_case="deterministic/d13-generic-constraint",
+        mutate=_resume_from_a_partial_policy,
+        outcome="PlainRefusal",
+        fragment="resume needs a whole checkpoint",
         error_class_name="PolicyIncompatibleError",
     ),
     _row(

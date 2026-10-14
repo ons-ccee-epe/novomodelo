@@ -657,10 +657,11 @@ writes a record's counters into its slot, so a resumed run with a budget or
 `dynamic` continues the eviction order and the seed window of the uninterrupted
 run, the prefix of a run that was itself warm-started included: its counters are
 on that run's clock. A record without counters resumes at `active_count = 0` and
-`last_active_iter = iteration`, so a checkpoint written with no reader configured
-and resumed by a run with one restarts each reloaded cut at its generating
-iteration. A warm start, a boundary injection and a simulation-only load read no
-counter.
+`last_active_iter = iteration`, which only a run with no reader configured reaches:
+a resume whose run configures one refuses a checkpoint written without counters
+(the resume rejects below), since every reloaded cut would restart at its
+generating iteration, a warm-started prefix cut at the source run's. A warm start,
+a boundary injection and a simulation-only load read no counter.
 
 Writing the counters always and reading them under `warm_start` is the
 wrong-but-compiling alternative: the records carry the source run's clock, which
@@ -880,14 +881,23 @@ node, the admitted entries with their global scenario; a training load hands the
 to `train` in `LoadedPolicy::scenario_bases`, and `TrainingSession::seed_basis_store`
 fills, on every rank and before `prime_frozen_templates`, local row
 `m < my_actual_fwd` of each node with `LoadedPolicy::seed_basis` of global scenario
-`fwd_offset + m`: that scenario's own entry, else the node's lowest-scenario entry
-(a source that ran fewer forward passes), else nothing. The padding rows
+`fwd_offset + m`: that scenario's own entry; when the node holds none for it, a
+`resume` seeds nothing (`MissingScenarioBasis::Cold`) and a `warm_start` seeds
+the node's lowest-scenario entry (a source that ran fewer forward passes). The
+padding rows
 `my_actual_fwd..max_local_fwd` stay empty. Simulation keeps one basis per node,
 the lowest-scenario admitted entry (`StoredBasisLoad::cache`).
 
 The wrong-but-compiling alternatives:
 
-- refusing the load over a basis, which only warm-starts a solve;
+- refusing a `warm_start`, simulation-only or boundary load over a basis, which
+  only warm-starts a solve. A `resume` is the one load that refuses over the store:
+  one whose `basis_store_complete` is unset (a failure exit's) is refused (the
+  resume rejects below);
+- seeding a resumed scenario from another scenario's entry where the node holds
+  none of its own: on a branching sampled graph the uninterrupted run holds no
+  basis for a node the scenario has not visited and solves it cold, and a seeded
+  solve can settle on another vertex;
 - admitting on shape alone, which lets a basic-count deficit reach
   `reconstruct_basis`;
 - adding a cold retry after `reconstruct_basis` fails, which hides an entry this
@@ -926,6 +936,11 @@ the seeded basis of scenario 1 does);
 (`policy/full_fcf_load.rs`: on a sampled fan where some nodes hold the bases of
 some scenarios only, every entry seeds its own scenario; the run comparison passes
 under copying scenario 0's basis, so the fan's power is the seeding check);
+`only_a_resume_leaves_a_scenario_without_a_stored_basis_cold`
+(`policy/full_fcf_load.rs`: on the same fan a scenario with no entry at a node
+gets none under a resume and the node's lowest-scenario entry under a warm start);
+`a_resume_refuses_a_checkpoint_whose_bases_are_not_whole` (`tests/full_fcf_load.rs`:
+the resume is refused and a warm start of the same checkpoint loads);
 `warm_start_skips_a_stored_basis_with_too_few_basic_entries_instead_of_aborting`
 (`tests/cut_basis.rs`),
 `simulation_only_loads_a_policy_with_a_wider_stored_basis_and_warns`
@@ -2704,6 +2719,68 @@ resumed a whole checkpoint); and by `a_failed_run_keeps_the_last_whole_checkpoin
 (`crates/novomodelo-python/tests/test_periodic_checkpoint.py`): a resumed run that
 fails in-band leaves the policy directory byte for byte and writes the sibling,
 and the next resume of the policy directory continues from the whole checkpoint.
+
+## A resume refuses a checkpoint that cannot continue the run identically
+
+A resume continues the run that wrote the checkpoint, so it reads state the file
+must carry. `check_full_fcf_load` refuses a `FullFcfLoadKind::Resume`, right after
+`validate_policy_load`, as `FullFcfLoadError::Refused(SddpError::Validation(..))`
+(class `IncompatiblePolicy`, phase `ResumeIncompatible`), on the first of these, in
+this order (`check_resume_serves`), reading the manifest's `ProducerBlock`:
+
+1. `forward_passes` differs from the run's `loop_params.forward_passes`: the slot
+   layout and the stored scenarios follow the count;
+2. the run's strategy is `Level1`, the study has an interior pool
+   (`interior_cut_nodes`), and `state_history` is `None`;
+3. the same run keeps every state (`lookback_iterations: None`) and the file holds
+   a `Window`, or the run's window is longer than the file's;
+4. `CutManagementConfig::tracks_binding_activity` holds and `activity_counters`
+   is unset;
+5. `basis_store_complete` is unset.
+
+Each message names the setting, what the checkpoint holds and the way out. A
+stored window longer than the run's is admitted: the extra states leave at the
+first selection pass, as they would have. A study with no interior pool stores no
+trial state under `level1`, so its `None` is not refused. `warm_start`,
+simulation-only and boundary loads read none of these fields. The run's own
+`check_frequency`, budget value and cost scale apply after a resume, and none of
+them is state the file must carry.
+
+The wrong-but-compiling alternatives:
+
+- deciding the history reject from missing state rows: a windowed source drops the
+  states of its older cuts, so a scored slot without a row is admitted by design.
+  `state_history` describes the interior pools only; the root's states, written
+  when `exports.states` is on, are unwindowed;
+- refusing a missing counter per generated record only: a checkpoint written
+  without a reader carries no counter on any record, and its warm-started prefix
+  cuts would restart at the source run's iterations;
+- refusing a store that is not whole for a `warm_start`: it seeds each scenario's
+  basis or none, never needs all of them, and only warm-starts a solve;
+- claiming that bases are missing: a one-rank failure exit holds every scenario
+  and is still marked not whole, so the message says the run failed.
+
+Read: `policy/full_fcf_load.rs` (`check_resume_serves`, `check_full_fcf_load`),
+`novomodelo_io::ProducerBlock`, `config.rs`
+(`CutManagementConfig::tracks_binding_activity`), `training/session/mod.rs`
+(`interior_cut_nodes`). Pinned by, in `tests/full_fcf_load.rs`, each with a warm
+start of the same checkpoint that loads:
+`a_resume_refuses_another_forward_pass_count`,
+`a_level1_resume_refuses_a_checkpoint_without_the_trial_state_history`,
+`a_level1_resume_refuses_a_shorter_stored_window` (a run keeping every state and
+one with a longer window are refused, the same and a shorter window resume),
+`a_resume_with_a_reader_refuses_a_checkpoint_without_the_binding_counters` (a
+budget and `dynamic`) and `a_resume_refuses_a_checkpoint_whose_bases_are_not_whole`;
+`a_whole_checkpoint_resumes_under_the_settings_that_wrote_it` (a `level1` run with
+a window and a budget resumes its own checkpoint),
+`a_level1_resume_of_a_study_without_an_interior_pool_needs_no_history`; and, in
+`crates/novomodelo-cli/tests/cli_validate.rs`,
+`validate_rejects_a_resume_without_the_trial_state_history` and
+`validate_rejects_a_resume_from_a_partial_policy` (each after a control that
+validates), with the rows `resume_without_the_trial_state_history` and
+`resume_from_a_partial_policy` of `crates/novomodelo-cli/tests/refusal_parity.rs` and
+`crates/novomodelo-python/tests/test_refusal_parity.py` (the same line from
+`novomodelo validate`, `novomodelo run` and the Python bindings).
 
 ## Policy-load compatibility validation is mandatory
 

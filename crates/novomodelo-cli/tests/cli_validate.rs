@@ -1540,6 +1540,129 @@ fn validate_refuses_a_resume_policy_written_by_another_version() {
     );
 }
 
+fn edit_json(path: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+    let mut value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    edit(&mut value);
+    fs::write(path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+}
+
+/// Asserts that `validate --json` refuses the case in `dir` under the resume
+/// phase with a message containing `fragment`.
+fn assert_resume_refused(dir: &Path, fragment: &str) {
+    let (output, value) = validate_json(dir);
+    assert_eq!(output.status.code(), Some(1), "{value}");
+    assert_eq!(value["error"]["phase"], "ResumeIncompatible");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(fragment),
+        "got: {value}"
+    );
+}
+
+/// A `level1` resume of a checkpoint written by a run without `level1` holds no
+/// trial-state history to continue from; the same resume without `level1`
+/// validates.
+#[test]
+fn validate_rejects_a_resume_without_the_trial_state_history() {
+    let dir = TempDir::new().unwrap();
+    copy_dir_recursive(&common::case_dir("1dtoy"), dir.path());
+    let config = dir.path().join("config.json");
+    edit_json(&config, |config| {
+        config["training"]["stopping_rules"] =
+            serde_json::json!([{ "type": "iteration_limit", "limit": 1 }]);
+        config["simulation"]["enabled"] = serde_json::json!(false);
+    });
+    run_case(dir.path());
+
+    edit_json(&config, |config| {
+        config["policy"] = serde_json::json!({ "mode": "resume" });
+    });
+    let (output, value) = validate_json(dir.path());
+    assert_eq!(output.status.code(), Some(0), "{value}");
+
+    edit_json(&config, |config| {
+        config["training"]["cut_selection"] =
+            serde_json::json!({ "selection": { "method": "level1", "check_frequency": 1 } });
+    });
+    assert_resume_refused(
+        dir.path(),
+        "resume needs the trial-state history of training.cut_selection.selection.method = \
+         level1; the checkpoint holds none",
+    );
+}
+
+/// A run that fails in-band writes its policy to `policy.partial`, whose bases
+/// are not whole: a resume from it is refused, while a resume from the whole
+/// checkpoint beside it validates.
+#[test]
+fn validate_rejects_a_resume_from_a_partial_policy() {
+    let dir = TempDir::new().unwrap();
+    copy_dir_recursive(
+        &common::case_dir("deterministic/d13-generic-constraint"),
+        dir.path(),
+    );
+    let healthy = TempDir::new().unwrap();
+    copy_dir_recursive(dir.path(), healthy.path());
+    let config = dir.path().join("config.json");
+    edit_json(&config, |config| {
+        config["training"]["stopping_rules"] =
+            serde_json::json!([{ "type": "iteration_limit", "limit": 1 }]);
+    });
+    run_case(dir.path());
+
+    edit_json(&config, |config| {
+        config["training"]["stopping_rules"] =
+            serde_json::json!([{ "type": "iteration_limit", "limit": 2 }]);
+        config["policy"] = serde_json::json!({ "mode": "resume" });
+    });
+    make_training_lp_infeasible(dir.path());
+    novomodelo()
+        .args(["run", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(3);
+    assert!(
+        dir.path()
+            .join("output/policy.partial/manifest.bin")
+            .is_file()
+    );
+    for file in [
+        "system/thermals.json",
+        "constraints/generic_constraints.json",
+    ] {
+        fs::copy(healthy.path().join(file), dir.path().join(file)).unwrap();
+    }
+    let (output, value) = validate_json(dir.path());
+    assert_eq!(output.status.code(), Some(0), "{value}");
+
+    edit_json(&config, |config| {
+        config["policy"]["path"] = serde_json::json!("policy.partial");
+    });
+    assert_resume_refused(
+        dir.path(),
+        "resume needs a whole checkpoint; the checkpoint's per-scenario bases are not whole \
+         (it was written when a run failed); resume from the last whole checkpoint or continue \
+         with policy.mode = warm_start",
+    );
+}
+
+/// With the generic constraint's slack disabled and a thermal minimum of 20 MW,
+/// every stage-0 training solve of the d13 deck is infeasible.
+fn make_training_lp_infeasible(case: &Path) {
+    edit_json(
+        &case.join("constraints/generic_constraints.json"),
+        |constraints| {
+            constraints["constraints"][0]["slack"] = serde_json::json!({ "enabled": false });
+        },
+    );
+    edit_json(&case.join("system/thermals.json"), |thermals| {
+        thermals["thermals"][0]["generation"]["min_mw"] = serde_json::json!(20.0);
+    });
+}
+
 /// A simulation-only load shares the warm-start kind: there is no third kind.
 #[test]
 fn validate_refuses_a_simulation_only_policy_under_the_warm_start_kind() {

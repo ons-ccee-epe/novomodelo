@@ -8,20 +8,23 @@
     clippy::float_cmp
 )]
 
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
 use novomodelo_core::System;
 use novomodelo_core::scenario::ScenarioSource;
-use novomodelo_io::config::{StoppingRuleConfig, TrainingSelection};
+use novomodelo_io::config::{Config, SelectionMethod, StoppingRuleConfig, TrainingSelection};
 use novomodelo_io::{OwnedPolicyCutRecord, read_policy_checkpoint};
-use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::cut::SlotOrigin;
 use novomodelo_sddp::hydro_models::prepare_hydro_models;
 use novomodelo_sddp::policy::full_fcf_load::{
     FullFcfLoadError, FullFcfLoadKind, check_full_fcf_load, locate_policy_dir,
 };
-use novomodelo_sddp::policy::orchestration::{CheckpointParams, write_checkpoint};
+use novomodelo_sddp::policy::orchestration::{
+    CheckpointParams, partial_policy_dir, write_checkpoint,
+};
 use novomodelo_sddp::setup::prepare_stochastic;
+use novomodelo_sddp::{ErrorClass, SddpError, StudySetup};
 use novomodelo_solver::ActiveSolver;
 use tempfile::TempDir;
 
@@ -352,19 +355,32 @@ fn a_resume_restores_the_prefix_length_of_a_warm_started_run() {
     }
 }
 
-/// 1dtoy with two forward passes and an active-cut budget of 6, the budget the
-/// only reader of binding activity.
-fn budget_setup(iteration_limit: u32) -> (System, StudySetup) {
+/// 1dtoy with `forward_passes` and `iteration_limit`, then `edit`.
+fn toy_setup(
+    forward_passes: u32,
+    iteration_limit: u32,
+    edit: impl FnOnce(&mut Config),
+) -> (System, StudySetup) {
     common::fresh_system_and_setup_with(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/1dtoy"),
         |config| {
-            config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
+            config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
             config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
                 limit: iteration_limit,
             }]);
-            config.training.cut_selection.max_active_per_stage = Some(6);
+            edit(config);
         },
     )
+}
+
+/// 1dtoy with two forward passes and an active-cut budget of 6, the budget the
+/// only reader of binding activity.
+fn budget_setup(iteration_limit: u32) -> (System, StudySetup) {
+    toy_setup(2, iteration_limit, with_budget)
+}
+
+fn with_budget(config: &mut Config) {
+    config.training.cut_selection.max_active_per_stage = Some(6);
 }
 
 fn load(kind: FullFcfLoadKind, output: &TempDir, setup: &mut StudySetup, system: &System) {
@@ -509,4 +525,238 @@ fn locate_policy_dir_accepts_a_policy_caught_between_renames() {
     let (_fcf, result) = checked.into_simulation_policy();
     assert_eq!(result.iterations, trained.completed_iterations);
     assert_eq!(relative_listing(output_dir), before);
+}
+
+fn with_level1(window: Option<u32>) -> impl FnOnce(&mut Config) {
+    move |config: &mut Config| {
+        config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+            check_frequency: NonZeroU32::MIN,
+            lookback_iterations: window.and_then(NonZeroU32::new),
+        });
+    }
+}
+
+fn with_dynamic(config: &mut Config) {
+    config.training.cut_selection.selection = Some(SelectionMethod::Dynamic {
+        start_iteration: NonZeroU32::MIN,
+        candidate_recency: None,
+        seed_window: 2,
+        max_added_per_round: NonZeroU32::MIN,
+        violation_tolerance: None,
+    });
+}
+
+/// The policy directory of a two-iteration 1dtoy run with `forward_passes`,
+/// configured by `edit`, and the output directory holding it.
+fn toy_checkpoint(forward_passes: u32, edit: impl FnOnce(&mut Config)) -> (TempDir, PathBuf) {
+    let (system, mut setup) = toy_setup(forward_passes, 2, edit);
+    let output = train_and_write(&mut setup, &system);
+    let policy_dir = output.path().join(&setup.policy_path);
+    (output, policy_dir)
+}
+
+/// The refusal a resume of `policy_dir` by a 1dtoy run with `forward_passes`,
+/// configured by `edit`, gets, after a warm start of the same checkpoint by the
+/// same run loads.
+fn resume_refusal(
+    policy_dir: &Path,
+    forward_passes: u32,
+    edit: impl FnOnce(&mut Config),
+) -> String {
+    let (system, setup) = toy_setup(forward_passes, 4, edit);
+    check_full_fcf_load(
+        FullFcfLoadKind::WarmStart,
+        policy_dir,
+        &system,
+        &setup,
+        &mut |_| {},
+    )
+    .expect("a warm start reads none of the fields a resume needs");
+    let err = check_full_fcf_load(
+        FullFcfLoadKind::Resume,
+        policy_dir,
+        &system,
+        &setup,
+        &mut |_| {},
+    )
+    .expect_err("the resume must be refused");
+    assert!(
+        matches!(err, FullFcfLoadError::Refused(SddpError::Validation(_))),
+        "{err}"
+    );
+    assert_eq!(err.class(), ErrorClass::IncompatiblePolicy);
+    err.to_string()
+}
+
+fn resumes(policy_dir: &Path, forward_passes: u32, edit: impl FnOnce(&mut Config)) {
+    let (system, setup) = toy_setup(forward_passes, 4, edit);
+    check_full_fcf_load(
+        FullFcfLoadKind::Resume,
+        policy_dir,
+        &system,
+        &setup,
+        &mut |_| {},
+    )
+    .expect("the checkpoint serves the resume");
+}
+
+#[test]
+fn a_whole_checkpoint_resumes_under_the_settings_that_wrote_it() {
+    let edit = |config: &mut Config| {
+        with_level1(Some(2))(config);
+        with_budget(config);
+    };
+    let (_output, policy_dir) = toy_checkpoint(2, edit);
+    let producer = read_policy_checkpoint(&policy_dir)
+        .expect("read checkpoint")
+        .metadata
+        .producer;
+    assert_eq!(producer.forward_passes, 2);
+    assert_eq!(
+        producer.state_history,
+        novomodelo_io::StateHistory::Window(NonZeroU32::new(2).unwrap())
+    );
+    assert!(producer.activity_counters && producer.basis_store_complete);
+    resumes(&policy_dir, 2, edit);
+}
+
+#[test]
+fn a_resume_refuses_another_forward_pass_count() {
+    let (_output, policy_dir) = toy_checkpoint(2, |_| {});
+    let message = resume_refusal(&policy_dir, 1, |_| {});
+    assert!(
+        message.contains(
+            "resume needs the forward-pass count the checkpoint was written with: \
+             training.selection.forward_passes is 1 here and 2 in the checkpoint"
+        ),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_level1_resume_refuses_a_checkpoint_without_the_trial_state_history() {
+    let (_output, policy_dir) = toy_checkpoint(2, |_| {});
+    let message = resume_refusal(&policy_dir, 2, with_level1(None));
+    assert!(
+        message.contains(
+            "resume needs the trial-state history of training.cut_selection.selection.method = \
+             level1; the checkpoint holds none"
+        ),
+        "{message}"
+    );
+    assert!(message.contains("policy.mode = warm_start"), "{message}");
+}
+
+/// A stored window serves a run that keeps the same or fewer iterations' states,
+/// never one that keeps more or every one.
+#[test]
+fn a_level1_resume_refuses_a_shorter_stored_window() {
+    let (_output, policy_dir) = toy_checkpoint(2, with_level1(Some(2)));
+
+    let every_state = resume_refusal(&policy_dir, 2, with_level1(None));
+    assert!(
+        every_state.contains(
+            "without lookback_iterations; the checkpoint holds those of the last 2 iterations only"
+        ),
+        "{every_state}"
+    );
+    let longer = resume_refusal(&policy_dir, 2, with_level1(Some(3)));
+    assert!(
+        longer.contains(
+            "resume needs the trial states of the last 3 iterations \
+             (training.cut_selection.selection.lookback_iterations = 3); the checkpoint holds \
+             those of the last 2 iterations only"
+        ),
+        "{longer}"
+    );
+
+    resumes(&policy_dir, 2, with_level1(Some(2)));
+    resumes(&policy_dir, 2, with_level1(Some(1)));
+}
+
+#[test]
+fn a_resume_with_a_reader_refuses_a_checkpoint_without_the_binding_counters() {
+    let (_output, policy_dir) = toy_checkpoint(2, |_| {});
+    for (edit, reader) in [
+        (
+            with_budget as fn(&mut Config),
+            "training.cut_selection.max_active_per_stage",
+        ),
+        (
+            with_dynamic,
+            "training.cut_selection.selection.method = dynamic",
+        ),
+    ] {
+        let message = resume_refusal(&policy_dir, 2, edit);
+        assert!(
+            message.contains(&format!(
+                "resume needs the binding counters read by {reader}; the checkpoint holds none"
+            )),
+            "{message}"
+        );
+    }
+}
+
+#[test]
+fn a_resume_refuses_a_checkpoint_whose_bases_are_not_whole() {
+    let (system, mut setup) = toy_setup(2, 2, |_| {});
+    let mut solver = ActiveSolver::new().expect("solver");
+    let mut outcome = setup
+        .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
+        .expect("train");
+    assert!(outcome.error.is_none());
+    outcome.result.checkpoint_bases.complete = false;
+    let output = TempDir::new().expect("tempdir");
+    let policy_dir = output.path().join(&setup.policy_path);
+    let params = CheckpointParams {
+        max_iterations: setup.loop_params.max_iterations,
+        forward_passes: setup.loop_params.forward_passes,
+        seed: setup.loop_params.seed,
+    };
+    let written = write_checkpoint(&policy_dir, &setup, &system, &outcome.result, &params)
+        .expect("write_checkpoint");
+    assert_eq!(Some(written.clone()), partial_policy_dir(&policy_dir));
+    assert!(
+        !read_policy_checkpoint(&written)
+            .expect("read checkpoint")
+            .metadata
+            .producer
+            .basis_store_complete
+    );
+
+    let message = resume_refusal(&written, 2, |_| {});
+    assert_eq!(
+        message,
+        "configuration validation error: resume needs a whole checkpoint; the checkpoint's \
+         per-scenario bases are not whole (it was written when a run failed); resume from the \
+         last whole checkpoint or continue with policy.mode = warm_start"
+    );
+}
+
+/// d01 has two stages, so no pool lies between the root and the leaf: a `level1`
+/// run stores no trial state there, and its resume needs none.
+#[test]
+fn a_level1_resume_of_a_study_without_an_interior_pool_needs_no_history() {
+    let trained = train_and_write_checkpoint();
+    let (system, setup) = common::fresh_system_and_setup_with(&d01_case_dir(), |config| {
+        config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 1 });
+        with_level1(None)(config);
+    });
+    let policy_dir = trained.output.path().join(&setup.policy_path);
+    assert_eq!(
+        read_policy_checkpoint(&policy_dir)
+            .expect("read checkpoint")
+            .metadata
+            .producer
+            .state_history,
+        novomodelo_io::StateHistory::None
+    );
+    check_full_fcf_load(
+        FullFcfLoadKind::Resume,
+        &policy_dir,
+        &system,
+        &setup,
+        &mut |_| {},
+    )
+    .expect("a study without an interior pool needs no trial-state history");
 }

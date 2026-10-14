@@ -194,19 +194,37 @@ pub struct LoadedPolicy {
     /// The stored trial states of the loaded pools, their slots already placed
     /// in the loaded pools.
     pub trial_states: Vec<StageStatesReadResult>,
+
+    /// `Cold` for a resume, the fallback for every other load.
+    pub missing_scenario_basis: MissingScenarioBasis,
+}
+
+/// What seeds a scenario whose own basis a node's stored bases lack.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MissingScenarioBasis {
+    /// The node's lowest-scenario basis, for a warm start whose source ran
+    /// fewer forward passes.
+    #[default]
+    NodeLowestScenario,
+    /// Nothing: the run that wrote a resumed checkpoint held no basis there
+    /// either, as for a node of a branching graph the scenario has not visited.
+    Cold,
 }
 
 impl LoadedPolicy {
     /// The basis that seeds global scenario `scenario`'s row of the basis store
-    /// at `node`: that scenario's own stored basis, else the node's
-    /// lowest-scenario one (a source that ran fewer forward passes), else none.
+    /// at `node`: that scenario's own stored basis, else what
+    /// [`MissingScenarioBasis`] says.
     #[must_use]
     pub fn seed_basis(&self, node: NodePos, scenario: u32) -> Option<&CapturedBasis> {
         let entries = self.scenario_bases.get(node.0)?;
-        entries
-            .binary_search_by_key(&scenario, |&(stored, _)| stored)
-            .map_or_else(|_| entries.first(), |i| entries.get(i))
-            .map(|(_, basis)| basis)
+        let own = entries.binary_search_by_key(&scenario, |&(stored, _)| stored);
+        match (own, self.missing_scenario_basis) {
+            (Ok(i), _) => entries.get(i),
+            (Err(_), MissingScenarioBasis::NodeLowestScenario) => entries.first(),
+            (Err(_), MissingScenarioBasis::Cold) => None,
+        }
+        .map(|(_, basis)| basis)
     }
 }
 

@@ -229,6 +229,21 @@ const ROWS: &[ParityRow] = &[
         fragment: "policy was written by",
     },
     ParityRow {
+        name: "resume_without_the_trial_state_history",
+        base_case: "1dtoy",
+        mutate: resume_without_the_trial_state_history,
+        outcome: Outcome::PlainRefusal,
+        fragment: "resume needs the trial-state history of \
+                   training.cut_selection.selection.method = level1",
+    },
+    ParityRow {
+        name: "resume_from_a_partial_policy",
+        base_case: "deterministic/d13-generic-constraint",
+        mutate: resume_from_a_partial_policy,
+        outcome: Outcome::PlainRefusal,
+        fragment: "resume needs a whole checkpoint",
+    },
+    ParityRow {
         name: "simulation_only_policy_from_another_version",
         base_case: "1dtoy",
         mutate: simulation_only_policy_from_another_version,
@@ -550,6 +565,54 @@ fn resume_policy_from_another_version(case: &Path) {
     train_one_iteration(case);
     restamp_policy_version(&case.join("output/policy"), "0.0.1");
     set_policy_mode(case, "resume");
+}
+
+fn resume_without_the_trial_state_history(case: &Path) {
+    train_one_iteration(case);
+    set_policy_mode(case, "resume");
+    set_cut_selection(
+        case,
+        json!({"selection": {"method": "level1", "check_frequency": 1}}),
+    );
+}
+
+/// A resume that fails in-band leaves the partial policy in `policy.partial`;
+/// the healthy deck then resumes from it.
+fn resume_from_a_partial_policy(case: &Path) {
+    let healthy = [
+        "system/thermals.json",
+        "constraints/generic_constraints.json",
+    ]
+    .map(|file| (file, fs::read(case.join(file)).unwrap()));
+    train_one_iteration(case);
+    edit_json(&case.join("config.json"), |config| {
+        config["training"]["stopping_rules"] = json!([{"type": "iteration_limit", "limit": 2}]);
+    });
+    set_policy_mode(case, "resume");
+    edit_json(
+        &case.join("constraints/generic_constraints.json"),
+        |constraints| {
+            constraints["constraints"][0]["slack"] = json!({"enabled": false});
+        },
+    );
+    edit_json(&case.join("system/thermals.json"), |thermals| {
+        thermals["thermals"][0]["generation"]["min_mw"] = json!(20.0);
+    });
+    let failed = novomodelo()
+        .arg("run")
+        .arg(case)
+        .arg("--quiet")
+        .output()
+        .unwrap();
+    assert_eq!(
+        failed.status.code(),
+        Some(3),
+        "the resumed run must fail in-band"
+    );
+    for (file, bytes) in healthy {
+        fs::write(case.join(file), bytes).unwrap();
+    }
+    set_policy_path(case, "policy.partial");
 }
 
 fn simulation_only_policy_from_another_version(case: &Path) {

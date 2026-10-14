@@ -14,9 +14,10 @@ use novomodelo_io::output::policy::{
 };
 use novomodelo_io::{
     EntitySlot, OutputError, OwnedPolicyCutRecord, ProducerBlock, StageCutsReadResult,
-    StageStatesReadResult,
+    StageStatesReadResult, StateHistory,
 };
 
+use crate::cut::CutSelectionStrategy;
 use crate::cut::fcf::FutureCostFunction;
 use crate::error::{ErrorClass, SddpError};
 use crate::policy::policy_load::{
@@ -24,7 +25,8 @@ use crate::policy::policy_load::{
     build_basis_cache_from_checkpoint, convert_checkpoint_cuts_for_load, validate_policy_load,
 };
 use crate::setup::StudySetup;
-use crate::training::training::{LoadedPolicy, TrainingResult};
+use crate::training::session::interior_cut_nodes;
+use crate::training::training::{LoadedPolicy, MissingScenarioBasis, TrainingResult};
 use crate::workspace::workspace::CapturedBasis;
 
 /// Which run consumes the loaded policy.
@@ -65,8 +67,8 @@ pub enum FullFcfLoadError {
         /// The underlying read failure.
         source: OutputError,
     },
-    /// The checkpoint is incompatible with the study: cost scale, software or
-    /// manifests.
+    /// The checkpoint is incompatible with the study: cost scale, software,
+    /// manifests, or state a resume reads that it does not hold.
     #[error(transparent)]
     Refused(SddpError),
     /// The future-cost function could not be built from the cuts.
@@ -229,6 +231,99 @@ fn place_trial_states(
         .collect()
 }
 
+/// The first state a resume of `setup` reads that the checkpoint `producer`
+/// describes does not hold, in a fixed order: the forward-pass count, the
+/// trial-state history, its window, the binding counters, the basis store.
+///
+/// # Errors
+///
+/// [`SddpError::Validation`] naming the setting, what the checkpoint holds and
+/// the way out.
+fn check_resume_serves(producer: &ProducerBlock, setup: &StudySetup) -> Result<(), SddpError> {
+    let refusal = |message: String| Err(SddpError::Validation(message));
+
+    let (run_passes, stored_passes) = (setup.loop_params.forward_passes, producer.forward_passes);
+    if stored_passes != run_passes {
+        return refusal(format!(
+            "resume needs the forward-pass count the checkpoint was written with: \
+             training.selection.forward_passes is {run_passes} here and {stored_passes} in the \
+             checkpoint; set it to {stored_passes} or continue with policy.mode = warm_start"
+        ));
+    }
+
+    // A study without an interior pool stores no trial state, so its level1
+    // checkpoint holds none either.
+    let level1_window = match setup.inputs.cut_management.cut_selection {
+        Some(CutSelectionStrategy::Level1 {
+            lookback_iterations,
+            ..
+        }) if !interior_cut_nodes(&setup.inputs.node_graph).is_empty() => Some(lookback_iterations),
+        Some(CutSelectionStrategy::Level1 { .. } | CutSelectionStrategy::Dynamic { .. }) | None => {
+            None
+        }
+    };
+    if let Some(run_window) = level1_window {
+        let stored_window = match producer.state_history {
+            StateHistory::None => {
+                return refusal(
+                    "resume needs the trial-state history of \
+                     training.cut_selection.selection.method = level1; the checkpoint holds \
+                     none (it was written by a run without level1 or exports.states); continue \
+                     with policy.mode = warm_start or retrain"
+                        .to_string(),
+                );
+            }
+            StateHistory::Window(window) => Some(u64::from(window.get())),
+            StateHistory::Whole => None,
+        };
+        match (run_window, stored_window) {
+            (None, Some(stored)) => {
+                return refusal(format!(
+                    "resume needs every trial state of the run under \
+                     training.cut_selection.selection.method = level1 without \
+                     lookback_iterations; the checkpoint holds those of the last {stored} \
+                     iterations only; set lookback_iterations to at most {stored} or continue \
+                     with policy.mode = warm_start"
+                ));
+            }
+            (Some(window), Some(stored)) if window.get() > stored => {
+                return refusal(format!(
+                    "resume needs the trial states of the last {window} iterations \
+                     (training.cut_selection.selection.lookback_iterations = {window}); the \
+                     checkpoint holds those of the last {stored} iterations only; set \
+                     lookback_iterations to at most {stored} or continue with \
+                     policy.mode = warm_start"
+                ));
+            }
+            (_, None) | (Some(_), Some(_)) => {}
+        }
+    }
+
+    let cut_management = &setup.inputs.cut_management;
+    if cut_management.tracks_binding_activity() && !producer.activity_counters {
+        let reader = if cut_management.budget.is_some() {
+            "training.cut_selection.max_active_per_stage"
+        } else {
+            "training.cut_selection.selection.method = dynamic"
+        };
+        return refusal(format!(
+            "resume needs the binding counters read by {reader}; the checkpoint holds none (it \
+             was written by a run without max_active_per_stage or the dynamic method); continue \
+             with policy.mode = warm_start or retrain"
+        ));
+    }
+
+    if !producer.basis_store_complete {
+        return refusal(
+            "resume needs a whole checkpoint; the checkpoint's per-scenario bases are not whole \
+             (it was written when a run failed); resume from the last whole checkpoint or \
+             continue with policy.mode = warm_start"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// Read, validate and decode the checkpoint in `policy_dir` against `setup`.
 ///
 /// `on_warning` receives each compatibility warning right after validation,
@@ -294,6 +389,10 @@ pub fn check_full_fcf_load(
     let proof =
         validate_policy_load::<FullFcf>(checkpoint.metadata.written_by(), &source, &current)
             .map_err(FullFcfLoadError::Refused)?;
+    if kind == FullFcfLoadKind::Resume {
+        check_resume_serves(&checkpoint.metadata.producer, setup)
+            .map_err(FullFcfLoadError::Refused)?;
+    }
     for msg in &proof.warnings {
         on_warning(msg);
     }
@@ -397,9 +496,16 @@ impl CheckedFullFcfLoad {
         debug_assert!(self.kind != FullFcfLoadKind::SimulationOnly);
         let completed = self.completed_iterations();
         setup.replace_fcf(self.fcf);
+        let missing_scenario_basis = match self.kind {
+            FullFcfLoadKind::Resume => MissingScenarioBasis::Cold,
+            FullFcfLoadKind::WarmStart | FullFcfLoadKind::SimulationOnly => {
+                MissingScenarioBasis::NodeLowestScenario
+            }
+        };
         setup.set_loaded_policy(LoadedPolicy {
             scenario_bases: self.scenario_bases,
             trial_states: self.trial_states,
+            missing_scenario_basis,
         });
         if self.kind == FullFcfLoadKind::Resume {
             setup.set_resume_point(completed, self.producer.lower_bound_history);
@@ -660,6 +766,53 @@ mod tests {
                     "pool {pool}, slot {slot}: coefficients"
                 );
             }
+        }
+    }
+
+    /// On a sampled fan a scenario does not visit every node: a resume leaves
+    /// that scenario's row cold there, as the run that wrote the checkpoint did,
+    /// and a warm start seeds it from the node's lowest-scenario basis.
+    #[test]
+    fn only_a_resume_leaves_a_scenario_without_a_stored_basis_cold() {
+        let (interrupted, interrupted_result) = train_fan(3, None);
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_fan_checkpoint(dir.path(), &interrupted, &interrupted_result);
+        let checkpoint = read_policy_checkpoint(dir.path()).expect("read_policy_checkpoint");
+        let (node, scenario) = checkpoint
+            .stage_bases
+            .iter()
+            .filter(|record| !record.entries.is_empty())
+            .find_map(|record| {
+                (0..FAN_PASSES)
+                    .find(|s| record.entries.iter().all(|entry| entry.scenario != *s))
+                    .map(|s| (NodePos(record.stage_id as usize), s))
+            })
+            .expect("power: some node holds the bases of some scenarios only");
+
+        let system = k_fan_system(FAN_WIDTH, false);
+        for kind in [FullFcfLoadKind::Resume, FullFcfLoadKind::WarmStart] {
+            let mut setup = k_fan_setup(FAN_WIDTH, FAN_PASSES, 6).setup;
+            check_full_fcf_load(kind, dir.path(), &system, &setup, &mut |_: &str| {})
+                .expect("the fan checkpoint must load")
+                .apply_to_training(&mut setup);
+            let loaded = setup.loaded_policy();
+            let lowest = loaded.scenario_bases[node.0]
+                .first()
+                .map(|(_, basis)| basis);
+            assert!(lowest.is_some());
+            let expected = match kind {
+                FullFcfLoadKind::Resume => None,
+                FullFcfLoadKind::WarmStart | FullFcfLoadKind::SimulationOnly => lowest,
+            };
+            let seeded = loaded.seed_basis(node, scenario);
+            assert!(
+                match (seeded, expected) {
+                    (Some(seeded), Some(expected)) => std::ptr::eq(seeded, expected),
+                    (seeded, expected) => seeded.is_none() && expected.is_none(),
+                },
+                "{kind:?}: node {}, scenario {scenario}",
+                node.0
+            );
         }
     }
 
