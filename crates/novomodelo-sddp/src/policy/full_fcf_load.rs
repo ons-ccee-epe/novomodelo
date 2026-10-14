@@ -12,7 +12,9 @@ use novomodelo_core::System;
 use novomodelo_io::output::policy::{
     ResolvedCheckpoint, read_policy_checkpoint, resolve_policy_checkpoint,
 };
-use novomodelo_io::{EntitySlot, OutputError, OwnedPolicyCutRecord, ProducerBlock};
+use novomodelo_io::{
+    EntitySlot, OutputError, OwnedPolicyCutRecord, ProducerBlock, StageStatesReadResult,
+};
 
 use crate::cut::fcf::FutureCostFunction;
 use crate::error::{ErrorClass, SddpError};
@@ -169,9 +171,52 @@ pub struct CheckedFullFcfLoad {
     fcf: FutureCostFunction,
     slot_maps: Vec<LoadedSlotMap>,
     basis_cache: Vec<Option<CapturedBasis>>,
+    trial_states: Vec<StageStatesReadResult>,
     unused_stored_bases: Option<UnusedStoredBases>,
     stored_basis_records: usize,
     producer: ProducerBlock,
+}
+
+/// `states` with each pool's stored slots replaced by the slots `slot_maps`
+/// puts their cuts at, after checking each pool's row dimension against the
+/// study's.
+fn place_trial_states(
+    kind: FullFcfLoadKind,
+    states: Vec<StageStatesReadResult>,
+    slot_maps: &[LoadedSlotMap],
+    pool_state_dimensions: &[usize],
+) -> Result<Vec<StageStatesReadResult>, FullFcfLoadError> {
+    let refusal = |message: String| FullFcfLoadError::FcfConstruction {
+        kind,
+        source: SddpError::Validation(message),
+    };
+    states
+        .into_iter()
+        .map(|mut pool_states| {
+            let pool = pool_states.stage_id as usize;
+            let (Some(slot_map), Some(&dimension)) =
+                (slot_maps.get(pool), pool_state_dimensions.get(pool))
+            else {
+                return Err(refusal(format!(
+                    "pool {pool}: stored trial states for a pool the study does not have"
+                )));
+            };
+            if pool_states.state_dimension as usize != dimension {
+                return Err(refusal(format!(
+                    "pool {pool}: stored trial states have {} values, the study's pool {dimension}",
+                    pool_states.state_dimension
+                )));
+            }
+            for slot in &mut pool_states.slots {
+                *slot = slot_map.dest(*slot).ok_or_else(|| {
+                    refusal(format!(
+                        "pool {pool}: a trial state is stored at slot {slot}, which holds no cut"
+                    ))
+                })?;
+            }
+            Ok(pool_states)
+        })
+        .collect()
 }
 
 /// Read, validate and decode the checkpoint in `policy_dir` against `setup`.
@@ -284,11 +329,20 @@ pub fn check_full_fcf_load(
         }
     }
 
-    let slot_maps = checkpoint
+    let slot_maps: Vec<LoadedSlotMap> = checkpoint
         .stage_cuts
         .iter()
         .map(|pool| LoadedSlotMap::new(kind, &pool.cuts))
         .collect();
+    let trial_states = match kind {
+        FullFcfLoadKind::WarmStart | FullFcfLoadKind::Resume => place_trial_states(
+            kind,
+            checkpoint.stage_states,
+            &slot_maps,
+            &pool_state_dimensions,
+        )?,
+        FullFcfLoadKind::SimulationOnly => Vec::new(),
+    };
 
     let StoredBasisLoad {
         cache: basis_cache,
@@ -303,6 +357,7 @@ pub fn check_full_fcf_load(
         fcf,
         slot_maps,
         basis_cache,
+        trial_states,
         unused_stored_bases,
         stored_basis_records: checkpoint.stage_bases.len(),
         producer: checkpoint.metadata.producer,
@@ -329,12 +384,13 @@ impl CheckedFullFcfLoad {
     }
 
     /// Install the loaded FCF, the stored basis cache (when the checkpoint
-    /// holds bases) and, for resume, the completed iterations and their recorded
-    /// lower bounds into `setup`.
+    /// holds bases), the stored trial states and, for resume, the completed
+    /// iterations and their recorded lower bounds into `setup`.
     pub fn apply_to_training(self, setup: &mut StudySetup) {
         debug_assert!(self.kind != FullFcfLoadKind::SimulationOnly);
         let completed = self.completed_iterations();
         setup.replace_fcf(self.fcf);
+        setup.set_loaded_trial_states(self.trial_states);
         // No stored bases (the training run captured none) → iteration 1
         // cold-starts.
         if self.stored_basis_records > 0 {
@@ -418,6 +474,66 @@ mod tests {
                 "{kind:?}"
             );
         }
+    }
+
+    fn states_at(pool: u32, dimension: u32, slots: &[u32]) -> StageStatesReadResult {
+        StageStatesReadResult {
+            stage_id: pool,
+            node_id: -1,
+            state_dimension: dimension,
+            count: slots.len() as u32,
+            data: slots
+                .iter()
+                .flat_map(|&slot| (0..dimension).map(move |i| f64::from(slot) + f64::from(i) / 8.0))
+                .collect(),
+            entity_manifest: Vec::new(),
+            slots: slots.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_stored_state_follows_its_cut_to_the_slot_the_load_puts_it_at() {
+        let records: Vec<_> = [0, 1, 3, 4].map(record_at).into();
+        let place = |kind| {
+            let slot_maps = [LoadedSlotMap::new(kind, &records)];
+            place_trial_states(kind, vec![states_at(0, 2, &[1, 3, 4])], &slot_maps, &[2])
+                .expect("every state sits at a cut")
+        };
+
+        let resumed = place(FullFcfLoadKind::Resume);
+        assert_eq!(resumed[0].slots, [1, 3, 4]);
+        let warm_started = place(FullFcfLoadKind::WarmStart);
+        assert_eq!(warm_started[0].slots, [1, 2, 3]);
+        assert_eq!(
+            resumed[0].data, warm_started[0].data,
+            "the rows do not move"
+        );
+        assert_eq!(resumed[0].data[2..4], [3.0, 3.125]);
+    }
+
+    #[test]
+    fn a_stored_state_the_study_cannot_hold_is_refused_naming_its_pool() {
+        let records: Vec<_> = [0, 1].map(record_at).into();
+        let kind = FullFcfLoadKind::Resume;
+        let slot_maps = [LoadedSlotMap::new(kind, &records)];
+        let refusal = |states: StageStatesReadResult, dimensions: &[usize]| {
+            place_trial_states(kind, vec![states], &slot_maps, dimensions)
+                .expect_err("the state cannot be held")
+        };
+
+        let wrong_dimension = refusal(states_at(0, 3, &[1]), &[2]);
+        assert!(
+            matches!(wrong_dimension, FullFcfLoadError::FcfConstruction { .. }),
+            "{wrong_dimension}"
+        );
+        assert!(
+            wrong_dimension.to_string().contains("pool 0"),
+            "{wrong_dimension}"
+        );
+        let no_cut = refusal(states_at(0, 2, &[2]), &[2]);
+        assert!(no_cut.to_string().contains("slot 2"), "{no_cut}");
+        let no_pool = refusal(states_at(1, 2, &[0]), &[2, 2]);
+        assert!(no_pool.to_string().contains("pool 1"), "{no_pool}");
     }
 
     #[test]

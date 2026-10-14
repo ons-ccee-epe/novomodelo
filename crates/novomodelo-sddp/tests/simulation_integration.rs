@@ -670,6 +670,7 @@ fn train_simulate_write_cycle() {
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
         None,
+        Vec::new(),
         SolverProfiles::default(),
     )
     .expect("train must succeed");
@@ -1333,6 +1334,7 @@ fn simulation_min_outflow_slack_extracted_from_primal() {
         &StubComm,
         || Ok(SizedMockSolver::new(t0.num_cols, t0.num_rows)),
         None,
+        Vec::new(),
         SolverProfiles::default(),
     )
     .expect("training must succeed");
@@ -1498,6 +1500,7 @@ fn enumerated_census_k1_matches_sampled_single_scenario() {
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
         None,
+        Vec::new(),
         SolverProfiles::default(),
     )
     .expect("train must succeed");

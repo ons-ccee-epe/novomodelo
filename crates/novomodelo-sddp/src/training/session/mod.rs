@@ -4,6 +4,7 @@
 //! No hot-path allocations; forward and backward passes encapsulated in their own state structs.
 
 use novomodelo_comm::CommError::CollectiveFailed;
+use novomodelo_io::StageStatesReadResult;
 use novomodelo_solver::SolverError;
 use novomodelo_solver::freeze_rows_into_template;
 
@@ -192,6 +193,7 @@ where
         training_ctx: &'a TrainingContext<'a>,
         comm: &'a C,
         solver_factory: impl Fn() -> Result<S, SolverError>,
+        loaded_trial_states: Vec<StageStatesReadResult>,
         solver_profiles: SolverProfiles,
     ) -> Result<Self, SddpError> {
         let horizon = training_ctx.horizon;
@@ -305,6 +307,7 @@ where
                 }
             }
         }
+        store_loaded_trial_states(fcf, loaded_trial_states);
 
         // `.take()` the non-Copy handles so `config` stays valid and can be
         // stored by value; `export_states` is Copy and read directly.
@@ -1455,6 +1458,22 @@ pub(crate) fn interior_cut_nodes(node_graph: &NodeGraph) -> Vec<NodePos> {
         .collect()
 }
 
+/// Rows of a pool that does not store trial states are dropped: the match in
+/// [`TrainingSession::new`] alone decides which pools store.
+fn store_loaded_trial_states(fcf: &mut FutureCostFunction, loaded: Vec<StageStatesReadResult>) {
+    for states in loaded {
+        let pool = &mut fcf.pools[states.stage_id as usize];
+        if !pool.stores_trial_states() {
+            continue;
+        }
+        let dimension = pool.state_dimension;
+        for (position, &slot) in states.slots.iter().enumerate() {
+            let row = &states.data[position * dimension..(position + 1) * dimension];
+            pool.load_trial_state(slot as usize, row);
+        }
+    }
+}
+
 /// Between-iteration capacity growth: doubles a pool's capacity via
 /// [`crate::cut::CutPool::grow`] (`Vec::resize`, position-stable — the
 /// append-only/slot-identity contract survives) when `realized_visits`
@@ -2105,6 +2124,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .unwrap();
@@ -2187,6 +2207,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .unwrap();
@@ -2291,6 +2312,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .unwrap();
@@ -2382,6 +2404,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .unwrap();
@@ -2479,6 +2502,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .unwrap();
@@ -2546,6 +2570,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .unwrap();
@@ -2614,6 +2639,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .unwrap();
@@ -2673,6 +2699,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .unwrap();
@@ -2749,6 +2776,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .unwrap();
@@ -3052,6 +3080,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .unwrap();
@@ -3295,6 +3324,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .err()
@@ -3371,6 +3401,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .expect("world = 1 is always sound, even with interior branching");
@@ -3428,6 +3459,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .expect("a deterministic trunk + terminal fan stays sound at world >= 2");

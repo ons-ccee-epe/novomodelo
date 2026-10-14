@@ -717,8 +717,10 @@ the recorded `capacity` and `slot_base + max_iterations * visit_stride`, so a po
 that grew keeps its slots. A slot below `warm_start_count` is `Prefix`, every
 other record is `Generated`, and each keeps the `scored` flag it was written with.
 A slot with no record stays `Vacant`, so `populated()` is one past the highest
-record and `generated()` counts records. `TrainingSession::new` sets the
-iteration base to 1 on every run, so the slot of iteration `k` and pass `p` is
+record and `generated()` counts records. The constructor stores no trial state:
+the session does, once it has enabled the store (the trial-state section below).
+`TrainingSession::new` sets the iteration base to 1 on every run, so the slot of
+iteration `k` and pass `p` is
 `slot_base + (k - 1) * visit_stride + p` on a resumed run as in the uninterrupted
 one; `start_iteration` only drives the loop range. A record that shares a slot,
 lies at or above the capacity, or leaves a slot of the prefix empty is refused
@@ -1139,9 +1141,11 @@ every node of a level, the pool holds only the states of the trials routed to
 its node.
 `SlotRole::scored` records that the pool stored states when the slot was
 written (`add_cut` writes it); enabling the store afterwards does not change the
-flag of a cut already written, and a loaded (`Prefix`) cut keeps the flag its
-record carries, with no state (no load stores one). A pool that does not store
-states allocates nothing. Enabling
+flag of a cut already written, and a loaded cut keeps the flag its record
+carries. A loaded scored slot receives its stored row through
+`CutPool::load_trial_state` once the session has enabled the store (below); one
+the checkpoint holds no row for, because its source's window dropped the state,
+has none. A pool that does not store states allocates nothing. Enabling
 reserves `capacity * state_dimension * 8` bytes, of which
 `stored_trial_states() * state_dimension * 8` hold a state, and per slot one
 `u32` for the slot-to-row lookup and one `f64` and two `u32` for the ownership
@@ -1158,6 +1162,23 @@ allocates a row. `exports.states` reads the archive, which no selection run
 trims. The strategy comes from the config
 the CLI broadcasts and the node set from the graph every rank builds from it, so
 the same pools store, with the same window, on every rank for the whole run.
+
+**Loaded rows.** A `resume` and a `warm_start` load carry the rows of the
+checkpoint's states files (a simulation-only load keeps none).
+`check_full_fcf_load` places each row at the slot its cut occupies in the loaded
+pool through `LoadedSlotMap::dest`, the stored slot under a resume and the
+record's rank under a warm start, which packs. It refuses, as
+`FullFcfLoadError::FcfConstruction` naming the pool, a states file of a pool the
+study does not have, of another row dimension than the study's, or with a row at
+a slot that holds no cut. Right after the enabling
+match, `TrainingSession::new` stores each row with `CutPool::load_trial_state`
+in every pool that stores trial states and drops the rows of every other pool,
+so the match stays the one place that decides which pools store. The loader
+stores nothing: a store it created would be unbounded where the strategy asks for
+a window. No ownership rebuild follows: the record is empty and its scanned mark
+is 0, so the pool's first `update_ownership` scans every loaded slot against every
+loaded state, which is the rebuild. Every rank runs the load on the whole
+checkpoint, so every rank stores the same rows.
 
 **Two fill sites.** Sampled: `run_one_backward_level` calls
 `store_level_trial_states` once per level, after
@@ -1222,11 +1243,27 @@ The wrong-but-compiling alternatives:
   `a_pool_that_stores_trial_states_marks_its_cuts_scored` under the second;
 - deciding the enabling or the fill from a value a rank computes locally (its
   trial count, the cuts it generated): the ranks' stores differ. Not
-  demonstrable in-process.
+  demonstrable in-process;
+- not storing the loaded rows: a resumed `level1` pool holds no state for the
+  scored cuts it loaded, so its first selection run scores them at the new run's
+  states only and deactivates cuts that owned a state. The mutation shown skips
+  the storing in `TrainingSession::new`; under it
+  `a_resumed_level1_pool_holds_the_states_and_record_of_the_interrupted_run`
+  fails on a stored state, and
+  `a_warm_started_cut_whose_state_aged_out_competes_at_the_new_states` on a
+  loaded state;
+- placing a row at its stored slot under a warm start: the load packs the cuts,
+  so after a vacant slot of the source every row sits on another cut. Pinned by
+  `a_stored_state_follows_its_cut_to_the_slot_the_load_puts_it_at`; no training
+  run shows it, since a chain source leaves no vacant slot;
+- creating the store in the loader, or storing before the enabling match: the
+  store is unbounded where the strategy asks for a window, and the match is no
+  longer the one owner of who stores. Not pinned by a test.
 
 Read: `cut/trial_states.rs`, `cut/pool.rs` (`CutPool::enable_trial_states`,
 `CutPool::enable_trial_states_within`, `CutPool::store_trial_state`,
-`CutPool::trial_state`, `add_cut`),
+`CutPool::load_trial_state`, `CutPool::trial_state`, `add_cut`),
+`policy/full_fcf_load.rs` (`place_trial_states`, `LoadedSlotMap::dest`),
 `lp/indexer/cut_state_projection.rs` (`gather_trial_state`),
 `training/backward_pass_state.rs` (`store_level_trial_states`,
 `run_one_backward_level`, `run_enumerated_backward`),
@@ -1235,6 +1272,19 @@ Read: `cut/trial_states.rs`, `cut/pool.rs` (`CutPool::enable_trial_states`,
 `a_trial_state_row_is_addressed_by_its_slot` (`cut/trial_states.rs`),
 `a_pool_that_stores_trial_states_marks_its_cuts_scored` and
 `a_slot_role_is_fixed_when_the_slot_is_written` (`cut/pool.rs`),
+`a_loaded_state_is_stored_at_a_scored_prefix_slot_past_the_reserve` (`cut/pool.rs`:
+a row at a scored loaded slot of a bounded store past its reserve, and the first
+`update_ownership` equal to the rebuild),
+`loading_a_state_at_an_unscored_slot_panics_in_debug` (`cut/pool.rs`),
+`a_stored_state_follows_its_cut_to_the_slot_the_load_puts_it_at` and
+`a_stored_state_the_study_cannot_hold_is_refused_naming_its_pool`
+(`policy/full_fcf_load.rs`), and, in `tests/cut_basis.rs`,
+`a_resumed_level1_pool_holds_the_states_and_record_of_the_interrupted_run` (a
+resumed pool's roles, stored states and rebuilt record equal the interrupted
+run's, with and without a window) and
+`a_warm_started_cut_whose_state_aged_out_competes_at_the_new_states` (a warm
+start restores the source's rows at their slots, and cuts whose state the
+source's window dropped own states and are deactivated at the new run's),
 `gather_trial_state_follows_the_projection_not_position`
 (`lp/indexer/cut_state_projection.rs`),
 `a_rank_stores_the_state_of_a_peers_cut_at_a_sibling_node` and
@@ -1353,6 +1403,8 @@ before the update that passes its slot. A slot written or a state stored below
 the mark is not seen until `rebuild_ownership`. A debug build refuses the second
 case: `Ownership::update` asserts that no state stored below the mark lacks an
 owner, which `rebuild_ownership` never trips because it resets the mark first.
+A load needs no `rebuild_ownership`: its rows are stored while the mark is 0, so
+the first `update_ownership` scans them all.
 Dropping a stored state, which the window section below describes, clears its
 entry and its owner's count, so `state_owner` and `state_best_value` read `None`
 for it as for a slot that never stored one.
@@ -1444,9 +1496,10 @@ By slot role:
 - generated and scored (every cut a `level1` run generates in an interior
   pool): live whatever its flag, active after a run exactly when it owns a
   state;
-- loaded and scored (a record written scored): the same, with no stored state: it
-  competes at each state this run stores and is active after a selection run
-  exactly when it owns one;
+- loaded and scored (a record written scored): the same: it competes at each
+  state the pool stores, the row loaded for it included, and is active after a
+  selection run exactly when it owns one; one whose row its source's window
+  dropped has no state of its own and competes at the stored ones;
 - loaded and stateless: live while its flag is set, and in neither list, so it
   keeps the flag it was loaded with. While active it can own a state and keep a
   tied generated cut above it inactive;
@@ -1584,10 +1637,11 @@ state is inside the window at a selection run of iteration `k`. With
 `r = k - iteration_base + 1`, the iterations this run has completed, it is slot 0
 while `r < w`, and `slot_base + (r - w) * visit_stride` from `r = w` on: the first
 slot of iteration `k - w + 1`. A generated cut's state is therefore inside
-exactly when its generating iteration exceeds `k - w`. A loaded state (no load
-stores one; a test stores one with `CutPool::set_trial_state_for_test`) is at
-iteration 0 of the run's clock, whatever iteration its record carries: it is
-inside while `r < w` and leaves at the run's iteration `w`.
+exactly when its generating iteration exceeds `k - w`. A state loaded at a
+`Prefix` slot (`CutPool::load_trial_state`) is at iteration 0 of the run's clock,
+whatever iteration its record carries: it is inside while `r < w` and leaves at
+the run's iteration `w`. One loaded at a `Generated` slot, under a resume, is at
+the iteration its slot gives it, as in the uninterrupted run.
 
 **The step.** `CutPool::expire_trial_states(k)` removes the states that left. For
 each slot from the previous boundary up to the new one that holds a state, it
@@ -1658,8 +1712,9 @@ The wrong-but-compiling alternatives:
   when this run's counter reaches that iteration plus `w`, not at the run's
   iteration `w`. The mutation shown keeps a loaded state for good, as a record
   of iteration 40 does in the fixture. Under it
-  `a_loaded_scored_cut_competes_only_at_this_runs_states_once_its_state_left_the_window`
-  and `windowed_record_equals_rebuild_and_reference` fail;
+  `a_loaded_scored_cut_competes_only_at_this_runs_states_once_its_state_left_the_window`,
+  `a_loaded_state_leaves_a_window_at_the_runs_iteration_w` and
+  `windowed_record_equals_rebuild_and_reference` fail;
 - a boundary that keeps one iteration more or one fewer than the last `w`: under
   both, `the_window_start_slot_agrees_with_the_slot_formula`,
   `a_windowed_pool_never_holds_more_rows_than_its_reserve`,

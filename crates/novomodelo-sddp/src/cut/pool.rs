@@ -597,6 +597,33 @@ impl CutPool {
         }
     }
 
+    /// Store `row`, a state already projected to `state_dimension` values, at a
+    /// scored `slot` of either origin: the only production path that stores a
+    /// state for a loaded slot.
+    ///
+    /// # Panics (debug builds only)
+    ///
+    /// Panics if the pool stores no trial states, the slot is not scored, the
+    /// slot already holds a state, or `row.len() != state_dimension`.
+    pub(crate) fn load_trial_state(&mut self, slot: usize, row: &[f64]) {
+        debug_assert!(
+            self.stores_trial_states(),
+            "load_trial_state: the pool stores no trial states"
+        );
+        debug_assert!(
+            self.roles[slot].scored,
+            "load_trial_state: slot {slot} is not scored"
+        );
+        debug_assert_eq!(
+            row.len(),
+            self.state_dimension,
+            "load_trial_state: row length differs from the state dimension"
+        );
+        if let Some(trial_states) = self.trial_states.as_mut() {
+            trial_states.claim(slot).copy_from_slice(row);
+        }
+    }
+
     /// The trial state stored for `slot`; `None` for a slot with none.
     #[must_use]
     pub fn trial_state(&self, slot: usize) -> Option<&[f64]> {
@@ -2672,6 +2699,98 @@ mod tests {
         assert!((0..15).all(|slot| pool.trial_state(slot).is_none()));
     }
 
+    fn scored_cut(intercept: f64, coefficient: f64) -> novomodelo_io::OwnedPolicyCutRecord {
+        novomodelo_io::OwnedPolicyCutRecord {
+            intercept,
+            coefficients: vec![coefficient],
+            scored: true,
+            ..loaded_cut(1)
+        }
+    }
+
+    /// derived: the cuts' values at `x` are `x`, `3`, `2x - 5` and `0.5`. The
+    /// states `0, 2, 4, 6` have the maxima `3, 3, 4, 7`, owned by slots `1, 1, 0,
+    /// 2`, so slots 0 to 3 own `1, 2, 1, 0` states. A window of 1 with a check
+    /// frequency of 1 reserves 2 rows for the 4 loaded states.
+    #[test]
+    fn a_loaded_state_is_stored_at_a_scored_prefix_slot_past_the_reserve() {
+        let records = [
+            scored_cut(0.0, 1.0),
+            scored_cut(3.0, 0.0),
+            scored_cut(-5.0, 2.0),
+            scored_cut(0.5, 0.0),
+        ];
+        let mut pool = CutPool::new_with_warm_start(1, 1, 4, &records);
+        pool.set_iteration_base(1);
+        pool.enable_trial_states_within(NonZeroU64::new(1).unwrap(), 1);
+        assert_eq!(pool.reserved_trial_rows(), 2);
+
+        let states = [0.0, 2.0, 4.0, 6.0];
+        for (slot, state) in states.into_iter().enumerate() {
+            pool.load_trial_state(slot, &[state]);
+        }
+
+        for (slot, state) in states.into_iter().enumerate() {
+            assert_eq!(
+                pool.role(slot),
+                SlotRole {
+                    origin: SlotOrigin::Prefix,
+                    scored: true
+                }
+            );
+            assert_eq!(pool.trial_state(slot), Some(&[state][..]));
+        }
+        assert_eq!(pool.stored_trial_states(), 4);
+        assert_eq!(pool.reserved_trial_rows(), 4, "a state past the reserve");
+
+        let mut rebuilt = pool.clone();
+        rebuilt.rebuild_ownership();
+        pool.update_ownership();
+        for p in [&pool, &rebuilt] {
+            let owners: Vec<_> = (0..4).map(|slot| p.state_owner(slot)).collect();
+            assert_eq!(owners, [Some(1), Some(1), Some(0), Some(2)]);
+            let best: Vec<_> = (0..4).map(|slot| p.state_best_value(slot)).collect();
+            assert_eq!(best, [Some(3.0), Some(3.0), Some(4.0), Some(7.0)]);
+            let owned: Vec<_> = (0..4).map(|slot| p.owned_states(slot)).collect();
+            assert_eq!(owned, [1, 2, 1, 0]);
+        }
+    }
+
+    /// derived: two loaded records put `slot_base` at 2 and `iteration_base` is
+    /// 1, so a window of 2 starts at slot 0 for the run of iteration 1 and at
+    /// slot 2 for the run of iteration 2: a loaded state leaves at the run's
+    /// iteration 2, whatever iteration its record carries. At the state 1 the
+    /// values are `0.75` and `2.75` for the loaded cuts and `0` for the cut
+    /// generated at slot 2, so slot 1 owns all three states until the loaded two
+    /// leave.
+    #[test]
+    fn a_loaded_state_leaves_a_window_at_the_runs_iteration_w() {
+        let records = [scored_cut(0.5, 0.25), scored_cut(1.5, 1.25)];
+        let mut pool = CutPool::new_with_warm_start(1, 1, 4, &records);
+        pool.set_iteration_base(1);
+        pool.enable_trial_states_within(NonZeroU64::new(2).unwrap(), 1);
+        pool.load_trial_state(0, &[1.0]);
+        pool.load_trial_state(1, &[1.0]);
+        pool.add_cut(NodeId(0), 1, 0, 0.0, &[0.0]);
+        pool.set_trial_state_for_test(2, &[1.0]);
+
+        pool.expire_trial_states(1);
+        pool.update_ownership();
+        assert_eq!(pool.stored_trial_states(), 3);
+        assert_eq!(pool.owned_states(1), 3);
+
+        pool.expire_trial_states(2);
+        pool.update_ownership();
+        assert_eq!(pool.stored_trial_states(), 1);
+        assert_eq!(
+            [0, 1, 2].map(|slot| pool.trial_state(slot).is_some()),
+            [false, false, true]
+        );
+        assert_eq!(pool.owned_states(1), 1);
+        assert_eq!(pool.state_owner(0), None);
+        assert_eq!(pool.state_owner(2), Some(1));
+    }
+
     #[test]
     fn new_with_warm_start_zero_max_iterations_yields_fixed_capacity() {
         use novomodelo_io::OwnedPolicyCutRecord;
@@ -3476,6 +3595,15 @@ mod tests {
         let mut pool = CutPool::new(4, 1, 2, 0);
         pool.add_cut(NodeId(0), 1, 0, 1.0, &[1.0]);
         pool.set_active(1, true);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "is not scored")]
+    fn loading_a_state_at_an_unscored_slot_panics_in_debug() {
+        let mut pool = CutPool::new_with_warm_start(1, 1, 4, &[loaded_cut(1)]);
+        pool.enable_trial_states();
+        pool.load_trial_state(0, &[1.0]);
     }
 
     #[cfg(debug_assertions)]

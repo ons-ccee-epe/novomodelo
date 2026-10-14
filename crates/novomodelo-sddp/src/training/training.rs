@@ -10,6 +10,7 @@
 
 use novomodelo_comm::CommError::InvalidBufferSize;
 use novomodelo_comm::Communicator;
+use novomodelo_io::StageStatesReadResult;
 use novomodelo_solver::ActiveProfile;
 use novomodelo_solver::SolverError;
 use novomodelo_solver::{SolverInterface, StageTemplate};
@@ -340,6 +341,9 @@ pub(crate) fn broadcast_basis_cache<C: Communicator>(
 ///
 /// Always panics if `comm.rank() > i32::MAX`. MPI world sizes are bounded well
 /// below this on all real systems.
+// Rationale: each argument is an independent input of the one training entry
+// point; a context struct would only move the argument list into its literal.
+#[allow(clippy::too_many_arguments)]
 pub fn train<S, C: Communicator>(
     solver: &mut S,
     config: TrainingConfig,
@@ -349,6 +353,7 @@ pub fn train<S, C: Communicator>(
     comm: &C,
     solver_factory: impl Fn() -> Result<S, SolverError>,
     warm_start_basis_cache: Option<Vec<Option<CapturedBasis>>>,
+    loaded_trial_states: Vec<StageStatesReadResult>,
     solver_profiles: SolverProfiles,
 ) -> Result<TrainingOutcome, SddpError>
 where
@@ -362,6 +367,7 @@ where
         training_ctx,
         comm,
         solver_factory,
+        loaded_trial_states,
         solver_profiles,
     )?;
     // Must seed the basis store before `prime_frozen_templates` freezes the loaded

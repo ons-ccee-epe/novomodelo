@@ -142,6 +142,7 @@ impl StudySetup {
         let training_ctx = self.inputs.training_ctx();
 
         let warm_start_basis_cache = self.warm_start_basis_cache.take();
+        let loaded_trial_states = std::mem::take(&mut self.loaded_trial_states);
 
         train(
             solver,
@@ -152,6 +153,7 @@ impl StudySetup {
             comm,
             solver_factory,
             warm_start_basis_cache,
+            loaded_trial_states,
             solver_profiles,
         )
     }

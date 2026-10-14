@@ -1420,7 +1420,7 @@ mod selection_in_a_training_run {
     };
     use novomodelo_sddp::{
         FutureCostFunction, StudySetup, TrainingResult, build_training_output,
-        cut::{CutSet, SlotOrigin, SlotRole},
+        cut::{CutPool, CutSet, SlotOrigin, SlotRole},
         hydro_models::prepare_hydro_models,
         policy::full_fcf_load::{
             CheckedFullFcfLoad, FullFcfLoadKind, check_full_fcf_load, locate_policy_dir,
@@ -1432,7 +1432,7 @@ mod selection_in_a_training_run {
     use tempfile::TempDir;
 
     use super::common::selection_fingerprint::{
-        SelectionFingerprint, SelectionPower, interior_pool_ids,
+        PoolOwnership, SelectionFingerprint, SelectionPower, interior_pool_ids,
     };
     use super::common::{StubComm, positive};
     use super::simulation_cut_set::{bitwise, simulate_with};
@@ -2450,8 +2450,24 @@ mod selection_in_a_training_run {
         source_configure: impl FnOnce(&mut Config),
         kind: FullFcfLoadKind,
     ) -> (StudySetup, CheckedFullFcfLoad, StudySetup) {
-        let (mut source, system) = build_setup(SOURCE_ITERATIONS, source_configure);
-        let result = train_setup(&mut source, SOURCE_ITERATIONS, None);
+        load_checkpoint_between(
+            SOURCE_ITERATIONS,
+            source_configure,
+            WARM_START_ITERATIONS,
+            select_level1,
+            kind,
+        )
+    }
+
+    fn load_checkpoint_between(
+        source_iterations: u32,
+        source_configure: impl FnOnce(&mut Config),
+        loading_iterations: u32,
+        loading_configure: impl FnOnce(&mut Config),
+        kind: FullFcfLoadKind,
+    ) -> (StudySetup, CheckedFullFcfLoad, StudySetup) {
+        let (mut source, system) = build_setup(source_iterations, source_configure);
+        let result = train_setup(&mut source, source_iterations, None);
 
         let output = TempDir::new().expect("tempdir");
         let policy_dir = output.path().join(&source.policy_path);
@@ -2465,7 +2481,7 @@ mod selection_in_a_training_run {
         write_checkpoint(&policy_dir, &source, &system, &result, &params)
             .expect("write_checkpoint must succeed");
 
-        let (setup, _) = build_setup(WARM_START_ITERATIONS, select_level1);
+        let (setup, _) = build_setup(loading_iterations, loading_configure);
         let policy_dir =
             locate_policy_dir(kind, output.path(), &setup).expect("the policy must be found");
         let checked = check_full_fcf_load(kind, &policy_dir, &system, &setup, &mut |_| {})
@@ -2581,6 +2597,125 @@ mod selection_in_a_training_run {
             "the source must hold a deactivated cut"
         );
         assert_eq!(counts(&loaded), source_counts);
+    }
+
+    fn level1_within(lookback: Option<u32>) -> impl Fn(&mut Config) + Copy {
+        move |config: &mut Config| {
+            config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+                check_frequency: positive(CHECK_FREQUENCY),
+                lookback_iterations: lookback.and_then(NonZeroU32::new),
+            });
+        }
+    }
+
+    fn bits(values: &[f64]) -> Vec<u64> {
+        values.iter().map(|value| value.to_bits()).collect()
+    }
+
+    /// The pool's roles and stored states, with the ownership record a rebuild
+    /// computes from them.
+    fn ownership_after_a_rebuild(pool: &CutPool) -> PoolOwnership {
+        let mut rebuilt = pool.clone();
+        rebuilt.rebuild_ownership();
+        let slots = || 0..pool.populated();
+        PoolOwnership {
+            roles: slots().map(|slot| pool.role(slot)).collect(),
+            trial_state_bits: slots()
+                .map(|slot| pool.trial_state(slot).map(bits))
+                .collect(),
+            best_value_bits: slots()
+                .map(|slot| rebuilt.state_best_value(slot).map(f64::to_bits))
+                .collect(),
+            owner: slots().map(|slot| rebuilt.state_owner(slot)).collect(),
+            owned_states: slots().map(|slot| rebuilt.owned_states(slot)).collect(),
+        }
+    }
+
+    /// derived: a run of 5 iterations at 2 passes writes 10 slots per interior
+    /// pool, and checks every 2 iterations, so its last selection run is at
+    /// iteration 4, before the checkpoint, which the rebuild brings up to date.
+    /// A window of 2 has dropped the states of slots 0 to 3 by then.
+    #[test]
+    fn a_resumed_level1_pool_holds_the_states_and_record_of_the_interrupted_run() {
+        const STOP: u32 = 5;
+        for (lookback, stored) in [(None, 10), (Some(2), 6)] {
+            let configure = level1_within(lookback);
+            let (interrupted, checked, mut resumed) =
+                load_checkpoint_between(STOP, configure, STOP, configure, FullFcfLoadKind::Resume);
+            checked.apply_to_training(&mut resumed);
+            train_setup(&mut resumed, STOP, None);
+
+            let pool_ids = interior_pool_ids(&interrupted);
+            assert!(!pool_ids.is_empty(), "the run must have an interior pool");
+            for pool_id in pool_ids {
+                let (before, after) =
+                    (&interrupted.fcf.pools[pool_id], &resumed.fcf.pools[pool_id]);
+                assert_eq!(
+                    before.stored_trial_states(),
+                    stored,
+                    "lookback {lookback:?} pool {pool_id}: power: the states the run held"
+                );
+                assert_eq!(
+                    ownership_after_a_rebuild(after),
+                    ownership_after_a_rebuild(before),
+                    "lookback {lookback:?} pool {pool_id}"
+                );
+            }
+        }
+    }
+
+    const AGED_OUT_SOURCE_ITERATIONS: u32 = 8;
+    const SOURCE_WINDOW: u32 = 2;
+
+    /// derived: a source of 8 iterations at 2 passes writes 16 slots per interior
+    /// pool, and its last selection run, at iteration 8, keeps the states of the
+    /// last 2 iterations, slots 12 to 15: the other 12 scored cuts are written
+    /// with no row.
+    #[test]
+    fn a_warm_started_cut_whose_state_aged_out_competes_at_the_new_states() {
+        let (source, checked, mut setup) = load_checkpoint_between(
+            AGED_OUT_SOURCE_ITERATIONS,
+            level1_within(Some(SOURCE_WINDOW)),
+            WARM_START_ITERATIONS,
+            level1_within(None),
+            FullFcfLoadKind::WarmStart,
+        );
+        checked.apply_to_training(&mut setup);
+        train_setup(&mut setup, WARM_START_ITERATIONS, None);
+
+        let (mut owning, mut inactive_and_owning_none) = (0, 0);
+        for pool_id in interior_pool_ids(&setup) {
+            let (before, after) = (&source.fcf.pools[pool_id], &setup.fcf.pools[pool_id]);
+            let loaded = 0..before.populated();
+            let aged_out: Vec<usize> = loaded
+                .clone()
+                .filter(|&slot| before.role(slot).scored && before.trial_state(slot).is_none())
+                .collect();
+            assert!(
+                !aged_out.is_empty(),
+                "pool {pool_id}: power: the source wrote no scored cut without a row"
+            );
+            for slot in loaded {
+                assert_eq!(
+                    after.trial_state(slot).map(bits),
+                    before.trial_state(slot).map(bits),
+                    "pool {pool_id} slot {slot}: a loaded state is restored where it was"
+                );
+            }
+            for slot in aged_out {
+                owning += usize::from(after.owned_states(slot) > 0);
+                inactive_and_owning_none +=
+                    usize::from(!after.is_active(slot) && after.owned_states(slot) == 0);
+            }
+        }
+        assert!(
+            owning > 0,
+            "no cut whose state aged out owns a stored state"
+        );
+        assert!(
+            inactive_and_owning_none > 0,
+            "every cut whose state aged out owns a state"
+        );
     }
 }
 

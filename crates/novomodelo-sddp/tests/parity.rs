@@ -1330,6 +1330,7 @@ mod determinism {
                     &comm,
                     || Ok(MockSolver3H::new(100.0)),
                     None,
+                    Vec::new(),
                     SolverProfiles::default(),
                 )
             })

@@ -572,6 +572,7 @@ fn train_fixture(
         &comm,
         ActiveSolver::new,
         None,
+        Vec::new(),
         SolverProfiles::default(),
     )
 }
