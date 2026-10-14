@@ -19,6 +19,7 @@ use novomodelo_stochastic::StochasticContext;
 use novomodelo_stochastic::context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
 
 use novomodelo_comm::LocalBackend;
+use novomodelo_io::test_support::owned_piece_defaults;
 
 use super::stats_aggregation::weighted_cost_reduction;
 use super::{
@@ -2875,13 +2876,12 @@ fn test_build_delta_excludes_warm_start_cuts() {
     use novomodelo_io::OwnedPolicyCutRecord;
 
     let warm_record = OwnedPolicyCutRecord {
-        cut_id: 0,
         slot_index: 0,
         coefficients: vec![5.0],
         intercept: 99.0,
         iteration: 0,
-        forward_pass_index: 0,
         is_active: true,
+        ..owned_piece_defaults()
     };
     let mut pool = CutPool::new_with_warm_start(1, 2, 10, &[warm_record]);
     // Now add a training cut at iteration=1, fwd_idx=0:
@@ -3064,13 +3064,12 @@ fn build_delta_cut_row_batch_into_skips_warm_start_slots() {
 
     // One warm-start cut at slot 0.
     let ws_record = OwnedPolicyCutRecord {
-        cut_id: 0,
         slot_index: 0,
         coefficients: vec![1.0],
         intercept: 99.0,
         iteration: 0,
-        forward_pass_index: 0,
         is_active: true,
+        ..owned_piece_defaults()
     };
     let mut pool = CutPool::new_with_warm_start(1, 1, 10, &[ws_record]);
     // One iteration-1 cut: slot = slot_base(1) + 1*1 + 0 = 2.

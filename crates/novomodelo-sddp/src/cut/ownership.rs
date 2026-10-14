@@ -238,6 +238,7 @@ mod tests {
     use std::num::NonZeroU64;
 
     use novomodelo_io::OwnedPolicyCutRecord;
+    use novomodelo_io::test_support::owned_piece_defaults;
     use proptest::prelude::*;
     use proptest::test_runner::RngSeed;
 
@@ -682,10 +683,10 @@ mod tests {
                 cut_id: slot as u64,
                 slot_index: slot as u32,
                 iteration: 1000,
-                forward_pass_index: 0,
                 intercept: spec.cuts[slot].intercept,
                 coefficients: spec.cuts[slot].coefficients.clone(),
                 is_active: spec.active[slot],
+                ..owned_piece_defaults()
             })
             .collect();
 

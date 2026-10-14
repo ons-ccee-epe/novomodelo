@@ -338,6 +338,7 @@ mod tests {
     use crate::cut::selection_reference::{RefCut, RefRole, active_after};
     use crate::cut::{CutPool, SlotOrigin, SlotRole};
     use novomodelo_io::config::{RowSelectionConfig, SelectionMethod};
+    use novomodelo_io::test_support::owned_piece_defaults;
     use proptest::prelude::*;
     use proptest::test_runner::RngSeed;
 
@@ -705,13 +706,12 @@ mod tests {
     #[test]
     fn a_loaded_scored_cut_competes_only_at_this_runs_states_once_its_state_left_the_window() {
         let loaded = |intercept, slope, is_active| novomodelo_io::OwnedPolicyCutRecord {
-            cut_id: 0,
             slot_index: 0,
             iteration: 40,
-            forward_pass_index: 0,
             intercept,
             coefficients: vec![slope],
             is_active,
+            ..owned_piece_defaults()
         };
         let mut pool = CutPool::new_with_warm_start(
             1,
@@ -775,13 +775,12 @@ mod tests {
     #[test]
     fn level1_deactivates_a_generated_cut_tied_with_a_lower_loaded_cut() {
         let loaded = vec![novomodelo_io::OwnedPolicyCutRecord {
-            cut_id: 0,
             slot_index: 0,
             iteration: 1,
-            forward_pass_index: 0,
             intercept: 5.0,
             coefficients: vec![0.0],
             is_active: true,
+            ..owned_piece_defaults()
         }];
         let mut pool = CutPool::new_with_warm_start(1, 1, 2, &loaded);
         pool.enable_trial_states();

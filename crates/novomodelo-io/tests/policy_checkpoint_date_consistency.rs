@@ -9,35 +9,26 @@
 )]
 
 use novomodelo_io::{
-    CheckpointManifest, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, FORMAT_VERSION, GraphManifest,
-    ProducerBlock, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, SeasonManifest, StageCutsPayload,
-    read_policy_checkpoint, write_policy_checkpoint,
+    CheckpointManifest, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, ProducerBlock, StageCutsPayload,
+    read_policy_checkpoint,
+    test_support::{
+        checkpoint_manifest_defaults, producer_block_defaults, stage_cuts_payload_defaults,
+    },
+    write_policy_checkpoint,
 };
 
 fn metadata() -> CheckpointManifest {
     CheckpointManifest {
-        format_version: FORMAT_VERSION,
-        software: Some("novomodelo".to_string()),
         software_version: "0.13.0".to_string(),
         created_at: "2026-08-11T00:00:00Z".to_string(),
         num_stages: 1,
-        graph_manifest: GraphManifest::default(),
         producer: ProducerBlock {
             completed_iterations: 1,
-            final_lower_bound: 0.0,
-            best_upper_bound: None,
             max_iterations: 1,
             forward_passes: 1,
-            warm_start_cuts: 0,
-            warm_start_counts: vec![],
-            rng_seed: 0,
-            total_visited_states: 0,
-            training_block_mode: "parallel".to_string(),
-            training_block_mode_per_stage: vec![],
-            cost_scale_factor: None,
-            lower_bound_history: Vec::new(),
+            ..producer_block_defaults()
         },
-        season_manifest: SeasonManifest::default(),
+        ..checkpoint_manifest_defaults()
     }
 }
 
@@ -46,16 +37,9 @@ fn write_fixture(dir: &std::path::Path, pool_id: u32, manifest: &[EntitySlot]) {
     let payload = StageCutsPayload {
         stage_id: pool_id,
         state_dimension: manifest.len() as u32,
-        capacity: 0,
-        warm_start_count: 0,
-        cuts: &[],
-        active_cut_indices: &[],
-        populated_count: 0,
         entity_manifest: manifest,
         cost_scale_factor: 1_000_000.0,
-        node_id: -1,
-        graph_stage_id: -1,
-        priced_state_date: STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+        ..stage_cuts_payload_defaults()
     };
     write_policy_checkpoint(dir, &[payload], &[], &metadata(), &[]).expect("fixture must write");
 }

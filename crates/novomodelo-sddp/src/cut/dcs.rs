@@ -784,6 +784,7 @@ pub fn build_initial_resident_set(
 #[allow(clippy::doc_markdown)]
 mod tests {
     use novomodelo_io::OwnedPolicyCutRecord;
+    use novomodelo_io::test_support::owned_piece_defaults;
     use novomodelo_solver::{
         ActiveProfile, ActiveSolver, Basis, ProfiledSolver, RowBatch, SolverError, SolverInterface,
         SolverStatistics, StageTemplate,
@@ -1250,13 +1251,12 @@ mod tests {
     fn candidate_recency_window_keeps_warm_start_cuts() {
         let idx = indexer();
         let loaded = OwnedPolicyCutRecord {
-            cut_id: 0,
             slot_index: 0,
             iteration: 2,
-            forward_pass_index: 0,
             intercept: 5.0,
             coefficients: vec![0.0, 0.0],
             is_active: true,
+            ..owned_piece_defaults()
         };
         let mut pool = CutPool::new_with_warm_start(N_STATE, 16, 1, &[loaded]);
         pool.add_cut(NodeId(0), 0, 0, 7.0, &[0.0, 0.0]);
@@ -3115,13 +3115,12 @@ mod tests {
 
     fn loaded_record(iteration: u32) -> OwnedPolicyCutRecord {
         OwnedPolicyCutRecord {
-            cut_id: 0,
             slot_index: 0,
             iteration,
-            forward_pass_index: 0,
             intercept: 0.0,
             coefficients: vec![0.0],
             is_active: true,
+            ..owned_piece_defaults()
         }
     }
 

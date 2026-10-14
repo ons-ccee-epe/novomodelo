@@ -577,6 +577,7 @@ mod tests {
     )]
 
     use novomodelo_comm::{CommData, CommError, Communicator, LocalBackend, ReduceOp};
+    use novomodelo_io::test_support::owned_piece_defaults;
 
     use super::CutSyncBuffers;
     use crate::{
@@ -932,13 +933,12 @@ mod tests {
 
         let n_state = 1usize;
         let loaded = OwnedPolicyCutRecord {
-            cut_id: 0,
             slot_index: 0,
             iteration: 1,
-            forward_pass_index: 0,
             intercept: 5.0,
             coefficients: vec![1.0],
             is_active: true,
+            ..owned_piece_defaults()
         };
         let mut fcf = FutureCostFunction::new(1, n_state, 1, 4, &[0]);
         fcf.pools[0] = CutPool::new_with_warm_start(n_state, 1, 4, &[loaded]);

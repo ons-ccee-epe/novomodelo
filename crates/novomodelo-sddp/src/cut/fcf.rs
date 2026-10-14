@@ -505,6 +505,7 @@ fn validate_consistent_state_dimension(
 #[cfg(test)]
 mod tests {
     use super::{FutureCostFunction, NodeId};
+    use novomodelo_io::test_support::owned_piece_defaults;
 
     #[test]
     fn new_creates_correct_number_of_pools() {
@@ -782,13 +783,12 @@ mod tests {
         is_active: bool,
     ) -> novomodelo_io::OwnedPolicyCutRecord {
         novomodelo_io::OwnedPolicyCutRecord {
-            cut_id: 0,
             slot_index: 0,
             iteration: 0,
-            forward_pass_index: 0,
             intercept,
             coefficients,
             is_active,
+            ..owned_piece_defaults()
         }
     }
 

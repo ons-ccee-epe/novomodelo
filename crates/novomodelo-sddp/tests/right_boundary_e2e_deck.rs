@@ -215,6 +215,7 @@ mod anticipated_fanout_readback {
     use std::path::{Path, PathBuf};
 
     use chrono::NaiveDate;
+    use novomodelo_io::test_support::{piece_defaults, stage_cuts_payload_defaults};
     use novomodelo_io::{
         ENTITY_SLOT_DATE_SENTINEL, EntitySlot, PolicyCutRecord, ProducerBlock, StageCutsPayload,
         StateFamily, decode_slot_date, encode_slot_date, write_policy_checkpoint,
@@ -271,28 +272,26 @@ mod anticipated_fanout_readback {
     ) {
         let state_dimension = u32::try_from(coefficients.len()).expect("small coefficient count");
         let cut = PolicyCutRecord {
-            cut_id: 0,
             slot_index: 0,
             iteration: 0,
-            forward_pass_index: 0,
             intercept: 1.0,
             coefficients,
             is_active: true,
+            ..piece_defaults()
         };
         let cuts = vec![cut];
         let payload = StageCutsPayload {
             stage_id: 0,
             state_dimension,
             capacity: 1,
-            warm_start_count: 0,
             cuts: &cuts,
             active_cut_indices: &[0],
             populated_count: 1,
             entity_manifest: manifest,
             cost_scale_factor: 1_000_000.0,
             node_id: 0,
-            graph_stage_id: -1,
             priced_state_date: encode_slot_date(priced_date),
+            ..stage_cuts_payload_defaults()
         };
         let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             1,

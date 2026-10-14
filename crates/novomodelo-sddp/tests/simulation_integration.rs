@@ -15,6 +15,7 @@
 #![allow(clippy::needless_update)]
 
 use novomodelo_io::config::{SimulationSelection, StoppingRuleConfig, TrainingSelection};
+use novomodelo_io::test_support::{producer_block_defaults, stage_cuts_payload_defaults};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::mpsc;
@@ -731,8 +732,8 @@ fn train_simulate_write_cycle() {
             entity_manifest: &[],
             cost_scale_factor: 1_000_000.0,
             node_id: i32::try_from(stage_idx).unwrap_or(-1),
-            graph_stage_id: -1,
             priced_state_date: STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+            ..stage_cuts_payload_defaults()
         })
         .collect();
 
@@ -749,11 +750,8 @@ fn train_simulate_write_cycle() {
             warm_start_cuts: warm_start_counts.iter().copied().max().unwrap_or(0),
             warm_start_counts,
             rng_seed: 42,
-            total_visited_states: 0,
-            training_block_mode: "parallel".to_string(),
-            training_block_mode_per_stage: vec![],
             cost_scale_factor: None,
-            lower_bound_history: Vec::new(),
+            ..producer_block_defaults()
         },
     );
 

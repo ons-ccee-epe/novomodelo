@@ -48,6 +48,10 @@ mod tests {
     use super::super::software::policy_checkpoint_remedy;
     use super::checkpoint::finish_interrupted_swap;
     use super::*;
+    use crate::test_support::{
+        checkpoint_manifest_defaults, piece_defaults, producer_block_defaults,
+        stage_cuts_payload_defaults,
+    };
 
     fn make_cut_record(
         cut_id: u64,
@@ -59,10 +63,9 @@ mod tests {
             cut_id,
             slot_index,
             iteration,
-            forward_pass_index: 0,
             intercept: 42.0,
             coefficients,
-            is_active: true,
+            ..piece_defaults()
         }
     }
 
@@ -88,9 +91,7 @@ mod tests {
             populated_count,
             entity_manifest,
             cost_scale_factor: 1_000_000.0,
-            node_id: -1,
-            graph_stage_id: -1,
-            priced_state_date: STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+            ..stage_cuts_payload_defaults()
         })
     }
 
@@ -103,10 +104,9 @@ mod tests {
             cut_id: 7,
             slot_index: 5,
             iteration: 3,
-            forward_pass_index: 0,
             intercept: 42.0,
             coefficients: &coefficients,
-            is_active: true,
+            ..piece_defaults()
         };
 
         let buf = ser_cuts(0, 3, 100, 0, &[cut], &[0], 1, &[]);
@@ -159,13 +159,9 @@ mod tests {
         for &dim in &[1u32, 10, 100, 1000] {
             let coefs: Vec<f64> = (0..dim).map(f64::from).collect();
             let cut = PolicyCutRecord {
-                cut_id: 0,
-                slot_index: 0,
                 iteration: 1,
-                forward_pass_index: 0,
-                intercept: 0.0,
                 coefficients: &coefs,
-                is_active: true,
+                ..piece_defaults()
             };
             let buf = ser_cuts(0, dim, 10, 0, &[cut], &[0], 1, &[]);
             assert!(
@@ -272,8 +268,6 @@ mod tests {
     /// on the payloads, not in the manifest core.
     fn make_metadata(num_stages: u32, _state_dimension: u32) -> CheckpointManifest {
         CheckpointManifest {
-            format_version: FORMAT_VERSION,
-            software: Some("novomodelo".to_string()),
             software_version: "0.0.1".to_string(),
             created_at: "2026-03-08T00:00:00Z".to_string(),
             num_stages,
@@ -284,16 +278,11 @@ mod tests {
                 best_upper_bound: Some(1050.0),
                 max_iterations: 100,
                 forward_passes: 4,
-                warm_start_cuts: 0,
                 warm_start_counts: vec![0; num_stages as usize],
                 rng_seed: 42,
-                total_visited_states: 0,
-                training_block_mode: "parallel".to_string(),
-                training_block_mode_per_stage: vec![],
-                cost_scale_factor: None,
-                lower_bound_history: Vec::new(),
+                ..producer_block_defaults()
             },
-            season_manifest: SeasonManifest::default(),
+            ..checkpoint_manifest_defaults()
         }
     }
 
@@ -309,15 +298,11 @@ mod tests {
             stage_id,
             state_dimension,
             capacity: 100,
-            warm_start_count: 0,
             cuts,
             active_cut_indices,
             populated_count: u32::try_from(cuts.len()).unwrap(),
-            entity_manifest: &[],
             cost_scale_factor: 1_000_000.0,
-            node_id: -1,
-            graph_stage_id: -1,
-            priced_state_date: STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+            ..stage_cuts_payload_defaults()
         }
     }
 
@@ -666,12 +651,11 @@ mod tests {
         let cuts = [
             PolicyCutRecord {
                 cut_id: 10,
-                slot_index: 0,
                 iteration: 1,
-                forward_pass_index: 0,
                 intercept: 100.0,
                 coefficients: &c0,
                 is_active: true,
+                ..piece_defaults()
             },
             PolicyCutRecord {
                 cut_id: 20,
@@ -738,12 +722,10 @@ mod tests {
     fn deserialize_stage_cuts_zero_length_coefficients() {
         let cut = PolicyCutRecord {
             cut_id: 1,
-            slot_index: 0,
             iteration: 1,
-            forward_pass_index: 0,
             intercept: 5.0,
             coefficients: &[],
-            is_active: true,
+            ..piece_defaults()
         };
         let buf = ser_cuts(0, 0, 10, 0, &[cut], &[0], 1, &[]);
         let result =
@@ -761,12 +743,11 @@ mod tests {
         let coefs: Vec<f64> = (0..dim).map(f64::from).collect();
         let cut = PolicyCutRecord {
             cut_id: 42,
-            slot_index: 0,
             iteration: 1,
-            forward_pass_index: 0,
             intercept: -99.0,
             coefficients: &coefs,
             is_active: false,
+            ..piece_defaults()
         };
         let buf = ser_cuts(3, dim, 10, 0, &[cut], &[0], 1, &[]);
         let result =
@@ -1379,18 +1360,14 @@ mod tests {
 
         let stage_cuts_payloads = [
             StageCutsPayload {
-                stage_id: 0,
                 state_dimension: 2,
                 capacity: 100,
                 warm_start_count: 10,
                 cuts: &cuts_s0,
                 active_cut_indices: &[0, 1],
                 populated_count: 2,
-                entity_manifest: &[],
                 cost_scale_factor: 1_000_000.0,
-                node_id: -1,
-                graph_stage_id: -1,
-                priced_state_date: STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+                ..stage_cuts_payload_defaults()
             },
             StageCutsPayload {
                 stage_id: 1,
@@ -1400,11 +1377,8 @@ mod tests {
                 cuts: &cuts_s1,
                 active_cut_indices: &[0, 1, 2],
                 populated_count: 3,
-                entity_manifest: &[],
                 cost_scale_factor: 1_000_000.0,
-                node_id: -1,
-                graph_stage_id: -1,
-                priced_state_date: STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+                ..stage_cuts_payload_defaults()
             },
             StageCutsPayload {
                 stage_id: 2,
@@ -1414,11 +1388,8 @@ mod tests {
                 cuts: &cuts_s2,
                 active_cut_indices: &[0, 1, 2, 3],
                 populated_count: 4,
-                entity_manifest: &[],
                 cost_scale_factor: 1_000_000.0,
-                node_id: -1,
-                graph_stage_id: -1,
-                priced_state_date: STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+                ..stage_cuts_payload_defaults()
             },
         ];
 

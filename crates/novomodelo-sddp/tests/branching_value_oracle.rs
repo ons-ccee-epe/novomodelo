@@ -67,6 +67,7 @@
 mod common;
 
 use novomodelo_io::config::BackwardScheduler;
+use novomodelo_io::test_support::owned_piece_defaults;
 use novomodelo_sddp::CutPool;
 use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::cut::SlotOrigin;
@@ -942,13 +943,12 @@ fn inject_constant_terminal_boundary_fcf(setup: &mut StudySetup, intercept: f64,
     let state_dim = setup.fcf.state_dimension;
     let forward_passes = setup.fcf.forward_passes;
     let record = novomodelo_io::OwnedPolicyCutRecord {
-        cut_id: 0,
         slot_index: 0,
         coefficients: vec![0.0; state_dim],
         intercept,
         iteration: 0,
-        forward_pass_index: 0,
         is_active,
+        ..owned_piece_defaults()
     };
     setup.fcf.pools[terminal] =
         CutPool::new_with_warm_start(state_dim, forward_passes, 0, &[record]);

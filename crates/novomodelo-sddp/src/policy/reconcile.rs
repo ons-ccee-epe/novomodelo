@@ -899,6 +899,7 @@ mod tests {
         transit_bucket_slot_over, ymd,
     };
     use novomodelo_core::{AnticipatedCommitmentHistory, EntityId};
+    use novomodelo_io::test_support::owned_piece_defaults;
     use novomodelo_io::{EntitySlot, OwnedPolicyCutRecord, encode_slot_date};
 
     /// The two-step index-then-rebind call `load_boundary_cuts` performs,
@@ -945,10 +946,10 @@ mod tests {
             cut_id: 1,
             slot_index: 0,
             iteration: 0,
-            forward_pass_index: 0,
             intercept: 0.0,
             coefficients,
             is_active: true,
+            ..owned_piece_defaults()
         }
     }
 

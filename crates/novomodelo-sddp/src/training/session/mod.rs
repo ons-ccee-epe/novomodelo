@@ -1533,6 +1533,7 @@ mod tests {
         },
     };
     use novomodelo_io::OwnedPolicyCutRecord;
+    use novomodelo_io::test_support::owned_piece_defaults;
     use novomodelo_solver::{
         Basis, RowBatch, SolverError, SolverInterface, SolverStatistics, StageTemplate,
     };
@@ -2248,10 +2249,10 @@ mod tests {
                 cut_id: u64::from(slot_index),
                 slot_index,
                 iteration: 0,
-                forward_pass_index: 0,
                 intercept: 1.0,
                 coefficients: vec![1.0],
                 is_active: true,
+                ..owned_piece_defaults()
             })
             .collect();
         fcf.pools[2] = CutPool::new_with_warm_start(1, 1, 0, &boundary);
@@ -2338,10 +2339,10 @@ mod tests {
                 cut_id: u64::from(slot_index),
                 slot_index,
                 iteration: 0,
-                forward_pass_index: 0,
                 intercept: 1.0,
                 coefficients: vec![1.0],
                 is_active: true,
+                ..owned_piece_defaults()
             })
             .collect();
         fcf.pools[2] = CutPool::new_with_warm_start(1, 1, 0, &boundary);
@@ -2925,13 +2926,12 @@ mod tests {
         let mut fcf = make_fcf(n_stages, 1, forward_passes, 10);
         let terminal_idx = n_stages - 1;
         let records = vec![OwnedPolicyCutRecord {
-            cut_id: 0,
             slot_index: 0,
             coefficients: vec![1.0],
             intercept: 5.0,
             is_active: true,
             iteration: 0,
-            forward_pass_index: 0,
+            ..owned_piece_defaults()
         }];
         fcf.pools[terminal_idx] = CutPool::new_with_warm_start(1, forward_passes, 0, &records);
         let capacity_before = fcf.pools[terminal_idx].capacity;

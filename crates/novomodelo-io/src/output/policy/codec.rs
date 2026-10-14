@@ -1703,6 +1703,10 @@ where
 mod tests {
     use super::super::records::SEASON_CYCLE_CODE_MONTHLY;
     use super::*;
+    use crate::test_support::{
+        checkpoint_manifest_defaults, piece_defaults, producer_block_defaults,
+        stage_cuts_payload_defaults,
+    };
 
     /// The reject-old-version half of the dual-owned wire-format checklist: a
     /// buffer without the `CBVF` `file_identifier` (a pre-0.14 `finish_minimal`
@@ -1713,26 +1717,19 @@ mod tests {
         let coeffs = [1.0_f64, 2.0];
         let cut = PolicyCutRecord {
             cut_id: 1,
-            slot_index: 0,
             iteration: 1,
-            forward_pass_index: 0,
             intercept: 3.0,
             coefficients: &coeffs,
-            is_active: true,
+            ..piece_defaults()
         };
         let mut buf = serialize_stage_cuts(&StageCutsPayload {
-            stage_id: 0,
             state_dimension: 2,
             capacity: 8,
-            warm_start_count: 0,
             cuts: &[cut],
             active_cut_indices: &[0],
             populated_count: 1,
-            entity_manifest: &[],
             cost_scale_factor: 1_000_000.0,
-            node_id: -1,
-            graph_stage_id: -1,
-            priced_state_date: STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+            ..stage_cuts_payload_defaults()
         });
         assert_eq!(
             buf.get(4..8),
@@ -1758,30 +1755,24 @@ mod tests {
         let coeffs = [1.0_f64, 2.0];
         let cut = PolicyCutRecord {
             cut_id: 1,
-            slot_index: 0,
             iteration: 1,
-            forward_pass_index: 0,
             intercept: 3.0,
             coefficients: &coeffs,
-            is_active: true,
+            ..piece_defaults()
         };
         let manifest = [
             EntitySlot::inflow_lag(5, 3, true).with_reference_date(20_310_401),
             EntitySlot::transit_bucket(9, 2, true).with_interval(20_311_201, 20_320_101),
         ];
         let buf = serialize_stage_cuts(&StageCutsPayload {
-            stage_id: 0,
             state_dimension: 2,
             capacity: 8,
-            warm_start_count: 0,
             cuts: &[cut],
             active_cut_indices: &[0],
             populated_count: 1,
             entity_manifest: &manifest,
             cost_scale_factor: 1_000_000.0,
-            node_id: -1,
-            graph_stage_id: -1,
-            priced_state_date: STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+            ..stage_cuts_payload_defaults()
         });
 
         let result = deserialize_stage_cuts(&buf).expect("round-trip must succeed");
@@ -1807,26 +1798,20 @@ mod tests {
         let coeffs = [1.0_f64, 2.0];
         let cut = PolicyCutRecord {
             cut_id: 1,
-            slot_index: 0,
             iteration: 1,
-            forward_pass_index: 0,
             intercept: 3.0,
             coefficients: &coeffs,
-            is_active: true,
+            ..piece_defaults()
         };
         let buf = serialize_stage_cuts(&StageCutsPayload {
-            stage_id: 0,
             state_dimension: 2,
             capacity: 8,
-            warm_start_count: 0,
             cuts: &[cut],
             active_cut_indices: &[0],
             populated_count: 1,
-            entity_manifest: &[],
             cost_scale_factor: 1_000_000.0,
-            node_id: -1,
-            graph_stage_id: -1,
             priced_state_date: 20_311_201,
+            ..stage_cuts_payload_defaults()
         });
 
         let result = deserialize_stage_cuts(&buf).expect("round-trip must succeed");
@@ -1868,36 +1853,15 @@ mod tests {
         );
     }
 
-    fn minimal_manifest_producer() -> ProducerBlock {
-        ProducerBlock {
-            completed_iterations: 0,
-            final_lower_bound: 0.0,
-            best_upper_bound: None,
-            max_iterations: 0,
-            forward_passes: 0,
-            warm_start_cuts: 0,
-            warm_start_counts: vec![],
-            rng_seed: 0,
-            total_visited_states: 0,
-            training_block_mode: "parallel".to_string(),
-            training_block_mode_per_stage: vec![],
-            cost_scale_factor: None,
-            lower_bound_history: Vec::new(),
-        }
-    }
-
     #[test]
     fn checkpoint_manifest_software_round_trips_and_absent_reads_as_none() {
         for software in [Some("novomodelo".to_string()), None] {
             let manifest = CheckpointManifest {
-                format_version: FORMAT_VERSION,
                 software: software.clone(),
                 software_version: "0.14.0".to_string(),
                 created_at: "2026-09-15T00:00:00Z".to_string(),
                 num_stages: 1,
-                graph_manifest: GraphManifest::default(),
-                producer: minimal_manifest_producer(),
-                season_manifest: SeasonManifest::default(),
+                ..checkpoint_manifest_defaults()
             };
 
             let buf = serialize_checkpoint_manifest(&manifest);
@@ -1912,17 +1876,14 @@ mod tests {
     fn checkpoint_manifest_round_trips_the_lower_bound_history_bitwise() {
         let history = [1.5, -0.0, f64::MIN_POSITIVE, 1.0e300];
         let manifest = CheckpointManifest {
-            format_version: FORMAT_VERSION,
-            software: Some("novomodelo".to_string()),
             software_version: "0.18.0".to_string(),
             created_at: "2026-10-06T00:00:00Z".to_string(),
             num_stages: 1,
-            graph_manifest: GraphManifest::default(),
             producer: ProducerBlock {
                 lower_bound_history: history.to_vec(),
-                ..minimal_manifest_producer()
+                ..producer_block_defaults()
             },
-            season_manifest: SeasonManifest::default(),
+            ..checkpoint_manifest_defaults()
         };
 
         let buf = serialize_checkpoint_manifest(&manifest);
@@ -1994,13 +1955,9 @@ mod tests {
     #[test]
     fn checkpoint_manifest_season_descriptor_round_trips() {
         let manifest = CheckpointManifest {
-            format_version: FORMAT_VERSION,
-            software: Some("novomodelo".to_string()),
             software_version: "0.14.0".to_string(),
             created_at: "2026-09-15T00:00:00Z".to_string(),
             num_stages: 2,
-            graph_manifest: GraphManifest::default(),
-            producer: minimal_manifest_producer(),
             season_manifest: SeasonManifest {
                 cycle_code: SEASON_CYCLE_CODE_MONTHLY,
                 n_seasons: 12,
@@ -2015,6 +1972,7 @@ mod tests {
                     },
                 ],
             },
+            ..checkpoint_manifest_defaults()
         };
 
         let buf = serialize_checkpoint_manifest(&manifest);
@@ -2045,13 +2003,9 @@ mod tests {
     #[test]
     fn checkpoint_manifest_rejects_unsorted_season_hydro_orders() {
         let manifest = CheckpointManifest {
-            format_version: FORMAT_VERSION,
-            software: Some("novomodelo".to_string()),
             software_version: "0.14.0".to_string(),
             created_at: "2026-09-16T00:00:00Z".to_string(),
             num_stages: 1,
-            graph_manifest: GraphManifest::default(),
-            producer: minimal_manifest_producer(),
             season_manifest: SeasonManifest {
                 cycle_code: SEASON_CYCLE_CODE_MONTHLY,
                 n_seasons: 2,
@@ -2066,6 +2020,7 @@ mod tests {
                     },
                 ],
             },
+            ..checkpoint_manifest_defaults()
         };
         let buf = serialize_checkpoint_manifest(&manifest);
 
@@ -2084,13 +2039,9 @@ mod tests {
     #[test]
     fn checkpoint_manifest_rejects_season_orders_length_mismatch() {
         let manifest = CheckpointManifest {
-            format_version: FORMAT_VERSION,
-            software: Some("novomodelo".to_string()),
             software_version: "0.14.0".to_string(),
             created_at: "2026-09-16T00:00:00Z".to_string(),
             num_stages: 1,
-            graph_manifest: GraphManifest::default(),
-            producer: minimal_manifest_producer(),
             season_manifest: SeasonManifest {
                 cycle_code: SEASON_CYCLE_CODE_MONTHLY,
                 n_seasons: 4,
@@ -2099,6 +2050,7 @@ mod tests {
                     orders: vec![1, 1, 1],
                 }],
             },
+            ..checkpoint_manifest_defaults()
         };
         let buf = serialize_checkpoint_manifest(&manifest);
 

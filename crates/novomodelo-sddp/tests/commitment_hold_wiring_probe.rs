@@ -29,6 +29,7 @@ use novomodelo_io::config::{
     StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
     UpperBoundEvaluationConfig,
 };
+use novomodelo_io::test_support::owned_piece_defaults;
 use novomodelo_io::{
     EntitySlot, OwnedPolicyCutRecord, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, StageCutsReadResult,
 };
@@ -274,19 +275,19 @@ fn sample_cut_records() -> Vec<OwnedPolicyCutRecord> {
             cut_id: 1,
             slot_index: 0,
             iteration: 0,
-            forward_pass_index: 0,
             intercept: 10.0,
             coefficients: vec![1.0, -2.0, 3.5],
             is_active: true,
+            ..owned_piece_defaults()
         },
         OwnedPolicyCutRecord {
             cut_id: 2,
             slot_index: 1,
             iteration: 0,
-            forward_pass_index: 0,
             intercept: -4.0,
             coefficients: vec![0.0, 7.25, -1.0],
             is_active: true,
+            ..owned_piece_defaults()
         },
     ]
 }

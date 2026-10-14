@@ -4,9 +4,9 @@
 //! that feature; must never be enabled in a production build.
 //!
 //! Entity builders, `ParsedData` skeletons, `Config` variants, input-file
-//! writers, the minimal-case corpus, output fixtures and stats-parser
-//! templates. Single-use helpers stay in their own module's `mod tests` block
-//! to keep the blast radius small.
+//! writers, the minimal-case corpus, output fixtures, stats-parser templates
+//! and the policy checkpoint record defaults. Single-use helpers stay in their
+//! own module's `mod tests` block to keep the blast radius small.
 //!
 //! Builders returning the crate-private `ParsedData` (`base_parsed_data`,
 //! `make_data`, `make_data_5b`, `make_data_estimation`) are additionally
@@ -40,7 +40,10 @@ use novomodelo_core::{
 use novomodelo_core::{entities::Line, initial_conditions::InitialConditions};
 
 use crate::{
-    InflowArCoefficientRow, InflowHistoryRow, LoadError,
+    CheckpointManifest, FORMAT_VERSION, GraphManifest, InflowArCoefficientRow, InflowHistoryRow,
+    LoadError, OwnedPolicyCutRecord, PolicyCutRecord, ProducerBlock, SOFTWARE_NAME,
+    SOFTWARE_VERSION, STAGE_CUTS_GRAPH_STAGE_ID_SENTINEL, STAGE_CUTS_NODE_ID_SENTINEL,
+    STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, SeasonManifest, StageCutsPayload,
     config::Config,
     extensions::{FphaHyperplaneRow, HydroGeometryRow},
     parse_config,
@@ -1209,6 +1212,90 @@ pub fn make_ar_row(hydro_id: i32, stage_id: i32, lag: i32) -> InflowArCoefficien
         stage_id,
         lag,
         coefficient: 0.5,
+    }
+}
+
+// ── Policy checkpoint record defaults ─────────────────────────────────────────
+
+/// An [`OwnedPolicyCutRecord`] with zero ids, no coefficients and `is_active` set.
+#[must_use]
+pub fn owned_piece_defaults() -> OwnedPolicyCutRecord {
+    OwnedPolicyCutRecord {
+        cut_id: 0,
+        slot_index: 0,
+        iteration: 0,
+        forward_pass_index: 0,
+        intercept: 0.0,
+        coefficients: Vec::new(),
+        is_active: true,
+    }
+}
+
+/// A [`PolicyCutRecord`] with zero ids, no coefficients and `is_active` set.
+#[must_use]
+pub fn piece_defaults<'a>() -> PolicyCutRecord<'a> {
+    PolicyCutRecord {
+        cut_id: 0,
+        slot_index: 0,
+        iteration: 0,
+        forward_pass_index: 0,
+        intercept: 0.0,
+        coefficients: &[],
+        is_active: true,
+    }
+}
+
+/// A [`StageCutsPayload`] with zero counts, cost scale `1.0` and the sentinel node, stage and date.
+#[must_use]
+pub fn stage_cuts_payload_defaults<'a>() -> StageCutsPayload<'a> {
+    StageCutsPayload {
+        stage_id: 0,
+        state_dimension: 0,
+        capacity: 0,
+        warm_start_count: 0,
+        cuts: &[],
+        active_cut_indices: &[],
+        populated_count: 0,
+        entity_manifest: &[],
+        cost_scale_factor: 1.0,
+        node_id: STAGE_CUTS_NODE_ID_SENTINEL,
+        graph_stage_id: STAGE_CUTS_GRAPH_STAGE_ID_SENTINEL,
+        priced_state_date: STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+    }
+}
+
+/// A [`ProducerBlock`] with zero counts, the `parallel` block mode and no cost-scale marker.
+#[must_use]
+pub fn producer_block_defaults() -> ProducerBlock {
+    ProducerBlock {
+        completed_iterations: 0,
+        final_lower_bound: 0.0,
+        best_upper_bound: None,
+        max_iterations: 0,
+        forward_passes: 0,
+        warm_start_cuts: 0,
+        warm_start_counts: Vec::new(),
+        rng_seed: 0,
+        total_visited_states: 0,
+        training_block_mode: "parallel".to_string(),
+        training_block_mode_per_stage: Vec::new(),
+        cost_scale_factor: None,
+        lower_bound_history: Vec::new(),
+    }
+}
+
+/// A [`CheckpointManifest`] stamped by this build, with no stages and the default producer.
+#[must_use]
+pub fn checkpoint_manifest_defaults() -> CheckpointManifest {
+    CheckpointManifest {
+        format_version: FORMAT_VERSION,
+        software: Some(SOFTWARE_NAME.to_string()),
+        software_version: SOFTWARE_VERSION.to_string(),
+        created_at: String::new(),
+        num_stages: 0,
+        graph_manifest: GraphManifest::default(),
+        producer: producer_block_defaults(),
+        season_manifest: SeasonManifest::default(),
     }
 }
 

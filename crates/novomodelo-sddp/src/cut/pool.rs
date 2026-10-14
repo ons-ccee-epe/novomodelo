@@ -1439,6 +1439,7 @@ mod tests {
     use crate::setup::NodeId;
     use crate::test_support::state_layout;
     use novomodelo_core::temporal::StageStateConfig;
+    use novomodelo_io::test_support::owned_piece_defaults;
     use proptest::prelude::*;
     use proptest::test_runner::RngSeed;
 
@@ -1858,13 +1859,12 @@ mod tests {
 
         let records = vec![
             OwnedPolicyCutRecord {
-                cut_id: 0,
                 slot_index: 0,
                 coefficients: vec![1.0, 2.0],
                 intercept: 10.0,
                 is_active: true,
                 iteration: 5,
-                forward_pass_index: 0,
+                ..owned_piece_defaults()
             },
             OwnedPolicyCutRecord {
                 cut_id: 1,
@@ -1891,13 +1891,12 @@ mod tests {
 
     fn loaded_cut(iteration: u32) -> novomodelo_io::OwnedPolicyCutRecord {
         novomodelo_io::OwnedPolicyCutRecord {
-            cut_id: 0,
             slot_index: 0,
             iteration,
-            forward_pass_index: 0,
             intercept: 1.0,
             coefficients: vec![1.0],
             is_active: true,
+            ..owned_piece_defaults()
         }
     }
 
@@ -2311,13 +2310,12 @@ mod tests {
 
         let records = vec![
             OwnedPolicyCutRecord {
-                cut_id: 0,
                 slot_index: 0,
                 coefficients: vec![1.0, 2.0],
                 intercept: 5.0,
                 is_active: true,
                 iteration: 3,
-                forward_pass_index: 0,
+                ..owned_piece_defaults()
             },
             OwnedPolicyCutRecord {
                 cut_id: 1,
@@ -2348,25 +2346,23 @@ mod tests {
         assert!(!empty.has_prefix_cuts());
 
         let active_record = vec![OwnedPolicyCutRecord {
-            cut_id: 0,
             slot_index: 0,
             coefficients: vec![1.0],
             intercept: 5.0,
             is_active: true,
             iteration: 0,
-            forward_pass_index: 0,
+            ..owned_piece_defaults()
         }];
         let active = CutPool::new_with_warm_start(1, 4, 100, &active_record);
         assert!(active.has_prefix_cuts());
 
         let inactive_record = vec![OwnedPolicyCutRecord {
-            cut_id: 0,
             slot_index: 0,
             coefficients: vec![1.0],
             intercept: 5.0,
             is_active: false,
             iteration: 0,
-            forward_pass_index: 0,
+            ..owned_piece_defaults()
         }];
         let inactive = CutPool::new_with_warm_start(1, 4, 100, &inactive_record);
         assert!(inactive.has_prefix_cuts());

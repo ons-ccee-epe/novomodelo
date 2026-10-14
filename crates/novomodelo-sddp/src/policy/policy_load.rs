@@ -1586,6 +1586,9 @@ pub fn reconcile_boundary_policy(
 mod tests {
     use chrono::NaiveDate;
     use novomodelo_core::{AnticipatedCommitmentHistory, EntityId};
+    use novomodelo_io::test_support::{
+        owned_piece_defaults, piece_defaults, stage_cuts_payload_defaults,
+    };
     use novomodelo_io::{
         EntitySlot, GraphManifest, HydroSeasonOrders, ProducerBlock, SEASON_CYCLE_CODE_MONTHLY,
         SEASON_CYCLE_CODE_WEEKLY, SOFTWARE_NAME, SOFTWARE_VERSION,
@@ -1750,10 +1753,10 @@ mod tests {
                         cut_id: i as u64,
                         slot_index: i as u32,
                         iteration: i as u32,
-                        forward_pass_index: 0,
                         intercept,
                         coefficients: &coefficients,
                         is_active: true,
+                        ..piece_defaults()
                     })
                     .collect()
             })
@@ -1768,15 +1771,14 @@ mod tests {
                 stage_id: s as u32,
                 state_dimension,
                 capacity: n_cuts as u32,
-                warm_start_count: 0,
                 cuts: &cut_records[s],
                 active_cut_indices: &active_indices[s],
                 populated_count: n_cuts as u32,
                 entity_manifest: manifest,
                 cost_scale_factor: 1.0,
                 node_id: s as i32,
-                graph_stage_id: -1,
                 priced_state_date: encode_slot_date(fixture_priced_date(s as u32)),
+                ..stage_cuts_payload_defaults()
             })
             .collect();
 
@@ -1821,28 +1823,26 @@ mod tests {
     ) {
         let state_dimension = coefficients.len() as u32;
         let cut = novomodelo_io::PolicyCutRecord {
-            cut_id: 0,
             slot_index: 0,
             iteration: 0,
-            forward_pass_index: 0,
             intercept,
             coefficients,
             is_active: true,
+            ..piece_defaults()
         };
         let cuts = vec![cut];
         let payload = StageCutsPayload {
             stage_id,
             state_dimension,
             capacity: 1,
-            warm_start_count: 0,
             cuts: &cuts,
             active_cut_indices: &[0],
             populated_count: 1,
             entity_manifest: &[],
             cost_scale_factor: 1.0,
             node_id: i32::try_from(stage_id).unwrap_or(-1),
-            graph_stage_id: -1,
             priced_state_date: encode_slot_date(fixture_priced_date(stage_id)),
+            ..stage_cuts_payload_defaults()
         };
         let metadata = test_support::checkpoint_metadata(
             stage_id + 1,
@@ -1904,10 +1904,10 @@ mod tests {
             cut_id: 1,
             slot_index: 0,
             iteration: 0,
-            forward_pass_index: 0,
             intercept,
             coefficients,
             is_active: true,
+            ..owned_piece_defaults()
         }
     }
 
@@ -1996,13 +1996,12 @@ mod tests {
                 .iter()
                 .zip(&intercepts)
                 .map(|(coeffs, &intercept)| novomodelo_io::PolicyCutRecord {
-                    cut_id: 0,
                     slot_index: 0,
                     iteration: 0,
-                    forward_pass_index: 0,
                     intercept,
                     coefficients: coeffs,
                     is_active: true,
+                    ..piece_defaults()
                 })
                 .collect(),
         ];
@@ -2043,13 +2042,12 @@ mod tests {
 
         let internal_records: Vec<Vec<novomodelo_io::PolicyCutRecord<'_>>> =
             vec![vec![novomodelo_io::PolicyCutRecord {
-                cut_id: 0,
                 slot_index: 0,
                 iteration: 0,
-                forward_pass_index: 0,
                 intercept,
                 coefficients: &original[0],
                 is_active: true,
+                ..piece_defaults()
             }]];
 
         let exported = scale_cut_records_for_export(&internal_records, s_train);
@@ -3148,10 +3146,10 @@ mod tests {
                         cut_id: i as u64,
                         slot_index: i as u32,
                         iteration: 0,
-                        forward_pass_index: 0,
                         intercept,
                         coefficients: &coefficients,
                         is_active: true,
+                        ..piece_defaults()
                     })
                     .collect()
             })
@@ -3169,15 +3167,14 @@ mod tests {
                     stage_id: *pool_id,
                     state_dimension: 1,
                     capacity: intercepts.len() as u32,
-                    warm_start_count: 0,
                     cuts,
                     active_cut_indices: active,
                     populated_count: intercepts.len() as u32,
                     entity_manifest: &[],
                     cost_scale_factor: 1.0,
                     node_id: i32::try_from(*pool_id).unwrap_or(-1),
-                    graph_stage_id: -1,
                     priced_state_date: *priced_state_date,
+                    ..stage_cuts_payload_defaults()
                 },
             )
             .collect();
@@ -4076,10 +4073,10 @@ mod tests {
             cut_id: u64::from(slot),
             slot_index: slot,
             iteration: 0,
-            forward_pass_index: 0,
             intercept: 0.0,
             coefficients: vec![0.0],
             is_active: true,
+            ..owned_piece_defaults()
         }
     }
 
@@ -4709,28 +4706,26 @@ mod tests {
     ) {
         let state_dimension = coefficients.len() as u32;
         let cut = novomodelo_io::PolicyCutRecord {
-            cut_id: 0,
             slot_index: 0,
             iteration: 0,
-            forward_pass_index: 0,
             intercept,
             coefficients,
             is_active: true,
+            ..piece_defaults()
         };
         let cuts = vec![cut];
         let payload = StageCutsPayload {
             stage_id: 0,
             state_dimension,
             capacity: 1,
-            warm_start_count: 0,
             cuts: &cuts,
             active_cut_indices: &[0],
             populated_count: 1,
             entity_manifest: manifest,
             cost_scale_factor: 1.0,
             node_id: 0,
-            graph_stage_id: -1,
             priced_state_date: encode_slot_date(fixture_priced_date(0)),
+            ..stage_cuts_payload_defaults()
         };
         let metadata = test_support::checkpoint_metadata(
             1,

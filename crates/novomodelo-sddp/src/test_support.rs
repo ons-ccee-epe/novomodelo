@@ -38,10 +38,14 @@ use novomodelo_io::config::{
     SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode, StoppingRuleConfig,
     TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
+use novomodelo_io::test_support::{
+    checkpoint_manifest_defaults, piece_defaults, producer_block_defaults,
+    stage_cuts_payload_defaults,
+};
 use novomodelo_io::{
     EntitySlot, GraphManifest, ManifestEdge, ManifestNode, PolicyCutRecord, ProducerBlock,
-    SOFTWARE_NAME, SOFTWARE_VERSION, SoftwareIdentity, StageCutsPayload, decode_slot_date,
-    encode_slot_date, write_policy_checkpoint,
+    SoftwareIdentity, StageCutsPayload, decode_slot_date, encode_slot_date,
+    write_policy_checkpoint,
 };
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 use novomodelo_stochastic::{
@@ -1356,14 +1360,11 @@ pub fn checkpoint_metadata(
     producer: novomodelo_io::ProducerBlock,
 ) -> novomodelo_io::CheckpointManifest {
     novomodelo_io::CheckpointManifest {
-        format_version: novomodelo_io::FORMAT_VERSION,
-        software: Some(SOFTWARE_NAME.to_string()),
-        software_version: SOFTWARE_VERSION.to_string(),
         created_at: "2026-01-01T00:00:00Z".to_string(),
         num_stages,
         graph_manifest,
         producer,
-        season_manifest: novomodelo_io::SeasonManifest::default(),
+        ..checkpoint_manifest_defaults()
     }
 }
 
@@ -1428,21 +1429,7 @@ pub fn next_month_anchor(month_anchor: i32) -> i32 {
 /// syntax.
 #[must_use]
 pub fn producer_block() -> ProducerBlock {
-    ProducerBlock {
-        completed_iterations: 0,
-        final_lower_bound: 0.0,
-        best_upper_bound: None,
-        max_iterations: 0,
-        forward_passes: 0,
-        warm_start_cuts: 0,
-        warm_start_counts: vec![],
-        rng_seed: 0,
-        total_visited_states: 0,
-        training_block_mode: "parallel".to_string(),
-        training_block_mode_per_stage: vec![],
-        cost_scale_factor: None,
-        lower_bound_history: Vec::new(),
-    }
+    producer_block_defaults()
 }
 
 /// A 1:1 chain [`GraphManifest`] over `n_stages` nodes (node id == stage id
@@ -1499,27 +1486,25 @@ pub fn write_synthetic_boundary(
     priced_state_date: NaiveDate,
 ) {
     let cuts = vec![PolicyCutRecord {
-        cut_id: 0,
         slot_index: 0,
         iteration: 0,
-        forward_pass_index: 0,
         intercept,
         coefficients,
         is_active: true,
+        ..piece_defaults()
     }];
     let payload = StageCutsPayload {
         stage_id: 0,
         state_dimension,
         capacity: 1,
-        warm_start_count: 0,
         cuts: &cuts,
         active_cut_indices: &[0],
         populated_count: 1,
         entity_manifest: &[],
         cost_scale_factor: 1.0,
         node_id: 100,
-        graph_stage_id: -1,
         priced_state_date: encode_slot_date(priced_state_date),
+        ..stage_cuts_payload_defaults()
     };
     let metadata = checkpoint_metadata(
         1,

@@ -10,6 +10,7 @@ use crate::lp::builder::StageGeometry;
 use crate::lp::indexer::{AnticipatedPlants, StateSpace, ThermalSys};
 use crate::test_support;
 use crate::time_value::DeliveryCalendar;
+use novomodelo_io::test_support::owned_piece_defaults;
 use novomodelo_stochastic::ExternalScenarioLibrary;
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 use novomodelo_stochastic::season_cast::StageCalendar;
@@ -11097,13 +11098,12 @@ fn study_horizon_end_ignores_pre_study_stages() {
 fn terminal_boundary_flag_formulas_agree_on_chain_and_terminal_fan() {
     fn boundary_record(state_dimension: usize) -> novomodelo_io::OwnedPolicyCutRecord {
         novomodelo_io::OwnedPolicyCutRecord {
-            cut_id: 0,
             slot_index: 0,
             coefficients: vec![0.0; state_dimension],
             intercept: 100.0,
             is_active: true,
             iteration: 0,
-            forward_pass_index: 0,
+            ..owned_piece_defaults()
         }
     }
 

@@ -26,6 +26,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use novomodelo_io::test_support::{piece_defaults, stage_cuts_payload_defaults};
 use novomodelo_io::{
     CheckpointManifest, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, FORMAT_VERSION, GraphManifest,
     HydroSeasonOrders, ManifestEdge, ManifestNode, OwnedPolicyBasisRecord, OwnedPolicyCutRecord,
@@ -265,9 +266,7 @@ fn ser_cuts(
         populated_count,
         entity_manifest,
         cost_scale_factor: 1_000_000.0,
-        node_id: -1,
-        graph_stage_id: -1,
-        priced_state_date: STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+        ..stage_cuts_payload_defaults()
     })
 }
 
@@ -405,12 +404,10 @@ fn stage_cuts_reduced_dimension_writer_matches_schema() {
     let coeffs = [3.5, -1.25];
     let cuts = [PolicyCutRecord {
         cut_id: 42,
-        slot_index: 0,
         iteration: 2,
-        forward_pass_index: 0,
         intercept: 7.0,
         coefficients: &coeffs,
-        is_active: true,
+        ..piece_defaults()
     }];
     let active = [0_u32];
     let manifest = reduced_storage_manifest();
@@ -487,26 +484,23 @@ fn stage_cuts_self_describing_facts_round_trip() {
     let coeffs = [1.0, 2.0, 3.0];
     let cuts = [PolicyCutRecord {
         cut_id: 5,
-        slot_index: 0,
         iteration: 2,
-        forward_pass_index: 0,
         intercept: 9.0,
         coefficients: &coeffs,
-        is_active: true,
+        ..piece_defaults()
     }];
     let payload = StageCutsPayload {
         stage_id: 4,
         state_dimension: 3,
         capacity: 8,
-        warm_start_count: 0,
         cuts: &cuts,
         active_cut_indices: &[0],
         populated_count: 1,
-        entity_manifest: &[],
         cost_scale_factor: 1_000_000.0,
         node_id: 3,
         graph_stage_id: 7,
         priced_state_date: 20_311_201,
+        ..stage_cuts_payload_defaults()
     };
     let buf = serialize_stage_cuts(&payload);
 
@@ -1297,12 +1291,10 @@ fn entity_slot_per_family_dates_round_trip() {
     let coeffs = [1.0, 2.0];
     let cuts = [PolicyCutRecord {
         cut_id: 1,
-        slot_index: 0,
         iteration: 1,
-        forward_pass_index: 0,
         intercept: 3.0,
         coefficients: &coeffs,
-        is_active: true,
+        ..piece_defaults()
     }];
     let manifest = vec![
         EntitySlot::inflow_lag(5, 3, true).with_reference_date(20_310_401),
