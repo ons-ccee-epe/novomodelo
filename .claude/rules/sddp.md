@@ -623,10 +623,10 @@ A warm start and a boundary injection restart both counters at 0 for the loaded
 prefix (`CutPool::restart_activity_clock`), because their records carry the
 iterations of another run or study: `check_full_fcf_load` restarts every pool
 for `FullFcfLoadKind::WarmStart`, and `inject_boundary_cuts` restarts the
-terminal pool it installs in every policy mode. A resume keeps the record's
-iteration, which is the value `add_cut` wrote when the run generated the cut; a
-simulation-only load keeps it too and reads no clock, since the simulation seeds
-at iteration 0. The restart touches the two counters of the prefix slots only:
+terminal pool it installs in every policy mode. A resume restores the counters
+the checkpoint carries (below); a simulation-only load keeps the record's
+iteration and reads no clock, since the simulation seeds at iteration 0. The
+restart touches the two counters of the prefix slots only:
 `iteration_generated` stays the record's iteration, as the paragraph above
 requires. A restarted active loaded cut is in the seed of iterations
 `1..=seed_window` and then of the `seed_window` iterations that follow each
@@ -644,24 +644,52 @@ nothing. Restarting the clock under a resume is the opposite error: a reloaded
 cut the run generated would fall out of the seed window it was in before the
 checkpoint.
 
-Two limits of what a resume restores. Bindings recorded before the checkpoint
-are not restored: the checkpoint writes no counters (its `activity_counters` is
-unset), so a reloaded cut that had
-bound resumes at the iteration that generated it. A resumed run that was itself
-warm-started has its prefix length restored from `warm_start_count`, but not the
-clocks of its loaded cuts: a prefix cut resumes at `last_active_iter = iteration`
-with the source's iteration, where its warm start had restarted it at 0, so the
-window seeds it in every lazy solve until the resumed run's iteration counter
-exceeds that iteration by more than `seed_window`. Both limits last until the
-checkpoint carries the counters.
+**A checkpoint carries the counters while a reader is configured.**
+`CheckpointLayout::new` keeps `CutManagementConfig::tracks_binding_activity` of
+the setup's config. While it holds, `build_stage_cut_records` writes every
+piece's `active_count` and `last_active_iter` (`last_active_iteration` on disk)
+from its slot's metadata, and the manifest's `activity_counters` is set;
+otherwise no piece carries them and the flag is unset. The write issues no
+collective: every rank applies the same `CutPool::record_binding` after the
+reduction in `sync_stage_metadata`, inside the backward pass, so rank 0 holds the
+run's counters at the periodic and at the final write. `CutPool::new_resumed`
+writes a record's counters into its slot, so a resumed run with a budget or
+`dynamic` continues the eviction order and the seed window of the uninterrupted
+run, the prefix of a run that was itself warm-started included: its counters are
+on that run's clock. A record without counters resumes at `active_count = 0` and
+`last_active_iter = iteration`, so a checkpoint written with no reader configured
+and resumed by a run with one restarts each reloaded cut at its generating
+iteration. A warm start, a boundary injection and a simulation-only load read no
+counter.
 
-Read: `cut/pool.rs` (`CutPool::restart_activity_clock`, `add_cut`,
-`enforce_budget`), `cut/dcs.rs` (`build_initial_resident_set`),
+Writing the counters always and reading them under `warm_start` is the
+wrong-but-compiling alternative: the records carry the source run's clock, which
+the new run's counter does not continue (the seeding error above). Not restoring
+them on a resume is the opposite one: a reloaded cut that had bound resumes at the
+iteration that generated it, so the budget evicts it ahead of cuts the
+uninterrupted run evicts and `dynamic` drops it from the seed window it was in.
+
+Read: `cut/pool.rs` (`CutPool::restart_activity_clock`, `CutPool::new_resumed`,
+`add_cut`, `enforce_budget`), `cut/dcs.rs` (`build_initial_resident_set`),
 `policy/full_fcf_load.rs` (`check_full_fcf_load`), `policy/policy_load.rs`
-(`inject_boundary_cuts`). Pinned by `loaded_activity_clock_follows_the_load_kind`
-(`tests/full_fcf_load.rs`: after the load, every loaded slot has
-`active_count = 0`; under a resume the slots are not prefix slots and
-`last_active_iter` equals the record's iteration, under a warm start they are
+(`inject_boundary_cuts`), `policy/orchestration.rs` (`CheckpointLayout::new`,
+`CheckpointLayout::write`), `policy/policy_export.rs`
+(`build_stage_cut_records`). Pinned by
+`a_layout_with_a_budget_writes_both_counters_on_every_piece` and
+`a_layout_without_a_reader_writes_no_counter` (`policy/policy_export.rs`),
+`a_resumed_pool_restores_the_binding_counters_of_its_checkpoint`
+(`tests/full_fcf_load.rs`: after a resume of a budget run's checkpoint every slot
+holds that run's counters, some of them non-zero),
+`a_warm_start_restarts_the_binding_counters_and_its_resume_restores_them`
+(`tests/full_fcf_load.rs`: a warm start from that checkpoint holds 0 in every
+prefix slot, and a resume of the warm-started run restores its counters, some
+prefix cut's non-zero),
+`resumed_run_equals_the_uninterrupted_run_with_one_forward_pass`
+(`tests/periodic_checkpoint.rs`: without a reader, the counters of every slot
+equal the uninterrupted run's), `loaded_activity_clock_follows_the_load_kind`
+(`tests/full_fcf_load.rs`: after a load of a checkpoint without counters, every
+loaded slot has `active_count = 0`; under a resume the slots are not prefix slots
+and `last_active_iter` equals the record's iteration, under a warm start they are
 prefix slots and it is 0),
 `injected_boundary_cuts_start_on_this_runs_activity_clock`
 (`policy/policy_load.rs`), `restart_activity_clock_touches_only_the_loaded_prefix`
@@ -1822,7 +1850,9 @@ over the two config values, not a stored flag, and matches every strategy
 variant by name, so a new variant must be classified to compile.
 
 `TrainingSession::new` passes the predicate's value once to
-`BackwardPassState::set_binding_tracking`, on every rank. Both inputs come from
+`BackwardPassState::set_binding_tracking`, on every rank, and
+`CheckpointLayout::new` reads it to decide whether a checkpoint carries the
+counters (the activity clock paragraph above). Both inputs come from
 the config every rank holds identically: the CLI broadcasts one `BroadcastConfig`
 from rank 0, every rank builds its `StudySetup` from it
 (`StudySetup::from_broadcast_params`), no `StudySetup` setter changes the

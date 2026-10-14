@@ -1337,8 +1337,10 @@ impl CutPool {
 
     /// Construct the pool a checkpoint recorded: each record at its own
     /// `slot_index`, the first `prefix_len` slots `Prefix` and every other
-    /// record `Generated`, a record's `scored` flag as written. A slot with no
-    /// record stays vacant, so a later cut lands where the recorded run's did.
+    /// record `Generated`, a record's `scored` flag and binding counters as
+    /// written. A record without counters starts at `active_count = 0` and
+    /// `last_active_iter = iteration`. A slot with no record stays vacant, so a
+    /// later cut lands where the recorded run's did.
     ///
     /// `prefix_len` is the recorded pool's protected-prefix length and becomes
     /// the slot base. Capacity is the larger of `stored_capacity` and
@@ -1421,6 +1423,11 @@ impl CutPool {
             if record.is_active {
                 cached_active_count += 1;
             }
+            let (active_count, last_active_iter) =
+                match (record.active_count, record.last_active_iteration) {
+                    (Some(count), Some(last)) => (count, last),
+                    _ => (0, u64::from(record.iteration)),
+                };
             metadata[slot] = CutMetadata {
                 iteration_generated: u64::from(record.iteration),
                 forward_pass_index: record.forward_pass_index,
@@ -1428,8 +1435,8 @@ impl CutPool {
                 // never packed for cut sync and its generating node never reaches
                 // the wire; 0 is inert.
                 node: NodeId(0),
-                active_count: 0,
-                last_active_iter: u64::from(record.iteration),
+                active_count,
+                last_active_iter,
             };
             roles[slot] = SlotRole {
                 origin: if slot < prefix {

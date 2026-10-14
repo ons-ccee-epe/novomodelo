@@ -108,7 +108,7 @@ mod simulation_only {
         let policy_dir = tmpdir.path().join("policy");
 
         let fcf = &setup.fcf;
-        let stage_records = build_stage_cut_records(fcf).expect("export");
+        let stage_records = build_stage_cut_records(fcf, false).expect("export");
         let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); fcf.pools.len()];
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
@@ -1218,7 +1218,7 @@ mod decomp_integration {
             build_stage_cuts_payloads, convert_basis_cache,
         };
         let fcf = &setup.fcf;
-        let stage_records = build_stage_cut_records(fcf).expect("export");
+        let stage_records = build_stage_cut_records(fcf, false).expect("export");
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
         let study_stage_end_dates = ascending_stage_end_dates(fcf.pools.len());
         let stage_cuts = build_stage_cuts_payloads(

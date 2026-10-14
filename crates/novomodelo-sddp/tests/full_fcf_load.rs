@@ -352,6 +352,114 @@ fn a_resume_restores_the_prefix_length_of_a_warm_started_run() {
     }
 }
 
+/// 1dtoy with two forward passes and an active-cut budget of 6, the budget the
+/// only reader of binding activity.
+fn budget_setup(iteration_limit: u32) -> (System, StudySetup) {
+    common::fresh_system_and_setup_with(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/1dtoy"),
+        |config| {
+            config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
+            config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+                limit: iteration_limit,
+            }]);
+            config.training.cut_selection.max_active_per_stage = Some(6);
+        },
+    )
+}
+
+fn load(kind: FullFcfLoadKind, output: &TempDir, setup: &mut StudySetup, system: &System) {
+    let policy_dir = locate_policy_dir(kind, output.path(), setup).expect("locate");
+    check_full_fcf_load(kind, &policy_dir, system, setup, &mut |_| {})
+        .expect("check")
+        .apply_to_training(setup);
+}
+
+/// Asserts that every written slot of `loaded` holds the binding counters of
+/// the same slot of `written`, and returns whether some slot had bound.
+fn assert_counters_restored(loaded: &StudySetup, written: &StudySetup) -> bool {
+    let mut bound = false;
+    assert_eq!(loaded.fcf.pools.len(), written.fcf.pools.len());
+    for (pool_id, (loaded, written)) in loaded.fcf.pools.iter().zip(&written.fcf.pools).enumerate()
+    {
+        assert_eq!(loaded.populated(), written.populated(), "pool {pool_id}");
+        for slot in
+            (0..written.populated()).filter(|&slot| written.role(slot).origin != SlotOrigin::Vacant)
+        {
+            let (l, w) = (loaded.metadata(slot), written.metadata(slot));
+            assert_eq!(
+                (l.active_count, l.last_active_iter),
+                (w.active_count, w.last_active_iter),
+                "pool {pool_id} slot {slot}: binding counters"
+            );
+            bound |= w.active_count > 0;
+        }
+    }
+    bound
+}
+
+#[test]
+fn a_resumed_pool_restores_the_binding_counters_of_its_checkpoint() {
+    let (system, mut written) = budget_setup(6);
+    let output = train_and_write(&mut written, &system);
+    assert!(
+        read_policy_checkpoint(&output.path().join(&written.policy_path))
+            .expect("read checkpoint")
+            .metadata
+            .producer
+            .activity_counters
+    );
+
+    let (system, mut resumed) = budget_setup(6);
+    load(FullFcfLoadKind::Resume, &output, &mut resumed, &system);
+    assert!(
+        assert_counters_restored(&resumed, &written),
+        "some cut of the written run must have bound"
+    );
+}
+
+/// A warm start reads no counter from a checkpoint that carries them, and a
+/// resume of the warm-started run restores the counters its prefix cuts
+/// gathered on that run's clock.
+#[test]
+fn a_warm_start_restarts_the_binding_counters_and_its_resume_restores_them() {
+    let (system, mut source) = budget_setup(6);
+    let source_out = train_and_write(&mut source, &system);
+
+    let (system, mut warm) = budget_setup(2);
+    load(FullFcfLoadKind::WarmStart, &source_out, &mut warm, &system);
+    let mut prefix_slots = 0;
+    for (pool_id, pool) in warm.fcf.pools.iter().enumerate() {
+        for slot in (0..pool.populated()).filter(|&slot| pool.is_prefix_slot(slot)) {
+            let meta = pool.metadata(slot);
+            assert_eq!(
+                (meta.active_count, meta.last_active_iter),
+                (0, 0),
+                "pool {pool_id} slot {slot}: a warm-started cut's counters"
+            );
+            prefix_slots += 1;
+        }
+    }
+    assert!(prefix_slots > 0, "the warm start must load cuts");
+    assert!(
+        source
+            .fcf
+            .pools
+            .iter()
+            .any(|pool| (0..pool.populated()).any(|slot| pool.metadata(slot).active_count > 0)),
+        "some cut of the source run must have bound, or the warm start reads nothing it could"
+    );
+
+    let warm_out = train_and_write(&mut warm, &system);
+    let (system, mut resumed) = budget_setup(2);
+    load(FullFcfLoadKind::Resume, &warm_out, &mut resumed, &system);
+    assert_counters_restored(&resumed, &warm);
+    assert!(
+        warm.fcf.pools.iter().any(|pool| (0..pool.populated())
+            .any(|slot| pool.is_prefix_slot(slot) && pool.metadata(slot).active_count > 0)),
+        "some prefix cut of the warm-started run must have bound"
+    );
+}
+
 #[test]
 fn simulation_only_check_returns_the_recorded_bounds_without_frozen_templates() {
     let trained = train_and_write_checkpoint();

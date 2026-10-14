@@ -6558,7 +6558,7 @@ mod chronological_telescoping {
     /// identical to the records written from `fcf` (`f64::to_bits`, never
     /// `==`): [`write_checkpoint`] writes the values as held in memory.
     fn assert_cuts_bit_identical(fcf: &FutureCostFunction, checkpoint: &PolicyCheckpoint) {
-        let written = build_stage_cut_records(fcf).expect("export");
+        let written = build_stage_cut_records(fcf, false).expect("export");
         assert_eq!(
             written.len(),
             checkpoint.stage_cuts.len(),
@@ -9487,7 +9487,7 @@ mod heterogeneous_visit_bound_resume {
             .map(|stage| fixture_priced_date(ymd(2030, 1, 1), stage))
             .collect();
         let cost_scale_factor = setup.inputs.stage_data.stage_templates.cost_scale_factor;
-        let stage_records = build_stage_cut_records(&setup.fcf).expect("export");
+        let stage_records = build_stage_cut_records(&setup.fcf, false).expect("export");
         let stage_manifests = vec![Vec::new(); trained.len()];
         let payloads = build_stage_cuts_payloads(
             &setup.fcf,
@@ -10524,7 +10524,7 @@ mod enumerated_checkpoint {
         }
 
         // The real export path.
-        let cut_records_per_stage = build_stage_cut_records(fcf).expect("export");
+        let cut_records_per_stage = build_stage_cut_records(fcf, false).expect("export");
 
         // Write-side stride-1 pin: a non-leaf pool's slot advances by one per
         // iteration at forward pass 0, never by a larger stride; the leaf pool

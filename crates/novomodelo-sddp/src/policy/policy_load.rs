@@ -2049,7 +2049,7 @@ mod tests {
         let mut fcf = FutureCostFunction::new(1, coefficients.len(), 1, 2, &[0]);
         fcf.pools[0].add_cut(NodeId(0), 0, 0, intercept, &coefficients);
 
-        let exported = build_stage_cut_records(&fcf).unwrap();
+        let exported = build_stage_cut_records(&fcf, false).unwrap();
         let mut round_tripped: Vec<OwnedPolicyCutRecord> = exported[0]
             .iter()
             .map(|r| OwnedPolicyCutRecord {

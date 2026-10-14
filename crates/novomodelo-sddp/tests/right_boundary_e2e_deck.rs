@@ -139,7 +139,7 @@ mod deck_smoke {
             .filter(|s| s.id >= 0)
             .map(|s| s.end_date)
             .collect();
-        let stage_records = build_stage_cut_records(&setup.fcf).expect("export");
+        let stage_records = build_stage_cut_records(&setup.fcf, false).expect("export");
         let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); setup.fcf.pools.len()];
         let stage_cuts = build_stage_cuts_payloads(

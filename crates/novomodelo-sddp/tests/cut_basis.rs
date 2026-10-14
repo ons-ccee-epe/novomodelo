@@ -89,7 +89,7 @@ mod boundary_cuts {
         // Each value times the study's factor under marker 1.0, so a load at that
         // factor gives `(value * s) / s`, the values this fixture always loaded.
         let s = setup.inputs.stage_data.stage_templates.cost_scale_factor;
-        let held = build_stage_cut_records(fcf).expect("export");
+        let held = build_stage_cut_records(fcf, false).expect("export");
         let scaled_coefficients: Vec<Vec<Vec<f64>>> = held
             .iter()
             .map(|pool| {
@@ -3228,7 +3228,7 @@ mod warm_start {
             build_stage_cuts_payloads, convert_basis_cache,
         };
         let fcf = &setup.fcf;
-        let stage_records = build_stage_cut_records(fcf).expect("export");
+        let stage_records = build_stage_cut_records(fcf, false).expect("export");
         let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); fcf.pools.len()];
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
@@ -3951,7 +3951,7 @@ mod group_state_invariance {
             .map(|pool| pool.state_dimension)
             .collect();
 
-        let stage_records = build_stage_cut_records(&setup.fcf).expect("export");
+        let stage_records = build_stage_cut_records(&setup.fcf, false).expect("export");
         let populated_cut_coefficient_lengths: Vec<Option<usize>> = stage_records
             .iter()
             .map(|records| records.first().map(|record| record.coefficients.len()))
@@ -4556,7 +4556,7 @@ mod range_warm_start_determinism {
         seed: u64,
     ) {
         let fcf = &setup.fcf;
-        let stage_records = build_stage_cut_records(fcf).expect("export");
+        let stage_records = build_stage_cut_records(fcf, false).expect("export");
         let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); fcf.pools.len()];
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();

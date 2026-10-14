@@ -254,6 +254,7 @@ pub(crate) struct CheckpointLayout {
     season_manifest: SeasonManifest,
     training_block_mode: String,
     training_block_mode_per_stage: Vec<String>,
+    activity_counters: bool,
     params: CheckpointParams,
 }
 
@@ -314,6 +315,7 @@ impl CheckpointLayout {
             season_manifest: build_season_manifest(system).to_season_manifest(),
             training_block_mode,
             training_block_mode_per_stage,
+            activity_counters: setup.inputs.cut_management.tracks_binding_activity(),
             params,
         }
     }
@@ -327,7 +329,7 @@ impl CheckpointLayout {
         state: CheckpointState<'_>,
     ) -> Result<(), OutputError> {
         let cost_scale_factor = self.cost_scale_factor;
-        let stage_records = build_stage_cut_records(fcf)?;
+        let stage_records = build_stage_cut_records(fcf, self.activity_counters)?;
         let stage_cuts = build_stage_cuts_payloads(
             fcf,
             node_graph,
@@ -378,7 +380,7 @@ impl CheckpointLayout {
                 cost_scale_factor: Some(cost_scale_factor),
                 lower_bound_history: state.lower_bound_history.to_vec(),
                 state_history: interior_state_history(fcf, node_graph)?,
-                activity_counters: false,
+                activity_counters: self.activity_counters,
                 basis_store_complete: false,
             },
             season_manifest: self.season_manifest.clone(),

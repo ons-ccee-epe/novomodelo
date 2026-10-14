@@ -370,6 +370,10 @@ fn assert_same_run(resumed: &RunOutcome, uninterrupted: &RunOutcome) {
         "generating iteration and forward pass of every slot"
     );
     assert_eq!(
+        resumed.fingerprint.binding, uninterrupted.fingerprint.binding,
+        "binding counters of every slot"
+    );
+    assert_eq!(
         resumed.fingerprint.bounds.final_ub_bits, uninterrupted.fingerprint.bounds.final_ub_bits,
         "final upper bound"
     );

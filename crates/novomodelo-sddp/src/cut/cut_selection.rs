@@ -95,14 +95,16 @@ pub struct CutMetadata {
     /// read by the value-based selection logic.
     pub node: NodeId,
 
-    /// Binding solves counted since the slot was written or loaded; stays 0
-    /// while no reader of binding activity is configured.
+    /// Binding solves counted since the slot was written; a resumed cut keeps
+    /// the checkpoint's count, and a warm start or boundary load restarts it at
+    /// 0. Stays 0 while no reader of binding activity is configured.
     pub active_count: u64,
 
     /// Iteration of the last recorded binding, on this run's clock. Starts at
-    /// the generating iteration for a cut of this run or of the run being
-    /// resumed, and at 0 for a cut loaded by a warm start or as a boundary
-    /// record. Read by the budget key and the `dynamic` seed window.
+    /// the generating iteration for a cut of this run, at the checkpoint's
+    /// value for a resumed cut (the generating iteration when the checkpoint
+    /// carries no counters), and at 0 for a cut loaded by a warm start or as a
+    /// boundary record. Read by the budget key and the `dynamic` seed window.
     pub last_active_iter: u64,
 }
 

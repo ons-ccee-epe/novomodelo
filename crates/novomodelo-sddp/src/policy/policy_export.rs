@@ -428,7 +428,9 @@ fn splice_reserved_state_block(
 ///
 /// Both active and inactive cuts are included so the checkpoint preserves the
 /// full training history. Values are written as held in memory, in the run's
-/// scaled units; the pool's `cost_scale_factor` names that scale.
+/// scaled units; the pool's `cost_scale_factor` names that scale. With
+/// `activity_counters` every record carries its slot's binding counters, and
+/// without it none does.
 ///
 /// # Errors
 ///
@@ -436,6 +438,7 @@ fn splice_reserved_state_block(
 /// iteration does not fit the record's 32-bit field.
 pub fn build_stage_cut_records(
     fcf: &FutureCostFunction,
+    activity_counters: bool,
 ) -> Result<Vec<Vec<PolicyCutRecord<'_>>>, OutputError> {
     fcf.pools
         .iter()
@@ -463,8 +466,8 @@ pub fn build_stage_cut_records(
                         coefficients: pool.coefficient_row(slot),
                         is_active: pool.is_active(slot),
                         scored: pool.role(slot).scored,
-                        active_count: None,
-                        last_active_iteration: None,
+                        active_count: activity_counters.then_some(meta.active_count),
+                        last_active_iteration: activity_counters.then_some(meta.last_active_iter),
                     })
                 })
                 .collect()
@@ -2959,7 +2962,7 @@ mod tests {
         let mut fcf = FutureCostFunction::new(1, 1, 2, 4, &[0]);
         fcf.pools[0] = CutPool::new_with_warm_start(1, 2, 4, &[loaded]);
 
-        let records = build_stage_cut_records(&fcf).unwrap();
+        let records = build_stage_cut_records(&fcf, false).unwrap();
 
         assert_eq!(records[0][0].iteration, 5);
         assert!(!records[0][0].scored, "a loaded cut is written unscored");
@@ -2977,7 +2980,8 @@ mod tests {
         fcf.pools[1].add_cut(NodeId(1), 1, 0, 0.0, &[1.0]);
         fcf.pools[1].set_iteration_generated_for_test(1, u64::from(u32::MAX) + 1);
 
-        let err = build_stage_cut_records(&fcf).expect_err("the iteration must not be truncated");
+        let err =
+            build_stage_cut_records(&fcf, false).expect_err("the iteration must not be truncated");
         let msg = err.to_string();
         assert!(
             msg.contains("pool 1 slot 1") && msg.contains("4294967296"),
@@ -2998,7 +3002,7 @@ mod tests {
         fcf.pools[0] = pool;
         let node_graph = chain_node_graph(1);
 
-        let stage_records = build_stage_cut_records(&fcf).unwrap();
+        let stage_records = build_stage_cut_records(&fcf, false).unwrap();
         let stage_manifests: Vec<Vec<EntitySlot>> = vec![Vec::new()];
         let payloads = build_stage_cuts_payloads(
             &fcf,
@@ -3015,6 +3019,115 @@ mod tests {
         assert_eq!(payloads[0].populated_count, 3);
     }
 
+    /// The K-fan study's checkpoint, written by its layout after two cuts went
+    /// into every pool that takes cuts and the first of each bound, with
+    /// `budget` the only possible reader of binding activity; returned with the
+    /// setup it was written from.
+    fn checkpoint_with_a_bound_cut(
+        budget: Option<u32>,
+    ) -> (
+        crate::setup::StudySetup,
+        novomodelo_io::output::policy::PolicyCheckpoint,
+    ) {
+        use crate::cut::SlotOrigin;
+        use crate::policy::orchestration::{CheckpointLayout, CheckpointParams, CheckpointState};
+
+        let mut setup = test_support::k_fan_setup(2, 1, 4).setup;
+        let system = test_support::k_fan_system(2, false);
+        setup.inputs.cut_management.budget = budget;
+        for pool in setup.fcf.pools.iter_mut().filter(|p| p.visit_stride > 0) {
+            let coefficients = vec![1.0; pool.state_dimension];
+            pool.add_cut(NodeId(0), 0, 0, -1.0, &coefficients);
+            pool.add_cut(NodeId(0), 1, 0, -2.0, &coefficients);
+            let first = (0..pool.populated())
+                .find(|&slot| pool.role(slot).origin != SlotOrigin::Vacant)
+                .unwrap();
+            pool.record_binding(first, 3, 1);
+        }
+
+        let out = tempfile::tempdir().unwrap();
+        let policy_dir = out.path().join("policy");
+        std::fs::create_dir_all(&policy_dir).unwrap();
+        CheckpointLayout::new(
+            &setup,
+            &system,
+            CheckpointParams {
+                max_iterations: 4,
+                forward_passes: 1,
+                seed: 0,
+            },
+        )
+        .write(
+            &policy_dir,
+            &setup.fcf,
+            &setup.inputs.node_graph,
+            CheckpointState {
+                iterations: 1,
+                final_lb: 0.0,
+                final_ub: 0.0,
+                basis_cache: &[],
+                lower_bound_history: &[0.0],
+            },
+        )
+        .unwrap();
+        let checkpoint = novomodelo_io::read_policy_checkpoint(&policy_dir).unwrap();
+        (setup, checkpoint)
+    }
+
+    /// A written record's counters and its slot's in-memory ones.
+    struct PieceCounters {
+        written: (Option<u64>, Option<u64>),
+        held: (u64, u64),
+    }
+
+    fn piece_counters(
+        setup: &crate::setup::StudySetup,
+        checkpoint: &novomodelo_io::output::policy::PolicyCheckpoint,
+    ) -> Vec<PieceCounters> {
+        assert_eq!(checkpoint.stage_cuts.len(), setup.fcf.pools.len());
+        setup
+            .fcf
+            .pools
+            .iter()
+            .zip(&checkpoint.stage_cuts)
+            .flat_map(|(pool, written)| {
+                written.cuts.iter().map(|record| {
+                    let meta = pool.metadata(record.slot_index as usize);
+                    PieceCounters {
+                        written: (record.active_count, record.last_active_iteration),
+                        held: (meta.active_count, meta.last_active_iter),
+                    }
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_layout_with_a_budget_writes_both_counters_on_every_piece() {
+        let (setup, checkpoint) = checkpoint_with_a_bound_cut(Some(1));
+        assert!(checkpoint.metadata.producer.activity_counters);
+        let pieces = piece_counters(&setup, &checkpoint);
+        for piece in &pieces {
+            assert_eq!(piece.written, (Some(piece.held.0), Some(piece.held.1)));
+        }
+        assert!(
+            pieces.iter().any(|piece| piece.held.0 > 0),
+            "some written piece must have bound"
+        );
+    }
+
+    #[test]
+    fn a_layout_without_a_reader_writes_no_counter() {
+        let (setup, checkpoint) = checkpoint_with_a_bound_cut(None);
+        assert!(!checkpoint.metadata.producer.activity_counters);
+        let pieces = piece_counters(&setup, &checkpoint);
+        assert!(pieces.iter().all(|piece| piece.written == (None, None)));
+        assert!(
+            pieces.iter().any(|piece| piece.held.0 > 0),
+            "a piece that bound must still be written without counters"
+        );
+    }
+
     // -- build_stage_cuts_payloads: priced_state_date stamping --
 
     #[test]
@@ -3024,7 +3137,7 @@ mod tests {
 
         let node_graph = chain_node_graph(3);
         let fcf = FutureCostFunction::new(3, 1, 1, 10, &[0; 3]);
-        let stage_records = build_stage_cut_records(&fcf).unwrap();
+        let stage_records = build_stage_cut_records(&fcf, false).unwrap();
         let stage_manifests: Vec<Vec<EntitySlot>> = vec![Vec::new(); 3];
         let study_stage_ids = vec![0, 1, 2];
         let study_stage_end_dates = vec![
@@ -3064,7 +3177,7 @@ mod tests {
 
         let node_graph = binary_tree_node_graph(); // 4 pools; pool_stage = [0, 1, 1, 2]
         let fcf = FutureCostFunction::new(4, 1, 1, 10, &[0; 4]);
-        let stage_records = build_stage_cut_records(&fcf).unwrap();
+        let stage_records = build_stage_cut_records(&fcf, false).unwrap();
         let stage_manifests: Vec<Vec<EntitySlot>> = vec![Vec::new(); 4];
         let study_stage_ids = vec![0, 1, 2];
         let study_stage_end_dates = vec![
@@ -3132,7 +3245,7 @@ mod tests {
             pool_stage: vec![StageIdx(5)],
         };
         let fcf = FutureCostFunction::new(1, 1, 1, 10, &[0]);
-        let stage_records = build_stage_cut_records(&fcf).unwrap();
+        let stage_records = build_stage_cut_records(&fcf, false).unwrap();
         let stage_manifests: Vec<Vec<EntitySlot>> = vec![Vec::new(); 1];
         let study_stage_ids = vec![0, 1]; // len 2; pool_stage[0] == 5 is out of range
         let study_stage_end_dates = vec![
@@ -3172,7 +3285,7 @@ mod tests {
 
         let node_graph = chain_node_graph(1);
         let fcf = FutureCostFunction::new(1, 1, 1, 10, &[0; 1]);
-        let stage_records = build_stage_cut_records(&fcf).unwrap();
+        let stage_records = build_stage_cut_records(&fcf, false).unwrap();
         let stage_manifests: Vec<Vec<EntitySlot>> = vec![Vec::new(); 1];
         let study_stage_ids = vec![0];
         let study_stage_end_dates = vec![chrono::NaiveDate::from_ymd_opt(2031, 11, 10).unwrap()];
