@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the first-try/retried/failed split and the forward solve seconds with it. The
   training summary and `solve_stats` in `training/metadata.json` now report the
   same counts for any rank count, and the split adds up to the total.
+- `cobre run` under MPI no longer panics when the forward passes do not
+  divide evenly across ranks. A rank holding fewer passes than another could
+  index its stored warm-start bases out of bounds, and the job then hung. Such
+  a run now writes the same outputs as a single-process run.
 
 ## [0.18.0] - 2026-10-07
 

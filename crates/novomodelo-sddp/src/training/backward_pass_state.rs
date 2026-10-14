@@ -1864,7 +1864,7 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
     } else {
         let basis_slices = inputs
             .basis_store
-            .split_workers_mut(params.n_workers_local.max(1));
+            .split_workers_mut(inputs.local_work, params.n_workers_local.max(1));
         let worker_staged = process_stage_backward(
             inputs.workspaces,
             ctx,
@@ -2865,7 +2865,7 @@ mod tests {
         // every child against child 0's basis key would leave the siblings' slots
         // empty — the reified per-child solve populates them all.
         {
-            let slice = basis_store.split_workers_mut(1).remove(0);
+            let slice = basis_store.split_workers_mut(local_count, 1).remove(0);
             for succ in &node_graph.successors[NodePos(0)] {
                 assert!(
                     slice.get(0, succ.child).is_some(),
@@ -4536,7 +4536,7 @@ mod tests {
 
         let mut store = BasisStore::new(1, ng.nodes.len());
         {
-            let mut slices = store.split_workers_mut(1);
+            let mut slices = store.split_workers_mut(1, 1);
             let slice = &mut slices[0];
             *slice.get_mut(0, node_a) =
                 Some(CapturedBasis::new(2, 1, 0, 0, 0, ng.node_ids[node_a]));
