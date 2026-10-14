@@ -53,7 +53,7 @@ use crate::{
         aggregate_solver_statistics, pack_delta_scalars, unpack_delta_scalars,
     },
     state_exchange::ExchangeBuffers,
-    training::training::rank_local_basis_cache,
+    training::training::{CheckpointBasisStore, gather_basis_store},
     training::{TrainingOutcome, TrainingResult, broadcast_basis_cache},
     workspace::{BasisStore, NoisePreallocation, WorkspacePool, WorkspaceSizing},
 };
@@ -613,14 +613,16 @@ where
         Ok(IterationOutcome::Continue)
     }
 
-    /// Rank 0 writes the periodic checkpoint when the schedule fires at
-    /// `iteration`; every rank then agrees on the write's outcome, so a failed
-    /// write ends training on every rank at this iteration.
+    /// When the schedule fires at `iteration`, every rank gathers the basis store
+    /// and rank 0 writes the periodic checkpoint; every rank then agrees on the
+    /// outcome, so a failed gather or write ends training on every rank at this
+    /// iteration.
     ///
     /// # Errors
     ///
-    /// [`SddpError::CheckpointWrite`] on rank 0 when the write fails, the peer
-    /// failure from [`reconcile_error_flag`] on every other rank.
+    /// [`SddpError::CheckpointWrite`] on rank 0 when the write fails, the
+    /// [`gather_basis_store`] error on the rank that met it, and the peer failure
+    /// from [`reconcile_error_flag`] on every other rank.
     fn write_periodic_checkpoint(&mut self, iteration: u64) -> Result<(), SddpError> {
         let Some(periodic) = self.runtime.periodic_checkpoint() else {
             return Ok(());
@@ -630,9 +632,8 @@ where
         }
 
         let start = Instant::now();
-        let local = if self.comm.rank() == 0 {
-            let basis_cache = rank_local_basis_cache(&self.basis_store);
-            periodic
+        let local = match gather_basis_store(&self.basis_store, &self.ranks, self.comm) {
+            Ok(Some(bases)) => periodic
                 .write(
                     self.fcf,
                     self.training_ctx.node_graph,
@@ -640,13 +641,13 @@ where
                         iterations: iteration,
                         final_lb: self.results.final_lb,
                         final_ub: self.results.final_ub,
-                        basis_cache: &basis_cache,
+                        bases: &bases,
                         lower_bound_history: self.convergence_monitor.lower_bound_history(),
                     },
                 )
-                .map_err(|source| SddpError::CheckpointWrite { iteration, source })
-        } else {
-            Ok(())
+                .map_err(|source| SddpError::CheckpointWrite { iteration, source }),
+            Ok(None) => Ok(()),
+            Err(e) => Err(e),
         };
         let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         reconcile_error_flag(local, self.comm, &mut self.fwd_state.reconcile_scratch)?;
@@ -668,12 +669,13 @@ where
     ///
     /// # Errors
     ///
-    /// Returns `SddpError::Communication` if `broadcast_basis_cache` fails.
+    /// Returns what [`gather_basis_store`] or `broadcast_basis_cache` returns
+    /// when either fails.
     pub(crate) fn finalize(mut self) -> Result<TrainingOutcome, SddpError> {
-        // Reconcile finalize arrival before the basis-cache broadcast so
-        // broadcast_basis_cache is entered by all ranks or none: a peer that failed
-        // makes this clean rank take the same no-broadcast exit in lockstep, rather
-        // than block alone in the broadcast.
+        // Reconcile finalize arrival before the basis-store gather and the
+        // basis-cache broadcast so both are entered by all ranks or none: a peer
+        // that failed makes this clean rank take the same no-collective exit in
+        // lockstep, rather than block alone in a collective.
         if let Err(peer_err) =
             reconcile_error_flag(Ok(()), self.comm, &mut self.fwd_state.reconcile_scratch)
         {
@@ -709,6 +711,8 @@ where
             },
         );
 
+        let checkpoint_bases =
+            gather_basis_store(&self.basis_store, &self.ranks, self.comm)?.unwrap_or_default();
         let basis_cache = broadcast_basis_cache(&self.basis_store, self.comm)?;
 
         let mut result = TrainingResult::new(
@@ -726,6 +730,7 @@ where
         result.stop_decision = stop_decision;
         result.lower_bound_history =
             committed_lower_bound_history(&self.convergence_monitor, completed_iterations).to_vec();
+        result.checkpoint_bases = checkpoint_bases;
 
         Ok(TrainingOutcome {
             result,
@@ -735,7 +740,8 @@ where
 
     /// Emit `TrainingFinished` with `reason = "error"` and return a partial
     /// `TrainingOutcome` carrying the original error, taking the coordinated
-    /// no-broadcast exit so no rank blocks in `broadcast_basis_cache`.
+    /// no-collective exit so no rank blocks in the basis-store gather or
+    /// `broadcast_basis_cache`.
     pub(crate) fn finalize_with_error(mut self, err: SddpError) -> TrainingOutcome {
         // Announce this rank's failure to peers still in the clean `finalize` so they
         // skip their basis-cache broadcast in lockstep; reconcile over a local Err
@@ -753,12 +759,18 @@ where
         self.finalize_without_broadcast(err)
     }
 
-    /// Build the error-exit `TrainingOutcome` WITHOUT entering
-    /// `broadcast_basis_cache`. Used once the ranks did not all agree to broadcast
-    /// (a rank-local or peer failure), so the basis cache is empty — no collective
-    /// is safe on this path. The caller must have already reconciled the failure
-    /// across ranks so every rank takes this exit in lockstep.
+    /// Build the error-exit `TrainingOutcome` WITHOUT entering a collective. Used
+    /// once the ranks did not all agree to broadcast (a rank-local or peer
+    /// failure), so the basis cache is empty and the checkpoint bases are rank
+    /// 0's own, marked incomplete — no collective is safe on this path. The
+    /// caller must have already reconciled the failure across ranks so every
+    /// rank takes this exit in lockstep.
     fn finalize_without_broadcast(self, err: SddpError) -> TrainingOutcome {
+        let checkpoint_bases = if self.comm.rank() == 0 {
+            CheckpointBasisStore::rank_local(&self.basis_store, &self.ranks)
+        } else {
+            CheckpointBasisStore::default()
+        };
         let frozen_templates = self.scratch.frozen_templates;
         let TrainingResults {
             final_lb,
@@ -801,6 +813,7 @@ where
         );
         result.lower_bound_history =
             committed_lower_bound_history(&self.convergence_monitor, completed_iterations).to_vec();
+        result.checkpoint_bases = checkpoint_bases;
 
         TrainingOutcome {
             result,
@@ -1341,7 +1354,7 @@ where
     /// `cache` carries one [`CapturedBasis`]
     /// per canonical node (built by
     /// [`build_basis_cache_from_checkpoint`](crate::build_basis_cache_from_checkpoint)).
-    /// The checkpoint holds a single basis per node; the forward pass keeps one
+    /// The load keeps a single basis per node; the forward pass keeps one
     /// per `(worker, node)`, so each node's basis is replicated across every
     /// worker for iteration 1's warm-start. `reconstruct_basis` reconciles the
     /// stored cut rows against the current active set by slot identity, so a

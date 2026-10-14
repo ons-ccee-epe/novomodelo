@@ -32,6 +32,7 @@ use crate::lp::indexer::{
 };
 use crate::setup::{NodeGraph, extended_delivery_stages};
 use crate::time_value::post_study_delivery_calendar;
+use crate::training::training::CheckpointBasisStore;
 use crate::workspace::CapturedBasis;
 
 /// The sentinel-or-dated `(interval_start, interval_end)` pair for a resolved
@@ -550,71 +551,115 @@ pub fn convert_basis_cache(basis_cache: &[Option<CapturedBasis>]) -> (Vec<Vec<u8
     basis_cache
         .iter()
         .map(|opt| {
-            opt.as_ref().map_or_else(
-                || (Vec::new(), Vec::new()),
-                |cb| {
-                    (
-                        cb.basis
-                            .col_status
-                            .iter()
-                            .map(|status| status.to_discriminant_code())
-                            .collect(),
-                        cb.basis
-                            .row_status
-                            .iter()
-                            .map(|status| status.to_discriminant_code())
-                            .collect(),
-                    )
-                },
-            )
+            opt.as_ref()
+                .map_or_else(|| (Vec::new(), Vec::new()), status_bytes)
         })
         .unzip()
 }
 
-/// One [`BasisEntry`] per node of `basis_cache`, for global scenario 0, over
-/// pre-converted status bytes; `None` where the node holds no basis.
-///
+/// The `(column, row)` status bytes of every basis of `bases`, per node in its
+/// order, converted as [`convert_basis_cache`] converts.
+#[must_use]
+pub fn convert_basis_store(bases: &CheckpointBasisStore) -> Vec<Vec<(Vec<u8>, Vec<u8>)>> {
+    bases
+        .nodes
+        .iter()
+        .map(|entries| entries.iter().map(|(_, cb)| status_bytes(cb)).collect())
+        .collect()
+}
+
+fn status_bytes(cb: &CapturedBasis) -> (Vec<u8>, Vec<u8>) {
+    (
+        cb.basis
+            .col_status
+            .iter()
+            .map(|status| status.to_discriminant_code())
+            .collect(),
+        cb.basis
+            .row_status
+            .iter()
+            .map(|status| status.to_discriminant_code())
+            .collect(),
+    )
+}
+
 /// `piece_row_slots` is [`CapturedBasis::cut_row_slots`], one slot per trailing
 /// cut row of the captured basis itself, never its pool's populated count: the
 /// root basis is captured in the last forward pass, before that iteration's
 /// backward pass appends cuts to its pool.
+fn basis_entry<'a>(
+    node: usize,
+    scenario: u32,
+    cb: &'a CapturedBasis,
+    column_status: &'a [u8],
+    row_status: &'a [u8],
+) -> BasisEntry<'a> {
+    debug_assert_eq!(
+        cb.cut_row_slots.len(),
+        cb.basis.row_status.len() - cb.base_row_count,
+        "node {node}: one stored slot per trailing cut row"
+    );
+    BasisEntry {
+        scenario,
+        column_status,
+        row_status,
+        piece_row_slots: &cb.cut_row_slots,
+    }
+}
+
+/// One [`BasisEntry`] per stored `(scenario, node)` of `bases`, per node in
+/// ascending scenario order, over `statuses` from [`convert_basis_store`].
+#[must_use]
+pub fn build_basis_store_entries<'a>(
+    bases: &'a CheckpointBasisStore,
+    statuses: &'a [Vec<(Vec<u8>, Vec<u8>)>],
+) -> Vec<Vec<BasisEntry<'a>>> {
+    bases
+        .nodes
+        .iter()
+        .zip(statuses)
+        .enumerate()
+        .map(|(node, (entries, node_statuses))| {
+            entries
+                .iter()
+                .zip(node_statuses)
+                .map(|((scenario, cb), (column, row))| {
+                    basis_entry(node, *scenario, cb, column, row)
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// At most one [`BasisEntry`] per node of `basis_cache`, for global scenario 0,
+/// over status bytes from [`convert_basis_cache`]; none where the node holds no
+/// basis.
 #[must_use]
 pub fn build_scenario_zero_basis_entries<'a>(
     basis_cache: &'a [Option<CapturedBasis>],
     basis_col_u8: &'a [Vec<u8>],
     basis_row_u8: &'a [Vec<u8>],
-) -> Vec<Option<BasisEntry<'a>>> {
+) -> Vec<Vec<BasisEntry<'a>>> {
     basis_cache
         .iter()
         .enumerate()
         .map(|(node, opt)| {
-            opt.as_ref().map(|cb| {
-                debug_assert_eq!(
-                    cb.cut_row_slots.len(),
-                    cb.basis.row_status.len() - cb.base_row_count,
-                    "node {node}: one stored slot per trailing cut row"
-                );
-                BasisEntry {
-                    scenario: 0,
-                    column_status: &basis_col_u8[node],
-                    row_status: &basis_row_u8[node],
-                    piece_row_slots: &cb.cut_row_slots,
-                }
-            })
+            opt.iter()
+                .map(|cb| basis_entry(node, 0, cb, &basis_col_u8[node], &basis_row_u8[node]))
+                .collect()
         })
         .collect()
 }
 
 /// One [`PolicyBasisRecord`] per node holding an entry of `node_entries`
-/// (node-indexed, from [`build_scenario_zero_basis_entries`]), carrying the
-/// node position in `stage_id`.
+/// (node-indexed), carrying the node position in `stage_id`.
 ///
 /// # Errors
 ///
 /// [`OutputError::SerializationError`] when `iteration` does not fit the
 /// record's 32-bit field.
 pub fn build_stage_basis_records<'a>(
-    node_entries: &'a [Option<BasisEntry<'a>>],
+    node_entries: &'a [Vec<BasisEntry<'a>>],
     iteration: u64,
 ) -> Result<Vec<PolicyBasisRecord<'a>>, OutputError> {
     let iteration = u32::try_from(iteration).map_err(|_| {
@@ -626,12 +671,11 @@ pub fn build_stage_basis_records<'a>(
     Ok(node_entries
         .iter()
         .enumerate()
-        .filter_map(|(node, entry)| {
-            entry.as_ref().map(|entry| PolicyBasisRecord {
-                stage_id: node as u32,
-                iteration,
-                entries: std::slice::from_ref(entry),
-            })
+        .filter(|(_, entries)| !entries.is_empty())
+        .map(|(node, entries)| PolicyBasisRecord {
+            stage_id: node as u32,
+            iteration,
+            entries,
         })
         .collect())
 }
@@ -2865,11 +2909,9 @@ mod tests {
 
     #[test]
     fn build_stage_basis_records_writes_each_basis_own_trailing_cut_row_count() {
-        use super::{
-            build_scenario_zero_basis_entries, build_stage_basis_records, convert_basis_cache,
-        };
-        use crate::TrainingResult;
+        use super::{build_basis_store_entries, build_stage_basis_records, convert_basis_store};
         use crate::cut::FutureCostFunction;
+        use crate::training::training::CheckpointBasisStore;
         use crate::workspace::CapturedBasis;
         use novomodelo_solver::{Basis, BasisStatus};
 
@@ -2883,62 +2925,60 @@ mod tests {
         fcf.add_cut(NodeId(0), 3, 1, 0, 0.0, &[0.0]);
 
         let base_row_count = 3;
-        let basis_cache: Vec<Option<CapturedBasis>> = (0..7)
-            .map(|node| {
-                let cut_rows = node + 3;
-                Some(CapturedBasis {
-                    basis: Basis {
-                        col_status: Vec::new(),
-                        row_status: vec![BasisStatus::Basic; base_row_count + cut_rows],
-                    },
-                    base_row_count,
-                    cut_row_slots: (0..cut_rows as u32).collect(),
-                    state_at_capture: Vec::new(),
-                    node_id: NodeId(0),
+        let captured = |cut_rows: usize| CapturedBasis {
+            basis: Basis {
+                col_status: Vec::new(),
+                row_status: vec![BasisStatus::Basic; base_row_count + cut_rows],
+            },
+            base_row_count,
+            cut_row_slots: (0..cut_rows as u32).collect(),
+            state_at_capture: Vec::new(),
+            node_id: NodeId(0),
+        };
+        let mut bases = CheckpointBasisStore {
+            nodes: (0..7)
+                .map(|node| {
+                    [0_u32, 2]
+                        .into_iter()
+                        .map(|scenario| (scenario, captured(node + 3 + scenario as usize)))
+                        .collect()
                 })
-            })
-            .collect();
-        let training_result = TrainingResult::new(
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            1,
-            "t".to_string(),
-            0,
-            basis_cache,
-            Vec::new(),
-            None,
+                .collect(),
+            complete: true,
+        };
+        bases.nodes[6].clear();
+
+        let statuses = convert_basis_store(&bases);
+        let entries = build_basis_store_entries(&bases, &statuses);
+        let records = build_stage_basis_records(&entries, 1).unwrap();
+
+        assert_eq!(
+            records.iter().map(|rec| rec.stage_id).collect::<Vec<_>>(),
+            [0, 1, 2, 3, 4, 5],
+            "one record per node holding a basis, carrying the node ordinal, not per pool"
         );
-
-        let (col, row) = convert_basis_cache(&training_result.basis_cache);
-        let entries = build_scenario_zero_basis_entries(&training_result.basis_cache, &col, &row);
-        let records = build_stage_basis_records(&entries, training_result.iterations).unwrap();
-
-        assert_eq!(records.len(), 7, "one basis record per node, not per pool");
-        for (node, rec) in records.iter().enumerate() {
-            assert_eq!(
-                rec.stage_id as usize, node,
-                "stage_id must carry the node ordinal"
-            );
-            let cb = training_result.basis_cache[node]
-                .as_ref()
-                .expect("every node holds a basis");
-            let own_cut_rows = cb.basis.row_status.len() - cb.base_row_count;
+        for rec in &records {
+            let node = rec.stage_id as usize;
             let pool_populated = fcf.pools[node_graph.nodes[NodePos(node)].pool_id].populated();
-            assert_ne!(
-                own_cut_rows, pool_populated,
-                "fixture: node {node}'s basis must not carry its pool's cut count"
-            );
-            assert_eq!(rec.entries.len(), 1, "node {node}: one entry, scenario 0");
-            assert_eq!(rec.entries[0].scenario, 0);
             assert_eq!(
-                rec.entries[0].piece_row_slots.len(),
-                own_cut_rows,
-                "node {node} piece_row_slots must be its basis's row_status.len() - \
-                 base_row_count, not its pool's {pool_populated} populated cuts"
+                rec.entries.iter().map(|e| e.scenario).collect::<Vec<_>>(),
+                [0, 2],
+                "node {node}: one entry per stored scenario, ascending"
             );
-            assert_eq!(rec.entries[0].piece_row_slots, cb.cut_row_slots.as_slice());
+            for (entry, (_, cb)) in rec.entries.iter().zip(&bases.nodes[node]) {
+                let own_cut_rows = cb.basis.row_status.len() - cb.base_row_count;
+                assert_ne!(
+                    own_cut_rows, pool_populated,
+                    "fixture: node {node}'s basis must not carry its pool's cut count"
+                );
+                assert_eq!(
+                    entry.piece_row_slots,
+                    cb.cut_row_slots.as_slice(),
+                    "node {node} scenario {}: piece_row_slots must be the basis's own {own_cut_rows} \
+                     trailing cut rows, not its pool's {pool_populated} populated cuts",
+                    entry.scenario
+                );
+            }
         }
     }
 
@@ -3031,6 +3071,7 @@ mod tests {
     ) {
         use crate::cut::SlotOrigin;
         use crate::policy::orchestration::{CheckpointLayout, CheckpointParams, CheckpointState};
+        use crate::training::training::CheckpointBasisStore;
 
         let mut setup = test_support::k_fan_setup(2, 1, 4).setup;
         let system = test_support::k_fan_system(2, false);
@@ -3065,7 +3106,7 @@ mod tests {
                 iterations: 1,
                 final_lb: 0.0,
                 final_ub: 0.0,
-                basis_cache: &[],
+                bases: &CheckpointBasisStore::default(),
                 lower_bound_history: &[0.0],
             },
         )

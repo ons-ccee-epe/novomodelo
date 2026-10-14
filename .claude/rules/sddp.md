@@ -849,11 +849,13 @@ basis's cut rows, because a forward-pass capture precedes that iteration's
 backward pass, which appends cuts to the pool afterwards. `FORMAT_VERSION` 4
 marks this layout. The loader still takes the template row count from the
 current LP (`node_dims`), never from the record. Read: `policy/policy_export.rs`
-(`build_scenario_zero_basis_entries`, `build_stage_basis_records`). Pinned by
+(`basis_entry`, the one builder of an entry, `build_basis_store_entries`,
+`build_stage_basis_records`). Pinned by
 `build_stage_basis_records_writes_each_basis_own_trailing_cut_row_count`
-(`policy/policy_export.rs`) and
+(`policy/policy_export.rs`: two scenarios per node, each with its own slots) and
 `exported_basis_records_count_the_cut_rows_each_basis_was_captured_with`
-(`tests/cut_basis.rs`).
+(`tests/cut_basis.rs`, through `build_scenario_zero_basis_entries`, which builds
+its entries with `basis_entry` too).
 
 The load uses a stored basis for its node only when it fits that node's LP
 exactly. It reads each node record's entry with the lowest `scenario`, and
@@ -2522,6 +2524,78 @@ Read: `policy/policy_export.rs` (`build_stage_cut_records`),
 (`tests/boundary_self_describing_clean_break.rs`), and the one-pass resume leg
 `resumed_run_equals_the_uninterrupted_run_with_one_forward_pass`
 (`tests/periodic_checkpoint.rs`), which runs at the default factor.
+
+## The per-scenario basis store is gathered at every checkpoint write
+
+A checkpoint's `basis/` files hold one `BasisEntry` per (global scenario, node)
+whose basis the run's `BasisStore` holds. A rank's store is keyed by its local
+row `m`, and the global scenario of that row is `fwd_offset + m`
+(`RankDistribution`); rows `my_actual_fwd..max_local_fwd` are padding and never
+sent. `gather_basis_store` (`training/training.rs`) assembles the store on rank
+0: per canonical node, each rank packs its rows `0..my_actual_fwd` with
+`CapturedBasis::to_broadcast_payload`, the sole owner of the bytes (`0_i32` for a
+row with no basis), and the node issues one `allgatherv` of the two payload
+lengths of every rank, then one `allgatherv` each of the `i32` and the `f64`
+payloads at the displacements those lengths give. Rank 0 decodes each rank's
+segment with `CapturedBasis::try_from_broadcast_payload`, numbers its rows from
+the rank's first scenario (the ranks' scenarios are contiguous blocks in rank
+order, so no scenario index travels), drops `state_at_capture`, and keeps the
+rows that hold a basis, in a `CheckpointBasisStore` marked `complete`. The
+writer (`build_basis_store_entries`) writes one entry per kept row, and the
+manifest's `basis_store_complete` is the store's `complete`.
+`TrainingResult::basis_cache` and `broadcast_basis_cache` keep their own job:
+scenario 0 per node, for simulation.
+
+Every rank enters the gather under a condition all ranks share: the schedule in
+`write_periodic_checkpoint` (`PeriodicCheckpoint::fires_at`, built on every rank
+from the broadcast config), and the clean `finalize` once `reconcile_error_flag`
+has agreed, before `broadcast_basis_cache`. A length that does not fit an `i32`
+count travels as `-1`, so every rank fails at the same node; a segment rank 0
+cannot decode ends the gather only after the last node, so no rank leaves the
+collectives early. On the periodic path either failure is reconciled like a
+failed write. The exits that skip the collectives, `finalize_with_error` and
+`finalize_without_broadcast`, gather nothing: `TrainingResult::checkpoint_bases`
+holds rank 0's own rows keyed by global scenario
+(`CheckpointBasisStore::rank_local`), marked not `complete`, which is also what a
+one-rank failure exit writes although it holds every scenario.
+
+The wrong-but-compiling alternatives:
+
+- keying an entry by the local row `m`: on one rank it is the global scenario,
+  so nothing fails there; on several ranks every rank's row 0 is written as
+  scenario 0, so the checkpoint depends on the writing run's rank count;
+- writing rank 0's rows only, skipping the gather: on one rank it is the whole
+  store; on several ranks the other ranks' scenarios are missing from a
+  checkpoint that says it is whole;
+- gathering on an error exit: a peer that failed never enters the collective, so
+  the ranks that reach it block.
+
+Read: `training/training.rs` (`gather_basis_store`, `CheckpointBasisStore`,
+`CheckpointBasisStore::rank_local`), `training/session/mod.rs`
+(`write_periodic_checkpoint`, `finalize`, `finalize_without_broadcast`),
+`workspace/workspace.rs` (`CapturedBasis::to_broadcast_payload`,
+`CapturedBasis::try_from_broadcast_payload`), `policy/orchestration.rs`
+(`CheckpointLayout::write`), `policy/policy_export.rs`
+(`build_basis_store_entries`). Pinned by, in `training/training/tests.rs`:
+`a_single_rank_gather_keeps_every_stored_row_with_its_scenario` (every stored row
+with its scenario, a node with no basis has no entry),
+`a_rank_zero_of_two_gather_reads_an_empty_peer_segment_as_no_entries` (a
+communicator that writes rank 0's segment only) and
+`a_two_rank_gather_numbers_each_peer_row_from_its_offset` (two cooperating ranks
+in one process, the peer's padding row stored and not sent: fails under the
+local-row key and under rank 0's rows only),
+`a_gather_that_cannot_decode_a_peer_segment_still_issues_every_collective` (rank
+0 returns the decode error after consuming every collective the peer issued) and
+`a_payload_length_that_does_not_fit_an_i32_count_fails_naming_its_rank` (a `-1`
+length is refused naming its rank and node), with the `complete` flag of a clean
+end and of a failure exit in `ac_train_result_fields_populated` and
+`ac_train_partial_result_on_mid_iteration_failure`; and by
+`periodic_checkpoint_with_several_forward_passes_holds_every_scenario_basis_and_equals_the_final_one`
+(`tests/periodic_checkpoint.rs`: three forward passes, the periodic and the final
+checkpoint at the same iteration hold scenarios 0, 1 and 2 at every node with a
+basis, both whole, and are equal). No committed test runs the gather under an MPI
+launcher, and none pins the error-exit alternative, which no single-process run
+can show.
 
 ## Policy-load compatibility validation is mandatory
 

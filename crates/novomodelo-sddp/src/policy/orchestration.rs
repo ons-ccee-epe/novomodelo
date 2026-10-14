@@ -31,9 +31,9 @@ use novomodelo_stochastic::StochasticContext;
 use crate::TrainingResult;
 use crate::cut::FutureCostFunction;
 use crate::policy_export::{
-    build_pool_states_payloads, build_scenario_zero_basis_entries, build_stage_basis_records,
+    build_basis_store_entries, build_pool_states_payloads, build_stage_basis_records,
     build_stage_cut_records, build_stage_cuts_payloads, build_stage_entity_manifest,
-    collect_stored_pool_states, convert_basis_cache,
+    collect_stored_pool_states, convert_basis_store,
 };
 use crate::setup::{NodeGraph, StudySetup};
 use crate::stochastic_summary::{
@@ -41,7 +41,7 @@ use crate::stochastic_summary::{
     inflow_models_to_ar_rows, inflow_models_to_stats_rows,
 };
 use crate::training::session::interior_cut_nodes;
-use crate::workspace::CapturedBasis;
+use crate::training::training::CheckpointBasisStore;
 
 use novomodelo_core::{BlockMode, InflowModel, SeasonCycleType, System};
 
@@ -263,7 +263,7 @@ pub(crate) struct CheckpointState<'a> {
     pub(crate) iterations: u64,
     pub(crate) final_lb: f64,
     pub(crate) final_ub: f64,
-    pub(crate) basis_cache: &'a [Option<CapturedBasis>],
+    pub(crate) bases: &'a CheckpointBasisStore,
     pub(crate) lower_bound_history: &'a [f64],
 }
 
@@ -273,7 +273,7 @@ impl<'a> CheckpointState<'a> {
             iterations: result.iterations,
             final_lb: result.final_lb,
             final_ub: result.final_ub,
-            basis_cache: &result.basis_cache,
+            bases: &result.checkpoint_bases,
             lower_bound_history: &result.lower_bound_history,
         }
     }
@@ -346,9 +346,8 @@ impl CheckpointLayout {
             "every pool must carry the study's single resolved cost_scale_factor"
         );
 
-        let (basis_col_u8, basis_row_u8) = convert_basis_cache(state.basis_cache);
-        let basis_entries =
-            build_scenario_zero_basis_entries(state.basis_cache, &basis_col_u8, &basis_row_u8);
+        let basis_statuses = convert_basis_store(state.bases);
+        let basis_entries = build_basis_store_entries(state.bases, &basis_statuses);
         let stage_bases = build_stage_basis_records(&basis_entries, state.iterations)?;
 
         let stored_states = collect_stored_pool_states(fcf);
@@ -381,7 +380,7 @@ impl CheckpointLayout {
                 lower_bound_history: state.lower_bound_history.to_vec(),
                 state_history: interior_state_history(fcf, node_graph)?,
                 activity_counters: self.activity_counters,
-                basis_store_complete: false,
+                basis_store_complete: state.bases.complete,
             },
             season_manifest: self.season_manifest.clone(),
         };

@@ -35,8 +35,10 @@ fn checkpointing_setup(
     iteration_limit: u32,
     initial_iteration: Option<u32>,
     interval_iterations: u32,
+    forward_passes: u32,
 ) -> (System, StudySetup) {
     fresh_system_and_setup_with(&toy_case(), |config| {
+        config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
         config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
             limit: iteration_limit,
         }]);
@@ -85,9 +87,9 @@ struct PeriodicAndFinal {
     n_run_pool_capacities: Vec<u32>,
 }
 
-fn periodic_at_3_and_final_at_3() -> PeriodicAndFinal {
+fn periodic_at_3_and_final_at_3(forward_passes: u32) -> PeriodicAndFinal {
     let n_out = tempfile::tempdir().expect("tempdir");
-    let (system, mut n_setup) = checkpointing_setup(6, Some(3), 6);
+    let (system, mut n_setup) = checkpointing_setup(6, Some(3), 6, forward_passes);
     let n_run_pool_capacities = n_setup
         .fcf
         .pools
@@ -99,7 +101,7 @@ fn periodic_at_3_and_final_at_3() -> PeriodicAndFinal {
     let periodic = read_policy_checkpoint(&n_out.path().join(&n_setup.policy_path))
         .expect("the periodic checkpoint must be readable");
 
-    let (k_system, mut k_setup) = checkpointing_setup(3, Some(3), 6);
+    let (k_system, mut k_setup) = checkpointing_setup(3, Some(3), 6, forward_passes);
     let k_result = train(&mut k_setup, None);
     assert_eq!(k_result.iterations, 3);
     let k_out = tempfile::tempdir().expect("tempdir");
@@ -125,13 +127,7 @@ fn periodic_at_3_and_final_at_3() -> PeriodicAndFinal {
     }
 }
 
-#[test]
-fn periodic_checkpoint_equals_the_final_checkpoint_of_a_run_stopped_at_that_iteration() {
-    let PeriodicAndFinal {
-        periodic,
-        final_at_k,
-        ..
-    } = periodic_at_3_and_final_at_3();
+fn assert_periodic_equals_final(periodic: &PolicyCheckpoint, final_at_k: &PolicyCheckpoint) {
     assert_eq!(periodic.metadata.producer.completed_iterations, 3);
     assert_eq!(periodic.stage_cuts.len(), final_at_k.stage_cuts.len());
     assert!(
@@ -153,12 +149,68 @@ fn periodic_checkpoint_equals_the_final_checkpoint_of_a_run_stopped_at_that_iter
 }
 
 #[test]
+fn periodic_checkpoint_equals_the_final_checkpoint_of_a_run_stopped_at_that_iteration() {
+    let PeriodicAndFinal {
+        periodic,
+        final_at_k,
+        ..
+    } = periodic_at_3_and_final_at_3(1);
+    assert_periodic_equals_final(&periodic, &final_at_k);
+}
+
+#[test]
+fn periodic_checkpoint_with_several_forward_passes_holds_every_scenario_basis_and_equals_the_final_one()
+ {
+    let PeriodicAndFinal {
+        periodic,
+        final_at_k,
+        ..
+    } = periodic_at_3_and_final_at_3(3);
+
+    for (which, checkpoint) in [("periodic", &periodic), ("final", &final_at_k)] {
+        assert!(
+            checkpoint.metadata.producer.basis_store_complete,
+            "the {which} checkpoint holds the whole basis store"
+        );
+        assert!(
+            !checkpoint.stage_bases.is_empty(),
+            "the {which} checkpoint holds bases"
+        );
+        for record in &checkpoint.stage_bases {
+            assert_eq!(
+                record
+                    .entries
+                    .iter()
+                    .map(|e| e.scenario)
+                    .collect::<Vec<_>>(),
+                [0, 1, 2],
+                "{which} checkpoint, node {}: one basis per forward pass",
+                record.stage_id
+            );
+        }
+    }
+    assert!(
+        periodic.stage_bases.iter().any(|record| {
+            record.entries.iter().any(|a| {
+                record.entries.iter().any(|b| {
+                    (&a.column_status, &a.row_status, &a.piece_row_slots)
+                        != (&b.column_status, &b.row_status, &b.piece_row_slots)
+                })
+            })
+        }),
+        "power: at some node two forward passes store different bases"
+    );
+
+    assert_periodic_equals_final(&periodic, &final_at_k);
+}
+
+#[test]
 fn periodic_checkpoint_records_the_running_configuration_as_provenance() {
     let PeriodicAndFinal {
         periodic,
         final_at_k,
         n_run_pool_capacities,
-    } = periodic_at_3_and_final_at_3();
+    } = periodic_at_3_and_final_at_3(1);
 
     assert_eq!(periodic.metadata.producer.max_iterations, 6);
     assert_eq!(final_at_k.metadata.producer.max_iterations, 3);
@@ -178,7 +230,7 @@ fn periodic_checkpoint_records_the_running_configuration_as_provenance() {
 #[test]
 fn periodic_checkpoints_follow_the_schedule_and_skip_the_stop_iteration() {
     let out = tempfile::tempdir().expect("tempdir");
-    let (system, mut setup) = checkpointing_setup(6, Some(2), 2);
+    let (system, mut setup) = checkpointing_setup(6, Some(2), 2, 1);
     setup.enable_periodic_checkpoints(&system, out.path());
     let policy_dir = out.path().join(&setup.policy_path);
 
@@ -210,7 +262,7 @@ fn periodic_checkpoints_follow_the_schedule_and_skip_the_stop_iteration() {
 fn failed_periodic_write_ends_training_with_the_failing_iteration() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let blocker = tmp.path().join("blocker");
-    let (system, mut setup) = checkpointing_setup(6, None, 2);
+    let (system, mut setup) = checkpointing_setup(6, None, 2, 1);
     setup.enable_periodic_checkpoints(&system, &blocker);
     std::fs::write(&blocker, b"a regular file, not a directory").expect("write blocker");
 

@@ -983,6 +983,13 @@ fn ac_train_result_fields_populated() {
     assert!(result.error.is_none(), "expected no error");
     assert_eq!(result.result.iterations, 5);
     assert!(!result.result.reason.is_empty(), "reason must not be empty");
+    let bases = &result.result.checkpoint_bases;
+    assert!(bases.complete, "a clean end gathers the whole basis store");
+    assert_eq!(bases.nodes.len(), n_stages);
+    assert!(
+        bases.nodes.iter().any(|entries| !entries.is_empty()),
+        "the gathered store holds the bases the forward pass captured"
+    );
 }
 
 #[test]
@@ -1414,6 +1421,10 @@ fn ac_train_partial_result_on_mid_iteration_failure() {
     assert!(
         outcome.result.total_time_ms > 0,
         "total_time_ms must be > 0"
+    );
+    assert!(
+        !outcome.result.checkpoint_bases.complete,
+        "a failure exit gathers nothing, so its checkpoint bases are not whole"
     );
 
     let events: Vec<TrainingEvent> = rx.try_iter().collect();
@@ -2221,10 +2232,10 @@ fn broadcast_basis_cache_truncated_state_returns_validation() {
 
 #[test]
 fn broadcast_basis_cache_rejects_oversized_i32_payload() {
-    use super::checked_broadcast_len;
+    use super::checked_mpi_count;
 
     let oversized: usize = (i32::MAX as usize) + 1;
-    let result = checked_broadcast_len(oversized, "broadcast_basis_cache_i32");
+    let result = checked_mpi_count(oversized, "broadcast_basis_cache_i32");
 
     match result {
         Err(SddpError::Communication(CommError::InvalidBufferSize {
@@ -2433,4 +2444,376 @@ fn ac_training_result_new_assigns_all_fields() {
         "solver_stats_log[0].iteration"
     );
     assert!(result.frozen_templates.is_none(), "frozen_templates");
+}
+
+// ── gather_basis_store unit tests ────────────────────────────────────────
+
+/// A basis whose every field depends on `seed`, with a non-empty
+/// `state_at_capture` the gather drops.
+fn seeded_basis(seed: usize) -> crate::workspace::CapturedBasis {
+    const VARIANTS: [BasisStatus; 4] = [
+        BasisStatus::Lower,
+        BasisStatus::Basic,
+        BasisStatus::Upper,
+        BasisStatus::Nonbasic,
+    ];
+    crate::workspace::CapturedBasis {
+        basis: Basis {
+            col_status: vec![VARIANTS[seed % 4], VARIANTS[(seed + 1) % 4]],
+            row_status: vec![VARIANTS[(seed + 2) % 4]; 2 + seed % 3],
+        },
+        base_row_count: 2,
+        cut_row_slots: (0..(seed % 3) as u32).map(|s| s + seed as u32).collect(),
+        state_at_capture: vec![seed as f64; 1 + seed % 2],
+        node_id: NodeId(seed as i32),
+    }
+}
+
+/// A store of `rows` rows over `num_nodes` nodes holding `seeded_basis(seed)`
+/// at each `(row, node, seed)`.
+fn store_with(
+    rows: usize,
+    num_nodes: usize,
+    bases: &[(usize, usize, usize)],
+) -> crate::workspace::BasisStore {
+    let mut store = crate::workspace::BasisStore::new(rows, num_nodes);
+    for &(row, node, seed) in bases {
+        *store.get_mut(row, crate::setup::NodePos(node)) = Some(seeded_basis(seed));
+    }
+    store
+}
+
+/// `gathered` holds exactly `(scenario, seed)` at each node, every basis equal
+/// to `seeded_basis(seed)` without its capture state.
+fn assert_gathered(gathered: &super::CheckpointBasisStore, expected: &[&[(u32, usize)]]) {
+    assert_eq!(
+        gathered.nodes.len(),
+        expected.len(),
+        "one entry list per node"
+    );
+    for (node, (entries, want)) in gathered.nodes.iter().zip(expected).enumerate() {
+        assert_eq!(
+            entries.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+            want.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+            "node {node}: the scenarios holding a basis, ascending"
+        );
+        for ((scenario, got), &(_, seed)) in entries.iter().zip(want.iter()) {
+            let expected = seeded_basis(seed);
+            assert_eq!(
+                got.basis.col_status, expected.basis.col_status,
+                "node {node} scenario {scenario}"
+            );
+            assert_eq!(
+                got.basis.row_status, expected.basis.row_status,
+                "node {node} scenario {scenario}"
+            );
+            assert_eq!(
+                got.base_row_count, expected.base_row_count,
+                "node {node} scenario {scenario}"
+            );
+            assert_eq!(
+                got.cut_row_slots, expected.cut_row_slots,
+                "node {node} scenario {scenario}"
+            );
+            assert_eq!(
+                got.node_id, expected.node_id,
+                "node {node} scenario {scenario}"
+            );
+            assert!(
+                got.state_at_capture.is_empty(),
+                "node {node} scenario {scenario}: the capture state is dropped"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_single_rank_gather_keeps_every_stored_row_with_its_scenario() {
+    use super::gather_basis_store;
+    use crate::training::session::rank_distribution::RankDistribution;
+
+    let store = store_with(
+        3,
+        3,
+        &[(0, 0, 1), (2, 0, 2), (0, 1, 3), (1, 1, 4), (2, 1, 5)],
+    );
+    let ranks = RankDistribution::new(&StubComm, 3);
+
+    let gathered = gather_basis_store(&store, &ranks, &StubComm)
+        .unwrap()
+        .expect("rank 0 receives the gathered store");
+
+    assert!(gathered.complete);
+    assert_gathered(
+        &gathered,
+        &[&[(0, 1), (2, 2)], &[(0, 3), (1, 4), (2, 5)], &[]],
+    );
+}
+
+/// Rank 0 of two: `allgatherv` writes this rank's segment only, so the peer's
+/// lengths read as zero.
+struct Rank0Of2;
+
+impl Communicator for Rank0Of2 {
+    fn allgatherv<T: CommData>(
+        &self,
+        send: &[T],
+        recv: &mut [T],
+        _counts: &[usize],
+        displs: &[usize],
+    ) -> Result<(), CommError> {
+        recv[displs[0]..displs[0] + send.len()].clone_from_slice(send);
+        Ok(())
+    }
+
+    fn allreduce<T: CommData>(
+        &self,
+        send: &[T],
+        recv: &mut [T],
+        _op: ReduceOp,
+    ) -> Result<(), CommError> {
+        recv.clone_from_slice(send);
+        Ok(())
+    }
+
+    fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
+        Ok(())
+    }
+
+    fn barrier(&self) -> Result<(), CommError> {
+        Ok(())
+    }
+
+    fn rank(&self) -> usize {
+        0
+    }
+
+    fn size(&self) -> usize {
+        2
+    }
+
+    fn abort(&self, error_code: i32) -> ! {
+        std::process::exit(error_code)
+    }
+}
+
+#[test]
+fn a_rank_zero_of_two_gather_reads_an_empty_peer_segment_as_no_entries() {
+    use super::gather_basis_store;
+    use crate::training::session::rank_distribution::RankDistribution;
+
+    let store = store_with(2, 2, &[(0, 0, 1), (1, 0, 2), (1, 1, 3)]);
+    let ranks = RankDistribution::new(&Rank0Of2, 3);
+    assert_eq!(ranks.my_actual_fwd, 2, "fixture: the peer owns scenario 2");
+
+    let gathered = gather_basis_store(&store, &ranks, &Rank0Of2)
+        .unwrap()
+        .expect("rank 0 receives the gathered store");
+
+    assert!(gathered.complete);
+    assert_gathered(&gathered, &[&[(0, 1), (1, 2)], &[(1, 3)]]);
+}
+
+/// One of two cooperating ranks in one process. Rank 1 records every buffer
+/// it sends; rank 0, built from that record, writes rank 1's buffer of each
+/// collective into the peer segment, in call order.
+struct TwoRankReplay {
+    rank: usize,
+    peer_sends: std::sync::Mutex<std::collections::VecDeque<MockPayload>>,
+}
+
+impl TwoRankReplay {
+    fn recording_peer() -> Self {
+        Self {
+            rank: 1,
+            peer_sends: std::sync::Mutex::new(std::collections::VecDeque::new()),
+        }
+    }
+
+    fn root_replaying(peer: Self) -> Self {
+        Self {
+            rank: 0,
+            peer_sends: peer.peer_sends,
+        }
+    }
+}
+
+fn erase_comm_data<T: CommData>(values: &[T]) -> MockPayload {
+    use std::any::Any;
+    let probe = T::default();
+    let probe: &dyn Any = &probe;
+    if probe.is::<i32>() {
+        MockPayload::Ints(
+            values
+                .iter()
+                .map(|v| *(v as &dyn Any).downcast_ref::<i32>().unwrap())
+                .collect(),
+        )
+    } else if probe.is::<f64>() {
+        MockPayload::Floats(
+            values
+                .iter()
+                .map(|v| *(v as &dyn Any).downcast_ref::<f64>().unwrap())
+                .collect(),
+        )
+    } else {
+        panic!("TwoRankReplay: unsupported element type (expected i32 or f64)")
+    }
+}
+
+fn restore_comm_data<T: CommData>(payload: &MockPayload, dst: &mut [T]) {
+    use std::any::Any;
+    for (i, slot) in dst.iter_mut().enumerate() {
+        let slot: &mut dyn Any = slot;
+        match payload {
+            MockPayload::Ints(v) => *slot.downcast_mut::<i32>().unwrap() = v[i],
+            MockPayload::Floats(v) => *slot.downcast_mut::<f64>().unwrap() = v[i],
+        }
+    }
+}
+
+impl Communicator for TwoRankReplay {
+    fn allgatherv<T: CommData>(
+        &self,
+        send: &[T],
+        recv: &mut [T],
+        counts: &[usize],
+        displs: &[usize],
+    ) -> Result<(), CommError> {
+        let own = displs[self.rank];
+        recv[own..own + send.len()].clone_from_slice(send);
+        let mut peer_sends = self.peer_sends.lock().unwrap();
+        if self.rank == 1 {
+            peer_sends.push_back(erase_comm_data(send));
+        } else {
+            let peer = peer_sends
+                .pop_front()
+                .expect("TwoRankReplay: rank 0 issued more collectives than rank 1");
+            restore_comm_data(&peer, &mut recv[displs[1]..displs[1] + counts[1]]);
+        }
+        Ok(())
+    }
+
+    fn allreduce<T: CommData>(
+        &self,
+        _send: &[T],
+        _recv: &mut [T],
+        _op: ReduceOp,
+    ) -> Result<(), CommError> {
+        unreachable!("gather_basis_store does not call allreduce")
+    }
+
+    fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
+        unreachable!("gather_basis_store does not call broadcast")
+    }
+
+    fn barrier(&self) -> Result<(), CommError> {
+        Ok(())
+    }
+
+    fn rank(&self) -> usize {
+        self.rank
+    }
+
+    fn size(&self) -> usize {
+        2
+    }
+
+    fn abort(&self, code: i32) -> ! {
+        std::process::exit(code)
+    }
+}
+
+#[test]
+fn a_two_rank_gather_numbers_each_peer_row_from_its_offset() {
+    use super::gather_basis_store;
+    use crate::training::session::rank_distribution::RankDistribution;
+
+    // Three passes over two ranks: rank 0 owns scenarios 0 and 1, rank 1
+    // scenario 2 in its row 0; rank 1's row 1 is padding and is never sent.
+    let peer = TwoRankReplay::recording_peer();
+    let peer_ranks = RankDistribution::new(&peer, 3);
+    assert_eq!((peer_ranks.my_actual_fwd, peer_ranks.max_local_fwd), (1, 2));
+    let peer_store = store_with(2, 3, &[(0, 0, 7), (0, 1, 8), (1, 0, 99), (1, 2, 99)]);
+    assert!(
+        gather_basis_store(&peer_store, &peer_ranks, &peer)
+            .unwrap()
+            .is_none(),
+        "only rank 0 receives the gathered store"
+    );
+
+    let root = TwoRankReplay::root_replaying(peer);
+    let root_ranks = RankDistribution::new(&root, 3);
+    let root_store = store_with(2, 3, &[(0, 0, 1), (1, 0, 2), (1, 1, 3)]);
+    let gathered = gather_basis_store(&root_store, &root_ranks, &root)
+        .unwrap()
+        .expect("rank 0 receives the gathered store");
+
+    assert!(
+        root.peer_sends.lock().unwrap().is_empty(),
+        "both ranks issue the same collectives"
+    );
+    assert!(gathered.complete);
+    assert_gathered(
+        &gathered,
+        &[&[(0, 1), (1, 2), (2, 7)], &[(1, 3), (2, 8)], &[]],
+    );
+}
+
+#[test]
+fn a_gather_that_cannot_decode_a_peer_segment_still_issues_every_collective() {
+    use super::gather_basis_store;
+    use crate::training::session::rank_distribution::RankDistribution;
+    use crate::workspace::BASIS_BROADCAST_FORMAT_TAG;
+
+    let peer = TwoRankReplay::recording_peer();
+    let peer_ranks = RankDistribution::new(&peer, 3);
+    let peer_store = store_with(2, 3, &[(0, 0, 7), (0, 1, 8), (0, 2, 9)]);
+    gather_basis_store(&peer_store, &peer_ranks, &peer).unwrap();
+    {
+        let mut sends = peer.peer_sends.lock().unwrap();
+        // Node 0's `i32` payload is the second collective; its second value is
+        // the format tag.
+        let MockPayload::Ints(payload) = &mut sends[1] else {
+            panic!("node 0's second collective carries the i32 payload");
+        };
+        assert_eq!(payload[1], BASIS_BROADCAST_FORMAT_TAG);
+        payload[1] = BASIS_BROADCAST_FORMAT_TAG + 1;
+    }
+
+    let root = TwoRankReplay::root_replaying(peer);
+    let root_ranks = RankDistribution::new(&root, 3);
+    let root_store = store_with(2, 3, &[(0, 0, 1)]);
+    let err = gather_basis_store(&root_store, &root_ranks, &root)
+        .expect_err("rank 0 cannot decode the peer's node-0 segment");
+
+    assert!(
+        matches!(&err, SddpError::Validation(msg) if msg.contains("unsupported wire version")),
+        "{err:?}"
+    );
+    assert!(
+        root.peer_sends.lock().unwrap().is_empty(),
+        "rank 0 gathers every node before it reports the decode failure"
+    );
+}
+
+#[test]
+fn a_payload_length_that_does_not_fit_an_i32_count_fails_naming_its_rank() {
+    use super::segment_layout;
+
+    let (mut counts, mut displs) = (vec![0_usize; 2], vec![0_usize; 2]);
+    let err = segment_layout(
+        [5_i32, -1].iter(),
+        4,
+        "gather_basis_store_i32",
+        &mut counts,
+        &mut displs,
+    )
+    .expect_err("a -1 length is a payload past the i32 count limit");
+
+    assert!(
+        matches!(&err, SddpError::Validation(msg)
+            if msg.contains("rank 1") && msg.contains("node 4")),
+        "{err:?}"
+    );
 }
