@@ -23,7 +23,7 @@ use pyo3::exceptions::{PyFileNotFoundError, PyIndexError, PyOSError, PyValueErro
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyList, PyString};
 
-use novomodelo_io::StateHistory;
+use novomodelo_io::{EntitySlot, StateHistory};
 
 use crate::errors::{ErrorSource, convert_error};
 
@@ -887,6 +887,25 @@ fn metadata_to_py<'py>(
     Ok(dict)
 }
 
+fn entity_manifest_to_py<'py>(
+    py: Python<'py>,
+    manifest: &[EntitySlot],
+) -> PyResult<Bound<'py, PyList>> {
+    let manifest_list = PyList::empty(py);
+    for slot in manifest {
+        let slot_dict = PyDict::new(py);
+        slot_dict.set_item("entity_type", into_py(py, slot.entity_type)?)?;
+        slot_dict.set_item("entity_id", into_py(py, slot.entity_id)?)?;
+        slot_dict.set_item("subindex", into_py(py, slot.subindex)?)?;
+        slot_dict.set_item("was_active", PyBool::new(py, slot.was_active).to_owned())?;
+        slot_dict.set_item("reference_date", into_py(py, slot.reference_date)?)?;
+        slot_dict.set_item("interval_start", into_py(py, slot.interval_start)?)?;
+        slot_dict.set_item("interval_end", into_py(py, slot.interval_end)?)?;
+        manifest_list.append(slot_dict)?;
+    }
+    Ok(manifest_list)
+}
+
 /// Read one `scenario_id=NNNN/data.parquet` partition and append rows to `result_list`.
 ///
 /// Each row is a Python dict of column values. The `scenario_id` integer is injected
@@ -1329,9 +1348,10 @@ pub fn load_simulation_arrow(
 
 /// Load a `FlatBuffers` policy checkpoint from `<output_dir>/<policy_subdir>`.
 ///
-/// Reads the policy metadata, per-stage cut pools, and per-stage solver bases
-/// written by `novomodelo-io`'s policy checkpoint writer and returns them as a
-/// nested Python dict.
+/// Reads the policy metadata, per-stage cut pools, per-node solver bases and
+/// per-pool stored trial states written by `novomodelo-io`'s policy checkpoint writer
+/// and returns them as a nested Python dict. Passing the four values back to
+/// `write_policy_checkpoint` writes the same checkpoint.
 ///
 /// `policy_subdir` selects the checkpoint sub-directory under `output_dir` and
 /// defaults to `"policy"` — the location the standard solve lifecycle writes
@@ -1386,6 +1406,9 @@ pub fn load_simulation_arrow(
 ///                     "coefficients": [1.0, 2.0, ...],
 ///                     "is_active": True,
 ///                     "scored": False,
+///                     // present only when the checkpoint carries the counters:
+///                     "active_count": 3,
+///                     "last_active_iteration": 7,
 ///                 },
 ///                 ...
 ///             ]
@@ -1406,9 +1429,23 @@ pub fn load_simulation_arrow(
 ///             ],
 ///         },
 ///         ...
+///     ],
+///     "stage_states": [
+///         {
+///             "stage_id": 0,
+///             "node_id": 0,
+///             "state_dimension": 4,
+///             "count": 2,
+///             "slots": [0, 3],
+///             "data": [0.5, ...],   // count * state_dimension values, row-major
+///             "entity_manifest": [ ... ],
+///         },
+///         ...
 ///     ]
 /// }
 /// ```
+///
+/// `stage_states` is empty when no pool stores trial states.
 ///
 /// ## Errors
 ///
@@ -1477,19 +1514,10 @@ pub fn load_policy(
         // through `write_policy_checkpoint` (whose binding already accepts this
         // exact shape). Without it the manifest — present on disk and required by
         // external boundary-cut authoring — is silently dropped on the read side.
-        let manifest_list = PyList::empty(py);
-        for slot in &sc.entity_manifest {
-            let slot_dict = PyDict::new(py);
-            slot_dict.set_item("entity_type", into_py(py, slot.entity_type)?)?;
-            slot_dict.set_item("entity_id", into_py(py, slot.entity_id)?)?;
-            slot_dict.set_item("subindex", into_py(py, slot.subindex)?)?;
-            slot_dict.set_item("was_active", PyBool::new(py, slot.was_active).to_owned())?;
-            slot_dict.set_item("reference_date", into_py(py, slot.reference_date)?)?;
-            slot_dict.set_item("interval_start", into_py(py, slot.interval_start)?)?;
-            slot_dict.set_item("interval_end", into_py(py, slot.interval_end)?)?;
-            manifest_list.append(slot_dict)?;
-        }
-        sc_dict.set_item("entity_manifest", manifest_list)?;
+        sc_dict.set_item(
+            "entity_manifest",
+            entity_manifest_to_py(py, &sc.entity_manifest)?,
+        )?;
 
         let cuts_list = PyList::empty(py);
         for cut in &sc.cuts {
@@ -1557,10 +1585,27 @@ pub fn load_policy(
         stage_bases_list.append(basis_dict)?;
     }
 
+    let stage_states_list = PyList::empty(py);
+    for states in &checkpoint.stage_states {
+        let states_dict = PyDict::new(py);
+        states_dict.set_item("stage_id", into_py(py, states.stage_id)?)?;
+        states_dict.set_item("node_id", into_py(py, states.node_id)?)?;
+        states_dict.set_item("state_dimension", into_py(py, states.state_dimension)?)?;
+        states_dict.set_item("count", into_py(py, states.count)?)?;
+        states_dict.set_item("slots", PyList::new(py, &states.slots)?)?;
+        states_dict.set_item("data", PyList::new(py, &states.data)?)?;
+        states_dict.set_item(
+            "entity_manifest",
+            entity_manifest_to_py(py, &states.entity_manifest)?,
+        )?;
+        stage_states_list.append(states_dict)?;
+    }
+
     let result = PyDict::new(py);
     result.set_item("metadata", metadata_py)?;
     result.set_item("stage_cuts", stage_cuts_list)?;
     result.set_item("stage_bases", stage_bases_list)?;
+    result.set_item("stage_states", stage_states_list)?;
 
     Ok(result.unbind().into())
 }

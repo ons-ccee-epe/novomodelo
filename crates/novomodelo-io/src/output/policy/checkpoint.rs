@@ -155,9 +155,12 @@ fn check_family_applicability(pool_id: u32, slot: &EntitySlot) -> Result<(), Out
 ///
 /// Returns [`OutputError::SerializationError`] naming the pool, the offending
 /// subindex, and its `interval_start`.
-fn check_transit_bucket_monotonicity(pool: &StageCutsReadResult) -> Result<(), OutputError> {
+fn check_transit_bucket_monotonicity(
+    pool_id: u32,
+    manifest: &[EntitySlot],
+) -> Result<(), OutputError> {
     let mut by_entity: BTreeMap<i32, Vec<(u32, i32)>> = BTreeMap::new();
-    for slot in &pool.entity_manifest {
+    for slot in manifest {
         if slot.family() == Some(StateFamily::HydroTransitBucket)
             && slot.interval_start != ENTITY_SLOT_DATE_SENTINEL
         {
@@ -173,7 +176,6 @@ fn check_transit_bucket_monotonicity(pool: &StageCutsReadResult) -> Result<(), O
             let (prev_subindex, prev_start) = pair[0];
             let (subindex, start) = pair[1];
             if start < prev_start {
-                let pool_id = pool.stage_id;
                 return Err(OutputError::serialization(
                     "policy_checkpoint_dates",
                     format!(
@@ -187,6 +189,26 @@ fn check_transit_bucket_monotonicity(pool: &StageCutsReadResult) -> Result<(), O
     Ok(())
 }
 
+/// Validate that one pool's entity manifest is date-consistent, returning the
+/// first violation found.
+///
+/// # Errors
+///
+/// Returns [`OutputError::SerializationError`] naming the pool and the
+/// offending slot.
+fn check_pool_dates(pool_id: u32, manifest: &[EntitySlot]) -> Result<(), OutputError> {
+    // Canonical order so the first reported error is declaration-order invariant.
+    let mut slots: Vec<&EntitySlot> = manifest.iter().collect();
+    slots.sort_by_key(|slot| (slot.entity_type, slot.entity_id, slot.subindex));
+    for slot in slots {
+        check_well_formed_slot_dates(pool_id, slot)?;
+        check_interval_pairing(pool_id, slot)?;
+        check_interval_ordering(pool_id, slot)?;
+        check_family_applicability(pool_id, slot)?;
+    }
+    check_transit_bucket_monotonicity(pool_id, manifest)
+}
+
 /// Validate that `checkpoint` is internally date-consistent, returning the
 /// first violation found.
 ///
@@ -196,17 +218,16 @@ fn check_transit_bucket_monotonicity(pool: &StageCutsReadResult) -> Result<(), O
 /// slot.
 fn validate_checkpoint_dates(checkpoint: &PolicyCheckpoint) -> Result<(), OutputError> {
     for pool in &checkpoint.stage_cuts {
-        let pool_id = pool.stage_id;
-        // Canonical order so the first reported error is declaration-order invariant.
-        let mut slots: Vec<&EntitySlot> = pool.entity_manifest.iter().collect();
-        slots.sort_by_key(|slot| (slot.entity_type, slot.entity_id, slot.subindex));
-        for slot in slots {
-            check_well_formed_slot_dates(pool_id, slot)?;
-            check_interval_pairing(pool_id, slot)?;
-            check_interval_ordering(pool_id, slot)?;
-            check_family_applicability(pool_id, slot)?;
-        }
-        check_transit_bucket_monotonicity(pool)?;
+        check_pool_dates(pool.stage_id, &pool.entity_manifest)?;
+    }
+    Ok(())
+}
+
+/// [`validate_checkpoint_dates`] over the payloads a write receives, in the
+/// read's file order so the first violation reported is the same.
+fn check_payload_dates(stage_cuts: &[StageCutsPayload<'_>]) -> Result<(), OutputError> {
+    for pool in sorted_by_id(stage_cuts, |p| p.stage_id) {
+        check_pool_dates(pool.stage_id, pool.entity_manifest)?;
     }
     Ok(())
 }
@@ -584,6 +605,48 @@ fn check_payload_structure(
     Ok(())
 }
 
+/// The first id, in ascending order, that `ids` holds twice.
+fn first_repeated(ids: impl IntoIterator<Item = u32>) -> Option<u32> {
+    let mut ids: Vec<u32> = ids.into_iter().collect();
+    ids.sort_unstable();
+    ids.windows(2)
+        .find(|pair| pair[0] == pair[1])
+        .map(|pair| pair[0])
+}
+
+/// Each id names one file, so two payloads of one kind with the same id would
+/// overwrite one another.
+fn check_unique_ids(
+    stage_cuts: &[StageCutsPayload<'_>],
+    stage_bases: &[PolicyBasisRecord<'_>],
+    stage_states: &[StageStatesPayload<'_>],
+) -> Result<(), OutputError> {
+    let repeated = [
+        (
+            "cuts",
+            first_repeated(stage_cuts.iter().map(|p| p.stage_id)),
+        ),
+        (
+            "basis",
+            first_repeated(stage_bases.iter().map(|b| b.stage_id)),
+        ),
+        (
+            "states",
+            first_repeated(stage_states.iter().map(|s| s.stage_id)),
+        ),
+    ];
+    for (dir, id) in repeated {
+        if let Some(id) = id {
+            return Err(structure_error(
+                dir,
+                id,
+                "more than one payload carries this id",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn sorted_by_id<T>(items: &[T], id: impl Fn(&T) -> u32) -> Vec<&T> {
     let mut sorted: Vec<&T> = items.iter().collect();
     sorted.sort_by_key(|item| id(item));
@@ -635,10 +698,11 @@ pub(super) fn check_encoded_sizes(
     )
 }
 
-/// Check, before anything is written, that a checkpoint of these payloads is
-/// one [`read_policy_checkpoint`] accepts structurally, and that no file of it
-/// can exceed the 2 GiB `FlatBuffers` buffer limit. [`write_policy_checkpoint`]
-/// runs it first.
+/// Check, before anything is written, that no two payloads of one kind share an
+/// id, that a checkpoint of these payloads is one [`read_policy_checkpoint`]
+/// accepts (its entity manifests date-consistent and its payloads
+/// structurally sound), and that no file of it can exceed the 2 GiB
+/// `FlatBuffers` buffer limit. [`write_policy_checkpoint`] runs it first.
 ///
 /// # Errors
 ///
@@ -651,6 +715,8 @@ pub fn check_checkpoint_payloads(
     stage_states: &[StageStatesPayload<'_>],
     metadata: &CheckpointManifest,
 ) -> Result<(), OutputError> {
+    check_unique_ids(stage_cuts, stage_bases, stage_states)?;
+    check_payload_dates(stage_cuts)?;
     check_payload_structure(stage_cuts, stage_bases, stage_states, metadata)?;
     check_encoded_sizes(
         stage_cuts,

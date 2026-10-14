@@ -15,9 +15,10 @@ use pyo3::prelude::*;
 
 use std::num::NonZeroU32;
 
+use novomodelo_io::output::policy::check_checkpoint_payloads;
 use novomodelo_io::{
     BasisEntry, CheckpointManifest, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, FORMAT_VERSION,
-    GraphManifest, HydroSeasonOrders, ManifestEdge, ManifestNode, PolicyBasisRecord,
+    GraphManifest, HydroSeasonOrders, ManifestEdge, ManifestNode, OutputError, PolicyBasisRecord,
     PolicyCutRecord, ProducerBlock, SOFTWARE_NAME, SOFTWARE_VERSION,
     STAGE_CUTS_GRAPH_STAGE_ID_SENTINEL, STAGE_CUTS_NODE_ID_SENTINEL,
     STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, STAGE_STATES_NODE_ID_SENTINEL, SeasonManifest,
@@ -105,8 +106,7 @@ pub(crate) struct PyStageCutsPayload {
     populated_count: Option<u32>,
     #[pyo3(default)]
     entity_manifest: Vec<PyEntitySlot>,
-    /// Defaults to the metadata producer block's factor when omitted (see
-    /// [`write_policy_checkpoint`]).
+    /// Required; read by [`pool_cost_scale_factors`], which rejects an absent value.
     #[pyo3(default)]
     cost_scale_factor: Option<f64>,
     #[pyo3(default = STAGE_CUTS_NODE_ID_SENTINEL)]
@@ -265,10 +265,12 @@ pub(crate) struct PyProducerBlock {
 
 /// A producer's `state_history` key: `None` (no trial points), `"whole"`, or a
 /// positive window of iterations — the shape [`crate::results::load_policy`]
-/// emits.
+/// emits. `Flag` catches a Python `bool`, which a `u32` extraction would take
+/// for a window of 1.
 #[derive(Debug, FromPyObject)]
 pub(crate) enum PyStateHistory {
     Named(String),
+    Flag(bool),
     Window(u32),
 }
 
@@ -282,6 +284,10 @@ impl PyStateHistory {
                 .ok_or_else(|| PyValueError::new_err("state_history window must be positive")),
             Some(Self::Named(other)) => Err(PyValueError::new_err(format!(
                 "state_history {other:?} is neither None, \"whole\" nor a positive window"
+            ))),
+            Some(Self::Flag(flag)) => Err(PyValueError::new_err(format!(
+                "state_history {} is a bool, not None, \"whole\" or a positive window",
+                if *flag { "True" } else { "False" }
             ))),
         }
     }
@@ -375,17 +381,82 @@ fn resolve_populated_counts(stage_cuts: &[PyStageCutsPayload]) -> PyResult<Vec<u
     Ok(resolved)
 }
 
-/// Validates `data.len() == count * state_dimension` per stage.
-fn validate_stage_states(stage_states: &[PyStageStatesPayload]) -> PyResult<()> {
-    for ss in stage_states {
-        let expected = ss.count as usize * ss.state_dimension as usize;
-        if ss.data.len() != expected {
+/// The scale of a pool's values, read from its required `cost_scale_factor`.
+fn pool_cost_scale_factors(stage_cuts: &[PyStageCutsPayload]) -> PyResult<Vec<f64>> {
+    stage_cuts
+        .iter()
+        .enumerate()
+        .map(|(index, sc)| {
+            let problem = match sc.cost_scale_factor {
+                None => "is required".to_string(),
+                Some(factor) if !(factor.is_finite() && factor > 0.0) => {
+                    format!("must be finite and positive, got {factor}")
+                }
+                Some(factor) => return Ok(factor),
+            };
+            Err(PyValueError::new_err(format!(
+                "stage_cuts[{index}] (stage_id {}): cost_scale_factor {problem}; the intercepts \
+                 and coefficients are in the units of this factor (pass 1.0 for values in \
+                 currency units)",
+                sc.stage_id
+            )))
+        })
+        .collect()
+}
+
+/// A whole basis store claims every scenario's basis, which cannot be true of a
+/// write that received none.
+fn reject_unreceived_basis_store(
+    producer: &PyProducerBlock,
+    stage_bases: &[PyBasisRecord],
+) -> PyResult<()> {
+    if producer.basis_store_complete && stage_bases.iter().all(|b| b.entries.is_empty()) {
+        return Err(PyValueError::new_err(
+            "metadata['producer']['basis_store_complete'] is True but stage_bases holds no \
+             basis; pass the bases or set it to False",
+        ));
+    }
+    Ok(())
+}
+
+// `from_item_all` ignores keys it does not name, so a caller still passing a
+// retired key would otherwise write without error.
+const RETIRED_POOL_KEYS: [&str; 1] = ["active_cut_indices"];
+const RETIRED_CUT_KEYS: [&str; 1] = ["cut_id"];
+const RETIRED_BASIS_KEYS: [&str; 3] = ["num_cut_rows", "num_columns", "num_rows"];
+
+fn reject_retired_keys(item: &Bound<'_, PyAny>, keys: &[&str], position: &str) -> PyResult<()> {
+    for key in keys {
+        if item.contains(key)? {
             return Err(PyValueError::new_err(format!(
-                "stage {}: states data has {} entries, expected count*state_dimension={}",
-                ss.stage_id,
-                ss.data.len(),
-                expected
+                "{position}: key '{key}' is not part of a policy checkpoint (format \
+                 {FORMAT_VERSION}); remove it"
             )));
+        }
+    }
+    Ok(())
+}
+
+/// Runs on the raw arguments, before extraction.
+fn reject_retired_checkpoint_keys(
+    stage_cuts: &Bound<'_, PyAny>,
+    stage_bases: Option<&Bound<'_, PyAny>>,
+) -> PyResult<()> {
+    for (pool_index, pool) in stage_cuts.try_iter()?.enumerate() {
+        let pool = pool?;
+        let position = format!("stage_cuts[{pool_index}]");
+        reject_retired_keys(&pool, &RETIRED_POOL_KEYS, &position)?;
+        if pool.contains("cuts")? {
+            for (cut_index, cut) in pool.get_item("cuts")?.try_iter()?.enumerate() {
+                let position = format!("{position}.cuts[{cut_index}]");
+                reject_retired_keys(&cut?, &RETIRED_CUT_KEYS, &position)?;
+            }
+        }
+    }
+    if let Some(stage_bases) = stage_bases {
+        for (node_index, basis) in stage_bases.try_iter()?.enumerate() {
+            let position = format!("stage_bases[{node_index}]");
+            reject_retired_keys(&basis?, &RETIRED_BASIS_KEYS, &position)?;
         }
     }
     Ok(())
@@ -470,6 +541,10 @@ fn build_stage_cuts_data(
 /// default to empty when omitted (a checkpoint authored from raw cut data
 /// carries neither).
 ///
+/// Every pool's `cost_scale_factor` is required: the pool's values are in the
+/// units of that factor, and the producer block's `cost_scale_factor` is
+/// provenance only, never a fallback.
+///
 /// `inflow_lag_depth`, when set to `N > 0`, has novomodelo reserve `N` canonical
 /// `HydroInflowLag` state slots per storage hydro in every stage's manifest
 /// (via [`reserve_boundary_inflow_lag_slots`]), placing each cut's
@@ -484,34 +559,44 @@ fn build_stage_cuts_data(
 ///
 /// # Errors
 ///
-/// `ValueError` when a cut's `coefficients` length does not match its stage's
-/// `state_dimension`, a stage's state data length does not match
-/// `count * state_dimension`, a cut carries `inflow_lag_coefficients` without a
-/// positive `inflow_lag_depth`, or (under `inflow_lag_depth`) a manifest lacks a
-/// leading storage block or an inflow-lag coefficient is unplaceable. A
-/// `season_manifest` whose `hydro_orders` are not ascending by `hydro_id` or
+/// `ValueError` when a pool dict holds the retired `active_cut_indices`, a cut
+/// dict `cut_id` or a basis dict `num_cut_rows`, `num_columns` or `num_rows`; a
+/// pool's `cost_scale_factor` is absent, not finite or not positive; a cut's
+/// `coefficients` length does not match its stage's `state_dimension`; a cut
+/// carries `inflow_lag_coefficients` without a positive `inflow_lag_depth`; or
+/// (under `inflow_lag_depth`) a manifest lacks a leading storage block or an
+/// inflow-lag coefficient is unplaceable. `ValueError` also when the producer
+/// claims `basis_store_complete` with no basis in `stage_bases`, when a producer
+/// `state_history` is other than `None`, `"whole"` or a positive window, and
+/// when [`check_checkpoint_payloads`] refuses the payloads, with its message.
+/// A `season_manifest` whose `hydro_orders` are not ascending by `hydro_id` or
 /// whose `orders` lengths disagree with `n_seasons` is written as given and
-/// rejected by [`crate::results::load_policy`] with `OutputError`. A producer
-/// `state_history` other than `None`, `"whole"` or a positive window is a
-/// `ValueError`. Otherwise
-/// the `novomodelo.errors` leaf mapped from the underlying [`novomodelo_io::OutputError`].
+/// rejected by [`crate::results::load_policy`] with `OutputError`. A failed
+/// write raises the `novomodelo.errors` leaf mapped from the underlying
+/// [`novomodelo_io::OutputError`].
 #[pyfunction]
 #[pyo3(signature = (path, stage_cuts, metadata, stage_bases=None, stage_states=None, inflow_lag_depth=None))]
 #[allow(clippy::needless_pass_by_value)]
 pub fn write_policy_checkpoint(
     py: Python<'_>,
     path: PathBuf,
-    stage_cuts: Vec<PyStageCutsPayload>,
+    stage_cuts: &Bound<'_, PyAny>,
     metadata: PyPolicyCheckpointMetadata,
-    stage_bases: Option<Vec<PyBasisRecord>>,
+    stage_bases: Option<&Bound<'_, PyAny>>,
     stage_states: Option<Vec<PyStageStatesPayload>>,
     inflow_lag_depth: Option<u32>,
 ) -> PyResult<()> {
-    let stage_bases = stage_bases.unwrap_or_default();
+    reject_retired_checkpoint_keys(stage_cuts, stage_bases)?;
+    let stage_cuts: Vec<PyStageCutsPayload> = stage_cuts.extract()?;
+    let stage_bases: Vec<PyBasisRecord> = stage_bases
+        .map(PyAnyMethods::extract)
+        .transpose()?
+        .unwrap_or_default();
     let stage_states = stage_states.unwrap_or_default();
 
     let populated_counts = resolve_populated_counts(&stage_cuts)?;
-    validate_stage_states(&stage_states)?;
+    let cost_scale_factors = pool_cost_scale_factors(&stage_cuts)?;
+    reject_unreceived_basis_store(&metadata.producer, &stage_bases)?;
 
     let reserve_depth = inflow_lag_depth.filter(|&n| n > 0);
     reject_unreserved_lag_coefficients(&stage_cuts, reserve_depth)?;
@@ -522,7 +607,7 @@ pub fn write_policy_checkpoint(
 
     let metadata = metadata.into_manifest()?;
 
-    py.detach(|| {
+    let written = py.detach(|| -> PyResult<Result<(), OutputError>> {
         let cut_records: Vec<Vec<PolicyCutRecord<'_>>> = stage_cuts
             .iter()
             .zip(&stage_data)
@@ -557,10 +642,7 @@ pub fn write_policy_checkpoint(
                 cuts: &cut_records[i],
                 populated_count: populated_counts[i],
                 entity_manifest: &data.manifest,
-                cost_scale_factor: sc
-                    .cost_scale_factor
-                    .or(metadata.producer.cost_scale_factor)
-                    .unwrap_or(1_000_000.0),
+                cost_scale_factor: cost_scale_factors[i],
                 node_id: sc.node_id,
                 graph_stage_id: sc.graph_stage_id,
                 priced_state_date: sc.priced_state_date,
@@ -610,15 +692,23 @@ pub fn write_policy_checkpoint(
             })
             .collect();
 
-        novomodelo_io::write_policy_checkpoint(
+        check_checkpoint_payloads(
+            &stage_cuts_payloads,
+            &basis_records,
+            &state_payloads,
+            &metadata,
+        )
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        Ok(novomodelo_io::write_policy_checkpoint(
             &path,
             &stage_cuts_payloads,
             &basis_records,
             &metadata,
             &state_payloads,
-        )
-    })
-    .map_err(|e| convert_error(ErrorSource::Output(&e)))
+        ))
+    })?;
+    written.map_err(|e| convert_error(ErrorSource::Output(&e)))
 }
 
 #[cfg(test)]

@@ -9,10 +9,19 @@ Run with (from the repo root):
     pytest crates/novomodelo-python/tests/test_write_policy_checkpoint.py
 """
 
+import json
+import math
 import pathlib
+import shutil
 from typing import Any, Optional
 
+import pyarrow.parquet as pq
 import pytest
+
+_REPO_ROOT = pathlib.Path(__file__).parents[3]
+_TOY_CASE = _REPO_ROOT / "examples" / "1dtoy"
+
+_POOL_COST_SCALE_FACTOR = 2_500_000.0
 
 
 def _make_metadata(
@@ -44,12 +53,15 @@ def _make_metadata(
     return metadata
 
 
-def _make_stage_cuts() -> list[dict[str, Any]]:
+def _make_stage_cuts(
+    cost_scale_factor: float = _POOL_COST_SCALE_FACTOR,
+) -> list[dict[str, Any]]:
     return [
         {
             "stage_id": 0,
             "state_dimension": 3,
             "capacity": 10,
+            "cost_scale_factor": cost_scale_factor,
             "cuts": [
                 {
                     "slot_index": 0,
@@ -96,6 +108,7 @@ def test_write_policy_checkpoint_round_trip(tmp_path: pathlib.Path) -> None:
     assert stage["stage_id"] == 0
     assert stage["state_dimension"] == 3
     assert stage["capacity"] == 10
+    assert stage["cost_scale_factor"] == pytest.approx(_POOL_COST_SCALE_FACTOR)
     assert stage["populated_count"] == 2, "populated_count must default to len(cuts)"
 
     cuts = stage["cuts"]
@@ -135,8 +148,8 @@ def test_write_policy_checkpoint_stamps_the_running_software(
 def test_write_policy_checkpoint_cost_scale_factor_omitted_reads_as_none(
     tmp_path: pathlib.Path,
 ) -> None:
-    """Omitting cost_scale_factor from the metadata dict reads back as None,
-    matching a legacy (pre-marker) checkpoint.
+    """Omitting cost_scale_factor from the producer block reads back as None: it
+    is provenance only, and the pool's own factor is what the values are in.
     """
     import novomodelo  # noqa: PLC0415
     import novomodelo.results  # noqa: PLC0415
@@ -149,6 +162,9 @@ def test_write_policy_checkpoint_cost_scale_factor_omitted_reads_as_none(
 
     loaded = novomodelo.results.load_policy(str(tmp_path))
     assert loaded["metadata"]["producer"]["cost_scale_factor"] is None
+    assert loaded["stage_cuts"][0]["cost_scale_factor"] == pytest.approx(
+        _POOL_COST_SCALE_FACTOR
+    )
 
 
 def test_write_policy_checkpoint_lower_bound_history_round_trips(
@@ -217,7 +233,6 @@ def test_write_policy_checkpoint_defaults_apply_when_keys_omitted(
 
     stage_cuts = _make_stage_cuts()
     assert "warm_start_count" not in stage_cuts[0]
-    assert "active_cut_indices" not in stage_cuts[0]
     assert "entity_manifest" not in stage_cuts[0]
 
     novomodelo.write_policy_checkpoint(
@@ -255,6 +270,7 @@ def _storage_only_stage_cuts(
             "stage_id": 0,
             "state_dimension": len(hydro_ids),
             "capacity": 4,
+            "cost_scale_factor": _POOL_COST_SCALE_FACTOR,
             "entity_manifest": manifest,
             "cuts": [
                 {
@@ -432,30 +448,6 @@ def test_load_policy_self_describing_fields_survive_rewrite(
     assert stage["cost_scale_factor"] == pytest.approx(7_777.0)
 
 
-def test_write_policy_checkpoint_active_cut_indices_do_not_survive_the_round_trip(
-    tmp_path: pathlib.Path,
-) -> None:
-    """active_cut_indices is not part of the checkpoint format, so a dict
-    carrying it loads back without it; cut activity round-trips through
-    is_active.
-    """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.results  # noqa: PLC0415
-
-    stage_cuts = _make_stage_cuts()
-    stage_cuts[0]["active_cut_indices"] = [0]
-
-    novomodelo.write_policy_checkpoint(
-        str(tmp_path / "policy"), stage_cuts, _make_metadata()
-    )
-
-    loaded = novomodelo.results.load_policy(str(tmp_path))
-    stage = loaded["stage_cuts"][0]
-
-    assert "active_cut_indices" not in stage
-    assert stage["cuts"][0]["is_active"] is True
-
-
 def test_write_policy_checkpoint_lag_coefficients_without_depth_raises(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -618,3 +610,416 @@ def test_write_policy_checkpoint_refuses_a_directory_holding_other_files(
     assert notes.read_text() == "keep me"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["policy"]
     assert sorted(p.name for p in policy.iterdir()) == ["notes.txt"]
+
+
+def _file_bytes(root: pathlib.Path) -> dict[str, bytes]:
+    return {
+        p.relative_to(root).as_posix(): p.read_bytes()
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    }
+
+
+def _states_checkpoint(
+    slots: tuple[int, ...] = (0, 2),
+) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
+    """One pool of three scored cuts, with a stored trial state at each of `slots`."""
+    manifest = [
+        {
+            "entity_type": _ENTITY_TYPE_HYDRO_STORAGE,
+            "entity_id": hid,
+            "subindex": 0,
+            "was_active": True,
+        }
+        for hid in (1, 2, 3)
+    ]
+    stage_cuts = [
+        {
+            "stage_id": 0,
+            "state_dimension": 3,
+            "capacity": 4,
+            "cost_scale_factor": 1.0,
+            "entity_manifest": manifest,
+            "cuts": [
+                {
+                    "slot_index": slot,
+                    "iteration": 1,
+                    "forward_pass_index": 0,
+                    "intercept": 1.0,
+                    "coefficients": [1.0, 2.0, 3.0],
+                    "is_active": True,
+                    "scored": True,
+                }
+                for slot in range(3)
+            ],
+        }
+    ]
+    stage_states = [
+        {
+            "stage_id": 0,
+            "state_dimension": 3,
+            "count": len(slots),
+            "slots": list(slots),
+            "data": [0.5] * (3 * len(slots)),
+        }
+    ]
+    metadata = _make_metadata()
+    metadata["producer"]["total_visited_states"] = len(slots)
+    metadata["producer"]["state_history"] = "whole"
+    return stage_cuts, metadata, stage_states
+
+
+_RETIRED_KEYS = [
+    pytest.param("active_cut_indices", "stage_cuts[0]", id="active_cut_indices"),
+    pytest.param("cut_id", "stage_cuts[0].cuts[1]", id="cut_id"),
+    pytest.param("num_cut_rows", "stage_bases[0]", id="num_cut_rows"),
+    pytest.param("num_columns", "stage_bases[0]", id="num_columns"),
+    pytest.param("num_rows", "stage_bases[0]", id="num_rows"),
+]
+
+
+@pytest.mark.parametrize(("key", "position"), _RETIRED_KEYS)
+def test_write_policy_checkpoint_retired_key_raises_naming_key_and_position(
+    tmp_path: pathlib.Path, key: str, position: str
+) -> None:
+    import novomodelo  # noqa: PLC0415
+
+    stage_cuts = _make_stage_cuts()
+    stage_bases: list[dict[str, Any]] = [{"stage_id": 0, "iteration": 1, "entries": []}]
+    holders = {
+        "stage_cuts[0]": stage_cuts[0],
+        "stage_cuts[0].cuts[1]": stage_cuts[0]["cuts"][1],
+        "stage_bases[0]": stage_bases[0],
+    }
+    holders[position][key] = 0
+
+    with pytest.raises(ValueError) as failure:
+        novomodelo.write_policy_checkpoint(
+            str(tmp_path / "policy"), stage_cuts, _make_metadata(), stage_bases
+        )
+
+    assert str(failure.value) == (
+        f"{position}: key '{key}' is not part of a policy checkpoint "
+        "(format 4); remove it"
+    )
+    assert not (tmp_path / "policy").exists()
+
+
+def test_write_policy_checkpoint_ignores_unknown_keys_a_loaded_result_carries(
+    tmp_path: pathlib.Path,
+) -> None:
+    import novomodelo  # noqa: PLC0415
+
+    stage_cuts = _make_stage_cuts()
+    stage_cuts[0]["unrelated"] = 1
+    stage_cuts[0]["cuts"][0]["unrelated"] = 1
+
+    novomodelo.write_policy_checkpoint(
+        str(tmp_path / "policy"), stage_cuts, _make_metadata()
+    )
+
+    assert (tmp_path / "policy" / "manifest.bin").is_file()
+
+
+@pytest.mark.parametrize(
+    "factor",
+    [None, 0.0, -1.0, math.nan, math.inf],
+    ids=["missing", "zero", "negative", "nan", "inf"],
+)
+def test_write_policy_checkpoint_pool_cost_scale_factor_must_be_finite_and_positive(
+    tmp_path: pathlib.Path, factor: Optional[float]
+) -> None:
+    """The producer block's factor (set by _make_metadata) is never a fallback."""
+    import novomodelo  # noqa: PLC0415
+
+    stage_cuts = _make_stage_cuts()
+    if factor is None:
+        del stage_cuts[0]["cost_scale_factor"]
+    else:
+        stage_cuts[0]["cost_scale_factor"] = factor
+    assert _make_metadata()["producer"]["cost_scale_factor"] > 0.0
+
+    with pytest.raises(
+        ValueError,
+        match=r"stage_cuts\[0\] \(stage_id 0\): cost_scale_factor .*"
+        r"units of this factor \(pass 1\.0 for values in currency units\)",
+    ):
+        novomodelo.write_policy_checkpoint(
+            str(tmp_path / "policy"), stage_cuts, _make_metadata()
+        )
+
+    assert not (tmp_path / "policy").exists()
+
+
+@pytest.mark.parametrize("history", [True, False])
+def test_write_policy_checkpoint_state_history_rejects_a_bool(
+    tmp_path: pathlib.Path, history: bool
+) -> None:
+    import novomodelo  # noqa: PLC0415
+
+    metadata = _make_metadata()
+    metadata["producer"]["state_history"] = history
+
+    with pytest.raises(ValueError, match=r"state_history (True|False) is a bool"):
+        novomodelo.write_policy_checkpoint(
+            str(tmp_path / "policy"), _make_stage_cuts(), metadata
+        )
+
+
+def test_write_policy_checkpoint_whole_basis_store_needs_the_bases(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A checkpoint never claims a whole basis store it did not receive."""
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
+
+    metadata = _make_metadata()
+    metadata["producer"]["basis_store_complete"] = True
+
+    with pytest.raises(ValueError, match=r"basis_store_complete.*no basis"):
+        novomodelo.write_policy_checkpoint(
+            str(tmp_path / "policy"), _make_stage_cuts(), metadata
+        )
+    assert not (tmp_path / "policy").exists()
+
+    stage_bases = [
+        {
+            "stage_id": 0,
+            "iteration": 1,
+            "entries": [
+                {
+                    "scenario": 0,
+                    "column_status": [0],
+                    "row_status": [1],
+                    "piece_row_slots": [],
+                }
+            ],
+        }
+    ]
+    novomodelo.write_policy_checkpoint(
+        str(tmp_path / "policy"), _make_stage_cuts(), metadata, stage_bases
+    )
+    loaded = novomodelo.results.load_policy(str(tmp_path))
+    assert loaded["metadata"]["producer"]["basis_store_complete"] is True
+
+
+def test_write_policy_checkpoint_counter_flag_must_match_the_cuts(
+    tmp_path: pathlib.Path,
+) -> None:
+    """activity_counters is a claim about every cut, and a cut without its
+    counters breaks it.
+    """
+    import novomodelo  # noqa: PLC0415
+
+    metadata = _make_metadata()
+    metadata["producer"]["activity_counters"] = True
+
+    with pytest.raises(ValueError, match=r"activity_counters is true"):
+        novomodelo.write_policy_checkpoint(
+            str(tmp_path / "policy"), _make_stage_cuts(), metadata
+        )
+
+
+_DATE_INCONSISTENT_MANIFEST = [
+    {
+        "entity_type": _ENTITY_TYPE_HYDRO_STORAGE,
+        "entity_id": 1,
+        "subindex": 0,
+        "was_active": True,
+        "reference_date": 20_311_201,
+    }
+]
+
+
+@pytest.mark.parametrize(
+    ("edit", "message"),
+    [
+        pytest.param(
+            lambda pools: pools[0].update(entity_manifest=_DATE_INCONSISTENT_MANIFEST),
+            r"pool 0 entity 1 subindex 0 is a storage slot, which carries no per-slot date",
+            id="date_inconsistent_manifest",
+        ),
+        pytest.param(
+            lambda pools: pools.append(dict(pools[0])),
+            r"cuts/000\.bin: more than one payload carries this id",
+            id="repeated_stage_id",
+        ),
+    ],
+)
+def test_write_policy_checkpoint_refuses_what_the_reader_refuses(
+    tmp_path: pathlib.Path, edit: Any, message: str
+) -> None:
+    import novomodelo  # noqa: PLC0415
+
+    stage_cuts = _make_stage_cuts()
+    edit(stage_cuts)
+
+    with pytest.raises(ValueError, match=message):
+        novomodelo.write_policy_checkpoint(
+            str(tmp_path / "policy"), stage_cuts, _make_metadata()
+        )
+
+    assert not (tmp_path / "policy").exists()
+
+
+def test_write_policy_checkpoint_structural_error_raises_value_error_and_keeps_the_target(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A payload rule broken by the caller is a ValueError, not an OutputError
+    (an OSError), and a refused write leaves the target directory as it was.
+    """
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.errors  # noqa: PLC0415
+
+    stage_cuts, metadata, stage_states = _states_checkpoint()
+    policy = tmp_path / "policy"
+    novomodelo.write_policy_checkpoint(
+        str(policy), stage_cuts, metadata, stage_states=stage_states
+    )
+    before = _file_bytes(tmp_path)
+    assert any(name.startswith("policy/states/") for name in before)
+
+    stage_states[0]["slots"] = [2, 0]
+    for target in (policy, tmp_path / "fresh"):
+        with pytest.raises(
+            ValueError, match=r"states/000\.bin: slots not strictly ascending"
+        ) as failure:
+            novomodelo.write_policy_checkpoint(
+                str(target), stage_cuts, metadata, stage_states=stage_states
+            )
+        assert not isinstance(failure.value, novomodelo.errors.OutputError)
+
+    assert _file_bytes(tmp_path) == before
+
+
+def _level1_case(
+    root: pathlib.Path, *, iteration_limit: int, lookback: Optional[int]
+) -> pathlib.Path:
+    """1dtoy under `level1` with an active-cut budget, so a checkpoint holds
+    trial states, scored flags and binding counters; simulation is off.
+    """
+    case = root / "case"
+    shutil.copytree(_TOY_CASE, case, ignore=shutil.ignore_patterns("output"))
+    selection: dict[str, Any] = {"method": "level1", "check_frequency": 1}
+    if lookback is not None:
+        selection["lookback_iterations"] = lookback
+    config_path = case / "config.json"
+    config = json.loads(config_path.read_text())
+    config["training"]["stopping_rules"] = [
+        {"type": "iteration_limit", "limit": iteration_limit}
+    ]
+    config["training"]["cut_selection"] = {
+        "selection": selection,
+        "max_active_per_stage": 4,
+    }
+    config["simulation"]["enabled"] = False
+    config_path.write_text(json.dumps(config, indent=2))
+    return case
+
+
+def _write_back(loaded: dict[str, Any], policy: pathlib.Path) -> None:
+    import novomodelo  # noqa: PLC0415
+
+    novomodelo.write_policy_checkpoint(
+        str(policy),
+        loaded["stage_cuts"],
+        loaded["metadata"],
+        loaded["stage_bases"],
+        loaded["stage_states"],
+    )
+
+
+def test_load_policy_round_trips_every_version_4_field(tmp_path: pathlib.Path) -> None:
+    """Load -> write -> load returns equal dicts and rewrites every file of a
+    CLI-shaped checkpoint byte for byte: the trial states, the scored flags, the
+    binding counters, the basis entries and the manifest flags included.
+    """
+    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
+
+    case = _level1_case(tmp_path, iteration_limit=6, lookback=4)
+    original = tmp_path / "original"
+    novomodelo.run.run(str(case), output_dir=str(original))
+
+    loaded = novomodelo.results.load_policy(str(original))
+    producer = loaded["metadata"]["producer"]
+    cuts = [cut for pool in loaded["stage_cuts"] for cut in pool["cuts"]]
+    assert loaded["stage_states"], "level1 must store trial states"
+    assert producer["state_history"] == 4
+    assert producer["activity_counters"] is True
+    assert producer["basis_store_complete"] is True
+    assert producer["total_visited_states"] == sum(
+        states["count"] for states in loaded["stage_states"]
+    )
+    assert any(cut["scored"] for cut in cuts)
+    assert any(not cut["is_active"] for cut in cuts), "the budget must evict"
+    assert all("active_count" in cut and "last_active_iteration" in cut for cut in cuts)
+    assert any(basis["entries"] for basis in loaded["stage_bases"])
+
+    rewritten = tmp_path / "rewritten"
+    _write_back(loaded, rewritten / "policy")
+
+    assert novomodelo.results.load_policy(str(rewritten)) == loaded
+    assert _file_bytes(rewritten / "policy") == _file_bytes(original / "policy")
+
+
+def _convergence(output_dir: pathlib.Path) -> dict[str, list[Any]]:
+    table = pq.read_table(output_dir / "training" / "convergence.parquet")
+    return {
+        name: table.column(name).to_pylist()
+        for name in table.column_names
+        if not name.endswith("_ms")
+    }
+
+
+def test_a_checkpoint_written_back_from_python_resumes(tmp_path: pathlib.Path) -> None:
+    """A `level1` checkpoint loaded and written back by Python resumes as the
+    original does: the same iterations and convergence output, and the same
+    final policy files.
+    """
+    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
+
+    case = _level1_case(tmp_path, iteration_limit=3, lookback=None)
+    original = tmp_path / "original"
+    novomodelo.run.run(str(case), output_dir=str(original))
+
+    config_path = case / "config.json"
+    config = json.loads(config_path.read_text())
+    config["training"]["stopping_rules"] = [{"type": "iteration_limit", "limit": 6}]
+    config["policy"] = {"mode": "resume"}
+    config_path.write_text(json.dumps(config, indent=2))
+
+    from_original = tmp_path / "from_original"
+    shutil.copytree(original, from_original)
+    from_rewrite = tmp_path / "from_rewrite"
+    _write_back(novomodelo.results.load_policy(str(original)), from_rewrite / "policy")
+
+    results = {
+        leg: novomodelo.run.run(str(case), output_dir=str(leg))
+        for leg in (from_original, from_rewrite)
+    }
+
+    keys = ("iterations", "converged", "lower_bound", "upper_bound", "gap_percent")
+    assert [results[from_rewrite][key] for key in keys] == [
+        results[from_original][key] for key in keys
+    ]
+    assert results[from_original]["iterations"] == 6
+    assert _convergence(from_rewrite) == _convergence(from_original)
+
+    def policy_files(output_dir: pathlib.Path) -> dict[str, bytes]:
+        return {
+            name: data
+            for name, data in _file_bytes(output_dir / "policy").items()
+            if name != "manifest.bin"
+        }
+
+    assert policy_files(from_rewrite) == policy_files(from_original)
+    assert any(name.startswith("states/") for name in policy_files(from_original))
+
+    def manifest(output_dir: pathlib.Path) -> dict[str, Any]:
+        metadata = novomodelo.results.load_policy(str(output_dir))["metadata"]
+        del metadata["created_at"]
+        return metadata
+
+    assert manifest(from_rewrite) == manifest(from_original)

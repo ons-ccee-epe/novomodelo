@@ -1,5 +1,6 @@
 //! Integration tests for the intra-artifact date-consistency validation that
-//! `read_policy_checkpoint` runs after decode.
+//! `read_policy_checkpoint` runs after decode, and that `write_policy_checkpoint`
+//! applies to the payloads it receives.
 
 #![allow(
     clippy::unwrap_used,
@@ -10,7 +11,7 @@
 
 use novomodelo_io::{
     CheckpointManifest, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, ProducerBlock, StageCutsPayload,
-    read_policy_checkpoint,
+    read_policy_checkpoint, serialize_checkpoint_manifest, serialize_stage_cuts,
     test_support::{
         checkpoint_manifest_defaults, producer_block_defaults, stage_cuts_payload_defaults,
     },
@@ -32,23 +33,45 @@ fn metadata() -> CheckpointManifest {
     }
 }
 
-/// Write a one-pool checkpoint fixture whose only payload is `manifest`.
-fn write_fixture(dir: &std::path::Path, pool_id: u32, manifest: &[EntitySlot]) {
-    let payload = StageCutsPayload {
+fn fixture_payload(pool_id: u32, manifest: &[EntitySlot]) -> StageCutsPayload<'_> {
+    StageCutsPayload {
         stage_id: pool_id,
         state_dimension: manifest.len() as u32,
         entity_manifest: manifest,
         cost_scale_factor: 1_000_000.0,
         ..stage_cuts_payload_defaults()
-    };
+    }
+}
+
+/// Write a one-pool checkpoint fixture whose only payload is `manifest`.
+fn write_fixture(dir: &std::path::Path, pool_id: u32, manifest: &[EntitySlot]) {
+    let payload = fixture_payload(pool_id, manifest);
     write_policy_checkpoint(dir, &[payload], &[], &metadata(), &[]).expect("fixture must write");
+}
+
+/// Encode the same fixture's files without the writer's checks, so a manifest
+/// the writer refuses reaches the reader.
+fn encode_fixture(dir: &std::path::Path, pool_id: u32, manifest: &[EntitySlot]) {
+    for sub in ["cuts", "basis"] {
+        std::fs::create_dir_all(dir.join(sub)).unwrap();
+    }
+    std::fs::write(
+        dir.join(format!("cuts/{pool_id:03}.bin")),
+        serialize_stage_cuts(&fixture_payload(pool_id, manifest)),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("manifest.bin"),
+        serialize_checkpoint_manifest(&metadata()),
+    )
+    .unwrap();
 }
 
 #[test]
 fn malformed_month_reference_date_rejected_naming_slot() {
     let dir = tempfile::tempdir().unwrap();
     let manifest = [EntitySlot::inflow_lag(7, 0, true).with_reference_date(20_261_305)];
-    write_fixture(dir.path(), 0, &manifest);
+    encode_fixture(dir.path(), 0, &manifest);
 
     let err = read_policy_checkpoint(dir.path()).expect_err("month-13 date must be rejected");
     let msg = err.to_string();
@@ -67,7 +90,7 @@ fn hydro_transit_bucket_decreasing_dates_rejected_naming_pool_and_subindex() {
         EntitySlot::transit_bucket(42, 0, true).with_interval(20_260_601, 20_260_701),
         EntitySlot::transit_bucket(42, 1, true).with_interval(20_260_501, 20_260_601),
     ];
-    write_fixture(dir.path(), 3, &manifest);
+    encode_fixture(dir.path(), 3, &manifest);
 
     let err = read_policy_checkpoint(dir.path())
         .expect_err("decreasing HydroTransitBucket dates must be rejected");
@@ -143,7 +166,7 @@ fn half_populated_interval_rejected_naming_slot_and_endpoint() {
     let dir = tempfile::tempdir().unwrap();
     let manifest = [EntitySlot::transit_bucket(42, 0, true)
         .with_interval(20_320_101, ENTITY_SLOT_DATE_SENTINEL)];
-    write_fixture(dir.path(), 0, &manifest);
+    encode_fixture(dir.path(), 0, &manifest);
 
     let err =
         read_policy_checkpoint(dir.path()).expect_err("a half-populated interval must be rejected");
@@ -161,7 +184,7 @@ fn half_populated_interval_rejected_naming_slot_and_endpoint() {
 fn reversed_interval_rejected_naming_both_endpoints() {
     let dir = tempfile::tempdir().unwrap();
     let manifest = [EntitySlot::transit_bucket(42, 0, true).with_interval(20_320_101, 20_311_201)];
-    write_fixture(dir.path(), 0, &manifest);
+    encode_fixture(dir.path(), 0, &manifest);
 
     let err = read_policy_checkpoint(dir.path()).expect_err("a reversed interval must be rejected");
     let msg = err.to_string();
@@ -175,7 +198,7 @@ fn reversed_interval_rejected_naming_both_endpoints() {
 fn degenerate_zero_length_interval_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let manifest = [EntitySlot::transit_bucket(42, 0, true).with_interval(20_320_101, 20_320_101)];
-    write_fixture(dir.path(), 0, &manifest);
+    encode_fixture(dir.path(), 0, &manifest);
 
     read_policy_checkpoint(dir.path())
         .expect_err("a zero-length interval (start == end) must be rejected");
@@ -185,7 +208,7 @@ fn degenerate_zero_length_interval_rejected() {
 fn storage_slot_with_live_reference_date_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let manifest = [EntitySlot::storage(1, true).with_reference_date(20_311_201)];
-    write_fixture(dir.path(), 0, &manifest);
+    encode_fixture(dir.path(), 0, &manifest);
 
     let err = read_policy_checkpoint(dir.path())
         .expect_err("a storage slot with a live reference_date must be rejected");
@@ -202,7 +225,7 @@ fn storage_slot_with_live_reference_date_rejected() {
 fn transit_bucket_slot_with_live_reference_date_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let manifest = [EntitySlot::transit_bucket(42, 0, true).with_reference_date(20_311_201)];
-    write_fixture(dir.path(), 0, &manifest);
+    encode_fixture(dir.path(), 0, &manifest);
 
     let err = read_policy_checkpoint(dir.path())
         .expect_err("a transit-bucket slot with a live reference_date must be rejected");
@@ -220,7 +243,7 @@ fn transit_bucket_slot_with_live_reference_date_rejected() {
 fn anticipated_slot_with_live_reference_date_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let manifest = [EntitySlot::anticipated(7, 0, true).with_reference_date(20_311_201)];
-    write_fixture(dir.path(), 0, &manifest);
+    encode_fixture(dir.path(), 0, &manifest);
 
     let err = read_policy_checkpoint(dir.path()).expect_err(
         "an anticipated-thermal-state slot with a live reference_date must be rejected",
@@ -239,7 +262,7 @@ fn anticipated_slot_with_live_reference_date_rejected() {
 fn inflow_lag_slot_with_live_interval_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let manifest = [EntitySlot::inflow_lag(5, 1, true).with_interval(20_320_101, 20_320_601)];
-    write_fixture(dir.path(), 0, &manifest);
+    encode_fixture(dir.path(), 0, &manifest);
 
     let err = read_policy_checkpoint(dir.path())
         .expect_err("an inflow-lag slot with a live interval must be rejected");
@@ -272,10 +295,10 @@ fn first_reported_error_identical_across_slot_declaration_order() {
         || EntitySlot::transit_bucket(20, 0, true).with_interval(20_330_101, 20_320_101);
 
     let dir_a = tempfile::tempdir().unwrap();
-    write_fixture(dir_a.path(), 0, &[violation_10(), violation_20()]);
+    encode_fixture(dir_a.path(), 0, &[violation_10(), violation_20()]);
 
     let dir_b = tempfile::tempdir().unwrap();
-    write_fixture(dir_b.path(), 0, &[violation_20(), violation_10()]);
+    encode_fixture(dir_b.path(), 0, &[violation_20(), violation_10()]);
 
     let err_a =
         read_policy_checkpoint(dir_a.path()).expect_err("a reversed interval must be rejected");
@@ -290,4 +313,66 @@ fn first_reported_error_identical_across_slot_declaration_order() {
         err_a.to_string().contains("entity 10"),
         "the canonically-first violating slot (entity 10) must be the one reported: {err_a}"
     );
+}
+
+#[test]
+fn the_writer_refuses_each_manifest_the_reader_refuses_with_the_same_message() {
+    let cases: [(u32, Vec<EntitySlot>); 6] = [
+        (
+            0,
+            vec![EntitySlot::inflow_lag(7, 0, true).with_reference_date(20_261_305)],
+        ),
+        (
+            0,
+            vec![
+                EntitySlot::transit_bucket(42, 0, true)
+                    .with_interval(20_320_101, ENTITY_SLOT_DATE_SENTINEL),
+            ],
+        ),
+        (
+            0,
+            vec![EntitySlot::transit_bucket(42, 0, true).with_interval(20_320_101, 20_311_201)],
+        ),
+        (
+            0,
+            vec![EntitySlot::storage(1, true).with_reference_date(20_311_201)],
+        ),
+        (
+            0,
+            vec![EntitySlot::inflow_lag(5, 1, true).with_interval(20_320_101, 20_320_601)],
+        ),
+        (
+            3,
+            vec![
+                EntitySlot::transit_bucket(42, 0, true).with_interval(20_260_601, 20_260_701),
+                EntitySlot::transit_bucket(42, 1, true).with_interval(20_260_501, 20_260_601),
+            ],
+        ),
+    ];
+
+    for (pool_id, manifest) in cases {
+        let encoded = tempfile::tempdir().unwrap();
+        encode_fixture(encoded.path(), pool_id, &manifest);
+        let read_error = read_policy_checkpoint(encoded.path())
+            .expect_err("the reader must refuse the manifest")
+            .to_string();
+
+        let target = tempfile::tempdir().unwrap();
+        let policy = target.path().join("policy");
+        let write_error = write_policy_checkpoint(
+            &policy,
+            &[fixture_payload(pool_id, &manifest)],
+            &[],
+            &metadata(),
+            &[],
+        )
+        .expect_err("the writer must refuse the manifest")
+        .to_string();
+
+        assert_eq!(write_error, read_error);
+        assert!(
+            !policy.exists(),
+            "a refused write must leave nothing behind"
+        );
+    }
 }

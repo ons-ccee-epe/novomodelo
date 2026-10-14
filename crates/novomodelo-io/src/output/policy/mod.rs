@@ -2607,6 +2607,67 @@ mod tests {
         fixture.assert_rejected("states/000.bin", "slot 3 after slot 3");
     }
 
+    #[test]
+    fn two_payloads_of_one_kind_with_one_id_are_refused() {
+        let metadata = make_metadata(1, 3);
+        let pool = || StageCutsPayload {
+            stage_id: 2,
+            ..stage_cuts_payload_defaults()
+        };
+        let basis = || PolicyBasisRecord {
+            stage_id: 2,
+            iteration: 1,
+            entries: &[],
+        };
+        let states = || StageStatesPayload {
+            stage_id: 2,
+            node_id: 2,
+            state_dimension: 0,
+            count: 0,
+            data: &[],
+            entity_manifest: &[],
+            slots: &[],
+        };
+        let pools_twice = [pool(), pool()];
+        let bases_twice = [basis(), basis()];
+        let states_twice = [states(), states()];
+
+        for (file, result) in [
+            (
+                "cuts/002.bin",
+                check_checkpoint_payloads(&pools_twice, &[], &[], &metadata),
+            ),
+            (
+                "basis/002.bin",
+                check_checkpoint_payloads(&[], &bases_twice, &[], &metadata),
+            ),
+            (
+                "states/002.bin",
+                check_checkpoint_payloads(&[], &[], &states_twice, &metadata),
+            ),
+        ] {
+            let err = result.expect_err("two payloads with one id must be refused");
+            let msg = err.to_string();
+            assert!(
+                matches!(err, OutputError::SerializationError { .. })
+                    && msg.contains(file)
+                    && msg.contains("more than one payload"),
+                "must name {file} and the repeated id: {msg}"
+            );
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let policy = root.path().join("policy");
+        StructureFixture::valid().write_to(&policy).unwrap();
+        let before = tree_snapshot(root.path());
+        write_policy_checkpoint(&policy, &pools_twice, &[], &metadata, &[])
+            .expect_err("a write must refuse two payloads with one id");
+        assert!(
+            tree_snapshot(root.path()) == before,
+            "a refused write must leave the disk unchanged"
+        );
+    }
+
     // ── encoded-size bounds ───────────────────────────────────────────────────
 
     #[test]

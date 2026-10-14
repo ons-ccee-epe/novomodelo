@@ -38,7 +38,9 @@ constants name the excluded paths and columns, with the reason each is masked:
 
 The policy checkpoint is content-exempt: its presence is asserted by the
 file-set equality, but its bytes are not compared, because the manifest embeds
-`created_at`.
+`created_at`. A third leg runs `exports.states` under the `dynamic` method (no
+selection) and compares the `policy/states/` files byte for byte, since they
+carry no timestamp.
 
 Run with (from the repo root):
 
@@ -407,6 +409,43 @@ def selection_python_output(
     return output_dir
 
 
+def _exported_states_case(root: pathlib.Path) -> pathlib.Path:
+    case = root / "case"
+    shutil.copytree(TOY_CASE, case)
+    config_path = case / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["training"]["stopping_rules"] = [{"type": "iteration_limit", "limit": 6}]
+    config["training"]["cut_selection"] = {"selection": {"method": "dynamic"}}
+    config["simulation"]["enabled"] = False
+    config["exports"] = {"states": True}
+    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    return case
+
+
+@pytest.fixture(scope="module")
+def states_cli_output(
+    tmp_path_factory: pytest.TempPathFactory, cli_binary: pathlib.Path
+) -> pathlib.Path:
+    """Run 1dtoy with `dynamic` selection and `exports.states` through the CLI."""
+    case = _exported_states_case(tmp_path_factory.mktemp("states_cli_case"))
+    output_dir = tmp_path_factory.mktemp("states_cli_out")
+    run_cli(case, output_dir, cli_binary)
+    return output_dir
+
+
+@pytest.fixture(scope="module")
+def states_python_output(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> pathlib.Path:
+    """Run 1dtoy with `dynamic` selection and `exports.states` through `novomodelo.run.run()`."""
+    import novomodelo.run  # noqa: PLC0415
+
+    case = _exported_states_case(tmp_path_factory.mktemp("states_python_case"))
+    output_dir = tmp_path_factory.mktemp("states_python_out")
+    novomodelo.run.run(str(case), output_dir=str(output_dir))
+    return output_dir
+
+
 def test_cli_python_output_file_sets_are_equal(
     toy_cli_output: pathlib.Path, toy_python_output: pathlib.Path
 ) -> None:
@@ -467,6 +506,24 @@ def test_selection_on_cli_python_parquet_files_match(
 ) -> None:
     """With `level1` row selection on, the Parquet files match outside the masks."""
     _assert_parquet_files_match(selection_cli_output, selection_python_output)
+
+
+def test_exported_states_under_dynamic_selection_are_identical_on_cli_and_python(
+    states_cli_output: pathlib.Path, states_python_output: pathlib.Path
+) -> None:
+    """With `exports.states` and no selection, both write paths write the same
+    `policy/states/` files, byte for byte, and the same file set overall.
+    """
+    _assert_file_sets_equal(states_cli_output, states_python_output)
+
+    cli_states = _states_files(states_cli_output)
+    assert cli_states, "exports.states must write policy/states/*.bin under dynamic"
+    assert cli_states == _states_files(states_python_output)
+
+
+def _states_files(output_dir: pathlib.Path) -> dict[str, bytes]:
+    states_dir = output_dir / "policy" / "states"
+    return {path.name: path.read_bytes() for path in sorted(states_dir.glob("*.bin"))}
 
 
 def test_compared_surface_is_non_vacuous(
