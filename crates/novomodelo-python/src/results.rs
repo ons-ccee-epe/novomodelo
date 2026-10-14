@@ -23,6 +23,8 @@ use pyo3::exceptions::{PyFileNotFoundError, PyIndexError, PyOSError, PyValueErro
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyList, PyString};
 
+use novomodelo_io::StateHistory;
+
 use crate::errors::{ErrorSource, convert_error};
 
 fn canonicalize_dir(path: &Path) -> PyResult<PathBuf> {
@@ -865,6 +867,21 @@ fn metadata_to_py<'py>(
         lower_bound_history.append(into_py(py, lb)?)?;
     }
     producer_dict.set_item("lower_bound_history", lower_bound_history)?;
+    match producer.state_history {
+        StateHistory::None => producer_dict.set_item("state_history", py.None())?,
+        StateHistory::Whole => producer_dict.set_item("state_history", "whole")?,
+        StateHistory::Window(window) => {
+            producer_dict.set_item("state_history", into_py(py, window.get())?)?;
+        }
+    }
+    producer_dict.set_item(
+        "activity_counters",
+        PyBool::new(py, producer.activity_counters).to_owned(),
+    )?;
+    producer_dict.set_item(
+        "basis_store_complete",
+        PyBool::new(py, producer.basis_store_complete).to_owned(),
+    )?;
     dict.set_item("producer", producer_dict)?;
 
     Ok(dict)
@@ -1326,7 +1343,7 @@ pub fn load_simulation_arrow(
 /// ```python
 /// {
 ///     "metadata": {
-///         "format_version": 3,
+///         "format_version": 4,
 ///         "software": "novomodelo",
 ///         "software_version": "1.0.0",
 ///         "created_at": "2026-01-15T12:00:00Z",
@@ -1362,13 +1379,13 @@ pub fn load_simulation_arrow(
 ///             ],
 ///             "cuts": [
 ///                 {
-///                     "cut_id": 0,
 ///                     "slot_index": 0,
 ///                     "iteration": 1,
 ///                     "forward_pass_index": 0,
 ///                     "intercept": 42.0,
 ///                     "coefficients": [1.0, 2.0, ...],
 ///                     "is_active": True,
+///                     "scored": False,
 ///                 },
 ///                 ...
 ///             ]
@@ -1379,9 +1396,14 @@ pub fn load_simulation_arrow(
 ///         {
 ///             "stage_id": 0,
 ///             "iteration": 1,
-///             "column_status": [0, 1, ...],
-///             "row_status": [1, 0, ...],
-///             "num_cut_rows": 50,
+///             "entries": [
+///                 {
+///                     "scenario": 0,
+///                     "column_status": [0, 1, ...],
+///                     "row_status": [1, 0, ...],
+///                     "piece_row_slots": [0, 1, ...],
+///                 },
+///             ],
 ///         },
 ///         ...
 ///     ]
@@ -1472,7 +1494,6 @@ pub fn load_policy(
         let cuts_list = PyList::empty(py);
         for cut in &sc.cuts {
             let cut_dict = PyDict::new(py);
-            cut_dict.set_item("cut_id", into_py(py, cut.cut_id)?)?;
             cut_dict.set_item("slot_index", into_py(py, cut.slot_index)?)?;
             cut_dict.set_item("iteration", into_py(py, cut.iteration)?)?;
             cut_dict.set_item("forward_pass_index", into_py(py, cut.forward_pass_index)?)?;
@@ -1485,6 +1506,13 @@ pub fn load_policy(
             cut_dict.set_item("coefficients", coeffs_list)?;
 
             cut_dict.set_item("is_active", PyBool::new(py, cut.is_active).to_owned())?;
+            cut_dict.set_item("scored", PyBool::new(py, cut.scored).to_owned())?;
+            if let Some(count) = cut.active_count {
+                cut_dict.set_item("active_count", into_py(py, count)?)?;
+            }
+            if let Some(iteration) = cut.last_active_iteration {
+                cut_dict.set_item("last_active_iteration", into_py(py, iteration)?)?;
+            }
 
             cuts_list.append(cut_dict)?;
         }
@@ -1499,19 +1527,32 @@ pub fn load_policy(
         basis_dict.set_item("stage_id", into_py(py, basis.stage_id)?)?;
         basis_dict.set_item("iteration", into_py(py, basis.iteration)?)?;
 
-        let col_status_list = PyList::empty(py);
-        for &b in &basis.column_status {
-            col_status_list.append(into_py(py, i32::from(b))?)?;
-        }
-        basis_dict.set_item("column_status", col_status_list)?;
+        let entries_list = PyList::empty(py);
+        for entry in &basis.entries {
+            let entry_dict = PyDict::new(py);
+            entry_dict.set_item("scenario", into_py(py, entry.scenario)?)?;
 
-        let row_status_list = PyList::empty(py);
-        for &b in &basis.row_status {
-            row_status_list.append(into_py(py, i32::from(b))?)?;
-        }
-        basis_dict.set_item("row_status", row_status_list)?;
+            let col_status_list = PyList::empty(py);
+            for &b in &entry.column_status {
+                col_status_list.append(into_py(py, i32::from(b))?)?;
+            }
+            entry_dict.set_item("column_status", col_status_list)?;
 
-        basis_dict.set_item("num_cut_rows", into_py(py, basis.num_cut_rows)?)?;
+            let row_status_list = PyList::empty(py);
+            for &b in &entry.row_status {
+                row_status_list.append(into_py(py, i32::from(b))?)?;
+            }
+            entry_dict.set_item("row_status", row_status_list)?;
+
+            let slots_list = PyList::empty(py);
+            for &slot in &entry.piece_row_slots {
+                slots_list.append(into_py(py, slot)?)?;
+            }
+            entry_dict.set_item("piece_row_slots", slots_list)?;
+
+            entries_list.append(entry_dict)?;
+        }
+        basis_dict.set_item("entries", entries_list)?;
 
         stage_bases_list.append(basis_dict)?;
     }

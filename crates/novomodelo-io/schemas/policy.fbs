@@ -6,8 +6,8 @@
 // under a Novomodelo study's `policy/` directory:
 //
 //   policy/cuts/<pool>.bin       — root: Novomodelo.IO.Policy.StageCuts
-//   policy/basis/<stage>.bin     — root: Novomodelo.IO.Policy.StageBasis
-//   policy/states/<stage>.bin    — root: Novomodelo.IO.Policy.StageStates
+//   policy/basis/<node>.bin      — root: Novomodelo.IO.Policy.StageBasis
+//   policy/states/<pool>.bin     — root: Novomodelo.IO.Policy.StageStates
 //
 // The Novomodelo Rust runtime does NOT consume this file; the writer/reader
 // in `src/output/policy/` is hand-rolled to satisfy the workspace's
@@ -33,14 +33,15 @@
 //     `--root-type StageCuts|StageBasis|StageStates` when invoking
 //     `flatc -t` or `flatc -b`. Generated code emits `GetRootAsT`
 //     for every table T.
-//   • Field IDs are explicit on every field. Three slots are permanently
+//   • Field IDs are explicit on every field. These slots are permanently
 //     burned: `AffinePiece` field id 7 (vtable slot 18) held a former
 //     always-empty vector field, and `EntitySlot` field id 4 (vtable slot 12)
 //     held the former month-integer `delivery_anchor` — both deleted under the
 //     0.14 format break; `EntitySlot` field id 5 (vtable slot 14) held the
 //     former single-field `delivery_date` anchor, replaced by the per-family
-//     `reference_date`/`interval_start`/`interval_end` fields. Each is kept
-//     `deprecated` so no future field silently reuses that slot.
+//     `reference_date`/`interval_start`/`interval_end` fields. Format version 4
+//     burns `AffinePiece` id 0, `StageCuts` id 5 and `StageBasis` ids 2-6.
+//     Each is kept `deprecated` so no future field silently reuses that slot.
 //   • A further root, `Novomodelo.IO.Policy.CheckpointManifest`, carries the
 //     study-global checkpoint metadata (format version, the policy-graph
 //     manifest of nodes/edges, and the producer provenance block). Its field
@@ -123,11 +124,14 @@ table EntitySlot {
 /// One affine piece of the piecewise-linear value function. Element type of
 /// `StageCuts.cuts`.
 ///
-/// `coefficients` length equals the enclosing `StageCuts.state_dimension`. The
-/// piece bounds the value function as `intercept + coefficients · x`.
+/// `coefficients` length equals the enclosing `StageCuts.entity_manifest`
+/// length. The piece bounds the value function as `intercept + coefficients · x`,
+/// in the writer's scaled units (`StageCuts.cost_scale_factor`).
 table AffinePiece {
-  /// Unique identifier for this piece across all iterations.
-  piece_id:uint64 (id: 0);
+  /// RESERVED — do not reuse. Slot 4 (id 0) held a per-run piece label
+  /// removed under format version 4. Marked `deprecated` so the slot number is
+  /// permanently burned.
+  piece_id:uint64 (id: 0, deprecated);
 
   /// LP row position. Required for artifact reproducibility and
   /// basis warm-starting.
@@ -145,8 +149,8 @@ table AffinePiece {
   /// format break, which cleanly rejects any earlier artifact.
   intercept:float64 (id: 4);
 
-  /// Gradient coefficient vector. Length equals
-  /// `StageCuts.state_dimension`.
+  /// Gradient coefficient vector. Length equals the enclosing
+  /// `StageCuts.entity_manifest` length.
   coefficients:[float64] (id: 5);
 
   /// Whether this piece is currently active in the LP. Inactive pieces
@@ -157,6 +161,19 @@ table AffinePiece {
   /// vector field deleted under the 0.14 format break. Marked `deprecated` so
   /// the slot number is permanently burned for any future field.
   reserved_7:[float64] (id: 7, deprecated);
+
+  /// Whether the writer stored a trial point for this piece when it wrote the
+  /// piece's slot. Kept when that point is later dropped; a reader takes it as
+  /// written, never from the states table.
+  scored:bool (id: 8);
+
+  /// The writer's activity count for this piece; absent unless
+  /// `CheckpointManifest.activity_counters` is set.
+  active_count:uint64 = null (id: 9);
+
+  /// The writer's last iteration of activity for this piece; absent unless
+  /// `CheckpointManifest.activity_counters` is set.
+  last_active_iteration:uint64 = null (id: 10);
 }
 
 /// Root table for `policy/cuts/<pool>.bin`.
@@ -164,34 +181,36 @@ table StageCuts {
   /// Pool id (0-based) — the storage-unit key naming `cuts/<pool>.bin`.
   stage_id:uint32 (id: 0);
 
-  /// State-vector dimension. Matches the coefficient-vector length on
-  /// every `AffinePiece` and the length of the embedded `entity_manifest`,
-  /// which carries the per-slot identity of each state-vector dimension.
+  /// The writing study's global state-vector length. A pool that projects
+  /// fewer dimensions holds shorter coefficient vectors, of the embedded
+  /// `entity_manifest`'s length.
   state_dimension:uint32 (id: 1);
 
   /// Total preallocated piece slots in the pool.
   capacity:uint32 (id: 2);
 
-  /// Number of slots `[0..warm_start_count)` loaded from a prior
-  /// artifact at run start.
+  /// Protected-prefix length: the leading slots the writing run started with.
   warm_start_count:uint32 (id: 3);
 
-  /// Pieces currently held for this pool. Length equals
-  /// `populated_count`.
+  /// Pieces held for this pool, strictly ascending by `slot_index`. Length
+  /// equals `populated_count`.
   cuts:[AffinePiece] (id: 4);
 
-  /// Indices into `cuts` of pieces currently active in the LP.
-  active_cut_indices:[uint32] (id: 5);
+  /// RESERVED — do not reuse. Slot 14 (id 5) held a list of active piece
+  /// indices removed under format version 4; `AffinePiece.is_active` carries
+  /// the same fact. Marked `deprecated` so the slot number is permanently
+  /// burned.
+  active_cut_indices:[uint32] (id: 5, deprecated);
 
-  /// Number of filled slots in the pool. Equals `cuts.length`.
+  /// Number of pieces. Equals `cuts.length`.
   populated_count:uint32 (id: 6);
 
-  /// Per-slot entity identity. Length equals `StageCuts.state_dimension`.
+  /// Per-slot entity identity, one entry per coefficient of each piece.
   entity_manifest:[EntitySlot] (id: 7);
 
-  /// Objective cost-scale factor the writing study resolved — the provenance
-  /// marker making each cut's `coefficients`/`intercept` scale-independent at
-  /// rest. A reader yields no value (absent) for a pre-`id:8` buffer.
+  /// The scale of every piece's `intercept` and `coefficients`: the objective
+  /// cost-scale factor of the writing study, whose scaled units they are in.
+  /// A reader yields no value (absent) for a buffer without it.
   cost_scale_factor:float64 (id: 8);
 
   /// Owning node's policy-graph id when this pool has a single owner, else `-1`
@@ -212,47 +231,66 @@ table StageCuts {
   priced_state_date:int32 (id: 11);
 }
 
-/// Root table for `policy/basis/<stage>.bin`.
-///
-/// LP simplex basis checkpoint for one stage. `column_status`/`row_status` bytes
-/// are the canonical BasisStatus discriminant space (0..=6), a strict superset of
-/// the HiGHS code space this format previously carried, so files written before
-/// the canonical encoding decode identically.
-table StageBasis {
-  /// Stage index (0-based).
-  stage_id:uint32 (id: 0);
-
-  /// Training iteration that produced this basis.
-  iteration:uint32 (id: 1);
-
-  /// Number of LP columns. Equals `column_status.length`.
-  num_columns:uint32 (id: 2);
-
-  /// Number of LP rows. Equals `row_status.length`.
-  num_rows:uint32 (id: 3);
+/// One scenario's LP simplex basis at a node. Element type of
+/// `StageBasis.entries`. `column_status`/`row_status` bytes are the canonical
+/// BasisStatus discriminant space (0..=6).
+table BasisEntry {
+  /// Global scenario index holding this basis.
+  scenario:uint32 (id: 0);
 
   /// Canonical BasisStatus discriminant per LP column (variable).
-  column_status:[uint8] (id: 4);
+  column_status:[uint8] (id: 1);
 
   /// Canonical BasisStatus discriminant per LP row (constraint).
-  row_status:[uint8] (id: 5);
+  row_status:[uint8] (id: 2);
 
-  /// Number of trailing entries in `row_status` that correspond to
-  /// affine-piece rows (as opposed to structural constraints).
-  num_cut_rows:uint32 (id: 6);
+  /// Pool slot of each trailing affine-piece row of `row_status`: entry `i` is
+  /// the slot of the `i`-th piece row.
+  piece_row_slots:[uint32] (id: 3);
 }
 
-/// Root table for `policy/states/<stage>.bin`.
-///
-/// Visited forward-pass trial points for one stage. Only emitted when
-/// `exports.states = true` in the run configuration.
-table StageStates {
-  /// Study stage index (0-based).
+/// Root table for `policy/basis/<node>.bin`: the LP simplex bases stored at
+/// one node.
+table StageBasis {
+  /// Node position (0-based) — the storage-unit key naming `basis/<node>.bin`.
   stage_id:uint32 (id: 0);
 
-  /// Length of each state vector. Matches the length of the embedded
-  /// `entity_manifest`, which carries the per-slot identity of each
-  /// state-vector dimension.
+  /// Training iteration that produced these bases.
+  iteration:uint32 (id: 1);
+
+  /// RESERVED — do not reuse. Ids 2-6 held a single basis (column and row
+  /// counts, the two status vectors and a trailing piece-row count), replaced
+  /// by `entries` under format version 4. Marked `deprecated` so the slot
+  /// numbers are permanently burned.
+  num_columns:uint32 (id: 2, deprecated);
+
+  /// RESERVED — do not reuse (see `num_columns`).
+  num_rows:uint32 (id: 3, deprecated);
+
+  /// RESERVED — do not reuse (see `num_columns`).
+  column_status:[uint8] (id: 4, deprecated);
+
+  /// RESERVED — do not reuse (see `num_columns`).
+  row_status:[uint8] (id: 5, deprecated);
+
+  /// RESERVED — do not reuse (see `num_columns`).
+  num_cut_rows:uint32 (id: 6, deprecated);
+
+  /// One entry per global scenario holding a basis at this node, ascending by
+  /// `scenario`.
+  entries:[BasisEntry] (id: 7);
+}
+
+/// Root table for `policy/states/<pool>.bin`.
+///
+/// The trial points one pool stores, one per stored slot. Written for every
+/// pool that stores trial points.
+table StageStates {
+  /// Pool id (0-based) — the same key as `StageCuts.stage_id`.
+  stage_id:uint32 (id: 0);
+
+  /// Length of each state vector: the pool's `StageCuts.entity_manifest`
+  /// length.
   state_dimension:uint32 (id: 1);
 
   /// Number of state vectors stored.
@@ -264,11 +302,13 @@ table StageStates {
   /// Per-slot entity identity. Length equals `StageStates.state_dimension`.
   entity_manifest:[EntitySlot] (id: 4);
 
-  /// Policy-graph node identity (distinct from `stage_id` once a graph
-  /// carries more than one node per stage). Default `-1` (no node identity
-  /// resolved) — the value a reader yields when the field is absent from a
-  /// pre-`id:5` buffer (forward-compatible default).
+  /// Declared id of the pool's sole owning node, or `-1` for a shared pool.
+  /// Default `-1` is also the value a reader yields when the field is absent.
   node_id:int32 = -1 (id: 5);
+
+  /// Pool slot of each stored row, strictly ascending. Length equals `count`;
+  /// each slot holds a piece whose `scored` is set.
+  slots:[uint32] (id: 6);
 }
 
 /// One node of the checkpoint's policy-graph manifest. Element type of
@@ -417,4 +457,21 @@ table CheckpointManifest {
   /// iteration `completed_iterations`. A writer records every completed iteration
   /// it has; an empty or absent vector means none was recorded.
   lower_bound_history:[float64] (id: 21);
+
+  /// Which trial points the pools that are neither the root's nor the
+  /// terminal's store: 0 none, 1 those of the last `state_history_window`
+  /// iterations, 2 every one. A raw discriminant — see the
+  /// `STATE_HISTORY_SCOPE_*` constants in `src/output/policy/records.rs`.
+  state_history_scope:uint8 (id: 22);
+
+  /// The window of iterations under scope 1; `0` under every other scope.
+  state_history_window:uint32 (id: 23);
+
+  /// Whether every piece of every pool carries `active_count` and
+  /// `last_active_iteration`.
+  activity_counters:bool (id: 24);
+
+  /// Whether `basis/` holds a basis for every scenario that held one, rather
+  /// than one representative per node.
+  basis_store_complete:bool (id: 25);
 }

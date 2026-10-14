@@ -86,9 +86,7 @@ mod deck_smoke {
 
     use novomodelo_io::{StateFamily, encode_slot_date};
     use novomodelo_sddp::indexer::StateDim;
-    use novomodelo_sddp::policy_export::{
-        build_active_indices, build_stage_cut_records, build_stage_cuts_payloads,
-    };
+    use novomodelo_sddp::policy_export::{build_stage_cut_records, build_stage_cuts_payloads};
 
     use crate::common::fresh_setup_with;
 
@@ -141,8 +139,7 @@ mod deck_smoke {
             .filter(|s| s.id >= 0)
             .map(|s| s.end_date)
             .collect();
-        let stage_records = build_stage_cut_records(&setup.fcf);
-        let stage_active_indices = build_active_indices(&stage_records);
+        let stage_records = build_stage_cut_records(&setup.fcf).expect("export");
         let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); setup.fcf.pools.len()];
         let stage_cuts = build_stage_cuts_payloads(
@@ -152,7 +149,6 @@ mod deck_smoke {
             &study_stage_end_dates,
             1_000_000.0,
             &stage_records,
-            &stage_active_indices,
             &stage_manifests,
         );
         let last_end_date = *study_stage_end_dates
@@ -285,7 +281,6 @@ mod anticipated_fanout_readback {
             state_dimension,
             capacity: 1,
             cuts: &cuts,
-            active_cut_indices: &[0],
             populated_count: 1,
             entity_manifest: manifest,
             cost_scale_factor: 1_000_000.0,

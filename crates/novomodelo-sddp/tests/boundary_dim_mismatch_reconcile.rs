@@ -105,7 +105,6 @@ fn write_source_checkpoint(
         state_dimension,
         capacity: 1,
         cuts: &cuts,
-        active_cut_indices: &[0],
         populated_count: 1,
         entity_manifest: manifest,
         cost_scale_factor: cost_scale_factor.unwrap_or(1_000_000.0),

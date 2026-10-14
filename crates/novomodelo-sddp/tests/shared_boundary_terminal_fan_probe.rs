@@ -62,7 +62,6 @@ fn write_synthetic_checkpoint(
         .iter()
         .enumerate()
         .map(|(i, &intercept)| PolicyCutRecord {
-            cut_id: i as u64,
             slot_index: i as u32,
             iteration: 0,
             intercept,
@@ -71,7 +70,6 @@ fn write_synthetic_checkpoint(
             ..piece_defaults()
         })
         .collect();
-    let active_cut_indices: Vec<u32> = (0..intercepts.len() as u32).collect();
 
     let mut owner_node_id: Option<i32> = None;
     let mut owner_stage_id: Option<i32> = None;
@@ -97,7 +95,6 @@ fn write_synthetic_checkpoint(
         state_dimension,
         capacity: intercepts.len() as u32,
         cuts: &cuts,
-        active_cut_indices: &active_cut_indices,
         populated_count: intercepts.len() as u32,
         entity_manifest: &[],
         cost_scale_factor: 1_000_000.0,

@@ -23,14 +23,16 @@ pub(crate) use checkpoint::{check_checkpoint_replaceable, checkpoint_target};
 pub use codec::{deserialize_stage_basis, deserialize_stage_cuts, deserialize_stage_states};
 pub use codec::{serialize_stage_basis, serialize_stage_cuts, serialize_stage_states};
 pub use records::{
-    CheckpointManifest, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, FORMAT_VERSION, GraphManifest,
-    HydroSeasonOrders, ManifestEdge, ManifestNode, OwnedPolicyBasisRecord, OwnedPolicyCutRecord,
-    PolicyBasisRecord, PolicyCheckpoint, PolicyCutRecord, ProducerBlock, SEASON_CYCLE_CODE_ABSENT,
-    SEASON_CYCLE_CODE_CUSTOM, SEASON_CYCLE_CODE_MONTHLY, SEASON_CYCLE_CODE_WEEKLY,
-    STAGE_CUTS_GRAPH_STAGE_ID_SENTINEL, STAGE_CUTS_NODE_ID_SENTINEL,
-    STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, STAGE_STATES_NODE_ID_SENTINEL, SeasonManifest,
-    StageCutsPayload, StageCutsReadResult, StageStatesPayload, StageStatesReadResult, StateFamily,
-    decode_slot_date, encode_slot_date,
+    BasisEntry, CheckpointManifest, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, FORMAT_VERSION,
+    GraphManifest, HydroSeasonOrders, ManifestEdge, ManifestNode, OwnedBasisEntry,
+    OwnedPolicyBasisRecord, OwnedPolicyCutRecord, PolicyBasisRecord, PolicyCheckpoint,
+    PolicyCutRecord, ProducerBlock, SEASON_CYCLE_CODE_ABSENT, SEASON_CYCLE_CODE_CUSTOM,
+    SEASON_CYCLE_CODE_MONTHLY, SEASON_CYCLE_CODE_WEEKLY, STAGE_CUTS_GRAPH_STAGE_ID_SENTINEL,
+    STAGE_CUTS_NODE_ID_SENTINEL, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+    STAGE_STATES_NODE_ID_SENTINEL, STATE_HISTORY_SCOPE_NONE, STATE_HISTORY_SCOPE_WHOLE,
+    STATE_HISTORY_SCOPE_WINDOW, SeasonManifest, StageCutsPayload, StageCutsReadResult,
+    StageStatesPayload, StageStatesReadResult, StateFamily, StateHistory, decode_slot_date,
+    encode_slot_date,
 };
 
 #[cfg(test)]
@@ -54,13 +56,11 @@ mod tests {
     };
 
     fn make_cut_record(
-        cut_id: u64,
         slot_index: u32,
         iteration: u32,
         coefficients: &[f64],
     ) -> PolicyCutRecord<'_> {
         PolicyCutRecord {
-            cut_id,
             slot_index,
             iteration,
             intercept: 42.0,
@@ -77,7 +77,6 @@ mod tests {
         capacity: u32,
         warm_start_count: u32,
         cuts: &[PolicyCutRecord<'_>],
-        active_cut_indices: &[u32],
         populated_count: u32,
         entity_manifest: &[EntitySlot],
     ) -> Vec<u8> {
@@ -87,7 +86,6 @@ mod tests {
             capacity,
             warm_start_count,
             cuts,
-            active_cut_indices,
             populated_count,
             entity_manifest,
             cost_scale_factor: 1_000_000.0,
@@ -101,7 +99,6 @@ mod tests {
     fn serialize_stage_cuts_single_cut_round_trip() {
         let coefficients = [1.0_f64, 2.0, 3.0];
         let cut = PolicyCutRecord {
-            cut_id: 7,
             slot_index: 5,
             iteration: 3,
             intercept: 42.0,
@@ -109,7 +106,7 @@ mod tests {
             ..piece_defaults()
         };
 
-        let buf = ser_cuts(0, 3, 100, 0, &[cut], &[0], 1, &[]);
+        let buf = ser_cuts(0, 3, 100, 0, &[cut], 1, &[]);
 
         assert!(!buf.is_empty(), "buffer must not be empty");
         assert!(buf.len() >= 4, "buffer must have at least 4 bytes");
@@ -122,7 +119,7 @@ mod tests {
 
     #[test]
     fn serialize_stage_cuts_empty_cuts_valid_buffer() {
-        let buf = ser_cuts(0, 3, 100, 0, &[], &[], 0, &[]);
+        let buf = ser_cuts(0, 3, 100, 0, &[], 0, &[]);
 
         assert!(!buf.is_empty(), "buffer must not be empty for empty cuts");
         assert!(
@@ -143,13 +140,13 @@ mod tests {
         let c2 = [7.0_f64, 8.0, 9.0];
 
         let cuts = [
-            make_cut_record(1, 0, 1, &c0),
-            make_cut_record(2, 1, 1, &c1),
-            make_cut_record(3, 2, 1, &c2),
+            make_cut_record(0, 1, &c0),
+            make_cut_record(1, 1, &c1),
+            make_cut_record(2, 1, &c2),
         ];
 
-        let buf_a = ser_cuts(5, 3, 50, 0, &cuts, &[0, 1, 2], 3, &[]);
-        let buf_b = ser_cuts(5, 3, 50, 0, &cuts, &[0, 1, 2], 3, &[]);
+        let buf_a = ser_cuts(5, 3, 50, 0, &cuts, 3, &[]);
+        let buf_b = ser_cuts(5, 3, 50, 0, &cuts, 3, &[]);
 
         assert_eq!(buf_a, buf_b, "output must be byte-identical for same input");
     }
@@ -163,7 +160,7 @@ mod tests {
                 coefficients: &coefs,
                 ..piece_defaults()
             };
-            let buf = ser_cuts(0, dim, 10, 0, &[cut], &[0], 1, &[]);
+            let buf = ser_cuts(0, dim, 10, 0, &[cut], 1, &[]);
             assert!(
                 !buf.is_empty(),
                 "buffer must not be empty for state_dimension={dim}"
@@ -178,9 +175,12 @@ mod tests {
         let record = PolicyBasisRecord {
             stage_id: 0,
             iteration: 5,
-            column_status: &[0, 1, 2],
-            row_status: &[1, 1, 0, 0],
-            num_cut_rows: 2,
+            entries: &[BasisEntry {
+                scenario: 0,
+                column_status: &[0, 1, 2],
+                row_status: &[1, 1, 0, 0],
+                piece_row_slots: &[0, 1],
+            }],
         };
 
         let buf = serialize_stage_basis(&record);
@@ -199,9 +199,12 @@ mod tests {
         let record = PolicyBasisRecord {
             stage_id: 1,
             iteration: 0,
-            column_status: &[],
-            row_status: &[],
-            num_cut_rows: 0,
+            entries: &[BasisEntry {
+                scenario: 0,
+                column_status: &[],
+                row_status: &[],
+                piece_row_slots: &[],
+            }],
         };
 
         let buf = serialize_stage_basis(&record);
@@ -223,9 +226,12 @@ mod tests {
         let record = PolicyBasisRecord {
             stage_id: 7,
             iteration: 12,
-            column_status: &col,
-            row_status: &row,
-            num_cut_rows: 3,
+            entries: &[BasisEntry {
+                scenario: 0,
+                column_status: &col,
+                row_status: &row,
+                piece_row_slots: &[0, 1, 2],
+            }],
         };
 
         let buf_a = serialize_stage_basis(&record);
@@ -291,7 +297,6 @@ mod tests {
     fn make_stage_cuts_payload<'a>(
         stage_id: u32,
         cuts: &'a [PolicyCutRecord<'a>],
-        active_cut_indices: &'a [u32],
         state_dimension: u32,
     ) -> StageCutsPayload<'a> {
         StageCutsPayload {
@@ -299,7 +304,6 @@ mod tests {
             state_dimension,
             capacity: 100,
             cuts,
-            active_cut_indices,
             populated_count: u32::try_from(cuts.len()).unwrap(),
             cost_scale_factor: 1_000_000.0,
             ..stage_cuts_payload_defaults()
@@ -310,9 +314,12 @@ mod tests {
         PolicyBasisRecord {
             stage_id,
             iteration: 10,
-            column_status: &[0, 1, 2, 3],
-            row_status: &[1, 0, 1, 0, 1],
-            num_cut_rows: 2,
+            entries: &[BasisEntry {
+                scenario: 0,
+                column_status: &[0, 1, 2, 3],
+                row_status: &[1, 0, 1, 0, 1],
+                piece_row_slots: &[0],
+            }],
         }
     }
 
@@ -322,14 +329,14 @@ mod tests {
 
         let c0 = [1.0_f64, 2.0, 3.0];
         let c1 = [4.0_f64, 5.0, 6.0];
-        let cuts_s0 = [make_cut_record(1, 0, 1, &c0), make_cut_record(2, 1, 1, &c1)];
-        let cuts_s1 = [make_cut_record(3, 0, 2, &c0)];
-        let cuts_s2 = [make_cut_record(4, 0, 3, &c1)];
+        let cuts_s0 = [make_cut_record(0, 1, &c0), make_cut_record(1, 1, &c1)];
+        let cuts_s1 = [make_cut_record(0, 2, &c0)];
+        let cuts_s2 = [make_cut_record(0, 3, &c1)];
 
         let stage_cuts = [
-            make_stage_cuts_payload(0, &cuts_s0, &[0, 1], 3),
-            make_stage_cuts_payload(1, &cuts_s1, &[0], 3),
-            make_stage_cuts_payload(2, &cuts_s2, &[0], 3),
+            make_stage_cuts_payload(0, &cuts_s0, 3),
+            make_stage_cuts_payload(1, &cuts_s1, 3),
+            make_stage_cuts_payload(2, &cuts_s2, 3),
         ];
         let basis_records = [
             make_basis_record(0),
@@ -369,8 +376,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
 
         let c0 = [1.0_f64, 2.0, 3.0];
-        let cuts_s0 = [make_cut_record(1, 0, 1, &c0)];
-        let stage_cuts = [make_stage_cuts_payload(0, &cuts_s0, &[0], 3)];
+        let cuts_s0 = [make_cut_record(0, 1, &c0)];
+        let stage_cuts = [make_stage_cuts_payload(0, &cuts_s0, 3)];
         let metadata = make_metadata(1, 3);
 
         write_policy_checkpoint(tmp.path(), &stage_cuts, &[], &metadata, &[])
@@ -396,14 +403,14 @@ mod tests {
 
         let c0 = [1.0_f64, 2.0, 3.0];
         let c1 = [4.0_f64, 5.0, 6.0];
-        let cuts_s0 = [make_cut_record(1, 0, 1, &c0), make_cut_record(2, 1, 1, &c1)];
-        let cuts_s1 = [make_cut_record(3, 0, 2, &c0)];
-        let cuts_s2 = [make_cut_record(4, 0, 3, &c1)];
+        let cuts_s0 = [make_cut_record(0, 1, &c0), make_cut_record(1, 1, &c1)];
+        let cuts_s1 = [make_cut_record(0, 2, &c0)];
+        let cuts_s2 = [make_cut_record(0, 3, &c1)];
 
         let stage_cuts = [
-            make_stage_cuts_payload(0, &cuts_s0, &[0, 1], 3),
-            make_stage_cuts_payload(1, &cuts_s1, &[0], 3),
-            make_stage_cuts_payload(2, &cuts_s2, &[0], 3),
+            make_stage_cuts_payload(0, &cuts_s0, 3),
+            make_stage_cuts_payload(1, &cuts_s1, 3),
+            make_stage_cuts_payload(2, &cuts_s2, 3),
         ];
         let metadata = make_metadata(3, 3);
 
@@ -428,8 +435,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
 
         let c0 = [1.0_f64, 2.0];
-        let cuts_s0 = [make_cut_record(1, 0, 1, &c0)];
-        let stage_cuts = [make_stage_cuts_payload(0, &cuts_s0, &[0], 2)];
+        let cuts_s0 = [make_cut_record(0, 1, &c0)];
+        let stage_cuts = [make_stage_cuts_payload(0, &cuts_s0, 2)];
         let basis_records = [make_basis_record(0)];
         let metadata = make_metadata(1, 2);
 
@@ -452,8 +459,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
 
         let c0 = [1.0_f64, 2.0];
-        let cuts_s0 = [make_cut_record(1, 0, 1, &c0)];
-        let stage_cuts = [make_stage_cuts_payload(0, &cuts_s0, &[0], 2)];
+        let cuts_s0 = [make_cut_record(0, 1, &c0)];
+        let stage_cuts = [make_stage_cuts_payload(0, &cuts_s0, 2)];
         let metadata = make_metadata(1, 2);
 
         let result = write_policy_checkpoint(tmp.path(), &stage_cuts, &[], &metadata, &[]);
@@ -514,8 +521,8 @@ mod tests {
         let readonly_target = tmp.path().join("policy");
 
         let c0 = [1.0_f64];
-        let cuts_s0 = [make_cut_record(1, 0, 1, &c0)];
-        let stage_cuts = [make_stage_cuts_payload(0, &cuts_s0, &[0], 1)];
+        let cuts_s0 = [make_cut_record(0, 1, &c0)];
+        let stage_cuts = [make_stage_cuts_payload(0, &cuts_s0, 1)];
         let metadata = make_metadata(1, 1);
 
         let result = write_policy_checkpoint(&readonly_target, &stage_cuts, &[], &metadata, &[]);
@@ -536,35 +543,44 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
 
         let c0 = [1.0_f64, 2.0];
-        let cuts_s0 = [make_cut_record(1, 0, 1, &c0)];
-        let cuts_s1 = [make_cut_record(2, 0, 1, &c0)];
-        let cuts_s59 = [make_cut_record(3, 0, 1, &c0)];
+        let cuts_s0 = [make_cut_record(0, 1, &c0)];
+        let cuts_s1 = [make_cut_record(0, 1, &c0)];
+        let cuts_s59 = [make_cut_record(0, 1, &c0)];
 
         let stage_cuts = [
-            make_stage_cuts_payload(0, &cuts_s0, &[0], 2),
-            make_stage_cuts_payload(1, &cuts_s1, &[0], 2),
-            make_stage_cuts_payload(59, &cuts_s59, &[0], 2),
+            make_stage_cuts_payload(0, &cuts_s0, 2),
+            make_stage_cuts_payload(1, &cuts_s1, 2),
+            make_stage_cuts_payload(59, &cuts_s59, 2),
         ];
         let basis_records_0 = PolicyBasisRecord {
             stage_id: 0,
             iteration: 1,
-            column_status: &[0u8],
-            row_status: &[1u8],
-            num_cut_rows: 0,
+            entries: &[BasisEntry {
+                scenario: 0,
+                column_status: &[0u8],
+                row_status: &[1u8],
+                piece_row_slots: &[],
+            }],
         };
         let basis_records_1 = PolicyBasisRecord {
             stage_id: 1,
             iteration: 1,
-            column_status: &[0u8],
-            row_status: &[1u8],
-            num_cut_rows: 0,
+            entries: &[BasisEntry {
+                scenario: 0,
+                column_status: &[0u8],
+                row_status: &[1u8],
+                piece_row_slots: &[],
+            }],
         };
         let basis_records_59 = PolicyBasisRecord {
             stage_id: 59,
             iteration: 1,
-            column_status: &[0u8],
-            row_status: &[1u8],
-            num_cut_rows: 0,
+            entries: &[BasisEntry {
+                scenario: 0,
+                column_status: &[0u8],
+                row_status: &[1u8],
+                piece_row_slots: &[],
+            }],
         };
         let stage_bases = [basis_records_0, basis_records_1, basis_records_59];
         let metadata = make_metadata(3, 2);
@@ -604,16 +620,18 @@ mod tests {
     fn deserialize_stage_cuts_single_cut_all_fields() {
         let coefficients = [1.0_f64, 2.0, 3.0];
         let cut = PolicyCutRecord {
-            cut_id: 7,
             slot_index: 5,
             iteration: 3,
             forward_pass_index: 2,
             intercept: 42.0,
             coefficients: &coefficients,
             is_active: true,
+            scored: true,
+            active_count: Some(4),
+            last_active_iteration: Some(9),
         };
 
-        let buf = ser_cuts(0, 3, 100, 0, &[cut], &[0], 1, &[]);
+        let buf = ser_cuts(0, 3, 100, 0, &[cut], 1, &[]);
         let result = deserialize_stage_cuts(&buf).expect("deserialization must succeed");
 
         assert_eq!(result.stage_id, 0, "stage_id must round-trip");
@@ -627,7 +645,6 @@ mod tests {
         assert_eq!(result.cuts.len(), 1, "one cut must be deserialized");
 
         let c = &result.cuts[0];
-        assert_eq!(c.cut_id, 7, "cut_id must round-trip");
         assert_eq!(c.slot_index, 5, "slot_index must round-trip");
         assert_eq!(c.iteration, 3, "iteration must round-trip");
         assert_eq!(
@@ -641,6 +658,13 @@ mod tests {
             "coefficients must round-trip"
         );
         assert!(c.is_active, "is_active must round-trip");
+        assert!(c.scored, "scored must round-trip");
+        assert_eq!(c.active_count, Some(4), "active_count must round-trip");
+        assert_eq!(
+            c.last_active_iteration,
+            Some(9),
+            "last_active_iteration must round-trip"
+        );
     }
 
     #[test]
@@ -650,7 +674,6 @@ mod tests {
         let c2 = [3.0_f64, 2.5];
         let cuts = [
             PolicyCutRecord {
-                cut_id: 10,
                 iteration: 1,
                 intercept: 100.0,
                 coefficients: &c0,
@@ -658,26 +681,30 @@ mod tests {
                 ..piece_defaults()
             },
             PolicyCutRecord {
-                cut_id: 20,
                 slot_index: 1,
                 iteration: 2,
                 forward_pass_index: 1,
                 intercept: 200.0,
                 coefficients: &c1,
                 is_active: false,
+                scored: true,
+                active_count: Some(0),
+                last_active_iteration: Some(2),
             },
             PolicyCutRecord {
-                cut_id: 30,
                 slot_index: 2,
                 iteration: 3,
                 forward_pass_index: 2,
                 intercept: 300.0,
                 coefficients: &c2,
                 is_active: true,
+                scored: false,
+                active_count: Some(7),
+                last_active_iteration: Some(3),
             },
         ];
 
-        let buf = ser_cuts(5, 2, 50, 1, &cuts, &[0, 2], 3, &[]);
+        let buf = ser_cuts(5, 2, 50, 1, &cuts, 3, &[]);
         let result = deserialize_stage_cuts(&buf).expect("deserialization must succeed");
 
         assert_eq!(result.stage_id, 5);
@@ -687,13 +714,18 @@ mod tests {
         assert_eq!(result.populated_count, 3);
         assert_eq!(result.cuts.len(), 3);
 
-        let expected_cut_ids = [10u64, 20, 30];
+        let expected_scored = [false, true, false];
+        let expected_active_counts = [None, Some(0), Some(7)];
         let expected_intercepts = [100.0f64, 200.0, 300.0];
         let expected_coefficients = [&c0[..], &c1[..], &c2[..]];
         let expected_active = [true, false, true];
 
         for (i, cut) in result.cuts.iter().enumerate() {
-            assert_eq!(cut.cut_id, expected_cut_ids[i], "cut {i} cut_id");
+            assert_eq!(cut.scored, expected_scored[i], "cut {i} scored");
+            assert_eq!(
+                cut.active_count, expected_active_counts[i],
+                "cut {i} active_count"
+            );
             assert_eq!(cut.intercept, expected_intercepts[i], "cut {i} intercept");
             assert_eq!(
                 cut.coefficients, expected_coefficients[i],
@@ -705,7 +737,7 @@ mod tests {
 
     #[test]
     fn deserialize_stage_cuts_empty_cut_pool() {
-        let buf = ser_cuts(2, 10, 200, 0, &[], &[], 0, &[]);
+        let buf = ser_cuts(2, 10, 200, 0, &[], 0, &[]);
         let result =
             deserialize_stage_cuts(&buf).expect("deserialization of empty cut pool must succeed");
 
@@ -721,13 +753,12 @@ mod tests {
     #[test]
     fn deserialize_stage_cuts_zero_length_coefficients() {
         let cut = PolicyCutRecord {
-            cut_id: 1,
             iteration: 1,
             intercept: 5.0,
             coefficients: &[],
             ..piece_defaults()
         };
-        let buf = ser_cuts(0, 0, 10, 0, &[cut], &[0], 1, &[]);
+        let buf = ser_cuts(0, 0, 10, 0, &[cut], 1, &[]);
         let result =
             deserialize_stage_cuts(&buf).expect("zero-length coefficients must deserialize");
         assert_eq!(result.cuts.len(), 1);
@@ -742,14 +773,13 @@ mod tests {
         let dim = 1000u32;
         let coefs: Vec<f64> = (0..dim).map(f64::from).collect();
         let cut = PolicyCutRecord {
-            cut_id: 42,
             iteration: 1,
             intercept: -99.0,
             coefficients: &coefs,
             is_active: false,
             ..piece_defaults()
         };
-        let buf = ser_cuts(3, dim, 10, 0, &[cut], &[0], 1, &[]);
+        let buf = ser_cuts(3, dim, 10, 0, &[cut], 1, &[]);
         let result =
             deserialize_stage_cuts(&buf).expect("large coefficient vector must deserialize");
         assert_eq!(result.cuts[0].coefficients.len(), dim as usize);
@@ -760,8 +790,8 @@ mod tests {
     #[test]
     fn deserialize_stage_cuts_truncated_buffer_returns_error() {
         let coefs = [1.0_f64, 2.0];
-        let cut = make_cut_record(1, 0, 1, &coefs);
-        let full_buf = ser_cuts(0, 2, 10, 0, &[cut], &[0], 1, &[]);
+        let cut = make_cut_record(0, 1, &coefs);
+        let full_buf = ser_cuts(0, 2, 10, 0, &[cut], 1, &[]);
         // Truncate to 2 bytes — root offset itself is incomplete.
         let truncated = &full_buf[..2];
         let result = deserialize_stage_cuts(truncated);
@@ -770,7 +800,7 @@ mod tests {
 
     #[test]
     fn deserialize_stage_cuts_stage_id_nonzero() {
-        let buf = ser_cuts(59, 4, 50, 0, &[], &[], 0, &[]);
+        let buf = ser_cuts(59, 4, 50, 0, &[], 0, &[]);
         let result = deserialize_stage_cuts(&buf).expect("stage_id=59 must deserialize");
         assert_eq!(result.stage_id, 59, "stage_id=59 must round-trip");
     }
@@ -802,10 +832,10 @@ mod tests {
     #[test]
     fn stage_cuts_entity_manifest_round_trip() {
         let coefficients = [1.0_f64, 2.0, 3.0];
-        let cut = make_cut_record(7, 0, 1, &coefficients);
+        let cut = make_cut_record(0, 1, &coefficients);
         let manifest = sample_manifest();
 
-        let buf = ser_cuts(4, 3, 100, 0, &[cut], &[0], 1, &manifest);
+        let buf = ser_cuts(4, 3, 100, 0, &[cut], 1, &manifest);
         let result = deserialize_stage_cuts(&buf).expect("manifest round-trip must succeed");
 
         assert_eq!(result.cuts.len(), 1, "cuts must still round-trip");
@@ -823,6 +853,7 @@ mod tests {
             count: 2,
             data: &data,
             entity_manifest: &manifest,
+            slots: &[4, 11],
         };
 
         let buf = serialize_stage_states(&payload);
@@ -830,14 +861,15 @@ mod tests {
 
         assert_eq!(result.data, data.to_vec(), "data must still round-trip");
         assert_eq!(result.node_id, 9, "node_id must round-trip");
+        assert_eq!(result.slots, [4, 11], "slots must round-trip");
         assert_manifest_eq(&result.entity_manifest, &manifest);
     }
 
     #[test]
     fn stage_cuts_empty_manifest_deserializes_to_empty_vec() {
         let coefficients = [1.0_f64, 2.0];
-        let cut = make_cut_record(1, 0, 1, &coefficients);
-        let buf = ser_cuts(0, 2, 10, 0, &[cut], &[0], 1, &[]);
+        let cut = make_cut_record(0, 1, &coefficients);
+        let buf = ser_cuts(0, 2, 10, 0, &[cut], 1, &[]);
         let result = deserialize_stage_cuts(&buf).expect("empty manifest must deserialize");
         assert!(
             result.entity_manifest.is_empty(),
@@ -852,9 +884,12 @@ mod tests {
         let record = PolicyBasisRecord {
             stage_id: 3,
             iteration: 7,
-            column_status: &[0, 1, 2, 3],
-            row_status: &[1, 0, 1, 0, 1],
-            num_cut_rows: 2,
+            entries: &[BasisEntry {
+                scenario: 0,
+                column_status: &[0, 1, 2, 3],
+                row_status: &[1, 0, 1, 0, 1],
+                piece_row_slots: &[0, 1],
+            }],
         };
 
         let buf = serialize_stage_basis(&record);
@@ -863,16 +898,20 @@ mod tests {
         assert_eq!(owned.stage_id, 3, "stage_id must round-trip");
         assert_eq!(owned.iteration, 7, "iteration must round-trip");
         assert_eq!(
-            owned.column_status,
+            owned.entries[0].column_status,
             &[0u8, 1, 2, 3],
             "column_status must round-trip"
         );
         assert_eq!(
-            owned.row_status,
+            owned.entries[0].row_status,
             &[1u8, 0, 1, 0, 1],
             "row_status must round-trip"
         );
-        assert_eq!(owned.num_cut_rows, 2, "num_cut_rows must round-trip");
+        assert_eq!(
+            owned.entries[0].piece_row_slots,
+            [0, 1],
+            "piece_row_slots must round-trip"
+        );
     }
 
     #[test]
@@ -880,23 +919,26 @@ mod tests {
         let record = PolicyBasisRecord {
             stage_id: 0,
             iteration: 0,
-            column_status: &[],
-            row_status: &[],
-            num_cut_rows: 0,
+            entries: &[BasisEntry {
+                scenario: 0,
+                column_status: &[],
+                row_status: &[],
+                piece_row_slots: &[],
+            }],
         };
 
         let buf = serialize_stage_basis(&record);
         let owned = deserialize_stage_basis(&buf).expect("empty basis must deserialize");
 
         assert!(
-            owned.column_status.is_empty(),
+            owned.entries[0].column_status.is_empty(),
             "empty column_status must round-trip"
         );
         assert!(
-            owned.row_status.is_empty(),
+            owned.entries[0].row_status.is_empty(),
             "empty row_status must round-trip"
         );
-        assert_eq!(owned.num_cut_rows, 0);
+        assert!(owned.entries[0].piece_row_slots.is_empty());
     }
 
     #[test]
@@ -906,17 +948,24 @@ mod tests {
         let record = PolicyBasisRecord {
             stage_id: 10,
             iteration: 99,
-            column_status: &col,
-            row_status: &row,
-            num_cut_rows: 50,
+            entries: &[BasisEntry {
+                scenario: 0,
+                column_status: &col,
+                row_status: &row,
+                piece_row_slots: &[
+                    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+                    22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
+                    42, 43, 44, 45, 46, 47, 48, 49,
+                ],
+            }],
         };
 
         let buf = serialize_stage_basis(&record);
         let owned = deserialize_stage_basis(&buf).expect("large basis must deserialize");
 
-        assert_eq!(owned.column_status, col);
-        assert_eq!(owned.row_status, row);
-        assert_eq!(owned.num_cut_rows, 50);
+        assert_eq!(owned.entries[0].column_status, col);
+        assert_eq!(owned.entries[0].row_status, row);
+        assert_eq!(owned.entries[0].piece_row_slots.len(), 50);
     }
 
     #[test]
@@ -924,9 +973,12 @@ mod tests {
         let record = PolicyBasisRecord {
             stage_id: 0,
             iteration: 1,
-            column_status: &[0, 1],
-            row_status: &[1, 0],
-            num_cut_rows: 0,
+            entries: &[BasisEntry {
+                scenario: 0,
+                column_status: &[0, 1],
+                row_status: &[1, 0],
+                piece_row_slots: &[],
+            }],
         };
         let full_buf = serialize_stage_basis(&record);
         let truncated = &full_buf[..3];
@@ -964,12 +1016,12 @@ mod tests {
         let c1 = [4.0_f64, 5.0, 6.0];
         let c2 = [7.0_f64, 8.0, 9.0];
 
-        let cuts_s0 = [make_cut_record(1, 0, 1, &c0), make_cut_record(2, 1, 1, &c1)];
-        let cuts_s1 = [make_cut_record(3, 0, 2, &c2)];
+        let cuts_s0 = [make_cut_record(0, 1, &c0), make_cut_record(1, 1, &c1)];
+        let cuts_s1 = [make_cut_record(0, 2, &c2)];
 
         let stage_cuts_payloads = [
-            make_stage_cuts_payload(0, &cuts_s0, &[0, 1], 3),
-            make_stage_cuts_payload(1, &cuts_s1, &[0], 3),
+            make_stage_cuts_payload(0, &cuts_s0, 3),
+            make_stage_cuts_payload(1, &cuts_s1, 3),
         ];
         let basis_records = [make_basis_record(0), make_basis_record(1)];
         let metadata = make_metadata(2, 3);
@@ -1002,25 +1054,31 @@ mod tests {
         assert_eq!(checkpoint.stage_cuts[1].cuts.len(), 1);
 
         let cut00 = &checkpoint.stage_cuts[0].cuts[0];
-        assert_eq!(cut00.cut_id, 1);
+        assert_eq!((cut00.slot_index, cut00.iteration), (0, 1));
         assert_eq!(cut00.coefficients, &[1.0f64, 2.0, 3.0]);
         assert_eq!(cut00.intercept, 42.0);
         assert!(cut00.is_active);
 
         let cut01 = &checkpoint.stage_cuts[0].cuts[1];
-        assert_eq!(cut01.cut_id, 2);
+        assert_eq!((cut01.slot_index, cut01.iteration), (1, 1));
         assert_eq!(cut01.coefficients, &[4.0f64, 5.0, 6.0]);
 
         let cut10 = &checkpoint.stage_cuts[1].cuts[0];
-        assert_eq!(cut10.cut_id, 3);
+        assert_eq!((cut10.slot_index, cut10.iteration), (0, 2));
         assert_eq!(cut10.coefficients, &[7.0f64, 8.0, 9.0]);
 
         assert_eq!(checkpoint.stage_bases.len(), 2, "must have two stage bases");
         assert_eq!(checkpoint.stage_bases[0].stage_id, 0);
         assert_eq!(checkpoint.stage_bases[1].stage_id, 1);
-        assert_eq!(checkpoint.stage_bases[0].column_status, &[0u8, 1, 2, 3]);
-        assert_eq!(checkpoint.stage_bases[0].row_status, &[1u8, 0, 1, 0, 1]);
-        assert_eq!(checkpoint.stage_bases[0].num_cut_rows, 2);
+        assert_eq!(
+            checkpoint.stage_bases[0].entries[0].column_status,
+            &[0u8, 1, 2, 3]
+        );
+        assert_eq!(
+            checkpoint.stage_bases[0].entries[0].row_status,
+            &[1u8, 0, 1, 0, 1]
+        );
+        assert_eq!(checkpoint.stage_bases[0].entries[0].piece_row_slots, [0]);
     }
 
     #[test]
@@ -1028,8 +1086,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
 
         let c0 = [1.0_f64];
-        let cuts_s0 = [make_cut_record(1, 0, 1, &c0)];
-        let stage_cuts_payloads = [make_stage_cuts_payload(0, &cuts_s0, &[0], 1)];
+        let cuts_s0 = [make_cut_record(0, 1, &c0)];
+        let stage_cuts_payloads = [make_stage_cuts_payload(0, &cuts_s0, 1)];
         let metadata = make_metadata(1, 1);
 
         write_policy_checkpoint(tmp.path(), &stage_cuts_payloads, &[], &metadata, &[])
@@ -1051,10 +1109,10 @@ mod tests {
         let a0 = [1.0_f64, 2.0, 3.0];
         let piece_a = PolicyCutRecord {
             intercept: 11.0,
-            ..make_cut_record(101, 0, 1, &a0)
+            ..make_cut_record(0, 1, &a0)
         };
         let cuts_a = [piece_a];
-        let stage_cuts_a = [make_stage_cuts_payload(0, &cuts_a, &[0], 3)];
+        let stage_cuts_a = [make_stage_cuts_payload(0, &cuts_a, 3)];
         let basis_a = [make_basis_record(0)];
         let metadata_a = make_metadata(1, 3);
 
@@ -1064,10 +1122,10 @@ mod tests {
         let b0 = [40.0_f64, 50.0, 60.0];
         let piece_b = PolicyCutRecord {
             intercept: 99.0,
-            ..make_cut_record(202, 0, 5, &b0)
+            ..make_cut_record(0, 5, &b0)
         };
         let cuts_b = [piece_b];
-        let stage_cuts_b = [make_stage_cuts_payload(0, &cuts_b, &[0], 3)];
+        let stage_cuts_b = [make_stage_cuts_payload(0, &cuts_b, 3)];
         let basis_b = [make_basis_record(0)];
         let metadata_b = make_metadata(1, 3);
 
@@ -1091,8 +1149,7 @@ mod tests {
         assert_eq!(checkpoint.stage_cuts[0].cuts.len(), 1);
 
         let cut = &checkpoint.stage_cuts[0].cuts[0];
-        assert_eq!(cut.cut_id, 202, "must read back B's cut id, not A's");
-        assert_ne!(cut.cut_id, 101, "A's cut id must not survive the rewrite");
+        assert_eq!(cut.iteration, 5, "must read back B's iteration, not A's");
         assert_eq!(
             cut.coefficients,
             &[40.0f64, 50.0, 60.0],
@@ -1117,10 +1174,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
 
         let a0 = [1.0_f64, 2.0, 3.0];
-        let cuts_a = [make_cut_record(101, 0, 1, &a0)];
+        let cuts_a = [make_cut_record(0, 1, &a0)];
         let stage_cuts_a = [
-            make_stage_cuts_payload(0, &cuts_a, &[0], 3),
-            make_stage_cuts_payload(1, &cuts_a, &[0], 3),
+            make_stage_cuts_payload(0, &cuts_a, 3),
+            make_stage_cuts_payload(1, &cuts_a, 3),
         ];
         let basis_a = [make_basis_record(0), make_basis_record(1)];
         let states_data = [1.0_f64, 2.0, 3.0];
@@ -1132,6 +1189,7 @@ mod tests {
             count: 1,
             data: &states_data,
             entity_manifest: &states_manifest,
+            slots: &[0],
         }];
         write_policy_checkpoint(
             tmp.path(),
@@ -1144,8 +1202,8 @@ mod tests {
         assert!(tmp.path().join("states").is_dir());
 
         let b0 = [40.0_f64, 50.0, 60.0];
-        let cuts_b = [make_cut_record(202, 0, 5, &b0)];
-        let stage_cuts_b = [make_stage_cuts_payload(0, &cuts_b, &[0], 3)];
+        let cuts_b = [make_cut_record(0, 5, &b0)];
+        let stage_cuts_b = [make_stage_cuts_payload(0, &cuts_b, 3)];
         let basis_b = [make_basis_record(0)];
         write_policy_checkpoint(
             tmp.path(),
@@ -1173,7 +1231,7 @@ mod tests {
         let checkpoint = read_policy_checkpoint(tmp.path())
             .expect("read of the rewritten checkpoint must succeed");
         assert_eq!(checkpoint.stage_cuts.len(), 1);
-        assert_eq!(checkpoint.stage_cuts[0].cuts[0].cut_id, 202);
+        assert_eq!(checkpoint.stage_cuts[0].cuts[0].iteration, 5);
         assert_eq!(checkpoint.stage_bases.len(), 1);
         assert!(checkpoint.stage_states.is_empty());
     }
@@ -1182,10 +1240,16 @@ mod tests {
     fn rewrite_with_fewer_states_payloads_leaves_no_stale_states() {
         let tmp = tempfile::tempdir().unwrap();
         let a0 = [1.0_f64, 2.0, 3.0];
-        let cuts = [make_cut_record(101, 0, 1, &a0)];
-        let stage_cuts = [make_stage_cuts_payload(0, &cuts, &[0], 3)];
+        let cuts = [PolicyCutRecord {
+            scored: true,
+            ..make_cut_record(0, 1, &a0)
+        }];
         let states_data = [1.0_f64, 2.0, 3.0];
         let states_manifest = sample_manifest();
+        let stage_cuts = [StageCutsPayload {
+            entity_manifest: &states_manifest,
+            ..make_stage_cuts_payload(0, &cuts, 3)
+        }];
         let states_for = |stage_id: u32| StageStatesPayload {
             stage_id,
             node_id: i32::try_from(stage_id).unwrap(),
@@ -1193,6 +1257,12 @@ mod tests {
             count: 1,
             data: &states_data,
             entity_manifest: &states_manifest,
+            slots: &[0],
+        };
+        let metadata_with_states = |total_visited_states: u64| {
+            let mut metadata = make_metadata(1, 3);
+            metadata.producer.total_visited_states = total_visited_states;
+            metadata
         };
 
         let states_a = [states_for(0), states_for(1)];
@@ -1200,7 +1270,7 @@ mod tests {
             tmp.path(),
             &stage_cuts,
             &[],
-            &make_metadata(1, 3),
+            &metadata_with_states(2),
             &states_a,
         )
         .expect("write of checkpoint A must succeed");
@@ -1210,7 +1280,7 @@ mod tests {
             tmp.path(),
             &stage_cuts,
             &[],
-            &make_metadata(1, 3),
+            &metadata_with_states(1),
             &states_b,
         )
         .expect("rewrite with checkpoint B must succeed");
@@ -1273,14 +1343,14 @@ mod tests {
 
         // Write stages in non-ascending order — reader must sort.
         let c = [1.0_f64, 2.0];
-        let cuts2 = [make_cut_record(1, 0, 1, &c)];
-        let cuts0 = [make_cut_record(2, 0, 1, &c)];
-        let cuts1 = [make_cut_record(3, 0, 1, &c)];
+        let cuts2 = [make_cut_record(0, 1, &c)];
+        let cuts0 = [make_cut_record(0, 1, &c)];
+        let cuts1 = [make_cut_record(0, 1, &c)];
 
         let stage_cuts_payloads = [
-            make_stage_cuts_payload(2, &cuts2, &[0], 2),
-            make_stage_cuts_payload(0, &cuts0, &[0], 2),
-            make_stage_cuts_payload(1, &cuts1, &[0], 2),
+            make_stage_cuts_payload(2, &cuts2, 2),
+            make_stage_cuts_payload(0, &cuts0, 2),
+            make_stage_cuts_payload(1, &cuts1, 2),
         ];
         let metadata = make_metadata(3, 2);
 
@@ -1345,17 +1415,17 @@ mod tests {
         let c0 = [1.0_f64, 2.0];
         let c1 = [3.0_f64, 4.0];
         let c2 = [5.0_f64, 6.0];
-        let cuts_s0 = [make_cut_record(1, 0, 1, &c0), make_cut_record(2, 1, 1, &c0)];
+        let cuts_s0 = [make_cut_record(0, 1, &c0), make_cut_record(1, 1, &c0)];
         let cuts_s1 = [
-            make_cut_record(3, 0, 2, &c1),
-            make_cut_record(4, 1, 2, &c1),
-            make_cut_record(5, 2, 2, &c1),
+            make_cut_record(0, 2, &c1),
+            make_cut_record(1, 2, &c1),
+            make_cut_record(2, 2, &c1),
         ];
         let cuts_s2 = [
-            make_cut_record(6, 0, 3, &c2),
-            make_cut_record(7, 1, 3, &c2),
-            make_cut_record(8, 2, 3, &c2),
-            make_cut_record(9, 3, 3, &c2),
+            make_cut_record(0, 3, &c2),
+            make_cut_record(1, 3, &c2),
+            make_cut_record(2, 3, &c2),
+            make_cut_record(3, 3, &c2),
         ];
 
         let stage_cuts_payloads = [
@@ -1364,7 +1434,6 @@ mod tests {
                 capacity: 100,
                 warm_start_count: 10,
                 cuts: &cuts_s0,
-                active_cut_indices: &[0, 1],
                 populated_count: 2,
                 cost_scale_factor: 1_000_000.0,
                 ..stage_cuts_payload_defaults()
@@ -1375,7 +1444,6 @@ mod tests {
                 capacity: 100,
                 warm_start_count: 8,
                 cuts: &cuts_s1,
-                active_cut_indices: &[0, 1, 2],
                 populated_count: 3,
                 cost_scale_factor: 1_000_000.0,
                 ..stage_cuts_payload_defaults()
@@ -1386,7 +1454,6 @@ mod tests {
                 capacity: 100,
                 warm_start_count: 6,
                 cuts: &cuts_s2,
-                active_cut_indices: &[0, 1, 2, 3],
                 populated_count: 4,
                 cost_scale_factor: 1_000_000.0,
                 ..stage_cuts_payload_defaults()
@@ -1417,8 +1484,8 @@ mod tests {
     fn read_policy_checkpoint_rejects_stale_manifest_version_before_parsing_payloads() {
         let tmp = tempfile::tempdir().unwrap();
         let c0 = [1.0_f64];
-        let cuts_s0 = [make_cut_record(1, 0, 1, &c0)];
-        let stage_cuts = [make_stage_cuts_payload(0, &cuts_s0, &[0], 1)];
+        let cuts_s0 = [make_cut_record(0, 1, &c0)];
+        let stage_cuts = [make_stage_cuts_payload(0, &cuts_s0, 1)];
         write_policy_checkpoint(tmp.path(), &stage_cuts, &[], &make_metadata(1, 1), &[])
             .expect("write must succeed");
 
@@ -1447,8 +1514,8 @@ mod tests {
     fn read_policy_checkpoint_rejects_older_manifest_version() {
         let tmp = tempfile::tempdir().unwrap();
         let c0 = [1.0_f64];
-        let cuts_s0 = [make_cut_record(1, 0, 1, &c0)];
-        let stage_cuts = [make_stage_cuts_payload(0, &cuts_s0, &[0], 1)];
+        let cuts_s0 = [make_cut_record(0, 1, &c0)];
+        let stage_cuts = [make_stage_cuts_payload(0, &cuts_s0, 1)];
         write_policy_checkpoint(tmp.path(), &stage_cuts, &[], &make_metadata(1, 1), &[])
             .expect("write must succeed");
 
@@ -1501,11 +1568,11 @@ mod tests {
 
         // One payload per pool: pool 0 (root, stage 0) and pool 1 (shared leaf pool).
         let c = [1.0_f64];
-        let cuts_p0 = [make_cut_record(1, 0, 1, &c)];
-        let cuts_p1 = [make_cut_record(2, 0, 1, &c)];
+        let cuts_p0 = [make_cut_record(0, 1, &c)];
+        let cuts_p1 = [make_cut_record(0, 1, &c)];
         let stage_cuts = [
-            make_stage_cuts_payload(0, &cuts_p0, &[0], 1),
-            make_stage_cuts_payload(1, &cuts_p1, &[0], 1),
+            make_stage_cuts_payload(0, &cuts_p0, 1),
+            make_stage_cuts_payload(1, &cuts_p1, 1),
         ];
 
         let mut nodes = vec![ManifestNode {
@@ -1583,8 +1650,8 @@ mod tests {
 
     fn try_write_copy(dir: &Path, completed_iterations: u32) -> Result<(), OutputError> {
         let coefficients = [1.0_f64];
-        let cuts = [make_cut_record(1, 0, 1, &coefficients)];
-        let stage_cuts = [make_stage_cuts_payload(0, &cuts, &[0], 1)];
+        let cuts = [make_cut_record(0, 1, &coefficients)];
+        let stage_cuts = [make_stage_cuts_payload(0, &cuts, 1)];
         let mut metadata = make_metadata(1, 1);
         metadata.producer.completed_iterations = completed_iterations;
         write_policy_checkpoint(dir, &stage_cuts, &[make_basis_record(0)], &metadata, &[])
@@ -2211,5 +2278,255 @@ mod tests {
             "the earlier release's metadata.json must go with the replaced copy"
         );
         assert_eq!(leftover_siblings(&policy), Vec::<PathBuf>::new());
+    }
+
+    // ── structural checks on read ─────────────────────────────────────────────
+
+    /// One owned pool, its stored trial points and one node's bases: a
+    /// structurally valid version-4 checkpoint that each check test breaks in
+    /// one place.
+    struct StructureFixture {
+        pieces: Vec<OwnedPolicyCutRecord>,
+        capacity: u32,
+        populated_count: Option<u32>,
+        states_slots: Vec<u32>,
+        states_count: u32,
+        states_dimension: u32,
+        states_data: Vec<f64>,
+        entries: Vec<OwnedBasisEntry>,
+        total_visited_states: u64,
+        activity_counters: bool,
+    }
+
+    impl StructureFixture {
+        fn valid() -> Self {
+            let piece = |slot_index: u32, scored: bool| OwnedPolicyCutRecord {
+                slot_index,
+                iteration: 1,
+                coefficients: vec![1.0, 2.0, 3.0],
+                scored,
+                ..crate::test_support::owned_piece_defaults()
+            };
+            let entry = |scenario: u32, piece_row_slots: Vec<u32>| OwnedBasisEntry {
+                scenario,
+                column_status: vec![0, 1],
+                row_status: vec![1, 1, 0],
+                piece_row_slots,
+            };
+            Self {
+                pieces: vec![piece(0, true), piece(1, false), piece(3, true)],
+                capacity: 4,
+                populated_count: None,
+                states_slots: vec![0, 3],
+                states_count: 2,
+                states_dimension: 3,
+                states_data: vec![0.5; 6],
+                entries: vec![entry(0, vec![0]), entry(3, vec![0, 3])],
+                total_visited_states: 2,
+                activity_counters: false,
+            }
+        }
+
+        fn write_and_read(&self) -> Result<PolicyCheckpoint, OutputError> {
+            let tmp = tempfile::tempdir().unwrap();
+            let manifest = sample_manifest();
+            let pieces: Vec<PolicyCutRecord<'_>> = self
+                .pieces
+                .iter()
+                .map(|r| PolicyCutRecord {
+                    slot_index: r.slot_index,
+                    iteration: r.iteration,
+                    forward_pass_index: r.forward_pass_index,
+                    intercept: r.intercept,
+                    coefficients: &r.coefficients,
+                    is_active: r.is_active,
+                    scored: r.scored,
+                    active_count: r.active_count,
+                    last_active_iteration: r.last_active_iteration,
+                })
+                .collect();
+            let stage_cuts = [StageCutsPayload {
+                state_dimension: 3,
+                capacity: self.capacity,
+                cuts: &pieces,
+                populated_count: self
+                    .populated_count
+                    .unwrap_or(u32::try_from(pieces.len()).unwrap()),
+                entity_manifest: &manifest,
+                ..stage_cuts_payload_defaults()
+            }];
+            let entries: Vec<BasisEntry<'_>> = self
+                .entries
+                .iter()
+                .map(|e| BasisEntry {
+                    scenario: e.scenario,
+                    column_status: &e.column_status,
+                    row_status: &e.row_status,
+                    piece_row_slots: &e.piece_row_slots,
+                })
+                .collect();
+            let bases = [PolicyBasisRecord {
+                stage_id: 0,
+                iteration: 1,
+                entries: &entries,
+            }];
+            let states = [StageStatesPayload {
+                stage_id: 0,
+                node_id: 0,
+                state_dimension: self.states_dimension,
+                count: self.states_count,
+                data: &self.states_data,
+                entity_manifest: &manifest,
+                slots: &self.states_slots,
+            }];
+            let mut metadata = make_metadata(1, 3);
+            metadata.producer.total_visited_states = self.total_visited_states;
+            metadata.producer.activity_counters = self.activity_counters;
+            write_policy_checkpoint(tmp.path(), &stage_cuts, &bases, &metadata, &states)?;
+            read_policy_checkpoint(tmp.path())
+        }
+
+        /// Reads the fixture expecting the structural reject naming `file` and
+        /// carrying `fragment`.
+        fn assert_rejected(&self, file: &str, fragment: &str) {
+            let err = self
+                .write_and_read()
+                .expect_err("a structurally invalid checkpoint must be refused");
+            let msg = err.to_string();
+            assert!(
+                msg.contains(file) && msg.contains(fragment),
+                "must name {file} and the check ({fragment}): {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_structurally_valid_checkpoint_reads_back_every_version_four_field() {
+        let checkpoint = StructureFixture::valid()
+            .write_and_read()
+            .expect("the valid fixture must read");
+        let scored: Vec<bool> = checkpoint.stage_cuts[0]
+            .cuts
+            .iter()
+            .map(|r| r.scored)
+            .collect();
+        assert_eq!(scored, [true, false, true]);
+        assert_eq!(checkpoint.stage_states[0].slots, [0, 3]);
+        let scenarios: Vec<u32> = checkpoint.stage_bases[0]
+            .entries
+            .iter()
+            .map(|e| e.scenario)
+            .collect();
+        assert_eq!(scenarios, [0, 3]);
+        assert_eq!(checkpoint.stage_bases[0].entries[1].piece_row_slots, [0, 3]);
+        assert_eq!(checkpoint.metadata.producer.total_visited_states, 2);
+    }
+
+    #[test]
+    fn pieces_out_of_slot_order_are_refused() {
+        let mut fixture = StructureFixture::valid();
+        fixture.pieces.swap(1, 2);
+        fixture.assert_rejected("cuts/000.bin", "strictly ascending by slot_index");
+    }
+
+    #[test]
+    fn a_piece_at_or_above_the_capacity_is_refused() {
+        let mut fixture = StructureFixture::valid();
+        fixture.capacity = 3;
+        fixture.assert_rejected("cuts/000.bin", "not below capacity");
+    }
+
+    #[test]
+    fn a_populated_count_other_than_the_record_count_is_refused() {
+        let mut fixture = StructureFixture::valid();
+        fixture.populated_count = Some(4);
+        fixture.assert_rejected("cuts/000.bin", "populated_count");
+    }
+
+    #[test]
+    fn states_data_of_another_length_than_count_times_dimension_is_refused() {
+        let mut fixture = StructureFixture::valid();
+        fixture.states_data.pop();
+        fixture.assert_rejected("states/000.bin", "not count");
+    }
+
+    #[test]
+    fn states_with_a_slot_count_other_than_count_are_refused() {
+        let mut fixture = StructureFixture::valid();
+        fixture.states_slots.push(1);
+        fixture.assert_rejected("states/000.bin", "slots for count");
+    }
+
+    #[test]
+    fn states_slots_out_of_order_are_refused() {
+        let mut fixture = StructureFixture::valid();
+        fixture.states_slots.reverse();
+        fixture.assert_rejected("states/000.bin", "slots not strictly ascending");
+    }
+
+    #[test]
+    fn a_stored_state_without_a_scored_piece_is_refused() {
+        let mut fixture = StructureFixture::valid();
+        fixture.states_slots = vec![0, 1];
+        fixture.assert_rejected("states/000.bin", "slot 1 has no scored record");
+    }
+
+    #[test]
+    fn a_states_dimension_other_than_the_pool_manifest_length_is_refused() {
+        let mut fixture = StructureFixture::valid();
+        fixture.states_dimension = 2;
+        fixture.states_count = 3;
+        fixture.states_slots = vec![0, 1, 3];
+        fixture.pieces[1].scored = true;
+        fixture.total_visited_states = 3;
+        fixture.assert_rejected("states/000.bin", "entity-manifest length");
+    }
+
+    #[test]
+    fn basis_entries_out_of_scenario_order_are_refused() {
+        let mut fixture = StructureFixture::valid();
+        fixture.entries.reverse();
+        fixture.assert_rejected("basis/000.bin", "strictly ascending by scenario");
+    }
+
+    #[test]
+    fn a_basis_with_more_piece_row_slots_than_rows_is_refused() {
+        let mut fixture = StructureFixture::valid();
+        fixture.entries[1].piece_row_slots = vec![0, 1, 3, 3];
+        fixture.assert_rejected("basis/000.bin", "piece-row slots but only 3 rows");
+    }
+
+    #[test]
+    fn a_piece_row_slot_without_a_record_in_the_node_pool_is_refused() {
+        let mut fixture = StructureFixture::valid();
+        fixture.entries[1].piece_row_slots = vec![0, 2];
+        fixture.assert_rejected("basis/000.bin", "slot 2 has no record");
+    }
+
+    #[test]
+    fn a_total_visited_states_other_than_the_stored_rows_is_refused() {
+        let mut fixture = StructureFixture::valid();
+        fixture.total_visited_states = 5;
+        fixture.assert_rejected("manifest.bin", "total_visited_states");
+    }
+
+    #[test]
+    fn activity_counters_disagreeing_with_the_pieces_are_refused() {
+        let mut fixture = StructureFixture::valid();
+        fixture.pieces[0].active_count = Some(2);
+        fixture.pieces[0].last_active_iteration = Some(1);
+        fixture.assert_rejected("manifest.bin", "activity_counters is false");
+
+        for piece in &mut fixture.pieces {
+            piece.active_count = Some(0);
+            piece.last_active_iteration = Some(1);
+        }
+        fixture.activity_counters = true;
+        fixture
+            .write_and_read()
+            .expect("counters on every piece agree with the flag");
+
+        fixture.pieces[2].last_active_iteration = None;
+        fixture.assert_rejected("manifest.bin", "activity_counters is true");
     }
 }

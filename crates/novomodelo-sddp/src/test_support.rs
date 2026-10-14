@@ -1498,7 +1498,6 @@ pub fn write_synthetic_boundary(
         state_dimension,
         capacity: 1,
         cuts: &cuts,
-        active_cut_indices: &[0],
         populated_count: 1,
         entity_manifest: &[],
         cost_scale_factor: 1.0,

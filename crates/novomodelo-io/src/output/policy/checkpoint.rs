@@ -21,8 +21,8 @@ use super::codec::{
 };
 use super::records::{
     CheckpointManifest, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, OwnedPolicyBasisRecord,
-    PolicyBasisRecord, PolicyCheckpoint, StageCutsPayload, StageCutsReadResult, StageStatesPayload,
-    StageStatesReadResult, StateFamily, decode_slot_date,
+    OwnedPolicyCutRecord, PolicyBasisRecord, PolicyCheckpoint, StageCutsPayload,
+    StageCutsReadResult, StageStatesPayload, StageStatesReadResult, StateFamily, decode_slot_date,
 };
 
 fn is_well_formed_slot_date(value: i32) -> bool {
@@ -214,6 +214,209 @@ fn bin_file_name(id: u32) -> String {
     format!("{id:03}.bin")
 }
 
+fn structure_error(dir: &str, id: u32, detail: &str) -> OutputError {
+    OutputError::serialization(
+        "policy_checkpoint_structure",
+        format!("{dir}/{}: {detail}", bin_file_name(id)),
+    )
+}
+
+fn check_pool_records(pool: &StageCutsReadResult) -> Result<(), OutputError> {
+    let fail = |detail: String| structure_error("cuts", pool.stage_id, &detail);
+    if let Some(pair) = pool
+        .cuts
+        .windows(2)
+        .find(|pair| pair[0].slot_index >= pair[1].slot_index)
+    {
+        return Err(fail(format!(
+            "records not strictly ascending by slot_index: slot {} after slot {}",
+            pair[1].slot_index, pair[0].slot_index
+        )));
+    }
+    if let Some(record) = pool.cuts.iter().find(|r| r.slot_index >= pool.capacity) {
+        return Err(fail(format!(
+            "record slot_index {} not below capacity {}",
+            record.slot_index, pool.capacity
+        )));
+    }
+    if pool.populated_count as usize != pool.cuts.len() {
+        return Err(fail(format!(
+            "populated_count {} differs from its {} records",
+            pool.populated_count,
+            pool.cuts.len()
+        )));
+    }
+    Ok(())
+}
+
+/// The record at `slot` of the checkpoint's `pool`, if both exist. Records are
+/// strictly ascending by slot once [`check_pool_records`] passed.
+fn pool_record(
+    stage_cuts: &[StageCutsReadResult],
+    pool: u32,
+    slot: u32,
+) -> Option<&OwnedPolicyCutRecord> {
+    let pool = stage_cuts.iter().find(|p| p.stage_id == pool)?;
+    let index = pool
+        .cuts
+        .binary_search_by_key(&slot, |r| r.slot_index)
+        .ok()?;
+    pool.cuts.get(index)
+}
+
+fn check_pool_states(
+    states: &StageStatesReadResult,
+    stage_cuts: &[StageCutsReadResult],
+) -> Result<(), OutputError> {
+    let fail = |detail: String| structure_error("states", states.stage_id, &detail);
+    let expected = u64::from(states.count) * u64::from(states.state_dimension);
+    if states.data.len() as u64 != expected {
+        return Err(fail(format!(
+            "data holds {} values, not count {} times state_dimension {}",
+            states.data.len(),
+            states.count,
+            states.state_dimension
+        )));
+    }
+    if states.slots.len() != states.count as usize {
+        return Err(fail(format!(
+            "{} slots for count {}",
+            states.slots.len(),
+            states.count
+        )));
+    }
+    if let Some(&[previous, next]) = states.slots.windows(2).find(|pair| pair[0] >= pair[1]) {
+        return Err(fail(format!(
+            "slots not strictly ascending: slot {next} after slot {previous}"
+        )));
+    }
+    for &slot in &states.slots {
+        if !pool_record(stage_cuts, states.stage_id, slot).is_some_and(|r| r.scored) {
+            return Err(fail(format!(
+                "slot {slot} has no scored record in the pool's `cuts/` file"
+            )));
+        }
+    }
+    let manifest_len = stage_cuts
+        .iter()
+        .find(|p| p.stage_id == states.stage_id)
+        .map_or(0, |p| p.entity_manifest.len());
+    if states.state_dimension as usize != manifest_len {
+        return Err(fail(format!(
+            "state_dimension {} differs from the pool's entity-manifest length {manifest_len}",
+            states.state_dimension
+        )));
+    }
+    Ok(())
+}
+
+fn check_node_bases(
+    basis: &OwnedPolicyBasisRecord,
+    checkpoint: &PolicyCheckpoint,
+) -> Result<(), OutputError> {
+    let fail = |detail: String| structure_error("basis", basis.stage_id, &detail);
+    if let Some(pair) = basis
+        .entries
+        .windows(2)
+        .find(|pair| pair[0].scenario >= pair[1].scenario)
+    {
+        return Err(fail(format!(
+            "entries not strictly ascending by scenario: scenario {} after scenario {}",
+            pair[1].scenario, pair[0].scenario
+        )));
+    }
+    for entry in &basis.entries {
+        if entry.row_status.len() < entry.piece_row_slots.len() {
+            return Err(fail(format!(
+                "scenario {} has {} piece-row slots but only {} rows",
+                entry.scenario,
+                entry.piece_row_slots.len(),
+                entry.row_status.len()
+            )));
+        }
+        if entry.piece_row_slots.is_empty() {
+            continue;
+        }
+        let Some(node) = checkpoint
+            .metadata
+            .graph_manifest
+            .nodes
+            .get(basis.stage_id as usize)
+        else {
+            return Err(fail(
+                "names a node position the manifest's graph does not hold".to_string(),
+            ));
+        };
+        for &slot in &entry.piece_row_slots {
+            if pool_record(&checkpoint.stage_cuts, node.pool_id, slot).is_none() {
+                return Err(fail(format!(
+                    "scenario {} piece-row slot {slot} has no record in pool {}'s `cuts/` file",
+                    entry.scenario, node.pool_id
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_manifest_totals(checkpoint: &PolicyCheckpoint) -> Result<(), OutputError> {
+    let fail = |detail: String| {
+        OutputError::serialization(
+            "policy_checkpoint_structure",
+            format!("manifest.bin: {detail}"),
+        )
+    };
+    let producer = &checkpoint.metadata.producer;
+    let stored: u64 = checkpoint
+        .stage_states
+        .iter()
+        .map(|s| u64::from(s.count))
+        .sum();
+    if producer.total_visited_states != stored {
+        return Err(fail(format!(
+            "total_visited_states {} differs from the {stored} rows of the states files",
+            producer.total_visited_states
+        )));
+    }
+    for pool in &checkpoint.stage_cuts {
+        if let Some(record) = pool.cuts.iter().find(|r| {
+            (r.active_count.is_some() && r.last_active_iteration.is_some())
+                != producer.activity_counters
+        }) {
+            return Err(fail(format!(
+                "activity_counters is {} but pool {} slot {} carries active_count {:?} and \
+                 last_active_iteration {:?}",
+                producer.activity_counters,
+                pool.stage_id,
+                record.slot_index,
+                record.active_count,
+                record.last_active_iteration
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Validate that `checkpoint`'s payloads agree with each other and with the
+/// manifest, returning the first violation found.
+///
+/// # Errors
+///
+/// Returns [`OutputError::SerializationError`] naming the offending file and
+/// the check it fails.
+fn validate_checkpoint_structure(checkpoint: &PolicyCheckpoint) -> Result<(), OutputError> {
+    for pool in &checkpoint.stage_cuts {
+        check_pool_records(pool)?;
+    }
+    for states in &checkpoint.stage_states {
+        check_pool_states(states, &checkpoint.stage_cuts)?;
+    }
+    for basis in &checkpoint.stage_bases {
+        check_node_bases(basis, checkpoint)?;
+    }
+    check_manifest_totals(checkpoint)
+}
+
 /// Write a complete value-function artifact to `path`, replacing the copy
 /// there.
 ///
@@ -227,11 +430,11 @@ fn bin_file_name(id: u32) -> String {
 ///     001.bin
 ///     ...
 ///   basis/
-///     000.bin        (only when stage_bases is non-empty)
+///     000.bin        (one per node with a basis, keyed by node position)
 ///     001.bin
 ///     ...
 ///   states/          (only when stage_states is non-empty)
-///     000.bin
+///     000.bin        (one per pool that stores trial points, keyed by pool id)
 ///     ...
 /// ```
 ///
@@ -278,19 +481,22 @@ fn bin_file_name(id: u32) -> String {
 ///     write_policy_checkpoint, FORMAT_VERSION, GraphManifest, PolicyBasisRecord,
 ///     CheckpointManifest, PolicyCutRecord, ProducerBlock, SeasonManifest,
 ///     SOFTWARE_NAME, SOFTWARE_VERSION, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, StageCutsPayload,
+///     StateHistory,
 /// };
 /// use std::path::Path;
 ///
 /// # fn main() -> Result<(), novomodelo_io::OutputError> {
 /// let coefficients = [1.0_f64, 2.0, 3.0];
 /// let piece = PolicyCutRecord {
-///     cut_id: 1,
 ///     slot_index: 0,
 ///     iteration: 1,
 ///     forward_pass_index: 0,
 ///     intercept: 42.0,
 ///     coefficients: &coefficients,
 ///     is_active: true,
+///     scored: false,
+///     active_count: None,
+///     last_active_iteration: None,
 /// };
 /// let stage_cuts = [StageCutsPayload {
 ///     stage_id: 0,
@@ -298,7 +504,6 @@ fn bin_file_name(id: u32) -> String {
 ///     capacity: 100,
 ///     warm_start_count: 0,
 ///     cuts: &[piece],
-///     active_cut_indices: &[0],
 ///     populated_count: 1,
 ///     entity_manifest: &[],
 ///     cost_scale_factor: 1_000_000.0,
@@ -327,6 +532,9 @@ fn bin_file_name(id: u32) -> String {
 ///         training_block_mode_per_stage: vec![],
 ///         cost_scale_factor: None,
 ///         lower_bound_history: Vec::new(),
+///         state_history: StateHistory::None,
+///         activity_counters: false,
+///         basis_store_complete: false,
 ///     },
 ///     season_manifest: SeasonManifest::default(),
 /// };
@@ -744,8 +952,9 @@ pub fn resolve_policy_checkpoint(path: &Path) -> Result<ResolvedCheckpoint, Outp
 ///   missing `manifest.bin`, i.e. a pre-`manifest.bin` artifact, included).
 /// - [`OutputError::SerializationError`] — a `FlatBuffers` parse failure, a
 ///   missing `CBVF` identifier or a `format_version` mismatch (both enforced by
-///   [`deserialize_checkpoint_manifest`]), or a date-consistency violation
-///   caught by [`validate_checkpoint_dates`].
+///   [`deserialize_checkpoint_manifest`]), a date-consistency violation caught
+///   by [`validate_checkpoint_dates`], or a structural violation caught by
+///   [`validate_checkpoint_structure`].
 ///
 /// # Examples
 ///
@@ -801,5 +1010,6 @@ fn read_checkpoint_dir(path: &Path) -> Result<PolicyCheckpoint, OutputError> {
         stage_states,
     };
     validate_checkpoint_dates(&checkpoint)?;
+    validate_checkpoint_structure(&checkpoint)?;
     Ok(checkpoint)
 }

@@ -20,6 +20,7 @@ use novomodelo_io::BoundaryPolicy;
 use novomodelo_io::Config;
 use novomodelo_io::EntitySlot;
 use novomodelo_io::GraphManifest;
+use novomodelo_io::OwnedBasisEntry;
 use novomodelo_io::OwnedPolicyBasisRecord;
 use novomodelo_io::OwnedPolicyCutRecord;
 use novomodelo_io::PolicyCheckpoint;
@@ -62,41 +63,42 @@ use std::path::{Path, PathBuf};
 ///
 /// Reserved seam: this repo's own front ends never reach the `None`/Legacy
 /// branch — both the boundary path ([`load_boundary_cuts`]) and the [`FullFcf`]
-/// path ([`checkpoint_terminal_cost_scale_factor`]) hard-reject a `None`
-/// `cost_scale_factor` before rescale, so [`rescale_cut_records_for_load`]'s
-/// Legacy branch is reachable only by a direct library caller.
+/// path ([`check_full_fcf_load`](crate::policy::full_fcf_load::check_full_fcf_load)) reject a pool
+/// without a factor through [`pool_cost_scale_factor`] before converting, so
+/// [`rescale_cut_records_for_load`]'s Legacy branch is reachable only by a
+/// direct library caller.
 pub const LEGACY_COST_SCALE_FACTOR: f64 = 1_000_000.0;
 
-/// Rescale one stage's cut records from their at-rest
-/// representation into the LOADING study's internal scaled cost space.
+/// Convert one pool's cut records from the scale they were written in into the
+/// LOADING study's scaled cost space.
 ///
-/// - **Marked** (`source_cost_scale_factor: Some(s)`): the checkpoint holds
-///   canonical currency units — export multiplied every value by the writing
-///   study's own `s` ([`crate::policy_export::scale_cut_records_for_export`]).
-///   Every value here is divided by `loading_cost_scale_factor`, UNCONDITIONALLY
-///   — even when `s` equals `loading_cost_scale_factor` — since the file
-///   already carries one export-side rounding; a second division is the
-///   accepted same-factor ULP drift, never special-cased
-///   away.
-/// - **Legacy** (`None`): the checkpoint holds the writing study's OWN internal
-///   scaled values under [`LEGACY_COST_SCALE_FACTOR`] — legacy files carry
-///   no export-side multiply. When `loading_cost_scale_factor ==
-///   LEGACY_COST_SCALE_FACTOR` (the overwhelmingly common case: every existing
-///   policy directory read at the still-default factor) this is an exact,
-///   bit-identical no-op — a correctness requirement, not an optimization: a
-///   legacy checkpoint at the default factor must load bit-identically, never
-///   re-baselined. Otherwise every value is
-///   multiplied by `LEGACY_COST_SCALE_FACTOR / loading_cost_scale_factor`.
+/// - **Marked** (`source_cost_scale_factor: Some(s)`): the records hold the
+///   writing study's scaled values, at scale `s`. When `s` is bit-equal to
+///   `loading_cost_scale_factor` they are already in the loading study's units
+///   and are returned unchanged, so a same-factor reload is exact. Otherwise
+///   every value becomes `(value * s) / loading_cost_scale_factor`, evaluated
+///   left to right: `value * (s / loading)` is the wrong-but-compiling
+///   alternative, which rounds the ratio first and moves the bits of a load
+///   whose source is marked `1.0`.
+/// - **Legacy** (`None`): the records hold the writing study's internal scaled
+///   values under [`LEGACY_COST_SCALE_FACTOR`]. When `loading_cost_scale_factor
+///   == LEGACY_COST_SCALE_FACTOR` this is an exact, bit-identical no-op;
+///   otherwise every value is multiplied by
+///   `LEGACY_COST_SCALE_FACTOR / loading_cost_scale_factor`.
 pub(crate) fn rescale_cut_records_for_load(
     records: &mut [OwnedPolicyCutRecord],
     source_cost_scale_factor: Option<f64>,
     loading_cost_scale_factor: f64,
 ) {
-    if source_cost_scale_factor.is_some() {
+    if let Some(source) = source_cost_scale_factor {
+        // `to_bits`, not `==`: `0.0 == -0.0` and `NaN != NaN`.
+        if source.to_bits() == loading_cost_scale_factor.to_bits() {
+            return;
+        }
         for cut in records {
-            cut.intercept /= loading_cost_scale_factor;
+            cut.intercept = (cut.intercept * source) / loading_cost_scale_factor;
             for c in &mut cut.coefficients {
-                *c /= loading_cost_scale_factor;
+                *c = (*c * source) / loading_cost_scale_factor;
             }
         }
         return;
@@ -114,8 +116,9 @@ pub(crate) fn rescale_cut_records_for_load(
     }
 }
 
-/// [`rescale_cut_records_for_load`] applied to every stage of a full policy
-/// checkpoint — the [`FullFcf`] load path.
+/// [`rescale_cut_records_for_load`] applied to every pool of a checkpoint with
+/// one given source factor — the entry for a direct library caller; the load
+/// paths convert each pool by its own factor ([`pool_cost_scale_factor`]).
 pub fn rescale_checkpoint_cuts_for_load(
     stage_cuts: &mut [StageCutsReadResult],
     source_cost_scale_factor: Option<f64>,
@@ -130,29 +133,47 @@ pub fn rescale_checkpoint_cuts_for_load(
     }
 }
 
-/// The terminal pool's (`stage_cuts.last()`) `cost_scale_factor` — the
-/// [`FullFcf`] load path's mirror of [`load_boundary_cuts`]'s own per-pool
-/// read, resolving the source cost scale to feed
-/// [`rescale_checkpoint_cuts_for_load`].
+/// The factor naming the scale of `pool`'s cut values: its own
+/// `cost_scale_factor`.
 ///
 /// # Errors
 ///
-/// Returns [`SddpError::Validation`] if `checkpoint.stage_cuts` is empty or
-/// the terminal pool's `cost_scale_factor` reads `None`.
-pub fn checkpoint_terminal_cost_scale_factor(
-    checkpoint: &PolicyCheckpoint,
-) -> Result<f64, SddpError> {
-    checkpoint
-        .stage_cuts
-        .last()
-        .and_then(|stage| stage.cost_scale_factor)
-        .ok_or_else(|| {
-            SddpError::Validation(format!(
-                "policy checkpoint predates self-describing cuts (its resolved \
-                 cuts/<pool>.bin carries no cost_scale_factor); {remedy}",
-                remedy = policy_checkpoint_remedy()
-            ))
-        })
+/// [`SddpError::Validation`] naming the pool when the factor is absent (a
+/// checkpoint that predates self-describing cuts), not finite, or not
+/// positive.
+pub fn pool_cost_scale_factor(pool: &StageCutsReadResult) -> Result<f64, SddpError> {
+    match pool.cost_scale_factor {
+        None => Err(SddpError::Validation(format!(
+            "policy checkpoint predates self-describing cuts (its cuts/<pool>.bin for pool {} \
+             carries no cost_scale_factor); {remedy}",
+            pool.stage_id,
+            remedy = policy_checkpoint_remedy()
+        ))),
+        Some(factor) if factor.is_finite() && factor > 0.0 => Ok(factor),
+        Some(factor) => Err(SddpError::Validation(format!(
+            "policy checkpoint pool {} records cost_scale_factor {factor}, which is not a \
+             finite positive number; {remedy}",
+            pool.stage_id,
+            remedy = policy_checkpoint_remedy()
+        ))),
+    }
+}
+
+/// Convert every pool of a checkpoint into the loading study's scaled cost
+/// space, each by its own factor ([`pool_cost_scale_factor`]).
+///
+/// # Errors
+///
+/// The first pool's [`pool_cost_scale_factor`] error, in pool order.
+pub(crate) fn convert_checkpoint_cuts_for_load(
+    stage_cuts: &mut [StageCutsReadResult],
+    loading_cost_scale_factor: f64,
+) -> Result<(), SddpError> {
+    for pool in stage_cuts {
+        let source = pool_cost_scale_factor(pool)?;
+        rescale_cut_records_for_load(&mut pool.cuts, Some(source), loading_cost_scale_factor);
+    }
+    Ok(())
 }
 
 /// Per-side state layout fed to [`validate_policy_load`]: one manifest for the
@@ -504,11 +525,11 @@ pub fn build_basis_cache_from_checkpoint(
 /// The basic count is checked because `reconstruct_basis` assumes it and
 /// aborts on a deficit instead of repairing it.
 fn admit_stored_basis(
-    record: &OwnedPolicyBasisRecord,
+    entry: &OwnedBasisEntry,
     template_cols: usize,
     template_rows: usize,
 ) -> Result<(), StoredBasisMisfit> {
-    let found_cols = record.column_status.len();
+    let found_cols = entry.column_status.len();
     if found_cols != template_cols {
         return Err(StoredBasisMisfit::Columns {
             expected: template_cols,
@@ -516,8 +537,8 @@ fn admit_stored_basis(
         });
     }
 
-    let found_rows = record.row_status.len();
-    let expected_rows = template_rows.saturating_add(record.num_cut_rows as usize);
+    let found_rows = entry.row_status.len();
+    let expected_rows = template_rows.saturating_add(entry.piece_row_slots.len());
     if found_rows != expected_rows {
         return Err(StoredBasisMisfit::Rows {
             expected: expected_rows,
@@ -525,10 +546,10 @@ fn admit_stored_basis(
         });
     }
 
-    let basic_count = record
+    let basic_count = entry
         .column_status
         .iter()
-        .chain(&record.row_status)
+        .chain(&entry.row_status)
         .filter(|&&code| BasisStatus::from_discriminant_code(code) == BasisStatus::Basic)
         .count();
     if basic_count != found_rows {
@@ -542,7 +563,8 @@ fn admit_stored_basis(
 
 /// Each basis record is keyed by its own node ordinal (its `stage_id`), so
 /// leaves sharing a pool land in distinct node slots — no `>= num_stages` drop,
-/// no cross-node collision. `u8` status codes decode via
+/// no cross-node collision. Of a record's entries the one with the lowest
+/// `scenario` is used; a record with none is skipped and not counted. `u8` status codes decode via
 /// `from_discriminant_code`, the mirror of `convert_basis_cache`'s export-side
 /// `to_discriminant_code`; a pre-existing checkpoint (bytes `0..=4`) decodes
 /// identically, since that range means the same in the canonical and `HiGHS`
@@ -556,7 +578,7 @@ fn admit_stored_basis(
 /// # Cut-slot reconstruction
 ///
 /// `base_row_count` is taken from `node_dims[pos]` — the STUDY's own template row
-/// count — never from the record's `row_status.len() - num_cut_rows`. The
+/// count — never from the entry's `row_status.len() - piece_row_slots.len()`. The
 /// trailing `k = row_status.len() - base_row_count` rows are matched to pool slot
 /// identity only when a node's OWN pool's [`StageCutsReadResult`]
 /// (`sc.stage_id == node_pools[node]`, never the record whose pool id happens to
@@ -597,10 +619,13 @@ fn build_basis_cache_for_nodes(
         if node.0 >= n_nodes {
             continue;
         }
+        let Some(entry) = record.entries.iter().min_by_key(|e| e.scenario) else {
+            continue;
+        };
 
         total += 1;
         let (expected_cols, expected_template_rows) = node_dims[node.0];
-        if let Err(reason) = admit_stored_basis(record, expected_cols, expected_template_rows) {
+        if let Err(reason) = admit_stored_basis(entry, expected_cols, expected_template_rows) {
             count += 1;
             if first.as_ref().is_none_or(|(lowest, _)| node.0 < lowest.0) {
                 first = Some((node, reason));
@@ -608,12 +633,12 @@ fn build_basis_cache_for_nodes(
             continue;
         }
 
-        let col_status: Vec<BasisStatus> = record
+        let col_status: Vec<BasisStatus> = entry
             .column_status
             .iter()
             .map(|&c| BasisStatus::from_discriminant_code(c))
             .collect();
-        let mut row_status: Vec<BasisStatus> = record
+        let mut row_status: Vec<BasisStatus> = entry
             .row_status
             .iter()
             .map(|&r| BasisStatus::from_discriminant_code(r))
@@ -1262,8 +1287,9 @@ pub fn load_boundary_cuts(
 
     let stage_result = select_boundary_pool(&checkpoint, boundary_path, boundary_date)?;
 
-    let Some(source_cost_scale_factor) = stage_result.cost_scale_factor else {
-        return Err(boundary_predates_self_describing_cuts(boundary_path));
+    let source_cost_scale_factor = match stage_result.cost_scale_factor {
+        None => return Err(boundary_predates_self_describing_cuts(boundary_path)),
+        Some(_) => pool_cost_scale_factor(stage_result)?,
     };
 
     if stage_result.node_id == STAGE_CUTS_NODE_ID_SENTINEL {
@@ -1750,7 +1776,6 @@ mod tests {
                     .iter()
                     .enumerate()
                     .map(|(i, &intercept)| novomodelo_io::PolicyCutRecord {
-                        cut_id: i as u64,
                         slot_index: i as u32,
                         iteration: i as u32,
                         intercept,
@@ -1762,17 +1787,12 @@ mod tests {
             })
             .collect();
 
-        let active_indices: Vec<Vec<u32>> = (0..n_stages)
-            .map(|_| (0..n_cuts as u32).collect())
-            .collect();
-
         let payloads: Vec<StageCutsPayload<'_>> = (0..n_stages as usize)
             .map(|s| StageCutsPayload {
                 stage_id: s as u32,
                 state_dimension,
                 capacity: n_cuts as u32,
                 cuts: &cut_records[s],
-                active_cut_indices: &active_indices[s],
                 populated_count: n_cuts as u32,
                 entity_manifest: manifest,
                 cost_scale_factor: 1.0,
@@ -1836,7 +1856,6 @@ mod tests {
             state_dimension,
             capacity: 1,
             cuts: &cuts,
-            active_cut_indices: &[0],
             populated_count: 1,
             entity_manifest: &[],
             cost_scale_factor: 1.0,
@@ -1852,11 +1871,11 @@ mod tests {
         novomodelo_io::write_policy_checkpoint(dir, &[payload], &[], &metadata, &[]).unwrap();
     }
 
-    /// Behavioral: [`load_boundary_cuts`] on a MARKED checkpoint (canonical
-    /// currency units at rest) loaded at a series of differing
-    /// `loading_cost_scale_factor` values recovers `at_rest / loading_factor`
-    /// for every value, matching [`rescale_cut_records_for_load`]'s contract at
-    /// the file-I/O boundary — not just as a pure-function unit test.
+    /// Behavioral: [`load_boundary_cuts`] on a checkpoint marked `1.0` loaded
+    /// at a series of differing `loading_cost_scale_factor` values recovers
+    /// `at_rest * 1.0 / loading_factor` for every value, matching
+    /// [`rescale_cut_records_for_load`]'s contract at the file-I/O boundary —
+    /// not just as a pure-function unit test.
     #[test]
     fn load_boundary_cuts_across_differing_loading_factors() {
         let at_rest_intercept = 1_234_000.0;
@@ -1896,12 +1915,10 @@ mod tests {
     // ── rescale_cut_records_for_load unit tests ──────────────────────────────
 
     use super::{LEGACY_COST_SCALE_FACTOR, rescale_cut_records_for_load};
-    use crate::policy_export::scale_cut_records_for_export;
     use novomodelo_io::OwnedPolicyCutRecord;
 
     fn owned_cut(intercept: f64, coefficients: Vec<f64>) -> OwnedPolicyCutRecord {
         OwnedPolicyCutRecord {
-            cut_id: 1,
             slot_index: 0,
             iteration: 0,
             intercept,
@@ -1955,134 +1972,157 @@ mod tests {
         assert!((records[0].coefficients[1] - 4.0 * ratio).abs() < 1e-9);
     }
 
-    /// A marked checkpoint (`Some(s)`) is ALWAYS divided by
-    /// `loading_cost_scale_factor` — even when `s` equals the loading factor —
-    /// never special-cased to a no-op. The `source_cost_scale_factor` VALUE is
-    /// irrelevant once the file holds canonical currency units; only its
-    /// presence (marked vs. legacy) selects the code path.
+    /// A marked checkpoint converts by its own factor: written at the loading
+    /// factor it loads its written bits; written at another factor its values
+    /// become `value * source / loading`, so the two loads differ.
     #[test]
-    fn marked_checkpoint_always_divides_regardless_of_source_value() {
+    fn a_marked_checkpoint_converts_by_its_own_factor() {
         let loading_factor = 1_000_000.0;
-        let mut with_matching_source = vec![owned_cut(100.0, vec![50.0])];
-        let mut with_different_source = vec![owned_cut(100.0, vec![50.0])];
+        let written = owned_cut(100.0, vec![50.0, -0.1]);
+        let mut at_the_loading_factor = vec![written.clone()];
+        let mut at_another_factor = vec![written.clone()];
 
         rescale_cut_records_for_load(
-            &mut with_matching_source,
+            &mut at_the_loading_factor,
             Some(loading_factor),
             loading_factor,
         );
-        rescale_cut_records_for_load(&mut with_different_source, Some(42.0), loading_factor);
+        rescale_cut_records_for_load(&mut at_another_factor, Some(42.0), loading_factor);
 
         assert_eq!(
-            with_matching_source[0].intercept.to_bits(),
-            with_different_source[0].intercept.to_bits(),
-            "the source factor's VALUE must not affect the loaded result"
+            bits_of(&at_the_loading_factor[0]),
+            bits_of(&written),
+            "a load at the writing factor returns the written bits"
         );
-        assert!((with_matching_source[0].intercept - 100.0 / loading_factor).abs() < 1e-12);
+        assert_ne!(
+            at_another_factor[0].intercept.to_bits(),
+            at_the_loading_factor[0].intercept.to_bits(),
+            "the source factor's value decides the conversion"
+        );
+        assert_eq!(
+            at_another_factor[0].intercept.to_bits(),
+            ((100.0 * 42.0) / loading_factor).to_bits()
+        );
     }
 
-    /// Export/load transform property: export (multiply by `S`) then load at
-    /// the SAME factor (divide by `S`) recovers the original value within 1
-    /// ULP per value — the accepted same-factor round-trip drift (1e6 is not a
-    /// power of two, so two roundings do not cancel exactly).
+    /// A cross-factor load evaluates `(value * source) / loading`, multiplying
+    /// first. `value * (source / loading)` rounds the ratio first and lands on
+    /// other bits for at least one of these values, which the guard asserts.
     #[test]
-    fn export_then_load_same_factor_round_trips_within_one_ulp() {
-        let cost_scale_factor = 1_000_000.0;
-        let originals = [vec![1.0_f64, -3.5, 1e-6, 123_456.789]];
-        let intercepts = [7.25_f64];
+    fn a_cross_factor_load_multiplies_by_the_source_before_dividing() {
+        for (source, loading) in [(1.0, 1_000_000.0), (500_000.0, 2_500_000.0)] {
+            let values = [0.1, 123_456.789, 7.25, -3.5, 2.2];
+            assert!(
+                values
+                    .iter()
+                    .any(|v| (v * source) / loading != v * (source / loading)),
+                "fixture: the two evaluation orders must differ at ({source}, {loading})"
+            );
+            let mut records = vec![owned_cut(values[0], values[1..].to_vec())];
+            rescale_cut_records_for_load(&mut records, Some(source), loading);
 
-        let internal_records: Vec<Vec<novomodelo_io::PolicyCutRecord<'_>>> = vec![
-            originals
+            let expected: Vec<u64> = values
                 .iter()
-                .zip(&intercepts)
-                .map(|(coeffs, &intercept)| novomodelo_io::PolicyCutRecord {
-                    slot_index: 0,
-                    iteration: 0,
-                    intercept,
-                    coefficients: coeffs,
-                    is_active: true,
-                    ..piece_defaults()
-                })
-                .collect(),
-        ];
+                .map(|v| ((v * source) / loading).to_bits())
+                .collect();
+            assert_eq!(bits_of(&records[0]), expected);
+        }
+    }
 
-        let exported = scale_cut_records_for_export(&internal_records, cost_scale_factor);
-        let mut round_tripped = exported[0].clone();
+    /// A pool's values written as held in memory and loaded at the same factor
+    /// come back bit for bit. These two values do not survive a multiply then a
+    /// divide by `1e6`, which the guard asserts.
+    #[test]
+    fn export_then_load_same_factor_round_trips_bit_for_bit() {
+        use crate::cut::FutureCostFunction;
+        use crate::policy_export::build_stage_cut_records;
+
+        let cost_scale_factor = 1_000_000.0;
+        let intercept = -957.020_589_468_182_3;
+        let coefficients = [-758.220_080_388_387_1, 1.0, -3.5, 1e-6, 123_456.789];
+        assert!(
+            [intercept, coefficients[0]]
+                .iter()
+                .all(|v| (v * cost_scale_factor) / cost_scale_factor != *v),
+            "fixture: multiplying then dividing by the factor must move these values"
+        );
+        let mut fcf = FutureCostFunction::new(1, coefficients.len(), 1, 2, &[0]);
+        fcf.pools[0].add_cut(NodeId(0), 0, 0, intercept, &coefficients);
+
+        let exported = build_stage_cut_records(&fcf).unwrap();
+        let mut round_tripped: Vec<OwnedPolicyCutRecord> = exported[0]
+            .iter()
+            .map(|r| OwnedPolicyCutRecord {
+                slot_index: r.slot_index,
+                iteration: r.iteration,
+                forward_pass_index: r.forward_pass_index,
+                intercept: r.intercept,
+                coefficients: r.coefficients.to_vec(),
+                is_active: r.is_active,
+                scored: r.scored,
+                active_count: r.active_count,
+                last_active_iteration: r.last_active_iteration,
+            })
+            .collect();
         rescale_cut_records_for_load(
             &mut round_tripped,
             Some(cost_scale_factor),
             cost_scale_factor,
         );
 
-        let original_intercept = intercepts[0];
-        let ulp_intercept = (round_tripped[0].intercept - original_intercept).abs();
-        assert!(
-            ulp_intercept <= original_intercept.abs() * f64::EPSILON * 4.0,
-            "intercept round-trip drift {ulp_intercept} exceeds a few ULP of {original_intercept}"
-        );
-        for (rt, orig) in round_tripped[0].coefficients.iter().zip(&originals[0]) {
-            let drift = (rt - orig).abs();
-            let tol = (orig.abs().max(1.0)) * f64::EPSILON * 4.0;
-            assert!(
-                drift <= tol,
-                "coefficient round-trip drift {drift} exceeds tolerance {tol} for original {orig}"
-            );
-        }
+        let mut expected = vec![intercept.to_bits()];
+        expected.extend(coefficients.iter().map(|c| c.to_bits()));
+        assert_eq!(bits_of(&round_tripped[0]), expected);
     }
 
-    /// Export/load transform property: cross-factor linearity — exporting at
-    /// `S_train` then loading at `S_prime` recovers `original * (S_train /
-    /// S_prime)` (the net two-rounding transform), for `S_prime != S_train`.
+    /// A pool written at `s_train` and loaded at `s_prime` loads
+    /// `value * s_train / s_prime`, linear in each value.
     #[test]
     fn export_then_load_cross_factor_is_linear() {
         let s_train = 1_000_000.0;
         let s_prime = 4_000_000.0;
-        let original = [vec![2.0_f64, -0.5]];
+        let original = vec![2.0_f64, -0.5];
         let intercept = 9.0_f64;
 
-        let internal_records: Vec<Vec<novomodelo_io::PolicyCutRecord<'_>>> =
-            vec![vec![novomodelo_io::PolicyCutRecord {
-                slot_index: 0,
-                iteration: 0,
-                intercept,
-                coefficients: &original[0],
-                is_active: true,
-                ..piece_defaults()
-            }]];
-
-        let exported = scale_cut_records_for_export(&internal_records, s_train);
-        let mut loaded = exported[0].clone();
+        let mut loaded = vec![owned_cut(intercept, original.clone())];
         rescale_cut_records_for_load(&mut loaded, Some(s_train), s_prime);
 
         let ratio = s_train / s_prime;
-        assert!((loaded[0].intercept - intercept * ratio).abs() < 1e-9);
-        for (l, o) in loaded[0].coefficients.iter().zip(&original[0]) {
-            assert!((l - o * ratio).abs() < 1e-9);
+        assert!((loaded[0].intercept - intercept * ratio).abs() < 1e-12);
+        for (l, o) in loaded[0].coefficients.iter().zip(&original) {
+            assert!((l - o * ratio).abs() < 1e-12);
         }
     }
 
-    // ── checkpoint_terminal_cost_scale_factor unit tests ─────────────────────
+    fn bits_of(record: &OwnedPolicyCutRecord) -> Vec<u64> {
+        std::iter::once(record.intercept)
+            .chain(record.coefficients.iter().copied())
+            .map(f64::to_bits)
+            .collect()
+    }
 
-    use super::checkpoint_terminal_cost_scale_factor;
+    // ── pool_cost_scale_factor unit tests ─────────────────────────────────────
 
-    /// [`checkpoint_terminal_cost_scale_factor`] reads the terminal pool's own
-    /// `cost_scale_factor` from the on-disk `.bin`, never
-    /// `metadata.producer.cost_scale_factor` — `write_checkpoint_with_scale`
-    /// marks only the pool, leaving `producer_block`'s own factor at `None`, so
-    /// a correct read proves the source.
+    use super::{convert_checkpoint_cuts_for_load, pool_cost_scale_factor};
+
+    /// [`pool_cost_scale_factor`] reads each pool's own `cost_scale_factor`
+    /// from the on-disk `.bin`, never `metadata.producer.cost_scale_factor` —
+    /// `write_checkpoint_with_scale` marks only the pool, leaving
+    /// `producer_block`'s own factor at `None`, so a correct read proves the
+    /// source.
     #[test]
     fn full_fcf_source_cost_scale_reads_terminal_pool_from_bin() {
         let tmp = tempfile::tempdir().unwrap();
         write_checkpoint_with_scale(tmp.path(), 0, 1.0, &[1.0]);
         let checkpoint = novomodelo_io::read_policy_checkpoint(tmp.path()).unwrap();
 
-        let resolved = checkpoint_terminal_cost_scale_factor(&checkpoint).unwrap();
+        let resolved = pool_cost_scale_factor(checkpoint.stage_cuts.last().unwrap()).unwrap();
 
         assert_eq!(resolved, 1.0);
     }
 
-    /// A checkpoint whose terminal pool's `cost_scale_factor` reads `None` (a
-    /// pre-self-describing `.bin`) rejects — the [`FullFcf`] mirror of
+    /// A pool whose `cost_scale_factor` reads `None` (a pre-self-describing
+    /// `.bin`) rejects, naming the pool — the [`FullFcf`] mirror of
     /// [`load_boundary_cuts`]'s own clean-break reject.
     #[test]
     fn full_fcf_source_cost_scale_rejects_pre_self_describing() {
@@ -2097,12 +2137,59 @@ mod tests {
             stage_states: Vec::new(),
         };
 
-        let msg = checkpoint_terminal_cost_scale_factor(&checkpoint)
+        let msg = pool_cost_scale_factor(&checkpoint.stage_cuts[0])
             .unwrap_err()
             .to_string();
 
         assert!(msg.contains("predates self-describing cuts"), "{msg}");
+        assert!(msg.contains("pool 0"), "{msg}");
         assert!(msg.ends_with(&policy_checkpoint_remedy()), "{msg}");
+    }
+
+    /// A factor of `0`, a negative one or a NaN cannot name a scale: each is
+    /// refused naming the pool, never loaded.
+    #[test]
+    fn a_pool_factor_that_is_not_finite_and_positive_is_refused() {
+        for factor in [0.0, -0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let mut pool = pool_cuts(3, &[]);
+            pool.cost_scale_factor = Some(factor);
+            let msg = pool_cost_scale_factor(&pool).unwrap_err().to_string();
+            assert!(
+                msg.contains("pool 3") && msg.contains("not a finite positive number"),
+                "factor {factor}: {msg}"
+            );
+        }
+    }
+
+    /// Every pool of a full load converts by its own factor: a pool written at
+    /// the loading factor keeps its bits while a pool written at another one is
+    /// converted.
+    #[test]
+    fn a_full_load_converts_each_pool_by_its_own_factor() {
+        let loading_factor = 1_000_000.0;
+        let written = owned_cut(-957.020_589_468_182_3, vec![0.1]);
+        let mut pools = vec![pool_cuts(0, &[]), pool_cuts(1, &[])];
+        for (pool, factor) in pools.iter_mut().zip([loading_factor, 1.0]) {
+            pool.cuts = vec![written.clone()];
+            pool.cost_scale_factor = Some(factor);
+        }
+
+        convert_checkpoint_cuts_for_load(&mut pools, loading_factor).unwrap();
+
+        assert_eq!(bits_of(&pools[0].cuts[0]), bits_of(&written));
+        assert_eq!(
+            bits_of(&pools[1].cuts[0]),
+            [
+                (written.intercept / loading_factor).to_bits(),
+                (0.1 / loading_factor).to_bits()
+            ]
+        );
+
+        pools[1].cost_scale_factor = None;
+        let msg = convert_checkpoint_cuts_for_load(&mut pools, loading_factor)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("pool 1"), "{msg}");
     }
 
     // ── load_boundary_cuts tests ──────────────────────────────────────────────
@@ -3143,7 +3230,6 @@ mod tests {
                     .iter()
                     .enumerate()
                     .map(|(i, &intercept)| novomodelo_io::PolicyCutRecord {
-                        cut_id: i as u64,
                         slot_index: i as u32,
                         iteration: 0,
                         intercept,
@@ -3154,21 +3240,15 @@ mod tests {
                     .collect()
             })
             .collect();
-        let active_per_pool: Vec<Vec<u32>> = pools
-            .iter()
-            .map(|(_, _, intercepts)| (0..intercepts.len() as u32).collect())
-            .collect();
         let payloads: Vec<StageCutsPayload<'_>> = pools
             .iter()
             .zip(&cuts_per_pool)
-            .zip(&active_per_pool)
             .map(
-                |(((pool_id, priced_state_date, intercepts), cuts), active)| StageCutsPayload {
+                |((pool_id, priced_state_date, intercepts), cuts)| StageCutsPayload {
                     stage_id: *pool_id,
                     state_dimension: 1,
                     capacity: intercepts.len() as u32,
                     cuts,
-                    active_cut_indices: active,
                     populated_count: intercepts.len() as u32,
                     entity_manifest: &[],
                     cost_scale_factor: 1.0,
@@ -3925,7 +4005,9 @@ mod tests {
     /// decode via `build_basis_cache_for_nodes`.
     #[test]
     fn basis_status_round_trips_through_export_and_load_for_every_variant() {
-        use novomodelo_io::{PolicyBasisRecord, deserialize_stage_basis, serialize_stage_basis};
+        use novomodelo_io::{
+            BasisEntry, PolicyBasisRecord, deserialize_stage_basis, serialize_stage_basis,
+        };
         use novomodelo_solver::{Basis, BasisStatus};
 
         use super::build_basis_cache_for_nodes;
@@ -3977,9 +4059,12 @@ mod tests {
         let record = PolicyBasisRecord {
             stage_id: 0,
             iteration: 1,
-            column_status: &col_u8[0],
-            row_status: &row_u8[0],
-            num_cut_rows: 0,
+            entries: &[BasisEntry {
+                scenario: 0,
+                column_status: &col_u8[0],
+                row_status: &row_u8[0],
+                piece_row_slots: &[],
+            }],
         };
         let buf = serialize_stage_basis(&record);
         let owned = deserialize_stage_basis(&buf).expect("codec round-trip must succeed");
@@ -4013,7 +4098,9 @@ mod tests {
     /// and `HiGHS` code spaces.
     #[test]
     fn pre_existing_checkpoint_bytes_load_to_highs_space_statuses() {
-        use novomodelo_io::{PolicyBasisRecord, deserialize_stage_basis, serialize_stage_basis};
+        use novomodelo_io::{
+            BasisEntry, PolicyBasisRecord, deserialize_stage_basis, serialize_stage_basis,
+        };
         use novomodelo_solver::BasisStatus;
 
         use super::build_basis_cache_for_nodes;
@@ -4026,9 +4113,12 @@ mod tests {
         let record = PolicyBasisRecord {
             stage_id: 0,
             iteration: 1,
-            column_status: &col_bytes,
-            row_status: &row_bytes,
-            num_cut_rows: 0,
+            entries: &[BasisEntry {
+                scenario: 0,
+                column_status: &col_bytes,
+                row_status: &row_bytes,
+                piece_row_slots: &[],
+            }],
         };
         let buf = serialize_stage_basis(&record);
         let owned = deserialize_stage_basis(&buf).expect("codec round-trip must succeed");
@@ -4065,12 +4155,11 @@ mod tests {
 
     // ── branching-graph basis-cache keying ────────────────────────────────────
 
-    use novomodelo_io::{OwnedPolicyBasisRecord, StageCutsReadResult};
+    use novomodelo_io::{OwnedBasisEntry, OwnedPolicyBasisRecord, StageCutsReadResult};
 
     /// An active cut record at LP slot `slot`.
     fn active_cut(slot: u32) -> OwnedPolicyCutRecord {
         OwnedPolicyCutRecord {
-            cut_id: u64::from(slot),
             slot_index: slot,
             iteration: 0,
             intercept: 0.0,
@@ -4105,9 +4194,12 @@ mod tests {
         OwnedPolicyBasisRecord {
             stage_id: node,
             iteration: 0,
-            column_status: vec![0_u8, 0_u8],
-            row_status: vec![1_u8; 3 + num_cut],
-            num_cut_rows: num_cut as u32,
+            entries: vec![OwnedBasisEntry {
+                scenario: 0,
+                column_status: vec![0_u8, 0_u8],
+                row_status: vec![1_u8; 3 + num_cut],
+                piece_row_slots: (0..num_cut as u32).collect(),
+            }],
         }
     }
 
@@ -4244,9 +4336,12 @@ mod tests {
         OwnedPolicyBasisRecord {
             stage_id: 0,
             iteration: 0,
-            column_status: vec![0_u8; cols],
-            row_status: vec![1_u8; rows],
-            num_cut_rows: num_cut as u32,
+            entries: vec![OwnedBasisEntry {
+                scenario: 0,
+                column_status: vec![0_u8; cols],
+                row_status: vec![1_u8; rows],
+                piece_row_slots: (0..num_cut as u32).collect(),
+            }],
         }
     }
 
@@ -4338,8 +4433,8 @@ mod tests {
     fn stored_basis_whose_basic_count_differs_from_its_rows_is_dropped() {
         for (code, basic_entries) in [(0_u8, 0), (1_u8, 7)] {
             let mut record = dim_basis_record(4, 3, 0);
-            record.column_status.fill(code);
-            record.row_status.fill(code);
+            record.entries[0].column_status.fill(code);
+            record.entries[0].row_status.fill(code);
 
             let load = load_single_record(record, &[]);
 
@@ -4366,7 +4461,7 @@ mod tests {
 
     /// The pool holds more cuts than the basis has cut rows, so `base_row_count`
     /// must come from the template (`node_dims`), not
-    /// `row_status.len() - num_cut_rows`, and the unbroken `0..populated` prefix
+    /// `row_status.len() - piece_row_slots.len()`, and the unbroken `0..populated` prefix
     /// resolves the single cut row to the pool's oldest slot.
     #[test]
     fn stored_basis_cut_rows_map_to_the_oldest_pool_slots() {
@@ -4380,7 +4475,7 @@ mod tests {
             .expect("the node's basis must be present");
         assert_eq!(
             cb.base_row_count, 3,
-            "base_row_count must come from the template, not row_status.len() - num_cut_rows"
+            "base_row_count must come from the template, not the entry's own row split"
         );
         assert_eq!(cb.cut_row_slots, vec![0_u32]);
     }
@@ -4422,7 +4517,7 @@ mod tests {
             .collect();
         let node_pools: TypedVec<NodePos, usize> = vec![0, 1, 2, 3, 3, 3, 3].into();
         let mut stage_bases: Vec<_> = (0..7).map(|node| node_basis(node, 4)).collect();
-        stage_bases[4].column_status.push(0);
+        stage_bases[4].entries[0].column_status.push(0);
 
         let load = super::build_basis_cache_for_nodes(
             &stage_bases,
@@ -4456,9 +4551,9 @@ mod tests {
         let node_ids: TypedVec<NodePos, NodeId> = vec![0, 1, 2].into_iter().map(NodeId).collect();
         let node_pools: TypedVec<NodePos, usize> = vec![0, 1, 2].into();
         let mut columns_misfit = node_basis(1, 0);
-        columns_misfit.column_status.push(0);
+        columns_misfit.entries[0].column_status.push(0);
         let mut basic_count_misfit = node_basis(2, 0);
-        basic_count_misfit.row_status.fill(0);
+        basic_count_misfit.entries[0].row_status.fill(0);
         let mut records = vec![node_basis(0, 0), columns_misfit, basic_count_misfit];
 
         let forward =
@@ -4719,7 +4814,6 @@ mod tests {
             state_dimension,
             capacity: 1,
             cuts: &cuts,
-            active_cut_indices: &[0],
             populated_count: 1,
             entity_manifest: manifest,
             cost_scale_factor: 1.0,

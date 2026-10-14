@@ -486,18 +486,25 @@ mod tests {
     fn broadcast_value_round_trips_owned_policy_cut_records() {
         let comm = novomodelo_comm::LocalBackend;
         let original = vec![novomodelo_io::OwnedPolicyCutRecord {
-            cut_id: 7,
             slot_index: 3,
             iteration: 2,
             forward_pass_index: 0,
             intercept: 1.5,
             coefficients: vec![0.25, -0.5, 1.0],
             is_active: true,
+            scored: true,
+            active_count: Some(4),
+            last_active_iteration: None,
         }];
         let result = broadcast_value(Some(original.clone()), &comm).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].cut_id, original[0].cut_id);
         assert_eq!(result[0].slot_index, original[0].slot_index);
+        assert_eq!(result[0].scored, original[0].scored);
+        assert_eq!(result[0].active_count, original[0].active_count);
+        assert_eq!(
+            result[0].last_active_iteration,
+            original[0].last_active_iteration
+        );
         assert_eq!(result[0].intercept, original[0].intercept);
         assert_eq!(result[0].coefficients, original[0].coefficients);
         assert_eq!(result[0].is_active, original[0].is_active);

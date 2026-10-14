@@ -556,6 +556,13 @@ impl CutPool {
         self.trial_states.is_some()
     }
 
+    /// The window of iterations whose trial states the pool keeps; `None`
+    /// keeps every state, or the pool stores none.
+    #[must_use]
+    pub(crate) fn trial_state_window(&self) -> Option<NonZeroU64> {
+        self.lookback
+    }
+
     /// Store the state the cut at `(iteration, forward_pass_index)` was computed
     /// at: `x_hat`, a full state vector, gathered through `projection`.
     ///
@@ -1105,13 +1112,15 @@ impl CutPool {
     ///
     /// let records = vec![
     ///     OwnedPolicyCutRecord {
-    ///         cut_id: 0,
     ///         slot_index: 0,
     ///         iteration: 0,
     ///         forward_pass_index: 0,
     ///         intercept: 5.0,
     ///         coefficients: vec![1.0, 2.0],
     ///         is_active: true,
+    ///         scored: false,
+    ///         active_count: None,
+    ///         last_active_iteration: None,
     ///     },
     /// ];
     ///
@@ -1192,9 +1201,10 @@ impl CutPool {
     ///
     /// let records = vec![
     ///     OwnedPolicyCutRecord {
-    ///         cut_id: 0, slot_index: 0, iteration: 0, forward_pass_index: 0,
+    ///         slot_index: 0, iteration: 0, forward_pass_index: 0,
     ///         intercept: 5.0, coefficients: vec![1.0, 2.0],
-    ///         is_active: true,
+    ///         is_active: true, scored: false, active_count: None,
+    ///         last_active_iteration: None,
     ///     },
     /// ];
     /// let pool = CutPool::new_with_warm_start(2, 4, 10, &records);
@@ -1867,13 +1877,15 @@ mod tests {
                 ..owned_piece_defaults()
             },
             OwnedPolicyCutRecord {
-                cut_id: 1,
                 slot_index: 1,
                 coefficients: vec![3.0, 4.0],
                 intercept: 20.0,
                 is_active: true,
                 iteration: 7,
                 forward_pass_index: 1,
+                scored: false,
+                active_count: None,
+                last_active_iteration: None,
             },
         ];
 
@@ -2318,13 +2330,15 @@ mod tests {
                 ..owned_piece_defaults()
             },
             OwnedPolicyCutRecord {
-                cut_id: 1,
                 slot_index: 1,
                 coefficients: vec![3.0, 4.0],
                 intercept: 6.0,
                 is_active: true,
                 iteration: 4,
                 forward_pass_index: 1,
+                scored: false,
+                active_count: None,
+                last_active_iteration: None,
             },
         ];
 

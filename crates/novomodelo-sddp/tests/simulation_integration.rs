@@ -693,26 +693,17 @@ fn train_simulate_write_cycle() {
                 .map(|slot| {
                     let meta = pool.metadata(slot);
                     PolicyCutRecord {
-                        cut_id: slot as u64,
                         slot_index: slot as u32,
                         iteration: meta.iteration_generated as u32,
                         forward_pass_index: meta.forward_pass_index,
                         intercept: pool.intercept(slot),
                         coefficients: pool.coefficient_row(slot),
                         is_active: pool.is_active(slot),
+                        scored: pool.role(slot).scored,
+                        active_count: None,
+                        last_active_iteration: None,
                     }
                 })
-                .collect()
-        })
-        .collect();
-
-    let active_indices_per_stage: Vec<Vec<u32>> = fcf
-        .pools
-        .iter()
-        .map(|pool| {
-            (0..pool.populated())
-                .filter(|&slot| pool.is_active(slot))
-                .map(|slot| slot as u32)
                 .collect()
         })
         .collect();
@@ -727,7 +718,6 @@ fn train_simulate_write_cycle() {
             capacity: pool.capacity as u32,
             warm_start_count: pool.prefix_len() as u32,
             cuts: &cut_records_per_stage[stage_idx],
-            active_cut_indices: &active_indices_per_stage[stage_idx],
             populated_count: pool.populated() as u32,
             entity_manifest: &[],
             cost_scale_factor: 1_000_000.0,
@@ -1930,8 +1920,8 @@ fn simulation_only_with_partly_dropped_stored_bases_is_bit_identical_across_thre
 
     let mut records = checkpoint.stage_bases.clone();
     for record in records.iter_mut().filter(|r| matches!(r.stage_id, 1 | 2)) {
-        let code = record.column_status[0];
-        record.column_status.push(code);
+        let code = record.entries[0].column_status[0];
+        record.entries[0].column_status.push(code);
     }
     let load = build_basis_cache_from_checkpoint(&records, &checkpoint.stage_cuts, &setup);
     let unused = load

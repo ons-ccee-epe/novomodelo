@@ -1410,26 +1410,17 @@ fn d12_checkpoint_round_trip() {
                 .map(|slot| {
                     let meta = pool.metadata(slot);
                     PolicyCutRecord {
-                        cut_id: slot as u64,
                         slot_index: slot as u32,
                         iteration: meta.iteration_generated as u32,
                         forward_pass_index: meta.forward_pass_index,
                         intercept: pool.intercept(slot),
                         coefficients: pool.coefficient_row(slot),
                         is_active: pool.is_active(slot),
+                        scored: pool.role(slot).scored,
+                        active_count: None,
+                        last_active_iteration: None,
                     }
                 })
-                .collect()
-        })
-        .collect();
-
-    let active_indices_per_stage: Vec<Vec<u32>> = fcf
-        .pools
-        .iter()
-        .map(|pool| {
-            (0..pool.populated())
-                .filter(|&slot| pool.is_active(slot))
-                .map(|slot| slot as u32)
                 .collect()
         })
         .collect();
@@ -1444,7 +1435,6 @@ fn d12_checkpoint_round_trip() {
             capacity: pool.capacity as u32,
             warm_start_count: pool.prefix_len() as u32,
             cuts: &cut_records_per_stage[stage_idx],
-            active_cut_indices: &active_indices_per_stage[stage_idx],
             populated_count: pool.populated() as u32,
             entity_manifest: &[],
             cost_scale_factor: 1_000_000.0,
@@ -6566,23 +6556,10 @@ mod chronological_telescoping {
     }
 
     /// Assert every checkpoint cut's coefficients and intercept are bit-for-bit
-    /// identical to `scale * (the records written from fcf)` (`f64::to_bits`,
-    /// never `==`).
-    ///
-    /// `scale == 1.0` compares raw internal-scaled values (a `checkpoint`
-    /// whose cuts were never routed through the canonical-currency export
-    /// transform, e.g. `FutureCostFunction::new_with_warm_start` fed
-    /// `checkpoint.stage_cuts` directly). `scale ==
-    /// setup.inputs.stage_data.stage_templates.cost_scale_factor` compares against a
-    /// checkpoint written by [`write_checkpoint`] (`orchestration.rs`), which
-    /// multiplies every value by that same factor at export — a single
-    /// multiply, so the comparison is exact, not tolerance-based.
-    fn assert_cuts_bit_identical(
-        fcf: &FutureCostFunction,
-        checkpoint: &PolicyCheckpoint,
-        scale: f64,
-    ) {
-        let written = build_stage_cut_records(fcf);
+    /// identical to the records written from `fcf` (`f64::to_bits`, never
+    /// `==`): [`write_checkpoint`] writes the values as held in memory.
+    fn assert_cuts_bit_identical(fcf: &FutureCostFunction, checkpoint: &PolicyCheckpoint) {
+        let written = build_stage_cut_records(fcf).expect("export");
         assert_eq!(
             written.len(),
             checkpoint.stage_cuts.len(),
@@ -6598,9 +6575,9 @@ mod chronological_telescoping {
             );
             for (cut_idx, (w, r)) in stage_written.iter().zip(stage_read.cuts.iter()).enumerate() {
                 assert_eq!(
-                    (w.intercept * scale).to_bits(),
+                    w.intercept.to_bits(),
                     r.intercept.to_bits(),
-                    "stage {stage} cut {cut_idx}: intercept bits differ ({} * {scale} vs {})",
+                    "stage {stage} cut {cut_idx}: intercept bits differ ({} vs {})",
                     w.intercept,
                     r.intercept
                 );
@@ -6611,9 +6588,9 @@ mod chronological_telescoping {
                 );
                 for (k, (wc, rc)) in w.coefficients.iter().zip(r.coefficients.iter()).enumerate() {
                     assert_eq!(
-                        (wc * scale).to_bits(),
+                        wc.to_bits(),
                         rc.to_bits(),
-                        "stage {stage} cut {cut_idx} coeff {k}: bits differ ({wc} * {scale} vs {rc})"
+                        "stage {stage} cut {cut_idx} coeff {k}: bits differ ({wc} vs {rc})"
                     );
                 }
             }
@@ -6623,9 +6600,8 @@ mod chronological_telescoping {
     /// Train in `train_mode`, checkpoint, then load into a `load_mode` study and
     /// evaluate `theta` against the load-mode LP.
     ///
-    /// Asserts (1) the written checkpoint holds the trained FCF's cuts scaled
-    /// by the writing study's `cost_scale_factor` (canonical
-    /// currency units at rest — exact, a single multiply), (2) the cross-mode
+    /// Asserts (1) the written checkpoint holds the trained FCF's cuts as held
+    /// in memory, bit for bit, (2) the cross-mode
     /// warm-start load succeeds, (3) `FutureCostFunction::new_with_warm_start`
     /// (constructor fidelity only, bypassing the load-side rescale this
     /// narrow test does not exercise) copies the checkpoint's raw bytes
@@ -6635,12 +6611,7 @@ mod chronological_telescoping {
     /// intentionally not asserted.
     fn assert_cross_mode_load_preserves_cut_bytes(train_mode: BlockMode, load_mode: BlockMode) {
         let (trained_setup, checkpoint, _policy_dir) = train_and_checkpoint(train_mode);
-        let cost_scale_factor = trained_setup
-            .inputs
-            .stage_data
-            .stage_templates
-            .cost_scale_factor;
-        assert_cuts_bit_identical(&trained_setup.fcf, &checkpoint, cost_scale_factor);
+        assert_cuts_bit_identical(&trained_setup.fcf, &checkpoint);
 
         let config = build_config();
         let mut setup2 = build_setup_in_code(build_system(load_mode), &config);
@@ -6667,7 +6638,7 @@ mod chronological_telescoping {
         )
         .expect("cross-mode warm-start load must succeed (cuts are n_blks-independent)");
 
-        assert_cuts_bit_identical(&warm_fcf, &checkpoint, 1.0);
+        assert_cuts_bit_identical(&warm_fcf, &checkpoint);
 
         setup2.replace_fcf(warm_fcf);
         setup2.simulation_config.n_scenarios = 1;
@@ -10353,11 +10324,11 @@ mod f36_gap_attainability {
 }
 
 /// Enumerated-study checkpoint export→re-load round-trip under the stride-1
-/// `cut_id` numbering. The sampled half is `d12_checkpoint_round_trip`; this pins
-/// the enumerated half — an enumerated policy's dense stride-1 `cut_id`
-/// (`iteration_generated * visit_stride + forward_pass_index` with `visit_stride
-/// == 1` and `forward_pass_index == 0`, so `cut_id == iteration` for a non-leaf
-/// pool, never `iteration ×` a larger stride) survives write→read intact. The
+/// slot numbering. The sampled half is `d12_checkpoint_round_trip`; this pins
+/// the enumerated half — an enumerated non-leaf pool writes one cut per
+/// iteration at forward pass 0, so its slot advances by one per iteration
+/// (`visit_stride == 1`, never a larger stride), and `(slot_index, iteration,
+/// forward_pass_index)` survives write→read intact. The
 /// trunk+fan enumerated graph carries several non-leaf pools (root plus each
 /// fan node) and one shared leaf pool, so the round-trip is pinned across both
 /// stride-1 and stride-0 pools on both backends.
@@ -10383,7 +10354,7 @@ mod enumerated_checkpoint {
         ignore = "slow: run with --features slow-tests"
     )]
     #[test]
-    fn enumerated_checkpoint_round_trips_under_stride_one_cut_ids() {
+    fn enumerated_checkpoint_round_trips_slot_and_iteration_under_stride_one() {
         const K: usize = 3;
         const MAX_ITERATIONS: u32 = 4;
 
@@ -10422,7 +10393,7 @@ mod enumerated_checkpoint {
         );
 
         let fcf = &fixture.setup.fcf;
-        // The stride that drives the enumerated cut_id numbering.
+        // The stride that drives the enumerated slot numbering.
         for &p in &nonleaf_pools {
             assert_eq!(
                 fcf.pools[p].visit_stride, 1,
@@ -10436,19 +10407,28 @@ mod enumerated_checkpoint {
             );
         }
 
-        // The real export path: cut_id = iteration_generated * visit_stride + fp.
-        let cut_records_per_stage = build_stage_cut_records(fcf);
+        // The real export path.
+        let cut_records_per_stage = build_stage_cut_records(fcf).expect("export");
 
-        // Write-side stride-1 pin: a non-leaf pool's cut_id is dense (== its
-        // iteration), never iteration × a larger stride; the leaf pool emits none.
+        // Write-side stride-1 pin: a non-leaf pool's slot advances by one per
+        // iteration at forward pass 0, never by a larger stride; the leaf pool
+        // emits none.
         let mut nonleaf_cut_count = 0usize;
         for (pool_idx, records) in cut_records_per_stage.iter().enumerate() {
             if nonleaf_pools.contains(&pool_idx) {
                 for rec in records {
                     assert_eq!(
-                        rec.cut_id,
-                        u64::from(rec.iteration),
-                        "non-leaf pool {pool_idx}: stride-1 cut_id must equal its iteration"
+                        (
+                            rec.slot_index - records[0].slot_index,
+                            rec.iteration - records[0].iteration,
+                            rec.forward_pass_index
+                        ),
+                        (
+                            rec.iteration - records[0].iteration,
+                            rec.iteration - records[0].iteration,
+                            0
+                        ),
+                        "non-leaf pool {pool_idx}: stride-1 slots follow the iteration at pass 0"
                     );
                     nonleaf_cut_count += 1;
                 }
@@ -10463,17 +10443,6 @@ mod enumerated_checkpoint {
             nonleaf_cut_count > 0,
             "training must produce non-leaf cuts for the round-trip to pin"
         );
-
-        let active_indices_per_stage: Vec<Vec<u32>> = fcf
-            .pools
-            .iter()
-            .map(|pool| {
-                (0..pool.populated())
-                    .filter(|&slot| pool.is_active(slot))
-                    .map(|slot| slot as u32)
-                    .collect()
-            })
-            .collect();
 
         let pool_owner_node_id = |pool: usize| -> i32 {
             node_graph
@@ -10491,7 +10460,6 @@ mod enumerated_checkpoint {
                 capacity: pool.capacity as u32,
                 warm_start_count: pool.prefix_len() as u32,
                 cuts: &cut_records_per_stage[pool_idx],
-                active_cut_indices: &active_indices_per_stage[pool_idx],
                 populated_count: pool.populated() as u32,
                 entity_manifest: &[],
                 cost_scale_factor: 1_000_000.0,
@@ -10540,7 +10508,7 @@ mod enumerated_checkpoint {
         assert_eq!(checkpoint.stage_cuts.len(), n_pools, "one payload per pool");
 
         // Every pool's cuts round-trip byte-for-byte, and every reloaded non-leaf
-        // cut still carries the dense stride-1 cut_id (== its iteration).
+        // cut keeps its stride-1 slot, iteration and forward pass.
         for (pool_idx, stage) in checkpoint.stage_cuts.iter().enumerate() {
             let written = &cut_records_per_stage[pool_idx];
             assert_eq!(
@@ -10553,9 +10521,15 @@ mod enumerated_checkpoint {
                 "pool {pool_idx} state_dimension round-trips"
             );
             for (loaded, w) in stage.cuts.iter().zip(written) {
-                assert_eq!(loaded.cut_id, w.cut_id, "cut_id round-trips");
-                assert_eq!(loaded.slot_index, w.slot_index, "slot_index round-trips");
-                assert_eq!(loaded.iteration, w.iteration, "iteration round-trips");
+                assert_eq!(
+                    (
+                        loaded.slot_index,
+                        loaded.iteration,
+                        loaded.forward_pass_index
+                    ),
+                    (w.slot_index, w.iteration, w.forward_pass_index),
+                    "slot_index, iteration and forward_pass_index round-trip"
+                );
                 assert_eq!(
                     loaded.intercept.to_bits(),
                     w.intercept.to_bits(),
@@ -10570,9 +10544,12 @@ mod enumerated_checkpoint {
             if nonleaf_pools.contains(&pool_idx) {
                 for loaded in &stage.cuts {
                     assert_eq!(
-                        loaded.cut_id,
-                        u64::from(loaded.iteration),
-                        "reloaded non-leaf pool {pool_idx}: stride-1 cut_id survives the round-trip"
+                        (
+                            loaded.slot_index - stage.cuts[0].slot_index,
+                            loaded.forward_pass_index
+                        ),
+                        (loaded.iteration - stage.cuts[0].iteration, 0),
+                        "reloaded non-leaf pool {pool_idx}: stride-1 slots survive the round-trip"
                     );
                 }
             }

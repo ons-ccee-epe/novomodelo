@@ -943,7 +943,6 @@ mod tests {
 
     fn owned_cut(coefficients: Vec<f64>) -> OwnedPolicyCutRecord {
         OwnedPolicyCutRecord {
-            cut_id: 1,
             slot_index: 0,
             iteration: 0,
             intercept: 0.0,

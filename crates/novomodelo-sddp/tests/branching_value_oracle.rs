@@ -371,7 +371,7 @@ fn sampled_fan_checkpoint_holds_no_never_written_slot() {
         "power: some pool must hold a vacant slot below its slot bound"
     );
 
-    let records = build_stage_cut_records(&fixture.setup.fcf);
+    let records = build_stage_cut_records(&fixture.setup.fcf).expect("export");
     for (pool_id, (pool, records)) in pools.iter().zip(&records).enumerate() {
         let written: Vec<u32> = (0..pool.populated())
             .filter(|&slot| !is_vacant(pool, slot))

@@ -43,7 +43,7 @@ use crate::{
     CheckpointManifest, FORMAT_VERSION, GraphManifest, InflowArCoefficientRow, InflowHistoryRow,
     LoadError, OwnedPolicyCutRecord, PolicyCutRecord, ProducerBlock, SOFTWARE_NAME,
     SOFTWARE_VERSION, STAGE_CUTS_GRAPH_STAGE_ID_SENTINEL, STAGE_CUTS_NODE_ID_SENTINEL,
-    STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, SeasonManifest, StageCutsPayload,
+    STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, SeasonManifest, StageCutsPayload, StateHistory,
     config::Config,
     extensions::{FphaHyperplaneRow, HydroGeometryRow},
     parse_config,
@@ -1217,31 +1217,37 @@ pub fn make_ar_row(hydro_id: i32, stage_id: i32, lag: i32) -> InflowArCoefficien
 
 // ── Policy checkpoint record defaults ─────────────────────────────────────────
 
-/// An [`OwnedPolicyCutRecord`] with zero ids, no coefficients and `is_active` set.
+/// An [`OwnedPolicyCutRecord`] with zero ids, no coefficients, `is_active` set, unscored and
+/// without activity counters.
 #[must_use]
 pub fn owned_piece_defaults() -> OwnedPolicyCutRecord {
     OwnedPolicyCutRecord {
-        cut_id: 0,
         slot_index: 0,
         iteration: 0,
         forward_pass_index: 0,
         intercept: 0.0,
         coefficients: Vec::new(),
         is_active: true,
+        scored: false,
+        active_count: None,
+        last_active_iteration: None,
     }
 }
 
-/// A [`PolicyCutRecord`] with zero ids, no coefficients and `is_active` set.
+/// A [`PolicyCutRecord`] with zero ids, no coefficients, `is_active` set, unscored and without
+/// activity counters.
 #[must_use]
 pub fn piece_defaults<'a>() -> PolicyCutRecord<'a> {
     PolicyCutRecord {
-        cut_id: 0,
         slot_index: 0,
         iteration: 0,
         forward_pass_index: 0,
         intercept: 0.0,
         coefficients: &[],
         is_active: true,
+        scored: false,
+        active_count: None,
+        last_active_iteration: None,
     }
 }
 
@@ -1254,7 +1260,6 @@ pub fn stage_cuts_payload_defaults<'a>() -> StageCutsPayload<'a> {
         capacity: 0,
         warm_start_count: 0,
         cuts: &[],
-        active_cut_indices: &[],
         populated_count: 0,
         entity_manifest: &[],
         cost_scale_factor: 1.0,
@@ -1264,7 +1269,8 @@ pub fn stage_cuts_payload_defaults<'a>() -> StageCutsPayload<'a> {
     }
 }
 
-/// A [`ProducerBlock`] with zero counts, the `parallel` block mode and no cost-scale marker.
+/// A [`ProducerBlock`] with zero counts, the `parallel` block mode, no cost-scale marker, no
+/// state history, no activity counters and an incomplete basis store.
 #[must_use]
 pub fn producer_block_defaults() -> ProducerBlock {
     ProducerBlock {
@@ -1281,6 +1287,9 @@ pub fn producer_block_defaults() -> ProducerBlock {
         training_block_mode_per_stage: Vec::new(),
         cost_scale_factor: None,
         lower_bound_history: Vec::new(),
+        state_history: StateHistory::None,
+        activity_counters: false,
+        basis_store_complete: false,
     }
 }
 

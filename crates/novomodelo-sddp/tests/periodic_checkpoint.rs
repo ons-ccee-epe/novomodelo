@@ -15,15 +15,17 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use novomodelo_core::{System, TrainingEvent};
-use novomodelo_io::config::{CheckpointingConfig, StoppingRuleConfig, TrainingSelection};
+use novomodelo_io::config::{
+    CheckpointingConfig, SelectionMethod, StoppingRuleConfig, TrainingSelection,
+};
 use novomodelo_io::output::policy::{PolicyCheckpoint, read_policy_checkpoint};
 use novomodelo_sddp::policy::full_fcf_load::{FullFcfLoadKind, check_full_fcf_load};
 use novomodelo_sddp::policy::orchestration::{CheckpointParams, write_checkpoint};
-use novomodelo_sddp::{SddpError, StudySetup, TrainingResult};
+use novomodelo_sddp::{DEFAULT_COST_SCALE_FACTOR, SddpError, StudySetup, TrainingResult};
 use novomodelo_solver::ActiveSolver;
 
 use common::selection_fingerprint::SelectionFingerprint;
-use common::{StubComm, fresh_system_and_setup_with};
+use common::{StubComm, fresh_system_and_setup_with, positive};
 
 fn toy_case() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/1dtoy")
@@ -38,7 +40,10 @@ fn checkpointing_setup(
         config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
             limit: iteration_limit,
         }]);
-        config.exports.states = true;
+        config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+            check_frequency: positive(2),
+            lookback_iterations: None,
+        });
         config.policy.checkpointing = CheckpointingConfig {
             enabled: Some(true),
             initial_iteration,
@@ -132,7 +137,7 @@ fn periodic_checkpoint_equals_the_final_checkpoint_of_a_run_stopped_at_that_iter
     assert_eq!(periodic.stage_cuts.len(), final_at_k.stage_cuts.len());
     assert!(
         !periodic.stage_states.is_empty(),
-        "the case must export visited states"
+        "the case's pools must store trial states"
     );
 
     let mut aligned = periodic.clone();
@@ -229,7 +234,6 @@ fn failed_periodic_write_ends_training_with_the_failing_iteration() {
 /// Bound on two solves of one LP that start from different solver states.
 const LOWER_BOUND_REL_TOL: f64 = 1e-6;
 const RESUMED_ITERATIONS: std::ops::RangeInclusive<u64> = 4..=6;
-const POWER_OF_TWO_COST_SCALE: f64 = 1_048_576.0;
 
 struct RunOutcome {
     fingerprint: SelectionFingerprint,
@@ -262,33 +266,25 @@ impl RunOutcome {
     }
 }
 
-fn selection_off_setup(
-    iteration_limit: u32,
-    forward_passes: u32,
-    cost_scale_factor: Option<f64>,
-) -> (System, StudySetup) {
+fn selection_off_setup(iteration_limit: u32, forward_passes: u32) -> (System, StudySetup) {
     fresh_system_and_setup_with(&toy_case(), |config| {
         config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
         config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
             limit: iteration_limit,
         }]);
-        config.modeling.cost_scale_factor = cost_scale_factor;
     })
 }
 
 /// Returns `(resumed, uninterrupted)`: the resumed run trains 3 iterations,
 /// checkpoints, loads the checkpoint through the production resume path and
 /// trains to 6.
-fn resumed_and_uninterrupted(
-    forward_passes: u32,
-    cost_scale_factor: Option<f64>,
-) -> (RunOutcome, RunOutcome) {
-    let (_, mut full_setup) = selection_off_setup(6, forward_passes, cost_scale_factor);
+fn resumed_and_uninterrupted(forward_passes: u32) -> (RunOutcome, RunOutcome) {
+    let (_, mut full_setup) = selection_off_setup(6, forward_passes);
     let full_result = train(&mut full_setup, None);
     assert_eq!(full_result.iterations, 6);
     let uninterrupted = RunOutcome::capture(&full_setup, &full_result);
 
-    let (system, mut first_setup) = selection_off_setup(3, forward_passes, cost_scale_factor);
+    let (system, mut first_setup) = selection_off_setup(3, forward_passes);
     let first_result = train(&mut first_setup, None);
     assert_eq!(first_result.iterations, 3);
     let out = tempfile::tempdir().expect("tempdir");
@@ -307,7 +303,7 @@ fn resumed_and_uninterrupted(
     )
     .expect("write_checkpoint must succeed");
 
-    let (system, mut resumed_setup) = selection_off_setup(6, forward_passes, cost_scale_factor);
+    let (system, mut resumed_setup) = selection_off_setup(6, forward_passes);
     check_full_fcf_load(
         FullFcfLoadKind::Resume,
         &policy_dir,
@@ -377,25 +373,21 @@ fn assert_same_run(resumed: &RunOutcome, uninterrupted: &RunOutcome) {
 
 #[test]
 fn resumed_run_equals_the_uninterrupted_run_with_one_forward_pass() {
-    let (resumed, uninterrupted) = resumed_and_uninterrupted(1, Some(POWER_OF_TWO_COST_SCALE));
-    assert_eq!(resumed.resolved_cost_scale_factor, POWER_OF_TWO_COST_SCALE);
+    let (resumed, uninterrupted) = resumed_and_uninterrupted(1);
+    assert_eq!(
+        resumed.resolved_cost_scale_factor,
+        DEFAULT_COST_SCALE_FACTOR
+    );
     assert_eq!(
         uninterrupted.resolved_cost_scale_factor,
-        POWER_OF_TWO_COST_SCALE
+        DEFAULT_COST_SCALE_FACTOR
     );
-    assert_same_run(&resumed, &uninterrupted);
-}
-
-#[test]
-#[ignore = "a checkpoint stores cut values multiplied by the cost scale factor and a load divides them again; at the default factor that round trip is not exact"]
-fn resumed_run_equals_the_uninterrupted_run_at_the_default_cost_scale() {
-    let (resumed, uninterrupted) = resumed_and_uninterrupted(1, None);
     assert_same_run(&resumed, &uninterrupted);
 }
 
 #[test]
 #[ignore = "resume restores one stored basis per node; forward passes beyond the first restart from it"]
 fn resumed_run_equals_the_uninterrupted_run_with_several_forward_passes() {
-    let (resumed, uninterrupted) = resumed_and_uninterrupted(3, Some(POWER_OF_TWO_COST_SCALE));
+    let (resumed, uninterrupted) = resumed_and_uninterrupted(3);
     assert_same_run(&resumed, &uninterrupted);
 }

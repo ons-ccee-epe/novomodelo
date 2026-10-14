@@ -272,7 +272,6 @@ fn anticipated_ring_columns_carry_unit_col_scale() {
 fn sample_cut_records() -> Vec<OwnedPolicyCutRecord> {
     vec![
         OwnedPolicyCutRecord {
-            cut_id: 1,
             slot_index: 0,
             iteration: 0,
             intercept: 10.0,
@@ -281,7 +280,6 @@ fn sample_cut_records() -> Vec<OwnedPolicyCutRecord> {
             ..owned_piece_defaults()
         },
         OwnedPolicyCutRecord {
-            cut_id: 2,
             slot_index: 1,
             iteration: 0,
             intercept: -4.0,

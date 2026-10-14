@@ -7,6 +7,7 @@
 //! `on_warning` callback on [`export_stochastic_artifacts`].
 
 use std::collections::{BTreeMap, HashMap};
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
@@ -14,7 +15,7 @@ use novomodelo_io::config::CheckpointSchedule;
 use novomodelo_io::output::policy::{
     CheckpointManifest, FORMAT_VERSION, GraphManifest, HydroSeasonOrders, ProducerBlock,
     SEASON_CYCLE_CODE_ABSENT, SEASON_CYCLE_CODE_CUSTOM, SEASON_CYCLE_CODE_MONTHLY,
-    SEASON_CYCLE_CODE_WEEKLY, SeasonManifest, write_policy_checkpoint,
+    SEASON_CYCLE_CODE_WEEKLY, SeasonManifest, StateHistory, write_policy_checkpoint,
 };
 use novomodelo_io::output::{
     OutputError, write_correlation_json, write_fitting_report, write_inflow_annual_component,
@@ -30,16 +31,16 @@ use novomodelo_stochastic::StochasticContext;
 use crate::TrainingResult;
 use crate::cut::FutureCostFunction;
 use crate::policy_export::{
-    borrow_cut_records, build_active_indices, build_stage_basis_records, build_stage_cut_records,
-    build_stage_cuts_payloads, build_stage_entity_manifest, build_stage_states_payloads,
-    convert_basis_cache, scale_cut_records_for_export,
+    build_pool_states_payloads, build_scenario_zero_basis_entries, build_stage_basis_records,
+    build_stage_cut_records, build_stage_cuts_payloads, build_stage_entity_manifest,
+    collect_stored_pool_states, convert_basis_cache,
 };
-use crate::setup::{NodeGraph, NodePos, StudySetup};
+use crate::setup::{NodeGraph, StudySetup};
 use crate::stochastic_summary::{
     estimation_report_to_fitting_report, inflow_models_to_annual_component_rows,
     inflow_models_to_ar_rows, inflow_models_to_stats_rows,
 };
-use crate::visited_states::VisitedStatesArchive;
+use crate::training::session::interior_cut_nodes;
 use crate::workspace::CapturedBasis;
 
 use novomodelo_core::{BlockMode, InflowModel, SeasonCycleType, System};
@@ -214,8 +215,8 @@ pub struct CheckpointParams {
     pub forward_passes: u32,
     /// Random seed used for noise generation.
     pub seed: u64,
-    /// When `false`, omit visited-state payloads even if the archive is
-    /// populated. Controlled by the `exports.states` config flag.
+    /// The `exports.states` config flag. The checkpoint writer does not read
+    /// it: every pool that stores trial states writes them.
     pub export_states: bool,
 }
 
@@ -265,7 +266,6 @@ pub(crate) struct CheckpointState<'a> {
     pub(crate) final_lb: f64,
     pub(crate) final_ub: f64,
     pub(crate) basis_cache: &'a [Option<CapturedBasis>],
-    pub(crate) visited_archive: Option<&'a VisitedStatesArchive>,
     pub(crate) lower_bound_history: &'a [f64],
 }
 
@@ -276,7 +276,6 @@ impl<'a> CheckpointState<'a> {
             final_lb: result.final_lb,
             final_ub: result.final_ub,
             basis_cache: &result.basis_cache,
-            visited_archive: result.visited_archive.as_ref(),
             lower_bound_history: &result.lower_bound_history,
         }
     }
@@ -322,7 +321,7 @@ impl CheckpointLayout {
         }
     }
 
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(clippy::cast_possible_truncation)]
     pub(crate) fn write(
         &self,
         policy_dir: &Path,
@@ -331,11 +330,7 @@ impl CheckpointLayout {
         state: CheckpointState<'_>,
     ) -> Result<(), OutputError> {
         let cost_scale_factor = self.cost_scale_factor;
-        let stage_records_internal = build_stage_cut_records(fcf);
-        let stage_records_owned =
-            scale_cut_records_for_export(&stage_records_internal, cost_scale_factor);
-        let stage_records = borrow_cut_records(&stage_records_owned);
-        let stage_active_indices = build_active_indices(&stage_records);
+        let stage_records = build_stage_cut_records(fcf)?;
         let stage_cuts = build_stage_cuts_payloads(
             fcf,
             node_graph,
@@ -343,7 +338,6 @@ impl CheckpointLayout {
             &self.study_stage_end_dates,
             cost_scale_factor,
             &stage_records,
-            &stage_active_indices,
             &self.stage_manifests,
         );
         debug_assert!(
@@ -354,12 +348,14 @@ impl CheckpointLayout {
         );
 
         let (basis_col_u8, basis_row_u8) = convert_basis_cache(state.basis_cache);
-        let stage_bases = build_stage_basis_records(
-            state.basis_cache,
-            state.iterations,
-            &basis_col_u8,
-            &basis_row_u8,
-        );
+        let basis_entries =
+            build_scenario_zero_basis_entries(state.basis_cache, &basis_col_u8, &basis_row_u8);
+        let stage_bases = build_stage_basis_records(&basis_entries, state.iterations)?;
+
+        let stored_states = collect_stored_pool_states(fcf);
+        let stage_states =
+            build_pool_states_payloads(&stored_states, fcf, &self.stage_manifests, node_graph);
+        let total_visited_states = stored_states.iter().map(|s| s.slots.len() as u64).sum();
 
         let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
 
@@ -371,29 +367,24 @@ impl CheckpointLayout {
             num_stages: self.n_stages as u32,
             graph_manifest: self.graph_manifest.clone(),
             producer: ProducerBlock {
-                completed_iterations: state.iterations as u32,
+                completed_iterations: manifest_count("completed_iterations", state.iterations)?,
                 final_lower_bound: state.final_lb,
                 best_upper_bound: Some(state.final_ub),
-                max_iterations: self.params.max_iterations as u32,
+                max_iterations: manifest_count("max_iterations", self.params.max_iterations)?,
                 forward_passes: self.params.forward_passes,
                 warm_start_cuts: warm_start_counts.iter().copied().max().unwrap_or(0),
                 warm_start_counts,
                 rng_seed: self.params.seed,
-                total_visited_states: state.visited_archive.map_or(0, |a| {
-                    (0..a.num_nodes()).map(|t| a.count(NodePos(t)) as u64).sum()
-                }),
+                total_visited_states,
                 training_block_mode: self.training_block_mode.clone(),
                 training_block_mode_per_stage: self.training_block_mode_per_stage.clone(),
                 cost_scale_factor: Some(cost_scale_factor),
                 lower_bound_history: state.lower_bound_history.to_vec(),
+                state_history: interior_state_history(fcf, node_graph)?,
+                activity_counters: false,
+                basis_store_complete: false,
             },
             season_manifest: self.season_manifest.clone(),
-        };
-
-        let stage_states = if self.params.export_states {
-            build_stage_states_payloads(state.visited_archive, &self.stage_manifests, node_graph)
-        } else {
-            Vec::new()
         };
 
         write_policy_checkpoint(
@@ -406,7 +397,68 @@ impl CheckpointLayout {
     }
 }
 
-/// Write the trained policy (cuts, bases, visited states, metadata) to
+/// `value` as a 32-bit manifest count.
+///
+/// # Errors
+///
+/// [`OutputError::SerializationError`] naming `field` when `value` does not fit.
+fn manifest_count(field: &str, value: u64) -> Result<u32, OutputError> {
+    u32::try_from(value).map_err(|_| {
+        OutputError::serialization(
+            "policy_checkpoint",
+            format!("manifest {field} {value} does not fit a 32-bit field"),
+        )
+    })
+}
+
+/// Which trial points the interior pools store ([`interior_cut_nodes`]'s
+/// pools): `Whole` when each stores every state, `Window(w)` when each stores
+/// within window `w`, `None` when none stores states.
+///
+/// # Errors
+///
+/// [`OutputError::SerializationError`] when the interior pools disagree, or a
+/// window does not fit the manifest's 32-bit field.
+fn interior_state_history(
+    fcf: &FutureCostFunction,
+    node_graph: &NodeGraph,
+) -> Result<StateHistory, OutputError> {
+    let mut scopes = interior_cut_nodes(node_graph).into_iter().map(|pos| {
+        let pool = &fcf.pools[node_graph.nodes[pos].pool_id];
+        match (pool.stores_trial_states(), pool.trial_state_window()) {
+            (false, _) => Ok(StateHistory::None),
+            (true, None) => Ok(StateHistory::Whole),
+            (true, Some(window)) => u32::try_from(window.get())
+                .ok()
+                .and_then(NonZeroU32::new)
+                .map(StateHistory::Window)
+                .ok_or_else(|| {
+                    OutputError::serialization(
+                        "policy_checkpoint",
+                        format!("trial-state window {window} does not fit a 32-bit field"),
+                    )
+                }),
+        }
+    });
+    let Some(first) = scopes.next().transpose()? else {
+        return Ok(StateHistory::None);
+    };
+    for scope in scopes {
+        let scope = scope?;
+        if scope != first {
+            return Err(OutputError::serialization(
+                "policy_checkpoint",
+                format!(
+                    "the interior pools store different trial-state histories: {first:?} and \
+                     {scope:?}"
+                ),
+            ));
+        }
+    }
+    Ok(first)
+}
+
+/// Write the trained policy (cuts, bases, stored trial states, metadata) to
 /// `policy_dir` as `FlatBuffers` files.
 ///
 /// The single implementation shared by the CLI and the Python bindings, so the
@@ -581,6 +633,90 @@ mod tests {
         BlockMode, InflowModel, SEASON_CYCLE_CODE_WEEKLY, SeasonCycleType, System,
         build_season_manifest, hydro_season_orders, training_block_provenance,
     };
+
+    /// A four-stage chain: nodes 1 and 2 are the interior ones, node 0 the
+    /// root and node 3 the terminal.
+    fn four_stage_chain() -> crate::setup::NodeGraph {
+        use crate::setup::{
+            NodeId, NodeOpenings, NodePos, NodeRuntime, NodeSuccessor, OpeningSource, StageIdx,
+        };
+        let openings = NodeOpenings {
+            source: OpeningSource::Generated,
+            offset: 0,
+            len: 1,
+            q: 1.0,
+        };
+        crate::setup::NodeGraph {
+            node_ids: (0..4).map(NodeId).collect(),
+            nodes: (0..4)
+                .map(|t| NodeRuntime {
+                    stage: StageIdx(t),
+                    pool_id: t,
+                    openings,
+                })
+                .collect(),
+            successors: (0..4)
+                .map(|t| {
+                    if t < 3 {
+                        vec![NodeSuccessor {
+                            child: NodePos(t + 1),
+                            probability: 1.0,
+                        }]
+                    } else {
+                        Vec::new()
+                    }
+                })
+                .collect(),
+            n_pools: 4,
+            pool_stage: (0..4).map(StageIdx).collect(),
+        }
+    }
+
+    /// The manifest's history is read from the interior pools only: none
+    /// storing is `None`, each storing every state is `Whole`, each storing a
+    /// window is that window, a storing root changes nothing, and interior pools
+    /// that disagree are refused.
+    #[test]
+    fn the_state_history_is_read_from_the_interior_pools() {
+        use std::num::{NonZeroU32, NonZeroU64};
+
+        use super::{StateHistory, interior_state_history};
+        use crate::cut::FutureCostFunction;
+
+        let graph = four_stage_chain();
+        let fresh = || FutureCostFunction::new(4, 1, 1, 4, &[0; 4]);
+
+        let mut fcf = fresh();
+        fcf.pools[0].enable_trial_states();
+        assert_eq!(
+            interior_state_history(&fcf, &graph).unwrap(),
+            StateHistory::None
+        );
+
+        for pool in &mut fcf.pools[1..3] {
+            pool.enable_trial_states();
+        }
+        assert_eq!(
+            interior_state_history(&fcf, &graph).unwrap(),
+            StateHistory::Whole
+        );
+
+        let mut fcf = fresh();
+        for pool in &mut fcf.pools[1..3] {
+            pool.enable_trial_states_within(NonZeroU64::new(3).unwrap(), 1);
+        }
+        assert_eq!(
+            interior_state_history(&fcf, &graph).unwrap(),
+            StateHistory::Window(NonZeroU32::new(3).unwrap())
+        );
+
+        let mut fcf = fresh();
+        fcf.pools[1].enable_trial_states();
+        let msg = interior_state_history(&fcf, &graph)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("different trial-state histories"), "{msg}");
+    }
 
     #[test]
     fn uniform_parallel_study_summarizes_without_per_stage_list() {

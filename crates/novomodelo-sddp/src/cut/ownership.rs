@@ -680,7 +680,6 @@ mod tests {
         let iterations = (spec.cuts.len() - loaded).div_ceil(stride) as u64;
         let records: Vec<OwnedPolicyCutRecord> = (0..loaded)
             .map(|slot| OwnedPolicyCutRecord {
-                cut_id: slot as u64,
                 slot_index: slot as u32,
                 iteration: 1000,
                 intercept: spec.cuts[slot].intercept,

@@ -82,17 +82,36 @@ mod boundary_cuts {
         seed: u64,
     ) {
         use novomodelo_sddp::policy_export::{
-            borrow_cut_records, build_active_indices, build_stage_basis_records,
-            build_stage_cut_records, build_stage_cuts_payloads, convert_basis_cache,
-            scale_cut_records_for_export,
+            build_scenario_zero_basis_entries, build_stage_basis_records, build_stage_cut_records,
+            build_stage_cuts_payloads, convert_basis_cache,
         };
         let fcf = &setup.fcf;
-        let currency_records = scale_cut_records_for_export(
-            &build_stage_cut_records(fcf),
-            setup.inputs.stage_data.stage_templates.cost_scale_factor,
-        );
-        let stage_records = borrow_cut_records(&currency_records);
-        let stage_active_indices = build_active_indices(&stage_records);
+        // Each value times the study's factor under marker 1.0, so a load at that
+        // factor gives `(value * s) / s`, the values this fixture always loaded.
+        let s = setup.inputs.stage_data.stage_templates.cost_scale_factor;
+        let held = build_stage_cut_records(fcf).expect("export");
+        let scaled_coefficients: Vec<Vec<Vec<f64>>> = held
+            .iter()
+            .map(|pool| {
+                pool.iter()
+                    .map(|r| r.coefficients.iter().map(|c| c * s).collect())
+                    .collect()
+            })
+            .collect();
+        let stage_records: Vec<Vec<novomodelo_io::PolicyCutRecord<'_>>> = held
+            .iter()
+            .zip(&scaled_coefficients)
+            .map(|(pool, coefficients)| {
+                pool.iter()
+                    .zip(coefficients)
+                    .map(|(r, c)| novomodelo_io::PolicyCutRecord {
+                        intercept: r.intercept * s,
+                        coefficients: c,
+                        ..r.clone()
+                    })
+                    .collect()
+            })
+            .collect();
         let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); fcf.pools.len()];
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
@@ -104,16 +123,13 @@ mod boundary_cuts {
             &study_stage_end_dates,
             1.0,
             &stage_records,
-            &stage_active_indices,
             &stage_manifests,
         );
         let (basis_col, basis_row) = convert_basis_cache(&result.basis_cache);
-        let stage_bases = build_stage_basis_records(
-            &result.basis_cache,
-            result.iterations,
-            &basis_col,
-            &basis_row,
-        );
+        let basis_entries =
+            build_scenario_zero_basis_entries(&result.basis_cache, &basis_col, &basis_row);
+        let stage_bases =
+            build_stage_basis_records(&basis_entries, result.iterations).expect("bases");
         let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
         let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             fcf.pools.len() as u32,
@@ -2924,12 +2940,11 @@ mod warm_start {
         seed: u64,
     ) {
         use novomodelo_sddp::policy_export::{
-            build_active_indices, build_stage_basis_records, build_stage_cut_records,
+            build_scenario_zero_basis_entries, build_stage_basis_records, build_stage_cut_records,
             build_stage_cuts_payloads, convert_basis_cache,
         };
         let fcf = &setup.fcf;
-        let stage_records = build_stage_cut_records(fcf);
-        let stage_active_indices = build_active_indices(&stage_records);
+        let stage_records = build_stage_cut_records(fcf).expect("export");
         let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); fcf.pools.len()];
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
@@ -2941,16 +2956,13 @@ mod warm_start {
             &study_stage_end_dates,
             1_000_000.0,
             &stage_records,
-            &stage_active_indices,
             &stage_manifests,
         );
         let (basis_col, basis_row) = convert_basis_cache(&result.basis_cache);
-        let stage_bases = build_stage_basis_records(
-            &result.basis_cache,
-            result.iterations,
-            &basis_col,
-            &basis_row,
-        );
+        let basis_entries =
+            build_scenario_zero_basis_entries(&result.basis_cache, &basis_col, &basis_row);
+        let stage_bases =
+            build_stage_basis_records(&basis_entries, result.iterations).expect("bases");
         let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
         let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             fcf.pools.len() as u32,
@@ -3079,7 +3091,9 @@ mod warm_start {
 
     #[test]
     fn exported_basis_records_count_the_cut_rows_each_basis_was_captured_with() {
-        use novomodelo_sddp::policy_export::{build_stage_basis_records, convert_basis_cache};
+        use novomodelo_sddp::policy_export::{
+            build_scenario_zero_basis_entries, build_stage_basis_records, convert_basis_cache,
+        };
 
         let case_dir = d01_case_dir();
         let mut config =
@@ -3097,12 +3111,9 @@ mod warm_start {
         let result = outcome.result;
 
         let (basis_col, basis_row) = convert_basis_cache(&result.basis_cache);
-        let records = build_stage_basis_records(
-            &result.basis_cache,
-            result.iterations,
-            &basis_col,
-            &basis_row,
-        );
+        let basis_entries =
+            build_scenario_zero_basis_entries(&result.basis_cache, &basis_col, &basis_row);
+        let records = build_stage_basis_records(&basis_entries, result.iterations).expect("bases");
         assert!(
             !records.is_empty(),
             "training must capture at least one basis"
@@ -3113,7 +3124,7 @@ mod warm_start {
                 .as_ref()
                 .expect("every record comes from a captured basis");
             assert_eq!(
-                rec.num_cut_rows as usize,
+                rec.entries[0].piece_row_slots.len(),
                 cb.basis.row_status.len() - cb.base_row_count,
                 "node {} must record the cut rows its basis was captured with",
                 rec.stage_id
@@ -3126,10 +3137,10 @@ mod warm_start {
             .expect("the root node's basis is exported");
         let root_pool_populated = setup.fcf.pools[0].populated();
         assert!(
-            (root.num_cut_rows as usize) < root_pool_populated,
+            root.entries[0].piece_row_slots.len() < root_pool_populated,
             "the root basis is captured before the last backward pass, so it must carry fewer \
              cut rows ({}) than its pool holds at export ({root_pool_populated})",
-            root.num_cut_rows
+            root.entries[0].piece_row_slots.len()
         );
     }
 
@@ -3247,8 +3258,8 @@ mod warm_start {
             .iter_mut()
             .find(|record| record.stage_id == MISFIT_NODE)
             .expect("the misfit node's basis is stored");
-        misfit.column_status.fill(0);
-        misfit.row_status.fill(0);
+        misfit.entries[0].column_status.fill(0);
+        misfit.entries[0].row_status.fill(0);
 
         let mut setup_warm = build_setup(&case_dir, &config);
         let proof = novomodelo_sddp::test_support::trivial_full_fcf_proof(
@@ -3656,7 +3667,7 @@ mod group_state_invariance {
             .map(|pool| pool.state_dimension)
             .collect();
 
-        let stage_records = build_stage_cut_records(&setup.fcf);
+        let stage_records = build_stage_cut_records(&setup.fcf).expect("export");
         let populated_cut_coefficient_lengths: Vec<Option<usize>> = stage_records
             .iter()
             .map(|records| records.first().map(|record| record.coefficients.len()))
@@ -3839,7 +3850,7 @@ mod range_warm_start_determinism {
     use novomodelo_sddp::hydro_models::{PrepareHydroModelsResult, prepare_hydro_models};
     use novomodelo_sddp::inflow_method::InflowNonNegativityMethod;
     use novomodelo_sddp::policy_export::{
-        build_active_indices, build_stage_basis_records, build_stage_cut_records,
+        build_scenario_zero_basis_entries, build_stage_basis_records, build_stage_cut_records,
         build_stage_cuts_payloads, convert_basis_cache,
     };
     use novomodelo_sddp::resolved_parameters::ResolvedParameters;
@@ -4261,8 +4272,7 @@ mod range_warm_start_determinism {
         seed: u64,
     ) {
         let fcf = &setup.fcf;
-        let stage_records = build_stage_cut_records(fcf);
-        let stage_active_indices = build_active_indices(&stage_records);
+        let stage_records = build_stage_cut_records(fcf).expect("export");
         let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); fcf.pools.len()];
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
@@ -4274,16 +4284,13 @@ mod range_warm_start_determinism {
             &study_stage_end_dates,
             1_000_000.0,
             &stage_records,
-            &stage_active_indices,
             &stage_manifests,
         );
         let (basis_col, basis_row) = convert_basis_cache(&result.basis_cache);
-        let stage_bases = build_stage_basis_records(
-            &result.basis_cache,
-            result.iterations,
-            &basis_col,
-            &basis_row,
-        );
+        let basis_entries =
+            build_scenario_zero_basis_entries(&result.basis_cache, &basis_col, &basis_row);
+        let stage_bases =
+            build_stage_basis_records(&basis_entries, result.iterations).expect("bases");
         let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
         let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             fcf.pools.len() as u32,

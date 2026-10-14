@@ -287,14 +287,7 @@ where
             )
         });
 
-        let interior_cut_nodes: Vec<NodePos> = {
-            let ng = training_ctx.node_graph;
-            ng.nodes
-                .iter_indexed()
-                .filter(|&(pos, n)| n.stage >= StageIdx(1) && !ng.successors[pos].is_empty())
-                .map(|(pos, _)| pos)
-                .collect()
-        };
+        let interior_cut_nodes = interior_cut_nodes(training_ctx.node_graph);
         if let Some(strategy) = config.cut_management.cut_selection.as_ref() {
             for &node_pos in &interior_cut_nodes {
                 let pool = &mut fcf.pools[training_ctx.node_graph.nodes[node_pos].pool_id];
@@ -656,7 +649,6 @@ where
                         final_lb: self.results.final_lb,
                         final_ub: self.results.final_ub,
                         basis_cache: &basis_cache,
-                        visited_archive: self.visited_archive.as_ref(),
                         lower_bound_history: self.convergence_monitor.lower_bound_history(),
                     },
                 )
@@ -1448,6 +1440,19 @@ fn committed_lower_bound_history(
     let uncommitted =
         usize::try_from(monitor.iteration_count() - completed_iterations).unwrap_or(usize::MAX);
     &history[..history.len().saturating_sub(uncommitted)]
+}
+
+/// The nodes whose pools selection and the budget visit: stage 1 or later,
+/// with a successor. Every non-leaf node owns its pool and the leaves share
+/// one, so their pools are those that are neither the root's nor the
+/// terminal's.
+pub(crate) fn interior_cut_nodes(node_graph: &NodeGraph) -> Vec<NodePos> {
+    node_graph
+        .nodes
+        .iter_indexed()
+        .filter(|&(pos, n)| n.stage >= StageIdx(1) && !node_graph.successors[pos].is_empty())
+        .map(|(pos, _)| pos)
+        .collect()
 }
 
 /// Between-iteration capacity growth: doubles a pool's capacity via
@@ -2246,7 +2251,6 @@ mod tests {
         }
         let boundary: Vec<OwnedPolicyCutRecord> = (0..3)
             .map(|slot_index| OwnedPolicyCutRecord {
-                cut_id: u64::from(slot_index),
                 slot_index,
                 iteration: 0,
                 intercept: 1.0,
@@ -2336,7 +2340,6 @@ mod tests {
         }
         let boundary: Vec<OwnedPolicyCutRecord> = (0..CUTS_PER_POOL)
             .map(|slot_index| OwnedPolicyCutRecord {
-                cut_id: u64::from(slot_index),
                 slot_index,
                 iteration: 0,
                 intercept: 1.0,

@@ -18,8 +18,7 @@ use crate::cut::fcf::FutureCostFunction;
 use crate::error::{ErrorClass, SddpError};
 use crate::policy::policy_load::{
     FullFcf, PolicyStageManifest, StoredBasisLoad, UnusedStoredBases,
-    build_basis_cache_from_checkpoint, checkpoint_terminal_cost_scale_factor,
-    rescale_checkpoint_cuts_for_load, validate_policy_load,
+    build_basis_cache_from_checkpoint, convert_checkpoint_cuts_for_load, validate_policy_load,
 };
 use crate::setup::StudySetup;
 use crate::training::training::TrainingResult;
@@ -156,13 +155,11 @@ pub fn check_full_fcf_load(
 ) -> Result<CheckedFullFcfLoad, FullFcfLoadError> {
     let mut checkpoint =
         read_policy_checkpoint(policy_dir).map_err(|source| FullFcfLoadError::Read { source })?;
-    let source_cost_scale_factor =
-        checkpoint_terminal_cost_scale_factor(&checkpoint).map_err(FullFcfLoadError::Refused)?;
-    rescale_checkpoint_cuts_for_load(
+    convert_checkpoint_cuts_for_load(
         &mut checkpoint.stage_cuts,
-        Some(source_cost_scale_factor),
         setup.inputs.stage_data.stage_templates.cost_scale_factor,
-    );
+    )
+    .map_err(FullFcfLoadError::Refused)?;
 
     // Rationale: the cast cannot truncate — `n_stages` is the validated study
     // horizon (a `u16`-scale stage count), far below `u32::MAX`.

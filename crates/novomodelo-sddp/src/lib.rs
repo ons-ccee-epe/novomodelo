@@ -101,8 +101,8 @@ pub use policy::policy_load::{
     LEGACY_COST_SCALE_FACTOR, PolicyLoadKind, PolicyLoadProof, PolicyStageManifest,
     StoredBasisLoad, StoredBasisMisfit, UnusedStoredBases, ValidatedBoundaryCuts,
     boundary_policy_required_lag_depth, build_basis_cache_from_checkpoint,
-    checkpoint_terminal_cost_scale_factor, compare_manifest_slot_identity, inject_boundary_cuts,
-    load_boundary_cuts, reconcile_boundary_policy, rescale_checkpoint_cuts_for_load,
+    compare_manifest_slot_identity, inject_boundary_cuts, load_boundary_cuts,
+    pool_cost_scale_factor, reconcile_boundary_policy, rescale_checkpoint_cuts_for_load,
     resolve_boundary_state_requirements, validate_policy_load,
 };
 pub use policy::provenance::{

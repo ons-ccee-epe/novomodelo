@@ -52,7 +52,6 @@ def _make_stage_cuts() -> list[dict[str, Any]]:
             "capacity": 10,
             "cuts": [
                 {
-                    "cut_id": 1,
                     "slot_index": 0,
                     "iteration": 1,
                     "forward_pass_index": 0,
@@ -61,7 +60,6 @@ def _make_stage_cuts() -> list[dict[str, Any]]:
                     "is_active": True,
                 },
                 {
-                    "cut_id": 2,
                     "slot_index": 1,
                     "iteration": 1,
                     "forward_pass_index": 1,
@@ -87,7 +85,7 @@ def test_write_policy_checkpoint_round_trip(tmp_path: pathlib.Path) -> None:
 
     loaded = novomodelo.results.load_policy(str(tmp_path))
 
-    assert loaded["metadata"]["format_version"] == 3
+    assert loaded["metadata"]["format_version"] == 4
     assert loaded["metadata"]["producer"]["cost_scale_factor"] == pytest.approx(
         2_500_000.0
     )
@@ -102,10 +100,12 @@ def test_write_policy_checkpoint_round_trip(tmp_path: pathlib.Path) -> None:
 
     cuts = stage["cuts"]
     assert len(cuts) == 2
-    assert cuts[0]["cut_id"] == 1
+    assert [cut["slot_index"] for cut in cuts] == [0, 1]
+    assert "cut_id" not in cuts[0]
     assert cuts[0]["intercept"] == pytest.approx(42.0)
     assert cuts[0]["coefficients"] == pytest.approx([1.0, 2.0, 3.0])
-    assert cuts[1]["cut_id"] == 2
+    assert cuts[0]["scored"] is False
+    assert "active_count" not in cuts[0]
     assert cuts[1]["coefficients"] == pytest.approx([0.5, -1.5, 2.5])
 
 
@@ -200,7 +200,7 @@ def test_write_policy_checkpoint_coefficient_length_mismatch_raises(
     stage_cuts = _make_stage_cuts()
     stage_cuts[0]["cuts"][0]["coefficients"] = [1.0, 2.0]  # state_dimension is 3
 
-    with pytest.raises(ValueError, match=r"stage 0 cut 1.*coefficients"):
+    with pytest.raises(ValueError, match=r"stage 0 cut at slot 0.*coefficients"):
         novomodelo.write_policy_checkpoint(
             str(tmp_path / "policy"), stage_cuts, _make_metadata()
         )
@@ -209,8 +209,8 @@ def test_write_policy_checkpoint_coefficient_length_mismatch_raises(
 def test_write_policy_checkpoint_defaults_apply_when_keys_omitted(
     tmp_path: pathlib.Path,
 ) -> None:
-    """warm_start_count, active_cut_indices, and entity_manifest all default
-    when their keys are absent from the stage_cuts dict.
+    """warm_start_count and entity_manifest default when their keys are absent
+    from the stage_cuts dict.
     """
     import novomodelo  # noqa: PLC0415
     import novomodelo.results  # noqa: PLC0415
@@ -258,7 +258,6 @@ def _storage_only_stage_cuts(
             "entity_manifest": manifest,
             "cuts": [
                 {
-                    "cut_id": 1,
                     "slot_index": 0,
                     "iteration": 1,
                     "forward_pass_index": 0,
@@ -436,8 +435,9 @@ def test_load_policy_self_describing_fields_survive_rewrite(
 def test_write_policy_checkpoint_active_cut_indices_do_not_survive_the_round_trip(
     tmp_path: pathlib.Path,
 ) -> None:
-    """active_cut_indices is written but not returned by load_policy, so a
-    load -> write cycle resets it; cut activity round-trips through is_active.
+    """active_cut_indices is not part of the checkpoint format, so a dict
+    carrying it loads back without it; cut activity round-trips through
+    is_active.
     """
     import novomodelo  # noqa: PLC0415
     import novomodelo.results  # noqa: PLC0415

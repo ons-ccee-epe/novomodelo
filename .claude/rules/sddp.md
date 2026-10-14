@@ -562,16 +562,14 @@ as `Prefix` for each record's slot and `add_cut` writes as `Generated`. It is
 never a value of `iteration_generated`. Under `warm_start` the run's iteration
 counter restarts at 1, so a loaded cut's generating iteration can equal the
 current one; every reader that separates a loaded cut from a cut of this run
-tests the predicate before the iteration. `cut_id` is a per-run label,
-`iteration_generated * visit_stride + forward_pass_index`, recomputed from the
-real iteration — not an identity across runs.
+tests the predicate before the iteration.
 
 A sentinel in `iteration_generated` (a value no iteration reaches) is the
 wrong-but-compiling alternative: it keeps loaded cuts out of the per-iteration
 sets, but the field reaches the checkpoint writer, which writes it as the cut's
-`iteration` and multiplies it into `cut_id`, so every loaded cut is exported with
-a corrupted iteration and, with two or more forward passes, an overflowing
-`cut_id`. Comparing `iteration_generated` to the current iteration without the
+`iteration`, so every loaded cut is exported with a corrupted iteration, or the
+write is refused when the sentinel does not fit the record's 32-bit field.
+Comparing `iteration_generated` to the current iteration without the
 predicate is the second: a loaded cut whose generating iteration equals the
 current one is taken for a cut of this iteration, appended to the LP a second
 time as a delta row and packed for the cut exchange as a new cut. Answering by
@@ -629,7 +627,8 @@ cut the run generated would fall out of the seed window it was in before the
 checkpoint.
 
 Two limits of what a resume restores. Bindings recorded before the checkpoint
-are not restored: the checkpoint stores no counters, so a reloaded cut that had
+are not restored: the checkpoint writes no counters (its `activity_counters` is
+unset), so a reloaded cut that had
 bound resumes at the iteration that generated it. A resumed run that was itself
 warm-started reloads its original prefix with the source's iterations: the load
 does not read the recorded `warm_start_count`, every record becomes a loaded
@@ -748,22 +747,25 @@ holds exactly its pool's active cuts, the terminal pool's included).
 
 ### A stored basis records its own cut-row count
 
-Each checkpoint `StageBasis` record carries `num_cut_rows =
-row_status.len() - base_row_count`, the trailing cut rows of the captured basis
-itself. Writing the node's pool count (`populated()`) instead is the
-wrong-but-compiling alternative: it overstates the basis's cut rows, because a
-forward-pass capture precedes that iteration's backward pass, which appends cuts
-to the pool afterwards. `FORMAT_VERSION` 3 marks this meaning. The loader still
-takes the template row count from the current LP (`node_dims`), never from the
-record. Read: `policy/policy_export.rs` (`build_stage_basis_records`). Pinned by
+Each checkpoint `StageBasis` record holds one `BasisEntry` per scenario, and each
+entry carries `piece_row_slots`, the pool slot of every trailing cut row of the
+captured basis itself (`CapturedBasis::cut_row_slots`, one per row of
+`row_status.len() - base_row_count`). Writing the node's pool count
+(`populated()`) instead is the wrong-but-compiling alternative: it overstates the
+basis's cut rows, because a forward-pass capture precedes that iteration's
+backward pass, which appends cuts to the pool afterwards. `FORMAT_VERSION` 4
+marks this layout. The loader still takes the template row count from the
+current LP (`node_dims`), never from the record. Read: `policy/policy_export.rs`
+(`build_scenario_zero_basis_entries`, `build_stage_basis_records`). Pinned by
 `build_stage_basis_records_writes_each_basis_own_trailing_cut_row_count`
 (`policy/policy_export.rs`) and
 `exported_basis_records_count_the_cut_rows_each_basis_was_captured_with`
 (`tests/cut_basis.rs`).
 
 The load uses a stored basis for its node only when it fits that node's LP
-exactly. `admit_stored_basis` checks, in order, `found_cols == template_cols`,
-`found_rows == template_rows + num_cut_rows`, and a basic count (column and row
+exactly. It reads each node record's entry with the lowest `scenario`, and
+`admit_stored_basis` checks, in order, `found_cols == template_cols`,
+`found_rows == template_rows + piece_row_slots.len()`, and a basic count (column and row
 statuses decoding to `Basic`) equal to `found_rows`. A record that fails is not
 used for its node and the load proceeds: its slot stays `None`, and
 `UnusedStoredBases` owns the one aggregated warning, `stored bases not used: …`.
@@ -2297,6 +2299,38 @@ machinery), whereas spillage is legitimately free in `Filling`.
 Read: `lp/builder/columns.rs` (`fill_spillage_columns`). Cases: D38, D39, D42
 (phantom PreFilling spill removed); D40 (legitimate Filling-phase spill retained).
 
+## Checkpoint cut values are stored in the run's scaled units
+
+A checkpoint stores every cut's intercept and coefficients as the pool holds them
+in memory, in the writing study's scaled units, and each pool's
+`StageCuts.cost_scale_factor` names that scale (`build_stage_cut_records`). A load
+converts each pool by its own factor (`rescale_cut_records_for_load`): when the
+pool's factor is bit-equal (`to_bits`) to the loading study's, the records are
+used unchanged, so a same-factor round trip, a resume included, is bit for bit;
+otherwise every value becomes `(value * source) / loading`, multiplying first.
+`value * (source / loading)` rounds the ratio first and moves the bits of a
+pool written at `1.0`.
+
+The wrong-but-compiling alternatives:
+
+- multiplying by the factor on export and dividing on load: the two roundings do
+  not cancel at a factor that is not a power of two, the default included, so a
+  resumed run drifts from the run it continues;
+- ignoring the source factor on load (dividing by the loading factor alone): a
+  checkpoint written at another factor loads at the wrong scale.
+
+Read: `policy/policy_export.rs` (`build_stage_cut_records`),
+`policy/policy_load.rs` (`rescale_cut_records_for_load`, `pool_cost_scale_factor`,
+`convert_checkpoint_cuts_for_load`), `policy/full_fcf_load.rs`
+(`check_full_fcf_load`). Pinned by `export_then_load_same_factor_round_trips_bit_for_bit`,
+`a_marked_checkpoint_converts_by_its_own_factor`,
+`a_cross_factor_load_multiplies_by_the_source_before_dividing` and
+`a_full_load_converts_each_pool_by_its_own_factor` (`policy/policy_load.rs`),
+`boundary_load_reads_cost_scale_from_bin`
+(`tests/boundary_self_describing_clean_break.rs`), and the one-pass resume leg
+`resumed_run_equals_the_uninterrupted_run_with_one_forward_pass`
+(`tests/periodic_checkpoint.rs`), which runs at the default factor.
+
 ## Policy-load compatibility validation is mandatory
 
 Every policy load — full-FCF warm-start/resume/simulation-only and terminal
@@ -2348,8 +2382,8 @@ and compared as an integer against each pool's own `priced_state_date`, walking
 `checkpoint.stage_cuts` in its pool-id-sorted order — an index into
 `graph_stage_id` or the raw pool id could silently pick a different, wrong
 future-cost function whose reconciliation tally is identical to the correct
-one. It then reads the selected pool's `cost_scale_factor` to feed
-`rescale_cut_records_for_load` — the additive `StageCuts`
+one. It then reads the selected pool's `cost_scale_factor` through
+`pool_cost_scale_factor` to feed `rescale_cut_records_for_load` — the additive `StageCuts`
 `cost_scale_factor`/`node_id`/`priced_state_date` fields make one
 `cuts/<pool>.bin` self-describing. Four named rejects guard the boundary load:
 every pool in the checkpoint carrying the `priced_state_date` sentinel (a
@@ -2362,9 +2396,10 @@ resolved pool whose `cost_scale_factor` reads `None` (a pre-self-describing
 re-export), never silently defaulting to `LEGACY_COST_SCALE_FACTOR`; and a
 resolved pool whose `node_id` is the `-1` sentinel (a shared, multi-owner
 pool) REJECTS — a boundary source must be a single-node terminal pool. The
-`FullFcf` path mirrors the `cost_scale_factor` read + `None`
-clean-break reject through `checkpoint_terminal_cost_scale_factor` (the terminal
-pool's own value). Resurrecting a read of `metadata.graph_manifest` or
+`FullFcf` path mirrors the `cost_scale_factor` read and its rejects through the
+per-pool check `pool_cost_scale_factor`, applied to every pool by
+`convert_checkpoint_cuts_for_load`: each pool converts by its own factor, and a
+factor that is absent, not finite or not positive is refused naming the pool. Resurrecting a read of `metadata.graph_manifest` or
 `metadata.producer.cost_scale_factor` on either load path is the
 wrong-but-compiling alternative this contract rules out: `metadata.json` is
 retired — the study-global graph, `num_stages`, and provenance now live on the
@@ -2377,7 +2412,8 @@ The shared-pool `node_id` reject above is pinned by
 `tests/shared_boundary_terminal_fan_probe.rs`.
 
 Read: `policy/policy_load.rs` (`validate_policy_load`, `slot_identity`,
-`checkpoint_terminal_cost_scale_factor`, `boundary_predates_self_describing_cuts`,
+`pool_cost_scale_factor`, `convert_checkpoint_cuts_for_load`,
+`boundary_predates_self_describing_cuts`,
 `PolicyLoadKind::CHECK_STATE_DIMENSION`,
 `PolicyLoadKind::CHECK_SLOT_IDENTITY_EXACT`), `policy/reconcile.rs`
 (`build_rebind`, `rebind_cut`). Pinned by the `validate_policy_load_full_fcf_*`

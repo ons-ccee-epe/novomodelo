@@ -92,16 +92,18 @@ pub use initial_conditions::parse_initial_conditions;
 pub use output::policy::codec::{deserialize_checkpoint_manifest, serialize_checkpoint_manifest};
 pub use output::policy::records::CheckpointManifest;
 pub use output::policy::{
-    ENTITY_SLOT_DATE_SENTINEL, EntitySlot, FORMAT_VERSION, GraphManifest, HydroSeasonOrders,
-    ManifestEdge, ManifestNode, OwnedPolicyBasisRecord, OwnedPolicyCutRecord, PolicyBasisRecord,
-    PolicyCheckpoint, PolicyCutRecord, ProducerBlock, ResolvedCheckpoint, SEASON_CYCLE_CODE_ABSENT,
-    SEASON_CYCLE_CODE_CUSTOM, SEASON_CYCLE_CODE_MONTHLY, SEASON_CYCLE_CODE_WEEKLY,
-    STAGE_CUTS_GRAPH_STAGE_ID_SENTINEL, STAGE_CUTS_NODE_ID_SENTINEL,
-    STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, STAGE_STATES_NODE_ID_SENTINEL, SeasonManifest,
-    StageCutsPayload, StageCutsReadResult, StageStatesPayload, StageStatesReadResult, StateFamily,
-    decode_slot_date, deserialize_stage_basis, deserialize_stage_cuts, deserialize_stage_states,
-    encode_slot_date, read_policy_checkpoint, resolve_policy_checkpoint, serialize_stage_basis,
-    serialize_stage_cuts, serialize_stage_states, write_policy_checkpoint,
+    BasisEntry, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, FORMAT_VERSION, GraphManifest,
+    HydroSeasonOrders, ManifestEdge, ManifestNode, OwnedBasisEntry, OwnedPolicyBasisRecord,
+    OwnedPolicyCutRecord, PolicyBasisRecord, PolicyCheckpoint, PolicyCutRecord, ProducerBlock,
+    ResolvedCheckpoint, SEASON_CYCLE_CODE_ABSENT, SEASON_CYCLE_CODE_CUSTOM,
+    SEASON_CYCLE_CODE_MONTHLY, SEASON_CYCLE_CODE_WEEKLY, STAGE_CUTS_GRAPH_STAGE_ID_SENTINEL,
+    STAGE_CUTS_NODE_ID_SENTINEL, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+    STAGE_STATES_NODE_ID_SENTINEL, STATE_HISTORY_SCOPE_NONE, STATE_HISTORY_SCOPE_WHOLE,
+    STATE_HISTORY_SCOPE_WINDOW, SeasonManifest, StageCutsPayload, StageCutsReadResult,
+    StageStatesPayload, StageStatesReadResult, StateFamily, StateHistory, decode_slot_date,
+    deserialize_stage_basis, deserialize_stage_cuts, deserialize_stage_states, encode_slot_date,
+    read_policy_checkpoint, resolve_policy_checkpoint, serialize_stage_basis, serialize_stage_cuts,
+    serialize_stage_states, write_policy_checkpoint,
 };
 pub use output::{
     DeviationSummary, DeviationWorstEntry, DistributionInfo, EVAPORATION_MODELS_FILE,

@@ -256,11 +256,6 @@ fn warm_started_run_exports_loaded_cuts_with_their_iterations() {
                 "pool {pool_id} slot {slot}: iteration {}",
                 cut.iteration
             );
-            assert_eq!(
-                cut.cut_id,
-                u64::from(cut.iteration) * stride + u64::from(cut.forward_pass_index),
-                "pool {pool_id} slot {slot}: cut id"
-            );
         }
     }
 
