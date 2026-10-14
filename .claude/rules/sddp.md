@@ -656,12 +656,15 @@ run's counters at the periodic and at the final write. `CutPool::new_resumed`
 writes a record's counters into its slot, so a resumed run with a budget or
 `dynamic` continues the eviction order and the seed window of the uninterrupted
 run, the prefix of a run that was itself warm-started included: its counters are
-on that run's clock. A record without counters resumes at `active_count = 0` and
-`last_active_iter = iteration`, which only a run with no reader configured reaches:
-a resume whose run configures one refuses a checkpoint written without counters
-(the resume rejects below), since every reloaded cut would restart at its
-generating iteration, a warm-started prefix cut at the source run's. A warm start,
-a boundary injection and a simulation-only load read no counter.
+on that run's clock. A record without counters resumes at `active_count = 0` and, in
+a slot below the recorded prefix length, at `last_active_iter = 0`, where the
+restart of a warm start or a boundary injection left it; in any other slot at
+`last_active_iter = iteration`, where `add_cut` starts a cut. Only a run with no
+reader configured writes such a record, and nothing reads either counter in
+that run. A resume whose run configures a reader refuses a checkpoint written
+without counters (the resume rejects below), since the recorded run did not count
+the iterations in which its cuts bound. A warm start, a boundary injection and a
+simulation-only load read no counter.
 
 Writing the counters always and reading them under `warm_start` is the
 wrong-but-compiling alternative: the records carry the source run's clock, which
@@ -669,6 +672,9 @@ the new run's counter does not continue (the seeding error above). Not restoring
 them on a resume is the opposite one: a reloaded cut that had bound resumes at the
 iteration that generated it, so the budget evicts it ahead of cuts the
 uninterrupted run evicts and `dynamic` drops it from the seed window it was in.
+Resuming a prefix record without counters at its generating iteration is the
+last: no result moves, since no reader exists, but the resumed pool no longer
+equals the uninterrupted warm-started run's, whose prefix holds 0.
 
 Read: `cut/pool.rs` (`CutPool::restart_activity_clock`, `CutPool::new_resumed`,
 `add_cut`, `enforce_budget`), `cut/dcs.rs` (`build_initial_resident_set`),
@@ -694,7 +700,13 @@ and `last_active_iter` equals the record's iteration, under a warm start they ar
 prefix slots and it is 0),
 `injected_boundary_cuts_start_on_this_runs_activity_clock`
 (`policy/policy_load.rs`), `restart_activity_clock_touches_only_the_loaded_prefix`
-(`cut/pool.rs`), `a_warm_started_cut_is_seeded_in_the_first_window_and_after_it_binds`
+(`cut/pool.rs`), `a_resumed_record_without_counters_resumes_on_the_clock_its_run_left_it`
+(`cut/pool.rs`: a record without counters resumes at 0 below the prefix length
+and at its iteration above it, one with counters at its counters),
+`a_resumed_warm_started_run_equals_its_uninterrupted_run`
+(`tests/periodic_checkpoint.rs`: the counters of every slot of a warm-started run
+without a reader, prefix included, equal the uninterrupted run's),
+`a_warm_started_cut_is_seeded_in_the_first_window_and_after_it_binds`
 (`cut/dcs.rs`: the window and its saturation under the stored clock) and
 `a_loaded_slot_is_not_seeded_as_a_current_iteration_cut` (`cut/dcs.rs`: the
 guard).
@@ -1426,7 +1438,12 @@ The wrong-but-compiling alternatives:
   run shows it, since a chain source leaves no vacant slot;
 - creating the store in the loader, or storing before the enabling: the
   store is unbounded where the strategy asks for a window, and the enabling is no
-  longer the one owner of who stores. Not pinned by a test.
+  longer the one owner of who stores. The mutation shown has the loader call
+  `enable_trial_states` for each pool it holds rows for, before the enabling, which
+  then skips a pool that already stores. Pinned by
+  `level1_with_a_window_resume_equals_the_uninterrupted_run`
+  (`tests/periodic_checkpoint.rs`), which fails under it: the states of the
+  iterations after the resume never leave the window.
 
 Read: `cut/trial_states.rs`, `cut/pool.rs` (`CutPool::enable_trial_states`,
 `CutPool::enable_trial_states_within`, `CutPool::store_trial_state`,
@@ -2838,6 +2855,77 @@ validates), with the rows `resume_without_the_trial_state_history` and
 `resume_from_a_partial_policy` of `crates/novomodelo-cli/tests/refusal_parity.rs` and
 `crates/novomodelo-python/tests/test_refusal_parity.py` (the same line from
 `novomodelo validate`, `novomodelo run` and the Python bindings).
+
+## A resume continues the uninterrupted run
+
+A run resumed from the checkpoint of iteration `k` and trained to iteration `n`
+holds what the run uninterrupted to `n` holds, both stopped by an iteration limit:
+a stopping rule that reads the lower bound can stop the two runs an iteration
+apart.
+
+Bit for bit:
+
+- in every pool, the cut values, the activity flags, the generating iteration and
+  forward pass of every slot, the binding counters, each slot's role, the stored
+  trial states and the ownership record (the owner, the best value and the owned
+  count of each state);
+- the final upper bound, the forward and backward simplex counts of the iterations
+  after `k`, and the pool row counts those iterations report
+  (`TrainingEvent::PolicyPoolSummary`, bar its wall-clock field);
+- the bases the resume seeds, per node and scenario, against the ones the
+  checkpoint holds;
+- the final checkpoint: manifest, cuts, bases, trial states and prefix length, bar
+  `created_at` and its lower-bound fields.
+
+Within a relative `1e-6`: the lower-bound series, and the checkpoint's copy of it.
+The uninterrupted run rebuilds the lower-bound LP warm and the resumed run builds
+it cold, so two solves of one LP start from different solver states. The simplex
+counts of the lower-bound solve are not compared.
+
+The resumed run's own settings apply after the resume: its iteration limit,
+`check_frequency`, budget value and cost scale. The state the resume rejects name
+(the forward-pass count, the trial-state history and window, the binding counters
+and a whole basis store) must come with the checkpoint; the legs resume under the
+settings that wrote it, which is what makes the comparison with the uninterrupted
+run one of equals.
+
+The wrong-but-compiling alternatives:
+
+- comparing the cuts and the bounds only: a counter, a role, a trial state or a
+  basis that differs changes no cut value until a later pass reads it;
+- comparing the lower bounds bit for bit: the cold rebuild differs in the last
+  digits.
+
+The legs catch each of these mutations of the resume:
+
+- every record loaded as `Prefix`: every leg fails, on the slot roles or, once a
+  budget evicts, on the cuts;
+- no trial state loaded: the legs that run `level1` fail on the cuts the first
+  selection pass deactivates, and the `dynamic` and selection-off legs, whose pools
+  store none, are unchanged;
+- an iteration base of `start_iteration + 1`: a `debug_assert` stops a debug build.
+  With debug assertions off the legs still fail: the resumed run aborts with
+  `BasisRowCountMismatch` in most, and in the `dynamic` and the warm-start legs,
+  whose runs complete, the comparison of the final checkpoints fails by itself.
+
+Read: `training/session/mod.rs` (`TrainingSession::new`), `cut/pool.rs`
+(`CutPool::new_resumed`), `policy/full_fcf_load.rs` (`check_full_fcf_load`).
+Pinned by, in `tests/periodic_checkpoint.rs`, the legs
+`level1_resume_equals_the_uninterrupted_run`,
+`level1_with_a_window_resume_equals_the_uninterrupted_run`,
+`level1_with_a_budget_resume_equals_the_uninterrupted_run`,
+`dynamic_resume_equals_the_uninterrupted_run`,
+`a_resume_on_more_threads_equals_the_uninterrupted_run` (checkpointed on one thread,
+resumed on two), `a_resumed_warm_started_run_equals_its_uninterrupted_run` and the
+selection-off legs `resumed_run_equals_the_uninterrupted_run_with_one_forward_pass`
+and `resumed_run_equals_the_uninterrupted_run_with_several_forward_passes`. Each
+`level1` leg asserts that a selection pass ran at the last iteration, so the
+ownership record is current, and that a slot generated by the checkpoint changed
+its flag afterwards; the window legs, that the window had dropped a state before
+the checkpoint (the warm-start leg, a loaded one); the budget leg, that an owner
+generated by the checkpoint is inactive at `n`, which only the final budget can
+have made it; the `dynamic` leg, that a slot generated by the checkpoint bound
+again.
 
 ## Policy-load compatibility validation is mandatory
 

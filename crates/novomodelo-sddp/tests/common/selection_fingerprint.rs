@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
+use std::ops::RangeInclusive;
 
 use novomodelo_core::TrainingEvent;
 use novomodelo_sddp::cut::{CutPool, SlotOrigin, SlotRole};
@@ -152,9 +153,46 @@ impl SelectionFingerprint {
         );
     }
 
+    /// Asserts that every pool of `self` and `other` agrees in every field,
+    /// naming the first difference. The bounds are not compared.
+    ///
+    /// # Panics
+    ///
+    /// Panics with `context` and the field, its pool, the position in it and
+    /// both values.
+    pub fn assert_pools_match(&self, other: &Self, context: &str) {
+        let difference = self.first_pool_difference(other);
+        assert!(
+            difference.is_none(),
+            "{context}: {}",
+            difference.unwrap_or_default()
+        );
+    }
+
     /// The first field in which `self` and `other` differ, with its pool, its
     /// position in the field and both values.
     fn first_difference(&self, other: &Self) -> Option<String> {
+        self.first_pool_difference(other).or_else(|| {
+            [
+                mismatch(
+                    "lower_bound_bits",
+                    &self.bounds.lower_bound_bits,
+                    &other.bounds.lower_bound_bits,
+                ),
+                mismatch(
+                    "final_ub_bits",
+                    &[self.bounds.final_ub_bits],
+                    &[other.bounds.final_ub_bits],
+                ),
+            ]
+            .into_iter()
+            .flatten()
+            .next()
+        })
+    }
+
+    /// [`first_difference`](Self::first_difference) over the pools only.
+    fn first_pool_difference(&self, other: &Self) -> Option<String> {
         if self.cuts.len() != other.cuts.len() {
             return Some(format!(
                 "pool count: {} vs {}",
@@ -222,23 +260,7 @@ impl SelectionFingerprint {
             .next()
             .map(|difference| format!("pool {pool}: {difference}"))
         };
-        (0..self.cuts.len()).find_map(in_pool).or_else(|| {
-            [
-                mismatch(
-                    "lower_bound_bits",
-                    &self.bounds.lower_bound_bits,
-                    &other.bounds.lower_bound_bits,
-                ),
-                mismatch(
-                    "final_ub_bits",
-                    &[self.bounds.final_ub_bits],
-                    &[other.bounds.final_ub_bits],
-                ),
-            ]
-            .into_iter()
-            .flatten()
-            .next()
-        })
+        (0..self.cuts.len()).find_map(in_pool)
     }
 }
 
@@ -300,6 +322,23 @@ impl SelectionPower {
     }
 }
 
+/// The row-management events of `iterations`, in the order they were emitted.
+pub fn row_management_events(
+    events: &[TrainingEvent],
+    iterations: RangeInclusive<u64>,
+) -> Vec<TrainingEvent> {
+    events
+        .iter()
+        .filter(|event| match event {
+            TrainingEvent::PolicySelectionComplete { iteration, .. }
+            | TrainingEvent::PolicyBudgetEnforcementComplete { iteration, .. }
+            | TrainingEvent::PolicyPoolSummary { iteration, .. } => iterations.contains(iteration),
+            _ => false,
+        })
+        .cloned()
+        .collect()
+}
+
 /// Whether a selection pass ran at the run's last iteration. The ownership
 /// record is brought up to date by a selection pass only, so otherwise the
 /// states of the later iterations have no owner yet.
@@ -340,6 +379,8 @@ pub struct OwnershipPower {
     pub states_owned_by_another_slot: usize,
     /// Scored slots that hold no trial state: a window dropped it.
     pub scored_slots_without_a_state: usize,
+    /// The scored slots without a state that a load wrote.
+    pub loaded_scored_slots_without_a_state: usize,
 }
 
 impl OwnershipPower {
@@ -349,6 +390,7 @@ impl OwnershipPower {
             stored_states: 0,
             states_owned_by_another_slot: 0,
             scored_slots_without_a_state: 0,
+            loaded_scored_slots_without_a_state: 0,
         };
         for pool_id in interior_pool_ids(setup) {
             let pool = &setup.fcf.pools[pool_id];
@@ -360,6 +402,9 @@ impl OwnershipPower {
                     }
                 } else if pool.role(slot).scored {
                     power.scored_slots_without_a_state += 1;
+                    if pool.is_prefix_slot(slot) {
+                        power.loaded_scored_slots_without_a_state += 1;
+                    }
                 }
             }
         }

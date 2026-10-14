@@ -1339,8 +1339,10 @@ impl CutPool {
     /// `slot_index`, the first `prefix_len` slots `Prefix` and every other
     /// record `Generated`, a record's `scored` flag and binding counters as
     /// written. A record without counters starts at `active_count = 0` and
-    /// `last_active_iter = iteration`. A slot with no record stays vacant, so a
-    /// later cut lands where the recorded run's did.
+    /// `last_active_iter = iteration`, or at `last_active_iter = 0` below
+    /// `prefix_len`, where [`restart_activity_clock`](CutPool::restart_activity_clock)
+    /// left the recorded run's. A slot with no record stays vacant, so a later
+    /// cut lands where the recorded run's did.
     ///
     /// `prefix_len` is the recorded pool's protected-prefix length and becomes
     /// the slot base. Capacity is the larger of `stored_capacity` and
@@ -1426,6 +1428,7 @@ impl CutPool {
             let (active_count, last_active_iter) =
                 match (record.active_count, record.last_active_iteration) {
                     (Some(count), Some(last)) => (count, last),
+                    _ if slot < prefix => (0, 0),
                     _ => (0, u64::from(record.iteration)),
                 };
             metadata[slot] = CutMetadata {
@@ -2311,12 +2314,63 @@ mod tests {
                 (
                     u64::from(record.iteration),
                     record.forward_pass_index,
-                    u64::from(record.iteration),
+                    if slot < 2 {
+                        0
+                    } else {
+                        u64::from(record.iteration)
+                    },
                     0
                 ),
                 "slot {slot}"
             );
         }
+    }
+
+    #[test]
+    fn a_resumed_record_without_counters_resumes_on_the_clock_its_run_left_it() {
+        let counted = |slot, iteration| novomodelo_io::OwnedPolicyCutRecord {
+            active_count: Some(4),
+            last_active_iteration: Some(7),
+            ..record_at(slot, iteration)
+        };
+        let clock = |pool: &CutPool, slot: usize| {
+            let meta = pool.metadata(slot);
+            (meta.active_count, meta.last_active_iter)
+        };
+        let pool = CutPool::new_resumed(
+            1,
+            2,
+            4,
+            2,
+            6,
+            &[
+                record_at(0, 3),
+                counted(1, 3),
+                record_at(2, 3),
+                counted(3, 3),
+            ],
+        )
+        .unwrap();
+        assert_eq!(clock(&pool, 0), (0, 0), "prefix record without counters");
+        assert_eq!(clock(&pool, 1), (4, 7), "prefix record with counters");
+        assert_eq!(clock(&pool, 2), (0, 3), "generated record without counters");
+        assert_eq!(clock(&pool, 3), (4, 7), "generated record with counters");
+
+        let mut restarted = CutPool::new_resumed(
+            1,
+            2,
+            4,
+            2,
+            6,
+            &[counted(0, 3), counted(1, 3), record_at(2, 3)],
+        )
+        .unwrap();
+        restarted.restart_activity_clock();
+        assert_eq!(
+            clock(&restarted, 0),
+            clock(&pool, 0),
+            "a restarted prefix slot is the one a record without counters resumes at"
+        );
     }
 
     #[test]
