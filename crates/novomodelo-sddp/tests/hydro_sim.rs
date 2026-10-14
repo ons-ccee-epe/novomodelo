@@ -663,6 +663,7 @@ mod multi_resolution_integration {
     use std::sync::mpsc;
 
     use novomodelo_core::temporal::SeasonCycleType;
+    use novomodelo_sddp::indexer::CutSlot;
     use novomodelo_sddp::setup::{NodePos, StageIdx};
     use novomodelo_sddp::test_support::{
         node_opening_noise, oracle_initial_state, patch_backward_opening_for_probe,
@@ -916,23 +917,31 @@ mod multi_resolution_integration {
             "D30: training outcome must have no error; got: {:?}",
             outcome.error
         );
-        let archive = outcome
-            .result
-            .visited_archive
-            .expect("set_export_states(true) must keep the visited-states archive");
-        let stride = archive.packing_stride();
+        let training_ctx = trained.training_ctx();
+        let n_state = trained.stage_state().n_state;
 
         (0..trained.num_stages())
             .map(|t| {
                 if t == 0 {
                     return oracle_initial_state(&trained);
                 }
-                archive
-                    .states_for_node(NodePos(t - 1))
-                    .chunks_exact(stride)
-                    .next_back()
-                    .unwrap_or_else(|| panic!("D30: node {} archived no state", t - 1))
-                    .to_vec()
+                let pool_id = trained.inputs.node_graph.nodes[NodePos(t - 1)].pool_id;
+                let pool = &trained.fcf.pools[pool_id];
+                let layout = &training_ctx.cut_state_layouts[pool_id];
+                assert_eq!(
+                    layout.n_slots(),
+                    n_state,
+                    "D30: pool {pool_id} must project every state dimension"
+                );
+                let row = (0..pool.populated())
+                    .rev()
+                    .find_map(|slot| pool.trial_state(slot))
+                    .unwrap_or_else(|| panic!("D30: pool {pool_id} stored no state"));
+                let mut state = vec![0.0; n_state];
+                for (j, &value) in row.iter().enumerate() {
+                    state[layout.global_state_index(CutSlot::new(j)).get()] = value;
+                }
+                state
             })
             .collect()
     }

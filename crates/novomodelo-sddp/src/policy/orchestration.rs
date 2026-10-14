@@ -215,9 +215,6 @@ pub struct CheckpointParams {
     pub forward_passes: u32,
     /// Random seed used for noise generation.
     pub seed: u64,
-    /// The `exports.states` config flag. The checkpoint writer does not read
-    /// it: every pool that stores trial states writes them.
-    pub export_states: bool,
 }
 
 fn pool_entity_manifests(

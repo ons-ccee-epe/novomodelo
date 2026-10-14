@@ -544,7 +544,6 @@ pub(crate) fn write_training_outputs(
             max_iterations: setup.loop_params.max_iterations,
             forward_passes: setup.loop_params.forward_passes,
             seed,
-            export_states: config.exports.states,
         },
     )
     .map_err(|e| format!("{POLICY_CHECKPOINT_ERROR_PREFIX}: {e}"))?;

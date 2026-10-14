@@ -344,7 +344,6 @@ impl Study {
                 Vec::new(),
                 Vec::new(),
                 None,
-                None,
             );
             return Ok(Policy {
                 training_result: synthetic,

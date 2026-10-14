@@ -47,7 +47,6 @@ use crate::{
     state_exchange::ExchangeBuffers,
     training_session::{rank_distribution::RankDistribution, runtime::RuntimeHandles},
     trajectory::TrajectoryRecord,
-    visited_states::VisitedStatesArchive,
     workspace::{BasisStore, BasisStoreSliceMut, ByNodeScratch, SolverWorkspace, WorkspacePool},
 };
 
@@ -89,9 +88,6 @@ pub struct BackwardPassInputs<'a, S: SolverInterface + Send, C: Communicator> {
 
     /// Pre-allocated cut synchronisation buffers for per-stage `allgatherv`.
     pub cut_sync_bufs: &'a mut CutSyncBuffers,
-
-    /// Visited-states archive; `None` when the training session allocates none.
-    pub visited_archive: Option<&'a mut VisitedStatesArchive>,
 
     /// Optional event channel for emitting [`TrainingEvent::WorkerTiming`] events.
     pub event_sender: Option<&'a Sender<TrainingEvent>>,
@@ -140,7 +136,6 @@ impl<'a, S: SolverInterface + Send, C: Communicator> BackwardPassInputs<'a, S, C
         fcf: &'a mut FutureCostFunction,
         exchange: &'a mut ExchangeBuffers,
         cut_sync_bufs: &'a mut CutSyncBuffers,
-        visited_archive: &'a mut Option<VisitedStatesArchive>,
         training_ctx: &'a TrainingContext<'a>,
         comm: &'a C,
         cut_mgmt: &'a CutManagementConfig,
@@ -162,7 +157,6 @@ impl<'a, S: SolverInterface + Send, C: Communicator> BackwardPassInputs<'a, S, C
             exchange,
             records,
             cut_sync_bufs,
-            visited_archive: visited_archive.as_mut(),
             event_sender: runtime.event_sender(),
             risk_measures: &cut_mgmt.risk_measures,
             cut_activity_tolerance: cut_mgmt.cut_activity_tolerance,
@@ -204,9 +198,6 @@ pub struct BackwardPassState {
     /// Receive buffer for the `allreduce(Sum)` aggregating per-slot binding
     /// increments across MPI ranks.
     pub(crate) global_increments_buf: Vec<u64>,
-
-    /// Packs real (non-padded) gathered state vectors when archiving visited states.
-    pub(crate) real_states_buf: Vec<f64>,
 
     /// Per-(worker, opening) gather buffer for backward-pass solver stats.
     ///
@@ -393,8 +384,6 @@ impl BackwardPassState {
     /// - `n_workers_local`: number of rayon worker threads on this rank.
     /// - `n_ranks`: total MPI rank count.
     /// - `bwd_max_openings`: maximum opening count across all stages.
-    /// - `real_states_capacity`: capacity hint for `real_states_buf`
-    ///   (`real_total_scenarios * n_state`).
     /// - `max_local_fwd`: maximum local forward-pass count across the run.
     /// - `state`: state-vector layout owner (`n_state` dimension).
     /// - `horizon`: horizon owner (`num_stages` dimension).
@@ -407,7 +396,6 @@ impl BackwardPassState {
         n_workers_local: usize,
         n_ranks: usize,
         bwd_max_openings: usize,
-        real_states_capacity: usize,
         max_local_fwd: usize,
         state: &StateSpace,
         horizon: &HorizonMode,
@@ -421,7 +409,6 @@ impl BackwardPassState {
             successor_active_slots_buf: Vec::new(),
             metadata_sync_buf: Vec::new(),
             global_increments_buf: Vec::new(),
-            real_states_buf: Vec::with_capacity(real_states_capacity),
             stage_worker_stats_buf: StageWorkerStatsBuffer::new(n_workers_local, bwd_max_openings),
             bwd_stats_send_buf: vec![0.0; send_stride],
             bwd_stats_recv_buf: vec![0.0; n_ranks * send_stride],
@@ -775,13 +762,6 @@ impl BackwardPassState {
                 let successor_stage = node_stage.next();
 
                 let x_hat = inputs.enumerated_state.out_state(node_pos);
-
-                // A node on the enumerated path has ONE distinct incoming state,
-                // so archive that single vector (never `total_fwd` copies as the
-                // sampled level driver does).
-                if let Some(archive) = inputs.visited_archive.as_mut() {
-                    archive.archive_one_state(node_pos, x_hat);
-                }
 
                 assemble_successor_outcome_weights(
                     node_graph,
@@ -1621,22 +1601,6 @@ fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
     // [`check_visit_bound`] compares a single-node level's routed count
     // against (every trial routes to that level's sole node).
     let total_fwd = inputs.exchange.real_total_scenarios();
-
-    if let Some(ref mut archive) = inputs.visited_archive {
-        inputs
-            .exchange
-            .pack_real_states_into(&mut state.real_states_buf);
-        // Archive by NODE position, not `level_stage` used as a node index:
-        // sibling nodes at one stage own distinct pools and cut regions, so each
-        // reads back its own archive (`states_for_node`). The exchange gathers the
-        // level's states without per-node split, so every node in a multi-node
-        // level receives the level's states — a conservative over-inclusion that
-        // never drops a binding cut. On a chain the level is one node, giving the
-        // former single stage-keyed bucket byte-for-byte.
-        for &node_pos in level {
-            archive.archive_gathered_states(node_pos, &state.real_states_buf, total_fwd);
-        }
-    }
 
     // Route this rank's trial points to the level's pools once (a mem-swapped
     // local so the borrow does not conflict with `&mut state` below); a
@@ -2721,13 +2685,11 @@ mod tests {
         let n_workers_local = 2_usize;
         let n_ranks = 3_usize;
         let bwd_max_openings = 5_usize;
-        let real_states_capacity = 10_usize;
 
         let state = BackwardPassState::new(
             n_workers_local,
             n_ranks,
             bwd_max_openings,
-            real_states_capacity,
             7,
             &state_layout(4, 0),
             &HorizonMode::Finite { num_stages: 3 },
@@ -2774,7 +2736,6 @@ mod tests {
             1,
             2,
             1,
-            0,
             max_local_fwd,
             &state_layout(1, 0),
             &HorizonMode::Finite { num_stages: 2 },
@@ -3145,15 +3106,8 @@ mod tests {
         let bwd_max_openings = n_openings;
         // Capture local_count before mutably borrowing exchange inside the struct literal.
         let local_count = exchange.local_count();
-        let mut state = BackwardPassState::new(
-            1,
-            1,
-            bwd_max_openings,
-            n_state,
-            local_count,
-            &state,
-            &horizon,
-        );
+        let mut state =
+            BackwardPassState::new(1, 1, bwd_max_openings, local_count, &state, &horizon);
 
         let mut inputs = BackwardPassInputs {
             workspaces: &mut workspaces,
@@ -3167,7 +3121,6 @@ mod tests {
             exchange: &mut exchange,
             records: &records,
             cut_sync_bufs: &mut csb,
-            visited_archive: None,
             event_sender: None,
             risk_measures: &risk_measures,
             cut_activity_tolerance: 0.0,
@@ -3300,15 +3253,8 @@ mod tests {
         };
 
         let local_count = exchange.local_count();
-        let mut state_machine = BackwardPassState::new(
-            1,
-            1,
-            bwd_max_openings,
-            n_state,
-            local_count,
-            state,
-            &horizon,
-        );
+        let mut state_machine =
+            BackwardPassState::new(1, 1, bwd_max_openings, local_count, state, &horizon);
 
         let mut inputs = BackwardPassInputs {
             workspaces: &mut workspaces,
@@ -3322,7 +3268,6 @@ mod tests {
             exchange: &mut exchange,
             records,
             cut_sync_bufs: &mut csb,
-            visited_archive: None,
             event_sender: None,
             risk_measures: &risk_measures,
             cut_activity_tolerance: 0.0,
@@ -3689,15 +3634,8 @@ mod tests {
         };
 
         let local_count = exchange.local_count();
-        let mut state_machine = BackwardPassState::new(
-            n_workers,
-            1,
-            bwd_max_openings,
-            n_state,
-            local_count,
-            state,
-            &horizon,
-        );
+        let mut state_machine =
+            BackwardPassState::new(n_workers, 1, bwd_max_openings, local_count, state, &horizon);
         state_machine.set_scheduler(scheduler);
 
         let mut inputs = BackwardPassInputs {
@@ -3712,7 +3650,6 @@ mod tests {
             exchange: &mut exchange,
             records,
             cut_sync_bufs: &mut csb,
-            visited_archive: None,
             event_sender: None,
             risk_measures: &risk_measures,
             cut_activity_tolerance: 0.0,
@@ -3925,8 +3862,7 @@ mod tests {
             .max()
             .unwrap_or(0)
             .max(1);
-        let mut state_machine =
-            BackwardPassState::new(1, 1, bwd_max_openings, n_state, 1, &state, &horizon);
+        let mut state_machine = BackwardPassState::new(1, 1, bwd_max_openings, 1, &state, &horizon);
 
         let mut inputs = BackwardPassInputs {
             workspaces: &mut workspaces,
@@ -3940,7 +3876,6 @@ mod tests {
             exchange: &mut exchange,
             records: &[],
             cut_sync_bufs: &mut csb,
-            visited_archive: None,
             event_sender: None,
             risk_measures: &risk_measures,
             cut_activity_tolerance: 0.0,
@@ -4413,7 +4348,6 @@ mod tests {
             1,
             1,
             bwd_max_openings,
-            n_state,
             local_count,
             &state_layout_fixture,
             &horizon,
@@ -4448,7 +4382,6 @@ mod tests {
             exchange: &mut exchange,
             records: &records,
             cut_sync_bufs: &mut csb,
-            visited_archive: None,
             event_sender: None,
             risk_measures: &risk_measures,
             cut_activity_tolerance: 0.0,
@@ -4538,15 +4471,8 @@ mod tests {
 
         let bwd_max_openings = n_openings;
         let local_count = exchange.local_count();
-        let mut state = BackwardPassState::new(
-            1,
-            1,
-            bwd_max_openings,
-            n_state,
-            local_count,
-            &state,
-            &horizon,
-        );
+        let mut state =
+            BackwardPassState::new(1, 1, bwd_max_openings, local_count, &state, &horizon);
 
         let mut inputs = BackwardPassInputs {
             workspaces: &mut workspaces,
@@ -4560,7 +4486,6 @@ mod tests {
             exchange: &mut exchange,
             records: &records,
             cut_sync_bufs: &mut csb,
-            visited_archive: None,
             event_sender: None,
             risk_measures: &risk_measures,
             cut_activity_tolerance: 0.0,
@@ -4642,7 +4567,6 @@ mod tests {
             1,
             1,
             n_openings,
-            n_state,
             1,
             &state_layout(n_state, 0),
             &HorizonMode::Finite {
@@ -4987,16 +4911,16 @@ mod tests {
         let horizon = HorizonMode::Finite { num_stages: 5 };
 
         // No scheduler set ⇒ empty (the pre-existing ByScenario/sampled default).
-        let baseline = BackwardPassState::new(1, 1, 4, 0, 2, &state, &horizon);
+        let baseline = BackwardPassState::new(1, 1, 4, 2, &state, &horizon);
         assert_eq!(baseline.by_node_scratch_arena_capacity(), 0);
 
         // set_scheduler(ByNode) sizes it.
-        let mut by_node_only = BackwardPassState::new(1, 1, 4, 0, 2, &state, &horizon);
+        let mut by_node_only = BackwardPassState::new(1, 1, 4, 2, &state, &horizon);
         by_node_only.set_scheduler(BackwardScheduler::ByNode { block_size: None });
         assert!(by_node_only.by_node_scratch_arena_capacity() > 0);
 
         // set_scheduler(ByScenario) keeps it empty.
-        let mut by_scenario_only = BackwardPassState::new(1, 1, 4, 0, 2, &state, &horizon);
+        let mut by_scenario_only = BackwardPassState::new(1, 1, 4, 2, &state, &horizon);
         by_scenario_only.set_scheduler(BackwardScheduler::ByScenario {});
         assert_eq!(by_scenario_only.by_node_scratch_arena_capacity(), 0);
     }
@@ -5255,7 +5179,6 @@ mod tests {
             1,
             1,
             bwd_max_openings,
-            n_state,
             total_forward_passes,
             training_ctx.state,
             training_ctx.horizon,
@@ -5273,7 +5196,6 @@ mod tests {
             exchange: &mut exchange,
             records: &records,
             cut_sync_bufs: &mut csb,
-            visited_archive: None,
             event_sender,
             risk_measures: &risk_measures,
             cut_activity_tolerance: 0.0,

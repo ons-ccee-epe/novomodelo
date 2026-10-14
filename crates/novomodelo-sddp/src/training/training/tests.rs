@@ -33,7 +33,7 @@ use novomodelo_stochastic::{
     ClassSchemes, OpeningTreeInputs, StochasticContext, build_stochastic_context,
 };
 
-use super::train;
+use super::{LoadedPolicy, train};
 use crate::{
     SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
     config::{CutManagementConfig, EventConfig, LoopConfig},
@@ -469,8 +469,7 @@ fn ac_train_completes_with_iteration_limit() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -552,8 +551,7 @@ fn ac_train_returns_partial_on_infeasible() {
         },
         &comm,
         || Ok(MockSolver::infeasible()),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     );
 
@@ -648,8 +646,7 @@ fn ac_train_emits_correct_event_sequence() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -828,8 +825,7 @@ fn ac_worker_timing_per_worker_event_count_and_setup_invariant() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -979,8 +975,7 @@ fn ac_train_result_fields_populated() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -1062,8 +1057,7 @@ fn ac_train_with_no_event_sender() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     );
 
@@ -1142,8 +1136,7 @@ fn ac_total_time_ms_is_non_negative() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -1230,8 +1223,7 @@ fn cut_selection_none_skips_step() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -1320,8 +1312,7 @@ fn existing_train_tests_pass_with_none() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -1409,8 +1400,7 @@ fn ac_train_partial_result_on_mid_iteration_failure() {
         },
         &comm,
         || Ok(MockSolver::infeasible()),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -1511,8 +1501,7 @@ fn start_iteration_resumes_from_offset() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -1596,8 +1585,7 @@ fn start_iteration_at_or_beyond_max_runs_zero_iterations() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -2336,8 +2324,7 @@ fn template_freeze_event_emitted() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -2427,7 +2414,6 @@ fn ac_training_result_new_assigns_all_fields() {
         9_999_u64,                     // total_time_ms
         basis_cache,
         solver_stats_log,
-        None, // visited_archive
         None, // frozen_templates
     );
 
@@ -2446,6 +2432,5 @@ fn ac_training_result_new_assigns_all_fields() {
         result.solver_stats_log[0].iteration, 7_u64,
         "solver_stats_log[0].iteration"
     );
-    assert!(result.visited_archive.is_none(), "visited_archive");
     assert!(result.frozen_templates.is_none(), "frozen_templates");
 }

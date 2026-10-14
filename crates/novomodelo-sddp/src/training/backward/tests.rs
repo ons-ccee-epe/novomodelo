@@ -27,13 +27,10 @@ where
         .map(|t| inputs.training_ctx.stochastic.opening_tree().n_openings(t))
         .max()
         .unwrap_or(0);
-    let real_states_capacity =
-        inputs.exchange.real_total_scenarios() * inputs.training_ctx.state.n_state;
     let mut bwd_state = BackwardPassState::new(
         n_workers_local,
         n_ranks,
         bwd_max_openings,
-        real_states_capacity,
         inputs.local_work,
         inputs.training_ctx.state,
         inputs.training_ctx.horizon,
@@ -987,7 +984,6 @@ fn single_stage_system_produces_no_cuts() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1070,7 +1066,6 @@ fn two_stage_system_two_trial_states_generates_two_cuts_at_stage_0() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1160,7 +1155,6 @@ fn cut_inserted_with_correct_stage_iteration_and_forward_pass_index() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1244,7 +1238,6 @@ fn no_cuts_generated_at_last_stage() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1329,7 +1322,6 @@ fn elapsed_ms_is_non_negative() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1409,7 +1401,6 @@ fn infeasible_solver_returns_sddp_infeasible_error() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1524,7 +1515,6 @@ fn cut_coefficients_and_intercept_match_dual_extraction_formula() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1620,7 +1610,6 @@ fn cut_gradient_sign_physically_correct() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1727,7 +1716,6 @@ fn cut_is_tight_at_trial_state() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1824,7 +1812,6 @@ fn single_rank_backward_pass_with_local_backend_produces_correct_fcf() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1932,7 +1919,6 @@ fn forward_pass_index_matches_global_scenario_index() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -2026,7 +2012,6 @@ fn warm_start_uses_prepopulated_forward_basis() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -2113,7 +2098,6 @@ fn multi_opening_subsequent_openings_use_internal_hotstart() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -2206,7 +2190,6 @@ fn backward_solver_error_propagates() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -2319,7 +2302,6 @@ fn test_backward_pass_parallel_cut_determinism() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -2382,7 +2364,6 @@ fn test_backward_pass_parallel_cut_determinism() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -2723,7 +2704,6 @@ fn backward_pass_load_patches_applied() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -2849,7 +2829,6 @@ fn backward_pass_no_load_buses_unchanged() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -2976,7 +2955,6 @@ fn backward_pass_cut_coefficients_unaffected() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -3090,7 +3068,6 @@ fn per_stage_cut_sync_invariant_after_bug1_fix() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -3227,7 +3204,6 @@ fn backward_iteration_3_over_three_old_cuts<C: Communicator>(
             exchange: &mut exchange,
             cut_activity_tolerance: 0.0,
             cut_sync_bufs: &mut csb,
-            visited_archive: None,
             event_sender: None,
 
             traversal: &Traversal::default(),
@@ -3519,7 +3495,6 @@ fn active_count_after_one_binding_solve(cut_row_dual: f64, tolerance: f64) -> u6
         exchange: &mut exchange,
         cut_activity_tolerance: tolerance,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -3668,7 +3643,6 @@ fn run_backward_pass_with_n_workers(n_workers: usize) -> FutureCostFunction {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -3988,7 +3962,6 @@ fn allgatherv_single_rank_two_workers_stage_stats_has_per_worker_entries() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -4171,7 +4144,6 @@ fn allgatherv_dual_rank_stub_stage_stats_contains_both_ranks() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -4835,7 +4807,6 @@ fn handshake_passes_with_local_backend() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -4984,7 +4955,6 @@ fn handshake_rejects_nonuniform_workers() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),

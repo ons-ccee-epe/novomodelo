@@ -42,7 +42,7 @@ use novomodelo_stochastic::{
 };
 
 use novomodelo_sddp::{
-    SddpError, SolverProfiles, StopMask, StoppingMode, StoppingRule, StoppingRuleSet,
+    LoadedPolicy, SddpError, SolverProfiles, StopMask, StoppingMode, StoppingRule, StoppingRuleSet,
     TrainingConfig,
     config::{CutManagementConfig, EventConfig, LoopConfig, ShutdownSource},
     context::TrainingContext,
@@ -597,8 +597,7 @@ fn run_one_deterministic_pass(
         },
         &StubComm,
         || Ok(MockSolver::with_fixed(50.0)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap()
@@ -667,8 +666,7 @@ fn train_converges_with_mock_solver() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -766,8 +764,7 @@ fn train_lb_monotonically_nondecreasing() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -854,8 +851,7 @@ fn train_emits_correct_event_sequence() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -948,8 +944,7 @@ fn train_stops_at_iteration_limit() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -1033,8 +1028,7 @@ fn train_with_a_shutdown_during_iteration_1(
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -1196,8 +1190,7 @@ fn train_propagates_infeasible_error() {
         },
         &comm,
         || Ok(MockSolver::infeasible_on_first()),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     );
 
@@ -1340,8 +1333,7 @@ fn frozen_backward_pass_smoke_test() {
         },
         &StubComm,
         || Ok(ExpandingMockSolver::with_objectives(vec![50.0])),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .expect("frozen backward pass smoke: train must not error");

@@ -208,7 +208,9 @@ pub struct EventConfig {
     /// and a cooperative writer never stores the signal level.
     pub shutdown_flag: Option<Arc<AtomicUsize>>,
 
-    /// Allocate the visited-states archive the state export reads. Default `false`.
+    /// Force every pool the backward pass fills, the root's included, to store
+    /// the trial state of each cut under any cut-selection setting, so the
+    /// checkpoint's states files hold them. Default `false`.
     pub export_states: bool,
 }
 

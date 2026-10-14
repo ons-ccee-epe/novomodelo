@@ -10,7 +10,6 @@ use novomodelo_solver::freeze_rows_into_template;
 
 use crate::cut_selection::CutSelectionStrategy::Dynamic;
 use crate::cut_selection::CutSelectionStrategy::Level1;
-use crate::visited_states::VisitedStatesArchive;
 use crate::workspace::CapturedBasis;
 
 use std::ops::RangeInclusive;
@@ -155,7 +154,6 @@ pub(crate) struct TrainingSession<'a, S: SolverInterface + Send, C: Communicator
     basis_store: BasisStore,
     exchange_bufs: ExchangeBuffers,
     cut_sync_bufs: CutSyncBuffers,
-    visited_archive: Option<VisitedStatesArchive>,
     /// Interior cut-generating nodes (canonical order), the loop-invariant filter
     /// cut management sweeps each cycle; the graph topology is fixed for the run,
     /// so it is resolved once here rather than re-derived per cut-selection cycle.
@@ -280,41 +278,35 @@ where
             total_forward_passes,
         );
 
-        let visited_archive = config.events.export_states.then(|| {
-            VisitedStatesArchive::new(
-                training_ctx.node_graph.nodes.len(),
-                state.n_state,
-                config.loop_config.max_iterations,
-                total_forward_passes,
-            )
-        });
-
         let interior_cut_nodes = interior_cut_nodes(training_ctx.node_graph);
-        if let Some(strategy) = config.cut_management.cut_selection.as_ref() {
-            for &node_pos in &interior_cut_nodes {
-                let pool = &mut fcf.pools[training_ctx.node_graph.nodes[node_pos].pool_id];
-                match strategy {
-                    Level1 {
-                        check_frequency,
-                        lookback_iterations: Some(lookback),
-                        ..
-                    } => pool.enable_trial_states_within(*lookback, *check_frequency),
-                    Level1 {
-                        lookback_iterations: None,
-                        ..
-                    } => pool.enable_trial_states(),
-                    Dynamic { .. } => {}
+        let export_states = config.events.export_states;
+        let strategy = config.cut_management.cut_selection.as_ref();
+        for &node_pos in &interior_cut_nodes {
+            let pool = &mut fcf.pools[training_ctx.node_graph.nodes[node_pos].pool_id];
+            match strategy {
+                Some(Level1 {
+                    check_frequency,
+                    lookback_iterations: Some(lookback),
+                    ..
+                }) => pool.enable_trial_states_within(*lookback, *check_frequency),
+                Some(Level1 { .. }) => pool.enable_trial_states(),
+                Some(Dynamic { .. }) | None => {
+                    if export_states {
+                        pool.enable_trial_states();
+                    }
                 }
             }
+        }
+        if export_states && let Some(root) = root_cut_node(training_ctx.node_graph) {
+            fcf.pools[training_ctx.node_graph.nodes[root].pool_id].enable_trial_states();
         }
         store_loaded_trial_states(fcf, loaded_trial_states);
 
         // `.take()` the non-Copy handles so `config` stays valid and can be
-        // stored by value; `export_states` is Copy and read directly.
+        // stored by value.
         let event_sender = config.events.event_sender.take();
         let shutdown_flag = config.events.shutdown_flag.take();
         let periodic_checkpoint = config.events.periodic_checkpoint.take();
-        let export_states = config.events.export_states;
 
         let mut convergence_monitor = ConvergenceMonitor::with_iteration_budget(
             config.loop_config.stopping_rules.clone(),
@@ -406,12 +398,10 @@ where
             )));
         }
 
-        let real_states_capacity = exchange_bufs.real_total_scenarios() * state.n_state;
         let mut bwd_state = BackwardPassState::new(
             n_workers_local,
             ranks.num_ranks,
             max_openings,
-            real_states_capacity,
             ranks.max_local_fwd,
             state,
             horizon,
@@ -434,7 +424,6 @@ where
             basis_store,
             exchange_bufs,
             cut_sync_bufs,
-            visited_archive,
             interior_cut_nodes,
             scratch,
             convergence_monitor,
@@ -695,7 +684,6 @@ where
         let total_time_ms = (self.results.start_time.elapsed().as_millis() as u64).max(1);
 
         let frozen_templates = self.scratch.frozen_templates;
-        let visited_archive = self.visited_archive;
         let TrainingResults {
             final_lb,
             final_ub,
@@ -733,7 +721,6 @@ where
             total_time_ms,
             basis_cache,
             solver_stats_log,
-            visited_archive,
             Some(frozen_templates),
         );
         result.stop_decision = stop_decision;
@@ -773,7 +760,6 @@ where
     /// across ranks so every rank takes this exit in lockstep.
     fn finalize_without_broadcast(self, err: SddpError) -> TrainingOutcome {
         let frozen_templates = self.scratch.frozen_templates;
-        let visited_archive = self.visited_archive;
         let TrainingResults {
             final_lb,
             final_ub,
@@ -811,7 +797,6 @@ where
             total_time_ms,
             Vec::new(),
             solver_stats_log,
-            visited_archive,
             Some(frozen_templates),
         );
         result.lower_bound_history =
@@ -1050,7 +1035,6 @@ where
             self.fcf,
             &mut self.exchange_bufs,
             &mut self.cut_sync_bufs,
-            &mut self.visited_archive,
             self.training_ctx,
             self.comm,
             &self.config.cut_management,
@@ -1458,8 +1442,15 @@ pub(crate) fn interior_cut_nodes(node_graph: &NodeGraph) -> Vec<NodePos> {
         .collect()
 }
 
-/// Rows of a pool that does not store trial states are dropped: the match in
-/// [`TrainingSession::new`] alone decides which pools store.
+/// The study's root when it generates cuts: stage 0 with a successor.
+fn root_cut_node(node_graph: &NodeGraph) -> Option<NodePos> {
+    node_graph
+        .frontier_node(StageIdx(0))
+        .filter(|&pos| !node_graph.successors[pos].is_empty())
+}
+
+/// Rows of a pool that does not store trial states are dropped: the enabling
+/// in [`TrainingSession::new`] alone decides which pools store.
 fn store_loaded_trial_states(fcf: &mut FutureCostFunction, loaded: Vec<StageStatesReadResult>) {
     for states in loaded {
         let pool = &mut fcf.pools[states.stage_id as usize];

@@ -4051,7 +4051,6 @@ mod tests {
             vec![Some(captured)],
             Vec::new(),
             None,
-            None,
         );
 
         let (col_u8, row_u8) = convert_basis_cache(&training_result.basis_cache);

@@ -64,7 +64,7 @@ impl StudySetup {
         self.loaded_trial_states = states;
     }
 
-    /// Enable state archiving for export.
+    /// Store each pool's trial states for the checkpoint's states export.
     pub fn set_export_states(&mut self, export: bool) {
         self.events.export_states = export;
     }
@@ -87,7 +87,6 @@ impl StudySetup {
                 max_iterations: self.loop_params.max_iterations,
                 forward_passes: self.loop_params.forward_passes,
                 seed: self.loop_params.seed,
-                export_states: self.events.export_states,
             },
         );
         self.periodic_checkpoint = Some(PeriodicCheckpoint::new(

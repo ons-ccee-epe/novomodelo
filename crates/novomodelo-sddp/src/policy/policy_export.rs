@@ -2906,7 +2906,6 @@ mod tests {
             basis_cache,
             Vec::new(),
             None,
-            None,
         );
 
         let (col, row) = convert_basis_cache(&training_result.basis_cache);

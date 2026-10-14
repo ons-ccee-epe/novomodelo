@@ -1426,7 +1426,7 @@ mod selection_in_a_training_run {
             CheckedFullFcfLoad, FullFcfLoadKind, check_full_fcf_load, locate_policy_dir,
         },
         policy::orchestration::{CheckpointParams, write_checkpoint},
-        setup::{NodePos, prepare_stochastic},
+        setup::{StageIdx, prepare_stochastic},
     };
     use novomodelo_solver::ActiveSolver;
     use tempfile::TempDir;
@@ -2237,7 +2237,7 @@ mod selection_in_a_training_run {
         );
     }
 
-    const ARCHIVE_RUN_ITERATIONS: u32 = 3;
+    const EXPORT_RUN_ITERATIONS: u32 = 3;
 
     fn level1() -> SelectionMethod {
         SelectionMethod::Level1 {
@@ -2318,53 +2318,74 @@ mod selection_in_a_training_run {
         );
     }
 
-    #[test]
-    fn a_dynamic_run_keeps_no_state_archive() {
-        let (_, result) = train_with(dynamic(), false, ARCHIVE_RUN_ITERATIONS, None);
-        assert!(
-            result.visited_archive.is_none(),
-            "dynamic selection scores no visited state and must not allocate the archive"
-        );
+    /// The pool of the study's root, which selection never scores.
+    fn root_pool_id(setup: &StudySetup) -> usize {
+        let graph = &setup.inputs.node_graph;
+        graph
+            .nodes
+            .iter()
+            .zip(graph.successors.iter())
+            .find(|(node, successors)| node.stage == StageIdx(0) && !successors.is_empty())
+            .map(|(node, _)| node.pool_id)
+            .expect("the study must have a root that generates cuts")
     }
 
-    #[test]
-    fn a_dynamic_run_with_exported_states_keeps_the_archive() {
-        let (_, result) = train_with(dynamic(), true, ARCHIVE_RUN_ITERATIONS, None);
-        assert!(
-            result.visited_archive.is_some(),
-            "exports.states must keep the archive under dynamic selection"
-        );
-    }
-
-    /// derived: a chain pool receives `FORWARD_PASSES` cuts per iteration, so an
-    /// archive no selection run trims holds one state per generated cut.
-    #[test]
-    fn a_level1_run_with_exported_states_keeps_every_visited_state() {
-        let (setup, result) = train_with(level1(), true, ITERATIONS, None);
-        let archive = result
-            .visited_archive
-            .as_ref()
-            .expect("exports.states must keep the archive");
-        let pool_ids = interior_pool_ids(&setup);
-        assert!(!pool_ids.is_empty(), "the run must have an interior pool");
-        for pool_id in pool_ids {
+    /// derived: a chain pool receives `FORWARD_PASSES` cuts per iteration, so a
+    /// pool that trims nothing stores one state per generated cut. Every pool that
+    /// receives cuts stores, the root's included; the terminal pool receives none.
+    fn assert_every_cut_generating_pool_stores_every_trial_state(
+        setup: &StudySetup,
+        iterations: u32,
+    ) {
+        let interior = interior_pool_ids(setup);
+        assert!(!interior.is_empty(), "the run must have an interior pool");
+        let root = root_pool_id(setup);
+        for pool_id in interior.into_iter().chain([root]) {
+            let pool = &setup.fcf.pools[pool_id];
+            assert!(pool.stores_trial_states(), "pool {pool_id} stores no state");
             assert_eq!(
-                archive.count(NodePos(pool_id)),
-                (ITERATIONS * FORWARD_PASSES) as usize,
-                "pool {pool_id}: a selection run must not trim the exported states"
+                pool.stored_trial_states(),
+                (iterations * FORWARD_PASSES) as usize,
+                "pool {pool_id}: one stored state per generated cut"
             );
         }
+        let terminal = setup
+            .inputs
+            .node_graph
+            .terminal_pool(setup.num_stages())
+            .expect("the study has a terminal pool");
+        assert!(
+            !setup.fcf.pools[terminal].stores_trial_states(),
+            "the terminal pool receives no cut and stores no state"
+        );
     }
 
-    /// derived: `level1` reads the states stored with its cuts, and the archive
-    /// is allocated for `exports.states` only.
     #[test]
-    fn a_level1_run_keeps_no_state_archive() {
-        let (_, result) = train_with(level1(), false, ARCHIVE_RUN_ITERATIONS, None);
-        assert!(
-            result.visited_archive.is_none(),
-            "level1 reads no archived state and must not allocate the archive"
-        );
+    fn a_dynamic_run_with_exported_states_stores_every_trial_state() {
+        let (setup, _) = train_with(dynamic(), true, EXPORT_RUN_ITERATIONS, None);
+        assert_every_cut_generating_pool_stores_every_trial_state(&setup, EXPORT_RUN_ITERATIONS);
+    }
+
+    #[test]
+    fn a_level1_run_with_exported_states_keeps_every_trial_state() {
+        let (setup, _) = train_with(level1(), true, ITERATIONS, None);
+        assert_every_cut_generating_pool_stores_every_trial_state(&setup, ITERATIONS);
+    }
+
+    /// derived: `level1` stores in the pools it selects over, which exclude the
+    /// root's, and `exports.states` alone adds the root.
+    #[test]
+    fn level1_without_exported_states_stores_in_the_interior_pools_only() {
+        let (setup, _) = train_with(level1(), false, EXPORT_RUN_ITERATIONS, None);
+        assert!(!setup.fcf.pools[root_pool_id(&setup)].stores_trial_states());
+        let interior = interior_pool_ids(&setup);
+        assert!(!interior.is_empty(), "the run must have an interior pool");
+        for pool_id in interior {
+            assert!(
+                setup.fcf.pools[pool_id].stores_trial_states(),
+                "pool {pool_id}"
+            );
+        }
     }
 
     fn slots_with_recorded_binding(setup: &StudySetup) -> usize {
@@ -2476,7 +2497,6 @@ mod selection_in_a_training_run {
             max_iterations: source.loop_params.max_iterations,
             forward_passes: source.loop_params.forward_passes,
             seed: source.loop_params.seed,
-            export_states: false,
         };
         write_checkpoint(&policy_dir, &source, &system, &result, &params)
             .expect("write_checkpoint must succeed");
@@ -2720,23 +2740,20 @@ mod selection_in_a_training_run {
 }
 
 mod trial_state_store {
-    //! The state each scored cut was computed at, stored by slot, against the
-    //! visited-states archive as an independent source: it is written from the
-    //! gathered states before any cut exists. Every run keeps `exports.states`
-    //! on and gives `level1` a `check_frequency` above the iteration limit.
+    //! The state each scored cut was computed at, stored by slot. Every run gives
+    //! `level1` a `check_frequency` above the iteration limit.
 
     use std::collections::BTreeSet;
     use std::path::Path;
 
     use novomodelo_io::Config;
     use novomodelo_io::config::{SelectionMethod, StoppingRuleConfig, TrainingSelection};
+    use novomodelo_sddp::StudySetup;
     use novomodelo_sddp::cut::SlotOrigin;
-    use novomodelo_sddp::indexer::{CutSlot, CutStateProjection};
-    use novomodelo_sddp::setup::{NodePos, StageIdx};
     use novomodelo_sddp::test_support::{k_fan_setup, oracle_chain_setup_with_selection};
-    use novomodelo_sddp::{StudySetup, TrainingResult};
     use novomodelo_solver::ActiveSolver;
 
+    use super::common::selection_fingerprint::interior_pool_ids;
     use super::common::{StubComm, fresh_setup_with, fresh_setup_with_openings, positive};
 
     const ITERATIONS: u32 = 6;
@@ -2764,8 +2781,7 @@ mod trial_state_store {
         }
     }
 
-    fn train(setup: &mut StudySetup) -> TrainingResult {
-        setup.set_export_states(true);
+    fn train(setup: &mut StudySetup) {
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
         let outcome = setup
             .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
@@ -2775,87 +2791,31 @@ mod trial_state_store {
             "expected no training error, got: {:?}",
             outcome.error
         );
-        outcome.result
     }
 
-    /// The nodes that own a pool selection scores: stage 1 or later, with a
-    /// successor.
-    fn interior_nodes(setup: &StudySetup) -> Vec<(NodePos, usize)> {
-        let graph = &setup.inputs.node_graph;
-        graph
-            .nodes
-            .iter_indexed()
-            .filter(|&(pos, node)| node.stage >= StageIdx(1) && !graph.successors[pos].is_empty())
-            .map(|(pos, node)| (pos, node.pool_id))
-            .collect()
-    }
-
-    /// The archive as plain data: its stride and, per node, the packed states.
-    struct Archived {
-        stride: usize,
-        per_node: Vec<Vec<f64>>,
-    }
-
-    impl Archived {
-        fn of(result: &TrainingResult) -> Self {
-            let archive = result
-                .visited_archive
-                .as_ref()
-                .expect("exports.states must keep the archive");
-            Self {
-                stride: archive.packing_stride(),
-                per_node: (0..archive.num_nodes())
-                    .map(|node| archive.states_for_node(NodePos(node)).to_vec())
-                    .collect(),
-            }
-        }
-
-        fn count(&self, node: NodePos) -> usize {
-            self.per_node[node.0].len() / self.stride
-        }
-
-        fn state(&self, node: NodePos, position: usize) -> &[f64] {
-            &self.per_node[node.0][position * self.stride..(position + 1) * self.stride]
-        }
-    }
-
-    fn bits(values: &[f64]) -> Vec<u64> {
-        values.iter().map(|value| value.to_bits()).collect()
-    }
-
-    /// `state` read at the global dimension each slot of `layout` projects.
-    fn gathered_bits(layout: &CutStateProjection, state: &[f64]) -> Vec<u64> {
-        (0..layout.n_slots())
-            .map(|j| state[layout.global_state_index(CutSlot::new(j)).get()].to_bits())
-            .collect()
-    }
-
-    /// Checks a chain run whose archive position of a cut is its slot: every
-    /// interior pool holds, at each generated slot and nowhere else, the
-    /// gather of the archived state at that position, and every other pool
-    /// stores nothing. Returns the number of stored states.
-    fn assert_stored_states_match_the_archive(
-        setup: &StudySetup,
-        result: &TrainingResult,
-    ) -> usize {
-        let archived = Archived::of(result);
+    /// Checks a chain run whose position of a cut in its pool is its slot: every
+    /// interior pool holds, at each generated slot and nowhere else, a state at
+    /// the pool's projected dimension, none of the iterations' states are
+    /// trimmed, and every other pool stores nothing. Returns the number of
+    /// stored states.
+    fn assert_stored_states_sit_at_the_generated_slots(setup: &StudySetup) -> usize {
         let training_ctx = setup.training_ctx();
-        let interior = interior_nodes(setup);
+        let interior = interior_pool_ids(setup);
         let mut stored = 0;
         for (pool_id, pool) in setup.fcf.pools.iter().enumerate() {
-            let Some(&(node, _)) = interior.iter().find(|&&(_, id)| id == pool_id) else {
+            if !interior.contains(&pool_id) {
                 assert!(
                     !pool.stores_trial_states(),
                     "pool {pool_id}: only an interior pool stores states"
                 );
                 continue;
-            };
+            }
             assert!(pool.stores_trial_states(), "pool {pool_id}");
             assert_eq!(pool.slot_base, 0, "pool {pool_id}");
             assert_eq!(
-                archived.count(node),
+                pool.generated(),
                 ITERATIONS as usize * pool.visit_stride as usize,
-                "pool {pool_id}: the archive must hold every iteration's states, untrimmed"
+                "pool {pool_id}: every iteration's cuts"
             );
             let layout = &training_ctx.cut_state_layouts[pool_id];
             assert_eq!(pool.state_dimension, layout.n_slots(), "pool {pool_id}");
@@ -2864,11 +2824,7 @@ mod trial_state_store {
                 match (pool.trial_state(slot), role.origin == SlotOrigin::Generated) {
                     (Some(row), true) => {
                         assert!(role.scored, "pool {pool_id} slot {slot}");
-                        assert_eq!(
-                            bits(row),
-                            gathered_bits(layout, archived.state(node, slot)),
-                            "pool {pool_id} slot {slot}"
-                        );
+                        assert_eq!(row.len(), layout.n_slots(), "pool {pool_id} slot {slot}");
                     }
                     (None, false) => {}
                     (Some(_), false) => {
@@ -2897,9 +2853,9 @@ mod trial_state_store {
             Path::new(UNIFORM_CASE),
             sampled(2, Some(level1_without_a_selection_run())),
         );
-        let result = train(&mut setup);
+        train(&mut setup);
 
-        let stored = assert_stored_states_match_the_archive(&setup, &result);
+        let stored = assert_stored_states_sit_at_the_generated_slots(&setup);
 
         assert!(stored > 0, "the run must generate cuts in an interior pool");
     }
@@ -2911,17 +2867,17 @@ mod trial_state_store {
             NON_UNIFORM_OPENINGS,
             sampled(4, Some(level1_without_a_selection_run())),
         );
-        let dimensions: BTreeSet<usize> = interior_nodes(&setup)
+        let dimensions: BTreeSet<usize> = interior_pool_ids(&setup)
             .iter()
-            .map(|&(_, pool_id)| setup.fcf.pools[pool_id].state_dimension)
+            .map(|&pool_id| setup.fcf.pools[pool_id].state_dimension)
             .collect();
         assert!(
             dimensions.len() > 1,
             "the interior pools must project different cut-state dimensions, got {dimensions:?}"
         );
-        let result = train(&mut setup);
+        train(&mut setup);
 
-        let stored = assert_stored_states_match_the_archive(&setup, &result);
+        let stored = assert_stored_states_sit_at_the_generated_slots(&setup);
 
         assert!(stored > 0, "the run must generate cuts in an interior pool");
     }
@@ -2930,9 +2886,9 @@ mod trial_state_store {
     fn an_enumerated_level1_run_stores_one_trial_state_per_cut() {
         let mut setup =
             oracle_chain_setup_with_selection(ITERATIONS, level1_without_a_selection_run());
-        let result = train(&mut setup);
+        train(&mut setup);
 
-        let stored = assert_stored_states_match_the_archive(&setup, &result);
+        let stored = assert_stored_states_sit_at_the_generated_slots(&setup);
 
         assert_eq!(
             stored, ITERATIONS as usize,
@@ -2945,20 +2901,19 @@ mod trial_state_store {
         const ITERATIONS: usize = 3;
         let mut fixture = k_fan_setup(8, 6, ITERATIONS as u32);
         let forward_passes = fixture.forward_passes as usize;
-        let fan = interior_nodes(&fixture.setup);
+        let fan = interior_pool_ids(&fixture.setup);
         assert_eq!(fan.len(), fixture.k);
-        for &(_, pool_id) in &fan {
+        for &pool_id in &fan {
             fixture.setup.fcf.pools[pool_id].enable_trial_states();
         }
-        let result = train(&mut fixture.setup);
+        train(&mut fixture.setup);
 
         let setup = &fixture.setup;
-        let archived = Archived::of(&result);
-        let layout = &setup.training_ctx().cut_state_layouts[fan[0].1];
+        let layout = &setup.training_ctx().cut_state_layouts[fan[0]];
         let mut stored = 0;
-        let mut some_pool_holds_fewer_than_its_archive = false;
+        let mut some_pool_holds_fewer_than_the_level = false;
         let mut vacant_below_the_bound = false;
-        for &(node, pool_id) in &fan {
+        for &pool_id in &fan {
             let pool = &setup.fcf.pools[pool_id];
             assert_eq!(pool.state_dimension, layout.n_slots(), "pool {pool_id}");
             for slot in 0..pool.capacity {
@@ -2971,8 +2926,8 @@ mod trial_state_store {
                 vacant_below_the_bound |= origin == SlotOrigin::Vacant && slot < pool.populated();
             }
             stored += pool.stored_trial_states();
-            some_pool_holds_fewer_than_its_archive |=
-                pool.stored_trial_states() < archived.count(node);
+            some_pool_holds_fewer_than_the_level |=
+                pool.stored_trial_states() < forward_passes * ITERATIONS;
         }
         assert!(
             vacant_below_the_bound,
@@ -2980,42 +2935,33 @@ mod trial_state_store {
         );
         assert_eq!(stored, forward_passes * ITERATIONS);
         assert!(
-            some_pool_holds_fewer_than_its_archive,
-            "every fan pool stores as many states as its node's archive holds"
+            some_pool_holds_fewer_than_the_level,
+            "every fan pool stores the states of every trial"
         );
 
         for iteration in 1..=ITERATIONS as u64 {
-            let mut held: Vec<Vec<u64>> = fan
+            let held: usize = fan
                 .iter()
-                .flat_map(|&(_, pool_id)| {
+                .map(|&pool_id| {
                     let pool = &setup.fcf.pools[pool_id];
                     (0..pool.populated())
-                        .filter(move |&slot| {
+                        .filter(|&slot| {
                             pool.role(slot).origin == SlotOrigin::Generated
                                 && pool.metadata(slot).iteration_generated == iteration
+                                && pool.trial_state(slot).is_some()
                         })
-                        .filter_map(move |slot| pool.trial_state(slot))
+                        .count()
                 })
-                .map(bits)
-                .collect();
-            held.sort_unstable();
-            for &(node, _) in &fan {
-                let first = (iteration as usize - 1) * forward_passes;
-                let mut level: Vec<Vec<u64>> = (first..first + forward_passes)
-                    .map(|position| gathered_bits(layout, archived.state(node, position)))
-                    .collect();
-                level.sort_unstable();
-                assert_eq!(
-                    held, level,
-                    "iteration {iteration}, archive of node {node:?}"
-                );
-            }
+                .sum();
+            assert_eq!(
+                held, forward_passes,
+                "iteration {iteration}: each trial's state is stored in exactly one fan pool"
+            );
         }
     }
 
-    #[test]
-    fn a_run_without_level1_stores_no_trial_state() {
-        let others = [
+    fn without_level1() -> [Option<SelectionMethod>; 2] {
+        [
             None,
             Some(SelectionMethod::Dynamic {
                 start_iteration: positive(2),
@@ -3024,8 +2970,12 @@ mod trial_state_store {
                 max_added_per_round: positive(10),
                 violation_tolerance: None,
             }),
-        ];
-        for selection in others {
+        ]
+    }
+
+    #[test]
+    fn a_run_without_level1_stores_no_trial_state() {
+        for selection in without_level1() {
             let label = format!("{selection:?}");
             let mut setup = fresh_setup_with(Path::new(UNIFORM_CASE), sampled(2, selection));
             train(&mut setup);
@@ -3041,6 +2991,41 @@ mod trial_state_store {
                 }
             }
             assert!(generated > 0, "{label}: the run must generate cuts");
+        }
+    }
+
+    /// derived: a pool that receives cuts holds generated cuts, and with
+    /// `exports.states` it stores the state of each whatever the selection method.
+    #[test]
+    fn exported_states_make_every_pool_that_receives_cuts_store_without_level1() {
+        for selection in without_level1() {
+            let label = format!("{selection:?}");
+            let mut setup = fresh_setup_with(Path::new(UNIFORM_CASE), sampled(2, selection));
+            setup.set_export_states(true);
+            train(&mut setup);
+
+            let mut storing = 0;
+            for (pool_id, pool) in setup.fcf.pools.iter().enumerate() {
+                let receives_cuts = pool.generated() > 0;
+                assert_eq!(
+                    pool.stores_trial_states(),
+                    receives_cuts,
+                    "{label}: pool {pool_id}"
+                );
+                assert_eq!(
+                    pool.stored_trial_states(),
+                    pool.generated(),
+                    "{label}: pool {pool_id}"
+                );
+                for slot in 0..pool.populated() {
+                    assert!(
+                        pool.role(slot).scored,
+                        "{label}: pool {pool_id} slot {slot}"
+                    );
+                }
+                storing += usize::from(receives_cuts);
+            }
+            assert!(storing > 1, "{label}: the root and an interior pool store");
         }
     }
 }

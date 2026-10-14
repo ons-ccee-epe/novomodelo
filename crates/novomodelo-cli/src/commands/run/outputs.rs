@@ -75,7 +75,6 @@ pub(super) fn write_training_outputs(args: &WriteTrainingArgs<'_>) -> Result<(),
             max_iterations: args.setup.loop_params.max_iterations,
             forward_passes: args.setup.loop_params.forward_passes,
             seed: args.setup.loop_params.seed,
-            export_states: args.config.exports.states,
         },
     )
     .map_err(CliError::from)?;

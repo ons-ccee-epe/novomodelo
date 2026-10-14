@@ -41,8 +41,8 @@ use novomodelo_core::{
 };
 use novomodelo_io::config::{InflowNonNegativityMethod as CfgInflowMethod, SimulationSelection};
 use novomodelo_sddp::{
-    Phase, ResolvedParameters, SimulationHydroResult, SimulationScenarioResult, SolverProfiles,
-    StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
+    LoadedPolicy, Phase, ResolvedParameters, SimulationHydroResult, SimulationScenarioResult,
+    SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
     build_stage_templates_resolving_layout,
     config::{CutManagementConfig, EventConfig, LoopConfig},
     context::TrainingContext,
@@ -571,8 +571,7 @@ fn train_fixture(
         },
         &comm,
         ActiveSolver::new,
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
 }

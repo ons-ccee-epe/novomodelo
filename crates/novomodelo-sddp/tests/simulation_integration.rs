@@ -51,8 +51,8 @@ use novomodelo_io::{
     read_policy_checkpoint, write_policy_checkpoint, write_results,
 };
 use novomodelo_sddp::{
-    CapturedBasis, Phase, PrepareHydroModelsResult, ResolvedParameters, SimulationSummary,
-    SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
+    CapturedBasis, LoadedPolicy, Phase, PrepareHydroModelsResult, ResolvedParameters,
+    SimulationSummary, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
     aggregate_simulation, build_basis_cache_from_checkpoint, build_training_output,
     config::{CutManagementConfig, EventConfig, LoopConfig},
     context::TrainingContext,
@@ -669,8 +669,7 @@ fn train_simulate_write_cycle() {
         &training_context,
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .expect("train must succeed");
@@ -1333,8 +1332,7 @@ fn simulation_min_outflow_slack_extracted_from_primal() {
         &training_context,
         &StubComm,
         || Ok(SizedMockSolver::new(t0.num_cols, t0.num_rows)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .expect("training must succeed");
@@ -1499,8 +1497,7 @@ fn enumerated_census_k1_matches_sampled_single_scenario() {
         &training_context,
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        Vec::new(),
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .expect("train must succeed");
@@ -1914,7 +1911,6 @@ fn simulation_only_with_partly_dropped_stored_bases_is_bit_identical_across_thre
         max_iterations: setup.loop_params.max_iterations,
         forward_passes: setup.loop_params.forward_passes,
         seed: setup.loop_params.seed,
-        export_states: false,
     };
     write_checkpoint(policy_dir.path(), &setup, &system, &outcome.result, &params)
         .expect("write_checkpoint must succeed");

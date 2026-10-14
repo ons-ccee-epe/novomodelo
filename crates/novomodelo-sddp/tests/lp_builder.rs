@@ -619,7 +619,6 @@ mod policy_entity_manifest {
                 max_iterations: 100,
                 forward_passes: 1,
                 seed: 42,
-                export_states: false,
             },
         )
         .expect("write_checkpoint must succeed");

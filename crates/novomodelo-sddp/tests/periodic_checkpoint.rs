@@ -113,7 +113,6 @@ fn periodic_at_3_and_final_at_3() -> PeriodicAndFinal {
             max_iterations: k_setup.loop_params.max_iterations,
             forward_passes: k_setup.loop_params.forward_passes,
             seed: k_setup.loop_params.seed,
-            export_states: true,
         },
     )
     .expect("write_checkpoint must succeed");
@@ -258,7 +257,6 @@ fn write_and_read_checkpoint(
             max_iterations: setup.loop_params.max_iterations,
             forward_passes: setup.loop_params.forward_passes,
             seed: setup.loop_params.seed,
-            export_states: false,
         },
     )
     .expect("write_checkpoint must succeed");
@@ -323,7 +321,6 @@ fn resumed_and_uninterrupted(forward_passes: u32) -> (RunOutcome, RunOutcome) {
             max_iterations: first_setup.loop_params.max_iterations,
             forward_passes: first_setup.loop_params.forward_passes,
             seed: first_setup.loop_params.seed,
-            export_states: false,
         },
     )
     .expect("write_checkpoint must succeed");

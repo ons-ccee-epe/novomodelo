@@ -416,7 +416,6 @@ impl CheckedFullFcfLoad {
             0,
             self.basis_cache,
             Vec::new(),
-            None,
             // Checkpoints store no frozen templates; `simulate()` re-freezes from the
             // FCF row pool when this is None.
             None,

@@ -1136,9 +1136,7 @@ state): one row at the pool's projected dimension (`CutPool::state_dimension`),
 addressed by the slot (`CutPool::trial_state`) and written by
 `CutPool::store_trial_state` through `CutStateProjection::gather_trial_state`,
 the single owner of "global state to projected state". A pool's rows are those
-of its own cuts: the visited-states archive appends the whole level's states to
-every node of a level, the pool holds only the states of the trials routed to
-its node.
+of its own cuts: it holds only the states of the trials routed to its node.
 `SlotRole::scored` records that the pool stored states when the slot was
 written (`add_cut` writes it); enabling the store afterwards does not change the
 flag of a cut already written, and a loaded cut keeps the flag its record
@@ -1153,13 +1151,19 @@ record. With a window the rows reserved are those of the window section.
 
 **Who enables it.** `TrainingSession::new` enables the store on every rank, on
 the pool of every node of `interior_cut_nodes` (stage 1 or later, with a
-successor), through one total match over the strategy variants: `Level1` only,
+successor), through one total match over the strategy variants: `Level1` stores,
 with `enable_trial_states_within` when the strategy carries a window and
-`enable_trial_states` otherwise. That match is the only place that decides which
-strategy stores states. The session enables neither the root pool nor the leaf
-pool, `exports.states` alone enables nothing, and without `cut_selection` no pool
-allocates a row. `exports.states` reads the archive, which no selection run
-trims. The strategy comes from the config
+`enable_trial_states` otherwise; `Dynamic` and no strategy store, with
+`enable_trial_states`, only when `exports.states` is on. `exports.states` forces
+the store on whatever the strategy, and also on the root's pool (stage 0, with a
+successor), which stores without a window because selection never scores or
+expires it. The leaf pool receives no cut and never stores. The enabling in
+`TrainingSession::new` is the only place that decides which pools store, and
+nothing else allocates per-node states: the exported states are what the pools
+store, each pool's by slot at the pool's dimension, and a run without
+`exports.states` that is not `level1` allocates no row. A forced store only sets
+`scored` on the cuts a run generates, which `dynamic` and a run without selection
+never read, so forcing it changes no result. The strategy comes from the config
 the CLI broadcasts and the node set from the graph every rank builds from it, so
 the same pools store, with the same window, on every rank for the whole run.
 
@@ -1170,10 +1174,10 @@ pool through `LoadedSlotMap::dest`, the stored slot under a resume and the
 record's rank under a warm start, which packs. It refuses, as
 `FullFcfLoadError::FcfConstruction` naming the pool, a states file of a pool the
 study does not have, of another row dimension than the study's, or with a row at
-a slot that holds no cut. Right after the enabling
-match, `TrainingSession::new` stores each row with `CutPool::load_trial_state`
+a slot that holds no cut. Right after the enabling,
+`TrainingSession::new` stores each row with `CutPool::load_trial_state`
 in every pool that stores trial states and drops the rows of every other pool,
-so the match stays the one place that decides which pools store. The loader
+so the enabling stays the one place that decides which pools store. The loader
 stores nothing: a store it created would be unbounded where the strategy asks for
 a window. No ownership rebuild follows: the record is empty and its scanned mark
 is 0, so the pool's first `update_ownership` scans every loaded slot against every
@@ -1235,12 +1239,25 @@ The wrong-but-compiling alternatives:
   `max_local_fwd`: they have no cut, and a debug build of `store_trial_state`
   refuses the slot. Pinned by
   `a_single_node_level_stores_each_trial_state_at_its_cut`;
-- enabling the store for a strategy other than `Level1`, or setting `scored` on
-  the cuts already written when the store is enabled. Pinned by
-  `a_run_without_level1_stores_no_trial_state`, which fails on its `dynamic` leg
-  under the first: the mutation shown admits `Dynamic` in the enabling match of
-  `TrainingSession::new`; and by `a_slot_role_is_fixed_when_the_slot_is_written` and
+- enabling the store for a strategy other than `Level1` when `exports.states` is
+  off, or setting `scored` on the cuts already written when the store is enabled.
+  Pinned by `a_run_without_level1_stores_no_trial_state`, which fails on its
+  `dynamic` leg under the first: the mutation shown admits `Dynamic` in the
+  enabling match of `TrainingSession::new` whatever `exports.states` says; and by
+  `a_slot_role_is_fixed_when_the_slot_is_written` and
   `a_pool_that_stores_trial_states_marks_its_cuts_scored` under the second;
+- forcing the store for `exports.states` in the interior pools only: the root's
+  cuts keep no state and the checkpoint holds no states file for the root pool.
+  The mutation shown removes the root's arm of the enabling; under it
+  `a_level1_run_with_exported_states_keeps_every_trial_state`,
+  `a_dynamic_run_with_exported_states_stores_every_trial_state` and
+  `exported_states_make_every_pool_that_receives_cuts_store_without_level1` fail.
+  Leaving `dynamic` and the run without a strategy out of the forcing fails the
+  last two;
+- forcing the root's pool without `exports.states`, which `level1` selection never
+  scores: `level1_without_exported_states_stores_in_the_interior_pools_only` fails;
+- giving the root's pool the strategy's window: no step expires the root's states,
+  so a bounded store would claim a window it does not honour. Not pinned by a test;
 - deciding the enabling or the fill from a value a rank computes locally (its
   trial count, the cuts it generated): the ranks' stores differ. Not
   demonstrable in-process;
@@ -1256,8 +1273,8 @@ The wrong-but-compiling alternatives:
   so after a vacant slot of the source every row sits on another cut. Pinned by
   `a_stored_state_follows_its_cut_to_the_slot_the_load_puts_it_at`; no training
   run shows it, since a chain source leaves no vacant slot;
-- creating the store in the loader, or storing before the enabling match: the
-  store is unbounded where the strategy asks for a window, and the match is no
+- creating the store in the loader, or storing before the enabling: the
+  store is unbounded where the strategy asks for a window, and the enabling is no
   longer the one owner of who stores. Not pinned by a test.
 
 Read: `cut/trial_states.rs`, `cut/pool.rs` (`CutPool::enable_trial_states`,
@@ -1291,12 +1308,20 @@ source's window dropped own states and are deactivated at the new run's),
 `a_single_node_level_stores_each_trial_state_at_its_cut`
 (`training/backward_pass_state.rs`: the gathered states of two ranks, two
 sibling nodes, one pool projecting a non-leading dimension, and a padded slot),
-and, in `tests/cut_basis.rs` against the archive,
+and, in `tests/cut_basis.rs`,
 `a_level1_run_stores_the_trial_state_of_every_generated_cut`,
 `a_level1_run_stores_states_at_each_pools_projected_dimension`,
-`an_enumerated_level1_run_stores_one_trial_state_per_cut`,
-`a_sampled_fan_stores_only_each_nodes_own_trial_states` and
-`a_run_without_level1_stores_no_trial_state`; and, in `tests/mpi_wire.rs` on a
+`an_enumerated_level1_run_stores_one_trial_state_per_cut` and
+`a_sampled_fan_stores_only_each_nodes_own_trial_states` (the states sit at the
+generated slots, one per cut, at the pool's dimension; their values are pinned
+by the unit tests above), `a_run_without_level1_stores_no_trial_state` (no pool
+stores without `level1` and without `exports.states`),
+`level1_without_exported_states_stores_in_the_interior_pools_only`,
+`a_level1_run_with_exported_states_keeps_every_trial_state`,
+`a_dynamic_run_with_exported_states_stores_every_trial_state` and
+`exported_states_make_every_pool_that_receives_cuts_store_without_level1` (with
+`exports.states` every pool that receives cuts, the root's included, stores the
+state of each); and, in `tests/mpi_wire.rs` on a
 sampled fan whose two sibling nodes receive trials with different states,
 `level1_thread_shapes_agree_on_a_branching_fan` and
 `level1_declaration_order_is_invariant_on_a_branching_fan` (each sibling pool
@@ -1510,10 +1535,9 @@ By slot role:
 `run_cut_management` runs it in every iteration `should_run` holds, for the pool
 of each node of `interior_cut_nodes`: `expire_trial_states` (a no-op without a
 window), `update_ownership`, then
-`apply_updates(ownership_activity_updates())`. It reads no archive: a `level1`
-run without `exports.states` allocates none, and with `exports.states` no
-selection run trims the archive, so the exported states are every visited state
-of the run. The call site meets what the update relies on:
+`apply_updates(ownership_activity_updates())`. Selection drops no stored state,
+only the window of the lookback section does, so a `level1` run without a window
+exports every state of the run. The call site meets what the update relies on:
 
 - `TrainingSession::new` enabled the store on these pools before the first cut,
   so every generated cut there is scored;
@@ -1602,9 +1626,8 @@ a scored cut is active exactly when it owns a stored state),
 envelope invariant, and the run's record against a rebuild),
 `level1_reactivates_an_owner_the_budget_evicted` (the budget paragraph, as
 existence over a run's events, which carry counts and no slot),
-`a_level1_run_keeps_no_state_archive` and
-`a_level1_run_with_exported_states_keeps_every_visited_state` (no selection run
-trims the archive),
+`a_level1_run_with_exported_states_keeps_every_trial_state` (no selection run
+drops a stored state),
 `a_warm_started_scored_cut_is_selected_like_a_generated_one` (a loaded scored cut
 changes its flag in a warm-started run) and
 `a_warm_started_unscored_cut_keeps_its_flag` (a loaded unscored cut never does);

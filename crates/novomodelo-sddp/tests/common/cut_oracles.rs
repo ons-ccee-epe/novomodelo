@@ -13,7 +13,7 @@ use novomodelo_io::Config;
 use novomodelo_io::config::{RowSelectionConfig, SelectionMethod, StoppingRuleConfig};
 use novomodelo_sddp::context::TrainingContext;
 use novomodelo_sddp::cut::CutPool;
-use novomodelo_sddp::indexer::CutSlot;
+use novomodelo_sddp::indexer::{CutSlot, CutStateProjection};
 use novomodelo_sddp::setup::{NodePos, StageIdx};
 use novomodelo_sddp::test_support::{
     inflow_slack_bounds_for_probe, stage_state_box_bounds,
@@ -691,57 +691,110 @@ fn check_pool(
     report.min_feasible_points = report.min_feasible_points.min(feasible_count);
 }
 
-/// Pairs every active cut slot `j` of pool `t` with the state it was generated
-/// at: archive position `j - slot_base` of the pool's node, which holds
-/// every iteration's trial states in slot order.
+/// A state stored in a pool, at its projected dimension, as a vector over the
+/// global state: the dimensions the pool drops come from `fill`.
+fn global_state(layout: &CutStateProjection, row: &[f64], fill: &[f64]) -> Vec<f64> {
+    let mut state = fill.to_vec();
+    for (j, &value) in row.iter().enumerate() {
+        state[layout.global_state_index(CutSlot::new(j)).get()] = value;
+    }
+    state
+}
+
+/// The values of the global dimensions pool `t` drops, as a state over the global
+/// state (zeros for a pool that projects every dimension).
+///
+/// A pool stores the projected dimensions of its states only, and the run keeps
+/// the whole state of one trial: the one `captured`, the basis the final iteration
+/// captured at the successor. That state stands for every trial of the pool when
+/// the dropped dimensions do not differ between trials, which holds with one
+/// forward pass and one opening in every stage up to `t`.
 ///
 /// # Panics
 ///
-/// Panics if the archive layout does not match the slot formula (a loaded
-/// policy or `visit_stride != forward_passes`), or if a
-/// cut's recorded `(iteration, forward pass)` disagrees with its slot.
+/// Panics if a pool that drops dimensions has several trials or openings, or no
+/// captured state.
+fn dropped_dimension_fill(
+    label: &str,
+    t: usize,
+    layout: &CutStateProjection,
+    n_state: usize,
+    single_trial: bool,
+    captured: Option<&[f64]>,
+) -> Vec<f64> {
+    if layout.n_slots() == n_state {
+        return vec![0.0; n_state];
+    }
+    assert!(
+        single_trial,
+        "{label}: pool {t} drops state dimensions, which the run keeps for one trial only"
+    );
+    captured
+        .unwrap_or_else(|| panic!("{label}: pool {t}: the successor captured no basis"))
+        .to_vec()
+}
+
+/// Pairs every active cut slot `j` of pool `t` with the state it was generated at:
+/// the state the pool stores at that slot, its dropped dimensions from `fill`.
+///
+/// # Panics
+///
+/// Panics if an active cut has no stored state.
 fn recover_cut_trial_states(
     label: &str,
     t: usize,
     pool: &CutPool,
-    flat: &[f64],
-    n_state: usize,
-    count: usize,
-    forward_passes: usize,
+    layout: &CutStateProjection,
+    fill: &[f64],
 ) -> Vec<(usize, Vec<f64>)> {
-    let visit_stride = pool.visit_stride as usize;
-    let slot_base = pool.slot_base as usize;
-    assert_eq!(slot_base, 0, "{label}: pool {t}: slot_base");
-    assert_eq!(
-        count,
-        ORACLE_ITERATIONS as usize * visit_stride,
-        "{label}: pool {t}: archived states != ORACLE_ITERATIONS * visit_stride"
-    );
-    assert_eq!(
-        visit_stride, forward_passes,
-        "{label}: pool {t}: visit_stride != forward_passes"
-    );
     pool.active_cuts()
         .map(|(j, _, _)| {
-            let pos = j - slot_base;
-            assert!(
-                pos < count,
-                "{label}: pool {t}: slot {j} has no archived state"
-            );
-            let meta = pool.metadata(j);
-            assert_eq!(
-                meta.forward_pass_index as usize,
-                pos % visit_stride,
-                "{label}: pool {t}: slot {j} forward_pass_index"
-            );
-            assert_eq!(
-                meta.iteration_generated.checked_sub(pool.iteration_base),
-                Some((pos / visit_stride) as u64),
-                "{label}: pool {t}: slot {j} iteration_generated"
-            );
-            (j, flat[pos * n_state..(pos + 1) * n_state].to_vec())
+            let row = pool
+                .trial_state(j)
+                .unwrap_or_else(|| panic!("{label}: pool {t}: slot {j} has no stored state"));
+            (j, global_state(layout, row, fill))
         })
         .collect()
+}
+
+/// The final iteration's `forward_passes` trial states of pool `t`, its dropped
+/// dimensions from `fill`. When the pool drops some, `fill` is the captured state
+/// and the stored dimensions of the one trial must equal it bit for bit.
+///
+/// # Panics
+///
+/// Panics if the pool stores fewer states than `forward_passes`, or stores a state
+/// other than the captured one.
+fn final_trial_points(
+    label: &str,
+    t: usize,
+    pool: &CutPool,
+    layout: &CutStateProjection,
+    forward_passes: usize,
+    fill: &[f64],
+) -> Vec<Vec<f64>> {
+    let stored: Vec<&[f64]> = (0..pool.populated())
+        .filter_map(|slot| pool.trial_state(slot))
+        .collect();
+    assert!(
+        stored.len() >= forward_passes,
+        "{label}: pool {t} stored {} states, fewer than forward_passes ({forward_passes})",
+        stored.len()
+    );
+    let points: Vec<Vec<f64>> = stored[stored.len() - forward_passes..]
+        .iter()
+        .map(|row| global_state(layout, row, fill))
+        .collect();
+    if layout.n_slots() < fill.len() {
+        assert!(
+            points[0]
+                .iter()
+                .zip(fill)
+                .all(|(a, b)| a.to_bits() == b.to_bits()),
+            "{label}: pool {t}: the stored state is not the state the final iteration captured"
+        );
+    }
+    points
 }
 
 /// Trains `setup` with `HiGHS` on a single rank/thread, then gates every stored
@@ -817,14 +870,11 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
         Some(_) => {}
     }
 
-    let archive = outcome
-        .result
-        .visited_archive
-        .expect("run_cut_oracles: set_export_states(true) must produce a visited-states archive");
     let frozen_templates = outcome
         .result
         .frozen_templates
         .expect("run_cut_oracles: training must populate frozen_templates");
+    let basis_cache = outcome.result.basis_cache;
     let forward_passes = setup.fcf.forward_passes as usize;
 
     let mut workspace_pool = setup
@@ -851,25 +901,19 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
         let (lo, hi) = stage_state_box_bounds(&setup, t);
         let n_state = lo.len();
 
-        let node_pos = NodePos(t);
-        assert_eq!(
-            archive.packing_stride(),
+        let pool_t = &setup.fcf.pools[t];
+        let layout_t = &setup.training_ctx().cut_state_layouts[t];
+        let fill = dropped_dimension_fill(
+            label,
+            t,
+            layout_t,
             n_state,
-            "{label}: archive packing stride must equal the state-box length"
+            forward_passes == 1 && (0..=t).all(|stage| occ.tree_view.n_openings(stage) == 1),
+            basis_cache[s]
+                .as_ref()
+                .map(|basis| basis.state_at_capture.as_slice()),
         );
-        let count = archive.count(node_pos);
-        assert!(
-            count >= forward_passes,
-            "{label}: node {t} archived {count} states, fewer than forward_passes ({forward_passes})"
-        );
-        let flat = archive.states_for_node(node_pos);
-        let start = (count - forward_passes) * n_state;
-        let trial_points: Vec<Vec<f64>> = (0..forward_passes)
-            .map(|m| {
-                let base = start + m * n_state;
-                flat[base..base + n_state].to_vec()
-            })
-            .collect();
+        let trial_points = final_trial_points(label, t, pool_t, layout_t, forward_passes, &fill);
 
         let mut box_points = vec![
             box_corner(&lo, &hi, &trial_points[0], f64::midpoint),
@@ -884,15 +928,7 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
         let cut_signatures = if last_selection_pass.is_some() {
             state_free_cut_signatures(label, &occ, ws, t, s, &trial_points[0])
         } else {
-            let cut_trial_states = recover_cut_trial_states(
-                label,
-                t,
-                &setup.fcf.pools[t],
-                flat,
-                n_state,
-                count,
-                forward_passes,
-            );
+            let cut_trial_states = recover_cut_trial_states(label, t, pool_t, layout_t, &fill);
             cut_signatures_at_trial_states(&occ, ws, s, &cut_trial_states)
         };
 

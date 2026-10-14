@@ -271,7 +271,6 @@ fn partial_to_iteration_record(iter: u64, partial: &PartialRecord) -> IterationR
 ///     Vec::new(),
 ///     Vec::new(),
 ///     None,
-///     None,
 /// );
 ///
 /// let events = vec![TrainingEvent::IterationSummary {
@@ -590,7 +589,6 @@ mod tests {
             1_000,
             Vec::new(),
             Vec::new(),
-            None,
             None,
         )
     }

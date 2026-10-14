@@ -67,7 +67,6 @@ pub(crate) use stochastic::{noise, stochastic_summary};
 
 pub(crate) use training::{
     backward, backward_pass_state, forward_pass_state, rank_reconcile, state_exchange, trajectory,
-    visited_states,
 };
 pub use training::{forward, lower_bound};
 
@@ -150,7 +149,7 @@ pub use stochastic::stochastic_summary::{
 pub use training::forward::SyncResult;
 pub use training::rank_reconcile::reconcile_global_ok;
 pub use training::state_exchange::ExchangeBuffers;
-pub use training::training::{TrainingOutcome, TrainingResult, train};
+pub use training::training::{LoadedPolicy, TrainingOutcome, TrainingResult, train};
 pub use training::training_output::{
     PhaseTimingTotals, build_training_output, sum_phase_timing_ms,
 };

@@ -15,7 +15,6 @@ use novomodelo_solver::ActiveProfile;
 use novomodelo_solver::SolverError;
 use novomodelo_solver::{SolverInterface, StageTemplate};
 
-use crate::visited_states::VisitedStatesArchive;
 use crate::workspace::BasisStore;
 use crate::{
     SddpError, SolverProfiles, TrainingConfig,
@@ -93,9 +92,6 @@ pub struct TrainingResult {
     /// `"lower_bound"` entries (rank-aggregated, no stage axis).
     pub solver_stats_log: Vec<SolverStatsLogEntry>,
 
-    /// Visited-states archive, `None` unless `exports.states` is on.
-    pub visited_archive: Option<VisitedStatesArchive>,
-
     /// Final-iteration frozen templates, one per POOL (each is a pool's base
     /// stage template plus that pool's active cuts). Always `Some`: freeze runs
     /// unconditionally before the first iteration and is never reverted.
@@ -122,7 +118,6 @@ impl TrainingResult {
         total_time_ms: u64,
         basis_cache: Vec<Option<CapturedBasis>>,
         solver_stats_log: Vec<SolverStatsLogEntry>,
-        visited_archive: Option<VisitedStatesArchive>,
         frozen_templates: Option<Vec<StageTemplate>>,
     ) -> Self {
         Self {
@@ -137,10 +132,21 @@ impl TrainingResult {
             total_time_ms,
             basis_cache,
             solver_stats_log,
-            visited_archive,
             frozen_templates,
         }
     }
+}
+
+/// What a policy load hands to [`train`].
+#[derive(Debug, Default)]
+pub struct LoadedPolicy {
+    /// Per-node stored bases that warm-start the basis store; `None` for a
+    /// fresh start.
+    pub basis_cache: Option<Vec<Option<CapturedBasis>>>,
+
+    /// The stored trial states of the loaded pools, their slots already placed
+    /// in the loaded pools.
+    pub trial_states: Vec<StageStatesReadResult>,
 }
 
 // ---------------------------------------------------------------------------
@@ -310,11 +316,15 @@ pub(crate) fn broadcast_basis_cache<C: Communicator>(
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use novomodelo_sddp::{train, TrainingConfig, LoopConfig, CutManagementConfig, EventConfig, SolverProfiles};
-/// use novomodelo_sddp::{StoppingRuleSet, StoppingRule, RiskMeasure, HorizonMode};
+/// `fcf`, `stage_ctx`, `training_ctx` and `comm` come from a built
+/// [`StudySetup`](crate::setup::StudySetup), so the example is not compiled.
 ///
-/// let mut solver = HiggsBackend::new();
+/// ```rust,ignore
+/// use novomodelo_sddp::config::{CutManagementConfig, EventConfig, LoopConfig};
+/// use novomodelo_sddp::{LoadedPolicy, RiskMeasure, SolverProfiles, TrainingConfig, train};
+/// use novomodelo_solver::ActiveSolver;
+///
+/// let mut solver = ActiveSolver::new()?;
 /// let config = TrainingConfig {
 ///     loop_config: LoopConfig { forward_passes: 100, max_iterations: 100, ..LoopConfig::default() },
 ///     cut_management: CutManagementConfig {
@@ -323,14 +333,13 @@ pub(crate) fn broadcast_basis_cache<C: Communicator>(
 ///     },
 ///     events: EventConfig::default(),
 /// };
-/// let mut fcf = FutureCostFunction::new(num_stages - 1, n_state, capacity);
 ///
-/// let result = train(
+/// let outcome = train(
 ///     &mut solver, config, &mut fcf, &stage_ctx, &training_ctx, &comm,
-///     || HiggsBackend::new(), None, SolverProfiles::default(),
+///     ActiveSolver::new, LoadedPolicy::default(), SolverProfiles::default(),
 /// )?;
 ///
-/// println!("converged in {} iterations, gap={:.4}", result.result.iterations, result.result.final_gap);
+/// println!("stopped after {} iterations, gap={:.4}", outcome.result.iterations, outcome.result.final_gap);
 /// ```
 ///
 /// # Panics
@@ -341,9 +350,6 @@ pub(crate) fn broadcast_basis_cache<C: Communicator>(
 ///
 /// Always panics if `comm.rank() > i32::MAX`. MPI world sizes are bounded well
 /// below this on all real systems.
-// Rationale: each argument is an independent input of the one training entry
-// point; a context struct would only move the argument list into its literal.
-#[allow(clippy::too_many_arguments)]
 pub fn train<S, C: Communicator>(
     solver: &mut S,
     config: TrainingConfig,
@@ -352,13 +358,16 @@ pub fn train<S, C: Communicator>(
     training_ctx: &TrainingContext<'_>,
     comm: &C,
     solver_factory: impl Fn() -> Result<S, SolverError>,
-    warm_start_basis_cache: Option<Vec<Option<CapturedBasis>>>,
-    loaded_trial_states: Vec<StageStatesReadResult>,
+    loaded: LoadedPolicy,
     solver_profiles: SolverProfiles,
 ) -> Result<TrainingOutcome, SddpError>
 where
     S: SolverInterface<Profile = ActiveProfile> + Send,
 {
+    let LoadedPolicy {
+        basis_cache,
+        trial_states,
+    } = loaded;
     let mut session = TrainingSession::new(
         solver,
         config,
@@ -367,12 +376,12 @@ where
         training_ctx,
         comm,
         solver_factory,
-        loaded_trial_states,
+        trial_states,
         solver_profiles,
     )?;
     // Must seed the basis store before `prime_frozen_templates` freezes the loaded
     // cuts into the templates.
-    if let Some(cache) = warm_start_basis_cache {
+    if let Some(cache) = basis_cache {
         session.seed_basis_store(&cache);
     }
     session.prime_frozen_templates();

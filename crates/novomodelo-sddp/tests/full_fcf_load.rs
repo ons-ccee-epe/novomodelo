@@ -93,7 +93,6 @@ fn train_and_write(setup: &mut StudySetup, system: &System) -> TempDir {
         max_iterations: setup.loop_params.max_iterations,
         forward_passes: setup.loop_params.forward_passes,
         seed: setup.loop_params.seed,
-        export_states: false,
     };
     write_checkpoint(&policy_dir, setup, system, &outcome.result, &params)
         .expect("write_checkpoint");

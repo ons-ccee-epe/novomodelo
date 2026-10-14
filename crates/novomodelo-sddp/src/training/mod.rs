@@ -16,7 +16,6 @@
 //! - `state_exchange` — `ExchangeBuffers`: `allgatherv` of trial points between
 //!   the forward and backward passes.
 //! - `trajectory` — `TrajectoryRecord`: the forward→backward data unit.
-//! - `visited_states` — archived trial states for state export.
 //! - `training_output` — converts the training summary plus event log into the
 //!   structured output the `novomodelo-io` writers consume.
 
@@ -38,11 +37,10 @@ pub(crate) mod stage_solve_prep;
 pub(crate) mod state_exchange;
 pub(crate) mod training_output;
 pub(crate) mod trajectory;
-pub(crate) mod visited_states;
 
 pub use forward::SyncResult;
 pub use state_exchange::ExchangeBuffers;
-pub use training::{TrainingOutcome, TrainingResult, train};
+pub use training::{LoadedPolicy, TrainingOutcome, TrainingResult, train};
 pub use training_output::build_training_output;
 pub use trajectory::TrajectoryRecord;
 
