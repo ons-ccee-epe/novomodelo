@@ -81,11 +81,16 @@ mod boundary_cuts {
         seed: u64,
     ) {
         use novomodelo_sddp::policy_export::{
-            build_active_indices, build_stage_basis_records, build_stage_cut_records,
-            build_stage_cuts_payloads, convert_basis_cache,
+            borrow_cut_records, build_active_indices, build_stage_basis_records,
+            build_stage_cut_records, build_stage_cuts_payloads, convert_basis_cache,
+            scale_cut_records_for_export,
         };
         let fcf = &setup.fcf;
-        let stage_records = build_stage_cut_records(fcf);
+        let currency_records = scale_cut_records_for_export(
+            &build_stage_cut_records(fcf),
+            setup.inputs.stage_data.stage_templates.cost_scale_factor,
+        );
+        let stage_records = borrow_cut_records(&currency_records);
         let stage_active_indices = build_active_indices(&stage_records);
         let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); fcf.pools.len()];
@@ -96,7 +101,7 @@ mod boundary_cuts {
             &setup.inputs.node_graph,
             &study_stage_ids,
             &study_stage_end_dates,
-            1_000_000.0,
+            1.0,
             &stage_records,
             &stage_active_indices,
             &stage_manifests,

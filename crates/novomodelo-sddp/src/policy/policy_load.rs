@@ -1627,11 +1627,8 @@ mod tests {
     }
 
     /// `loading_cost_scale_factor` for tests that assert raw coefficient/
-    /// intercept VALUES and don't care about cost-scale semantics: every
-    /// resolved pool is marked (`cost_scale_factor: Some(_)`), and the marked
-    /// rescale branch always divides by `loading_cost_scale_factor`
-    /// (never a no-op, even at a matching source factor), so `1.0` is the one
-    /// value that keeps a written raw value equal to its loaded value.
+    /// intercept VALUES: the fixtures write the pool marker `1.0` and these
+    /// tests load at `1.0`, so a written value is its loaded value.
     const NEUTRAL_LOADING_FACTOR: f64 = 1.0;
 
     /// A minimal producer block for artifact-writing test helpers.
@@ -1776,7 +1773,7 @@ mod tests {
                 active_cut_indices: &active_indices[s],
                 populated_count: n_cuts as u32,
                 entity_manifest: manifest,
-                cost_scale_factor: 1_000_000.0,
+                cost_scale_factor: 1.0,
                 node_id: s as i32,
                 graph_stage_id: -1,
                 priced_state_date: encode_slot_date(fixture_priced_date(s as u32)),
@@ -1842,7 +1839,7 @@ mod tests {
             active_cut_indices: &[0],
             populated_count: 1,
             entity_manifest: &[],
-            cost_scale_factor: 1_000_000.0,
+            cost_scale_factor: 1.0,
             node_id: i32::try_from(stage_id).unwrap_or(-1),
             graph_stage_id: -1,
             priced_state_date: encode_slot_date(fixture_priced_date(stage_id)),
@@ -2083,7 +2080,7 @@ mod tests {
 
         let resolved = checkpoint_terminal_cost_scale_factor(&checkpoint).unwrap();
 
-        assert_eq!(resolved, 1_000_000.0);
+        assert_eq!(resolved, 1.0);
     }
 
     /// A checkpoint whose terminal pool's `cost_scale_factor` reads `None` (a
@@ -3177,7 +3174,7 @@ mod tests {
                     active_cut_indices: active,
                     populated_count: intercepts.len() as u32,
                     entity_manifest: &[],
-                    cost_scale_factor: 1_000_000.0,
+                    cost_scale_factor: 1.0,
                     node_id: i32::try_from(*pool_id).unwrap_or(-1),
                     graph_stage_id: -1,
                     priced_state_date: *priced_state_date,
@@ -4695,9 +4692,10 @@ mod tests {
         }
     }
 
-    /// Write a single-stage MARKED checkpoint (`cost_scale_factor: Some(s)`)
-    /// whose one cut carries the given at-rest `intercept`/`coefficients`
-    /// (byte-for-byte, no transform here) and whose stage payload attaches
+    /// Write a single-stage MARKED checkpoint (pool marker `1.0`;
+    /// `cost_scale_factor` sets only the producer block) whose one cut carries
+    /// the given at-rest `intercept`/`coefficients` (byte-for-byte, no
+    /// transform here) and whose stage payload attaches
     /// `manifest` — the fold wiring tests need a verifiable manifest, a marked
     /// scale, and custom coefficients simultaneously, which neither
     /// `write_checkpoint_with_scale` (empty manifest) nor
@@ -4729,7 +4727,7 @@ mod tests {
             active_cut_indices: &[0],
             populated_count: 1,
             entity_manifest: manifest,
-            cost_scale_factor: 1_000_000.0,
+            cost_scale_factor: 1.0,
             node_id: 0,
             graph_stage_id: -1,
             priced_state_date: encode_slot_date(fixture_priced_date(0)),

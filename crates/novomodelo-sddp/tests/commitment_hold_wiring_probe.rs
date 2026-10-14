@@ -316,11 +316,7 @@ fn rescale_checkpoint_cuts_scales_every_coefficient_uniformly_marked_source() {
     let mut stage_cuts = sample_stage_cuts();
     let loading_cost_scale_factor = 2_000_000.0;
 
-    rescale_checkpoint_cuts_for_load(
-        &mut stage_cuts,
-        Some(1_000_000.0),
-        loading_cost_scale_factor,
-    );
+    rescale_checkpoint_cuts_for_load(&mut stage_cuts, Some(1.0), loading_cost_scale_factor);
 
     for (b, a) in before.iter().zip(&stage_cuts[0].cuts) {
         assert_eq!(a.intercept, b.intercept / loading_cost_scale_factor);
