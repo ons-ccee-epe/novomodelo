@@ -79,9 +79,11 @@ A `policy.boundary` pool contributes its active rows to training, and the termin
 never selected. Under `simulation.cut_set = all` the pool also contributes the rows its
 writer scored, whatever their flag. `dynamic` refuses
 `simulation.cut_set = all` when the run simulates and a loaded pool, or the boundary pool,
-holds rows that selection deactivated (scored and inactive), because the `all` set then
-differs from the active set and a `dynamic` solve reads only the active cuts. Inactive rows
-that were never scored, such as those a capped source leaves, do not trigger the refusal.
+holds an inactive row that `all` includes, because the `all` set then differs from the
+active set and a `dynamic` solve reads only the active cuts. For a policy loaded to resume
+or only to simulate, those are the rows selection deactivated or the cap evicted. For a
+warm-start policy and the boundary pool, only scored inactive rows are included, so inactive
+rows that were never scored, such as those a capped source leaves, do not trigger the refusal.
 
 ## Error handling (`SddpError`)
 
