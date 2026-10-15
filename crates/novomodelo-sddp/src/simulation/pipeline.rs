@@ -446,7 +446,7 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
             fcf.pools[pool_id].active_count(),
             "the lazy solve reads the active cuts, so the chosen set must equal them; \
              check_full_fcf_load refuses every load kind, and reconcile_boundary_policy \
-             policy.boundary, where it does not"
+             refuses policy.boundary, where it does not"
         );
         // Simulation has no iteration counter; seed with `current_iteration = 0`.
         build_initial_resident_set(
@@ -497,7 +497,7 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
             stored_basis: load_spec.warm_basis,
             stage_index: t,
             scenario_index: ids.scenario_id as usize,
-            iteration: None, // simulation has no iteration counter
+            iteration: None,
             node_id: ids.node_id,
         };
 
@@ -954,8 +954,6 @@ pub(crate) fn dispatch_scenario_result(
 
 /// Evaluate the trained SDDP policy on a set of scenarios, with the active cuts
 /// in every stage LP.
-///
-/// Thin shim that delegates to [`run_simulation`].
 ///
 /// # Errors
 ///

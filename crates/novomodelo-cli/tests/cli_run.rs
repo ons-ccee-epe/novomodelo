@@ -9,9 +9,8 @@
     clippy::float_cmp
 )]
 
-use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray};
 use arrow::record_batch::RecordBatch;
@@ -24,8 +23,8 @@ use tempfile::TempDir;
 
 mod common;
 use common::{
-    case_dir, copy_dir_recursive, make_valid_case, novomodelo, restamp_policy_version, write_file,
-    write_supplied_opening_tree_case,
+    case_dir, copy_dir_recursive, make_valid_case, novomodelo, restamp_policy_version,
+    snapshot_files, write_file, write_supplied_opening_tree_case,
 };
 
 #[test]
@@ -2381,25 +2380,6 @@ fn run_accepts_a_supplied_opening_tree_with_historical_residuals_stages() {
 }
 
 // ── A failed run keeps the last whole checkpoint ──────────────────────────────
-
-fn snapshot_files(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
-    fn walk(root: &Path, dir: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
-        for entry in fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                walk(root, &path, files);
-            } else {
-                files.insert(
-                    path.strip_prefix(root).unwrap().to_path_buf(),
-                    fs::read(&path).unwrap(),
-                );
-            }
-        }
-    }
-    let mut files = BTreeMap::new();
-    walk(dir, dir, &mut files);
-    files
-}
 
 /// The deck of `infeasible_training_lp_exits_3_naming_stage_iteration_and_scenario`: with
 /// the generic constraint's slack disabled and a thermal minimum of 20 MW, every stage-0

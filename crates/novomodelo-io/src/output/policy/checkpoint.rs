@@ -209,29 +209,6 @@ fn check_pool_dates(pool_id: u32, manifest: &[EntitySlot]) -> Result<(), OutputE
     check_transit_bucket_monotonicity(pool_id, manifest)
 }
 
-/// Validate that `checkpoint` is internally date-consistent, returning the
-/// first violation found.
-///
-/// # Errors
-///
-/// Returns [`OutputError::SerializationError`] naming the offending pool and
-/// slot.
-fn validate_checkpoint_dates(checkpoint: &PolicyCheckpoint) -> Result<(), OutputError> {
-    for pool in &checkpoint.stage_cuts {
-        check_pool_dates(pool.stage_id, &pool.entity_manifest)?;
-    }
-    Ok(())
-}
-
-/// [`validate_checkpoint_dates`] over the payloads a write receives, in the
-/// read's file order so the first violation reported is the same.
-fn check_payload_dates(stage_cuts: &[StageCutsPayload<'_>]) -> Result<(), OutputError> {
-    for pool in sorted_by_id(stage_cuts, |p| p.stage_id) {
-        check_pool_dates(pool.stage_id, pool.entity_manifest)?;
-    }
-    Ok(())
-}
-
 /// Zero-padded `.bin` name for stable on-disk sort. Identity comes from the
 /// buffer content, never this filename.
 fn bin_file_name(id: u32) -> String {
@@ -265,44 +242,81 @@ fn first_not_ascending(values: impl IntoIterator<Item = u32>) -> Option<(u32, u3
     None
 }
 
-/// One pool's record slots and its scored slots, in record order.
-struct PoolSlots {
+/// One pool's `cuts/` payload as the rules read it: record slots and scored
+/// slots in record order, and each record's counters.
+struct PoolView<'a> {
     pool_id: u32,
+    capacity: u32,
+    populated_count: u32,
+    entity_manifest: &'a [EntitySlot],
     slots: Vec<u32>,
     scored_slots: Vec<u32>,
-    manifest_len: usize,
+    counters: Vec<(u32, Option<u64>, Option<u64>)>,
 }
 
-impl PoolSlots {
-    fn new(pool_id: u32, records: impl Iterator<Item = (u32, bool)>, manifest_len: usize) -> Self {
+/// A record's `(slot, scored, active_count, last_active_iteration)`.
+type RecordFacts = (u32, bool, Option<u64>, Option<u64>);
+
+impl<'a> PoolView<'a> {
+    fn new(
+        pool_id: u32,
+        capacity: u32,
+        populated_count: u32,
+        entity_manifest: &'a [EntitySlot],
+        records: impl Iterator<Item = RecordFacts>,
+    ) -> Self {
         let mut slots = Vec::new();
         let mut scored_slots = Vec::new();
-        for (slot, scored) in records {
+        let mut counters = Vec::new();
+        for (slot, scored, active_count, last_active_iteration) in records {
             slots.push(slot);
             if scored {
                 scored_slots.push(slot);
             }
+            counters.push((slot, active_count, last_active_iteration));
         }
         Self {
             pool_id,
+            capacity,
+            populated_count,
+            entity_manifest,
             slots,
             scored_slots,
-            manifest_len,
+            counters,
         }
     }
 }
 
-fn find_pool(pools: &[PoolSlots], pool_id: u32) -> Option<&PoolSlots> {
+struct StatesView<'a> {
+    pool_id: u32,
+    count: u32,
+    state_dimension: u32,
+    data_len: usize,
+    slots: &'a [u32],
+}
+
+struct EntryView<'a> {
+    scenario: u32,
+    row_count: usize,
+    piece_row_slots: &'a [u32],
+}
+
+struct BasisView<'a> {
+    node: u32,
+    entries: Vec<EntryView<'a>>,
+}
+
+fn find_pool<'a, 'b>(pools: &'b [PoolView<'a>], pool_id: u32) -> Option<&'b PoolView<'a>> {
     pools.iter().find(|pool| pool.pool_id == pool_id)
 }
 
 /// The pool id and record slots of the pool at graph position `node`; the
 /// slots are empty when no `cuts/` file holds that pool.
-fn node_pool<'a>(
+fn node_pool<'b>(
     nodes: &[ManifestNode],
-    pools: &'a [PoolSlots],
+    pools: &'b [PoolView<'_>],
     node: u32,
-) -> Option<(u32, &'a [u32])> {
+) -> Option<(u32, &'b [u32])> {
     let pool_id = nodes.get(node as usize)?.pool_id;
     let slots = find_pool(pools, pool_id).map_or(&[][..], |pool| pool.slots.as_slice());
     Some((pool_id, slots))
@@ -452,157 +466,191 @@ fn check_counter_presence(
     }
 }
 
-/// Validate that `checkpoint`'s payloads agree with each other and with the
-/// manifest, returning the first violation found. The rules are those
-/// [`check_checkpoint_payloads`] applies before a write.
-///
-/// # Errors
-///
-/// Returns [`OutputError::SerializationError`] naming the offending file and
-/// the check it fails.
-fn validate_checkpoint_structure(checkpoint: &PolicyCheckpoint) -> Result<(), OutputError> {
-    let pools: Vec<PoolSlots> = checkpoint
-        .stage_cuts
-        .iter()
-        .map(|pool| {
-            PoolSlots::new(
-                pool.stage_id,
-                pool.cuts.iter().map(|r| (r.slot_index, r.scored)),
-                pool.entity_manifest.len(),
-            )
-        })
-        .collect();
-    for (pool, slots) in checkpoint.stage_cuts.iter().zip(&pools) {
-        check_record_slots(
-            pool.stage_id,
-            pool.capacity,
-            pool.populated_count,
-            &slots.slots,
-        )?;
-    }
-    for states in &checkpoint.stage_states {
-        let pool = find_pool(&pools, states.stage_id);
-        check_state_rows(
-            states.stage_id,
-            states.count,
-            states.state_dimension,
-            states.data.len(),
-            &states.slots,
-            pool.map_or(&[], |p| p.scored_slots.as_slice()),
-            pool.map_or(0, |p| p.manifest_len),
-        )?;
-    }
-    for basis in &checkpoint.stage_bases {
-        check_scenario_order(basis.stage_id, basis.entries.iter().map(|e| e.scenario))?;
-        let node_pool = node_pool(
-            &checkpoint.metadata.graph_manifest.nodes,
-            &pools,
-            basis.stage_id,
-        );
-        for entry in &basis.entries {
-            check_basis_entry(
-                basis.stage_id,
-                entry.scenario,
-                entry.row_status.len(),
-                &entry.piece_row_slots,
-                node_pool,
-            )?;
-        }
-    }
-    let producer = &checkpoint.metadata.producer;
-    check_stored_row_total(
-        producer.total_visited_states,
-        checkpoint
-            .stage_states
-            .iter()
-            .map(|s| u64::from(s.count))
-            .sum(),
-    )?;
-    for pool in &checkpoint.stage_cuts {
-        for record in &pool.cuts {
-            check_counter_presence(
-                producer.activity_counters,
-                pool.stage_id,
-                record.slot_index,
-                record.active_count,
-                record.last_active_iteration,
-            )?;
-        }
-    }
-    Ok(())
+/// Everything the date and structure rules read of a checkpoint, borrowed from
+/// either the files a read parsed or the payloads a write receives. The rules
+/// run in [`CheckpointView::check`] alone, so a rule added there binds both.
+struct CheckpointView<'a> {
+    pools: Vec<PoolView<'a>>,
+    states: Vec<StatesView<'a>>,
+    bases: Vec<BasisView<'a>>,
+    metadata: &'a CheckpointManifest,
 }
 
-/// [`validate_checkpoint_structure`] over the payloads a write receives, in
-/// the read's file order so the first violation reported is the same.
-fn check_payload_structure(
-    stage_cuts: &[StageCutsPayload<'_>],
-    stage_bases: &[PolicyBasisRecord<'_>],
-    stage_states: &[StageStatesPayload<'_>],
-    metadata: &CheckpointManifest,
-) -> Result<(), OutputError> {
-    let stage_cuts = sorted_by_id(stage_cuts, |p| p.stage_id);
-    let stage_bases = sorted_by_id(stage_bases, |b| b.stage_id);
-    let stage_states = sorted_by_id(stage_states, |s| s.stage_id);
-    let pools: Vec<PoolSlots> = stage_cuts
-        .iter()
-        .map(|pool| {
-            PoolSlots::new(
-                pool.stage_id,
-                pool.cuts.iter().map(|r| (r.slot_index, r.scored)),
-                pool.entity_manifest.len(),
-            )
-        })
-        .collect();
-    for (pool, slots) in stage_cuts.iter().zip(&pools) {
-        check_record_slots(
-            pool.stage_id,
-            pool.capacity,
-            pool.populated_count,
-            &slots.slots,
-        )?;
-    }
-    for states in &stage_states {
-        let pool = find_pool(&pools, states.stage_id);
-        check_state_rows(
-            states.stage_id,
-            states.count,
-            states.state_dimension,
-            states.data.len(),
-            states.slots,
-            pool.map_or(&[], |p| p.scored_slots.as_slice()),
-            pool.map_or(0, |p| p.manifest_len),
-        )?;
-    }
-    for basis in &stage_bases {
-        check_scenario_order(basis.stage_id, basis.entries.iter().map(|e| e.scenario))?;
-        let node_pool = node_pool(&metadata.graph_manifest.nodes, &pools, basis.stage_id);
-        for entry in basis.entries {
-            check_basis_entry(
-                basis.stage_id,
-                entry.scenario,
-                entry.row_status.len(),
-                entry.piece_row_slots,
-                node_pool,
-            )?;
+impl<'a> CheckpointView<'a> {
+    /// The parsed files, already in ascending id order.
+    fn of_checkpoint(checkpoint: &'a PolicyCheckpoint) -> Self {
+        Self {
+            pools: checkpoint
+                .stage_cuts
+                .iter()
+                .map(|pool| {
+                    PoolView::new(
+                        pool.stage_id,
+                        pool.capacity,
+                        pool.populated_count,
+                        &pool.entity_manifest,
+                        pool.cuts.iter().map(|r| {
+                            (
+                                r.slot_index,
+                                r.scored,
+                                r.active_count,
+                                r.last_active_iteration,
+                            )
+                        }),
+                    )
+                })
+                .collect(),
+            states: checkpoint
+                .stage_states
+                .iter()
+                .map(|s| StatesView {
+                    pool_id: s.stage_id,
+                    count: s.count,
+                    state_dimension: s.state_dimension,
+                    data_len: s.data.len(),
+                    slots: &s.slots,
+                })
+                .collect(),
+            bases: checkpoint
+                .stage_bases
+                .iter()
+                .map(|b| BasisView {
+                    node: b.stage_id,
+                    entries: b
+                        .entries
+                        .iter()
+                        .map(|e| EntryView {
+                            scenario: e.scenario,
+                            row_count: e.row_status.len(),
+                            piece_row_slots: &e.piece_row_slots,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            metadata: &checkpoint.metadata,
         }
     }
-    let producer = &metadata.producer;
-    check_stored_row_total(
-        producer.total_visited_states,
-        stage_states.iter().map(|s| u64::from(s.count)).sum(),
-    )?;
-    for pool in &stage_cuts {
-        for record in pool.cuts {
-            check_counter_presence(
-                producer.activity_counters,
-                pool.stage_id,
-                record.slot_index,
-                record.active_count,
-                record.last_active_iteration,
-            )?;
+
+    /// The payloads a write receives, in the read's file order so the first
+    /// violation reported is the same.
+    fn of_payloads(
+        stage_cuts: &'a [StageCutsPayload<'_>],
+        stage_bases: &'a [PolicyBasisRecord<'_>],
+        stage_states: &'a [StageStatesPayload<'_>],
+        metadata: &'a CheckpointManifest,
+    ) -> Self {
+        Self {
+            pools: sorted_by_id(stage_cuts, |p| p.stage_id)
+                .into_iter()
+                .map(|pool| {
+                    PoolView::new(
+                        pool.stage_id,
+                        pool.capacity,
+                        pool.populated_count,
+                        pool.entity_manifest,
+                        pool.cuts.iter().map(|r| {
+                            (
+                                r.slot_index,
+                                r.scored,
+                                r.active_count,
+                                r.last_active_iteration,
+                            )
+                        }),
+                    )
+                })
+                .collect(),
+            states: sorted_by_id(stage_states, |s| s.stage_id)
+                .into_iter()
+                .map(|s| StatesView {
+                    pool_id: s.stage_id,
+                    count: s.count,
+                    state_dimension: s.state_dimension,
+                    data_len: s.data.len(),
+                    slots: s.slots,
+                })
+                .collect(),
+            bases: sorted_by_id(stage_bases, |b| b.stage_id)
+                .into_iter()
+                .map(|b| BasisView {
+                    node: b.stage_id,
+                    entries: b
+                        .entries
+                        .iter()
+                        .map(|e| EntryView {
+                            scenario: e.scenario,
+                            row_count: e.row_status.len(),
+                            piece_row_slots: e.piece_row_slots,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            metadata,
         }
     }
-    Ok(())
+
+    /// Check that the checkpoint's entity manifests are date-consistent and its
+    /// payloads agree with each other and with the manifest, returning the first
+    /// violation found.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OutputError::SerializationError`] naming the offending file and
+    /// the rule it breaks.
+    fn check(&self) -> Result<(), OutputError> {
+        for pool in &self.pools {
+            check_pool_dates(pool.pool_id, pool.entity_manifest)?;
+        }
+        for pool in &self.pools {
+            check_record_slots(
+                pool.pool_id,
+                pool.capacity,
+                pool.populated_count,
+                &pool.slots,
+            )?;
+        }
+        for states in &self.states {
+            let pool = find_pool(&self.pools, states.pool_id);
+            check_state_rows(
+                states.pool_id,
+                states.count,
+                states.state_dimension,
+                states.data_len,
+                states.slots,
+                pool.map_or(&[], |p| p.scored_slots.as_slice()),
+                pool.map_or(0, |p| p.entity_manifest.len()),
+            )?;
+        }
+        for basis in &self.bases {
+            check_scenario_order(basis.node, basis.entries.iter().map(|e| e.scenario))?;
+            let node_pool = node_pool(&self.metadata.graph_manifest.nodes, &self.pools, basis.node);
+            for entry in &basis.entries {
+                check_basis_entry(
+                    basis.node,
+                    entry.scenario,
+                    entry.row_count,
+                    entry.piece_row_slots,
+                    node_pool,
+                )?;
+            }
+        }
+        let producer = &self.metadata.producer;
+        check_stored_row_total(
+            producer.total_visited_states,
+            self.states.iter().map(|s| u64::from(s.count)).sum(),
+        )?;
+        for pool in &self.pools {
+            for &(slot, active_count, last_active_iteration) in &pool.counters {
+                check_counter_presence(
+                    producer.activity_counters,
+                    pool.pool_id,
+                    slot,
+                    active_count,
+                    last_active_iteration,
+                )?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The first id, in ascending order, that `ids` holds twice.
@@ -716,8 +764,7 @@ pub fn check_checkpoint_payloads(
     metadata: &CheckpointManifest,
 ) -> Result<(), OutputError> {
     check_unique_ids(stage_cuts, stage_bases, stage_states)?;
-    check_payload_dates(stage_cuts)?;
-    check_payload_structure(stage_cuts, stage_bases, stage_states, metadata)?;
+    CheckpointView::of_payloads(stage_cuts, stage_bases, stage_states, metadata).check()?;
     check_encoded_sizes(
         stage_cuts,
         stage_bases,
@@ -1182,7 +1229,7 @@ pub(crate) fn checkpoint_target(path: &Path) -> Result<PathBuf, OutputError> {
             })
         }
         Ok(_) => Ok(path.to_path_buf()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(path.to_path_buf()),
         Err(e) => Err(OutputError::io(path, e)),
     }
 }
@@ -1265,9 +1312,8 @@ pub fn resolve_policy_checkpoint(path: &Path) -> Result<ResolvedCheckpoint, Outp
 ///   missing `manifest.bin`, i.e. a pre-`manifest.bin` artifact, included).
 /// - [`OutputError::SerializationError`] — a `FlatBuffers` parse failure, a
 ///   missing `CBVF` identifier or a `format_version` mismatch (both enforced by
-///   [`deserialize_checkpoint_manifest`]), a date-consistency violation caught
-///   by [`validate_checkpoint_dates`], or a structural violation caught by
-///   [`validate_checkpoint_structure`].
+///   [`deserialize_checkpoint_manifest`]), or a date-consistency or structural
+///   violation, the rules [`check_checkpoint_payloads`] applies before a write.
 ///
 /// # Examples
 ///
@@ -1322,7 +1368,6 @@ fn read_checkpoint_dir(path: &Path) -> Result<PolicyCheckpoint, OutputError> {
         stage_bases,
         stage_states,
     };
-    validate_checkpoint_dates(&checkpoint)?;
-    validate_checkpoint_structure(&checkpoint)?;
+    CheckpointView::of_checkpoint(&checkpoint).check()?;
     Ok(checkpoint)
 }

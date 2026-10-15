@@ -2,9 +2,8 @@
 
 #![allow(clippy::unwrap_used)]
 
-use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use assert_cmd::prelude::*;
@@ -12,7 +11,9 @@ use predicates::prelude::*;
 use tempfile::TempDir;
 
 mod common;
-use common::{PENALTIES_JSON, copy_dir_recursive, write_supplied_opening_tree_case};
+use common::{
+    PENALTIES_JSON, copy_dir_recursive, snapshot_files, write_supplied_opening_tree_case,
+};
 
 // ── fixture helpers ───────────────────────────────────────────────────────────
 
@@ -1060,25 +1061,6 @@ fn append_simulation_only_policy(dir: &Path) {
     );
 }
 
-/// Every file under `dir` keyed by its path relative to `dir`, with its bytes:
-/// two equal snapshots hold the same relative paths, lengths and contents.
-fn snapshot_files(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
-    fn walk(root: &Path, dir: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
-        for entry in fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                walk(root, &path, files);
-            } else {
-                let relative = path.strip_prefix(root).unwrap().to_path_buf();
-                files.insert(relative, fs::read(&path).unwrap());
-            }
-        }
-    }
-    let mut files = BTreeMap::new();
-    walk(dir, dir, &mut files);
-    files
-}
-
 fn validate_json(dir: &Path) -> (std::process::Output, serde_json::Value) {
     let output = novomodelo()
         .args(["validate", dir.to_str().unwrap(), "--json"])
@@ -1192,6 +1174,39 @@ fn boundary_mismatched_hydro_set_exits_nonzero_and_names_hydro() {
         .code(1)
         .stdout(predicate::str::contains("hydro 0"))
         .stdout(predicate::str::contains("different set of plants"));
+}
+
+/// A run that does not train never injects its boundary, so `validate` does not
+/// reconcile it: the mismatched boundary of the test above is refused only while
+/// training is enabled.
+#[test]
+fn boundary_is_reconciled_only_when_the_run_trains() {
+    let target_dir = TempDir::new().unwrap();
+    write_boundary_case(target_dir.path(), 0);
+    run_case(target_dir.path());
+
+    let source_dir = TempDir::new().unwrap();
+    write_boundary_case(source_dir.path(), 1);
+    run_case(source_dir.path());
+
+    append_boundary_policy(target_dir.path(), &source_dir.path().join("output/policy"));
+    novomodelo()
+        .args(["validate", target_dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("different set of plants"));
+
+    let config_path = target_dir.path().join("config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    config["training"]["enabled"] = serde_json::json!(false);
+    fs::write(&config_path, config.to_string()).unwrap();
+
+    let (output, value) = validate_json(target_dir.path());
+    assert!(output.status.success(), "{value}");
+    assert_eq!(value["configured"], serde_json::json!(false));
+    assert!(value["boundary_date"].is_null());
 }
 
 /// The same mismatched-hydro-set boundary reject under `--json` emits a

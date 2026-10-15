@@ -31,9 +31,9 @@ use novomodelo_stochastic::StochasticContext;
 use crate::TrainingResult;
 use crate::cut::FutureCostFunction;
 use crate::policy_export::{
-    build_basis_store_entries, build_pool_states_payloads, build_stage_basis_records,
-    build_stage_cut_records, build_stage_cuts_payloads, build_stage_entity_manifest,
-    collect_stored_pool_states, convert_basis_store,
+    BindingCounters, build_basis_store_entries, build_pool_states_payloads,
+    build_stage_basis_records, build_stage_cut_records, build_stage_cuts_payloads,
+    build_stage_entity_manifest, collect_stored_pool_states, convert_basis_store,
 };
 use crate::setup::{NodeGraph, StudySetup};
 use crate::stochastic_summary::{
@@ -329,7 +329,12 @@ impl CheckpointLayout {
         state: CheckpointState<'_>,
     ) -> Result<(), OutputError> {
         let cost_scale_factor = self.cost_scale_factor;
-        let stage_records = build_stage_cut_records(fcf, self.activity_counters)?;
+        let counters = if self.activity_counters {
+            BindingCounters::Carried
+        } else {
+            BindingCounters::Omitted
+        };
+        let stage_records = build_stage_cut_records(fcf, counters)?;
         let stage_cuts = build_stage_cuts_payloads(
             fcf,
             node_graph,
@@ -660,8 +665,8 @@ mod tests {
         System, build_season_manifest, hydro_season_orders, partial_policy_dir,
         training_block_provenance, write_checkpoint,
     };
-    use crate::TrainingResult;
-    use crate::test_support::{k_fan_setup, k_fan_system};
+    use crate::test_support::{k_fan_setup, k_fan_system, snapshot_files};
+    use crate::{CheckpointBasisStore, TrainingResult};
 
     /// A four-stage chain: nodes 1 and 2 are the interior ones, node 0 the
     /// root and node 3 the terminal.
@@ -1086,35 +1091,12 @@ mod tests {
         );
     }
 
-    fn snapshot(dir: &std::path::Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
-        fn visit(
-            root: &std::path::Path,
-            dir: &std::path::Path,
-            files: &mut std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
-        ) {
-            for entry in std::fs::read_dir(dir).unwrap() {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    visit(root, &path, files);
-                } else {
-                    files.insert(
-                        path.strip_prefix(root).unwrap().to_path_buf(),
-                        std::fs::read(&path).unwrap(),
-                    );
-                }
-            }
-        }
-        let mut files = std::collections::BTreeMap::new();
-        visit(dir, dir, &mut files);
-        files
-    }
-
     fn try_write_fan_checkpoint(
         policy_dir: &std::path::Path,
         complete: bool,
     ) -> Result<std::path::PathBuf, novomodelo_io::output::OutputError> {
         let fixture = k_fan_setup(2, 2, 1);
-        let mut result = TrainingResult::new(
+        let result = TrainingResult::new(
             0.0,
             0.0,
             0.0,
@@ -1125,8 +1107,11 @@ mod tests {
             Vec::new(),
             Vec::new(),
             None,
+            CheckpointBasisStore {
+                complete,
+                ..CheckpointBasisStore::default()
+            },
         );
-        result.checkpoint_bases.complete = complete;
         let params = CheckpointParams {
             max_iterations: 1,
             forward_passes: 2,
@@ -1150,7 +1135,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let policy = root.path().join("policy");
         assert_eq!(write_fan_checkpoint(&policy, true), policy);
-        let whole = snapshot(&policy);
+        let whole = snapshot_files(&policy);
         assert!(whole.contains_key(std::path::Path::new("manifest.bin")));
 
         let partial = write_fan_checkpoint(&policy, false);
@@ -1158,12 +1143,12 @@ mod tests {
         assert_eq!(Some(partial.clone()), partial_policy_dir(&policy));
         assert!(partial.join("manifest.bin").is_file());
         assert_eq!(
-            snapshot(&policy),
+            snapshot_files(&policy),
             whole,
             "a partial policy leaves the whole checkpoint byte for byte"
         );
         assert_eq!(write_fan_checkpoint(&policy, false), partial);
-        assert_eq!(snapshot(&policy), whole);
+        assert_eq!(snapshot_files(&policy), whole);
     }
 
     #[test]

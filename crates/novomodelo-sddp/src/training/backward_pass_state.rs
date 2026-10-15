@@ -10,8 +10,9 @@ use std::time::Instant;
 use novomodelo_comm::{Communicator, ReduceOp};
 use novomodelo_core::{TrainingEvent, WorkerPhaseTimings, WorkerTimingPhase};
 use novomodelo_io::config::BackwardScheduler;
-use novomodelo_solver::ActiveProfile;
-use novomodelo_solver::{RowBatch, SolverInterface, SolverStatistics, StageTemplate};
+use novomodelo_solver::{
+    ActiveProfile, RowBatch, SolverInterface, SolverStatistics, StageTemplate,
+};
 use rayon::iter::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
 };
@@ -2161,6 +2162,7 @@ pub(crate) fn process_stage_backward<S: SolverInterface + Send>(
 )]
 mod tests {
     use super::*;
+    use crate::test_support::RankStub;
     use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
     use novomodelo_core::scenario::{InflowModel, SamplingScheme};
     use novomodelo_solver::{
@@ -2225,91 +2227,6 @@ mod tests {
         }
         fn size(&self) -> usize {
             1
-        }
-        fn abort(&self, code: i32) -> ! {
-            std::process::exit(code)
-        }
-    }
-
-    /// `size() == 2` sibling of [`StubComm`]: `allgatherv` writes only this
-    /// rank's own slot (`recv[displs[0]..displs[0] + send.len()]`), the faithful
-    /// single-process view of rank 0's contribution to a 2-rank collective.
-    struct Rank0Of2;
-
-    impl Communicator for Rank0Of2 {
-        fn allgatherv<T: CommData>(
-            &self,
-            send: &[T],
-            recv: &mut [T],
-            _counts: &[usize],
-            displs: &[usize],
-        ) -> Result<(), CommError> {
-            let start = displs[0];
-            recv[start..start + send.len()].copy_from_slice(send);
-            Ok(())
-        }
-        fn allreduce<T: CommData>(
-            &self,
-            send: &[T],
-            recv: &mut [T],
-            _op: ReduceOp,
-        ) -> Result<(), CommError> {
-            recv[..send.len()].copy_from_slice(send);
-            Ok(())
-        }
-        fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
-            Ok(())
-        }
-        fn barrier(&self) -> Result<(), CommError> {
-            Ok(())
-        }
-        fn rank(&self) -> usize {
-            0
-        }
-        fn size(&self) -> usize {
-            2
-        }
-        fn abort(&self, code: i32) -> ! {
-            std::process::exit(code)
-        }
-    }
-
-    /// Rank 1's view of the collective [`Rank0Of2`] shows from rank 0:
-    /// `allgatherv` writes only `recv[displs[1]..displs[1] + send.len()]`.
-    struct Rank1Of2;
-
-    impl Communicator for Rank1Of2 {
-        fn allgatherv<T: CommData>(
-            &self,
-            send: &[T],
-            recv: &mut [T],
-            _counts: &[usize],
-            displs: &[usize],
-        ) -> Result<(), CommError> {
-            let start = displs[1];
-            recv[start..start + send.len()].copy_from_slice(send);
-            Ok(())
-        }
-        fn allreduce<T: CommData>(
-            &self,
-            send: &[T],
-            recv: &mut [T],
-            _op: ReduceOp,
-        ) -> Result<(), CommError> {
-            recv[..send.len()].copy_from_slice(send);
-            Ok(())
-        }
-        fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
-            Ok(())
-        }
-        fn barrier(&self) -> Result<(), CommError> {
-            Ok(())
-        }
-        fn rank(&self) -> usize {
-            1
-        }
-        fn size(&self) -> usize {
-            2
         }
         fn abort(&self, code: i32) -> ! {
             std::process::exit(code)
@@ -2779,8 +2696,8 @@ mod tests {
 
     fn both_rank_views() -> [Result<BackwardPassState, SddpError>; 2] {
         [
-            rank_view(&Rank0Of2, &RANK0_NODES, &RANK1_SEGMENT),
-            rank_view(&Rank1Of2, &RANK1_NODES, &RANK0_SEGMENT),
+            rank_view(&RankStub::of_two(0), &RANK0_NODES, &RANK1_SEGMENT),
+            rank_view(&RankStub::of_two(1), &RANK1_NODES, &RANK0_SEGMENT),
         ]
     }
 
@@ -2866,7 +2783,7 @@ mod tests {
     #[test]
     fn a_malformed_node_position_exchange_is_rejected() {
         let rejection = |peer_segment: &[u64; MAX_LOCAL_FWD]| match rank_view(
-            &Rank0Of2,
+            &RankStub::of_two(0),
             &RANK0_NODES,
             peer_segment,
         ) {
@@ -2897,7 +2814,7 @@ mod tests {
         let (routed, offsets) = routing_of(&[1], 2);
 
         state
-            .compute_node_visit_offsets(&routed, &offsets, 2, 0, 1, &Rank0Of2)
+            .compute_node_visit_offsets(&routed, &offsets, 2, 0, 1, &RankStub::of_two(0))
             .expect("one real trial in the level");
 
         assert_eq!(state.rank_node_visits, [0, 1, 0, 0]);
@@ -2929,10 +2846,10 @@ mod tests {
         let mut exchange =
             ExchangeBuffers::with_actual_counts(&state_layout(2, 1), 2, 2, real_trials);
         exchange
-            .exchange(&trial_records(rank1), StageIdx(0), 1, &Rank1Of2)
+            .exchange(&trial_records(rank1), StageIdx(0), 1, &RankStub::of_two(1))
             .unwrap();
         exchange
-            .exchange(&trial_records(rank0), StageIdx(0), 1, &Rank0Of2)
+            .exchange(&trial_records(rank0), StageIdx(0), 1, &RankStub::of_two(0))
             .unwrap();
         exchange
     }
@@ -2971,7 +2888,7 @@ mod tests {
         state.trial_node_recv[2..].copy_from_slice(&[A, B]);
         let (routed, offsets) = routing_of(&[B as usize, A as usize], 2);
         state
-            .compute_node_visit_offsets(&routed, &offsets, 2, 0, 4, &Rank0Of2)
+            .compute_node_visit_offsets(&routed, &offsets, 2, 0, 4, &RankStub::of_two(0))
             .unwrap();
         assert_eq!(state.trial_node_recv, [B, A, A, B]);
 
@@ -3965,7 +3882,7 @@ mod tests {
             &stochastic,
             &traversal,
             &enumerated_state,
-            &Rank0Of2,
+            &RankStub::of_two(0),
         );
         let world1 = world1.expect("world=1 enumerated backward must not error");
         let world2 = world2.expect("world=2 enumerated backward must not error");

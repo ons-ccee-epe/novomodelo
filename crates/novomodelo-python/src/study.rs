@@ -28,8 +28,8 @@ use novomodelo_sddp::policy::full_fcf_load::{
 };
 use novomodelo_sddp::validate_phases::check_configured_policy_load;
 use novomodelo_sddp::{
-    FutureCostFunction, HydroModelSummary, ModelProvenanceReport, StochasticSummary, StudySetup,
-    TrainingResult,
+    CheckpointBasisStore, FutureCostFunction, HydroModelSummary, ModelProvenanceReport,
+    StochasticSummary, StudySetup, TrainingResult,
 };
 
 use crate::convert::pydict_to_json_map;
@@ -344,6 +344,7 @@ impl Study {
                 Vec::new(),
                 Vec::new(),
                 None,
+                CheckpointBasisStore::default(),
             );
             return Ok(Policy {
                 training_result: synthetic,

@@ -29,7 +29,7 @@ pub enum PolicyMode {
     Resume,
 }
 
-impl std::fmt::Display for PolicyMode {
+impl fmt::Display for PolicyMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PolicyMode::Fresh => f.write_str("fresh"),

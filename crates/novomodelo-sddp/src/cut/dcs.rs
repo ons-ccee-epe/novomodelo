@@ -714,8 +714,6 @@ pub fn lazy_solve_preloaded<S: SolverInterface>(
         }
         round = round.saturating_add(1);
 
-        // End the view's solver borrow before mutating the solver.
-        let _ = view;
         append_slots_to_lp(
             solver,
             pool,

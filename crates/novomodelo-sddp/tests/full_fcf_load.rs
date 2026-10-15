@@ -28,7 +28,8 @@ use novomodelo_sddp::policy::orchestration::{
 };
 use novomodelo_sddp::setup::prepare_stochastic;
 use novomodelo_sddp::{
-    BoundaryReconciliation, ErrorClass, SddpError, StudySetup, reconcile_boundary_policy,
+    BoundaryReconciliation, ErrorClass, SddpError, StudySetup, inject_boundary_cuts,
+    reconcile_boundary_policy,
 };
 use novomodelo_solver::ActiveSolver;
 use tempfile::TempDir;
@@ -702,9 +703,14 @@ fn a_resume_with_a_reader_refuses_a_checkpoint_without_the_binding_counters() {
     }
 }
 
-#[test]
-fn a_resume_refuses_a_checkpoint_whose_bases_are_not_whole() {
-    let (system, mut setup) = toy_setup(2, 2, |_| {});
+/// The sibling `.partial` policy directory a failed run leaves, and the output
+/// directory holding it: a two-iteration 1dtoy run with `forward_passes`,
+/// configured by `edit`, whose checkpoint is not whole.
+fn partial_toy_checkpoint(
+    forward_passes: u32,
+    edit: impl FnOnce(&mut Config),
+) -> (TempDir, PathBuf) {
+    let (system, mut setup) = toy_setup(forward_passes, 2, edit);
     let mut solver = ActiveSolver::new().expect("solver");
     let mut outcome = setup
         .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
@@ -728,6 +734,12 @@ fn a_resume_refuses_a_checkpoint_whose_bases_are_not_whole() {
             .producer
             .basis_store_complete
     );
+    (output, written)
+}
+
+#[test]
+fn a_resume_refuses_a_checkpoint_whose_bases_are_not_whole() {
+    let (_output, written) = partial_toy_checkpoint(2, |_| {});
 
     let message = resume_refusal(&written, 2, |_| {});
     assert_eq!(
@@ -735,6 +747,42 @@ fn a_resume_refuses_a_checkpoint_whose_bases_are_not_whole() {
         "configuration validation error: resume needs a whole checkpoint; the checkpoint's \
          per-scenario bases are not whole (it was written when a run failed); resume from the \
          last whole checkpoint or continue with policy.mode = warm_start"
+    );
+}
+
+/// When several rejects hold at once the first of this order is reported: the
+/// forward-pass count, the trial-state history, its window, the binding
+/// counters, the bases. A history that is missing and a window that is too short
+/// exclude each other.
+#[test]
+fn a_resume_reports_the_first_refusal_in_its_fixed_order() {
+    let level1_with_budget = |window| {
+        move |config: &mut Config| {
+            with_level1(window)(config);
+            with_budget(config);
+        }
+    };
+    let (_no_history, no_history) = partial_toy_checkpoint(2, |_| {});
+    let (_windowed, windowed) = partial_toy_checkpoint(2, with_level1(Some(2)));
+
+    for (checkpoint, passes, window, fragment) in [
+        (&no_history, 1, None, "resume needs the forward-pass count"),
+        (
+            &no_history,
+            2,
+            None,
+            "resume needs the trial-state history of",
+        ),
+        (&windowed, 2, None, "without lookback_iterations"),
+        (&windowed, 2, Some(2), "resume needs the binding counters"),
+    ] {
+        let message = resume_refusal(checkpoint, passes, level1_with_budget(window));
+        assert!(message.contains(fragment), "{fragment}: {message}");
+    }
+    let message = resume_refusal(&windowed, 2, with_level1(Some(2)));
+    assert!(
+        message.contains("resume needs a whole checkpoint"),
+        "{message}"
     );
 }
 
@@ -972,6 +1020,79 @@ fn a_dynamic_simulation_of_all_refuses_boundary_cuts_outside_the_active_set() {
     ] {
         assert!(message.contains(&fragment), "{message}");
     }
+}
+
+/// The policy directory of a `level1` run under a budget over the first
+/// `pool_id + 1` stages of 1dtoy whose `policy.boundary` is pool `pool_id` of
+/// `boundary_dir`: its terminal pool holds the boundary rows with the flags of
+/// their source, and it carries the binding counters a `dynamic` resume reads.
+fn boundary_run_checkpoint(boundary_dir: &Path, pool_id: usize) -> (TempDir, PathBuf) {
+    let case = truncated_toy_case(pool_id + 1);
+    let boundary = BoundaryPolicy {
+        path: boundary_dir.to_str().expect("utf-8 path").to_string(),
+        strict: false,
+    };
+    let (system, mut setup) = common::fresh_system_and_setup_with(case.path(), |config| {
+        config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
+        config.training.stopping_rules =
+            Some(vec![StoppingRuleConfig::IterationLimit { limit: 2 }]);
+        with_level1(None)(config);
+        with_budget(config);
+        config.policy.boundary = Some(boundary.clone());
+    });
+    let reconciled = reconcile_boundary_policy(&setup, &system, &boundary, case.path())
+        .expect("the boundary reconciles");
+    inject_boundary_cuts(&mut setup, &reconciled.cuts).expect("inject");
+    let output = train_and_write(&mut setup, &system);
+    let terminal = setup
+        .inputs
+        .node_graph
+        .terminal_pool(setup.num_stages())
+        .expect("terminal pool");
+    let pool = &setup.fcf.pools[terminal];
+    assert_ne!(
+        pool.count_in(CutSet::All),
+        pool.active_count(),
+        "power: the terminal pool must hold a boundary row outside its active set"
+    );
+    let policy_dir = output.path().join(&setup.policy_path);
+    (output, policy_dir)
+}
+
+/// `policy.boundary` replaces the loaded terminal pool, and the boundary is
+/// checked on its own: the pool a checkpoint holds there is not checked.
+#[test]
+fn a_boundary_replaces_the_loaded_terminal_pool_the_dynamic_check_reads() {
+    let (_source, source_dir, (pool_id, _, _)) = deactivating_checkpoint();
+    let (_checkpoint, checkpoint_dir) = boundary_run_checkpoint(&source_dir, pool_id);
+    let (_plain, plain_dir) = toy_checkpoint(2, |_| {});
+
+    let case = truncated_toy_case(pool_id + 1);
+    let boundary = BoundaryPolicy {
+        path: plain_dir.to_str().expect("utf-8 path").to_string(),
+        strict: false,
+    };
+    let (system, setup) = common::fresh_system_and_setup_with(case.path(), |config| {
+        config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
+        dynamic_simulating(SimulationRowSet::All)(config);
+        config.policy.boundary = Some(boundary.clone());
+    });
+    reconcile_boundary_policy(&setup, &system, &boundary, case.path())
+        .expect("every row of the plain policy is active");
+    for kind in [FullFcfLoadKind::WarmStart, FullFcfLoadKind::Resume] {
+        check_full_fcf_load(kind, &checkpoint_dir, &system, &setup, &mut |_| {}).unwrap_or_else(
+            |err| panic!("{kind:?}: the boundary replaces the terminal pool: {err}"),
+        );
+    }
+    let err = check_full_fcf_load(
+        FullFcfLoadKind::SimulationOnly,
+        &checkpoint_dir,
+        &system,
+        &setup,
+        &mut |_| {},
+    )
+    .expect_err("a simulation-only run injects no boundary and simulates the loaded pool");
+    assert!(matches!(err, FullFcfLoadError::Refused(_)), "{err}");
 }
 
 /// A row a capped source evicted was never scored, so `all` leaves it out as it

@@ -38,8 +38,7 @@ use crate::solver_stats::SolverStatsDelta;
 /// `node_id` differs from the node being solved as cold, never warm-started
 /// from it — a resampled path visiting a different node than the one that
 /// captured the basis. Carried on the broadcast wire (see
-/// [`CapturedBasis::to_broadcast_payload`]), so the decode side is
-/// self-describing rather than positionally filled.
+/// [`CapturedBasis::to_broadcast_payload`]).
 #[derive(Clone, Debug)]
 pub struct CapturedBasis {
     /// Row and column statuses from the solver.
@@ -63,10 +62,7 @@ pub struct CapturedBasis {
 /// the presence sentinel (`1_i32`). Bump this constant and update
 /// `try_from_broadcast_payload` whenever the field layout changes.
 ///
-/// Version 2 carries: the generating/capture `node_id` (making each entry
-/// self-describing rather than positionally filled by the caller), column
-/// statuses, template-row statuses, cut-row statuses, `cut_row_slots`, and
-/// `state_at_capture`. `cut_row_slots` is the load-bearing reconstruction key —
+/// `cut_row_slots` is the load-bearing reconstruction key —
 /// `build_slot_lookup` binds stored cut-row statuses to target-LP cut rows by
 /// slot id. `state_at_capture` is not read by any current reconstruction
 /// reader; it is retained for diagnostics and to allow re-introducing a
@@ -123,8 +119,7 @@ impl CapturedBasis {
     /// Pushes the following into `i32_buf` in order:
     /// - `1_i32` sentinel (present)
     /// - [`BASIS_BROADCAST_FORMAT_TAG`] as `i32` (format tag)
-    /// - `node_id` as `i32` (the generating/capture node — self-describing
-    ///   header, so the decode side no longer fills it positionally)
+    /// - `node_id` as `i32` (the capture node)
     /// - `col_status.len()` as `i32`
     /// - `row_status.len()` as `i32`
     /// - `base_row_count` as `i32`
@@ -136,9 +131,8 @@ impl CapturedBasis {
     ///
     /// Pushes `state_at_capture[..]` into `f64_buf`.
     ///
-    /// The callers (currently `broadcast_basis_cache`) are
-    /// responsible for writing the `0_i32` "no basis" sentinel
-    /// when `Option<CapturedBasis>` is `None`.
+    /// Callers write the `0_i32` "no basis" sentinel when
+    /// `Option<CapturedBasis>` is `None`.
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     pub fn to_broadcast_payload(&self, i32_buf: &mut Vec<i32>, f64_buf: &mut Vec<f64>) {
         i32_buf.push(1_i32);

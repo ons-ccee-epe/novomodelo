@@ -11,12 +11,9 @@
 use novomodelo_comm::CommError::InvalidBufferSize;
 use novomodelo_comm::{Communicator, per_rank_counts};
 use novomodelo_io::StageStatesReadResult;
-use novomodelo_solver::ActiveProfile;
-use novomodelo_solver::SolverError;
-use novomodelo_solver::{SolverInterface, StageTemplate};
+use novomodelo_solver::{ActiveProfile, SolverError, SolverInterface, StageTemplate};
 
 use crate::training::session::rank_distribution::RankDistribution;
-use crate::workspace::BasisStore;
 use crate::{
     SddpError, SolverProfiles, TrainingConfig,
     context::{StageContext, TrainingContext},
@@ -25,7 +22,7 @@ use crate::{
     solver_stats::SolverStatsLogEntry,
     stopping_rule::StopDecision,
     training_session::{IterationOutcome, TrainingSession},
-    workspace::CapturedBasis,
+    workspace::{BasisStore, CapturedBasis},
 };
 
 // ---------------------------------------------------------------------------
@@ -107,7 +104,8 @@ impl TrainingResult {
     /// Construct a `TrainingResult` with explicit field values.
     ///
     /// Prefer this over struct-literal syntax: adding a field then fails to
-    /// compile until every call site is updated.
+    /// compile until every call site is updated. `checkpoint_bases.complete`
+    /// decides where `write_checkpoint` puts the result, so every caller states it.
     #[must_use]
     // Rationale: the arguments are independently sourced phase outputs and every
     // call site constructs the full result, so a context struct would not reduce
@@ -124,6 +122,7 @@ impl TrainingResult {
         basis_cache: Vec<Option<CapturedBasis>>,
         solver_stats_log: Vec<SolverStatsLogEntry>,
         frozen_templates: Option<Vec<StageTemplate>>,
+        checkpoint_bases: CheckpointBasisStore,
     ) -> Self {
         Self {
             final_lb,
@@ -138,7 +137,7 @@ impl TrainingResult {
             basis_cache,
             solver_stats_log,
             frozen_templates,
-            checkpoint_bases: CheckpointBasisStore::default(),
+            checkpoint_bases,
         }
     }
 }
@@ -195,20 +194,21 @@ pub struct LoadedPolicy {
     /// in the loaded pools.
     pub trial_states: Vec<StageStatesReadResult>,
 
-    /// `Cold` for a resume, the fallback for every other load.
+    /// `Cold` unless the load that built this sets the fallback: a warm start
+    /// and a simulation-only load do, a resume does not.
     pub missing_scenario_basis: MissingScenarioBasis,
 }
 
 /// What seeds a scenario whose own basis a node's stored bases lack.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum MissingScenarioBasis {
-    /// The node's lowest-scenario basis, for a warm start whose source ran
-    /// fewer forward passes.
-    #[default]
-    NodeLowestScenario,
     /// Nothing: the run that wrote a resumed checkpoint held no basis there
     /// either, as for a node of a branching graph the scenario has not visited.
+    #[default]
     Cold,
+    /// The node's lowest-scenario basis, for a warm start whose source ran
+    /// fewer forward passes.
+    NodeLowestScenario,
 }
 
 impl LoadedPolicy {
@@ -298,13 +298,9 @@ fn rank_local_basis_cache(basis_store: &BasisStore) -> Vec<Option<CapturedBasis>
 /// for the i32 and f64 buffers). Single-rank runs skip the broadcast and return
 /// [`rank_local_basis_cache`].
 ///
-/// Each reconstructed basis's `node_id` now rides the wire payload
-/// (`try_from_broadcast_payload` reads it), so no out-of-band fill from a
-/// per-stage node array is needed. The single-rank clone path likewise keeps
-/// the `node_id` capture set via `write_capture_metadata`. The cache is sized
-/// and keyed by `basis_store.num_nodes()` (one slot per canonical node), so a
-/// branching graph's leaf nodes are broadcast too, never truncated at
-/// `num_stages`.
+/// The cache is sized and keyed by `basis_store.num_nodes()` (one slot per
+/// canonical node), so a branching graph's leaf nodes are broadcast too, never
+/// truncated at `num_stages`.
 ///
 /// # Errors
 ///
@@ -323,13 +319,7 @@ pub(crate) fn broadcast_basis_cache<C: Communicator>(
         return Ok(rank_local_basis_cache(basis_store));
     }
 
-    // Multi-rank path: pack rank 0's scenario-0 full CapturedBasis into two
-    // flat buffers (one i32 for integer/status fields, one f64 for
-    // state_at_capture) and broadcast both.
-    //
-    // Wire format is owned by CapturedBasis::to_broadcast_payload /
-    // CapturedBasis::try_from_broadcast_payload. The None case writes a
-    // 0_i32 sentinel directly; the Some case delegates to the method.
+    // None is written as a bare 0_i32 sentinel; Some delegates to the wire owner.
     let mut buf: Vec<i32> = Vec::new();
     let mut f64_buf: Vec<f64> = Vec::new();
     if comm.rank() == 0 {

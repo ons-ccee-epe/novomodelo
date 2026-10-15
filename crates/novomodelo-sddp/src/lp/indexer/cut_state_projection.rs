@@ -151,7 +151,7 @@ impl CutStateProjection {
     /// Identity for an all-enabled pool (`s == global_state_index(s).get()`); a
     /// reduced pool selects the enabled dimensions, which are NOT a prefix (a
     /// `storage:false` pool begins at the first inflow-lag [`StateDim`]). Index a
-    /// `StateDim`-packed archive through this, never [`Self::outgoing_column`],
+    /// `StateDim`-packed trial-state vector through this, never [`Self::outgoing_column`],
     /// which remaps inflow-lag slots off the [`StateDim`] axis (to `z_inflow`,
     /// outside `[0, n_state)`).
     ///

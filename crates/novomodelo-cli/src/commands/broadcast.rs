@@ -108,7 +108,7 @@ pub(crate) struct BroadcastConfig {
     /// When `false`, all ranks skip training and proceed to simulation (or exit).
     pub(crate) training_enabled: bool,
     pub(crate) policy_mode: PolicyMode,
-    /// Whether the visited-states archive is allocated for export.
+    /// Whether every pool stores its trial states for the checkpoint's states export.
     pub(crate) export_states: bool,
     /// `policy.checkpointing`'s resolved schedule; every rank evaluates it.
     pub(crate) checkpoint_schedule: Option<CheckpointSchedule>,

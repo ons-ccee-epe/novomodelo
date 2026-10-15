@@ -80,11 +80,11 @@ fn slot_key(slot: &EntitySlot) -> SlotKey {
 /// and the topology-subset pre-check that runs ahead of it — the same
 /// `source` manifest, so both consumers read one hashing of it.
 pub(crate) fn build_identity_index(source: &[EntitySlot]) -> HashMap<SlotKey, usize> {
-    let mut index = HashMap::with_capacity(source.len());
-    for (pos, slot) in source.iter().enumerate() {
-        index.insert(slot_key(slot), pos);
-    }
-    index
+    source
+        .iter()
+        .enumerate()
+        .map(|(pos, slot)| (slot_key(slot), pos))
+        .collect()
 }
 
 /// One forward-family source slot's decoded delivery/arrival interval and its
@@ -870,16 +870,13 @@ pub(crate) fn build_reconciliation_report(
         }
     }
 
-    let mut source_interval_count = 0;
     // AnticipatedCoverage is anticipated-only; the shared index also carries
     // HydroTransitBucket entries.
-    for (&(family_byte, _), intervals) in source_index {
-        if family_byte != StateFamily::AnticipatedThermalState.code() {
-            continue;
-        }
-        source_interval_count += intervals.len();
-    }
-    report.anticipated_coverage.source_interval_count = source_interval_count;
+    report.anticipated_coverage.source_interval_count = source_index
+        .iter()
+        .filter(|(key, _)| key.0 == StateFamily::AnticipatedThermalState.code())
+        .map(|(_, intervals)| intervals.len())
+        .sum();
 
     report
 }

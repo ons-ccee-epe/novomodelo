@@ -52,9 +52,8 @@ use crate::{
 /// with fewer actual forward passes zero-pad their trailing send-buffer slots.
 ///
 /// The true total forward pass count is tracked in `real_total` and exposed
-/// via [`real_total_scenarios`](Self::real_total_scenarios). Use
-/// [`pack_real_states_into`](Self::pack_real_states_into) to extract only the
-/// non-padded state vectors from the receive buffer.
+/// via [`real_total_scenarios`](Self::real_total_scenarios); the real count of
+/// each rank is `actual_counts`.
 ///
 /// # Buffer layout
 ///
@@ -129,8 +128,8 @@ pub struct ExchangeBuffers {
 // Several constructors and accessors on `ExchangeBuffers` (`new`,
 // `gathered_states`, `local_count`, `total_scenarios`) are part of the
 // stable shape callers may want for inspection or for the uniform-rank
-// distribution path. Production drivers go through `with_actual_counts`
-// and pack helpers; these are retained for symmetry and tests.
+// distribution path. Production drivers go through `with_actual_counts`;
+// these are retained for symmetry and tests.
 #[allow(dead_code)]
 impl ExchangeBuffers {
     /// Construct pre-allocated exchange buffers for the given topology.
@@ -142,8 +141,7 @@ impl ExchangeBuffers {
     /// equivalent to calling [`with_actual_counts`](Self::with_actual_counts)
     /// with uniform `actual_per_rank`. For uneven distributions, prefer
     /// `with_actual_counts` so that [`real_total_scenarios`](Self::real_total_scenarios)
-    /// and [`pack_real_states_into`](Self::pack_real_states_into) return
-    /// correct results.
+    /// and `actual_counts` return correct results.
     ///
     /// # Arguments
     ///
@@ -163,12 +161,11 @@ impl ExchangeBuffers {
     ///
     /// Use this constructor when the total number of forward passes does not
     /// divide evenly among ranks so that
-    /// [`real_total_scenarios`](Self::real_total_scenarios) and
-    /// [`pack_real_states_into`](Self::pack_real_states_into) return correct
-    /// results.
+    /// [`real_total_scenarios`](Self::real_total_scenarios) and `actual_counts`
+    /// return correct results.
     ///
     /// The `allgatherv` buffer sizing still uses `max_local_count` uniformly
-    /// for all ranks (the padded layout). Only the archival helpers use
+    /// for all ranks (the padded layout). Only the real-count accessors use
     /// `actual_per_rank`.
     ///
     /// # Arguments
@@ -362,35 +359,11 @@ impl ExchangeBuffers {
     pub(crate) fn actual_counts(&self) -> &[usize] {
         &self.actual_counts
     }
-
-    /// Copy only the real (non-padded) state vectors from the receive buffer
-    /// into `buf`.
-    ///
-    /// After a successful [`exchange`](Self::exchange), the receive buffer
-    /// contains `local_count * num_ranks` state slots in rank-major order.
-    /// Ranks with fewer actual forward passes have zero-padded trailing slots.
-    /// This method copies only the `actual_counts[r]` real slots for each rank
-    /// `r` into `buf`, producing a compact slice of
-    /// [`real_total_scenarios`](Self::real_total_scenarios) state vectors.
-    ///
-    /// The output length equals `real_total_scenarios() * n_state`.
-    ///
-    /// # Arguments
-    ///
-    /// - `buf` — destination buffer. It is cleared and then filled with the
-    ///   real state data. Capacity is preserved between calls.
-    pub fn pack_real_states_into(&self, buf: &mut Vec<f64>) {
-        buf.clear();
-        for r in 0..self.num_ranks {
-            let base = r * self.local_count * self.n_state;
-            let real_len = self.actual_counts[r] * self.n_state;
-            buf.extend_from_slice(&self.recv_buf[base..base + real_len]);
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::RankStub;
     use novomodelo_comm::{CommData, CommError, Communicator, LocalBackend, ReduceOp};
 
     use super::ExchangeBuffers;
@@ -642,7 +615,7 @@ mod tests {
         );
     }
 
-    // ── with_actual_counts / real_total_scenarios / pack_real_states_into ─────
+    // ── with_actual_counts / real_total_scenarios ─────────────────────────────
 
     #[test]
     fn real_total_scenarios_uneven_distribution() {
@@ -669,122 +642,7 @@ mod tests {
         assert_eq!(bufs.total_scenarios(), 3);
     }
 
-    #[test]
-    #[allow(clippy::erasing_op, clippy::identity_op)]
-    fn pack_real_states_into_excludes_padding() {
-        // AC: max_local_count=3, num_ranks=2, actual_per_rank=[3,2], n_state=2.
-        // Rank 0 has 3 real states, rank 1 has 2 real states + 1 zero-padded slot.
-        // pack_real_states_into must return exactly 5 state vectors (10 f64 values).
-        let n_state = 2;
-        let max_local = 3;
-        let num_ranks = 2;
-        let mut bufs =
-            ExchangeBuffers::with_actual_counts(&state_of(n_state), max_local, num_ranks, &[3, 2]);
-
-        // Manually fill recv_buf:
-        // rank 0: slots [10,11], [20,21], [30,31]   (3 real)
-        // rank 1: slots [40,41], [50,51], [0, 0]    (2 real + 1 padding)
-        let rank0_base = 0 * max_local * n_state; // 0
-        let rank1_base = 1 * max_local * n_state; // 6
-        bufs.recv_buf[rank0_base..rank0_base + 2].copy_from_slice(&[10.0, 11.0]);
-        bufs.recv_buf[rank0_base + 2..rank0_base + 4].copy_from_slice(&[20.0, 21.0]);
-        bufs.recv_buf[rank0_base + 4..rank0_base + 6].copy_from_slice(&[30.0, 31.0]);
-        bufs.recv_buf[rank1_base..rank1_base + 2].copy_from_slice(&[40.0, 41.0]);
-        bufs.recv_buf[rank1_base + 2..rank1_base + 4].copy_from_slice(&[50.0, 51.0]);
-        // padding slot stays zero: recv_buf[rank1_base+4..rank1_base+6] = [0.0, 0.0]
-
-        let mut out = Vec::new();
-        bufs.pack_real_states_into(&mut out);
-
-        // Expect 5 vectors × 2 elements = 10 values, zero-padded slot excluded.
-        assert_eq!(
-            out.len(),
-            10,
-            "expected 10 f64 values (5 state vectors × 2)"
-        );
-        assert_eq!(
-            out,
-            vec![10.0, 11.0, 20.0, 21.0, 30.0, 31.0, 40.0, 41.0, 50.0, 51.0]
-        );
-    }
-
-    #[test]
-    fn pack_real_states_into_even_distribution_matches_gathered_states() {
-        // When distribution is even, pack_real_states_into must return the
-        // same data as gathered_states (in the same order).
-        let mut bufs = ExchangeBuffers::new(&state_of(2), 3, 1);
-        let records = vec![
-            make_record(vec![1.0, 2.0]),
-            make_record(vec![3.0, 4.0]),
-            make_record(vec![5.0, 6.0]),
-        ];
-        let comm = LocalBackend;
-        bufs.exchange(&records, StageIdx(0), 1, &comm).unwrap();
-
-        let mut packed = Vec::new();
-        bufs.pack_real_states_into(&mut packed);
-        assert_eq!(packed, bufs.gathered_states());
-    }
-
-    #[test]
-    fn pack_real_states_into_reuses_buffer_capacity() {
-        // Calling pack_real_states_into twice must clear and refill the buffer
-        // without changing its capacity (capacity is preserved after clear).
-        let mut bufs = ExchangeBuffers::with_actual_counts(&state_of(2), 3, 2, &[3, 2]);
-        // Fill all recv_buf slots with 1.0 for simplicity.
-        bufs.recv_buf.fill(1.0);
-
-        let mut out = Vec::with_capacity(20);
-        bufs.pack_real_states_into(&mut out);
-        assert_eq!(out.len(), 10); // 5 real states × 2
-
-        bufs.pack_real_states_into(&mut out);
-        assert_eq!(out.len(), 10); // still 10 after second call (clear + refill)
-    }
-
     // ── zero-work rank ────────────────────────────────────────────────────────
-
-    /// Rank 1 of a 2-rank world whose `allgatherv` honours `displs`, so a test
-    /// can tell whether this rank contributed its own slot rather than reading
-    /// a peer's.
-    struct Rank1Of2;
-
-    impl Communicator for Rank1Of2 {
-        fn allgatherv<T: CommData>(
-            &self,
-            send: &[T],
-            recv: &mut [T],
-            _counts: &[usize],
-            displs: &[usize],
-        ) -> Result<(), CommError> {
-            let start = displs[1];
-            recv[start..start + send.len()].clone_from_slice(send);
-            Ok(())
-        }
-        fn allreduce<T: CommData>(
-            &self,
-            _send: &[T],
-            _recv: &mut [T],
-            _op: ReduceOp,
-        ) -> Result<(), CommError> {
-            unreachable!("exchange only calls allgatherv")
-        }
-        fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
-            unreachable!("exchange only calls allgatherv")
-        }
-        fn barrier(&self) -> Result<(), CommError> {
-            unreachable!("exchange only calls allgatherv")
-        }
-        fn rank(&self) -> usize {
-            1
-        }
-        fn size(&self) -> usize {
-            2
-        }
-        fn abort(&self, error_code: i32) -> ! {
-            std::process::exit(error_code)
-        }
-    }
 
     /// Deadlock-freedom for the per-stage exchange: `total_forward_passes=1`
     /// across 2 ranks leaves rank 1 with zero real trial points, yet it must
@@ -803,7 +661,8 @@ mod tests {
         // slot is padding the forward pass never wrote.
         let records = vec![make_record(vec![10.0]), make_record(vec![20.0])];
 
-        bufs.exchange(&records, StageIdx(0), 2, &Rank1Of2).unwrap();
+        bufs.exchange(&records, StageIdx(0), 2, &RankStub::of_two(1))
+            .unwrap();
 
         assert_eq!(
             bufs.gathered_states()[max_local_fwd * n_state],
@@ -812,28 +671,21 @@ mod tests {
         );
     }
 
-    /// The zero-work rank's padding must never reach the archive that drives cut
-    /// selection: `real_total_scenarios` and `pack_real_states_into` are keyed on
-    /// `actual_counts`, which is rank-uniform, so every rank archives the same
-    /// states regardless of which rank drew them.
+    /// The zero-work rank's padding slot is not a real trial point:
+    /// `real_total_scenarios` and `actual_counts` are rank-uniform, so every rank
+    /// counts the same real states regardless of which rank drew them.
     #[test]
-    fn zero_work_rank_padding_is_excluded_from_the_packed_states() {
+    fn zero_work_rank_padding_is_excluded_from_the_real_total() {
         let mut bufs = ExchangeBuffers::with_actual_counts(&state_of(1), 1, 2, &[1, 0]);
         let records = vec![make_record(vec![10.0]), make_record(vec![20.0])];
-        bufs.exchange(&records, StageIdx(0), 2, &Rank1Of2).unwrap();
+        bufs.exchange(&records, StageIdx(0), 2, &RankStub::of_two(1))
+            .unwrap();
 
         assert_eq!(
             bufs.real_total_scenarios(),
             1,
             "only rank 0 drew a trial point"
         );
-
-        let mut packed = Vec::new();
-        bufs.pack_real_states_into(&mut packed);
-        assert_eq!(
-            packed.len(),
-            1,
-            "rank 1's padding slot must not reach the archive"
-        );
+        assert_eq!(bufs.actual_counts(), &[1, 0]);
     }
 }

@@ -1098,7 +1098,6 @@ impl CutPool {
     /// ```
     #[must_use]
     pub fn sparsity_report(&self) -> SparsityReport {
-        let active_count = self.active_count();
         let mut exact_zero_count = 0usize;
         let mut per_dimension_zeros = vec![0usize; self.state_dimension];
 
@@ -1111,7 +1110,7 @@ impl CutPool {
             }
         }
 
-        let total = active_count * self.state_dimension;
+        let total = self.active_count() * self.state_dimension;
         #[allow(clippy::cast_precision_loss)]
         let fraction = if total > 0 {
             exact_zero_count as f64 / total as f64
@@ -1344,10 +1343,11 @@ impl CutPool {
     /// left the recorded run's. A slot with no record stays vacant, so a later
     /// cut lands where the recorded run's did.
     ///
-    /// `prefix_len` is the recorded pool's protected-prefix length and becomes
-    /// the slot base. Capacity is the larger of `stored_capacity` and
-    /// `prefix_len + max_iterations * visit_stride`, so a pool grown by
-    /// [`grow`](CutPool::grow) keeps its slots.
+    /// `prefix_len` is the number of `Prefix` records the recorded pool held
+    /// (the writer stores [`CutPool::prefix_len`] as the pool's
+    /// `warm_start_count`) and becomes the slot base. Capacity is the larger of
+    /// `stored_capacity` and `prefix_len + max_iterations * visit_stride`, so a
+    /// pool grown by [`grow`](CutPool::grow) keeps its slots.
     ///
     /// # Errors
     ///
@@ -2314,7 +2314,7 @@ mod tests {
                 (
                     u64::from(record.iteration),
                     record.forward_pass_index,
-                    if slot < 2 {
+                    if slot < pool.prefix_len() {
                         0
                     } else {
                         u64::from(record.iteration)

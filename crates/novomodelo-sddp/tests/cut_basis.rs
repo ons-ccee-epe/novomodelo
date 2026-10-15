@@ -82,14 +82,14 @@ mod boundary_cuts {
         seed: u64,
     ) {
         use novomodelo_sddp::policy_export::{
-            build_scenario_zero_basis_entries, build_stage_basis_records, build_stage_cut_records,
-            build_stage_cuts_payloads, convert_basis_cache,
+            BindingCounters, build_basis_store_entries, build_stage_basis_records,
+            build_stage_cut_records, build_stage_cuts_payloads, convert_basis_store,
         };
         let fcf = &setup.fcf;
         // Each value times the study's factor under marker 1.0, so a load at that
         // factor gives `(value * s) / s`, the values this fixture always loaded.
         let s = setup.inputs.stage_data.stage_templates.cost_scale_factor;
-        let held = build_stage_cut_records(fcf, false).expect("export");
+        let held = build_stage_cut_records(fcf, BindingCounters::Omitted).expect("export");
         let scaled_coefficients: Vec<Vec<Vec<f64>>> = held
             .iter()
             .map(|pool| {
@@ -125,9 +125,8 @@ mod boundary_cuts {
             &stage_records,
             &stage_manifests,
         );
-        let (basis_col, basis_row) = convert_basis_cache(&result.basis_cache);
-        let basis_entries =
-            build_scenario_zero_basis_entries(&result.basis_cache, &basis_col, &basis_row);
+        let basis_statuses = convert_basis_store(&result.checkpoint_bases);
+        let basis_entries = build_basis_store_entries(&result.checkpoint_bases, &basis_statuses);
         let stage_bases =
             build_stage_basis_records(&basis_entries, result.iterations).expect("bases");
         let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
@@ -3225,11 +3224,11 @@ mod warm_start {
         seed: u64,
     ) {
         use novomodelo_sddp::policy_export::{
-            build_scenario_zero_basis_entries, build_stage_basis_records, build_stage_cut_records,
-            build_stage_cuts_payloads, convert_basis_cache,
+            BindingCounters, build_basis_store_entries, build_stage_basis_records,
+            build_stage_cut_records, build_stage_cuts_payloads, convert_basis_store,
         };
         let fcf = &setup.fcf;
-        let stage_records = build_stage_cut_records(fcf, false).expect("export");
+        let stage_records = build_stage_cut_records(fcf, BindingCounters::Omitted).expect("export");
         let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); fcf.pools.len()];
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
@@ -3243,9 +3242,8 @@ mod warm_start {
             &stage_records,
             &stage_manifests,
         );
-        let (basis_col, basis_row) = convert_basis_cache(&result.basis_cache);
-        let basis_entries =
-            build_scenario_zero_basis_entries(&result.basis_cache, &basis_col, &basis_row);
+        let basis_statuses = convert_basis_store(&result.checkpoint_bases);
+        let basis_entries = build_basis_store_entries(&result.checkpoint_bases, &basis_statuses);
         let stage_bases =
             build_stage_basis_records(&basis_entries, result.iterations).expect("bases");
         let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
@@ -3377,7 +3375,7 @@ mod warm_start {
     #[test]
     fn exported_basis_records_count_the_cut_rows_each_basis_was_captured_with() {
         use novomodelo_sddp::policy_export::{
-            build_scenario_zero_basis_entries, build_stage_basis_records, convert_basis_cache,
+            build_basis_store_entries, build_stage_basis_records, convert_basis_store,
         };
 
         let case_dir = d01_case_dir();
@@ -3395,9 +3393,8 @@ mod warm_start {
         assert!(outcome.error.is_none());
         let result = outcome.result;
 
-        let (basis_col, basis_row) = convert_basis_cache(&result.basis_cache);
-        let basis_entries =
-            build_scenario_zero_basis_entries(&result.basis_cache, &basis_col, &basis_row);
+        let basis_statuses = convert_basis_store(&result.checkpoint_bases);
+        let basis_entries = build_basis_store_entries(&result.checkpoint_bases, &basis_statuses);
         let records = build_stage_basis_records(&basis_entries, result.iterations).expect("bases");
         assert!(
             !records.is_empty(),
@@ -3807,7 +3804,7 @@ mod group_state_invariance {
     use novomodelo_core::scenario::ScenarioSource;
     use novomodelo_core::{EntityId, HydroUnitGroup, System, SystemBuilder};
     use novomodelo_sddp::indexer::{HydroCellIndex, HydroSys};
-    use novomodelo_sddp::policy_export::build_stage_cut_records;
+    use novomodelo_sddp::policy_export::{BindingCounters, build_stage_cut_records};
     use novomodelo_sddp::{
         StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
     };
@@ -3955,7 +3952,8 @@ mod group_state_invariance {
             .map(|pool| pool.state_dimension)
             .collect();
 
-        let stage_records = build_stage_cut_records(&setup.fcf, false).expect("export");
+        let stage_records =
+            build_stage_cut_records(&setup.fcf, BindingCounters::Omitted).expect("export");
         let populated_cut_coefficient_lengths: Vec<Option<usize>> = stage_records
             .iter()
             .map(|records| records.first().map(|record| record.coefficients.len()))
@@ -4138,8 +4136,8 @@ mod range_warm_start_determinism {
     use novomodelo_sddp::hydro_models::{PrepareHydroModelsResult, prepare_hydro_models};
     use novomodelo_sddp::inflow_method::InflowNonNegativityMethod;
     use novomodelo_sddp::policy_export::{
-        build_scenario_zero_basis_entries, build_stage_basis_records, build_stage_cut_records,
-        build_stage_cuts_payloads, convert_basis_cache,
+        BindingCounters, build_basis_store_entries, build_stage_basis_records,
+        build_stage_cut_records, build_stage_cuts_payloads, convert_basis_store,
     };
     use novomodelo_sddp::resolved_parameters::ResolvedParameters;
     use novomodelo_sddp::setup::prepare_stochastic;
@@ -4560,7 +4558,7 @@ mod range_warm_start_determinism {
         seed: u64,
     ) {
         let fcf = &setup.fcf;
-        let stage_records = build_stage_cut_records(fcf, false).expect("export");
+        let stage_records = build_stage_cut_records(fcf, BindingCounters::Omitted).expect("export");
         let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); fcf.pools.len()];
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
@@ -4574,9 +4572,8 @@ mod range_warm_start_determinism {
             &stage_records,
             &stage_manifests,
         );
-        let (basis_col, basis_row) = convert_basis_cache(&result.basis_cache);
-        let basis_entries =
-            build_scenario_zero_basis_entries(&result.basis_cache, &basis_col, &basis_row);
+        let basis_statuses = convert_basis_store(&result.checkpoint_bases);
+        let basis_entries = build_basis_store_entries(&result.checkpoint_bases, &basis_statuses);
         let stage_bases =
             build_stage_basis_records(&basis_entries, result.iterations).expect("bases");
         let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();

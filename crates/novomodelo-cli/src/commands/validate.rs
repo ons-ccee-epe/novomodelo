@@ -16,8 +16,9 @@
 //! [`novomodelo_sddp::validate_phases::validate_study`], the pipeline `novomodelo.io.validate`
 //! shares: it builds the study with the constructor `novomodelo run` uses, checks the
 //! warm-start, resume or simulation-only policy the run would load, and, when
-//! `config.policy.boundary` is configured, reconciles the boundary policy against
-//! its terminal manifest, without solving. A failure exits by its
+//! `config.policy.boundary` is configured and the run trains, reconciles the
+//! boundary policy against its terminal manifest, without solving. A failure exits
+//! by its
 //! [`novomodelo_sddp::ErrorClass`].
 
 use std::path::{Path, PathBuf};
@@ -58,7 +59,8 @@ pub struct ValidateArgs {
 /// Success outcome (`configured`/`boundary_date`/`report` populated, `error` None) and error outcome (`configured`/`boundary_date`/`report` None, `error` populated) never overlap.
 #[derive(Debug, Serialize)]
 struct ValidateBoundaryOutput {
-    /// Whether `policy.boundary` is configured in this case's `config.json`.
+    /// Whether `policy.boundary` is configured in this case's `config.json` and
+    /// the run applies it, which only a run that trains does.
     configured: Option<bool>,
     /// The date the boundary pool was selected against, when `configured`
     /// is `Some(true)`.

@@ -332,12 +332,7 @@ where
             },
         );
 
-        let runtime = RuntimeHandles::new(
-            event_sender,
-            shutdown_flag,
-            export_states,
-            periodic_checkpoint,
-        );
+        let runtime = RuntimeHandles::new(event_sender, shutdown_flag, periodic_checkpoint);
 
         let results = TrainingResults::new(config.loop_config.start_iteration);
 
@@ -730,11 +725,11 @@ where
             basis_cache,
             solver_stats_log,
             Some(frozen_templates),
+            checkpoint_bases,
         );
         result.stop_decision = stop_decision;
         result.lower_bound_history =
             committed_lower_bound_history(&self.convergence_monitor, completed_iterations).to_vec();
-        result.checkpoint_bases = checkpoint_bases;
 
         Ok(TrainingOutcome {
             result,
@@ -814,10 +809,10 @@ where
             Vec::new(),
             solver_stats_log,
             Some(frozen_templates),
+            checkpoint_bases,
         );
         result.lower_bound_history =
             committed_lower_bound_history(&self.convergence_monitor, completed_iterations).to_vec();
-        result.checkpoint_bases = checkpoint_bases;
 
         TrainingOutcome {
             result,
@@ -1542,6 +1537,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::mpsc;
 
+    use crate::test_support::RankStub;
     use chrono::NaiveDate;
     use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
     use novomodelo_core::{
@@ -1568,6 +1564,7 @@ mod tests {
         IterationOutcome, LazySolveTotals, TrainingSession, grow_pools_for_next_iteration,
         reduce_lazy_totals_delta,
     };
+    use crate::training::training::MissingScenarioBasis;
     use crate::workspace::CapturedBasis;
     use crate::{
         CutPool, LoadedPolicy, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet,
@@ -3127,54 +3124,6 @@ mod tests {
 
     // ── seed_basis_store: each rank restores its own scenarios ─────────────
 
-    /// One rank of a two-rank world that issues no collective: `size()` and
-    /// `rank()` are the only load-bearing methods.
-    struct OneOfTwo(usize);
-
-    impl Communicator for OneOfTwo {
-        fn allgatherv<T: CommData>(
-            &self,
-            send: &[T],
-            recv: &mut [T],
-            _counts: &[usize],
-            displs: &[usize],
-        ) -> Result<(), CommError> {
-            let start = displs[self.0];
-            recv[start..start + send.len()].clone_from_slice(send);
-            Ok(())
-        }
-
-        fn allreduce<T: CommData>(
-            &self,
-            send: &[T],
-            recv: &mut [T],
-            _op: ReduceOp,
-        ) -> Result<(), CommError> {
-            recv.clone_from_slice(send);
-            Ok(())
-        }
-
-        fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
-            Ok(())
-        }
-
-        fn barrier(&self) -> Result<(), CommError> {
-            Ok(())
-        }
-
-        fn rank(&self) -> usize {
-            self.0
-        }
-
-        fn size(&self) -> usize {
-            2
-        }
-
-        fn abort(&self, error_code: i32) -> ! {
-            std::process::exit(error_code)
-        }
-    }
-
     /// The local rows of the store after seeding `loaded` on `comm`, with
     /// three forward passes on a two-stage chain: per node, each row's
     /// `cut_row_slots`, which the fixture sets to the basis's scenario.
@@ -3263,22 +3212,23 @@ mod tests {
                 vec![tagged(0, 0), tagged(0, 1), tagged(0, 2)],
                 vec![tagged(1, 0)],
             ],
+            missing_scenario_basis: MissingScenarioBasis::NodeLowestScenario,
             ..LoadedPolicy::default()
         };
 
         assert_eq!(
-            seeded_rows(&OneOfTwo(0), &loaded),
+            seeded_rows(&RankStub::of_two(0), &loaded),
             [
                 vec![Some(vec![0]), Some(vec![1])],
                 vec![Some(vec![0]), Some(vec![0])],
             ]
         );
         assert_eq!(
-            seeded_rows(&OneOfTwo(1), &loaded),
+            seeded_rows(&RankStub::of_two(1), &loaded),
             [vec![Some(vec![2]), None], vec![Some(vec![0]), None]]
         );
         assert_eq!(
-            seeded_rows(&OneOfTwo(1), &LoadedPolicy::default()),
+            seeded_rows(&RankStub::of_two(1), &LoadedPolicy::default()),
             [vec![None, None], vec![None, None]],
             "a fresh start seeds nothing"
         );
@@ -3479,58 +3429,6 @@ mod tests {
 
     // ── TrainingSession::new: enumerated world >= 2 interior-branching guard ─
 
-    /// `size() == 2` sibling of [`StubComm`] — the same faithful rank-0
-    /// partial-write stub `backward_pass_state.rs`'s test module uses for its
-    /// 2-rank enumerated backward regression. `TrainingSession::new` never
-    /// issues a collective itself (only `RankDistribution::new` reads
-    /// `size()`/`rank()`), so the collective bodies below are never exercised
-    /// by the tests that use this stub — only `size()` is load-bearing.
-    struct Rank0Of2;
-
-    impl Communicator for Rank0Of2 {
-        fn allgatherv<T: CommData>(
-            &self,
-            send: &[T],
-            recv: &mut [T],
-            _counts: &[usize],
-            displs: &[usize],
-        ) -> Result<(), CommError> {
-            let start = displs[0];
-            recv[start..start + send.len()].clone_from_slice(send);
-            Ok(())
-        }
-
-        fn allreduce<T: CommData>(
-            &self,
-            send: &[T],
-            recv: &mut [T],
-            _op: ReduceOp,
-        ) -> Result<(), CommError> {
-            recv.clone_from_slice(send);
-            Ok(())
-        }
-
-        fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
-            Ok(())
-        }
-
-        fn barrier(&self) -> Result<(), CommError> {
-            Ok(())
-        }
-
-        fn rank(&self) -> usize {
-            0
-        }
-
-        fn size(&self) -> usize {
-            2
-        }
-
-        fn abort(&self, error_code: i32) -> ! {
-            std::process::exit(error_code)
-        }
-    }
-
     /// Root branches into two non-leaf nodes at stage 1, each fanning into
     /// its own leaf at stage 2 — node 1 (and node 2) sit on only one of the
     /// two root→leaf paths, never on both.
@@ -3647,7 +3545,7 @@ mod tests {
         let mut config = make_config(1, 10, 1, n_stages);
         config.loop_config.training_enumerated = true;
         let mut solver = MockSolver::with_fixed(100.0);
-        let comm = Rank0Of2;
+        let comm = RankStub::of_two(0);
         let block_counts = vec![1usize; n_stages];
         let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
         let geometry = equipment_free_geometry(&block_counts);
@@ -3784,7 +3682,7 @@ mod tests {
         let mut config = make_config(1, 10, 1, n_stages);
         config.loop_config.training_enumerated = true;
         let mut solver = MockSolver::with_fixed(100.0);
-        let comm = Rank0Of2;
+        let comm = RankStub::of_two(0);
         let block_counts = vec![1usize; n_stages];
         let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
         let geometry = equipment_free_geometry(&block_counts);

@@ -33,8 +33,8 @@ mod simulation_only {
         FutureCostFunction, StudySetup, build_basis_cache_from_checkpoint,
         hydro_models::prepare_hydro_models,
         policy_export::{
-            build_scenario_zero_basis_entries, build_stage_basis_records, build_stage_cut_records,
-            build_stage_cuts_payloads, convert_basis_cache,
+            BindingCounters, build_basis_store_entries, build_stage_basis_records,
+            build_stage_cut_records, build_stage_cuts_payloads, convert_basis_store,
         },
         setup::{NodePos, prepare_stochastic},
     };
@@ -109,7 +109,7 @@ mod simulation_only {
         let policy_dir = tmpdir.path().join("policy");
 
         let fcf = &setup.fcf;
-        let stage_records = build_stage_cut_records(fcf, false).expect("export");
+        let stage_records = build_stage_cut_records(fcf, BindingCounters::Omitted).expect("export");
         let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); fcf.pools.len()];
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
@@ -124,12 +124,9 @@ mod simulation_only {
             &stage_manifests,
         );
 
-        let (basis_col_u8, basis_row_u8) = convert_basis_cache(&training_result.basis_cache);
-        let basis_entries = build_scenario_zero_basis_entries(
-            &training_result.basis_cache,
-            &basis_col_u8,
-            &basis_row_u8,
-        );
+        let basis_statuses = convert_basis_store(&training_result.checkpoint_bases);
+        let basis_entries =
+            build_basis_store_entries(&training_result.checkpoint_bases, &basis_statuses);
         let stage_bases =
             build_stage_basis_records(&basis_entries, training_result.iterations).expect("bases");
 
@@ -1215,11 +1212,11 @@ mod decomp_integration {
         stage_manifests: &[Vec<novomodelo_io::EntitySlot>],
     ) {
         use novomodelo_sddp::policy_export::{
-            build_scenario_zero_basis_entries, build_stage_basis_records, build_stage_cut_records,
-            build_stage_cuts_payloads, convert_basis_cache,
+            BindingCounters, build_basis_store_entries, build_stage_basis_records,
+            build_stage_cut_records, build_stage_cuts_payloads, convert_basis_store,
         };
         let fcf = &setup.fcf;
-        let stage_records = build_stage_cut_records(fcf, false).expect("export");
+        let stage_records = build_stage_cut_records(fcf, BindingCounters::Omitted).expect("export");
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
         let study_stage_end_dates = ascending_stage_end_dates(fcf.pools.len());
         let stage_cuts = build_stage_cuts_payloads(
@@ -1231,9 +1228,8 @@ mod decomp_integration {
             &stage_records,
             stage_manifests,
         );
-        let (basis_col, basis_row) = convert_basis_cache(&result.basis_cache);
-        let basis_entries =
-            build_scenario_zero_basis_entries(&result.basis_cache, &basis_col, &basis_row);
+        let basis_statuses = convert_basis_store(&result.checkpoint_bases);
+        let basis_entries = build_basis_store_entries(&result.checkpoint_bases, &basis_statuses);
         let stage_bases =
             build_stage_basis_records(&basis_entries, result.iterations).expect("bases");
         let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();

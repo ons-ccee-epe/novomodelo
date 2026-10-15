@@ -1479,7 +1479,7 @@ mod tests {
         );
     }
 
-    // ── 0.14 format-wave markers ──────────────────────────────────────────────
+    // ── manifest version and layout checks ────────────────────────────────────
 
     /// A manifest whose `format_version` is not [`FORMAT_VERSION`] is rejected on
     /// the version marker BEFORE any payload is parsed: the reader names

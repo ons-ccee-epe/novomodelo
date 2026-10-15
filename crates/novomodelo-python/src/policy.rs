@@ -8,21 +8,19 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use std::num::NonZeroU32;
-
-use novomodelo_io::output::policy::check_checkpoint_payloads;
 use novomodelo_io::{
     BasisEntry, CheckpointManifest, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, FORMAT_VERSION,
     GraphManifest, HydroSeasonOrders, ManifestEdge, ManifestNode, OutputError, PolicyBasisRecord,
     PolicyCutRecord, ProducerBlock, SOFTWARE_NAME, SOFTWARE_VERSION,
     STAGE_CUTS_GRAPH_STAGE_ID_SENTINEL, STAGE_CUTS_NODE_ID_SENTINEL,
     STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, STAGE_STATES_NODE_ID_SENTINEL, SeasonManifest,
-    StageCutsPayload, StageStatesPayload, StateFamily, StateHistory,
+    StageCutsPayload, StageStatesPayload, StateFamily, StateHistory, check_checkpoint_payloads,
 };
 use novomodelo_sddp::{SddpError, reserve_boundary_inflow_lag_slots};
 

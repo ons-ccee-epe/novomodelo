@@ -100,10 +100,10 @@ pub use output::policy::{
     STAGE_CUTS_NODE_ID_SENTINEL, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
     STAGE_STATES_NODE_ID_SENTINEL, STATE_HISTORY_SCOPE_NONE, STATE_HISTORY_SCOPE_WHOLE,
     STATE_HISTORY_SCOPE_WINDOW, SeasonManifest, StageCutsPayload, StageCutsReadResult,
-    StageStatesPayload, StageStatesReadResult, StateFamily, StateHistory, decode_slot_date,
-    deserialize_stage_basis, deserialize_stage_cuts, deserialize_stage_states, encode_slot_date,
-    read_policy_checkpoint, resolve_policy_checkpoint, serialize_stage_basis, serialize_stage_cuts,
-    serialize_stage_states, write_policy_checkpoint,
+    StageStatesPayload, StageStatesReadResult, StateFamily, StateHistory,
+    check_checkpoint_payloads, decode_slot_date, deserialize_stage_basis, deserialize_stage_cuts,
+    deserialize_stage_states, encode_slot_date, read_policy_checkpoint, resolve_policy_checkpoint,
+    serialize_stage_basis, serialize_stage_cuts, serialize_stage_states, write_policy_checkpoint,
 };
 pub use output::{
     DeviationSummary, DeviationWorstEntry, DistributionInfo, EVAPORATION_MODELS_FILE,

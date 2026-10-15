@@ -72,7 +72,7 @@ use novomodelo_sddp::CutPool;
 use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::cut::SlotOrigin;
 use novomodelo_sddp::hydro_models::ResolvedProductionModel;
-use novomodelo_sddp::policy_export::build_stage_cut_records;
+use novomodelo_sddp::policy_export::{BindingCounters, build_stage_cut_records};
 use novomodelo_sddp::setup::{NodePos, OpeningSource, StageIdx};
 use novomodelo_sddp::test_support::{
     dcs_k_fan_setup, extensive_form_optimum, external_distinct_fan_setup,
@@ -371,7 +371,8 @@ fn sampled_fan_checkpoint_holds_no_never_written_slot() {
         "power: some pool must hold a vacant slot below its slot bound"
     );
 
-    let records = build_stage_cut_records(&fixture.setup.fcf, false).expect("export");
+    let records =
+        build_stage_cut_records(&fixture.setup.fcf, BindingCounters::Omitted).expect("export");
     for (pool_id, (pool, records)) in pools.iter().zip(&records).enumerate() {
         let written: Vec<u32> = (0..pool.populated())
             .filter(|&slot| !is_vacant(pool, slot))

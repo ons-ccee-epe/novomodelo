@@ -529,8 +529,8 @@ pub struct ProducerBlock {
     pub state_history: StateHistory,
     /// Whether every piece of every pool carries both activity counters.
     pub activity_counters: bool,
-    /// Whether `basis/` holds a basis for every scenario that held one, rather
-    /// than one representative per node.
+    /// Whether the writing run gathered the bases of every rank into `basis/`.
+    /// Unset when the run ended in failure, which keeps the writing rank's own.
     pub basis_store_complete: bool,
 }
 

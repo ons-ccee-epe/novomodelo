@@ -611,8 +611,6 @@ pub(super) fn build_checkpoint_manifest(
     let graph = &manifest.graph_manifest;
     let producer = &manifest.producer;
 
-    let season_manifest = &manifest.season_manifest;
-
     let mut builder = FlatBufferBuilder::with_capacity(checkpoint_manifest_size_bound(manifest));
 
     let node_offsets: Vec<WIPOffset<flatbuffers::TableFinishedWIPOffset>> = graph
@@ -625,7 +623,8 @@ pub(super) fn build_checkpoint_manifest(
         .iter()
         .map(|e| build_manifest_edge_table(&mut builder, e))
         .collect();
-    let season_manifest_offset = build_season_manifest_table(&mut builder, season_manifest);
+    let season_manifest_offset =
+        build_season_manifest_table(&mut builder, &manifest.season_manifest);
 
     let software = manifest
         .software
@@ -802,7 +801,7 @@ fn field_data_offset(buf: &[u8], vtable_pos: usize, slot: u16) -> Option<u16> {
 fn field_pos(buf: &[u8], table_pos: usize, vtable_pos: usize, slot: u16) -> Option<usize> {
     let data_off = field_data_offset(buf, vtable_pos, slot)?;
     if data_off == 0 {
-        return None; // field absent
+        return None;
     }
     table_pos.checked_add(data_off as usize)
 }

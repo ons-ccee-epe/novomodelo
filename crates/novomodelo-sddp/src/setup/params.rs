@@ -169,8 +169,8 @@ pub struct StudyParams {
     /// [`StudySetup::new_with_boundary_requirements`](super::StudySetup::new_with_boundary_requirements)
     /// (local) or the broadcast carrier (MPI), before any consumer reads it.
     pub boundary: BoundaryStateRequirements,
-    /// Whether the visited-states archive is allocated for export
-    /// (`config.exports.states`). Overridable post-construction via
+    /// Whether every pool stores its trial states for the checkpoint's states
+    /// export (`config.exports.states`). Overridable post-construction via
     /// [`StudySetup::set_export_states`](super::StudySetup::set_export_states).
     pub export_states: bool,
     /// `policy.checkpointing`'s resolved schedule; `None` when periodic

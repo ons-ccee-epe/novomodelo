@@ -6,10 +6,8 @@
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
-use novomodelo_core::WorkerPhaseTimings;
-use novomodelo_core::{TrainingEvent, WorkerTimingPhase};
-use novomodelo_solver::ActiveProfile;
-use novomodelo_solver::{SolverInterface, SolverStatistics, StageTemplate};
+use novomodelo_core::{TrainingEvent, WorkerPhaseTimings, WorkerTimingPhase};
+use novomodelo_solver::{ActiveProfile, SolverInterface, SolverStatistics, StageTemplate};
 use novomodelo_stochastic::context::ClassSchemes;
 #[cfg(test)]
 use novomodelo_stochastic::select_transition_child;
@@ -676,7 +674,6 @@ impl ForwardPassState {
                 .map(|(b, a)| SolverStatsDelta::from_snapshots(b, a)),
         );
 
-        // setup_time_ms: total non-solve work (load_model + set_bounds + basis_set).
         let fwd_setup_ms: f64 = self
             .worker_deltas
             .iter()
@@ -990,8 +987,8 @@ pub(crate) fn run_forward_worker<S: SolverInterface + Send>(
 mod tests {
     use std::collections::BTreeMap;
 
+    use crate::test_support::RankStub;
     use chrono::NaiveDate;
-    use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
     use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
     use novomodelo_core::scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
@@ -2527,53 +2524,9 @@ mod tests {
         );
     }
 
-    /// One rank of a two-rank world: `RankDistribution::new` reads nothing else.
-    struct RankOfTwo(usize);
-
-    impl Communicator for RankOfTwo {
-        fn allgatherv<T: CommData>(
-            &self,
-            _send: &[T],
-            _recv: &mut [T],
-            _counts: &[usize],
-            _displs: &[usize],
-        ) -> Result<(), CommError> {
-            unreachable!("no collective is issued")
-        }
-
-        fn allreduce<T: CommData>(
-            &self,
-            _send: &[T],
-            _recv: &mut [T],
-            _op: ReduceOp,
-        ) -> Result<(), CommError> {
-            unreachable!("no collective is issued")
-        }
-
-        fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
-            unreachable!("no collective is issued")
-        }
-
-        fn barrier(&self) -> Result<(), CommError> {
-            unreachable!("no collective is issued")
-        }
-
-        fn rank(&self) -> usize {
-            self.0
-        }
-
-        fn size(&self) -> usize {
-            2
-        }
-
-        fn abort(&self, error_code: i32) -> ! {
-            std::process::exit(error_code)
-        }
-    }
-
     #[test]
     fn a_rank_with_fewer_passes_than_store_rows_keeps_each_scenario_basis_in_its_own_row() {
-        let ranks = RankDistribution::new(&RankOfTwo(1), 5);
+        let ranks = RankDistribution::new(&RankStub::of_two(1), 5);
         assert!(
             ranks.my_actual_fwd < ranks.max_local_fwd,
             "the fixture must leave this rank a row with no forward pass"

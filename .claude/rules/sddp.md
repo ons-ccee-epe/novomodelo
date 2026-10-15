@@ -646,9 +646,10 @@ checkpoint.
 
 **A checkpoint carries the counters while a reader is configured.**
 `CheckpointLayout::new` keeps `CutManagementConfig::tracks_binding_activity` of
-the setup's config. While it holds, `build_stage_cut_records` writes every
-piece's `active_count` and `last_active_iter` (`last_active_iteration` on disk)
-from its slot's metadata, and the manifest's `activity_counters` is set;
+the setup's config. While it holds, `build_stage_cut_records` called with
+`BindingCounters::Carried` writes every piece's `active_count` and
+`last_active_iter` (`last_active_iteration` on disk) from its slot's metadata,
+and the manifest's `activity_counters` is set;
 otherwise no piece carries them and the flag is unset. The write issues no
 collective: every rank applies the same `CutPool::record_binding` after the
 reduction in `sync_stage_metadata`, inside the backward pass, so rank 0 holds the
@@ -668,7 +669,9 @@ simulation-only load read no counter.
 
 Writing the counters always and reading them under `warm_start` is the
 wrong-but-compiling alternative: the records carry the source run's clock, which
-the new run's counter does not continue (the seeding error above). Not restoring
+the new run's counter does not continue (the seeding error above). No test pins
+this one: the restart of a warm start zeroes the prefix counters after the load,
+so a load that read them leaves the same pool. Not restoring
 them on a resume is the opposite one: a reloaded cut that had bound resumes at the
 iteration that generated it, so the budget evicts it ahead of cuts the
 uninterrupted run evicts and `dynamic` drops it from the seed window it was in.
@@ -867,8 +870,7 @@ current LP (`node_dims`), never from the record. Read: `policy/policy_export.rs`
 `build_stage_basis_records_writes_each_basis_own_trailing_cut_row_count`
 (`policy/policy_export.rs`: two scenarios per node, each with its own slots) and
 `exported_basis_records_count_the_cut_rows_each_basis_was_captured_with`
-(`tests/cut_basis.rs`, through `build_scenario_zero_basis_entries`, which builds
-its entries with `basis_entry` too).
+(`tests/cut_basis.rs`, through the checkpoint's own `build_basis_store_entries`).
 
 The load decodes every entry of every node record (`build_basis_cache_for_nodes`)
 and admits each by its stored slots. An entry's cut rows keep the slots it
@@ -944,10 +946,11 @@ with the interrupted run's checkpoint entry, and the resumed run equals the
 uninterrupted one bit for bit; under copying scenario 0's basis to every row the
 cut intercepts of pool 1 differ, and under decoding only the lowest-scenario entry
 the seeded basis of scenario 1 does);
-`a_resumed_fan_run_restores_every_stored_basis_and_equals_the_uninterrupted_run`
+`a_resumed_fan_run_ends_with_the_cut_pools_of_the_uninterrupted_run`
 (`policy/full_fcf_load.rs`: on a sampled fan where some nodes hold the bases of
-some scenarios only, every entry seeds its own scenario; the run comparison passes
-under copying scenario 0's basis, so the fan's power is the seeding check);
+some scenarios only, the resumed pools equal the uninterrupted run's slot by slot;
+the comparison passes under copying scenario 0's basis, so it pins the pools and
+not the seeding, which the next test checks);
 `only_a_resume_leaves_a_scenario_without_a_stored_basis_cold`
 (`policy/full_fcf_load.rs`: on the same fan a scenario with no entry at a node
 gets none under a resume and the node's lowest-scenario entry under a warm start);
@@ -993,7 +996,10 @@ load kind, and `reconcile_boundary_policy` for `policy.boundary`
 (`check_dynamic_simulation_serves`, one function for both), when the run's
 strategy is `Dynamic`, the run simulates (`simulation_config.n_scenarios > 0`) with
 `simulation_cut_set = All`, and some loaded pool, or the terminal pool the
-boundary injection installs, has `count_in(All) != active_count()`. A load is
+boundary injection installs, has `count_in(All) != active_count()`. The loaded
+terminal pool is not checked in a warm start or a resume of a study that declares
+`policy.boundary`, which replaces it after the load; a simulation-only load
+injects no boundary and checks it. A load is
 refused as `FullFcfLoadError::Refused(SddpError::Validation(..))`, class
 `IncompatiblePolicy`; the boundary as `SddpError::Validation` of the boundary
 phase (`PrepPhase::Boundary`), which `novomodelo validate`, a training `novomodelo run` and
@@ -1041,7 +1047,12 @@ The wrong-but-compiling alternatives:
   a `policy.boundary` over a `level1` source breaks the assert for the default
   value of the key;
 - refusing a boundary that holds any inactive record: an unscored inactive record
-  is in neither set, so the refusal is spurious.
+  is in neither set, so the refusal is spurious;
+- checking the loaded terminal pool of a warm start or a resume under
+  `policy.boundary`: a checkpoint whose terminal pool holds boundary rows outside
+  its active set is refused for a boundary that replaces them, though the boundary
+  itself loads. Skipping it in a simulation-only load is the opposite error: no
+  boundary replaces the pool there, and the lazy-branch assert meets it.
 
 A simulation-only load restores each record's origin and scored flag
 (`CutPool::from_deserialized`: `Prefix` below the recorded `warm_start_count`,
@@ -1096,7 +1107,11 @@ by `a_dynamic_simulation_of_all_refuses_boundary_cuts_outside_the_active_set`
 (`tests/full_fcf_load.rs`: a `level1` source's pool as the boundary of a shorter
 study is refused under `All` and loads under `Active`),
 `a_dynamic_simulation_of_all_loads_boundary_cuts_a_cap_evicted` (the same with a
-capped source, whose inactive rows are unscored), and by
+capped source, whose inactive rows are unscored),
+`a_boundary_replaces_the_loaded_terminal_pool_the_dynamic_check_reads` (a
+checkpoint whose terminal pool holds a scored inactive boundary row warm-starts and
+resumes for a study whose own boundary is whole, and a simulation-only load of it is
+refused), and by
 `validate_rejects_a_dynamic_simulation_over_deactivated_boundary_cuts`
 (`crates/novomodelo-cli/tests/cli_validate.rs`, after a control that validates) with the
 row `dynamic_simulation_over_deactivated_boundary_cuts` of the two parity tables.

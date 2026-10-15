@@ -766,10 +766,6 @@ pub(crate) fn run_simulation_phase_py(
         })?;
     }
 
-    let sim_summary = SimSummary {
-        n_scenarios: sim_out.n_scenarios,
-        completed: sim_out.completed,
-    };
     let sim_ctx = OutputContext {
         hostname: get_hostname(),
         solver: active_solver_metadata_id().to_string(),
@@ -786,7 +782,10 @@ pub(crate) fn run_simulation_phase_py(
     write_success_marker(&output_dir.join("simulation"))
         .map_err(|e| format!("{OUTPUT_WRITE_ERROR_PREFIX}: simulation success marker: {e}"))?;
 
-    Ok(sim_summary)
+    Ok(SimSummary {
+        n_scenarios: sim_out.n_scenarios,
+        completed: sim_out.completed,
+    })
 }
 
 /// Write a skipped simulation's metadata and marker, in place of
@@ -1205,11 +1204,7 @@ pub(crate) fn run_via_study(
                 converged: false,
                 iterations: 0,
                 lower_bound: result.final_lb,
-                upper_bound: if result.final_ub.is_finite() {
-                    Some(result.final_ub)
-                } else {
-                    None
-                },
+                upper_bound: result.final_ub.is_finite().then_some(result.final_ub),
                 gap_percent: None,
                 total_time_ms: 0,
                 output_dir,
@@ -1379,28 +1374,27 @@ pub(crate) fn provenance_to_dict<'py>(
 /// `gap_percent = gap * 100`. The Python side must scale to a percentage itself.
 fn iteration_summary_to_dict<'py>(
     py: Python<'py>,
-    event: &novomodelo_core::TrainingEvent,
+    event: &TrainingEvent,
 ) -> PyResult<Option<Bound<'py, PyDict>>> {
-    match event {
-        IterationSummary {
-            iteration,
-            lower_bound,
-            upper_bound,
-            gap,
-            wall_time_ms,
-            ..
-        } => {
-            let dict = PyDict::new(py);
-            dict.set_item("kind", "iteration")?;
-            dict.set_item("iteration", *iteration)?;
-            dict.set_item("lower_bound", *lower_bound)?;
-            dict.set_item("upper_bound", *upper_bound)?;
-            dict.set_item("gap", *gap)?;
-            dict.set_item("wall_time_ms", *wall_time_ms)?;
-            Ok(Some(dict))
-        }
-        _ => Ok(None),
-    }
+    let IterationSummary {
+        iteration,
+        lower_bound,
+        upper_bound,
+        gap,
+        wall_time_ms,
+        ..
+    } = event
+    else {
+        return Ok(None);
+    };
+    let dict = PyDict::new(py);
+    dict.set_item("kind", "iteration")?;
+    dict.set_item("iteration", *iteration)?;
+    dict.set_item("lower_bound", *lower_bound)?;
+    dict.set_item("upper_bound", *upper_bound)?;
+    dict.set_item("gap", *gap)?;
+    dict.set_item("wall_time_ms", *wall_time_ms)?;
+    Ok(Some(dict))
 }
 
 /// Load a case, train an SDDP policy, optionally simulate, and write results.
@@ -1578,18 +1572,15 @@ mod tests {
         let loaded = build_study_setup(&case_dir, &output_dir, None)
             .expect("build_study_setup must succeed for 1dtoy");
 
-        // 1dtoy uses the default tree seed.
         assert_eq!(
             loaded.seed,
             novomodelo_sddp::DEFAULT_SEED,
             "1dtoy must resolve to the default tree seed"
         );
-        // 1dtoy trains, so training is enabled in the effective config.
         assert!(
             loaded.config.training.enabled,
             "1dtoy config.training.enabled must be true"
         );
-        // The stochastic summary must describe at least one hydro.
         assert!(
             loaded.stochastic_summary.n_hydros > 0,
             "stochastic summary must report a non-zero hydro count"
@@ -1961,7 +1952,6 @@ mod tests {
         // but parity targets are floating-point so use a relative bound).
         let close = |actual: f64, golden: f64| (actual - golden).abs() / golden < 1e-6;
 
-        // ── Training metadata ────────────────────────────────────────────────
         assert_eq!(
             training.problem_dimensions.num_stages, 4,
             "1dtoy must be a 4-stage case so total_lp_solves is a multi-stage guard"
@@ -1991,7 +1981,6 @@ mod tests {
             "training total_lp_solves must equal the convergence-record sum"
         );
 
-        // ── Simulation metadata ──────────────────────────────────────────────
         let cost = simulation
             .cost
             .as_ref()
@@ -2014,7 +2003,6 @@ mod tests {
             "scenarios.total must be 100"
         );
 
-        // ── Host layout (single-host LocalBackend) ───────────────────────────
         for (label, hosts) in [
             ("training", &training.distribution.hosts),
             ("simulation", &simulation.distribution.hosts),

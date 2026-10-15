@@ -26,7 +26,9 @@ use crate::policy::policy_load::{
 };
 use crate::setup::StudySetup;
 use crate::training::session::interior_cut_nodes;
-use crate::training::training::{LoadedPolicy, MissingScenarioBasis, TrainingResult};
+use crate::training::training::{
+    CheckpointBasisStore, LoadedPolicy, MissingScenarioBasis, TrainingResult,
+};
 use crate::workspace::workspace::CapturedBasis;
 
 /// Which run consumes the loaded policy.
@@ -325,7 +327,8 @@ fn check_resume_serves(producer: &ProducerBlock, setup: &StudySetup) -> Result<(
 }
 
 /// Refuse a `dynamic` run that simulates [`CutSet::All`] over a pool whose cuts
-/// are not all active. `name` is how the refusal calls the pool at an index.
+/// are not all active. `name` is how the refusal calls the pool at an index, and
+/// `replaced` is a pool the caller installs another in place of, which is not checked.
 ///
 /// # Errors
 ///
@@ -334,6 +337,7 @@ fn check_resume_serves(producer: &ProducerBlock, setup: &StudySetup) -> Result<(
 pub(crate) fn check_dynamic_simulation_serves(
     setup: &StudySetup,
     pools: &[CutPool],
+    replaced: Option<usize>,
     name: impl Fn(usize) -> String,
 ) -> Result<(), SddpError> {
     if setup.simulation_config.n_scenarios == 0
@@ -345,7 +349,11 @@ pub(crate) fn check_dynamic_simulation_serves(
     {
         return Ok(());
     }
-    for (index, pool) in pools.iter().enumerate() {
+    for (index, pool) in pools
+        .iter()
+        .enumerate()
+        .filter(|&(index, _)| Some(index) != replaced)
+    {
         let (held, active) = (pool.count_in(CutSet::All), pool.active_count());
         if held != active {
             let named = name(index);
@@ -469,8 +477,19 @@ pub fn check_full_fcf_load(
         ),
     }
     .map_err(|source| FullFcfLoadError::FcfConstruction { kind, source })?;
-    check_dynamic_simulation_serves(setup, &fcf.pools, |pool_id| format!("pool {pool_id}"))
-        .map_err(FullFcfLoadError::Refused)?;
+    // A training run applies `policy.boundary` after the load: it replaces the terminal
+    // pool, and `reconcile_boundary_policy` checks the pool it installs. A simulation-only
+    // run injects no boundary and simulates the loaded terminal pool.
+    let replaced =
+        if kind != FullFcfLoadKind::SimulationOnly && setup.boundary_requirements().is_present() {
+            setup.inputs.node_graph.terminal_pool(setup.num_stages())
+        } else {
+            None
+        };
+    check_dynamic_simulation_serves(setup, &fcf.pools, replaced, |pool_id| {
+        format!("pool {pool_id}")
+    })
+    .map_err(FullFcfLoadError::Refused)?;
     if kind == FullFcfLoadKind::WarmStart {
         for pool in &mut fcf.pools {
             pool.restart_activity_clock();
@@ -569,6 +588,7 @@ impl CheckedFullFcfLoad {
             // Checkpoints store no frozen templates; `simulate()` re-freezes from the
             // FCF row pool when this is None.
             None,
+            CheckpointBasisStore::default(),
         );
         (self.fcf, result)
     }
@@ -761,7 +781,7 @@ mod tests {
     const FAN_PASSES: u32 = 6;
 
     #[test]
-    fn a_resumed_fan_run_restores_every_stored_basis_and_equals_the_uninterrupted_run() {
+    fn a_resumed_fan_run_ends_with_the_cut_pools_of_the_uninterrupted_run() {
         let (uninterrupted, _) = train_fan(6, None);
         let (interrupted, interrupted_result) = train_fan(3, None);
         let dir = tempfile::tempdir().expect("tempdir");

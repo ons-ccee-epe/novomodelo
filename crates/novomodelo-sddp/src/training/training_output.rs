@@ -257,7 +257,7 @@ fn partial_to_iteration_record(iter: u64, partial: &PartialRecord) -> IterationR
 /// # Examples
 ///
 /// ```rust
-/// use novomodelo_sddp::{build_training_output, TrainingResult, FutureCostFunction};
+/// use novomodelo_sddp::{build_training_output, CheckpointBasisStore, TrainingResult, FutureCostFunction};
 /// use novomodelo_core::TrainingEvent;
 ///
 /// let result = TrainingResult::new(
@@ -271,6 +271,7 @@ fn partial_to_iteration_record(iter: u64, partial: &PartialRecord) -> IterationR
 ///     Vec::new(),
 ///     Vec::new(),
 ///     None,
+///     CheckpointBasisStore::default(),
 /// );
 ///
 /// let events = vec![TrainingEvent::IterationSummary {
@@ -576,7 +577,9 @@ mod tests {
     use crate::stopping_rule::{
         MonitorState, StopDecision, StoppingMode, StoppingRule, StoppingRuleSet,
     };
-    use crate::{ConvergenceMonitor, FutureCostFunction, SyncResult, TrainingResult};
+    use crate::{
+        CheckpointBasisStore, ConvergenceMonitor, FutureCostFunction, SyncResult, TrainingResult,
+    };
 
     fn make_result(reason: &str, lb: f64, ub: f64, gap: f64, iterations: u64) -> TrainingResult {
         TrainingResult::new(
@@ -590,6 +593,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             None,
+            CheckpointBasisStore::default(),
         )
     }
 

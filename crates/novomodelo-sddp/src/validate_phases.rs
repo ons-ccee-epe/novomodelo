@@ -196,6 +196,13 @@ fn at(phase: PrepPhase) -> impl FnOnce(SddpError) -> ValidateFailure {
     move |error| ValidateFailure::Phase(PhaseFailure { phase, error })
 }
 
+fn run_phase_plan(setup: &StudySetup, config: &Config) -> RunPhasePlan {
+    RunPhasePlan::resolve(
+        config.training.enabled,
+        setup.simulation_config.n_scenarios > 0,
+    )
+}
+
 fn configured_full_fcf_load(plan: RunPhasePlan, mode: PolicyMode) -> Option<FullFcfLoadKind> {
     match (plan, mode) {
         (RunPhasePlan::TrainedThenSimulated, PolicyMode::WarmStart) => {
@@ -243,10 +250,7 @@ pub fn check_configured_policy_load(
     config: &Config,
     output_dir: &Path,
 ) -> Result<Option<PolicyLoadReport>, PolicyLoadFailure> {
-    let plan = RunPhasePlan::resolve(
-        config.training.enabled,
-        setup.simulation_config.n_scenarios > 0,
-    );
+    let plan = run_phase_plan(setup, config);
     let Some(load) = configured_full_fcf_load(plan, config.policy.mode) else {
         return Ok(None);
     };
@@ -285,7 +289,9 @@ pub fn check_configured_policy_load(
 ///
 /// A configured warm-start, resume or simulation-only policy is checked with
 /// [`check_configured_policy_load`] after the study is built and before the
-/// boundary policy is reconciled, the order the run applies them.
+/// boundary policy is reconciled, the order the run applies them. The boundary
+/// policy is reconciled only when the run trains, as only a training run
+/// injects it.
 ///
 /// # Errors
 ///
@@ -354,7 +360,9 @@ pub fn validate_study(request: ValidateRequest<'_>) -> Result<ValidatedStudy, Va
     let policy_load = check_configured_policy_load(&prepared.system, &setup, config, output_dir)
         .map_err(ValidateFailure::PolicyLoad)?;
 
+    // A run that does not train never injects the boundary, so it never reconciles it.
     let boundary = boundary_policy
+        .filter(|_| run_phase_plan(&setup, config) == RunPhasePlan::TrainedThenSimulated)
         .map(|bp| reconcile_boundary_policy(&setup, &prepared.system, bp, case_dir))
         .transpose()
         .map_err(at(PrepPhase::Boundary))?;

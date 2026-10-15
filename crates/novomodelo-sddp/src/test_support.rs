@@ -13,10 +13,10 @@
 
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
-use novomodelo_comm::LocalBackend;
+use novomodelo_comm::{CommData, CommError, Communicator, LocalBackend, ReduceOp};
 use novomodelo_core::scenario::{CorrelationModel, InflowModel, LoadModel, SamplingScheme};
 use novomodelo_core::temporal::{
     Node as PolicyNode, PolicyGraphType, StageLagTransition, Transition,
@@ -1366,6 +1366,101 @@ pub fn checkpoint_metadata(
         producer,
         ..checkpoint_manifest_defaults()
     }
+}
+
+/// One rank of a world of `size` ranks, for a unit test that reads `rank()` and
+/// `size()` or needs one rank's view of a collective: `allgatherv` writes this
+/// rank's segment only (`recv[displs[rank]..displs[rank] + send.len()]`), leaving
+/// each peer's segment as the test set it, and `allreduce` and `broadcast` pass the
+/// data through.
+#[derive(Debug, Clone, Copy)]
+pub struct RankStub {
+    /// This rank.
+    pub rank: usize,
+    /// The world size.
+    pub size: usize,
+}
+
+impl RankStub {
+    /// Rank `rank` of a two-rank world.
+    #[must_use]
+    pub const fn of_two(rank: usize) -> Self {
+        Self { rank, size: 2 }
+    }
+}
+
+impl Communicator for RankStub {
+    fn allgatherv<T: CommData>(
+        &self,
+        send: &[T],
+        recv: &mut [T],
+        _counts: &[usize],
+        displs: &[usize],
+    ) -> Result<(), CommError> {
+        let start = displs[self.rank];
+        recv[start..start + send.len()].clone_from_slice(send);
+        Ok(())
+    }
+
+    fn allreduce<T: CommData>(
+        &self,
+        send: &[T],
+        recv: &mut [T],
+        _op: ReduceOp,
+    ) -> Result<(), CommError> {
+        recv[..send.len()].clone_from_slice(send);
+        Ok(())
+    }
+
+    fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
+        Ok(())
+    }
+
+    fn barrier(&self) -> Result<(), CommError> {
+        Ok(())
+    }
+
+    fn rank(&self) -> usize {
+        self.rank
+    }
+
+    fn size(&self) -> usize {
+        self.size
+    }
+
+    fn abort(&self, error_code: i32) -> ! {
+        std::process::exit(error_code)
+    }
+}
+
+/// Every file under `dir` keyed by its path relative to `dir`, with its bytes:
+/// two equal snapshots hold the same relative paths and contents.
+///
+/// # Panics
+///
+/// When a directory or file under `dir` cannot be read.
+#[expect(
+    clippy::expect_used,
+    reason = "a fixture directory that cannot be read fails the test"
+)]
+#[must_use]
+pub fn snapshot_files(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn visit(root: &Path, dir: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in std::fs::read_dir(dir).expect("read_dir") {
+            let path = entry.expect("directory entry").path();
+            if path.is_dir() {
+                visit(root, &path, files);
+            } else {
+                files.insert(
+                    path.strip_prefix(root).expect("under root").to_path_buf(),
+                    std::fs::read(&path).expect("read file"),
+                );
+            }
+        }
+    }
+    let mut files = BTreeMap::new();
+    visit(dir, dir, &mut files);
+    files
 }
 
 /// `YYYY-MM-DD` as a [`NaiveDate`], for a fixture's literal calendar date.

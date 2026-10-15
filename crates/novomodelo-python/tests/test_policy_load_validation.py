@@ -6,7 +6,8 @@ entry point -- there is no per-call opt-out. This module verifies the
 Python-facing consequences of the unified validation path: the removed opt-out
 kwarg raises `TypeError`, a policy whose terminal entity manifest disagrees with
 the current study raises `ValueError`, and a policy version mismatch raises
-`PolicyIncompatibleError`. A stored basis that does not fit the study is skipped
+`PolicyIncompatibleError`, as does a policy the study's `dynamic` simulation of
+all cuts cannot serve. A stored basis that does not fit the study is skipped
 with one warning. The compatible-load path is already exercised by
 `test_load_policy_then_simulate_matches_run` in `test_study.py`.
 
@@ -245,6 +246,51 @@ def test_load_policy_with_a_wider_stored_basis_loads_and_warns_once(
 
     err = capfd.readouterr().err
     assert err.count("stored bases not used: ") == 1, err
+
+
+def test_load_policy_refuses_a_dynamic_simulation_of_all_over_deactivated_cuts(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A `level1` policy that deactivated cuts cannot serve a study whose
+    `dynamic` simulation reads the default `simulation.cut_set = all`:
+    `Study.load_policy` raises `PolicyIncompatibleError` naming both settings,
+    and the same policy loads under `simulation.cut_set = active`."""
+    import novomodelo  # noqa: PLC0415
+    import novomodelo.errors  # noqa: PLC0415
+
+    run_dir = tmp_path / "level1_run"
+    novomodelo.run.run(
+        VALID_CASE,
+        output_dir=str(run_dir),
+        config_overrides={
+            "training.cut_selection": {
+                "selection": {"method": "level1", "check_frequency": 1}
+            },
+            "training.stopping_rules": [{"type": "iteration_limit", "limit": 4}],
+            "simulation.enabled": False,
+        },
+    )
+
+    dynamic = {"training.cut_selection": {"selection": {"method": "dynamic"}}}
+    study = novomodelo.Study(
+        VALID_CASE, output_dir=str(tmp_path / "study_dir"), config_overrides=dynamic
+    )
+    with pytest.raises(novomodelo.errors.PolicyIncompatibleError) as exc_info:
+        study.load_policy(output_dir=str(run_dir))
+
+    message = str(exc_info.value)
+    assert message.startswith("policy validation error: "), message
+    assert (
+        "training.cut_selection.selection.method = dynamic cannot simulate "
+        "simulation.cut_set = all over this policy: pool"
+    ) in message, message
+
+    active_study = novomodelo.Study(
+        VALID_CASE,
+        output_dir=str(tmp_path / "active_study_dir"),
+        config_overrides={**dynamic, "simulation.cut_set": "active"},
+    )
+    active_study.load_policy(output_dir=str(run_dir))
 
 
 @pytest.mark.parametrize(

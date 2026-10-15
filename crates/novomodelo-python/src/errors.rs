@@ -79,7 +79,7 @@ impl LeafClass {
     /// qualified name reads `novomodelo.errors.<Name>`.
     fn build(&self, py: Python<'_>) -> PyResult<Py<PyType>> {
         let novomodelo_base = py.get_type::<NovomodeloError>();
-        let builtin: Bound<'_, PyType> = match self.builtin_base {
+        let builtin = match self.builtin_base {
             BuiltinBase::Value => py.get_type::<PyValueError>(),
             BuiltinBase::Os => py.get_type::<PyOSError>(),
             BuiltinBase::Runtime => py.get_type::<PyRuntimeError>(),
@@ -91,7 +91,7 @@ impl LeafClass {
 
         let type_builtin = py.get_type::<PyType>();
         let class = type_builtin.call1((self.name, bases, namespace))?;
-        let class_type = class.cast_into::<PyType>().map_err(PyErr::from)?;
+        let class_type = class.cast_into::<PyType>()?;
         Ok(class_type.unbind())
     }
 }

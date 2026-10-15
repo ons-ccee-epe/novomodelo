@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 use std::sync::mpsc;
 
+use crate::test_support::RankStub;
 use chrono::NaiveDate;
 use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
 use novomodelo_core::{
@@ -2426,6 +2427,7 @@ fn ac_training_result_new_assigns_all_fields() {
         basis_cache,
         solver_stats_log,
         None, // frozen_templates
+        super::CheckpointBasisStore::default(),
     );
 
     assert_eq!(result.final_lb, 1.5_f64, "final_lb");
@@ -2550,63 +2552,16 @@ fn a_single_rank_gather_keeps_every_stored_row_with_its_scenario() {
     );
 }
 
-/// Rank 0 of two: `allgatherv` writes this rank's segment only, so the peer's
-/// lengths read as zero.
-struct Rank0Of2;
-
-impl Communicator for Rank0Of2 {
-    fn allgatherv<T: CommData>(
-        &self,
-        send: &[T],
-        recv: &mut [T],
-        _counts: &[usize],
-        displs: &[usize],
-    ) -> Result<(), CommError> {
-        recv[displs[0]..displs[0] + send.len()].clone_from_slice(send);
-        Ok(())
-    }
-
-    fn allreduce<T: CommData>(
-        &self,
-        send: &[T],
-        recv: &mut [T],
-        _op: ReduceOp,
-    ) -> Result<(), CommError> {
-        recv.clone_from_slice(send);
-        Ok(())
-    }
-
-    fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
-        Ok(())
-    }
-
-    fn barrier(&self) -> Result<(), CommError> {
-        Ok(())
-    }
-
-    fn rank(&self) -> usize {
-        0
-    }
-
-    fn size(&self) -> usize {
-        2
-    }
-
-    fn abort(&self, error_code: i32) -> ! {
-        std::process::exit(error_code)
-    }
-}
-
 #[test]
 fn a_rank_zero_of_two_gather_reads_an_empty_peer_segment_as_no_entries() {
     use super::gather_basis_store;
     use crate::training::session::rank_distribution::RankDistribution;
 
     let store = store_with(2, 2, &[(0, 0, 1), (1, 0, 2), (1, 1, 3)]);
-    let ranks = RankDistribution::new(&Rank0Of2, 3);
+    let ranks = RankDistribution::new(&RankStub::of_two(0), 3);
     assert_eq!(ranks.my_actual_fwd, 2, "fixture: the peer owns scenario 2");
 
-    let gathered = gather_basis_store(&store, &ranks, &Rank0Of2)
+    let gathered = gather_basis_store(&store, &ranks, &RankStub::of_two(0))
         .unwrap()
         .expect("rank 0 receives the gathered store");
 

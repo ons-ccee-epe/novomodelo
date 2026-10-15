@@ -1610,6 +1610,7 @@ pub fn reconcile_boundary_policy(
     check_dynamic_simulation_serves(
         setup,
         std::slice::from_ref(&terminal_boundary_pool(&setup.fcf, &cuts)),
+        None,
         |_| "the policy.boundary pool".to_string(),
     )?;
 
@@ -2048,7 +2049,7 @@ mod tests {
     #[test]
     fn export_then_load_same_factor_round_trips_bit_for_bit() {
         use crate::cut::FutureCostFunction;
-        use crate::policy_export::build_stage_cut_records;
+        use crate::policy_export::{BindingCounters, build_stage_cut_records};
 
         let cost_scale_factor = 1_000_000.0;
         let intercept = -957.020_589_468_182_3;
@@ -2062,7 +2063,7 @@ mod tests {
         let mut fcf = FutureCostFunction::new(1, coefficients.len(), 1, 2, &[0]);
         fcf.pools[0].add_cut(NodeId(0), 0, 0, intercept, &coefficients);
 
-        let exported = build_stage_cut_records(&fcf, false).unwrap();
+        let exported = build_stage_cut_records(&fcf, BindingCounters::Omitted).unwrap();
         let mut round_tripped: Vec<OwnedPolicyCutRecord> = exported[0]
             .iter()
             .map(|r| OwnedPolicyCutRecord {
@@ -4014,7 +4015,7 @@ mod tests {
     /// Every one of the seven `BasisStatus` variants survives the full
     /// export→disk→load path losslessly — including the CLP-only `Superbasic`
     /// and `Fixed`, which the old `to_highs_code` path folded onto `Nonbasic`/
-    /// `Lower`. Encode via `convert_basis_cache`, round-trip through the codec,
+    /// `Lower`. Encode via `convert_basis_store`, round-trip through the codec,
     /// decode via `build_basis_cache_for_nodes`.
     #[test]
     fn basis_status_round_trips_through_export_and_load_for_every_variant() {
@@ -4024,8 +4025,8 @@ mod tests {
         use novomodelo_solver::{Basis, BasisStatus};
 
         use super::build_basis_cache_for_nodes;
-        use crate::TrainingResult;
-        use crate::policy_export::convert_basis_cache;
+        use crate::policy_export::convert_basis_store;
+        use crate::training::training::CheckpointBasisStore;
         use crate::workspace::CapturedBasis;
 
         let mut row_status = vec![
@@ -4053,28 +4054,21 @@ mod tests {
             state_at_capture: Vec::new(),
             node_id: NodeId(0),
         };
-        let training_result = TrainingResult::new(
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            1,
-            "test".to_string(),
-            0,
-            vec![Some(captured)],
-            Vec::new(),
-            None,
-        );
+        let bases = CheckpointBasisStore {
+            nodes: vec![vec![(0, captured)]],
+            complete: true,
+        };
 
-        let (col_u8, row_u8) = convert_basis_cache(&training_result.basis_cache);
+        let statuses = convert_basis_store(&bases);
+        let (col_u8, row_u8) = &statuses[0][0];
 
         let record = PolicyBasisRecord {
             stage_id: 0,
             iteration: 1,
             entries: &[BasisEntry {
                 scenario: 0,
-                column_status: &col_u8[0],
-                row_status: &row_u8[0],
+                column_status: col_u8,
+                row_status: row_u8,
                 piece_row_slots: &[],
             }],
         };

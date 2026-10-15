@@ -5976,7 +5976,7 @@ mod chronological_telescoping {
     use novomodelo_io::{PolicyCheckpoint, read_policy_checkpoint};
     use novomodelo_sddp::FutureCostFunction;
     use novomodelo_sddp::policy::orchestration::{CheckpointParams, write_checkpoint};
-    use novomodelo_sddp::policy_export::build_stage_cut_records;
+    use novomodelo_sddp::policy_export::{BindingCounters, build_stage_cut_records};
     use tempfile::TempDir;
 
     use super::common::builders::{
@@ -6558,7 +6558,7 @@ mod chronological_telescoping {
     /// identical to the records written from `fcf` (`f64::to_bits`, never
     /// `==`): [`write_checkpoint`] writes the values as held in memory.
     fn assert_cuts_bit_identical(fcf: &FutureCostFunction, checkpoint: &PolicyCheckpoint) {
-        let written = build_stage_cut_records(fcf, false).expect("export");
+        let written = build_stage_cut_records(fcf, BindingCounters::Omitted).expect("export");
         assert_eq!(
             written.len(),
             checkpoint.stage_cuts.len(),
@@ -9337,7 +9337,9 @@ mod heterogeneous_visit_bound_resume {
         read_policy_checkpoint, write_policy_checkpoint,
     };
     use novomodelo_sddp::cut::SlotOrigin;
-    use novomodelo_sddp::policy_export::{build_stage_cut_records, build_stage_cuts_payloads};
+    use novomodelo_sddp::policy_export::{
+        BindingCounters, build_stage_cut_records, build_stage_cuts_payloads,
+    };
     use novomodelo_sddp::setup::NodeId;
     use novomodelo_sddp::test_support::{
         checkpoint_metadata, fixture_priced_date, k_fan_setup, producer_block,
@@ -9487,7 +9489,8 @@ mod heterogeneous_visit_bound_resume {
             .map(|stage| fixture_priced_date(ymd(2030, 1, 1), stage))
             .collect();
         let cost_scale_factor = setup.inputs.stage_data.stage_templates.cost_scale_factor;
-        let stage_records = build_stage_cut_records(&setup.fcf, false).expect("export");
+        let stage_records =
+            build_stage_cut_records(&setup.fcf, BindingCounters::Omitted).expect("export");
         let stage_manifests = vec![Vec::new(); trained.len()];
         let payloads = build_stage_cuts_payloads(
             &setup.fcf,
@@ -10458,7 +10461,7 @@ mod enumerated_checkpoint {
         STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, StageCutsPayload, read_policy_checkpoint,
         write_policy_checkpoint,
     };
-    use novomodelo_sddp::policy_export::build_stage_cut_records;
+    use novomodelo_sddp::policy_export::{BindingCounters, build_stage_cut_records};
     use novomodelo_sddp::setup::NodePos;
     use novomodelo_sddp::test_support::k_fan_setup_enumerated;
     use novomodelo_solver::ActiveSolver;
@@ -10524,7 +10527,8 @@ mod enumerated_checkpoint {
         }
 
         // The real export path.
-        let cut_records_per_stage = build_stage_cut_records(fcf, false).expect("export");
+        let cut_records_per_stage =
+            build_stage_cut_records(fcf, BindingCounters::Omitted).expect("export");
 
         // Write-side stride-1 pin: a non-leaf pool's slot advances by one per
         // iteration at forward pass 0, never by a larger stride; the leaf pool

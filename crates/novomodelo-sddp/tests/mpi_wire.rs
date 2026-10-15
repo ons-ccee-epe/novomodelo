@@ -67,7 +67,7 @@ mod test_mpi_basis_broadcast_large_len {
     use novomodelo_comm::CommError;
     use novomodelo_sddp::SddpError;
 
-    /// Mirrors the error `checked_broadcast_len` produces for
+    /// Mirrors the error `checked_mpi_count` produces for
     /// `len = (i32::MAX as usize) + 1` — the smallest value that cannot be
     /// represented as an MPI count.
     #[test]

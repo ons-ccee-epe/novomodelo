@@ -330,7 +330,7 @@ pub struct NodeRuntime {
     /// stage id.
     pub stage: StageIdx,
     /// Pool id into `FutureCostFunction::pools` (pool *contents* — capacity,
-    /// archives, basis tagging — are out of scope here). Leaves
+    /// trial states, basis tagging — are out of scope here). Leaves
     /// share one id; a node with successors always owns its own.
     pub pool_id: usize,
     /// This node's Ω view.
@@ -373,7 +373,7 @@ impl NodeGraph {
     /// Node → pool map, one entry per canonical node position
     /// (`nodes[i].pool_id`). The load-path basis reconstruction
     /// ([`build_basis_cache_from_checkpoint`](crate::build_basis_cache_from_checkpoint))
-    /// keys each node's cut records through this.
+    /// picks each node's pool slot map through this.
     #[must_use]
     pub fn node_pool_ids(&self) -> TypedVec<NodePos, usize> {
         self.nodes.iter().map(|n| n.pool_id).collect()

@@ -10,10 +10,8 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::NaiveDate;
-use novomodelo_core::Stage;
-use novomodelo_core::System;
-use novomodelo_core::Thermal;
 use novomodelo_core::commissioning::{commissioning_active, hydro_operating_active};
+use novomodelo_core::{Hydro, Stage, System, Thermal};
 use novomodelo_io::output::OutputError;
 use novomodelo_io::output::policy::{
     BasisEntry, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, GraphManifest, ManifestEdge, ManifestNode,
@@ -156,6 +154,15 @@ pub fn build_stage_entity_manifest(
         .with_interval(interval_start, interval_end)
     };
 
+    let operating_active = |hydro: &Hydro| {
+        hydro_operating_active(
+            hydro.filling.as_ref(),
+            hydro.entry_stage_id,
+            hydro.exit_stage_id,
+            stage_id,
+        )
+    };
+
     let mut manifest = Vec::with_capacity(projection.n_slots());
     for j in 0..projection.n_slots() {
         let (region, offset) =
@@ -163,51 +170,25 @@ pub fn build_stage_entity_manifest(
         let slot = match region {
             StateRegion::Storage => {
                 let hydro = &hydros[offset];
-                EntitySlot::storage(
-                    hydro.id.0,
-                    hydro_operating_active(
-                        hydro.filling.as_ref(),
-                        hydro.entry_stage_id,
-                        hydro.exit_stage_id,
-                        stage_id,
-                    ),
-                )
+                EntitySlot::storage(hydro.id.0, operating_active(hydro))
             }
             StateRegion::Lag => {
                 let lag = offset / n;
                 let h = offset % n;
                 let hydro = &hydros[h];
-                EntitySlot::inflow_lag(
-                    hydro.id.0,
-                    (lag + 1) as u32,
-                    hydro_operating_active(
-                        hydro.filling.as_ref(),
-                        hydro.entry_stage_id,
-                        hydro.exit_stage_id,
-                        stage_id,
-                    ),
-                )
-                .with_reference_date(lag_reference_anchor(
-                    system.stages(),
-                    pool_pos_in_all,
-                    lag,
-                ))
+                EntitySlot::inflow_lag(hydro.id.0, (lag + 1) as u32, operating_active(hydro))
+                    .with_reference_date(lag_reference_anchor(
+                        system.stages(),
+                        pool_pos_in_all,
+                        lag,
+                    ))
             }
             StateRegion::Buckets => {
                 let (plant_idx, lag) = global_layout.transit_bucket_column_order[offset];
                 let hydro = &hydros[plant_idx.get()];
                 let (interval_start, interval_end) = slot_interval(bucket_arrival_stage(lag));
-                EntitySlot::transit_bucket(
-                    hydro.id.0,
-                    lag as u32,
-                    hydro_operating_active(
-                        hydro.filling.as_ref(),
-                        hydro.entry_stage_id,
-                        hydro.exit_stage_id,
-                        stage_id,
-                    ),
-                )
-                .with_interval(interval_start, interval_end)
+                EntitySlot::transit_bucket(hydro.id.0, lag as u32, operating_active(hydro))
+                    .with_interval(interval_start, interval_end)
             }
             StateRegion::CommitmentHold => anticipated_slot(offset),
         };
@@ -424,14 +405,22 @@ fn splice_reserved_state_block(
     Ok((new_manifest, new_coefficients))
 }
 
+/// Whether the cut records of a checkpoint carry their slots' binding counters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingCounters {
+    /// Every record carries `active_count` and `last_active_iteration`.
+    Carried,
+    /// No record does.
+    Omitted,
+}
+
 /// Build per-pool vectors of a [`PolicyCutRecord`] for every written slot of the
 /// FCF pools, in slot order. A vacant slot below a pool's slot bound has no record.
 ///
 /// Both active and inactive cuts are included so the checkpoint preserves the
 /// full training history. Values are written as held in memory, in the run's
-/// scaled units; the pool's `cost_scale_factor` names that scale. With
-/// `activity_counters` every record carries its slot's binding counters, and
-/// without it none does.
+/// scaled units; the pool's `cost_scale_factor` names that scale. `counters`
+/// says whether each record carries its slot's binding counters.
 ///
 /// # Errors
 ///
@@ -439,8 +428,9 @@ fn splice_reserved_state_block(
 /// iteration does not fit the record's 32-bit field.
 pub fn build_stage_cut_records(
     fcf: &FutureCostFunction,
-    activity_counters: bool,
+    counters: BindingCounters,
 ) -> Result<Vec<Vec<PolicyCutRecord<'_>>>, OutputError> {
+    let carried = counters == BindingCounters::Carried;
     fcf.pools
         .iter()
         .enumerate()
@@ -467,8 +457,8 @@ pub fn build_stage_cut_records(
                         coefficients: pool.coefficient_row(slot),
                         is_active: pool.is_active(slot),
                         scored: pool.role(slot).scored,
-                        active_count: activity_counters.then_some(meta.active_count),
-                        last_active_iteration: activity_counters.then_some(meta.last_active_iter),
+                        active_count: carried.then_some(meta.active_count),
+                        last_active_iteration: carried.then_some(meta.last_active_iter),
                     })
                 })
                 .collect()
@@ -539,26 +529,14 @@ pub fn build_stage_cuts_payloads<'a>(
         .collect()
 }
 
-/// Convert `basis_cache` to u8 byte vectors via `to_discriminant_code`.
+/// The `(column, row)` status bytes of every basis of `bases`, per node in its
+/// order, via `to_discriminant_code`.
 ///
 /// The canonical discriminant space (`0..=6`) is a strict superset of the `HiGHS`
 /// code space this format previously stored, so pre-existing checkpoints (bytes
 /// `0..=4`) decode identically — while a CLP-captured `Superbasic`/`Fixed`, which
 /// `to_highs_code` would fold, now survives reload. Mirrored on load by
 /// `build_basis_cache_from_checkpoint`'s `from_discriminant_code`.
-#[must_use]
-pub fn convert_basis_cache(basis_cache: &[Option<CapturedBasis>]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
-    basis_cache
-        .iter()
-        .map(|opt| {
-            opt.as_ref()
-                .map_or_else(|| (Vec::new(), Vec::new()), status_bytes)
-        })
-        .unzip()
-}
-
-/// The `(column, row)` status bytes of every basis of `bases`, per node in its
-/// order, converted as [`convert_basis_cache`] converts.
 #[must_use]
 pub fn convert_basis_store(bases: &CheckpointBasisStore) -> Vec<Vec<(Vec<u8>, Vec<u8>)>> {
     bases
@@ -626,26 +604,6 @@ pub fn build_basis_store_entries<'a>(
                 .map(|((scenario, cb), (column, row))| {
                     basis_entry(node, *scenario, cb, column, row)
                 })
-                .collect()
-        })
-        .collect()
-}
-
-/// At most one [`BasisEntry`] per node of `basis_cache`, for global scenario 0,
-/// over status bytes from [`convert_basis_cache`]; none where the node holds no
-/// basis.
-#[must_use]
-pub fn build_scenario_zero_basis_entries<'a>(
-    basis_cache: &'a [Option<CapturedBasis>],
-    basis_col_u8: &'a [Vec<u8>],
-    basis_row_u8: &'a [Vec<u8>],
-) -> Vec<Vec<BasisEntry<'a>>> {
-    basis_cache
-        .iter()
-        .enumerate()
-        .map(|(node, opt)| {
-            opt.iter()
-                .map(|cb| basis_entry(node, 0, cb, &basis_col_u8[node], &basis_row_u8[node]))
                 .collect()
         })
         .collect()
@@ -2984,7 +2942,7 @@ mod tests {
 
     #[test]
     fn exported_loaded_cut_keeps_its_generating_iteration() {
-        use super::build_stage_cut_records;
+        use super::{BindingCounters, build_stage_cut_records};
         use crate::cut::{CutPool, FutureCostFunction};
         use novomodelo_io::OwnedPolicyCutRecord;
 
@@ -3002,7 +2960,7 @@ mod tests {
         let mut fcf = FutureCostFunction::new(1, 1, 2, 4, &[0]);
         fcf.pools[0] = CutPool::new_with_warm_start(1, 2, 4, &[loaded]);
 
-        let records = build_stage_cut_records(&fcf, false).unwrap();
+        let records = build_stage_cut_records(&fcf, BindingCounters::Omitted).unwrap();
 
         assert_eq!(records[0][0].iteration, 5);
         assert!(!records[0][0].scored, "a loaded cut is written unscored");
@@ -3012,7 +2970,7 @@ mod tests {
     /// naming the pool and slot, never a truncated record.
     #[test]
     fn a_generating_iteration_past_32_bits_is_refused_not_truncated() {
-        use super::build_stage_cut_records;
+        use super::{BindingCounters, build_stage_cut_records};
         use crate::cut::FutureCostFunction;
 
         let mut fcf = FutureCostFunction::new(2, 1, 1, 4, &[0; 2]);
@@ -3020,8 +2978,8 @@ mod tests {
         fcf.pools[1].add_cut(NodeId(1), 1, 0, 0.0, &[1.0]);
         fcf.pools[1].set_iteration_generated_for_test(1, u64::from(u32::MAX) + 1);
 
-        let err =
-            build_stage_cut_records(&fcf, false).expect_err("the iteration must not be truncated");
+        let err = build_stage_cut_records(&fcf, BindingCounters::Omitted)
+            .expect_err("the iteration must not be truncated");
         let msg = err.to_string();
         assert!(
             msg.contains("pool 1 slot 1") && msg.contains("4294967296"),
@@ -3031,7 +2989,7 @@ mod tests {
 
     #[test]
     fn a_never_written_slot_is_not_exported() {
-        use super::{build_stage_cut_records, build_stage_cuts_payloads};
+        use super::{BindingCounters, build_stage_cut_records, build_stage_cuts_payloads};
         use crate::cut::{CutPool, FutureCostFunction};
 
         let mut pool = CutPool::new(4, 1, 2, 0);
@@ -3042,7 +3000,7 @@ mod tests {
         fcf.pools[0] = pool;
         let node_graph = chain_node_graph(1);
 
-        let stage_records = build_stage_cut_records(&fcf, false).unwrap();
+        let stage_records = build_stage_cut_records(&fcf, BindingCounters::Omitted).unwrap();
         let stage_manifests: Vec<Vec<EntitySlot>> = vec![Vec::new()];
         let payloads = build_stage_cuts_payloads(
             &fcf,
@@ -3173,12 +3131,12 @@ mod tests {
 
     #[test]
     fn stage_cuts_payload_stamps_owning_stage_end_date() {
-        use super::{build_stage_cut_records, build_stage_cuts_payloads};
+        use super::{BindingCounters, build_stage_cut_records, build_stage_cuts_payloads};
         use crate::cut::FutureCostFunction;
 
         let node_graph = chain_node_graph(3);
         let fcf = FutureCostFunction::new(3, 1, 1, 10, &[0; 3]);
-        let stage_records = build_stage_cut_records(&fcf, false).unwrap();
+        let stage_records = build_stage_cut_records(&fcf, BindingCounters::Omitted).unwrap();
         let stage_manifests: Vec<Vec<EntitySlot>> = vec![Vec::new(); 3];
         let study_stage_ids = vec![0, 1, 2];
         let study_stage_end_dates = vec![
@@ -3213,12 +3171,12 @@ mod tests {
     /// this test distinguishes.
     #[test]
     fn stage_cuts_payload_priced_date_resolves_through_pool_stage_on_branching_graph() {
-        use super::{build_stage_cut_records, build_stage_cuts_payloads};
+        use super::{BindingCounters, build_stage_cut_records, build_stage_cuts_payloads};
         use crate::cut::FutureCostFunction;
 
         let node_graph = binary_tree_node_graph(); // 4 pools; pool_stage = [0, 1, 1, 2]
         let fcf = FutureCostFunction::new(4, 1, 1, 10, &[0; 4]);
-        let stage_records = build_stage_cut_records(&fcf, false).unwrap();
+        let stage_records = build_stage_cut_records(&fcf, BindingCounters::Omitted).unwrap();
         let stage_manifests: Vec<Vec<EntitySlot>> = vec![Vec::new(); 4];
         let study_stage_ids = vec![0, 1, 2];
         let study_stage_end_dates = vec![
@@ -3263,8 +3221,9 @@ mod tests {
     #[test]
     fn stage_cuts_payload_unresolvable_pool_stage_keeps_both_sentinels() {
         use super::{
-            STAGE_CUTS_GRAPH_STAGE_ID_SENTINEL, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
-            build_stage_cut_records, build_stage_cuts_payloads,
+            BindingCounters, STAGE_CUTS_GRAPH_STAGE_ID_SENTINEL,
+            STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, build_stage_cut_records,
+            build_stage_cuts_payloads,
         };
         use crate::cut::FutureCostFunction;
 
@@ -3286,7 +3245,7 @@ mod tests {
             pool_stage: vec![StageIdx(5)],
         };
         let fcf = FutureCostFunction::new(1, 1, 1, 10, &[0]);
-        let stage_records = build_stage_cut_records(&fcf, false).unwrap();
+        let stage_records = build_stage_cut_records(&fcf, BindingCounters::Omitted).unwrap();
         let stage_manifests: Vec<Vec<EntitySlot>> = vec![Vec::new(); 1];
         let study_stage_ids = vec![0, 1]; // len 2; pool_stage[0] == 5 is out of range
         let study_stage_end_dates = vec![
@@ -3321,12 +3280,12 @@ mod tests {
     /// pool ending earlier in the same month.
     #[test]
     fn stage_cuts_payload_priced_state_date_keeps_the_stage_end_day() {
-        use super::{build_stage_cut_records, build_stage_cuts_payloads};
+        use super::{BindingCounters, build_stage_cut_records, build_stage_cuts_payloads};
         use crate::cut::FutureCostFunction;
 
         let node_graph = chain_node_graph(1);
         let fcf = FutureCostFunction::new(1, 1, 1, 10, &[0; 1]);
-        let stage_records = build_stage_cut_records(&fcf, false).unwrap();
+        let stage_records = build_stage_cut_records(&fcf, BindingCounters::Omitted).unwrap();
         let stage_manifests: Vec<Vec<EntitySlot>> = vec![Vec::new(); 1];
         let study_stage_ids = vec![0];
         let study_stage_end_dates = vec![chrono::NaiveDate::from_ymd_opt(2031, 11, 10).unwrap()];

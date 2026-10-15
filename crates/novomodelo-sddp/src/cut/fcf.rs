@@ -171,12 +171,12 @@ impl FutureCostFunction {
             .zip(visit_bounds)
             .map(|((&slot_base, &pool_dim), &visit_bound)| {
                 let capacity = pool_capacity(slot_base, max_iterations, visit_bound);
-                // The live (sampled) arm caps visit_bound at forward_passes per
-                // pool, and a chain's visit_bound equals forward_passes exactly
-                // (pool_cut_stride), so this never truncates on that path.
-                #[allow(clippy::cast_possible_truncation)]
-                let stride = visit_bound as u32;
-                CutPool::new(capacity, pool_dim, stride, slot_base)
+                CutPool::new(
+                    capacity,
+                    pool_dim,
+                    pool_visit_stride(visit_bound),
+                    slot_base,
+                )
             })
             .collect();
 
@@ -317,13 +317,12 @@ impl FutureCostFunction {
             .zip(pool_state_dimensions)
             .zip(visit_bounds)
             .map(|((sr, &pool_dim), &visit_bound)| {
-                // The live (sampled) arm caps visit_bound at forward_passes per
-                // pool, and a chain's visit_bound equals forward_passes exactly
-                // (pool_cut_stride), so this never truncates on that path — the
-                // same cap `new_per_pool` relies on.
-                #[allow(clippy::cast_possible_truncation)]
-                let stride = visit_bound as u32;
-                CutPool::new_with_warm_start(pool_dim, stride, max_iterations, &sr.cuts)
+                CutPool::new_with_warm_start(
+                    pool_dim,
+                    pool_visit_stride(visit_bound),
+                    max_iterations,
+                    &sr.cuts,
+                )
             })
             .collect();
 
@@ -383,11 +382,9 @@ impl FutureCostFunction {
             .zip(pool_state_dimensions)
             .zip(visit_bounds)
             .map(|((sr, &pool_dim), &visit_bound)| {
-                #[allow(clippy::cast_possible_truncation)]
-                let stride = visit_bound as u32;
                 CutPool::new_resumed(
                     pool_dim,
-                    stride,
+                    pool_visit_stride(visit_bound),
                     max_iterations,
                     sr.warm_start_count,
                     sr.capacity,
@@ -554,6 +551,14 @@ impl FutureCostFunction {
 #[allow(clippy::cast_possible_truncation)]
 fn pool_capacity(slot_base: u32, max_iterations: u64, visit_bound: u64) -> usize {
     (u64::from(slot_base) + max_iterations * visit_bound) as usize
+}
+
+/// The sampled arm caps `visit_bound` at `forward_passes` per pool and a chain's
+/// equals `forward_passes` exactly (`NodeGraph::pool_cut_stride`), so the cast
+/// never truncates on that path.
+#[allow(clippy::cast_possible_truncation)]
+fn pool_visit_stride(visit_bound: u64) -> u32 {
+    visit_bound as u32
 }
 
 fn validate_consistent_state_dimension(

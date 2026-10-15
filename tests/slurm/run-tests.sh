@@ -455,7 +455,11 @@ PYEOF
 # rows with iteration > <k>, index-aligned, bit-exact except `lower_bound` and
 # `gap_percent`, which must agree within 1e-6 relative
 # (|a - b| <= 1e-6 * max(1, |a|, |b|)); a row with iteration <= <k> is not
-# compared, but must name an iteration the baseline holds. simulation/ is
+# compared, but must name a key the baseline holds. The retry histogram is
+# compared the same way without its lower_bound rows, and may hold no row.
+# metadata.json and codes.json are compared key by key, except the keys a
+# resumed run writes from its own clock, host, rank layout and solves; the
+# final lower bound and gap within the same tolerance. simulation/ is
 # compared by compare_outputs_bitwise. Prints the largest relative
 # lower-bound difference and exits 1 naming the first mismatch.
 # ---------------------------------------------------------------------------
@@ -466,6 +470,7 @@ compare_resumed_outputs() {
     local exit_code=0
     python3 - "${baseline_dir}" "${test_dir}" "${k}" <<'PYEOF' || exit_code=$?
 import fnmatch
+import json
 import os
 import struct
 import sys
@@ -482,12 +487,17 @@ TOLERANT_COLUMNS = {"lower_bound", "gap_percent"}
 
 # Ordered (fnmatch pattern, class, detail) rules -- first match wins, and `*`
 # also matches `/`. Classes:
-#   bytes         byte-identical; detail unused
-#   rows-after-k  rows with iteration > k compared; detail is
-#                 (exempt columns, the key, iteration first, that an earlier
-#                 row must share with a baseline row)
-#   table         every row compared; detail is the exempt columns
-#   exempt        not compared; detail is the reason
+#   bytes                byte-identical; detail unused
+#   rows-after-k         rows with iteration > k compared; detail is
+#                        (exempt columns, the key, iteration first, that an
+#                        earlier row must share with a baseline row)
+#   sparse-rows-after-k  rows-after-k for a table that may hold no row; detail
+#                        adds the phases whose rows are not compared
+#   table                every row compared; detail is the exempt columns
+#   json                 compared key by key, a nested key named by its dotted
+#                        path; detail is (exempt key patterns, keys compared
+#                        within RELATIVE_TOLERANCE)
+#   exempt               not compared; detail is the reason
 RESUMED_ROWS = [
     ("policy/manifest.bin", "exempt", "holds created_at"),
     ("policy/cuts/*.bin", "bytes", None),
@@ -506,20 +516,37 @@ RESUMED_ROWS = [
     ("training/_SUCCESS", "bytes", None),
     (
         "training/metadata.json",
-        "exempt",
-        "wall clock, rank layout, policy mode and the solve counts of the run itself",
+        "json",
+        (
+            # Wall clock, host, rank layout, policy mode, and the counts the
+            # run takes over its own iterations only.
+            (
+                "hostname",
+                "started_at",
+                "completed_at",
+                "duration_seconds",
+                "configuration.policy_mode",
+                "row_pool.peak_active",
+                "row_pool.rows_in_lp_*",
+                "solve_stats.*",
+                "setup.*",
+                "distribution.*",
+            ),
+            {"bounds.final_lower_bound", "convergence.final_gap_percent"},
+        ),
     ),
     ("training/hydro_models.json", "bytes", None),
     ("training/model_provenance.json", "bytes", None),
     ("training/scaling_report.json", "bytes", None),
-    ("training/dictionaries/codes.json", "exempt", "holds generated_at"),
+    ("training/dictionaries/codes.json", "json", (("generated_at",), set())),
     ("training/dictionaries/*.csv", "bytes", None),
     ("training/dictionaries/*.parquet", "table", set()),
     ("training/solver/iterations.parquet", "exempt", "rows stamped with rank and worker"),
     (
         "training/solver/retry_histogram.parquet",
-        "exempt",
-        "its lower_bound rows count retries of the lower-bound LP, which a resume rebuilds cold",
+        "sparse-rows-after-k",
+        # A resume rebuilds the lower-bound LP cold, so its retries differ.
+        (set(), ("iteration", "phase", "stage_id", "retry_level"), {"lower_bound"}),
     ),
     ("training/timing/*", "exempt", "wall clock"),
 ]
@@ -624,28 +651,82 @@ def compare_rows(rel_path, baseline_table, test_table, exempt_columns):
                 )
 
 
+def select_rows(table, keep):
+    # Typed indices: pyarrow cannot take with an untyped empty list.
+    return table.take(pa.array([i for i, kept in enumerate(keep) if kept], type=pa.int64()))
+
+
 def rows_after_k(table):
-    return table.take(
-        [i for i, iteration in enumerate(table.column("iteration").to_pylist()) if iteration > k]
-    )
+    return select_rows(table, (iteration > k for iteration in table.column("iteration").to_pylist()))
 
 
-def compare_rows_after_k(rel_path, exempt_columns, key_columns):
-    baseline_table = read_table(baseline_dir, rel_path)
-    test_table = read_table(test_dir, rel_path)
-    for name, table in (("baseline", baseline_table), ("test", test_table)):
-        for column in key_columns:
+def without_phases(table, phases):
+    return select_rows(table, (phase not in phases for phase in table.column("phase").to_pylist()))
+
+
+def compare_rows_after_k(
+    rel_path, exempt_columns, key_columns, excluded_phases=frozenset(), may_be_empty=False
+):
+    required_columns = tuple(key_columns) + (("phase",) if excluded_phases else ())
+    tables = []
+    for name, root in (("baseline", baseline_dir), ("test", test_dir)):
+        table = read_table(root, rel_path)
+        for column in required_columns:
             if column not in table.column_names:
                 fail(f"{rel_path}: column '{column}' missing from the {name} output")
+        tables.append(without_phases(table, excluded_phases) if excluded_phases else table)
+    baseline_table, test_table = tables
     baseline_keys = set(zip(*(baseline_table.column(c).to_pylist() for c in key_columns)))
     test_keys = zip(*(test_table.column(c).to_pylist() for c in key_columns))
     for key in test_keys:
         if key[0] <= k and key not in baseline_keys:
             fail(f"{rel_path}: row {dict(zip(key_columns, key))} is absent from the baseline")
     baseline_after = rows_after_k(baseline_table)
-    if baseline_after.num_rows == 0:
+    if baseline_after.num_rows == 0 and not may_be_empty:
         fail(f"{rel_path}: the baseline holds no row after iteration {k}")
     compare_rows(rel_path, baseline_after, rows_after_k(test_table), exempt_columns)
+
+
+def flatten_json(value, prefix=""):
+    if not isinstance(value, dict):
+        return {prefix: value}
+    flat = {}
+    for key, child in value.items():
+        flat.update(flatten_json(child, f"{prefix}.{key}" if prefix else key))
+    return flat
+
+
+def is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def compare_json(rel_path, exempt_patterns, tolerant_keys):
+    flats = []
+    for root in (baseline_dir, test_dir):
+        with open(os.path.join(root, rel_path)) as f:
+            flat = flatten_json(json.load(f))
+        flats.append(
+            {
+                key: value
+                for key, value in flat.items()
+                if not any(fnmatch.fnmatchcase(key, pattern) for pattern in exempt_patterns)
+            }
+        )
+    baseline, test = flats
+    if baseline.keys() != test.keys():
+        fail(
+            f"{rel_path}: key set mismatch "
+            f"(missing={sorted(baseline.keys() - test.keys())}, "
+            f"extra={sorted(test.keys() - baseline.keys())})"
+        )
+    for key in sorted(baseline):
+        a, b = baseline[key], test[key]
+        if key in tolerant_keys and is_number(a) and is_number(b):
+            same = abs(a - b) <= RELATIVE_TOLERANCE * max(1.0, abs(a), abs(b))
+        else:
+            same = type(a) is type(b) and a == b
+        if not same:
+            fail(f"{rel_path}: key '{key}' differs (baseline={a!r}, test={b!r})")
 
 
 all_paths = sorted(
@@ -672,6 +753,10 @@ for rel_path in all_paths:
         compare_bytes(rel_path)
     elif cls == "rows-after-k":
         compare_rows_after_k(rel_path, *detail)
+    elif cls == "sparse-rows-after-k":
+        compare_rows_after_k(rel_path, *detail, may_be_empty=True)
+    elif cls == "json":
+        compare_json(rel_path, *detail)
     else:
         compare_rows(
             rel_path,
@@ -824,7 +909,11 @@ assert_compare_exit() {
 # exercises compare_resumed_outputs with k = 2: identical runs PASS, one
 # differing byte in a cuts file FAILs, a lower bound of iteration 3 differing
 # by 1e-9 relative PASSes and by 1e-5 FAILs, a differing row at iteration 2
-# PASSes, and a missing basis file FAILs.
+# PASSes, a missing basis file FAILs, metadata.json and codes.json differing
+# only in the keys a resumed run writes for itself PASS, a differing
+# completed-iteration count or dictionary code FAILs, retry-histogram
+# lower_bound rows differing after iteration 2 PASS and a differing backward
+# row FAILs, and an unclassified file under policy/ FAILs.
 # Aborts (exit 1) if any case's exit code does not match its expectation.
 # ---------------------------------------------------------------------------
 run_self_check() {
@@ -835,6 +924,8 @@ run_self_check() {
     echo "=== Self-check: comparator fixtures ==="
 
     python3 - "${root}" <<'PYEOF'
+import copy
+import json
 import math
 import os
 import sys
@@ -988,10 +1079,53 @@ def write_bytes(path, data):
 
 
 RESUME_LOWER_BOUNDS = [1.0e6, 2.0e6, 3.0e6, 4.0e6]
+RESUME_METADATA = {
+    "software": "novomodelo",
+    "hostname": "node-a",
+    "started_at": "2026-01-01T00:00:00Z",
+    "duration_seconds": 1.5,
+    "configuration": {"max_iterations": 4, "policy_mode": "fresh"},
+    "iterations": {"completed": 4},
+    "row_pool": {"total_generated": 8, "peak_active": 6},
+    "bounds": {"final_lower_bound": 4.0e6},
+    "solve_stats": {"total_lp_solves": 40, "parallelism": 1},
+    "distribution": {"world_size": 1, "hosts": [{"hostname": "node-a", "ranks": [0]}]},
+}
+RESUME_CODES = {"generated_at": "2026-01-01T00:00:00Z", "entity_type": {"hydro": 0}}
+# (iteration, phase, stage_id, retry_level, count)
+RESUME_RETRIES = [
+    (1, "lower_bound", None, 1, 1),
+    (3, "backward", 2, 1, 1),
+    (3, "lower_bound", None, 1, 2),
+]
+
+
+def with_values(document, values):
+    document = copy.deepcopy(document)
+    for path, value in values.items():
+        *parents, leaf = path.split(".")
+        node = document
+        for parent in parents:
+            node = node[parent]
+        node[leaf] = value
+    return document
+
+
+def write_json(path, document):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(document, f)
 
 
 def write_resumed_run(
-    base, iterations=(1, 2, 3, 4), lower_bounds=None, cuts=b"\x01\x02\x03", basis=True
+    base,
+    iterations=(1, 2, 3, 4),
+    lower_bounds=None,
+    cuts=b"\x01\x02\x03",
+    basis=True,
+    metadata=RESUME_METADATA,
+    codes=RESUME_CODES,
+    retries=RESUME_RETRIES,
 ):
     # The comparator is run with k = 2, so only iterations 3 and 4 are compared.
     lower_bounds = lower_bounds or [RESUME_LOWER_BOUNDS[i - 1] for i in iterations]
@@ -1023,6 +1157,18 @@ def write_resumed_run(
         os.path.join(base, "simulation", "costs", "data.parquet"),
         {"scenario_id": [0], "value": [1.0]},
     )
+    write_json(os.path.join(base, "training", "metadata.json"), metadata)
+    write_json(os.path.join(base, "training", "dictionaries", "codes.json"), codes)
+    write(
+        os.path.join(base, "training", "solver", "retry_histogram.parquet"),
+        {
+            "iteration": pa.array([r[0] for r in retries], type=pa.uint32()),
+            "phase": pa.array([r[1] for r in retries], type=pa.string()),
+            "stage_id": pa.array([r[2] for r in retries], type=pa.int32()),
+            "retry_level": pa.array([r[3] for r in retries], type=pa.uint32()),
+            "count": pa.array([r[4] for r in retries], type=pa.uint64()),
+        },
+    )
 
 
 # resume_identical: the uninterrupted run itself -> expect PASS.
@@ -1049,6 +1195,68 @@ write_resumed_run(
 
 # resume_missing_basis: the basis file is missing -> expect FAIL.
 write_resumed_run(os.path.join(root, "resume_missing_basis"), basis=False)
+
+# resume_own_keys: metadata.json and codes.json differ only in the keys a
+# resumed run writes for itself, and in a final lower bound 1e-9 relative
+# away -> expect PASS.
+write_resumed_run(
+    os.path.join(root, "resume_own_keys"),
+    metadata=with_values(
+        RESUME_METADATA,
+        {
+            "hostname": "node-b",
+            "started_at": "2026-01-02T00:00:00Z",
+            "duration_seconds": 0.7,
+            "configuration.policy_mode": "resume",
+            "row_pool.peak_active": 5,
+            "bounds.final_lower_bound": 4.0e6 * (1.0 + 1e-9),
+            "solve_stats.total_lp_solves": 20,
+            "solve_stats.parallelism": 2,
+            "distribution.world_size": 2,
+            "distribution.hosts": [{"hostname": "node-b", "ranks": [0, 1]}],
+        },
+    ),
+    codes=with_values(RESUME_CODES, {"generated_at": "2026-01-02T00:00:00Z"}),
+)
+
+# resume_metadata_iterations: the completed-iteration count differs -> expect
+# FAIL.
+write_resumed_run(
+    os.path.join(root, "resume_metadata_iterations"),
+    metadata=with_values(RESUME_METADATA, {"iterations.completed": 3}),
+)
+
+# resume_codes_entry: a dictionary code differs -> expect FAIL.
+write_resumed_run(
+    os.path.join(root, "resume_codes_entry"),
+    codes=with_values(RESUME_CODES, {"entity_type.hydro": 1}),
+)
+
+# resume_retry_lower_bound: the lower_bound rows differ after iteration 2 and
+# the row of iteration 1 is absent -> expect PASS.
+write_resumed_run(
+    os.path.join(root, "resume_retry_lower_bound"),
+    retries=[
+        (3, "backward", 2, 1, 1),
+        (3, "lower_bound", None, 1, 5),
+        (4, "lower_bound", None, 2, 1),
+    ],
+)
+
+# resume_retry_backward: a backward row of iteration 3 differs -> expect FAIL.
+write_resumed_run(
+    os.path.join(root, "resume_retry_backward"),
+    retries=[
+        (1, "lower_bound", None, 1, 1),
+        (3, "backward", 2, 1, 2),
+        (3, "lower_bound", None, 1, 2),
+    ],
+)
+
+# resume_unclassified_policy: identical plus one policy/ file no rule names
+# -> expect FAIL.
+write_resumed_run(os.path.join(root, "resume_unclassified_policy"))
+write_bytes(os.path.join(root, "resume_unclassified_policy", "policy", "selection", "000.bin"), b"\x07")
 PYEOF
 
     SELF_CHECK_CASES=0
@@ -1069,7 +1277,8 @@ PYEOF
         assert_selection_power_of_case
     local resume_case expected_exit
     for resume_case in identical:0 cuts_byte:1 lower_bound_1e-9:0 lower_bound_1e-5:1 \
-        early_row:0 missing_basis:1; do
+        early_row:0 missing_basis:1 own_keys:0 metadata_iterations:1 codes_entry:1 \
+        retry_lower_bound:0 retry_backward:1 unclassified_policy:1; do
         expected_exit="${resume_case##*:}"
         resume_case="${resume_case%:*}"
         assert_compare_exit "resume_${resume_case}" "${root}/resume_baseline" \
@@ -1450,7 +1659,6 @@ run_sbatch_test() {
     fi
 
     # Build the extra args string for insertion into the batch script.
-    # Paths are absolute; this heredoc is unquoted so variables expand.
     local extra_str="${extra_args[*]+"${extra_args[*]}"}"
 
     # Generate the batch script with absolute paths.
@@ -1631,7 +1839,8 @@ main() {
         "${WORK_DIR}/r0/policy" "${resumed_comparator}" 2 --threads 2
 
     if [[ "${MODE}" == "full" ]]; then
-        # R2: sbatch multi-node, 1 rank per node, stopped at RESUME_AT (no comparison)
+        # R2: sbatch -N 2 -n 2, mpiexec -n 2 in that allocation (placement of the two
+        # ranks on separate nodes is not requested), stopped at RESUME_AT (no comparison)
         run_sbatch_test "R2" "${partial_run[@]}" 2 2 2
 
         # R3: resumes R2's two-rank checkpoint on one rank, compared against L1
