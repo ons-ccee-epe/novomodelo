@@ -39,6 +39,7 @@ still carry the canonical boundary regex).
 | `check-release-kernel.sh`            | A built x86_64 Linux binary, archive or wheel carries no packed FMA instruction (the release workflows run it on what they built). |
 | `check_python_parity.py`             | Both write paths call the same set of `novomodelo_io` / `novomodelo_sddp::policy::orchestration` writers, and each phase writer calls `write_success_marker` as its last write. |
 | `check_schemas.sh`                   | Exported JSON schemas match the source types (needs the release binary; `--build`).                        |
+| `run-mpi-launcher-gates.sh`          | Launches the tests that compare a real MPI world with the single-rank reference at two and four ranks and requires every rank to report its test passed. |
 | `quality-report.sh`                  | Advisory code-quality hotspot report; also runs the comment-bloat advisory.                                |
 | `lib/comment_scan.sh`                | Shared `cfg(test)`-boundary helpers, sourced by the comment gates.                                         |
 | `allow-rationale-allowlist.txt`      | Allowlist consumed by `check-allow-rationale.sh`.                                                          |
