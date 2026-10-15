@@ -18,7 +18,7 @@ use novomodelo_io::config::{
     TrainingSelection,
 };
 use novomodelo_io::{OwnedPolicyCutRecord, read_policy_checkpoint};
-use novomodelo_sddp::cut::{CutSet, SlotOrigin};
+use novomodelo_sddp::cut::{CutPool, CutSet, SlotOrigin};
 use novomodelo_sddp::hydro_models::prepare_hydro_models;
 use novomodelo_sddp::policy::full_fcf_load::{
     FullFcfLoadError, FullFcfLoadKind, check_full_fcf_load, locate_policy_dir,
@@ -35,7 +35,7 @@ use novomodelo_solver::ActiveSolver;
 use tempfile::TempDir;
 
 mod common;
-use common::StubComm;
+use common::{StubComm, truncated_toy_case};
 
 const ITERATIONS: u32 = 3;
 
@@ -938,39 +938,6 @@ fn a_load_is_refused_for_a_dynamic_all_simulation_over_deactivated_cuts_only() {
     }
 }
 
-fn copy_toy_case(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst).expect("create dir");
-    for entry in std::fs::read_dir(src).expect("read dir") {
-        let entry = entry.expect("dir entry");
-        let target = dst.join(entry.file_name());
-        if entry.file_type().expect("file type").is_dir() {
-            copy_toy_case(&entry.path(), &target);
-        } else {
-            std::fs::copy(entry.path(), target).expect("copy file");
-        }
-    }
-}
-
-/// 1dtoy cut to its first `stages` stages, so its boundary date is the end of
-/// stage `stages - 1`: the date the 1dtoy pool with that index is priced at.
-fn truncated_toy_case(stages: usize) -> TempDir {
-    let case = TempDir::new().expect("tempdir");
-    copy_toy_case(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/1dtoy"),
-        case.path(),
-    );
-    let stages_file = case.path().join("stages.json");
-    let mut document: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&stages_file).expect("read stages"))
-            .expect("parse stages");
-    document["stages"]
-        .as_array_mut()
-        .expect("stages array")
-        .truncate(stages);
-    std::fs::write(&stages_file, document.to_string()).expect("write stages");
-    case
-}
-
 /// What a `dynamic` run simulating `cut_set` gets from using pool `pool_id` of
 /// `policy_dir`, a 1dtoy policy, as its `policy.boundary`.
 fn reconcile_boundary_of(
@@ -1022,24 +989,37 @@ fn a_dynamic_simulation_of_all_refuses_boundary_cuts_outside_the_active_set() {
     }
 }
 
-/// The policy directory of a `level1` run under a budget over the first
-/// `pool_id + 1` stages of 1dtoy whose `policy.boundary` is pool `pool_id` of
-/// `boundary_dir`: its terminal pool holds the boundary rows with the flags of
-/// their source, and it carries the binding counters a `dynamic` resume reads.
-fn boundary_run_checkpoint(boundary_dir: &Path, pool_id: usize) -> (TempDir, PathBuf) {
+/// 1dtoy over its first `pool_id + 1` stages as a `level1` run under a budget
+/// with two forward passes, whose `policy.boundary` is pool `pool_id` of
+/// `boundary_dir`.
+fn boundary_run_setup(
+    boundary_dir: &Path,
+    pool_id: usize,
+    iteration_limit: u32,
+) -> (TempDir, BoundaryPolicy, System, StudySetup) {
     let case = truncated_toy_case(pool_id + 1);
     let boundary = BoundaryPolicy {
         path: boundary_dir.to_str().expect("utf-8 path").to_string(),
         strict: false,
     };
-    let (system, mut setup) = common::fresh_system_and_setup_with(case.path(), |config| {
+    let (system, setup) = common::fresh_system_and_setup_with(case.path(), |config| {
         config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
-        config.training.stopping_rules =
-            Some(vec![StoppingRuleConfig::IterationLimit { limit: 2 }]);
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: iteration_limit,
+        }]);
         with_level1(None)(config);
         with_budget(config);
         config.policy.boundary = Some(boundary.clone());
     });
+    (case, boundary, system, setup)
+}
+
+/// The policy directory of a `level1` run under a budget over the first
+/// `pool_id + 1` stages of 1dtoy whose `policy.boundary` is pool `pool_id` of
+/// `boundary_dir`: its terminal pool holds the boundary rows with the flags of
+/// their source, and it carries the binding counters a `dynamic` resume reads.
+fn boundary_run_checkpoint(boundary_dir: &Path, pool_id: usize) -> (TempDir, PathBuf) {
+    let (case, boundary, system, mut setup) = boundary_run_setup(boundary_dir, pool_id, 2);
     let reconciled = reconcile_boundary_policy(&setup, &system, &boundary, case.path())
         .expect("the boundary reconciles");
     inject_boundary_cuts(&mut setup, &reconciled.cuts).expect("inject");
@@ -1093,6 +1073,66 @@ fn a_boundary_replaces_the_loaded_terminal_pool_the_dynamic_check_reads() {
     )
     .expect_err("a simulation-only run injects no boundary and simulates the loaded pool");
     assert!(matches!(err, FullFcfLoadError::Refused(_)), "{err}");
+}
+
+/// A resume of a run that declared `policy.boundary` keeps the binding counters
+/// its checkpoint holds for the terminal rows and refuses a boundary whose rows
+/// differ from them; a warm start of the same checkpoint takes any boundary and
+/// restarts the counters.
+#[test]
+fn a_resume_refuses_a_boundary_that_no_longer_matches_its_checkpoint() {
+    let (_source, source_dir, (pool_id, _, _)) = deactivating_checkpoint();
+    let (_checkpoint, checkpoint_dir) = boundary_run_checkpoint(&source_dir, pool_id);
+    let (_plain, plain_dir) = toy_checkpoint(2, |_| {});
+
+    let load_then_inject = |kind: FullFcfLoadKind, boundary_dir: &Path| {
+        let (case, boundary, system, mut setup) = boundary_run_setup(boundary_dir, pool_id, 3);
+        check_full_fcf_load(kind, &checkpoint_dir, &system, &setup, &mut |_| {})
+            .expect("the checkpoint loads")
+            .apply_to_training(&mut setup);
+        let terminal = setup
+            .inputs
+            .node_graph
+            .terminal_pool(setup.num_stages())
+            .expect("terminal pool");
+        let loaded = setup.fcf.pools[terminal].clone();
+        let reconciled = reconcile_boundary_policy(&setup, &system, &boundary, case.path())
+            .expect("the boundary reconciles");
+        let injected = inject_boundary_cuts(&mut setup, &reconciled.cuts);
+        (injected, loaded, setup.fcf.pools[terminal].clone())
+    };
+    let counters = |pool: &CutPool| -> Vec<(u64, u64)> {
+        (0..pool.populated())
+            .map(|slot| {
+                let meta = pool.metadata(slot);
+                (meta.active_count, meta.last_active_iter)
+            })
+            .collect()
+    };
+
+    let (injected, loaded, resumed) = load_then_inject(FullFcfLoadKind::Resume, &source_dir);
+    injected.expect("the boundary the interrupted run used is admitted");
+    assert!(
+        counters(&loaded).iter().any(|&(count, _)| count > 0),
+        "power: the checkpoint's terminal rows must have bound"
+    );
+    assert_eq!(counters(&resumed), counters(&loaded));
+
+    let (injected, _, _) = load_then_inject(FullFcfLoadKind::Resume, &plain_dir);
+    let err = injected.expect_err("another boundary is refused");
+    assert!(matches!(err, SddpError::Validation(_)), "{err}");
+    let message = err.to_string();
+    for fragment in [
+        "resume needs the policy.boundary and modeling.cost_scale_factor the interrupted run used",
+        &format!("(pool {pool_id}) differs from the checkpoint's at slot count"),
+        "policy.mode = warm_start",
+    ] {
+        assert!(message.contains(fragment), "{message}");
+    }
+
+    let (injected, _, restarted) = load_then_inject(FullFcfLoadKind::WarmStart, &plain_dir);
+    injected.expect("a warm start takes any boundary");
+    assert!(counters(&restarted).iter().all(|&c| c == (0, 0)));
 }
 
 /// A row a capped source evicted was never scored, so `all` leaves it out as it

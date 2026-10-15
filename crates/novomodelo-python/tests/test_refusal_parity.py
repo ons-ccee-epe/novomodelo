@@ -287,6 +287,34 @@ def _resume_from_a_partial_policy(case: pathlib.Path) -> None:
     _set_policy_path(case, "policy.partial")
 
 
+def _resume_over_a_changed_boundary(case: pathlib.Path) -> None:
+    """A two-stage study interrupted over the `policy.boundary` of a longer run
+    resumes over the policy of a shorter one, whose terminal rows differ."""
+
+    def set_boundary(path: str) -> None:
+        def edit(config: Any) -> None:
+            config.setdefault("policy", {})["boundary"] = {"path": path}
+
+        _edit_json(case / "config.json", edit)
+
+    def truncate(stages: Any) -> None:
+        del stages["stages"][2:]
+
+    def resume_two_iterations(config: Any) -> None:
+        config["training"]["stopping_rules"] = [{"type": "iteration_limit", "limit": 2}]
+
+    _train_iterations(case, 4)
+    (case / "output" / "policy").rename(case / "boundary_source")
+    _train_iterations(case, 2)
+    (case / "output" / "policy").rename(case / "boundary_changed")
+    _edit_json(case / "stages.json", truncate)
+    set_boundary("boundary_source")
+    _train_iterations(case, 1)
+    set_boundary("boundary_changed")
+    _set_policy_mode(case, "resume")
+    _edit_json(case / "config.json", resume_two_iterations)
+
+
 def _simulation_only_policy_from_another_version(case: pathlib.Path) -> None:
     _train_one_iteration(case)
     _restamp_policy_version(case / "output" / "policy")
@@ -634,6 +662,17 @@ ROWS = [
         outcome="PlainRefusal",
         fragment="resume needs a whole checkpoint",
         error_class_name="PolicyIncompatibleError",
+    ),
+    _row(
+        name="resume_over_a_changed_boundary",
+        base_case="1dtoy",
+        mutate=_resume_over_a_changed_boundary,
+        outcome="PlainRefusal",
+        fragment=(
+            "resume needs the policy.boundary and modeling.cost_scale_factor "
+            "the interrupted run used"
+        ),
+        error_class_name="ValidationError",
     ),
     _row(
         name="simulation_only_policy_from_another_version",

@@ -22,8 +22,9 @@ use novomodelo_io::{CaseArtifacts, Config, ErrorKind, LoadError, PolicyMode, Rep
 
 use crate::hydro_models::prepare_hydro_models_from_artifacts;
 use crate::policy::full_fcf_load::{
-    FullFcfLoadError, FullFcfLoadKind, check_full_fcf_load, locate_policy_dir,
+    CheckedFullFcfLoad, FullFcfLoadError, FullFcfLoadKind, check_full_fcf_load, locate_policy_dir,
 };
+use crate::policy::policy_load::check_resume_boundary;
 use crate::setup::RunPhasePlan;
 use crate::{
     BoundaryReconciliation, ErrorClass, SddpError, StudyParams, StudySetup, prepare_stochastic,
@@ -45,7 +46,7 @@ use crate::{
 /// | [`HydroModels`]      | `prepare_hydro_models_from_artifacts`      | `system/hydro_production_models.json` |
 /// | [`GenericConstraints`] | `validate_generic_constraint_parameters` | `constraints/`                        |
 /// | [`StudySetup`]       | `StudySetup::new_from_params`              | `scenarios/`                          |
-/// | [`Boundary`]         | `resolve_boundary_state_requirements`, `StudySetup::new_from_params`, `reconcile_boundary_policy` | `policy.boundary` |
+/// | [`Boundary`]         | `resolve_boundary_state_requirements`, `StudySetup::new_from_params`, `reconcile_boundary_policy`, `check_resume_boundary` | `policy.boundary` |
 ///
 /// [`Config`]: PrepPhase::Config
 /// [`Stochastic`]: PrepPhase::Stochastic
@@ -70,8 +71,10 @@ pub enum PrepPhase {
     StudySetup,
     /// The boundary-policy steps of a deck with `config.policy.boundary` set: the
     /// requirements read (`resolve_boundary_state_requirements`), study construction
-    /// (`StudySetup::new_from_params`) and `reconcile_boundary_policy`
-    /// (checkpoint reconciliation against the terminal entity manifest).
+    /// (`StudySetup::new_from_params`), `reconcile_boundary_policy`
+    /// (checkpoint reconciliation against the terminal entity manifest) and, for a
+    /// resume, `check_resume_boundary` (the reconciled rows against the checkpoint's
+    /// terminal pool).
     Boundary,
 }
 
@@ -250,6 +253,22 @@ pub fn check_configured_policy_load(
     config: &Config,
     output_dir: &Path,
 ) -> Result<Option<PolicyLoadReport>, PolicyLoadFailure> {
+    check_configured_full_fcf_load(system, setup, config, output_dir)
+        .map(|loaded| loaded.map(|(_, report)| report))
+}
+
+/// [`check_configured_policy_load`] that also returns the checked load, for a
+/// caller that applies it.
+///
+/// # Errors
+///
+/// Returns the [`PolicyLoadFailure`] naming the load step the run would refuse.
+pub fn check_configured_full_fcf_load(
+    system: &System,
+    setup: &StudySetup,
+    config: &Config,
+    output_dir: &Path,
+) -> Result<Option<(CheckedFullFcfLoad, PolicyLoadReport)>, PolicyLoadFailure> {
     let plan = run_phase_plan(setup, config);
     let Some(load) = configured_full_fcf_load(plan, config.policy.mode) else {
         return Ok(None);
@@ -268,13 +287,14 @@ pub fn check_configured_policy_load(
     })
     .map_err(failed)?;
 
-    Ok(Some(PolicyLoadReport {
+    let report = PolicyLoadReport {
         summary: PolicyLoadSummary {
             load,
             unused_stored_bases: checked.unused_stored_bases().map_or(0, |u| u.count),
         },
         warnings,
-    }))
+    };
+    Ok(Some((checked, report)))
 }
 
 /// Run every pre-solver check `novomodelo run` reaches before it starts solving, in
@@ -289,9 +309,11 @@ pub fn check_configured_policy_load(
 ///
 /// A configured warm-start, resume or simulation-only policy is checked with
 /// [`check_configured_policy_load`] after the study is built and before the
-/// boundary policy is reconciled, the order the run applies them. The boundary
-/// policy is reconciled only when the run trains, as only a training run
-/// injects it.
+/// boundary policy is reconciled, the order the run applies them. A resume is
+/// applied to the study before the reconciliation, and the reconciled boundary is
+/// compared with the checkpoint's terminal pool ([`check_resume_boundary`]), so a
+/// boundary the run would refuse for a resume is refused here. The boundary policy
+/// is reconciled only when the run trains, as only a training run injects it.
 ///
 /// # Errors
 ///
@@ -347,7 +369,7 @@ pub fn validate_study(request: ValidateRequest<'_>) -> Result<ValidatedStudy, Va
         .map_err(at(PrepPhase::GenericConstraints))?;
         PrepPhase::StudySetup
     };
-    let setup = StudySetup::new_from_params(
+    let mut setup = StudySetup::new_from_params(
         &prepared.system,
         config,
         prepared.stochastic,
@@ -357,13 +379,23 @@ pub fn validate_study(request: ValidateRequest<'_>) -> Result<ValidatedStudy, Va
     )
     .map_err(at(setup_phase))?;
 
-    let policy_load = check_configured_policy_load(&prepared.system, &setup, config, output_dir)
-        .map_err(ValidateFailure::PolicyLoad)?;
+    let policy_load = check_configured_full_fcf_load(&prepared.system, &setup, config, output_dir)
+        .map_err(ValidateFailure::PolicyLoad)?
+        .map(|(checked, report)| {
+            if report.summary.load == FullFcfLoadKind::Resume {
+                checked.apply_to_training(&mut setup);
+            }
+            report
+        });
 
     // A run that does not train never injects the boundary, so it never reconciles it.
     let boundary = boundary_policy
         .filter(|_| run_phase_plan(&setup, config) == RunPhasePlan::TrainedThenSimulated)
-        .map(|bp| reconcile_boundary_policy(&setup, &prepared.system, bp, case_dir))
+        .map(|bp| {
+            let reconciled = reconcile_boundary_policy(&setup, &prepared.system, bp, case_dir)?;
+            check_resume_boundary(&setup, &reconciled.cuts)?;
+            Ok(reconciled)
+        })
         .transpose()
         .map_err(at(PrepPhase::Boundary))?;
 

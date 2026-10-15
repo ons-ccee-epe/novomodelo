@@ -1501,9 +1501,15 @@ impl Deref for ValidatedBoundaryCuts {
 /// mean a bare `Vec<OwnedPolicyCutRecord>`/slice cannot substitute, so an
 /// unvalidated boundary load cannot compile.
 ///
+/// A resume (`loop_params.start_iteration > 0`) keeps the binding counters the
+/// checkpoint holds for the terminal pool's rows, matched by slot, so a budget or
+/// the `dynamic` method continues the interrupted run's eviction order and seed
+/// window. Every other load restarts them at 0.
+///
 /// # Errors
 ///
-/// Returns [`SddpError::Validation`] if the study has no terminal pool.
+/// Returns [`SddpError::Validation`] if the study has no terminal pool, or the
+/// refusal of [`check_resume_boundary`].
 ///
 /// ```compile_fail
 /// use novomodelo_sddp::{StudySetup, inject_boundary_cuts};
@@ -1519,7 +1525,22 @@ pub fn inject_boundary_cuts(
     setup: &mut StudySetup,
     boundary_cuts: &ValidatedBoundaryCuts,
 ) -> Result<(), SddpError> {
-    let terminal_idx = setup
+    let terminal_idx = terminal_pool_index(setup)?;
+    check_resume_boundary(setup, boundary_cuts)?;
+    let mut pool = terminal_boundary_pool(&setup.fcf, boundary_cuts);
+    if setup.loop_params.start_iteration > 0 {
+        let loaded = &setup.fcf.pools[terminal_idx];
+        for slot in 0..loaded.populated() {
+            let counters = loaded.metadata(slot);
+            pool.record_binding(slot, counters.active_count, counters.last_active_iter);
+        }
+    }
+    setup.fcf.pools[terminal_idx] = pool;
+    Ok(())
+}
+
+fn terminal_pool_index(setup: &StudySetup) -> Result<usize, SddpError> {
+    setup
         .inputs
         .node_graph
         .terminal_pool(setup.num_stages())
@@ -1528,9 +1549,98 @@ pub fn inject_boundary_cuts(
                 "boundary cuts need a terminal pool, but the study has no terminal stage"
                     .to_string(),
             )
-        })?;
-    setup.fcf.pools[terminal_idx] = terminal_boundary_pool(&setup.fcf, boundary_cuts);
-    Ok(())
+        })
+}
+
+/// Refuses a resume (`loop_params.start_iteration > 0`, which only
+/// `CheckedFullFcfLoad::apply_to_training` sets) whose reconciled `boundary_cuts`
+/// are not the rows of the checkpoint's terminal pool in `setup`, which
+/// [`inject_boundary_cuts`] would otherwise give another row's binding counters.
+/// Any other load passes.
+///
+/// The rows are the ones [`inject_boundary_cuts`] installs and are compared by
+/// state dimension, slot count and, per slot, role, active flag and the bits of the
+/// intercept and coefficients. A changed `modeling.cost_scale_factor` rescales the
+/// checkpoint's rows and the boundary's by different arithmetic, so it is refused
+/// here too and the message names it.
+///
+/// # Errors
+///
+/// Returns [`SddpError::Validation`] naming the pool, the first difference and the
+/// way out if the rows differ, or if the study has no terminal pool.
+pub fn check_resume_boundary(
+    setup: &StudySetup,
+    boundary_cuts: &ValidatedBoundaryCuts,
+) -> Result<(), SddpError> {
+    if setup.loop_params.start_iteration == 0 {
+        return Ok(());
+    }
+    let terminal_idx = terminal_pool_index(setup)?;
+    let boundary = terminal_boundary_pool(&setup.fcf, boundary_cuts);
+    match first_difference(&setup.fcf.pools[terminal_idx], &boundary) {
+        None => Ok(()),
+        Some(difference) => Err(SddpError::Validation(format!(
+            "resume needs the policy.boundary and modeling.cost_scale_factor the interrupted \
+             run used: the boundary pool (pool {terminal_idx}) differs from the checkpoint's at \
+             {difference}; resume with that policy.boundary and cost scale or continue with \
+             policy.mode = warm_start"
+        ))),
+    }
+}
+
+/// The first difference between two terminal pools, in the order: state
+/// dimension, slot count, then per slot its role, active flag, intercept bits
+/// and coefficient bits.
+fn first_difference(loaded: &CutPool, boundary: &CutPool) -> Option<String> {
+    fn mismatch<T: fmt::Debug>(what: &str, loaded: T, boundary: T) -> String {
+        format!("{what} ({loaded:?} in the checkpoint, {boundary:?} in the boundary)")
+    }
+    if loaded.state_dimension != boundary.state_dimension {
+        return Some(mismatch(
+            "state dimension",
+            loaded.state_dimension,
+            boundary.state_dimension,
+        ));
+    }
+    if loaded.populated() != boundary.populated() {
+        return Some(mismatch(
+            "slot count",
+            loaded.populated(),
+            boundary.populated(),
+        ));
+    }
+    (0..loaded.populated()).find_map(|slot| {
+        if loaded.role(slot) != boundary.role(slot) {
+            return Some(mismatch(
+                &format!("slot {slot} role"),
+                loaded.role(slot),
+                boundary.role(slot),
+            ));
+        }
+        if loaded.is_active(slot) != boundary.is_active(slot) {
+            return Some(mismatch(
+                &format!("slot {slot} active flag"),
+                loaded.is_active(slot),
+                boundary.is_active(slot),
+            ));
+        }
+        let (l, b) = (loaded.intercept(slot), boundary.intercept(slot));
+        if l.to_bits() != b.to_bits() {
+            return Some(mismatch(&format!("slot {slot} intercept"), l, b));
+        }
+        loaded
+            .coefficient_row(slot)
+            .iter()
+            .zip(boundary.coefficient_row(slot))
+            .position(|(l, b)| l.to_bits() != b.to_bits())
+            .map(|j| {
+                mismatch(
+                    &format!("slot {slot} coefficient {j}"),
+                    loaded.coefficient_row(slot)[j],
+                    boundary.coefficient_row(slot)[j],
+                )
+            })
+    })
 }
 
 /// The terminal pool [`inject_boundary_cuts`] installs, which
@@ -1645,6 +1755,7 @@ mod tests {
         load_boundary_cuts, validate_policy_load,
     };
     use crate::SddpError;
+    use crate::StudySetup;
     use crate::policy::orchestration::{StudyHydroSeasonOrders, StudySeasonManifest};
     use crate::policy::reconcile::overlap_hours;
     use crate::test_support;
@@ -4717,6 +4828,188 @@ mod tests {
             ),
             (9, 0, 0)
         );
+    }
+
+    fn terminal_rows(dimension: usize) -> Vec<OwnedPolicyCutRecord> {
+        (0..3u32)
+            .map(|row| owned_cut(5.0 + f64::from(row), vec![f64::from(row) + 1.0; dimension]))
+            .collect()
+    }
+
+    fn boundary_of(records: Vec<OwnedPolicyCutRecord>) -> ValidatedBoundaryCuts {
+        ValidatedBoundaryCuts {
+            records,
+            report: BoundaryReconciliationReport::default(),
+        }
+    }
+
+    fn setup_holding_terminal_pool(
+        loaded: &[OwnedPolicyCutRecord],
+        dimension: usize,
+        start_iteration: u64,
+    ) -> (StudySetup, usize) {
+        let mut setup = test_support::oracle_chain_setup(10);
+        let terminal_idx = setup
+            .inputs
+            .node_graph
+            .terminal_pool(setup.num_stages())
+            .unwrap();
+        let mut pool = CutPool::new_with_warm_start(dimension, setup.fcf.forward_passes, 0, loaded);
+        pool.record_binding(0, 7, 4);
+        pool.record_binding(2, 2, 3);
+        setup.fcf.pools[terminal_idx] = pool;
+        setup.set_resume_point(start_iteration, Vec::new());
+        (setup, terminal_idx)
+    }
+
+    #[test]
+    fn a_resume_keeps_the_binding_counters_of_the_checkpoints_terminal_rows() {
+        let dimension = test_support::oracle_chain_setup(10).fcf.state_dimension;
+        let rows = terminal_rows(dimension);
+        let (mut setup, terminal_idx) = setup_holding_terminal_pool(&rows, dimension, 4);
+
+        inject_boundary_cuts(&mut setup, &boundary_of(rows)).unwrap();
+
+        let pool = &setup.fcf.pools[terminal_idx];
+        let counters: Vec<_> = (0..3)
+            .map(|slot| {
+                let meta = pool.metadata(slot);
+                (meta.active_count, meta.last_active_iter)
+            })
+            .collect();
+        assert_eq!(counters, [(7, 4), (0, 0), (2, 3)]);
+    }
+
+    #[test]
+    fn only_a_resume_compares_the_boundary_with_the_loaded_terminal_pool() {
+        let dimension = test_support::oracle_chain_setup(10).fcf.state_dimension;
+        let rows = terminal_rows(dimension);
+        let (mut setup, terminal_idx) = setup_holding_terminal_pool(&rows, dimension, 0);
+
+        inject_boundary_cuts(&mut setup, &boundary_of(rows[..2].to_vec())).unwrap();
+
+        let pool = &setup.fcf.pools[terminal_idx];
+        assert_eq!(pool.populated(), 2);
+        assert_eq!(
+            (0..2)
+                .map(|slot| (
+                    pool.metadata(slot).active_count,
+                    pool.metadata(slot).last_active_iter
+                ))
+                .collect::<Vec<_>>(),
+            [(0, 0), (0, 0)]
+        );
+    }
+
+    #[test]
+    fn a_resume_refuses_a_boundary_that_differs_from_the_checkpoints_terminal_rows() {
+        type Case = (
+            &'static str,
+            usize,
+            fn(&mut Vec<OwnedPolicyCutRecord>),
+            String,
+        );
+        let dimension = test_support::oracle_chain_setup(10).fcf.state_dimension;
+        let last = dimension - 1;
+        let cases: [Case; 6] = [
+            (
+                "slot count",
+                dimension,
+                |rows| {
+                    rows.pop();
+                },
+                "slot count".to_string(),
+            ),
+            (
+                "role",
+                dimension,
+                |rows| rows[1].scored = true,
+                "slot 1 role".to_string(),
+            ),
+            (
+                "active flag",
+                dimension,
+                |rows| rows[2].is_active = false,
+                "slot 2 active flag".to_string(),
+            ),
+            (
+                "intercept bits",
+                dimension,
+                |rows| rows[1].intercept = f64::from_bits(rows[1].intercept.to_bits() + 1),
+                "slot 1 intercept".to_string(),
+            ),
+            (
+                "coefficient bits",
+                dimension,
+                |rows| {
+                    let last = rows[2].coefficients.len() - 1;
+                    rows[2].coefficients[last] =
+                        f64::from_bits(rows[2].coefficients[last].to_bits() + 1);
+                },
+                format!("slot 2 coefficient {last}"),
+            ),
+            (
+                "state dimension",
+                dimension + 1,
+                |_| {},
+                "state dimension".to_string(),
+            ),
+        ];
+
+        for (label, loaded_dimension, mutate_boundary, needle) in cases {
+            let loaded = terminal_rows(loaded_dimension);
+            let (mut setup, terminal_idx) =
+                setup_holding_terminal_pool(&loaded, loaded_dimension, 4);
+            let mut boundary = terminal_rows(dimension);
+            mutate_boundary(&mut boundary);
+
+            let error = inject_boundary_cuts(&mut setup, &boundary_of(boundary))
+                .expect_err(label)
+                .to_string();
+
+            for fragment in [
+                needle.as_str(),
+                &format!("pool {terminal_idx}"),
+                "policy.boundary and modeling.cost_scale_factor the interrupted run used",
+                "policy.mode = warm_start",
+            ] {
+                assert!(
+                    error.contains(fragment),
+                    "{label}: missing {fragment:?} in: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_resume_at_another_cost_scale_factor_is_refused_naming_the_factor() {
+        let dimension = test_support::oracle_chain_setup(10).fcf.state_dimension;
+        let source: Vec<_> = [
+            255.433_164_073_614_53,
+            8_091.589_868_823_923,
+            1_999.194_362_351_453_8,
+        ]
+        .into_iter()
+        .map(|value| owned_cut(value, vec![value; dimension]))
+        .collect();
+        let converted = |records: &[OwnedPolicyCutRecord], written_at: f64, loaded_at: f64| {
+            let mut records = records.to_vec();
+            rescale_cut_records_for_load(&mut records, Some(written_at), loaded_at);
+            records
+        };
+        let resume_with = |written_at: f64| {
+            let checkpoint = converted(&converted(&source, written_at, 1e6), 1e6, 1e3);
+            let boundary = converted(&source, written_at, 1e3);
+            let (mut setup, _) = setup_holding_terminal_pool(&checkpoint, dimension, 4);
+            inject_boundary_cuts(&mut setup, &boundary_of(boundary))
+        };
+
+        resume_with(1e6)
+            .expect("a boundary written at the interrupted run's factor converts alike");
+        let error = resume_with(1.0)
+            .expect_err("a boundary written at another factor converts by other arithmetic")
+            .to_string();
+        assert!(error.contains("modeling.cost_scale_factor"), "{error}");
     }
 
     /// `active_cuts()` on the fixed terminal pool must be identical to what a

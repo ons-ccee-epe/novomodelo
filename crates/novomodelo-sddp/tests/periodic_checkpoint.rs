@@ -18,7 +18,7 @@ use std::sync::mpsc;
 use novomodelo_core::{System, TrainingEvent};
 use novomodelo_io::Config;
 use novomodelo_io::config::{
-    CheckpointingConfig, SelectionMethod, StoppingRuleConfig, TrainingSelection,
+    BoundaryPolicy, CheckpointingConfig, SelectionMethod, StoppingRuleConfig, TrainingSelection,
 };
 use novomodelo_io::output::policy::{PolicyCheckpoint, read_policy_checkpoint};
 use novomodelo_sddp::cut::SlotOrigin;
@@ -30,6 +30,7 @@ use novomodelo_sddp::setup::NodePos;
 use novomodelo_sddp::test_support::snapshot_files;
 use novomodelo_sddp::{
     CapturedBasis, DEFAULT_COST_SCALE_FACTOR, SddpError, StudySetup, TrainingResult,
+    inject_boundary_cuts, reconcile_boundary_policy,
 };
 use novomodelo_solver::{ActiveSolver, BasisStatus};
 use tempfile::TempDir;
@@ -38,7 +39,7 @@ use common::selection_fingerprint::{
     OwnershipPower, SelectionFingerprint, SelectionPower, row_management_events,
     selection_ran_at_the_last_iteration,
 };
-use common::{StubComm, fresh_system_and_setup_with, positive};
+use common::{StubComm, fresh_system_and_setup_with, positive, truncated_toy_case};
 
 fn toy_case() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/1dtoy")
@@ -533,8 +534,9 @@ impl RestoredStore {
 
 /// A resume leg on `1dtoy`: the config edit every run of the leg takes, the
 /// iteration `k` the interrupted run stops at, the iteration `n` the other
-/// runs stop at, the thread counts before and after the resume, and the policy
-/// the runs warm-start from. Each run stops on its iteration limit.
+/// runs stop at, the thread counts before and after the resume, the policy
+/// the runs warm-start from and the policy they declare as `policy.boundary`.
+/// Each run stops on its iteration limit.
 #[derive(Clone, Copy)]
 struct Leg {
     forward_passes: u32,
@@ -544,6 +546,7 @@ struct Leg {
     threads_before: usize,
     threads_after: usize,
     source: Option<SourceRun>,
+    boundary: Option<BoundarySource>,
 }
 
 /// The run whose checkpoint a leg warm-starts from.
@@ -553,13 +556,27 @@ struct SourceRun {
     configure: fn(&mut Config),
 }
 
+/// The run whose pool `stages - 1` a leg declares as `policy.boundary` on the
+/// 1dtoy case cut to its first `stages` stages.
+#[derive(Clone, Copy)]
+struct BoundarySource {
+    run: SourceRun,
+    stages: usize,
+}
+
 impl Leg {
     fn resumed_iterations(&self) -> RangeInclusive<u64> {
         u64::from(self.k) + 1..=u64::from(self.n)
     }
 
-    fn setup(&self, configure: fn(&mut Config), iteration_limit: u32) -> (System, StudySetup) {
-        fresh_system_and_setup_with(&toy_case(), |config| {
+    fn setup(
+        &self,
+        case: &Path,
+        boundary: Option<&BoundaryPolicy>,
+        configure: fn(&mut Config),
+        iteration_limit: u32,
+    ) -> (System, StudySetup) {
+        fresh_system_and_setup_with(case, |config| {
             config.training.selection = Some(TrainingSelection::Sampled {
                 forward_passes: self.forward_passes,
             });
@@ -567,6 +584,9 @@ impl Leg {
                 limit: iteration_limit,
             }]);
             configure(config);
+            if let Some(boundary) = boundary {
+                config.policy.boundary = Some(boundary.clone());
+            }
         })
     }
 }
@@ -581,6 +601,7 @@ const SELECTION_OFF: Leg = Leg {
     threads_before: 1,
     threads_after: 1,
     source: None,
+    boundary: None,
 };
 
 /// A source's checkpoint and the rows each of its pools holds.
@@ -591,7 +612,7 @@ struct TrainedSource {
 }
 
 fn train_source(leg: &Leg, source: SourceRun) -> TrainedSource {
-    let (system, mut setup) = leg.setup(source.configure, source.iterations);
+    let (system, mut setup) = leg.setup(&toy_case(), None, source.configure, source.iterations);
     let result = train(&mut setup, None);
     assert_eq!(result.iterations, u64::from(source.iterations));
     let output = tempfile::tempdir().expect("tempdir");
@@ -622,13 +643,58 @@ fn load(kind: FullFcfLoadKind, policy_dir: &Path, system: &System, setup: &mut S
         .apply_to_training(setup);
 }
 
+/// The case a leg with a boundary trains on, the `policy.boundary` it declares
+/// and the rows of the source pool that boundary is.
+struct BoundaryCase {
+    _source: TrainedSource,
+    case: TempDir,
+    policy: BoundaryPolicy,
+    rows: u32,
+}
+
+impl BoundaryCase {
+    fn new(leg: &Leg, boundary: BoundarySource) -> Self {
+        let source = train_source(leg, boundary.run);
+        let policy = BoundaryPolicy {
+            path: source.policy_dir.to_str().expect("utf-8 path").to_string(),
+            strict: false,
+        };
+        Self {
+            rows: source.rows[boundary.stages - 1],
+            case: truncated_toy_case(boundary.stages),
+            policy,
+            _source: source,
+        }
+    }
+}
+
+/// The case a leg's runs train on and the boundary they declare.
+fn case_and_boundary(boundary: Option<&BoundaryCase>) -> (PathBuf, Option<&BoundaryPolicy>) {
+    boundary.map_or_else(
+        || (toy_case(), None),
+        |boundary| (boundary.case.path().to_path_buf(), Some(&boundary.policy)),
+    )
+}
+
+/// Replaces the terminal pool with the boundary's, after the policy load, as
+/// the CLI does.
+fn inject_boundary(boundary: Option<&BoundaryCase>, system: &System, setup: &mut StudySetup) {
+    let Some(boundary) = boundary else { return };
+    let reconciled =
+        reconcile_boundary_policy(setup, system, &boundary.policy, boundary.case.path())
+            .expect("the boundary reconciles");
+    inject_boundary_cuts(setup, &reconciled.cuts).expect("the boundary injects");
+}
+
 /// A leg's setup stopping at `iteration_limit`, warm-started from `source`.
 fn leg_setup(
     leg: &Leg,
     iteration_limit: u32,
     source: Option<&TrainedSource>,
+    boundary: Option<&BoundaryCase>,
 ) -> (System, StudySetup) {
-    let (system, mut setup) = leg.setup(leg.configure, iteration_limit);
+    let (case, policy) = case_and_boundary(boundary);
+    let (system, mut setup) = leg.setup(&case, policy, leg.configure, iteration_limit);
     if let Some(source) = source {
         load(
             FullFcfLoadKind::WarmStart,
@@ -637,6 +703,7 @@ fn leg_setup(
             &mut setup,
         );
     }
+    inject_boundary(boundary, &system, &mut setup);
     (system, setup)
 }
 
@@ -658,9 +725,12 @@ struct LegRuns {
 /// resume path and trains to `n`.
 fn run_leg(leg: Leg) -> LegRuns {
     let source = leg.source.map(|source| train_source(&leg, source));
+    let boundary = leg
+        .boundary
+        .map(|boundary| BoundaryCase::new(&leg, boundary));
     let iterations = leg.resumed_iterations();
 
-    let (full_system, mut full_setup) = leg_setup(&leg, leg.n, source.as_ref());
+    let (full_system, mut full_setup) = leg_setup(&leg, leg.n, source.as_ref(), boundary.as_ref());
     let (full_result, full_events) = train_collecting(&mut full_setup, leg.threads_before);
     assert_eq!(full_result.iterations, u64::from(leg.n));
     let uninterrupted = RunOutcome::capture(
@@ -671,7 +741,7 @@ fn run_leg(leg: Leg) -> LegRuns {
         &iterations,
     );
 
-    let (system, mut first_setup) = leg_setup(&leg, leg.k, source.as_ref());
+    let (system, mut first_setup) = leg_setup(&leg, leg.k, source.as_ref(), boundary.as_ref());
     let first_result = train_in_pool(&mut first_setup, leg.threads_before, None);
     assert_eq!(first_result.iterations, u64::from(leg.k));
     let at_k = SelectionFingerprint::capture(&first_setup, &first_result);
@@ -687,13 +757,15 @@ fn run_leg(leg: Leg) -> LegRuns {
     )
     .expect("write_checkpoint must succeed");
 
-    let (system, mut resumed_setup) = leg.setup(leg.configure, leg.n);
+    let (case, policy) = case_and_boundary(boundary.as_ref());
+    let (system, mut resumed_setup) = leg.setup(&case, policy, leg.configure, leg.n);
     load(
         FullFcfLoadKind::Resume,
         &policy_dir,
         &system,
         &mut resumed_setup,
     );
+    inject_boundary(boundary.as_ref(), &system, &mut resumed_setup);
     let interrupted = read_policy_checkpoint(&policy_dir).expect("read_policy_checkpoint");
     let restored = RestoredStore::capture(&resumed_setup, &interrupted, leg.forward_passes);
     let (resumed_result, resumed_events) = train_collecting(&mut resumed_setup, leg.threads_after);
@@ -717,11 +789,27 @@ fn run_leg(leg: Leg) -> LegRuns {
             .iter()
             .map(|pool| pool.warm_start_count)
             .collect(),
-        expected_prefix: source.map_or_else(
-            || vec![0; first_setup.fcf.pools.len()],
-            |source| source.rows,
-        ),
+        expected_prefix: expected_prefix(&first_setup, source.as_ref(), boundary.as_ref()),
     }
+}
+
+/// The rows each pool holds before the run's first iteration: the warm-start
+/// source's pools, with the boundary's rows in the terminal pool.
+fn expected_prefix(
+    setup: &StudySetup,
+    source: Option<&TrainedSource>,
+    boundary: Option<&BoundaryCase>,
+) -> Vec<u32> {
+    let mut prefix = source.map_or_else(|| vec![0; setup.fcf.pools.len()], |s| s.rows.clone());
+    if let Some(boundary) = boundary {
+        let terminal = setup
+            .inputs
+            .node_graph
+            .terminal_pool(setup.num_stages())
+            .expect("a terminal pool");
+        prefix[terminal] = boundary.rows;
+    }
+    prefix
 }
 
 /// The `PolicyPoolSummary` events after iteration `after`, with the wall-clock
@@ -1017,6 +1105,50 @@ fn assert_a_slot_bound_again_after_the_checkpoint(runs: &LegRuns) {
     );
 }
 
+/// Power of a boundary leg: every run holds the boundary's rows in its
+/// terminal pool.
+fn assert_the_boundary_rows_are_loaded(runs: &LegRuns) {
+    let terminal = runs
+        .expected_prefix
+        .iter()
+        .position(|&rows| rows > 0)
+        .expect("power: the boundary holds no row");
+    for (which, fingerprint) in [
+        ("uninterrupted", &runs.uninterrupted.fingerprint),
+        ("interrupted", &runs.at_k),
+        ("resumed", &runs.resumed.fingerprint),
+    ] {
+        let loaded = fingerprint.ownership[terminal]
+            .roles
+            .iter()
+            .filter(|role| role.origin == SlotOrigin::Prefix)
+            .count();
+        assert_eq!(
+            loaded,
+            usize::try_from(runs.expected_prefix[terminal]).unwrap(),
+            "power: boundary rows in the terminal pool of the {which} run"
+        );
+    }
+}
+
+/// Power of a boundary leg that counts bindings: a boundary row bound by
+/// iteration `k`, so a clock restarted at the resume would show.
+fn assert_a_boundary_row_bound_before_the_checkpoint(runs: &LegRuns) {
+    let terminal = runs
+        .expected_prefix
+        .iter()
+        .position(|&rows| rows > 0)
+        .expect("power: the boundary holds no row");
+    assert!(
+        runs.at_k.binding[terminal]
+            .last_active_iter
+            .iter()
+            .any(|&iteration| iteration > 0),
+        "power: no boundary row bound by iteration {}",
+        runs.leg.k
+    );
+}
+
 const CHECK_FREQUENCY: u32 = 2;
 const WINDOW: u32 = 2;
 const BUDGET: u32 = 6;
@@ -1059,6 +1191,7 @@ const LEVEL1: Leg = Leg {
     threads_before: 1,
     threads_after: 1,
     source: None,
+    boundary: None,
 };
 
 #[test]
@@ -1157,4 +1290,55 @@ fn resumed_run_equals_the_uninterrupted_run_with_several_forward_passes() {
             ..SELECTION_OFF
         }),
     );
+}
+
+const BOUNDARY: BoundarySource = BoundarySource {
+    run: SourceRun {
+        iterations: 2,
+        configure: level1,
+    },
+    stages: 3,
+};
+
+/// Later and longer than `LEVEL1`: on the 3-stage case a selection pass flips a
+/// flag after the checkpoint on every backend only from `k` 5.
+const BOUNDARY_LEG: Leg = Leg {
+    k: 5,
+    n: 12,
+    boundary: Some(BOUNDARY),
+    ..LEVEL1
+};
+
+#[test]
+fn level1_with_a_boundary_resume_equals_the_uninterrupted_run() {
+    let runs = run_leg(BOUNDARY_LEG);
+    assert_the_boundary_rows_are_loaded(&runs);
+    assert_selection_changed_a_flag_after_the_checkpoint(&runs);
+    finish("level1 with a boundary", &runs);
+}
+
+#[test]
+fn level1_with_a_budget_and_a_boundary_resume_equals_the_uninterrupted_run() {
+    let runs = run_leg(Leg {
+        configure: level1_with_a_budget,
+        ..BOUNDARY_LEG
+    });
+    assert_the_boundary_rows_are_loaded(&runs);
+    assert_a_boundary_row_bound_before_the_checkpoint(&runs);
+    assert_selection_changed_a_flag_after_the_checkpoint(&runs);
+    assert_the_budget_evicted_a_slot_generated_before_the_checkpoint(&runs);
+    finish("budget with a boundary", &runs);
+}
+
+#[test]
+fn dynamic_with_a_boundary_resume_equals_the_uninterrupted_run() {
+    let runs = run_leg(Leg {
+        configure: dynamic,
+        ..BOUNDARY_LEG
+    });
+    assert_the_boundary_rows_are_loaded(&runs);
+    assert_a_boundary_row_bound_before_the_checkpoint(&runs);
+    assert_row_management_ran(&runs);
+    assert_a_slot_bound_again_after_the_checkpoint(&runs);
+    finish("dynamic with a boundary", &runs);
 }

@@ -23,6 +23,7 @@ use novomodelo_solver::ActiveSolver;
 use novomodelo_stochastic::{
     ClassSchemes, OpeningTreeInputs, StochasticContext, build_stochastic_context,
 };
+use tempfile::TempDir;
 
 pub mod anticipated_structural_assertions;
 pub mod builders;
@@ -267,6 +268,39 @@ pub fn fresh_setup_with_openings(
     let tmp =
         copy_case_with_stage_field(case_dir, "num_openings", &serde_json::json!(num_openings));
     fresh_setup_with(tmp.path(), mutate)
+}
+
+pub fn copy_toy_case(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).expect("create dir");
+    for entry in std::fs::read_dir(src).expect("read dir") {
+        let entry = entry.expect("dir entry");
+        let target = dst.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            copy_toy_case(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).expect("copy file");
+        }
+    }
+}
+
+/// 1dtoy cut to its first `stages` stages, so its boundary date is the end of
+/// stage `stages - 1`: the date the 1dtoy pool with that index is priced at.
+pub fn truncated_toy_case(stages: usize) -> TempDir {
+    let case = TempDir::new().expect("tempdir");
+    copy_toy_case(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/1dtoy"),
+        case.path(),
+    );
+    let stages_file = case.path().join("stages.json");
+    let mut document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&stages_file).expect("read stages"))
+            .expect("parse stages");
+    document["stages"]
+        .as_array_mut()
+        .expect("stages array")
+        .truncate(stages);
+    std::fs::write(&stages_file, document.to_string()).expect("write stages");
+    case
 }
 
 /// Recursively copies `src` into `dst`, skipping any `output` subdirectory

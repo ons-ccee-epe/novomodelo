@@ -244,6 +244,14 @@ const ROWS: &[ParityRow] = &[
         fragment: "resume needs a whole checkpoint",
     },
     ParityRow {
+        name: "resume_over_a_changed_boundary",
+        base_case: "1dtoy",
+        mutate: resume_over_a_changed_boundary,
+        outcome: Outcome::PlainRefusal,
+        fragment: "resume needs the policy.boundary and modeling.cost_scale_factor the \
+                   interrupted run used",
+    },
+    ParityRow {
         name: "simulation_only_policy_from_another_version",
         base_case: "1dtoy",
         mutate: simulation_only_policy_from_another_version,
@@ -635,6 +643,36 @@ fn resume_from_a_partial_policy(case: &Path) {
     set_policy_path(case, "policy.partial");
 }
 
+fn set_policy_boundary(case: &Path, path: &str) {
+    edit_json(&case.join("config.json"), |config| {
+        config["policy"]["boundary"] = json!({ "path": path });
+    });
+}
+
+/// A two-stage study resumable from a checkpoint written over the
+/// `policy.boundary` of a longer run, with the policy of a shorter run beside
+/// it, whose terminal rows differ.
+fn interrupted_over_a_boundary(case: &Path) {
+    train_iterations(case, 4);
+    fs::rename(case.join("output/policy"), case.join("boundary_source")).unwrap();
+    train_iterations(case, 2);
+    fs::rename(case.join("output/policy"), case.join("boundary_changed")).unwrap();
+    edit_json(&case.join("stages.json"), |stages| {
+        stages["stages"].as_array_mut().unwrap().truncate(2);
+    });
+    set_policy_boundary(case, "boundary_source");
+    train_iterations(case, 1);
+    set_policy_mode(case, "resume");
+    edit_json(&case.join("config.json"), |config| {
+        config["training"]["stopping_rules"] = json!([{"type": "iteration_limit", "limit": 2}]);
+    });
+}
+
+fn resume_over_a_changed_boundary(case: &Path) {
+    interrupted_over_a_boundary(case);
+    set_policy_boundary(case, "boundary_changed");
+}
+
 fn simulation_only_policy_from_another_version(case: &Path) {
     train_one_iteration(case);
     restamp_policy_version(&case.join("output/policy"), "0.0.1");
@@ -892,6 +930,26 @@ fn validate_and_run_report_identically() {
             violations.join("; ")
         );
     }
+}
+
+#[test]
+fn a_resume_over_the_boundary_it_was_interrupted_over_validates() {
+    let dir = TempDir::new().unwrap();
+    copy_dir_recursive(&case_dir("1dtoy"), dir.path());
+    interrupted_over_a_boundary(dir.path());
+
+    let validate = novomodelo()
+        .arg("validate")
+        .arg(dir.path())
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        validate.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&validate.stdout)
+    );
 }
 
 #[test]
