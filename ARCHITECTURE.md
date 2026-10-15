@@ -67,8 +67,9 @@ SolverInterface`).
 
 - **[`novomodelo-sddp`](crates/novomodelo-sddp/README.md)** — The Stochastic Dual
   Dynamic Programming algorithm: forward-pass scenario simulation, backward-pass
-  Benders cut generation, cut management (Level-1/LML1/dominated-cut pruning
-  and Dynamic Cut Selection), CVaR risk measures, convergence monitoring,
+  Benders cut generation, cut management (cut
+  selection: the `level1` method, the lazy `dynamic` method and an active-cut
+  budget), CVaR risk measures, convergence monitoring,
   policy warm-start/resume, and the post-training simulation pipeline. Depends
   on all four infrastructure/I-O crates below it — `novomodelo-core` (data model),
   `novomodelo-io` (loading case data and writing results), `novomodelo-solver` (LP
