@@ -23,6 +23,18 @@
 # L2: mpiexec -n 2 --threads 2
 # L3: sbatch -N 2 -n 4           (mpiexec -n 4 --threads 1)
 #
+# The R cases resume the selection run at another rank count. A partial run
+# trains a copy of the selection case stopped at iteration RESUME_AT and is not
+# compared; a resume run continues its final checkpoint, written at one rank
+# count, at another rank count up to L1's iteration limit, and is compared
+# against L1 by compare_resumed_outputs and by its per-scenario solver
+# counters.
+#
+# R0: mpiexec -n 1               (partial run)
+# R1: mpiexec -n 2 --threads 2   (resumes R0's checkpoint)
+# R2: sbatch -N 2 -n 2           (mpiexec -n 2; partial run)
+# R3: mpiexec -n 1 --threads 1   (resumes R2's checkpoint)
+#
 # The S cases run simulation only, from T1's policy, on a copy of the case
 # whose stages 4 to 7 have their single block split in two. The stored bases
 # of those stages no longer fit their LP and are not used; the others are.
@@ -38,8 +50,9 @@
 # Usage:
 #   /shared/run-tests.sh [--mode reduced|full]
 #
-#   reduced   T1, T2, L1, L2, S1 and S2 only (mpiexec, no sbatch / SLURM cluster required).
-#   full      every T, L and S case (default — preserves prior behavior).
+#   reduced   T1, T2, L1, L2, R0, R1, S1 and S2 only (mpiexec, no sbatch / SLURM
+#             cluster required).
+#   full      every T, L, R and S case (default — preserves prior behavior).
 #
 # Prerequisites (satisfied by the Docker image):
 #   - /shared/novomodelo-mpi   (novomodelo binary built with --features mpi)
@@ -55,6 +68,8 @@ readonly NOVOMODELO_BIN="/shared/novomodelo-mpi"
 readonly CASE_DIR="/shared/4ree"
 readonly TIMEOUT=120
 readonly WORK_DIR="/shared/work"
+# Iteration whose final checkpoint the R cases resume.
+readonly RESUME_AT=128
 
 # Set by parse_mode(); read by main() and print_summary().
 MODE="full"
@@ -74,11 +89,14 @@ usage() {
     cat <<'USAGE'
 Usage: run-tests.sh [--mode reduced|full]
 
-  reduced   Run T1, T2, L1, L2, S1 and S2 (mpiexec only); no sbatch.
-  full      Run T1 through T5, L1 through L3 and S1 through S4 (default).
+  reduced   Run T1, T2, L1, L2, R0, R1, S1 and S2 (mpiexec only); no sbatch.
+  full      Run T1 through T5, L1 through L3, R0 through R3 and S1 through S4
+            (default).
 
   The L cases train a copy of the case with cut selection added to its
   config.json (level1, check_frequency 2, max_active_per_stage 100).
+  R0 and R2 stop that copy at an earlier iteration; R1 and R3 resume their
+  checkpoint at another rank count and are compared against L1.
 USAGE
 }
 
@@ -427,6 +445,268 @@ PYEOF
 }
 
 # ---------------------------------------------------------------------------
+# compare_resumed_outputs <baseline_dir> <test_dir> <k>
+#
+# Compares a run resumed from the checkpoint of iteration <k> against the
+# uninterrupted run in <baseline_dir>. Every file under policy/ and training/
+# is classified by the RESUMED_ROWS table (first match wins; a path matching
+# no rule FAILs as unclassified). The policy payloads must have equal path
+# sets and be byte-identical. The per-iteration tables are compared on their
+# rows with iteration > <k>, index-aligned, bit-exact except `lower_bound` and
+# `gap_percent`, which must agree within 1e-6 relative
+# (|a - b| <= 1e-6 * max(1, |a|, |b|)); a row with iteration <= <k> is not
+# compared, but must name an iteration the baseline holds. simulation/ is
+# compared by compare_outputs_bitwise. Prints the largest relative
+# lower-bound difference and exits 1 naming the first mismatch.
+# ---------------------------------------------------------------------------
+compare_resumed_outputs() {
+    local baseline_dir="$1"
+    local test_dir="$2"
+    local k="$3"
+    local exit_code=0
+    python3 - "${baseline_dir}" "${test_dir}" "${k}" <<'PYEOF' || exit_code=$?
+import fnmatch
+import os
+import struct
+import sys
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+baseline_dir = sys.argv[1]
+test_dir = sys.argv[2]
+k = int(sys.argv[3])
+
+RELATIVE_TOLERANCE = 1e-6
+TOLERANT_COLUMNS = {"lower_bound", "gap_percent"}
+
+# Ordered (fnmatch pattern, class, detail) rules -- first match wins, and `*`
+# also matches `/`. Classes:
+#   bytes         byte-identical; detail unused
+#   rows-after-k  rows with iteration > k compared; detail is
+#                 (exempt columns, the key, iteration first, that an earlier
+#                 row must share with a baseline row)
+#   table         every row compared; detail is the exempt columns
+#   exempt        not compared; detail is the reason
+RESUMED_ROWS = [
+    ("policy/manifest.bin", "exempt", "holds created_at"),
+    ("policy/cuts/*.bin", "bytes", None),
+    ("policy/basis/*.bin", "bytes", None),
+    ("policy/states/*.bin", "bytes", None),
+    (
+        "training/convergence.parquet",
+        "rows-after-k",
+        ({"time_forward_ms", "time_backward_ms", "time_total_ms"}, ("iteration",)),
+    ),
+    (
+        "training/cut_selection/iterations.parquet",
+        "rows-after-k",
+        ({"selection_time_ms"}, ("iteration", "pool_id")),
+    ),
+    ("training/_SUCCESS", "bytes", None),
+    (
+        "training/metadata.json",
+        "exempt",
+        "wall clock, rank layout, policy mode and the solve counts of the run itself",
+    ),
+    ("training/hydro_models.json", "bytes", None),
+    ("training/model_provenance.json", "bytes", None),
+    ("training/scaling_report.json", "bytes", None),
+    ("training/dictionaries/codes.json", "exempt", "holds generated_at"),
+    ("training/dictionaries/*.csv", "bytes", None),
+    ("training/dictionaries/*.parquet", "table", set()),
+    ("training/solver/iterations.parquet", "exempt", "rows stamped with rank and worker"),
+    (
+        "training/solver/retry_histogram.parquet",
+        "exempt",
+        "its lower_bound rows count retries of the lower-bound LP, which a resume rebuilds cold",
+    ),
+    ("training/timing/*", "exempt", "wall clock"),
+]
+
+
+def fail(message):
+    print(f"FAIL: {message}")
+    sys.exit(1)
+
+
+def classify(rel_path):
+    for pattern, cls, detail in RESUMED_ROWS:
+        if fnmatch.fnmatchcase(rel_path, pattern):
+            return cls, detail
+    return None
+
+
+def files_under(root, top):
+    found = set()
+    for dirpath, _, filenames in os.walk(os.path.join(root, top)):
+        for name in filenames:
+            found.add(os.path.relpath(os.path.join(dirpath, name), root).replace(os.sep, "/"))
+    return found
+
+
+def compare_bytes(rel_path):
+    with open(os.path.join(baseline_dir, rel_path), "rb") as f:
+        baseline_bytes = f.read()
+    with open(os.path.join(test_dir, rel_path), "rb") as f:
+        test_bytes = f.read()
+    if baseline_bytes == test_bytes:
+        return
+    first = next(
+        (i for i, (a, b) in enumerate(zip(baseline_bytes, test_bytes)) if a != b),
+        min(len(baseline_bytes), len(test_bytes)),
+    )
+    fail(
+        f"{rel_path}: differs at byte {first} "
+        f"(baseline {len(baseline_bytes)} bytes, test {len(test_bytes)} bytes)"
+    )
+
+
+def read_table(root, rel_path):
+    return pq.ParquetFile(os.path.join(root, rel_path)).read()
+
+
+def bits_of(value, byte_width):
+    return struct.pack(">d" if byte_width == 8 else ">f", value)
+
+
+largest_lower_bound_difference = None
+
+
+def compare_rows(rel_path, baseline_table, test_table, exempt_columns):
+    global largest_lower_bound_difference
+    baseline_cols = set(baseline_table.column_names)
+    test_cols = set(test_table.column_names)
+    if baseline_cols != test_cols:
+        fail(
+            f"{rel_path}: column set mismatch "
+            f"(missing={sorted(baseline_cols - test_cols)}, "
+            f"extra={sorted(test_cols - baseline_cols)})"
+        )
+    if baseline_table.num_rows != test_table.num_rows:
+        fail(
+            f"{rel_path}: compared row count mismatch "
+            f"(baseline={baseline_table.num_rows}, test={test_table.num_rows})"
+        )
+    iterations = (
+        baseline_table.column("iteration").to_pylist()
+        if "iteration" in baseline_cols
+        else [None] * baseline_table.num_rows
+    )
+    for col_name in sorted(baseline_cols - set(exempt_columns)):
+        field_type = baseline_table.schema.field(col_name).type
+        is_float = pa.types.is_floating(field_type)
+        byte_width = 4 if pa.types.is_float32(field_type) else 8
+        tolerant = is_float and col_name in TOLERANT_COLUMNS
+        baseline_values = baseline_table.column(col_name).to_pylist()
+        test_values = test_table.column(col_name).to_pylist()
+        for row, (a, b) in enumerate(zip(baseline_values, test_values)):
+            if a is None or b is None:
+                same = a is None and b is None
+            elif tolerant:
+                scale = max(1.0, abs(a), abs(b))
+                same = abs(a - b) <= RELATIVE_TOLERANCE * scale
+                if same and col_name == "lower_bound":
+                    relative = abs(a - b) / scale
+                    if (
+                        largest_lower_bound_difference is None
+                        or relative > largest_lower_bound_difference[0]
+                    ):
+                        largest_lower_bound_difference = (relative, iterations[row])
+            elif is_float:
+                same = bits_of(a, byte_width) == bits_of(b, byte_width)
+            else:
+                same = a == b
+            if not same:
+                fail(
+                    f"{rel_path}: column '{col_name}' differs at iteration "
+                    f"{iterations[row]} (compared row {row}; baseline={a!r}, test={b!r})"
+                )
+
+
+def rows_after_k(table):
+    return table.take(
+        [i for i, iteration in enumerate(table.column("iteration").to_pylist()) if iteration > k]
+    )
+
+
+def compare_rows_after_k(rel_path, exempt_columns, key_columns):
+    baseline_table = read_table(baseline_dir, rel_path)
+    test_table = read_table(test_dir, rel_path)
+    for name, table in (("baseline", baseline_table), ("test", test_table)):
+        for column in key_columns:
+            if column not in table.column_names:
+                fail(f"{rel_path}: column '{column}' missing from the {name} output")
+    baseline_keys = set(zip(*(baseline_table.column(c).to_pylist() for c in key_columns)))
+    test_keys = zip(*(test_table.column(c).to_pylist() for c in key_columns))
+    for key in test_keys:
+        if key[0] <= k and key not in baseline_keys:
+            fail(f"{rel_path}: row {dict(zip(key_columns, key))} is absent from the baseline")
+    baseline_after = rows_after_k(baseline_table)
+    if baseline_after.num_rows == 0:
+        fail(f"{rel_path}: the baseline holds no row after iteration {k}")
+    compare_rows(rel_path, baseline_after, rows_after_k(test_table), exempt_columns)
+
+
+all_paths = sorted(
+    files_under(baseline_dir, "policy")
+    | files_under(test_dir, "policy")
+    | files_under(baseline_dir, "training")
+    | files_under(test_dir, "training")
+)
+if not any(fnmatch.fnmatchcase(p, "policy/cuts/*.bin") for p in all_paths):
+    fail("policy/cuts: no file in either output")
+
+compared = 0
+for rel_path in all_paths:
+    rule = classify(rel_path)
+    if rule is None:
+        fail(f"{rel_path}: unclassified output file")
+    cls, detail = rule
+    if cls == "exempt":
+        continue
+    for name, root in (("baseline", baseline_dir), ("test", test_dir)):
+        if not os.path.isfile(os.path.join(root, rel_path)):
+            fail(f"{rel_path}: missing from the {name} output")
+    if cls == "bytes":
+        compare_bytes(rel_path)
+    elif cls == "rows-after-k":
+        compare_rows_after_k(rel_path, *detail)
+    else:
+        compare_rows(
+            rel_path,
+            read_table(baseline_dir, rel_path),
+            read_table(test_dir, rel_path),
+            detail,
+        )
+    compared += 1
+
+print(f"INFO: {compared} policy and training file(s) match after iteration {k}")
+if largest_lower_bound_difference is not None:
+    relative, iteration = largest_lower_bound_difference
+    print(
+        f"INFO: largest relative lower_bound difference after iteration {k}: "
+        f"{relative:.3e} (iteration {iteration})"
+    )
+sys.exit(0)
+PYEOF
+    if [[ "${exit_code}" -ne 0 ]]; then
+        return "${exit_code}"
+    fi
+
+    # compare_outputs_bitwise classifies paths relative to the directory it is
+    # given, so it reads each run's simulation/ through a view holding only it.
+    local views
+    views="$(mktemp -d)"
+    mkdir -p "${views}/baseline" "${views}/test"
+    ln -s "${baseline_dir}/simulation" "${views}/baseline/simulation"
+    ln -s "${test_dir}/simulation" "${views}/test/simulation"
+    compare_outputs_bitwise "${views}/baseline" "${views}/test" || exit_code=$?
+    rm -rf "${views}"
+    return "${exit_code}"
+}
+
+# ---------------------------------------------------------------------------
 # assert_selection_power <output_dir>
 #
 # Reads training/cut_selection/iterations.parquet under <output_dir> and
@@ -489,12 +769,24 @@ assert_selection_power_of_case() {
 }
 
 # ---------------------------------------------------------------------------
+# run_comparator <comparator> <baseline_dir> <test_dir>
+#
+# Runs <comparator>: a function name, then any arguments the function takes
+# after the two directories (as in "compare_resumed_outputs 128").
+# ---------------------------------------------------------------------------
+run_comparator() {
+    local -a words
+    read -r -a words <<<"$1"
+    "${words[0]}" "$2" "$3" "${words[@]:1}"
+}
+
+# ---------------------------------------------------------------------------
 # assert_compare_exit <label> <baseline_dir> <case_dir> <expected_exit> [comparator]
 #
-# Runs <comparator> (default compare_outputs_bitwise) and asserts its exit
-# code matches expectation, counting the case in SELF_CHECK_CASES and
-# recording any mismatch in SELF_CHECK_FAILURES (both used by
-# run_self_check).
+# Runs <comparator> (default compare_outputs_bitwise) through run_comparator
+# and asserts its exit code matches expectation, counting the case in
+# SELF_CHECK_CASES and recording any mismatch in SELF_CHECK_FAILURES (both
+# used by run_self_check).
 # ---------------------------------------------------------------------------
 assert_compare_exit() {
     local label="$1"
@@ -506,7 +798,7 @@ assert_compare_exit() {
 
     SELF_CHECK_CASES=$((SELF_CHECK_CASES + 1))
     echo "--- self-check case: ${label} ---"
-    "${comparator}" "${baseline_dir}" "${case_dir}" || actual_exit=$?
+    run_comparator "${comparator}" "${baseline_dir}" "${case_dir}" || actual_exit=$?
 
     if [[ "${actual_exit}" -eq "${expected_exit}" ]]; then
         echo "[self-check:${label}] PASS (exit ${actual_exit}, expected ${expected_exit})"
@@ -528,7 +820,11 @@ assert_compare_exit() {
 # compare_solver_counters: rows differing only in `rank`, `worker_id`, a
 # `*_ms` value and row order PASS, and one differing `basis_offered` FAILs.
 # Then exercises assert_selection_power: a selection file meeting all four
-# conditions PASSes, and one whose `cuts_reactivated` sums to 0 FAILs.
+# conditions PASSes, and one whose `cuts_reactivated` sums to 0 FAILs. Then
+# exercises compare_resumed_outputs with k = 2: identical runs PASS, one
+# differing byte in a cuts file FAILs, a lower bound of iteration 3 differing
+# by 1e-9 relative PASSes and by 1e-5 FAILs, a differing row at iteration 2
+# PASSes, and a missing basis file FAILs.
 # Aborts (exit 1) if any case's exit code does not match its expectation.
 # ---------------------------------------------------------------------------
 run_self_check() {
@@ -683,6 +979,76 @@ write_selection_iterations(os.path.join(root, "selection_power"), [None, 1, 0])
 
 # selection_no_reactivation: `cuts_reactivated` sums to 0 -> expect FAIL.
 write_selection_iterations(os.path.join(root, "selection_no_reactivation"), [None, 0, 0])
+
+
+def write_bytes(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data)
+
+
+RESUME_LOWER_BOUNDS = [1.0e6, 2.0e6, 3.0e6, 4.0e6]
+
+
+def write_resumed_run(
+    base, iterations=(1, 2, 3, 4), lower_bounds=None, cuts=b"\x01\x02\x03", basis=True
+):
+    # The comparator is run with k = 2, so only iterations 3 and 4 are compared.
+    lower_bounds = lower_bounds or [RESUME_LOWER_BOUNDS[i - 1] for i in iterations]
+    write_bytes(os.path.join(base, "policy", "manifest.bin"), b"manifest")
+    write_bytes(os.path.join(base, "policy", "cuts", "000.bin"), cuts)
+    if basis:
+        write_bytes(os.path.join(base, "policy", "basis", "000.bin"), b"\x04\x05")
+    write_bytes(os.path.join(base, "policy", "states", "001.bin"), b"\x06")
+    write(
+        os.path.join(base, "training", "convergence.parquet"),
+        {
+            "iteration": pa.array(iterations, type=pa.int32()),
+            "lower_bound": lower_bounds,
+            "upper_bound": [5.0e6] * len(iterations),
+            "gap_percent": [1.0] * len(iterations),
+            "time_total_ms": [7] * len(iterations),
+        },
+    )
+    write(
+        os.path.join(base, "training", "cut_selection", "iterations.parquet"),
+        {
+            "iteration": pa.array(iterations, type=pa.int32()),
+            "pool_id": pa.array([1] * len(iterations), type=pa.int32()),
+            "cuts_deactivated": pa.array([2] * len(iterations), type=pa.int32()),
+            "selection_time_ms": [0.5] * len(iterations),
+        },
+    )
+    write(
+        os.path.join(base, "simulation", "costs", "data.parquet"),
+        {"scenario_id": [0], "value": [1.0]},
+    )
+
+
+# resume_identical: the uninterrupted run itself -> expect PASS.
+write_resumed_run(os.path.join(root, "resume_baseline"))
+write_resumed_run(os.path.join(root, "resume_identical"))
+
+# resume_cuts_byte: one byte of a cuts file differs -> expect FAIL.
+write_resumed_run(os.path.join(root, "resume_cuts_byte"), cuts=b"\x01\x02\x04")
+
+# resume_lower_bound_1e-9 / 1e-5: the lower bound of iteration 3 differs by
+# that relative amount -> expect PASS / FAIL.
+for label, relative in (("1e-9", 1e-9), ("1e-5", 1e-5)):
+    bounds = list(RESUME_LOWER_BOUNDS)
+    bounds[2] *= 1.0 + relative
+    write_resumed_run(os.path.join(root, f"resume_lower_bound_{label}"), lower_bounds=bounds)
+
+# resume_early_row: the file starts at iteration 2, whose lower bound differs
+# -> expect PASS.
+write_resumed_run(
+    os.path.join(root, "resume_early_row"),
+    iterations=(2, 3, 4),
+    lower_bounds=[9.0e6] + RESUME_LOWER_BOUNDS[2:],
+)
+
+# resume_missing_basis: the basis file is missing -> expect FAIL.
+write_resumed_run(os.path.join(root, "resume_missing_basis"), basis=False)
 PYEOF
 
     SELF_CHECK_CASES=0
@@ -701,6 +1067,14 @@ PYEOF
         assert_selection_power_of_case
     assert_compare_exit "selection_no_reactivation" "" "${root}/selection_no_reactivation" 1 \
         assert_selection_power_of_case
+    local resume_case expected_exit
+    for resume_case in identical:0 cuts_byte:1 lower_bound_1e-9:0 lower_bound_1e-5:1 \
+        early_row:0 missing_basis:1; do
+        expected_exit="${resume_case##*:}"
+        resume_case="${resume_case%:*}"
+        assert_compare_exit "resume_${resume_case}" "${root}/resume_baseline" \
+            "${root}/resume_${resume_case}" "${expected_exit}" "compare_resumed_outputs 2"
+    done
 
     rm -rf "${root}"
 
@@ -821,6 +1195,81 @@ PYEOF
 }
 
 # ---------------------------------------------------------------------------
+# prepare_resume_cases <selection_case> <partial_case> <resume_case>
+#
+# Copies <selection_case> to <partial_case> and <resume_case>. The partial
+# copy's iteration limit becomes RESUME_AT and nothing else changes; the
+# resume copy sets policy.mode to "resume" and keeps the limit, since
+# iteration numbers are absolute across a resume. Exits 1 unless
+# the selection case has exactly one iteration_limit rule with a limit above
+# RESUME_AT and sets no policy.mode.
+# ---------------------------------------------------------------------------
+prepare_resume_cases() {
+    local selection_case="$1"
+    local partial_case="$2"
+    local resume_case="$3"
+    local case_dir
+    for case_dir in "${partial_case}" "${resume_case}"; do
+        mkdir -p "${case_dir}"
+        cp -R "${selection_case}/." "${case_dir}/"
+    done
+    python3 - "${partial_case}" "${resume_case}" "${RESUME_AT}" <<'PYEOF'
+import json
+import os
+import sys
+
+partial_case = sys.argv[1]
+resume_case = sys.argv[2]
+resume_at = int(sys.argv[3])
+
+
+def fail(message):
+    print(f"FAIL: {message}")
+    sys.exit(1)
+
+
+def load(case_dir):
+    path = os.path.join(case_dir, "config.json")
+    if not os.path.isfile(path):
+        fail(f"{path}: missing")
+    with open(path) as f:
+        return path, json.load(f)
+
+
+def dump(path, config):
+    with open(path, "w") as f:
+        json.dump(config, f, indent=2)
+        f.write("\n")
+
+
+def iteration_limit_rule(path, config):
+    rules = [
+        rule
+        for rule in config.get("training", {}).get("stopping_rules", [])
+        if rule.get("type") == "iteration_limit"
+    ]
+    if len(rules) != 1:
+        fail(f"{path}: {len(rules)} iteration_limit rules in training.stopping_rules, expected 1")
+    if not isinstance(rules[0].get("limit"), int) or rules[0]["limit"] <= resume_at:
+        fail(f"{path}: iteration_limit {rules[0].get('limit')!r} is not above {resume_at}")
+    return rules[0]
+
+
+path, config = load(partial_case)
+iteration_limit_rule(path, config)["limit"] = resume_at
+dump(path, config)
+
+path, config = load(resume_case)
+iteration_limit_rule(path, config)
+policy = config.setdefault("policy", {})
+if "mode" in policy:
+    fail(f"{path}: policy.mode already set")
+policy["mode"] = "resume"
+dump(path, config)
+PYEOF
+}
+
+# ---------------------------------------------------------------------------
 # seed_policy <policy_dir> <output_dir>
 #
 # Copies <policy_dir> into <output_dir>/policy, where a simulation-only run
@@ -835,6 +1284,7 @@ seed_policy() {
 
 # ---------------------------------------------------------------------------
 # check_outputs <test_name> <exit_code> <output_dir> <baseline_dir> <marker> <seeded_policy>
+#               [comparator]
 #
 # Verifies:
 #   1. Exit code is 0 (or reports timeout on code 124)
@@ -842,9 +1292,10 @@ seed_policy() {
 #   3. policy/manifest.bin exists (the self-describing checkpoint commit signal)
 #   4. <marker> exists (training/convergence.parquet for a training run,
 #      simulation/_SUCCESS for a simulation-only run)
-#   5. Every classified output is bit-identical to the baseline directory
-#   6. When <seeded_policy> is non-empty, the per-scenario solver counters
-#      equal the baseline's
+#   5. When <baseline_dir> is non-empty, <comparator> (run by run_comparator,
+#      default compare_outputs_bitwise) accepts the output against it
+#   6. When <baseline_dir> and <seeded_policy> are non-empty, the per-scenario
+#      solver counters equal the baseline's
 #
 # Returns 0 on full pass, 1 on any failure. Prints diagnostics on failure.
 # ---------------------------------------------------------------------------
@@ -855,6 +1306,7 @@ check_outputs() {
     local baseline_dir="$4"
     local marker="$5"
     local seeded_policy="$6"
+    local comparator="${7:-compare_outputs_bitwise}"
 
     if [[ "${exit_code}" -eq 124 ]]; then
         echo "[${test_name}] FAIL: timed out after ${TIMEOUT}s (exit 124)"
@@ -891,9 +1343,9 @@ check_outputs() {
     fi
 
     if [[ -n "${baseline_dir}" ]]; then
-        echo "[${test_name}] Comparing classified outputs against ${baseline_dir} (bitwise) ..."
-        if ! compare_outputs_bitwise "${baseline_dir}" "${output_dir}"; then
-            echo "[${test_name}] FAIL: bitwise output comparison failed (see above)"
+        echo "[${test_name}] Comparing outputs against ${baseline_dir} (${comparator}) ..."
+        if ! run_comparator "${comparator}" "${baseline_dir}" "${output_dir}"; then
+            echo "[${test_name}] FAIL: output comparison failed (see above)"
             return 1
         fi
         if [[ -n "${seeded_policy}" ]]; then
@@ -910,13 +1362,13 @@ check_outputs() {
 
 # ---------------------------------------------------------------------------
 # run_mpiexec_test <test_name> <case_dir> <baseline_tag> <marker> <policy_src>
-#                  <n_ranks> <extra_args...>
+#                  <comparator> <n_ranks> <extra_args...>
 #
 # Seeds $WORK_DIR/<test_name_lower> with <policy_src> when it is non-empty,
 # then runs: timeout $TIMEOUT mpiexec -n <n_ranks> $NOVOMODELO_BIN run <case_dir>
 #              --output $WORK_DIR/<test_name_lower> --quiet [extra_args]
-# Calls check_outputs against $WORK_DIR/<baseline_tag> (none when the test
-# is the baseline itself) and updates RESULTS.
+# Calls check_outputs with <comparator> against $WORK_DIR/<baseline_tag>
+# (none when the tag is empty or names the test itself) and updates RESULTS.
 # ---------------------------------------------------------------------------
 run_mpiexec_test() {
     local test_name="$1"
@@ -924,8 +1376,9 @@ run_mpiexec_test() {
     local baseline_tag="$3"
     local marker="$4"
     local policy_src="$5"
-    local n_ranks="$6"
-    shift 6
+    local comparator="$6"
+    local n_ranks="$7"
+    shift 7
     local extra_args=("$@")
 
     local tag
@@ -945,12 +1398,12 @@ run_mpiexec_test() {
         "${extra_args[@]+"${extra_args[@]}"}" || exit_code=$?
 
     local baseline=""
-    if [[ "${tag}" != "${baseline_tag}" ]]; then
+    if [[ -n "${baseline_tag}" && "${tag}" != "${baseline_tag}" ]]; then
         baseline="${WORK_DIR}/${baseline_tag}"
     fi
 
     if check_outputs "${test_name}" "${exit_code}" "${output_dir}" "${baseline}" \
-        "${marker}" "${policy_src}"; then
+        "${marker}" "${policy_src}" "${comparator}"; then
         echo "[${test_name}] PASS"
         RESULTS["${test_name}"]="PASS"
     else
@@ -962,12 +1415,12 @@ run_mpiexec_test() {
 
 # ---------------------------------------------------------------------------
 # run_sbatch_test <test_name> <case_dir> <baseline_tag> <marker> <policy_src>
-#                 <sbatch_N> <sbatch_n> <mpiexec_n> <extra_args...>
+#                 <comparator> <sbatch_N> <sbatch_n> <mpiexec_n> <extra_args...>
 #
 # Seeds the output directory with <policy_src> when it is non-empty,
 # generates a batch script as a heredoc, submits via sbatch --wait, then
-# calls check_outputs against $WORK_DIR/<baseline_tag>. On failure, prints
-# SLURM .out/.err logs.
+# calls check_outputs with <comparator> against $WORK_DIR/<baseline_tag>
+# (none when the tag is empty). On failure, prints SLURM .out/.err logs.
 # ---------------------------------------------------------------------------
 run_sbatch_test() {
     local test_name="$1"
@@ -975,10 +1428,11 @@ run_sbatch_test() {
     local baseline_tag="$3"
     local marker="$4"
     local policy_src="$5"
-    local sbatch_N="$6"
-    local sbatch_n="$7"
-    local mpiexec_n="$8"
-    shift 8
+    local comparator="$6"
+    local sbatch_N="$7"
+    local sbatch_n="$8"
+    local mpiexec_n="$9"
+    shift 9
     local extra_args=("$@")
 
     local tag
@@ -1018,10 +1472,13 @@ SBEOF
         --error="${slurm_err}" \
         "${batch_script}" || exit_code=$?
 
-    local baseline="${WORK_DIR}/${baseline_tag}"
+    local baseline=""
+    if [[ -n "${baseline_tag}" ]]; then
+        baseline="${WORK_DIR}/${baseline_tag}"
+    fi
 
     if check_outputs "${test_name}" "${exit_code}" "${output_dir}" "${baseline}" \
-        "${marker}" "${policy_src}"; then
+        "${marker}" "${policy_src}" "${comparator}"; then
         echo "[${test_name}] PASS"
         RESULTS["${test_name}"]="PASS"
     else
@@ -1059,9 +1516,9 @@ SBEOF
 # print_summary
 #
 # Prints a pass/fail table of the tests attempted for the active MODE
-# (T1, T2, L1, L2, S1 and S2 for "reduced", every T, L and S case for
-# "full") so a "reduced" run is not marked FAILED merely for never attempting
-# the sbatch cases.
+# (T1, T2, L1, L2, R0, R1, S1 and S2 for "reduced", every T, L, R and S case
+# for "full") so a "reduced" run is not marked FAILED merely for never
+# attempting the sbatch cases.
 # ---------------------------------------------------------------------------
 print_summary() {
     local tests_to_check=("T1" "T2")
@@ -1071,6 +1528,10 @@ print_summary() {
     tests_to_check+=("L1" "L2")
     if [[ "${MODE}" == "full" ]]; then
         tests_to_check+=("L3")
+    fi
+    tests_to_check+=("R0" "R1")
+    if [[ "${MODE}" == "full" ]]; then
+        tests_to_check+=("R2" "R3")
     fi
     tests_to_check+=("S1" "S2")
     if [[ "${MODE}" == "full" ]]; then
@@ -1107,11 +1568,21 @@ main() {
     preflight_check
     run_self_check
 
-    # Case directory, baseline tag, completion marker, policy to seed.
-    local training_run=("${CASE_DIR}" t1 training/convergence.parquet "")
-    local selection_run=("${WORK_DIR}/4ree-selection" l1 training/convergence.parquet "")
+    # Case directory, baseline tag, completion marker, policy to seed, comparator.
+    local training_run=(
+        "${CASE_DIR}" t1 training/convergence.parquet "" compare_outputs_bitwise
+    )
+    local selection_run=(
+        "${WORK_DIR}/4ree-selection" l1 training/convergence.parquet "" compare_outputs_bitwise
+    )
+    local partial_run=(
+        "${WORK_DIR}/4ree-selection-partial" "" training/convergence.parquet "" ""
+    )
+    local resume_case="${WORK_DIR}/4ree-selection-resume"
+    local resumed_comparator="compare_resumed_outputs ${RESUME_AT}"
     local simulation_run=(
         "${WORK_DIR}/4ree-partial-misfit" s1 simulation/_SUCCESS "${WORK_DIR}/t1/policy"
+        compare_outputs_bitwise
     )
 
     # T1: mpiexec single rank (baseline — no extra args)
@@ -1148,6 +1619,24 @@ main() {
     if [[ "${MODE}" == "full" ]]; then
         # L3: sbatch multi-node, 2 ranks per node
         run_sbatch_test "L3" "${selection_run[@]}" 2 4 4 --threads 1
+    fi
+
+    prepare_resume_cases "${selection_run[0]}" "${partial_run[0]}" "${resume_case}"
+
+    # R0: mpiexec single rank, stopped at RESUME_AT (no comparison)
+    run_mpiexec_test "R0" "${partial_run[@]}" 1
+
+    # R1: resumes R0's checkpoint on two ranks, compared against L1
+    run_mpiexec_test "R1" "${resume_case}" l1 training/convergence.parquet \
+        "${WORK_DIR}/r0/policy" "${resumed_comparator}" 2 --threads 2
+
+    if [[ "${MODE}" == "full" ]]; then
+        # R2: sbatch multi-node, 1 rank per node, stopped at RESUME_AT (no comparison)
+        run_sbatch_test "R2" "${partial_run[@]}" 2 2 2
+
+        # R3: resumes R2's two-rank checkpoint on one rank, compared against L1
+        run_mpiexec_test "R3" "${resume_case}" l1 training/convergence.parquet \
+            "${WORK_DIR}/r2/policy" "${resumed_comparator}" 1 --threads 1
     fi
 
     prepare_partial_misfit_case "${CASE_DIR}" "${simulation_run[0]}"
