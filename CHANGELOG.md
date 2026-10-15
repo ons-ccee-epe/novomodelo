@@ -38,9 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   another `training.selection.forward_passes`.
 - `policy.mode = resume` is refused by `cobre validate` and `cobre run` when
   the rows of `policy.boundary` differ from the terminal pool of the
-  checkpoint. A changed `modeling.cost_scale_factor` is one way they differ.
-  A changed cost scale is not refused on its own: the resume applies the
-  scale of its own configuration.
+  checkpoint. A resume whose `modeling.cost_scale_factor` differs from the run
+  that wrote the checkpoint is refused only when the boundary rows then
+  differ. The resume applies the scale of its own configuration.
 
 ### Changed
 
@@ -68,9 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING:** `simulation.cut_set` defaults to `all`. A run with `level1` or
   `max_active_per_stage` now simulates with every row training added,
   including deactivated and evicted ones. Set `simulation.cut_set` to
-  `active` for the earlier behaviour. Runs without a selection method or cap,
-  runs under `dynamic`, and simulation-only runs over a loaded policy are
-  unchanged.
+  `active` for the earlier behaviour. Runs without a selection method or cap
+  and runs under `dynamic` are unchanged. A simulation over a loaded policy
+  also includes the rows the writing run deactivated or evicted, as in the
+  `warm_start` entry below.
 - **BREAKING:** `violation_tolerance` of the `dynamic` method is a relative
   factor, absent by default. Absent, each phase uses the primal feasibility
   tolerance of its solver profile. A value of 1 or more, or below the primal
@@ -81,13 +82,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   explicit `null` is refused. A run that sets `max_active_per_stage` or uses
   `dynamic` and omits the key can evict and seed other rows. Set the key to 0
   to keep the earlier behaviour.
-- A zero in `check_frequency`, `lookback_iterations`, `start_iteration`,
-  `candidate_recency` or `max_added_per_round` is a parse error that names the
-  key path.
-- A `selection` object given as an array is refused. Write it as an object
-  with a `method` key.
-- `max_active_per_stage` is refused at load with `dynamic` and with
-  `training.selection.method` set to `enumerated`. The cap applies to the
+- **BREAKING:** a zero in `check_frequency`, `lookback_iterations`,
+  `start_iteration`, `candidate_recency` or `max_added_per_round` is a parse
+  error that names the key path. Set the key to 1 or more, or delete it to use
+  its default.
+- **BREAKING:** a `selection` object given as an array is refused. Write it as
+  an object with a `method` key.
+- **BREAKING:** `max_active_per_stage` is refused at load with `dynamic` and
+  with `training.selection.method` set to `enumerated`. Remove the cap, or use
+  `level1`; for enumerated, set `training.selection.method` to `sampled`. The cap applies to the
   rows the current run added to each stage strictly between the first and the
   last, and not to loaded rows. Ties for eviction go to the row binding in
   fewer solves, then to the lower position in the pool.
@@ -126,9 +129,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `<policy.path>.partial` and leaves the last whole checkpoint in
   `policy.path`. The failure message names the directory.
 - A `dynamic` run that simulates with `simulation.cut_set = all` is refused
-  when the policy it loads, or the rows of `policy.boundary`, hold scored
-  inactive (selection-deactivated) rows, and only when the run simulates.
-  Set `simulation.cut_set` to `active` or use `level1`.
+  when the pool it loads holds inactive rows that `all` includes, and only
+  when the run simulates. For a policy loaded to resume or only to simulate,
+  these are the rows a selection method deactivated or `max_active_per_stage`
+  evicted in the run that wrote it. For a `warm_start` policy and for
+  `policy.boundary` rows, they are the scored inactive rows; inactive rows
+  that were never scored, such as those a capped source leaves, are not
+  included. The terminal pool of a checkpoint is not checked when
+  `policy.boundary` replaces it. Set `simulation.cut_set` to `active` or use
+  `level1`.
 - `cobre validate` reconciles `policy.boundary` only when the run trains.
 - x86_64 Linux builds of the MPI release archive and builds from source,
   `cargo install` included, no longer enable AVX2 and FMA. Every x86_64 build
@@ -148,21 +157,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `truncation` corrects a negative inflow when the hydro's PAR residual
   standard deviation is zero. Such a study could stop on an infeasible LP
   before.
-- `cuts_removed` in `training/cut_selection/iterations.parquet` was always 0.
-  `cuts_active` ignored evictions and reactivations, and `peak_active` missed
-  a peak reached after a reactivation.
+- `cuts_removed` in `training/convergence.parquet` was always 0.
+  `cuts_active` in the same file ignored evictions and reactivations, and
+  `row_pool.peak_active` in `training/metadata.json` missed a peak reached
+  after a reactivation.
 - A `max_active_per_stage` below the number of cuts loaded by `policy.boundary`
   aborted training on a basis row-count mismatch. The cap now counts and
   evicts only the rows the run generated.
 - A lazy solve under `dynamic` that reached the round cap returned a relaxed
   result. It now ends only when no candidate row is violated.
 - `cobre validate` printed two warnings twice.
-- A resume that declares `policy.boundary` keeps the binding counters of the
-  terminal pool, so it matches the uninterrupted run under
-  `max_active_per_stage` or `dynamic`.
-- A warm start or resume that declares `policy.boundary` with
-  `simulation.cut_set = all` under `dynamic` is no longer refused over the
-  loaded terminal pool, which the boundary replaces.
 - A checkpoint write refuses a payload a load would reject, and a file over the
   2 GiB limit of the policy format, naming the file. The writers refuse an
   entity manifest whose dates are inconsistent and repeated ids.
