@@ -36,6 +36,7 @@ still carry the canonical boundary regex).
 | `check-allow-rationale.sh`           | Every `#[allow]` carries a `// Rationale:` (E4; diff-scoped via `BASE_REF`).                               |
 | `check-infra-genericity.sh`          | No algorithm-specific vocabulary in the infrastructure crates.                                             |
 | `check-cut-selection-determinism.sh` | No fast-math, runtime CPU detection or target feature/cpu flag in own code or in a file a build reads; dependency facts are in `deny.toml`. |
+| `check-release-kernel.sh`            | A built x86_64 Linux binary, archive or wheel carries no packed FMA instruction (the release workflows run it on what they built). |
 | `check_python_parity.py`             | Both write paths call the same set of `novomodelo_io` / `novomodelo_sddp::policy::orchestration` writers, and each phase writer calls `write_success_marker` as its last write. |
 | `check_schemas.sh`                   | Exported JSON schemas match the source types (needs the release binary; `--build`).                        |
 | `quality-report.sh`                  | Advisory code-quality hotspot report; also runs the comment-bloat advisory.                                |

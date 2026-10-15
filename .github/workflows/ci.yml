@@ -292,6 +292,8 @@ jobs:
         run: bash scripts/ci/check-cut-selection-determinism.sh --verify
       - name: Cut-selection determinism gate
         run: bash scripts/ci/check-cut-selection-determinism.sh
+      - name: Release kernel probe self-test
+        run: bash scripts/ci/check-release-kernel.sh --verify
       - name: cfg(test) boundary drift guard (shared scan lib)
         # Fails if the holdout gates' cfg(test) boundary desyncs from the shared
         # scripts/ci/lib/comment_scan.sh definition.
