@@ -367,6 +367,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Verify init/run structural invariants
         run: ./scripts/ci/check-docs-examples.sh --build
+      - name: Smoke-test the selection measurement tool
+        run: ./scripts/ci/check-cut-selection-measurement.sh
 
   # Docs build once on the primary (HiGHS) backend; NOT duplicated onto CLP.
   docs:

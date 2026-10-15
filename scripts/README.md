@@ -14,6 +14,10 @@ Helper scripts for Novomodelo, grouped by role.
   counts split into production vs test, per crate and global, plus test-function
   counts. `--nextest` adds the runtime test count, `--worktree`/`--csv` vary the
   source and output format.
+- **`measure_cut_selection.py`** — reporting tool (not a CI gate): runs `level1`
+  with all states and with state windows, and a simulation of all cuts against
+  active cuts, on a case, and reports lower bound, simulated cost, wall time and
+  peak memory.
 
 ## `ci/` — quality gates
 
@@ -28,6 +32,7 @@ still carry the canonical boundary regex).
 | `check_doc_voice.py`                 | No promotional voice or unpinned "typical" numbers in prose (doc-integrity §5/§2).                         |
 | `check-doc-placeholders.sh`          | No placeholder text (TODO/TBD/…) in shipped docs.                                                          |
 | `check-docs-examples.sh`             | A fresh `init`→`run` matches the expected output structure (needs the release binary; `--build`).          |
+| `check-cut-selection-measurement.sh` | Runs `measure_cut_selection.py` on `1dtoy` and checks that its report holds every variant with finite values (needs the release binary; `--build`). |
 | `check-no-plan-leaks.sh`             | No plan-structure tokens (`Epic`/`ticket`/…) in shipped artifacts.                                         |
 | `check-comment-refs.sh`              | No un-rottable `file.rs:NNN`-style references in shipped comments.                                         |
 | `check-comment-line-refs.sh`         | No drift-prone line references in shipped comments and stubs.                                              |
