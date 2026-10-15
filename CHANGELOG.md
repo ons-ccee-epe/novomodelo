@@ -90,10 +90,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an object with a `method` key.
 - **BREAKING:** `max_active_per_stage` is refused at load with `dynamic` and
   with `training.selection.method` set to `enumerated`. Remove the cap, or use
-  `level1`; for enumerated, set `training.selection.method` to `sampled`. The cap applies to the
-  rows the current run added to each stage strictly between the first and the
-  last, and not to loaded rows. Ties for eviction go to the row binding in
-  fewer solves, then to the lower position in the pool.
+  `level1`; for enumerated, set `training.selection.method` to `sampled`.
+- `max_active_per_stage` applies to the rows the current run added to each
+  stage strictly between the first and the last, and not to loaded rows. Ties
+  for eviction go to the row binding in fewer solves, then to the lower
+  position in the pool.
 - Loaded cuts keep the `iteration` they were generated in on export. The cuts
   loaded by `policy.boundary` and by a warm start restart their activity clock.
 - **BREAKING:** `training/cut_selection/iterations.parquet` has one row per
