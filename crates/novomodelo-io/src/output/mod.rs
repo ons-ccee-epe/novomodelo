@@ -196,7 +196,7 @@ pub struct IterationRecord {
     /// Row-batch assembly time (ms) → `cut_batch_build_ms`. Backward sub-component.
     pub time_cut_batch_build_ms: u64,
 
-    /// Estimated backward worker load imbalance (ms) → `bwd_load_imbalance_ms`. Backward sub-component.
+    /// Estimated backward worker load imbalance across all ranks (ms) → `bwd_load_imbalance_ms`. Backward sub-component.
     pub time_bwd_load_imbalance_ms: u64,
 
     /// Backward scheduling/sync overhead (ms) → `bwd_scheduling_overhead_ms`. Backward sub-component.

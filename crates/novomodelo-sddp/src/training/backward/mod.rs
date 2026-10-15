@@ -146,8 +146,10 @@ pub struct BackwardResult {
     pub setup_time_ms: u64,
 
     /// Load-imbalance component of parallel overhead, accumulated across all
-    /// stages (milliseconds). Computed per-stage as `max_worker_total_ms - avg_worker_total_ms`,
-    /// where `worker_total_ms = solve + load_model + set_bounds + basis_set` for each worker.
+    /// stages (milliseconds). Computed per-stage as `max_worker_total_ms - avg_worker_total_ms`
+    /// over every worker on every rank, where `worker_total_ms = solve + load_model +
+    /// set_bounds + basis_set`; under MPI it includes the time a rank waits for its peers.
+    /// Identical on every rank.
     pub load_imbalance_ms: u64,
 
     /// Rayon scheduling overhead, accumulated across all stages (milliseconds).
