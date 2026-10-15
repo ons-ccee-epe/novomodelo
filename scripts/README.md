@@ -35,7 +35,7 @@ still carry the canonical boundary regex).
 | `check-comment-bloat.sh`             | Ranks comment-bloat candidates (advisory; also surfaced by `quality-report.sh`).                           |
 | `check-allow-rationale.sh`           | Every `#[allow]` carries a `// Rationale:` (E4; diff-scoped via `BASE_REF`).                               |
 | `check-infra-genericity.sh`          | No algorithm-specific vocabulary in the infrastructure crates.                                             |
-| `check-cut-selection-determinism.sh` | Cut-selection code stays declaration-order deterministic.                                                  |
+| `check-cut-selection-determinism.sh` | No fast-math, runtime CPU detection or target feature/cpu flag in own code or in a file a build reads; dependency facts are in `deny.toml`. |
 | `check_python_parity.py`             | Both write paths call the same set of `novomodelo_io` / `novomodelo_sddp::policy::orchestration` writers, and each phase writer calls `write_success_marker` as its last write. |
 | `check_schemas.sh`                   | Exported JSON schemas match the source types (needs the release binary; `--build`).                        |
 | `quality-report.sh`                  | Advisory code-quality hotspot report; also runs the comment-bloat advisory.                                |
