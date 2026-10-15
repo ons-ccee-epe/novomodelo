@@ -28,7 +28,7 @@ use, prefer `novomodelo-cli`, which wraps this crate.
   bookkeeping
 - **`CutSelectionStrategy`** — enum controlling cut selection, with two variants:
   - `Level1 { check_frequency, lookback_iterations }` — at each stored trial state the cut
-    with the highest value is active, ties go to the lowest slot, and a cut that holds no
+    with the highest value is active, ties go to the lowest slot, and a cut that owns no
     state is deactivated, never deleted; it runs every `check_frequency` iterations, and
     `lookback_iterations` limits the states to a window of the last iterations
   - `Dynamic { candidate_recency, seed_window, max_added_per_round, violation_tolerance,
@@ -70,14 +70,18 @@ the interrupted run and the resume. A resume refuses a checkpoint that cannot co
 run: one written with another forward-pass count, one without the trial-state history or
 window that `level1` needs, one without the binding counters that a budget or `dynamic`
 reads, one whose bases are incomplete, and one written by a run that ended in an error. A run
-that declares `policy.boundary` keeps the terminal binding counters on a resume; a resume
-whose `policy.boundary` or `modeling.cost_scale_factor` no longer matches the checkpoint is
-refused.
+that declares `policy.boundary` keeps the terminal binding counters on a resume. A resume
+that declares `policy.boundary` is refused when the reconciled boundary rows differ from the
+terminal pool of the checkpoint; a changed `modeling.cost_scale_factor` is one way that
+difference can arise. The resume applies its own cost scale from then on.
 
 A `policy.boundary` pool contributes its active rows to training, and the terminal pool is
 never selected. Under `simulation.cut_set = all` the pool also contributes the rows its
-writer scored, whatever their flag. `dynamic` refuses `simulation.cut_set = all` over a
-boundary or loaded pool that holds deactivated rows.
+writer scored, whatever their flag. `dynamic` refuses
+`simulation.cut_set = all` when the run simulates and a loaded pool, or the boundary pool,
+holds rows that selection deactivated (scored and inactive), because the `all` set then
+differs from the active set and a `dynamic` solve reads only the active cuts. Inactive rows
+that were never scored, such as those a capped source leaves, do not trigger the refusal.
 
 ## Error handling (`SddpError`)
 
