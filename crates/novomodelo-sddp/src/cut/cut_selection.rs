@@ -9,10 +9,13 @@
 //!
 //! **Stored states.** For the pool of each node of stage 1 or later that has a
 //! successor: the trial state of every cut this run generated for that pool,
-//! one per cut, on every rank; such a cut is scored. A loaded cut is unscored
-//! and has no state: no load writes a scored role or a state. Every stored
-//! state of the run is kept, so the memory of a run grows with its cut count,
-//! unless the strategy carries a window of `w` iterations
+//! one per cut, on every rank; such a cut is scored. A loaded cut keeps the
+//! `scored` flag its record carries. On a resume or a warm start, a pool that
+//! stores states gives each loaded cut the state its checkpoint holds for it
+//! (`CutPool::load_trial_state`); a loaded cut the checkpoint holds no state for
+//! owns none. Every stored state of the run is kept, so the memory of a run
+//! grows with its cut count, unless the strategy carries a window of `w`
+//! iterations
 //! ([`lookback_iterations`](CutSelectionStrategy::Level1::lookback_iterations)).
 //! A selection run of iteration `k` then drops the states of the cuts generated
 //! before iteration `k - w + 1`, a loaded cut counting as iteration 0, so the

@@ -374,7 +374,10 @@ pub(crate) struct BackwardAccumulators {
     pub(crate) outcomes: Vec<BackwardOutcome>,
     /// Per-slot binding count over the node's successor pool regions, concatenated
     /// per child (`SuccessorChild::metadata_offset + slot`), so a fan's distinct
-    /// sibling pools never collide on a shared slot index; zeroed per trial point.
+    /// sibling pools never collide on a shared slot index. Filled only while
+    /// [`tracks_binding_activity`](crate::config::CutManagementConfig::tracks_binding_activity)
+    /// holds; zeroed per trial point by the by-scenario path, once per stage by
+    /// the by-node path.
     pub(crate) slot_increments: Vec<u64>,
     /// Aggregated cut coefficients (`n_state` entries), written by
     /// `aggregate_weighted_into` then copied into [`agg_arena`](Self::agg_arena)

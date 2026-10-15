@@ -2130,9 +2130,9 @@ on the claim index instead of `(m, ω)`, is the wrong-but-compiling
 alternative — CVaR's tail weighting is order-sensitive, so it silently breaks
 CVaR reproducibility and declaration-order invariance the same way a
 solve-order-keyed aggregation would break the by-scenario path above. An
-active Dynamic Cut Selection iteration always falls back to the by-scenario
-path: the by-node scheduler's frozen-LP load is incompatible with
-DCS's cut-free lazy core.
+active `dynamic` iteration always falls back to the by-scenario path: the
+by-node scheduler's frozen-LP load is incompatible with the lazy solve's
+cut-free core.
 Read: `training/backward/by_node.rs`
 (`process_stage_backward_by_node`'s claim loop,
 `by_node_finish`'s per-`(m, ω)` arena and ascending-m aggregation),

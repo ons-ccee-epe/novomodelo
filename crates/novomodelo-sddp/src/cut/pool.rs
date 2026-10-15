@@ -1131,9 +1131,9 @@ impl CutPool {
     ///
     /// Capacity is exactly `records.len()` with `visit_stride = 0` — this pool
     /// takes no new training cuts. Record `i` sits at slot `i`. A record stored
-    /// below `prefix_len` (the recorded pool's protected-prefix length) is `Prefix`
-    /// and every other record `Generated`, each with the `scored` flag it was
-    /// written with, so [`CutSet::All`] holds what the recorded run's held.
+    /// below `prefix_len` (the count of `Prefix` records the writer stored) is
+    /// `Prefix` and every other record `Generated`, each with the `scored` flag
+    /// it was written with, so [`CutSet::All`] holds what the recorded run's held.
     ///
     /// # Example
     ///

@@ -19,7 +19,7 @@
 //!   slot identity for warm-start basis reconstruction.
 //! - [`cut_selection`] — [`CutSelectionStrategy`]: the `Level1` periodic
 //!   selection pass and the `Dynamic` lazy-row method.
-//! - [`dcs`] — Dynamic Cut Selection: scores all resident cuts per stage.
+//! - [`dcs`] — lazy row generation of the `dynamic` method.
 //! - [`cut_sync`] — [`CutSyncBuffers`]: MPI cut-synchronization scratch space.
 //! - [`basis_reconstruct`] — warm-start basis reconstruction for the frozen
 //!   hot path and the DCS path.

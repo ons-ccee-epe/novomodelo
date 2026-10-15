@@ -1,4 +1,4 @@
-//! Microbenchmark for Dynamic Cut Selection candidate scoring.
+//! Microbenchmark for the `dynamic` method's candidate scoring.
 //!
 //! Compares the production batched `score_violated_candidates` (one N-row GEMM
 //! per pass) against a per-candidate baseline scoring each candidate with its

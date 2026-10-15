@@ -48,7 +48,7 @@ use super::{
 pub(crate) enum StageOpeningSolver {
     /// Frozen all-cuts LP path (no DCS).
     Frozen,
-    /// Lazy resident-set LP path (Dynamic Cut Selection). Carries the active
+    /// Lazy resident-set LP path (the `dynamic` method). Carries the active
     /// [`DcsParams`] so the per-opening call needs no separate `Option` test.
     Lazy(DcsParams),
 }
@@ -244,7 +244,7 @@ impl StageOpeningSolver {
         Ok(())
     }
 
-    /// Lazy resident-set per-opening solve under Dynamic Cut Selection.
+    /// Lazy resident-set per-opening solve under the `dynamic` method.
     ///
     /// The cut-free core and metadata seed are loaded ONCE per trial point by
     /// [`StageOpeningSolver::prepare`]; this routine never reloads or re-seeds, only
