@@ -52,16 +52,20 @@ pub(crate) fn reconcile_error_flag<C: Communicator>(
     if reconcile_global_ok(local_ok.is_ok(), comm, scratch)? {
         Ok(())
     } else {
-        Err(local_ok.err().unwrap_or_else(|| {
-            SddpError::Communication(CommError::CollectiveFailed {
-                operation: "reconcile_error_flag",
-                mpi_error_code: 0,
-                message: "a peer rank reported a local failure; failing this \
-                          phase on every rank in lockstep"
-                    .to_string(),
-            })
-        }))
+        Err(local_ok
+            .err()
+            .unwrap_or_else(|| peer_failure("reconcile_error_flag")))
     }
+}
+
+fn peer_failure(operation: &'static str) -> SddpError {
+    SddpError::Communication(CommError::CollectiveFailed {
+        operation,
+        mpi_error_code: 0,
+        message: "a peer rank reported a local failure; failing this \
+                  phase on every rank in lockstep"
+            .to_string(),
+    })
 }
 
 /// Reconcile a rank-local `Result<T, SddpError>` across ranks before a lockstep
@@ -89,6 +93,35 @@ pub(crate) fn reconcile_result<T, C: Communicator>(
             message: "cross-rank reconcile agreed but this rank held no payload".to_string(),
         })
     })
+}
+
+/// [`reconcile_result`] that also agrees the largest `local_max` across ranks in
+/// the same `allreduce`: every rank returns `Ok((payload, global_max))` iff no
+/// rank failed, otherwise every rank returns `Err` in lockstep.
+///
+/// # Errors
+///
+/// Returns this rank's own error when it failed, or [`SddpError::Communication`]
+/// when the `allreduce` transport fails or a peer failed while this rank did not.
+pub(crate) fn reconcile_result_with_max<T, C: Communicator>(
+    local: Result<T, SddpError>,
+    local_max: f64,
+    comm: &C,
+) -> Result<(T, f64), SddpError> {
+    if comm.size() == 1 {
+        return local.map(|payload| (payload, local_max));
+    }
+
+    let send = [if local.is_ok() { 0.0 } else { 1.0 }, local_max];
+    let mut reduced = [0.0_f64; 2];
+    comm.allreduce(&send, &mut reduced, ReduceOp::Max)
+        .map_err(SddpError::Communication)?;
+
+    match local {
+        Err(e) => Err(e),
+        Ok(_) if reduced[0] > 0.0 => Err(peer_failure("reconcile_result_with_max")),
+        Ok(payload) => Ok((payload, reduced[1])),
+    }
 }
 
 /// The stop-decision inputs each rank reads locally: its shutdown request and
@@ -146,6 +179,7 @@ pub(crate) fn agree_stop_inputs<C: Communicator>(
 mod tests {
     use super::{
         StopInputs, agree_stop_inputs, reconcile_error_flag, reconcile_global_ok, reconcile_result,
+        reconcile_result_with_max,
     };
     use crate::SddpError;
     use crate::config::ShutdownSource;
@@ -244,25 +278,25 @@ mod tests {
         use std::any::Any;
         *(&value as &dyn Any)
             .downcast_ref::<f64>()
-            .expect("stop-vote stub only reduces f64 votes")
+            .expect("max-vote stub only reduces f64 votes")
     }
 
     fn upcast_f64<T: CommData>(value: f64) -> T {
         use std::any::Any;
         *(&value as &dyn Any)
             .downcast_ref::<T>()
-            .expect("stop-vote stub only reduces f64 votes")
+            .expect("max-vote stub only reduces f64 votes")
     }
 
     /// A two-rank peer whose `allreduce` combines this rank's vote with the
     /// other rank's `peer` vote.
-    struct StopVoteStub {
+    struct MaxVoteStub {
         size: usize,
         peer: [f64; 2],
         mode: Mode,
     }
 
-    impl Communicator for StopVoteStub {
+    impl Communicator for MaxVoteStub {
         fn allgatherv<T: CommData>(
             &self,
             _send: &[T],
@@ -270,7 +304,7 @@ mod tests {
             _counts: &[usize],
             _displs: &[usize],
         ) -> Result<(), CommError> {
-            unreachable!("agree_stop_inputs does not call allgatherv")
+            unreachable!("a vote reconcile does not call allgatherv")
         }
 
         fn allreduce<T: CommData>(
@@ -289,7 +323,7 @@ mod tests {
                     message: "simulated transport failure".to_string(),
                 }),
                 Mode::Reduce => {
-                    assert_eq!(op, ReduceOp::Max, "the stop inputs must reduce with Max");
+                    assert_eq!(op, ReduceOp::Max, "a two-value vote must reduce with Max");
                     assert_eq!(send.len(), 2);
                     assert_eq!(recv.len(), 2);
                     for ((s, r), peer) in send.iter().zip(recv.iter_mut()).zip(self.peer) {
@@ -301,11 +335,11 @@ mod tests {
         }
 
         fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
-            unreachable!("agree_stop_inputs does not call broadcast")
+            unreachable!("a vote reconcile does not call broadcast")
         }
 
         fn barrier(&self) -> Result<(), CommError> {
-            unreachable!("agree_stop_inputs does not call barrier")
+            unreachable!("a vote reconcile does not call barrier")
         }
 
         fn rank(&self) -> usize {
@@ -605,8 +639,8 @@ mod tests {
         }
     }
 
-    fn reduce_against(peer: StopInputs) -> StopVoteStub {
-        StopVoteStub {
+    fn reduce_against(peer: StopInputs) -> MaxVoteStub {
+        MaxVoteStub {
             size: 2,
             peer: peer.vote(),
             mode: Mode::Reduce,
@@ -663,7 +697,7 @@ mod tests {
 
     #[test]
     fn stop_inputs_agreement_on_one_rank_returns_the_local_inputs_without_a_collective() {
-        let comm = StopVoteStub {
+        let comm = MaxVoteStub {
             size: 1,
             peer: [2.0, 99.0],
             mode: Mode::Forbidden,
@@ -713,7 +747,7 @@ mod tests {
 
     #[test]
     fn stop_inputs_agreement_reports_a_transport_failure() {
-        let comm = StopVoteStub {
+        let comm = MaxVoteStub {
             size: 2,
             peer: [0.0; 2],
             mode: Mode::Transport,
@@ -781,5 +815,69 @@ mod tests {
             assert!(mask.contains(StopMask::SHUTDOWN), "rank {rank}");
         }
         assert_eq!(a, b);
+    }
+
+    fn max_vote_peer(peer_failed: bool, peer_max: f64) -> MaxVoteStub {
+        MaxVoteStub {
+            size: 2,
+            peer: [if peer_failed { 1.0 } else { 0.0 }, peer_max],
+            mode: Mode::Reduce,
+        }
+    }
+
+    #[test]
+    fn reconcile_with_max_on_one_rank_returns_the_local_max_without_a_collective() {
+        let comm = MaxVoteStub {
+            size: 1,
+            peer: [0.0; 2],
+            mode: Mode::Forbidden,
+        };
+        let out = reconcile_result_with_max(Ok(7_usize), 12.5, &comm);
+        assert_eq!(out.ok(), Some((7, 12.5)));
+        let err = reconcile_result_with_max::<usize, _>(
+            Err(SddpError::Validation("local".to_string())),
+            12.5,
+            &comm,
+        );
+        assert!(matches!(err, Err(SddpError::Validation(_))));
+    }
+
+    #[test]
+    fn reconcile_with_max_returns_the_largest_max_across_ranks() {
+        let slower_peer = reconcile_result_with_max(Ok(7_usize), 12.0, &max_vote_peer(false, 30.0));
+        assert_eq!(slower_peer.ok(), Some((7, 30.0)));
+        let faster_peer = reconcile_result_with_max(Ok(7_usize), 12.0, &max_vote_peer(false, 3.0));
+        assert_eq!(faster_peer.ok(), Some((7, 12.0)));
+    }
+
+    #[test]
+    fn reconcile_with_max_failing_rank_returns_its_own_error() {
+        let out = reconcile_result_with_max::<usize, _>(
+            Err(SddpError::Infeasible {
+                stage: 2,
+                iteration: 3,
+                scenario: 1,
+            }),
+            12.0,
+            &max_vote_peer(false, 30.0),
+        );
+        assert!(matches!(out, Err(SddpError::Infeasible { .. })));
+    }
+
+    #[test]
+    fn reconcile_with_max_healthy_peer_of_failing_rank_returns_err() {
+        let out = reconcile_result_with_max(Ok(7_usize), 12.0, &max_vote_peer(true, 30.0));
+        assert!(matches!(out, Err(SddpError::Communication(_))));
+    }
+
+    #[test]
+    fn reconcile_with_max_transport_failure_is_a_communication_error() {
+        let comm = MaxVoteStub {
+            size: 2,
+            peer: [0.0; 2],
+            mode: Mode::Transport,
+        };
+        let out = reconcile_result_with_max(Ok(7_usize), 12.0, &comm);
+        assert!(matches!(out, Err(SddpError::Communication(_))));
     }
 }
