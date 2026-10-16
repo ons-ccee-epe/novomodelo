@@ -221,10 +221,9 @@ fn configured_full_fcf_load(plan: RunPhasePlan, mode: PolicyMode) -> Option<Full
 
 fn policy_load_error_kind(load: FullFcfLoadKind) -> ErrorKind {
     match load {
-        FullFcfLoadKind::WarmStart | FullFcfLoadKind::SimulationOnly => {
-            ErrorKind::WarmStartIncompatible
-        }
+        FullFcfLoadKind::WarmStart => ErrorKind::WarmStartIncompatible,
         FullFcfLoadKind::Resume => ErrorKind::ResumeIncompatible,
+        FullFcfLoadKind::SimulationOnly => ErrorKind::SimulationPolicyIncompatible,
     }
 }
 
@@ -599,17 +598,17 @@ mod tests {
             (
                 from_policy,
                 PolicyMode::WarmStart,
-                Some((SimulationOnly, ErrorKind::WarmStartIncompatible)),
+                Some((SimulationOnly, ErrorKind::SimulationPolicyIncompatible)),
             ),
             (
                 from_policy,
                 PolicyMode::Resume,
-                Some((SimulationOnly, ErrorKind::WarmStartIncompatible)),
+                Some((SimulationOnly, ErrorKind::SimulationPolicyIncompatible)),
             ),
             (
                 from_policy,
                 PolicyMode::Fresh,
-                Some((SimulationOnly, ErrorKind::WarmStartIncompatible)),
+                Some((SimulationOnly, ErrorKind::SimulationPolicyIncompatible)),
             ),
             (nothing, PolicyMode::WarmStart, None),
             (nothing, PolicyMode::Resume, None),
@@ -648,7 +647,7 @@ mod tests {
         );
         assert_eq!(
             missing(FullFcfLoadKind::SimulationOnly).kind(),
-            "WarmStartIncompatible"
+            "SimulationPolicyIncompatible"
         );
 
         let unreadable = PolicyLoadFailure {
