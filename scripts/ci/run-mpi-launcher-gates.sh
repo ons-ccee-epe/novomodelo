@@ -2,9 +2,10 @@
 #
 # run-mpi-launcher-gates.sh — launch the MPI world-size gates under mpiexec.
 #
-# Each gate trains on the real MPI world and compares the result with the
-# single-rank reference. Under plain `cargo test` the world has one rank and the
-# comparison is an identity, so these tests prove something only when a launcher
+# Each gate trains on the real MPI world. Most compare the result with the
+# single-rank reference; the checkpoint gate makes every rank fail one periodic
+# write in-band and checks what rank 0 leaves on disk. Under plain `cargo test`
+# the world has one rank, so these tests prove something only when a launcher
 # starts them on several ranks. Every gate in the table runs at 2 and 4 ranks.
 #
 # One probe runs the first gate on a world larger than its forward passes and
@@ -40,6 +41,7 @@ readonly GATES=(
     "mpi_wire selection_on_determinism::level1_world_size_is_invariant_on_a_branching_fan"
     "mpi_wire by_node_k_fan_branching::by_node_k_fan_final_lb_bitwise_invariant_across_world_size"
     "test_mpi_sync_cuts_invariant k_fan_branching_rank_invariance::k_fan_final_lb_bitwise_invariant_across_world_size"
+    "periodic_checkpoint a_failed_periodic_write_on_the_world_leaves_the_last_whole_checkpoint_and_a_partial_beside_it"
 )
 readonly RANK_COUNTS=(2 4)
 readonly OVERSIZED_GATE="${GATES[0]}"

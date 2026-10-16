@@ -15,6 +15,7 @@ use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
+use novomodelo_comm::{BackendKind, CommError, Communicator, create_communicator};
 use novomodelo_core::{System, TrainingEvent};
 use novomodelo_io::Config;
 use novomodelo_io::config::{
@@ -29,8 +30,8 @@ use novomodelo_sddp::policy::orchestration::{
 use novomodelo_sddp::setup::NodePos;
 use novomodelo_sddp::test_support::snapshot_files;
 use novomodelo_sddp::{
-    CapturedBasis, DEFAULT_COST_SCALE_FACTOR, SddpError, StudySetup, TrainingResult,
-    inject_boundary_cuts, reconcile_boundary_policy,
+    CapturedBasis, DEFAULT_COST_SCALE_FACTOR, SddpError, StudySetup, TrainingOutcome,
+    TrainingResult, inject_boundary_cuts, reconcile_boundary_policy,
 };
 use novomodelo_solver::{ActiveSolver, BasisStatus};
 use tempfile::TempDir;
@@ -390,6 +391,159 @@ fn a_failed_periodic_write_leaves_the_last_whole_checkpoint_and_a_partial_beside
     )
     .expect("the policy directory still resumes");
     assert_eq!(load.completed_iterations(), 3);
+}
+
+/// Shows more than the single-process test above only when launched on several
+/// ranks (`scripts/ci/run-mpi-launcher-gates.sh`).
+#[test]
+fn a_failed_periodic_write_on_the_world_leaves_the_last_whole_checkpoint_and_a_partial_beside_it() {
+    const FORWARD_PASSES: u32 = 4;
+    let world =
+        create_communicator(BackendKind::Auto).expect("communicator construction must succeed");
+    assert!(
+        world.size() <= FORWARD_PASSES as usize,
+        "a world of {} ranks leaves a rank without a trial",
+        world.size()
+    );
+    let rank = world.rank();
+
+    let (system, mut first) = checkpointing_setup(3, None, 1, FORWARD_PASSES);
+    let first_result = train_on_world(&mut first, &world);
+    assert!(
+        first_result.error.is_none(),
+        "rank {rank}: {:?}",
+        first_result.error
+    );
+    let first_result = first_result.result;
+
+    let root_out = (rank == 0).then(|| tempfile::tempdir().expect("tempdir"));
+    let mut whole = None;
+    if let Some(out) = &root_out {
+        let policy_dir = out.path().join(&first.policy_path);
+        assert_eq!(
+            write_checkpoint(
+                &policy_dir,
+                &first,
+                &system,
+                &first_result,
+                &checkpoint_params(&first)
+            )
+            .expect("write_checkpoint must succeed"),
+            policy_dir
+        );
+        let written = read_policy_checkpoint(&policy_dir).expect("the whole checkpoint reads");
+        assert!(written.metadata.producer.basis_store_complete);
+        assert!(!written.stage_bases.is_empty());
+        for record in &written.stage_bases {
+            assert_eq!(
+                record
+                    .entries
+                    .iter()
+                    .map(|e| e.scenario)
+                    .collect::<Vec<_>>(),
+                (0..FORWARD_PASSES).collect::<Vec<_>>(),
+                "node {}: one basis per forward pass of every rank",
+                record.stage_id
+            );
+        }
+        whole = Some(snapshot_files(&policy_dir));
+        std::fs::write(
+            policy_dir.join("foreign"),
+            b"no checkpoint writer leaves this",
+        )
+        .unwrap();
+    }
+    let out = broadcast_root_path(&world, root_out.as_ref().map(TempDir::path));
+    let policy_dir = out.join(&first.policy_path);
+
+    let (system, mut resumed) = checkpointing_setup(6, None, 1, FORWARD_PASSES);
+    check_full_fcf_load(
+        FullFcfLoadKind::Resume,
+        &policy_dir,
+        &system,
+        &resumed,
+        &mut |_msg: &str| {},
+    )
+    .expect("the checkpoint must load beside the foreign file")
+    .apply_to_training(&mut resumed);
+    resumed.enable_periodic_checkpoints(&system, &out);
+    let outcome = train_on_world(&mut resumed, &world);
+
+    assert_eq!(outcome.result.iterations, 4, "rank {rank}");
+    if rank == 0 {
+        assert!(
+            matches!(
+                outcome.error,
+                Some(SddpError::CheckpointWrite { iteration: 4, .. })
+            ),
+            "{:?}",
+            outcome.error
+        );
+    } else {
+        assert!(
+            matches!(
+                outcome.error,
+                Some(SddpError::Communication(CommError::CollectiveFailed {
+                    operation: "reconcile_error_flag",
+                    ..
+                }))
+            ),
+            "rank {rank}: {:?}",
+            outcome.error
+        );
+    }
+    let Some(whole) = whole else {
+        return;
+    };
+
+    let partial = write_checkpoint(
+        &policy_dir,
+        &resumed,
+        &system,
+        &outcome.result,
+        &checkpoint_params(&resumed),
+    )
+    .expect("the failure exit writes beside the policy directory");
+    assert_eq!(Some(partial.clone()), partial_policy_dir(&policy_dir));
+    let partial_checkpoint = read_policy_checkpoint(&partial).expect("the partial policy reads");
+    assert!(!partial_checkpoint.metadata.producer.basis_store_complete);
+    let mut kept = snapshot_files(&policy_dir);
+    assert!(kept.remove(Path::new("foreign")).is_some());
+    assert_eq!(
+        kept, whole,
+        "the whole checkpoint is byte for byte the one the first run wrote"
+    );
+
+    std::fs::remove_file(policy_dir.join("foreign")).unwrap();
+    let (system, third) = checkpointing_setup(6, None, 1, FORWARD_PASSES);
+    let load = check_full_fcf_load(
+        FullFcfLoadKind::Resume,
+        &policy_dir,
+        &system,
+        &third,
+        &mut |_msg: &str| {},
+    )
+    .expect("the policy directory still resumes");
+    assert_eq!(load.completed_iterations(), 3);
+}
+
+fn train_on_world<C: Communicator>(setup: &mut StudySetup, world: &C) -> TrainingOutcome {
+    let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+    setup
+        .train(&mut solver, world, 1, ActiveSolver::new, None, None)
+        .expect("train must return Ok")
+}
+
+fn broadcast_root_path<C: Communicator>(comm: &C, root_path: Option<&Path>) -> PathBuf {
+    let mut bytes = root_path
+        .map(|path| path.to_str().expect("a UTF-8 path").as_bytes().to_vec())
+        .unwrap_or_default();
+    let mut len = [bytes.len() as u64];
+    comm.broadcast(&mut len, 0)
+        .expect("the path length broadcasts");
+    bytes.resize(usize::try_from(len[0]).unwrap(), 0);
+    comm.broadcast(&mut bytes, 0).expect("the path broadcasts");
+    PathBuf::from(String::from_utf8(bytes).expect("a UTF-8 path"))
 }
 
 /// Bound on two solves of one LP that start from different solver states.

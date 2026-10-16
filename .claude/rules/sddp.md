@@ -2757,9 +2757,14 @@ end and of a failure exit in `ac_train_result_fields_populated` and
 `periodic_checkpoint_with_several_forward_passes_holds_every_scenario_basis_and_equals_the_final_one`
 (`tests/periodic_checkpoint.rs`: three forward passes, the periodic and the final
 checkpoint at the same iteration hold scenarios 0, 1 and 2 at every node with a
-basis, both whole, and are equal). No committed test runs the gather under an MPI
-launcher, and none pins the error-exit alternative, which no single-process run
-can show.
+basis, both whole, and are equal). The clean end's gather runs under an MPI
+launcher in
+`a_failed_periodic_write_on_the_world_leaves_the_last_whole_checkpoint_and_a_partial_beside_it`
+(`tests/periodic_checkpoint.rs`, launched on 2 and 4 ranks by
+`scripts/ci/run-mpi-launcher-gates.sh`): rank 0's whole checkpoint holds every
+forward pass of every rank at each node record, which fails under the local-row
+key. Under `cargo test` it is a single-rank pass and pins nothing here. No test
+pins the error-exit alternative, which no single-process run can show.
 
 ## A failed run never replaces a whole checkpoint
 
@@ -2803,7 +2808,10 @@ whole checkpoint is byte for byte unchanged),
 `a_result_with_every_ranks_bases_is_written_to_the_policy_directory`; by
 `a_failed_periodic_write_leaves_the_last_whole_checkpoint_and_a_partial_beside_it`
 (`tests/periodic_checkpoint.rs`: an in-band periodic write failure of a run that
-resumed a whole checkpoint); and by `a_failed_run_keeps_the_last_whole_checkpoint`
+resumed a whole checkpoint) and, on 2 and 4 ranks under the MPI launcher gates,
+`a_failed_periodic_write_on_the_world_leaves_the_last_whole_checkpoint_and_a_partial_beside_it`
+(the same failure on every rank of the real world); and by
+`a_failed_run_keeps_the_last_whole_checkpoint`
 (`crates/novomodelo-cli/tests/cli_run.rs`) and
 `test_a_failed_run_keeps_the_last_whole_checkpoint`
 (`crates/novomodelo-python/tests/test_periodic_checkpoint.py`): a resumed run that
