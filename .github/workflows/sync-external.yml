@@ -1,0 +1,73 @@
+# Publishes to the external repository (ons-ccee-epe, public) what lands in the internal one (onstec-modelos):
+#
+#   PR merged into main   -> main on the external repo. No force: if the external main diverged, the push fails
+#                            instead of overwriting it.
+#   push to feat/**, fix/** -> the same branch on the external repo, with its commits. Forced, so a rebase in
+#                            the internal repo is followed.
+#   tag push              -> the same tag on the external repo. No force: a tag that already exists there is
+#                            never moved.
+#
+# Other branches (chore/, ci/, release/, sync/...) stay internal. Branch deletions are not propagated.
+#
+# This file reaches the external repo together with main; there the job is skipped (it only runs when the
+# owner is onstec-modelos).
+#
+# Secret EXTERNO_PUSH_TOKEN: a PAT with Contents and Workflows write on the ons-ccee-epe repositories. Pushing
+# with a PAT (not GITHUB_TOKEN) is what lets the external workflows fire, e.g. the release run for a tag.
+# GitHub creates no push event when more than three tags are pushed at once: push tags one at a time.
+name: Sync to external
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  push:
+    branches: ["feat/**", "fix/**"]
+    tags: ["**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  # One sync per destination ref at a time, in arrival order
+  group: sync-external-${{ github.event_name == 'pull_request' && 'refs/heads/main' || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: >-
+      github.repository_owner == 'onstec-modelos' &&
+      ((github.event_name == 'push' && !github.event.deleted) ||
+       (github.event_name == 'pull_request' && github.event.pull_request.merged))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DESTINATION: ons-ccee-epe/${{ github.event.repository.name }}
+      REF: ${{ github.event_name == 'pull_request' && 'refs/heads/main' || github.ref }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.REF }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Push ${{ env.REF }} to ${{ env.DESTINATION }}
+        env:
+          TOKEN: ${{ secrets.EXTERNO_PUSH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TOKEN" ]; then
+            echo "::error::secret EXTERNO_PUSH_TOKEN is not set in this repository"
+            exit 1
+          fi
+          url="https://x-access-token:${TOKEN}@github.com/${DESTINATION}.git"
+          case "$REF" in
+            refs/heads/main) git push "$url" "HEAD:refs/heads/main" ;;
+            refs/heads/*)    git push --force "$url" "HEAD:${REF}" ;;
+            refs/tags/*)     git push "$url" "${REF}:${REF}" ;;
+            *) echo "::error::ref out of scope: $REF"; exit 1 ;;
+          esac
+          {
+            echo "### \`${REF}\` -> \`${DESTINATION}\`"
+            echo "commit \`$(git rev-parse HEAD)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
