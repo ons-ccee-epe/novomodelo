@@ -853,7 +853,7 @@ pub fn hydro_only_bus_geometry() -> StageGeometry {
 /// `z_inflow`(1), `storage_in`(2), `theta`(3)) is free (zero cost, zero NZ).
 #[must_use]
 pub fn hydro_only_bus_template() -> StageTemplate {
-    let num_cols = 15;
+    let num_cols = 17;
     let num_rows = 7;
     let mut col_lower = vec![0.0; num_cols];
     col_lower[1] = f64::NEG_INFINITY;
@@ -880,7 +880,7 @@ pub fn hydro_only_bus_template() -> StageTemplate {
 /// Fixed [`LpSolution`] for [`hydro_only_bus_template`]'s layout; theta at col 3.
 #[must_use]
 pub fn hydro_only_bus_solution(objective: f64, theta_val: f64) -> LpSolution {
-    let num_cols = 15;
+    let num_cols = 17;
     let mut primal = vec![0.0_f64; num_cols];
     primal[3] = theta_val;
     LpSolution {

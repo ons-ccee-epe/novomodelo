@@ -258,6 +258,8 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
         outflow_above_slack,
         turbine_below_slack,
         generation_below_slack,
+        turbine_below_plant_slack: _,
+        generation_below_plant_slack: _,
         contract_import,
         contract_export,
         water_balance,

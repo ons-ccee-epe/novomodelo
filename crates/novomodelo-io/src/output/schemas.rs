@@ -1678,8 +1678,8 @@ mod tests {
             .map(|(s, n)| (*n, s.fields().len()))
             .collect();
         let expected: &[(&str, usize)] = &[
-            ("costs", 29),
-            ("hydros", 41),
+            ("costs", 31),
+            ("hydros", 43),
             ("hydro_bus_generation", 9),
             ("thermals", 12),
             ("exchanges", 13),

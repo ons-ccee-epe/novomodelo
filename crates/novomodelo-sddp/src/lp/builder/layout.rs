@@ -278,6 +278,10 @@ impl OperViolationRanges {
 /// above-max-outflow, below-min-turbine, below-min-generation,
 /// below-min-turbine-plant, below-min-generation-plant), in the order their
 /// paired rows follow in [`OperViolationRanges::new`].
+#[expect(
+    clippy::type_complexity,
+    reason = "six ranges returned together; a named struct would add indirection"
+)]
 fn allocate_oper_violation_slack_columns(
     col: &mut RangeCursor,
     n_op_hydro: usize,

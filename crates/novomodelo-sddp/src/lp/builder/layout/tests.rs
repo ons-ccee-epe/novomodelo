@@ -1617,7 +1617,7 @@ fn filling_target_row_and_col_below_structural_bounds() {
         );
     }
     assert_eq!(
-        row_start, layout.oper_violation.min_generation.end,
+        row_start, layout.oper_violation.min_generation_plant.end,
         "σ_fill rows follow the operational-violation rows directly"
     );
 

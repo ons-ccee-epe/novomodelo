@@ -753,13 +753,23 @@ fn hydro_operational_slacks(
 ) -> (f64, f64, f64, f64, f64, f64) {
     let blk = BlockIdx::new(b);
     let hydro = HydroSys::new(h);
+    let turbine_plant = if spec.geometry.turbine_below_plant_slack.is_empty() {
+        0.0
+    } else {
+        view.primal[spec.geometry.turbine_below_plant_col(hydro, blk)]
+    };
+    let generation_plant = if spec.geometry.generation_below_plant_slack.is_empty() {
+        0.0
+    } else {
+        view.primal[spec.geometry.generation_below_plant_col(hydro, blk)]
+    };
     (
         sum_cell_slack(view, spec, StageGeometry::turbine_below_col, h, b),
         view.primal[spec.geometry.outflow_below_col(hydro, blk)],
         view.primal[spec.geometry.outflow_above_col(hydro, blk)],
         sum_cell_slack(view, spec, StageGeometry::generation_below_col, h, b),
-        view.primal[spec.geometry.turbine_below_plant_col(hydro, blk)],
-        view.primal[spec.geometry.generation_below_plant_col(hydro, blk)],
+        turbine_plant,
+        generation_plant,
     )
 }
 

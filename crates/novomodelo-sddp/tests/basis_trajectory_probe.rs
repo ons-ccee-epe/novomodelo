@@ -76,8 +76,9 @@ use common::StubComm;
 /// plus a residual `GenericConstraint` region and the appended-cuts region.
 /// The real order (`lp/builder/layout.rs`, the `row.alloc(...)` sequence in
 /// `StageLayout::new`): `z_inflow`, `water_balance`, `transit_bucket_definition`,
-/// `load_balance`, `fpha`, `evaporation`, the four operational-violation families,
-/// `filling_target`, `filled_min_storage_floor`, the three anticipated-thermal
+/// `load_balance`, `fpha`, `evaporation`, the six operational-violation families
+/// (min/max outflow, min turbine/generation per cell, min turbine/generation per
+/// plant), `filling_target`, `filled_min_storage_floor`, the three anticipated-thermal
 /// families, then generic constraints.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -92,10 +93,12 @@ enum RowFamily {
     MaxOutflowViolation = 7,
     MinTurbineViolation = 8,
     MinGenerationViolation = 9,
-    FillingTarget = 10,
-    FilledMinStorageFloor = 11,
-    GenericConstraint = 12,
-    CutRow = 13,
+    MinTurbinePlantViolation = 10,
+    MinGenerationPlantViolation = 11,
+    FillingTarget = 12,
+    FilledMinStorageFloor = 13,
+    GenericConstraint = 14,
+    CutRow = 15,
 }
 
 impl RowFamily {
@@ -111,6 +114,8 @@ impl RowFamily {
             RowFamily::MaxOutflowViolation => "max_outflow_violation",
             RowFamily::MinTurbineViolation => "min_turbine_violation",
             RowFamily::MinGenerationViolation => "min_generation_violation",
+            RowFamily::MinTurbinePlantViolation => "min_turbine_plant_violation",
+            RowFamily::MinGenerationPlantViolation => "min_generation_plant_violation",
             RowFamily::FillingTarget => "filling_target",
             RowFamily::FilledMinStorageFloor => "filled_min_storage_floor",
             RowFamily::GenericConstraint => "generic_constraint",
@@ -200,6 +205,8 @@ fn classify_stage_rows(
         RowFamily::MaxOutflowViolation,
         RowFamily::MinTurbineViolation,
         RowFamily::MinGenerationViolation,
+        RowFamily::MinTurbinePlantViolation,
+        RowFamily::MinGenerationPlantViolation,
     ] {
         mark(&mut fam, next..next + opviol_len, family);
         next += opviol_len;
@@ -275,7 +282,9 @@ fn census(fam: &[RowFamily]) -> RowCensus {
         operational_violation: count(RowFamily::MinOutflowViolation)
             + count(RowFamily::MaxOutflowViolation)
             + count(RowFamily::MinTurbineViolation)
-            + count(RowFamily::MinGenerationViolation),
+            + count(RowFamily::MinGenerationViolation)
+            + count(RowFamily::MinTurbinePlantViolation)
+            + count(RowFamily::MinGenerationPlantViolation),
         cut_rows: count(RowFamily::CutRow),
     }
 }
@@ -299,9 +308,9 @@ fn classify_stage_rows_reconciles_on_a_hand_built_geometry() {
 
     let total_fpha_rows = 2 * n_blks + 3 * n_blks;
     let evap_rows = geom.evap_indices.len(); // one evap hydro
-    let opviol_rows = 4 * n_hydros * n_blks;
+    let opviol_rows = 6 * n_hydros * n_blks;
     // z_inflow (n_hydros) + water_balance (n_hydros, BlockMode::Parallel) +
-    // load_balance + fpha + evaporation + 4 operational-violation families;
+    // load_balance + fpha + evaporation + 6 operational-violation families;
     // no filling/anticipated/generic-constraint rows in this fixture.
     let base_row_count = n_hydros
         + n_hydros

@@ -2584,6 +2584,8 @@ mod tests {
             curtailment_cost: 0.0,
             exchange_cost: 2.0,
             pumping_cost: 0.0,
+            turbined_violation_plant_cost: 0.0,
+            generation_violation_plant_cost: 0.0,
         }
     }
 
@@ -2627,6 +2629,8 @@ mod tests {
             integrated_accumulated_productivity_mw_per_m3s: 6.0,
             stored_energy_initial_mw: 1.7145,
             stored_energy_final_mw: 1.7222,
+            turbined_slack_plant_m3s: 0.0,
+            generation_slack_plant_mw: 0.0,
         }
     }
 
@@ -2673,7 +2677,7 @@ mod tests {
             .expect("costs batch must build");
 
         assert_eq!(batch.num_rows(), 2, "must have 2 rows");
-        assert_eq!(batch.num_columns(), 29, "costs schema has 29 columns");
+        assert_eq!(batch.num_columns(), 31, "costs schema has 31 columns");
 
         let expected = costs_schema();
         assert_eq!(
@@ -2696,7 +2700,7 @@ mod tests {
         let batch = build_hydros_batch(records.iter().copied(), 0, &block_durations, records.len())
             .expect("hydros batch must build");
         assert_eq!(batch.num_rows(), 2);
-        assert_eq!(batch.num_columns(), 41, "hydros schema has 41 columns");
+        assert_eq!(batch.num_columns(), 43, "hydros schema has 43 columns");
 
         let gen_mwh_col = batch
             .column_by_name("generation_mwh")
@@ -3397,7 +3401,7 @@ mod tests {
             .join("simulation/costs/scenario_id=0000/data.parquet");
         let batch = read_first_batch(&path);
         assert_eq!(batch.num_rows(), 2, "costs parquet must have 2 rows");
-        assert_eq!(batch.num_columns(), 29, "costs schema has 29 columns");
+        assert_eq!(batch.num_columns(), 31, "costs schema has 31 columns");
     }
 
     #[test]
@@ -3464,10 +3468,10 @@ mod tests {
         // both front ends' output identically.
         let schema = batch.schema();
         for (col, expected_index) in [
-            ("integrated_equivalent_productivity_mw_per_m3s", 37),
-            ("integrated_accumulated_productivity_mw_per_m3s", 38),
-            ("stored_energy_initial_mw", 39),
-            ("stored_energy_final_mw", 40),
+            ("integrated_equivalent_productivity_mw_per_m3s", 39),
+            ("integrated_accumulated_productivity_mw_per_m3s", 40),
+            ("stored_energy_initial_mw", 41),
+            ("stored_energy_final_mw", 42),
         ] {
             let field = schema
                 .field_with_name(col)
@@ -3589,8 +3593,8 @@ mod tests {
         let schema = hydros_schema();
         assert_eq!(
             schema.fields().len(),
-            41,
-            "hydros_schema must have 41 fields (39 + scenario_id + node_id)"
+            43,
+            "hydros_schema must have 43 fields (41 + scenario_id + node_id)"
         );
     }
 

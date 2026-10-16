@@ -1043,6 +1043,8 @@ fn build_geometry(
         outflow_above_slack: oa,
         turbine_below_slack: tb,
         generation_below_slack: gb,
+        turbine_below_plant_slack: 0..0,
+        generation_below_plant_slack: 0..0,
         // This conformance geometry models no contract columns; the production
         // `start..start`-at-pumping-end anchoring is owned by
         // `StageGeometry::from_layout`.

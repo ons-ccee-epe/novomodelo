@@ -508,13 +508,13 @@ pub(super) fn fill_operational_violation_rows(
                 .resolved
                 .bounds
                 .hydro_bounds_at_block(h_idx, stage_idx, blk);
-            let row_t_plant = layout.min_turbine_plant_row(hydro_sys, b);
-            row_lower[row_t_plant] = hb.min_turbined_m3s;
-            row_upper[row_t_plant] = f64::INFINITY;
+            let row_turbine_plant = layout.min_turbine_plant_row(hydro_sys, b);
+            row_lower[row_turbine_plant] = hb.min_turbined_m3s;
+            row_upper[row_turbine_plant] = f64::INFINITY;
 
-            let row_g_plant = layout.min_generation_plant_row(hydro_sys, b);
-            row_lower[row_g_plant] = hb.min_generation_mw;
-            row_upper[row_g_plant] = f64::INFINITY;
+            let row_generation_plant = layout.min_generation_plant_row(hydro_sys, b);
+            row_lower[row_generation_plant] = hb.min_generation_mw;
+            row_upper[row_generation_plant] = f64::INFINITY;
         }
     }
 }
