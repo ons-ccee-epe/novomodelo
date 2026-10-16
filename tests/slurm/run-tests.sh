@@ -8,11 +8,19 @@
 # tables are exempt by design — see the CLASSIFICATION_ROWS table in
 # compare_outputs_bitwise below).
 #
-# T1: mpiexec -n 1         (single rank, baseline)
-# T2: mpiexec -n 2         (multi-rank, single machine)
-# T3: sbatch -N 1 -n 2     (SLURM single-node)
-# T4: sbatch -N 2 -n 2     (SLURM multi-node — catches MPICH 4.3.0 deadlock)
-# T5: sbatch -N 2 -n 4     (SLURM multi-node, multiple ranks per node)
+# T1: mpiexec -n 1               (single rank, baseline)
+# T2: mpiexec -n 2               (multi-rank, single machine)
+# T3: sbatch, 1 node x 2 ranks   (SLURM single-node control)
+# T4: sbatch, 2 nodes x 1 rank   (SLURM multi-node — catches MPICH 4.3.0 deadlock)
+# T5: sbatch, 2 nodes x 2 ranks  (SLURM multi-node, several ranks per node)
+#
+# An sbatch case of <nodes> nodes x <k> ranks submits
+# `sbatch -N <nodes> -n <nodes*k> --ntasks-per-node=<k>` and runs
+# `mpiexec -n <nodes*k> -ppn <k> -hosts <the allocation's nodes>` in it. Hydra
+# is given the host list because, reading the SLURM node list itself, it starts
+# every rank on one node. The case fails unless `distribution.hosts` in the
+# run's metadata.json (the one beside its completion marker) lists <nodes>
+# hosts holding <k> ranks each.
 #
 # The L cases train a copy of the case whose config.json adds cut selection
 # (level1 every second iteration, at most 100 active cuts per stage). Each L
@@ -21,7 +29,7 @@
 #
 # L1: mpiexec -n 1               (selection-on baseline)
 # L2: mpiexec -n 2 --threads 2
-# L3: sbatch -N 2 -n 4           (mpiexec -n 4 --threads 1)
+# L3: sbatch, 2 nodes x 2 ranks  (--threads 1)
 #
 # The R cases resume the selection run at another rank count. A partial run
 # trains a copy of the selection case stopped at iteration RESUME_AT and is not
@@ -32,7 +40,7 @@
 #
 # R0: mpiexec -n 1               (partial run)
 # R1: mpiexec -n 2 --threads 2   (resumes R0's checkpoint)
-# R2: sbatch -N 2 -n 2           (mpiexec -n 2; partial run)
+# R2: sbatch, 2 nodes x 1 rank   (partial run)
 # R3: mpiexec -n 1 --threads 1   (resumes R2's checkpoint)
 #
 # The S cases run simulation only, from T1's policy, on a copy of the case
@@ -44,8 +52,8 @@
 #
 # S1: mpiexec -n 1 --threads 1   (simulation-only baseline)
 # S2: mpiexec -n 2 --threads 2
-# S3: sbatch -N 2 -n 2           (mpiexec -n 2)
-# S4: sbatch -N 2 -n 4           (mpiexec -n 4 --threads 1)
+# S3: sbatch, 2 nodes x 1 rank
+# S4: sbatch, 2 nodes x 2 ranks  (--threads 1)
 #
 # Usage:
 #   /shared/run-tests.sh [--mode reduced|full]
@@ -854,6 +862,80 @@ assert_selection_power_of_case() {
 }
 
 # ---------------------------------------------------------------------------
+# assert_rank_placement <output_dir> <metadata> <hosts> <ranks_per_host>
+#
+# Reads `distribution` from <output_dir>/<metadata> (a metadata.json) and
+# exits 1 unless `hosts` lists <hosts> distinct hostnames, each holding
+# <ranks_per_host> ranks, the ranks are 0 to world_size - 1 once each, and
+# `world_size` is <hosts> * <ranks_per_host>. Prints the layout.
+# ---------------------------------------------------------------------------
+assert_rank_placement() {
+    local output_dir="$1"
+    local metadata="$2"
+    local hosts="$3"
+    local ranks_per_host="$4"
+    python3 - "${output_dir}/${metadata}" "${hosts}" "${ranks_per_host}" <<'PYEOF'
+import json
+import os
+import sys
+
+path = sys.argv[1]
+expected_hosts = int(sys.argv[2])
+ranks_per_host = int(sys.argv[3])
+world_size = expected_hosts * ranks_per_host
+
+
+def fail(message):
+    print(f"FAIL: {message}")
+    sys.exit(1)
+
+
+if not os.path.isfile(path):
+    fail(f"{path}: missing")
+with open(path) as f:
+    distribution = json.load(f).get("distribution")
+if not isinstance(distribution, dict) or not isinstance(distribution.get("hosts"), list):
+    fail(f"{path}: distribution.hosts missing")
+hosts = distribution["hosts"]
+for host in hosts:
+    if not isinstance(host, dict) or not isinstance(host.get("ranks"), list):
+        fail(f"{path}: distribution.hosts entry {host!r} has no ranks list")
+print(
+    "INFO: rank placement: "
+    + "; ".join(f"{host.get('hostname')} {host['ranks']}" for host in hosts)
+)
+
+names = [host.get("hostname") for host in hosts]
+if len(set(names)) != len(names):
+    fail(f"{path}: distribution.hosts names a host twice: {names}")
+if len(hosts) != expected_hosts:
+    fail(f"{path}: ranks span {len(hosts)} hosts, expected {expected_hosts}")
+for host in hosts:
+    if len(host["ranks"]) != ranks_per_host:
+        fail(
+            f"{path}: host {host.get('hostname')} holds {len(host['ranks'])} ranks, "
+            f"expected {ranks_per_host}"
+        )
+if sorted(rank for host in hosts for rank in host["ranks"]) != list(range(world_size)):
+    fail(f"{path}: the ranks of distribution.hosts are not 0 to {world_size - 1} once each")
+if distribution.get("world_size") != world_size:
+    fail(f"{path}: world_size is {distribution.get('world_size')}, expected {world_size}")
+sys.exit(0)
+PYEOF
+}
+
+# ---------------------------------------------------------------------------
+# assert_rank_placement_of_case <baseline_dir> <case_dir> <metadata> <hosts>
+#                               <ranks_per_host>
+#
+# assert_rank_placement on <case_dir>, with the two-directory signature
+# assert_compare_exit calls its comparator with; <baseline_dir> is unused.
+# ---------------------------------------------------------------------------
+assert_rank_placement_of_case() {
+    assert_rank_placement "$2" "$3" "$4" "$5"
+}
+
+# ---------------------------------------------------------------------------
 # run_comparator <comparator> <baseline_dir> <test_dir>
 #
 # Runs <comparator>: a function name, then any arguments the function takes
@@ -913,7 +995,11 @@ assert_compare_exit() {
 # only in the keys a resumed run writes for itself PASS, a differing
 # completed-iteration count or dictionary code FAILs, retry-histogram
 # lower_bound rows differing after iteration 2 PASS and a differing backward
-# row FAILs, and an unclassified file under policy/ FAILs.
+# row FAILs, and an unclassified file under policy/ FAILs. Then exercises
+# assert_rank_placement: two hosts of two ranks PASS as 2 x 2 and FAIL when
+# read from a metadata.json that was not written, two hosts of one rank under
+# simulation/ PASS as 2 x 1, and four ranks on one host or three and one FAIL
+# as 2 x 2.
 # Aborts (exit 1) if any case's exit code does not match its expectation.
 # ---------------------------------------------------------------------------
 run_self_check() {
@@ -1257,6 +1343,51 @@ write_resumed_run(
 # -> expect FAIL.
 write_resumed_run(os.path.join(root, "resume_unclassified_policy"))
 write_bytes(os.path.join(root, "resume_unclassified_policy", "policy", "selection", "000.bin"), b"\x07")
+
+
+def write_placement(base, relative, hosts):
+    write_json(
+        os.path.join(base, relative),
+        {
+            "distribution": {
+                "world_size": sum(len(ranks) for _, ranks in hosts),
+                "num_hosts": len(hosts),
+                "hosts": [{"hostname": name, "ranks": ranks} for name, ranks in hosts],
+            }
+        },
+    )
+
+
+# placement_spanning: two hosts of two ranks each, checked as 2 x 2 -> expect
+# PASS; checked under simulation/, where it was not written -> expect FAIL.
+write_placement(
+    os.path.join(root, "placement_spanning"),
+    os.path.join("training", "metadata.json"),
+    [("controller", [0, 1]), ("node2", [2, 3])],
+)
+
+# placement_simulation: two hosts of one rank each under simulation/ -> expect
+# PASS as 2 x 1.
+write_placement(
+    os.path.join(root, "placement_simulation"),
+    os.path.join("simulation", "metadata.json"),
+    [("controller", [0]), ("node2", [1])],
+)
+
+# placement_one_host: four ranks on one host, checked as 2 x 2 -> expect FAIL.
+write_placement(
+    os.path.join(root, "placement_one_host"),
+    os.path.join("training", "metadata.json"),
+    [("controller", [0, 1, 2, 3])],
+)
+
+# placement_uneven: three ranks on one host and one on the other, checked as
+# 2 x 2 -> expect FAIL.
+write_placement(
+    os.path.join(root, "placement_uneven"),
+    os.path.join("training", "metadata.json"),
+    [("controller", [0, 1, 2]), ("node2", [3])],
+)
 PYEOF
 
     SELF_CHECK_CASES=0
@@ -1284,6 +1415,16 @@ PYEOF
         assert_compare_exit "resume_${resume_case}" "${root}/resume_baseline" \
             "${root}/resume_${resume_case}" "${expected_exit}" "compare_resumed_outputs 2"
     done
+    assert_compare_exit "placement_spanning" "" "${root}/placement_spanning" 0 \
+        "assert_rank_placement_of_case training/metadata.json 2 2"
+    assert_compare_exit "placement_wrong_file" "" "${root}/placement_spanning" 1 \
+        "assert_rank_placement_of_case simulation/metadata.json 2 2"
+    assert_compare_exit "placement_simulation" "" "${root}/placement_simulation" 0 \
+        "assert_rank_placement_of_case simulation/metadata.json 2 1"
+    assert_compare_exit "placement_one_host" "" "${root}/placement_one_host" 1 \
+        "assert_rank_placement_of_case training/metadata.json 2 2"
+    assert_compare_exit "placement_uneven" "" "${root}/placement_uneven" 1 \
+        "assert_rank_placement_of_case training/metadata.json 2 2"
 
     rm -rf "${root}"
 
@@ -1624,12 +1765,18 @@ run_mpiexec_test() {
 
 # ---------------------------------------------------------------------------
 # run_sbatch_test <test_name> <case_dir> <baseline_tag> <marker> <policy_src>
-#                 <comparator> <sbatch_N> <sbatch_n> <mpiexec_n> <extra_args...>
+#                 <comparator> <nodes> <ranks_per_node> <extra_args...>
 #
-# Seeds the output directory with <policy_src> when it is non-empty,
-# generates a batch script as a heredoc, submits via sbatch --wait, then
-# calls check_outputs with <comparator> against $WORK_DIR/<baseline_tag>
-# (none when the tag is empty). On failure, prints SLURM .out/.err logs.
+# Seeds the output directory with <policy_src> when it is non-empty and
+# submits a batch script with
+#   sbatch --wait -N <nodes> -n <nodes*ranks_per_node>
+#          --ntasks-per-node=<ranks_per_node>
+# that runs
+#   mpiexec -n <nodes*ranks_per_node> -ppn <ranks_per_node>
+#           -hosts <the allocation's nodes> $NOVOMODELO_BIN run <case_dir> ...
+# Then calls check_outputs with <comparator> against $WORK_DIR/<baseline_tag>
+# (none when the tag is empty) and assert_rank_placement on the metadata.json
+# beside <marker>. On failure, prints SLURM .out/.err logs.
 # ---------------------------------------------------------------------------
 run_sbatch_test() {
     local test_name="$1"
@@ -1638,11 +1785,11 @@ run_sbatch_test() {
     local marker="$4"
     local policy_src="$5"
     local comparator="$6"
-    local sbatch_N="$7"
-    local sbatch_n="$8"
-    local mpiexec_n="$9"
-    shift 9
+    local nodes="$7"
+    local ranks_per_node="$8"
+    shift 8
     local extra_args=("$@")
+    local n_ranks=$((nodes * ranks_per_node))
 
     local tag
     tag="$(echo "${test_name}" | tr '[:upper:]' '[:lower:]')"
@@ -1652,7 +1799,8 @@ run_sbatch_test() {
     local batch_script="${WORK_DIR}/${tag}.sbatch"
 
     echo ""
-    echo "=== ${test_name}: sbatch -N ${sbatch_N} -n ${sbatch_n} (mpiexec -n ${mpiexec_n}) ==="
+    echo "=== ${test_name}: sbatch -N ${nodes} --ntasks-per-node=${ranks_per_node}" \
+        "(mpiexec -n ${n_ranks} -ppn ${ranks_per_node}) ==="
 
     if [[ -n "${policy_src}" ]]; then
         seed_policy "${policy_src}" "${output_dir}"
@@ -1661,21 +1809,24 @@ run_sbatch_test() {
     # Build the extra args string for insertion into the batch script.
     local extra_str="${extra_args[*]+"${extra_args[*]}"}"
 
-    # Generate the batch script with absolute paths.
-    # The heredoc delimiter is unquoted so WORK_DIR, NOVOMODELO_BIN, case_dir,
-    # output_dir, and mpiexec_n expand at generation time.
+    # The heredoc delimiter is unquoted: the harness's variables expand when the
+    # script is written, the escaped ones when the batch job runs.
     cat > "${batch_script}" << SBEOF
 #!/bin/bash
+set -euo pipefail
 export PATH=/opt/mpich/bin:\$PATH
-mpiexec -n ${mpiexec_n} ${NOVOMODELO_BIN} run ${case_dir} --output ${output_dir} --quiet ${extra_str}
+hosts="\$(scontrol show hostnames "\${SLURM_JOB_NODELIST}" | paste -sd, -)"
+mpiexec -n ${n_ranks} -ppn ${ranks_per_node} -hosts "\${hosts}" \\
+    ${NOVOMODELO_BIN} run ${case_dir} --output ${output_dir} --quiet ${extra_str}
 SBEOF
 
     chmod +x "${batch_script}"
 
     local exit_code=0
     timeout "${TIMEOUT}" sbatch --wait \
-        -N "${sbatch_N}" \
-        -n "${sbatch_n}" \
+        -N "${nodes}" \
+        -n "${n_ranks}" \
+        --ntasks-per-node="${ranks_per_node}" \
         --output="${slurm_out}" \
         --error="${slurm_err}" \
         "${batch_script}" || exit_code=$?
@@ -1686,7 +1837,9 @@ SBEOF
     fi
 
     if check_outputs "${test_name}" "${exit_code}" "${output_dir}" "${baseline}" \
-        "${marker}" "${policy_src}" "${comparator}"; then
+        "${marker}" "${policy_src}" "${comparator}" \
+        && assert_rank_placement "${output_dir}" "$(dirname "${marker}")/metadata.json" \
+            "${nodes}" "${ranks_per_node}"; then
         echo "[${test_name}] PASS"
         RESULTS["${test_name}"]="PASS"
     else
@@ -1800,14 +1953,14 @@ main() {
     run_mpiexec_test "T2" "${training_run[@]}" 2 --threads 2
 
     if [[ "${MODE}" == "full" ]]; then
-        # T3: sbatch single-node, 2 ranks
-        run_sbatch_test "T3" "${training_run[@]}" 1 2 2
+        # T3: sbatch, 1 node x 2 ranks (the single-node control)
+        run_sbatch_test "T3" "${training_run[@]}" 1 2
 
-        # T4: sbatch multi-node, 1 rank per node (critical PMI2 deadlock test)
-        run_sbatch_test "T4" "${training_run[@]}" 2 2 2
+        # T4: sbatch, 2 nodes x 1 rank (critical PMI2 deadlock test)
+        run_sbatch_test "T4" "${training_run[@]}" 2 1
 
-        # T5: sbatch multi-node, 2 ranks per node
-        run_sbatch_test "T5" "${training_run[@]}" 2 4 4 --threads 1
+        # T5: sbatch, 2 nodes x 2 ranks
+        run_sbatch_test "T5" "${training_run[@]}" 2 2 --threads 1
     fi
 
     prepare_selection_case "${CASE_DIR}" "${selection_run[0]}"
@@ -1825,8 +1978,8 @@ main() {
     run_mpiexec_test "L2" "${selection_run[@]}" 2 --threads 2
 
     if [[ "${MODE}" == "full" ]]; then
-        # L3: sbatch multi-node, 2 ranks per node
-        run_sbatch_test "L3" "${selection_run[@]}" 2 4 4 --threads 1
+        # L3: sbatch, 2 nodes x 2 ranks
+        run_sbatch_test "L3" "${selection_run[@]}" 2 2 --threads 1
     fi
 
     prepare_resume_cases "${selection_run[0]}" "${partial_run[0]}" "${resume_case}"
@@ -1839,9 +1992,8 @@ main() {
         "${WORK_DIR}/r0/policy" "${resumed_comparator}" 2 --threads 2
 
     if [[ "${MODE}" == "full" ]]; then
-        # R2: sbatch -N 2 -n 2, mpiexec -n 2 in that allocation (placement of the two
-        # ranks on separate nodes is not requested), stopped at RESUME_AT (no comparison)
-        run_sbatch_test "R2" "${partial_run[@]}" 2 2 2
+        # R2: sbatch, 2 nodes x 1 rank, stopped at RESUME_AT (no comparison)
+        run_sbatch_test "R2" "${partial_run[@]}" 2 1
 
         # R3: resumes R2's two-rank checkpoint on one rank, compared against L1
         run_mpiexec_test "R3" "${resume_case}" l1 training/convergence.parquet \
@@ -1857,11 +2009,11 @@ main() {
     run_mpiexec_test "S2" "${simulation_run[@]}" 2 --threads 2
 
     if [[ "${MODE}" == "full" ]]; then
-        # S3: sbatch multi-node, 1 rank per node
-        run_sbatch_test "S3" "${simulation_run[@]}" 2 2 2
+        # S3: sbatch, 2 nodes x 1 rank
+        run_sbatch_test "S3" "${simulation_run[@]}" 2 1
 
-        # S4: sbatch multi-node, 2 ranks per node
-        run_sbatch_test "S4" "${simulation_run[@]}" 2 4 4 --threads 1
+        # S4: sbatch, 2 nodes x 2 ranks
+        run_sbatch_test "S4" "${simulation_run[@]}" 2 2 --threads 1
     fi
 
     print_summary
