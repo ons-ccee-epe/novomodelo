@@ -3611,3 +3611,333 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
         );
     }
 }
+
+mod generic_slack_penalty_basis {
+    //! A soft generic-constraint row's reported violation cost follows its
+    //! declared `penalty_basis` on stages of different lengths: a `per_unit`
+    //! storage shortfall costs the same per hm³ on a 168 h week and a 744 h
+    //! month, while its `per_hour` twin scales with each stage's hours.
+
+    use chrono::NaiveDate;
+    use novomodelo_core::scenario::InflowModel;
+    use novomodelo_core::temporal::{
+        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
+        StageStateConfig,
+    };
+    use novomodelo_core::{
+        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ConstraintExpression,
+        ContractBlockBounds, DeficitSegment, EntityId, GenericConstraint, HydroBlockBounds,
+        HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties,
+        LinearTerm, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis,
+        PumpingBlockBounds, ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties,
+        SlackConfig, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds, VariableRef,
+    };
+    use novomodelo_io::config::{
+        Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
+        InflowNonNegativityMethod, ModelingConfig, PolicyConfig, RowSelectionConfig,
+        SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode,
+        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        UpperBoundEvaluationConfig,
+    };
+    use std::collections::HashMap;
+
+    use super::common::builders::{
+        BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage,
+    };
+    use super::common::{build_setup_in_code, run_simulation};
+
+    const HYDRO_ID: i32 = 1;
+    const BUS_ID: i32 = 1;
+    const CONSTRAINT_ID: i32 = 10;
+    /// A week, then a 31-day month.
+    const STAGE_HOURS: [f64; 2] = [168.0, 744.0];
+    /// With zero inflow and no reason to release, storage stays here all horizon.
+    const INITIAL_STORAGE_HM3: f64 = 100.0;
+    const STORAGE_FLOOR_HM3: f64 = 300.0;
+    const PENALTY: f64 = 7.0;
+    /// derived: the floor the reservoir cannot reach, `300 − 100` hm³, every stage.
+    const SHORTFALL_HM3: f64 = STORAGE_FLOOR_HM3 - INITIAL_STORAGE_HM3;
+
+    fn stages() -> Vec<Stage> {
+        let mut start = NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date");
+        STAGE_HOURS
+            .iter()
+            .enumerate()
+            .map(|(i, &hours)| {
+                let end = start + chrono::Duration::hours(hours as i64);
+                let stage = make_stage(
+                    i,
+                    StageSpec {
+                        start_date: start,
+                        end_date: end,
+                        blocks: vec![Block {
+                            index: 0,
+                            name: "S".to_string(),
+                            duration_hours: hours,
+                        }],
+                        block_mode: BlockMode::Parallel,
+                        state_config: StageStateConfig {
+                            storage: true,
+                            inflow_lags: false,
+                        },
+                        risk_config: StageRiskConfig::Expectation,
+                        scenario_config: ScenarioSourceConfig {
+                            branching_factor: 1,
+                            noise_method: NoiseMethod::Saa,
+                        },
+                        ..Default::default()
+                    },
+                );
+                start = end;
+                stage
+            })
+            .collect()
+    }
+
+    fn storage_floor(penalty_basis: PenaltyBasis) -> GenericConstraint {
+        GenericConstraint {
+            id: EntityId(CONSTRAINT_ID),
+            name: "storage_floor".to_string(),
+            description: None,
+            expression: ConstraintExpression {
+                terms: vec![LinearTerm::literal(
+                    1.0,
+                    VariableRef::HydroStorage {
+                        hydro_id: EntityId(HYDRO_ID),
+                    },
+                )],
+            },
+            slack: Some(SlackConfig {
+                penalty: PENALTY,
+                penalty_basis,
+            }),
+            bound_lower_affine: None,
+            bound_upper_affine: None,
+        }
+    }
+
+    fn build_system(penalty_basis: PenaltyBasis) -> System {
+        let bus = make_bus(
+            EntityId(BUS_ID),
+            BusSpec {
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 500.0,
+                }],
+                excess_cost: 0.0,
+                ..Default::default()
+            },
+        );
+        let hydro = make_hydro(
+            EntityId(HYDRO_ID),
+            HydroSpec {
+                bus_id: EntityId(BUS_ID),
+                max_storage_hm3: 1000.0,
+                max_turbined_m3s: 100.0,
+                max_generation_mw: 100.0,
+                ..Default::default()
+            },
+        );
+
+        let stages = stages();
+        let n_stages = stages.len();
+        let inflow_models: Vec<InflowModel> = (0..n_stages)
+            .map(|i| InflowModel {
+                hydro_id: EntityId(HYDRO_ID),
+                stage_id: i as i32,
+                mean_m3s: 0.0,
+                std_m3s: 0.0,
+                ar_coefficients: vec![],
+                residual_std_ratio: 1.0,
+                annual: None,
+            })
+            .collect();
+
+        let bounds = ResolvedBounds::new(
+            &BoundsCountsSpec {
+                n_hydros: 1,
+                n_thermals: 0,
+                n_lines: 0,
+                n_pumping: 0,
+                n_contracts: 0,
+                n_stages,
+                k_max: 0,
+            },
+            &BoundsDefaults {
+                hydro: HydroStageBounds {
+                    min_storage_hm3: 0.0,
+                    max_storage_hm3: 1000.0,
+                    filling_min_rate_m3s: 0.0,
+                    water_withdrawal_m3s: 0.0,
+                },
+                hydro_block: HydroBlockBounds {
+                    max_turbined_m3s: 100.0,
+                    max_generation_mw: 100.0,
+                    ..Default::default()
+                },
+                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
+                thermal_block: ThermalBlockBounds {
+                    min_generation_mw: 0.0,
+                    max_generation_mw: 0.0,
+                },
+                line_block: LineBlockBounds {
+                    direct_mw: 0.0,
+                    reverse_mw: 0.0,
+                },
+                pumping_block: PumpingBlockBounds {
+                    min_flow_m3s: 0.0,
+                    max_flow_m3s: 0.0,
+                },
+                contract_block: ContractBlockBounds {
+                    min_mw: 0.0,
+                    max_mw: 0.0,
+                    price_per_mwh: 0.0,
+                },
+            },
+        );
+        let penalties = ResolvedPenalties::new(
+            &PenaltiesCountsSpec {
+                n_hydros: 1,
+                n_buses: 1,
+                n_lines: 0,
+                n_ncs: 0,
+                n_stages,
+            },
+            &PenaltiesDefaults {
+                hydro: HydroSpec::default().penalties,
+                bus: BusStagePenalties { excess_cost: 0.0 },
+                line: LineStagePenalties { exchange_cost: 0.0 },
+                ncs: NcsStagePenalties {
+                    curtailment_cost: 0.0,
+                },
+            },
+        );
+
+        let id_map: HashMap<i32, usize> = [(CONSTRAINT_ID, 0)].into_iter().collect();
+        let rows = (0..n_stages as i32).map(|stage| {
+            (
+                CONSTRAINT_ID,
+                stage,
+                None::<i32>,
+                Some(STORAGE_FLOOR_HM3),
+                None,
+            )
+        });
+        let generic_bounds = ResolvedGenericConstraintBounds::new(&id_map, rows);
+
+        SystemBuilder::new()
+            .buses(vec![bus])
+            .hydros(vec![hydro])
+            .stages(stages)
+            .inflow_models(inflow_models)
+            .bounds(bounds)
+            .penalties(penalties)
+            .generic_constraints(vec![storage_floor(penalty_basis)])
+            .resolved_generic_bounds(generic_bounds)
+            .initial_conditions(InitialConditions {
+                storage: vec![HydroStorage {
+                    hydro_id: EntityId(HYDRO_ID),
+                    value_hm3: INITIAL_STORAGE_HM3,
+                }],
+                ..InitialConditions::default()
+            })
+            .build()
+            .expect("generic_slack_penalty_basis: valid one-hydro system")
+    }
+
+    fn config() -> Config {
+        Config {
+            schema: None,
+            modeling: ModelingConfig {
+                inflow_non_negativity: InflowNonNegativityConfig {
+                    method: InflowNonNegativityMethod::None,
+                },
+                cost_scale_factor: None,
+            },
+            training: TrainingConfig {
+                enabled: true,
+                tree_seed: Some(42),
+                stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit { limit: 3 }]),
+                stopping_mode: StoppingMode::Any,
+                cut_selection: RowSelectionConfig::default(),
+                solver: TrainingSolverConfig::default(),
+                parallelism: novomodelo_io::config::ParallelismConfig::default(),
+                scenario_source: None,
+                selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+            },
+            upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
+            policy: PolicyConfig::default(),
+            simulation: IoSimulationConfig {
+                enabled: true,
+                io_channel_capacity: 16,
+                selection: Some(SimulationSelection::Sampled { num_scenarios: 1 }),
+                ..IoSimulationConfig::default()
+            },
+            exports: ExportsConfig::default(),
+            estimation: EstimationConfig::default(),
+        }
+    }
+
+    /// The `(slack_value, slack_cost)` the simulation reports for the storage
+    /// floor on each stage.
+    fn reported_violations(penalty_basis: PenaltyBasis) -> Vec<(f64, f64)> {
+        let mut setup = build_setup_in_code(build_system(penalty_basis), &config());
+        let results = run_simulation(&mut setup, 3);
+        assert_eq!(results.len(), 1, "exactly one scenario must be produced");
+        results[0]
+            .stages
+            .iter()
+            .map(|stage| {
+                assert_eq!(
+                    stage.generic_violations.len(),
+                    1,
+                    "stage {}: one violation record for the stage-level storage row",
+                    stage.stage_id
+                );
+                let violation = &stage.generic_violations[0];
+                assert_eq!(violation.constraint_id, CONSTRAINT_ID);
+                assert_eq!(violation.block_id, None);
+                (violation.slack_value, violation.slack_cost)
+            })
+            .collect()
+    }
+
+    /// derived: `per_unit` costs `PENALTY × SHORTFALL_HM3` on every stage.
+    #[test]
+    fn per_unit_storage_shortfall_costs_the_same_on_a_week_and_a_month() {
+        let violations = reported_violations(PenaltyBasis::PerUnit);
+        assert_eq!(violations.len(), STAGE_HOURS.len());
+        for (stage, (slack_value, slack_cost)) in violations.into_iter().enumerate() {
+            assert!(
+                (slack_value - SHORTFALL_HM3).abs() < 1e-6,
+                "stage {stage}: expected a {SHORTFALL_HM3} hm³ shortfall, got {slack_value}"
+            );
+            let expected = PENALTY * SHORTFALL_HM3;
+            assert!(
+                (slack_cost - expected).abs() < 1e-6,
+                "stage {stage}: per_unit shortfall must cost {expected}, got {slack_cost}"
+            );
+        }
+    }
+
+    /// derived: the `per_hour` twin costs `PENALTY × SHORTFALL_HM3 × stage hours`,
+    /// so the week and the month differ.
+    #[test]
+    fn per_hour_storage_shortfall_cost_scales_with_stage_hours() {
+        let violations = reported_violations(PenaltyBasis::PerHour);
+        assert_eq!(violations.len(), STAGE_HOURS.len());
+        for ((stage, (slack_value, slack_cost)), hours) in
+            violations.into_iter().enumerate().zip(STAGE_HOURS)
+        {
+            assert!(
+                (slack_value - SHORTFALL_HM3).abs() < 1e-6,
+                "stage {stage}: expected a {SHORTFALL_HM3} hm³ shortfall, got {slack_value}"
+            );
+            let expected = PENALTY * SHORTFALL_HM3 * hours;
+            assert!(
+                (slack_cost - expected).abs() < 1e-6 * expected,
+                "stage {stage}: per_hour shortfall must cost {expected}, got {slack_cost}"
+            );
+        }
+    }
+}

@@ -1731,6 +1731,97 @@ fn generic_constraint_chronological_specific_block_ramp_one_row() {
     );
 }
 
+/// Objective coefficient of the slack on a soft `S ≤ 150 hm³` storage row, on a
+/// parallel stage of `n_blks` 720-hour blocks.
+fn storage_slack_objective(n_blks: usize, penalty_basis: novomodelo_core::PenaltyBasis) -> f64 {
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::{
+        BlockMode, ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
+    };
+    use std::collections::HashMap;
+
+    let baseline = one_hydro_system(
+        n_blks,
+        BlockMode::Parallel,
+        None,
+        ResolvedGenericConstraintBounds::new(&HashMap::new(), std::iter::empty()),
+    );
+    let baseline_tpl = &build_templates_for(&baseline)[0];
+
+    let constraint = GenericConstraint {
+        id: EntityId(100),
+        name: "gc_storage_cap".to_string(),
+        description: None,
+        expression: ConstraintExpression {
+            terms: vec![LinearTerm::literal(
+                1.0,
+                VariableRef::HydroStorage {
+                    hydro_id: EntityId(5),
+                },
+            )],
+        },
+        slack: Some(SlackConfig {
+            penalty: 40.0,
+            penalty_basis,
+        }),
+        bound_lower_affine: None,
+        bound_upper_affine: None,
+    };
+    let id_map: HashMap<i32, usize> = [(100_i32, 0)].into_iter().collect();
+    let rows = vec![(100_i32, 0_i32, None::<i32>, None, Some(150.0_f64))];
+    let generic_bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter());
+
+    let system = one_hydro_system(
+        n_blks,
+        BlockMode::Parallel,
+        Some(constraint),
+        generic_bounds,
+    );
+    let t = &build_templates_for(&system)[0];
+
+    assert_eq!(t.num_cols, baseline_tpl.num_cols + 1);
+    assert_eq!(t.num_rows, baseline_tpl.num_rows + 1);
+    let slack_col = baseline_tpl.num_cols;
+    let generic_row = baseline_tpl.num_rows;
+    let entry: f64 = csc_entries_at(t, slack_col, generic_row).iter().sum();
+    assert!(
+        (entry + 1.0).abs() < f64::EPSILON,
+        "`<=` slack must carry -1.0 on the storage row, got {entry}"
+    );
+    t.objective[slack_col]
+}
+
+/// derived: a `per_unit` slack costs `penalty / COST_SCALE_FACTOR` per hm³ short on
+/// any stage length; its `per_hour` twin costs `penalty × stage_hours / COST_SCALE_FACTOR`.
+#[test]
+#[allow(clippy::cast_precision_loss)]
+fn per_unit_storage_slack_price_ignores_stage_hours() {
+    use novomodelo_core::PenaltyBasis;
+
+    let penalty = 40.0_f64;
+    for n_blks in [1_usize, 3] {
+        let stage_hours = 720.0 * n_blks as f64;
+
+        let per_unit = storage_slack_objective(n_blks, PenaltyBasis::PerUnit);
+        let expected_per_unit = penalty / COST_SCALE_FACTOR;
+        assert!(
+            (per_unit - expected_per_unit).abs() < 1e-12,
+            "{n_blks} blocks: per_unit slack must cost {expected_per_unit}, got {per_unit}"
+        );
+
+        let per_hour = storage_slack_objective(n_blks, PenaltyBasis::PerHour);
+        let expected_per_hour = penalty * stage_hours / COST_SCALE_FACTOR;
+        assert!(
+            (per_hour - expected_per_hour).abs() < 1e-9,
+            "{n_blks} blocks: per_hour slack must cost {expected_per_hour}, got {per_hour}"
+        );
+        assert!(
+            (per_hour / per_unit - stage_hours).abs() < 1e-9,
+            "the per_hour twin must cost {stage_hours}× the per_unit slack"
+        );
+    }
+}
+
 // ── Parameter (stage, block) axis + symbolic RHS bound byte-identity twins ──
 //
 // These twins prove the resolved parameter axis and `@name`-bounded constraints
