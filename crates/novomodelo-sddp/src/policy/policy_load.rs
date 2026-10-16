@@ -1526,10 +1526,10 @@ pub fn inject_boundary_cuts(
     boundary_cuts: &ValidatedBoundaryCuts,
 ) -> Result<(), SddpError> {
     let terminal_idx = terminal_pool_index(setup)?;
-    check_resume_boundary(setup, boundary_cuts)?;
     let mut pool = terminal_boundary_pool(&setup.fcf, boundary_cuts);
     if setup.loop_params.start_iteration > 0 {
         let loaded = &setup.fcf.pools[terminal_idx];
+        refuse_changed_boundary(terminal_idx, loaded, &pool)?;
         for slot in 0..loaded.populated() {
             let counters = loaded.metadata(slot);
             pool.record_binding(slot, counters.active_count, counters.last_active_iter);
@@ -1577,7 +1577,15 @@ pub fn check_resume_boundary(
     }
     let terminal_idx = terminal_pool_index(setup)?;
     let boundary = terminal_boundary_pool(&setup.fcf, boundary_cuts);
-    match first_difference(&setup.fcf.pools[terminal_idx], &boundary) {
+    refuse_changed_boundary(terminal_idx, &setup.fcf.pools[terminal_idx], &boundary)
+}
+
+fn refuse_changed_boundary(
+    terminal_idx: usize,
+    loaded: &CutPool,
+    boundary: &CutPool,
+) -> Result<(), SddpError> {
+    match first_difference(loaded, boundary) {
         None => Ok(()),
         Some(difference) => Err(SddpError::Validation(format!(
             "resume needs the policy.boundary and modeling.cost_scale_factor the interrupted \

@@ -1324,10 +1324,10 @@ fn total_solve_count<S: SolverInterface>(workspaces: &[SolverWorkspace<S>]) -> u
 }
 
 /// Resolve the effective backward thread scheduler for the SAMPLED path
-/// (`compute_one_backward_node`'s only caller): an active Dynamic Cut
-/// Selection iteration always forces the by-scenario path (its cut-free lazy
-/// core is incompatible with the by-node frozen-LP load); otherwise the
-/// configured scheduler is unchanged.
+/// (`compute_one_backward_node`'s only caller): an active iteration of the
+/// `dynamic` method always forces the by-scenario path (its cut-free lazy core
+/// is incompatible with the by-node frozen-LP load); otherwise the configured
+/// scheduler is unchanged.
 fn resolve_backward_scheduler(
     dcs_active: bool,
     configured: BackwardScheduler,

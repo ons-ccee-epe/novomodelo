@@ -18,7 +18,8 @@ launcher). Every variant sets `simulation.cut_set` explicitly.
 
 Each case copy links the entries of the source case and holds its own
 `config.json`: the source config with the variant's settings merged in (dicts
-merge recursively, lists and scalars are replaced). The source case is never
+merge recursively, lists, scalars and `selection` objects are replaced whole,
+since a selection's keys depend on its method). The source case is never
 written to.
 
 Example:
@@ -51,7 +52,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-COLUMNS = (
+COLUMNS: tuple[str, ...] = (
     "variant",
     "lower_bound",
     "mean_simulated_cost",
@@ -76,7 +77,11 @@ class Variant:
 def merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
     for key, value in overlay.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
+        if (
+            key != "selection"
+            and isinstance(value, dict)
+            and isinstance(base.get(key), dict)
+        ):
             merged[key] = merge(base[key], value)
         else:
             merged[key] = value

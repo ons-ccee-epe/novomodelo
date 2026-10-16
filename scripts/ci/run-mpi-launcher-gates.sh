@@ -7,8 +7,13 @@
 # comparison is an identity, so these tests prove something only when a launcher
 # starts them on several ranks. Every gate in the table runs at 2 and 4 ranks.
 #
+# One probe runs the first gate on a world larger than its forward passes and
+# requires the refusal that leaves a rank without a trial: a non-zero exit and
+# one refusal line per rank in the log. A passing launch there would mean the
+# gate no longer checks its world size.
+#
 # Usage: TEST_FEATURES="<cargo features>" [MPIEXEC=<launcher>] run-mpi-launcher-gates.sh
-#        run-mpi-launcher-gates.sh --list
+#        run-mpi-launcher-gates.sh --list      (the gates, then the probe)
 #
 # The test executables come from
 # `cargo test --workspace --features "$TEST_FEATURES" --no-run`, so a preceding
@@ -23,8 +28,9 @@
 # Needs cargo, jq, timeout and the launcher (MPIEXEC, default `mpiexec`).
 #
 # Exit codes:
-#   0 — every launch passed (or --list).
-#   1 — a build, executable resolution or launch failed (stops at the first).
+#   0 — every launch passed and the probe was refused (or --list).
+#   1 — a build, executable resolution, launch or the probe failed (stops at the
+#       first).
 #   2 — bad invocation: an unknown argument, TEST_FEATURES unset, or a missing
 #       tool.
 
@@ -36,6 +42,9 @@ readonly GATES=(
     "test_mpi_sync_cuts_invariant k_fan_branching_rank_invariance::k_fan_final_lb_bitwise_invariant_across_world_size"
 )
 readonly RANK_COUNTS=(2 4)
+readonly OVERSIZED_GATE="${GATES[0]}"
+readonly OVERSIZED_RANKS=9
+readonly OVERSIZED_REFUSAL="leaves a rank without a trial"
 readonly LAUNCH_TIMEOUT_S=600
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -57,6 +66,7 @@ case "${1:-}" in
     "") ;;
     --list)
         printf '%s\n' "${GATES[@]}"
+        printf '%s on %d ranks must be refused: %s\n' "${OVERSIZED_GATE#* }" "$OVERSIZED_RANKS" "$OVERSIZED_REFUSAL"
         exit 0
         ;;
     *) refuse "unknown argument '$1' (usage: TEST_FEATURES=... $0 | $0 --list)" ;;
@@ -89,26 +99,41 @@ for gate in "${GATES[@]}"; do
     EXECUTABLE[$target]="${found[0]}"
 done
 
+launch() {
+    local target="$1" test_name="$2" ranks="$3"
+    echo "--- $test_name on $ranks ranks"
+    local started_us="${EPOCHREALTIME//[!0-9]/}"
+    status=0
+    timeout --kill-after=30 "$LAUNCH_TIMEOUT_S" \
+        "$MPIEXEC" -n "$ranks" "${EXECUTABLE[$target]}" --exact "$test_name" --test-threads=1 \
+        >"$LOG" 2>&1 || status=$?
+    elapsed_us=$((${EPOCHREALTIME//[!0-9]/} - started_us))
+    cat "$LOG"
+    [[ $status -ne 124 && $status -ne 137 ]] \
+        || fail "$test_name timed out on $ranks ranks after ${LAUNCH_TIMEOUT_S} s"
+}
+
+report() {
+    printf 'OK: %s on %d ranks (%d.%02d s)\n' "$1" "$2" $((elapsed_us / 1000000)) $((elapsed_us % 1000000 / 10000))
+}
+
 cd "$PACKAGE_DIR"
 for gate in "${GATES[@]}"; do
     target="${gate%% *}"
     test_name="${gate#* }"
     for ranks in "${RANK_COUNTS[@]}"; do
-        echo "--- $test_name on $ranks ranks"
-        started_us="${EPOCHREALTIME//[!0-9]/}"
-        status=0
-        timeout --kill-after=30 "$LAUNCH_TIMEOUT_S" \
-            "$MPIEXEC" -n "$ranks" "${EXECUTABLE[$target]}" --exact "$test_name" --test-threads=1 \
-            >"$LOG" 2>&1 || status=$?
-        elapsed_us=$((${EPOCHREALTIME//[!0-9]/} - started_us))
-        cat "$LOG"
-        [[ $status -ne 124 && $status -ne 137 ]] \
-            || fail "$test_name timed out on $ranks ranks after ${LAUNCH_TIMEOUT_S} s"
+        launch "$target" "$test_name" "$ranks"
         [[ $status -eq 0 ]] || fail "$test_name failed on $ranks ranks (launcher exit $status)"
         passed="$(grep -c 'test result: ok\. 1 passed;' "$LOG" || true)"
         [[ "$passed" -eq "$ranks" ]] \
             || fail "$test_name: rank count mismatch, $ranks ranks launched but $passed reported '1 passed' (the filter matched nothing or the test is ignored)"
-        printf 'OK: %s on %d ranks (%d.%02d s)\n' "$test_name" "$ranks" \
-            $((elapsed_us / 1000000)) $((elapsed_us % 1000000 / 10000))
+        report "$test_name" "$ranks"
     done
 done
+
+launch "${OVERSIZED_GATE%% *}" "${OVERSIZED_GATE#* }" "$OVERSIZED_RANKS"
+[[ $status -ne 0 ]] || fail "${OVERSIZED_GATE#* } passed on $OVERSIZED_RANKS ranks, a world larger than its forward passes"
+refused="$(grep -c "$OVERSIZED_REFUSAL" "$LOG" || true)"
+[[ "$refused" -eq "$OVERSIZED_RANKS" ]] \
+    || fail "${OVERSIZED_GATE#* } on $OVERSIZED_RANKS ranks: $refused ranks reported '$OVERSIZED_REFUSAL', expected every rank"
+report "${OVERSIZED_GATE#* } refused" "$OVERSIZED_RANKS"

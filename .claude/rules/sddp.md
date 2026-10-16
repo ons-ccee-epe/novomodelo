@@ -2963,8 +2963,9 @@ with `policy.mode = warm_start`. Rows that match take the `active_count` and
 simulation-only load do not compare and keep the restart (the activity clock
 paragraph above).
 
-The compare is one public function, `check_resume_boundary`, which
-`inject_boundary_cuts` and `validate_study` both call, so `novomodelo validate`,
+The compare is one function, `refuse_changed_boundary`, which
+`inject_boundary_cuts` runs on the pool it installs and `check_resume_boundary`
+runs on the pool it builds for `validate_study`, so `novomodelo validate`,
 `novomodelo run` and the Python bindings refuse the same resume with the same line.
 `validate_study` applies a resume load to its setup before it reconciles the
 boundary, in the order of a run; without that the setup it reconciles on has
@@ -3003,7 +3004,7 @@ The wrong-but-compiling alternatives:
   `novomodelo run` refuses.
 
 Read: `policy/policy_load.rs` (`inject_boundary_cuts`, `check_resume_boundary`,
-`terminal_boundary_pool`), `validate_phases.rs` (`validate_study`,
+`refuse_changed_boundary`, `terminal_boundary_pool`), `validate_phases.rs` (`validate_study`,
 `check_configured_full_fcf_load`), `cut/pool.rs` (`CutPool::record_binding`,
 `CutPool::restart_activity_clock`).
 Pinned by `level1_with_a_budget_and_a_boundary_resume_equals_the_uninterrupted_run`

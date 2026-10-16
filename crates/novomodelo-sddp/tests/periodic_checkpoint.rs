@@ -156,11 +156,7 @@ fn periodic_at_3_and_final_at_3(forward_passes: u32) -> PeriodicAndFinal {
         &k_setup,
         &k_system,
         &k_result,
-        &CheckpointParams {
-            max_iterations: k_setup.loop_params.max_iterations,
-            forward_passes: k_setup.loop_params.forward_passes,
-            seed: k_setup.loop_params.seed,
-        },
+        &checkpoint_params(&k_setup),
     )
     .expect("write_checkpoint must succeed");
     let final_at_k = read_policy_checkpoint(&k_policy_dir).expect("read_policy_checkpoint");
@@ -333,11 +329,7 @@ fn a_failed_periodic_write_leaves_the_last_whole_checkpoint_and_a_partial_beside
     let (system, mut first) = checkpointing_setup(3, None, 1, 1);
     let first_result = train(&mut first, None);
     let policy_dir = out.path().join(&first.policy_path);
-    let params = CheckpointParams {
-        max_iterations: first.loop_params.max_iterations,
-        forward_passes: first.loop_params.forward_passes,
-        seed: first.loop_params.seed,
-    };
+    let params = checkpoint_params(&first);
     assert_eq!(
         write_checkpoint(&policy_dir, &first, &system, &first_result, &params)
             .expect("write_checkpoint must succeed"),

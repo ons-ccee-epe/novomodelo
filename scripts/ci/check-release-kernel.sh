@@ -24,7 +24,7 @@
 # and checks that the probe fails, passes and refuses as it must. Its files live under $TMPDIR
 # and are always removed.
 #
-# Needs objdump, tar and python3; --verify also needs as. GNU grep (for \b).
+# Needs objdump, tar, python3 and od; --verify also needs as. GNU grep (for \b).
 #
 # Exit codes:
 #   0 — Pass: every probed file holds 0 packed FMA instructions (or --verify

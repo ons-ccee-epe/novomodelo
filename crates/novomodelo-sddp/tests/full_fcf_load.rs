@@ -820,10 +820,17 @@ const DEACTIVATING_ITERATIONS: u32 = 6;
 /// the run holds a cut outside its active set. Returns the first such pool with
 /// its cut count and its active count.
 fn deactivating_checkpoint() -> (TempDir, PathBuf, (usize, usize, usize)) {
-    let (system, mut setup) = toy_setup(2, DEACTIVATING_ITERATIONS, |config| {
+    deactivating_checkpoint_under(|config| {
         with_level1(None)(config);
         with_budget(config);
-    });
+    })
+}
+
+/// [`deactivating_checkpoint`] for a two-pass run configured by `edit`.
+fn deactivating_checkpoint_under(
+    edit: impl FnOnce(&mut Config),
+) -> (TempDir, PathBuf, (usize, usize, usize)) {
+    let (system, mut setup) = toy_setup(2, DEACTIVATING_ITERATIONS, edit);
     let output = train_and_write(&mut setup, &system);
     let policy_dir = output.path().join(&setup.policy_path);
     let first = setup
@@ -856,15 +863,22 @@ fn dynamic_simulating(cut_set: SimulationRowSet) -> impl FnOnce(&mut Config) {
 /// A `dynamic` run that simulates every cut refuses `kind`'s load of the
 /// deactivating checkpoint, and loads it under `simulation.cut_set = active`.
 fn assert_dynamic_all_is_refused(kind: FullFcfLoadKind) {
-    let (_output, policy_dir, (pool_id, held, active)) = deactivating_checkpoint();
+    let (_output, policy_dir, first) = deactivating_checkpoint();
+    assert_dynamic_all_is_refused_over(kind, &policy_dir, first);
+}
 
+fn assert_dynamic_all_is_refused_over(
+    kind: FullFcfLoadKind,
+    policy_dir: &Path,
+    (pool_id, held, active): (usize, usize, usize),
+) {
     load_under(
         kind,
-        &policy_dir,
+        policy_dir,
         dynamic_simulating(SimulationRowSet::Active),
     )
     .expect("the active cuts are what a dynamic lazy solve reads");
-    let err = load_under(kind, &policy_dir, dynamic_simulating(SimulationRowSet::All))
+    let err = load_under(kind, policy_dir, dynamic_simulating(SimulationRowSet::All))
         .expect_err("the load must be refused");
 
     assert!(
@@ -897,6 +911,23 @@ fn a_dynamic_warm_start_refuses_to_simulate_all_over_deactivated_cuts() {
 #[test]
 fn a_dynamic_resume_refuses_to_simulate_all_over_deactivated_cuts() {
     assert_dynamic_all_is_refused(FullFcfLoadKind::Resume);
+}
+
+/// A row the cap alone evicted is `Generated`, which `all` holds whatever its flag:
+/// a simulation-only load and a resume are refused, while a warm start loads
+/// every row as `Prefix`, and an unscored inactive one is in neither set.
+#[test]
+fn a_dynamic_load_refuses_to_simulate_all_over_cap_evicted_cuts() {
+    let (_output, policy_dir, first) = deactivating_checkpoint_under(with_budget);
+    for kind in [FullFcfLoadKind::SimulationOnly, FullFcfLoadKind::Resume] {
+        assert_dynamic_all_is_refused_over(kind, &policy_dir, first);
+    }
+    load_under(
+        FullFcfLoadKind::WarmStart,
+        &policy_dir,
+        dynamic_simulating(SimulationRowSet::All),
+    )
+    .expect("a warm start loads an unscored inactive row as a prefix row");
 }
 
 /// The refusal needs all three of: the `dynamic` method, a simulation of `all`,
