@@ -1135,10 +1135,6 @@ where
             let sel_start = Instant::now();
             let node_graph = self.training_ctx.node_graph;
 
-            // Selection judges interior cut-generating nodes only; terminal
-            // leaves gain no cuts and the root pool is never selected.
-            // A cut-generating (non-leaf) node always owns its own pool, so
-            // selection is per-pool.
             // Sequential (not `into_par_iter`): the ownership scan already
             // saturates the cores via its inner parallelism.
             let mut deactivations: Vec<(usize, CutActivityUpdates, f64)> =

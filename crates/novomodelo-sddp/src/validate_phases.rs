@@ -388,7 +388,6 @@ pub fn validate_study(request: ValidateRequest<'_>) -> Result<ValidatedStudy, Va
             report
         });
 
-    // A run that does not train never injects the boundary, so it never reconciles it.
     let boundary = boundary_policy
         .filter(|_| run_phase_plan(&setup, config) == RunPhasePlan::TrainedThenSimulated)
         .map(|bp| {

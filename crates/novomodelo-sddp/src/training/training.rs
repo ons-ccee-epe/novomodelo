@@ -319,7 +319,6 @@ pub(crate) fn broadcast_basis_cache<C: Communicator>(
         return Ok(rank_local_basis_cache(basis_store));
     }
 
-    // None is written as a bare 0_i32 sentinel; Some delegates to the wire owner.
     let mut buf: Vec<i32> = Vec::new();
     let mut f64_buf: Vec<f64> = Vec::new();
     if comm.rank() == 0 {
