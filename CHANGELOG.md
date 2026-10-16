@@ -143,8 +143,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING:** a refused policy loaded only to simulate is reported by
   `cobre validate --json` and `cobre.io.validate` as
   `SimulationPolicyIncompatible`, no longer as `WarmStartIncompatible`, which
-  now covers only `policy.mode = warm_start`. Filter on both kinds to keep the
-  previous behaviour.
+  now covers only `policy.mode = warm_start`. The warnings of an accepted
+  simulation-only load, which the Python validation also returns, change kind
+  the same way. Filter on both kinds to keep the previous behaviour.
 - x86_64 Linux builds of the MPI release archive and builds from source,
   `cargo install` included, no longer enable AVX2 and FMA. Every x86_64 build
   of a version now uses one floating-point kernel, so they select the same

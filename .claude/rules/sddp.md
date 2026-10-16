@@ -2810,7 +2810,8 @@ whole checkpoint is byte for byte unchanged),
 (`tests/periodic_checkpoint.rs`: an in-band periodic write failure of a run that
 resumed a whole checkpoint) and, on 2 and 4 ranks under the MPI launcher gates,
 `a_failed_periodic_write_on_the_world_leaves_the_last_whole_checkpoint_and_a_partial_beside_it`
-(the same failure on every rank of the real world); and by
+(rank 0's write fails and every peer fails at the same iteration through the
+error reconciliation); and by
 `a_failed_run_keeps_the_last_whole_checkpoint`
 (`crates/novomodelo-cli/tests/cli_run.rs`) and
 `test_a_failed_run_keeps_the_last_whole_checkpoint`
