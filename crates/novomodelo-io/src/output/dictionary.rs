@@ -1242,7 +1242,14 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "generic_constraint_echo",
         "slack_penalty",
         "Penalty per unit of slack, NULL when slack is disabled; its unit is $ per unit \
-         of the constraint identified by constraint_id",
+         of the constraint identified by constraint_id, per hour when slack_penalty_basis \
+         is per_hour",
+    ),
+    (
+        "generic_constraint_echo",
+        "slack_penalty_basis",
+        "How slack_penalty is charged: per_hour (times the hours the row spans) or \
+         per_unit; NULL when slack is disabled",
     ),
     (
         "bounds",
@@ -4135,6 +4142,7 @@ mod tests {
                 "variable",
                 "derived_shape",
                 "slack_enabled",
+                "slack_penalty_basis",
             ],
         ),
         (

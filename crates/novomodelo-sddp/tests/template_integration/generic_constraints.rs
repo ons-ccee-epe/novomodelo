@@ -530,9 +530,7 @@ fn generic_constraint_inactive_does_not_contribute_rows() {
 #[test]
 fn generic_constraint_thermal_le_row_bounds_and_csc_entry() {
     use novomodelo_core::ResolvedGenericConstraintBounds;
-    use novomodelo_core::{
-        ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-    };
+    use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
     use std::collections::HashMap;
 
     let thermal_entity_id = EntityId(2);
@@ -550,10 +548,7 @@ fn generic_constraint_thermal_le_row_bounds_and_csc_entry() {
                 },
             )],
         },
-        slack: SlackConfig {
-            enabled: false,
-            penalty: None,
-        },
+        slack: None,
         bound_lower_affine: None,
         bound_upper_affine: None,
     };
@@ -597,7 +592,7 @@ fn generic_constraint_thermal_le_row_bounds_and_csc_entry() {
 fn generic_constraint_thermal_le_slack_column_and_csc_entry() {
     use novomodelo_core::ResolvedGenericConstraintBounds;
     use novomodelo_core::{
-        ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
+        ConstraintExpression, GenericConstraint, LinearTerm, PenaltyBasis, SlackConfig, VariableRef,
     };
     use std::collections::HashMap;
 
@@ -618,10 +613,10 @@ fn generic_constraint_thermal_le_slack_column_and_csc_entry() {
                 },
             )],
         },
-        slack: SlackConfig {
-            enabled: true,
-            penalty: Some(penalty),
-        },
+        slack: Some(SlackConfig {
+            penalty,
+            penalty_basis: PenaltyBasis::PerHour,
+        }),
         bound_lower_affine: None,
         bound_upper_affine: None,
     };
@@ -675,9 +670,7 @@ fn generic_constraint_thermal_le_slack_column_and_csc_entry() {
 #[test]
 fn generic_constraint_thermal_ge_row_bounds() {
     use novomodelo_core::ResolvedGenericConstraintBounds;
-    use novomodelo_core::{
-        ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-    };
+    use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
     use std::collections::HashMap;
 
     let thermal_entity_id = EntityId(2);
@@ -695,10 +688,7 @@ fn generic_constraint_thermal_ge_row_bounds() {
                 },
             )],
         },
-        slack: SlackConfig {
-            enabled: false,
-            penalty: None,
-        },
+        slack: None,
         bound_lower_affine: None,
         bound_upper_affine: None,
     };
@@ -730,7 +720,7 @@ fn generic_constraint_thermal_ge_row_bounds() {
 fn generic_constraint_thermal_ge_slack_column_and_csc_entry() {
     use novomodelo_core::ResolvedGenericConstraintBounds;
     use novomodelo_core::{
-        ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
+        ConstraintExpression, GenericConstraint, LinearTerm, PenaltyBasis, SlackConfig, VariableRef,
     };
     use std::collections::HashMap;
 
@@ -751,10 +741,10 @@ fn generic_constraint_thermal_ge_slack_column_and_csc_entry() {
                 },
             )],
         },
-        slack: SlackConfig {
-            enabled: true,
-            penalty: Some(penalty),
-        },
+        slack: Some(SlackConfig {
+            penalty,
+            penalty_basis: PenaltyBasis::PerHour,
+        }),
         bound_lower_affine: None,
         bound_upper_affine: None,
     };
@@ -802,9 +792,7 @@ fn generic_constraint_thermal_ge_slack_column_and_csc_entry() {
 #[test]
 fn generic_constraint_two_sided_thermal_row_bounds_and_csc_entry() {
     use novomodelo_core::ResolvedGenericConstraintBounds;
-    use novomodelo_core::{
-        ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-    };
+    use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
     use std::collections::HashMap;
 
     let thermal_entity_id = EntityId(2);
@@ -822,10 +810,7 @@ fn generic_constraint_two_sided_thermal_row_bounds_and_csc_entry() {
                 },
             )],
         },
-        slack: SlackConfig {
-            enabled: false,
-            penalty: None,
-        },
+        slack: None,
         bound_lower_affine: None,
         bound_upper_affine: None,
     };
@@ -867,7 +852,7 @@ fn generic_constraint_two_sided_thermal_row_bounds_and_csc_entry() {
 #[test]
 fn generic_constraint_degenerate_band_thermal_two_slacks() {
     use novomodelo_core::ResolvedGenericConstraintBounds;
-    use novomodelo_core::{ConstraintExpression, GenericConstraint, SlackConfig};
+    use novomodelo_core::{ConstraintExpression, GenericConstraint, PenaltyBasis, SlackConfig};
     use std::collections::HashMap;
 
     let thermal_entity_id = EntityId(2);
@@ -879,10 +864,10 @@ fn generic_constraint_degenerate_band_thermal_two_slacks() {
         name: "gc_thermal_eq_slack".to_string(),
         description: None,
         expression: ConstraintExpression { terms: vec![] },
-        slack: SlackConfig {
-            enabled: true,
-            penalty: Some(penalty),
-        },
+        slack: Some(SlackConfig {
+            penalty,
+            penalty_basis: PenaltyBasis::PerHour,
+        }),
         bound_lower_affine: None,
         bound_upper_affine: None,
     };
@@ -957,7 +942,7 @@ fn generic_constraint_degenerate_band_thermal_two_slacks() {
 #[test]
 fn generic_constraint_two_sided_thermal_two_slacks() {
     use novomodelo_core::ResolvedGenericConstraintBounds;
-    use novomodelo_core::{ConstraintExpression, GenericConstraint, SlackConfig};
+    use novomodelo_core::{ConstraintExpression, GenericConstraint, PenaltyBasis, SlackConfig};
     use std::collections::HashMap;
 
     let thermal_entity_id = EntityId(2);
@@ -969,10 +954,10 @@ fn generic_constraint_two_sided_thermal_two_slacks() {
         name: "gc_thermal_range_slack".to_string(),
         description: None,
         expression: ConstraintExpression { terms: vec![] },
-        slack: SlackConfig {
-            enabled: true,
-            penalty: Some(penalty),
-        },
+        slack: Some(SlackConfig {
+            penalty,
+            penalty_basis: PenaltyBasis::PerHour,
+        }),
         bound_lower_affine: None,
         bound_upper_affine: None,
     };
@@ -1052,7 +1037,7 @@ fn generic_constraint_two_sided_thermal_two_slacks() {
 #[test]
 fn generic_constraint_degenerate_band_gets_equality_row_and_two_slacks() {
     use novomodelo_core::ResolvedGenericConstraintBounds;
-    use novomodelo_core::{ConstraintExpression, GenericConstraint, SlackConfig};
+    use novomodelo_core::{ConstraintExpression, GenericConstraint, PenaltyBasis, SlackConfig};
     use std::collections::HashMap;
 
     let thermal_entity_id = EntityId(2);
@@ -1064,10 +1049,10 @@ fn generic_constraint_degenerate_band_gets_equality_row_and_two_slacks() {
         name: format!("gc_{id}"),
         description: None,
         expression: ConstraintExpression { terms: vec![] },
-        slack: SlackConfig {
-            enabled: true,
-            penalty: Some(penalty),
-        },
+        slack: Some(SlackConfig {
+            penalty,
+            penalty_basis: PenaltyBasis::PerHour,
+        }),
         bound_lower_affine: None,
         bound_upper_affine: None,
     };
@@ -1103,9 +1088,7 @@ fn generic_constraint_two_hydros_sum_csc_entries() {
     use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
-    use novomodelo_core::{
-        ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-    };
+    use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
     use std::collections::HashMap;
 
     let h1_id = EntityId(5);
@@ -1302,10 +1285,7 @@ fn generic_constraint_two_hydros_sum_csc_entries() {
                 ),
             ],
         },
-        slack: SlackConfig {
-            enabled: false,
-            penalty: None,
-        },
+        slack: None,
         bound_lower_affine: None,
         bound_upper_affine: None,
     };
@@ -1591,7 +1571,7 @@ fn one_hydro_system(
 fn generic_constraint_chronological_stage_net_storage_one_row() {
     use novomodelo_core::ResolvedGenericConstraintBounds;
     use novomodelo_core::{
-        BlockMode, ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
+        BlockMode, ConstraintExpression, GenericConstraint, LinearTerm, VariableRef,
     };
     use std::collections::HashMap;
 
@@ -1628,10 +1608,7 @@ fn generic_constraint_chronological_stage_net_storage_one_row() {
                 ),
             ],
         },
-        slack: SlackConfig {
-            enabled: false,
-            penalty: None,
-        },
+        slack: None,
         bound_lower_affine: None,
         bound_upper_affine: None,
     };
@@ -1673,7 +1650,7 @@ fn generic_constraint_chronological_stage_net_storage_one_row() {
 fn generic_constraint_chronological_specific_block_ramp_one_row() {
     use novomodelo_core::ResolvedGenericConstraintBounds;
     use novomodelo_core::{
-        BlockMode, ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
+        BlockMode, ConstraintExpression, GenericConstraint, LinearTerm, VariableRef,
     };
     use std::collections::HashMap;
 
@@ -1711,10 +1688,7 @@ fn generic_constraint_chronological_specific_block_ramp_one_row() {
                 ),
             ],
         },
-        slack: SlackConfig {
-            enabled: false,
-            penalty: None,
-        },
+        slack: None,
         bound_lower_affine: None,
         bound_upper_affine: None,
     };
@@ -1853,7 +1827,7 @@ fn assert_desugaring_twin_builds_identical_lp(
 fn per_stage_block_coefficient_twin_matches_hand_flattened_literals() {
     use novomodelo_core::{
         ConstraintExpression, GenericConstraint, LinearTerm, ParameterKind,
-        ResolvedGenericConstraintBounds, ScalarParameter, SlackConfig, VariableRef,
+        ResolvedGenericConstraintBounds, ScalarParameter, VariableRef,
     };
     use std::collections::HashMap;
 
@@ -1880,10 +1854,7 @@ fn per_stage_block_coefficient_twin_matches_hand_flattened_literals() {
         name: "gc_block_coef".to_string(),
         description: None,
         expression: sugared_expr,
-        slack: SlackConfig {
-            enabled: false,
-            penalty: None,
-        },
+        slack: None,
         bound_lower_affine: None,
         bound_upper_affine: None,
     };
@@ -1927,10 +1898,7 @@ fn per_stage_block_coefficient_twin_matches_hand_flattened_literals() {
             name: format!("gc_lit_{id}"),
             description: None,
             expression: expr,
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         }
@@ -1966,7 +1934,7 @@ fn per_stage_block_coefficient_twin_matches_hand_flattened_literals() {
 fn symbolic_upper_bound_ref_twin_matches_literal_per_block_bounds() {
     use novomodelo_core::{
         AffineBound, ConstraintExpression, GenericConstraint, LinearTerm, ParameterKind,
-        ResolvedGenericConstraintBounds, ScalarParameter, SlackConfig, VariableRef,
+        ResolvedGenericConstraintBounds, ScalarParameter, VariableRef,
     };
     use std::collections::HashMap;
 
@@ -1982,10 +1950,6 @@ fn symbolic_upper_bound_ref_twin_matches_literal_per_block_bounds() {
             },
         )],
     };
-    let no_slack = SlackConfig {
-        enabled: false,
-        penalty: None,
-    };
 
     // Sugared: the reference lives on the constraint; the activation row's numeric
     // upper endpoint stays null, so the parameter's (stage, block) axis supplies it.
@@ -1994,7 +1958,7 @@ fn symbolic_upper_bound_ref_twin_matches_literal_per_block_bounds() {
         name: "gc_sym_cap".to_string(),
         description: None,
         expression: expr(),
-        slack: no_slack.clone(),
+        slack: None,
         bound_lower_affine: None,
         bound_upper_affine: Some(AffineBound::single(EntityId(200))),
     };
@@ -2019,7 +1983,7 @@ fn symbolic_upper_bound_ref_twin_matches_literal_per_block_bounds() {
         name: "gc_sym_cap".to_string(),
         description: None,
         expression: expr(),
-        slack: no_slack,
+        slack: None,
         bound_lower_affine: None,
         bound_upper_affine: None,
     };
@@ -2050,17 +2014,13 @@ fn symbolic_upper_bound_ref_twin_matches_literal_per_block_bounds() {
 fn symbolic_lower_bound_ref_stage_level_collapse_twin() {
     use novomodelo_core::{
         AffineBound, ConstraintExpression, GenericConstraint, ParameterKind,
-        ResolvedGenericConstraintBounds, ScalarParameter, SlackConfig,
+        ResolvedGenericConstraintBounds, ScalarParameter,
     };
     use std::collections::HashMap;
 
     let n_blks = 3_usize;
     let floor = 275.0_f64;
     let empty_expr = || ConstraintExpression { terms: vec![] };
-    let no_slack = SlackConfig {
-        enabled: false,
-        penalty: None,
-    };
 
     // Sugared: block-independent (empty) expression, stage-level floor reference,
     // numeric lower endpoint null in the activation row.
@@ -2069,7 +2029,7 @@ fn symbolic_lower_bound_ref_stage_level_collapse_twin() {
         name: "gc_sym_floor".to_string(),
         description: None,
         expression: empty_expr(),
-        slack: no_slack.clone(),
+        slack: None,
         bound_lower_affine: Some(AffineBound::single(EntityId(200))),
         bound_upper_affine: None,
     };
@@ -2092,7 +2052,7 @@ fn symbolic_lower_bound_ref_stage_level_collapse_twin() {
         name: "gc_sym_floor".to_string(),
         description: None,
         expression: empty_expr(),
-        slack: no_slack,
+        slack: None,
         bound_lower_affine: None,
         bound_upper_affine: None,
     };
@@ -2198,7 +2158,7 @@ fn same_variable_repeat_merges_to_summed_coefficient() {
 #[test]
 fn full_cancellation_drops_net_zero_column() {
     use novomodelo_core::{
-        ConstraintExpression, GenericConstraint, ResolvedGenericConstraintBounds, SlackConfig,
+        ConstraintExpression, GenericConstraint, ResolvedGenericConstraintBounds,
     };
     use std::collections::HashMap;
 
@@ -2220,10 +2180,7 @@ fn full_cancellation_drops_net_zero_column() {
         name: "cancel".to_string(),
         description: None,
         expression: ConstraintExpression { terms: vec![] },
-        slack: SlackConfig {
-            enabled: false,
-            penalty: None,
-        },
+        slack: None,
         bound_lower_affine: None,
         bound_upper_affine: None,
     };
@@ -2286,7 +2243,7 @@ fn paren_distribution_normalizes_to_hand_flattened_terms() {
 fn parquet_base_folds_with_inline_affine_remainder() {
     use novomodelo_core::{
         ConstraintExpression, GenericConstraint, LinearTerm, ResolvedGenericConstraintBounds,
-        SlackConfig, VariableRef,
+        VariableRef,
     };
     use std::collections::HashMap;
 
@@ -2314,10 +2271,7 @@ fn parquet_base_folds_with_inline_affine_remainder() {
                 },
             )],
         },
-        slack: SlackConfig {
-            enabled: false,
-            penalty: None,
-        },
+        slack: None,
         bound_lower_affine: None,
         bound_upper_affine: None,
     };
@@ -2351,7 +2305,7 @@ fn parquet_base_folds_with_inline_affine_remainder() {
 fn parameter_rhs_places_two_distinct_terms_on_one_column() {
     use novomodelo_core::{
         ConstraintExpression, GenericConstraint, LinearTerm, ParameterKind,
-        ResolvedGenericConstraintBounds, ScalarParameter, SlackConfig, VariableRef,
+        ResolvedGenericConstraintBounds, ScalarParameter, VariableRef,
     };
     use std::collections::HashMap;
 
@@ -2404,10 +2358,7 @@ fn parameter_rhs_places_two_distinct_terms_on_one_column() {
         name: "param_rhs".to_string(),
         description: None,
         expression: flat_expr,
-        slack: SlackConfig {
-            enabled: false,
-            penalty: None,
-        },
+        slack: None,
         bound_lower_affine: None,
         bound_upper_affine: None,
     };

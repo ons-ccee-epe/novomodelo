@@ -1,5 +1,20 @@
 {
   "$defs": {
+    "PenaltyBasis": {
+      "description": "What one unit of a generic-constraint violation is charged.\n\nThe row's quantity decides the basis: a rate (MW, m³/s) is integrated over the\nhours its row spans, an amount (`MWh`, hm³) is not.",
+      "oneOf": [
+        {
+          "const": "per_hour",
+          "description": "`penalty × hours` per unit of violation, for rate rows.",
+          "type": "string"
+        },
+        {
+          "const": "per_unit",
+          "description": "`penalty` per unit of violation, for amount rows.",
+          "type": "string"
+        }
+      ]
+    },
     "RawConstraint": {
       "additionalProperties": false,
       "description": "A single constraint entry.",
@@ -72,12 +87,23 @@
           "type": "boolean"
         },
         "penalty": {
-          "description": "Penalty per unit of violation. Must be > 0.0 when `enabled` is `true`.",
+          "description": "Penalty per unit of violation. Required and > 0.0 when `enabled` is `true`;\nabsent otherwise.",
           "format": "double",
           "type": [
             "number",
             "null"
           ]
+        },
+        "penalty_basis": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PenaltyBasis"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How `penalty` is charged: `\"per_hour\"` multiplies it by the hours the row\nspans (rows in MW or m³/s); `\"per_unit\"` does not (rows in `MWh` or hm³).\nRequired when `enabled` is `true`; absent otherwise."
         }
       },
       "required": [

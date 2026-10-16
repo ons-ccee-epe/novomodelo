@@ -13,7 +13,7 @@ use super::{
     extract_generic_violations, extract_pumping_stations, extract_stage_result,
     extract_stub_collections,
 };
-use novomodelo_core::{BlockMode, ContractType};
+use novomodelo_core::{BlockMode, ContractType, PenaltyBasis, SlackConfig};
 
 use crate::energy_conversion::EnergyConversionSet;
 use crate::horizon_mode::HorizonMode;
@@ -7137,7 +7137,7 @@ fn extract_hydro_bus_generation_maps_fpha_cells_by_plant_relative_offset() {
 fn two_slack_row_entry(
     is_stage_level: bool,
     block_idx: usize,
-    penalty: f64,
+    slack: SlackConfig,
     s_plus: f64,
     s_minus: f64,
 ) -> (GenericConstraintRowEntry, Vec<f64>) {
@@ -7148,12 +7148,18 @@ fn two_slack_row_entry(
         is_stage_level,
         bound_lower: Some(0.0),
         bound_upper: Some(0.0),
-        slack_enabled: true,
-        slack_penalty: penalty,
+        slack: Some(slack),
         slack_plus_col: Some(0),
         slack_minus_col: Some(1),
     };
     (entry, vec![s_plus, s_minus])
+}
+
+fn per_hour(penalty: f64) -> SlackConfig {
+    SlackConfig {
+        penalty,
+        penalty_basis: PenaltyBasis::PerHour,
+    }
 }
 
 /// Build a `StageExtractionSpec` whose only meaningful fields are
@@ -7216,13 +7222,13 @@ fn generic_only_spec<'a>(
     }
 }
 
-/// A two-sided entry with `slack_enabled = true`, `slack_penalty = 100.0`,
+/// A two-sided entry with a `per_hour` slack of penalty `100.0`,
 /// `block_hours = 730.0`, `s_plus = 3.0`, `s_minus = 1.0` reports the signed net
 /// (`2.0`) as `slack_value` while charging BOTH slacks
 /// (`4.0 * 100.0 * 730.0`) as `slack_cost`.
 #[test]
 fn two_sided_net_report_reads_signed_net_and_charges_both_slacks() {
-    let (entry, primal) = two_slack_row_entry(false, 0, 100.0, 3.0, 1.0);
+    let (entry, primal) = two_slack_row_entry(false, 0, per_hour(100.0), 3.0, 1.0);
     let block_hours = [730.0_f64];
     let dual: Vec<f64> = Vec::new();
     let view = SolutionView {
@@ -7252,7 +7258,7 @@ fn two_sided_net_report_reads_signed_net_and_charges_both_slacks() {
 /// block's.
 #[test]
 fn stage_level_two_sided_prices_summed_stage_hours() {
-    let (entry, primal) = two_slack_row_entry(true, 0, 1.0, 1.0, 0.0);
+    let (entry, primal) = two_slack_row_entry(true, 0, per_hour(1.0), 1.0, 0.0);
     let block_hours = [400.0_f64, 330.0_f64];
     let dual: Vec<f64> = Vec::new();
     let view = SolutionView {
@@ -7277,7 +7283,7 @@ fn stage_level_two_sided_prices_summed_stage_hours() {
 /// block's own duration (`330.0`) — not block 0's `400.0` nor the summed `730.0`.
 #[test]
 fn per_block_two_sided_prices_its_own_block_duration() {
-    let (entry, primal) = two_slack_row_entry(false, 1, 10.0, 2.0, 0.5);
+    let (entry, primal) = two_slack_row_entry(false, 1, per_hour(10.0), 2.0, 0.5);
     let block_hours = [400.0_f64, 330.0_f64];
     let dual: Vec<f64> = Vec::new();
     let view = SolutionView {
@@ -7298,7 +7304,35 @@ fn per_block_two_sided_prices_its_own_block_duration() {
     assert_eq!(results[0].slack_cost, 2.5 * 10.0 * 330.0);
 }
 
-/// A two-sided entry with `slack_enabled = false` reports `slack_value ==
+/// A `per_unit` slack is charged its penalty per unit of violation whatever the
+/// row's hours: the stage-level row over `[400.0, 330.0]` costs `(3.0 + 1.0) * 5.0`.
+#[test]
+fn stage_level_per_unit_slack_ignores_stage_hours() {
+    let slack = SlackConfig {
+        penalty: 5.0,
+        penalty_basis: PenaltyBasis::PerUnit,
+    };
+    let (entry, primal) = two_slack_row_entry(true, 0, slack, 3.0, 1.0);
+    let block_hours = [400.0_f64, 330.0_f64];
+    let dual: Vec<f64> = Vec::new();
+    let view = SolutionView {
+        primal: &primal,
+        dual: &dual,
+        objective: 0.0,
+        objective_coeffs: &[],
+        row_lower: &[],
+    };
+    let entries = [entry];
+    let spec = generic_only_spec(&entries, &block_hours);
+
+    let (results, total_cost) = extract_generic_violations(&view, &spec, 0);
+
+    assert_eq!(results[0].slack_value, 2.0);
+    assert_eq!(results[0].slack_cost, 4.0 * 5.0);
+    assert_eq!(total_cost, 4.0 * 5.0);
+}
+
+/// A two-sided entry without a slack reports `slack_value ==
 /// 0.0` and `slack_cost == 0.0` and contributes nothing to the returned total
 /// cost — the `map_or(0.0, ...)` fallback path, never reading the (absent)
 /// slack columns.
@@ -7311,8 +7345,7 @@ fn two_sided_slack_disabled_reports_zero_and_contributes_nothing() {
         is_stage_level: false,
         bound_lower: Some(0.0),
         bound_upper: Some(0.0),
-        slack_enabled: false,
-        slack_penalty: 0.0,
+        slack: None,
         slack_plus_col: None,
         slack_minus_col: None,
     };

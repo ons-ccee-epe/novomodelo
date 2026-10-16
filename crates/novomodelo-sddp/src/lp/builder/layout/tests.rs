@@ -12,9 +12,9 @@ use novomodelo_core::{
     ConstraintExpression, ContractBlockBounds, ContractType, EnergyContract, EntityId,
     FillingConfig, GenericConstraint, Hydro, HydroBlockBounds, HydroGenerationModel,
     HydroStageBounds, LineBlockBounds, LinearTerm, NoiseMethod, NonControllableSource,
-    PumpingBlockBounds, PumpingStation, ResolvedBounds, ResolvedGenericConstraintBounds,
-    ScenarioSourceConfig, SlackConfig, Stage, StageRiskConfig, StageStateConfig, Thermal,
-    ThermalBlockBounds, ThermalStageBounds, VariableRef,
+    PenaltyBasis, PumpingBlockBounds, PumpingStation, ResolvedBounds,
+    ResolvedGenericConstraintBounds, ScenarioSourceConfig, SlackConfig, Stage, StageRiskConfig,
+    StageStateConfig, Thermal, ThermalBlockBounds, ThermalStageBounds, VariableRef,
 };
 
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
@@ -97,10 +97,10 @@ impl ZeroEntityFixtures {
             name: "demand_cap".to_string(),
             description: None,
             expression: ConstraintExpression { terms: vec![] },
-            slack: SlackConfig {
-                enabled: true,
-                penalty: Some(10.0),
-            },
+            slack: Some(SlackConfig {
+                penalty: 10.0,
+                penalty_basis: PenaltyBasis::PerHour,
+            }),
             bound_lower_affine: None,
             bound_upper_affine: Some(AffineBound::single(EntityId(42))),
         }];
@@ -125,10 +125,7 @@ impl ZeroEntityFixtures {
             name: "folded_cap".to_string(),
             description: None,
             expression: ConstraintExpression { terms: vec![] },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: Some(AffineBound {
                 constant: -5.0,
@@ -613,10 +610,7 @@ impl UsefulVolumeFixtures {
             name: "useful_volume".to_string(),
             description: None,
             expression: ConstraintExpression { terms },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         }];
@@ -4289,10 +4283,10 @@ fn two_sided_real_layout_allocates_minus_slack_column() {
         name: "gc_range_test".to_string(),
         description: None,
         expression: ConstraintExpression { terms: vec![] },
-        slack: SlackConfig {
-            enabled: true,
-            penalty: Some(10.0),
-        },
+        slack: Some(SlackConfig {
+            penalty: 10.0,
+            penalty_basis: PenaltyBasis::PerHour,
+        }),
         bound_lower_affine: None,
         bound_upper_affine: None,
     };

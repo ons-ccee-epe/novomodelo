@@ -64,7 +64,7 @@ def test_cli_and_python_echo_are_identical(
     """Both write paths emit the echo, and its content is identical.
 
     Reads both `resolved_echo.parquet` files with pyarrow and compares the
-    full table (13-column schema + every value). Both paths produce the rows
+    full table (14-column schema + every value). Both paths produce the rows
     through the same builder in canonical order, so the tables must be equal
     column-for-column.
     """
@@ -76,7 +76,7 @@ def test_cli_and_python_echo_are_identical(
     cli_table = pq.read_table(cli_echo)
     py_table = pq.read_table(py_echo)
 
-    assert cli_table.num_columns == 13, "echo must carry the 13-column schema"
+    assert cli_table.num_columns == 14, "echo must carry the 14-column schema"
     assert cli_table.schema.names == py_table.schema.names, (
         "CLI and Python echo column names diverge"
     )

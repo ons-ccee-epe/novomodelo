@@ -356,7 +356,7 @@ fn boundary_is_interior(k: usize, num_blocks: usize) -> bool {
 mod tests {
     use novomodelo_core::{
         AffineBound, CoefficientRef, ComputedParameter, ConstraintExpression, EntityId,
-        GenericConstraint, LinearTerm, ParameterKind, ScalarParameter, SlackConfig, VariableRef,
+        GenericConstraint, LinearTerm, ParameterKind, ScalarParameter, VariableRef,
         temporal::{Block, BlockMode},
     };
 
@@ -399,10 +399,7 @@ mod tests {
             expression: ConstraintExpression {
                 terms: vec![LinearTerm::literal(1.0, variable)],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         }];
@@ -916,10 +913,7 @@ mod tests {
             expression: ConstraintExpression {
                 terms: vec![param_term(lhs_param)],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: Some(AffineBound::single(upper_bound_param)),
         }
@@ -933,10 +927,7 @@ mod tests {
             expression: ConstraintExpression {
                 terms: vec![param_term(param_a), param_term(param_b)],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         }
@@ -957,10 +948,7 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         }

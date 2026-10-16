@@ -2148,17 +2148,14 @@ mod tests {
         lower_ref: Option<i32>,
         upper_ref: Option<i32>,
     ) -> novomodelo_core::GenericConstraint {
-        use novomodelo_core::{AffineBound, ConstraintExpression, GenericConstraint, SlackConfig};
+        use novomodelo_core::{AffineBound, ConstraintExpression, GenericConstraint};
 
         GenericConstraint {
             id: EntityId(id),
             name: format!("sym{id}"),
             description: None,
             expression: ConstraintExpression { terms: vec![] },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: lower_ref.map(|id| AffineBound::single(EntityId(id))),
             bound_upper_affine: upper_ref.map(|id| AffineBound::single(EntityId(id))),
         }
@@ -2802,9 +2799,7 @@ mod tests {
     /// including the constraint id in the context.
     #[test]
     fn test_anticipated_decision_unknown_thermal_ref() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -2823,10 +2818,7 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         };
@@ -2860,9 +2852,7 @@ mod tests {
 
     #[test]
     fn test_hydro_inflow_unknown_hydro_ref() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -2882,10 +2872,7 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         };
@@ -2917,9 +2904,7 @@ mod tests {
     /// `Some(_)` form validates identically to the `None` form.
     #[test]
     fn test_hydro_inflow_with_block_unknown_hydro_ref() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -2938,10 +2923,7 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         };
@@ -2973,9 +2955,7 @@ mod tests {
     /// hydro arm's `..` pattern absorbs `block_id`, matching `HydroStorage`.
     #[test]
     fn test_hydro_storage_initial_unknown_hydro_ref() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -2994,10 +2974,7 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         };
@@ -3029,9 +3006,7 @@ mod tests {
     /// the same check `hydro_storage_final` gets, via the shared hydro arm.
     #[test]
     fn test_hydro_useful_volume_final_unknown_hydro_ref() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -3050,10 +3025,7 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         };
@@ -3122,9 +3094,7 @@ mod tests {
     /// group. The per-plant check rejects it even though bus 9 is a declared bus.
     #[test]
     fn test_generic_constraint_unknown_bus_selector_rejected() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -3144,10 +3114,7 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         };
@@ -3192,9 +3159,7 @@ mod tests {
     /// bus rather than group id accepts the valid selector.
     #[test]
     fn test_generic_constraint_valid_bus_selector_and_none_accepted() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -3214,10 +3179,7 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         };
@@ -3235,10 +3197,7 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         };
@@ -3265,9 +3224,7 @@ mod tests {
     /// plant and must not also fire.
     #[test]
     fn test_generic_constraint_unknown_hydro_with_selector_emits_one_finding() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -3287,10 +3244,7 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         };
@@ -3328,9 +3282,7 @@ mod tests {
     /// the "bus does not exist" case, so no second finding is added.
     #[test]
     fn test_generic_constraint_nonexistent_bus_selector_emits_one_finding() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -3350,10 +3302,7 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         };
@@ -3390,9 +3339,7 @@ mod tests {
     /// file generic constraints are read from.
     #[test]
     fn generic_constraint_reference_findings_name_the_constraints_file() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -3419,10 +3366,7 @@ mod tests {
                     ),
                 ],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         };

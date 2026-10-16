@@ -56,6 +56,9 @@ pub struct GenericConstraintEchoRow {
     pub slack_enabled: bool,
     /// Slack penalty; `None` when slack is disabled.
     pub slack_penalty: Option<f64>,
+    /// How `slack_penalty` is charged (`"per_hour"` / `"per_unit"`); `None` when
+    /// slack is disabled.
+    pub slack_penalty_basis: Option<String>,
 }
 
 /// Write a slice of [`GenericConstraintEchoRow`] to a Parquet file at `path`.
@@ -90,6 +93,7 @@ pub struct GenericConstraintEchoRow {
 ///     derived_shape: "band".to_string(),
 ///     slack_enabled: true,
 ///     slack_penalty: Some(1000.0),
+///     slack_penalty_basis: Some("per_hour".to_string()),
 /// }];
 /// write_generic_constraint_echo(
 ///     Path::new("/tmp/out/generic_constraints_echo.parquet"),
@@ -124,6 +128,7 @@ fn build_generic_constraint_echo_batch(
     let mut derived_shape_col = StringBuilder::with_capacity(n, n * 8);
     let mut slack_enabled_col = BooleanBuilder::with_capacity(n);
     let mut slack_penalty_col = Float64Builder::with_capacity(n);
+    let mut slack_penalty_basis_col = StringBuilder::with_capacity(n, n * 8);
 
     for row in rows {
         stage_id_col.append_value(row.stage_id);
@@ -139,6 +144,7 @@ fn build_generic_constraint_echo_batch(
         derived_shape_col.append_value(&row.derived_shape);
         slack_enabled_col.append_value(row.slack_enabled);
         slack_penalty_col.append_option(row.slack_penalty);
+        slack_penalty_basis_col.append_option(row.slack_penalty_basis.as_deref());
     }
 
     RecordBatch::try_new(
@@ -157,6 +163,7 @@ fn build_generic_constraint_echo_batch(
             Arc::new(derived_shape_col.finish()),
             Arc::new(slack_enabled_col.finish()),
             Arc::new(slack_penalty_col.finish()),
+            Arc::new(slack_penalty_basis_col.finish()),
         ],
     )
     .map_err(|e| OutputError::serialization("generic_constraint_echo", e.to_string()))
@@ -188,6 +195,7 @@ mod tests {
                 derived_shape: "band".to_string(),
                 slack_enabled: true,
                 slack_penalty: Some(1000.0),
+                slack_penalty_basis: Some("per_hour".to_string()),
             },
             // Stage-level (block_id None), upper-only → "cap"; slack off.
             GenericConstraintEchoRow {
@@ -204,6 +212,7 @@ mod tests {
                 derived_shape: "cap".to_string(),
                 slack_enabled: false,
                 slack_penalty: None,
+                slack_penalty_basis: None,
             },
             // Term-less placeholder (all per-term columns None), lower-only → "floor".
             GenericConstraintEchoRow {
@@ -220,6 +229,7 @@ mod tests {
                 derived_shape: "floor".to_string(),
                 slack_enabled: false,
                 slack_penalty: None,
+                slack_penalty_basis: None,
             },
         ]
     }
@@ -234,7 +244,7 @@ mod tests {
         assert!(path.exists(), "file must exist after write");
 
         let batch = read_first_batch(&path);
-        assert_eq!(batch.num_columns(), 13, "must have 13 columns");
+        assert_eq!(batch.num_columns(), 14, "must have 14 columns");
         assert_eq!(batch.num_rows(), 3, "must have 3 rows");
 
         let stage_id = batch
@@ -315,6 +325,12 @@ mod tests {
             .as_any()
             .downcast_ref::<Float64Array>()
             .unwrap();
+        let slack_penalty_basis = batch
+            .column_by_name("slack_penalty_basis")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
 
         // Row 0 — band, full term, slack on.
         assert_eq!(stage_id.value(0), 1);
@@ -330,6 +346,7 @@ mod tests {
         assert_eq!(derived_shape.value(0), "band");
         assert!(slack_enabled.value(0));
         assert!(!slack_penalty.is_null(0) && slack_penalty.value(0) == 1000.0);
+        assert_eq!(slack_penalty_basis.value(0), "per_hour");
 
         // Row 1 — cap, stage-level (block_id NULL), bound_lower NULL, slack off.
         assert_eq!(stage_id.value(1), 1);
@@ -348,6 +365,7 @@ mod tests {
             slack_penalty.is_null(1),
             "slack-off row penalty must be NULL"
         );
+        assert!(slack_penalty_basis.is_null(1));
 
         // Row 2 — floor, term-less placeholder (per-term columns NULL), bound_upper NULL.
         assert_eq!(stage_id.value(2), 2);
@@ -366,6 +384,7 @@ mod tests {
         assert_eq!(derived_shape.value(2), "floor");
         assert!(!slack_enabled.value(2));
         assert!(slack_penalty.is_null(2));
+        assert!(slack_penalty_basis.is_null(2));
     }
 
     #[test]
@@ -380,8 +399,8 @@ mod tests {
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
         assert_eq!(
             builder.schema().fields().len(),
-            13,
-            "empty file must still carry the full 13-column schema"
+            14,
+            "empty file must still carry the full 14-column schema"
         );
         let total_rows: usize = builder
             .build()
