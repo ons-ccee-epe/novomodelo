@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # SLURM MPI integration test for `novomodelo run`.
 #
-# Exercises up to 5 MPI execution modes against the 4ree example case and
-# verifies rank-count invariance: every classified output parquet of each
+# Exercises up to 5 MPI execution modes against the 4ree example case (the F
+# cases use a branching case kept beside this script) and verifies
+# rank-count invariance: every classified output parquet of each
 # test run is compared against the T1 single-rank baseline, decoded-value
 # bit-exact (wall-clock timing columns and per-rank/worker execution-topology
 # tables are exempt by design — see the CLASSIFICATION_ROWS table in
@@ -43,6 +44,23 @@
 # R2: sbatch, 2 nodes x 1 rank   (partial run)
 # R3: mpiexec -n 1 --threads 1   (resumes R2's checkpoint)
 #
+# The F cases resume a branching run the same way. The 1dtoy-fan case
+# (tests/slurm/1dtoy-fan) is a sampled fan whose root has two successors, one
+# of which has two successors again; each non-leaf node owns a cut pool and
+# level1 selection runs every second iteration. F1 trains it uninterrupted and
+# must have deactivated, reactivated and evicted cuts by iteration
+# FAN_RESUME_AT, so the checkpoints the resume runs continue already carry a
+# selection's effects. F2 and F4 stop copies of it at FAN_RESUME_AT; F3 and F5
+# resume them at another rank count and are compared against F1 as the R
+# cases are against L1. The case's eight forward passes give each of F3's two
+# ranks four and each of F4's four ranks two.
+#
+# F1: mpiexec -n 1               (branching baseline)
+# F2: mpiexec -n 1               (partial run)
+# F3: mpiexec -n 2 --threads 2   (resumes F2's checkpoint)
+# F4: sbatch, 2 nodes x 2 ranks  (partial run, --threads 1)
+# F5: mpiexec -n 1 --threads 1   (resumes F4's checkpoint)
+#
 # The S cases run simulation only, from T1's policy, on a copy of the case
 # whose stages 4 to 7 have their single block split in two. The stored bases
 # of those stages no longer fit their LP and are not used; the others are.
@@ -58,13 +76,14 @@
 # Usage:
 #   /shared/run-tests.sh [--mode reduced|full]
 #
-#   reduced   T1, T2, L1, L2, R0, R1, S1 and S2 only (mpiexec, no sbatch / SLURM
-#             cluster required).
-#   full      every T, L, R and S case (default — preserves prior behavior).
+#   reduced   T1, T2, L1, L2, R0, R1, F1, F2, F3, S1 and S2 only (mpiexec, no
+#             sbatch / SLURM cluster required).
+#   full      every T, L, R, F and S case (default — preserves prior behavior).
 #
 # Prerequisites (satisfied by the Docker image):
 #   - /shared/novomodelo-mpi   (novomodelo binary built with --features mpi)
 #   - /shared/4ree        (example case directory)
+#   - /shared/1dtoy-fan   (branching case, copied from tests/slurm/1dtoy-fan)
 #   - /opt/mpich/bin      (MPICH installation)
 #   - python3 with pyarrow
 set -euo pipefail
@@ -78,6 +97,9 @@ readonly TIMEOUT=120
 readonly WORK_DIR="/shared/work"
 # Iteration whose final checkpoint the R cases resume.
 readonly RESUME_AT=128
+readonly FAN_CASE_DIR="/shared/1dtoy-fan"
+# Iteration whose final checkpoint the F cases resume.
+readonly FAN_RESUME_AT=24
 
 # Set by parse_mode(); read by main() and print_summary().
 MODE="full"
@@ -97,14 +119,18 @@ usage() {
     cat <<'USAGE'
 Usage: run-tests.sh [--mode reduced|full]
 
-  reduced   Run T1, T2, L1, L2, R0, R1, S1 and S2 (mpiexec only); no sbatch.
-  full      Run T1 through T5, L1 through L3, R0 through R3 and S1 through S4
-            (default).
+  reduced   Run T1, T2, L1, L2, R0, R1, F1, F2, F3, S1 and S2 (mpiexec only);
+            no sbatch.
+  full      Run T1 through T5, L1 through L3, R0 through R3, F1 through F5 and
+            S1 through S4 (default).
 
   The L cases train a copy of the case with cut selection added to its
   config.json (level1, check_frequency 2, max_active_per_stage 100).
   R0 and R2 stop that copy at an earlier iteration; R1 and R3 resume their
   checkpoint at another rank count and are compared against L1.
+  F1 trains the branching case 1dtoy-fan; F2 and F4 stop copies of it at an
+  earlier iteration, and F3 and F5 resume their checkpoint at another rank
+  count and are compared against F1.
 USAGE
 }
 
@@ -156,10 +182,13 @@ preflight_check() {
         ok=0
     fi
 
-    if [[ ! -d "${CASE_DIR}" ]]; then
-        echo "ERROR: case directory not found: ${CASE_DIR}"
-        ok=0
-    fi
+    local case_dir
+    for case_dir in "${CASE_DIR}" "${FAN_CASE_DIR}"; do
+        if [[ ! -d "${case_dir}" ]]; then
+            echo "ERROR: case directory not found: ${case_dir}"
+            ok=0
+        fi
+    done
 
     if ! command -v mpiexec &>/dev/null; then
         echo "ERROR: mpiexec not found in PATH (checked /opt/mpich/bin)"
@@ -180,6 +209,7 @@ preflight_check() {
 
     echo "INFO: novomodelo binary: ${NOVOMODELO_BIN}"
     echo "INFO: case directory: ${CASE_DIR}"
+    echo "INFO: branching case directory: ${FAN_CASE_DIR}"
     echo "INFO: work directory: ${WORK_DIR}"
     echo "INFO: mpiexec: $(command -v mpiexec)"
     echo "INFO: python3: $(command -v python3)"
@@ -800,17 +830,19 @@ PYEOF
 }
 
 # ---------------------------------------------------------------------------
-# assert_selection_power <output_dir>
+# assert_selection_power <output_dir> [through_iteration]
 #
 # Reads training/cut_selection/iterations.parquet under <output_dir> and
 # exits 1 unless the sums of `cuts_deactivated`, `cuts_reactivated` and
 # `budget_evicted` (nulls ignored) are each positive and some row whose
 # `cuts_deactivated` is null (an iteration without a selection run) has
-# `budget_evicted > 0`. Prints the three sums.
+# `budget_evicted > 0`. With <through_iteration>, only the rows of iterations
+# up to it are read. Prints the three sums.
 # ---------------------------------------------------------------------------
 assert_selection_power() {
     local output_dir="$1"
-    python3 - "${output_dir}" <<'PYEOF'
+    local through_iteration="${2:-}"
+    python3 - "${output_dir}" "${through_iteration}" <<'PYEOF'
 import os
 import sys
 
@@ -826,16 +858,22 @@ def fail(message):
 
 
 path = os.path.join(sys.argv[1], REL_PATH)
+through_iteration = int(sys.argv[2]) if sys.argv[2] else None
 if not os.path.isfile(path):
     fail(f"{path}: missing")
 table = pq.ParquetFile(path).read()
-for column in SUMMED_COLUMNS:
+read_columns = SUMMED_COLUMNS + (("iteration",) if through_iteration is not None else ())
+for column in read_columns:
     if column not in table.column_names:
         fail(f"{path}: column '{column}' missing")
 
-values = {column: table.column(column).to_pylist() for column in SUMMED_COLUMNS}
+values = {column: table.column(column).to_pylist() for column in read_columns}
+if through_iteration is not None:
+    kept = [iteration <= through_iteration for iteration in values["iteration"]]
+    values = {column: [v for v, keep in zip(values[column], kept) if keep] for column in values}
 sums = {column: sum(v for v in values[column] if v is not None) for column in SUMMED_COLUMNS}
-print("INFO: selection power: " + ", ".join(f"{c}={sums[c]}" for c in SUMMED_COLUMNS))
+scope = f" through iteration {through_iteration}" if through_iteration is not None else ""
+print(f"INFO: selection power{scope}: " + ", ".join(f"{c}={sums[c]}" for c in SUMMED_COLUMNS))
 
 for column in SUMMED_COLUMNS:
     if sums[column] <= 0:
@@ -852,13 +890,13 @@ PYEOF
 }
 
 # ---------------------------------------------------------------------------
-# assert_selection_power_of_case <baseline_dir> <case_dir>
+# assert_selection_power_of_case <baseline_dir> <case_dir> [through_iteration]
 #
 # assert_selection_power on <case_dir>, with the two-directory signature
 # assert_compare_exit calls its comparator with; <baseline_dir> is unused.
 # ---------------------------------------------------------------------------
 assert_selection_power_of_case() {
-    assert_selection_power "$2"
+    assert_selection_power "${@:2}"
 }
 
 # ---------------------------------------------------------------------------
@@ -987,7 +1025,9 @@ assert_compare_exit() {
 # compare_solver_counters: rows differing only in `rank`, `worker_id`, a
 # `*_ms` value and row order PASS, and one differing `basis_offered` FAILs.
 # Then exercises assert_selection_power: a selection file meeting all four
-# conditions PASSes, and one whose `cuts_reactivated` sums to 0 FAILs. Then
+# conditions PASSes, also when read through iteration 2, its last; read
+# through iteration 1, where nothing is deactivated, it FAILs; and one whose
+# `cuts_reactivated` sums to 0 FAILs. Then
 # exercises compare_resumed_outputs with k = 2: identical runs PASS, one
 # differing byte in a cuts file FAILs, a lower bound of iteration 3 differing
 # by 1e-9 relative PASSes and by 1e-5 FAILs, a differing row at iteration 2
@@ -1406,6 +1446,10 @@ PYEOF
         assert_selection_power_of_case
     assert_compare_exit "selection_no_reactivation" "" "${root}/selection_no_reactivation" 1 \
         assert_selection_power_of_case
+    assert_compare_exit "selection_power_through_2" "" "${root}/selection_power" 0 \
+        "assert_selection_power_of_case 2"
+    assert_compare_exit "selection_power_through_1" "" "${root}/selection_power" 1 \
+        "assert_selection_power_of_case 1"
     local resume_case expected_exit
     for resume_case in identical:0 cuts_byte:1 lower_bound_1e-9:0 lower_bound_1e-5:1 \
         early_row:0 missing_basis:1 own_keys:0 metadata_iterations:1 codes_entry:1 \
@@ -1545,25 +1589,26 @@ PYEOF
 }
 
 # ---------------------------------------------------------------------------
-# prepare_resume_cases <selection_case> <partial_case> <resume_case>
+# prepare_resume_cases <source_case> <resume_at> <partial_case> <resume_case>
 #
-# Copies <selection_case> to <partial_case> and <resume_case>. The partial
-# copy's iteration limit becomes RESUME_AT and nothing else changes; the
+# Copies <source_case> to <partial_case> and <resume_case>. The partial
+# copy's iteration limit becomes <resume_at> and nothing else changes; the
 # resume copy sets policy.mode to "resume" and keeps the limit, since
 # iteration numbers are absolute across a resume. Exits 1 unless
-# the selection case has exactly one iteration_limit rule with a limit above
-# RESUME_AT and sets no policy.mode.
+# the source case has exactly one iteration_limit rule with a limit above
+# <resume_at> and sets no policy.mode.
 # ---------------------------------------------------------------------------
 prepare_resume_cases() {
-    local selection_case="$1"
-    local partial_case="$2"
-    local resume_case="$3"
+    local source_case="$1"
+    local resume_at="$2"
+    local partial_case="$3"
+    local resume_case="$4"
     local case_dir
     for case_dir in "${partial_case}" "${resume_case}"; do
         mkdir -p "${case_dir}"
-        cp -R "${selection_case}/." "${case_dir}/"
+        cp -R "${source_case}/." "${case_dir}/"
     done
-    python3 - "${partial_case}" "${resume_case}" "${RESUME_AT}" <<'PYEOF'
+    python3 - "${partial_case}" "${resume_case}" "${resume_at}" <<'PYEOF'
 import json
 import os
 import sys
@@ -1877,8 +1922,8 @@ SBEOF
 # print_summary
 #
 # Prints a pass/fail table of the tests attempted for the active MODE
-# (T1, T2, L1, L2, R0, R1, S1 and S2 for "reduced", every T, L, R and S case
-# for "full") so a "reduced" run is not marked FAILED merely for never
+# (T1, T2, L1, L2, R0, R1, F1, F2, F3, S1 and S2 for "reduced", every T, L,
+# R, F and S case for "full") so a "reduced" run is not marked FAILED merely for never
 # attempting the sbatch cases.
 # ---------------------------------------------------------------------------
 print_summary() {
@@ -1893,6 +1938,10 @@ print_summary() {
     tests_to_check+=("R0" "R1")
     if [[ "${MODE}" == "full" ]]; then
         tests_to_check+=("R2" "R3")
+    fi
+    tests_to_check+=("F1" "F2" "F3")
+    if [[ "${MODE}" == "full" ]]; then
+        tests_to_check+=("F4" "F5")
     fi
     tests_to_check+=("S1" "S2")
     if [[ "${MODE}" == "full" ]]; then
@@ -1941,6 +1990,14 @@ main() {
     )
     local resume_case="${WORK_DIR}/4ree-selection-resume"
     local resumed_comparator="compare_resumed_outputs ${RESUME_AT}"
+    local fan_run=(
+        "${FAN_CASE_DIR}" f1 training/convergence.parquet "" compare_outputs_bitwise
+    )
+    local fan_partial_run=(
+        "${WORK_DIR}/1dtoy-fan-partial" "" training/convergence.parquet "" ""
+    )
+    local fan_resume_case="${WORK_DIR}/1dtoy-fan-resume"
+    local fan_resumed_comparator="compare_resumed_outputs ${FAN_RESUME_AT}"
     local simulation_run=(
         "${WORK_DIR}/4ree-partial-misfit" s1 simulation/_SUCCESS "${WORK_DIR}/t1/policy"
         compare_outputs_bitwise
@@ -1982,7 +2039,7 @@ main() {
         run_sbatch_test "L3" "${selection_run[@]}" 2 2 --threads 1
     fi
 
-    prepare_resume_cases "${selection_run[0]}" "${partial_run[0]}" "${resume_case}"
+    prepare_resume_cases "${selection_run[0]}" "${RESUME_AT}" "${partial_run[0]}" "${resume_case}"
 
     # R0: mpiexec single rank, stopped at RESUME_AT (no comparison)
     run_mpiexec_test "R0" "${partial_run[@]}" 1
@@ -1998,6 +2055,35 @@ main() {
         # R3: resumes R2's two-rank checkpoint on one rank, compared against L1
         run_mpiexec_test "R3" "${resume_case}" l1 training/convergence.parquet \
             "${WORK_DIR}/r2/policy" "${resumed_comparator}" 1 --threads 1
+    fi
+
+    # F1: mpiexec single rank (branching baseline), then its power check
+    # through FAN_RESUME_AT
+    run_mpiexec_test "F1" "${fan_run[@]}" 1
+    if ! assert_selection_power "${WORK_DIR}/f1" "${FAN_RESUME_AT}"; then
+        echo "[F1] FAIL: the branching run has no selection power by iteration ${FAN_RESUME_AT} (see above)"
+        RESULTS["F1"]="FAIL"
+        print_summary
+        exit 1
+    fi
+
+    prepare_resume_cases "${FAN_CASE_DIR}" "${FAN_RESUME_AT}" "${fan_partial_run[0]}" \
+        "${fan_resume_case}"
+
+    # F2: mpiexec single rank, stopped at FAN_RESUME_AT (no comparison)
+    run_mpiexec_test "F2" "${fan_partial_run[@]}" 1
+
+    # F3: resumes F2's checkpoint on two ranks, compared against F1
+    run_mpiexec_test "F3" "${fan_resume_case}" f1 training/convergence.parquet \
+        "${WORK_DIR}/f2/policy" "${fan_resumed_comparator}" 2 --threads 2
+
+    if [[ "${MODE}" == "full" ]]; then
+        # F4: sbatch, 2 nodes x 2 ranks, stopped at FAN_RESUME_AT (no comparison)
+        run_sbatch_test "F4" "${fan_partial_run[@]}" 2 2 --threads 1
+
+        # F5: resumes F4's four-rank checkpoint on one rank, compared against F1
+        run_mpiexec_test "F5" "${fan_resume_case}" f1 training/convergence.parquet \
+            "${WORK_DIR}/f4/policy" "${fan_resumed_comparator}" 1 --threads 1
     fi
 
     prepare_partial_misfit_case "${CASE_DIR}" "${simulation_run[0]}"
