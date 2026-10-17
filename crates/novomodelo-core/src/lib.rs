@@ -51,7 +51,7 @@ pub mod system;
 pub mod test_support;
 pub mod topology;
 
-pub use model::{parameters, penalty, resolved, scenario, temporal};
+pub use model::{parameters, penalty, resolved, scalar_expr, scenario, temporal};
 
 pub use constraints::{generic_constraint, initial_conditions, training_event};
 
@@ -94,6 +94,7 @@ pub use model::resolved::{
     ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors, ResolvedPenalties,
     ThermalBlockBounds, ThermalBlockOverride, ThermalStageBounds,
 };
+pub use model::scalar_expr::is_exact_zero;
 pub use model::scenario::{
     CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile,
     CorrelationScheduleEntry, ExternalLoadRow, ExternalNcsRow, ExternalScenarioRow,

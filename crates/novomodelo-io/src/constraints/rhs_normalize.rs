@@ -8,11 +8,11 @@
 //! variable term list plus the operator's targeted [`AffineBound`]
 //! endpoint(s): variable terms collect on the left (the right side's
 //! sign-flipped), a same-variable/same-coefficient-kind pair merges by
-//! summing its effective contribution, a merged literal column at exactly
-//! `0.0` drops, and every non-variable term collects into the affine
-//! remainder `R` assigned to the endpoint(s) the operator selects.
+//! summing its effective contribution, a merged literal column that is an
+//! exact zero (either sign) drops, and every non-variable term collects into
+//! the affine remainder `R` assigned to the endpoint(s) the operator selects.
 
-use novomodelo_core::{AffineBound, CoefficientRef, EntityId, LinearTerm};
+use novomodelo_core::{AffineBound, CoefficientRef, EntityId, LinearTerm, is_exact_zero};
 
 /// One term of a relational side after the caller has inlined every
 /// named-expression reference and resolved every bound-position `@name` to a
@@ -155,9 +155,9 @@ fn merge_into(existing: &mut LinearTerm, incoming: &LinearTerm) {
     }
 }
 
-/// Bit-exact zero check on a merged literal column — the drop criterion.
+/// Exact-zero check on a merged literal column, the drop criterion.
 fn is_zero_literal(coef: &CoefficientRef) -> bool {
-    matches!(coef, CoefficientRef::Literal(v) if v.to_bits() == 0.0_f64.to_bits())
+    matches!(coef, CoefficientRef::Literal(v) if is_exact_zero(*v))
 }
 
 #[cfg(test)]
@@ -243,6 +243,19 @@ mod tests {
                 terms: vec![],
                 products: vec![],
             })
+        );
+    }
+
+    #[test]
+    fn normalize_negative_zero_merge_drops() {
+        let lhs = vec![
+            SideTerm::Variable(LinearTerm::literal(-0.0, hg(1))),
+            SideTerm::Variable(LinearTerm::literal(-0.0, hg(1))),
+        ];
+        let (terms, _, _) = normalize(lhs, vec![SideTerm::Constant(1.0)], RelOp::Le);
+        assert!(
+            terms.is_empty(),
+            "a -0.0 merged literal must drop: {terms:?}"
         );
     }
 
