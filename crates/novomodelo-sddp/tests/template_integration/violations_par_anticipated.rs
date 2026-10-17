@@ -1808,15 +1808,17 @@ fn test_anticipated_thermals_lp_roundtrip_k0_baseline_parity() {
         result_baseline.templates[0].n_state, 1,
         "K=0 baseline: n_state must be 1 (no anticipated state)"
     );
-    // num_cols = 26: the anticipated geometry's 28+K drops both K-only columns
+    // num_cols = 30: the anticipated geometry's 32+K drops both K-only columns
     // (1 commitment-hold slot + 1 anticipated_decision) when K=0.
+    // Includes 4 plant-level operational violation slack columns (2 families × 2 blocks).
     assert_eq!(
-        result_baseline.templates[0].num_cols, 26,
-        "K=0 baseline: num_cols must be 26 (no anticipated state or decision columns)"
+        result_baseline.templates[0].num_cols, 30,
+        "K=0 baseline: num_cols must be 30 (no anticipated state or decision columns)"
     );
+    // num_rows = 16: includes 4 plant-level operational violation rows (2 families × 2 blocks).
     assert_eq!(
-        result_baseline.templates[0].num_rows, 12,
-        "K=0 baseline: num_rows must be 12 (no rows pin incoming state)"
+        result_baseline.templates[0].num_rows, 16,
+        "K=0 baseline: num_rows must be 16 (no rows pin incoming state)"
     );
 }
 

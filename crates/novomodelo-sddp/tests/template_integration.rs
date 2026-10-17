@@ -4330,20 +4330,23 @@ fn rt_col_ant_dec_start(k: usize) -> usize {
 
 /// `row_anticipated_fishing_start` for the roundtrip geometry. Incoming state
 /// is pinned by column bounds, so no row pins it: = min_generation_start +
-/// n_op_rows = 11 + 1 = 12 (K-independent: row layout does not depend on the
-/// anticipated ring's column width).
+/// n_op_rows = 15 + 1 = 16 (K-independent: row layout does not depend on the
+/// anticipated ring's column width). Includes 4 plant-level operational violation
+/// rows (2 families × 2 blocks).
 fn rt_row_ant_fishing_start(_k: usize) -> usize {
-    12
+    16
 }
 
 /// Expected `num_cols` for the roundtrip geometry with anticipation K=k.
 ///
-/// = 27+2K: the anticipated ring contributes `2*n_ant_state = 2*k` columns
+/// = 31+2K: the anticipated ring contributes `2*n_ant_state = 2*k` columns
 /// (outgoing `commit_out` + incoming `commit_in`) plus the
 /// stage-level `anticipated_decision` column, one more than the pre-ring
 /// no-anticipated baseline's single combined block.
+/// Includes 6 operational violation slack columns per hydro (4 cell-level +
+/// 2 plant-level) × 2 blocks = 12 columns for the 1-hydro fixture.
 fn rt_expected_num_cols(k: usize) -> usize {
-    27 + 2 * k
+    31 + 2 * k
 }
 
 /// Expected `num_rows` for the roundtrip geometry with anticipation K=k and stage
@@ -4354,15 +4357,17 @@ fn rt_expected_num_cols(k: usize) -> usize {
 /// gate); each of the `k - 1` interior ring slots gets its own ring-shift
 /// definition row iff it is within the horizon-reachable cap
 /// `slot < n_stages - stage_idx - 1`.
+/// Plant-level violation rows add 4 rows (2 families × 2 blocks = 4).
 fn rt_expected_num_rows(k: usize, stage_idx: usize) -> usize {
-    // base = 12 (incoming state is pinned by column bounds; no row pins it)
+    // base = 16 (incoming state is pinned by column bounds; no row pins it)
+    // includes 4 plant-level violation rows
     let fishing = 1_usize; // always-active: 1 fishing row per anticipated plant
     let state_out_def = usize::from(stage_idx + k < 4);
     let horizon_cap = 4_usize.saturating_sub(stage_idx + 1);
     let interior_active = (0..k.saturating_sub(1))
         .filter(|&slot| slot < horizon_cap)
         .count();
-    12 + fishing + state_out_def + interior_active
+    16 + fishing + state_out_def + interior_active
 }
 
 #[path = "template_integration/deficit_and_withdrawal.rs"]

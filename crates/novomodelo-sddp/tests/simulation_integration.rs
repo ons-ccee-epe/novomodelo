@@ -194,9 +194,9 @@ impl SolverInterface for MockSolver {
         let obj = self.objectives[call % self.objectives.len()];
         Ok(novomodelo_solver::SolutionView {
             objective: obj,
-            primal: &[0.0; 15],
+            primal: &[0.0; 17],
             dual: &[0.0; 7],
-            reduced_costs: &[0.0; 15],
+            reduced_costs: &[0.0; 17],
             iterations: 0,
             solve_time_seconds: 0.0,
         })
@@ -344,11 +344,11 @@ fn make_stochastic_context(n_stages: usize, n_openings: usize) -> StochasticCont
 fn minimal_template() -> StageTemplate {
     // N=1, L=0 → cols: storage(0), z_inflow(1), storage_in(2), theta(3), then
     // the decoupled hydro+bus equipment padding `test_support::geometry`
-    // addresses for N=1 hydro, 1 bus, 1 block (turbine..generation_below_slack,
-    // cols 4-14); `MockSolver::solve` mirrors this column count.
+    // addresses for N=1 hydro, 1 bus, 1 block (turbine..generation_below_plant_slack,
+    // cols 4-16); `MockSolver::solve` mirrors this column count.
     //             rows: z_inflow(0), mock_pin(1), then that same
     //             layout's water_balance/load_balance/oper_violation rows (2-6)
-    let num_cols = 15;
+    let num_cols = 17;
     let num_rows = 7;
     let mut col_lower = vec![0.0; num_cols];
     col_lower[1] = f64::NEG_INFINITY;

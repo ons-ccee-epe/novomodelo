@@ -125,8 +125,8 @@ fn evap_row_bounds_equality_at_intercept() {
     let t = &result.templates[0];
     let n_h = system.hydros().len();
 
-    // Evaporation row: followed by 4*N operational violation rows.
-    let evap_row = t.num_rows - 1 - 4 * n_h;
+    // Evaporation row: followed by 6*N operational violation rows (4 cell-level + 2 plant-level).
+    let evap_row = t.num_rows - 1 - 6 * n_h;
     assert_eq!(
         t.row_lower[evap_row], intercept_m3s,
         "evaporation row_lower must equal intercept_m3s = {intercept_m3s}, got {}",
@@ -158,11 +158,11 @@ fn evap_col_bounds_and_objective() {
     let t = &result.templates[0];
     let n_h = system.hydros().len();
 
-    // The 3 evaporation columns are followed by 1 withdrawal slack + 4 operational
-    // violation slack columns (5*N=5 total for N=1).
-    let col_evaporation_flow = t.num_cols - 4 - 5 * n_h;
-    let col_f_plus = t.num_cols - 3 - 5 * n_h;
-    let col_f_minus = t.num_cols - 2 - 5 * n_h;
+    // The 3 evaporation columns are followed by 2 withdrawal slack + 6 operational
+    // violation slack columns (8*N=8 total for N=1).
+    let col_evaporation_flow = t.num_cols - 4 - 7 * n_h;
+    let col_f_plus = t.num_cols - 3 - 7 * n_h;
+    let col_f_minus = t.num_cols - 2 - 7 * n_h;
 
     // The evaporation-outflow column is free-signed: [-q_max, +q_max] where
     // q_max = |intercept_m3s + volume_slope_m3s_per_hm3 * v_max| * margin.
@@ -237,12 +237,12 @@ fn evap_csc_entries_one_hydro_correct_coefficients() {
     //   row 1: water balance (row_water_balance_start = N = 1)
     //   row 2: load balance
     //   row 3: evaporation constraint
-    //   rows 4-7: operational violation rows
-    // Evaporation columns come before withdrawal slack + 4*N operational slacks.
-    let col_evaporation_flow = t.num_cols - 4 - 5 * n_h;
-    let col_f_plus = t.num_cols - 3 - 5 * n_h;
-    let col_f_minus = t.num_cols - 2 - 5 * n_h;
-    let evap_row = t.num_rows - 1 - 4 * n_h;
+    //   rows 4-9: operational violation rows (6 per hydro)
+    // Evaporation columns come before withdrawal slack + 6*N operational slacks.
+    let col_evaporation_flow = t.num_cols - 4 - 7 * n_h;
+    let col_f_plus = t.num_cols - 3 - 7 * n_h;
+    let col_f_minus = t.num_cols - 2 - 7 * n_h;
+    let evap_row = t.num_rows - 1 - 6 * n_h;
     let water_balance_row = 1_usize; // row_water_balance_start = N = 1
 
     // Entries are sorted by row ascending: [0] = water balance, [1] = evap constraint.
@@ -348,7 +348,7 @@ fn evap_csc_entries_coefficient_scaling() {
 
     let t = &result.templates[0];
     let n_h = system.hydros().len();
-    let evap_row = t.num_rows - 1 - 4 * n_h;
+    let evap_row = t.num_rows - 1 - 6 * n_h;
     let expected_coeff = -volume_slope_m3s_per_hm3 / 2.0; // -0.02
 
     let entry_v = entries_for_col(t, 0)
@@ -452,8 +452,8 @@ fn evap_csc_entries_two_hydros_independent_rows() {
     let t = &result.templates[0];
     let n_h = system.hydros().len();
     // 2 evap hydros: evap rows are followed by 4*N operational violation rows.
-    let evap_row_0 = t.num_rows - 2 - 4 * n_h;
-    let evap_row_1 = t.num_rows - 1 - 4 * n_h;
+    let evap_row_0 = t.num_rows - 2 - 6 * n_h;
+    let evap_row_1 = t.num_rows - 1 - 6 * n_h;
 
     // Hydro 0 (volume_slope_m3s_per_hm3=0.02): v coefficient = -0.01.
     let entry_v_h0 = entries_for_col(t, 0)
@@ -500,7 +500,7 @@ fn evap_csc_entries_zero_volume_slope_produces_zero_volume_coefficients() {
 
     let t = &result.templates[0];
     let n_h = system.hydros().len();
-    let evap_row = t.num_rows - 1 - 4 * n_h;
+    let evap_row = t.num_rows - 1 - 6 * n_h;
 
     let entry_v = entries_for_col(t, 0)
         .into_iter()
@@ -548,7 +548,7 @@ fn evap_water_balance_one_hydro_coefficient_is_zeta() {
     let water_balance_row = 1_usize; // row_water_balance_start = N = 1
 
     // evap outflow is the first of 3 evaporation columns; before withdrawal + 4*N op slacks.
-    let col_evaporation_flow = t.num_cols - 4 - 5 * n_h;
+    let col_evaporation_flow = t.num_cols - 4 - 7 * n_h;
 
     let entries = entries_for_col(t, col_evaporation_flow);
     let entry = entries
@@ -792,7 +792,7 @@ fn evap_water_balance_only_second_hydro_has_evap() {
 
     // evaporation outflow for hydro 1 (local_idx=0, since only hydro 1 is evap): col_evap_start + 0*3.
     // N=2 withdrawal + 4*N operational slack columns follow evap.
-    let col_evaporation_flow_h1 = t.num_cols - 5 - 5 * n_h;
+    let col_evaporation_flow_h1 = t.num_cols - 5 - 7 * n_h;
 
     let entries_h1 = entries_for_col(t, col_evaporation_flow_h1);
     let found_h1 = entries_h1
@@ -871,9 +871,9 @@ fn evap_violation_cost_applied_to_slack_columns() {
 
     // Evaporation columns (evaporation outflow, f_plus, f_minus) are followed by
     // 1 withdrawal slack + 4*N operational slacks.
-    let col_evaporation_flow = t.num_cols - 4 - 5 * n_h;
-    let col_f_plus = t.num_cols - 3 - 5 * n_h;
-    let col_f_minus = t.num_cols - 2 - 5 * n_h;
+    let col_evaporation_flow = t.num_cols - 4 - 7 * n_h;
+    let col_f_plus = t.num_cols - 3 - 7 * n_h;
+    let col_f_minus = t.num_cols - 2 - 7 * n_h;
 
     let expected_base = 500.0 * 730.0 / COST_SCALE_FACTOR;
 
@@ -914,7 +914,7 @@ fn evap_outflow_objective_is_zero() {
     let t = &result.templates[0];
     let n_h = system.hydros().len();
     // N=1 withdrawal + 4*N operational slacks follow the 3 evap columns.
-    let col_evaporation_flow = t.num_cols - 4 - 5 * n_h;
+    let col_evaporation_flow = t.num_cols - 4 - 7 * n_h;
 
     assert!(
         t.objective[col_evaporation_flow].abs() < 1e-12,
@@ -955,7 +955,7 @@ fn evap_lp_solvable_and_outflow_positive_coefficients() {
         .expect("evaporation LP must be feasible and optimal");
 
     // evaporation outflow is the first evaporation column (before withdrawal + 4*N operational slacks).
-    let col_evaporation_flow = template.num_cols - 4 - 5 * n_h;
+    let col_evaporation_flow = template.num_cols - 4 - 7 * n_h;
     let evaporation_flow = view.primal[col_evaporation_flow];
 
     // Tight lower bound: evaporation outflow >= intercept_m3s + (volume_slope_m3s_per_hm3 / 2) · v_min + (volume_slope_m3s_per_hm3 / 2) · v_in
@@ -998,8 +998,8 @@ fn evap_violation_slacks_near_zero_feasible_constraint() {
         .expect("evaporation LP must be feasible and optimal");
 
     // Evaporation violation slack columns are before withdrawal + 4*N operational slacks.
-    let col_f_plus = template.num_cols - 3 - 5 * n_h;
-    let col_f_minus = template.num_cols - 2 - 5 * n_h;
+    let col_f_plus = template.num_cols - 3 - 7 * n_h;
+    let col_f_minus = template.num_cols - 2 - 7 * n_h;
     let f_plus = view.primal[col_f_plus];
     let f_minus = view.primal[col_f_minus];
 
@@ -1117,8 +1117,8 @@ fn evap_bound_prevents_dump_valve() {
     // col 7: deficit, col 8: excess.
     // Evaporation columns: evaporation outflow, f_plus, f_minus, then withdrawal + 4*N operational slacks.
     let col_spillage = 5;
-    let col_evaporation_flow = template.num_cols - 4 - 5 * n_h;
-    let col_f_minus = template.num_cols - 2 - 5 * n_h;
+    let col_evaporation_flow = template.num_cols - 4 - 7 * n_h;
+    let col_f_minus = template.num_cols - 2 - 7 * n_h;
 
     let evaporation_flow = view.primal[col_evaporation_flow];
     let f_minus = view.primal[col_f_minus];

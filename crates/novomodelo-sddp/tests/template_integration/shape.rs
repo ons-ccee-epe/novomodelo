@@ -75,10 +75,10 @@ fn num_cols_formula_one_hydro_lag_zero() {
     .expect("constant productivity ok");
     let t = &result.templates[0];
     // N=1 withdrawal slacks add 2 columns (neg + pos): 7 + 2 = 9.
-    // N=1 operational violation slacks add 4 columns: 9 + 4 = 13.
-    // N=1 z-inflow column adds 1: 13 + 1 = 14.
-    // N=1 diversion column adds 1: 14 + 1 = 15.
-    assert_eq!(t.num_cols, 15, "num_cols mismatch for N=1 L=0");
+    // N=1 operational violation slacks add 6 columns (4 cell-level + 2 plant-level): 9 + 6 = 15.
+    // N=1 z-inflow column adds 1: 15 + 1 = 16.
+    // N=1 diversion column adds 1: 16 + 1 = 17.
+    assert_eq!(t.num_cols, 17, "num_cols mismatch for N=1 L=0");
 }
 
 #[test]
@@ -100,10 +100,10 @@ fn num_cols_formula_one_hydro_lag_two() {
     .expect("constant productivity ok");
     let t = &result.templates[0];
     // N=1 withdrawal slacks add 2 columns (neg + pos): 9 + 2 = 11.
-    // N=1 operational violation slacks add 4 columns: 11 + 4 = 15.
-    // N=1 z-inflow column adds 1: 15 + 1 = 16.
-    // N=1 diversion column adds 1: 16 + 1 = 17.
-    assert_eq!(t.num_cols, 17, "num_cols mismatch for N=1 L=2");
+    // N=1 operational violation slacks add 6 columns (4 cell-level + 2 plant-level): 11 + 6 = 17.
+    // N=1 z-inflow column adds 1: 17 + 1 = 18.
+    // N=1 diversion column adds 1: 18 + 1 = 19.
+    assert_eq!(t.num_cols, 19, "num_cols mismatch for N=1 L=2");
 }
 
 #[test]
@@ -129,7 +129,7 @@ fn num_rows_formula_no_hydro() {
 #[test]
 fn num_rows_formula_one_hydro_lag_zero() {
     // N=1, L=0, B=1, K=1; no state-fixing rows (incoming state pinned via column bounds).
-    // num_rows = N z_inflow(1) + N water_balance(1) + B*K load_balance(1) + 4 op-violation = 7
+    // num_rows = N z_inflow(1) + N water_balance(1) + B*K load_balance(1) + 6 op-violation = 9
     let system = one_hydro_system(1, 0);
     let result = build_stage_templates_resolving_layout(
         &system,
@@ -142,13 +142,13 @@ fn num_rows_formula_one_hydro_lag_zero() {
     )
     .expect("constant productivity ok");
     let t = &result.templates[0];
-    assert_eq!(t.num_rows, 7, "num_rows mismatch for N=1 L=0");
+    assert_eq!(t.num_rows, 9, "num_rows mismatch for N=1 L=0");
 }
 
 #[test]
 fn num_rows_formula_one_hydro_lag_two() {
-    // N=1, L=2, B=1, K=1; lags do not add rows, no state-fixing rows. Same 7 as L=0:
-    // num_rows = N z_inflow(1) + N water_balance(1) + B*K load_balance(1) + 4 op-violation = 7
+    // N=1, L=2, B=1, K=1; lags do not add rows, no state-fixing rows. Same 9 as L=0:
+    // num_rows = N z_inflow(1) + N water_balance(1) + B*K load_balance(1) + 6 op-violation = 9
     let system = one_hydro_system(1, 2);
     let result = build_stage_templates_resolving_layout(
         &system,
@@ -161,7 +161,7 @@ fn num_rows_formula_one_hydro_lag_two() {
     )
     .expect("constant productivity ok");
     let t = &result.templates[0];
-    assert_eq!(t.num_rows, 7, "num_rows mismatch for N=1 L=2");
+    assert_eq!(t.num_rows, 9, "num_rows mismatch for N=1 L=2");
 }
 
 #[test]
