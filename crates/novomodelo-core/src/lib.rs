@@ -94,7 +94,7 @@ pub use model::resolved::{
     ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors, ResolvedPenalties,
     ThermalBlockBounds, ThermalBlockOverride, ThermalStageBounds,
 };
-pub use model::scalar_expr::is_exact_zero;
+pub use model::scalar_expr::{ScalarExpr, is_exact_zero};
 pub use model::scenario::{
     CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile,
     CorrelationScheduleEntry, ExternalLoadRow, ExternalNcsRow, ExternalScenarioRow,
