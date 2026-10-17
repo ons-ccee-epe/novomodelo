@@ -274,6 +274,8 @@ impl<'de> serde::Deserialize<'de> for ScalarExpr {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     const A: EntityId = EntityId(1);
@@ -512,5 +514,201 @@ mod tests {
             .expect("a literal-only program is accepted");
         assert_eq!(parsed, lit(6.0));
         assert_eq!(parsed.op_count(), 1);
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum BinOp {
+        Add,
+        Sub,
+        Mul,
+        Div,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Tree {
+        Lit(f64),
+        Par(i32),
+        Neg(Box<Tree>),
+        Bin(BinOp, Box<Tree>, Box<Tree>),
+    }
+
+    fn leaf_value(values: &[f64; 8], id: EntityId) -> f64 {
+        values[usize::try_from(id.0).expect("parameter ids are drawn from 0..8")]
+    }
+
+    fn eval_tree(tree: &Tree, values: &[f64; 8]) -> f64 {
+        match tree {
+            Tree::Lit(v) => *v,
+            Tree::Par(i) => leaf_value(values, EntityId(*i)),
+            Tree::Neg(operand) => -eval_tree(operand, values),
+            Tree::Bin(op, lhs, rhs) => {
+                let a = eval_tree(lhs, values);
+                let b = eval_tree(rhs, values);
+                match op {
+                    BinOp::Add => a + b,
+                    BinOp::Sub => a - b,
+                    BinOp::Mul => a * b,
+                    BinOp::Div => a / b,
+                }
+            }
+        }
+    }
+
+    fn build(tree: &Tree) -> ScalarExpr {
+        match tree {
+            Tree::Lit(v) => lit(*v),
+            Tree::Par(i) => par(EntityId(*i)),
+            Tree::Neg(operand) => -build(operand),
+            Tree::Bin(op, lhs, rhs) => {
+                let (lhs, rhs) = (build(lhs), build(rhs));
+                match op {
+                    BinOp::Add => lhs + rhs,
+                    BinOp::Sub => lhs - rhs,
+                    BinOp::Mul => lhs * rhs,
+                    BinOp::Div => lhs / rhs,
+                }
+            }
+        }
+    }
+
+    fn collect_params(tree: &Tree, ids: &mut Vec<EntityId>) {
+        match tree {
+            Tree::Lit(_) => {}
+            Tree::Par(i) => ids.push(EntityId(*i)),
+            Tree::Neg(operand) => collect_params(operand, ids),
+            Tree::Bin(_, lhs, rhs) => {
+                collect_params(lhs, ids);
+                collect_params(rhs, ids);
+            }
+        }
+    }
+
+    fn same_bits(a: f64, b: f64) -> bool {
+        a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())
+    }
+
+    fn literal_values() -> impl Strategy<Value = f64> {
+        prop_oneof![any::<f64>(), -1e6..1e6_f64, Just(0.0), Just(-0.0)]
+    }
+
+    fn leaf_arrays() -> impl Strategy<Value = [f64; 8]> {
+        prop::array::uniform8(prop_oneof![-1e6..1e6_f64, Just(0.0), Just(-0.0)])
+    }
+
+    fn trees(with_params: bool) -> impl Strategy<Value = Tree> {
+        let leaf = if with_params {
+            prop_oneof![
+                literal_values().prop_map(Tree::Lit),
+                (0..8_i32).prop_map(Tree::Par),
+            ]
+            .boxed()
+        } else {
+            literal_values().prop_map(Tree::Lit).boxed()
+        };
+        let ops = prop_oneof![
+            Just(BinOp::Add),
+            Just(BinOp::Sub),
+            Just(BinOp::Mul),
+            Just(BinOp::Div),
+        ];
+        leaf.prop_recursive(6, 64, 2, move |inner| {
+            prop_oneof![
+                1 => inner.clone().prop_map(|operand| Tree::Neg(Box::new(operand))),
+                3 => (ops.clone(), inner.clone(), inner).prop_map(|(op, lhs, rhs)| {
+                    Tree::Bin(op, Box::new(lhs), Box::new(rhs))
+                }),
+            ]
+        })
+    }
+
+    #[cfg(feature = "serde")]
+    fn holds_non_finite_literal(expr: &ScalarExpr) -> bool {
+        expr.ops
+            .iter()
+            .any(|op| matches!(op, ScalarOp::Literal(v) if !v.is_finite()))
+    }
+
+    /// Op-for-op equality with literals compared by `same_bits`, since derived
+    /// `==` is false for a `NaN` literal and blind to the sign of zero.
+    #[cfg(feature = "serde")]
+    fn same_program(a: &ScalarExpr, b: &ScalarExpr) -> bool {
+        a.ops.len() == b.ops.len()
+            && a.ops.iter().zip(&b.ops).all(|(x, y)| match (x, y) {
+                (ScalarOp::Literal(p), ScalarOp::Literal(q)) => same_bits(*p, *q),
+                _ => x == y,
+            })
+    }
+
+    proptest! {
+        /// derived: the reference tree evaluates left operand, then right operand,
+        /// then the node's own `f64` operation, so a program built from the same
+        /// tree, folded or not, has the same bits.
+        #[test]
+        fn evaluation_matches_reference_tree(tree in trees(true), values in leaf_arrays()) {
+            let actual = build(&tree).evaluate(|id| leaf_value(&values, id));
+            let expected = eval_tree(&tree, &values);
+            prop_assert!(same_bits(actual, expected), "program {actual:?}, tree {expected:?}");
+        }
+
+        /// derived: a tree without a parameter folds node by node with the same
+        /// `f64` operations the reference tree applies, leaving one literal.
+        #[test]
+        fn literal_only_trees_fold_to_one_literal(tree in trees(false)) {
+            let expected = eval_tree(&tree, &[0.0; 8]);
+            let folded = build(&tree).as_literal();
+            prop_assert!(
+                folded.is_some_and(|v| same_bits(v, expected)),
+                "folded {folded:?}, tree {expected:?}"
+            );
+        }
+
+        /// derived: folding removes only subtrees that contain no parameter, so
+        /// the parameter ids are the tree's `Par` nodes read left to right.
+        #[test]
+        fn params_follow_tree_leaf_order(tree in trees(true)) {
+            let mut expected = Vec::new();
+            collect_params(&tree, &mut expected);
+            prop_assert_eq!(build(&tree).params().collect::<Vec<_>>(), expected);
+        }
+
+        /// derived: a constructed program is already in the constructors' image,
+        /// so the replay on deserialization rebuilds the same op list and
+        /// serialize then deserialize is the identity. The JSON half is skipped
+        /// for a program whose built op list holds a non-finite literal, which
+        /// `serde_json` writes as `null`; a tree of finite literals can still
+        /// build one, since a literal-only operator folds an overflow or `0 / 0`.
+        /// Every other literal round-trips exactly because JSON number parsing
+        /// is correctly rounded (the `float_roundtrip` feature).
+        #[cfg(feature = "serde")]
+        #[test]
+        fn constructed_programs_round_trip_through_serde(
+            tree in trees(true),
+            values in leaf_arrays(),
+        ) {
+            let expr = build(&tree);
+            let expected = expr.evaluate(|id| leaf_value(&values, id));
+
+            let bytes = postcard::to_allocvec(&expr).expect("ScalarExpr serializes");
+            let decoded: ScalarExpr =
+                postcard::from_bytes(&bytes).expect("a constructed program deserializes");
+            prop_assert!(same_program(&decoded, &expr), "postcard {decoded:?}, built {expr:?}");
+            prop_assert_eq!(
+                postcard::to_allocvec(&decoded).expect("ScalarExpr re-serializes"),
+                bytes
+            );
+            prop_assert!(same_bits(decoded.evaluate(|id| leaf_value(&values, id)), expected));
+
+            if !holds_non_finite_literal(&expr) {
+                let json = serde_json::to_string(&expr).expect("ScalarExpr serializes");
+                let parsed: ScalarExpr =
+                    serde_json::from_str(&json).expect("a constructed program parses");
+                prop_assert!(same_program(&parsed, &expr), "json {parsed:?}, built {expr:?}");
+                prop_assert_eq!(
+                    serde_json::to_string(&parsed).expect("ScalarExpr re-serializes"),
+                    json
+                );
+                prop_assert!(same_bits(parsed.evaluate(|id| leaf_value(&values, id)), expected));
+            }
+        }
     }
 }
