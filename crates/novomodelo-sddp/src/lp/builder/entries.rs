@@ -1164,7 +1164,7 @@ pub(super) fn fill_generic_constraint_entries(
         let constraint = &ctx.generic_constraints[entry.constraint_idx];
         // A collapsed stage-level row spans the stage's total hours (it stands in for
         // one row per block); a `per_hour` total is penalty-conserving either way.
-        let block_hours = if entry.is_stage_level {
+        let row_hours = if entry.is_stage_level {
             layout.clock.total_hours()
         } else {
             layout.clock.hours(BlockIdx::new(entry.block_idx))
@@ -1194,7 +1194,7 @@ pub(super) fn fill_generic_constraint_entries(
         }
 
         if let (Some(plus_col), Some(slack)) = (entry.slack_plus_col, entry.slack) {
-            let obj_coeff = slack.unit_cost(block_hours);
+            let obj_coeff = slack.unit_cost(row_hours);
 
             col_upper[plus_col] = f64::INFINITY;
             objective[plus_col] = obj_coeff;

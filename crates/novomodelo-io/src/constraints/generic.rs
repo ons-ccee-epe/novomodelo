@@ -321,7 +321,8 @@ fn duplicate_line_pair_error(key: (EntityId, EntityId)) -> LoadError {
 /// | File not found / read failure                  | [`LoadError::IoError`]     |
 /// | Invalid JSON syntax or missing required field  | [`LoadError::ParseError`]  |
 /// | Duplicate `id` within the constraints array    | [`LoadError::SchemaError`] |
-/// | `slack.enabled = true` with absent or <= 0 penalty | [`LoadError::SchemaError`] |
+/// | `slack.enabled = true` with absent or <= 0 penalty, or absent `penalty_basis` | [`LoadError::SchemaError`] |
+/// | `slack.enabled = false` with `penalty` or `penalty_basis` set | [`LoadError::SchemaError`] |
 /// | Expression syntax error                        | [`LoadError::SchemaError`] |
 /// | Unknown variable name in expression            | [`LoadError::SchemaError`] |
 /// | `@param` coefficient not found in `name_to_id` | [`LoadError::SchemaError`] |
@@ -3907,33 +3908,17 @@ mod tests {
     /// Slack with zero penalty → SchemaError.
     #[test]
     fn test_parse_slack_zero_penalty_returns_schema_error() {
-        let json = r#"{
-  "constraints": [
-    {
-      "id": 0,
-      "name": "a",
-      "expression": "hydro_generation(0)",
-      "slack": { "enabled": true, "penalty": 0.0, "penalty_basis": "per_hour" }
-    }
-  ]
-}"#;
-        let f = write_json(json);
-        let err =
-            parse_generic_constraints(f.path(), &HashMap::new(), &LineBusPairIndex::default())
-                .unwrap_err();
-        match &err {
-            LoadError::SchemaError { field, message, .. } => {
-                assert!(
-                    field.contains("penalty"),
-                    "field should contain 'penalty', got: {field}"
-                );
-                assert!(
-                    message.contains("> 0.0"),
-                    "message should mention > 0.0, got: {message}"
-                );
-            }
-            other => panic!("expected SchemaError, got: {other:?}"),
-        }
+        let (field, message) = slack_schema_error(
+            r#"{ "enabled": true, "penalty": 0.0, "penalty_basis": "per_hour" }"#,
+        );
+        assert!(
+            field.contains("penalty"),
+            "field should contain 'penalty', got: {field}"
+        );
+        assert!(
+            message.contains("> 0.0"),
+            "message should mention > 0.0, got: {message}"
+        );
     }
 
     /// An enabled slack resolves to its penalty and basis; a disabled one to `None`.
@@ -3953,7 +3938,7 @@ mod tests {
         assert_eq!(result[1].slack, None);
     }
 
-    fn slack_schema_error(slack: &str) -> (String, String) {
+    fn parse_slack_err(slack: &str) -> LoadError {
         let json = format!(
             r#"{{
   "constraints": [
@@ -3967,10 +3952,12 @@ mod tests {
 }}"#
         );
         let f = write_json(&json);
-        let err =
-            parse_generic_constraints(f.path(), &HashMap::new(), &LineBusPairIndex::default())
-                .unwrap_err();
-        match err {
+        parse_generic_constraints(f.path(), &HashMap::new(), &LineBusPairIndex::default())
+            .unwrap_err()
+    }
+
+    fn slack_schema_error(slack: &str) -> (String, String) {
+        match parse_slack_err(slack) {
             LoadError::SchemaError { field, message, .. } => (field, message),
             other => panic!("expected SchemaError, got: {other:?}"),
         }
@@ -4000,20 +3987,9 @@ mod tests {
 
     #[test]
     fn test_parse_unknown_penalty_basis_returns_parse_error() {
-        let json = r#"{
-  "constraints": [
-    {
-      "id": 0,
-      "name": "a",
-      "expression": "hydro_generation(0)",
-      "slack": { "enabled": true, "penalty": 5000.0, "penalty_basis": "per_stage" }
-    }
-  ]
-}"#;
-        let f = write_json(json);
-        let err =
-            parse_generic_constraints(f.path(), &HashMap::new(), &LineBusPairIndex::default())
-                .unwrap_err();
+        let err = parse_slack_err(
+            r#"{ "enabled": true, "penalty": 5000.0, "penalty_basis": "per_stage" }"#,
+        );
         assert!(
             matches!(err, LoadError::ParseError { .. }),
             "expected ParseError for an unknown penalty_basis, got: {err:?}"
