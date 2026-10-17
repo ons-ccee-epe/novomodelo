@@ -39,11 +39,16 @@ pub fn is_exact_zero(v: f64) -> bool {
 /// assert_eq!(expr.evaluate(|_| 3.0), 6.0);
 /// ```
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize), serde(transparent))]
 pub struct ScalarExpr {
     ops: Vec<ScalarOp>,
 }
 
+/// Postcard encodes a variant by its position: append only, never reorder
+/// (`scalar_op_postcard_discriminant_pin`).
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub(crate) enum ScalarOp {
     Literal(f64),
     Param(EntityId),
@@ -224,6 +229,49 @@ impl Div for ScalarExpr {
     }
 }
 
+// Manual (not derived): replaying the ops through the constructors keeps every
+// deserialized program well-formed and folded.
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for ScalarExpr {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+
+        fn pop_operands(stack: &mut Vec<ScalarExpr>) -> Option<(ScalarExpr, ScalarExpr)> {
+            let rhs = stack.pop()?;
+            let lhs = stack.pop()?;
+            Some((lhs, rhs))
+        }
+
+        let ops = Vec::<ScalarOp>::deserialize(deserializer)?;
+        if ops.is_empty() {
+            return Err(D::Error::custom("scalar expression program is empty"));
+        }
+        let mut stack: Vec<ScalarExpr> = Vec::with_capacity(ops.len());
+        for (i, op) in ops.into_iter().enumerate() {
+            let value = match op {
+                ScalarOp::Literal(v) => Some(ScalarExpr::literal(v)),
+                ScalarOp::Param(id) => Some(ScalarExpr::param(id)),
+                ScalarOp::Neg => stack.pop().map(|operand| -operand),
+                ScalarOp::Add => pop_operands(&mut stack).map(|(lhs, rhs)| lhs + rhs),
+                ScalarOp::Sub => pop_operands(&mut stack).map(|(lhs, rhs)| lhs - rhs),
+                ScalarOp::Mul => pop_operands(&mut stack).map(|(lhs, rhs)| lhs * rhs),
+                ScalarOp::Div => pop_operands(&mut stack).map(|(lhs, rhs)| lhs / rhs),
+            };
+            let value = value.ok_or_else(|| {
+                D::Error::custom(format!("scalar expression program underflows at op {i}"))
+            })?;
+            stack.push(value);
+        }
+        match <[ScalarExpr; 1]>::try_from(stack) {
+            Ok([value]) => Ok(value),
+            Err(stack) => Err(D::Error::custom(format!(
+                "scalar expression program leaves {} values; expected 1",
+                stack.len()
+            ))),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,5 +409,108 @@ mod tests {
         assert_eq!(compound.as_literal(), None);
         assert_eq!(compound.as_param(), None);
         assert_eq!(compound.op_count(), 3);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn scalar_op_postcard_discriminant_pin() {
+        let pins = [
+            (ScalarOp::Literal(0.0), 0x00_u8),
+            (ScalarOp::Param(EntityId(0)), 0x01),
+            (ScalarOp::Neg, 0x02),
+            (ScalarOp::Add, 0x03),
+            (ScalarOp::Sub, 0x04),
+            (ScalarOp::Mul, 0x05),
+            (ScalarOp::Div, 0x06),
+        ];
+        for (op, discriminant) in pins {
+            let bytes = postcard::to_allocvec(&op).expect("ScalarOp serializes");
+            assert_eq!(
+                bytes[0], discriminant,
+                "{op:?} must serialize to postcard discriminant {discriminant:#04x}"
+            );
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn scalar_expr_postcard_round_trip() {
+        let programs = [
+            (lit(2.0) * par(EntityId(7))) / (par(EntityId(8)) - lit(1.5)),
+            -par(EntityId(-3)),
+        ];
+        for expr in programs {
+            let bytes = postcard::to_allocvec(&expr).expect("ScalarExpr serializes");
+            let decoded: ScalarExpr =
+                postcard::from_bytes(&bytes).expect("ScalarExpr deserializes");
+            assert_eq!(decoded, expr);
+            assert_eq!(
+                postcard::to_allocvec(&decoded).expect("ScalarExpr re-serializes"),
+                bytes
+            );
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn scalar_expr_json_spelling_round_trip() {
+        let expr = lit(2.5) * par(EntityId(7));
+        let json = serde_json::to_string(&expr).expect("ScalarExpr serializes");
+        assert_eq!(json, r#"[{"literal":2.5},{"param":7},"mul"]"#);
+        let parsed: ScalarExpr = serde_json::from_str(&json).expect("ScalarExpr deserializes");
+        assert_eq!(parsed, expr);
+        assert_eq!(
+            serde_json::to_string(&parsed).expect("ScalarExpr re-serializes"),
+            json
+        );
+    }
+
+    /// Postcard reports every custom error as `SerdeDeCustom` without its text;
+    /// the JSON test pins the messages.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn scalar_expr_postcard_rejects_malformed_programs() {
+        let malformed: [&[u8]; 3] = [&[0x00], &[0x01, 0x03], &[0x02, 0x01, 0x06, 0x01, 0x06]];
+        for bytes in malformed {
+            assert_eq!(
+                postcard::from_bytes::<ScalarExpr>(bytes),
+                Err(postcard::Error::SerdeDeCustom),
+                "{bytes:?} must be rejected by the program validation"
+            );
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn scalar_expr_json_rejects_malformed_programs() {
+        let malformed = [
+            (r"[]", "scalar expression program is empty"),
+            (r#"["add"]"#, "scalar expression program underflows at op 0"),
+            (r#"["neg"]"#, "scalar expression program underflows at op 0"),
+            (
+                r#"[{"param":1},"add"]"#,
+                "scalar expression program underflows at op 1",
+            ),
+            (
+                r#"[{"literal":1.0},{"literal":2.0}]"#,
+                "scalar expression program leaves 2 values; expected 1",
+            ),
+        ];
+        for (json, message) in malformed {
+            let error = serde_json::from_str::<ScalarExpr>(json)
+                .expect_err("malformed program must be rejected")
+                .to_string();
+            assert!(error.contains(message), "{json}: got {error:?}");
+        }
+    }
+
+    /// derived: 2 * 3 = 6, folded by the constructor
+    #[cfg(feature = "serde")]
+    #[test]
+    fn scalar_expr_deserialize_folds_literal_only_operators() {
+        let parsed: ScalarExpr = serde_json::from_str(r#"[{"literal":2.0},{"literal":3.0},"mul"]"#)
+            .expect("a literal-only program is accepted");
+        assert_eq!(parsed, lit(6.0));
+        assert_eq!(parsed.op_count(), 1);
     }
 }
