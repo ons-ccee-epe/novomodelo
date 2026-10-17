@@ -850,7 +850,9 @@ fn expression_collapses_to_stage_level(
 
 /// Resolve an affine bound remainder to `f64`: `bound.constant` plus the sum of
 /// each term's coefficient times its parameter's resolved value at
-/// `(stage_idx, block_idx)`. `AffineBound::single(id)` resolves to exactly
+/// `(stage_idx, block_idx)`, plus the sum of each product term's scale times
+/// the product of its two parameters' resolved values.
+/// `AffineBound::single(id)` resolves to exactly
 /// `resolved.get(id, stage_idx, block_idx)` (`0.0 + 1.0 * x == x` in `f64`).
 fn resolve_affine(
     bound: &AffineBound,
@@ -858,9 +860,17 @@ fn resolve_affine(
     stage_idx: usize,
     block_idx: usize,
 ) -> f64 {
-    bound.terms.iter().fold(bound.constant, |acc, &(coef, id)| {
+    let linear_sum = bound.terms.iter().fold(bound.constant, |acc, &(coef, id)| {
         acc + coef * resolved.get(id, stage_idx, block_idx)
-    })
+    });
+    bound
+        .products
+        .iter()
+        .fold(linear_sum, |acc, &(scale, left, right)| {
+            let left_val = resolved.get(left, stage_idx, block_idx);
+            let right_val = resolved.get(right, stage_idx, block_idx);
+            acc + scale * left_val * right_val
+        })
 }
 
 /// Fold a generic-constraint endpoint's parquet base with its affine remainder:
@@ -2164,6 +2174,7 @@ mod collapse_stage_level_tests {
         constraint.bound_upper_affine = Some(AffineBound {
             constant: 10.0,
             terms: vec![(2.0, EntityId(43)), (0.5, EntityId(42))],
+            products: vec![],
         });
         assert!(bound_affine_is_block_varying(&constraint, &r));
     }
@@ -2181,8 +2192,46 @@ mod collapse_stage_level_tests {
         let bound = AffineBound {
             constant: 100.0,
             terms: vec![(2.0, EntityId(42)), (-1.0, EntityId(43))],
+            products: vec![],
         };
         let expected = 100.0 + 2.0 * r.get(EntityId(42), 0, 1) - 1.0 * r.get(EntityId(43), 0, 1);
         assert_eq!(resolve_affine(&bound, &r, 0, 1), expected);
+    }
+
+    #[test]
+    fn resolve_affine_product_only() {
+        let r = resolved();
+        let bound = AffineBound {
+            constant: 0.0,
+            terms: vec![],
+            products: vec![(1.0, EntityId(42), EntityId(43))],
+        };
+        let expected = r.get(EntityId(42), 0, 1) * r.get(EntityId(43), 0, 1);
+        assert_eq!(resolve_affine(&bound, &r, 0, 1), expected);
+    }
+
+    #[test]
+    fn resolve_affine_scaled_product() {
+        let r = resolved();
+        let bound = AffineBound {
+            constant: 0.0,
+            terms: vec![],
+            products: vec![(2.5, EntityId(42), EntityId(43))],
+        };
+        let expected = 2.5 * r.get(EntityId(42), 0, 1) * r.get(EntityId(43), 0, 1);
+        assert_eq!(resolve_affine(&bound, &r, 0, 1), expected);
+    }
+
+    #[test]
+    fn resolve_affine_mixed_linear_and_product() {
+        let r = resolved();
+        let bound = AffineBound {
+            constant: 5.0,
+            terms: vec![(2.0, EntityId(42))],
+            products: vec![(0.5, EntityId(42), EntityId(43))],
+        };
+        let linear = 5.0 + 2.0 * r.get(EntityId(42), 0, 1);
+        let product = 0.5 * r.get(EntityId(42), 0, 1) * r.get(EntityId(43), 0, 1);
+        assert_eq!(resolve_affine(&bound, &r, 0, 1), linear + product);
     }
 }

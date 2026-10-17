@@ -15,3 +15,8 @@ pub use productivity_override::{
     HydroEnergyProductivityOverride, build_hydro_energy_productivity_override,
 };
 pub use types::{EnergyConversion, EnergyConversionError, EnergyConversionSet};
+
+/// Conversion factor from `hm³ · MW/(m³/s)` to `MWh`.
+///
+/// Unit cancellation: `hm³ × 10⁶ m³/hm³ ÷ 3600 s/h × MW/(m³/s) = MWh`.
+pub const ENERGY_FACTOR_MWH_PER_HM3_PER_MW_PER_M3S: f64 = 1.0e6 / 3600.0;

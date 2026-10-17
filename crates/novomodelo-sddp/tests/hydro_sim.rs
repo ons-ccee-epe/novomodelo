@@ -3616,7 +3616,10 @@ mod generic_slack_penalty_basis {
     //! A soft generic-constraint row's reported violation cost follows its
     //! declared `penalty_basis` on stages of different lengths: a `per_unit`
     //! storage shortfall costs the same per hm³ on a 168 h week and a 744 h
-    //! month, while its `per_hour` twin scales with each stage's hours.
+    //! month, while its `per_hour` twin scales with each stage's hours. The
+    //! same holds for the stored-energy form of the row, written in `MWh` with
+    //! the `integrated_accumulated_productivity_mwh_per_hm3` coefficient and a
+    //! `@share * @max_stored_energy_mwh` floor.
 
     use chrono::NaiveDate;
     use novomodelo_core::scenario::InflowModel;
@@ -3625,12 +3628,13 @@ mod generic_slack_penalty_basis {
         StageStateConfig,
     };
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ConstraintExpression,
-        ContractBlockBounds, DeficitSegment, EntityId, GenericConstraint, HydroBlockBounds,
-        HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties,
-        LinearTerm, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis,
-        PumpingBlockBounds, ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties,
-        SlackConfig, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds, VariableRef,
+        AffineBound, BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ComputedParameter,
+        ConstraintExpression, ContractBlockBounds, DeficitSegment, EntityId, GenericConstraint,
+        HydroBlockBounds, HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds,
+        LineStagePenalties, LinearTerm, NcsStagePenalties, ParameterKind, PenaltiesCountsSpec,
+        PenaltiesDefaults, PenaltyBasis, PumpingBlockBounds, ResolvedBounds,
+        ResolvedGenericConstraintBounds, ResolvedPenalties, ScalarParameter, SlackConfig, System,
+        SystemBuilder, ThermalBlockBounds, ThermalStageBounds, VariableRef,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -3639,24 +3643,42 @@ mod generic_slack_penalty_basis {
         StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
         UpperBoundEvaluationConfig,
     };
+    use novomodelo_sddp::StudySetup;
+    use novomodelo_sddp::hydro_models::{
+        PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel,
+    };
     use std::collections::HashMap;
 
     use super::common::builders::{
         BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage,
     };
-    use super::common::{build_setup_in_code, run_simulation};
+    use super::common::{build_setup_in_code, run_simulation, stochastic_in_code};
 
     const HYDRO_ID: i32 = 1;
     const BUS_ID: i32 = 1;
     const CONSTRAINT_ID: i32 = 10;
     /// A week, then a 31-day month.
     const STAGE_HOURS: [f64; 2] = [168.0, 744.0];
+    const MAX_STORAGE_HM3: f64 = 1000.0;
     /// With zero inflow and no reason to release, storage stays here all horizon.
     const INITIAL_STORAGE_HM3: f64 = 100.0;
-    const STORAGE_FLOOR_HM3: f64 = 300.0;
+    const FLOOR_SHARE: f64 = 0.3;
+    const STORAGE_FLOOR_HM3: f64 = FLOOR_SHARE * MAX_STORAGE_HM3;
     const PENALTY: f64 = 7.0;
     /// derived: the floor the reservoir cannot reach, `300 − 100` hm³, every stage.
     const SHORTFALL_HM3: f64 = STORAGE_FLOOR_HM3 - INITIAL_STORAGE_HM3;
+
+    const PRODUCTIVITY_MW_PER_M3S: f64 = 0.9;
+    /// derived: a lone constant-productivity plant stores `ρ · 10⁶ m³/hm³ ÷ 3600 s/h`
+    /// `MWh` per hm³.
+    const MWH_PER_HM3: f64 = PRODUCTIVITY_MW_PER_M3S * 1.0e6 / 3600.0;
+    /// derived: the same hm³ shortfall in `MWh`, since the row's floor is
+    /// `FLOOR_SHARE · MWH_PER_HM3 · MAX_STORAGE_HM3` and the plant holds
+    /// `MWH_PER_HM3 · INITIAL_STORAGE_HM3`.
+    const SHORTFALL_MWH: f64 = MWH_PER_HM3 * SHORTFALL_HM3;
+    const RHO_MWH_ID: i32 = 1;
+    const MAX_STORED_ENERGY_MWH_ID: i32 = 2;
+    const FLOOR_SHARE_ID: i32 = 3;
 
     fn stages() -> Vec<Stage> {
         let mut start = NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date");
@@ -3716,7 +3738,82 @@ mod generic_slack_penalty_basis {
         }
     }
 
-    fn build_system(penalty_basis: PenaltyBasis) -> System {
+    /// `@rho_mwh * hydro_storage(1) >= @share * @max_stored_energy_mwh`.
+    fn stored_energy_floor(penalty_basis: PenaltyBasis) -> GenericConstraint {
+        GenericConstraint {
+            id: EntityId(CONSTRAINT_ID),
+            name: "stored_energy_floor".to_string(),
+            description: None,
+            expression: ConstraintExpression {
+                terms: vec![LinearTerm::parameter(
+                    EntityId(RHO_MWH_ID),
+                    1.0,
+                    VariableRef::HydroStorage {
+                        hydro_id: EntityId(HYDRO_ID),
+                    },
+                )],
+            },
+            slack: Some(SlackConfig {
+                penalty: PENALTY,
+                penalty_basis,
+            }),
+            bound_lower_affine: Some(AffineBound {
+                constant: 0.0,
+                terms: vec![],
+                products: vec![(
+                    1.0,
+                    EntityId(FLOOR_SHARE_ID),
+                    EntityId(MAX_STORED_ENERGY_MWH_ID),
+                )],
+            }),
+            bound_upper_affine: None,
+        }
+    }
+
+    fn stored_energy_parameters() -> Vec<ScalarParameter> {
+        let hydro_id = EntityId(HYDRO_ID);
+        vec![
+            ScalarParameter {
+                id: EntityId(RHO_MWH_ID),
+                name: "rho_mwh".to_string(),
+                kind: ParameterKind::Computed {
+                    computed_spec: ComputedParameter::IntegratedAccumulatedProductivityMwhPerHm3 {
+                        hydro_id,
+                    },
+                },
+            },
+            ScalarParameter {
+                id: EntityId(MAX_STORED_ENERGY_MWH_ID),
+                name: "earm_max".to_string(),
+                kind: ParameterKind::Computed {
+                    computed_spec: ComputedParameter::MaxStoredEnergyMwh { hydro_id },
+                },
+            },
+            ScalarParameter {
+                id: EntityId(FLOOR_SHARE_ID),
+                name: "share".to_string(),
+                kind: ParameterKind::Constant { value: FLOOR_SHARE },
+            },
+        ]
+    }
+
+    fn constant_productivity_models(system: &System) -> PrepareHydroModelsResult {
+        let n_stages = STAGE_HOURS.len();
+        let mut hydro_models = PrepareHydroModelsResult::default_from_system(system);
+        hydro_models.production = ProductionModelSet::new(
+            vec![vec![
+                ResolvedProductionModel::ConstantProductivity {
+                    productivity: PRODUCTIVITY_MW_PER_M3S,
+                };
+                n_stages
+            ]],
+            system.hydros(),
+            n_stages,
+        );
+        hydro_models
+    }
+
+    fn build_system(floor: GenericConstraint, row_lower: f64) -> System {
         let bus = make_bus(
             EntityId(BUS_ID),
             BusSpec {
@@ -3732,7 +3829,7 @@ mod generic_slack_penalty_basis {
             EntityId(HYDRO_ID),
             HydroSpec {
                 bus_id: EntityId(BUS_ID),
-                max_storage_hm3: 1000.0,
+                max_storage_hm3: MAX_STORAGE_HM3,
                 max_turbined_m3s: 100.0,
                 max_generation_mw: 100.0,
                 ..Default::default()
@@ -3766,7 +3863,7 @@ mod generic_slack_penalty_basis {
             &BoundsDefaults {
                 hydro: HydroStageBounds {
                     min_storage_hm3: 0.0,
-                    max_storage_hm3: 1000.0,
+                    max_storage_hm3: MAX_STORAGE_HM3,
                     filling_min_rate_m3s: 0.0,
                     water_withdrawal_m3s: 0.0,
                 },
@@ -3814,15 +3911,8 @@ mod generic_slack_penalty_basis {
         );
 
         let id_map: HashMap<i32, usize> = [(CONSTRAINT_ID, 0)].into_iter().collect();
-        let rows = (0..n_stages as i32).map(|stage| {
-            (
-                CONSTRAINT_ID,
-                stage,
-                None::<i32>,
-                Some(STORAGE_FLOOR_HM3),
-                None,
-            )
-        });
+        let rows = (0..n_stages as i32)
+            .map(|stage| (CONSTRAINT_ID, stage, None::<i32>, Some(row_lower), None));
         let generic_bounds = ResolvedGenericConstraintBounds::new(&id_map, rows);
 
         SystemBuilder::new()
@@ -3832,7 +3922,7 @@ mod generic_slack_penalty_basis {
             .inflow_models(inflow_models)
             .bounds(bounds)
             .penalties(penalties)
-            .generic_constraints(vec![storage_floor(penalty_basis)])
+            .generic_constraints(vec![floor])
             .resolved_generic_bounds(generic_bounds)
             .initial_conditions(InitialConditions {
                 storage: vec![HydroStorage {
@@ -3878,10 +3968,27 @@ mod generic_slack_penalty_basis {
         }
     }
 
-    /// The `(slack_value, slack_cost)` the simulation reports for the storage
-    /// floor on each stage.
-    fn reported_violations(penalty_basis: PenaltyBasis) -> Vec<(f64, f64)> {
-        let mut setup = build_setup_in_code(build_system(penalty_basis), &config());
+    fn storage_floor_setup(penalty_basis: PenaltyBasis) -> StudySetup {
+        let system = build_system(storage_floor(penalty_basis), STORAGE_FLOOR_HM3);
+        build_setup_in_code(system, &config())
+    }
+
+    fn stored_energy_floor_setup(penalty_basis: PenaltyBasis) -> StudySetup {
+        let system = build_system(stored_energy_floor(penalty_basis), 0.0);
+        let hydro_models = constant_productivity_models(&system);
+        StudySetup::new(
+            &system,
+            &config(),
+            stochastic_in_code(&system),
+            hydro_models,
+            stored_energy_parameters(),
+        )
+        .expect("generic_slack_penalty_basis: stored-energy study builds")
+    }
+
+    /// The `(slack_value, slack_cost)` the simulation reports for the floor row
+    /// on each stage.
+    fn reported_violations(mut setup: StudySetup) -> Vec<(f64, f64)> {
         let results = run_simulation(&mut setup, 3);
         assert_eq!(results.len(), 1, "exactly one scenario must be produced");
         results[0]
@@ -3902,42 +4009,59 @@ mod generic_slack_penalty_basis {
             .collect()
     }
 
+    /// Each stage reports `shortfall` and costs `expected_cost(stage hours)`.
+    fn assert_violations(
+        violations: &[(f64, f64)],
+        shortfall: f64,
+        expected_cost: impl Fn(f64) -> f64,
+    ) {
+        assert_eq!(violations.len(), STAGE_HOURS.len());
+        for (stage, (&(slack_value, slack_cost), hours)) in
+            violations.iter().zip(STAGE_HOURS).enumerate()
+        {
+            assert!(
+                (slack_value - shortfall).abs() < 1e-9 * shortfall,
+                "stage {stage}: expected a shortfall of {shortfall}, got {slack_value}"
+            );
+            let expected = expected_cost(hours);
+            assert!(
+                (slack_cost - expected).abs() < 1e-9 * expected,
+                "stage {stage}: shortfall must cost {expected}, got {slack_cost}"
+            );
+        }
+    }
+
     /// derived: `per_unit` costs `PENALTY × SHORTFALL_HM3` on every stage.
     #[test]
     fn per_unit_storage_shortfall_costs_the_same_on_a_week_and_a_month() {
-        let violations = reported_violations(PenaltyBasis::PerUnit);
-        assert_eq!(violations.len(), STAGE_HOURS.len());
-        for (stage, (slack_value, slack_cost)) in violations.into_iter().enumerate() {
-            assert!(
-                (slack_value - SHORTFALL_HM3).abs() < 1e-6,
-                "stage {stage}: expected a {SHORTFALL_HM3} hm³ shortfall, got {slack_value}"
-            );
-            let expected = PENALTY * SHORTFALL_HM3;
-            assert!(
-                (slack_cost - expected).abs() < 1e-6,
-                "stage {stage}: per_unit shortfall must cost {expected}, got {slack_cost}"
-            );
-        }
+        let violations = reported_violations(storage_floor_setup(PenaltyBasis::PerUnit));
+        assert_violations(&violations, SHORTFALL_HM3, |_| PENALTY * SHORTFALL_HM3);
     }
 
     /// derived: the `per_hour` twin costs `PENALTY × SHORTFALL_HM3 × stage hours`,
     /// so the week and the month differ.
     #[test]
     fn per_hour_storage_shortfall_cost_scales_with_stage_hours() {
-        let violations = reported_violations(PenaltyBasis::PerHour);
-        assert_eq!(violations.len(), STAGE_HOURS.len());
-        for ((stage, (slack_value, slack_cost)), hours) in
-            violations.into_iter().enumerate().zip(STAGE_HOURS)
-        {
-            assert!(
-                (slack_value - SHORTFALL_HM3).abs() < 1e-6,
-                "stage {stage}: expected a {SHORTFALL_HM3} hm³ shortfall, got {slack_value}"
-            );
-            let expected = PENALTY * SHORTFALL_HM3 * hours;
-            assert!(
-                (slack_cost - expected).abs() < 1e-6 * expected,
-                "stage {stage}: per_hour shortfall must cost {expected}, got {slack_cost}"
-            );
-        }
+        let violations = reported_violations(storage_floor_setup(PenaltyBasis::PerHour));
+        assert_violations(&violations, SHORTFALL_HM3, |hours| {
+            PENALTY * SHORTFALL_HM3 * hours
+        });
+    }
+
+    /// derived: `per_unit` costs `PENALTY × SHORTFALL_MWH` on every stage — a
+    /// price per `MWh` of stored energy, whatever the stage length.
+    #[test]
+    fn per_unit_stored_energy_shortfall_costs_the_same_mwh_price_on_a_week_and_a_month() {
+        let violations = reported_violations(stored_energy_floor_setup(PenaltyBasis::PerUnit));
+        assert_violations(&violations, SHORTFALL_MWH, |_| PENALTY * SHORTFALL_MWH);
+    }
+
+    /// derived: the `per_hour` twin costs `PENALTY × SHORTFALL_MWH × stage hours`.
+    #[test]
+    fn per_hour_stored_energy_shortfall_cost_scales_with_stage_hours() {
+        let violations = reported_violations(stored_energy_floor_setup(PenaltyBasis::PerHour));
+        assert_violations(&violations, SHORTFALL_MWH, |hours| {
+            PENALTY * SHORTFALL_MWH * hours
+        });
     }
 }

@@ -29,6 +29,8 @@
 //! side       ::= side_term (('+' | '-') side_term)*
 //! side_term  ::= term
 //!              | coefficient                             (only in a relation with an operator)
+//!              | product                                 (only on the right-hand side of a relation)
+//! product    ::= (coefficient '*')? '@' name '*' '@' name
 //! term       ::= coefficient '*' '@' name '*' variable   (parameter coefficient, scaled)
 //!              | '@' name '*' variable                   (parameter coefficient)
 //!              | coefficient '*' '@' name                (named-expression reference, scaled)
@@ -46,8 +48,12 @@
 //! `&HashMap::new()` when no parameters are loaded; such a coefficient token then
 //! errors as an unknown parameter). A standalone `@name`, or a `coefficient *
 //! @name` with no trailing variable, is a named-expression reference, resolved
-//! against the file's own `expressions` table, not `name_to_id`. `@param * @name`
-//! (two references in one term) is rejected — it has no linear core representation.
+//! against the file's own `expressions` table, not `name_to_id`.
+//!
+//! A `product` multiplies two scalar parameters (never a named expression) into
+//! the affine remainder. It is a top-level right-hand-side term only: a product
+//! on the left-hand side, inside a group, or multiplying anything further
+//! (`@p * @q * variable`, `@p * @q * @r`) is rejected.
 //!
 //! A `group` — bare, or scaled by a leading literal `coefficient '*'` — distributes
 //! that coefficient into every inner term's scale at parse time (nesting to
@@ -891,9 +897,7 @@ fn parse_single_term(
                     }
                     let id = resolve_param_ref(name, name_to_id)?;
                     if let Some(Token::ParamRef(second)) = tokens.get(var_pos) {
-                        return Err(format!(
-                            "only one @parameter reference is allowed per term; found \"@{name}\" and \"@{second}\""
-                        ));
+                        return Err(two_param_refs_error(name, second));
                     }
                     let (variable, orientation, end_pos) =
                         parse_variable_ref(tokens, var_pos, line_index)?;
@@ -940,9 +944,7 @@ fn parse_single_term(
                     ));
                 }
                 if let Token::ParamRef(second) = &tokens[var_pos] {
-                    return Err(format!(
-                        "only one @parameter reference is allowed per term; found \"@{name}\" and \"@{second}\""
-                    ));
+                    return Err(two_param_refs_error(name, second));
                 }
                 let (variable, orientation, end_pos) =
                     parse_variable_ref(tokens, var_pos, line_index)?;
@@ -1070,6 +1072,16 @@ fn param_scaled_group_error(name: &str) -> String {
     )
 }
 
+/// `@first * @second` where a single term was expected: a variable takes one
+/// `@parameter` coefficient, and a product of two scalar parameters stands alone.
+fn two_param_refs_error(first: &str, second: &str) -> String {
+    format!(
+        "only one @parameter reference is allowed per term; found \"@{first}\" and \"@{second}\" \
+         (a product \"@{first} * @{second}\" of two scalar parameters is allowed only as a \
+         top-level term on the right-hand side of a relation)"
+    )
+}
+
 /// Look up `name` in `name_to_id`, returning its [`EntityId`] or a descriptive error.
 fn resolve_param_ref(
     name: &str,
@@ -1093,6 +1105,12 @@ enum SplitTerm {
     Named(ParsedTerm),
     /// A standalone numeric literal with no variable.
     Constant(f64),
+    /// A product of two scalar parameters: `scale * @left * @right`.
+    ParamProduct {
+        scale: f64,
+        left: EntityId,
+        right: EntityId,
+    },
 }
 
 /// A constraint expression, optionally split by exactly one top-level
@@ -1129,8 +1147,8 @@ fn parse_relation(
             &tokens, name_to_id, line_index,
         )?)),
         Some((lhs_tokens, op, rhs_tokens)) => {
-            let lhs = parse_split_side(lhs_tokens, name_to_id, line_index)?;
-            let rhs = parse_split_side(rhs_tokens, name_to_id, line_index)?;
+            let lhs = parse_split_side(lhs_tokens, Side::Lhs, name_to_id, line_index)?;
+            let rhs = parse_split_side(rhs_tokens, Side::Rhs, name_to_id, line_index)?;
             Ok(ParsedRelation::Relational { lhs, op, rhs })
         }
     }
@@ -1186,6 +1204,7 @@ fn split_relational(tokens: &[Token]) -> Result<Option<RelationalSplit<'_>>, Str
 /// remainder may carry (`... <= 73`).
 fn parse_split_side(
     tokens: &[Token],
+    side: Side,
     name_to_id: &HashMap<String, EntityId>,
     line_index: &LineBusPairIndex,
 ) -> Result<Vec<SplitTerm>, String> {
@@ -1206,7 +1225,8 @@ fn parse_split_side(
         _ => {}
     }
 
-    let (mut group, next_pos) = parse_split_single_term(tokens, pos, sign, name_to_id, line_index)?;
+    let (mut group, next_pos) =
+        parse_split_single_term(tokens, pos, sign, side, name_to_id, line_index)?;
     terms.append(&mut group);
     pos = next_pos;
 
@@ -1223,7 +1243,7 @@ fn parse_split_side(
         pos += 1;
 
         let (mut group, next_pos) =
-            parse_split_single_term(tokens, pos, op_sign, name_to_id, line_index)?;
+            parse_split_single_term(tokens, pos, op_sign, side, name_to_id, line_index)?;
         terms.append(&mut group);
         pos = next_pos;
     }
@@ -1231,15 +1251,73 @@ fn parse_split_side(
     Ok(terms)
 }
 
+/// Which side of a relational operator a term sits on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Lhs,
+    Rhs,
+}
+
+/// Match a top-level parameter product `(coefficient '*')? '@' p '*' '@' q` whose
+/// two names are both scalar parameters and which multiplies nothing further. Any
+/// other shape returns `Ok(None)`, so [`parse_single_term`] reports it with the
+/// plain grammar's diagnostics (`@p * @expr`, `@p * @q * variable`).
+///
+/// # Errors
+///
+/// A matched product on the left-hand side, reported with its authored names.
+fn try_parse_param_product(
+    tokens: &[Token],
+    pos: usize,
+    sign: f64,
+    side: Side,
+    name_to_id: &HashMap<String, EntityId>,
+) -> Result<Option<(SplitTerm, usize)>, String> {
+    let (scale, start) = match (tokens.get(pos), tokens.get(pos + 1)) {
+        (Some(Token::Number(coef)), Some(Token::Star)) => (sign * coef, pos + 2),
+        _ => (sign, pos),
+    };
+    let (Some(Token::ParamRef(left)), Some(Token::Star), Some(Token::ParamRef(right))) = (
+        tokens.get(start),
+        tokens.get(start + 1),
+        tokens.get(start + 2),
+    ) else {
+        return Ok(None);
+    };
+    let end = start + 3;
+    if tokens.get(end) == Some(&Token::Star) {
+        return Ok(None);
+    }
+    let (Some(&left_id), Some(&right_id)) = (name_to_id.get(left), name_to_id.get(right)) else {
+        return Ok(None);
+    };
+    if side == Side::Lhs {
+        return Err(format!(
+            "parameter product \"@{left} * @{right}\" is allowed only on the right-hand side \
+             of a relation; move it across the operator"
+        ));
+    }
+    Ok(Some((
+        SplitTerm::ParamProduct {
+            scale,
+            left: left_id,
+            right: right_id,
+        },
+        end,
+    )))
+}
+
 /// Parse one term of a relational side: a standalone numeric literal with no
-/// following `*` is the new affine-remainder constant leaf; every other shape
+/// following `*` is the affine-remainder constant leaf; a top-level parameter
+/// product is the product leaf ([`try_parse_param_product`]); every other shape
 /// delegates to [`parse_single_term`] unchanged (paren groups, `@param`
-/// coefficients, and named-expression/parameter references all work exactly
-/// as they do in the plain grammar).
+/// coefficients, and named-expression/parameter references all work exactly as
+/// they do in the plain grammar).
 fn parse_split_single_term(
     tokens: &[Token],
     pos: usize,
     sign: f64,
+    side: Side,
     name_to_id: &HashMap<String, EntityId>,
     line_index: &LineBusPairIndex,
 ) -> Result<(Vec<SplitTerm>, usize), String> {
@@ -1247,6 +1325,11 @@ fn parse_split_single_term(
         && tokens.get(pos + 1) != Some(&Token::Star)
     {
         return Ok((vec![SplitTerm::Constant(v * sign)], pos + 1));
+    }
+
+    if let Some((product, next_pos)) = try_parse_param_product(tokens, pos, sign, side, name_to_id)?
+    {
+        return Ok((vec![product], next_pos));
     }
 
     let (parsed, next_pos) = parse_single_term(tokens, pos, sign, name_to_id, line_index)?;
@@ -1279,6 +1362,9 @@ fn resolve_split_side(
                     let id = resolve_param_ref(&name, name_to_id)?;
                     out.push(SideTerm::Param(scale, id));
                 }
+            }
+            SplitTerm::ParamProduct { scale, left, right } => {
+                out.push(SideTerm::ParamProduct { scale, left, right });
             }
         }
     }
@@ -2312,12 +2398,18 @@ mod tests {
     #[test]
     fn parse_split_side_standalone_constant() {
         let tokens = tokenize("73").unwrap();
-        let terms =
-            parse_split_side(&tokens, &HashMap::new(), &LineBusPairIndex::default()).unwrap();
+        let terms = parse_split_side(
+            &tokens,
+            Side::Rhs,
+            &HashMap::new(),
+            &LineBusPairIndex::default(),
+        )
+        .unwrap();
         assert_eq!(terms.len(), 1);
         match &terms[0] {
             SplitTerm::Constant(v) => assert!((v - 73.0).abs() < f64::EPSILON),
             SplitTerm::Named(t) => panic!("expected a Constant term, got: {t:?}"),
+            SplitTerm::ParamProduct { .. } => panic!("expected a Constant term, got ParamProduct"),
         }
     }
 
@@ -2325,13 +2417,21 @@ mod tests {
     #[test]
     fn parse_split_side_negated_standalone_constant() {
         let tokens = tokenize("10 - 73").unwrap();
-        let terms =
-            parse_split_side(&tokens, &HashMap::new(), &LineBusPairIndex::default()).unwrap();
+        let terms = parse_split_side(
+            &tokens,
+            Side::Rhs,
+            &HashMap::new(),
+            &LineBusPairIndex::default(),
+        )
+        .unwrap();
         assert_eq!(terms.len(), 2);
         for (term, expected) in terms.iter().zip([10.0, -73.0]) {
             match term {
                 SplitTerm::Constant(v) => assert!((v - expected).abs() < f64::EPSILON),
                 SplitTerm::Named(t) => panic!("expected a Constant term, got: {t:?}"),
+                SplitTerm::ParamProduct { .. } => {
+                    panic!("expected a Constant term, got ParamProduct")
+                }
             }
         }
     }
@@ -2366,7 +2466,8 @@ mod tests {
             result[0].bound_upper_affine,
             Some(AffineBound {
                 constant: 73.0,
-                terms: vec![]
+                terms: vec![],
+                products: vec![],
             })
         );
         assert_eq!(result[0].bound_lower_affine, None);
@@ -2412,7 +2513,8 @@ mod tests {
             result[0].bound_upper_affine,
             Some(AffineBound {
                 constant: 5.0,
-                terms: vec![]
+                terms: vec![],
+                products: vec![],
             })
         );
         assert_eq!(result[0].bound_lower_affine, None);
@@ -2452,7 +2554,8 @@ mod tests {
             result[0].bound_upper_affine,
             Some(AffineBound {
                 constant: 12352.0,
-                terms: vec![]
+                terms: vec![],
+                products: vec![],
             })
         );
         assert_eq!(result[0].bound_lower_affine, None);
@@ -2507,10 +2610,96 @@ mod tests {
             result[0].bound_upper_affine,
             Some(AffineBound {
                 constant: 73.0,
-                terms: vec![]
+                terms: vec![],
+                products: vec![],
             })
         );
         assert_eq!(result[0].bound_lower_affine, None);
+    }
+
+    // ── Parameter products ────────────────────────────────────────────────────
+
+    /// Parse one constraint `expression` (plus a named expression `e`) against
+    /// the scalar parameters `p`, `q`, `r`, `s` (ids 1..=4).
+    fn parse_with_pqrs(expression: &str) -> Result<Vec<GenericConstraint>, String> {
+        let json = format!(
+            r#"{{
+  "expressions": [ {{ "name": "e", "expression": "hydro_generation(1)" }} ],
+  "constraints": [
+    {{ "id": 0, "name": "c", "expression": "{expression}", "slack": {{ "enabled": false }} }}
+  ]
+}}"#
+        );
+        let f = write_json(&json);
+        let params: HashMap<String, EntityId> = [("p", 1), ("q", 2), ("r", 3), ("s", 4)]
+            .into_iter()
+            .map(|(name, id)| (name.to_string(), EntityId(id)))
+            .collect();
+        parse_generic_constraints(f.path(), &params, &LineBusPairIndex::default())
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn rhs_param_products_collect_scaled_and_signed() {
+        let result = parse_with_pqrs("hydro_generation(0) >= 2 * @p * @q - @r * @s + 5").unwrap();
+        assert_eq!(
+            result[0].bound_lower_affine,
+            Some(AffineBound {
+                constant: 5.0,
+                terms: vec![],
+                products: vec![
+                    (2.0, EntityId(1), EntityId(2)),
+                    (-1.0, EntityId(3), EntityId(4))
+                ],
+            })
+        );
+        assert_eq!(result[0].bound_upper_affine, None);
+    }
+
+    #[test]
+    fn lhs_param_product_is_rejected_with_authored_names() {
+        let err = parse_with_pqrs("@p * @q + hydro_generation(0) >= 0").unwrap_err();
+        assert!(err.contains("\"@p * @q\""), "{err}");
+        assert!(err.contains("right-hand side"), "{err}");
+    }
+
+    #[test]
+    fn param_times_named_expression_keeps_the_one_parameter_diagnostic() {
+        let err = parse_with_pqrs("hydro_generation(0) >= @p * @e").unwrap_err();
+        assert!(
+            err.contains("only one @parameter reference is allowed per term"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn param_product_times_a_variable_keeps_the_one_parameter_diagnostic() {
+        let err = parse_with_pqrs("@p * @q * hydro_generation(0) >= 0").unwrap_err();
+        assert!(
+            err.contains("only one @parameter reference is allowed per term"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn chained_param_product_is_rejected() {
+        let err = parse_with_pqrs("hydro_generation(0) >= @p * @q * @r").unwrap_err();
+        assert!(
+            err.contains("only one @parameter reference is allowed per term"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn param_product_inside_a_group_is_rejected() {
+        let err = parse_with_pqrs("hydro_generation(0) >= 2 * (@p * @q)").unwrap_err();
+        assert!(err.contains("top-level term"), "{err}");
+    }
+
+    #[test]
+    fn param_product_with_unknown_name_reports_the_name() {
+        let err = parse_with_pqrs("hydro_generation(0) >= @p * @missing").unwrap_err();
+        assert!(err.contains("@missing"), "{err}");
     }
 
     // ── Parenthesized group unit tests ────────────────────────────────────────
@@ -3532,7 +3721,8 @@ mod tests {
             result[0].bound_lower_affine,
             Some(AffineBound {
                 constant: 0.0,
-                terms: vec![]
+                terms: vec![],
+                products: vec![],
             }),
             "an all-variable RHS supplies an explicit zero bound, not \"no bound\""
         );

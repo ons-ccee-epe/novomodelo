@@ -25,7 +25,7 @@ use novomodelo_core::ContractType;
 use novomodelo_core::EntityId;
 use novomodelo_core::HydroPastDefluence;
 
-use crate::energy_conversion::EnergyConversionSet;
+use crate::energy_conversion::{ENERGY_FACTOR_MWH_PER_HM3_PER_MW_PER_M3S, EnergyConversionSet};
 use crate::horizon_mode::HorizonMode;
 use crate::lp::builder::{
     GenericConstraintRowEntry, StageGeometry, evaporation_slot, evaporation_slot_count,
@@ -597,11 +597,6 @@ pub struct SolutionView<'a> {
     /// Row lower bounds from the stage template (may be patched for load noise).
     pub row_lower: &'a [f64],
 }
-
-/// Conversion factor from `hm³ · MW/(m³/s)` to `MWh`.
-///
-/// Unit cancellation: `hm³ × 10⁶ m³/hm³ ÷ 3600 s/h × MW/(m³/s) = MWh`.
-pub const ENERGY_FACTOR_MWH_PER_HM3_PER_MW_PER_M3S: f64 = 1.0e6 / 3600.0;
 
 /// `(storage - v_min) * rho_acum * ENERGY_FACTOR` — stored energy above the
 /// minimum operable volume, shared by the initial- and final-storage reads.

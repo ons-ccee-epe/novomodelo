@@ -133,8 +133,28 @@ pub enum ComputedParameter {
     /// Maximum stored energy: `integrated_accumulated_productivity * (V_hi -
     /// V_lo)` over the hydro plant's physical storage range (stage-invariant).
     /// Unit is productivity `[MW/(m3/s)]` times volume `[hm3]` — the same unit
-    /// as a productivity-times-storage-volume constraint term, not `MWh`.
+    /// as a productivity-times-storage-volume constraint term, not `MWh`
+    /// (`max_stored_energy_mwh` is the `MWh` form).
     MaxStoredEnergy {
+        /// Hydro plant identifier.
+        hydro_id: EntityId,
+    },
+    /// `integrated_accumulated_productivity` in `[MWh/hm3]` (times `10⁶/3600`):
+    /// times a useful volume `[hm3]` it gives stored energy `[MWh]` (cascade scope).
+    IntegratedAccumulatedProductivityMwhPerHm3 {
+        /// Hydro plant identifier.
+        hydro_id: EntityId,
+    },
+    /// `max_stored_energy` in `[MWh]` (times `10⁶/3600`): the energy stored over
+    /// the plant's physical storage range, valued with the cascade's productivity.
+    MaxStoredEnergyMwh {
+        /// Hydro plant identifier.
+        hydro_id: EntityId,
+    },
+    /// `integrated_equivalent_productivity` in `[MWh/hm3]` (times `10⁶/3600`):
+    /// times a useful volume `[hm3]` it gives the plant's own stored energy
+    /// `[MWh]`, without the cascade below it.
+    IntegratedEquivalentProductivityMwhPerHm3 {
         /// Hydro plant identifier.
         hydro_id: EntityId,
     },
@@ -479,12 +499,21 @@ mod tests {
             ComputedParameter::MaxStoredEnergy {
                 hydro_id: EntityId(10),
             },
+            ComputedParameter::IntegratedAccumulatedProductivityMwhPerHm3 {
+                hydro_id: EntityId(11),
+            },
+            ComputedParameter::MaxStoredEnergyMwh {
+                hydro_id: EntityId(12),
+            },
+            ComputedParameter::IntegratedEquivalentProductivityMwhPerHm3 {
+                hydro_id: EntityId(13),
+            },
         ];
 
         assert_eq!(
             variants.len(),
-            10,
-            "ComputedParameter must have exactly 10 variants"
+            13,
+            "ComputedParameter must have exactly 13 variants"
         );
 
         // No `_` arm: adding a variant without updating here is a compile error.
@@ -504,6 +533,13 @@ mod tests {
                     "IntegratedAccumulatedProductivity"
                 }
                 ComputedParameter::MaxStoredEnergy { .. } => "MaxStoredEnergy",
+                ComputedParameter::IntegratedAccumulatedProductivityMwhPerHm3 { .. } => {
+                    "IntegratedAccumulatedProductivityMwhPerHm3"
+                }
+                ComputedParameter::MaxStoredEnergyMwh { .. } => "MaxStoredEnergyMwh",
+                ComputedParameter::IntegratedEquivalentProductivityMwhPerHm3 { .. } => {
+                    "IntegratedEquivalentProductivityMwhPerHm3"
+                }
             };
         }
     }

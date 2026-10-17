@@ -315,7 +315,7 @@ declare_rules! {
         "A hydro with evaporation coefficients has no rows in hydro_geometry.parquet";
     SEMANTIC_GENERIC_PRODUCTIVITY_TAG_MISMATCH = "semantic.5a.51",
         Semantic, SemanticAmbiguity, Warning,
-        "A generic constraint pairs max_stored_energy with accumulated_productivity for the same hydro";
+        "A generic constraint pairs stored-energy tags that would not cancel (scope, evaluator or unit)";
     SEMANTIC_PUMPING_ENDPOINT_NOT_OPERATING = "semantic.5a.52",
         Semantic, BusinessRuleViolation, Error,
         "A pumping station is active at a study stage where its source or destination hydro is not operating";

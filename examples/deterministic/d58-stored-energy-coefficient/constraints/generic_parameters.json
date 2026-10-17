@@ -1,0 +1,47 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/generic_parameters.schema.json",
+  "scalar_parameters": [
+    {
+      "id": 1,
+      "name": "rho_mwh_h0",
+      "kind": "computed",
+      "computed_spec": {
+        "tag": "integrated_accumulated_productivity_mwh_per_hm3",
+        "hydro_id": 0
+      }
+    },
+    {
+      "id": 2,
+      "name": "rho_mwh_h1",
+      "kind": "computed",
+      "computed_spec": {
+        "tag": "integrated_accumulated_productivity_mwh_per_hm3",
+        "hydro_id": 1
+      }
+    },
+    {
+      "id": 3,
+      "name": "earm_max_h0",
+      "kind": "computed",
+      "computed_spec": {
+        "tag": "max_stored_energy_mwh",
+        "hydro_id": 0
+      }
+    },
+    {
+      "id": 4,
+      "name": "earm_max_h1",
+      "kind": "computed",
+      "computed_spec": {
+        "tag": "max_stored_energy_mwh",
+        "hydro_id": 1
+      }
+    },
+    {
+      "id": 5,
+      "name": "pct_vminop",
+      "kind": "per_stage",
+      "values": [[0, 0.25], [1, 0.30]]
+    }
+  ]
+}

@@ -130,6 +130,7 @@ impl ZeroEntityFixtures {
             bound_upper_affine: Some(AffineBound {
                 constant: -5.0,
                 terms: vec![],
+                products: vec![],
             }),
         }];
         let id_map: HashMap<i32, usize> = [(5, 0)].into_iter().collect();
@@ -459,6 +460,7 @@ fn fold_endpoint_literal_and_constant_affine_composes() {
     let bound = AffineBound {
         constant: -5.0,
         terms: vec![],
+        products: vec![],
     };
     assert_eq!(
         fold_endpoint(Some(100.0), Some(&bound), &resolved, 0, 0),
@@ -487,6 +489,7 @@ fn fold_endpoint_equals_normalized_folds_both_endpoints() {
     let bound = AffineBound {
         constant: 2.0,
         terms: vec![],
+        products: vec![],
     };
     assert_eq!(
         fold_endpoint(Some(10.0), Some(&bound), &resolved, 0, 0),

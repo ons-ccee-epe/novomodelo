@@ -503,10 +503,11 @@ fn canonical_term_key(term: &LinearTerm) -> ((u8, i32, i64, i64), u8, u64, u64) 
     )
 }
 
-/// A generic constraint's symbolic bound endpoint: `constant + Σ coefᵢ·@paramᵢ`.
+/// A generic constraint's symbolic bound endpoint: `constant + Σ coefᵢ·@paramᵢ + Σ scaleⱼ·@leftⱼ·@rightⱼ`.
 ///
 /// Each `(coef, param_id)` term resolves through `param_id`'s `(stage, block)`
-/// axis and is summed with `constant`. [`AffineBound::single`] is the
+/// axis and is summed with `constant`. Each `(scale, left, right)` product
+/// resolves both parameters and multiplies them. [`AffineBound::single`] is the
 /// single-`@name`-ref special case: `constant = 0.0` and one term at
 /// coefficient `1.0`, which resolves to exactly the named parameter's value
 /// (`0.0 + 1.0 * x == x` in `f64`).
@@ -517,6 +518,10 @@ pub struct AffineBound {
     pub constant: f64,
     /// Ordered `(coefficient, parameter_id)` terms summed onto `constant`.
     pub terms: Vec<(f64, EntityId)>,
+    /// Ordered `(scale, left_param_id, right_param_id)` product terms.
+    /// Each product resolves to `scale * resolve(left) * resolve(right)`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub products: Vec<(f64, EntityId, EntityId)>,
 }
 
 impl AffineBound {
@@ -526,12 +531,26 @@ impl AffineBound {
         Self {
             constant: 0.0,
             terms: vec![(1.0, id)],
+            products: vec![],
         }
     }
 
-    /// Iterate over the parameter ids referenced by this bound's terms.
+    /// Every parameter id the bound reads: each term's id, then both operands of
+    /// each product.
     pub fn params(&self) -> impl Iterator<Item = EntityId> + '_ {
-        self.terms.iter().map(|&(_, id)| id)
+        let term_ids = self.terms.iter().map(|&(_, id)| id);
+        let product_ids = self
+            .products
+            .iter()
+            .flat_map(|&(_, left, right)| [left, right]);
+        term_ids.chain(product_ids)
+    }
+
+    /// `true` when the bound reads no parameter, so it resolves to `constant`
+    /// on every `(stage, block)`.
+    #[must_use]
+    pub fn is_constant(&self) -> bool {
+        self.terms.is_empty() && self.products.is_empty()
     }
 }
 
@@ -1360,11 +1379,41 @@ mod tests {
         let bound = AffineBound {
             constant: 12.0,
             terms: vec![(0.5, EntityId(7)), (-2.0, EntityId(9))],
+            products: vec![],
         };
         assert_eq!(
             bound.params().collect::<Vec<_>>(),
             vec![EntityId(7), EntityId(9)]
         );
+    }
+
+    #[test]
+    fn affine_bound_params_include_both_product_operands() {
+        let bound = AffineBound {
+            constant: 0.0,
+            terms: vec![(1.0, EntityId(3))],
+            products: vec![(2.0, EntityId(5), EntityId(6))],
+        };
+        assert_eq!(
+            bound.params().collect::<Vec<_>>(),
+            vec![EntityId(3), EntityId(5), EntityId(6)]
+        );
+    }
+
+    #[test]
+    fn affine_bound_with_only_products_is_not_constant() {
+        let constant = AffineBound {
+            constant: 4.0,
+            terms: vec![],
+            products: vec![],
+        };
+        let product_only = AffineBound {
+            products: vec![(1.0, EntityId(5), EntityId(6))],
+            ..constant.clone()
+        };
+        assert!(constant.is_constant());
+        assert!(!product_only.is_constant());
+        assert!(!AffineBound::single(EntityId(1)).is_constant());
     }
 
     /// The byte-neutral load-bearing identity for `AffineBound::single`: any

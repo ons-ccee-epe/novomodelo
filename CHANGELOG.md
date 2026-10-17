@@ -9,8 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Computed scalar parameters in MWh: `max_stored_energy_mwh`,
+  `integrated_accumulated_productivity_mwh_per_hm3` and
+  `integrated_equivalent_productivity_mwh_per_hm3`. Each is the raw tag of the
+  same name times 10⁶/3600. With them a stored-energy constraint states its
+  amounts in MWh and no stage duration enters either side; price its slack with
+  `"penalty_basis": "per_unit"` so the penalty is a price per MWh on every stage.
+- A generic-constraint right-hand side accepts a product of two scalar
+  parameters, `@p * @q` or `coefficient * @p * @q` (for example
+  `@pct * @emax`). A product must be a top-level right-hand-side term.
+
 ### Changed
 
+- The stored-energy pairing warning (rule 51) also flags a constraint that
+  mixes raw and MWh stored-energy tags, and a `max_stored_energy*` tag beside a
+  same-unit productivity tag of another scope or evaluator for the same hydro.
 - **BREAKING:** an enabled generic-constraint slack must declare
   `slack.penalty_basis`. `per_hour` charges the penalty for every hour the
   row covers, as before: the stage's total hours for a stage-level row and
