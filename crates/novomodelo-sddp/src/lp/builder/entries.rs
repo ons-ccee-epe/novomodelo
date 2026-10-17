@@ -1142,8 +1142,8 @@ pub(super) struct LpMatrixBuffers<'a> {
 
 /// Fill matrix entries, row bounds, and slack columns for every active generic constraint
 /// row at this stage, resolving each term via `resolve_variable_ref` and pricing enabled
-/// slack at `penalty * block_hours`. Unknown entity IDs resolve to zero contributions
-/// (the defense-in-depth fallback for referential-validation gaps).
+/// slack by `SlackConfig::unit_cost` over the row's hours. Unknown entity IDs resolve to
+/// zero contributions (the defense-in-depth fallback for referential-validation gaps).
 pub(super) fn fill_generic_constraint_entries(
     ctx: &TemplateBuildCtx<'_>,
     stage_idx: usize,
@@ -1162,9 +1162,9 @@ pub(super) fn fill_generic_constraint_entries(
     for (entry_idx, entry) in layout.generic_constraint_rows.iter().enumerate() {
         let row = layout.generic_row(entry_idx);
         let constraint = &ctx.generic_constraints[entry.constraint_idx];
-        // A collapsed stage-level row is priced by the stage's total hours (it stands in
-        // for one row per block); the total is penalty-conserving either way.
-        let block_hours = if entry.is_stage_level {
+        // A collapsed stage-level row spans the stage's total hours (it stands in for
+        // one row per block); a `per_hour` total is penalty-conserving either way.
+        let row_hours = if entry.is_stage_level {
             layout.clock.total_hours()
         } else {
             layout.clock.hours(BlockIdx::new(entry.block_idx))
@@ -1193,9 +1193,8 @@ pub(super) fn fill_generic_constraint_entries(
             }
         }
 
-        if let Some(plus_col) = entry.slack_plus_col {
-            let penalty = constraint.slack.penalty.unwrap_or(0.0);
-            let obj_coeff = penalty * block_hours;
+        if let (Some(plus_col), Some(slack)) = (entry.slack_plus_col, entry.slack) {
+            let obj_coeff = slack.unit_cost(row_hours);
 
             col_upper[plus_col] = f64::INFINITY;
             objective[plus_col] = obj_coeff;
@@ -1517,8 +1516,7 @@ mod parameter_resolution_tests {
         HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds, LineStagePenalties,
         NcsStagePenalties, ParameterKind, PenaltiesCountsSpec, PenaltiesDefaults,
         PumpingBlockBounds, ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties,
-        ScalarParameter, SlackConfig, StageId, SystemBuilder, ThermalBlockBounds,
-        ThermalStageBounds,
+        ScalarParameter, StageId, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
     use novomodelo_core::{LinearTerm, VariableRef};
     use novomodelo_stochastic::normal::precompute::PrecomputedNormal;
@@ -1843,10 +1841,7 @@ mod parameter_resolution_tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         }
@@ -1873,10 +1868,7 @@ mod parameter_resolution_tests {
                     },
                 }],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         }
@@ -3260,9 +3252,9 @@ mod pumping_water_tests {
         EnergyContract, EntityId, GenericConstraint, Hydro, HydroBlockBounds, HydroGenerationModel,
         HydroPenalties, HydroStageBounds, HydroUnitGroup, Line, LineBlockBounds,
         LineStagePenalties, LinearTerm, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
-        PumpingBlockBounds, PumpingStation, ResolvedBounds, ResolvedGenericConstraintBounds,
-        ResolvedPenalties, SlackConfig, Stage, Thermal, ThermalBlockBounds, ThermalStageBounds,
-        VariableRef,
+        PenaltyBasis, PumpingBlockBounds, PumpingStation, ResolvedBounds,
+        ResolvedGenericConstraintBounds, ResolvedPenalties, SlackConfig, Stage, Thermal,
+        ThermalBlockBounds, ThermalStageBounds, VariableRef,
     };
     use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
@@ -4344,10 +4336,7 @@ mod pumping_water_tests {
             expression: ConstraintExpression {
                 terms: vec![import_term],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         };
@@ -4544,10 +4533,7 @@ mod pumping_water_tests {
                     },
                 ],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         };
@@ -7356,10 +7342,7 @@ mod pumping_water_tests {
                     },
                 ],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         };
@@ -7449,10 +7432,10 @@ mod pumping_water_tests {
                     },
                 }],
             },
-            slack: SlackConfig {
-                enabled: true,
-                penalty: Some(penalty),
-            },
+            slack: Some(SlackConfig {
+                penalty,
+                penalty_basis: PenaltyBasis::PerHour,
+            }),
             bound_lower_affine: None,
             bound_upper_affine: None,
         };

@@ -616,7 +616,8 @@ pub(crate) fn row_selection_schema() -> Schema {
 /// max), each `None` where unbounded on that side; `derived_shape` labels the
 /// shape those endpoints imply. The per-term columns (`term_index`,
 /// `variable_kind`, `variable`, `coefficient`) are `None` on a term-less
-/// constraint's placeholder row, and `slack_penalty` is `None` when slack is off.
+/// constraint's placeholder row, and `slack_penalty`/`slack_penalty_basis` are
+/// `None` when slack is off.
 pub(crate) fn generic_constraint_echo_schema() -> Schema {
     Schema::new(vec![
         Field::new("stage_id", DataType::Int32, false),
@@ -632,6 +633,7 @@ pub(crate) fn generic_constraint_echo_schema() -> Schema {
         Field::new("derived_shape", DataType::Utf8, false),
         Field::new("slack_enabled", DataType::Boolean, false),
         Field::new("slack_penalty", DataType::Float64, true),
+        Field::new("slack_penalty_basis", DataType::Utf8, true),
     ])
 }
 
@@ -1684,7 +1686,7 @@ mod tests {
             ("cut_selection", 10),
             ("solver_iterations", 19),
             ("retry_histogram", 5),
-            ("generic_constraint_echo", 13),
+            ("generic_constraint_echo", 14),
         ];
         for ((name, actual), (_, exp)) in counts.iter().zip(expected.iter()) {
             assert_eq!(
@@ -1784,8 +1786,8 @@ mod tests {
         let schema = generic_constraint_echo_schema();
         assert_eq!(
             schema.fields().len(),
-            13,
-            "generic_constraint_echo schema must have 13 fields"
+            14,
+            "generic_constraint_echo schema must have 14 fields"
         );
         let expected: &[(&str, DataType, bool)] = &[
             ("stage_id", DataType::Int32, false),
@@ -1801,6 +1803,7 @@ mod tests {
             ("derived_shape", DataType::Utf8, false),
             ("slack_enabled", DataType::Boolean, false),
             ("slack_penalty", DataType::Float64, true),
+            ("slack_penalty_basis", DataType::Utf8, true),
         ];
         for (i, (name, dtype, nullable)) in expected.iter().enumerate() {
             let field = &schema.fields()[i];

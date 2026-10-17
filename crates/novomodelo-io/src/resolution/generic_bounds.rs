@@ -19,7 +19,7 @@ use crate::constraints::GenericConstraintBoundsRow;
 ///
 /// ```
 /// use novomodelo_core::GenericConstraint;
-/// use novomodelo_core::generic_constraint::{ConstraintExpression, SlackConfig};
+/// use novomodelo_core::generic_constraint::ConstraintExpression;
 /// use novomodelo_core::EntityId;
 /// use novomodelo_io::constraints::GenericConstraintBoundsRow;
 /// use novomodelo_io::resolution::resolve_generic_constraint_bounds;
@@ -29,7 +29,7 @@ use crate::constraints::GenericConstraintBoundsRow;
 ///     name: "c0".to_string(),
 ///     description: None,
 ///     expression: ConstraintExpression { terms: vec![] },
-///     slack: SlackConfig { enabled: false, penalty: None },
+///     slack: None,
 ///     bound_lower_affine: None,
 ///     bound_upper_affine: None,
 /// };
@@ -95,16 +95,12 @@ mod tests {
     use novomodelo_core::model::resolved::GenericConstraintBoundEntry;
 
     fn make_constraint(id: i32) -> GenericConstraint {
-        use novomodelo_core::generic_constraint::SlackConfig;
         GenericConstraint {
             id: EntityId(id),
             name: format!("c{id}"),
             description: None,
             expression: ConstraintExpression { terms: vec![] },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         }

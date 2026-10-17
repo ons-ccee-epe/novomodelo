@@ -745,13 +745,13 @@ pub(super) fn contract_direction_counts(contracts: &[EnergyContract]) -> (usize,
 /// shape is a per-row property of the resolved bound entry, never a
 /// constraint-level label.
 fn allocate_generic_slack_cols(
-    slack: &SlackConfig,
+    slack: Option<SlackConfig>,
     bound_lower: Option<f64>,
     bound_upper: Option<f64>,
     col_generic_slack_start: usize,
     n_slack_cols: &mut usize,
 ) -> (Option<usize>, Option<usize>) {
-    if !slack.enabled {
+    if slack.is_none() {
         return (None, None);
     }
     let plus_col = col_generic_slack_start + *n_slack_cols;
@@ -1018,7 +1018,7 @@ fn enumerate_generic_constraint_rows(
                     effective_upper = effective_upper.map(|v| v + shift);
                 }
                 let (slack_plus_col, slack_minus_col) = allocate_generic_slack_cols(
-                    &constraint.slack,
+                    constraint.slack,
                     effective_lower,
                     effective_upper,
                     col_generic_slack_start,
@@ -1032,8 +1032,7 @@ fn enumerate_generic_constraint_rows(
                     is_stage_level,
                     bound_lower: effective_lower,
                     bound_upper: effective_upper,
-                    slack_enabled: constraint.slack.enabled,
-                    slack_penalty: constraint.slack.penalty.unwrap_or(0.0),
+                    slack: constraint.slack,
                     slack_plus_col,
                     slack_minus_col,
                 });
@@ -2128,10 +2127,7 @@ mod collapse_stage_level_tests {
             name: "c".to_string(),
             description: None,
             expression: expr(LinearTerm::literal(1.0, hydro_storage())),
-            slack: novomodelo_core::SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: lower_ref.map(AffineBound::single),
             bound_upper_affine: upper_ref.map(AffineBound::single),
         }

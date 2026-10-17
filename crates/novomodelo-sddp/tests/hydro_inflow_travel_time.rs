@@ -30,8 +30,8 @@ use novomodelo_core::{
     HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, HydroUnitGroup,
     InitialConditions, LineBlockBounds, LineStagePenalties, LinearTerm, NcsStagePenalties,
     PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-    ResolvedGenericConstraintBounds, ResolvedPenalties, SlackConfig, System, SystemBuilder,
-    ThermalBlockBounds, ThermalStageBounds, VariableRef,
+    ResolvedGenericConstraintBounds, ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds,
+    ThermalStageBounds, VariableRef,
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig, InflowNonNegativityMethod,
@@ -221,10 +221,7 @@ fn downstream_inflow_constraint() -> (GenericConstraint, ResolvedGenericConstrai
                 },
             )],
         },
-        slack: SlackConfig {
-            enabled: false,
-            penalty: None,
-        },
+        slack: None,
         bound_lower_affine: None,
         bound_upper_affine: None,
     };

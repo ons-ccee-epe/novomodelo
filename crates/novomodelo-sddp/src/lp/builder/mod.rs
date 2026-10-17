@@ -39,6 +39,8 @@
 //! exclusion — recomputes the phase by calling it; no caller may cache a per-stage
 //! [`novomodelo_core::commissioning::Phase`] mask.
 
+use novomodelo_core::SlackConfig;
+
 mod build_inputs;
 mod columns;
 pub(crate) mod delivery_ring;
@@ -137,17 +139,15 @@ pub struct GenericConstraintRowEntry {
     /// stage-level row (`is_stage_level = true`), which resolves the same column for
     /// any block.
     pub block_idx: usize,
-    /// Whether this row is a collapsed stage-level row; when `true` the slack column
+    /// Whether this row is a collapsed stage-level row; when `true` a `per_hour` slack
     /// is priced by the stage's total hours, not `block_idx`'s block hours.
     pub is_stage_level: bool,
     /// Lower right-hand-side endpoint; `None` when the row is upper-only.
     pub bound_lower: Option<f64>,
     /// Upper right-hand-side endpoint; `None` when the row is lower-only.
     pub bound_upper: Option<f64>,
-    /// Whether slack is enabled for this constraint.
-    pub slack_enabled: bool,
-    /// Penalty cost per unit of slack violation (`0.0` when slack is disabled).
-    pub slack_penalty: f64,
+    /// The parent constraint's slack; `None` for a hard constraint.
+    pub slack: Option<SlackConfig>,
     /// Positive-violation slack (`slack_plus`) column; `None` when slack is disabled.
     pub slack_plus_col: Option<usize>,
     /// Negative-violation slack (`slack_minus`) column, present only when slack is

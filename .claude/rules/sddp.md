@@ -114,6 +114,47 @@ Read: `lp/builder/layout.rs` (`evaporation_slot_count`), `lp/builder/columns.rs`
 Pinned by `parallel_multi_block_evap_slack_price_matches_water_it_moves` and
 `parallel_multiblock_evaporation_study_has_one_priced_stage_slot`.
 
+## A generic-constraint slack is priced by its declared basis, never by its terms
+
+Each soft generic-constraint row prices its slack columns with
+`SlackConfig::unit_cost(row_hours)`, where `row_hours` is the stage's total
+hours for a stage-level row and the block's hours for a block row.
+`PenaltyBasis::PerHour` gives `penalty × row_hours`, for a rate row (MW, m³/s).
+`PenaltyBasis::PerUnit` gives `penalty` with no hours, for an amount row (MWh,
+hm³). This is the same no-hours convention as the filling-target and
+storage-floor slacks (`fill_filling_target_columns`,
+`fill_filled_min_storage_floor_columns` in `lp/builder/columns.rs`). The LP
+objective (`fill_generic_constraint_entries`) and the simulation's reported
+`slack_cost` (`extract_generic_violations`) both call `unit_cost` with the same
+`row_hours`, so the reported cost always matches the LP's price.
+
+`PerUnit` is charged once per violated LP row. A block-independent row whose
+bound or coefficient uses a per-(stage, block) parameter is split into one row
+per block (`expression_collapses_to_stage_level`), and each violated block row
+is charged `penalty`. This is the intended meaning: each block row is its own
+constraint with its own bound. Scaling a split row by its block's share of the
+stage would require reading the row's terms, which this contract forbids.
+
+The user declares the basis; `novomodelo-io` rejects an enabled slack without one.
+Inferring it from the row's terms is the wrong-but-compiling alternative. An
+amount can be written with flow terms, for example a volume row built from
+hours-weighted turbined and spilled flow. Adding or removing one term would
+then silently change what the penalty means and rescale the slack price by the
+stage hours, which still compiles and still converges.
+
+Read: `crates/novomodelo-core/src/constraints/generic_constraint.rs`
+(`SlackConfig::unit_cost`, `PenaltyBasis`), `lp/builder/entries.rs`
+(`fill_generic_constraint_entries`), `simulation/extraction.rs`
+(`extract_generic_violations`), `crates/novomodelo-io/src/constraints/generic.rs`
+(`resolve_slack`). Pinned by `per_unit_storage_slack_price_ignores_stage_hours`
+(`tests/template_integration/generic_constraints.rs`, objective coefficient on
+720 h and 2160 h stages),
+`per_unit_storage_shortfall_costs_the_same_on_a_week_and_a_month` and
+`per_hour_storage_shortfall_cost_scales_with_stage_hours` (`tests/hydro_sim.rs`,
+reported cost on 168 h and 744 h stages), and
+`generic_constraint_collapsed_slack_priced_by_total_stage_hours` (a stage-level
+`per_hour` row prices at the total stage hours).
+
 ## Hydro-cell aggregation assumes one production map per cell
 
 `HydroCellIndex` partitions a plant's `unit_groups` into `bus_id`-equivalence

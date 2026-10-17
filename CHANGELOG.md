@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING:** an enabled generic-constraint slack must declare
+  `slack.penalty_basis`. `per_hour` charges the penalty for every hour the
+  row covers, as before: the stage's total hours for a stage-level row and
+  the block's hours for a block row. Use it for a row in MW or m³/s.
+  `per_unit` charges the penalty once per unit of violation, whatever the
+  stage length. Use it for a row in MWh or hm³. To keep a study's current
+  costs, add `"penalty_basis": "per_hour"` to every enabled slack.
+- **BREAKING:** a disabled generic-constraint slack that sets `penalty` or
+  `penalty_basis` is rejected. These fields used to be ignored.
+- `generic_constraints/resolved_echo.parquet` has a new
+  `slack_penalty_basis` column, null for a hard constraint.
 - HiGHS forward and simulation solves are cold by default: `use_warm_start`
   now defaults to `false` for those phases, so their LPs ignore the stored
   basis and run presolve. Backward solves still warm-start. Set

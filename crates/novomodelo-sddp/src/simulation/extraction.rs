@@ -1580,9 +1580,8 @@ fn extract_generic_violations(
     let mut total_cost = 0.0;
 
     for entry in entries {
-        // A stage-level row is priced by total stage hours (matching the LP
-        // objective in `fill_generic_constraint_entries`); a per-block row by its block's.
-        let block_hours = if entry.is_stage_level {
+        // Same row hours as the LP objective in `fill_generic_constraint_entries`.
+        let row_hours = if entry.is_stage_level {
             spec.block_hours.iter().sum()
         } else {
             spec.block_hours
@@ -1590,16 +1589,17 @@ fn extract_generic_violations(
                 .copied()
                 .unwrap_or(0.0)
         };
-        let (slack_value, slack_cost) = if entry.slack_enabled {
+        let (slack_value, slack_cost) = if let Some(slack) = entry.slack {
+            let unit_cost = slack.unit_cost(row_hours);
             if let Some(minus_col) = entry.slack_minus_col {
                 let s_plus = entry.slack_plus_col.map_or(0.0, |col| view.primal[col]);
                 let s_minus = view.primal[minus_col];
                 let net = s_plus - s_minus;
-                let cost = (s_plus + s_minus) * entry.slack_penalty * block_hours;
+                let cost = (s_plus + s_minus) * unit_cost;
                 (net, cost)
             } else {
                 let s = entry.slack_plus_col.map_or(0.0, |col| view.primal[col]);
-                let cost = s * entry.slack_penalty * block_hours;
+                let cost = s * unit_cost;
                 (s, cost)
             }
         } else {

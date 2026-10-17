@@ -13,7 +13,7 @@
 //!       "name": "min_southeast_hydro",
 //!       "description": "...",
 //!       "expression": "hydro_generation(0) + hydro_generation(1) <= @demanda_sin",
-//!       "slack": { "enabled": true, "penalty": 5000.0 }
+//!       "slack": { "enabled": true, "penalty": 5000.0, "penalty_basis": "per_hour" }
 //!     }
 //!   ]
 //! }
@@ -105,7 +105,8 @@
 //! After deserializing, the following invariants are checked before conversion:
 //!
 //! - No two constraints share the same `id`.
-//! - `slack.enabled = true` requires `slack.penalty` to be present and > 0.0.
+//! - `slack.enabled = true` requires `slack.penalty` (> 0.0) and
+//!   `slack.penalty_basis`; `slack.enabled = false` forbids both.
 //! - Each `expression` string must parse without error.
 //!
 //! Deferred validations (not performed here):
@@ -114,7 +115,8 @@
 //! - Block ID validity for the referenced stage — Layer 3/5.
 
 use novomodelo_core::{
-    ConstraintExpression, EntityId, GenericConstraint, Line, LinearTerm, SlackConfig, VariableRef,
+    ConstraintExpression, EntityId, GenericConstraint, Line, LinearTerm, PenaltyBasis, SlackConfig,
+    VariableRef,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -183,8 +185,14 @@ struct RawSlackConfig {
     /// Whether a slack variable is allowed.
     enabled: bool,
 
-    /// Penalty per unit of violation. Must be > 0.0 when `enabled` is `true`.
+    /// Penalty per unit of violation. Required and > 0.0 when `enabled` is `true`;
+    /// absent otherwise.
     penalty: Option<f64>,
+
+    /// How `penalty` is charged: `"per_hour"` multiplies it by the hours the row
+    /// spans (rows in MW or m³/s); `"per_unit"` does not (rows in `MWh` or hm³).
+    /// Required when `enabled` is `true`; absent otherwise.
+    penalty_basis: Option<PenaltyBasis>,
 }
 
 /// A named linear-expression declaration.
@@ -313,7 +321,8 @@ fn duplicate_line_pair_error(key: (EntityId, EntityId)) -> LoadError {
 /// | File not found / read failure                  | [`LoadError::IoError`]     |
 /// | Invalid JSON syntax or missing required field  | [`LoadError::ParseError`]  |
 /// | Duplicate `id` within the constraints array    | [`LoadError::SchemaError`] |
-/// | `slack.enabled = true` with absent or <= 0 penalty | [`LoadError::SchemaError`] |
+/// | `slack.enabled = true` with absent or <= 0 penalty, or absent `penalty_basis` | [`LoadError::SchemaError`] |
+/// | `slack.enabled = false` with `penalty` or `penalty_basis` set | [`LoadError::SchemaError`] |
 /// | Expression syntax error                        | [`LoadError::SchemaError`] |
 /// | Unknown variable name in expression            | [`LoadError::SchemaError`] |
 /// | `@param` coefficient not found in `name_to_id` | [`LoadError::SchemaError`] |
@@ -398,7 +407,7 @@ fn validate_raw(
 ) -> Result<(), LoadError> {
     validate_no_duplicate_ids(&raw.constraints, path)?;
     for (i, constraint) in raw.constraints.iter().enumerate() {
-        validate_slack(&constraint.slack, i, path)?;
+        resolve_slack(&constraint.slack, i, path)?;
         // Parsed here for accurate field paths; the result is discarded and the
         // expression is re-parsed and inlined during convert(). This is a syntax
         // check only — reference resolution needs the full table, built later.
@@ -428,32 +437,60 @@ fn validate_no_duplicate_ids(constraints: &[RawConstraint], path: &Path) -> Resu
     Ok(())
 }
 
-/// Check slack config consistency: `enabled = true` requires `penalty > 0.0`.
-fn validate_slack(
+/// Resolve a raw slack block: `enabled` requires a positive `penalty` and a
+/// `penalty_basis`; a disabled slack carries neither.
+fn resolve_slack(
     slack: &RawSlackConfig,
     constraint_index: usize,
     path: &Path,
-) -> Result<(), LoadError> {
-    if slack.enabled {
-        match slack.penalty {
-            None => {
-                return Err(LoadError::SchemaError {
-                    path: path.to_path_buf(),
-                    field: format!("constraints[{constraint_index}].slack.penalty"),
-                    message: "slack.enabled is true but slack.penalty is absent".to_string(),
-                });
-            }
-            Some(p) if p <= 0.0 => {
-                return Err(LoadError::SchemaError {
-                    path: path.to_path_buf(),
-                    field: format!("constraints[{constraint_index}].slack.penalty"),
-                    message: format!("slack.penalty must be > 0.0 when enabled, got {p}"),
-                });
-            }
-            Some(_) => {}
+) -> Result<Option<SlackConfig>, LoadError> {
+    let error = |key: &str, message: String| LoadError::SchemaError {
+        path: path.to_path_buf(),
+        field: format!("constraints[{constraint_index}].slack.{key}"),
+        message,
+    };
+    if !slack.enabled {
+        if slack.penalty.is_some() {
+            return Err(error(
+                "penalty",
+                "slack.penalty is set but slack.enabled is false".to_string(),
+            ));
         }
+        if slack.penalty_basis.is_some() {
+            return Err(error(
+                "penalty_basis",
+                "slack.penalty_basis is set but slack.enabled is false".to_string(),
+            ));
+        }
+        return Ok(None);
     }
-    Ok(())
+    let penalty = match slack.penalty {
+        None => {
+            return Err(error(
+                "penalty",
+                "slack.enabled is true but slack.penalty is absent".to_string(),
+            ));
+        }
+        Some(p) if p <= 0.0 => {
+            return Err(error(
+                "penalty",
+                format!("slack.penalty must be > 0.0 when enabled, got {p}"),
+            ));
+        }
+        Some(p) => p,
+    };
+    let Some(penalty_basis) = slack.penalty_basis else {
+        return Err(error(
+            "penalty_basis",
+            "slack.enabled is true but slack.penalty_basis is absent: use \"per_hour\" \
+             for a row in MW or m³/s, \"per_unit\" for a row in MWh or hm³"
+                .to_string(),
+        ));
+    };
+    Ok(Some(SlackConfig {
+        penalty,
+        penalty_basis,
+    }))
 }
 
 // ── Conversion ────────────────────────────────────────────────────────────────
@@ -497,10 +534,7 @@ fn convert(
             }
         };
 
-        let slack = SlackConfig {
-            enabled: c.slack.enabled,
-            penalty: c.slack.penalty,
-        };
+        let slack = resolve_slack(&c.slack, i, path)?;
 
         let mut expression = ConstraintExpression { terms };
         expression.canonicalize();
@@ -1829,7 +1863,7 @@ mod tests {
       "id": 0,
       "name": "max_thermal",
       "expression": "2.5 * thermal_generation(5) - hydro_generation(3)",
-      "slack": { "enabled": true, "penalty": 5000.0 }
+      "slack": { "enabled": true, "penalty": 5000.0, "penalty_basis": "per_unit" }
     }
   ]
 }"#;
@@ -3874,33 +3908,92 @@ mod tests {
     /// Slack with zero penalty → SchemaError.
     #[test]
     fn test_parse_slack_zero_penalty_returns_schema_error() {
-        let json = r#"{
+        let (field, message) = slack_schema_error(
+            r#"{ "enabled": true, "penalty": 0.0, "penalty_basis": "per_hour" }"#,
+        );
+        assert!(
+            field.contains("penalty"),
+            "field should contain 'penalty', got: {field}"
+        );
+        assert!(
+            message.contains("> 0.0"),
+            "message should mention > 0.0, got: {message}"
+        );
+    }
+
+    /// An enabled slack resolves to its penalty and basis; a disabled one to `None`.
+    #[test]
+    fn test_parse_slack_resolves_penalty_and_basis() {
+        let f = write_json(VALID_JSON);
+        let result =
+            parse_generic_constraints(f.path(), &HashMap::new(), &LineBusPairIndex::default())
+                .unwrap();
+        assert_eq!(
+            result[0].slack,
+            Some(SlackConfig {
+                penalty: 5000.0,
+                penalty_basis: PenaltyBasis::PerUnit,
+            })
+        );
+        assert_eq!(result[1].slack, None);
+    }
+
+    fn parse_slack_err(slack: &str) -> LoadError {
+        let json = format!(
+            r#"{{
   "constraints": [
-    {
+    {{
       "id": 0,
       "name": "a",
       "expression": "hydro_generation(0)",
-      "slack": { "enabled": true, "penalty": 0.0 }
-    }
+      "slack": {slack}
+    }}
   ]
-}"#;
-        let f = write_json(json);
-        let err =
-            parse_generic_constraints(f.path(), &HashMap::new(), &LineBusPairIndex::default())
-                .unwrap_err();
-        match &err {
-            LoadError::SchemaError { field, message, .. } => {
-                assert!(
-                    field.contains("penalty"),
-                    "field should contain 'penalty', got: {field}"
-                );
-                assert!(
-                    message.contains("> 0.0"),
-                    "message should mention > 0.0, got: {message}"
-                );
-            }
+}}"#
+        );
+        let f = write_json(&json);
+        parse_generic_constraints(f.path(), &HashMap::new(), &LineBusPairIndex::default())
+            .unwrap_err()
+    }
+
+    fn slack_schema_error(slack: &str) -> (String, String) {
+        match parse_slack_err(slack) {
+            LoadError::SchemaError { field, message, .. } => (field, message),
             other => panic!("expected SchemaError, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_parse_slack_enabled_without_penalty_basis_returns_schema_error() {
+        let (field, message) = slack_schema_error(r#"{ "enabled": true, "penalty": 5000.0 }"#);
+        assert_eq!(field, "constraints[0].slack.penalty_basis");
+        assert!(
+            message.contains("per_hour") && message.contains("per_unit"),
+            "message should name both bases, got: {message}"
+        );
+    }
+
+    #[test]
+    fn test_parse_disabled_slack_with_penalty_returns_schema_error() {
+        let (field, _) = slack_schema_error(r#"{ "enabled": false, "penalty": 5000.0 }"#);
+        assert_eq!(field, "constraints[0].slack.penalty");
+    }
+
+    #[test]
+    fn test_parse_disabled_slack_with_penalty_basis_returns_schema_error() {
+        let (field, _) = slack_schema_error(r#"{ "enabled": false, "penalty_basis": "per_unit" }"#);
+        assert_eq!(field, "constraints[0].slack.penalty_basis");
+    }
+
+    #[test]
+    fn test_parse_unknown_penalty_basis_returns_parse_error() {
+        let err = parse_slack_err(
+            r#"{ "enabled": true, "penalty": 5000.0, "penalty_basis": "per_stage" }"#,
+        );
+        assert!(
+            matches!(err, LoadError::ParseError { .. }),
+            "expected ParseError for an unknown penalty_basis, got: {err:?}"
+        );
     }
 
     /// Description is optional — absent means `None`.
