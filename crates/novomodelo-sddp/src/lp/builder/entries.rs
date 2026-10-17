@@ -3308,6 +3308,7 @@ mod pumping_water_tests {
         fill_generic_constraint_entries, fill_load_balance_entries,
         fill_operational_violation_entries, fill_pumping_water_entries,
         fill_transit_bucket_definition_entries, resolve_bucket_arrival_density,
+        resolve_variable_ref,
     };
 
     const N_STAGES: usize = 1;
@@ -7525,6 +7526,215 @@ mod pumping_water_tests {
                 "blk {blk}: an exact-zero sum must push no entry, got {entries:?}"
             );
         }
+    }
+
+    /// One-hydro fixture with an upper-only generic row over `terms`, canonicalized as the
+    /// loader does.
+    fn alias_row_fixtures(terms: Vec<LinearTerm>) -> PumpFixtures {
+        let mut expression = ConstraintExpression { terms };
+        expression.canonicalize();
+        let constraint = GenericConstraint {
+            id: EntityId(7),
+            name: "gc_alias".to_string(),
+            description: None,
+            expression,
+            slack: None,
+            bound_lower_affine: None,
+            bound_upper_affine: None,
+        };
+        PumpFixtures::new(vec![fixture_hydro(1)], Vec::new())
+            .with_generic_constraint(constraint, 40.0)
+    }
+
+    fn filled_generic_rows(
+        ctx: &TemplateBuildCtx<'_>,
+        layout: &StageLayout<'_>,
+    ) -> Vec<Vec<(usize, f64)>> {
+        let mut col_entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); layout.num_cols];
+        let mut col_upper = vec![f64::INFINITY; layout.num_cols];
+        let mut objective = vec![0.0_f64; layout.num_cols];
+        let mut row_lower = vec![f64::NEG_INFINITY; layout.rows.num_rows];
+        let mut row_upper = vec![f64::INFINITY; layout.rows.num_rows];
+        let mut buffers = LpMatrixBuffers {
+            col_entries: &mut col_entries,
+            col_upper: &mut col_upper,
+            objective: &mut objective,
+            row_lower: &mut row_lower,
+            row_upper: &mut row_upper,
+        };
+        fill_generic_constraint_entries(ctx, 0, layout, &mut buffers);
+        col_entries
+    }
+
+    /// On a constant-productivity plant `hydro_generation` is the turbine column at the
+    /// productivity, so it merges with `hydro_turbined` on every block row.
+    ///
+    /// derived: 1.0 + 2.5
+    #[test]
+    fn generic_row_merges_turbined_and_generation_on_constant_productivity() {
+        let turbined = VariableRef::HydroTurbined {
+            hydro_id: EntityId(1),
+            block_id: None,
+            bus_id: None,
+        };
+        let generation = VariableRef::HydroGeneration {
+            hydro_id: EntityId(1),
+            block_id: None,
+            bus_id: None,
+        };
+        let production_models = ProductionModelSet::new(
+            vec![vec![
+                ResolvedProductionModel::ConstantProductivity {
+                    productivity: 2.5
+                };
+                N_STAGES
+            ]],
+            &[fixture_hydro(1)],
+            N_STAGES,
+        );
+        let mut fixtures = alias_row_fixtures(vec![
+            LinearTerm::literal(1.0, generation),
+            LinearTerm::literal(1.0, turbined),
+        ])
+        .with_production_models(production_models);
+        let ctx = fixtures.make_ctx();
+        let stage = two_block_stage(0, [300.0, 444.0]);
+        let layout = StageLayout::new(&ctx, &stage, 0);
+
+        let turbine_col = layout
+            .geometry
+            .turbine_col(HydroCell::new(0), BlockIdx::new(0));
+        assert_eq!(
+            resolve_variable_ref(&turbined, 0, 0, &ctx, &layout),
+            vec![(turbine_col, 1.0)]
+        );
+        assert_eq!(
+            resolve_variable_ref(&generation, 0, 0, &ctx, &layout),
+            vec![(turbine_col, 2.5)],
+            "generation must alias the turbine column at the overridden productivity"
+        );
+        assert_eq!(layout.rows.n_generic_rows, 2, "one generic row per block");
+
+        let col_entries = filled_generic_rows(&ctx, &layout);
+        for (i, row_entry) in layout.generic_constraint_rows.iter().enumerate() {
+            let blk = row_entry.block_idx;
+            let row = layout.generic_row(i);
+            let col = layout
+                .geometry
+                .turbine_col(HydroCell::new(0), BlockIdx::new(blk));
+            assert_eq!(
+                entry_count_at(&col_entries, col, row),
+                1,
+                "blk {blk}: the turbine column must hold one merged entry"
+            );
+            assert_eq!(
+                raw_coeff_at(&col_entries, col, row).to_bits(),
+                3.5_f64.to_bits(),
+                "blk {blk}: merged turbined + generation coefficient"
+            );
+        }
+    }
+
+    /// `hydro_storage` and `hydro_useful_volume_final` (no block) are both the stage-final
+    /// storage column, so they merge on the single stage-level row.
+    ///
+    /// derived: 2.0 + 3.0
+    #[test]
+    fn generic_row_merges_storage_and_useful_volume_final() {
+        let storage = VariableRef::HydroStorage {
+            hydro_id: EntityId(1),
+        };
+        let useful_final = VariableRef::HydroUsefulVolumeFinal {
+            hydro_id: EntityId(1),
+            block_id: None,
+        };
+        let mut fixtures = alias_row_fixtures(vec![
+            LinearTerm::literal(3.0, useful_final),
+            LinearTerm::literal(2.0, storage),
+        ]);
+        let ctx = fixtures.make_ctx();
+        let stage = two_block_stage(0, [300.0, 444.0]);
+        let layout = StageLayout::new(&ctx, &stage, 0);
+
+        let storage_col = layout.state.storage_outgoing_col(HydroSys::new(0)).get();
+        assert_eq!(
+            resolve_variable_ref(&storage, 0, 0, &ctx, &layout),
+            vec![(storage_col, 1.0)]
+        );
+        assert_eq!(
+            resolve_variable_ref(&useful_final, 0, 0, &ctx, &layout),
+            vec![(storage_col, 1.0)],
+            "useful_volume_final must alias the stage-final storage column"
+        );
+        assert_eq!(
+            layout.rows.n_generic_rows, 1,
+            "block-independent variables collapse to one stage-level row"
+        );
+
+        let col_entries = filled_generic_rows(&ctx, &layout);
+        let row = layout.generic_row(0);
+        assert_eq!(
+            entry_count_at(&col_entries, storage_col, row),
+            1,
+            "the storage column must hold one merged entry"
+        );
+        assert_eq!(
+            raw_coeff_at(&col_entries, storage_col, row).to_bits(),
+            5.0_f64.to_bits(),
+            "merged storage + useful-volume coefficient"
+        );
+    }
+
+    /// The aliased sum follows canonical term order (`hydro_storage`, `hydro_storage_final`,
+    /// `hydro_useful_volume_final`), not authoring order.
+    ///
+    /// derived: canonical order s, f, u gives (1e16 + -1e16) + 1.0 = 1.0; reverse push order gives (1.0 + -1e16) + 1e16 = 0.0, which pushes no entry
+    #[test]
+    fn generic_row_alias_sum_follows_canonical_term_order() {
+        let storage = VariableRef::HydroStorage {
+            hydro_id: EntityId(1),
+        };
+        let storage_final = VariableRef::HydroStorageFinal {
+            hydro_id: EntityId(1),
+            block_id: None,
+        };
+        let useful_final = VariableRef::HydroUsefulVolumeFinal {
+            hydro_id: EntityId(1),
+            block_id: None,
+        };
+        let mut fixtures = alias_row_fixtures(vec![
+            LinearTerm::literal(1.0, useful_final),
+            LinearTerm::literal(-1e16, storage_final),
+            LinearTerm::literal(1e16, storage),
+        ]);
+        let ctx = fixtures.make_ctx();
+        let stage = two_block_stage(0, [300.0, 444.0]);
+        let layout = StageLayout::new(&ctx, &stage, 0);
+
+        let storage_col = layout.state.storage_outgoing_col(HydroSys::new(0)).get();
+        for variable in [&storage, &storage_final, &useful_final] {
+            assert_eq!(
+                resolve_variable_ref(variable, 0, 0, &ctx, &layout),
+                vec![(storage_col, 1.0)],
+                "{variable:?} must alias the stage-final storage column"
+            );
+        }
+        assert_eq!(
+            layout.rows.n_generic_rows, 1,
+            "block-independent variables collapse to one stage-level row"
+        );
+
+        let col_entries = filled_generic_rows(&ctx, &layout);
+        let row = layout.generic_row(0);
+        assert_eq!(
+            entry_count_at(&col_entries, storage_col, row),
+            1,
+            "the large terms must cancel first and leave the 1.0 entry"
+        );
+        assert_eq!(
+            raw_coeff_at(&col_entries, storage_col, row).to_bits(),
+            1.0_f64.to_bits()
+        );
     }
 
     /// AC: a two-sided row (both `bound_lower` and `bound_upper` present) carries
