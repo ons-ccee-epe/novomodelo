@@ -7471,20 +7471,7 @@ mod pumping_water_tests {
             "block-dependent pumping constraint must expand to one row per block"
         );
 
-        let mut col_entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); layout.num_cols];
-        let mut col_upper = vec![f64::INFINITY; layout.num_cols];
-        let mut objective = vec![0.0_f64; layout.num_cols];
-        let mut row_lower = vec![f64::NEG_INFINITY; layout.rows.num_rows];
-        let mut row_upper = vec![f64::INFINITY; layout.rows.num_rows];
-        let mut buffers = LpMatrixBuffers {
-            col_entries: &mut col_entries,
-            col_upper: &mut col_upper,
-            objective: &mut objective,
-            row_lower: &mut row_lower,
-            row_upper: &mut row_upper,
-        };
-
-        fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers);
+        let col_entries = filled_generic_rows(&ctx, &layout);
 
         (0..n_blks)
             .map(|blk| {

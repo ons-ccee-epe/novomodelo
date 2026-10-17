@@ -10,17 +10,7 @@ use novomodelo_sddp::test_support::assert_all_templates_byte_identical;
 /// fixtures carry no `@param` coefficients) and the line topology is empty (no
 /// `line_exchange(source_bus=…, target_bus=…)` form).
 fn parse_generic_from_str(json: &str) -> Vec<novomodelo_core::GenericConstraint> {
-    use std::collections::HashMap;
-    use std::io::Write;
-
-    let mut file = tempfile::NamedTempFile::new().expect("create tempfile");
-    file.write_all(json.as_bytes()).expect("write json fixture");
-    novomodelo_io::constraints::parse_generic_constraints(
-        file.path(),
-        &HashMap::new(),
-        &novomodelo_io::constraints::LineBusPairIndex::default(),
-    )
-    .expect("parse generic constraints")
+    parse_generic_from_str_with_params(json, &std::collections::HashMap::new())
 }
 
 /// Discharge the desugaring invariant on one twin pair: a sugared study and its
