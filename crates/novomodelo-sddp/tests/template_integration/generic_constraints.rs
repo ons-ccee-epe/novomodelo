@@ -2524,3 +2524,92 @@ fn declaration_order_and_rhs_term_order_are_invariant_in_lp() {
     let tpl_b = build_templates_for(&one_bus_system_n_blks_with_generic(1, parsed_b, bounds_b));
     assert_all_templates_byte_identical(&tpl_a, &tpl_b, "declaration order and commutative RHS");
 }
+
+/// An operator-free expression repeating one variable (`bus_excess(1) +
+/// bus_excess(1)`) keeps both terms through the loader, so the builder alone
+/// merges them: the template holds one entry on the excess column and loads and
+/// solves on the active backend.
+///
+/// derived: 1.0 + 1.0
+#[test]
+fn operator_free_repeated_variable_loads_one_entry_and_solves() {
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use novomodelo_solver::{ActiveSolver, SolverInterface};
+    use std::collections::HashMap;
+
+    let json = r#"{
+      "constraints": [
+        { "id": 8, "name": "repeat", "expression": "bus_excess(1) + bus_excess(1)", "slack": { "enabled": false } }
+      ]
+    }"#;
+    let constraints = parse_generic_from_str(json);
+    let id_map: HashMap<i32, usize> = [(8_i32, 0)].into_iter().collect();
+    let rows = vec![(8_i32, 0_i32, None::<i32>, None, Some(400.0_f64))];
+    let bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter());
+
+    // Layout (N=0, T=0, B=1, K=1): theta=0, deficit=1, excess=2; load_balance row 0,
+    // generic row 1.
+    let (excess_col, generic_row) = (2_usize, 1_usize);
+    let templates =
+        build_templates_for(&one_bus_system_n_blks_with_generic(1, constraints, bounds));
+    assert_eq!(
+        csc_entries_at(&templates[0], excess_col, generic_row),
+        vec![2.0],
+        "the two terms on bus_excess(1) must merge into one entry"
+    );
+
+    let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+    solver.load_model(&templates[0]);
+    solver
+        .solve(None)
+        .expect("merged generic row must load and solve");
+}
+
+/// A coefficient parameter resolving to exactly zero on one block stores no entry
+/// on that block's row, while the block where it resolves nonzero keeps its value.
+///
+/// derived: block 0 coefficient 0.0 stores nothing; block 1 coefficient 3.0
+#[test]
+fn block_varying_zero_parameter_coefficient_has_no_entry() {
+    use novomodelo_core::{ParameterKind, ResolvedGenericConstraintBounds, ScalarParameter};
+    use std::collections::HashMap;
+
+    let json = r#"{
+      "constraints": [
+        { "id": 9, "name": "zero_coef", "expression": "@a * bus_excess(1) <= 400", "slack": { "enabled": false } }
+      ]
+    }"#;
+    let name_to_id: HashMap<String, EntityId> =
+        [("a".to_string(), EntityId(230))].into_iter().collect();
+    let constraints = parse_generic_from_str_with_params(json, &name_to_id);
+    let id_map: HashMap<i32, usize> = [(9_i32, 0)].into_iter().collect();
+    let rows = vec![(9_i32, 0_i32, None::<i32>, None, None)];
+    let bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter());
+    let params = resolved_params_single_stage(
+        2,
+        &[ScalarParameter {
+            id: EntityId(230),
+            name: "a".to_string(),
+            kind: ParameterKind::PerStageBlock {
+                values: vec![(0, 0, 0.0), (0, 1, 3.0)],
+            },
+        }],
+    );
+
+    // Layout (N=0, T=0, B=1, K=2): theta=0, deficit=[1,3), excess=[3,5); load_balance
+    // rows 0..2, generic rows 2 (block 0) and 3 (block 1).
+    let templates = build_templates_with_params(
+        &one_bus_system_n_blks_with_generic(2, constraints, bounds),
+        &params,
+    );
+    assert_eq!(
+        csc_entries_at(&templates[0], 3, 2),
+        Vec::<f64>::new(),
+        "block 0: a coefficient resolving to exactly zero stores no entry"
+    );
+    assert_eq!(
+        csc_entries_at(&templates[0], 4, 3),
+        vec![3.0],
+        "block 1: the nonzero coefficient is stored"
+    );
+}

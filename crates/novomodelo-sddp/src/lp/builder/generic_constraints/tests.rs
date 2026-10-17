@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
+use super::super::entries::{LpMatrixBuffers, fill_generic_constraint_entries};
 use super::super::layout::variable_ref_is_block_independent;
 use super::{contract_family_slot, resolve_variable_ref};
 use crate::hydro_models::{
@@ -26,10 +27,11 @@ use crate::time_value::{PostStudyResolved, TimeValue};
 use novomodelo_core::entities::{HydroGenerationModel, HydroPenalties};
 use novomodelo_core::{
     AnticipatedConfig, Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, CascadeTopology,
-    ContractBlockBounds, ContractType, DeficitSegment, EnergyContract, EntityId, Hydro,
-    HydroBlockBounds, HydroStageBounds, Line, LineBlockBounds, NoiseMethod, PumpingBlockBounds,
-    PumpingStation, ResolvedBounds, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig,
-    Thermal, ThermalBlockBounds, ThermalStageBounds, VariableRef,
+    ConstraintExpression, ContractBlockBounds, ContractType, DeficitSegment, EnergyContract,
+    EntityId, GenericConstraint, Hydro, HydroBlockBounds, HydroStageBounds, Line, LineBlockBounds,
+    LinearTerm, NoiseMethod, PumpingBlockBounds, PumpingStation, ResolvedBounds,
+    ResolvedGenericConstraintBounds, ScenarioSourceConfig, Stage, StageRiskConfig,
+    StageStateConfig, Thermal, ThermalBlockBounds, ThermalStageBounds, VariableRef,
 };
 
 // ── Test helpers ──────────────────────────────────────────────────────────
@@ -1559,6 +1561,96 @@ fn line_exchange_maps_to_fwd_and_rev_columns() {
     );
 
     assert_eq!(result, vec![(56, 1.0), (59, -1.0)]);
+}
+
+/// `line_exchange` and `line_direct` on one line land on the same forward column,
+/// so each generic row stores one summed entry there and the exchange's reverse
+/// entry on the reverse column.
+///
+/// derived: forward 1.0 + 1.0; reverse -1.0
+#[test]
+fn generic_row_merges_line_exchange_and_line_direct() {
+    let line = EntityId(50);
+    let mut expression = ConstraintExpression {
+        terms: vec![
+            LinearTerm::literal(
+                1.0,
+                VariableRef::LineExchange {
+                    line_id: line,
+                    block_id: None,
+                },
+            ),
+            LinearTerm::literal(
+                1.0,
+                VariableRef::LineDirect {
+                    line_id: line,
+                    block_id: None,
+                },
+            ),
+        ],
+    };
+    expression.canonicalize();
+    let constraint = GenericConstraint {
+        id: EntityId(7),
+        name: "line_alias".to_string(),
+        description: None,
+        expression,
+        slack: None,
+        bound_lower_affine: None,
+        bound_upper_affine: None,
+    };
+
+    let mut fx = default_fixture();
+    let id_map: HashMap<i32, usize> = [(7, 0)].into_iter().collect();
+    let rows = [(7_i32, 0_i32, None::<i32>, None, Some(100.0_f64))];
+    fx.base.resolved_generic_bounds =
+        ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter());
+    fx.base.generic_constraints = vec![constraint];
+    let ctx = fx.base.ctx();
+    let layout = StageLayout::new(&ctx, &fx.stage, 0);
+
+    let n_blks = layout.clock.n_blks();
+    assert_eq!(
+        layout.rows.n_generic_rows, n_blks,
+        "a block-dependent expression expands to one generic row per block"
+    );
+
+    let mut col_entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); layout.num_cols];
+    let mut col_upper = vec![f64::INFINITY; layout.num_cols];
+    let mut objective = vec![0.0_f64; layout.num_cols];
+    let mut row_lower = vec![f64::NEG_INFINITY; layout.rows.num_rows];
+    let mut row_upper = vec![f64::INFINITY; layout.rows.num_rows];
+    let mut buffers = LpMatrixBuffers {
+        col_entries: &mut col_entries,
+        col_upper: &mut col_upper,
+        objective: &mut objective,
+        row_lower: &mut row_lower,
+        row_upper: &mut row_upper,
+    };
+    fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers);
+
+    for blk in 0..n_blks {
+        let direct = VariableRef::LineDirect {
+            line_id: line,
+            block_id: None,
+        };
+        let exchange = VariableRef::LineExchange {
+            line_id: line,
+            block_id: None,
+        };
+        let forward = call(direct, blk, &ctx, &layout)[0].0;
+        let reverse = call(exchange, blk, &ctx, &layout)[1].0;
+        let row = layout.generic_row(blk);
+        let at = |col: usize| -> Vec<f64> {
+            col_entries[col]
+                .iter()
+                .filter(|&&(r, _)| r == row)
+                .map(|&(_, v)| v)
+                .collect()
+        };
+        assert_eq!(at(forward), vec![2.0], "blk {blk}: forward column");
+        assert_eq!(at(reverse), vec![-1.0], "blk {blk}: reverse column");
+    }
 }
 
 /// LineExchange with explicit block_id overrides current block_idx.
