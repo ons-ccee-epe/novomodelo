@@ -1909,11 +1909,11 @@ fn assert_desugaring_twin_builds_identical_lp(
 
 /// A `PerStageBlock` parameter used as a coefficient resolves to its own block's
 /// value on each per-block row. The sugared study places two terms — each a
-/// distinct block-varying parameter — on the SAME excess column, so the CSC values
-/// sequence for that column (column-major with a per-column row sort) is
-/// order-observable; a single-term twin cannot detect a term-ordering regression.
-/// The hand-flattened twin writes the resolved per-block literals directly, one
-/// block-confined constraint per block, and must build the identical LP.
+/// distinct block-varying parameter — on the SAME excess column; the two terms
+/// merge into one entry per block row, so the twin checks the summed per-block
+/// value. The hand-flattened twin writes the resolved per-block literals
+/// directly, one block-confined constraint per block, and must build the
+/// identical LP.
 #[test]
 fn per_stage_block_coefficient_twin_matches_hand_flattened_literals() {
     use novomodelo_core::{
@@ -2383,17 +2383,18 @@ fn parquet_base_folds_with_inline_affine_remainder() {
 
 /// A parameter-coefficient RHS (`@a * bus_excess(1) <= -@b * bus_excess(1) +
 /// 400`) normalizes to two DISTINCT-parameter terms on the same `bus_excess(1)`
-/// column, never merged — different `@param` references have no common scalar
-/// to sum. Two terms sharing one column with distinct effective values makes
-/// the CSC storage order for that column observable; a single-term twin could
-/// not catch a regression there.
+/// column. The builder merges the two terms into one entry, so the sugared
+/// template holds a single value on that column and matches the hand-flattened
+/// twin.
+///
+/// derived: 2.0 + 6.0
 ///
 /// Guarded mutation: changing the hand-flattened side's second literal away
 /// from `@b`'s resolved value (`6.0`, independent of the first term's `2.0`)
-/// desyncs that column's second stored entry and fails the digest comparison —
-/// this twin is sensitive to both terms' values, not merely their count.
+/// changes the merged entry and fails the digest comparison — this twin is
+/// sensitive to both terms' values, not merely their count.
 #[test]
-fn parameter_rhs_places_two_distinct_terms_on_one_column() {
+fn parameter_rhs_terms_on_one_column_merge_to_one_entry() {
     use novomodelo_core::{
         ConstraintExpression, GenericConstraint, LinearTerm, ParameterKind,
         ResolvedGenericConstraintBounds, ScalarParameter, VariableRef,
@@ -2456,6 +2457,19 @@ fn parameter_rhs_places_two_distinct_terms_on_one_column() {
     let flat_id_map: HashMap<i32, usize> = [(6_i32, 0)].into_iter().collect();
     let flat_rows = vec![(6_i32, 0_i32, None::<i32>, None, Some(400.0_f64))];
     let flat_bounds = ResolvedGenericConstraintBounds::new(&flat_id_map, flat_rows.into_iter());
+
+    // Layout (N=0, T=0, B=1, K=1): theta=0, deficit=1, excess=2; load_balance row 0,
+    // generic row 1.
+    let (excess_col, generic_row) = (2_usize, 1_usize);
+    let sugared_tpl = build_templates_with_params(
+        &one_bus_system_n_blks_with_generic(1, sugared_constraints.clone(), sugared_bounds.clone()),
+        &sugared_params,
+    );
+    assert_eq!(
+        csc_entries_at(&sugared_tpl[0], excess_col, generic_row),
+        vec![8.0],
+        "the two terms on bus_excess(1) must merge into one entry"
+    );
 
     assert_desugaring_twin_builds_identical_lp(
         1,

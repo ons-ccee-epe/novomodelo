@@ -1,5 +1,5 @@
 use novomodelo_core::commissioning::Phase;
-use novomodelo_core::{BlockMode, CoefficientRef, ContractType, Stage};
+use novomodelo_core::{BlockMode, CoefficientRef, ContractType, Stage, is_exact_zero};
 
 use super::generic_constraints::resolve_variable_ref;
 use crate::hydro_models::EvaporationModel;
@@ -1144,6 +1144,8 @@ pub(super) struct LpMatrixBuffers<'a> {
 /// row at this stage, resolving each term via `resolve_variable_ref` and pricing enabled
 /// slack by `SlackConfig::unit_cost` over the row's hours. Unknown entity IDs resolve to
 /// zero contributions (the defense-in-depth fallback for referential-validation gaps).
+/// Each generic row gets one entry per column, the sum of its terms' entries on that
+/// column, and no entry when that sum is an exact zero.
 pub(super) fn fill_generic_constraint_entries(
     ctx: &TemplateBuildCtx<'_>,
     stage_idx: usize,
@@ -1159,6 +1161,7 @@ pub(super) fn fill_generic_constraint_entries(
     let row_lower = &mut *buffers.row_lower;
     let row_upper = &mut *buffers.row_upper;
 
+    let mut row_entries: Vec<(usize, f64)> = Vec::new();
     for (entry_idx, entry) in layout.generic_constraint_rows.iter().enumerate() {
         let row = layout.generic_row(entry_idx);
         let constraint = &ctx.generic_constraints[entry.constraint_idx];
@@ -1177,6 +1180,7 @@ pub(super) fn fill_generic_constraint_entries(
         row_lower[row] = entry.bound_lower.unwrap_or(f64::NEG_INFINITY);
         row_upper[row] = entry.bound_upper.unwrap_or(f64::INFINITY);
 
+        row_entries.clear();
         for term in &constraint.expression.terms {
             let pairs =
                 resolve_variable_ref(&term.variable, entry.block_idx, stage_idx, ctx, layout);
@@ -1189,9 +1193,10 @@ pub(super) fn fill_generic_constraint_entries(
                             .get(param_id, stage_idx, entry.block_idx)
                     }
                 };
-                col_entries[col].push((row, coef * term.scale * multiplier));
+                row_entries.push((col, coef * term.scale * multiplier));
             }
         }
+        push_merged_row_entries(row, &mut row_entries, col_entries);
 
         if let (Some(plus_col), Some(slack)) = (entry.slack_plus_col, entry.slack) {
             let obj_coeff = slack.unit_cost(row_hours);
@@ -1215,6 +1220,24 @@ pub(super) fn fill_generic_constraint_entries(
                 objective[minus_col] = obj_coeff;
                 col_entries[minus_col].push((row, -1.0));
             }
+        }
+    }
+}
+
+/// The sort must stay stable: equal columns keep push order, which fixes the addition order.
+fn push_merged_row_entries(
+    row: usize,
+    entries: &mut [(usize, f64)],
+    col_entries: &mut [Vec<(usize, f64)>],
+) {
+    entries.sort_by_key(|&(col, _)| col);
+    for run in entries.chunk_by(|a, b| a.0 == b.0) {
+        let Some((&(col, first), rest)) = run.split_first() else {
+            continue;
+        };
+        let sum = rest.iter().fold(first, |acc, &(_, v)| acc + v);
+        if !is_exact_zero(sum) {
+            col_entries[col].push((row, sum));
         }
     }
 }
@@ -7309,8 +7332,8 @@ mod pumping_water_tests {
     /// constraint participates in the LP — its row carries CSC entries on the
     /// pumping columns. The `block_id = None` expression is block-dependent, so it
     /// expands to one generic row per block; each row's two terms (flow ×1.0 and
-    /// power ×consumption) alias the SAME pumping column for that block, so the
-    /// summed coefficient at `(pumping_col, generic_row)` is `1.0 + consumption`.
+    /// power ×consumption) alias the SAME pumping column for that block, so
+    /// `(pumping_col, generic_row)` holds one entry, `1.0 + consumption`.
     #[test]
     fn b6b_generic_constraint_resolves_pumping_columns_in_lp() {
         let consumption = 0.5_f64;
@@ -7385,15 +7408,15 @@ mod pumping_water_tests {
         for blk in 0..n_blks {
             let row = layout.rows.row_generic_start + blk;
             let col = layout.geometry.pumping_flow.start + blk;
-            let summed: f64 = col_entries[col]
+            let entries: Vec<f64> = col_entries[col]
                 .iter()
                 .filter(|&&(r, _)| r == row)
                 .map(|&(_, v)| v)
-                .sum();
+                .collect();
             assert_eq!(
-                summed,
-                1.0 + consumption,
-                "blk {blk}: pumping column {col} must carry flow(1.0) + power({consumption}) on generic row {row}"
+                entries,
+                vec![1.0 + consumption],
+                "blk {blk}: pumping column {col} must carry one entry, flow(1.0) + power({consumption}), on generic row {row}"
             );
             // The row bound proves the constraint participates as an upper-only row.
             assert_eq!(
@@ -7404,6 +7427,102 @@ mod pumping_water_tests {
                 row_lower[row],
                 f64::NEG_INFINITY,
                 "blk {blk}: upper-only row lower"
+            );
+        }
+    }
+
+    /// Per block, the values stored on the pumping-flow column at that block's generic
+    /// row for a constraint holding `first * pumping_flow(10) + second * pumping_flow(10)`
+    /// (`block_id = None`, stage 0).
+    fn repeated_pumping_flow_entries(first: f64, second: f64) -> Vec<Vec<f64>> {
+        let station_id = EntityId(10);
+        let flow_term = |coefficient: f64| LinearTerm {
+            coefficient: CoefficientRef::Literal(coefficient),
+            scale: 1.0,
+            variable: VariableRef::PumpingFlow {
+                station_id,
+                block_id: None,
+            },
+        };
+        let constraint = GenericConstraint {
+            id: EntityId(7),
+            name: "gc_repeated_flow".to_string(),
+            description: None,
+            expression: ConstraintExpression {
+                terms: vec![flow_term(first), flow_term(second)],
+            },
+            slack: None,
+            bound_lower_affine: None,
+            bound_upper_affine: None,
+        };
+
+        let mut fixtures = PumpFixtures::new(
+            vec![fixture_hydro(1), fixture_hydro(2)],
+            vec![station_full(station_id.0, 1, 2, 0.0, 50.0, 1, 0.5)],
+        )
+        .with_generic_constraint(constraint, 40.0);
+        let ctx = fixtures.make_ctx();
+        let stage = two_block_stage(0, [300.0, 444.0]);
+        let layout = StageLayout::new(&ctx, &stage, 0);
+        let n_blks = layout.clock.n_blks();
+        assert_eq!(
+            layout.rows.n_generic_rows, n_blks,
+            "block-dependent pumping constraint must expand to one row per block"
+        );
+
+        let mut col_entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); layout.num_cols];
+        let mut col_upper = vec![f64::INFINITY; layout.num_cols];
+        let mut objective = vec![0.0_f64; layout.num_cols];
+        let mut row_lower = vec![f64::NEG_INFINITY; layout.rows.num_rows];
+        let mut row_upper = vec![f64::INFINITY; layout.rows.num_rows];
+        let mut buffers = LpMatrixBuffers {
+            col_entries: &mut col_entries,
+            col_upper: &mut col_upper,
+            objective: &mut objective,
+            row_lower: &mut row_lower,
+            row_upper: &mut row_upper,
+        };
+
+        fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers);
+
+        (0..n_blks)
+            .map(|blk| {
+                let row = layout.rows.row_generic_start + blk;
+                let col = layout.geometry.pumping_flow.start + blk;
+                col_entries[col]
+                    .iter()
+                    .filter(|&&(r, _)| r == row)
+                    .map(|&(_, v)| v)
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Two terms on one column merge into a single entry on every block row.
+    ///
+    /// derived: 1.5 + 2.25
+    #[test]
+    fn generic_row_repeated_column_sums_to_one_entry() {
+        let per_block = repeated_pumping_flow_entries(1.5, 2.25);
+        assert_eq!(per_block.len(), 2, "one generic row per block");
+        for (blk, entries) in per_block.iter().enumerate() {
+            assert_eq!(
+                entries,
+                &vec![3.75],
+                "blk {blk}: the flow column must hold exactly one merged entry"
+            );
+        }
+    }
+
+    /// Terms on one column that cancel exactly leave no entry on the generic rows.
+    #[test]
+    fn generic_row_exact_zero_sum_pushes_no_entry() {
+        let per_block = repeated_pumping_flow_entries(1.5, -1.5);
+        assert_eq!(per_block.len(), 2, "one generic row per block");
+        for (blk, entries) in per_block.iter().enumerate() {
+            assert!(
+                entries.is_empty(),
+                "blk {blk}: an exact-zero sum must push no entry, got {entries:?}"
             );
         }
     }
