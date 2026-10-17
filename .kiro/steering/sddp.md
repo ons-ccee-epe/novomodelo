@@ -132,6 +132,13 @@ objective (`fill_generic_constraint_entries`) and the simulation's reported
 `slack_cost` (`extract_generic_violations`) both call `unit_cost` with the same
 `row_hours`, so the reported cost always matches the LP's price.
 
+`PerUnit` is charged once per violated LP row. A block-independent row whose
+bound or coefficient uses a per-(stage, block) parameter is split into one row
+per block (`expression_collapses_to_stage_level`), and each violated block row
+is charged `penalty`. This is the intended meaning: each block row is its own
+constraint with its own bound. Scaling a split row by its block's share of the
+stage would require reading the row's terms, which this contract forbids.
+
 The user declares the basis; `novomodelo-io` rejects an enabled slack without one.
 Inferring it from the row's terms is the wrong-but-compiling alternative. An
 amount can be written with flow terms, for example a volume row built from
