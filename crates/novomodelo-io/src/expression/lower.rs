@@ -7,8 +7,15 @@
 //! An expression that reads an LP variable lowers to a [`LinearForm`]: one coefficient program
 //! per structurally distinct [`VariableRef`], merged in authoring order. Every node is typed
 //! before anything folds, so `0 * x` still holds a term for `x`.
+//!
+//! A `@name` reference to a named expression lowers to the form of its body, each body lowered
+//! at most once per constraint. Every form operation is refused before it builds a form whose
+//! programs hold more than [`MAX_INLINED_OPS`] operations in total. Each body is also lowered
+//! once at declaration with its own references read as empty forms, so a fault in its source is
+//! reported there and only faults of the composition reach a constraint.
 
 use std::collections::HashMap;
+use std::mem;
 use std::ops::Range;
 
 use novomodelo_core::{EntityId, ScalarExpr, VariableRef, is_exact_zero};
@@ -17,10 +24,146 @@ use super::Diagnostic;
 use super::catalog::{LineBusPairIndex, LinePairOrientation, variable_from_call};
 use super::parser::{AddOp, Expr, ExprKind, MulOp, RelOp, parse};
 
+/// The most operations the coefficient programs and constant of one form may hold together.
+pub(crate) const MAX_INLINED_OPS: usize = 100_000;
+
 /// The names an expression can read.
 pub(crate) struct Scope<'a> {
     pub(crate) params: &'a HashMap<String, EntityId>,
     pub(crate) line_index: &'a LineBusPairIndex,
+    pub(crate) named: &'a NamedTable,
+}
+
+/// The named expressions of one file, parsed, typed and checked, but expanded only where a
+/// constraint references them.
+pub(crate) struct NamedTable {
+    declarations: Vec<Declaration>,
+    index: HashMap<String, usize>,
+}
+
+struct Declaration {
+    name: String,
+    body: Expr,
+    /// Declaration indices of the body's named references, in source order, repeats kept.
+    references: Vec<usize>,
+}
+
+impl NamedTable {
+    /// Parses and types each body, reading every named reference as linear, then lowers it with
+    /// every named reference read as an empty form, so no body is expanded. Names must be unique
+    /// and must not collide with `params`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the index of the first declaration whose body does not parse, contains a
+    /// relational operator, reads an unknown name, is not linear, reads no LP variable, or
+    /// fails to lower on its own (a variable call that does not resolve, a fold that divides by
+    /// zero or is not finite), with a diagnostic on that body's source.
+    pub(crate) fn declare(
+        decls: &[(&str, &str)],
+        params: &HashMap<String, EntityId>,
+        line_index: &LineBusPairIndex,
+    ) -> Result<NamedTable, (usize, Diagnostic)> {
+        let index: HashMap<String, usize> = decls
+            .iter()
+            .enumerate()
+            .map(|(j, (name, _))| ((*name).to_owned(), j))
+            .collect();
+        let declarations = decls
+            .iter()
+            .enumerate()
+            .map(|(j, &(name, source))| {
+                let body = declared_body(name, source, params, &index).map_err(|d| (j, d))?;
+                let mut references = Vec::new();
+                collect_named_references(&body, &index, &mut references);
+                Ok(Declaration {
+                    name: name.to_owned(),
+                    body,
+                    references,
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        let table = NamedTable {
+            declarations,
+            index,
+        };
+        {
+            let scope = Scope {
+                params,
+                line_index,
+                named: &table,
+            };
+            let mut lowering = Lowering::opaque(&scope);
+            for (j, declaration) in table.declarations.iter().enumerate() {
+                lowering
+                    .form(&declaration.body)
+                    .map_err(|fault| (j, fault.into_diagnostic()))?;
+            }
+        }
+        Ok(table)
+    }
+
+    /// Each declaration in order with the named references of its body in source order,
+    /// repeats kept.
+    pub(crate) fn reference_graph(&self) -> Vec<(&str, Vec<&str>)> {
+        self.declarations
+            .iter()
+            .map(|declaration| {
+                let references = declaration
+                    .references
+                    .iter()
+                    .map(|&k| self.declarations[k].name.as_str())
+                    .collect();
+                (declaration.name.as_str(), references)
+            })
+            .collect()
+    }
+}
+
+fn declared_body(
+    name: &str,
+    source: &str,
+    params: &HashMap<String, EntityId>,
+    named: &HashMap<String, usize>,
+) -> Result<Expr, Diagnostic> {
+    let relation = parse(source)?;
+    let whole = 0..source.len();
+    if relation.rhs.is_some() {
+        return Err(Diagnostic {
+            span: whole,
+            message: "a named expression cannot contain a relational operator".to_owned(),
+        });
+    }
+    match type_of(&relation.lhs, params, named)? {
+        Type::Linear => Ok(relation.lhs),
+        Type::Scalar => Err(Diagnostic {
+            span: whole,
+            message: format!(
+                "\"{name}\" contains no LP variable; declare it in generic_parameters.json as a \
+                 kind \"expression\" parameter"
+            ),
+        }),
+    }
+}
+
+fn collect_named_references(expr: &Expr, named: &HashMap<String, usize>, out: &mut Vec<usize>) {
+    match &expr.kind {
+        ExprKind::Number(_) | ExprKind::Variable(_) => {}
+        ExprKind::Name(name) => out.extend(named.get(name)),
+        ExprKind::Neg(operand) => collect_named_references(operand, named, out),
+        ExprKind::Sum { head, tail } => {
+            collect_named_references(head, named, out);
+            for (_, operand) in tail {
+                collect_named_references(operand, named, out);
+            }
+        }
+        ExprKind::Product { head, tail } => {
+            collect_named_references(head, named, out);
+            for (_, operand) in tail {
+                collect_named_references(operand, named, out);
+            }
+        }
+    }
 }
 
 /// A coefficient of `None` is a unit coefficient, built as a program only when an operation or
@@ -58,57 +201,13 @@ pub(crate) struct LoweredRelation {
 /// missing `R.c` as `literal(0.0)` and a missing `L.c` as nothing: a left-only constant becomes
 /// `0.0 - L.c`, never `-L.c` (which turns a `+0.0` constant into `-0.0`), and a relation with
 /// no constant still targets `literal(0.0)`. An expression without an operator targets no
-/// endpoint and cannot have a constant part.
+/// endpoint and cannot have a constant part; a named body's constant counts as its side's.
 pub(crate) fn lower_relation(src: &str, scope: &Scope) -> Result<LoweredRelation, Diagnostic> {
     let relation = parse(src)?;
-    let whole = 0..src.len();
-    let Some((op, rhs)) = relation.rhs else {
-        let form = lower_form(&relation.lhs, scope)?;
-        if form.constant.is_some() {
-            return Err(Diagnostic {
-                span: whole,
-                message: "an expression without a relational operator cannot have a constant \
-                          part; put the bound in generic_constraint_bounds.parquet or use <=, >= \
-                          or =="
-                    .to_owned(),
-            });
-        }
-        return Ok(LoweredRelation {
-            terms: form.into_terms(),
-            lower: None,
-            upper: None,
-        });
-    };
-
-    let left = lower_form(&relation.lhs, scope)?;
-    let right = lower_form(&rhs, scope)?;
-    let variables = combine(
-        LinearForm {
-            terms: left.terms,
-            constant: None,
-        },
-        LinearForm {
-            terms: right.terms,
-            constant: None,
-        },
-        &AddOp::Sub,
-        &whole,
-    )?;
-    let right_constant = right.constant.unwrap_or_else(|| ScalarExpr::literal(0.0));
-    let remainder = match left.constant {
-        Some(left_constant) => checked(right_constant - left_constant, &whole)?,
-        None => right_constant,
-    };
-    let (lower, upper) = match op {
-        RelOp::Le => (None, Some(remainder)),
-        RelOp::Ge => (Some(remainder), None),
-        RelOp::Eq => (Some(remainder.clone()), Some(remainder)),
-    };
-    Ok(LoweredRelation {
-        terms: variables.into_terms(),
-        lower,
-        upper,
-    })
+    let rhs = relation.rhs.as_ref().map(|(_, rhs)| rhs);
+    Lowering::new(scope, &relation.lhs, rhs)
+        .relation(&relation.lhs, relation.rhs.as_ref(), 0..src.len())
+        .map_err(Fault::into_diagnostic)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,10 +280,16 @@ fn lower_scalar(expr: &Expr, params: &HashMap<String, EntityId>) -> Result<Scala
     }
 }
 
-fn type_of(expr: &Expr, scope: &Scope) -> Result<Type, Diagnostic> {
+/// Types `expr`, reading a named reference as linear without looking at its body.
+fn type_of(
+    expr: &Expr,
+    params: &HashMap<String, EntityId>,
+    named: &HashMap<String, usize>,
+) -> Result<Type, Diagnostic> {
     match &expr.kind {
         ExprKind::Number(_) => Ok(Type::Scalar),
-        ExprKind::Name(name) if scope.params.contains_key(name) => Ok(Type::Scalar),
+        ExprKind::Name(name) if params.contains_key(name) => Ok(Type::Scalar),
+        ExprKind::Name(name) if named.contains_key(name) => Ok(Type::Linear),
         ExprKind::Name(name) => Err(Diagnostic {
             span: expr.span.clone(),
             message: format!(
@@ -193,30 +298,54 @@ fn type_of(expr: &Expr, scope: &Scope) -> Result<Type, Diagnostic> {
             ),
         }),
         ExprKind::Variable(_) => Ok(Type::Linear),
-        ExprKind::Neg(operand) => type_of(operand, scope),
+        ExprKind::Neg(operand) => type_of(operand, params, named),
         ExprKind::Sum { head, tail } => {
-            let mut ty = type_of(head, scope)?;
+            let mut ty = type_of(head, params, named)?;
             for (_, operand) in tail {
-                if type_of(operand, scope)? == Type::Linear {
+                if type_of(operand, params, named)? == Type::Linear {
                     ty = Type::Linear;
                 }
             }
             Ok(ty)
         }
         ExprKind::Product { head, tail } => {
-            let mut ty = type_of(head, scope)?;
+            let mut ty = type_of(head, params, named)?;
+            let mut first_linear = (ty == Type::Linear).then_some(&**head);
             for (op, operand) in tail {
-                let rhs = type_of(operand, scope)?;
+                let rhs = type_of(operand, params, named)?;
                 ty = match (op, ty, rhs) {
                     (MulOp::Mul, Type::Linear, Type::Linear) | (MulOp::Div, _, Type::Linear) => {
-                        return Err(not_linear(op, head.span.start..operand.span.end));
+                        let culprit = match op {
+                            MulOp::Mul => named_reference(operand, named)
+                                .or_else(|| first_linear.and_then(|e| named_reference(e, named))),
+                            MulOp::Div => named_reference(operand, named),
+                        };
+                        let mut error = not_linear(op, head.span.start..operand.span.end);
+                        if let Some((name, j)) = culprit {
+                            error.message = format!(
+                                "{} (\"@{name}\" is the named expression at expressions[{j}], \
+                                 which contains LP variables)",
+                                error.message
+                            );
+                        }
+                        return Err(error);
                     }
                     (_, Type::Scalar, Type::Scalar) => Type::Scalar,
                     _ => Type::Linear,
                 };
+                if rhs == Type::Linear && first_linear.is_none() {
+                    first_linear = Some(operand);
+                }
             }
             Ok(ty)
         }
+    }
+}
+
+fn named_reference<'e>(expr: &'e Expr, named: &HashMap<String, usize>) -> Option<(&'e str, usize)> {
+    match &expr.kind {
+        ExprKind::Name(name) => named.get(name).map(|&j| (name.as_str(), j)),
+        _ => None,
     }
 }
 
@@ -231,146 +360,554 @@ fn not_linear(op: &MulOp, span: Range<usize>) -> Diagnostic {
     }
 }
 
-/// Lowers a tree that reads an LP variable or not; a tree that reads none becomes a form with
-/// only a constant.
-fn lower_form(expr: &Expr, scope: &Scope) -> Result<LinearForm, Diagnostic> {
-    enum Acc {
-        Scalar(ScalarExpr),
-        Form(LinearForm),
-    }
-    let operand = |expr: &Expr| -> Result<Acc, Diagnostic> {
-        Ok(match type_of(expr, scope)? {
-            Type::Scalar => Acc::Scalar(lower_scalar(expr, scope.params)?),
-            Type::Linear => Acc::Form(lower_form(expr, scope)?),
-        })
-    };
+/// A rejection on its way out of a lowering.
+enum Fault {
+    /// Located in the source being lowered, which may be a named body.
+    Local(Diagnostic),
+    /// Already located on the constraint's outermost reference.
+    Anchored(Diagnostic),
+}
 
-    let linear = type_of(expr, scope)? == Type::Linear;
-    match &expr.kind {
-        ExprKind::Variable(call) => {
-            let (variable, orientation) =
-                variable_from_call(call, scope.line_index).map_err(|message| Diagnostic {
-                    span: expr.span.clone(),
-                    message,
-                })?;
-            let coefficient = match orientation {
-                LinePairOrientation::Forward => None,
-                LinePairOrientation::Reversed => Some(ScalarExpr::literal(-1.0)),
-            };
-            Ok(LinearForm {
-                terms: vec![(variable, coefficient)],
+impl From<Diagnostic> for Fault {
+    fn from(diagnostic: Diagnostic) -> Self {
+        Fault::Local(diagnostic)
+    }
+}
+
+impl Fault {
+    fn into_diagnostic(self) -> Diagnostic {
+        match self {
+            Fault::Local(diagnostic) | Fault::Anchored(diagnostic) => diagnostic,
+        }
+    }
+}
+
+enum Slot {
+    Pending,
+    InProgress,
+    Lowered(LinearForm),
+}
+
+/// The state of one constraint's lowering: the forms of the named bodies it has lowered and
+/// still needs, indexed by declaration.
+struct Lowering<'a> {
+    scope: &'a Scope<'a>,
+    cache: Vec<Slot>,
+    /// Uses left per body, counted over the constraint and every reachable body; a form leaves
+    /// the cache at its last use, which keeps a long chain from holding every link at once.
+    remaining: Vec<usize>,
+    /// The constraint's reference whose bodies are being lowered.
+    origin: Option<(usize, Range<usize>)>,
+    /// Every named reference lowers to an empty form, which checks a body without expanding it.
+    opaque_references: bool,
+    #[cfg(test)]
+    lowerings: Vec<usize>,
+    #[cfg(test)]
+    peak_cached: usize,
+}
+
+impl<'a> Lowering<'a> {
+    fn opaque(scope: &'a Scope<'a>) -> Self {
+        let mut lowering = Self::with_remaining(scope, Vec::new());
+        lowering.opaque_references = true;
+        lowering
+    }
+    fn new(scope: &'a Scope<'a>, lhs: &Expr, rhs: Option<&Expr>) -> Self {
+        let declarations = &scope.named.declarations;
+        let mut remaining = vec![0; declarations.len()];
+        let mut reached = vec![false; declarations.len()];
+        let mut uses = Vec::new();
+        collect_named_references(lhs, &scope.named.index, &mut uses);
+        if let Some(rhs) = rhs {
+            collect_named_references(rhs, &scope.named.index, &mut uses);
+        }
+        let mut frontier = Vec::new();
+        while !uses.is_empty() {
+            for j in uses.drain(..) {
+                remaining[j] += 1;
+                if !reached[j] {
+                    reached[j] = true;
+                    frontier.push(j);
+                }
+            }
+            for j in frontier.drain(..) {
+                uses.extend_from_slice(&declarations[j].references);
+            }
+        }
+        Self::with_remaining(scope, remaining)
+    }
+
+    fn with_remaining(scope: &'a Scope<'a>, remaining: Vec<usize>) -> Self {
+        let declarations = &scope.named.declarations;
+        Lowering {
+            scope,
+            cache: declarations.iter().map(|_| Slot::Pending).collect(),
+            remaining,
+            origin: None,
+            opaque_references: false,
+            #[cfg(test)]
+            lowerings: vec![0; declarations.len()],
+            #[cfg(test)]
+            peak_cached: 0,
+        }
+    }
+
+    fn relation(
+        &mut self,
+        lhs: &Expr,
+        rhs: Option<&(RelOp, Expr)>,
+        whole: Range<usize>,
+    ) -> Result<LoweredRelation, Fault> {
+        let Some((op, rhs)) = rhs else {
+            let form = self.form(lhs)?;
+            if form.constant.is_some() {
+                return Err(Fault::Local(Diagnostic {
+                    span: whole,
+                    message: "an expression without a relational operator cannot have a constant \
+                              part; put the bound in generic_constraint_bounds.parquet or use <=, \
+                              >= or =="
+                        .to_owned(),
+                }));
+            }
+            return Ok(LoweredRelation {
+                terms: form.into_terms(),
+                lower: None,
+                upper: None,
+            });
+        };
+
+        let left = self.form(lhs)?;
+        let right = self.form(rhs)?;
+        let variables = self.combine(
+            LinearForm {
+                terms: left.terms,
                 constant: None,
-            })
-        }
-        ExprKind::Neg(inner) if linear => {
-            map_form(lower_form(inner, scope)?, |c| checked(-c, &expr.span), None)
-        }
-        ExprKind::Sum { head, tail } if linear => {
-            let mut acc = lower_form(head, scope)?;
-            for (op, rhs) in tail {
-                let other = lower_form(rhs, scope)?;
-                acc = combine(acc, other, op, &(head.span.start..rhs.span.end))?;
+            },
+            LinearForm {
+                terms: right.terms,
+                constant: None,
+            },
+            &AddOp::Sub,
+            &whole,
+        )?;
+        let right_constant = right.constant.unwrap_or_else(|| ScalarExpr::literal(0.0));
+        let remainder = match left.constant {
+            Some(left_constant) => {
+                self.check_budget(
+                    binary_ops(Some(&right_constant), Some(&left_constant)),
+                    &whole,
+                )?;
+                checked(right_constant - left_constant, &whole)?
             }
-            Ok(acc)
-        }
-        ExprKind::Product { head, tail } if linear => {
-            let mut acc = operand(head)?;
-            for (op, rhs) in tail {
-                let step = head.span.start..rhs.span.end;
-                acc = match (acc, op, operand(rhs)?) {
-                    (Acc::Scalar(lhs), MulOp::Mul, Acc::Scalar(rhs)) => {
-                        Acc::Scalar(checked(lhs * rhs, &step)?)
-                    }
-                    (Acc::Scalar(lhs), MulOp::Div, Acc::Scalar(rhs)) => {
-                        Acc::Scalar(checked_div(lhs, rhs, &step)?)
-                    }
-                    (Acc::Scalar(s), MulOp::Mul, Acc::Form(form)) => {
-                        Acc::Form(map_form(form, |c| checked(s.clone() * c, &step), Some(&s))?)
-                    }
-                    (Acc::Form(form), MulOp::Mul, Acc::Scalar(s)) => {
-                        Acc::Form(map_form(form, |c| checked(c * s.clone(), &step), Some(&s))?)
-                    }
-                    (Acc::Form(form), MulOp::Div, Acc::Scalar(s)) => {
-                        Acc::Form(map_form(form, |c| checked_div(c, s.clone(), &step), None)?)
-                    }
-                    (Acc::Form(_), MulOp::Mul, Acc::Form(_)) | (_, MulOp::Div, Acc::Form(_)) => {
-                        return Err(not_linear(op, step));
-                    }
-                };
-            }
-            Ok(match acc {
-                Acc::Scalar(value) => LinearForm {
-                    terms: Vec::new(),
-                    constant: Some(value),
-                },
-                Acc::Form(form) => form,
-            })
-        }
-        _ => Ok(LinearForm {
-            terms: Vec::new(),
-            constant: Some(lower_scalar(expr, scope.params)?),
-        }),
-    }
-}
-
-/// Applies `f` to every coefficient and to the constant. A unit coefficient becomes
-/// `unit_image` when one is given (the scale itself, for a product) and `f(literal(1.0))`
-/// otherwise.
-fn map_form(
-    form: LinearForm,
-    f: impl Fn(ScalarExpr) -> Result<ScalarExpr, Diagnostic>,
-    unit_image: Option<&ScalarExpr>,
-) -> Result<LinearForm, Diagnostic> {
-    let terms = form
-        .terms
-        .into_iter()
-        .map(|(variable, coefficient)| {
-            let image = match (coefficient, unit_image) {
-                (Some(c), _) => f(c)?,
-                (None, Some(unit_image)) => unit_image.clone(),
-                (None, None) => f(one())?,
-            };
-            Ok((variable, Some(image)))
+            None => right_constant,
+        };
+        let (lower, upper) = match op {
+            RelOp::Le => (None, Some(remainder)),
+            RelOp::Ge => (Some(remainder), None),
+            RelOp::Eq => (Some(remainder.clone()), Some(remainder)),
+        };
+        Ok(LoweredRelation {
+            terms: variables.into_terms(),
+            lower,
+            upper,
         })
-        .collect::<Result<_, Diagnostic>>()?;
-    let constant = form.constant.map(&f).transpose()?;
-    Ok(LinearForm { terms, constant })
-}
+    }
 
-/// Adds or subtracts `other` into `acc`: a variable already in `acc` (structural equality) has
-/// its coefficient combined in place, a new one is appended. No exact-zero coefficient is
-/// dropped here, so a later term can still change it.
-fn combine(
-    mut acc: LinearForm,
-    other: LinearForm,
-    op: &AddOp,
-    span: &Range<usize>,
-) -> Result<LinearForm, Diagnostic> {
-    let apply = |lhs: ScalarExpr, rhs: ScalarExpr| match op {
-        AddOp::Add => checked(lhs + rhs, span),
-        AddOp::Sub => checked(lhs - rhs, span),
-    };
-    for (variable, c2) in other.terms {
-        if let Some((_, c1)) = acc.terms.iter_mut().find(|(known, _)| *known == variable) {
-            let lhs = c1.take().unwrap_or_else(one);
-            *c1 = Some(apply(lhs, c2.unwrap_or_else(one))?);
-        } else {
-            let coefficient = match op {
-                AddOp::Add => c2,
-                AddOp::Sub => Some(checked(-c2.unwrap_or_else(one), span)?),
-            };
-            acc.terms.push((variable, coefficient));
+    fn type_of(&self, expr: &Expr) -> Result<Type, Diagnostic> {
+        type_of(expr, self.scope.params, &self.scope.named.index)
+    }
+
+    /// Lowers a tree that reads an LP variable or not; a tree that reads none becomes a form
+    /// with only a constant.
+    fn form(&mut self, expr: &Expr) -> Result<LinearForm, Fault> {
+        enum Acc {
+            Scalar(ScalarExpr),
+            Form(LinearForm),
+        }
+        fn operand(lowering: &mut Lowering, expr: &Expr) -> Result<Acc, Fault> {
+            Ok(match lowering.type_of(expr)? {
+                Type::Scalar => Acc::Scalar(lower_scalar(expr, lowering.scope.params)?),
+                Type::Linear => Acc::Form(lowering.form(expr)?),
+            })
+        }
+
+        let linear = self.type_of(expr)? == Type::Linear;
+        if let Some((_, j)) = named_reference(expr, &self.scope.named.index) {
+            return self.reference(j, &expr.span);
+        }
+        match &expr.kind {
+            ExprKind::Variable(call) => {
+                let (variable, orientation) = variable_from_call(call, self.scope.line_index)
+                    .map_err(|message| Diagnostic {
+                        span: expr.span.clone(),
+                        message,
+                    })?;
+                let coefficient = match orientation {
+                    LinePairOrientation::Forward => None,
+                    LinePairOrientation::Reversed => Some(ScalarExpr::literal(-1.0)),
+                };
+                Ok(LinearForm {
+                    terms: vec![(variable, coefficient)],
+                    constant: None,
+                })
+            }
+            ExprKind::Neg(inner) if linear => {
+                let form = self.form(inner)?;
+                self.map_form(form, Scaling::Negate, &expr.span)
+            }
+            ExprKind::Sum { head, tail } if linear => {
+                let mut acc = self.form(head)?;
+                for (op, rhs) in tail {
+                    let other = self.form(rhs)?;
+                    acc = self.combine(acc, other, op, &(head.span.start..rhs.span.end))?;
+                }
+                Ok(acc)
+            }
+            ExprKind::Product { head, tail } if linear => {
+                let mut acc = operand(self, head)?;
+                for (op, rhs) in tail {
+                    let step = head.span.start..rhs.span.end;
+                    acc = match (acc, op, operand(self, rhs)?) {
+                        (Acc::Scalar(lhs), MulOp::Mul, Acc::Scalar(rhs)) => {
+                            Acc::Scalar(checked(lhs * rhs, &step)?)
+                        }
+                        (Acc::Scalar(lhs), MulOp::Div, Acc::Scalar(rhs)) => {
+                            Acc::Scalar(checked_div(lhs, rhs, &step)?)
+                        }
+                        (Acc::Scalar(s), MulOp::Mul, Acc::Form(form)) => {
+                            Acc::Form(self.map_form(form, Scaling::ScaleLeft(&s), &step)?)
+                        }
+                        (Acc::Form(form), MulOp::Mul, Acc::Scalar(s)) => {
+                            Acc::Form(self.map_form(form, Scaling::ScaleRight(&s), &step)?)
+                        }
+                        (Acc::Form(form), MulOp::Div, Acc::Scalar(s)) => {
+                            Acc::Form(self.map_form(form, Scaling::DivideBy(&s), &step)?)
+                        }
+                        (Acc::Form(_), MulOp::Mul, Acc::Form(_))
+                        | (_, MulOp::Div, Acc::Form(_)) => {
+                            return Err(not_linear(op, step).into());
+                        }
+                    };
+                }
+                Ok(match acc {
+                    Acc::Scalar(value) => LinearForm {
+                        terms: Vec::new(),
+                        constant: Some(value),
+                    },
+                    Acc::Form(form) => form,
+                })
+            }
+            _ => Ok(LinearForm {
+                terms: Vec::new(),
+                constant: Some(lower_scalar(expr, self.scope.params)?),
+            }),
         }
     }
-    acc.constant = match (acc.constant, other.constant) {
-        (Some(k1), Some(k2)) => Some(apply(k1, k2)?),
-        (k1, None) => k1,
-        (None, Some(k2)) => Some(match op {
-            AddOp::Add => k2,
-            AddOp::Sub => checked(-k2, span)?,
-        }),
-    };
-    Ok(acc)
+
+    /// The form of body `j` for one of its uses at `span`; the last use takes the cached form,
+    /// every earlier one clones it.
+    fn reference(&mut self, j: usize, span: &Range<usize>) -> Result<LinearForm, Fault> {
+        if self.opaque_references {
+            return Ok(LinearForm {
+                terms: Vec::new(),
+                constant: None,
+            });
+        }
+        let form = match mem::replace(&mut self.cache[j], Slot::Pending) {
+            Slot::Lowered(form) => form,
+            Slot::InProgress => return Err(Fault::Anchored(cycle(span))),
+            Slot::Pending => {
+                let outermost = self.origin.is_none();
+                if outermost {
+                    self.origin = Some((j, span.clone()));
+                }
+                let anchor = self.origin.as_ref().map_or(span, |(_, at)| at).clone();
+                let walked = self.walk(j, &anchor);
+                if outermost {
+                    self.origin = None;
+                }
+                walked?
+            }
+        };
+        self.remaining[j] = self.remaining[j].saturating_sub(1);
+        if self.remaining[j] > 0 {
+            self.store(j, form.clone());
+        }
+        Ok(form)
+    }
+
+    /// Lowers body `root` after every body it reaches, in an iterative post-order so a long
+    /// chain never recurses; `root`'s form is returned, not cached.
+    fn walk(&mut self, root: usize, anchor: &Range<usize>) -> Result<LinearForm, Fault> {
+        let named = self.scope.named;
+        self.cache[root] = Slot::InProgress;
+        let mut stack = vec![(root, 0_usize)];
+        while let Some((node, next)) = stack.last_mut() {
+            let node = *node;
+            if let Some(&child) = named.declarations[node].references.get(*next) {
+                *next += 1;
+                match self.cache[child] {
+                    Slot::Lowered(_) => {}
+                    Slot::InProgress => return Err(Fault::Anchored(cycle(anchor))),
+                    Slot::Pending => {
+                        self.cache[child] = Slot::InProgress;
+                        stack.push((child, 0));
+                    }
+                }
+                continue;
+            }
+            stack.pop();
+            if stack.is_empty() {
+                break;
+            }
+            let form = self.lower_body(node, anchor)?;
+            self.store(node, form);
+        }
+        let form = self.lower_body(root, anchor);
+        self.cache[root] = Slot::Pending;
+        form
+    }
+
+    /// Lowers body `j`, whose references are all cached. [`NamedTable::declare`] already lowered
+    /// its source alone, so a fault here comes from the forms it composes; it moves to `anchor`
+    /// on the constraint's source and names the declaration.
+    fn lower_body(&mut self, j: usize, anchor: &Range<usize>) -> Result<LinearForm, Fault> {
+        #[cfg(test)]
+        {
+            self.lowerings[j] += 1;
+        }
+        let named = self.scope.named;
+        let declaration = &named.declarations[j];
+        self.form(&declaration.body).map_err(|fault| match fault {
+            Fault::Local(diagnostic) => Fault::Anchored(Diagnostic {
+                span: anchor.clone(),
+                message: format!(
+                    "{} (composing \"@{}\", the named expression at expressions[{j}])",
+                    diagnostic.message, declaration.name
+                ),
+            }),
+            anchored @ Fault::Anchored(_) => anchored,
+        })
+    }
+
+    fn store(&mut self, j: usize, form: LinearForm) {
+        self.cache[j] = Slot::Lowered(form);
+        #[cfg(test)]
+        {
+            let cached = self
+                .cache
+                .iter()
+                .filter(|slot| matches!(slot, Slot::Lowered(_)))
+                .count();
+            self.peak_cached = self.peak_cached.max(cached);
+        }
+    }
+
+    /// Refuses a form of `ops` total operations above [`MAX_INLINED_OPS`], naming the
+    /// constraint's reference under expansion if there is one.
+    fn check_budget(&self, ops: usize, span: &Range<usize>) -> Result<(), Fault> {
+        if ops <= MAX_INLINED_OPS {
+            return Ok(());
+        }
+        Err(match &self.origin {
+            Some((j, at)) => Fault::Anchored(Diagnostic {
+                span: at.clone(),
+                message: format!(
+                    "named-expression reference \"@{}\" expands to more than {MAX_INLINED_OPS} \
+                     coefficient operations; this indicates an exponential reference pattern \
+                     (e.g. a doubling chain \"@e = @prev + @prev\")",
+                    self.scope.named.declarations[*j].name
+                ),
+            }),
+            None => Fault::Local(Diagnostic {
+                span: span.clone(),
+                message: format!(
+                    "expression expands to more than {MAX_INLINED_OPS} coefficient operations"
+                ),
+            }),
+        })
+    }
+
+    /// Applies `scaling` to every coefficient and to the constant.
+    fn map_form(
+        &self,
+        form: LinearForm,
+        scaling: Scaling,
+        span: &Range<usize>,
+    ) -> Result<LinearForm, Fault> {
+        let ops = form
+            .terms
+            .iter()
+            .map(|(_, coefficient)| scaling.ops(coefficient.as_ref()))
+            .chain(
+                form.constant
+                    .iter()
+                    .map(|constant| scaling.ops(Some(constant))),
+            )
+            .fold(0, usize::saturating_add);
+        self.check_budget(ops, span)?;
+        // Checked before mapping so a form without terms, an opaque reference, still rejects it.
+        if let Scaling::DivideBy(divisor) = scaling
+            && divisor.as_literal().is_some_and(is_exact_zero)
+        {
+            return Err(division_by_zero(span).into());
+        }
+        let terms = form
+            .terms
+            .into_iter()
+            .map(|(variable, coefficient)| Ok((variable, Some(scaling.apply(coefficient, span)?))))
+            .collect::<Result<_, Diagnostic>>()?;
+        let constant = form
+            .constant
+            .map(|constant| scaling.apply(Some(constant), span))
+            .transpose()?;
+        Ok(LinearForm { terms, constant })
+    }
+
+    /// Adds or subtracts `other` into `acc`: a variable already in `acc` (structural equality)
+    /// has its coefficient combined in place, a new one is appended. No exact-zero coefficient
+    /// is dropped here, so a later term can still change it.
+    fn combine(
+        &self,
+        mut acc: LinearForm,
+        other: LinearForm,
+        op: &AddOp,
+        span: &Range<usize>,
+    ) -> Result<LinearForm, Fault> {
+        let positions: Vec<Option<usize>> = other
+            .terms
+            .iter()
+            .map(|(variable, _)| acc.terms.iter().position(|(known, _)| known == variable))
+            .collect();
+        let mut partners = vec![None; acc.terms.len()];
+        let mut ops = 0_usize;
+        for ((_, c2), position) in other.terms.iter().zip(&positions) {
+            match position {
+                Some(i) => partners[*i] = Some(c2.as_ref()),
+                None => ops = ops.saturating_add(signed_ops(op, c2.as_ref())),
+            }
+        }
+        for ((_, c1), partner) in acc.terms.iter().zip(&partners) {
+            let merged = match partner {
+                Some(c2) => binary_ops(c1.as_ref(), *c2),
+                None => ops_of(c1.as_ref()),
+            };
+            ops = ops.saturating_add(merged);
+        }
+        ops = ops.saturating_add(match (&acc.constant, &other.constant) {
+            (Some(k1), Some(k2)) => binary_ops(Some(k1), Some(k2)),
+            (Some(k1), None) => k1.op_count(),
+            (None, Some(k2)) => signed_ops(op, Some(k2)),
+            (None, None) => 0,
+        });
+        self.check_budget(ops, span)?;
+
+        let apply = |lhs: ScalarExpr, rhs: ScalarExpr| match op {
+            AddOp::Add => checked(lhs + rhs, span),
+            AddOp::Sub => checked(lhs - rhs, span),
+        };
+        for ((variable, c2), position) in other.terms.into_iter().zip(positions) {
+            if let Some(i) = position {
+                let c1 = &mut acc.terms[i].1;
+                let lhs = c1.take().unwrap_or_else(one);
+                *c1 = Some(apply(lhs, c2.unwrap_or_else(one))?);
+            } else {
+                let coefficient = match op {
+                    AddOp::Add => c2,
+                    AddOp::Sub => Some(checked(-c2.unwrap_or_else(one), span)?),
+                };
+                acc.terms.push((variable, coefficient));
+            }
+        }
+        acc.constant = match (acc.constant, other.constant) {
+            (Some(k1), Some(k2)) => Some(apply(k1, k2)?),
+            (k1, None) => k1,
+            (None, Some(k2)) => Some(match op {
+                AddOp::Add => k2,
+                AddOp::Sub => checked(-k2, span)?,
+            }),
+        };
+        Ok(acc)
+    }
+}
+
+fn cycle(span: &Range<usize>) -> Diagnostic {
+    Diagnostic {
+        span: span.clone(),
+        message: "named-expression reference cycle detected".to_owned(),
+    }
+}
+
+/// An operation `map_form` applies to every coefficient and to the constant; a unit coefficient
+/// becomes the scale itself under a product and the operation applied to `literal(1.0)`
+/// otherwise.
+#[derive(Clone, Copy)]
+enum Scaling<'s> {
+    Negate,
+    ScaleLeft(&'s ScalarExpr),
+    ScaleRight(&'s ScalarExpr),
+    DivideBy(&'s ScalarExpr),
+}
+
+impl Scaling<'_> {
+    fn apply(
+        self,
+        coefficient: Option<ScalarExpr>,
+        span: &Range<usize>,
+    ) -> Result<ScalarExpr, Diagnostic> {
+        match (self, coefficient) {
+            (Scaling::ScaleLeft(s) | Scaling::ScaleRight(s), None) => Ok(s.clone()),
+            (Scaling::ScaleLeft(s), Some(c)) => checked(s.clone() * c, span),
+            (Scaling::ScaleRight(s), Some(c)) => checked(c * s.clone(), span),
+            (Scaling::Negate, c) => checked(-c.unwrap_or_else(one), span),
+            (Scaling::DivideBy(s), c) => checked_div(c.unwrap_or_else(one), s.clone(), span),
+        }
+    }
+
+    /// The operation count of what [`Scaling::apply`] builds from `coefficient`.
+    fn ops(self, coefficient: Option<&ScalarExpr>) -> usize {
+        match (self, coefficient) {
+            (Scaling::ScaleLeft(s) | Scaling::ScaleRight(s), None) => s.op_count(),
+            (Scaling::Negate, c) => unary_ops(c),
+            (Scaling::ScaleLeft(s) | Scaling::ScaleRight(s) | Scaling::DivideBy(s), c) => {
+                binary_ops(c, Some(s))
+            }
+        }
+    }
+}
+
+/// The operation count of a coefficient once built; a unit coefficient is the one literal
+/// `1.0`.
+fn ops_of(coefficient: Option<&ScalarExpr>) -> usize {
+    coefficient.map_or(1, ScalarExpr::op_count)
+}
+
+fn is_literal(coefficient: Option<&ScalarExpr>) -> bool {
+    coefficient.is_none_or(|c| c.as_literal().is_some())
+}
+
+/// Literal operands fold to one literal; anything else appends one operation to both operands.
+fn binary_ops(lhs: Option<&ScalarExpr>, rhs: Option<&ScalarExpr>) -> usize {
+    if is_literal(lhs) && is_literal(rhs) {
+        1
+    } else {
+        ops_of(lhs).saturating_add(ops_of(rhs)).saturating_add(1)
+    }
+}
+
+fn unary_ops(operand: Option<&ScalarExpr>) -> usize {
+    if is_literal(operand) {
+        1
+    } else {
+        ops_of(operand).saturating_add(1)
+    }
+}
+
+fn signed_ops(op: &AddOp, operand: Option<&ScalarExpr>) -> usize {
+    match op {
+        AddOp::Add => ops_of(operand),
+        AddOp::Sub => unary_ops(operand),
+    }
 }
 
 fn one() -> ScalarExpr {
@@ -393,12 +930,16 @@ fn checked_div(
     span: &Range<usize>,
 ) -> Result<ScalarExpr, Diagnostic> {
     if rhs.as_literal().is_some_and(is_exact_zero) {
-        return Err(Diagnostic {
-            span: span.clone(),
-            message: "division by zero".to_owned(),
-        });
+        return Err(division_by_zero(span));
     }
     checked(lhs / rhs, span)
+}
+
+fn division_by_zero(span: &Range<usize>) -> Diagnostic {
+    Diagnostic {
+        span: span.clone(),
+        message: "division by zero".to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -409,10 +950,11 @@ mod tests {
     use novomodelo_core::{EntityId, Line, ScalarExpr, VariableRef};
 
     use super::{
-        LinearForm, LoweredRelation, Scope, lower_form, lower_relation, lower_scalar_body,
+        Fault, LinearForm, LoweredRelation, Lowering, NamedTable, Scope, Slot, lower_relation,
+        lower_scalar_body,
     };
     use crate::expression::Diagnostic;
-    use crate::expression::catalog::build_line_bus_pair_index;
+    use crate::expression::catalog::{LineBusPairIndex, build_line_bus_pair_index};
     use crate::expression::parser::{Expr, parse};
 
     fn params() -> HashMap<String, EntityId> {
@@ -589,9 +1131,23 @@ mod tests {
         }
     }
 
-    /// Runs `f` under `params()` and a single line 5 running from bus 3 to bus 7.
-    fn with_scope<T>(f: impl FnOnce(&Scope) -> T) -> T {
+    /// Runs `f` under `params()`, the named expressions `decls` and `line_index()`.
+    fn with_named<T>(decls: &[(&str, &str)], f: impl FnOnce(&Scope) -> T) -> T {
         let params = params();
+        let line_index = line_index();
+        let named = match NamedTable::declare(decls, &params, &line_index) {
+            Ok(named) => named,
+            Err((j, d)) => panic!("expressions[{j}]: {}", d.render(decls[j].1)),
+        };
+        f(&Scope {
+            params: &params,
+            line_index: &line_index,
+            named: &named,
+        })
+    }
+
+    /// A single line 5 running from bus 3 to bus 7.
+    fn line_index() -> LineBusPairIndex {
         let line = Line {
             id: EntityId(5),
             name: "L5".to_owned(),
@@ -605,15 +1161,19 @@ mod tests {
             losses_percent: 0.0,
             exchange_cost: 0.0,
         };
-        let line_index = build_line_bus_pair_index(&[line]).unwrap();
-        f(&Scope {
-            params: &params,
-            line_index: &line_index,
-        })
+        build_line_bus_pair_index(&[line]).unwrap()
+    }
+
+    fn with_scope<T>(f: impl FnOnce(&Scope) -> T) -> T {
+        with_named(&[], f)
     }
 
     fn lower_side(side: &Expr) -> Result<LinearForm, Diagnostic> {
-        with_scope(|scope| lower_form(side, scope))
+        with_scope(|scope| {
+            Lowering::new(scope, side, None)
+                .form(side)
+                .map_err(Fault::into_diagnostic)
+        })
     }
 
     fn form(src: &str) -> LinearForm {
@@ -1873,6 +2433,548 @@ mod tests {
         assert_eq!(
             literal_bits(relation(src).lower.as_ref()),
             Some(6.0_f64.to_bits())
+        );
+    }
+
+    fn named_relation(decls: &[(&str, &str)], src: &str) -> LoweredRelation {
+        with_named(decls, |scope| lower_relation(src, scope))
+            .unwrap_or_else(|d| panic!("{}", d.render(src)))
+    }
+
+    fn named_rejection(decls: &[(&str, &str)], src: &str) -> String {
+        with_named(decls, |scope| lower_relation(src, scope))
+            .unwrap_err()
+            .render(src)
+    }
+
+    fn declaration_rejection(decls: &[(&str, &str)]) -> (usize, String) {
+        match NamedTable::declare(decls, &params(), &line_index()) {
+            Ok(_) => panic!("{decls:?} declared"),
+            Err((j, d)) => (j, d.render(decls[j].1)),
+        }
+    }
+
+    /// One constraint's lowering, with how often each body was lowered, the most bodies cached
+    /// at once and whether the cache was empty at the end.
+    struct Trace {
+        result: Result<LoweredRelation, Diagnostic>,
+        lowerings: Vec<usize>,
+        peak_cached: usize,
+        cache_empty: bool,
+    }
+
+    fn trace_in(scope: &Scope, src: &str) -> Trace {
+        let relation = parse(src).unwrap();
+        let rhs = relation.rhs.as_ref().map(|(_, rhs)| rhs);
+        let mut lowering = Lowering::new(scope, &relation.lhs, rhs);
+        let result = lowering
+            .relation(&relation.lhs, relation.rhs.as_ref(), 0..src.len())
+            .map_err(Fault::into_diagnostic);
+        Trace {
+            result,
+            lowerings: lowering.lowerings.clone(),
+            peak_cached: lowering.peak_cached,
+            cache_empty: lowering
+                .cache
+                .iter()
+                .all(|slot| matches!(slot, Slot::Pending)),
+        }
+    }
+
+    fn traced(decls: &[(&str, &str)], src: &str) -> Trace {
+        with_named(decls, |scope| trace_in(scope, src))
+    }
+
+    /// `e0 = base` and `ek = @e(k-1) + @e(k-1)` for `k` up to `levels`.
+    fn doubling_chain(base: &str, levels: usize) -> Vec<(String, String)> {
+        let mut chain = vec![("e0".to_owned(), base.to_owned())];
+        for k in 1..=levels {
+            chain.push((
+                format!("e{k}"),
+                format!("@e{prev} + @e{prev}", prev = k - 1),
+            ));
+        }
+        chain
+    }
+
+    fn borrowed(decls: &[(String, String)]) -> Vec<(&str, &str)> {
+        decls
+            .iter()
+            .map(|(name, source)| (name.as_str(), source.as_str()))
+            .collect()
+    }
+
+    /// derived: `e = h0 + 2 * h1`, so `3 * @e` gives `h0` the scale itself, `3.0`, and `h1`
+    /// `3.0 * 2.0 = 6.0`; the upper endpoint is `1.0`; `-@e` is `[-1.0, -2.0]`; `s = @a * h0`,
+    /// so `2 * @s` gives `h0` the program `2, a, mul`.
+    #[test]
+    fn a_reference_inlines_its_body_scaled() {
+        let decls = [
+            ("e", "hydro_generation(0) + 2 * hydro_generation(1)"),
+            ("s", "@a * hydro_generation(0)"),
+        ];
+        let src = "3 * @e <= 1";
+        let lowered = named_relation(&decls, src);
+        assert_eq!(
+            literal_bits_of(src, lowered.terms),
+            [(hg(0), 3.0_f64.to_bits()), (hg(1), 6.0_f64.to_bits())]
+        );
+        assert_eq!(
+            literal_bits(lowered.upper.as_ref()),
+            Some(1.0_f64.to_bits())
+        );
+        assert_eq!(lowered.lower, None);
+
+        assert_eq!(
+            literal_bits_of("-@e", named_relation(&decls, "-@e").terms),
+            [(hg(0), (-1.0_f64).to_bits()), (hg(1), (-2.0_f64).to_bits())]
+        );
+        assert_eq!(
+            named_relation(&decls, "2 * @s").terms,
+            [(hg(0), lit(2.0) * a())]
+        );
+    }
+
+    /// derived: `e = h0 + 5`, so `@e <= 7` keeps `h0` at `1.0` and targets the upper endpoint
+    /// `7.0 - 5.0 = 2.0`; `@e >= @p` targets the lower endpoint with the program `p, 5, sub`.
+    #[test]
+    fn an_affine_body_moves_its_constant_to_the_bound() {
+        let decls = [("e", "hydro_generation(0) + 5")];
+        let src = "@e <= 7";
+        let lowered = named_relation(&decls, src);
+        assert_eq!(
+            literal_bits_of(src, lowered.terms),
+            [(hg(0), 1.0_f64.to_bits())]
+        );
+        assert_eq!(
+            literal_bits(lowered.upper.as_ref()),
+            Some(2.0_f64.to_bits())
+        );
+        assert_eq!(lowered.lower, None);
+
+        let parameter = named_relation(&decls, "@e >= @p");
+        assert_eq!(parameter.lower, Some(p() - lit(5.0)));
+        assert_eq!(parameter.upper, None);
+    }
+
+    #[test]
+    fn an_affine_body_in_an_operator_free_expression_is_rejected() {
+        let decls = [
+            ("e", "hydro_generation(0) + 5"),
+            ("f", "hydro_generation(0)"),
+        ];
+        for src in ["@e", "2 * @e + hydro_generation(1)"] {
+            assert_eq!(
+                named_rejection(&decls, src),
+                format!(
+                    "`{src}`: an expression without a relational operator cannot have a constant \
+                     part; put the bound in generic_constraint_bounds.parquet or use <=, >= or =="
+                ),
+                "{src:?}"
+            );
+        }
+        assert_eq!(named_relation(&decls, "@f").terms, [(hg(0), lit(1.0))]);
+    }
+
+    /// derived: `outer = 2 * @middle`, `middle = @inner + h1`, `inner = h0`, so `@outer` is
+    /// `2 * (h0 + h1)`, `[2.0, 2.0]`; `@outer - @inner >= 0` gives `h0` `2.0 - 1.0 = 1.0` and
+    /// keeps `h1` at `2.0`.
+    #[test]
+    fn composition_resolves_transitively() {
+        let decls = [
+            ("outer", "2 * @middle"),
+            ("middle", "@inner + hydro_generation(1)"),
+            ("inner", "hydro_generation(0)"),
+        ];
+        let lowered = named_relation(&decls, "@outer");
+        assert_eq!(
+            literal_bits_of("@outer", lowered.terms),
+            [(hg(0), 2.0_f64.to_bits()), (hg(1), 2.0_f64.to_bits())]
+        );
+
+        let src = "@outer - @inner >= 0";
+        let shared = traced(&decls, src);
+        assert_eq!(
+            literal_bits_of(src, shared.result.unwrap().terms),
+            [(hg(0), 1.0_f64.to_bits()), (hg(1), 2.0_f64.to_bits())]
+        );
+        assert_eq!(shared.lowerings, [1, 1, 1]);
+        assert!(shared.cache_empty);
+    }
+
+    #[test]
+    fn a_scalar_body_is_rejected_with_the_parameter_hint() {
+        let hint = |name: &str| {
+            format!(
+                "\"{name}\" contains no LP variable; declare it in generic_parameters.json as a \
+                 kind \"expression\" parameter"
+            )
+        };
+        assert_eq!(
+            declaration_rejection(&[("x0", "hydro_generation(0)"), ("k", "2 * @p")]),
+            (1, format!("`2 * @p`: {}", hint("k")))
+        );
+        assert_eq!(
+            declaration_rejection(&[("three", "3")]),
+            (0, format!("`3`: {}", hint("three")))
+        );
+        assert_eq!(
+            declaration_rejection(&[("k", "@p")]),
+            (0, format!("`@p`: {}", hint("k")))
+        );
+    }
+
+    #[test]
+    fn a_body_error_is_reported_at_its_declaration() {
+        assert_eq!(
+            declaration_rejection(&[("e", "hydro_generation(0) * hydro_generation(1)")]),
+            (
+                0,
+                "`hydro_generation(0) * hydro_generation(1)`: product of LP variables is not \
+                 linear"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            declaration_rejection(&[("top", "@mid"), ("mid", "@missing + hydro_generation(0)")]),
+            (
+                1,
+                "`@missing`: unknown name \"@missing\": no scalar parameter or named expression \
+                 with this name was declared"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            declaration_rejection(&[("r", "hydro_generation(0) <= 1")]),
+            (
+                0,
+                "`hydro_generation(0) <= 1`: a named expression cannot contain a relational \
+                 operator"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            declaration_rejection(&[
+                ("e", "hydro_generation(1)"),
+                ("bad", "hydro_turbined(5.5) + @e")
+            ]),
+            (
+                1,
+                "`hydro_turbined(5.5)`: entity_id must be a non-negative integer, got 5.5 in \
+                 variable \"hydro_turbined\""
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            declaration_rejection(&[("pair", "line_exchange(source_bus=1, target_bus=2)")]),
+            (
+                0,
+                "`line_exchange(source_bus=1, target_bus=2)`: no line connects buses source_bus=1 \
+                 and target_bus=2"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            declaration_rejection(&[
+                ("f", "hydro_generation(0)"),
+                ("g", "@f * hydro_generation(1)")
+            ]),
+            (
+                1,
+                "`@f * hydro_generation(1)`: product of LP variables is not linear (\"@f\" is the \
+                 named expression at expressions[0], which contains LP variables)"
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn an_unreferenced_body_with_a_misspelled_variable_is_rejected_at_its_declaration() {
+        assert_eq!(
+            declaration_rejection(&[
+                ("e", "hydro_generation(0)"),
+                ("typo", "2 * hydro_generaton(1) + @e")
+            ]),
+            (
+                1,
+                "`hydro_generaton(1)`: unknown variable name \"hydro_generaton\": not a recognised \
+                 LP variable name"
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn an_unreferenced_body_dividing_by_zero_is_rejected_at_its_declaration() {
+        assert_eq!(
+            declaration_rejection(&[
+                ("e", "hydro_generation(0)"),
+                ("zero", "hydro_generation(1) / (1 - 1)")
+            ]),
+            (
+                1,
+                "`hydro_generation(1) / (1 - 1)`: division by zero".to_owned()
+            )
+        );
+        assert_eq!(
+            declaration_rejection(&[("e", "hydro_generation(0)"), ("zero", "2 * @e / 0")]),
+            (1, "`2 * @e / 0`: division by zero".to_owned())
+        );
+    }
+
+    /// derived: `1e308 * @e` with `e = 1e308 * h0` folds `1e308 * 1e308` to `+inf`, in the
+    /// constraint and, through `f = 1e308 * @e`, inside the body of `f`.
+    #[test]
+    fn a_composition_error_names_the_declaration() {
+        let note =
+            "(\"@e\" is the named expression at expressions[0], which contains LP variables)";
+        let decls = [("e", "hydro_generation(1)")];
+        assert_eq!(
+            named_rejection(&decls, "@e * hydro_generation(0) <= 1"),
+            format!("`@e * hydro_generation(0)`: product of LP variables is not linear {note}")
+        );
+        assert_eq!(
+            named_rejection(&decls, "hydro_generation(0) / @e >= 0"),
+            format!(
+                "`hydro_generation(0) / @e`: division by an expression containing LP variables \
+                 {note}"
+            )
+        );
+        assert_eq!(
+            named_rejection(&[("e", "1e308 * hydro_generation(0)")], "1e308 * @e <= 1"),
+            "`1e308 * @e`: evaluates to a non-finite value (inf)"
+        );
+
+        let overflowing = [
+            ("e", "1e308 * hydro_generation(0)"),
+            ("f", "1e308 * @e"),
+            ("g", "@f + hydro_generation(1)"),
+        ];
+        let composing = "(composing \"@f\", the named expression at expressions[1])";
+        assert_eq!(
+            named_rejection(&overflowing, "@f <= 1"),
+            format!("`@f`: evaluates to a non-finite value (inf) {composing}")
+        );
+        assert_eq!(
+            named_rejection(&overflowing, "hydro_generation(2) + @g >= 0"),
+            format!("`@g`: evaluates to a non-finite value (inf) {composing}")
+        );
+        assert_eq!(
+            named_rejection(&[("e", "@e + hydro_generation(0)")], "@e <= 1"),
+            "`@e`: named-expression reference cycle detected"
+        );
+        assert_eq!(
+            named_rejection(
+                &[("ping", "@pong + hydro_generation(0)"), ("pong", "@ping")],
+                "hydro_generation(1) + @ping <= 1"
+            ),
+            "`@ping`: named-expression reference cycle detected"
+        );
+    }
+
+    /// derived: `e = h1 + 2 * h2`; `@p * @e` gives `h1` the scale itself, `p`, and `h2`
+    /// `p, 2, mul`, at `p = 3` equal to `3.0` and `6.0`; `@e * @p` gives `h2` `2, p, mul`; in
+    /// `h0 >= @p * @e` the right side moves left as `p, neg` and `p, 2, mul, neg` and the lower
+    /// endpoint is `+0.0`. Values cannot tell `p, 2, mul` from `2, p, mul`, so the programs are
+    /// also compared with constructor-built ones.
+    #[test]
+    fn a_parameter_may_scale_a_named_expression() {
+        let decls = [("e", "hydro_generation(1) + 2 * hydro_generation(2)")];
+        let scaled = named_relation(&decls, "@p * @e");
+        assert_eq!(scaled.terms, [(hg(1), p()), (hg(2), p() * lit(2.0))]);
+        assert_ne!(scaled.terms[1].1, lit(2.0) * p());
+        let values: Vec<u64> = scaled
+            .terms
+            .iter()
+            .map(|(_, c)| c.evaluate(|_| 3.0).to_bits())
+            .collect();
+        assert_eq!(values, [3.0_f64.to_bits(), 6.0_f64.to_bits()]);
+
+        assert_eq!(
+            named_relation(&decls, "@e * @p").terms,
+            [(hg(1), p()), (hg(2), lit(2.0) * p())]
+        );
+
+        let moved = named_relation(&decls, "hydro_generation(0) >= @p * @e");
+        assert_eq!(
+            moved.terms,
+            [(hg(0), lit(1.0)), (hg(1), -p()), (hg(2), -(p() * lit(2.0)))]
+        );
+        assert_eq!(literal_bits(moved.lower.as_ref()), Some(0.0_f64.to_bits()));
+    }
+
+    /// derived: `base = @p * h0` reaches `top` through `left` and `right`, so `@top` gives `h0`
+    /// the program `p, p, add`; `@base + @top` gives it `p, p, p, add, add`.
+    #[test]
+    fn each_body_is_lowered_once() {
+        let decls = [
+            ("top", "@left + @right"),
+            ("left", "@base"),
+            ("right", "@base"),
+            ("base", "@p * hydro_generation(0)"),
+        ];
+        let graph = with_named(&decls, |scope| {
+            scope
+                .named
+                .reference_graph()
+                .into_iter()
+                .map(|(name, refs)| (name.to_owned(), refs.join(" ")))
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            graph,
+            [
+                ("top".to_owned(), "left right".to_owned()),
+                ("left".to_owned(), "base".to_owned()),
+                ("right".to_owned(), "base".to_owned()),
+                ("base".to_owned(), String::new())
+            ]
+        );
+
+        let diamond = traced(&decls, "@top <= 1");
+        assert_eq!(diamond.result.unwrap().terms, [(hg(0), p() + p())]);
+        assert_eq!(diamond.lowerings, [1, 1, 1, 1]);
+        assert_eq!(diamond.peak_cached, 2);
+        assert!(diamond.cache_empty);
+
+        let shared = traced(&decls, "@base + @top <= 1");
+        let terms = shared.result.unwrap().terms;
+        assert_eq!(terms, [(hg(0), p() + (p() + p()))]);
+        assert_eq!(terms[0].1.op_count(), 5);
+        assert_eq!(shared.lowerings, [1, 1, 1, 1]);
+        assert!(shared.cache_empty);
+    }
+
+    /// derived: every level doubles a literal, `1.0 + 1.0 = 2.0` up to `2^59 + 2^59 = 2^60`,
+    /// each exact.
+    #[test]
+    fn a_literal_doubling_chain_folds_to_one_term() {
+        let chain = doubling_chain("hydro_generation(0)", 60);
+        let decls = borrowed(&chain);
+        let trace = traced(&decls, "@e60");
+        let terms = trace.result.unwrap().terms;
+        assert_eq!(terms.len(), 1);
+        assert_eq!(terms[0].0, hg(0));
+        assert_eq!(terms[0].1.op_count(), 1);
+        assert_eq!(
+            terms[0].1.as_literal().map(f64::to_bits),
+            Some(2.0_f64.powi(60).to_bits())
+        );
+        assert!(trace.lowerings.iter().all(|&n| n == 1));
+        assert!(trace.peak_cached <= 2);
+        assert!(trace.cache_empty);
+
+        let graph = with_named(&decls, |scope| {
+            let graph = scope.named.reference_graph();
+            (graph[1].0.to_owned(), graph[1].1.join(" "))
+        });
+        assert_eq!(graph, ("e1".to_owned(), "e0 e0".to_owned()));
+    }
+
+    /// derived: level `k` of the chain over `@a * h0` is `c, c, add` on level `k - 1`, so it
+    /// holds `2^(k+1) - 1` ops: `e15` holds 65535 and `e16` would hold 131071, the first above
+    /// the budget; `@e15 + @e15` would also hold 131071.
+    #[test]
+    fn a_parameter_doubling_chain_hits_the_budget_fast() {
+        let chain = doubling_chain("@a * hydro_generation(0)", 60);
+        let decls = borrowed(&chain);
+        let trace = traced(&decls, "@e60 <= 1");
+        assert_eq!(
+            trace.result.unwrap_err().render("@e60 <= 1"),
+            "`@e60`: named-expression reference \"@e60\" expands to more than 100000 coefficient \
+             operations; this indicates an exponential reference pattern (e.g. a doubling chain \
+             \"@e = @prev + @prev\")"
+        );
+        assert!(trace.lowerings[..=16].iter().all(|&n| n == 1));
+        assert!(trace.lowerings[17..].iter().all(|&n| n == 0));
+
+        let src = "@e15 + @e15 <= 1";
+        assert_eq!(
+            named_rejection(&decls, src),
+            "`@e15 + @e15`: expression expands to more than 100000 coefficient operations"
+        );
+    }
+
+    #[test]
+    fn an_unreferenced_doubling_chain_declares_fast() {
+        let chain = doubling_chain("@a * hydro_generation(0)", 60);
+        let decls = borrowed(&chain);
+        let trace = traced(&decls, "hydro_generation(0) <= 1");
+        assert_eq!(trace.result.unwrap().terms, [(hg(0), lit(1.0))]);
+        assert_eq!(trace.lowerings.len(), 61);
+        assert!(trace.lowerings.iter().all(|&n| n == 0));
+        assert!(trace.cache_empty);
+    }
+
+    /// derived: 1,000 distinct unit coefficients materialize to `1.0` each; scaled by `@p` each
+    /// is `p` itself, 1,000 ops in all.
+    #[test]
+    fn a_large_flat_expression_is_under_the_budget() {
+        let body = (0..1000)
+            .map(|id| format!("hydro_generation({id})"))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let decls = [("e", body.as_str())];
+        let expected: Vec<(VariableRef, u64)> =
+            (0..1000).map(|id| (hg(id), 1.0_f64.to_bits())).collect();
+
+        let src = "@e <= 1";
+        assert_eq!(
+            literal_bits_of(src, named_relation(&decls, src).terms),
+            expected
+        );
+        let direct = format!("{body} <= 1");
+        assert_eq!(literal_bits_of(&direct, relation(&direct).terms), expected);
+
+        let scaled = named_relation(&decls, "@p * @e <= 1").terms;
+        assert_eq!(scaled.len(), 1000);
+        assert!(
+            scaled
+                .iter()
+                .all(|(_, c)| c.as_param() == Some(EntityId(10)))
+        );
+    }
+
+    /// derived: `e200` sums 200 distinct unit coefficients, each `1.0` once materialized.
+    #[test]
+    fn a_linear_chain_keeps_at_most_two_bodies_cached() {
+        let mut chain = vec![("e1".to_owned(), "hydro_generation(1)".to_owned())];
+        for k in 2..=200 {
+            chain.push((
+                format!("e{k}"),
+                format!("@e{} + hydro_generation({k})", k - 1),
+            ));
+        }
+        let decls = borrowed(&chain);
+        let src = "@e200 <= 1";
+        let trace = traced(&decls, src);
+        let expected: Vec<(VariableRef, u64)> =
+            (1..=200).map(|id| (hg(id), 1.0_f64.to_bits())).collect();
+        assert_eq!(literal_bits_of(src, trace.result.unwrap().terms), expected);
+        assert!(trace.peak_cached <= 2, "peak {}", trace.peak_cached);
+        assert!(trace.lowerings.iter().all(|&n| n == 1));
+        assert!(trace.cache_empty);
+    }
+
+    /// derived: `e = h0 + 2 * h1` gives `h0` `1.0` and `h1` `2.0` under both constraints.
+    #[test]
+    fn an_evicted_body_is_lowered_again_for_the_next_constraint() {
+        let decls = [("e", "hydro_generation(0) + 2 * hydro_generation(1)")];
+        let src = "@e <= 1";
+        let (first, second) = with_named(&decls, |scope| {
+            let first = trace_in(scope, src);
+            let second = trace_in(scope, src);
+            (first, second)
+        });
+        for trace in [&first, &second] {
+            assert_eq!(trace.lowerings, [1]);
+            assert!(trace.cache_empty);
+        }
+        let first = first.result.unwrap();
+        assert_eq!(first, second.result.unwrap());
+        assert_eq!(
+            literal_bits_of(src, first.terms),
+            [(hg(0), 1.0_f64.to_bits()), (hg(1), 2.0_f64.to_bits())]
         );
     }
 }
