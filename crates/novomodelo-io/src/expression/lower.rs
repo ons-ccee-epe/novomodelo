@@ -15,7 +15,7 @@ use novomodelo_core::{EntityId, ScalarExpr, VariableRef, is_exact_zero};
 
 use super::Diagnostic;
 use super::catalog::{LineBusPairIndex, LinePairOrientation, variable_from_call};
-use super::parser::{AddOp, Expr, ExprKind, MulOp, parse};
+use super::parser::{AddOp, Expr, ExprKind, MulOp, RelOp, parse};
 
 /// The names an expression can read.
 pub(crate) struct Scope<'a> {
@@ -42,6 +42,73 @@ impl LinearForm {
             .filter(|(_, coefficient)| !coefficient.as_literal().is_some_and(is_exact_zero))
             .collect()
     }
+}
+
+/// A constraint's variables, moved to the left, and the remainder on each endpoint its
+/// relational operator targets.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LoweredRelation {
+    pub(crate) terms: Vec<(VariableRef, ScalarExpr)>,
+    pub(crate) lower: Option<ScalarExpr>,
+    pub(crate) upper: Option<ScalarExpr>,
+}
+
+/// Parses and lowers a constraint expression. A relation `L op R` moves every right-side
+/// variable left with a flipped sign and targets its endpoint(s) with `R.c - L.c`, reading a
+/// missing `R.c` as `literal(0.0)` and a missing `L.c` as nothing: a left-only constant becomes
+/// `0.0 - L.c`, never `-L.c` (which turns a `+0.0` constant into `-0.0`), and a relation with
+/// no constant still targets `literal(0.0)`. An expression without an operator targets no
+/// endpoint and cannot have a constant part.
+pub(crate) fn lower_relation(src: &str, scope: &Scope) -> Result<LoweredRelation, Diagnostic> {
+    let relation = parse(src)?;
+    let whole = 0..src.len();
+    let Some((op, rhs)) = relation.rhs else {
+        let form = lower_form(&relation.lhs, scope)?;
+        if form.constant.is_some() {
+            return Err(Diagnostic {
+                span: whole,
+                message: "an expression without a relational operator cannot have a constant \
+                          part; put the bound in generic_constraint_bounds.parquet or use <=, >= \
+                          or =="
+                    .to_owned(),
+            });
+        }
+        return Ok(LoweredRelation {
+            terms: form.into_terms(),
+            lower: None,
+            upper: None,
+        });
+    };
+
+    let left = lower_form(&relation.lhs, scope)?;
+    let right = lower_form(&rhs, scope)?;
+    let variables = combine(
+        LinearForm {
+            terms: left.terms,
+            constant: None,
+        },
+        LinearForm {
+            terms: right.terms,
+            constant: None,
+        },
+        &AddOp::Sub,
+        &whole,
+    )?;
+    let right_constant = right.constant.unwrap_or_else(|| ScalarExpr::literal(0.0));
+    let remainder = match left.constant {
+        Some(left_constant) => checked(right_constant - left_constant, &whole)?,
+        None => right_constant,
+    };
+    let (lower, upper) = match op {
+        RelOp::Le => (None, Some(remainder)),
+        RelOp::Ge => (Some(remainder), None),
+        RelOp::Eq => (Some(remainder.clone()), Some(remainder)),
+    };
+    Ok(LoweredRelation {
+        terms: variables.into_terms(),
+        lower,
+        upper,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,7 +408,9 @@ mod tests {
 
     use novomodelo_core::{EntityId, Line, ScalarExpr, VariableRef};
 
-    use super::{LinearForm, Scope, lower_form, lower_scalar_body};
+    use super::{
+        LinearForm, LoweredRelation, Scope, lower_form, lower_relation, lower_scalar_body,
+    };
     use crate::expression::Diagnostic;
     use crate::expression::catalog::build_line_bus_pair_index;
     use crate::expression::parser::{Expr, parse};
@@ -351,6 +420,8 @@ mod tests {
             ("a".to_owned(), EntityId(7)),
             ("b".to_owned(), EntityId(8)),
             ("c".to_owned(), EntityId(9)),
+            ("p".to_owned(), EntityId(10)),
+            ("q".to_owned(), EntityId(11)),
         ])
     }
 
@@ -518,8 +589,8 @@ mod tests {
         }
     }
 
-    /// Lowers one side under `params()` and a single line 5 running from bus 3 to bus 7.
-    fn lower_side(side: &Expr) -> Result<LinearForm, Diagnostic> {
+    /// Runs `f` under `params()` and a single line 5 running from bus 3 to bus 7.
+    fn with_scope<T>(f: impl FnOnce(&Scope) -> T) -> T {
         let params = params();
         let line = Line {
             id: EntityId(5),
@@ -535,13 +606,14 @@ mod tests {
             exchange_cost: 0.0,
         };
         let line_index = build_line_bus_pair_index(&[line]).unwrap();
-        lower_form(
-            side,
-            &Scope {
-                params: &params,
-                line_index: &line_index,
-            },
-        )
+        f(&Scope {
+            params: &params,
+            line_index: &line_index,
+        })
+    }
+
+    fn lower_side(side: &Expr) -> Result<LinearForm, Diagnostic> {
+        with_scope(|scope| lower_form(side, scope))
     }
 
     fn form(src: &str) -> LinearForm {
@@ -565,7 +637,14 @@ mod tests {
 
     /// Every coefficient of `src` as the bits of its folded literal.
     fn literal_terms(src: &str) -> Vec<(VariableRef, u64)> {
-        terms(src)
+        literal_bits_of(src, terms(src))
+    }
+
+    fn literal_bits_of(
+        src: &str,
+        terms: Vec<(VariableRef, ScalarExpr)>,
+    ) -> Vec<(VariableRef, u64)> {
+        terms
             .into_iter()
             .map(|(variable, coefficient)| {
                 let value = coefficient
@@ -987,6 +1066,10 @@ mod tests {
                 "{src:?}"
             );
         }
+        assert_eq!(
+            relation_rejection("hydro_generation(0) >= @p * @missing"),
+            format!("`@missing`: {}", unknown("missing"))
+        );
     }
 
     /// derived: the inner `1e308 * h0` holds `1e308`, and the outer `1e308 * 1e308` overflows
@@ -1483,5 +1566,313 @@ mod tests {
             }
         );
         assert_eq!(rhs.constant.as_ref().map(ScalarExpr::op_count), Some(5));
+    }
+
+    fn relation(src: &str) -> LoweredRelation {
+        with_scope(|scope| lower_relation(src, scope))
+            .unwrap_or_else(|d| panic!("{}", d.render(src)))
+    }
+
+    fn relation_rejection(src: &str) -> String {
+        with_scope(|scope| lower_relation(src, scope))
+            .unwrap_err()
+            .render(src)
+    }
+
+    fn relation_terms(src: &str) -> Vec<(VariableRef, u64)> {
+        literal_bits_of(src, relation(src).terms)
+    }
+
+    fn literal_bits(endpoint: Option<&ScalarExpr>) -> Option<u64> {
+        endpoint.and_then(ScalarExpr::as_literal).map(f64::to_bits)
+    }
+
+    fn p() -> ScalarExpr {
+        ScalarExpr::param(EntityId(10))
+    }
+
+    fn q() -> ScalarExpr {
+        ScalarExpr::param(EntityId(11))
+    }
+
+    /// derived: `h0 >= @p` targets the lower endpoint with `p` itself (one op), so at
+    /// `p = -0.0` it is `-0.0`; `h0 >= 2 * @p * @q - @a * @b + 5` keeps the right side's program
+    /// `2, p, mul, q, mul, a, b, mul, sub, 5, add` (11 ops), at `p = 3`, `q = 0.5`, `a = 2`,
+    /// `b = 0.25` equal to `((2.0 * 3.0) * 0.5 - 2.0 * 0.25) + 5.0 = 7.5`.
+    #[test]
+    fn a_bare_parameter_bound_keeps_its_single_leaf() {
+        let bare = relation("hydro_generation(0) >= @p");
+        assert_eq!(bare.terms, [(hg(0), lit(1.0))]);
+        let lower = bare.lower.unwrap();
+        assert_eq!(lower.as_param(), Some(EntityId(10)));
+        assert_eq!(lower.op_count(), 1);
+        assert_eq!(lower.evaluate(|_| -0.0).to_bits(), (-0.0_f64).to_bits());
+        assert_eq!(bare.upper, None);
+
+        let products = relation("hydro_generation(0) >= 2 * @p * @q - @a * @b + 5");
+        let lower = products.lower.unwrap();
+        assert_eq!(lower, lit(2.0) * p() * q() - a() * b() + lit(5.0));
+        assert_eq!(lower.op_count(), 11);
+        let value = lower.evaluate(|id| match id {
+            EntityId(10) => 3.0,
+            EntityId(11) => 0.5,
+            EntityId(7) => 2.0,
+            EntityId(8) => 0.25,
+            _ => panic!("unexpected parameter id {id:?}"),
+        });
+        assert_eq!(value.to_bits(), 7.5_f64.to_bits());
+        assert_eq!(products.upper, None);
+    }
+
+    /// derived: `h0 + 2 >= 5` is `5.0 - 2.0 = 3.0`; `h0 + 2 >= 10 - 73` is
+    /// `(10.0 - 73.0) - 2.0 = -65.0`; `@p * @q + h0 >= 0` is the program `0, p, q, mul, sub`
+    /// (5 ops), at `p = q = 0` equal to `0.0 - (0.0 * 0.0) = +0.0`; `h0 + 1e308 >= -1e308` is
+    /// `-1e308 - 1e308 = -inf`.
+    #[test]
+    fn constants_on_both_sides_subtract_right_minus_left() {
+        let folded = relation("hydro_generation(0) + 2 >= 5");
+        assert_eq!(
+            relation_terms("hydro_generation(0) + 2 >= 5"),
+            [(hg(0), 1.0_f64.to_bits())]
+        );
+        assert_eq!(literal_bits(folded.lower.as_ref()), Some(3.0_f64.to_bits()));
+        assert_eq!(folded.upper, None);
+
+        assert_eq!(
+            literal_bits(
+                relation("hydro_generation(0) + 2 >= 10 - 73")
+                    .lower
+                    .as_ref()
+            ),
+            Some((-65.0_f64).to_bits())
+        );
+
+        let product = relation("@p * @q + hydro_generation(0) >= 0")
+            .lower
+            .unwrap();
+        assert_eq!(product, lit(0.0) - p() * q());
+        assert_ne!(product, -(p() * q()));
+        assert_eq!(product.op_count(), 5);
+        assert_eq!(product.evaluate(|_| 0.0).to_bits(), 0.0_f64.to_bits());
+
+        let src = "hydro_generation(0) + 1e308 >= -1e308";
+        assert_eq!(
+            relation_rejection(src),
+            format!("`{src}`: evaluates to a non-finite value (-inf)")
+        );
+    }
+
+    /// derived: `@p * @q + h0 >= h1` is the program `0, p, q, mul, sub`, at `p = q = 0` equal to
+    /// `0.0 - 0.0 = +0.0`; `h0 + 0 <= h1` folds `0.0 - 0.0` to the literal `+0.0`;
+    /// `h0 - @a >= h1` is `0, a, neg, sub`, at `a = 0` equal to `0.0 - (-0.0) = +0.0` and at
+    /// `a = 1.5` to `1.5`; `10 + 2 * @a <= h1` is `0, 10, 2, a, mul, add, sub`.
+    #[test]
+    fn a_left_only_constant_is_subtracted_from_zero() {
+        let src = "@p * @q + hydro_generation(0) >= hydro_generation(1)";
+        let product = relation(src);
+        assert_eq!(
+            literal_bits_of(src, product.terms),
+            [(hg(0), 1.0_f64.to_bits()), (hg(1), (-1.0_f64).to_bits())]
+        );
+        let lower = product.lower.unwrap();
+        assert_eq!(lower, lit(0.0) - p() * q());
+        assert_ne!(lower, -(p() * q()));
+        assert_eq!(lower.evaluate(|_| 0.0).to_bits(), 0.0_f64.to_bits());
+        assert_eq!(product.upper, None);
+
+        let zero = relation("hydro_generation(0) + 0 <= hydro_generation(1)");
+        assert_eq!(literal_bits(zero.upper.as_ref()), Some(0.0_f64.to_bits()));
+        assert_eq!(zero.lower, None);
+
+        let negated = relation("hydro_generation(0) - @a >= hydro_generation(1)")
+            .lower
+            .unwrap();
+        assert_eq!(negated, lit(0.0) - -a());
+        assert_ne!(negated, a());
+        assert_eq!(negated.op_count(), 4);
+        assert_eq!(negated.evaluate(|_| 0.0).to_bits(), 0.0_f64.to_bits());
+        assert_eq!(negated.evaluate(|_| 1.5).to_bits(), 1.5_f64.to_bits());
+
+        let no_variable = relation("10 + 2 * @a <= hydro_generation(1)");
+        assert_eq!(no_variable.terms, [(hg(1), lit(-1.0))]);
+        assert_eq!(
+            no_variable.upper,
+            Some(lit(0.0) - (lit(10.0) + lit(2.0) * a()))
+        );
+    }
+
+    /// derived: with no constant on either side the targeted endpoint is the literal `+0.0`;
+    /// `h1` moves left at `-1.0`.
+    #[test]
+    fn a_relation_without_constants_targets_a_zero_remainder() {
+        let src = "hydro_generation(0) >= hydro_generation(1)";
+        let ge = relation(src);
+        assert_eq!(
+            relation_terms(src),
+            [(hg(0), 1.0_f64.to_bits()), (hg(1), (-1.0_f64).to_bits())]
+        );
+        assert_eq!(literal_bits(ge.lower.as_ref()), Some(0.0_f64.to_bits()));
+        assert_eq!(ge.upper, None);
+
+        let le = relation("hydro_generation(0) <= hydro_generation(1)");
+        assert_eq!(literal_bits(le.upper.as_ref()), Some(0.0_f64.to_bits()));
+        assert_eq!(le.lower, None);
+    }
+
+    /// derived: `h0 == 3` puts `3.0` on both endpoints; `h0 + 2 == h1` puts `0.0 - 2.0 = -2.0`
+    /// on both; `h0 == @p` puts `p` on both.
+    #[test]
+    fn equality_targets_both_endpoints() {
+        let three = relation("hydro_generation(0) == 3");
+        assert_eq!(literal_bits(three.lower.as_ref()), Some(3.0_f64.to_bits()));
+        assert_eq!(literal_bits(three.upper.as_ref()), Some(3.0_f64.to_bits()));
+
+        let moved = relation("hydro_generation(0) + 2 == hydro_generation(1)");
+        assert_eq!(
+            literal_bits(moved.lower.as_ref()),
+            Some((-2.0_f64).to_bits())
+        );
+        assert_eq!(
+            literal_bits(moved.upper.as_ref()),
+            Some((-2.0_f64).to_bits())
+        );
+
+        let parameter = relation("hydro_generation(0) == @p");
+        assert_eq!(parameter.lower, Some(p()));
+        assert_eq!(parameter.upper, Some(p()));
+    }
+
+    /// derived: `2 * h0 <= 3 * h0 + @a` gives `h0` the literal `2.0 - 3.0 = -1.0` and the upper
+    /// endpoint `a`; `t5 <= 0.87 * h140` gives `[1.0, -0.87]` and the upper endpoint `+0.0`;
+    /// `2 * @a * h0 <= 3 * @a * h0` gives `h0` the program `2, a, mul, 3, a, mul, sub` (7 ops),
+    /// at `a = 0.1` equal to `(2.0 * 0.1) - (3.0 * 0.1)`.
+    #[test]
+    fn right_side_variables_move_left_with_flipped_signs() {
+        let src = "2 * hydro_generation(0) <= 3 * hydro_generation(0) + @a";
+        assert_eq!(relation_terms(src), [(hg(0), (-1.0_f64).to_bits())]);
+        let merged = relation(src);
+        assert_eq!(
+            merged.upper.as_ref().and_then(ScalarExpr::as_param),
+            Some(EntityId(7))
+        );
+        assert_eq!(merged.lower, None);
+
+        let src = "thermal_generation(5) <= 0.87 * hydro_generation(140)";
+        assert_eq!(
+            relation_terms(src),
+            [(tg(5), 1.0_f64.to_bits()), (hg(140), (-0.87_f64).to_bits())]
+        );
+        assert_eq!(
+            literal_bits(relation(src).upper.as_ref()),
+            Some(0.0_f64.to_bits())
+        );
+
+        let repeated = relation("2 * @a * hydro_generation(0) <= 3 * @a * hydro_generation(0)");
+        assert_eq!(repeated.terms, [(hg(0), lit(2.0) * a() - lit(3.0) * a())]);
+        assert_eq!(repeated.terms[0].1.op_count(), 7);
+        assert_eq!(
+            repeated.terms[0].1.evaluate(|_| 0.1).to_bits(),
+            ((2.0_f64 * 0.1) - (3.0 * 0.1)).to_bits()
+        );
+    }
+
+    /// derived: `h0 - h0` and `h0` against `h0 + 5` both cancel to `1.0 - 1.0 = +0.0` and drop,
+    /// leaving `5.0`; `-0 * h1 - 0 * h1` is `-0.0 - 0.0 = -0.0`, an exact zero; `3 <= 5` has no
+    /// variable and the remainder `5.0 - 3.0 = 2.0`.
+    #[test]
+    fn cancelled_variables_leave_the_bound() {
+        for (src, upper) in [
+            ("hydro_generation(0) - hydro_generation(0) <= 5", 5.0),
+            ("hydro_generation(0) <= hydro_generation(0) + 5", 5.0),
+            (
+                "-0 * hydro_generation(1) - 0 * hydro_generation(1) <= 1",
+                1.0,
+            ),
+            ("3 <= 5", 2.0),
+        ] {
+            let lowered = relation(src);
+            assert!(lowered.terms.is_empty(), "{src:?}");
+            assert_eq!(
+                literal_bits(lowered.upper.as_ref()),
+                Some(f64::to_bits(upper)),
+                "{src:?}"
+            );
+            assert_eq!(lowered.lower, None, "{src:?}");
+        }
+    }
+
+    /// derived: `h0 + h1` without an operator keeps `[1.0, 1.0]` and targets no endpoint.
+    #[test]
+    fn an_operator_free_constant_is_rejected() {
+        for src in [
+            "hydro_generation(0) + 5",
+            "(hydro_generation(0) + 2)",
+            "hydro_generation(0) + 0",
+            "hydro_generation(0) + (hydro_generation(1) + 5)",
+            "2 * (hydro_generation(1) - 3)",
+            "3",
+            "@p * @q",
+        ] {
+            assert_eq!(
+                relation_rejection(src),
+                format!(
+                    "`{src}`: an expression without a relational operator cannot have a constant \
+                     part; put the bound in generic_constraint_bounds.parquet or use <=, >= or =="
+                ),
+                "{src:?}"
+            );
+        }
+
+        let src = "hydro_generation(0) + hydro_generation(1)";
+        assert_eq!(
+            relation_terms(src),
+            [(hg(0), 1.0_f64.to_bits()), (hg(1), 1.0_f64.to_bits())]
+        );
+        let free = relation(src);
+        assert_eq!((free.lower, free.upper), (None, None));
+    }
+
+    /// derived: `@p * @q * h0 <= 1` gives `h0` the program `p, q, mul`, at `p = 3`, `q = 0.5`
+    /// equal to `1.5`, and the upper endpoint `1.0`; `@p * @q + h0 >= 0` keeps `h0` at `1.0`
+    /// with the lower endpoint `0, p, q, mul, sub`.
+    #[test]
+    fn left_hand_parameter_products_are_accepted() {
+        let scaled = relation("@p * @q * hydro_generation(0) <= 1");
+        assert_eq!(scaled.terms, [(hg(0), p() * q())]);
+        assert_eq!(
+            scaled.terms[0]
+                .1
+                .evaluate(|id| if id == EntityId(10) { 3.0 } else { 0.5 })
+                .to_bits(),
+            1.5_f64.to_bits()
+        );
+        assert_eq!(literal_bits(scaled.upper.as_ref()), Some(1.0_f64.to_bits()));
+
+        let standalone = relation("@p * @q + hydro_generation(0) >= 0");
+        assert_eq!(standalone.terms, [(hg(0), lit(1.0))]);
+        assert_eq!(standalone.lower, Some(lit(0.0) - p() * q()));
+    }
+
+    /// derived: `h0 + (h1 + 5) <= 10` keeps `[1.0, 1.0]` and the upper endpoint
+    /// `10.0 - 5.0 = 5.0`; `2 * (h1 - 3) >= 0` gives `h1` the coefficient `2.0` and the lower
+    /// endpoint `0.0 - (2.0 * -3.0) = 6.0`.
+    #[test]
+    fn a_constant_inside_a_group_reaches_the_bound() {
+        let src = "hydro_generation(0) + (hydro_generation(1) + 5) <= 10";
+        assert_eq!(
+            relation_terms(src),
+            [(hg(0), 1.0_f64.to_bits()), (hg(1), 1.0_f64.to_bits())]
+        );
+        assert_eq!(
+            literal_bits(relation(src).upper.as_ref()),
+            Some(5.0_f64.to_bits())
+        );
+
+        let src = "2 * (hydro_generation(1) - 3) >= 0";
+        assert_eq!(relation_terms(src), [(hg(1), 2.0_f64.to_bits())]);
+        assert_eq!(
+            literal_bits(relation(src).lower.as_ref()),
+            Some(6.0_f64.to_bits())
+        );
     }
 }
