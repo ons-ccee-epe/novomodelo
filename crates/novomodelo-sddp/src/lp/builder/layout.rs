@@ -831,21 +831,16 @@ fn expression_is_block_independent(expression: &ConstraintExpression) -> bool {
         .all(|term| variable_ref_is_block_independent(&term.variable))
 }
 
-/// Whether a `block_id = None` bound over `expression` collapses to a single
-/// stage-level row: only when every term is block-independent in BOTH its variable
-/// ([`expression_is_block_independent`]) AND its coefficient. A term whose
-/// coefficient references a block-varying (`PerStageBlock`) parameter makes the
-/// expression block-dependent, so the collapsed single row cannot stand in for one
-/// arbitrary block's coefficient — it stays a per-block row set.
-fn expression_collapses_to_stage_level(
-    expression: &ConstraintExpression,
+/// A `block_id = None` bound collapses to one stage-level row only when every
+/// variable is block-independent and no parameter the constraint reads varies by block.
+fn constraint_collapses_to_stage_level(
+    constraint: &GenericConstraint,
     resolved: &ResolvedParameters,
 ) -> bool {
-    expression_is_block_independent(expression)
-        && !expression.terms.iter().any(|term| match term.coefficient {
-            CoefficientRef::Parameter(id) => resolved.is_block_varying(id),
-            CoefficientRef::Literal(_) => false,
-        })
+    expression_is_block_independent(&constraint.expression)
+        && !constraint
+            .parameter_ids()
+            .any(|id| resolved.is_block_varying(id))
 }
 
 /// Resolve an affine bound remainder to `f64`: `bound.constant` plus the sum of
@@ -941,25 +936,10 @@ fn useful_volume_bound_shift(
     found.then_some(shift)
 }
 
-/// Whether either affine bound on `constraint` references a block-varying
-/// (`PerStageBlock`) parameter. When true, the stage-level collapse is suppressed:
-/// a single collapsed row would resolve one arbitrary block's bound value, losing
-/// the per-block variation.
-fn bound_affine_is_block_varying(
-    constraint: &GenericConstraint,
-    resolved: &ResolvedParameters,
-) -> bool {
-    [&constraint.bound_lower, &constraint.bound_upper]
-        .into_iter()
-        .flatten()
-        .flat_map(AffineBound::params)
-        .any(|id| resolved.is_block_varying(id))
-}
-
 /// Enumerate active generic constraint rows and assign their slack column indices.
 ///
 /// One [`GenericConstraintRowEntry`] per active `(constraint, block)` pair, except
-/// a `block_id = None` bound over a block-independent expression, which collapses
+/// a `block_id = None` bound that [`constraint_collapses_to_stage_level`] collapses
 /// to a single stage-level row.
 fn enumerate_generic_constraint_rows(
     ctx: &TemplateBuildCtx<'_>,
@@ -988,8 +968,7 @@ fn enumerate_generic_constraint_rows(
             .bounds_for_stage(constraint_idx, stage.id);
 
         let collapse_stage_level =
-            expression_collapses_to_stage_level(&constraint.expression, resolved_parameters)
-                && !bound_affine_is_block_varying(constraint, resolved_parameters);
+            constraint_collapses_to_stage_level(constraint, resolved_parameters);
 
         for entry in bound_entries {
             #[expect(
@@ -2095,34 +2074,54 @@ mod collapse_stage_level_tests {
         }
     }
 
+    fn unbounded(expression: ConstraintExpression) -> GenericConstraint {
+        GenericConstraint {
+            id: EntityId(0),
+            name: "c".to_string(),
+            description: None,
+            expression,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
+        }
+    }
+
     #[test]
     fn block_varying_coefficient_suppresses_collapse() {
-        let e = expr(LinearTerm::parameter(EntityId(42), 1.0, hydro_storage()));
+        let c = unbounded(expr(LinearTerm::parameter(
+            EntityId(42),
+            1.0,
+            hydro_storage(),
+        )));
         assert!(
-            !expression_collapses_to_stage_level(&e, &resolved()),
+            !constraint_collapses_to_stage_level(&c, &resolved()),
             "a block-varying coefficient over a block-independent variable must not collapse"
         );
     }
 
     #[test]
     fn block_invariant_coefficient_still_collapses() {
-        let param = expr(LinearTerm::parameter(EntityId(43), 1.0, hydro_storage()));
-        let literal = expr(LinearTerm::literal(1.0, hydro_storage()));
+        let param = unbounded(expr(LinearTerm::parameter(
+            EntityId(43),
+            1.0,
+            hydro_storage(),
+        )));
+        let literal = unbounded(expr(LinearTerm::literal(1.0, hydro_storage())));
         let r = resolved();
-        assert!(expression_collapses_to_stage_level(&param, &r));
-        assert!(expression_collapses_to_stage_level(&literal, &r));
+        assert!(constraint_collapses_to_stage_level(&param, &r));
+        assert!(constraint_collapses_to_stage_level(&literal, &r));
     }
 
     #[test]
     fn block_dependent_variable_never_collapses() {
-        let e = expr(LinearTerm::literal(
+        let c = unbounded(expr(LinearTerm::literal(
             1.0,
             VariableRef::ThermalGeneration {
                 thermal_id: EntityId(0),
                 block_id: None,
             },
-        ));
-        assert!(!expression_collapses_to_stage_level(&e, &resolved()));
+        )));
+        assert!(!constraint_collapses_to_stage_level(&c, &resolved()));
     }
 
     fn constraint_with_refs(
@@ -2130,33 +2129,28 @@ mod collapse_stage_level_tests {
         upper_ref: Option<EntityId>,
     ) -> GenericConstraint {
         GenericConstraint {
-            id: EntityId(0),
-            name: "c".to_string(),
-            description: None,
-            expression: expr(LinearTerm::literal(1.0, hydro_storage())),
-            slack: None,
             bound_lower: lower_ref.map(AffineBound::single),
             bound_upper: upper_ref.map(AffineBound::single),
+            ..unbounded(expr(LinearTerm::literal(1.0, hydro_storage())))
         }
     }
 
     #[test]
-    fn bound_affine_block_varying_truth_table() {
+    fn a_block_varying_bound_parameter_suppresses_collapse() {
         let r = resolved();
-        // Slot 42 is block-varying, slot 43 broadcasts.
-        assert!(bound_affine_is_block_varying(
+        assert!(!constraint_collapses_to_stage_level(
             &constraint_with_refs(None, Some(EntityId(42))),
             &r
         ));
-        assert!(bound_affine_is_block_varying(
+        assert!(!constraint_collapses_to_stage_level(
             &constraint_with_refs(Some(EntityId(42)), None),
             &r
         ));
-        assert!(!bound_affine_is_block_varying(
+        assert!(constraint_collapses_to_stage_level(
             &constraint_with_refs(None, Some(EntityId(43))),
             &r
         ));
-        assert!(!bound_affine_is_block_varying(
+        assert!(constraint_collapses_to_stage_level(
             &constraint_with_refs(None, None),
             &r
         ));
@@ -2165,7 +2159,7 @@ mod collapse_stage_level_tests {
     /// A block-varying parameter reached through a multi-term affine bound (not
     /// just the `single` special case) still suppresses the collapse.
     #[test]
-    fn bound_affine_block_varying_detects_multi_term_reference() {
+    fn a_block_varying_multi_term_bound_suppresses_collapse() {
         let r = resolved();
         let mut constraint = constraint_with_refs(None, None);
         constraint.bound_upper = Some(AffineBound {
@@ -2173,7 +2167,7 @@ mod collapse_stage_level_tests {
             terms: vec![(2.0, EntityId(43)), (0.5, EntityId(42))],
             products: vec![],
         });
-        assert!(bound_affine_is_block_varying(&constraint, &r));
+        assert!(!constraint_collapses_to_stage_level(&constraint, &r));
     }
 
     #[test]

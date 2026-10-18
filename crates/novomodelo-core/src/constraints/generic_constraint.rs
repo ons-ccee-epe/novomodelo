@@ -618,6 +618,25 @@ pub struct GenericConstraint {
     pub bound_upper: Option<AffineBound>,
 }
 
+impl GenericConstraint {
+    /// Every scalar-parameter id this constraint reads directly: each term's
+    /// parameter coefficient in term order, then the lower bound's parameters,
+    /// then the upper bound's, with duplicates kept.
+    pub fn parameter_ids(&self) -> impl Iterator<Item = EntityId> + '_ {
+        let term_ids = self
+            .expression
+            .terms
+            .iter()
+            .filter_map(|term| match term.coefficient {
+                CoefficientRef::Parameter(id) => Some(id),
+                CoefficientRef::Literal(_) => None,
+            });
+        let lower_ids = self.bound_lower.iter().flat_map(AffineBound::params);
+        let upper_ids = self.bound_upper.iter().flat_map(AffineBound::params);
+        term_ids.chain(lower_ids).chain(upper_ids)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1398,6 +1417,71 @@ mod tests {
             bound.params().collect::<Vec<_>>(),
             vec![EntityId(3), EntityId(5), EntityId(6)]
         );
+    }
+
+    fn constraint_with(
+        terms: Vec<LinearTerm>,
+        bound_lower: Option<AffineBound>,
+        bound_upper: Option<AffineBound>,
+    ) -> GenericConstraint {
+        GenericConstraint {
+            id: EntityId(0),
+            name: "c".to_string(),
+            description: None,
+            expression: ConstraintExpression { terms },
+            slack: None,
+            bound_lower,
+            bound_upper,
+        }
+    }
+
+    fn thermal(id: i32) -> VariableRef {
+        VariableRef::ThermalGeneration {
+            thermal_id: EntityId(id),
+            block_id: None,
+        }
+    }
+
+    #[test]
+    fn parameter_ids_lists_terms_then_lower_then_upper_with_duplicates() {
+        let (id_p, id_q, id_r, id_s, id_t) = (
+            EntityId(1),
+            EntityId(2),
+            EntityId(3),
+            EntityId(4),
+            EntityId(5),
+        );
+        let constraint = constraint_with(
+            vec![
+                LinearTerm::parameter(id_p, 1.0, thermal(10)),
+                LinearTerm::literal(2.0, thermal(11)),
+                LinearTerm::parameter(id_q, 1.0, thermal(12)),
+                LinearTerm::parameter(id_p, 1.0, thermal(13)),
+            ],
+            Some(AffineBound {
+                constant: 0.0,
+                terms: vec![(1.0, id_r)],
+                products: vec![(1.0, id_s, id_t)],
+            }),
+            Some(AffineBound::single(id_p)),
+        );
+        assert_eq!(
+            constraint.parameter_ids().collect::<Vec<_>>(),
+            vec![id_p, id_q, id_p, id_r, id_s, id_t, id_p]
+        );
+    }
+
+    #[test]
+    fn parameter_ids_of_a_literal_only_constraint_is_empty() {
+        let constraint = constraint_with(
+            vec![
+                LinearTerm::literal(1.0, thermal(10)),
+                LinearTerm::literal(-3.0, thermal(11)),
+            ],
+            None,
+            None,
+        );
+        assert_eq!(constraint.parameter_ids().count(), 0);
     }
 
     #[test]

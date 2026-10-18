@@ -7,8 +7,7 @@
 use std::collections::HashMap;
 
 use novomodelo_core::{
-    AffineBound, CoefficientRef, ComputedParameter, EntityId, GenericConstraint, ParameterKind,
-    VariableRef, temporal::BlockMode,
+    ComputedParameter, EntityId, GenericConstraint, ParameterKind, VariableRef, temporal::BlockMode,
 };
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
@@ -175,7 +174,8 @@ pub(super) fn check_productivity_tag_pairing(data: &ParsedData, ctx: &mut Valida
         .collect();
 
     for constraint in &data.generic_constraints {
-        let mut tags: Vec<EnergyTag> = constraint_parameter_ids(constraint)
+        let mut tags: Vec<EnergyTag> = constraint
+            .parameter_ids()
             .filter_map(|id| computed.get(&id).copied())
             .collect();
         tags.sort_by_key(|t| (t.hydro_id, t.name));
@@ -234,22 +234,6 @@ pub(super) fn check_productivity_tag_pairing(data: &ParsedData, ctx: &mut Valida
             );
         }
     }
-}
-
-/// Every scalar-parameter id a constraint's expression coefficients or affine
-/// bounds reference.
-fn constraint_parameter_ids(constraint: &GenericConstraint) -> impl Iterator<Item = EntityId> + '_ {
-    let term_ids = constraint
-        .expression
-        .terms
-        .iter()
-        .filter_map(|term| match term.coefficient {
-            CoefficientRef::Parameter(id) => Some(id),
-            CoefficientRef::Literal(_) => None,
-        });
-    let lower_ids = constraint.bound_lower.iter().flat_map(AffineBound::params);
-    let upper_ids = constraint.bound_upper.iter().flat_map(AffineBound::params);
-    term_ids.chain(lower_ids).chain(upper_ids)
 }
 
 /// Which per-block storage boundary a term references, and the block selector.
