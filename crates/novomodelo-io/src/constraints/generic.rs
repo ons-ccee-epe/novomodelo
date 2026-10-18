@@ -425,8 +425,8 @@ mod tests {
         expr.params().collect()
     }
 
-    fn one_param_table() -> std::collections::HashMap<String, EntityId> {
-        let mut m = std::collections::HashMap::new();
+    fn one_param_table() -> HashMap<String, EntityId> {
+        let mut m = HashMap::new();
         m.insert("rho_eq".to_string(), EntityId(7));
         m.insert("rho".to_string(), EntityId(7));
         m

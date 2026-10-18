@@ -61,9 +61,6 @@ fn scalar_body_folds_literal_only_subexpressions() {
 /// 7.0`.
 #[test]
 fn scalar_body_keeps_the_authored_association() {
-    let a = || ScalarExpr::param(EntityId(7));
-    let lit = ScalarExpr::literal;
-
     let left = lowered("2 * @a * 3");
     assert_eq!(left.op_count(), 5);
     assert_eq!(left, (lit(2.0) * a()) * lit(3.0));
@@ -93,7 +90,7 @@ fn scalar_body_keeps_the_authored_association() {
     );
 
     let mixed = lowered("@a + @b * 2");
-    assert_eq!(mixed, a() + ScalarExpr::param(EntityId(8)) * lit(2.0));
+    assert_eq!(mixed, a() + b() * lit(2.0));
     assert_eq!(mixed.op_count(), 5);
     assert_eq!(
         mixed.params().collect::<Vec<_>>(),
