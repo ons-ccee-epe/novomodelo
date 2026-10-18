@@ -23,38 +23,6 @@ use crate::EntityId;
 #[cfg(feature = "serde")]
 use serde::Deserializer;
 
-/// Reference to a scalar coefficient in a linear term.
-///
-/// Allows constraint coefficients to be either a literal `f64` value known at
-/// input time, or a named parameter whose value is resolved later. The `Parameter`
-/// variant carries the [`EntityId`] of a [`ScalarParameter`] stored in the
-/// study's parameter collection.
-///
-/// # Examples
-///
-/// ```
-/// use novomodelo_core::{CoefficientRef, EntityId};
-///
-/// // A literal coefficient of 3.6:
-/// let literal = CoefficientRef::Literal(3.6);
-///
-/// // A parameter-backed coefficient referencing parameter ID 42:
-/// let param = CoefficientRef::Parameter(EntityId(42));
-///
-/// // CoefficientRef is Copy, so it can be used after moving:
-/// let a = CoefficientRef::Literal(1.0);
-/// let b = a;
-/// assert_eq!(a, b);
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum CoefficientRef {
-    /// A constant scalar value known at input parse time.
-    Literal(f64),
-    /// An indirect reference to a [`ScalarParameter`] by its entity ID.
-    Parameter(EntityId),
-}
-
 /// A Novomodelo-computed quantity indexed by hydro plant.
 ///
 /// Each variant names a scalar quantity that the resolver derives from hydro
@@ -464,7 +432,7 @@ impl<'de> serde::Deserialize<'de> for ParameterKind {
 mod tests {
     #[cfg(feature = "serde")]
     use super::ScalarParameter;
-    use super::{CoefficientRef, ComputedParameter, EntityId, ParameterKind};
+    use super::{ComputedParameter, EntityId, ParameterKind};
 
     #[test]
     fn computed_parameter_variant_coverage_is_exhaustive() {
@@ -586,13 +554,6 @@ mod tests {
                 values: vec![(1, 0.5), (2, 1.0), (3, 1.5)]
             }
         );
-    }
-
-    #[test]
-    fn coefficient_ref_copy_semantics() {
-        let a = CoefficientRef::Literal(1.0);
-        let b = a;
-        assert_eq!(a, b);
     }
 
     #[cfg(feature = "serde")]

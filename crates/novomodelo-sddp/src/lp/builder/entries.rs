@@ -1532,12 +1532,12 @@ mod assemble_csc_tests {
 )]
 mod parameter_resolution_tests {
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties, CoefficientRef,
-        ConstraintExpression, ContractBlockBounds, DeficitSegment, EntityId, GenericConstraint,
-        HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds, LineStagePenalties,
-        NcsStagePenalties, ParameterKind, PenaltiesCountsSpec, PenaltiesDefaults,
-        PumpingBlockBounds, ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties,
-        ScalarParameter, StageId, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties, ConstraintExpression,
+        ContractBlockBounds, DeficitSegment, EntityId, GenericConstraint, HydroBlockBounds,
+        HydroPenalties, HydroStageBounds, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
+        ParameterKind, PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
+        ResolvedGenericConstraintBounds, ResolvedPenalties, ScalarExpr, ScalarParameter, StageId,
+        SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
     use novomodelo_core::{LinearTerm, VariableRef};
     use novomodelo_stochastic::normal::precompute::PrecomputedNormal;
@@ -1841,7 +1841,7 @@ mod parameter_resolution_tests {
         .expect("per_stage_param_resolved: valid")
     }
 
-    /// Make a generic constraint with a single `Parameter` term over a thermal.
+    /// Make a generic constraint with a single `@param * scale` term over a thermal.
     fn parameter_constraint(
         constraint_id: EntityId,
         param_id: EntityId,
@@ -1853,14 +1853,13 @@ mod parameter_resolution_tests {
             name: format!("gc_{}", constraint_id.0),
             description: None,
             expression: ConstraintExpression {
-                terms: vec![LinearTerm::parameter(
-                    param_id,
-                    scale,
-                    VariableRef::ThermalGeneration {
+                terms: vec![LinearTerm {
+                    coefficient: ScalarExpr::param(param_id) * ScalarExpr::literal(scale),
+                    variable: VariableRef::ThermalGeneration {
                         thermal_id,
                         block_id: None,
                     },
-                )],
+                }],
             },
             slack: None,
             bound_lower: None,
@@ -1868,7 +1867,7 @@ mod parameter_resolution_tests {
         }
     }
 
-    /// Make a generic constraint with a single `Literal` term over a thermal.
+    /// Make a generic constraint with a single `coef * scale` literal term over a thermal.
     fn literal_constraint(
         constraint_id: EntityId,
         coef: f64,
@@ -1881,8 +1880,7 @@ mod parameter_resolution_tests {
             description: None,
             expression: ConstraintExpression {
                 terms: vec![LinearTerm {
-                    coefficient: CoefficientRef::Literal(coef),
-                    scale,
+                    coefficient: ScalarExpr::literal(coef) * ScalarExpr::literal(scale),
                     variable: VariableRef::ThermalGeneration {
                         thermal_id,
                         block_id: None,
@@ -1917,14 +1915,14 @@ mod parameter_resolution_tests {
     const GENERIC_ROW: usize = 1;
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Test 1: single stage, constant parameter, coefficient = param * scale * 1
+    // Test 1: single stage, constant parameter, coefficient = param * scale
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// A `CoefficientRef::Parameter` term is resolved against `ResolvedParameters`
-    /// at LP-build time.
+    /// A coefficient program reading a parameter is evaluated against
+    /// `ResolvedParameters` at LP-build time.
     ///
-    /// Fixture: EntityId(7) → 3.0 (constant), scale 2.0.
-    /// Expected CSC value: 3.0 * 2.0 * 1.0 = 6.0.
+    /// Fixture: EntityId(7) → 3.0 (constant), factor 2.0.
+    /// Expected CSC value: 3.0 * 2.0 = 6.0.
     #[test]
     fn parameter_coefficient_is_resolved_at_lp_build() {
         let param_id = EntityId(7);
@@ -1962,7 +1960,7 @@ mod parameter_resolution_tests {
     /// When the parameter has per-stage values, each stage template receives
     /// the stage-specific resolved coefficient.
     ///
-    /// Fixture: EntityId(7) → [3.0, 7.0, 11.0], scale 2.0.
+    /// Fixture: EntityId(7) → [3.0, 7.0, 11.0], factor 2.0.
     /// Expected CSC values: stage 0 → 6.0, stage 1 → 14.0, stage 2 → 22.0.
     #[test]
     fn parameter_coefficient_per_stage_changes_lp() {
@@ -2001,9 +1999,8 @@ mod parameter_resolution_tests {
     // Test 3: regression — Literal coefficients still work after wiring
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// `CoefficientRef::Literal(5.0)` with scale 3.0 must produce a CSC entry
-    /// of exactly `5.0 * 3.0 * 1.0 = 15.0`, unchanged by the parameter-resolution
-    /// wiring.
+    /// The literal program `5.0 * 3.0` folds to one literal and must produce a CSC
+    /// entry of exactly `15.0`, unchanged by the parameter-resolution wiring.
     #[test]
     fn literal_coefficient_still_works_after_wiring() {
         let thermal_id = EntityId(2);
@@ -3269,13 +3266,13 @@ mod pumping_water_tests {
 
     use novomodelo_core::{
         BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties, CascadeTopology,
-        CoefficientRef, ConstraintExpression, ContractBlockBounds, ContractType, DeficitSegment,
-        EnergyContract, EntityId, GenericConstraint, Hydro, HydroBlockBounds, HydroGenerationModel,
-        HydroPenalties, HydroStageBounds, HydroUnitGroup, Line, LineBlockBounds,
-        LineStagePenalties, LinearTerm, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
-        PenaltyBasis, PumpingBlockBounds, PumpingStation, ResolvedBounds,
-        ResolvedGenericConstraintBounds, ResolvedPenalties, SlackConfig, Stage, Thermal,
-        ThermalBlockBounds, ThermalStageBounds, VariableRef,
+        ConstraintExpression, ContractBlockBounds, ContractType, DeficitSegment, EnergyContract,
+        EntityId, GenericConstraint, Hydro, HydroBlockBounds, HydroGenerationModel, HydroPenalties,
+        HydroStageBounds, HydroUnitGroup, Line, LineBlockBounds, LineStagePenalties, LinearTerm,
+        NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis,
+        PumpingBlockBounds, PumpingStation, ResolvedBounds, ResolvedGenericConstraintBounds,
+        ResolvedPenalties, SlackConfig, Stage, Thermal, ThermalBlockBounds, ThermalStageBounds,
+        VariableRef,
     };
     use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
@@ -4343,14 +4340,13 @@ mod pumping_water_tests {
     /// `debug_assert!` firing — the mandatory tripwire's terminal condition.
     #[test]
     fn contracts_with_generic_constraint_assemble_without_debug_assert() {
-        let import_term = LinearTerm {
-            variable: VariableRef::ContractImport {
+        let import_term = LinearTerm::literal(
+            1.0,
+            VariableRef::ContractImport {
                 contract_id: EntityId(10),
                 block_id: None,
             },
-            coefficient: CoefficientRef::Literal(1.0),
-            scale: 1.0,
-        };
+        );
         let constraint = GenericConstraint {
             id: EntityId(1),
             name: "c-import-cap".to_string(),
@@ -4529,30 +4525,27 @@ mod pumping_water_tests {
             description: None,
             expression: ConstraintExpression {
                 terms: vec![
-                    LinearTerm {
-                        coefficient: CoefficientRef::Literal(1.0),
-                        scale: 1.0,
-                        variable: VariableRef::ThermalGeneration {
+                    LinearTerm::literal(
+                        1.0,
+                        VariableRef::ThermalGeneration {
                             thermal_id: EntityId(10),
                             block_id: None,
                         },
-                    },
-                    LinearTerm {
-                        coefficient: CoefficientRef::Literal(1.0),
-                        scale: 1.0,
-                        variable: VariableRef::LineExchange {
+                    ),
+                    LinearTerm::literal(
+                        1.0,
+                        VariableRef::LineExchange {
                             line_id: EntityId(100),
                             block_id: None,
                         },
-                    },
-                    LinearTerm {
-                        coefficient: CoefficientRef::Literal(1.0),
-                        scale: 1.0,
-                        variable: VariableRef::BusDeficit {
+                    ),
+                    LinearTerm::literal(
+                        1.0,
+                        VariableRef::BusDeficit {
                             bus_id: EntityId(2),
                             block_id: None,
                         },
-                    },
+                    ),
                 ],
             },
             slack: None,
@@ -7346,22 +7339,20 @@ mod pumping_water_tests {
             description: None,
             expression: ConstraintExpression {
                 terms: vec![
-                    LinearTerm {
-                        coefficient: CoefficientRef::Literal(1.0),
-                        scale: 1.0,
-                        variable: VariableRef::PumpingFlow {
+                    LinearTerm::literal(
+                        1.0,
+                        VariableRef::PumpingFlow {
                             station_id,
                             block_id: None,
                         },
-                    },
-                    LinearTerm {
-                        coefficient: CoefficientRef::Literal(1.0),
-                        scale: 1.0,
-                        variable: VariableRef::PumpingPower {
+                    ),
+                    LinearTerm::literal(
+                        1.0,
+                        VariableRef::PumpingPower {
                             station_id,
                             block_id: None,
                         },
-                    },
+                    ),
                 ],
             },
             slack: None,
@@ -7435,13 +7426,14 @@ mod pumping_water_tests {
     /// (`block_id = None`, stage 0).
     fn repeated_pumping_flow_entries(first: f64, second: f64) -> Vec<Vec<f64>> {
         let station_id = EntityId(10);
-        let flow_term = |coefficient: f64| LinearTerm {
-            coefficient: CoefficientRef::Literal(coefficient),
-            scale: 1.0,
-            variable: VariableRef::PumpingFlow {
-                station_id,
-                block_id: None,
-            },
+        let flow_term = |coefficient: f64| {
+            LinearTerm::literal(
+                coefficient,
+                VariableRef::PumpingFlow {
+                    station_id,
+                    block_id: None,
+                },
+            )
         };
         let constraint = GenericConstraint {
             id: EntityId(7),
@@ -7737,14 +7729,13 @@ mod pumping_water_tests {
             name: "gc_range".to_string(),
             description: None,
             expression: ConstraintExpression {
-                terms: vec![LinearTerm {
-                    coefficient: CoefficientRef::Literal(1.0),
-                    scale: 1.0,
-                    variable: VariableRef::PumpingFlow {
+                terms: vec![LinearTerm::literal(
+                    1.0,
+                    VariableRef::PumpingFlow {
                         station_id,
                         block_id: None,
                     },
-                }],
+                )],
             },
             slack: Some(SlackConfig {
                 penalty,

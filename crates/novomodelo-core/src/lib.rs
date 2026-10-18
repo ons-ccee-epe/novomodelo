@@ -56,8 +56,7 @@ pub use model::{parameters, penalty, resolved, scalar_expr, scenario, temporal};
 pub use constraints::{generic_constraint, initial_conditions, training_event};
 
 pub use constraints::generic_constraint::{
-    AffineBound, ConstraintExpression, GenericConstraint, LinearTerm, PenaltyBasis, SlackConfig,
-    VariableRef,
+    ConstraintExpression, GenericConstraint, LinearTerm, PenaltyBasis, SlackConfig, VariableRef,
 };
 pub use constraints::initial_conditions::{
     AnticipatedCommitmentHistory, HydroPastDefluence, HydroStorage, InitialConditions,
@@ -77,7 +76,7 @@ pub use entities::{
 pub use entity_id::EntityId;
 pub use error::ValidationError;
 pub use model::horizon::HorizonGraph;
-pub use model::parameters::{CoefficientRef, ComputedParameter, ParameterKind, ScalarParameter};
+pub use model::parameters::{ComputedParameter, ParameterKind, ScalarParameter};
 pub use model::penalty::{
     GlobalPenaltyDefaults, HydroPenaltyOverrides, resolve_bus_deficit_segments,
     resolve_bus_excess_cost, resolve_hydro_penalties, resolve_line_exchange_cost,

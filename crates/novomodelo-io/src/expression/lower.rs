@@ -36,11 +36,13 @@ pub(crate) struct Scope<'a> {
 
 /// The named expressions of one file, parsed, typed and checked, but expanded only where a
 /// constraint references them.
+#[derive(Debug)]
 pub(crate) struct NamedTable {
     declarations: Vec<Declaration>,
     index: HashMap<String, usize>,
 }
 
+#[derive(Debug)]
 struct Declaration {
     name: String,
     body: Expr,
@@ -55,10 +57,10 @@ impl NamedTable {
     ///
     /// # Errors
     ///
-    /// Returns the index of the first declaration whose body does not parse, contains a
-    /// relational operator, reads an unknown name, is not linear, reads no LP variable, or
-    /// fails to lower on its own (a variable call that does not resolve, a fold that divides by
-    /// zero or is not finite), with a diagnostic on that body's source.
+    /// Returns the index of the first declaration, in file order, whose body does not parse,
+    /// contains a relational operator, reads an unknown name, is not linear, reads no LP
+    /// variable, or fails to lower on its own (a variable call that does not resolve, a fold
+    /// that divides by zero or is not finite), with a diagnostic on that body's source.
     pub(crate) fn declare(
         decls: &[(&str, &str)],
         params: &HashMap<String, EntityId>,
@@ -69,20 +71,25 @@ impl NamedTable {
             .enumerate()
             .map(|(j, (name, _))| ((*name).to_owned(), j))
             .collect();
-        let declarations = decls
-            .iter()
-            .enumerate()
-            .map(|(j, &(name, source))| {
-                let body = declared_body(name, source, params, &index).map_err(|d| (j, d))?;
-                let mut references = Vec::new();
-                collect_named_references(&body, &index, &mut references);
-                Ok(Declaration {
-                    name: name.to_owned(),
-                    body,
-                    references,
-                })
-            })
-            .collect::<Result<_, _>>()?;
+        let mut declarations = Vec::with_capacity(decls.len());
+        let mut unparsed = None;
+        for (j, &(name, source)) in decls.iter().enumerate() {
+            match declared_body(name, source, params, &index) {
+                Ok(body) => {
+                    let mut references = Vec::new();
+                    collect_named_references(&body, &index, &mut references);
+                    declarations.push(Declaration {
+                        name: name.to_owned(),
+                        body,
+                        references,
+                    });
+                }
+                Err(fault) => {
+                    unparsed = Some((j, fault));
+                    break;
+                }
+            }
+        }
         let table = NamedTable {
             declarations,
             index,
@@ -100,7 +107,7 @@ impl NamedTable {
                     .map_err(|fault| (j, fault.into_diagnostic()))?;
             }
         }
-        Ok(table)
+        unparsed.map_or(Ok(table), Err)
     }
 
     /// Each declaration in order with the named references of its body in source order,
@@ -218,6 +225,7 @@ enum Type {
 
 /// Parses `src` and lowers it as the body of a scalar parameter, which has no relational
 /// operator.
+#[cfg_attr(not(test), expect(dead_code, reason = "no loader reads it yet"))]
 pub(crate) fn lower_scalar_body(
     src: &str,
     params: &HashMap<String, EntityId>,
@@ -2188,8 +2196,9 @@ mod tests {
         assert_eq!(products.upper, None);
     }
 
-    /// derived: each expected value replays the bound fold of `rhs_normalize::normalize`, `0.0` plus each parameter term `coef * leaf` and then each product
-    /// `scale * left * right`, right side first and left side negated: `h0 <= -2 * @p * @q` is `0.0 + (-2.0 * p) * q`, `h0 >= h1 - @p * @q` is
+    /// derived: each expected value replays the remainder fold, `0.0` plus each parameter term
+    /// `coef * leaf` and then each product `scale * left * right`, right side first and left
+    /// side negated: `h0 <= -2 * @p * @q` is `0.0 + (-2.0 * p) * q`, `h0 >= h1 - @p * @q` is
     /// `0.0 + (-1.0 * p) * q`, `h0 <= @a + @b` is `(0.0 + 1.0 * a) + 1.0 * b`, `h0 <= -@a` is
     /// `0.0 + -1.0 * a`, `h0 <= 2 * @a` is `0.0 + 2.0 * a`, `h0 >= @p` is `0.0 + 1.0 * p` and
     /// `h0 + @a >= @b` is `(0.0 + 1.0 * b) + -1.0 * a`; the `+0.0` start absorbs a `-0.0` sum,
@@ -2804,6 +2813,22 @@ mod tests {
                 1,
                 "`hydro_generaton(1)`: unknown variable name \"hydro_generaton\": not a recognised \
                  LP variable name"
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn declare_reports_the_first_failing_declaration_in_file_order() {
+        assert_eq!(
+            declaration_rejection(&[
+                ("lowering", "invalid_var(0)"),
+                ("syntax", "hydro_generation(")
+            ]),
+            (
+                0,
+                "`invalid_var(0)`: unknown variable name \"invalid_var\": not a recognised LP \
+                 variable name"
                     .to_owned()
             )
         );

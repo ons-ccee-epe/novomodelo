@@ -443,8 +443,8 @@ fn boundary_is_interior(k: usize, num_blocks: usize) -> bool {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use novomodelo_core::{
-        AffineBound, CoefficientRef, ComputedParameter, ConstraintExpression, EntityId,
-        GenericConstraint, LinearTerm, ParameterKind, ScalarParameter, VariableRef,
+        ComputedParameter, ConstraintExpression, EntityId, GenericConstraint, LinearTerm,
+        ParameterKind, ScalarExpr, ScalarParameter, VariableRef,
         temporal::{Block, BlockMode},
     };
 
@@ -980,8 +980,7 @@ mod tests {
 
     fn param_term(coefficient_id: EntityId) -> LinearTerm {
         LinearTerm {
-            coefficient: CoefficientRef::Parameter(coefficient_id),
-            scale: 1.0,
+            coefficient: ScalarExpr::param(coefficient_id),
             variable: VariableRef::HydroTurbined {
                 hydro_id: EntityId::from(1),
                 block_id: None,
@@ -1003,7 +1002,7 @@ mod tests {
             },
             slack: None,
             bound_lower: None,
-            bound_upper: Some(AffineBound::single(upper_bound_param)),
+            bound_upper: Some(ScalarExpr::param(upper_bound_param)),
         }
     }
 

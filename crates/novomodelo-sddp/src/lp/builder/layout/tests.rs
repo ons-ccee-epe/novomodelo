@@ -8,13 +8,13 @@ use std::ops::Range;
 
 use chrono::NaiveDate;
 use novomodelo_core::{
-    AffineBound, Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, CascadeTopology,
-    ConstraintExpression, ContractBlockBounds, ContractType, EnergyContract, EntityId,
-    FillingConfig, GenericConstraint, Hydro, HydroBlockBounds, HydroGenerationModel,
-    HydroStageBounds, LineBlockBounds, LinearTerm, NoiseMethod, NonControllableSource,
-    PenaltyBasis, PumpingBlockBounds, PumpingStation, ResolvedBounds,
-    ResolvedGenericConstraintBounds, ScenarioSourceConfig, SlackConfig, Stage, StageRiskConfig,
-    StageStateConfig, Thermal, ThermalBlockBounds, ThermalStageBounds, VariableRef,
+    Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, CascadeTopology, ConstraintExpression,
+    ContractBlockBounds, ContractType, EnergyContract, EntityId, FillingConfig, GenericConstraint,
+    Hydro, HydroBlockBounds, HydroGenerationModel, HydroStageBounds, LineBlockBounds, LinearTerm,
+    NoiseMethod, NonControllableSource, PenaltyBasis, PumpingBlockBounds, PumpingStation,
+    ResolvedBounds, ResolvedGenericConstraintBounds, ScalarExpr, ScenarioSourceConfig, SlackConfig,
+    Stage, StageRiskConfig, StageStateConfig, Thermal, ThermalBlockBounds, ThermalStageBounds,
+    VariableRef,
 };
 
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
@@ -102,7 +102,7 @@ impl ZeroEntityFixtures {
                 penalty_basis: PenaltyBasis::PerHour,
             }),
             bound_lower: None,
-            bound_upper: Some(AffineBound::single(EntityId(42))),
+            bound_upper: Some(ScalarExpr::param(EntityId(42))),
         }];
         let id_map: HashMap<i32, usize> = [(5, 0)].into_iter().collect();
         self.base.resolved_generic_bounds = ResolvedGenericConstraintBounds::new(
@@ -127,11 +127,7 @@ impl ZeroEntityFixtures {
             expression: ConstraintExpression { terms: vec![] },
             slack: None,
             bound_lower: None,
-            bound_upper: Some(AffineBound {
-                constant: -5.0,
-                terms: vec![],
-                products: vec![],
-            }),
+            bound_upper: Some(ScalarExpr::literal(-5.0)),
         }];
         let id_map: HashMap<i32, usize> = [(5, 0)].into_iter().collect();
         self.base.resolved_generic_bounds = ResolvedGenericConstraintBounds::new(
@@ -835,12 +831,12 @@ fn useful_volume_fold_uses_entity_physical_v_lo_not_per_stage_operative_bounds()
     );
 }
 
-/// The fold uses the EFFECTIVE coefficient `resolved_coeff * term.scale` — the
-/// same value `fill_generic_constraint_entries` prices the storage column at
+/// The fold uses the EVALUATED coefficient program (`@p * 2.5` here) — the same
+/// value `fill_generic_constraint_entries` prices the storage column at
 /// (`resolve_variable_ref` resolves a useful-volume variant at multiplier
-/// `1.0`), not the raw resolved coefficient alone.
+/// `1.0`), not the bare resolved parameter alone.
 #[test]
-fn useful_volume_fold_effective_coefficient_includes_term_scale() {
+fn useful_volume_fold_uses_the_evaluated_coefficient_program() {
     let mut fixtures = UsefulVolumeFixtures::new(1, 1);
     let h = EntityId(1);
     fixtures.base.hydros[0].min_storage_hm3 = 3.0;
@@ -850,14 +846,13 @@ fn useful_volume_fold_effective_coefficient_includes_term_scale() {
         cost_scale_factor: 1_000_000.0,
     };
     fixtures.install_constraint(
-        vec![LinearTerm::parameter(
-            EntityId(9),
-            2.5,
-            VariableRef::HydroUsefulVolumeFinal {
+        vec![LinearTerm {
+            coefficient: ScalarExpr::param(EntityId(9)) * ScalarExpr::literal(2.5),
+            variable: VariableRef::HydroUsefulVolumeFinal {
                 hydro_id: h,
                 block_id: None,
             },
-        )],
+        }],
         vec![(0, None, Some(1.0), None)],
     );
     let ctx = fixtures.make_ctx();
@@ -868,7 +863,7 @@ fn useful_volume_fold_effective_coefficient_includes_term_scale() {
     assert_eq!(
         row.bound_lower.expect("lower present").to_bits(),
         31.0_f64.to_bits(),
-        "1.0 + (4.0 resolved * 2.5 scale) * 3.0 V_lo = 1 + 10*3 = 31"
+        "1.0 + (4.0 resolved * 2.5) * 3.0 V_lo = 1 + 10*3 = 31"
     );
 }
 

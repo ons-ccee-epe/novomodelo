@@ -52,6 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from stderr must read stdout instead. `--color` now applies to both streams.
 - The training gap in the progress lines and the training summary is printed
   with 5 decimals instead of 1, so small gaps no longer round to `0.0%`.
+- A generic constraint written without a relational operator now drops a
+  variable whose coefficient is exactly zero, such as `0 * x` or `x - x`, as a
+  relation already did. When every remaining variable is stage-level, the row
+  now collapses to one stage-level row, so under `"penalty_basis": "per_unit"` a
+  violation of it costs the penalty once instead of once per block.
 
 ### Fixed
 

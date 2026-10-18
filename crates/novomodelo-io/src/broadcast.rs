@@ -339,39 +339,39 @@ mod tests {
         assert_eq!(restored, system);
     }
 
-    /// A generic constraint's affine bound remainder (`bound_upper`) rides the
-    /// constraint's derived serde through the `System` postcard wire — there is no
-    /// hand-written mirror for `GenericConstraint`, so the restored System must equal
-    /// the original. Uses a genuine multi-component remainder (a nonzero constant, a
-    /// scaled term and a parameter product), not just the `single` special case, to
-    /// prove the whole shape round-trips.
+    /// A generic constraint's coefficient and bound programs ride the constraint's derived
+    /// serde through the `System` postcard wire — there is no hand-written mirror for
+    /// `GenericConstraint`, so the restored System must equal the original. The term
+    /// coefficient is `2 * @p7` and `bound_upper` is `12 + 0.5 * @p7 + 0.25 * @p7 * @p8`: a
+    /// literal, a scaled parameter and a parameter product, so every op kind of the program
+    /// encoding crosses the wire.
     #[test]
     fn test_round_trip_generic_constraint_bound_ref() {
         use novomodelo_core::{
-            AffineBound, ConstraintExpression, GenericConstraint, LinearTerm, VariableRef,
+            ConstraintExpression, GenericConstraint, LinearTerm, ScalarExpr, VariableRef,
         };
 
+        let param = |id| ScalarExpr::param(EntityId(id));
+        let bound = ScalarExpr::literal(12.0)
+            + ScalarExpr::literal(0.5) * param(7)
+            + ScalarExpr::literal(0.25) * param(7) * param(8);
         let gc = GenericConstraint {
             id: EntityId(0),
             name: "demand_cap".to_string(),
             description: None,
             expression: ConstraintExpression {
-                terms: vec![LinearTerm::literal(
-                    1.0,
-                    VariableRef::HydroGeneration {
+                terms: vec![LinearTerm {
+                    coefficient: ScalarExpr::literal(2.0) * param(7),
+                    variable: VariableRef::HydroGeneration {
                         hydro_id: EntityId(1),
                         block_id: None,
                         bus_id: None,
                     },
-                )],
+                }],
             },
             slack: None,
             bound_lower: None,
-            bound_upper: Some(AffineBound {
-                constant: 12.0,
-                terms: vec![(0.5, EntityId(7))],
-                products: vec![(0.25, EntityId(7), EntityId(8))],
-            }),
+            bound_upper: Some(bound.clone()),
         };
 
         let system = SystemBuilder::new()
@@ -387,12 +387,8 @@ mod tests {
         assert_eq!(restored, system);
         assert_eq!(
             restored.generic_constraints()[0].bound_upper,
-            Some(AffineBound {
-                constant: 12.0,
-                terms: vec![(0.5, EntityId(7))],
-                products: vec![(0.25, EntityId(7), EntityId(8))],
-            }),
-            "affine bound remainder must survive broadcast round-trip"
+            Some(bound),
+            "bound program must survive broadcast round-trip"
         );
     }
 

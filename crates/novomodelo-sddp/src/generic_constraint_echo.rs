@@ -313,7 +313,7 @@ fn bus_label(bus_id: Option<EntityId>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use novomodelo_core::{ConstraintExpression, LinearTerm, SlackConfig, StageId};
+    use novomodelo_core::{ConstraintExpression, LinearTerm, ScalarExpr, SlackConfig, StageId};
 
     use crate::ResolvedParameters;
 
@@ -539,15 +539,18 @@ mod tests {
         assert_eq!(r.slack_penalty_basis, None);
     }
 
-    /// A `Parameter(id)` term resolves to `resolved.get(id, stage, block) * scale`,
-    /// matching `fill_generic_constraint_entries`, at each stage.
+    /// A `param * scale` coefficient resolves to `resolved.get(id, stage, block) *
+    /// scale`, matching `fill_generic_constraint_entries`, at each stage.
     #[test]
     fn parameter_coefficient_resolves_like_lp() {
         let scale = 2.5;
         let constraints = vec![constraint(
             1,
             "p",
-            vec![LinearTerm::parameter(EntityId(42), scale, thermal(0))],
+            vec![LinearTerm {
+                coefficient: ScalarExpr::param(EntityId(42)) * ScalarExpr::literal(scale),
+                variable: thermal(0),
+            }],
         )];
         let entries = vec![
             vec![entry(0, 1, 0, true, Some(0.0), None, None)],
@@ -585,11 +588,13 @@ mod tests {
     /// a single stage-level one.
     #[test]
     fn parameter_coefficient_reads_the_rows_own_block() {
-        let scale = 1.0;
         let constraints = vec![constraint(
             1,
             "per_block",
-            vec![LinearTerm::parameter(EntityId(42), scale, thermal(0))],
+            vec![LinearTerm {
+                coefficient: ScalarExpr::param(EntityId(42)),
+                variable: thermal(0),
+            }],
         )];
         // One stage, two per-block rows (is_stage_level = false) at blocks 0 and 1.
         let entries = vec![vec![

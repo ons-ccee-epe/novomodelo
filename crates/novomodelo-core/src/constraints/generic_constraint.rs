@@ -68,8 +68,8 @@
 //! assert_eq!(gc.expression.terms.len(), 2);
 //! ```
 
-use crate::CoefficientRef;
 use crate::EntityId;
+use crate::ScalarExpr;
 
 /// Reference to a single LP variable in a generic constraint expression.
 ///
@@ -326,41 +326,24 @@ pub enum VariableRef {
     },
 }
 
-/// One term in a linear constraint expression: `coefficient * scale * variable`.
+/// One term in a linear constraint expression: `coefficient * variable`.
 ///
-/// The LP coefficient is `resolve(coefficient, stage) * scale`, the
-/// stage-resolved scalar for a `Parameter` or the literal value for a `Literal`.
+/// The coefficient is a program that setup evaluates per study stage and block.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LinearTerm {
-    /// Coefficient reference, resolved to a scalar per stage at LP build time.
-    pub coefficient: CoefficientRef,
-    /// Multiplicative scale applied after the coefficient is resolved.
-    pub scale: f64,
+    /// Coefficient program, evaluated per study stage and block.
+    pub coefficient: ScalarExpr,
     /// The LP variable being referenced.
     pub variable: VariableRef,
 }
 
 impl LinearTerm {
-    /// Construct a literal-coefficient `LinearTerm` with `scale = 1.0`.
+    /// Construct a literal-coefficient `LinearTerm`.
     #[must_use]
     pub fn literal(coef: f64, variable: VariableRef) -> Self {
         Self {
-            coefficient: CoefficientRef::Literal(coef),
-            scale: 1.0,
-            variable,
-        }
-    }
-
-    /// Construct a named-parameter-coefficient `LinearTerm`.
-    ///
-    /// `scale` carries the literal multiplier from the expression (e.g. `2.5`
-    /// for `"2.5 * @rho_eq * x"`, or `sign` for `"@rho_eq * x"`).
-    #[must_use]
-    pub fn parameter(id: EntityId, scale: f64, variable: VariableRef) -> Self {
-        Self {
-            coefficient: CoefficientRef::Parameter(id),
-            scale,
+            coefficient: ScalarExpr::literal(coef),
             variable,
         }
     }
@@ -377,13 +360,13 @@ pub struct ConstraintExpression {
 }
 
 impl ConstraintExpression {
-    /// Sort `terms` into the content-derived canonical order ([`canonical_term_key`]),
-    /// so the flattened order is a pure function of the terms — independent of how the
-    /// expression was authored or the order references were substituted in. Upholds the
-    /// declaration-order-invariance contract: two expressions with the same terms in
-    /// different orders converge to the same term sequence.
+    /// Sort `terms` by [`VariableRef`] into the canonical order, so the flattened order is a
+    /// pure function of the variables, independent of how the expression was authored. The
+    /// sort is stable, so terms on one variable keep their authored order; a loaded
+    /// constraint has each variable once.
     pub fn canonicalize(&mut self) {
-        self.terms.sort_by_key(canonical_term_key);
+        self.terms
+            .sort_by_key(|term| canonical_variable_key(&term.variable));
     }
 }
 
@@ -485,75 +468,6 @@ fn bus_sentinel(bus_id: Option<EntityId>) -> i64 {
     bus_id.map_or(-1, |b| i64::from(b.0))
 }
 
-/// Total-order sort key over a [`LinearTerm`], a pure function of content: variable
-/// key, then coefficient kind (`Literal` = 0 before `Parameter` = 1) and its payload
-/// (`to_bits` / entity id), then `scale.to_bits`. `to_bits` gives exact float
-/// ordering; ties occur only between fully-identical terms, where the order is
-/// immaterial to the emitted bytes.
-fn canonical_term_key(term: &LinearTerm) -> ((u8, i32, i64, i64), u8, u64, u64) {
-    let (coef_kind, coef_payload) = match term.coefficient {
-        CoefficientRef::Literal(v) => (0, v.to_bits()),
-        CoefficientRef::Parameter(id) => (1, u64::from(id.0.cast_unsigned())),
-    };
-    (
-        canonical_variable_key(&term.variable),
-        coef_kind,
-        coef_payload,
-        term.scale.to_bits(),
-    )
-}
-
-/// A generic constraint's symbolic bound endpoint: `constant + Σ coefᵢ·@paramᵢ + Σ scaleⱼ·@leftⱼ·@rightⱼ`.
-///
-/// Each `(coef, param_id)` term resolves through `param_id`'s `(stage, block)`
-/// axis and is summed with `constant`. Each `(scale, left, right)` product
-/// resolves both parameters and multiplies them. [`AffineBound::single`] is the
-/// single-`@name`-ref special case: `constant = 0.0` and one term at
-/// coefficient `1.0`, which resolves to exactly the named parameter's value
-/// (`0.0 + 1.0 * x == x` in `f64`).
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct AffineBound {
-    /// The constant term of the affine remainder.
-    pub constant: f64,
-    /// Ordered `(coefficient, parameter_id)` terms summed onto `constant`.
-    pub terms: Vec<(f64, EntityId)>,
-    /// Ordered `(scale, left_param_id, right_param_id)` product terms.
-    /// Each product resolves to `scale * resolve(left) * resolve(right)`.
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub products: Vec<(f64, EntityId, EntityId)>,
-}
-
-impl AffineBound {
-    /// A single named-parameter reference: `constant = 0.0`, one term at coefficient `1.0`.
-    #[must_use]
-    pub fn single(id: EntityId) -> Self {
-        Self {
-            constant: 0.0,
-            terms: vec![(1.0, id)],
-            products: vec![],
-        }
-    }
-
-    /// Every parameter id the bound reads: each term's id, then both operands of
-    /// each product.
-    pub fn params(&self) -> impl Iterator<Item = EntityId> + '_ {
-        let term_ids = self.terms.iter().map(|&(_, id)| id);
-        let product_ids = self
-            .products
-            .iter()
-            .flat_map(|&(_, left, right)| [left, right]);
-        term_ids.chain(product_ids)
-    }
-
-    /// `true` when the bound reads no parameter, so it resolves to `constant`
-    /// on every `(stage, block)`.
-    #[must_use]
-    pub fn is_constant(&self) -> bool {
-        self.terms.is_empty() && self.products.is_empty()
-    }
-}
-
 /// What one unit of a generic-constraint violation is charged.
 ///
 /// The row's quantity decides the basis: a rate (MW, m³/s) is integrated over the
@@ -608,31 +522,26 @@ pub struct GenericConstraint {
     pub expression: ConstraintExpression,
     /// Slack of a soft constraint; `None` for a hard one.
     pub slack: Option<SlackConfig>,
-    /// Lower RHS bound as an affine remainder, composed with any numeric
-    /// parquet base on the same endpoint: the LP builder's `fold_endpoint`
-    /// resolves the endpoint to `base + bound` when both are present, or
-    /// either alone when only one is.
-    pub bound_lower: Option<AffineBound>,
-    /// Upper RHS bound as an affine remainder; upper counterpart of
-    /// `bound_lower`.
-    pub bound_upper: Option<AffineBound>,
+    /// Lower RHS bound as a remainder program, added to any parquet base on the same
+    /// endpoint: the LP builder's `fold_endpoint` resolves the endpoint to `base + bound`
+    /// when both are present, or either alone when only one is.
+    pub bound_lower: Option<ScalarExpr>,
+    /// Upper RHS bound as a remainder program; upper counterpart of `bound_lower`.
+    pub bound_upper: Option<ScalarExpr>,
 }
 
 impl GenericConstraint {
-    /// Every scalar-parameter id this constraint reads directly: each term's
-    /// parameter coefficient in term order, then the lower bound's parameters,
-    /// then the upper bound's, with duplicates kept.
+    /// Every scalar-parameter id this constraint reads directly, with duplicates kept: each
+    /// term coefficient's parameters in term order and then program order, then the lower
+    /// bound's, then the upper bound's.
     pub fn parameter_ids(&self) -> impl Iterator<Item = EntityId> + '_ {
         let term_ids = self
             .expression
             .terms
             .iter()
-            .filter_map(|term| match term.coefficient {
-                CoefficientRef::Parameter(id) => Some(id),
-                CoefficientRef::Literal(_) => None,
-            });
-        let lower_ids = self.bound_lower.iter().flat_map(AffineBound::params);
-        let upper_ids = self.bound_upper.iter().flat_map(AffineBound::params);
+            .flat_map(|term| term.coefficient.params());
+        let lower_ids = self.bound_lower.iter().flat_map(ScalarExpr::params);
+        let upper_ids = self.bound_upper.iter().flat_map(ScalarExpr::params);
         term_ids.chain(lower_ids).chain(upper_ids)
     }
 }
@@ -1064,13 +973,12 @@ mod tests {
                         bus_id: None,
                     },
                 ),
-                LinearTerm::parameter(
-                    EntityId(7),
-                    -1.0,
-                    VariableRef::HydroStorage {
+                LinearTerm {
+                    coefficient: ScalarExpr::literal(-1.0) * ScalarExpr::param(EntityId(7)),
+                    variable: VariableRef::HydroStorage {
                         hydro_id: EntityId(2),
                     },
-                ),
+                },
             ],
         };
         expr.canonicalize();
@@ -1080,24 +988,32 @@ mod tests {
     }
 
     #[test]
-    fn canonical_key_orders_literal_before_parameter() {
-        let var = VariableRef::HydroGeneration {
+    fn canonicalize_keeps_the_authored_order_of_a_repeated_variable() {
+        let x = VariableRef::HydroGeneration {
             hydro_id: EntityId(4),
             block_id: None,
             bus_id: None,
         };
+        let y = VariableRef::HydroStorage {
+            hydro_id: EntityId(4),
+        };
+        assert!(canonical_variable_key(&y) < canonical_variable_key(&x));
         let mut expr = ConstraintExpression {
             terms: vec![
-                LinearTerm::parameter(EntityId(7), 1.0, var),
-                LinearTerm::literal(1.0, var),
+                LinearTerm::literal(2.0, x),
+                LinearTerm::literal(1.0, y),
+                LinearTerm::literal(3.0, x),
             ],
         };
         expr.canonicalize();
-        assert_eq!(expr.terms[0].coefficient, CoefficientRef::Literal(1.0));
-        assert!(matches!(
-            expr.terms[1].coefficient,
-            CoefficientRef::Parameter(_)
-        ));
+        assert_eq!(
+            expr.terms,
+            [
+                LinearTerm::literal(1.0, y),
+                LinearTerm::literal(2.0, x),
+                LinearTerm::literal(3.0, x),
+            ]
+        );
     }
 
     #[test]
@@ -1176,13 +1092,6 @@ mod tests {
         assert_eq!(slack.unit_cost(744.0), 5_000.0);
     }
 
-    fn lit(term: &LinearTerm) -> f64 {
-        match term.coefficient {
-            CoefficientRef::Literal(v) => v,
-            CoefficientRef::Parameter(_) => panic!("expected literal"),
-        }
-    }
-
     #[test]
     fn test_linear_term_with_coefficient() {
         let term = LinearTerm::literal(
@@ -1192,7 +1101,7 @@ mod tests {
                 block_id: None,
             },
         );
-        assert!((lit(&term) - 2.5).abs() < f64::EPSILON);
+        assert_eq!(term.coefficient.as_literal(), Some(2.5));
         let debug = format!("{:?}", term.variable);
         assert!(debug.contains("ThermalGeneration"));
     }
@@ -1206,8 +1115,7 @@ mod tests {
                 block_id: None,
             },
         );
-        assert_eq!(term.coefficient, CoefficientRef::Literal(3.0));
-        assert!((term.scale - 1.0).abs() < f64::EPSILON);
+        assert_eq!(term.coefficient, ScalarExpr::literal(3.0));
         assert_eq!(
             term.variable,
             VariableRef::ThermalGeneration {
@@ -1215,18 +1123,6 @@ mod tests {
                 block_id: None,
             }
         );
-    }
-
-    #[test]
-    fn linear_term_explicit_scale() {
-        let term = LinearTerm {
-            coefficient: CoefficientRef::Literal(2.0),
-            scale: 0.5,
-            variable: VariableRef::HydroStorage {
-                hydro_id: EntityId(1),
-            },
-        };
-        assert!((term.scale - 0.5).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -1344,6 +1240,10 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn test_generic_constraint_serde_roundtrip() {
+        let param = |id| ScalarExpr::param(EntityId(id));
+        let bound = ScalarExpr::literal(12.0)
+            + ScalarExpr::literal(0.5) * param(42)
+            + ScalarExpr::literal(0.25) * param(42) * param(43);
         let gc = GenericConstraint {
             id: EntityId(0),
             name: "test".to_string(),
@@ -1358,14 +1258,14 @@ mod tests {
                             bus_id: None,
                         },
                     ),
-                    LinearTerm::literal(
-                        1.0,
-                        VariableRef::HydroGeneration {
+                    LinearTerm {
+                        coefficient: ScalarExpr::literal(2.0) * param(7),
+                        variable: VariableRef::HydroGeneration {
                             hydro_id: EntityId(11),
                             block_id: None,
                             bus_id: None,
                         },
-                    ),
+                    },
                 ],
             },
             slack: Some(SlackConfig {
@@ -1373,56 +1273,20 @@ mod tests {
                 penalty_basis: PenaltyBasis::PerUnit,
             }),
             bound_lower: None,
-            bound_upper: Some(AffineBound::single(EntityId(42))),
+            bound_upper: Some(bound.clone()),
         };
 
         let json = serde_json::to_string(&gc).unwrap();
         let deserialized: GenericConstraint = serde_json::from_str(&json).unwrap();
         assert_eq!(gc, deserialized);
         assert_eq!(deserialized.expression.terms.len(), 2);
-        assert_eq!(
-            deserialized.bound_upper,
-            Some(AffineBound::single(EntityId(42)))
-        );
-    }
-
-    #[test]
-    fn affine_bound_single_is_zero_constant_plus_one_term() {
-        let bound = AffineBound::single(EntityId(7));
-        assert_eq!(bound.constant, 0.0);
-        assert_eq!(bound.terms, vec![(1.0, EntityId(7))]);
-    }
-
-    #[test]
-    fn affine_bound_params_iterates_term_ids() {
-        let bound = AffineBound {
-            constant: 12.0,
-            terms: vec![(0.5, EntityId(7)), (-2.0, EntityId(9))],
-            products: vec![],
-        };
-        assert_eq!(
-            bound.params().collect::<Vec<_>>(),
-            vec![EntityId(7), EntityId(9)]
-        );
-    }
-
-    #[test]
-    fn affine_bound_params_include_both_product_operands() {
-        let bound = AffineBound {
-            constant: 0.0,
-            terms: vec![(1.0, EntityId(3))],
-            products: vec![(2.0, EntityId(5), EntityId(6))],
-        };
-        assert_eq!(
-            bound.params().collect::<Vec<_>>(),
-            vec![EntityId(3), EntityId(5), EntityId(6)]
-        );
+        assert_eq!(deserialized.bound_upper, Some(bound));
     }
 
     fn constraint_with(
         terms: Vec<LinearTerm>,
-        bound_lower: Option<AffineBound>,
-        bound_upper: Option<AffineBound>,
+        bound_lower: Option<ScalarExpr>,
+        bound_upper: Option<ScalarExpr>,
     ) -> GenericConstraint {
         GenericConstraint {
             id: EntityId(0),
@@ -1451,19 +1315,23 @@ mod tests {
             EntityId(4),
             EntityId(5),
         );
+        let param_term = |id, variable| LinearTerm {
+            coefficient: ScalarExpr::param(id),
+            variable,
+        };
         let constraint = constraint_with(
             vec![
-                LinearTerm::parameter(id_p, 1.0, thermal(10)),
+                param_term(id_p, thermal(10)),
                 LinearTerm::literal(2.0, thermal(11)),
-                LinearTerm::parameter(id_q, 1.0, thermal(12)),
-                LinearTerm::parameter(id_p, 1.0, thermal(13)),
+                param_term(id_q, thermal(12)),
+                param_term(id_p, thermal(13)),
             ],
-            Some(AffineBound {
-                constant: 0.0,
-                terms: vec![(1.0, id_r)],
-                products: vec![(1.0, id_s, id_t)],
-            }),
-            Some(AffineBound::single(id_p)),
+            Some(
+                ScalarExpr::literal(0.0)
+                    + ScalarExpr::literal(1.0) * ScalarExpr::param(id_r)
+                    + ScalarExpr::literal(1.0) * ScalarExpr::param(id_s) * ScalarExpr::param(id_t),
+            ),
+            Some(ScalarExpr::param(id_p)),
         );
         assert_eq!(
             constraint.parameter_ids().collect::<Vec<_>>(),
@@ -1482,35 +1350,5 @@ mod tests {
             None,
         );
         assert_eq!(constraint.parameter_ids().count(), 0);
-    }
-
-    #[test]
-    fn affine_bound_with_only_products_is_not_constant() {
-        let constant = AffineBound {
-            constant: 4.0,
-            terms: vec![],
-            products: vec![],
-        };
-        let product_only = AffineBound {
-            products: vec![(1.0, EntityId(5), EntityId(6))],
-            ..constant.clone()
-        };
-        assert!(constant.is_constant());
-        assert!(!product_only.is_constant());
-        assert!(!AffineBound::single(EntityId(1)).is_constant());
-    }
-
-    /// The byte-neutral load-bearing identity for `AffineBound::single`: any
-    /// resolved parameter value `x` passed through `single`'s
-    /// `constant + coef * x` shape returns `x` unchanged in `f64` — the
-    /// arithmetic fact that lets a single-ref remainder stand in for the
-    /// bare parameter reference it replaces.
-    #[test]
-    fn affine_bound_single_resolves_to_the_bare_value() {
-        for x in [0.0_f64, 1.0, -3.5, 42.75, f64::MIN_POSITIVE, 1e300] {
-            let bound = AffineBound::single(EntityId(1));
-            let (coef, _) = bound.terms[0];
-            assert_eq!(bound.constant + coef * x, x);
-        }
     }
 }

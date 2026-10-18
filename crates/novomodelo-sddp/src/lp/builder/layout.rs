@@ -2025,7 +2025,7 @@ mod tests;
 #[cfg(test)]
 mod collapse_stage_level_tests {
     use super::*;
-    use novomodelo_core::{AffineBound, LinearTerm, StageId, VariableRef};
+    use novomodelo_core::{LinearTerm, ScalarExpr, StageId, VariableRef};
 
     fn expr(term: LinearTerm) -> ConstraintExpression {
         ConstraintExpression { terms: vec![term] }
@@ -2072,11 +2072,10 @@ mod collapse_stage_level_tests {
 
     #[test]
     fn block_varying_coefficient_suppresses_collapse() {
-        let c = unbounded(expr(LinearTerm::parameter(
-            EntityId(42),
-            1.0,
-            hydro_storage(),
-        )));
+        let c = unbounded(expr(LinearTerm {
+            coefficient: ScalarExpr::param(EntityId(42)),
+            variable: hydro_storage(),
+        }));
         assert!(
             !collapses(&c),
             "a block-varying coefficient over a block-independent variable must not collapse"
@@ -2085,11 +2084,10 @@ mod collapse_stage_level_tests {
 
     #[test]
     fn block_invariant_coefficient_still_collapses() {
-        let param = unbounded(expr(LinearTerm::parameter(
-            EntityId(43),
-            1.0,
-            hydro_storage(),
-        )));
+        let param = unbounded(expr(LinearTerm {
+            coefficient: ScalarExpr::param(EntityId(43)),
+            variable: hydro_storage(),
+        }));
         let literal = unbounded(expr(LinearTerm::literal(1.0, hydro_storage())));
         assert!(collapses(&param));
         assert!(collapses(&literal));
@@ -2112,8 +2110,8 @@ mod collapse_stage_level_tests {
         upper_ref: Option<EntityId>,
     ) -> GenericConstraint {
         GenericConstraint {
-            bound_lower: lower_ref.map(AffineBound::single),
-            bound_upper: upper_ref.map(AffineBound::single),
+            bound_lower: lower_ref.map(ScalarExpr::param),
+            bound_upper: upper_ref.map(ScalarExpr::param),
             ..unbounded(expr(LinearTerm::literal(1.0, hydro_storage())))
         }
     }
@@ -2126,16 +2124,16 @@ mod collapse_stage_level_tests {
         assert!(collapses(&constraint_with_refs(None, None)));
     }
 
-    /// A block-varying parameter reached through a multi-term affine bound (not
-    /// just the `single` special case) still suppresses the collapse.
+    /// A block-varying parameter reached through a multi-term bound (not just a
+    /// bare parameter) still suppresses the collapse.
     #[test]
     fn a_block_varying_multi_term_bound_suppresses_collapse() {
         let mut constraint = constraint_with_refs(None, None);
-        constraint.bound_upper = Some(AffineBound {
-            constant: 10.0,
-            terms: vec![(2.0, EntityId(43)), (0.5, EntityId(42))],
-            products: vec![],
-        });
+        constraint.bound_upper = Some(
+            ScalarExpr::literal(10.0)
+                + ScalarExpr::literal(2.0) * ScalarExpr::param(EntityId(43))
+                + ScalarExpr::literal(0.5) * ScalarExpr::param(EntityId(42)),
+        );
         assert!(!collapses(&constraint));
     }
 }

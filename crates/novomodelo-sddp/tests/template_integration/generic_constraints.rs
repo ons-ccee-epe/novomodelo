@@ -74,18 +74,10 @@ fn desugared_named_expression_lp_matches_hand_flattened_twin() {
 
 /// Declaration-order invariance: three named expressions, each a single term on the
 /// SAME LP column (`bus_excess` of the one bus) with DISTINCT literal coefficients
-/// (1, 2, 4). Distinct coefficients give distinct `canonical_term_key`s and distinct
-/// CSC entries, and with `n_blks = 1` all three land on the SAME generic-constraint
-/// row. The constraint sums all three in the permuted order, so their CSC `values`
-/// sequence for that column is observable and order-sensitive. Every one of the
-/// `3! = 6` permutations of the declaration-and-reference order must build a
-/// byte-identical `StageTemplates`.
-///
-/// Guarded mutation: skipping `ConstraintExpression::canonicalize` lets the
-/// inline/reference order — a pure function of write order — leak into the term
-/// sequence, so the six permutations produce six different CSC `values` orderings
-/// and this assertion fails. `canonicalize` sorts the terms by content, collapsing
-/// every write order to one; that is what this test pins.
+/// (1, 2, 4). The expression engine merges the three references into one
+/// `bus_excess(1)` term per load, and with `n_blks = 1` it lands on a single
+/// generic-constraint row. Every one of the `3! = 6` permutations of the
+/// declaration-and-reference order must build a byte-identical `StageTemplates`.
 #[test]
 fn declaration_order_permutation_is_invariant_in_lp() {
     use novomodelo_core::ResolvedGenericConstraintBounds;
@@ -1908,7 +1900,7 @@ fn assert_desugaring_twin_builds_identical_lp(
 fn per_stage_block_coefficient_twin_matches_hand_flattened_literals() {
     use novomodelo_core::{
         ConstraintExpression, GenericConstraint, LinearTerm, ParameterKind,
-        ResolvedGenericConstraintBounds, ScalarParameter, VariableRef,
+        ResolvedGenericConstraintBounds, ScalarExpr, ScalarParameter, VariableRef,
     };
     use std::collections::HashMap;
 
@@ -1925,8 +1917,14 @@ fn per_stage_block_coefficient_twin_matches_hand_flattened_literals() {
     // and literal-keyed canonical orders agree.
     let mut sugared_expr = ConstraintExpression {
         terms: vec![
-            LinearTerm::parameter(EntityId(200), 1.0, excess(None)),
-            LinearTerm::parameter(EntityId(201), 1.0, excess(None)),
+            LinearTerm {
+                coefficient: ScalarExpr::param(EntityId(200)),
+                variable: excess(None),
+            },
+            LinearTerm {
+                coefficient: ScalarExpr::param(EntityId(201)),
+                variable: excess(None),
+            },
         ],
     };
     sugared_expr.canonicalize();
@@ -2014,8 +2012,8 @@ fn per_stage_block_coefficient_twin_matches_hand_flattened_literals() {
 #[test]
 fn symbolic_upper_bound_ref_twin_matches_literal_per_block_bounds() {
     use novomodelo_core::{
-        AffineBound, ConstraintExpression, GenericConstraint, LinearTerm, ParameterKind,
-        ResolvedGenericConstraintBounds, ScalarParameter, VariableRef,
+        ConstraintExpression, GenericConstraint, LinearTerm, ParameterKind,
+        ResolvedGenericConstraintBounds, ScalarExpr, ScalarParameter, VariableRef,
     };
     use std::collections::HashMap;
 
@@ -2041,7 +2039,7 @@ fn symbolic_upper_bound_ref_twin_matches_literal_per_block_bounds() {
         expression: expr(),
         slack: None,
         bound_lower: None,
-        bound_upper: Some(AffineBound::single(EntityId(200))),
+        bound_upper: Some(ScalarExpr::param(EntityId(200))),
     };
     let sugared_id_map: HashMap<i32, usize> = [(300_i32, 0)].into_iter().collect();
     let sugared_rows = vec![(300_i32, 0_i32, None::<i32>, None, None)];
@@ -2094,8 +2092,8 @@ fn symbolic_upper_bound_ref_twin_matches_literal_per_block_bounds() {
 #[test]
 fn symbolic_lower_bound_ref_stage_level_collapse_twin() {
     use novomodelo_core::{
-        AffineBound, ConstraintExpression, GenericConstraint, ParameterKind,
-        ResolvedGenericConstraintBounds, ScalarParameter,
+        ConstraintExpression, GenericConstraint, ParameterKind, ResolvedGenericConstraintBounds,
+        ScalarExpr, ScalarParameter,
     };
     use std::collections::HashMap;
 
@@ -2111,7 +2109,7 @@ fn symbolic_lower_bound_ref_stage_level_collapse_twin() {
         description: None,
         expression: empty_expr(),
         slack: None,
-        bound_lower: Some(AffineBound::single(EntityId(200))),
+        bound_lower: Some(ScalarExpr::param(EntityId(200))),
         bound_upper: None,
     };
     let sugared_id_map: HashMap<i32, usize> = [(300_i32, 0)].into_iter().collect();
@@ -2204,7 +2202,7 @@ fn decision_variable_rhs_normalizes_to_hand_flattened_form() {
 /// separate columns.
 #[test]
 fn same_variable_repeat_merges_to_summed_coefficient() {
-    use novomodelo_core::{CoefficientRef, ResolvedGenericConstraintBounds};
+    use novomodelo_core::ResolvedGenericConstraintBounds;
     use std::collections::HashMap;
 
     let sugared = r#"{
@@ -2221,8 +2219,8 @@ fn same_variable_repeat_merges_to_summed_coefficient() {
     let parsed = parse_generic_from_str(sugared);
     assert_eq!(parsed[0].expression.terms.len(), 1);
     assert_eq!(
-        parsed[0].expression.terms[0].coefficient,
-        CoefficientRef::Literal(1.0)
+        parsed[0].expression.terms[0].coefficient.as_literal(),
+        Some(1.0)
     );
 
     let id_map: HashMap<i32, usize> = [(2_i32, 0)].into_iter().collect();
@@ -2281,10 +2279,9 @@ fn full_cancellation_drops_net_zero_column() {
 }
 
 /// A coefficient-scaled paren group (`2 * (hydro_generation(0) -
-/// hydro_generation(1))`) distributes onto a `LinearTerm` as `coefficient: 1.0,
-/// scale: 2.0` — the paren-group shape — while the same effective value written
-/// directly (`2 * hydro_generation(0)`) parses as `coefficient: 2.0, scale: 1.0`;
-/// the two ASTs differ but must build the identical LP.
+/// hydro_generation(1))`) distributes to the same per-variable coefficients as
+/// the hand-flattened `2 * hydro_generation(0) - 2 * hydro_generation(1)`, and
+/// both must build the identical LP.
 #[test]
 fn paren_distribution_normalizes_to_hand_flattened_terms() {
     use novomodelo_core::ResolvedGenericConstraintBounds;
@@ -2372,10 +2369,9 @@ fn parquet_base_folds_with_inline_affine_remainder() {
 }
 
 /// A parameter-coefficient RHS (`@a * bus_excess(1) <= -@b * bus_excess(1) +
-/// 400`) normalizes to two DISTINCT-parameter terms on the same `bus_excess(1)`
-/// column. The builder merges the two terms into one entry, so the sugared
-/// template holds a single value on that column and matches the hand-flattened
-/// twin.
+/// 400`) lowers to one `bus_excess(1)` term whose coefficient program reads
+/// both `@a` and `@b`. The sugared template holds a single value on that column
+/// and matches the hand-flattened twin.
 ///
 /// derived: 2.0 + 6.0
 ///

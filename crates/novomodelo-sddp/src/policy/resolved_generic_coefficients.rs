@@ -3,7 +3,7 @@
 //! LP builder and the generic-constraint echo read numbers from it and resolve
 //! nothing themselves.
 
-use novomodelo_core::{AffineBound, CoefficientRef, GenericConstraint, StageId};
+use novomodelo_core::{GenericConstraint, ScalarExpr, StageId};
 use thiserror::Error;
 
 use crate::generic_constraint_echo::render_variable;
@@ -128,8 +128,8 @@ impl ResolvedGenericCoefficients {
         })
     }
 
-    /// The LP coefficient of term `term_idx` of constraint `constraint_idx`
-    /// (`coefficient * scale`) at `(stage_idx, block_idx)`.
+    /// The LP coefficient of term `term_idx` of constraint `constraint_idx` at
+    /// `(stage_idx, block_idx)`.
     #[must_use]
     pub(crate) fn term_value(
         &self,
@@ -198,16 +198,12 @@ fn resolve_constraint(
         .terms
         .iter()
         .map(|term| {
-            let block_varying = matches!(
-                term.coefficient,
-                CoefficientRef::Parameter(id) if resolved.is_block_varying(id)
-            );
+            let block_varying = term
+                .coefficient
+                .params()
+                .any(|id| resolved.is_block_varying(id));
             resolve_series(grid, block_varying, |s, b| {
-                let c = match term.coefficient {
-                    CoefficientRef::Literal(v) => v,
-                    CoefficientRef::Parameter(id) => resolved.get(id, s, b),
-                };
-                c * term.scale
+                term.coefficient.evaluate(|id| resolved.get(id, s, b))
             })
             .map_err(|cell| {
                 let (_, label) = render_variable(&term.variable);
@@ -243,7 +239,7 @@ fn resolve_constraint(
 
 fn resolve_bound(
     constraint: &GenericConstraint,
-    bound: Option<&AffineBound>,
+    bound: Option<&ScalarExpr>,
     side: &str,
     resolved: &ResolvedParameters,
     grid: &StudyGrid<'_>,
@@ -253,31 +249,10 @@ fn resolve_bound(
     };
     let block_varying = bound.params().any(|id| resolved.is_block_varying(id));
     resolve_series(grid, block_varying, |s, b| {
-        fold_remainder(bound, resolved, s, b)
+        bound.evaluate(|id| resolved.get(id, s, b))
     })
     .map(Some)
     .map_err(|cell| non_finite(constraint, format!("the {side} bound"), grid, &cell))
-}
-
-/// Start at `constant`, add the terms in order, then the products in order: the
-/// order is part of the bit-identity of every generic-constraint bound.
-fn fold_remainder(
-    bound: &AffineBound,
-    resolved: &ResolvedParameters,
-    stage_idx: usize,
-    block_idx: usize,
-) -> f64 {
-    let linear_sum = bound.terms.iter().fold(bound.constant, |acc, &(coef, id)| {
-        acc + coef * resolved.get(id, stage_idx, block_idx)
-    });
-    bound
-        .products
-        .iter()
-        .fold(linear_sum, |acc, &(scale, left, right)| {
-            let left_val = resolved.get(left, stage_idx, block_idx);
-            let right_val = resolved.get(right, stage_idx, block_idx);
-            acc + scale * left_val * right_val
-        })
 }
 
 fn resolve_series(
@@ -330,8 +305,8 @@ fn non_finite(
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use novomodelo_core::{
-        AffineBound, CoefficientRef, ConstraintExpression, EntityId, GenericConstraint, LinearTerm,
-        StageId, VariableRef,
+        ConstraintExpression, EntityId, GenericConstraint, LinearTerm, ScalarExpr, StageId,
+        VariableRef,
     };
 
     use super::{BoundSide, ResolvedGenericCoefficients, ResolvedGenericCoefficientsError};
@@ -340,6 +315,21 @@ mod tests {
     fn hydro_storage(id: i32) -> VariableRef {
         VariableRef::HydroStorage {
             hydro_id: EntityId(id),
+        }
+    }
+
+    fn lit(value: f64) -> ScalarExpr {
+        ScalarExpr::literal(value)
+    }
+
+    fn param(id: i32) -> ScalarExpr {
+        ScalarExpr::param(EntityId(id))
+    }
+
+    fn term(coefficient: ScalarExpr, variable: VariableRef) -> LinearTerm {
+        LinearTerm {
+            coefficient,
+            variable,
         }
     }
 
@@ -375,7 +365,7 @@ mod tests {
         table(vec![vec![vec![1.0, 2.0]], vec![vec![5.0]]], &[42, 43])
     }
 
-    fn lower_bound_at_block_1(bound: AffineBound) -> f64 {
+    fn lower_bound_at_block_1(bound: ScalarExpr) -> f64 {
         let mut c = constraint(vec![LinearTerm::literal(1.0, hydro_storage(1))]);
         c.bound_lower = Some(bound);
         let rgc =
@@ -390,12 +380,8 @@ mod tests {
     fn literal_and_parameter_terms_store_one_value_per_stage() {
         let r = table(vec![vec![vec![3.0], vec![4.0]]], &[5]);
         let c = constraint(vec![
-            LinearTerm {
-                coefficient: CoefficientRef::Literal(0.87),
-                scale: 2.0,
-                variable: hydro_storage(1),
-            },
-            LinearTerm::parameter(EntityId(5), -1.0, hydro_storage(2)),
+            term(lit(0.87) * lit(2.0), hydro_storage(1)),
+            term(param(5) * lit(-1.0), hydro_storage(2)),
         ]);
         let rgc = ResolvedGenericCoefficients::build(&[c], &r, &TWO_STAGES, &[2, 2]).unwrap();
         assert!(!rgc.is_block_varying(0));
@@ -415,15 +401,11 @@ mod tests {
     }
 
     /// derived: every `(stage, block)` cell is that cell's parameter value times
-    /// the term's `1.5` scale.
+    /// the term's `1.5` factor.
     #[test]
     fn a_block_varying_parameter_term_stores_every_block() {
         let r = table(vec![vec![vec![1.0, 2.0], vec![3.0, 4.0]]], &[6]);
-        let c = constraint(vec![LinearTerm::parameter(
-            EntityId(6),
-            1.5,
-            hydro_storage(1),
-        )]);
+        let c = constraint(vec![term(param(6) * lit(1.5), hydro_storage(1))]);
         let rgc = ResolvedGenericCoefficients::build(&[c], &r, &TWO_STAGES, &[2, 2]).unwrap();
         assert!(rgc.is_block_varying(0));
         for stage in 0..2 {
@@ -436,11 +418,11 @@ mod tests {
         }
     }
 
-    /// derived: `0.0 + 1.0 * x == x` in `f64`.
+    /// derived: a bare parameter evaluates to its resolved value.
     #[test]
     fn bound_of_a_single_parameter_equals_its_value() {
         let r = bound_fold_table();
-        let value = lower_bound_at_block_1(AffineBound::single(EntityId(42)));
+        let value = lower_bound_at_block_1(param(42));
         assert_eq!(value.to_bits(), r.get(EntityId(42), 0, 1).to_bits());
     }
 
@@ -448,11 +430,8 @@ mod tests {
     #[test]
     fn bound_sums_constant_then_terms() {
         let r = bound_fold_table();
-        let value = lower_bound_at_block_1(AffineBound {
-            constant: 100.0,
-            terms: vec![(2.0, EntityId(42)), (-1.0, EntityId(43))],
-            products: vec![],
-        });
+        let value =
+            lower_bound_at_block_1(lit(100.0) + lit(2.0) * param(42) - lit(1.0) * param(43));
         let expected = 100.0 + 2.0 * r.get(EntityId(42), 0, 1) - 1.0 * r.get(EntityId(43), 0, 1);
         assert_eq!(value.to_bits(), expected.to_bits());
     }
@@ -461,11 +440,7 @@ mod tests {
     #[test]
     fn bound_of_a_product_only() {
         let r = bound_fold_table();
-        let value = lower_bound_at_block_1(AffineBound {
-            constant: 0.0,
-            terms: vec![],
-            products: vec![(1.0, EntityId(42), EntityId(43))],
-        });
+        let value = lower_bound_at_block_1(param(42) * param(43));
         let expected = r.get(EntityId(42), 0, 1) * r.get(EntityId(43), 0, 1);
         assert_eq!(value.to_bits(), expected.to_bits());
     }
@@ -474,11 +449,7 @@ mod tests {
     #[test]
     fn bound_of_a_scaled_product() {
         let r = bound_fold_table();
-        let value = lower_bound_at_block_1(AffineBound {
-            constant: 0.0,
-            terms: vec![],
-            products: vec![(2.5, EntityId(42), EntityId(43))],
-        });
+        let value = lower_bound_at_block_1(lit(2.5) * param(42) * param(43));
         let expected = 2.5 * r.get(EntityId(42), 0, 1) * r.get(EntityId(43), 0, 1);
         assert_eq!(value.to_bits(), expected.to_bits());
     }
@@ -487,21 +458,19 @@ mod tests {
     #[test]
     fn bound_mixes_terms_then_products() {
         let r = bound_fold_table();
-        let value = lower_bound_at_block_1(AffineBound {
-            constant: 5.0,
-            terms: vec![(2.0, EntityId(42))],
-            products: vec![(0.5, EntityId(42), EntityId(43))],
-        });
+        let value = lower_bound_at_block_1(
+            lit(5.0) + lit(2.0) * param(42) + lit(0.5) * param(42) * param(43),
+        );
         let linear = 5.0 + 2.0 * r.get(EntityId(42), 0, 1);
         let product = 0.5 * r.get(EntityId(42), 0, 1) * r.get(EntityId(43), 0, 1);
         assert_eq!(value.to_bits(), (linear + product).to_bits());
     }
 
-    /// derived: the lower bound is `0.0 + 1.0 * 5.0`, parameter 43's only value.
+    /// derived: the lower bound is parameter 43's only value, `5.0`.
     #[test]
     fn an_absent_bound_side_has_no_value() {
         let mut c = constraint(vec![LinearTerm::literal(1.0, hydro_storage(1))]);
-        c.bound_lower = Some(AffineBound::single(EntityId(43)));
+        c.bound_lower = Some(param(43));
         let rgc =
             ResolvedGenericCoefficients::build(&[c], &bound_fold_table(), &[StageId(0)], &[2])
                 .unwrap();
@@ -515,30 +484,14 @@ mod tests {
     #[test]
     fn block_variation_follows_term_and_bound_leaves() {
         let literal = || vec![LinearTerm::literal(1.0, hydro_storage(1))];
-        let varying_term = constraint(vec![LinearTerm::parameter(
-            EntityId(42),
-            1.0,
-            hydro_storage(1),
-        )]);
+        let varying_term = constraint(vec![term(param(42), hydro_storage(1))]);
         let mut varying_lower = constraint(literal());
-        varying_lower.bound_lower = Some(AffineBound::single(EntityId(42)));
+        varying_lower.bound_lower = Some(param(42));
         let mut varying_product = constraint(literal());
-        varying_product.bound_upper = Some(AffineBound {
-            constant: 0.0,
-            terms: vec![(1.0, EntityId(43))],
-            products: vec![(1.0, EntityId(43), EntityId(42))],
-        });
-        let mut invariant = constraint(vec![LinearTerm::parameter(
-            EntityId(43),
-            1.0,
-            hydro_storage(1),
-        )]);
-        invariant.bound_lower = Some(AffineBound::single(EntityId(43)));
-        invariant.bound_upper = Some(AffineBound {
-            constant: 1.0,
-            terms: vec![(2.0, EntityId(43))],
-            products: vec![(1.0, EntityId(43), EntityId(43))],
-        });
+        varying_product.bound_upper = Some(param(43) + param(43) * param(42));
+        let mut invariant = constraint(vec![term(param(43), hydro_storage(1))]);
+        invariant.bound_lower = Some(param(43));
+        invariant.bound_upper = Some(lit(1.0) + lit(2.0) * param(43) + param(43) * param(43));
         let rgc = ResolvedGenericCoefficients::build(
             &[varying_term, varying_lower, varying_product, invariant],
             &bound_fold_table(),
@@ -555,7 +508,7 @@ mod tests {
     #[test]
     fn an_unresolved_parameter_names_the_constraint_and_id() {
         let mut c = constraint(vec![LinearTerm::literal(1.0, hydro_storage(1))]);
-        c.bound_lower = Some(AffineBound::single(EntityId(999)));
+        c.bound_lower = Some(param(999));
         let err =
             ResolvedGenericCoefficients::build(&[c], &bound_fold_table(), &[StageId(0)], &[2])
                 .unwrap_err();
@@ -597,7 +550,7 @@ mod tests {
     fn a_non_finite_parameter_at_any_study_stage_is_an_error() {
         let r = table(vec![vec![vec![1.0], vec![f64::NAN]]], &[7]);
         let mut c = constraint(vec![LinearTerm::literal(1.0, hydro_storage(1))]);
-        c.bound_lower = Some(AffineBound::single(EntityId(7)));
+        c.bound_lower = Some(param(7));
         let err = ResolvedGenericCoefficients::build(&[c], &r, &TWO_STAGES, &[1, 1]).unwrap_err();
         assert!(matches!(
             err,

@@ -22,15 +22,12 @@
 //! Semantic bound validation (e.g., min < max) is deferred.
 
 pub mod bounds;
-#[cfg(test)]
-mod engine_differential_tests;
 pub mod generic;
 pub mod generic_bounds;
 pub mod hydro_unit_group_bounds;
 pub(crate) mod named_expression_inline;
 pub mod ncs_bounds;
 pub mod penalty_overrides;
-pub(crate) mod rhs_normalize;
 
 pub use crate::expression::catalog::{LineBusPairIndex, build_line_bus_pair_index};
 pub use bounds::{
