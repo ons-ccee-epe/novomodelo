@@ -175,8 +175,8 @@ model, as it always has.
 ## The `hydro_useful_volume_*` fold
 
 `hydro_useful_volume_{initial,final}(id[, block])` are authorable generic
-constraint variable references, parsed in
-`crates/novomodelo-io/src/constraints/generic.rs` and resolving to
+constraint variable references, matched by name in
+`crates/novomodelo-io/src/expression/catalog.rs` and resolving to
 `VariableRef::HydroUsefulVolumeInitial` / `HydroUsefulVolumeFinal`. Each
 resolves to the exact same LP column as the corresponding
 `hydro_storage_{initial,final}` reference (coefficient multiplier `1.0`), and
@@ -184,21 +184,29 @@ receives the same referential and per-block validation the storage pair
 already receives — it names no new LP variable. What differs is the bound: at
 LP build time, `useful_volume_bound_shift` (in
 `crates/novomodelo-sddp/src/lp/builder/layout.rs`) moves each term's dead volume
-onto the bound: a term `coef * hydro_useful_volume_*(h)` stands for
-`coef * (storage - V_lo)`, so `coef * V_lo` — with `V_lo` the entity physical
-`Hydro.min_storage_hm3` — is ADDED to every resolved bound endpoint the
-constraint carries, one such term per `hydro_useful_volume_*` reference. The
-constraint reads as a useful-volume (above-dead-storage) quantity while the
-underlying LP column still carries the absolute storage value; a negative
-coefficient lowers the bound by the same rule.
+onto the bound. A term `coef * hydro_useful_volume_*(h)` stands for
+`coef * (storage - V_lo)`, with `V_lo` the entity physical
+`Hydro.min_storage_hm3`. The shift is therefore `coef * V_lo` per term, summed
+over the constraint's `hydro_useful_volume_*` terms. The builder first merges
+each endpoint's declared bound with its resolved bound remainder, then adds
+the shift to every endpoint that carries a bound; an untargeted (open)
+endpoint stays open. `coef` is the
+term's resolved coefficient at the row's stage and block, read through
+`ResolvedGenericCoefficients::term_value`
+(`crates/novomodelo-sddp/src/policy/resolved_generic_coefficients.rs`): a
+coefficient that reads a per-stage or per-block parameter shifts a different
+amount on each row. The constraint reads as a useful-volume
+(above-dead-storage) quantity while the underlying LP column still carries
+the absolute storage value; a negative coefficient lowers the bound by the
+same rule.
 
 The folded bound is publicly observable: `build_generic_constraint_echo_rows`
 (`crates/novomodelo-sddp/src/generic_constraint_echo.rs`) reports the
-post-fold value on `GenericConstraintEchoRow.bound_lower`, written to the same
-`generic_constraint_echo` output by both the CLI and the Python bindings. This
-echo output is the intended way to observe the folded bound — reading the
-declared bound directly from the input constraint would show the pre-fold
-value.
+post-fold value on `GenericConstraintEchoRow.bound_lower`, written to
+`generic_constraints/resolved_echo.parquet` by both the CLI and the Python
+bindings. This echo output is the intended way to observe the folded bound —
+reading the declared bound directly from the input constraint would show the
+pre-fold value.
 
 ## The security-curve authoring recipe
 
@@ -206,19 +214,30 @@ A security curve is authored as a generic constraint with three ingredients:
 a `computed` scalar parameter with `"tag": "integrated_accumulated_productivity"`
 as the per-hydro coefficient, a `computed` scalar parameter with `"tag":
 "max_stored_energy"` as the right-hand-side reference, and
-`hydro_useful_volume_final(id)` as the left-hand-side variable — for example,
-a constraint of the shape `coeff * hydro_useful_volume_final(id) >= pct *
-max_energy`. Because `max_stored_energy` and
+`hydro_useful_volume_final(id)` as the left-hand-side variable. In the
+engine's arithmetic the constraint is
+`@rho * hydro_useful_volume_final(id) >= @pct * @emax`, with `@rho` the
+`integrated_accumulated_productivity` parameter, `@emax` the
+`max_stored_energy` one, and `@pct` the required fraction. The coefficient and
+the right-hand side may each be any arithmetic over numbers and parameters;
+the language is described in the module doc of
+`crates/novomodelo-io/src/expression/mod.rs`. A combination reused across
+constraints, such as a weighted sum of two productivities, can be declared
+once as a `kind: "expression"` parameter (see the module doc of
+`crates/novomodelo-io/src/extensions/scalar_parameters.rs`). The deck
+`examples/deterministic/d58-stored-energy-coefficient` is a worked instance of
+this recipe, and `examples/deterministic/d59-parameter-sum-useful-volume-floor`
+shows a parameter-sum coefficient on a useful-volume term against a literal
+floor. Because `max_stored_energy` and
 `integrated_accumulated_productivity` ride the same raw `productivity *
 volume` unit (see above), and `hydro_useful_volume_final` reads as an
 above-dead-storage quantity (see the fold above), this constraint expresses "at
 least `pct` of the plant's useful volume, in energy terms" without any unit
 conversion in the input.
 
-The bridge's hand-folded equivalent — the form used before this feature
-existed, still valid today — expresses the same constraint as a literal
-coefficient on `hydro_storage_final(id)` with the plant's dead volume
-pre-subtracted into the coefficient by hand. The two forms are equivalent by
+The bridge's hand-folded equivalent expresses the same constraint on
+`hydro_storage_final(id)`, with `coeff * V_lo` added to the bound by hand
+and the coefficient unchanged. The two forms are equivalent by
 construction; `crates/novomodelo-sddp/tests/deterministic.rs`'s
 `security_curve_integrated_productivity_equivalence` module builds an
 end-to-end deck exercising both forms side by side (non-uniform VHA geometry,
