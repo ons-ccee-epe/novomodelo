@@ -132,7 +132,6 @@ impl ResolvedGenericCoefficients {
     /// The LP coefficient of term `term_idx` of constraint `constraint_idx`
     /// (`coefficient * scale`) at `(stage_idx, block_idx)`.
     #[must_use]
-    #[cfg_attr(not(test), expect(dead_code, reason = "no builder or echo reader yet"))]
     pub(crate) fn term_value(
         &self,
         constraint_idx: usize,

@@ -30,6 +30,7 @@ use super::{
     GenericConstraintRowEntry,
 };
 use crate::block_clock::BlockClock;
+use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::ResolvedParameters;
 
 /// Pre-resolved bound, penalty, and factor tables shared across all stages.
@@ -49,6 +50,9 @@ pub(crate) struct ResolvedTables<'a> {
     /// `(parameter_id, stage_idx, block_idx)` → resolved `f64`, queried for a
     /// [`novomodelo_core::CoefficientRef::Parameter`] term.
     pub(crate) resolved_parameters: &'a ResolvedParameters,
+    /// Per-`(stage, block)` generic-constraint term values and bound
+    /// remainders.
+    pub(crate) resolved_generic_coefficients: &'a ResolvedGenericCoefficients,
 }
 
 /// System-level context shared across all stages during template construction.

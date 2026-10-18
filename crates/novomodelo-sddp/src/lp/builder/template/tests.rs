@@ -30,6 +30,7 @@ use crate::indexer::{
 };
 use crate::inflow_method::InflowNonNegativityMethod;
 use crate::lead_time::AnticipatedResolution;
+use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::ResolvedParameters;
 use crate::test_support::{
     assert_templates_byte_identical, resolve_anticipated_commitments, state_layout_full,
@@ -226,6 +227,7 @@ fn resolve_lp_build_inputs_load_bus_indices_honors_threaded_scheme() {
     let time_value = build_time_value_for(&system);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
 
     let external = crate::test_support::resolve_lp_build_inputs(
         &system,
@@ -235,6 +237,7 @@ fn resolve_lp_build_inputs_load_bus_indices_honors_threaded_scheme() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     assert_eq!(external.load_bus_indices, vec![0]);
 
@@ -246,6 +249,7 @@ fn resolve_lp_build_inputs_load_bus_indices_honors_threaded_scheme() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     assert!(in_sample.load_bus_indices.is_empty());
 }
@@ -468,6 +472,7 @@ fn build_template_build_ctx_pumping_stations_id_sorted_and_pos_mapped() {
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
 
     let (topology, resolved) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
@@ -486,6 +491,7 @@ fn build_template_build_ctx_pumping_stations_id_sorted_and_pos_mapped() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx = super::build_template_build_ctx(
         &system,
@@ -527,6 +533,7 @@ fn build_template_build_ctx_n_pumping_matches_slice_and_bounds() {
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
 
     let (topology, resolved) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
@@ -545,6 +552,7 @@ fn build_template_build_ctx_n_pumping_matches_slice_and_bounds() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx = super::build_template_build_ctx(
         &system,
@@ -594,6 +602,7 @@ fn build_stage_templates_records_the_layout_pumping_flow_range_per_stage() {
     let par_lp = PrecomputedPar::default();
     let normal_lp = PrecomputedNormal::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
 
     let templates = crate::build_stage_templates_resolving_layout(
         &system,
@@ -623,6 +632,7 @@ fn build_stage_templates_records_the_layout_pumping_flow_range_per_stage() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx = super::build_template_build_ctx(
         &system,
@@ -846,6 +856,7 @@ fn geometry_ncs_family_matches_the_stage_layout() {
     let par_lp = PrecomputedPar::default();
     let normal_lp = PrecomputedNormal::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
 
     let templates = crate::build_stage_templates_resolving_layout(
         &system,
@@ -875,6 +886,7 @@ fn geometry_ncs_family_matches_the_stage_layout() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx = super::build_template_build_ctx(
         &system,
@@ -1145,6 +1157,7 @@ fn build_template_build_ctx_contracts_counted_and_pos_mapped() {
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
 
     let (topology, resolved) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
@@ -1163,6 +1176,7 @@ fn build_template_build_ctx_contracts_counted_and_pos_mapped() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx = super::build_template_build_ctx(
         &system,
@@ -1218,6 +1232,7 @@ fn stage_layout_geometry_populates_contract_ranges() {
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
 
     let (topology, resolved) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
@@ -1236,6 +1251,7 @@ fn stage_layout_geometry_populates_contract_ranges() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx = super::build_template_build_ctx(
         &system,
@@ -1275,6 +1291,7 @@ fn stage_layout_geometry_empty_contracts_are_pumping_end_anchored() {
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
 
     let (topology, resolved) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
@@ -1293,6 +1310,7 @@ fn stage_layout_geometry_empty_contracts_are_pumping_end_anchored() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx = super::build_template_build_ctx(
         &system,
@@ -1421,6 +1439,7 @@ fn build_template_build_ctx_contract_count_divergence_panics() {
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
 
     let (topology, resolved) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
@@ -1439,6 +1458,7 @@ fn build_template_build_ctx_contract_count_divergence_panics() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let _ = super::build_template_build_ctx(
         &system,
@@ -1500,6 +1520,7 @@ fn build_template_build_ctx_populates_anticipated_metadata() {
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
 
     let (topology, resolved) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
@@ -1518,6 +1539,7 @@ fn build_template_build_ctx_populates_anticipated_metadata() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx = super::build_template_build_ctx(
         &system,
@@ -1586,6 +1608,7 @@ fn build_template_build_ctx_zero_anticipated_when_none() {
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
 
     let (topology, resolved) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
@@ -1604,6 +1627,7 @@ fn build_template_build_ctx_zero_anticipated_when_none() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx = super::build_template_build_ctx(
         &system,
@@ -1997,6 +2021,7 @@ fn lp_template_invariant_under_anticipated_index_permutation() {
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
 
     let (topology, resolved) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
@@ -2015,6 +2040,7 @@ fn lp_template_invariant_under_anticipated_index_permutation() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx_a = super::build_template_build_ctx(
         &system,
@@ -2108,6 +2134,7 @@ fn lp_template_invariant_under_anticipated_index_permutation() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx_b = super::build_template_build_ctx(
         &system,
@@ -2394,6 +2421,7 @@ fn built_stage_templates_carry_the_one_step_discount_on_theta() {
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
     let (topology, layout) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
 
@@ -2412,6 +2440,7 @@ fn built_stage_templates_carry_the_one_step_discount_on_theta() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let templates = super::build_stage_templates(
         &system,
@@ -2470,6 +2499,7 @@ fn theta_discount_lands_on_the_state_theta_column_with_anticipated_thermals() {
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
     let (topology, layout) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
     let study_dims = crate::test_support::build_study_dimensions(
@@ -2503,6 +2533,7 @@ fn theta_discount_lands_on_the_state_theta_column_with_anticipated_thermals() {
             &time_value,
             &hydro_cell_index,
             &resolved_params,
+            &coefficients,
         );
         super::build_stage_templates(
             &system,
@@ -2573,6 +2604,7 @@ fn delivery_stage_ids_equals_study_stage_ids_with_no_post_study() {
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
     let (topology, resolved) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
     let time_value = build_time_value_for(&system);
@@ -2590,6 +2622,7 @@ fn delivery_stage_ids_equals_study_stage_ids_with_no_post_study() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx = super::build_template_build_ctx(
         &system,
@@ -2620,6 +2653,7 @@ fn delivery_stage_ids_continue_the_horizon_with_synthetic_ids() {
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
     let (topology, resolved) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
     let time_value = build_time_value_for(&system);
@@ -2637,6 +2671,7 @@ fn delivery_stage_ids_continue_the_horizon_with_synthetic_ids() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx = super::build_template_build_ctx(
         &system,
@@ -2675,6 +2710,7 @@ fn delivery_vectors_read_the_post_study_element_at_its_delivery_index() {
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
     let (topology, resolved) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
     let time_value = build_time_value_for(&system);
@@ -2692,6 +2728,7 @@ fn delivery_vectors_read_the_post_study_element_at_its_delivery_index() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx = super::build_template_build_ctx(
         &system,
@@ -2725,6 +2762,7 @@ fn delivery_cumulative_discount_matches_recomputed_extended_horizon() {
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
     let (topology, resolved) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
     let time_value = build_time_value_for(&system);
@@ -2742,6 +2780,7 @@ fn delivery_cumulative_discount_matches_recomputed_extended_horizon() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx = super::build_template_build_ctx(
         &system,
@@ -2944,6 +2983,7 @@ fn build_post_study_resolved_for(
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
     let (topology, resolved) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
     let time_value = build_time_value_for(&system);
@@ -2961,6 +3001,7 @@ fn build_post_study_resolved_for(
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx = super::build_template_build_ctx(
         &system,
@@ -3363,6 +3404,7 @@ fn build_active_violations_layout_and_template() -> (StageLayout<'static>, Stage
         system,
     )));
     let resolved_params = Box::leak(Box::new(empty_resolved_params()));
+    let coefficients = Box::leak(Box::new(ResolvedGenericCoefficients::default()));
 
     let (topology, resolved) = crate::test_support::resolved_layout_for(system, par_lp);
     let topology = Box::leak(Box::new(topology));
@@ -3383,6 +3425,7 @@ fn build_active_violations_layout_and_template() -> (StageLayout<'static>, Stage
         time_value,
         hydro_cell_index,
         resolved_params,
+        coefficients,
     )));
     let ctx = super::build_template_build_ctx(
         system,
@@ -3864,6 +3907,7 @@ fn block_template(block_mode: BlockMode, n_blks: usize) -> StageTemplate {
     );
     let hydro_models = PrepareHydroModelsResult::default_from_system(&system);
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
 
     let (topology, resolved) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
@@ -3882,6 +3926,7 @@ fn block_template(block_mode: BlockMode, n_blks: usize) -> StageTemplate {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx = super::build_template_build_ctx(
         &system,
@@ -3976,6 +4021,7 @@ fn block_layout_and_template(
         system,
     )));
     let resolved_params = Box::leak(Box::new(empty_resolved_params()));
+    let coefficients = Box::leak(Box::new(ResolvedGenericCoefficients::default()));
 
     let (topology, resolved) = crate::test_support::resolved_layout_for(system, par_lp);
     let topology = Box::leak(Box::new(topology));
@@ -3996,6 +4042,7 @@ fn block_layout_and_template(
         time_value,
         hydro_cell_index,
         resolved_params,
+        coefficients,
     )));
     let ctx = super::build_template_build_ctx(
         system,
@@ -4550,6 +4597,7 @@ fn stage_geometry_rerouted_ranges_match_layout_source_at_every_stage() {
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
 
     let (topology, resolved) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
@@ -4568,6 +4616,7 @@ fn stage_geometry_rerouted_ranges_match_layout_source_at_every_stage() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx = super::build_template_build_ctx(
         &system,
@@ -4993,6 +5042,7 @@ fn filling_block_layout_and_template(
         system,
     )));
     let resolved_params = Box::leak(Box::new(empty_resolved_params()));
+    let coefficients = Box::leak(Box::new(ResolvedGenericCoefficients::default()));
 
     let (topology, resolved) = crate::test_support::resolved_layout_for(system, par_lp);
     let topology = Box::leak(Box::new(topology));
@@ -5013,6 +5063,7 @@ fn filling_block_layout_and_template(
         time_value,
         hydro_cell_index,
         resolved_params,
+        coefficients,
     )));
     let ctx = super::build_template_build_ctx(
         system,
@@ -5326,6 +5377,7 @@ fn template_anticipated_resolution_matches_setup_lead_time() {
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
 
     let (topology, resolved) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
@@ -5344,6 +5396,7 @@ fn template_anticipated_resolution_matches_setup_lead_time() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx = super::build_template_build_ctx(
         &system,
@@ -5413,6 +5466,7 @@ fn template_leadstages_byte_identical_to_setup_and_fallback() {
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
 
     let (topology, resolved) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
@@ -5431,6 +5485,7 @@ fn template_leadstages_byte_identical_to_setup_and_fallback() {
         &time_value,
         &hydro_cell_index,
         &resolved_params,
+        &coefficients,
     );
     let ctx = super::build_template_build_ctx(
         &system,
@@ -5541,6 +5596,7 @@ fn build_stage_templates_never_emits_k0_advisory_itself() {
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
     let par_lp = PrecomputedPar::default();
     let resolved_params = empty_resolved_params();
+    let coefficients = ResolvedGenericCoefficients::default();
     let (topology, layout) = crate::test_support::resolved_layout_for(&system, &par_lp);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
     let study_dims = crate::test_support::build_study_dimensions(
@@ -5561,6 +5617,7 @@ fn build_stage_templates_never_emits_k0_advisory_itself() {
             &time_value,
             &hydro_cell_index,
             &resolved_params,
+            &coefficients,
         );
         let _ = super::build_stage_templates(
             &system,

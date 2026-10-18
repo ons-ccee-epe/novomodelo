@@ -185,13 +185,8 @@ pub struct StudySetup {
     /// rolling-seed emitter's per-stage windows never re-derive the calendar.
     pub(crate) study_stage_dates: Vec<(NaiveDate, NaiveDate)>,
 
-    /// Resolved `(parameter_id, stage)` coefficients; consumed by the LP builder
-    /// and the generic-constraint echo.
-    pub(crate) resolved_parameters: ResolvedParameters,
-
     /// Every generic-constraint term value and bound remainder per study stage
-    /// and block, resolved from `resolved_parameters`.
-    #[expect(dead_code, reason = "builder and echo readers not yet moved")]
+    /// and block.
     pub(crate) resolved_generic_coefficients: ResolvedGenericCoefficients,
 
     /// Iteration-loop parameters projected from [`crate::config::LoopConfig`].
@@ -388,7 +383,6 @@ impl StudySetup {
             stage_data,
             initial,
             energy_conversion,
-            resolved_parameters,
             resolved_generic_coefficients,
             transit_seed_arcs,
         } = resolve_stage_data(system, &config, &stochastic, &hydro_models)?;
@@ -474,7 +468,6 @@ impl StudySetup {
             transit_seed_arcs,
             past_defluences: system.initial_conditions().past_defluences.clone(),
             study_stage_dates,
-            resolved_parameters,
             resolved_generic_coefficients,
             loop_params,
             simulation_config,
@@ -1821,7 +1814,6 @@ struct ResolvedStageInputs {
     stage_data: StageData,
     initial: InitialConditions,
     energy_conversion: EnergyConversionSet,
-    resolved_parameters: ResolvedParameters,
     resolved_generic_coefficients: ResolvedGenericCoefficients,
     transit_seed_arcs: Vec<TransitSeedArc>,
 }
@@ -1830,10 +1822,10 @@ struct ResolvedStageInputs {
 /// and initial conditions built once before scenario libraries and the node
 /// graph.
 ///
-/// `energy_conversion`, `resolved_parameters`, `resolved_generic_coefficients`
-/// and `transit_seed_arcs` return alongside [`StageData`] rather than fold into
-/// it — all four are `StudySetup`'s own fields, not part of the
-/// stage/training/simulation contexts' shared inputs.
+/// `energy_conversion`, `resolved_generic_coefficients` and `transit_seed_arcs`
+/// return alongside [`StageData`] rather than fold into it — all three are
+/// `StudySetup`'s own fields, not part of the stage/training/simulation
+/// contexts' shared inputs.
 ///
 /// # Errors
 ///
@@ -1899,6 +1891,7 @@ fn resolve_stage_data(
         &time_value,
         &hydro_cell_index,
         &resolved_parameters,
+        &resolved_generic_coefficients,
     );
 
     let (stage_templates, scaling_report) = build_postprocessed_templates(
@@ -1943,7 +1936,6 @@ fn resolve_stage_data(
         stage_data,
         initial,
         energy_conversion,
-        resolved_parameters,
         resolved_generic_coefficients,
         transit_seed_arcs,
     })

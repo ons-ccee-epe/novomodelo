@@ -1,5 +1,5 @@
 use novomodelo_core::commissioning::Phase;
-use novomodelo_core::{BlockMode, CoefficientRef, ContractType, Stage, is_exact_zero};
+use novomodelo_core::{BlockMode, ContractType, Stage, is_exact_zero};
 
 use super::generic_constraints::resolve_variable_ref;
 use crate::hydro_models::EvaporationModel;
@@ -1181,19 +1181,17 @@ pub(super) fn fill_generic_constraint_entries(
         row_upper[row] = entry.bound_upper.unwrap_or(f64::INFINITY);
 
         row_entries.clear();
-        for term in &constraint.expression.terms {
+        for (term_idx, term) in constraint.expression.terms.iter().enumerate() {
+            let coefficient = ctx.resolved.resolved_generic_coefficients.term_value(
+                entry.constraint_idx,
+                term_idx,
+                stage_idx,
+                entry.block_idx,
+            );
             let pairs =
                 resolve_variable_ref(&term.variable, entry.block_idx, stage_idx, ctx, layout);
             for (col, multiplier) in pairs {
-                let coef = match term.coefficient {
-                    CoefficientRef::Literal(v) => v,
-                    CoefficientRef::Parameter(param_id) => {
-                        ctx.resolved
-                            .resolved_parameters
-                            .get(param_id, stage_idx, entry.block_idx)
-                    }
-                };
-                row_entries.push((col, coef * term.scale * multiplier));
+                row_entries.push((col, coefficient * multiplier));
             }
         }
         push_merged_row_entries(row, &mut row_entries, col_entries);
