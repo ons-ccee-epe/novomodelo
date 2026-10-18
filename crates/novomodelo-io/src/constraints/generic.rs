@@ -129,7 +129,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use super::named_expression_inline::{
-    ParsedExpression, ParsedTerm, detect_cycles, inline, validate_references_resolve,
+    ParsedExpression, ParsedTerm, detect_cycles, inline, named_reference_graph,
+    validate_references_resolve,
 };
 use super::rhs_normalize::{RelOp, SideTerm, normalize};
 use crate::LoadError;
@@ -281,10 +282,12 @@ pub fn parse_generic_constraints(
     validate_raw(&raw, path, name_to_id, line_index)?;
 
     let table = parse_named_expressions(&raw.expressions, path, name_to_id, line_index)?;
-    detect_cycles(&table).map_err(|message| LoadError::SchemaError {
-        path: path.to_path_buf(),
-        field: "expressions".to_string(),
-        message,
+    detect_cycles(&named_reference_graph(&table), "named-expression").map_err(|message| {
+        LoadError::SchemaError {
+            path: path.to_path_buf(),
+            field: "expressions".to_string(),
+            message,
+        }
     })?;
     validate_expression_references_resolve(&table, path)?;
 
