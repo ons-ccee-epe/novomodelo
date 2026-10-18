@@ -28,7 +28,7 @@ impl ResolvedSeries {
 }
 
 /// An absent bound side is `None`, never a zero series.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ResolvedConstraint {
     terms: Vec<ResolvedSeries>,
     lower: Option<ResolvedSeries>,

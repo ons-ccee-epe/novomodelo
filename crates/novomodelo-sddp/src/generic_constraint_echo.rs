@@ -46,7 +46,7 @@ fn build_echo_rows_from_parts(
     coefficients: &ResolvedGenericCoefficients,
     constraints: &[GenericConstraint],
 ) -> Vec<GenericConstraintEchoRow> {
-    let mut rows: Vec<GenericConstraintEchoRow> = Vec::new();
+    let mut rows = Vec::new();
 
     for (stage_idx, entries) in entries_per_stage.iter().enumerate() {
         let stage_id = stage_ids[stage_idx];
