@@ -197,11 +197,11 @@ pub(crate) struct LoweredRelation {
 }
 
 /// Parses and lowers a constraint expression. A relation `L op R` moves every right-side
-/// variable left with a flipped sign and targets its endpoint(s) with `R.c - L.c`, reading a
-/// missing `R.c` as `literal(0.0)` and a missing `L.c` as nothing: a left-only constant becomes
-/// `0.0 - L.c`, never `-L.c` (which turns a `+0.0` constant into `-0.0`), and a relation with
-/// no constant still targets `literal(0.0)`. An expression without an operator targets no
-/// endpoint and cannot have a constant part; a named body's constant counts as its side's.
+/// variable left with a flipped sign and targets its endpoint(s) with a remainder that starts
+/// from `literal(0.0)`, adds `R.c` and subtracts `L.c`, each only when present, so it is never
+/// `-0.0`; `R.c` alone or `-L.c` would keep or create one. An expression without an operator
+/// targets no endpoint and cannot have a constant part; a named body's constant counts as its
+/// side's.
 pub(crate) fn lower_relation(src: &str, scope: &Scope) -> Result<LoweredRelation, Diagnostic> {
     let relation = parse(src)?;
     let rhs = relation.rhs.as_ref().map(|(_, rhs)| rhs);
@@ -490,17 +490,15 @@ impl<'a> Lowering<'a> {
             &AddOp::Sub,
             &whole,
         )?;
-        let right_constant = right.constant.unwrap_or_else(|| ScalarExpr::literal(0.0));
-        let remainder = match left.constant {
-            Some(left_constant) => {
-                self.check_budget(
-                    binary_ops(Some(&right_constant), Some(&left_constant)),
-                    &whole,
-                )?;
-                checked(right_constant - left_constant, &whole)?
-            }
-            None => right_constant,
-        };
+        let mut remainder = ScalarExpr::literal(0.0);
+        if let Some(right_constant) = right.constant {
+            self.check_budget(binary_ops(Some(&remainder), Some(&right_constant)), &whole)?;
+            remainder = checked(remainder + right_constant, &whole)?;
+        }
+        if let Some(left_constant) = left.constant {
+            self.check_budget(binary_ops(Some(&remainder), Some(&left_constant)), &whole)?;
+            remainder = checked(remainder - left_constant, &whole)?;
+        }
         let (lower, upper) = match op {
             RelOp::Le => (None, Some(remainder)),
             RelOp::Ge => (Some(remainder), None),
@@ -2155,24 +2153,30 @@ mod tests {
         ScalarExpr::param(EntityId(11))
     }
 
-    /// derived: `h0 >= @p` targets the lower endpoint with `p` itself (one op), so at
-    /// `p = -0.0` it is `-0.0`; `h0 >= 2 * @p * @q - @a * @b + 5` keeps the right side's program
-    /// `2, p, mul, q, mul, a, b, mul, sub, 5, add` (11 ops), at `p = 3`, `q = 0.5`, `a = 2`,
-    /// `b = 0.25` equal to `((2.0 * 3.0) * 0.5 - 2.0 * 0.25) + 5.0 = 7.5`.
+    /// derived: `h0 >= @p` targets the lower endpoint with `0, p, add` (3 ops), at `p = -0.0`
+    /// equal to `0.0 + -0.0 = +0.0` and at `p = 1.25` to `1.25`;
+    /// `h0 >= 2 * @p * @q - @a * @b + 5` targets it with `0` added to the right side's program
+    /// `2, p, mul, q, mul, a, b, mul, sub, 5, add` (13 ops in all), at `p = 3`, `q = 0.5`,
+    /// `a = 2`, `b = 0.25` equal to `0.0 + (((2.0 * 3.0) * 0.5 - 2.0 * 0.25) + 5.0) = 7.5`.
     #[test]
-    fn a_bare_parameter_bound_keeps_its_single_leaf() {
+    fn a_bare_parameter_bound_starts_from_zero() {
         let bare = relation("hydro_generation(0) >= @p");
         assert_eq!(bare.terms, [(hg(0), lit(1.0))]);
         let lower = bare.lower.unwrap();
-        assert_eq!(lower.as_param(), Some(EntityId(10)));
-        assert_eq!(lower.op_count(), 1);
-        assert_eq!(lower.evaluate(|_| -0.0).to_bits(), (-0.0_f64).to_bits());
+        assert_eq!(lower, lit(0.0) + p());
+        assert_eq!(lower.as_param(), None);
+        assert_eq!(lower.op_count(), 3);
+        assert_eq!(lower.evaluate(|_| -0.0).to_bits(), 0.0_f64.to_bits());
+        assert_eq!(lower.evaluate(|_| 1.25).to_bits(), 1.25_f64.to_bits());
         assert_eq!(bare.upper, None);
 
         let products = relation("hydro_generation(0) >= 2 * @p * @q - @a * @b + 5");
         let lower = products.lower.unwrap();
-        assert_eq!(lower, lit(2.0) * p() * q() - a() * b() + lit(5.0));
-        assert_eq!(lower.op_count(), 11);
+        assert_eq!(
+            lower,
+            lit(0.0) + (lit(2.0) * p() * q() - a() * b() + lit(5.0))
+        );
+        assert_eq!(lower.op_count(), 13);
         let value = lower.evaluate(|id| match id {
             EntityId(10) => 3.0,
             EntityId(11) => 0.5,
@@ -2182,6 +2186,110 @@ mod tests {
         });
         assert_eq!(value.to_bits(), 7.5_f64.to_bits());
         assert_eq!(products.upper, None);
+    }
+
+    /// derived: each expected value replays the bound fold of `rhs_normalize::normalize` and
+    /// `resolve_affine`, `0.0` plus each parameter term `coef * leaf` and then each product
+    /// `scale * left * right`, right side first and left side negated: `h0 <= -2 * @p * @q` is `0.0 + (-2.0 * p) * q`, `h0 >= h1 - @p * @q` is
+    /// `0.0 + (-1.0 * p) * q`, `h0 <= @a + @b` is `(0.0 + 1.0 * a) + 1.0 * b`, `h0 <= -@a` is
+    /// `0.0 + -1.0 * a`, `h0 <= 2 * @a` is `0.0 + 2.0 * a`, `h0 >= @p` is `0.0 + 1.0 * p` and
+    /// `h0 + @a >= @b` is `(0.0 + 1.0 * b) + -1.0 * a`; the `+0.0` start absorbs a `-0.0` sum,
+    /// so none is `-0.0`. Away from `-0.0` values cannot tell `0, c, add` from `c`, so the
+    /// programs are also compared with constructor-built ones.
+    #[test]
+    fn right_only_and_two_sided_remainders_are_never_negative_zero() {
+        struct Shape {
+            src: &'static str,
+            program: ScalarExpr,
+            terms: &'static [(f64, i32)],
+            products: &'static [(f64, i32, i32)],
+        }
+        let shapes = [
+            Shape {
+                src: "hydro_generation(0) <= -2 * @p * @q",
+                program: lit(0.0) + lit(-2.0) * p() * q(),
+                terms: &[],
+                products: &[(-2.0, 10, 11)],
+            },
+            Shape {
+                src: "hydro_generation(0) >= hydro_generation(1) - @p * @q",
+                program: lit(0.0) + -(p() * q()),
+                terms: &[],
+                products: &[(-1.0, 10, 11)],
+            },
+            Shape {
+                src: "hydro_generation(0) <= @a + @b",
+                program: lit(0.0) + (a() + b()),
+                terms: &[(1.0, 7), (1.0, 8)],
+                products: &[],
+            },
+            Shape {
+                src: "hydro_generation(0) <= -@a",
+                program: lit(0.0) + -a(),
+                terms: &[(-1.0, 7)],
+                products: &[],
+            },
+            Shape {
+                src: "hydro_generation(0) <= 2 * @a",
+                program: lit(0.0) + lit(2.0) * a(),
+                terms: &[(2.0, 7)],
+                products: &[],
+            },
+            Shape {
+                src: "hydro_generation(0) >= @p",
+                program: lit(0.0) + p(),
+                terms: &[(1.0, 10)],
+                products: &[],
+            },
+            Shape {
+                src: "hydro_generation(0) + @a >= @b",
+                program: (lit(0.0) + b()) - a(),
+                terms: &[(1.0, 8), (-1.0, 7)],
+                products: &[],
+            },
+        ];
+        let valuations: [[(i32, f64); 4]; 3] = [
+            [(7, 0.0), (8, 0.0), (10, 0.0), (11, 0.0)],
+            [(7, -0.0), (8, -0.0), (10, -0.0), (11, -0.0)],
+            [(7, 0.0), (8, -0.0), (10, 0.0), (11, -0.0)],
+        ];
+        for shape in shapes {
+            let lowered = relation(shape.src);
+            let remainder = match (lowered.lower, lowered.upper) {
+                (Some(remainder), None) | (None, Some(remainder)) => remainder,
+                endpoints => panic!("{:?} targets {endpoints:?}", shape.src),
+            };
+            assert_eq!(remainder, shape.program, "{:?}", shape.src);
+            for valuation in valuations {
+                let leaf = |id: i32| match valuation.iter().find(|&&(known, _)| known == id) {
+                    Some(&(_, value)) => value,
+                    None => panic!("unexpected parameter id {id}"),
+                };
+                let value = remainder.evaluate(|EntityId(id)| leaf(id));
+                let linear = shape
+                    .terms
+                    .iter()
+                    .fold(0.0, |acc, &(coef, id)| acc + coef * leaf(id));
+                let old = shape
+                    .products
+                    .iter()
+                    .fold(linear, |acc, &(scale, left, right)| {
+                        acc + scale * leaf(left) * leaf(right)
+                    });
+                assert_ne!(
+                    value.to_bits(),
+                    (-0.0_f64).to_bits(),
+                    "{:?} at {valuation:?}",
+                    shape.src
+                );
+                assert_eq!(
+                    value.to_bits(),
+                    old.to_bits(),
+                    "{:?} at {valuation:?}",
+                    shape.src
+                );
+            }
+        }
     }
 
     /// derived: `h0 + 2 >= 5` is `5.0 - 2.0 = 3.0`; `h0 + 2 >= 10 - 73` is
@@ -2280,7 +2388,7 @@ mod tests {
     }
 
     /// derived: `h0 == 3` puts `3.0` on both endpoints; `h0 + 2 == h1` puts `0.0 - 2.0 = -2.0`
-    /// on both; `h0 == @p` puts `p` on both.
+    /// on both; `h0 == @p` puts `0, p, add` on both.
     #[test]
     fn equality_targets_both_endpoints() {
         let three = relation("hydro_generation(0) == 3");
@@ -2298,12 +2406,12 @@ mod tests {
         );
 
         let parameter = relation("hydro_generation(0) == @p");
-        assert_eq!(parameter.lower, Some(p()));
-        assert_eq!(parameter.upper, Some(p()));
+        assert_eq!(parameter.lower, Some(lit(0.0) + p()));
+        assert_eq!(parameter.upper, Some(lit(0.0) + p()));
     }
 
     /// derived: `2 * h0 <= 3 * h0 + @a` gives `h0` the literal `2.0 - 3.0 = -1.0` and the upper
-    /// endpoint `a`; `t5 <= 0.87 * h140` gives `[1.0, -0.87]` and the upper endpoint `+0.0`;
+    /// endpoint `0, a, add`; `t5 <= 0.87 * h140` gives `[1.0, -0.87]` and the upper endpoint `+0.0`;
     /// `2 * @a * h0 <= 3 * @a * h0` gives `h0` the program `2, a, mul, 3, a, mul, sub` (7 ops),
     /// at `a = 0.1` equal to `(2.0 * 0.1) - (3.0 * 0.1)`.
     #[test]
@@ -2311,10 +2419,7 @@ mod tests {
         let src = "2 * hydro_generation(0) <= 3 * hydro_generation(0) + @a";
         assert_eq!(relation_terms(src), [(hg(0), (-1.0_f64).to_bits())]);
         let merged = relation(src);
-        assert_eq!(
-            merged.upper.as_ref().and_then(ScalarExpr::as_param),
-            Some(EntityId(7))
-        );
+        assert_eq!(merged.upper, Some(lit(0.0) + a()));
         assert_eq!(merged.lower, None);
 
         let src = "thermal_generation(5) <= 0.87 * hydro_generation(140)";
@@ -2536,7 +2641,8 @@ mod tests {
     }
 
     /// derived: `e = h0 + 5`, so `@e <= 7` keeps `h0` at `1.0` and targets the upper endpoint
-    /// `7.0 - 5.0 = 2.0`; `@e >= @p` targets the lower endpoint with the program `p, 5, sub`.
+    /// `7.0 - 5.0 = 2.0`; `@e >= @p` targets the lower endpoint with the program
+    /// `0, p, add, 5, sub`.
     #[test]
     fn an_affine_body_moves_its_constant_to_the_bound() {
         let decls = [("e", "hydro_generation(0) + 5")];
@@ -2553,7 +2659,7 @@ mod tests {
         assert_eq!(lowered.lower, None);
 
         let parameter = named_relation(&decls, "@e >= @p");
-        assert_eq!(parameter.lower, Some(p() - lit(5.0)));
+        assert_eq!(parameter.lower, Some(lit(0.0) + p() - lit(5.0)));
         assert_eq!(parameter.upper, None);
     }
 
