@@ -172,7 +172,7 @@ fn penalty_basis_label(basis: PenaltyBasis) -> &'static str {
 /// Return `(kind_tag, rendered_label)` for a variable reference — the `"kind"`
 /// discriminant and the `"kind(args)"` display string. The exhaustive `match`
 /// makes a new [`VariableRef`] variant a compile error.
-fn render_variable(v: &VariableRef) -> (&'static str, String) {
+pub(crate) fn render_variable(v: &VariableRef) -> (&'static str, String) {
     let (kind, args) = match *v {
         VariableRef::HydroStorage { hydro_id } => ("hydro_storage", format!("id={}", hydro_id.0)),
         VariableRef::HydroTurbined {

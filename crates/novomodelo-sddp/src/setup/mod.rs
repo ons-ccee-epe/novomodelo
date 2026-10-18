@@ -49,6 +49,7 @@ use novomodelo_stochastic::season_cast::{DatedWindow, StageCalendar};
 use crate::StageTemplates;
 use crate::bucket_topology;
 use crate::config::LoopParams;
+use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::{ResolvedParameters, build_resolved_parameters};
 use crate::scaling_report::ScalingReport;
 use crate::simulation::SimulationConfig;
@@ -87,8 +88,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use novomodelo_core::{
-    AffineBound, AnticipatedConfig, CoefficientRef, EntityId, GenericConstraint, Hydro,
-    HydroPastDefluence, ScalarParameter, Stage, StageId, System, Thermal,
+    AnticipatedConfig, EntityId, Hydro, HydroPastDefluence, ScalarParameter, Stage, StageId,
+    System, Thermal,
     scenario::{SamplingScheme, ScenarioSource},
 };
 use novomodelo_io::StageIdResolver;
@@ -187,6 +188,11 @@ pub struct StudySetup {
     /// Resolved `(parameter_id, stage)` coefficients; consumed by the LP builder
     /// and the generic-constraint echo.
     pub(crate) resolved_parameters: ResolvedParameters,
+
+    /// Every generic-constraint term value and bound remainder per study stage
+    /// and block, resolved from `resolved_parameters`.
+    #[expect(dead_code, reason = "builder and echo readers not yet moved")]
+    pub(crate) resolved_generic_coefficients: ResolvedGenericCoefficients,
 
     /// Iteration-loop parameters projected from [`crate::config::LoopConfig`].
     ///
@@ -378,8 +384,14 @@ impl StudySetup {
             .set_solve_order(&solve_order_keys)
             .map_err(|e| SddpError::Validation(e.to_string()))?;
 
-        let (stage_data, initial, energy_conversion, resolved_parameters, transit_seed_arcs) =
-            resolve_stage_data(system, &config, &stochastic, &hydro_models)?;
+        let ResolvedStageInputs {
+            stage_data,
+            initial,
+            energy_conversion,
+            resolved_parameters,
+            resolved_generic_coefficients,
+            transit_seed_arcs,
+        } = resolve_stage_data(system, &config, &stochastic, &hydro_models)?;
         let n_stages = stage_data.stage_templates.templates.len();
 
         let study_stage_ids: Vec<i32> = stage_data.stages.iter().map(|s| s.id).collect();
@@ -463,6 +475,7 @@ impl StudySetup {
             past_defluences: system.initial_conditions().past_defluences.clone(),
             study_stage_dates,
             resolved_parameters,
+            resolved_generic_coefficients,
             loop_params,
             simulation_config,
             simulation_enumerated: config.simulation_enumerated,
@@ -878,22 +891,30 @@ fn build_postprocessed_templates(
     Ok((stage_templates, scaling_report))
 }
 
-/// Build the energy-conversion set and the resolved-parameter table, then fail
-/// loud on a generic constraint that references an unresolved scalar-parameter
-/// id — the shared prefix of [`resolve_stage_data`] and the
-/// validate-time [`validate_generic_constraint_parameters`].
+/// Build the energy-conversion set, the resolved-parameter table and the
+/// resolved generic-constraint coefficients — the shared prefix of
+/// [`resolve_stage_data`] and the validate-time
+/// [`validate_generic_constraint_parameters`].
 ///
 /// # Errors
 ///
 /// [`SddpError::Validation`] on energy-conversion or resolved-parameter
-/// construction failure, or a generic constraint referencing an id the resolved
-/// table never held (via [`check_scalar_parameters_present`]).
+/// construction failure, or a generic-constraint coefficient or bound that
+/// references an unresolved scalar parameter or resolves to a non-finite value
+/// at some study stage and block.
 fn build_energy_conversion_and_resolved_parameters(
     system: &System,
     hydro_models: &PrepareHydroModelsResult,
     scalar_parameters: &[ScalarParameter],
     cost_scale_factor: f64,
-) -> Result<(EnergyConversionSet, ResolvedParameters), SddpError> {
+) -> Result<
+    (
+        EnergyConversionSet,
+        ResolvedParameters,
+        ResolvedGenericCoefficients,
+    ),
+    SddpError,
+> {
     let study_stage_ids: Vec<StageId> = system
         .stages()
         .iter()
@@ -942,20 +963,31 @@ fn build_energy_conversion_and_resolved_parameters(
     )
     .map_err(|e| SddpError::Validation(e.to_string()))?;
 
-    check_scalar_parameters_present(system.generic_constraints(), &resolved_parameters)?;
+    let resolved_generic_coefficients = ResolvedGenericCoefficients::build(
+        system.generic_constraints(),
+        &resolved_parameters,
+        &study_stage_ids,
+        &stage_block_counts,
+    )
+    .map_err(|e| SddpError::Validation(e.to_string()))?;
 
-    Ok((energy_conversion, resolved_parameters))
+    Ok((
+        energy_conversion,
+        resolved_parameters,
+        resolved_generic_coefficients,
+    ))
 }
 
-/// Run study construction's scalar-parameter presence guard for `system`
-/// without building stage templates or a full [`StudySetup`], so a deck with no
-/// boundary policy still rejects an unresolved generic-constraint parameter at
-/// validate time (a boundary deck runs the same guard inside [`StudySetup::new`]).
+/// Reject an unresolved or non-finite generic-constraint coefficient or bound
+/// at validate time, without building stage templates or a full
+/// [`StudySetup`], so a deck with no boundary policy runs the same checks
+/// [`StudySetup::new`] runs.
 ///
 /// # Errors
 ///
 /// [`SddpError::Validation`] on a scalar parameter that fails to resolve, or a
-/// generic constraint referencing an id the resolved table never held.
+/// generic-constraint coefficient or bound that references an unresolved scalar
+/// parameter or resolves to a non-finite value.
 pub fn validate_generic_constraint_parameters(
     system: &System,
     hydro_models: &PrepareHydroModelsResult,
@@ -968,51 +1000,6 @@ pub fn validate_generic_constraint_parameters(
         scalar_parameters,
         cost_scale_factor,
     )?;
-    Ok(())
-}
-
-/// Fails loud when a generic constraint references a scalar-parameter id
-/// `resolved_parameters` never resolved, instead of letting
-/// [`ResolvedParameters::get`] fall through to its `0.0` sentinel once the LP
-/// build starts reading rows.
-///
-/// # Errors
-///
-/// [`SddpError::Validation`] naming the constraint and the missing id.
-fn check_scalar_parameters_present(
-    generic_constraints: &[GenericConstraint],
-    resolved_parameters: &ResolvedParameters,
-) -> Result<(), SddpError> {
-    let is_resolved = |id: EntityId| {
-        resolved_parameters
-            .id_to_slot
-            .binary_search_by_key(&id.0, |(k, _)| *k)
-            .is_ok()
-    };
-    for constraint in generic_constraints {
-        let expression_ids =
-            constraint
-                .expression
-                .terms
-                .iter()
-                .filter_map(|term| match term.coefficient {
-                    CoefficientRef::Parameter(id) => Some(id),
-                    CoefficientRef::Literal(_) => None,
-                });
-        let bound_ids = [&constraint.bound_lower, &constraint.bound_upper]
-            .into_iter()
-            .flatten()
-            .flat_map(AffineBound::params);
-        for id in expression_ids.chain(bound_ids) {
-            if !is_resolved(id) {
-                return Err(SddpError::Validation(format!(
-                    "generic constraint '{}' references scalar parameter id={} not \
-                     present in the resolved parameter table",
-                    constraint.name, id.0
-                )));
-            }
-        }
-    }
     Ok(())
 }
 
@@ -1829,14 +1816,24 @@ fn resolve_initial_conditions(
     }
 }
 
+/// The stage-phase inputs [`resolve_stage_data`] resolves for [`StudySetup::new`].
+struct ResolvedStageInputs {
+    stage_data: StageData,
+    initial: InitialConditions,
+    energy_conversion: EnergyConversionSet,
+    resolved_parameters: ResolvedParameters,
+    resolved_generic_coefficients: ResolvedGenericCoefficients,
+    transit_seed_arcs: Vec<TransitSeedArc>,
+}
+
 /// Resolve the stage phase: the state layout, LP templates, per-stage data,
 /// and initial conditions built once before scenario libraries and the node
 /// graph.
 ///
-/// `energy_conversion`, `resolved_parameters`, and `transit_seed_arcs` return
-/// alongside [`StageData`] rather than fold into it — all three are
-/// `StudySetup`'s own fields, not part of the stage/training/simulation
-/// contexts' shared inputs.
+/// `energy_conversion`, `resolved_parameters`, `resolved_generic_coefficients`
+/// and `transit_seed_arcs` return alongside [`StageData`] rather than fold into
+/// it — all four are `StudySetup`'s own fields, not part of the
+/// stage/training/simulation contexts' shared inputs.
 ///
 /// # Errors
 ///
@@ -1847,16 +1844,7 @@ fn resolve_stage_data(
     config: &StudyParams,
     stochastic: &StochasticContext,
     hydro_models: &PrepareHydroModelsResult,
-) -> Result<
-    (
-        StageData,
-        InitialConditions,
-        EnergyConversionSet,
-        ResolvedParameters,
-        Vec<TransitSeedArc>,
-    ),
-    SddpError,
-> {
+) -> Result<ResolvedStageInputs, SddpError> {
     let calendar = DeliveryCalendar::from_system(system);
     let (transit_bucket_topology, layout) = resolve_state_and_topology(
         system,
@@ -1874,12 +1862,13 @@ fn resolve_stage_data(
         config.boundary.is_present(),
     );
 
-    let (energy_conversion, resolved_parameters) = build_energy_conversion_and_resolved_parameters(
-        system,
-        hydro_models,
-        &config.scalar_parameters,
-        config.cost_scale_factor,
-    )?;
+    let (energy_conversion, resolved_parameters, resolved_generic_coefficients) =
+        build_energy_conversion_and_resolved_parameters(
+            system,
+            hydro_models,
+            &config.scalar_parameters,
+            config.cost_scale_factor,
+        )?;
 
     let stages: Vec<Stage> = system
         .stages()
@@ -1950,13 +1939,14 @@ fn resolve_stage_data(
         scaling_report,
     };
 
-    Ok((
+    Ok(ResolvedStageInputs {
         stage_data,
         initial,
         energy_conversion,
         resolved_parameters,
+        resolved_generic_coefficients,
         transit_seed_arcs,
-    ))
+    })
 }
 
 /// Build one phase's per-class [`PhaseLibraries`].
@@ -3270,8 +3260,8 @@ mod transit_seed_round_trip_tests {
 /// empty placeholder — see [`StudyParams::from_config`]): each gap class
 /// `build_resolved_parameters` can raise surfaces through
 /// [`StudySetup::new_with_boundary_requirements`], and a generic constraint
-/// referencing an id the table never resolved fails loud via
-/// `check_scalar_parameters_present` instead of reaching
+/// referencing an id the table never resolved fails loud while the resolved
+/// generic-constraint coefficients are built, instead of reaching
 /// [`ResolvedParameters::get`]'s `0.0` sentinel.
 #[cfg(test)]
 mod scalar_parameter_construction_tests {
@@ -3471,6 +3461,55 @@ mod scalar_parameter_construction_tests {
             crate::DEFAULT_COST_SCALE_FACTOR,
         )
         .expect("a deck with no generic-constraint parameter gap must pass the guard");
+    }
+
+    #[test]
+    fn validate_generic_constraint_parameters_rejects_a_non_finite_parameter_at_an_inactive_stage()
+    {
+        let base = k_fan_system(3, false);
+        let constraint = GenericConstraint {
+            id: EntityId(500),
+            name: "probe_constraint".to_string(),
+            description: None,
+            expression: ConstraintExpression { terms: vec![] },
+            slack: None,
+            bound_lower: Some(AffineBound::single(EntityId(7))),
+            bound_upper: None,
+        };
+        let system = SystemBuilder::new()
+            .buses(base.buses().to_vec())
+            .hydros(base.hydros().to_vec())
+            .stages(base.stages().to_vec())
+            .inflow_models(base.inflow_models().to_vec())
+            .load_models(base.load_models().to_vec())
+            .bounds(base.bounds().clone())
+            .penalties(base.penalties().clone())
+            .initial_conditions(base.initial_conditions().clone())
+            .policy_graph(base.policy_graph().clone())
+            .generic_constraints(vec![constraint])
+            .build()
+            .expect("adding a generic constraint keeps the fixture valid");
+        let n_study_stages = system.stages().iter().filter(|s| s.id >= 0).count();
+        let values = (0..n_study_stages)
+            .map(|s| if s == 1 { f64::NAN } else { 1.0 })
+            .collect();
+        let parameter = ScalarParameter {
+            id: EntityId(7),
+            name: "param_7".to_string(),
+            kind: ParameterKind::PerStage { values },
+        };
+        let hydro_models = PrepareHydroModelsResult::default_from_system(&system);
+        let err = super::validate_generic_constraint_parameters(
+            &system,
+            &hydro_models,
+            &[parameter],
+            crate::DEFAULT_COST_SCALE_FACTOR,
+        )
+        .expect_err("a NaN bound at a stage the constraint is inactive at must still reject");
+        assert!(
+            matches!(err, SddpError::Validation(ref msg) if msg.contains("probe_constraint") && msg.contains("the lower bound") && msg.contains("non-finite")),
+            "expected the non-finite bound message naming the constraint, got: {err:?}"
+        );
     }
 }
 

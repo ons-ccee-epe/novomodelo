@@ -145,6 +145,15 @@ impl Default for ResolvedParameters {
 }
 
 impl ResolvedParameters {
+    /// Whether the table holds parameter `id`; [`get`](Self::get) asserts on an
+    /// id it does not.
+    #[must_use]
+    pub fn contains(&self, id: EntityId) -> bool {
+        self.id_to_slot
+            .binary_search_by_key(&id.0, |(k, _)| *k)
+            .is_ok()
+    }
+
     /// Return the resolved `f64` value for `(id, stage_idx, block_idx)`.
     ///
     /// A length-1 inner block vector broadcasts to every `block_idx`; otherwise
