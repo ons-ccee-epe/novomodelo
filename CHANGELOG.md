@@ -17,9 +17,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same name times 10⁶/3600. With them a stored-energy constraint states its
   amounts in MWh and no stage duration enters either side; price its slack with
   `"penalty_basis": "per_unit"` so the penalty is a price per MWh on every stage.
-- A generic-constraint right-hand side accepts a product of two scalar
-  parameters, `@p * @q` or `coefficient * @p * @q` (for example
-  `@pct * @emax`). A product must be a top-level right-hand-side term.
+- A generic-constraint expression accepts arithmetic over numbers and
+  `@parameters` on both sides of the relation: `+`, `-`, `*`, `/`, parentheses
+  and unary minus, for example
+  `(@weight_a + @weight_b) * hydro_useful_volume_final(0) >= @pct * @emax`. It
+  must stay linear in LP variables: a product of two variables, or a division
+  by one, is rejected at load. A constant that divides by zero or is not finite
+  is rejected at load, and a value that resolves from parameters to a
+  non-finite number stops setup with an error naming the stage and block.
+- A scalar parameter in `constraints/generic_parameters.json` may be
+  `kind: "expression"`, a formula over other parameters, for example
+  `{ "id": 5, "name": "scaled_demand", "kind": "expression", "expression": "@discount_rate * @demand" }`.
+  A constraint reads it like any other parameter. A reference cycle or an LP
+  variable in the formula is rejected at load. The value is stored per block
+  when a parameter it reads varies by block, and the stored-energy pairing
+  warning (rule 51) checks the tags it reads.
 
 ### Changed
 
@@ -54,9 +66,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with 5 decimals instead of 1, so small gaps no longer round to `0.0%`.
 - A generic constraint written without a relational operator now drops a
   variable whose coefficient is exactly zero, such as `0 * x` or `x - x`, as a
-  relation already did. When every remaining variable is stage-level, the row
-  now collapses to one stage-level row, so under `"penalty_basis": "per_unit"` a
-  violation of it costs the penalty once instead of once per block.
+  relation already did. When every remaining variable is stage-level and
+  no coefficient or bound resolves to a per-block value, the row now collapses
+  to one stage-level row, so under `"penalty_basis": "per_unit"` a violation of
+  it costs the penalty once instead of once per block.
+- A generic-constraint expression nested deeper than 256 levels, counting
+  parentheses and unary operators alike, is rejected with a diagnostic.
+  Expanding named expressions into a constraint is likewise refused once the
+  expansion exceeds an operation budget set far above the size of an authored
+  constraint.
 - **BREAKING:** in `constraints/generic_parameters.json`, a payload field that
   does not belong to the entry's kind (for example `values` on a `constant`)
   stops the load. Only `block_values` was rejected before; the other fields
