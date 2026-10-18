@@ -3,7 +3,7 @@
 //! [`parse_generic_constraints`] reads `constraints/generic_constraints.json` and
 //! returns a sorted `Vec<GenericConstraint>`.
 //!
-//! ## JSON structure (spec SS3)
+//! ## JSON structure
 //!
 //! ```json
 //! {
@@ -75,7 +75,8 @@ struct RawConstraint {
     /// Optional human-readable description.
     description: Option<String>,
 
-    /// Expression string to be parsed. E.g. `"2.5 * thermal_generation(5) - hydro_generation(3)"`.
+    /// Linear expression over LP variables, with numbers and `@parameters` combined by `+`, `-`,
+    /// `*`, `/` and parentheses, e.g. `"2.5 * thermal_generation(5) - @k * hydro_generation(3) <= @cap"`.
     /// To constrain an anticipated thermal's commitment, use `"anticipated_decision(5)"` (stage-level scalar, no block index).
     /// To constrain one bus of a plant split across several buses, use `"hydro_turbined(5, bus=2)"`
     /// or `"hydro_generation(5, bus=2)"` — the only two variables accepting a `bus=` selector.
@@ -113,7 +114,8 @@ struct RawNamedExpression {
     /// Name bound to the expression; unique in the file and distinct from every scalar-parameter name.
     name: String,
 
-    /// Expression string, parsed under the variable + `@param`-coefficient grammar.
+    /// Linear expression over LP variables, under the same arithmetic as a constraint's
+    /// `expression`, without a relational operator.
     expression: String,
 
     /// Optional human-readable description.

@@ -24,7 +24,9 @@ use super::Diagnostic;
 use super::catalog::{LineBusPairIndex, LinePairOrientation, variable_from_call};
 use super::parser::{AddOp, Expr, ExprKind, MulOp, RelOp, parse};
 
-/// The most operations the coefficient programs and constant of one form may hold together.
+/// The most operations the coefficient programs and constant of one form may hold together; a
+/// guard against expansion blowup, set far above the size of an authored constraint so that
+/// authored files never meet it.
 pub(crate) const MAX_INLINED_OPS: usize = 100_000;
 
 /// The names an expression can read.

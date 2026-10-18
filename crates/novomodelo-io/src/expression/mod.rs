@@ -2,6 +2,42 @@
 //! arguments to a [`VariableRef`](novomodelo_core::VariableRef); [`lexer`] splits a source
 //! string into spanned tokens; [`parser`] builds their syntax tree; [`lower`] turns a tree into
 //! a [`ScalarExpr`](novomodelo_core::ScalarExpr) program.
+//!
+//! # Syntax
+//!
+//! An operand is a number, a `@name` reference to a scalar parameter or a named expression, a
+//! catalog variable call such as `hydro_generation(0)` or `hydro_turbined(5, bus=2)`, or a
+//! parenthesized expression. A number is a finite, non-negative literal; a sign is a unary
+//! operator. The operators are `+`, `-`, `*`, `/` and the unary signs `+` and `-`: a unary sign
+//! binds tightest, `*` and `/` bind tighter than `+` and `-`, and every binary operator is
+//! left-associative. An expression carries at most one relational operator, `<=`, `>=` or
+//! `==`, outside any parentheses.
+//!
+//! # Typing
+//!
+//! Every node types as a constant or a linear form over LP variables before anything folds. A
+//! constant times a form in either order, a form divided by a constant, and a sum of forms type
+//! as linear. A product of two forms and a division by a form are rejected. A scalar-parameter
+//! body reads neither an LP variable nor a named expression.
+//!
+//! # Relations
+//!
+//! A relation moves every variable term to the left and the constant to the right: the
+//! remainder is the right side's constant minus the left side's. `<=` assigns it to the upper
+//! bound, `>=` to the lower bound and `==` to both. An expression without a relational operator
+//! is the left-hand side alone and cannot carry a constant.
+//!
+//! # Named expressions
+//!
+//! A file's `expressions` array binds names to linear forms, each reading at least one LP
+//! variable. A `@name` reference lowers to its body's form, each body at most once per
+//! constraint, and a reference cycle is rejected at load.
+//!
+//! # Budgets
+//!
+//! Nesting of parentheses and unary operators is capped at [`parser::MAX_NESTING_DEPTH`]. A
+//! form whose programs would hold more than [`lower::MAX_INLINED_OPS`] operations is refused,
+//! which bounds named-expression expansion.
 
 use std::ops::Range;
 
