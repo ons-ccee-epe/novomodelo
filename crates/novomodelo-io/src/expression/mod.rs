@@ -1,11 +1,13 @@
 //! The generic-constraint expression language. [`catalog`] maps a variable name and its
 //! arguments to a [`VariableRef`](novomodelo_core::VariableRef); [`lexer`] splits a source
-//! string into spanned tokens; [`parser`] builds their syntax tree.
+//! string into spanned tokens; [`parser`] builds their syntax tree; [`lower`] turns a tree into
+//! a [`ScalarExpr`](novomodelo_core::ScalarExpr) program.
 
 use std::ops::Range;
 
 pub(crate) mod catalog;
 pub(crate) mod lexer;
+pub(crate) mod lower;
 pub(crate) mod parser;
 
 /// A rejection of an expression, located by a byte range of its source.
