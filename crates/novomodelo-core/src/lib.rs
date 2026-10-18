@@ -76,7 +76,9 @@ pub use entities::{
 pub use entity_id::EntityId;
 pub use error::ValidationError;
 pub use model::horizon::HorizonGraph;
-pub use model::parameters::{ComputedParameter, ParameterKind, ScalarParameter};
+pub use model::parameters::{
+    ComputedParameter, ParameterKind, ScalarParameter, expand_expression_parameters,
+};
 pub use model::penalty::{
     GlobalPenaltyDefaults, HydroPenaltyOverrides, resolve_bus_deficit_segments,
     resolve_bus_excess_cost, resolve_hydro_penalties, resolve_line_exchange_cost,

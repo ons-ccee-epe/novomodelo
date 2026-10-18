@@ -7,7 +7,8 @@
 use std::collections::HashMap;
 
 use novomodelo_core::{
-    ComputedParameter, EntityId, GenericConstraint, ParameterKind, VariableRef, temporal::BlockMode,
+    ComputedParameter, EntityId, GenericConstraint, ParameterKind, VariableRef,
+    expand_expression_parameters, temporal::BlockMode,
 };
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
@@ -160,7 +161,8 @@ fn matching_productivity(unit: EnergyUnit) -> &'static str {
 /// cancel: a `max_stored_energy*(h)` ceiling beside a same-unit productivity tag
 /// for the same hydro `h` other than the matching one (another scope or
 /// evaluator), or raw and `MWh` tags mixed in one constraint (a factor of
-/// `10^6/3600` apart). Warning only — never rejected.
+/// `10^6/3600` apart). It reads tags reached through expression parameters too.
+/// Warning only — never rejected.
 pub(super) fn check_productivity_tag_pairing(data: &ParsedData, ctx: &mut ValidationContext) {
     let computed: HashMap<EntityId, EnergyTag> = data
         .scalar_parameters
@@ -174,10 +176,11 @@ pub(super) fn check_productivity_tag_pairing(data: &ParsedData, ctx: &mut Valida
         .collect();
 
     for constraint in &data.generic_constraints {
-        let mut tags: Vec<EnergyTag> = constraint
-            .parameter_ids()
-            .filter_map(|id| computed.get(&id).copied())
-            .collect();
+        let mut tags: Vec<EnergyTag> =
+            expand_expression_parameters(constraint.parameter_ids(), &data.scalar_parameters)
+                .iter()
+                .filter_map(|id| computed.get(id).copied())
+                .collect();
         tags.sort_by_key(|t| (t.hydro_id, t.name));
         tags.dedup_by_key(|t| (t.hydro_id, t.name));
 
@@ -978,6 +981,14 @@ mod tests {
         }
     }
 
+    fn expression_scalar_param(id: i32, name: &str, expression: ScalarExpr) -> ScalarParameter {
+        ScalarParameter {
+            id: EntityId::from(id),
+            name: name.to_string(),
+            kind: ParameterKind::Expression { expression },
+        }
+    }
+
     fn param_term(coefficient_id: EntityId) -> LinearTerm {
         LinearTerm {
             coefficient: ScalarExpr::param(coefficient_id),
@@ -1166,6 +1177,96 @@ mod tests {
         assert!(
             ctx.warnings().is_empty(),
             "the matching integrated_accumulated_productivity coefficient must not warn"
+        );
+    }
+
+    #[test]
+    fn mismatched_pairing_behind_an_expression_parameter_warns_once() {
+        let data = make_data_with_constraint(
+            vec![
+                computed_scalar_param(
+                    1,
+                    "rho_acum",
+                    ComputedParameter::AccumulatedProductivity {
+                        hydro_id: EntityId::from(7),
+                    },
+                ),
+                computed_scalar_param(
+                    2,
+                    "e_max",
+                    ComputedParameter::MaxStoredEnergy {
+                        hydro_id: EntityId::from(7),
+                    },
+                ),
+                expression_scalar_param(
+                    3,
+                    "e",
+                    ScalarExpr::param(EntityId(1)) * ScalarExpr::literal(2.0),
+                ),
+            ],
+            constraint_with_lhs_and_upper_bound(EntityId(3), EntityId(2)),
+        );
+        let mut ctx = ValidationContext::new();
+        check_productivity_tag_pairing(&data, &mut ctx);
+
+        let messages: Vec<String> = ctx
+            .warnings()
+            .iter()
+            .map(|e| {
+                assert_eq!(e.kind, ErrorKind::SemanticAmbiguity);
+                e.message.clone()
+            })
+            .collect();
+        assert_eq!(messages.len(), 1, "expected one warning, got: {messages:?}");
+        assert!(
+            messages[0].contains('7'),
+            "message should name hydro 7, got: {}",
+            messages[0]
+        );
+        assert!(
+            messages[0].contains("integrated_accumulated_productivity"),
+            "message should name the matching coefficient, got: {}",
+            messages[0]
+        );
+
+        assert!(
+            ctx.into_result().is_ok(),
+            "a warning must not fail into_result"
+        );
+    }
+
+    #[test]
+    fn matching_integrated_coefficient_behind_an_expression_parameter_no_warning() {
+        let data = make_data_with_constraint(
+            vec![
+                computed_scalar_param(
+                    1,
+                    "rho_acum_int",
+                    ComputedParameter::IntegratedAccumulatedProductivity {
+                        hydro_id: EntityId::from(7),
+                    },
+                ),
+                computed_scalar_param(
+                    2,
+                    "e_max",
+                    ComputedParameter::MaxStoredEnergy {
+                        hydro_id: EntityId::from(7),
+                    },
+                ),
+                expression_scalar_param(
+                    3,
+                    "e",
+                    ScalarExpr::param(EntityId(1)) * ScalarExpr::literal(2.0),
+                ),
+            ],
+            constraint_with_lhs_and_upper_bound(EntityId(3), EntityId(2)),
+        );
+        let mut ctx = ValidationContext::new();
+        check_productivity_tag_pairing(&data, &mut ctx);
+
+        assert!(
+            ctx.warnings().is_empty(),
+            "the matching coefficient reached through an expression must not warn"
         );
     }
 

@@ -15,8 +15,10 @@
 //! - **Consumption** (substituting resolved values into LP rows) belongs to the
 //!   LP builder in the solver crate.
 //!
-//! This module defines only the structural types — it contains no I/O, no
-//! resolution logic, and no LP wiring.
+//! This module defines the structural types and the walk over the parameters
+//! they reference — it contains no I/O, no resolution logic, and no LP wiring.
+
+use std::collections::{BTreeSet, HashMap};
 
 use crate::{EntityId, ScalarExpr};
 
@@ -337,6 +339,33 @@ pub struct ScalarParameter {
     pub kind: ParameterKind,
 }
 
+/// The ids reachable from `roots` through expression parameters, including the roots.
+///
+/// An id no parameter declares is kept as a leaf, and a reference cycle terminates.
+#[must_use]
+pub fn expand_expression_parameters(
+    roots: impl IntoIterator<Item = EntityId>,
+    parameters: &[ScalarParameter],
+) -> BTreeSet<EntityId> {
+    let expressions: HashMap<EntityId, &ScalarExpr> = parameters
+        .iter()
+        .filter_map(|p| match &p.kind {
+            ParameterKind::Expression { expression } => Some((p.id, expression)),
+            _ => None,
+        })
+        .collect();
+    let mut pending: Vec<EntityId> = roots.into_iter().collect();
+    let mut reached = BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if reached.insert(id)
+            && let Some(expression) = expressions.get(&id)
+        {
+            pending.extend(expression.params());
+        }
+    }
+    reached
+}
+
 // Serde intermediate: `PerStage` is a dense `Vec<f64>` in memory but
 // `[[stage_id, value], ...]` on the wire; the other variants are shape-identical.
 
@@ -454,9 +483,75 @@ impl<'de> serde::Deserialize<'de> for ParameterKind {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "serde")]
-    use super::ScalarParameter;
-    use super::{ComputedParameter, EntityId, ParameterKind, ScalarExpr};
+    use std::collections::BTreeSet;
+
+    use super::{
+        ComputedParameter, EntityId, ParameterKind, ScalarExpr, ScalarParameter,
+        expand_expression_parameters,
+    };
+
+    fn expression_param(id: i32, expression: ScalarExpr) -> ScalarParameter {
+        ScalarParameter {
+            id: EntityId(id),
+            name: format!("e{id}"),
+            kind: ParameterKind::Expression { expression },
+        }
+    }
+
+    fn ids(values: &[i32]) -> BTreeSet<EntityId> {
+        values.iter().copied().map(EntityId).collect()
+    }
+
+    fn expand(roots: &[i32], parameters: &[ScalarParameter]) -> BTreeSet<EntityId> {
+        expand_expression_parameters(roots.iter().copied().map(EntityId), parameters)
+    }
+
+    #[test]
+    fn expand_expression_parameters_includes_the_roots() {
+        let parameters = [ScalarParameter {
+            id: EntityId(1),
+            name: "c".to_string(),
+            kind: ParameterKind::Constant { value: 1.0 },
+        }];
+        assert_eq!(expand(&[1, 2], &parameters), ids(&[1, 2]));
+    }
+
+    #[test]
+    fn expand_expression_parameters_follows_a_chain() {
+        let parameters = [
+            expression_param(3, ScalarExpr::param(EntityId(2)) * ScalarExpr::literal(2.0)),
+            expression_param(2, ScalarExpr::param(EntityId(1)) + ScalarExpr::literal(1.0)),
+        ];
+        assert_eq!(expand(&[3], &parameters), ids(&[1, 2, 3]));
+    }
+
+    #[test]
+    fn expand_expression_parameters_visits_a_diamond_once() {
+        let parameters = [
+            expression_param(
+                4,
+                ScalarExpr::param(EntityId(2)) + ScalarExpr::param(EntityId(3)),
+            ),
+            expression_param(2, ScalarExpr::param(EntityId(1))),
+            expression_param(3, ScalarExpr::param(EntityId(1))),
+        ];
+        assert_eq!(expand(&[4], &parameters), ids(&[1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn expand_expression_parameters_terminates_on_a_cycle() {
+        let parameters = [
+            expression_param(1, ScalarExpr::param(EntityId(2))),
+            expression_param(2, ScalarExpr::param(EntityId(1))),
+        ];
+        assert_eq!(expand(&[1], &parameters), ids(&[1, 2]));
+    }
+
+    #[test]
+    fn expand_expression_parameters_keeps_an_undeclared_id() {
+        let parameters = [expression_param(1, ScalarExpr::param(EntityId(9)))];
+        assert_eq!(expand(&[1], &parameters), ids(&[1, 9]));
+    }
 
     #[test]
     fn computed_parameter_variant_coverage_is_exhaustive() {
