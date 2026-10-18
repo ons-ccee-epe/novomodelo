@@ -12496,3 +12496,247 @@ mod parameter_sum_useful_volume_floor {
         );
     }
 }
+
+mod d58_stored_energy_bound_composition {
+    use std::path::Path;
+
+    use novomodelo_sddp::build_generic_constraint_echo_rows;
+
+    use crate::common::fresh_system_and_setup_with;
+
+    use super::run_with_simulation;
+
+    const CASE_DIR: &str = "../../examples/deterministic/d58-stored-energy-coefficient";
+    const CONSTRAINT_ID: i32 = 1;
+
+    const HOURS_PER_HM3_AT_ONE_M3S: f64 = 1e6 / 3600.0;
+    const LOSS_FACTOR: f64 = 0.03;
+    const SPECIFIC_PRODUCTIVITY: [f64; 2] = [0.0085, 0.009];
+    const TAILRACE_M: [f64; 2] = [300.0, 280.0];
+    const FOREBAY_HEIGHTS_M: [[f64; 5]; 2] = [
+        [350.0, 370.0, 385.0, 395.0, 400.0],
+        [280.0, 295.0, 310.0, 320.0, 330.0],
+    ];
+    const MIN_STORAGE_HM3: [f64; 2] = [0.0, 0.0];
+    const MAX_STORAGE_HM3: [f64; 2] = [200.0, 150.0];
+    const PCT_VMINOP: [f64; 2] = [0.25, 0.30];
+    const PARQUET_BASE: f64 = 0.0;
+    const PENALTY: f64 = 5000.0;
+
+    /// derived: the trapezoid mean head over four equal volume steps,
+    /// `(h_0/2 + h_1 + h_2 + h_3 + h_4/2) / 4`: 381.25 m for H0, 307.5 m for H1.
+    const MEAN_HEAD_M: [f64; 2] = [
+        (FOREBAY_HEIGHTS_M[0][0] / 2.0
+            + FOREBAY_HEIGHTS_M[0][1]
+            + FOREBAY_HEIGHTS_M[0][2]
+            + FOREBAY_HEIGHTS_M[0][3]
+            + FOREBAY_HEIGHTS_M[0][4] / 2.0)
+            / 4.0,
+        (FOREBAY_HEIGHTS_M[1][0] / 2.0
+            + FOREBAY_HEIGHTS_M[1][1]
+            + FOREBAY_HEIGHTS_M[1][2]
+            + FOREBAY_HEIGHTS_M[1][3]
+            + FOREBAY_HEIGHTS_M[1][4] / 2.0)
+            / 4.0,
+    ];
+    /// derived: the integrated productivity in MWh per hm³,
+    /// `ρ_h = ρ_esp,h · (h̄_h − h_tail,h) · (1 − loss) · 10⁶ / 3600`.
+    const RHO_MWH_PER_HM3: [f64; 2] = [
+        SPECIFIC_PRODUCTIVITY[0]
+            * (MEAN_HEAD_M[0] - TAILRACE_M[0])
+            * (1.0 - LOSS_FACTOR)
+            * HOURS_PER_HM3_AT_ONE_M3S,
+        SPECIFIC_PRODUCTIVITY[1]
+            * (MEAN_HEAD_M[1] - TAILRACE_M[1])
+            * (1.0 - LOSS_FACTOR)
+            * HOURS_PER_HM3_AT_ONE_M3S,
+    ];
+
+    /// derived: `bound_t = base_t + pct_t · Σ_h V̄_h · ρ_h + Σ_h ρ_h · V_lo,h`, with
+    /// the deck's Parquet base `0.0` and `V_lo,h = 0.0`; `stage_idx` is the study
+    /// index, equal to the `pct_vminop` stage id here.
+    fn derived_bound(stage_idx: usize) -> f64 {
+        PARQUET_BASE
+            + PCT_VMINOP[stage_idx]
+                * (MAX_STORAGE_HM3[0] * RHO_MWH_PER_HM3[0]
+                    + MAX_STORAGE_HM3[1] * RHO_MWH_PER_HM3[1])
+            + (RHO_MWH_PER_HM3[0] * MIN_STORAGE_HM3[0] + RHO_MWH_PER_HM3[1] * MIN_STORAGE_HM3[1])
+    }
+
+    fn close(value: f64, expected: f64) -> bool {
+        (value - expected).abs() <= 1e-12 * expected.abs()
+    }
+
+    /// The stored-energy floor's row bound is the Parquet base plus the
+    /// remainder program read at the row's own stage plus the useful-volume
+    /// shift, in the row entry, the unscaled template row and the echo alike.
+    #[test]
+    fn d58_bound_composition_matches_the_derived_fold() {
+        let case_dir = Path::new(CASE_DIR);
+        let (system, setup) = fresh_system_and_setup_with(case_dir, |_| {});
+        let stage_templates = &setup.inputs.stage_data.stage_templates;
+        let echo_rows = build_generic_constraint_echo_rows(&setup, &system);
+
+        let mut entry_bounds = [0.0; 2];
+        for (stage_idx, entry_bound) in entry_bounds.iter_mut().enumerate() {
+            let expected = derived_bound(stage_idx);
+
+            let entries = &stage_templates.generic_constraint_row_entries[stage_idx];
+            assert_eq!(
+                entries.len(),
+                1,
+                "D58 stage {stage_idx}: generic row entry count"
+            );
+            let entry = &entries[0];
+            assert_eq!(
+                entry.entity_id, CONSTRAINT_ID,
+                "D58 stage {stage_idx}: row entry constraint id"
+            );
+            assert!(
+                entry.is_stage_level,
+                "D58 stage {stage_idx}: row entry must be stage-level"
+            );
+            let lower = entry
+                .bound_lower
+                .expect("D58: the row entry carries a lower bound");
+            assert!(
+                close(lower, expected),
+                "D58 stage {stage_idx}: row entry bound_lower expected {expected}, got {lower}"
+            );
+            assert_eq!(
+                entry.bound_upper, None,
+                "D58 stage {stage_idx}: row entry bound_upper"
+            );
+            *entry_bound = lower;
+
+            let template = &stage_templates.templates[stage_idx];
+            let row = template.num_rows - entries.len();
+            let row_scale = template.row_scale.get(row).copied().unwrap_or(1.0);
+            let row_lower = template.row_lower[row] / row_scale;
+            assert!(
+                close(row_lower, expected),
+                "D58 stage {stage_idx}: unscaled template row_lower expected {expected}, got {row_lower}"
+            );
+
+            let stage_id = i32::try_from(stage_idx).expect("stage index fits i32");
+            let mut rows: Vec<_> = echo_rows
+                .iter()
+                .filter(|r| r.constraint_id == CONSTRAINT_ID && r.stage_id == stage_id)
+                .collect();
+            rows.sort_by_key(|r| r.term_index);
+            assert_eq!(rows.len(), 2, "D58 stage {stage_idx}: echo row count");
+            for (term, row) in rows.iter().enumerate() {
+                assert_eq!(
+                    row.term_index,
+                    Some(i32::try_from(term).expect("term index fits i32")),
+                    "D58 stage {stage_idx}: echo term index"
+                );
+                let coefficient = row
+                    .coefficient
+                    .expect("D58: echo row carries a coefficient");
+                assert!(
+                    close(coefficient, RHO_MWH_PER_HM3[term]),
+                    "D58 stage {stage_idx} term {term}: echo coefficient expected {}, got {coefficient}",
+                    RHO_MWH_PER_HM3[term]
+                );
+                let echo_lower = row
+                    .bound_lower
+                    .expect("D58: echo row carries a lower bound");
+                assert!(
+                    close(echo_lower, expected),
+                    "D58 stage {stage_idx} term {term}: echo bound_lower expected {expected}, got {echo_lower}"
+                );
+            }
+        }
+
+        assert!(
+            entry_bounds[0] != entry_bounds[1],
+            "D58: the two stages' bounds must differ, got {} at both",
+            entry_bounds[0]
+        );
+        let ratio = entry_bounds[1] / entry_bounds[0];
+        let expected_ratio = PCT_VMINOP[1] / PCT_VMINOP[0];
+        assert!(
+            close(ratio, expected_ratio),
+            "D58: stage 1 to stage 0 bound ratio expected {expected_ratio}, got {ratio}"
+        );
+    }
+
+    /// The solved run brackets its bounds, and at every stage the floor holds
+    /// against the derived bound once its slack is counted, with the slack
+    /// priced at the `per_unit` penalty.
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    #[test]
+    fn d58_generic_rows_hold_or_price_their_slack() {
+        let case_dir = Path::new(CASE_DIR);
+        let (result, scenarios, _) = run_with_simulation(case_dir);
+
+        assert!(
+            result.final_lb.is_finite(),
+            "D58: final_lb must be finite, got {}",
+            result.final_lb
+        );
+        assert!(
+            result.final_lb <= result.final_ub + 1e-6 * result.final_ub.abs().max(1.0),
+            "D58: final_lb {} exceeds final_ub {}",
+            result.final_lb,
+            result.final_ub
+        );
+
+        assert_eq!(scenarios.len(), 1, "D58: simulated scenario count");
+        let stages = &scenarios[0].stages;
+        assert_eq!(stages.len(), 2, "D58: simulated stage count");
+        for (stage_idx, stage) in stages.iter().enumerate() {
+            assert_eq!(
+                stage.generic_violations.len(),
+                1,
+                "D58 stage {stage_idx}: generic violation record count"
+            );
+            let violation = &stage.generic_violations[0];
+            assert_eq!(
+                violation.constraint_id, CONSTRAINT_ID,
+                "D58 stage {stage_idx}: violation constraint id"
+            );
+            assert_eq!(
+                violation.block_id, None,
+                "D58 stage {stage_idx}: violation block id"
+            );
+            assert!(
+                violation.slack_value >= -1e-9,
+                "D58 stage {stage_idx}: slack_value must be non-negative, got {}",
+                violation.slack_value
+            );
+            assert!(
+                (violation.slack_cost - PENALTY * violation.slack_value).abs() <= 1e-6,
+                "D58 stage {stage_idx}: slack_cost expected {}, got {}",
+                PENALTY * violation.slack_value,
+                violation.slack_cost
+            );
+
+            let mut stored_energy = 0.0;
+            for (hydro, (&rho, &v_lo)) in RHO_MWH_PER_HM3.iter().zip(&MIN_STORAGE_HM3).enumerate() {
+                let hydro_id = i32::try_from(hydro).expect("hydro index fits i32");
+                let rows: Vec<_> = stage
+                    .hydros
+                    .iter()
+                    .filter(|h| h.hydro_id == hydro_id)
+                    .collect();
+                assert_eq!(
+                    rows.len(),
+                    1,
+                    "D58 stage {stage_idx}: hydro {hydro_id} row count"
+                );
+                stored_energy += rho * (rows[0].storage_final_hm3 - v_lo);
+            }
+            let bound = derived_bound(stage_idx);
+            let lhs = stored_energy + violation.slack_value;
+            assert!(
+                lhs >= bound - 1e-6 * bound,
+                "D58 stage {stage_idx}: stored energy plus slack {lhs} below the derived bound {bound}"
+            );
+        }
+    }
+}
