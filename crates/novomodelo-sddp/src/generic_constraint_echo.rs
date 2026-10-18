@@ -626,6 +626,94 @@ mod tests {
         );
     }
 
+    /// A parameter coefficient that resolves to `0.0` at one stage still echoes its row.
+    #[test]
+    fn term_resolving_to_zero_still_emits_its_row() {
+        let constraints = vec![constraint(
+            1,
+            "zero_at_stage_1",
+            vec![
+                LinearTerm {
+                    coefficient: ScalarExpr::param(EntityId(42)),
+                    variable: thermal(0),
+                },
+                LinearTerm {
+                    coefficient: ScalarExpr::literal(1.0),
+                    variable: thermal(1),
+                },
+            ],
+        )];
+        let entries = vec![
+            vec![entry(0, 1, 0, true, Some(0.0), None, None)],
+            vec![entry(0, 1, 0, true, Some(0.0), None, None)],
+        ];
+        let resolved = ResolvedParameters {
+            per_param: vec![vec![vec![1.0], vec![0.0]]],
+            id_to_slot: vec![(42, 0)],
+            ..Default::default()
+        };
+
+        let rows = build_echo_rows_from_parts(
+            &entries,
+            &[0, 1],
+            &coefficients(&constraints, &resolved, &[0, 1], &entries),
+            &constraints,
+        );
+
+        assert_eq!(rows.len(), 4);
+        let param_row = |stage_id: i32| {
+            rows.iter()
+                .find(|r| r.stage_id == stage_id && r.term_index == Some(0))
+                .unwrap()
+        };
+        assert_eq!(param_row(1).coefficient, Some(0.0));
+        assert_eq!(param_row(0).coefficient, Some(1.0));
+    }
+
+    /// Two variable names that address one LP column echo as two separate rows.
+    #[test]
+    fn aliased_references_stay_separate_rows() {
+        let constraints = vec![constraint(
+            3,
+            "storage_alias",
+            vec![
+                LinearTerm::literal(
+                    1.0,
+                    VariableRef::HydroStorage {
+                        hydro_id: EntityId(3),
+                    },
+                ),
+                LinearTerm::literal(
+                    -1.0,
+                    VariableRef::HydroStorageFinal {
+                        hydro_id: EntityId(3),
+                        block_id: None,
+                    },
+                ),
+            ],
+        )];
+        let entries = vec![vec![entry(0, 3, 0, true, Some(0.0), None, None)]];
+        let resolved = ResolvedParameters::default();
+
+        let rows = build_echo_rows_from_parts(
+            &entries,
+            &[0],
+            &coefficients(&constraints, &resolved, &[0], &entries),
+            &constraints,
+        );
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].term_index, Some(0));
+        assert_eq!(rows[0].variable_kind.as_deref(), Some("hydro_storage"));
+        assert_eq!(rows[0].coefficient, Some(1.0));
+        assert_eq!(rows[1].term_index, Some(1));
+        assert_eq!(
+            rows[1].variable_kind.as_deref(),
+            Some("hydro_storage_final")
+        );
+        assert_eq!(rows[1].coefficient, Some(-1.0));
+    }
+
     /// Two `constraints` slices differing only in element order yield
     /// element-for-element identical rows (declaration-order invariance).
     #[test]

@@ -1196,7 +1196,10 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "generic_constraint_echo",
         "term_index",
-        "Term position in the resolved left-hand side; NULL on a term-less \
+        "Position of the term in the constraint's merged left-hand side, ordered by \
+         variable independently of authoring order. Repeated references to one variable \
+         merge into one term; two variable names that address the same LP column, such as \
+         hydro_storage and hydro_storage_final, stay separate terms. NULL on a term-less \
          constraint's placeholder row",
     ),
     (
@@ -1212,9 +1215,11 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "generic_constraint_echo",
         "coefficient",
-        "Resolved term coefficient, NULL on a placeholder row; its unit converts the \
-         unit of the variable named by variable_kind into the unit of the constraint \
-         identified by constraint_id",
+        "Resolved term coefficient, NULL on a placeholder row. A coefficient that reads a \
+         parameter keeps its row when it resolves to 0.0; a constant coefficient that folds \
+         to exactly zero drops its term at load. It is the coefficient before any factor the \
+         LP applies to the variable's columns; its unit converts the unit of the variable \
+         named by variable_kind into the unit of the constraint identified by constraint_id",
     ),
     (
         "generic_constraint_echo",
@@ -4524,6 +4529,25 @@ mod tests {
                 && desc.contains("0 = most recent")
                 && !desc.contains("1-based"),
             "inflow_lags.lag_index is 0-based with 0 = the most recent past period, got: {desc:?}"
+        );
+    }
+
+    #[test]
+    fn generic_constraint_echo_term_index_description_states_the_row_contract() {
+        let term_index = description_for("generic_constraint_echo", "term_index");
+        assert!(
+            term_index.contains("merged")
+                && term_index.contains("independently of authoring order")
+                && term_index.contains("stay separate terms"),
+            "generic_constraint_echo.term_index must state the merged, variable-ordered \
+             left-hand side, got: {term_index:?}"
+        );
+        let coefficient = description_for("generic_constraint_echo", "coefficient");
+        assert!(
+            coefficient.contains("keeps its row when it resolves to 0.0")
+                && coefficient.contains("before any factor the LP applies"),
+            "generic_constraint_echo.coefficient must state the zero-row and pre-factor \
+             contract, got: {coefficient:?}"
         );
     }
 
