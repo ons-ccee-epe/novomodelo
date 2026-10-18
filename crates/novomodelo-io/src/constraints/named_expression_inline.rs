@@ -43,8 +43,8 @@ pub(crate) type ParsedExpression = Vec<ParsedTerm>;
 /// the referenced expression's inlined terms (scale distributed, coefficient kind
 /// preserved). Duplicate variables are left un-merged, in substitution order.
 ///
-/// Call [`detect_cycles`] on `table` first; this substitution recurses over the
-/// reference graph and relies on it being acyclic.
+/// Run [`detect_cycles`] over [`named_reference_graph`] of `table` first; this
+/// substitution recurses over the reference graph and relies on it being acyclic.
 ///
 /// # Errors
 ///
