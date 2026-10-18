@@ -18,7 +18,7 @@
 //! This module defines only the structural types — it contains no I/O, no
 //! resolution logic, and no LP wiring.
 
-use crate::EntityId;
+use crate::{EntityId, ScalarExpr};
 
 #[cfg(feature = "serde")]
 use serde::Deserializer;
@@ -143,6 +143,8 @@ pub enum ComputedParameter {
 ///   hydro geometry data; no explicit user value is required.
 /// - [`PerStageBlock`](ParameterKind::PerStageBlock) — one value per
 ///   `(stage_id, block_id)` pair, keys unique and stored sorted.
+/// - [`Expression`](ParameterKind::Expression) — a program over other scalar
+///   parameters, resolved after them in dependency order.
 ///
 /// # JSON schema
 ///
@@ -151,7 +153,7 @@ pub enum ComputedParameter {
 ///
 /// ```
 /// # #[cfg(feature = "serde")] {
-/// use novomodelo_core::{ComputedParameter, EntityId, ParameterKind};
+/// use novomodelo_core::{ComputedParameter, EntityId, ParameterKind, ScalarExpr};
 ///
 /// // {"kind":"constant","value":3.6}
 /// let c = ParameterKind::Constant { value: 3.6 };
@@ -189,11 +191,21 @@ pub enum ComputedParameter {
 ///     serde_json::to_string(&psb).unwrap(),
 ///     r#"{"kind":"per_stage_block","values":[[0,0,1.0],[0,1,2.0]]}"#
 /// );
+///
+/// // {"kind":"expression","expression":[{"param":1},{"param":2},"mul"]}
+/// let expr = ParameterKind::Expression {
+///     expression: ScalarExpr::param(EntityId(1)) * ScalarExpr::param(EntityId(2)),
+/// };
+/// assert_eq!(
+///     serde_json::to_string(&expr).unwrap(),
+///     r#"{"kind":"expression","expression":[{"param":1},{"param":2},"mul"]}"#
+/// );
 /// # }
 /// ```
 ///
 /// Every variant round-trips through `serde_json::from_str` back to the same
-/// in-memory value.
+/// in-memory value, provided every number in it is finite: `serde_json` writes
+/// `NaN` and the infinities as `null`, which does not deserialize.
 ///
 /// # Examples
 ///
@@ -253,6 +265,11 @@ pub enum ParameterKind {
     PerStageBlock {
         /// Sorted, unique-keyed `(stage_id, block_id, value)` triples.
         values: Vec<(i32, i32, f64)>,
+    },
+    /// A program over other scalar parameters, resolved after them.
+    Expression {
+        /// Postfix program whose leaves are the ids of the parameters it reads.
+        expression: ScalarExpr,
     },
 }
 
@@ -332,6 +349,7 @@ enum ParameterKindJson {
     Seasonal { values: Vec<(i32, f64)> },
     Computed { computed_spec: ComputedParameter },
     PerStageBlock { values: Vec<(i32, i32, f64)> },
+    Expression { expression: ScalarExpr },
 }
 
 #[cfg(feature = "serde")]
@@ -354,6 +372,9 @@ impl From<ParameterKind> for ParameterKindJson {
                 ParameterKindJson::Computed { computed_spec }
             }
             ParameterKind::PerStageBlock { values } => ParameterKindJson::PerStageBlock { values },
+            ParameterKind::Expression { expression } => {
+                ParameterKindJson::Expression { expression }
+            }
         }
     }
 }
@@ -424,6 +445,9 @@ impl<'de> serde::Deserialize<'de> for ParameterKind {
 
                 Ok(ParameterKind::PerStageBlock { values })
             }
+            ParameterKindJson::Expression { expression } => {
+                Ok(ParameterKind::Expression { expression })
+            }
         }
     }
 }
@@ -432,7 +456,7 @@ impl<'de> serde::Deserialize<'de> for ParameterKind {
 mod tests {
     #[cfg(feature = "serde")]
     use super::ScalarParameter;
-    use super::{ComputedParameter, EntityId, ParameterKind};
+    use super::{ComputedParameter, EntityId, ParameterKind, ScalarExpr};
 
     #[test]
     fn computed_parameter_variant_coverage_is_exhaustive() {
@@ -513,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_kind_five_variants() {
+    fn parameter_kind_variant_coverage_is_exhaustive() {
         let variants = [
             ParameterKind::Constant { value: 1.0 },
             ParameterKind::PerStage {
@@ -530,6 +554,9 @@ mod tests {
             ParameterKind::PerStageBlock {
                 values: vec![(0, 0, 1.0)],
             },
+            ParameterKind::Expression {
+                expression: ScalarExpr::literal(1.0),
+            },
         ];
 
         // No `_` arm: adding a variant without updating here is a compile error.
@@ -540,6 +567,7 @@ mod tests {
                 ParameterKind::Seasonal { .. } => "Seasonal",
                 ParameterKind::Computed { .. } => "Computed",
                 ParameterKind::PerStageBlock { .. } => "PerStageBlock",
+                ParameterKind::Expression { .. } => "Expression",
             };
         }
     }
@@ -699,6 +727,49 @@ mod tests {
         );
         let roundtrip: ParameterKind = serde_json::from_str(&json).unwrap();
         assert_eq!(roundtrip, kind);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn parameter_kind_serde_expression_form() {
+        let kind = ParameterKind::Expression {
+            expression: ScalarExpr::param(EntityId(1)) * ScalarExpr::param(EntityId(2)),
+        };
+        let json = serde_json::to_string(&kind).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"expression","expression":[{"param":1},{"param":2},"mul"]}"#
+        );
+        let roundtrip: ParameterKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtrip, kind);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn parameter_kind_expression_with_a_non_finite_literal_does_not_round_trip() {
+        let kind = ParameterKind::Expression {
+            expression: ScalarExpr::literal(f64::NAN),
+        };
+        let json = serde_json::to_string(&kind).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"expression","expression":[{"literal":null}]}"#
+        );
+        assert!(serde_json::from_str::<ParameterKind>(&json).is_err());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn parameter_kind_rejects_a_malformed_expression_program() {
+        for json in [
+            r#"{"kind":"expression","expression":[]}"#,
+            r#"{"kind":"expression","expression":["add"]}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<ParameterKind>(json).is_err(),
+                "expected an error for {json}"
+            );
+        }
     }
 
     #[cfg(feature = "serde")]

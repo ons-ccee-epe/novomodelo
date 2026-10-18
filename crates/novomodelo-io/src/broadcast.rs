@@ -13,7 +13,7 @@
 //! lookup indices are rebuilt by its `Deserialize` impl, so `system.bus(id)`
 //! works immediately.
 
-use novomodelo_core::{ComputedParameter, EntityId, ParameterKind, ScalarParameter};
+use novomodelo_core::{ComputedParameter, EntityId, ParameterKind, ScalarExpr, ScalarParameter};
 use serde::{Deserialize, Serialize};
 
 // ── Broadcast mirror types (tag-free, postcard-compatible) ──────────────────
@@ -44,6 +44,8 @@ pub enum BroadcastParameterKind {
     Computed(BroadcastComputedParameter),
     /// Sorted, unique-keyed `(stage_id, block_id, value)` triples.
     PerStageBlock(Vec<(i32, i32, f64)>),
+    /// Postfix program over other scalar parameters.
+    Expression(ScalarExpr),
 }
 
 /// Postcard-safe mirror of [`ComputedParameter`]. Externally-tagged.
@@ -107,6 +109,7 @@ impl From<&ParameterKind> for BroadcastParameterKind {
                 Self::Computed(BroadcastComputedParameter::from(*computed_spec))
             }
             ParameterKind::PerStageBlock { values } => Self::PerStageBlock(values.clone()),
+            ParameterKind::Expression { expression } => Self::Expression(expression.clone()),
         }
     }
 }
@@ -121,6 +124,7 @@ impl From<BroadcastParameterKind> for ParameterKind {
                 computed_spec: ComputedParameter::from(c),
             },
             BroadcastParameterKind::PerStageBlock(values) => Self::PerStageBlock { values },
+            BroadcastParameterKind::Expression(expression) => Self::Expression { expression },
         }
     }
 }

@@ -9,11 +9,11 @@
 //! mutates parameter values across iterations (adaptive updates) breaks this and
 //! must rebuild or invalidate the affected `StageTemplate` entries.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 
 use novomodelo_core::{
-    ComputedParameter, EntityId, Hydro, ParameterKind, ScalarParameter, StageId,
+    ComputedParameter, EntityId, Hydro, ParameterKind, ScalarExpr, ScalarParameter, StageId,
 };
 use thiserror::Error;
 
@@ -85,6 +85,41 @@ pub enum ResolvedParametersError {
         block: i32,
         /// Why the cell failed coverage.
         issue: PerStageBlockCoverageIssue,
+    },
+
+    /// An `Expression` parameter reads an id that no parameter declares.
+    #[error("parameter '{name}': expression reads undeclared parameter id={id:?}")]
+    UnknownExpressionLeaf {
+        /// Parameter name from the source record.
+        name: String,
+        /// The undeclared parameter id the expression reads.
+        id: EntityId,
+    },
+
+    /// An `Expression` parameter evaluates to NaN or an infinity at some cell.
+    #[error(
+        "parameter '{name}': expression resolves to the non-finite value {value} at stage {stage}, block {block}"
+    )]
+    NonFiniteExpression {
+        /// Parameter name from the source record.
+        name: String,
+        /// Domain stage id of the offending cell.
+        stage: i32,
+        /// Block index of the offending cell.
+        block: usize,
+        /// The non-finite value.
+        value: f64,
+    },
+
+    /// `Expression` parameters read each other in a cycle.
+    #[error(
+        "expression parameters form or depend on a reference cycle: {}",
+        .names.iter().map(|name| format!("'{name}'")).collect::<Vec<_>>().join(", ")
+    )]
+    ExpressionCycle {
+        /// Every unresolved expression parameter in ascending id: the cycle
+        /// members and everything that depends on them.
+        names: Vec<String>,
     },
 }
 
@@ -226,6 +261,14 @@ impl ResolvedParameters {
 /// - [`MissingSpecificProductivity`](ResolvedParametersError::MissingSpecificProductivity)
 ///   when neither the override table nor the hydro entity record has a `ρ_esp`
 ///   value.
+/// - [`PerStageBlockCoverage`](ResolvedParametersError::PerStageBlockCoverage)
+///   when a `PerStageBlock` cell is missing, duplicated or out of range.
+/// - [`UnknownExpressionLeaf`](ResolvedParametersError::UnknownExpressionLeaf)
+///   when an `Expression` reads a parameter id that no parameter declares.
+/// - [`NonFiniteExpression`](ResolvedParametersError::NonFiniteExpression)
+///   when an `Expression` evaluates to NaN or an infinity at some stage and block.
+/// - [`ExpressionCycle`](ResolvedParametersError::ExpressionCycle) when
+///   `Expression` parameters read each other in a cycle.
 ///
 /// The constructor never panics; `n_stages == 0` produces an empty table.
 ///
@@ -313,11 +356,13 @@ pub fn build_resolved_parameters(
             .collect::<Vec<_>>()
     );
 
-    Ok(ResolvedParameters {
+    let mut resolved = ResolvedParameters {
         per_param,
         id_to_slot,
         cost_scale_factor,
-    })
+    };
+    resolve_expression_parameters(parameters, &mut resolved, &stage_axis)?;
+    Ok(resolved)
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +377,142 @@ struct StageAxis<'a> {
     ids: &'a [StageId],
     to_season: &'a [i32],
     block_counts: &'a [usize],
+}
+
+struct PendingExpression<'a> {
+    slot: usize,
+    name: &'a str,
+    expression: &'a ScalarExpr,
+    in_degree: usize,
+    dependents: Vec<i32>,
+}
+
+/// Fill the series of every `Expression` parameter, reading only parameters
+/// already resolved: the other kinds first, then expressions in dependency order
+/// (smallest ready id first, so the reported error is declaration-order
+/// invariant).
+fn resolve_expression_parameters(
+    parameters: &[ScalarParameter],
+    resolved: &mut ResolvedParameters,
+    stage_axis: &StageAxis<'_>,
+) -> Result<(), ResolvedParametersError> {
+    let mut pending: BTreeMap<i32, PendingExpression<'_>> = parameters
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, param)| match &param.kind {
+            ParameterKind::Expression { expression } => Some((
+                param.id.0,
+                PendingExpression {
+                    slot,
+                    name: &param.name,
+                    expression,
+                    in_degree: 0,
+                    dependents: Vec::new(),
+                },
+            )),
+            _ => None,
+        })
+        .collect();
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    for node in pending.values() {
+        if let Some(id) = node.expression.params().find(|id| !resolved.contains(*id)) {
+            return Err(ResolvedParametersError::UnknownExpressionLeaf {
+                name: node.name.to_string(),
+                id,
+            });
+        }
+    }
+
+    let edges: Vec<(i32, i32)> = pending
+        .iter()
+        .flat_map(|(&id, node)| {
+            node.expression
+                .params()
+                .map(|leaf| leaf.0)
+                .filter(|leaf| pending.contains_key(leaf))
+                .collect::<BTreeSet<i32>>()
+                .into_iter()
+                .map(move |leaf| (leaf, id))
+        })
+        .collect();
+    for (leaf, dependent) in edges {
+        if let Some(node) = pending.get_mut(&dependent) {
+            node.in_degree += 1;
+        }
+        if let Some(node) = pending.get_mut(&leaf) {
+            node.dependents.push(dependent);
+        }
+    }
+
+    let mut ready: BTreeSet<i32> = pending
+        .iter()
+        .filter(|(_, node)| node.in_degree == 0)
+        .map(|(&id, _)| id)
+        .collect();
+    while let Some(id) = ready.pop_first() {
+        let Some(node) = pending.remove(&id) else {
+            continue;
+        };
+        let series = evaluate_expression(node.name, node.expression, resolved, stage_axis)?;
+        resolved.per_param[node.slot] = series;
+        for dependent in node.dependents {
+            if let Some(waiting) = pending.get_mut(&dependent) {
+                waiting.in_degree -= 1;
+                if waiting.in_degree == 0 {
+                    ready.insert(dependent);
+                }
+            }
+        }
+    }
+
+    if pending.is_empty() {
+        Ok(())
+    } else {
+        Err(ResolvedParametersError::ExpressionCycle {
+            names: pending.values().map(|node| node.name.to_string()).collect(),
+        })
+    }
+}
+
+/// Evaluate one expression at every study stage: at every block when any leaf is
+/// block-varying, else at block 0 only, so a stage-level value is never stored
+/// per block.
+fn evaluate_expression(
+    name: &str,
+    expression: &ScalarExpr,
+    resolved: &ResolvedParameters,
+    stage_axis: &StageAxis<'_>,
+) -> Result<Vec<Vec<f64>>, ResolvedParametersError> {
+    let block_varying = expression
+        .params()
+        .any(|leaf| resolved.is_block_varying(leaf));
+    let mut series = Vec::with_capacity(stage_axis.ids.len());
+    for (t, (stage_id, &block_count)) in stage_axis
+        .ids
+        .iter()
+        .zip(stage_axis.block_counts)
+        .enumerate()
+    {
+        let n_blocks = if block_varying { block_count } else { 1 };
+        let mut blocks = Vec::with_capacity(n_blocks);
+        for b in 0..n_blocks {
+            let value = expression.evaluate(|leaf| resolved.get(leaf, t, b));
+            if !value.is_finite() {
+                return Err(ResolvedParametersError::NonFiniteExpression {
+                    name: name.to_string(),
+                    stage: stage_id.0,
+                    block: b,
+                    value,
+                });
+            }
+            blocks.push(value);
+        }
+        series.push(blocks);
+    }
+    Ok(series)
 }
 
 /// Resolve a single [`ParameterKind`] into the jagged `stage → block` storage.
@@ -398,6 +579,9 @@ fn resolve_kind(
         ParameterKind::PerStageBlock { values } => {
             resolve_per_stage_block(values, name, n_stages, stage_axis.block_counts)
         }
+
+        // Filled by `resolve_expression_parameters` once every other kind is resolved.
+        ParameterKind::Expression { .. } => Ok(Vec::new()),
     }
 }
 
@@ -1754,6 +1938,273 @@ mod tests {
         assert!(
             !table.is_block_varying(EntityId(99)),
             "an unknown id is not block-varying"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Expression parameters
+    // -------------------------------------------------------------------------
+
+    fn make_expression(id: i32, name: &str, expression: ScalarExpr) -> ScalarParameter {
+        ScalarParameter {
+            id: EntityId(id),
+            name: name.to_string(),
+            kind: ParameterKind::Expression { expression },
+        }
+    }
+
+    fn leaf(id: i32) -> ScalarExpr {
+        ScalarExpr::param(EntityId(id))
+    }
+
+    fn lit(value: f64) -> ScalarExpr {
+        ScalarExpr::literal(value)
+    }
+
+    #[test]
+    fn expression_declared_before_its_inputs_resolves() {
+        let b = [1.0, 1.5, 2.0, 2.5];
+        let params = vec![
+            make_expression(1, "e", leaf(2) * leaf(3)),
+            make_param(2, ParameterKind::Constant { value: 2.5 }),
+            make_param(3, ParameterKind::PerStage { values: b.to_vec() }),
+        ];
+
+        let table = build_block_table(&params, &[1, 1, 1, 1]).unwrap();
+
+        for (t, b_t) in b.iter().enumerate() {
+            assert_eq!(
+                table.get(EntityId(1), t, 0).to_bits(),
+                (2.5 * b_t).to_bits()
+            );
+        }
+        assert!(!table.is_block_varying(EntityId(1)));
+    }
+
+    #[test]
+    fn expression_over_a_block_varying_leaf_is_stored_per_block() {
+        let k: [[f64; 2]; 2] = [[1.5, 2.5], [3.5, 4.5]];
+        let params = vec![
+            make_param(
+                1,
+                ParameterKind::PerStageBlock {
+                    values: vec![(0, 0, 1.5), (0, 1, 2.5), (1, 0, 3.5), (1, 1, 4.5)],
+                },
+            ),
+            make_expression(2, "e", leaf(1) * lit(2.0)),
+            make_param(3, ParameterKind::Constant { value: 7.0 }),
+            make_expression(4, "e_twin", leaf(3) * lit(2.0)),
+        ];
+
+        let table = build_block_table(&params, &[2, 2]).unwrap();
+
+        assert!(table.is_block_varying(EntityId(2)));
+        for (t, k_t) in k.iter().enumerate() {
+            for (b, k_tb) in k_t.iter().enumerate() {
+                assert_eq!(
+                    table.get(EntityId(2), t, b).to_bits(),
+                    (k_tb * 2.0).to_bits()
+                );
+            }
+        }
+        assert!(!table.is_block_varying(EntityId(4)));
+        assert_eq!(table.get(EntityId(4), 1, 1).to_bits(), 14.0f64.to_bits());
+    }
+
+    #[test]
+    fn expression_chain_of_three_resolves_in_dependency_order() {
+        let a = [1.0, 2.5, 4.0];
+        let (z_id, y_id, x_id, a_id) = (1, 2, 3, 4);
+        let params = vec![
+            make_expression(z_id, "z", leaf(y_id) - leaf(a_id)),
+            make_expression(y_id, "y", leaf(x_id) * lit(2.0)),
+            make_expression(x_id, "x", leaf(a_id) + lit(1.0)),
+            make_param(a_id, ParameterKind::PerStage { values: a.to_vec() }),
+        ];
+
+        let table = build_block_table(&params, &[1, 1, 1]).unwrap();
+
+        for (t, &a_t) in a.iter().enumerate() {
+            let x = a_t + 1.0;
+            let y = x * 2.0;
+            assert_eq!(
+                table.get(EntityId(x_id), t, 0).to_bits(),
+                x.to_bits(),
+                "x at stage {t}"
+            );
+            assert_eq!(
+                table.get(EntityId(y_id), t, 0).to_bits(),
+                y.to_bits(),
+                "y at stage {t}"
+            );
+            assert_eq!(
+                table.get(EntityId(z_id), t, 0).to_bits(),
+                (y - a_t).to_bits(),
+                "z at stage {t}"
+            );
+        }
+    }
+
+    #[test]
+    fn expression_reading_the_same_expression_twice_resolves() {
+        let params = vec![
+            make_expression(1, "square", leaf(2) * leaf(2)),
+            make_expression(2, "shifted", leaf(3) + lit(1.0)),
+            make_param(3, ParameterKind::Constant { value: 2.0 }),
+        ];
+
+        let table = build_block_table(&params, &[1]).unwrap();
+
+        assert_eq!(table.get(EntityId(1), 0, 0).to_bits(), 9.0f64.to_bits());
+    }
+
+    #[test]
+    fn expression_division_by_a_zero_parameter_is_non_finite() {
+        let params = vec![
+            make_expression(3, "e", leaf(1) / leaf(2)),
+            make_param(1, ParameterKind::Constant { value: 5.0 }),
+            make_param(
+                2,
+                ParameterKind::PerStage {
+                    values: vec![1.0, 0.0, 2.0],
+                },
+            ),
+        ];
+
+        let err = build_block_table(&params, &[1, 1, 1]).unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                ResolvedParametersError::NonFiniteExpression { ref name, stage: 1, block: 0, value }
+                    if name == "e" && value.is_infinite()
+            ),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string()
+                .contains("resolves to the non-finite value inf at stage 1, block 0"),
+            "{err}"
+        );
+
+        let (_, ec, overrides, _, _) = make_setup_inputs(3);
+        let offset_stage_ids = [StageId(10), StageId(11), StageId(12)];
+        let err = build_resolved_parameters(
+            &params,
+            &ec,
+            &overrides,
+            &[],
+            &[0, 0, 0],
+            &offset_stage_ids,
+            &[1, 1, 1],
+            1_000_000.0,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ResolvedParametersError::NonFiniteExpression { stage: 11, .. }
+            ),
+            "the error carries the domain stage id, not the position: {err:?}"
+        );
+    }
+
+    #[test]
+    fn expression_non_finite_error_names_the_smallest_failing_id() {
+        let params = vec![
+            make_expression(2, "later", leaf(9) / lit(0.0)),
+            make_expression(1, "earlier", leaf(9) / lit(0.0)),
+            make_param(9, ParameterKind::Constant { value: 1.0 }),
+        ];
+
+        let err = build_block_table(&params, &[1]).unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                ResolvedParametersError::NonFiniteExpression { ref name, .. } if name == "earlier"
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn expression_reading_an_undeclared_parameter_is_an_error() {
+        let params = vec![
+            make_expression(5, "high", leaf(2) + leaf(99)),
+            make_expression(3, "low", leaf(98) + leaf(99)),
+            make_expression(1, "loop", leaf(1) + lit(1.0)),
+            make_param(2, ParameterKind::Constant { value: 1.0 }),
+        ];
+
+        let err = build_block_table(&params, &[1]).unwrap_err();
+
+        assert_eq!(
+            err,
+            ResolvedParametersError::UnknownExpressionLeaf {
+                name: "low".to_string(),
+                id: EntityId(98),
+            },
+            "the smallest-id offender, its first unknown leaf, and ahead of any cycle"
+        );
+    }
+
+    #[test]
+    fn expression_self_reference_is_a_cycle() {
+        let params = vec![make_expression(1, "e", leaf(1) + lit(1.0))];
+
+        let err = build_block_table(&params, &[1]).unwrap_err();
+
+        assert_eq!(
+            err,
+            ResolvedParametersError::ExpressionCycle {
+                names: vec!["e".to_string()],
+            }
+        );
+        assert_eq!(
+            err.to_string(),
+            "expression parameters form or depend on a reference cycle: 'e'"
+        );
+    }
+
+    #[test]
+    fn expression_two_cycle_reports_both_names_in_id_order() {
+        let params = vec![
+            make_expression(2, "q", leaf(1)),
+            make_expression(1, "p", leaf(2)),
+        ];
+
+        let err = build_block_table(&params, &[1]).unwrap_err();
+
+        assert_eq!(
+            err,
+            ResolvedParametersError::ExpressionCycle {
+                names: vec!["p".to_string(), "q".to_string()],
+            }
+        );
+        assert_eq!(
+            err.to_string(),
+            "expression parameters form or depend on a reference cycle: 'p', 'q'"
+        );
+    }
+
+    #[test]
+    fn expression_cycle_residue_includes_its_dependents() {
+        let params = vec![
+            make_expression(2, "q", leaf(1)),
+            make_expression(0, "r", leaf(1) * lit(2.0)),
+            make_expression(1, "p", leaf(2)),
+            make_expression(4, "fine", leaf(5) + lit(1.0)),
+            make_param(5, ParameterKind::Constant { value: 1.0 }),
+        ];
+
+        let err = build_block_table(&params, &[1]).unwrap_err();
+
+        assert_eq!(
+            err,
+            ResolvedParametersError::ExpressionCycle {
+                names: vec!["r".to_string(), "p".to_string(), "q".to_string()],
+            }
         );
     }
 
