@@ -12196,3 +12196,303 @@ mod stored_energy_columns_determinism {
         assert_six_columns_bit_identical("run-to-run reproducibility", &run_a, &run_b);
     }
 }
+
+/// D59: a useful-volume floor on H0 whose coefficient is the sum of two scalar
+/// parameters, softened by a `per_unit` slack, with no inflow and a 100 MW load.
+mod parameter_sum_useful_volume_floor {
+    use std::path::Path;
+
+    use novomodelo_io::GenericConstraintEchoRow;
+    use novomodelo_sddp::build_generic_constraint_echo_rows;
+    use novomodelo_sddp::test_support::assert_all_templates_byte_identical;
+
+    use crate::common::fresh_system_and_setup_with;
+
+    use super::{assert_cost, copy_case_dir, run_with_simulation};
+
+    const CASE_DIR: &str = "../../examples/deterministic/d59-parameter-sum-useful-volume-floor";
+
+    const HOURS: f64 = 250.0;
+    const TAU: f64 = HOURS * 3600.0 / 1e6;
+    const V_LO: f64 = 100.0;
+    const V_INIT: f64 = 245.0;
+    const RHS: f64 = 200.0;
+    const WEIGHT_A: f64 = 0.5;
+    const WEIGHT_B: f64 = 1.5;
+    const PENALTY: f64 = 10_000.0;
+    const THERMAL_COST: f64 = 100.0;
+    const LOAD_MW: f64 = 100.0;
+
+    /// derived: the row coefficient is the parameter sum `a + b = 0.5 + 1.5 = 2`.
+    const D59_COEFFICIENT: f64 = WEIGHT_A + WEIGHT_B;
+    /// derived: `coef · (V − V_lo) ≥ RHS` folds to `coef · V ≥ RHS + coef · V_lo`,
+    /// `200 + 2 · 100 = 400`.
+    const D59_BOUND_LOWER: f64 = RHS + D59_COEFFICIENT * V_LO;
+    /// derived: the floor on storage, `V ≥ (RHS + coef · V_lo) / coef = 200` hm³.
+    const D59_FLOOR_HM3: f64 = D59_BOUND_LOWER / D59_COEFFICIENT;
+    /// derived: a m³/s turbined over a stage displaces `H · c_th = 25,000` of
+    /// thermal, while under `per_unit` the same m³/s below the floor costs
+    /// `coef · τ · penalty = 2 · 0.9 · 10,000 = 18,000` at every stage it stays
+    /// short. The last stage violates (`18,000 < 25,000`) and H0 serves the whole
+    /// load; a stage-0 shortfall also lowers the last stage's end storage, so it
+    /// costs `36,000 > 25,000` and H0 stops at the floor, `(245 − 200) / 0.9 = 50`.
+    const D59_TURBINED_M3S: [f64; 2] = [(V_INIT - D59_FLOOR_HM3) / TAU, LOAD_MW];
+    /// derived: `V_t = V_{t−1} − τ · q_t` from `V_init`, with no inflow.
+    const D59_STORAGE_FINAL_HM3: [f64; 2] = [
+        V_INIT - TAU * D59_TURBINED_M3S[0],
+        V_INIT - TAU * D59_TURBINED_M3S[0] - TAU * D59_TURBINED_M3S[1],
+    ];
+    /// derived: T0 covers the load H0 does not, `L − ρ · q_t` with `ρ = 1`.
+    const D59_THERMAL_MW: [f64; 2] = [LOAD_MW - D59_TURBINED_M3S[0], LOAD_MW - D59_TURBINED_M3S[1]];
+    /// derived: the floor shortfall `RHS + coef · V_lo − coef · V_t`, zero at the floor.
+    const D59_SLACK: [f64; 2] = [
+        D59_BOUND_LOWER - D59_COEFFICIENT * D59_STORAGE_FINAL_HM3[0],
+        D59_BOUND_LOWER - D59_COEFFICIENT * D59_STORAGE_FINAL_HM3[1],
+    ];
+    /// derived: `Σ_t (H · c_th · g_t + penalty · s_t)`, the `per_unit` slack
+    /// carrying no stage hours: `1,250,000 + 1,800,000 = 3,050,000`.
+    const D59_TOTAL_COST: f64 = HOURS * THERMAL_COST * D59_THERMAL_MW[0]
+        + PENALTY * D59_SLACK[0]
+        + HOURS * THERMAL_COST * D59_THERMAL_MW[1]
+        + PENALTY * D59_SLACK[1];
+
+    fn case_dir() -> &'static Path {
+        Path::new(CASE_DIR)
+    }
+
+    fn echo_rows(case_dir: &Path) -> Vec<GenericConstraintEchoRow> {
+        let (system, setup) = fresh_system_and_setup_with(case_dir, |_| {});
+        build_generic_constraint_echo_rows(&setup, &system)
+    }
+
+    fn assert_floor_echo(rows: &[GenericConstraintEchoRow], label: &str) {
+        assert_eq!(rows.len(), 2, "{label}: one echo row per stage");
+        for (stage, row) in rows.iter().enumerate() {
+            assert_eq!(
+                row.stage_id,
+                i32::try_from(stage).expect("stage index fits i32"),
+                "{label} stage {stage}: echo stage id"
+            );
+            assert_eq!(row.constraint_id, 1, "{label} stage {stage}: constraint id");
+            assert_eq!(row.block_id, None, "{label} stage {stage}: block id");
+            assert_eq!(row.term_index, Some(0), "{label} stage {stage}: term index");
+            assert_eq!(
+                row.variable_kind.as_deref(),
+                Some("hydro_useful_volume_final"),
+                "{label} stage {stage}: variable kind"
+            );
+            assert_eq!(
+                row.coefficient.map(f64::to_bits),
+                Some(D59_COEFFICIENT.to_bits()),
+                "{label} stage {stage}: coefficient"
+            );
+            assert_eq!(
+                row.bound_lower.map(f64::to_bits),
+                Some(D59_BOUND_LOWER.to_bits()),
+                "{label} stage {stage}: bound_lower"
+            );
+            assert_eq!(row.bound_upper, None, "{label} stage {stage}: bound_upper");
+            assert_eq!(
+                row.derived_shape, "floor",
+                "{label} stage {stage}: derived shape"
+            );
+            assert_eq!(
+                row.slack_penalty_basis.as_deref(),
+                Some("per_unit"),
+                "{label} stage {stage}: slack penalty basis"
+            );
+        }
+    }
+
+    /// Materializes the deck with the parameter sum declared once as an
+    /// expression parameter and the constraint reading it.
+    fn expression_parameter_twin(case_dir: &Path) -> tempfile::TempDir {
+        let twin = copy_case_dir(case_dir);
+
+        let parameters_path = twin.path().join("constraints/generic_parameters.json");
+        let mut parameters: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&parameters_path).expect("read generic_parameters.json"),
+        )
+        .expect("generic_parameters.json is JSON");
+        parameters["scalar_parameters"]
+            .as_array_mut()
+            .expect("generic_parameters.json has a scalar_parameters array")
+            .push(serde_json::json!({
+                "id": 3,
+                "name": "weight_sum",
+                "kind": "expression",
+                "expression": "@weight_a + @weight_b"
+            }));
+        std::fs::write(
+            &parameters_path,
+            serde_json::to_string_pretty(&parameters).expect("serialize generic_parameters.json"),
+        )
+        .expect("write generic_parameters.json");
+
+        let constraints_path = twin.path().join("constraints/generic_constraints.json");
+        let mut constraints: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&constraints_path).expect("read generic_constraints.json"),
+        )
+        .expect("generic_constraints.json is JSON");
+        constraints["constraints"][0]["expression"] =
+            serde_json::Value::from("@weight_sum * hydro_useful_volume_final(0) >= 200");
+        std::fs::write(
+            &constraints_path,
+            serde_json::to_string_pretty(&constraints).expect("serialize generic_constraints.json"),
+        )
+        .expect("write generic_constraints.json");
+
+        twin
+    }
+
+    /// Trains and simulates D59 against its closed form: H0 stops at the floor at
+    /// stage 0 and violates it at the last stage, where a `per_unit` shortfall is
+    /// cheaper than thermal. The echo carries the parameter sum and the folded bound.
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    #[test]
+    fn d59_parameter_sum_floor_matches_closed_form() {
+        let case_dir = case_dir();
+        let (result, scenario_results, summary) = run_with_simulation(case_dir);
+
+        assert_cost(
+            result.final_lb,
+            D59_TOTAL_COST,
+            1e-6 * D59_TOTAL_COST,
+            "D59",
+        );
+        assert_cost(
+            summary.mean_cost,
+            D59_TOTAL_COST,
+            1e-6 * D59_TOTAL_COST,
+            "D59-sim",
+        );
+
+        assert_eq!(
+            scenario_results.len(),
+            1,
+            "D59: simulation must produce exactly 1 scenario"
+        );
+        let stages = &scenario_results[0].stages;
+        assert_eq!(stages.len(), 2, "D59: expected 2 stages");
+        for (stage, stage_result) in stages.iter().enumerate() {
+            let hydro = {
+                let rows: Vec<_> = stage_result
+                    .hydros
+                    .iter()
+                    .filter(|h| h.hydro_id == 0)
+                    .collect();
+                assert_eq!(rows.len(), 1, "D59 stage {stage}: one H0 row");
+                rows[0]
+            };
+            assert!(
+                (hydro.storage_final_hm3 - D59_STORAGE_FINAL_HM3[stage]).abs() < 1e-6,
+                "D59 stage {stage}: storage_final_hm3 expected {}, got {}",
+                D59_STORAGE_FINAL_HM3[stage],
+                hydro.storage_final_hm3
+            );
+            assert!(
+                (hydro.turbined_m3s - D59_TURBINED_M3S[stage]).abs() < 1e-6,
+                "D59 stage {stage}: turbined_m3s expected {}, got {}",
+                D59_TURBINED_M3S[stage],
+                hydro.turbined_m3s
+            );
+
+            let thermal = {
+                let rows: Vec<_> = stage_result
+                    .thermals
+                    .iter()
+                    .filter(|t| t.thermal_id == 0)
+                    .collect();
+                assert_eq!(rows.len(), 1, "D59 stage {stage}: one T0 row");
+                rows[0]
+            };
+            assert!(
+                (thermal.generation_mw - D59_THERMAL_MW[stage]).abs() < 1e-6,
+                "D59 stage {stage}: T0 generation_mw expected {}, got {}",
+                D59_THERMAL_MW[stage],
+                thermal.generation_mw
+            );
+
+            assert_eq!(
+                stage_result.generic_violations.len(),
+                1,
+                "D59 stage {stage}: exactly one generic violation record"
+            );
+            let violation = &stage_result.generic_violations[0];
+            assert_eq!(
+                violation.constraint_id, 1,
+                "D59 stage {stage}: violation constraint id"
+            );
+            assert_eq!(
+                violation.block_id, None,
+                "D59 stage {stage}: violation block id"
+            );
+            assert!(
+                (violation.slack_value - D59_SLACK[stage]).abs() < 1e-6,
+                "D59 stage {stage}: slack_value expected {}, got {}",
+                D59_SLACK[stage],
+                violation.slack_value
+            );
+            assert!(
+                (violation.slack_cost - PENALTY * violation.slack_value).abs()
+                    <= 1e-6 * PENALTY * D59_SLACK[stage].max(1.0),
+                "D59 stage {stage}: slack_cost expected {}, got {}",
+                PENALTY * violation.slack_value,
+                violation.slack_cost
+            );
+        }
+
+        assert_floor_echo(&echo_rows(case_dir), "D59 echo");
+    }
+
+    /// Declaring the parameter sum as an expression parameter builds the same
+    /// stage templates, bit for bit, and the same echo as the inline sum.
+    #[test]
+    fn d59_expression_parameter_twin_matches_inline_sum() {
+        let case_dir = case_dir();
+        let twin = expression_parameter_twin(case_dir);
+
+        let (inline_system, inline) = fresh_system_and_setup_with(case_dir, |_| {});
+        let (twin_system, twin_setup) = fresh_system_and_setup_with(twin.path(), |_| {});
+        let inline_rows = build_generic_constraint_echo_rows(&inline, &inline_system);
+        let twin_rows = build_generic_constraint_echo_rows(&twin_setup, &twin_system);
+        assert_floor_echo(&inline_rows, "D59 inline echo");
+        assert_floor_echo(&twin_rows, "D59 twin echo");
+
+        assert_all_templates_byte_identical(
+            &inline.inputs.stage_data.stage_templates.templates,
+            &twin_setup.inputs.stage_data.stage_templates.templates,
+            "d59 expression-parameter twin",
+        );
+
+        assert_eq!(
+            format!("{inline_rows:?}"),
+            format!("{twin_rows:?}"),
+            "D59: the twin's echo rows must match the inline sum's"
+        );
+    }
+
+    /// The expression-parameter twin trains to the inline deck's lower bound,
+    /// bit for bit.
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    #[test]
+    fn d59_expression_parameter_twin_trains_to_the_same_bound() {
+        let case_dir = case_dir();
+        let twin = expression_parameter_twin(case_dir);
+
+        let (inline, _, _) = run_with_simulation(case_dir);
+        let (twin_result, _, _) = run_with_simulation(twin.path());
+
+        assert_eq!(
+            inline.final_lb.to_bits(),
+            twin_result.final_lb.to_bits(),
+            "D59: the twin's final lower bound must match the inline sum's bit for bit"
+        );
+    }
+}

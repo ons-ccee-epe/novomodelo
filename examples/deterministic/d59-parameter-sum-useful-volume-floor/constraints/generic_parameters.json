@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/generic_parameters.schema.json",
+  "scalar_parameters": [
+    {
+      "id": 1,
+      "name": "weight_a",
+      "kind": "constant",
+      "value": 0.5
+    },
+    {
+      "id": 2,
+      "name": "weight_b",
+      "kind": "constant",
+      "value": 1.5
+    }
+  ]
+}
