@@ -352,9 +352,7 @@ mod tests {
     /// encoding crosses the wire.
     #[test]
     fn test_round_trip_generic_constraint_bound_ref() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, ScalarExpr, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let param = |id| ScalarExpr::param(EntityId(id));
         let bound = ScalarExpr::literal(12.0)

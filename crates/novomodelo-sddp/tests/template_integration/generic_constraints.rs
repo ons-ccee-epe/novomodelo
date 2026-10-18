@@ -2179,6 +2179,16 @@ fn parse_scalar_parameters_from_str(json: &str) -> Vec<novomodelo_core::ScalarPa
     novomodelo_io::parse_scalar_parameters_json(file.path()).expect("parse scalar parameters")
 }
 
+/// The `@name` resolution table for `params`, as `parse_generic_from_str_with_params` consumes it.
+fn name_to_id_of(
+    params: &[novomodelo_core::ScalarParameter],
+) -> std::collections::HashMap<String, novomodelo_core::EntityId> {
+    params
+        .iter()
+        .map(|param| (param.name.clone(), param.id))
+        .collect()
+}
+
 /// A decision-variable RHS (`thermal_generation(0) <= 0.5 * hydro_generation(1) +
 /// 12`) normalizes onto the LHS with the RHS variable sign-flipped and the
 /// constant remainder assigned to the upper endpoint — byte-identical to writing
@@ -2628,10 +2638,7 @@ fn expression_parameter_sum_coefficient_matches_inline_sum_in_the_same_associati
       ]
     }"#,
     );
-    let name_to_id: HashMap<String, EntityId> = scalar_params
-        .iter()
-        .map(|param| (param.name.clone(), param.id))
-        .collect();
+    let name_to_id = name_to_id_of(&scalar_params);
     let params = resolved_params_single_stage(1, &scalar_params);
 
     let inline_constraints = parse_generic_from_str_with_params(
@@ -2702,10 +2709,7 @@ fn block_varying_expression_parameter_coefficient_matches_inline_product() {
       ]
     }"#,
     );
-    let name_to_id: HashMap<String, EntityId> = scalar_params
-        .iter()
-        .map(|param| (param.name.clone(), param.id))
-        .collect();
+    let name_to_id = name_to_id_of(&scalar_params);
     let params = resolved_params_single_stage(2, &scalar_params);
     assert!(
         params.is_block_varying(EntityId(241)),
@@ -2770,10 +2774,7 @@ fn expression_parameter_bound_matches_inline_bound_sum() {
       ]
     }"#,
     );
-    let name_to_id: HashMap<String, EntityId> = scalar_params
-        .iter()
-        .map(|param| (param.name.clone(), param.id))
-        .collect();
+    let name_to_id = name_to_id_of(&scalar_params);
     let params = resolved_params_single_stage(1, &scalar_params);
 
     let inline_constraints = parse_generic_from_str_with_params(

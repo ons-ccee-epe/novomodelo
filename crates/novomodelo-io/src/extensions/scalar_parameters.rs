@@ -723,8 +723,7 @@ fn convert_per_stage_block(
 mod tests {
     use super::*;
     use crate::test_support::write_json;
-    use novomodelo_core::{EntityId, ScalarExpr};
-    use std::collections::BTreeSet;
+    use novomodelo_core::ScalarExpr;
 
     fn schema_error(json: &str) -> (String, String) {
         let tmp = write_json(json);
