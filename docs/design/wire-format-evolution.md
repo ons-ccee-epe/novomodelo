@@ -5,15 +5,13 @@
 > assignments of policy checkpoint manifest fields; re-derive against the live
 > tree before acting.
 
-Every postcard-encoded enum this register tracks — `VariableRef`
-(`novomodelo-core`), `BroadcastComputedParameter` (`novomodelo-io`) and `ScalarOp`
-(`novomodelo-core`, carried inside every `ScalarExpr`) — has no version byte:
-postcard serializes a variant as its positional index, so inserting a variant
-mid-enum silently shifts every later discriminant and reinterprets previously
-serialized values as the wrong variant. Each such enum is therefore
-append-only — a new variant is added at the tail only — and each tail
-assignment is guarded by a first-byte discriminant pin plus a full encode →
-decode → equality round-trip.
+Every postcard-encoded enum this register tracks — every enum named in the
+Enum column of the table below — has no version byte: postcard serializes a
+variant as its positional index, so inserting a variant mid-enum silently
+shifts every later discriminant and reinterprets previously serialized values
+as the wrong variant. Each such enum is therefore append-only — a new variant
+is added at the tail only — and each tail assignment is guarded by a
+first-byte discriminant pin plus a full encode → decode → equality round-trip.
 
 A `ScalarExpr` serializes as the bare sequence of its `ScalarOp`s and
 deserializes by replaying that sequence through its constructors, so a
@@ -39,6 +37,7 @@ value left) is a decoding error, never a value.
 | `Sub` | `ScalarOp` | `0x04` | `scalar_op_postcard_discriminant_pin` (pin); `scalar_expr_postcard_round_trip` (round-trip) |
 | `Mul` | `ScalarOp` | `0x05` | `scalar_op_postcard_discriminant_pin` (pin); `scalar_expr_postcard_round_trip` (round-trip) |
 | `Div` | `ScalarOp` | `0x06` | `scalar_op_postcard_discriminant_pin` (pin); `scalar_expr_postcard_round_trip` (round-trip) |
+| `Expression` | `BroadcastParameterKind` | `0x05` | `broadcast_parameter_kind_postcard_discriminant_pin` (pin); `broadcast_parameter_kind_expression_round_trip` (round-trip) |
 
 ## Why no reject-old-version test applies
 
@@ -53,13 +52,11 @@ two reasons that hold for every enum this register tracks:
   test has nothing to assert against — the discriminant pin already covers the
   failure mode a version byte would guard (a shifted index reinterpreting a
   byte as the wrong variant).
-- **Same-version-ranks-only, never persisted.** `VariableRef` values travel
-  inside the in-process constraint model built and consumed within one solver
-  build. `BroadcastComputedParameter` values travel only between MPI ranks of
-  a single running solve, broadcast from the same binary that constructed
-  them. `ScalarOp` values travel inside the constraint model and in-process
-  JSON only. No payload is written to disk and read back by a possibly older
-  or newer build, so there is no cross-version compatibility surface to test.
+- **Same-version-ranks-only, never persisted.** Every tracked enum travels
+  only within one build, either inside the in-process model or between the
+  MPI ranks of one solve broadcast from the same binary, and none is written
+  to disk and read back by a possibly older or newer build, so there is no
+  cross-version compatibility surface to test.
 
 A future reader should not file a "missing reject-test" finding against any
 tracked enum on this basis; the discriminant pin plus the full round-trip is
