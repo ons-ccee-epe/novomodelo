@@ -7,17 +7,12 @@
 
 mod common;
 
-use std::fmt::Write;
-
 use novomodelo_sddp::StudySetup;
-use novomodelo_sddp::build_generic_constraint_echo_rows;
 use novomodelo_sddp::test_support::decks::{SLOW_DECKS, committed_decks};
 use novomodelo_sddp::test_support::template_fact_groups;
-use sha2::{Digest, Sha256};
 
 use common::build_setup_in_code;
 use common::fresh_setup_with;
-use common::fresh_system_and_setup_with;
 use common::in_code_studies::{
     ChronologicalNoiseSpec, chronological_noise_study, mixed_lead_anticipated_study,
 };
@@ -112,35 +107,4 @@ fn every_in_code_study_template_is_invariant_to_declaration_order() {
             .collect::<Vec<_>>()
             .join("\n")
     );
-}
-
-#[test]
-#[ignore = "neutrality capture: run explicitly with --ignored"]
-fn committed_deck_template_digests() {
-    let decks = committed_decks();
-    assert!(
-        !decks.is_empty(),
-        "committed_decks() must find at least one deck"
-    );
-    for deck in decks {
-        let (system, setup) = fresh_system_and_setup_with(&deck.dir, |_| {});
-        for (group, bytes) in template_fact_groups(&setup) {
-            println!("DIGEST\t{}\t{group}\t{}", deck.key, sha256_hex(&bytes));
-        }
-        let rows = build_generic_constraint_echo_rows(&setup, &system);
-        println!(
-            "DIGEST\t{}\tgeneric_constraint_echo\t{}",
-            deck.key,
-            sha256_hex(format!("{rows:?}").as_bytes())
-        );
-    }
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .fold(String::with_capacity(64), |mut hex, byte| {
-            let _ = write!(hex, "{byte:02x}");
-            hex
-        })
 }
