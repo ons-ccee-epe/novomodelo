@@ -57,6 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   relation already did. When every remaining variable is stage-level, the row
   now collapses to one stage-level row, so under `"penalty_basis": "per_unit"` a
   violation of it costs the penalty once instead of once per block.
+- **BREAKING:** in `constraints/generic_parameters.json`, a payload field that
+  does not belong to the entry's kind (for example `values` on a `constant`)
+  stops the load. Only `block_values` was rejected before; the other fields
+  were ignored.
 
 ### Fixed
 

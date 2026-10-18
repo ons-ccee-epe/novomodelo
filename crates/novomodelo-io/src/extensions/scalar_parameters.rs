@@ -72,8 +72,8 @@
 //! - `"per_stage"` entries whose `stage_id` keys are not a contiguous range
 //!   from 0, or that contain duplicates.
 //! - `"per_stage_block"` entries with a duplicate `(stage_id, block_id)` pair.
-//! - `block_values` present on a non-`"per_stage_block"` entry, or absent on a
-//!   `"per_stage_block"` entry.
+//! - A payload field that the entry's `kind` does not own (see the `kind`
+//!   table) is rejected, as is the entry's own payload field when it is absent.
 //! - Non-finite `value` fields (NaN, ±∞).
 //!
 //! Top-level parse failures (malformed JSON) and unknown JSON fields, such as a
@@ -133,8 +133,8 @@ pub(crate) struct ScalarParameterJsonEntry {
     value: Option<f64>,
     /// `[[key, value], ...]` pairs. Required when `kind == "per_stage"` (keys are
     /// stage ids, must be a contiguous range starting at 0) or
-    /// `kind == "seasonal"` (keys are season ids, must be unique). Must be absent
-    /// for `"constant"` and `"computed"`.
+    /// `kind == "seasonal"` (keys are season ids, must be unique); must be absent
+    /// for all other kinds.
     values: Option<Vec<(i32, f64)>>,
     /// Computed-parameter specification. Required when `kind == "computed"`;
     /// must be absent for all other kinds.
@@ -163,6 +163,24 @@ pub(crate) enum RawParameterKind {
 }
 
 impl RawParameterKind {
+    const ALL: [RawParameterKind; 5] = [
+        Self::Constant,
+        Self::PerStage,
+        Self::Seasonal,
+        Self::Computed,
+        Self::PerStageBlock,
+    ];
+
+    /// The one payload field this kind owns; no `_` arm, so a new kind must name its field.
+    fn payload_field(self) -> PayloadField {
+        match self {
+            Self::Constant => PayloadField::Value,
+            Self::PerStage | Self::Seasonal => PayloadField::Values,
+            Self::Computed => PayloadField::ComputedSpec,
+            Self::PerStageBlock => PayloadField::BlockValues,
+        }
+    }
+
     fn as_str(self) -> &'static str {
         match self {
             Self::Constant => "constant",
@@ -170,6 +188,48 @@ impl RawParameterKind {
             Self::Seasonal => "seasonal",
             Self::Computed => "computed",
             Self::PerStageBlock => "per_stage_block",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PayloadField {
+    Value,
+    Values,
+    ComputedSpec,
+    BlockValues,
+}
+
+impl PayloadField {
+    const ALL: [PayloadField; 4] = [
+        Self::Value,
+        Self::Values,
+        Self::ComputedSpec,
+        Self::BlockValues,
+    ];
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Value => "value",
+            Self::Values => "values",
+            Self::ComputedSpec => "computed_spec",
+            Self::BlockValues => "block_values",
+        }
+    }
+
+    fn is_present(self, entry: &ScalarParameterJsonEntry) -> bool {
+        let ScalarParameterJsonEntry {
+            value,
+            values,
+            computed_spec,
+            block_values,
+            ..
+        } = entry;
+        match self {
+            Self::Value => value.is_some(),
+            Self::Values => values.is_some(),
+            Self::ComputedSpec => computed_spec.is_some(),
+            Self::BlockValues => block_values.is_some(),
         }
     }
 }
@@ -194,7 +254,7 @@ impl RawParameterKind {
 /// | Non-contiguous `stage_id` in `"per_stage"`    | [`LoadError::SchemaError`]     |
 /// | Duplicate `stage_id` in `"per_stage"` values  | [`LoadError::SchemaError`]     |
 /// | Duplicate `(stage_id, block_id)` in `"per_stage_block"` | [`LoadError::SchemaError`] |
-/// | `block_values` on wrong kind / absent on `"per_stage_block"` | [`LoadError::SchemaError`] |
+/// | Payload field not owned by the entry's `kind` / own field absent | [`LoadError::SchemaError`] |
 /// | Non-finite numeric value                      | [`LoadError::SchemaError`]     |
 ///
 /// # Examples
@@ -277,12 +337,23 @@ fn convert_entry_to_kind(
     entry: &ScalarParameterJsonEntry,
     path: &Path,
 ) -> Result<ParameterKind, LoadError> {
-    if entry.kind != RawParameterKind::PerStageBlock && entry.block_values.is_some() {
+    let own_field = entry.kind.payload_field();
+    if let Some(stray) = PayloadField::ALL
+        .into_iter()
+        .find(|&field| field != own_field && field.is_present(entry))
+    {
+        let owners = RawParameterKind::ALL
+            .into_iter()
+            .filter(|kind| kind.payload_field() == stray)
+            .map(|kind| format!("\"{}\"", kind.as_str()))
+            .collect::<Vec<_>>()
+            .join(" or ");
         return Err(LoadError::SchemaError {
             path: path.to_path_buf(),
-            field: format!("scalar_parameters[{i}].block_values"),
+            field: format!("scalar_parameters[{i}].{}", stray.as_str()),
             message: format!(
-                "\"block_values\" is only valid for kind \"per_stage_block\", not \"{}\"",
+                "\"{}\" is only valid for kind {owners}, not \"{}\"",
+                stray.as_str(),
                 entry.kind.as_str()
             ),
         });
@@ -518,6 +589,7 @@ mod tests {
     use super::*;
     use crate::test_support::write_json;
     use novomodelo_core::EntityId;
+    use std::collections::BTreeSet;
 
     // ── Test 1: happy path — all four variants ─────────────────────────────────
 
@@ -989,19 +1061,25 @@ mod tests {
         let err = parse_scalar_parameters_json(tmp.path()).unwrap_err();
         match err {
             LoadError::ParseError { message, .. } => {
-                for spelling in [
-                    "bogus",
-                    "constant",
-                    "per_stage",
-                    "seasonal",
-                    "computed",
-                    "per_stage_block",
-                ] {
+                assert!(
+                    message.contains("`bogus`"),
+                    "message should name `bogus`, got: {message}"
+                );
+                for kind in RawParameterKind::ALL {
+                    let spelling = kind.as_str();
                     assert!(
                         message.contains(&format!("`{spelling}`")),
                         "message should name `{spelling}`, got: {message}"
                     );
                 }
+                let (_, expected) = message
+                    .split_once("expected one of")
+                    .unwrap_or_else(|| panic!("no `expected one of` in: {message}"));
+                assert_eq!(
+                    expected.matches('`').count() / 2,
+                    RawParameterKind::ALL.len(),
+                    "every deserializable kind must be in RawParameterKind::ALL, got: {message}"
+                );
             }
             other => panic!("expected ParseError for an unlisted kind, got: {other:?}"),
         }
@@ -1011,16 +1089,133 @@ mod tests {
 
     #[test]
     fn raw_parameter_kind_as_str_is_its_json_spelling() {
-        for kind in [
-            RawParameterKind::Constant,
-            RawParameterKind::PerStage,
-            RawParameterKind::Seasonal,
-            RawParameterKind::Computed,
-            RawParameterKind::PerStageBlock,
-        ] {
+        for kind in RawParameterKind::ALL {
             let parsed: RawParameterKind =
                 serde_json::from_str(&format!("\"{}\"", kind.as_str())).unwrap();
             assert_eq!(parsed, kind);
         }
+    }
+
+    // ── kind-to-payload table ──────────────────────────────────────────────────
+
+    fn payload_json(field: PayloadField) -> &'static str {
+        match field {
+            PayloadField::Value => r#""value": 1.0"#,
+            PayloadField::Values => r#""values": [[0, 1.0]]"#,
+            PayloadField::ComputedSpec => {
+                r#""computed_spec": {"tag": "min_storage", "hydro_id": 1}"#
+            }
+            PayloadField::BlockValues => r#""block_values": [[0, 0, 1.0]]"#,
+        }
+    }
+
+    #[test]
+    fn scalar_parameters_json_rejects_a_foreign_payload_field_on_every_kind() {
+        let mut messages = Vec::new();
+        for kind in RawParameterKind::ALL {
+            let own = kind.payload_field();
+            for foreign in PayloadField::ALL.into_iter().filter(|&f| f != own) {
+                let json = format!(
+                    r#"{{ "scalar_parameters": [
+                        {{ "id": 1, "name": "p", "kind": "{}", {}, {} }}
+                    ] }}"#,
+                    kind.as_str(),
+                    payload_json(own),
+                    payload_json(foreign)
+                );
+                let tmp = write_json(&json);
+                let err = parse_scalar_parameters_json(tmp.path()).unwrap_err();
+                let owners = RawParameterKind::ALL
+                    .into_iter()
+                    .filter(|k| k.payload_field() == foreign)
+                    .map(|k| format!("\"{}\"", k.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(" or ");
+                match err {
+                    LoadError::SchemaError { field, message, .. } => {
+                        assert_eq!(field, format!("scalar_parameters[0].{}", foreign.as_str()));
+                        assert_eq!(
+                            message,
+                            format!(
+                                "\"{}\" is only valid for kind {owners}, not \"{}\"",
+                                foreign.as_str(),
+                                kind.as_str()
+                            )
+                        );
+                        messages.push(message);
+                    }
+                    other => panic!(
+                        "expected SchemaError for {} on {}, got: {other:?}",
+                        foreign.as_str(),
+                        kind.as_str()
+                    ),
+                }
+            }
+        }
+        assert_eq!(
+            messages.len(),
+            RawParameterKind::ALL.len() * (PayloadField::ALL.len() - 1)
+        );
+        for literal in [
+            r#""values" is only valid for kind "per_stage" or "seasonal", not "constant""#,
+            r#""block_values" is only valid for kind "per_stage_block", not "constant""#,
+        ] {
+            assert!(
+                messages.iter().any(|m| m == literal),
+                "missing {literal} among {messages:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn scalar_parameters_json_reports_a_stray_field_before_a_missing_own_field() {
+        let json = r#"{
+            "scalar_parameters": [
+                { "id": 1, "name": "c", "kind": "constant", "values": [[0, 1.0]] }
+            ]
+        }"#;
+        let tmp = write_json(json);
+        let err = parse_scalar_parameters_json(tmp.path()).unwrap_err();
+        match err {
+            LoadError::SchemaError { field, message, .. } => {
+                assert_eq!(field, "scalar_parameters[0].values");
+                assert_eq!(
+                    message,
+                    r#""values" is only valid for kind "per_stage" or "seasonal", not "constant""#
+                );
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn payload_field_table_gives_every_field_an_owner() {
+        let owned: BTreeSet<&str> = RawParameterKind::ALL
+            .into_iter()
+            .map(|kind| kind.payload_field().as_str())
+            .collect();
+        let fields: BTreeSet<&str> = PayloadField::ALL
+            .into_iter()
+            .map(PayloadField::as_str)
+            .collect();
+        assert_eq!(owned, fields);
+    }
+
+    #[cfg(feature = "schema")]
+    #[test]
+    fn payload_fields_are_every_payload_property_of_the_entry_schema() {
+        let schema = serde_json::to_value(schemars::schema_for!(ScalarParameterJsonEntry)).unwrap();
+        let properties: BTreeSet<&str> = schema["properties"]
+            .as_object()
+            .unwrap_or_else(|| panic!("entry schema has no properties: {schema}"))
+            .keys()
+            .map(String::as_str)
+            .filter(|key| !matches!(*key, "id" | "name" | "kind"))
+            .collect();
+        let fields: BTreeSet<&str> = PayloadField::ALL
+            .into_iter()
+            .map(PayloadField::as_str)
+            .collect();
+        assert_eq!(properties, fields);
     }
 }

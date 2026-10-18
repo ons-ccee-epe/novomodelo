@@ -337,7 +337,7 @@
           ]
         },
         "values": {
-          "description": "`[[key, value], ...]` pairs. Required when `kind == \"per_stage\"` (keys are\nstage ids, must be a contiguous range starting at 0) or\n`kind == \"seasonal\"` (keys are season ids, must be unique). Must be absent\nfor `\"constant\"` and `\"computed\"`.",
+          "description": "`[[key, value], ...]` pairs. Required when `kind == \"per_stage\"` (keys are\nstage ids, must be a contiguous range starting at 0) or\n`kind == \"seasonal\"` (keys are season ids, must be unique); must be absent\nfor all other kinds.",
           "items": {
             "maxItems": 2,
             "minItems": 2,
