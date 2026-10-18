@@ -2042,12 +2042,11 @@ mod tests {
             parse_generic_constraints(f.path(), &HashMap::new(), &LineBusPairIndex::default())
                 .unwrap();
 
-        let hand_flattened = parse_expression(
+        let mut hand_flattened = parse_expression(
             "thermal_generation(5) - 0.87 * hydro_generation(140)",
             &HashMap::new(),
         )
         .unwrap();
-        let mut hand_flattened = hand_flattened;
         hand_flattened.canonicalize();
 
         assert_eq!(result[0].expression.terms, hand_flattened.terms);
