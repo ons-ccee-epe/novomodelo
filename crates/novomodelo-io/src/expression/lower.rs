@@ -225,7 +225,6 @@ enum Type {
 
 /// Parses `src` and lowers it as the body of a scalar parameter, which has no relational
 /// operator.
-#[cfg_attr(not(test), expect(dead_code, reason = "no loader reads it yet"))]
 pub(crate) fn lower_scalar_body(
     src: &str,
     params: &HashMap<String, EntityId>,

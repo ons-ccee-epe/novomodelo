@@ -16,7 +16,9 @@
 //!     { "id": 3, "name": "wet_season_factor", "kind": "seasonal",
 //!       "values": [[0, 1.2], [1, 0.8]] },
 //!     { "id": 4, "name": "hydro_prod", "kind": "computed",
-//!       "computed_spec": { "tag": "equivalent_productivity", "hydro_id": 7 } }
+//!       "computed_spec": { "tag": "equivalent_productivity", "hydro_id": 7 } },
+//!     { "id": 5, "name": "scaled_demand", "kind": "expression",
+//!       "expression": "@discount_rate * @demand" }
 //!   ]
 //! }
 //! ```
@@ -32,6 +34,14 @@
 //! | `seasonal`  | `"values": [[season_id, value], ...]`                                 |
 //! | `computed`  | `"computed_spec": { "tag": "<variant>", "hydro_id": <int> }`         |
 //! | `per_stage_block` | `"block_values": [[stage_id, block_id, value], ...]` — unique `(stage_id, block_id)`, sorted |
+//! | `expression` | `"expression": "<arithmetic over @name>"` — evaluated per stage and block from the referenced parameters |
+//!
+//! ### `expression` bodies
+//!
+//! A body reads other parameters of this file by `@name`, in any declaration order, with
+//! `+ - * /`, unary minus, parentheses and numeric literals. It may not contain an LP
+//! variable, a relation, or a named expression from `generic_constraints.json`, and the
+//! references must not form a cycle.
 //!
 //! ### `per_stage` contiguity rule
 //!
@@ -75,6 +85,10 @@
 //! - A payload field that the entry's `kind` does not own (see the `kind`
 //!   table) is rejected, as is the entry's own payload field when it is absent.
 //! - Non-finite `value` fields (NaN, ±∞).
+//! - An `"expression"` body that fails to parse or lower, at
+//!   `scalar_parameters[i].expression`, quoting the offending fragment.
+//! - An `"expression"` kind without an `expression` body.
+//! - An `"expression"` reference cycle, at `scalar_parameters`.
 //!
 //! Top-level parse failures (malformed JSON) and unknown JSON fields, such as a
 //! stale `"values_source"`, return [`crate::LoadError::ParseError`].  I/O
@@ -85,13 +99,15 @@
 //! The returned `Vec<ScalarParameter>` is sorted ascending by `id.0`,
 //! regardless of the order entries appear in the file.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 use novomodelo_core::{ComputedParameter, EntityId, ParameterKind, ScalarParameter};
 use serde::Deserialize;
 
 use crate::LoadError;
+use crate::constraints::reference_cycles::detect_cycles;
+use crate::expression::lower::lower_scalar_body;
 
 // Intermediate types with inline payload fields: `ScalarParameter` cannot be
 // deserialized directly because the JSON places payload fields flat alongside
@@ -125,8 +141,8 @@ pub(crate) struct ScalarParameterJsonEntry {
     /// Human-readable name; unique within the file. Used as the `@name` reference
     /// from `generic_constraints.json`.
     name: String,
-    /// Selects which payload field (`value`, `values`, `computed_spec` or
-    /// `block_values`) the entry carries.
+    /// Selects the one payload field the entry carries; every other payload
+    /// field must be absent.
     kind: RawParameterKind,
     /// Scalar value. Required when `kind == "constant"`; must be absent for all
     /// other kinds.
@@ -143,6 +159,9 @@ pub(crate) struct ScalarParameterJsonEntry {
     /// `kind == "per_stage_block"` (each `(stage_id, block_id)` pair unique);
     /// must be absent for all other kinds.
     block_values: Option<Vec<(i32, i32, f64)>>,
+    /// Arithmetic over `@name` references to other parameters of this file.
+    /// Required when `kind == "expression"`; must be absent for all other kinds.
+    expression: Option<String>,
 }
 
 /// `kind` discriminator of a `generic_parameters.json` entry.
@@ -160,15 +179,18 @@ pub(crate) enum RawParameterKind {
     Computed,
     /// One value per stage and block, in `block_values`.
     PerStageBlock,
+    /// A program over other scalar parameters, in `expression`.
+    Expression,
 }
 
 impl RawParameterKind {
-    const ALL: [RawParameterKind; 5] = [
+    const ALL: [RawParameterKind; 6] = [
         Self::Constant,
         Self::PerStage,
         Self::Seasonal,
         Self::Computed,
         Self::PerStageBlock,
+        Self::Expression,
     ];
 
     /// The one payload field this kind owns; no `_` arm, so a new kind must name its field.
@@ -178,6 +200,7 @@ impl RawParameterKind {
             Self::PerStage | Self::Seasonal => PayloadField::Values,
             Self::Computed => PayloadField::ComputedSpec,
             Self::PerStageBlock => PayloadField::BlockValues,
+            Self::Expression => PayloadField::Expression,
         }
     }
 
@@ -188,6 +211,7 @@ impl RawParameterKind {
             Self::Seasonal => "seasonal",
             Self::Computed => "computed",
             Self::PerStageBlock => "per_stage_block",
+            Self::Expression => "expression",
         }
     }
 }
@@ -198,14 +222,16 @@ enum PayloadField {
     Values,
     ComputedSpec,
     BlockValues,
+    Expression,
 }
 
 impl PayloadField {
-    const ALL: [PayloadField; 4] = [
+    const ALL: [PayloadField; 5] = [
         Self::Value,
         Self::Values,
         Self::ComputedSpec,
         Self::BlockValues,
+        Self::Expression,
     ];
 
     fn as_str(self) -> &'static str {
@@ -214,6 +240,7 @@ impl PayloadField {
             Self::Values => "values",
             Self::ComputedSpec => "computed_spec",
             Self::BlockValues => "block_values",
+            Self::Expression => "expression",
         }
     }
 
@@ -223,6 +250,7 @@ impl PayloadField {
             values,
             computed_spec,
             block_values,
+            expression,
             ..
         } = entry;
         match self {
@@ -230,8 +258,16 @@ impl PayloadField {
             Self::Values => values.is_some(),
             Self::ComputedSpec => computed_spec.is_some(),
             Self::BlockValues => block_values.is_some(),
+            Self::Expression => expression.is_some(),
         }
     }
+}
+
+/// An entry's kind after the per-entry checks; an `"expression"` body waits for
+/// every name of the file before it is lowered.
+enum Converted<'a> {
+    Done(ParameterKind),
+    Deferred(&'a str),
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -256,6 +292,9 @@ impl PayloadField {
 /// | Duplicate `(stage_id, block_id)` in `"per_stage_block"` | [`LoadError::SchemaError`] |
 /// | Payload field not owned by the entry's `kind` / own field absent | [`LoadError::SchemaError`] |
 /// | Non-finite numeric value                      | [`LoadError::SchemaError`]     |
+/// | `"expression"` body that fails to parse or lower | [`LoadError::SchemaError`]  |
+/// | `"expression"` kind without an `expression` body | [`LoadError::SchemaError`]  |
+/// | `"expression"` reference cycle                | [`LoadError::SchemaError`]     |
 ///
 /// # Examples
 ///
@@ -275,11 +314,44 @@ pub fn parse_scalar_parameters_json(path: &Path) -> Result<Vec<ScalarParameter>,
         serde_json::from_str(&text).map_err(|e| LoadError::parse(path, e.to_string()))?;
 
     let entries = file.scalar_parameters;
-    let mut seen_ids: HashSet<i32> = HashSet::with_capacity(entries.len());
-    let mut seen_names: HashSet<String> = HashSet::with_capacity(entries.len());
-    let mut result: Vec<ScalarParameter> = Vec::with_capacity(entries.len());
+    let (converted, name_to_id) = convert_entries(&entries, path)?;
 
-    for (i, entry) in entries.into_iter().enumerate() {
+    let mut result = entries
+        .iter()
+        .zip(converted)
+        .enumerate()
+        .map(|(i, (entry, converted))| {
+            let kind = match converted {
+                Converted::Done(kind) => kind,
+                Converted::Deferred(body) => lower_expression_body(i, body, &name_to_id, path)?,
+            };
+            Ok(ScalarParameter {
+                id: EntityId(entry.id),
+                name: entry.name.clone(),
+                kind,
+            })
+        })
+        .collect::<Result<Vec<_>, LoadError>>()?;
+
+    result.sort_by_key(|p| p.id.0);
+    reject_expression_cycles(&result, path)?;
+
+    Ok(result)
+}
+
+// ── Private conversion helpers ────────────────────────────────────────────────
+
+/// Run the per-entry checks and conversions in file order, returning each entry's
+/// conversion and the file's complete name table.
+fn convert_entries<'a>(
+    entries: &'a [ScalarParameterJsonEntry],
+    path: &Path,
+) -> Result<(Vec<Converted<'a>>, HashMap<String, EntityId>), LoadError> {
+    let mut seen_ids: HashSet<i32> = HashSet::with_capacity(entries.len());
+    let mut name_to_id: HashMap<String, EntityId> = HashMap::with_capacity(entries.len());
+    let mut converted: Vec<Converted<'a>> = Vec::with_capacity(entries.len());
+
+    for (i, entry) in entries.iter().enumerate() {
         if !seen_ids.insert(entry.id) {
             return Err(LoadError::SchemaError {
                 path: path.to_path_buf(),
@@ -306,7 +378,10 @@ pub fn parse_scalar_parameters_json(path: &Path) -> Result<Vec<ScalarParameter>,
             });
         }
 
-        if !seen_names.insert(entry.name.clone()) {
+        if name_to_id
+            .insert(entry.name.clone(), EntityId(entry.id))
+            .is_some()
+        {
             return Err(LoadError::SchemaError {
                 path: path.to_path_buf(),
                 field: format!("scalar_parameters[{i}].name"),
@@ -314,29 +389,70 @@ pub fn parse_scalar_parameters_json(path: &Path) -> Result<Vec<ScalarParameter>,
             });
         }
 
-        let kind = convert_entry_to_kind(i, &entry, path)?;
-
-        result.push(ScalarParameter {
-            id: EntityId(entry.id),
-            name: entry.name,
-            kind,
-        });
+        converted.push(convert_entry_to_kind(i, entry, path)?);
     }
 
-    result.sort_by_key(|p| p.id.0);
-
-    Ok(result)
+    Ok((converted, name_to_id))
 }
 
-// ── Private conversion helpers ────────────────────────────────────────────────
-
-/// Convert a single `ScalarParameterJsonEntry` into a `ParameterKind`,
-/// performing all per-kind validations.
-fn convert_entry_to_kind(
+/// Lower an `"expression"` body against the file's full name table, so a body may
+/// name a parameter declared after it.
+fn lower_expression_body(
     i: usize,
-    entry: &ScalarParameterJsonEntry,
+    body: &str,
+    name_to_id: &HashMap<String, EntityId>,
     path: &Path,
 ) -> Result<ParameterKind, LoadError> {
+    lower_scalar_body(body, name_to_id)
+        .map(|expression| ParameterKind::Expression { expression })
+        .map_err(|diagnostic| LoadError::SchemaError {
+            path: path.to_path_buf(),
+            field: format!("scalar_parameters[{i}].expression"),
+            message: diagnostic.render(body),
+        })
+}
+
+/// Reject a reference cycle among `"expression"` parameters. `params` is sorted by
+/// id, and both the node order and each node's children follow id, so the reported
+/// cycle does not depend on declaration order.
+fn reject_expression_cycles(params: &[ScalarParameter], path: &Path) -> Result<(), LoadError> {
+    let expression_name = |id: EntityId| {
+        params
+            .binary_search_by_key(&id, |p| p.id)
+            .ok()
+            .and_then(|index| match &params[index].kind {
+                ParameterKind::Expression { .. } => Some(params[index].name.as_str()),
+                _ => None,
+            })
+    };
+    let graph: Vec<(&str, Vec<&str>)> = params
+        .iter()
+        .filter_map(|p| match &p.kind {
+            ParameterKind::Expression { expression } => {
+                let children: BTreeSet<EntityId> = expression.params().collect();
+                Some((
+                    p.name.as_str(),
+                    children.into_iter().filter_map(expression_name).collect(),
+                ))
+            }
+            _ => None,
+        })
+        .collect();
+
+    detect_cycles(&graph, "expression-parameter").map_err(|message| LoadError::SchemaError {
+        path: path.to_path_buf(),
+        field: "scalar_parameters".to_string(),
+        message,
+    })
+}
+
+/// Convert a single `ScalarParameterJsonEntry` into a `ParameterKind`,
+/// performing all per-kind validations; an `"expression"` body is deferred.
+fn convert_entry_to_kind<'a>(
+    i: usize,
+    entry: &'a ScalarParameterJsonEntry,
+    path: &Path,
+) -> Result<Converted<'a>, LoadError> {
     let own_field = entry.kind.payload_field();
     if let Some(stray) = PayloadField::ALL
         .into_iter()
@@ -359,13 +475,32 @@ fn convert_entry_to_kind(
         });
     }
 
-    match entry.kind {
+    let kind = match entry.kind {
         RawParameterKind::Constant => convert_constant(i, entry, path),
         RawParameterKind::PerStage => convert_per_stage(i, entry, path),
         RawParameterKind::Seasonal => convert_seasonal(i, entry, path),
         RawParameterKind::Computed => convert_computed(i, entry, path),
         RawParameterKind::PerStageBlock => convert_per_stage_block(i, entry, path),
-    }
+        RawParameterKind::Expression => return expression_body(i, entry, path),
+    };
+    kind.map(Converted::Done)
+}
+
+/// The deferred body of an `"expression"` entry, validating its presence.
+fn expression_body<'a>(
+    i: usize,
+    entry: &'a ScalarParameterJsonEntry,
+    path: &Path,
+) -> Result<Converted<'a>, LoadError> {
+    entry
+        .expression
+        .as_deref()
+        .map(Converted::Deferred)
+        .ok_or_else(|| LoadError::SchemaError {
+            path: path.to_path_buf(),
+            field: format!("scalar_parameters[{i}].expression"),
+            message: "\"expression\" kind requires an \"expression\" field".to_string(),
+        })
 }
 
 /// Build a `ParameterKind::Constant` from an entry, validating field presence
@@ -588,8 +723,26 @@ fn convert_per_stage_block(
 mod tests {
     use super::*;
     use crate::test_support::write_json;
-    use novomodelo_core::EntityId;
+    use novomodelo_core::{EntityId, ScalarExpr};
     use std::collections::BTreeSet;
+
+    fn schema_error(json: &str) -> (String, String) {
+        let tmp = write_json(json);
+        match parse_scalar_parameters_json(tmp.path()).unwrap_err() {
+            LoadError::SchemaError { field, message, .. } => (field, message),
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    fn expression_body_error(body: &str) -> (String, String) {
+        let json = format!(
+            r#"{{ "scalar_parameters": [
+                {{ "id": 1, "name": "a", "kind": "constant", "value": 2.0 }},
+                {{ "id": 2, "name": "e", "kind": "expression", "expression": "{body}" }}
+            ] }}"#
+        );
+        schema_error(&json)
+    }
 
     // ── Test 1: happy path — all four variants ─────────────────────────────────
 
@@ -823,6 +976,7 @@ mod tests {
                 values: None,
                 computed_spec: None,
                 block_values: None,
+                expression: None,
             },
             std::path::Path::new("/test.json"),
         );
@@ -1096,6 +1250,154 @@ mod tests {
         }
     }
 
+    // ── kind "expression" ──────────────────────────────────────────────────────
+
+    #[test]
+    fn scalar_parameters_json_loads_an_expression_parameter() {
+        let json = r#"{
+            "scalar_parameters": [
+                { "id": 1, "name": "a", "kind": "constant", "value": 2.5 },
+                { "id": 2, "name": "b", "kind": "per_stage", "values": [[0, 1.0], [1, 2.0]] },
+                { "id": 3, "name": "e", "kind": "expression", "expression": "@a * @b" }
+            ]
+        }"#;
+        let tmp = write_json(json);
+        let params = parse_scalar_parameters_json(tmp.path()).unwrap();
+
+        assert_eq!(params.len(), 3);
+        assert_eq!(params[2].id, EntityId(3));
+        assert_eq!(params[2].name, "e");
+        assert_eq!(
+            params[2].kind,
+            ParameterKind::Expression {
+                expression: ScalarExpr::param(EntityId(1)) * ScalarExpr::param(EntityId(2))
+            }
+        );
+    }
+
+    #[test]
+    fn scalar_parameters_json_expression_may_reference_a_later_declaration() {
+        let json = r#"{
+            "scalar_parameters": [
+                { "id": 3, "name": "e", "kind": "expression", "expression": "@a + 1" },
+                { "id": 1, "name": "a", "kind": "constant", "value": 2.0 }
+            ]
+        }"#;
+        let tmp = write_json(json);
+        let params = parse_scalar_parameters_json(tmp.path()).unwrap();
+
+        assert_eq!(params[0].id, EntityId(1));
+        assert_eq!(params[1].id, EntityId(3));
+        assert_eq!(
+            params[1].kind,
+            ParameterKind::Expression {
+                expression: ScalarExpr::param(EntityId(1)) + ScalarExpr::literal(1.0)
+            }
+        );
+    }
+
+    #[test]
+    fn scalar_parameters_json_rejects_an_expression_kind_without_a_body() {
+        let (field, message) = schema_error(
+            r#"{ "scalar_parameters": [ { "id": 1, "name": "e", "kind": "expression" } ] }"#,
+        );
+        assert_eq!(field, "scalar_parameters[0].expression");
+        assert_eq!(
+            message,
+            r#""expression" kind requires an "expression" field"#
+        );
+    }
+
+    #[test]
+    fn scalar_parameters_json_rejects_an_lp_variable_in_an_expression_body() {
+        let body = "@a * thermal_generation(1)";
+        let (field, message) = expression_body_error(body);
+        assert_eq!(field, "scalar_parameters[1].expression");
+        let Some((fragment, _)) = message
+            .strip_prefix('`')
+            .and_then(|rest| rest.split_once('`'))
+        else {
+            panic!("message does not start with a quoted fragment: {message}");
+        };
+        assert!(
+            !fragment.is_empty() && body.contains(fragment),
+            "quoted fragment {fragment:?} is not part of {body:?}"
+        );
+        assert!(
+            message.contains("an LP variable cannot appear in a scalar-parameter expression"),
+            "got: {message}"
+        );
+    }
+
+    #[test]
+    fn scalar_parameters_json_rejects_a_relation_in_an_expression_body() {
+        let (field, message) = expression_body_error("@a <= 3");
+        assert_eq!(field, "scalar_parameters[1].expression");
+        assert!(
+            message.contains("cannot contain a relational operator"),
+            "got: {message}"
+        );
+    }
+
+    #[test]
+    fn scalar_parameters_json_rejects_a_name_that_is_not_a_parameter_of_this_file() {
+        let (field, message) = expression_body_error("@missing + 1");
+        assert_eq!(field, "scalar_parameters[1].expression");
+        assert!(
+            message.contains(r#"unknown scalar parameter "@missing""#),
+            "got: {message}"
+        );
+    }
+
+    #[test]
+    fn scalar_parameters_json_rejects_a_literal_division_by_zero_in_an_expression_body() {
+        let (field, message) = expression_body_error("@a / 0");
+        assert_eq!(field, "scalar_parameters[1].expression");
+        assert!(message.contains("division by zero"), "got: {message}");
+    }
+
+    #[test]
+    fn scalar_parameters_json_rejects_a_self_referencing_expression() {
+        let (field, message) = schema_error(
+            r#"{ "scalar_parameters": [
+                { "id": 1, "name": "e", "kind": "expression", "expression": "@e + 1" }
+            ] }"#,
+        );
+        assert_eq!(field, "scalar_parameters");
+        assert_eq!(
+            message,
+            "expression-parameter reference cycle detected: e -> e"
+        );
+    }
+
+    #[test]
+    fn scalar_parameters_json_reports_the_same_cycle_in_any_declaration_order() {
+        let p = r#"{ "id": 1, "name": "p", "kind": "expression", "expression": "@q" }"#;
+        let q = r#"{ "id": 2, "name": "q", "kind": "expression", "expression": "@p" }"#;
+        let in_order = schema_error(&format!(r#"{{ "scalar_parameters": [{p}, {q}] }}"#));
+        let reversed = schema_error(&format!(r#"{{ "scalar_parameters": [{q}, {p}] }}"#));
+        assert_eq!(
+            in_order,
+            (
+                "scalar_parameters".to_string(),
+                "expression-parameter reference cycle detected: p -> q -> p".to_string()
+            )
+        );
+        assert_eq!(reversed, in_order);
+    }
+
+    #[test]
+    fn scalar_parameters_json_reports_entry_errors_before_expression_errors() {
+        let (field, message) = schema_error(
+            r#"{ "scalar_parameters": [
+                { "id": 1, "name": "e", "kind": "expression", "expression": "@missing" },
+                { "id": 1, "name": "f", "kind": "constant", "value": 1.0 }
+            ] }"#,
+        );
+        assert_eq!(field, "scalar_parameters[1].id");
+        assert_eq!(message, "duplicate id 1");
+    }
+
     // ── kind-to-payload table ──────────────────────────────────────────────────
 
     fn payload_json(field: PayloadField) -> &'static str {
@@ -1106,6 +1408,7 @@ mod tests {
                 r#""computed_spec": {"tag": "min_storage", "hydro_id": 1}"#
             }
             PayloadField::BlockValues => r#""block_values": [[0, 0, 1.0]]"#,
+            PayloadField::Expression => r#""expression": "@x""#,
         }
     }
 
@@ -1159,6 +1462,7 @@ mod tests {
         for literal in [
             r#""values" is only valid for kind "per_stage" or "seasonal", not "constant""#,
             r#""block_values" is only valid for kind "per_stage_block", not "constant""#,
+            r#""expression" is only valid for kind "expression", not "constant""#,
         ] {
             assert!(
                 messages.iter().any(|m| m == literal),

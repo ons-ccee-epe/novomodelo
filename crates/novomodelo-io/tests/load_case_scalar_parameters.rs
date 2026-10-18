@@ -4,6 +4,7 @@
 
 mod helpers;
 
+use novomodelo_core::EntityId;
 use novomodelo_io::{LoadError, load_case};
 use tempfile::TempDir;
 
@@ -133,4 +134,71 @@ fn load_case_accepts_valid_scalar_parameters() {
     );
 
     load_case(dir.path()).expect("valid scalar parameters must load");
+}
+
+#[test]
+fn load_case_resolves_a_constraint_reference_to_an_expression_parameter() {
+    let dir = TempDir::new().unwrap();
+    helpers::make_minimal_case(&dir);
+    helpers::write_file(
+        dir.path(),
+        "constraints/generic_parameters.json",
+        r#"{
+            "scalar_parameters": [
+                { "id": 1, "name": "a", "kind": "constant", "value": 2.0 },
+                { "id": 2, "name": "b", "kind": "constant", "value": 3.0 },
+                { "id": 3, "name": "e", "kind": "expression", "expression": "@a * @b" }
+            ]
+        }"#,
+    );
+    helpers::write_file(
+        dir.path(),
+        "constraints/generic_constraints.json",
+        r#"{ "constraints": [
+            { "id": 0, "name": "c0", "expression": "bus_excess(1) <= @e", "slack": { "enabled": false } }
+        ] }"#,
+    );
+
+    write_upper_activation_row(
+        &dir.path()
+            .join("constraints/generic_constraint_bounds.parquet"),
+    );
+
+    let system = load_case(dir.path()).expect("an expression parameter must be referable");
+    let upper = system.generic_constraints()[0]
+        .bound_upper
+        .as_ref()
+        .unwrap();
+    assert_eq!(upper.params().collect::<Vec<_>>(), [EntityId(3)]);
+}
+
+fn write_upper_activation_row(dest: &std::path::Path) {
+    use arrow::array::{Float64Array, Int32Array};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use parquet::arrow::ArrowWriter;
+    use std::sync::Arc;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("constraint_id", DataType::Int32, false),
+        Field::new("stage_id", DataType::Int32, false),
+        Field::new("block_id", DataType::Int32, true),
+        Field::new("bound_lower", DataType::Float64, true),
+        Field::new("bound_upper", DataType::Float64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![0])),
+            Arc::new(Int32Array::from(vec![0])),
+            Arc::new(Int32Array::new_null(1)),
+            Arc::new(Float64Array::new_null(1)),
+            Arc::new(Float64Array::from(vec![0.0])),
+        ],
+    )
+    .unwrap();
+    let mut writer =
+        ArrowWriter::try_new(std::fs::File::create(dest).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
 }
