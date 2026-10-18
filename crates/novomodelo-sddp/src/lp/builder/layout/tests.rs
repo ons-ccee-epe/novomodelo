@@ -416,88 +416,53 @@ fn folded_upper_bound_constant_shifts_parquet_base() {
 
 // ── fold_endpoint ─────────────────────────────────────────────────────────
 
-/// A `ResolvedParameters` fixture with one `PerStageBlock` parameter at the
-/// given id, one stage of per-block values.
-fn resolved_with_param(id: i32, values: Vec<f64>) -> ResolvedParameters {
-    ResolvedParameters {
-        per_param: vec![vec![values]],
-        id_to_slot: vec![(id, 0)],
-        ..ResolvedParameters::default()
-    }
-}
-
 /// `(None, None)`: an endpoint neither side targets stays untargeted.
 #[test]
 fn fold_endpoint_both_absent_stays_none() {
-    let resolved = ResolvedParameters::default();
-    assert_eq!(fold_endpoint(None, None, &resolved, 0, 0), None);
+    assert_eq!(fold_endpoint(None, None), None);
 }
 
 /// `(Some(base), None)`: a pure literal passes through unchanged.
 #[test]
 fn fold_endpoint_pure_literal_is_unchanged() {
-    let resolved = ResolvedParameters::default();
-    assert_eq!(fold_endpoint(Some(95.0), None, &resolved, 0, 0), Some(95.0));
+    assert_eq!(fold_endpoint(Some(95.0), None), Some(95.0));
 }
 
-/// `(None, Some(bound))`: with no parquet base, the remainder alone
-/// establishes the endpoint.
+/// `(None, Some(remainder))`: with no parquet base, the remainder alone
+/// establishes the endpoint; `7.0` stands for a single-parameter remainder
+/// resolved to `7.0`.
 #[test]
 fn fold_endpoint_pure_affine_establishes_endpoint() {
-    let resolved = resolved_with_param(42, vec![7.0]);
-    let bound = AffineBound::single(EntityId(42));
-    assert_eq!(
-        fold_endpoint(None, Some(&bound), &resolved, 0, 0),
-        Some(7.0)
-    );
+    assert_eq!(fold_endpoint(None, Some(7.0)), Some(7.0));
 }
 
-/// `(Some(base), Some(bound))` with a constant-only remainder shifts the base
-/// by the constant — the fold is `base + R`, never `R` replacing `base`.
+/// `(Some(base), Some(remainder))` with a constant-only remainder (`-5.0`)
+/// shifts the base by the constant — the fold is `base + R`, never `R`
+/// replacing `base`.
 #[test]
 fn fold_endpoint_literal_and_constant_affine_composes() {
-    let resolved = ResolvedParameters::default();
-    let bound = AffineBound {
-        constant: -5.0,
-        terms: vec![],
-        products: vec![],
-    };
-    assert_eq!(
-        fold_endpoint(Some(100.0), Some(&bound), &resolved, 0, 0),
-        Some(95.0)
-    );
+    assert_eq!(fold_endpoint(Some(100.0), Some(-5.0)), Some(95.0));
 }
 
-/// `(Some(base), Some(bound))` with a `@param`-bearing remainder folds the base
-/// with the resolved parameter value at `(stage_idx, block_idx)`, exactly as a
-/// constant-only remainder does — the fold does not distinguish the shape.
+/// `(Some(base), Some(remainder))` with a `@param`-bearing remainder (`4.0`,
+/// the parameter's value at block 1) folds exactly as a constant-only one does —
+/// the fold does not distinguish the shape.
 #[test]
 fn fold_endpoint_literal_and_param_affine_composes() {
-    let resolved = resolved_with_param(42, vec![3.0, 4.0]);
-    let bound = AffineBound::single(EntityId(42));
-    assert_eq!(
-        fold_endpoint(Some(100.0), Some(&bound), &resolved, 0, 1),
-        Some(104.0)
-    );
+    assert_eq!(fold_endpoint(Some(100.0), Some(4.0)), Some(104.0));
 }
 
-/// An `==`-normalized remainder assigned to both endpoints folds each
-/// independently against its own parquet base.
+/// An `==`-normalized constant remainder (`2.0`) assigned to both endpoints
+/// folds each independently against its own parquet base.
 #[test]
 fn fold_endpoint_equals_normalized_folds_both_endpoints() {
-    let resolved = ResolvedParameters::default();
-    let bound = AffineBound {
-        constant: 2.0,
-        terms: vec![],
-        products: vec![],
-    };
     assert_eq!(
-        fold_endpoint(Some(10.0), Some(&bound), &resolved, 0, 0),
+        fold_endpoint(Some(10.0), Some(2.0)),
         Some(12.0),
         "lower endpoint folds against its own base"
     );
     assert_eq!(
-        fold_endpoint(Some(50.0), Some(&bound), &resolved, 0, 0),
+        fold_endpoint(Some(50.0), Some(2.0)),
         Some(52.0),
         "upper endpoint folds against its own base"
     );

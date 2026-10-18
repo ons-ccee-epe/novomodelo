@@ -3,11 +3,10 @@ use std::ops::Range;
 
 use novomodelo_core::commissioning::Phase;
 use novomodelo_core::{
-    AffineBound, BlockMode, Bus, CascadeTopology, CoefficientRef, ConstraintExpression,
-    ContractType, EnergyContract, EntityId, GenericConstraint, Hydro, Line, LoadModel,
-    NonControllableSource, PumpingStation, ResolvedBounds, ResolvedGenericConstraintBounds,
-    ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors, ResolvedPenalties, SlackConfig,
-    Stage, Thermal, VariableRef,
+    BlockMode, Bus, CascadeTopology, ConstraintExpression, ContractType, EnergyContract, EntityId,
+    GenericConstraint, Hydro, Line, LoadModel, NonControllableSource, PumpingStation,
+    ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedLoadFactors, ResolvedNcsBounds,
+    ResolvedNcsFactors, ResolvedPenalties, SlackConfig, Stage, Thermal, VariableRef,
 };
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
@@ -30,7 +29,7 @@ use super::{
     GenericConstraintRowEntry,
 };
 use crate::block_clock::BlockClock;
-use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
+use crate::policy::resolved_generic_coefficients::{BoundSide, ResolvedGenericCoefficients};
 use crate::resolved_parameters::ResolvedParameters;
 
 /// Pre-resolved bound, penalty, and factor tables shared across all stages.
@@ -47,8 +46,8 @@ pub(crate) struct ResolvedTables<'a> {
     pub(crate) resolved_ncs_bounds: &'a ResolvedNcsBounds,
     /// Per-block NCS generation scaling factors.
     pub(crate) resolved_ncs_factors: &'a ResolvedNcsFactors,
-    /// `(parameter_id, stage_idx, block_idx)` → resolved `f64`, queried for a
-    /// [`novomodelo_core::CoefficientRef::Parameter`] term.
+    /// Read for the cost scale factor; generic-constraint values come from
+    /// `resolved_generic_coefficients`.
     pub(crate) resolved_parameters: &'a ResolvedParameters,
     /// Per-`(stage, block)` generic-constraint term values and bound
     /// remainders.
@@ -836,62 +835,28 @@ fn expression_is_block_independent(expression: &ConstraintExpression) -> bool {
 }
 
 /// A `block_id = None` bound collapses to one stage-level row only when every
-/// variable is block-independent and no parameter the constraint reads varies by block.
+/// variable is block-independent and no resolved value of the constraint, term or
+/// bound, varies by block.
 fn constraint_collapses_to_stage_level(
     constraint: &GenericConstraint,
-    resolved: &ResolvedParameters,
+    constraint_idx: usize,
+    coefficients: &ResolvedGenericCoefficients,
 ) -> bool {
     expression_is_block_independent(&constraint.expression)
-        && !constraint
-            .parameter_ids()
-            .any(|id| resolved.is_block_varying(id))
+        && !coefficients.is_block_varying(constraint_idx)
 }
 
-/// Resolve an affine bound remainder to `f64`: `bound.constant` plus the sum of
-/// each term's coefficient times its parameter's resolved value at
-/// `(stage_idx, block_idx)`, plus the sum of each product term's scale times
-/// the product of its two parameters' resolved values.
-/// `AffineBound::single(id)` resolves to exactly
-/// `resolved.get(id, stage_idx, block_idx)` (`0.0 + 1.0 * x == x` in `f64`).
-fn resolve_affine(
-    bound: &AffineBound,
-    resolved: &ResolvedParameters,
-    stage_idx: usize,
-    block_idx: usize,
-) -> f64 {
-    let linear_sum = bound.terms.iter().fold(bound.constant, |acc, &(coef, id)| {
-        acc + coef * resolved.get(id, stage_idx, block_idx)
-    });
-    bound
-        .products
-        .iter()
-        .fold(linear_sum, |acc, &(scale, left, right)| {
-            let left_val = resolved.get(left, stage_idx, block_idx);
-            let right_val = resolved.get(right, stage_idx, block_idx);
-            acc + scale * left_val * right_val
-        })
-}
-
-/// Fold a generic-constraint endpoint's parquet base with its affine remainder:
-/// a present remainder SHIFTS the base by `resolve_affine`'s value rather than
-/// replacing it, so `(Some(base), Some(bound))` folds to `base +
-/// resolve_affine(bound, ...)`, never `resolve_affine(bound, ...)` alone. A
-/// `(None, None)` endpoint is untargeted and stays `None` (the open LP
+/// Fold a generic-constraint endpoint's parquet base with its resolved bound
+/// remainder: a present remainder SHIFTS the base rather than replacing it, so
+/// `(Some(base), Some(remainder))` folds to `base + remainder`, never `remainder`
+/// alone. A `(None, None)` endpoint is untargeted and stays `None` (the open LP
 /// direction), never shifted.
-fn fold_endpoint(
-    parquet: Option<f64>,
-    affine: Option<&AffineBound>,
-    resolved: &ResolvedParameters,
-    stage_idx: usize,
-    block_idx: usize,
-) -> Option<f64> {
-    match (parquet, affine) {
+fn fold_endpoint(base: Option<f64>, remainder: Option<f64>) -> Option<f64> {
+    match (base, remainder) {
         (None, None) => None,
         (Some(base), None) => Some(base),
-        (None, Some(bound)) => Some(resolve_affine(bound, resolved, stage_idx, block_idx)),
-        (Some(base), Some(bound)) => {
-            Some(base + resolve_affine(bound, resolved, stage_idx, block_idx))
-        }
+        (None, Some(remainder)) => Some(remainder),
+        (Some(base), Some(remainder)) => Some(base + remainder),
     }
 }
 
@@ -903,14 +868,14 @@ fn fold_endpoint(
 /// the per-stage resolved `HydroStageBounds.min_storage_hm3`.
 fn useful_volume_bound_shift(
     constraint: &GenericConstraint,
+    constraint_idx: usize,
     ctx: &TemplateBuildCtx<'_>,
     stage_idx: usize,
     block_idx: usize,
 ) -> Option<f64> {
-    let resolved_parameters = ctx.resolved.resolved_parameters;
     let mut shift = 0.0;
     let mut found = false;
-    for term in &constraint.expression.terms {
+    for (term_idx, term) in constraint.expression.terms.iter().enumerate() {
         let (VariableRef::HydroUsefulVolumeInitial { hydro_id, .. }
         | VariableRef::HydroUsefulVolumeFinal { hydro_id, .. }) = term.variable
         else {
@@ -928,14 +893,14 @@ fn useful_volume_bound_shift(
             );
             continue;
         };
-        let coef = match term.coefficient {
-            CoefficientRef::Literal(v) => v,
-            CoefficientRef::Parameter(param_id) => {
-                resolved_parameters.get(param_id, stage_idx, block_idx)
-            }
-        };
+        let value = ctx.resolved.resolved_generic_coefficients.term_value(
+            constraint_idx,
+            term_idx,
+            stage_idx,
+            block_idx,
+        );
         let v_lo = ctx.hydros[h_idx].min_storage_hm3;
-        shift += coef * term.scale * v_lo;
+        shift += value * v_lo;
     }
     found.then_some(shift)
 }
@@ -955,7 +920,7 @@ fn enumerate_generic_constraint_rows(
     let mut n_generic_rows: usize = 0;
     let mut n_generic_slack_cols: usize = 0;
     let mut generic_constraint_rows: Vec<GenericConstraintRowEntry> = Vec::new();
-    let resolved_parameters = ctx.resolved.resolved_parameters;
+    let coefficients = ctx.resolved.resolved_generic_coefficients;
 
     for (constraint_idx, constraint) in ctx.generic_constraints.iter().enumerate() {
         if !ctx
@@ -972,7 +937,7 @@ fn enumerate_generic_constraint_rows(
             .bounds_for_stage(constraint_idx, stage.id);
 
         let collapse_stage_level =
-            constraint_collapses_to_stage_level(constraint, resolved_parameters);
+            constraint_collapses_to_stage_level(constraint, constraint_idx, coefficients);
 
         for entry in bound_entries {
             #[expect(
@@ -989,20 +954,24 @@ fn enumerate_generic_constraint_rows(
                 // two-sided slack shape.
                 let mut effective_lower = fold_endpoint(
                     entry.bound_lower,
-                    constraint.bound_lower.as_ref(),
-                    resolved_parameters,
-                    stage_idx,
-                    block_idx,
+                    coefficients.bound_value(
+                        constraint_idx,
+                        BoundSide::Lower,
+                        stage_idx,
+                        block_idx,
+                    ),
                 );
                 let mut effective_upper = fold_endpoint(
                     entry.bound_upper,
-                    constraint.bound_upper.as_ref(),
-                    resolved_parameters,
-                    stage_idx,
-                    block_idx,
+                    coefficients.bound_value(
+                        constraint_idx,
+                        BoundSide::Upper,
+                        stage_idx,
+                        block_idx,
+                    ),
                 );
                 if let Some(shift) =
-                    useful_volume_bound_shift(constraint, ctx, stage_idx, block_idx)
+                    useful_volume_bound_shift(constraint, constraint_idx, ctx, stage_idx, block_idx)
                 {
                     effective_lower = effective_lower.map(|v| v + shift);
                     effective_upper = effective_upper.map(|v| v + shift);
@@ -2056,7 +2025,7 @@ mod tests;
 #[cfg(test)]
 mod collapse_stage_level_tests {
     use super::*;
-    use novomodelo_core::{LinearTerm, VariableRef};
+    use novomodelo_core::{AffineBound, LinearTerm, StageId, VariableRef};
 
     fn expr(term: LinearTerm) -> ConstraintExpression {
         ConstraintExpression { terms: vec![term] }
@@ -2090,6 +2059,17 @@ mod collapse_stage_level_tests {
         }
     }
 
+    fn collapses(constraint: &GenericConstraint) -> bool {
+        let coefficients = ResolvedGenericCoefficients::build(
+            std::slice::from_ref(constraint),
+            &resolved(),
+            &[StageId(0)],
+            &[2],
+        )
+        .expect("every parameter the constraint reads is resolved and finite");
+        constraint_collapses_to_stage_level(constraint, 0, &coefficients)
+    }
+
     #[test]
     fn block_varying_coefficient_suppresses_collapse() {
         let c = unbounded(expr(LinearTerm::parameter(
@@ -2098,7 +2078,7 @@ mod collapse_stage_level_tests {
             hydro_storage(),
         )));
         assert!(
-            !constraint_collapses_to_stage_level(&c, &resolved()),
+            !collapses(&c),
             "a block-varying coefficient over a block-independent variable must not collapse"
         );
     }
@@ -2111,9 +2091,8 @@ mod collapse_stage_level_tests {
             hydro_storage(),
         )));
         let literal = unbounded(expr(LinearTerm::literal(1.0, hydro_storage())));
-        let r = resolved();
-        assert!(constraint_collapses_to_stage_level(&param, &r));
-        assert!(constraint_collapses_to_stage_level(&literal, &r));
+        assert!(collapses(&param));
+        assert!(collapses(&literal));
     }
 
     #[test]
@@ -2125,7 +2104,7 @@ mod collapse_stage_level_tests {
                 block_id: None,
             },
         )));
-        assert!(!constraint_collapses_to_stage_level(&c, &resolved()));
+        assert!(!collapses(&c));
     }
 
     fn constraint_with_refs(
@@ -2141,92 +2120,22 @@ mod collapse_stage_level_tests {
 
     #[test]
     fn a_block_varying_bound_parameter_suppresses_collapse() {
-        let r = resolved();
-        assert!(!constraint_collapses_to_stage_level(
-            &constraint_with_refs(None, Some(EntityId(42))),
-            &r
-        ));
-        assert!(!constraint_collapses_to_stage_level(
-            &constraint_with_refs(Some(EntityId(42)), None),
-            &r
-        ));
-        assert!(constraint_collapses_to_stage_level(
-            &constraint_with_refs(None, Some(EntityId(43))),
-            &r
-        ));
-        assert!(constraint_collapses_to_stage_level(
-            &constraint_with_refs(None, None),
-            &r
-        ));
+        assert!(!collapses(&constraint_with_refs(None, Some(EntityId(42)))));
+        assert!(!collapses(&constraint_with_refs(Some(EntityId(42)), None)));
+        assert!(collapses(&constraint_with_refs(None, Some(EntityId(43)))));
+        assert!(collapses(&constraint_with_refs(None, None)));
     }
 
     /// A block-varying parameter reached through a multi-term affine bound (not
     /// just the `single` special case) still suppresses the collapse.
     #[test]
     fn a_block_varying_multi_term_bound_suppresses_collapse() {
-        let r = resolved();
         let mut constraint = constraint_with_refs(None, None);
         constraint.bound_upper = Some(AffineBound {
             constant: 10.0,
             terms: vec![(2.0, EntityId(43)), (0.5, EntityId(42))],
             products: vec![],
         });
-        assert!(!constraint_collapses_to_stage_level(&constraint, &r));
-    }
-
-    #[test]
-    fn resolve_affine_of_single_equals_get() {
-        let r = resolved();
-        let bound = AffineBound::single(EntityId(42));
-        assert_eq!(resolve_affine(&bound, &r, 0, 1), r.get(EntityId(42), 0, 1));
-    }
-
-    #[test]
-    fn resolve_affine_of_two_term_remainder_sums_constant_and_terms() {
-        let r = resolved();
-        let bound = AffineBound {
-            constant: 100.0,
-            terms: vec![(2.0, EntityId(42)), (-1.0, EntityId(43))],
-            products: vec![],
-        };
-        let expected = 100.0 + 2.0 * r.get(EntityId(42), 0, 1) - 1.0 * r.get(EntityId(43), 0, 1);
-        assert_eq!(resolve_affine(&bound, &r, 0, 1), expected);
-    }
-
-    #[test]
-    fn resolve_affine_product_only() {
-        let r = resolved();
-        let bound = AffineBound {
-            constant: 0.0,
-            terms: vec![],
-            products: vec![(1.0, EntityId(42), EntityId(43))],
-        };
-        let expected = r.get(EntityId(42), 0, 1) * r.get(EntityId(43), 0, 1);
-        assert_eq!(resolve_affine(&bound, &r, 0, 1), expected);
-    }
-
-    #[test]
-    fn resolve_affine_scaled_product() {
-        let r = resolved();
-        let bound = AffineBound {
-            constant: 0.0,
-            terms: vec![],
-            products: vec![(2.5, EntityId(42), EntityId(43))],
-        };
-        let expected = 2.5 * r.get(EntityId(42), 0, 1) * r.get(EntityId(43), 0, 1);
-        assert_eq!(resolve_affine(&bound, &r, 0, 1), expected);
-    }
-
-    #[test]
-    fn resolve_affine_mixed_linear_and_product() {
-        let r = resolved();
-        let bound = AffineBound {
-            constant: 5.0,
-            terms: vec![(2.0, EntityId(42))],
-            products: vec![(0.5, EntityId(42), EntityId(43))],
-        };
-        let linear = 5.0 + 2.0 * r.get(EntityId(42), 0, 1);
-        let product = 0.5 * r.get(EntityId(42), 0, 1) * r.get(EntityId(43), 0, 1);
-        assert_eq!(resolve_affine(&bound, &r, 0, 1), linear + product);
+        assert!(!collapses(&constraint));
     }
 }

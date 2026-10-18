@@ -47,7 +47,6 @@ pub(crate) struct ResolvedGenericCoefficients {
 
 /// Which bound remainder of a generic constraint to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "no builder or echo reader yet"))]
 pub(crate) enum BoundSide {
     Lower,
     Upper,
@@ -149,7 +148,6 @@ impl ResolvedGenericCoefficients {
     /// The resolved remainder of bound `side` of constraint `constraint_idx` at
     /// `(stage_idx, block_idx)`; `None` when that side is absent.
     #[must_use]
-    #[cfg_attr(not(test), expect(dead_code, reason = "no builder or echo reader yet"))]
     pub(crate) fn bound_value(
         &self,
         constraint_idx: usize,
@@ -168,7 +166,6 @@ impl ResolvedGenericCoefficients {
     /// Whether any term or bound series of constraint `constraint_idx` varies
     /// by block.
     #[must_use]
-    #[cfg_attr(not(test), expect(dead_code, reason = "no builder or echo reader yet"))]
     pub(crate) fn is_block_varying(&self, constraint_idx: usize) -> bool {
         let constraint = &self.constraints[constraint_idx];
         constraint
@@ -262,8 +259,8 @@ fn resolve_bound(
     .map_err(|cell| non_finite(constraint, format!("the {side} bound"), grid, &cell))
 }
 
-/// Byte-for-byte the LP builder's affine-bound fold: start at `constant`, add
-/// the terms in order, then the products in order.
+/// Start at `constant`, add the terms in order, then the products in order: the
+/// order is part of the bit-identity of every generic-constraint bound.
 fn fold_remainder(
     bound: &AffineBound,
     resolved: &ResolvedParameters,
