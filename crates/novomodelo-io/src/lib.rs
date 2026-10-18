@@ -43,6 +43,10 @@ pub mod broadcast;
 pub mod config;
 pub mod constraints;
 pub mod error;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "constraint loading does not call it yet")
+)]
 pub(crate) mod expression;
 pub mod extensions;
 pub mod initial_conditions;
