@@ -2319,7 +2319,7 @@ fn paren_distribution_normalizes_to_hand_flattened_terms() {
 /// A parquet-base upper endpoint (`100`) folds with an inline affine remainder
 /// established from the LHS constant (`+ 5`, negated to `-5`) to the same
 /// effective bound as the pre-folded literal `95` — `fold_endpoint`'s `base +
-/// resolve_affine` arm, not the base or the remainder alone.
+/// remainder` arm, not the base or the remainder alone.
 #[test]
 fn parquet_base_folds_with_inline_affine_remainder() {
     use novomodelo_core::{

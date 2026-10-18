@@ -2188,8 +2188,7 @@ mod tests {
         assert_eq!(products.upper, None);
     }
 
-    /// derived: each expected value replays the bound fold of `rhs_normalize::normalize` and
-    /// `resolve_affine`, `0.0` plus each parameter term `coef * leaf` and then each product
+    /// derived: each expected value replays the bound fold of `rhs_normalize::normalize`, `0.0` plus each parameter term `coef * leaf` and then each product
     /// `scale * left * right`, right side first and left side negated: `h0 <= -2 * @p * @q` is `0.0 + (-2.0 * p) * q`, `h0 >= h1 - @p * @q` is
     /// `0.0 + (-1.0 * p) * q`, `h0 <= @a + @b` is `(0.0 + 1.0 * a) + 1.0 * b`, `h0 <= -@a` is
     /// `0.0 + -1.0 * a`, `h0 <= 2 * @a` is `0.0 + 2.0 * a`, `h0 >= @p` is `0.0 + 1.0 * p` and
