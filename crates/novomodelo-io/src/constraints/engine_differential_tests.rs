@@ -170,8 +170,8 @@ fn compare_constraint(
             }
         }
         let endpoints = [
-            ("lower endpoint", &old.bound_lower_affine, &new.lower),
-            ("upper endpoint", &old.bound_upper_affine, &new.upper),
+            ("lower endpoint", &old.bound_lower, &new.lower),
+            ("upper endpoint", &old.bound_upper, &new.upper),
         ];
         for (place, old_bound, new_bound) in endpoints {
             let old_value = old_bound.as_ref().map(|b| old_endpoint(b, leaf));

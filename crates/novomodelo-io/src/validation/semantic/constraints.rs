@@ -247,14 +247,8 @@ fn constraint_parameter_ids(constraint: &GenericConstraint) -> impl Iterator<Ite
             CoefficientRef::Parameter(id) => Some(id),
             CoefficientRef::Literal(_) => None,
         });
-    let lower_ids = constraint
-        .bound_lower_affine
-        .iter()
-        .flat_map(AffineBound::params);
-    let upper_ids = constraint
-        .bound_upper_affine
-        .iter()
-        .flat_map(AffineBound::params);
+    let lower_ids = constraint.bound_lower.iter().flat_map(AffineBound::params);
+    let upper_ids = constraint.bound_upper.iter().flat_map(AffineBound::params);
     term_ids.chain(lower_ids).chain(upper_ids)
 }
 
@@ -510,8 +504,8 @@ mod tests {
                 terms: vec![LinearTerm::literal(1.0, variable)],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         }];
         data.generic_constraint_bounds = vec![GenericConstraintBoundsRow {
             constraint_id: 1,
@@ -1024,8 +1018,8 @@ mod tests {
                 terms: vec![param_term(lhs_param)],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: Some(AffineBound::single(upper_bound_param)),
+            bound_lower: None,
+            bound_upper: Some(AffineBound::single(upper_bound_param)),
         }
     }
 
@@ -1038,8 +1032,8 @@ mod tests {
                 terms: vec![param_term(param_a), param_term(param_b)],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         }
     }
 
@@ -1059,8 +1053,8 @@ mod tests {
                 )],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         }
     }
 

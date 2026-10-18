@@ -339,7 +339,7 @@ mod tests {
         assert_eq!(restored, system);
     }
 
-    /// A generic constraint's affine bound remainder (`bound_upper_affine`) rides the
+    /// A generic constraint's affine bound remainder (`bound_upper`) rides the
     /// constraint's derived serde through the `System` postcard wire — there is no
     /// hand-written mirror for `GenericConstraint`, so the restored System must equal
     /// the original. Uses a genuine multi-component remainder (a nonzero constant, a
@@ -366,8 +366,8 @@ mod tests {
                 )],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: Some(AffineBound {
+            bound_lower: None,
+            bound_upper: Some(AffineBound {
                 constant: 12.0,
                 terms: vec![(0.5, EntityId(7))],
                 products: vec![(0.25, EntityId(7), EntityId(8))],
@@ -386,7 +386,7 @@ mod tests {
 
         assert_eq!(restored, system);
         assert_eq!(
-            restored.generic_constraints()[0].bound_upper_affine,
+            restored.generic_constraints()[0].bound_upper,
             Some(AffineBound {
                 constant: 12.0,
                 terms: vec![(0.5, EntityId(7))],

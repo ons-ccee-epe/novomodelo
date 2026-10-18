@@ -61,8 +61,8 @@
 //!     description: Some("Minimum hydro generation in Southeast region".to_string()),
 //!     expression: expr,
 //!     slack: Some(SlackConfig { penalty: 5_000.0, penalty_basis: PenaltyBasis::PerHour }),
-//!     bound_lower_affine: None,
-//!     bound_upper_affine: None,
+//!     bound_lower: None,
+//!     bound_upper: None,
 //! };
 //!
 //! assert_eq!(gc.expression.terms.len(), 2);
@@ -612,10 +612,10 @@ pub struct GenericConstraint {
     /// parquet base on the same endpoint: the LP builder's `fold_endpoint`
     /// resolves the endpoint to `base + bound` when both are present, or
     /// either alone when only one is.
-    pub bound_lower_affine: Option<AffineBound>,
+    pub bound_lower: Option<AffineBound>,
     /// Upper RHS bound as an affine remainder; upper counterpart of
-    /// `bound_lower_affine`.
-    pub bound_upper_affine: Option<AffineBound>,
+    /// `bound_lower`.
+    pub bound_upper: Option<AffineBound>,
 }
 
 #[cfg(test)]
@@ -972,8 +972,8 @@ mod tests {
                 penalty: 5_000.0,
                 penalty_basis: PenaltyBasis::PerHour,
             }),
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
 
         assert_eq!(gc.expression.terms.len(), 2);
@@ -1353,8 +1353,8 @@ mod tests {
                 penalty: 5_000.0,
                 penalty_basis: PenaltyBasis::PerUnit,
             }),
-            bound_lower_affine: None,
-            bound_upper_affine: Some(AffineBound::single(EntityId(42))),
+            bound_lower: None,
+            bound_upper: Some(AffineBound::single(EntityId(42))),
         };
 
         let json = serde_json::to_string(&gc).unwrap();
@@ -1362,7 +1362,7 @@ mod tests {
         assert_eq!(gc, deserialized);
         assert_eq!(deserialized.expression.terms.len(), 2);
         assert_eq!(
-            deserialized.bound_upper_affine,
+            deserialized.bound_upper,
             Some(AffineBound::single(EntityId(42)))
         );
     }

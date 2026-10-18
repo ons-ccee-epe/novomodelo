@@ -3733,8 +3733,8 @@ mod generic_slack_penalty_basis {
                 penalty: PENALTY,
                 penalty_basis,
             }),
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         }
     }
 
@@ -3757,7 +3757,7 @@ mod generic_slack_penalty_basis {
                 penalty: PENALTY,
                 penalty_basis,
             }),
-            bound_lower_affine: Some(AffineBound {
+            bound_lower: Some(AffineBound {
                 constant: 0.0,
                 terms: vec![],
                 products: vec![(
@@ -3766,7 +3766,7 @@ mod generic_slack_penalty_basis {
                     EntityId(MAX_STORED_ENERGY_MWH_ID),
                 )],
             }),
-            bound_upper_affine: None,
+            bound_upper: None,
         }
     }
 

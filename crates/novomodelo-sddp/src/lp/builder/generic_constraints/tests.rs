@@ -1596,8 +1596,8 @@ fn generic_row_merges_line_exchange_and_line_direct() {
         description: None,
         expression,
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let mut fx = default_fixture();

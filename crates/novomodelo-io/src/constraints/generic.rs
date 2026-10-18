@@ -75,7 +75,7 @@
 //! same-variable terms merged, a net-zero column dropped) and collects every
 //! non-variable term — a literal or a `@name` that resolves as a parameter, never
 //! a named expression — into the affine remainder the operator assigns to
-//! `bound_lower_affine` (`>=`), `bound_upper_affine` (`<=`), or both (`==`).
+//! `bound_lower` (`>=`), `bound_upper` (`<=`), or both (`==`).
 //!
 //! An optional top-level `expressions` array declares named linear expressions
 //! (see [`parse_named_expressions`]); a constraint or another expression
@@ -436,7 +436,7 @@ fn convert(
         let relation =
             parse_relation(&c.expression, name_to_id, line_index).map_err(expression_err)?;
 
-        let (terms, bound_lower_affine, bound_upper_affine) = match relation {
+        let (terms, bound_lower, bound_upper) = match relation {
             ParsedRelation::Plain(parsed) => {
                 let terms = inline(&parsed, table).map_err(expression_err)?;
                 (terms, None, None)
@@ -459,8 +459,8 @@ fn convert(
             description: c.description,
             expression,
             slack,
-            bound_lower_affine,
-            bound_upper_affine,
+            bound_lower,
+            bound_upper,
         });
     }
 
@@ -2028,8 +2028,8 @@ mod tests {
     /// `thermal_generation(5) <= 0.87 * hydro_generation(140) + 73` normalizes
     /// to the same terms as the hand-flattened LHS
     /// `thermal_generation(5) - 0.87 * hydro_generation(140)` after
-    /// canonicalize; `bound_upper_affine` carries the constant,
-    /// `bound_lower_affine` stays `None`.
+    /// canonicalize; `bound_upper` carries the constant,
+    /// `bound_lower` stays `None`.
     #[test]
     fn ac1_inline_constant_and_variable_rhs_normalizes() {
         let json = r#"{
@@ -2052,14 +2052,14 @@ mod tests {
 
         assert_eq!(result[0].expression.terms, hand_flattened.terms);
         assert_eq!(
-            result[0].bound_upper_affine,
+            result[0].bound_upper,
             Some(AffineBound {
                 constant: 73.0,
                 terms: vec![],
                 products: vec![],
             })
         );
-        assert_eq!(result[0].bound_lower_affine, None);
+        assert_eq!(result[0].bound_lower, None);
     }
 
     /// `line_exchange(3) >= @target` where `target` is a loaded parameter
@@ -2077,14 +2077,14 @@ mod tests {
         let result =
             parse_generic_constraints(f.path(), &tbl, &LineBusPairIndex::default()).unwrap();
         assert_eq!(
-            result[0].bound_lower_affine,
+            result[0].bound_lower,
             Some(AffineBound::single(EntityId(99)))
         );
-        assert_eq!(result[0].bound_upper_affine, None);
+        assert_eq!(result[0].bound_upper, None);
     }
 
     /// `hydro_generation(0) - hydro_generation(0) <= 5` merges to an empty
-    /// term list (the net-zero column dropped) and `bound_upper_affine` carries
+    /// term list (the net-zero column dropped) and `bound_upper` carries
     /// the constant `5`.
     #[test]
     fn ac3_net_zero_column_drops_and_constant_bound_survives() {
@@ -2099,14 +2099,14 @@ mod tests {
                 .unwrap();
         assert!(result[0].expression.terms.is_empty());
         assert_eq!(
-            result[0].bound_upper_affine,
+            result[0].bound_upper,
             Some(AffineBound {
                 constant: 5.0,
                 terms: vec![],
                 products: vec![],
             })
         );
-        assert_eq!(result[0].bound_lower_affine, None);
+        assert_eq!(result[0].bound_lower, None);
     }
 
     /// DECOMP-shaped form 1: a decision-variable RHS mixing two variable terms
@@ -2140,14 +2140,14 @@ mod tests {
         assert!((effective(find(1)) - 0.316).abs() < 1e-10);
         assert!((effective(find(2)) - (-0.5)).abs() < 1e-10);
         assert_eq!(
-            result[0].bound_upper_affine,
+            result[0].bound_upper,
             Some(AffineBound {
                 constant: 12352.0,
                 terms: vec![],
                 products: vec![],
             })
         );
-        assert_eq!(result[0].bound_lower_affine, None);
+        assert_eq!(result[0].bound_lower, None);
     }
 
     /// DECOMP-shaped form 2: affine parameters plus a constant, no decision
@@ -2171,15 +2171,12 @@ mod tests {
         assert_eq!(result[0].expression.terms.len(), 1);
         assert!((lit(&result[0].expression.terms[0]) - 1.0).abs() < f64::EPSILON);
 
-        let bound = result[0]
-            .bound_upper_affine
-            .as_ref()
-            .expect("upper bound present");
+        let bound = result[0].bound_upper.as_ref().expect("upper bound present");
         assert!((bound.constant - 11000.0).abs() < f64::EPSILON);
         assert_eq!(bound.terms.len(), 2);
         assert!(bound.terms.contains(&(-0.04, EntityId(50))));
         assert!(bound.terms.contains(&(0.06, EntityId(51))));
-        assert_eq!(result[0].bound_lower_affine, None);
+        assert_eq!(result[0].bound_lower, None);
     }
 
     /// DECOMP-shaped form 3: a pure-constant RHS (`FSIOR <= 73`).
@@ -2196,14 +2193,14 @@ mod tests {
                 .unwrap();
         assert_eq!(result[0].expression.terms.len(), 1);
         assert_eq!(
-            result[0].bound_upper_affine,
+            result[0].bound_upper,
             Some(AffineBound {
                 constant: 73.0,
                 terms: vec![],
                 products: vec![],
             })
         );
-        assert_eq!(result[0].bound_lower_affine, None);
+        assert_eq!(result[0].bound_lower, None);
     }
 
     // ── Parameter products ────────────────────────────────────────────────────
@@ -2232,7 +2229,7 @@ mod tests {
     fn rhs_param_products_collect_scaled_and_signed() {
         let result = parse_with_pqrs("hydro_generation(0) >= 2 * @p * @q - @r * @s + 5").unwrap();
         assert_eq!(
-            result[0].bound_lower_affine,
+            result[0].bound_lower,
             Some(AffineBound {
                 constant: 5.0,
                 terms: vec![],
@@ -2242,7 +2239,7 @@ mod tests {
                 ],
             })
         );
-        assert_eq!(result[0].bound_upper_affine, None);
+        assert_eq!(result[0].bound_upper, None);
     }
 
     #[test]
@@ -3192,10 +3189,10 @@ mod tests {
             parse_generic_constraints(f.path(), &tbl, &LineBusPairIndex::default()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(
-            result[0].bound_upper_affine,
+            result[0].bound_upper,
             Some(AffineBound::single(EntityId(7)))
         );
-        assert_eq!(result[0].bound_lower_affine, None);
+        assert_eq!(result[0].bound_lower, None);
     }
 
     /// An inline `>=` against a bare `@name` resolves the same way, on the lower
@@ -3217,7 +3214,7 @@ mod tests {
         let result =
             parse_generic_constraints(f.path(), &tbl, &LineBusPairIndex::default()).unwrap();
         assert_eq!(
-            result[0].bound_lower_affine,
+            result[0].bound_lower,
             Some(AffineBound::single(EntityId(7)))
         );
     }
@@ -3281,7 +3278,7 @@ mod tests {
                 .unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(
-            result[0].bound_lower_affine,
+            result[0].bound_lower,
             Some(AffineBound {
                 constant: 0.0,
                 terms: vec![],
@@ -3289,7 +3286,7 @@ mod tests {
             }),
             "an all-variable RHS supplies an explicit zero bound, not \"no bound\""
         );
-        assert_eq!(result[0].bound_upper_affine, None);
+        assert_eq!(result[0].bound_upper, None);
         let terms = &result[0].expression.terms;
         assert_eq!(terms.len(), 3, "hydro_generation(0) plus fnese's two terms");
         for hydro_id in [0, 10, 11] {
@@ -3339,8 +3336,8 @@ mod tests {
             parse_generic_constraints(f.path(), &HashMap::new(), &LineBusPairIndex::default())
                 .unwrap();
         for gc in &result {
-            assert_eq!(gc.bound_lower_affine, None);
-            assert_eq!(gc.bound_upper_affine, None);
+            assert_eq!(gc.bound_lower, None);
+            assert_eq!(gc.bound_upper, None);
         }
     }
 

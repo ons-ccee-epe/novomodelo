@@ -222,8 +222,8 @@ fn downstream_inflow_constraint() -> (GenericConstraint, ResolvedGenericConstrai
             )],
         },
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
     let id_map: HashMap<i32, usize> = [(GENERIC_CONSTRAINT_ID, 0)].into_iter().collect();
     let rows = vec![(

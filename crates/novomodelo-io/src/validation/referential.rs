@@ -902,15 +902,7 @@ fn check_generic_constraint_bounds_validity(data: &ParsedData, ctx: &mut Validat
     let constraint_affines: HashMap<i32, (Option<&AffineBound>, Option<&AffineBound>)> = data
         .generic_constraints
         .iter()
-        .map(|gc| {
-            (
-                gc.id.0,
-                (
-                    gc.bound_lower_affine.as_ref(),
-                    gc.bound_upper_affine.as_ref(),
-                ),
-            )
-        })
+        .map(|gc| (gc.id.0, (gc.bound_lower.as_ref(), gc.bound_upper.as_ref())))
         .collect();
 
     // The interval IS the constraint: shape derives from which endpoints a row
@@ -970,7 +962,7 @@ fn check_generic_constraint_bounds_validity(data: &ParsedData, ctx: &mut Validat
         .map(|row| row.constraint_id)
         .collect();
     for gc in &data.generic_constraints {
-        if (gc.bound_lower_affine.is_some() || gc.bound_upper_affine.is_some())
+        if (gc.bound_lower.is_some() || gc.bound_upper.is_some())
             && !constraints_with_rows.contains(&gc.id.0)
         {
             ctx.emit(
@@ -2156,8 +2148,8 @@ mod tests {
             description: None,
             expression: ConstraintExpression { terms: vec![] },
             slack: None,
-            bound_lower_affine: lower_ref.map(|id| AffineBound::single(EntityId(id))),
-            bound_upper_affine: upper_ref.map(|id| AffineBound::single(EntityId(id))),
+            bound_lower: lower_ref.map(|id| AffineBound::single(EntityId(id))),
+            bound_upper: upper_ref.map(|id| AffineBound::single(EntityId(id))),
         }
     }
 
@@ -2170,7 +2162,7 @@ mod tests {
         let mut data = parse_case(&dir);
 
         let mut constraint = symbolic_constraint(5, None, None);
-        constraint.bound_upper_affine = Some(AffineBound {
+        constraint.bound_upper = Some(AffineBound {
             constant: -5.0,
             terms: vec![],
             products: vec![],
@@ -2234,7 +2226,7 @@ mod tests {
         let mut data = parse_case(&dir);
 
         let mut constraint = symbolic_constraint(5, None, None);
-        constraint.bound_upper_affine = Some(AffineBound {
+        constraint.bound_upper = Some(AffineBound {
             constant: -30.0,
             terms: vec![],
             products: vec![],
@@ -2304,7 +2296,7 @@ mod tests {
         let mut data = parse_case(&dir);
 
         let mut constraint = symbolic_constraint(5, None, None);
-        constraint.bound_upper_affine = Some(AffineBound {
+        constraint.bound_upper = Some(AffineBound {
             constant: 0.0,
             terms: vec![],
             products: vec![(1.0, EntityId(98), EntityId(99))],
@@ -2855,8 +2847,8 @@ mod tests {
                 )],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc];
 
@@ -2909,8 +2901,8 @@ mod tests {
                 )],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc];
 
@@ -2960,8 +2952,8 @@ mod tests {
                 )],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc];
 
@@ -3011,8 +3003,8 @@ mod tests {
                 )],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc];
 
@@ -3062,8 +3054,8 @@ mod tests {
                 )],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc];
 
@@ -3151,8 +3143,8 @@ mod tests {
                 )],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc];
 
@@ -3216,8 +3208,8 @@ mod tests {
                 )],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         let gc_generation = GenericConstraint {
             id: EntityId::from(2),
@@ -3234,8 +3226,8 @@ mod tests {
                 )],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc_turbined, gc_generation];
 
@@ -3281,8 +3273,8 @@ mod tests {
                 )],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc];
 
@@ -3339,8 +3331,8 @@ mod tests {
                 )],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc];
 
@@ -3403,8 +3395,8 @@ mod tests {
                 ],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc];
 

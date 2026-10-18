@@ -1865,8 +1865,8 @@ mod parameter_resolution_tests {
                 )],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         }
     }
 
@@ -1892,8 +1892,8 @@ mod parameter_resolution_tests {
                 }],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         }
     }
 
@@ -4361,8 +4361,8 @@ mod pumping_water_tests {
                 terms: vec![import_term],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         let mut fixtures = PumpFixtures::new_with_contracts(
             vec![fixture_hydro(1), fixture_hydro(2)],
@@ -4558,8 +4558,8 @@ mod pumping_water_tests {
                 ],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
 
         // Run the production assemble sequence into a CSC for a fixture. Takes the
@@ -7367,8 +7367,8 @@ mod pumping_water_tests {
                 ],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
 
         let mut fixtures = PumpFixtures::new(
@@ -7453,8 +7453,8 @@ mod pumping_water_tests {
                 terms: vec![flow_term(first), flow_term(second)],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
 
         let mut fixtures = PumpFixtures::new(
@@ -7526,8 +7526,8 @@ mod pumping_water_tests {
             description: None,
             expression,
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         PumpFixtures::new(vec![fixture_hydro(1)], Vec::new())
             .with_generic_constraint(constraint, 40.0)
@@ -7752,8 +7752,8 @@ mod pumping_water_tests {
                 penalty,
                 penalty_basis: PenaltyBasis::PerHour,
             }),
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
 
         let mut fixtures = PumpFixtures::new(

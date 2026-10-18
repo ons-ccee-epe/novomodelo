@@ -999,13 +999,10 @@ fn check_scalar_parameters_present(
                     CoefficientRef::Parameter(id) => Some(id),
                     CoefficientRef::Literal(_) => None,
                 });
-        let bound_ids = [
-            &constraint.bound_lower_affine,
-            &constraint.bound_upper_affine,
-        ]
-        .into_iter()
-        .flatten()
-        .flat_map(AffineBound::params);
+        let bound_ids = [&constraint.bound_lower, &constraint.bound_upper]
+            .into_iter()
+            .flatten()
+            .flat_map(AffineBound::params);
         for id in expression_ids.chain(bound_ids) {
             if !is_resolved(id) {
                 return Err(SddpError::Validation(format!(
@@ -3399,8 +3396,8 @@ mod scalar_parameter_construction_tests {
             description: None,
             expression: ConstraintExpression { terms: vec![] },
             slack: None,
-            bound_lower_affine: Some(AffineBound::single(EntityId(999))),
-            bound_upper_affine: None,
+            bound_lower: Some(AffineBound::single(EntityId(999))),
+            bound_upper: None,
         };
         let system = SystemBuilder::new()
             .buses(base.buses().to_vec())
@@ -3433,8 +3430,8 @@ mod scalar_parameter_construction_tests {
             description: None,
             expression: ConstraintExpression { terms: vec![] },
             slack: None,
-            bound_lower_affine: Some(AffineBound::single(EntityId(999))),
-            bound_upper_affine: None,
+            bound_lower: Some(AffineBound::single(EntityId(999))),
+            bound_upper: None,
         };
         let system = SystemBuilder::new()
             .buses(base.buses().to_vec())

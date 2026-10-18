@@ -949,14 +949,11 @@ fn bound_affine_is_block_varying(
     constraint: &GenericConstraint,
     resolved: &ResolvedParameters,
 ) -> bool {
-    [
-        &constraint.bound_lower_affine,
-        &constraint.bound_upper_affine,
-    ]
-    .into_iter()
-    .flatten()
-    .flat_map(AffineBound::params)
-    .any(|id| resolved.is_block_varying(id))
+    [&constraint.bound_lower, &constraint.bound_upper]
+        .into_iter()
+        .flatten()
+        .flat_map(AffineBound::params)
+        .any(|id| resolved.is_block_varying(id))
 }
 
 /// Enumerate active generic constraint rows and assign their slack column indices.
@@ -1009,14 +1006,14 @@ fn enumerate_generic_constraint_rows(
                 // two-sided slack shape.
                 let mut effective_lower = fold_endpoint(
                     entry.bound_lower,
-                    constraint.bound_lower_affine.as_ref(),
+                    constraint.bound_lower.as_ref(),
                     resolved_parameters,
                     stage_idx,
                     block_idx,
                 );
                 let mut effective_upper = fold_endpoint(
                     entry.bound_upper,
-                    constraint.bound_upper_affine.as_ref(),
+                    constraint.bound_upper.as_ref(),
                     resolved_parameters,
                     stage_idx,
                     block_idx,
@@ -2138,8 +2135,8 @@ mod collapse_stage_level_tests {
             description: None,
             expression: expr(LinearTerm::literal(1.0, hydro_storage())),
             slack: None,
-            bound_lower_affine: lower_ref.map(AffineBound::single),
-            bound_upper_affine: upper_ref.map(AffineBound::single),
+            bound_lower: lower_ref.map(AffineBound::single),
+            bound_upper: upper_ref.map(AffineBound::single),
         }
     }
 
@@ -2171,7 +2168,7 @@ mod collapse_stage_level_tests {
     fn bound_affine_block_varying_detects_multi_term_reference() {
         let r = resolved();
         let mut constraint = constraint_with_refs(None, None);
-        constraint.bound_upper_affine = Some(AffineBound {
+        constraint.bound_upper = Some(AffineBound {
             constant: 10.0,
             terms: vec![(2.0, EntityId(43)), (0.5, EntityId(42))],
             products: vec![],

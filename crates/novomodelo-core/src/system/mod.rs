@@ -2624,8 +2624,8 @@ mod tests {
                 penalty: 2500.0,
                 penalty_basis: PenaltyBasis::PerHour,
             }),
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         }];
 
         let inflow_history = vec![

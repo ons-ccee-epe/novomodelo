@@ -539,8 +539,8 @@ fn generic_constraint_thermal_le_row_bounds_and_csc_entry() {
             )],
         },
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(10_i32, 0)].into_iter().collect();
@@ -607,8 +607,8 @@ fn generic_constraint_thermal_le_slack_column_and_csc_entry() {
             penalty,
             penalty_basis: PenaltyBasis::PerHour,
         }),
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(20_i32, 0)].into_iter().collect();
@@ -679,8 +679,8 @@ fn generic_constraint_thermal_ge_row_bounds() {
             )],
         },
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(30_i32, 0)].into_iter().collect();
@@ -735,8 +735,8 @@ fn generic_constraint_thermal_ge_slack_column_and_csc_entry() {
             penalty,
             penalty_basis: PenaltyBasis::PerHour,
         }),
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(35_i32, 0)].into_iter().collect();
@@ -801,8 +801,8 @@ fn generic_constraint_two_sided_thermal_row_bounds_and_csc_entry() {
             )],
         },
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(72_i32, 0)].into_iter().collect();
@@ -858,8 +858,8 @@ fn generic_constraint_degenerate_band_thermal_two_slacks() {
             penalty,
             penalty_basis: PenaltyBasis::PerHour,
         }),
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(40_i32, 0)].into_iter().collect();
@@ -948,8 +948,8 @@ fn generic_constraint_two_sided_thermal_two_slacks() {
             penalty,
             penalty_basis: PenaltyBasis::PerHour,
         }),
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(73_i32, 0)].into_iter().collect();
@@ -1043,8 +1043,8 @@ fn generic_constraint_degenerate_band_gets_equality_row_and_two_slacks() {
             penalty,
             penalty_basis: PenaltyBasis::PerHour,
         }),
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
     let id_map: HashMap<i32, usize> = [(id, 0_usize)].into_iter().collect();
     let rows = vec![(id, 0_i32, None::<i32>, Some(10.0_f64), Some(10.0_f64))];
@@ -1276,8 +1276,8 @@ fn generic_constraint_two_hydros_sum_csc_entries() {
             ],
         },
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(100_i32, 0)].into_iter().collect();
@@ -1599,8 +1599,8 @@ fn generic_constraint_chronological_stage_net_storage_one_row() {
             ],
         },
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(100_i32, 0)].into_iter().collect();
@@ -1679,8 +1679,8 @@ fn generic_constraint_chronological_specific_block_ramp_one_row() {
             ],
         },
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(100_i32, 0)].into_iter().collect();
@@ -1754,8 +1754,8 @@ fn storage_slack_objective(n_blks: usize, penalty_basis: novomodelo_core::Penalt
             penalty: 40.0,
             penalty_basis,
         }),
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
     let id_map: HashMap<i32, usize> = [(100_i32, 0)].into_iter().collect();
     let rows = vec![(100_i32, 0_i32, None::<i32>, None, Some(150.0_f64))];
@@ -1936,8 +1936,8 @@ fn per_stage_block_coefficient_twin_matches_hand_flattened_literals() {
         description: None,
         expression: sugared_expr,
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
     let sugared_id_map: HashMap<i32, usize> = [(300_i32, 0)].into_iter().collect();
     let sugared_rows = vec![(300_i32, 0_i32, None::<i32>, None, Some(upper))];
@@ -1980,8 +1980,8 @@ fn per_stage_block_coefficient_twin_matches_hand_flattened_literals() {
             description: None,
             expression: expr,
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         }
     };
     let flat_constraints = vec![
@@ -2006,7 +2006,7 @@ fn per_stage_block_coefficient_twin_matches_hand_flattened_literals() {
     );
 }
 
-/// A symbolic upper bound (`bound_upper_affine` naming a `PerStageBlock` parameter,
+/// A symbolic upper bound (`bound_upper` naming a `PerStageBlock` parameter,
 /// with the numeric `bound_upper` left null in the activation rows) resolves per
 /// `(stage, block)` and builds the identical LP to a study whose rows carry the
 /// resolved literal `bound_upper` per block and no reference. The block-varying
@@ -2040,8 +2040,8 @@ fn symbolic_upper_bound_ref_twin_matches_literal_per_block_bounds() {
         description: None,
         expression: expr(),
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: Some(AffineBound::single(EntityId(200))),
+        bound_lower: None,
+        bound_upper: Some(AffineBound::single(EntityId(200))),
     };
     let sugared_id_map: HashMap<i32, usize> = [(300_i32, 0)].into_iter().collect();
     let sugared_rows = vec![(300_i32, 0_i32, None::<i32>, None, None)];
@@ -2065,8 +2065,8 @@ fn symbolic_upper_bound_ref_twin_matches_literal_per_block_bounds() {
         description: None,
         expression: expr(),
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
     let flat_id_map: HashMap<i32, usize> = [(300_i32, 0)].into_iter().collect();
     let flat_rows = vec![
@@ -2086,7 +2086,7 @@ fn symbolic_upper_bound_ref_twin_matches_literal_per_block_bounds() {
     );
 }
 
-/// A block-independent expression whose symbolic lower bound (`bound_lower_affine`)
+/// A block-independent expression whose symbolic lower bound (`bound_lower`)
 /// names a stage-level (broadcast) parameter collapses to a single stage-level row,
 /// and the collapse path resolves the reference to the parameter's one-per-stage
 /// value — byte-identical to the same study written with a literal `bound_lower`
@@ -2111,8 +2111,8 @@ fn symbolic_lower_bound_ref_stage_level_collapse_twin() {
         description: None,
         expression: empty_expr(),
         slack: None,
-        bound_lower_affine: Some(AffineBound::single(EntityId(200))),
-        bound_upper_affine: None,
+        bound_lower: Some(AffineBound::single(EntityId(200))),
+        bound_upper: None,
     };
     let sugared_id_map: HashMap<i32, usize> = [(300_i32, 0)].into_iter().collect();
     let sugared_rows = vec![(300_i32, 0_i32, None::<i32>, None, None)];
@@ -2134,8 +2134,8 @@ fn symbolic_lower_bound_ref_stage_level_collapse_twin() {
         description: None,
         expression: empty_expr(),
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
     let flat_id_map: HashMap<i32, usize> = [(300_i32, 0)].into_iter().collect();
     let flat_rows = vec![(300_i32, 0_i32, None::<i32>, Some(floor), None)];
@@ -2262,8 +2262,8 @@ fn full_cancellation_drops_net_zero_column() {
         description: None,
         expression: ConstraintExpression { terms: vec![] },
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
     let flat_id_map: HashMap<i32, usize> = [(3_i32, 0)].into_iter().collect();
     let flat_rows = vec![(3_i32, 0_i32, None::<i32>, None, Some(5.0_f64))];
@@ -2353,8 +2353,8 @@ fn parquet_base_folds_with_inline_affine_remainder() {
             )],
         },
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
     let flat_id_map: HashMap<i32, usize> = [(5_i32, 0)].into_iter().collect();
     let flat_rows = vec![(5_i32, 0_i32, None::<i32>, None, Some(95.0_f64))];
@@ -2441,8 +2441,8 @@ fn parameter_rhs_terms_on_one_column_merge_to_one_entry() {
         description: None,
         expression: flat_expr,
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
     let flat_id_map: HashMap<i32, usize> = [(6_i32, 0)].into_iter().collect();
     let flat_rows = vec![(6_i32, 0_i32, None::<i32>, None, Some(400.0_f64))];

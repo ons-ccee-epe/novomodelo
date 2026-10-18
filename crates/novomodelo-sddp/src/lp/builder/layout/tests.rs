@@ -101,8 +101,8 @@ impl ZeroEntityFixtures {
                 penalty: 10.0,
                 penalty_basis: PenaltyBasis::PerHour,
             }),
-            bound_lower_affine: None,
-            bound_upper_affine: Some(AffineBound::single(EntityId(42))),
+            bound_lower: None,
+            bound_upper: Some(AffineBound::single(EntityId(42))),
         }];
         let id_map: HashMap<i32, usize> = [(5, 0)].into_iter().collect();
         self.base.resolved_generic_bounds = ResolvedGenericConstraintBounds::new(
@@ -126,8 +126,8 @@ impl ZeroEntityFixtures {
             description: None,
             expression: ConstraintExpression { terms: vec![] },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: Some(AffineBound {
+            bound_lower: None,
+            bound_upper: Some(AffineBound {
                 constant: -5.0,
                 terms: vec![],
                 products: vec![],
@@ -614,8 +614,8 @@ impl UsefulVolumeFixtures {
             description: None,
             expression: ConstraintExpression { terms },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         }];
         let id_map: HashMap<i32, usize> = [(5, 0)].into_iter().collect();
         self.base.resolved_generic_bounds = ResolvedGenericConstraintBounds::new(
@@ -4290,8 +4290,8 @@ fn two_sided_real_layout_allocates_minus_slack_column() {
             penalty: 10.0,
             penalty_basis: PenaltyBasis::PerHour,
         }),
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(1, 0)].into_iter().collect();
