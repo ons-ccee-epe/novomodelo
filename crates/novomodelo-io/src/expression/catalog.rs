@@ -2,6 +2,7 @@ use novomodelo_core::{EntityId, Line, VariableRef};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use super::parser::{Arg, VariableCall};
 use crate::LoadError;
 
 // ── Line bus-pair addressing ────────────────────────────────────────────────
@@ -293,6 +294,126 @@ pub(crate) fn build_variable_ref(
     }
 
     Ok(variable)
+}
+
+/// Resolves a parsed variable call: a positional entity id, an optional positional block and
+/// an optional `bus=` after them, or the `line_exchange(source_bus=, target_bus=)` pair form,
+/// which reads its line and orientation from `line_index`. The direct forms are `Forward`.
+pub(crate) fn variable_from_call(
+    call: &VariableCall,
+    line_index: &LineBusPairIndex,
+) -> Result<(VariableRef, LinePairOrientation), String> {
+    let name = call.name.as_str();
+    let Some((first, rest)) = call.args.split_first() else {
+        return Err(format!("variable \"{name}\" has an empty argument list"));
+    };
+    let entity_id = match first {
+        Arg::Named { key, .. } if key == "source_bus" || key == "target_bus" => {
+            return line_pair_from_call(call, line_index);
+        }
+        Arg::Named { .. } => {
+            return Err(format!("expected integer entity_id in variable \"{name}\""));
+        }
+        Arg::Positional { value, .. } => token_f64_to_i32(*value).ok_or_else(|| {
+            format!("entity_id must be a non-negative integer, got {value} in variable \"{name}\"")
+        })?,
+    };
+
+    let mut block_id: Option<usize> = None;
+    let mut bus_id: Option<EntityId> = None;
+    for arg in rest {
+        match arg {
+            Arg::Positional { value, .. } => {
+                if bus_id.is_some() {
+                    return Err(format!(
+                        "positional block argument must precede the named \"bus=\" argument in variable \"{name}\""
+                    ));
+                }
+                if block_id.is_some() {
+                    return Err(format!("repeated block argument in variable \"{name}\""));
+                }
+                block_id = Some(token_f64_to_usize(*value).ok_or_else(|| {
+                    format!(
+                        "block_id must be a non-negative integer, got {value} in variable \"{name}\""
+                    )
+                })?);
+            }
+            Arg::Named { key, value, .. } if key == "bus" => {
+                if bus_id.is_some() {
+                    return Err(format!("repeated \"bus=\" argument in variable \"{name}\""));
+                }
+                let bus = token_f64_to_i32(*value).ok_or_else(|| {
+                    format!(
+                        "bus_id must be a non-negative integer, got {value} in variable \"{name}\""
+                    )
+                })?;
+                bus_id = Some(EntityId::from(bus));
+            }
+            Arg::Named { key, .. } if key == "source_bus" || key == "target_bus" => {
+                return Err(format!(
+                    "the (source_bus=, target_bus=) pair form is only accepted on \"line_exchange\" as its sole argument, e.g. \"line_exchange(source_bus=3, target_bus=7)\"; it cannot follow a positional argument in \"{name}\""
+                ));
+            }
+            Arg::Named { key, .. } => {
+                return Err(format!(
+                    "unknown named argument \"{key}\" in variable \"{name}\": only \"bus\" is supported"
+                ));
+            }
+        }
+    }
+
+    build_variable_ref(name, EntityId::from(entity_id), block_id, bus_id)
+        .map(|variable| (variable, LinePairOrientation::Forward))
+}
+
+/// The pair form: exactly one `source_bus=` and one `target_bus=`, on `line_exchange` only.
+fn line_pair_from_call(
+    call: &VariableCall,
+    line_index: &LineBusPairIndex,
+) -> Result<(VariableRef, LinePairOrientation), String> {
+    let name = call.name.as_str();
+    if name != "line_exchange" {
+        return Err(format!(
+            "the (source_bus=, target_bus=) pair form addresses a line by its endpoint buses and is only accepted on \"line_exchange\", not \"{name}\""
+        ));
+    }
+
+    let mut source_bus: Option<EntityId> = None;
+    let mut target_bus: Option<EntityId> = None;
+    for arg in &call.args {
+        let (slot, key, value) = match arg {
+            Arg::Named { key, value, .. } if key == "source_bus" => (&mut source_bus, key, value),
+            Arg::Named { key, value, .. } if key == "target_bus" => (&mut target_bus, key, value),
+            _ => {
+                return Err(format!(
+                    "expected \"source_bus\" or \"target_bus\" in \"{name}\" pair form"
+                ));
+            }
+        };
+        let bus = token_f64_to_i32(*value).ok_or_else(|| {
+            format!("{key} must be a non-negative integer, got {value} in \"{name}\"")
+        })?;
+        if slot.is_some() {
+            return Err(format!("repeated \"{key}=\" argument in \"{name}\""));
+        }
+        *slot = Some(EntityId::from(bus));
+    }
+
+    let (Some(source_bus), Some(target_bus)) = (source_bus, target_bus) else {
+        return Err(format!(
+            "the \"{name}\" pair form requires both \"source_bus=\" and \"target_bus=\"; write \"line_exchange(source_bus=X, target_bus=Y)\""
+        ));
+    };
+    let (line_id, orientation) = line_index.resolve(source_bus, target_bus).ok_or_else(|| {
+        format!("no line connects buses source_bus={source_bus} and target_bus={target_bus}")
+    })?;
+    Ok((
+        VariableRef::LineExchange {
+            line_id,
+            block_id: None,
+        },
+        orientation,
+    ))
 }
 
 #[cfg(test)]
