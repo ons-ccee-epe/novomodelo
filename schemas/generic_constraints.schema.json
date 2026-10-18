@@ -27,7 +27,7 @@
           ]
         },
         "expression": {
-          "description": "Expression string to be parsed. E.g. `\"2.5 * thermal_generation(5) - hydro_generation(3)\"`.\nTo constrain an anticipated thermal's commitment, use `\"anticipated_decision(5)\"` (stage-level scalar, no block index).\nTo constrain one bus of a plant split across several buses, use `\"hydro_turbined(5, bus=2)\"`\nor `\"hydro_generation(5, bus=2)\"` — the only two variables accepting a `bus=` selector.\nAn optional inline relational operator (`<=`, `>=`, `==`) followed by a\nright-hand side normalizes onto the F3 interval — see the module doc.",
+          "description": "Expression string to be parsed. E.g. `\"2.5 * thermal_generation(5) - hydro_generation(3)\"`.\nTo constrain an anticipated thermal's commitment, use `\"anticipated_decision(5)\"` (stage-level scalar, no block index).\nTo constrain one bus of a plant split across several buses, use `\"hydro_turbined(5, bus=2)\"`\nor `\"hydro_generation(5, bus=2)\"` — the only two variables accepting a `bus=` selector.\nAn optional inline relational operator (`<=`, `>=`, `==`) moves every variable term to\nthe left and assigns the remainder to the bound it targets.",
           "type": "string"
         },
         "id": {

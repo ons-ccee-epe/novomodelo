@@ -36,7 +36,7 @@ use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use super::named_expression_inline::detect_cycles;
+use super::reference_cycles::detect_cycles;
 use crate::LoadError;
 use crate::expression::catalog::LineBusPairIndex;
 use crate::expression::lower::{NamedTable, Scope, lower_relation};
@@ -79,8 +79,8 @@ struct RawConstraint {
     /// To constrain an anticipated thermal's commitment, use `"anticipated_decision(5)"` (stage-level scalar, no block index).
     /// To constrain one bus of a plant split across several buses, use `"hydro_turbined(5, bus=2)"`
     /// or `"hydro_generation(5, bus=2)"` — the only two variables accepting a `bus=` selector.
-    /// An optional inline relational operator (`<=`, `>=`, `==`) followed by a
-    /// right-hand side normalizes onto the F3 interval — see the module doc.
+    /// An optional inline relational operator (`<=`, `>=`, `==`) moves every variable term to
+    /// the left and assigns the remainder to the bound it targets.
     expression: String,
 
     /// Slack variable configuration.
