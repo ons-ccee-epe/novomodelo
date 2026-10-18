@@ -3260,7 +3260,7 @@ mod scalar_parameter_construction_tests {
     use novomodelo_core::scenario::SamplingScheme;
     use novomodelo_core::{
         ComputedParameter, ConstraintExpression, EntityId, GenericConstraint, ParameterKind,
-        ScalarExpr, ScalarParameter, SystemBuilder,
+        ScalarExpr, ScalarParameter, System, SystemBuilder,
     };
     use novomodelo_io::Config;
     use novomodelo_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
@@ -3305,6 +3305,49 @@ mod scalar_parameter_construction_tests {
             id: EntityId(1),
             name: "probe".to_string(),
             kind,
+        }
+    }
+
+    fn system_with_probe_lower_bound(bound_lower: ScalarExpr) -> System {
+        let base = k_fan_system(3, false);
+        let constraint = GenericConstraint {
+            id: EntityId(500),
+            name: "probe_constraint".to_string(),
+            description: None,
+            expression: ConstraintExpression { terms: vec![] },
+            slack: None,
+            bound_lower: Some(bound_lower),
+            bound_upper: None,
+        };
+        SystemBuilder::new()
+            .buses(base.buses().to_vec())
+            .hydros(base.hydros().to_vec())
+            .stages(base.stages().to_vec())
+            .inflow_models(base.inflow_models().to_vec())
+            .load_models(base.load_models().to_vec())
+            .bounds(base.bounds().clone())
+            .penalties(base.penalties().clone())
+            .initial_conditions(base.initial_conditions().clone())
+            .policy_graph(base.policy_graph().clone())
+            .generic_constraints(vec![constraint])
+            .build()
+            .expect("adding a generic constraint keeps the fixture valid")
+    }
+
+    fn per_stage_with_value_at_study_stage_one(
+        system: &System,
+        id: i32,
+        name: &str,
+        value: f64,
+    ) -> ScalarParameter {
+        let n_study_stages = system.stages().iter().filter(|s| s.id >= 0).count();
+        let values = (0..n_study_stages)
+            .map(|s| if s == 1 { value } else { 1.0 })
+            .collect();
+        ScalarParameter {
+            id: EntityId(id),
+            name: name.to_string(),
+            kind: ParameterKind::PerStage { values },
         }
     }
 
@@ -3458,38 +3501,8 @@ mod scalar_parameter_construction_tests {
     #[test]
     fn validate_generic_constraint_parameters_rejects_a_non_finite_parameter_at_an_inactive_stage()
     {
-        let base = k_fan_system(3, false);
-        let constraint = GenericConstraint {
-            id: EntityId(500),
-            name: "probe_constraint".to_string(),
-            description: None,
-            expression: ConstraintExpression { terms: vec![] },
-            slack: None,
-            bound_lower: Some(ScalarExpr::param(EntityId(7))),
-            bound_upper: None,
-        };
-        let system = SystemBuilder::new()
-            .buses(base.buses().to_vec())
-            .hydros(base.hydros().to_vec())
-            .stages(base.stages().to_vec())
-            .inflow_models(base.inflow_models().to_vec())
-            .load_models(base.load_models().to_vec())
-            .bounds(base.bounds().clone())
-            .penalties(base.penalties().clone())
-            .initial_conditions(base.initial_conditions().clone())
-            .policy_graph(base.policy_graph().clone())
-            .generic_constraints(vec![constraint])
-            .build()
-            .expect("adding a generic constraint keeps the fixture valid");
-        let n_study_stages = system.stages().iter().filter(|s| s.id >= 0).count();
-        let values = (0..n_study_stages)
-            .map(|s| if s == 1 { f64::NAN } else { 1.0 })
-            .collect();
-        let parameter = ScalarParameter {
-            id: EntityId(7),
-            name: "param_7".to_string(),
-            kind: ParameterKind::PerStage { values },
-        };
+        let system = system_with_probe_lower_bound(ScalarExpr::param(EntityId(7)));
+        let parameter = per_stage_with_value_at_study_stage_one(&system, 7, "param_7", f64::NAN);
         let hydro_models = PrepareHydroModelsResult::default_from_system(&system);
         let err = super::validate_generic_constraint_parameters(
             &system,
@@ -3501,6 +3514,78 @@ mod scalar_parameter_construction_tests {
         assert!(
             matches!(err, SddpError::Validation(ref msg) if msg.contains("probe_constraint") && msg.contains("the lower bound") && msg.contains("non-finite")),
             "expected the non-finite bound message naming the constraint, got: {err:?}"
+        );
+    }
+
+    /// The inline quotient and an expression parameter holding it reject the same non-finite
+    /// value at the same stage and block. The inline form is named after the constraint; the
+    /// expression form is named after the parameter, because it fails while parameters
+    /// resolve, before any constraint reads it.
+    #[test]
+    fn a_non_finite_expression_parameter_fails_validation_like_the_inline_arithmetic() {
+        let numerator = ScalarParameter {
+            id: EntityId(7),
+            name: "numerator".to_string(),
+            kind: ParameterKind::Constant { value: 1.0 },
+        };
+        let ratio = ScalarExpr::param(EntityId(7)) / ScalarExpr::param(EntityId(8));
+
+        let inline_system = system_with_probe_lower_bound(ratio.clone());
+        let denominator =
+            per_stage_with_value_at_study_stage_one(&inline_system, 8, "denominator", 0.0);
+        let inline_models = PrepareHydroModelsResult::default_from_system(&inline_system);
+        let inline_err = super::validate_generic_constraint_parameters(
+            &inline_system,
+            &inline_models,
+            &[numerator.clone(), denominator.clone()],
+            crate::DEFAULT_COST_SCALE_FACTOR,
+        )
+        .expect_err("the inline quotient by zero must reject");
+
+        let expression_system = system_with_probe_lower_bound(ScalarExpr::param(EntityId(9)));
+        let ratio_parameter = ScalarParameter {
+            id: EntityId(9),
+            name: "ratio".to_string(),
+            kind: ParameterKind::Expression { expression: ratio },
+        };
+        let expression_models = PrepareHydroModelsResult::default_from_system(&expression_system);
+        let expression_err = super::validate_generic_constraint_parameters(
+            &expression_system,
+            &expression_models,
+            &[numerator, denominator, ratio_parameter],
+            crate::DEFAULT_COST_SCALE_FACTOR,
+        )
+        .expect_err("the expression parameter holding the quotient by zero must reject");
+
+        let (SddpError::Validation(inline_msg), SddpError::Validation(expression_msg)) =
+            (&inline_err, &expression_err)
+        else {
+            panic!(
+                "non-finite twin: both forms must fail with SddpError::Validation, got: {inline_err:?} and {expression_err:?}"
+            );
+        };
+        assert!(
+            inline_msg.contains("probe_constraint") && inline_msg.contains("the lower bound"),
+            "non-finite twin: the inline message must name the constraint and the bound, got: {inline_msg}"
+        );
+        assert!(
+            expression_msg.contains("parameter 'ratio'")
+                && !expression_msg.contains("probe_constraint"),
+            "non-finite twin: the expression message must name the parameter only, got: {expression_msg}"
+        );
+        let (_, inline_suffix) = inline_msg
+            .split_once("resolves to")
+            .expect("the inline message carries the shared suffix");
+        let (_, expression_suffix) = expression_msg
+            .split_once("resolves to")
+            .expect("the expression message carries the shared suffix");
+        assert_eq!(
+            inline_suffix, expression_suffix,
+            "non-finite twin: both forms must report the same value, stage and block"
+        );
+        assert!(
+            inline_suffix.contains("the non-finite value inf"),
+            "non-finite twin: the shared suffix must report an infinity, got: {inline_suffix}"
         );
     }
 }

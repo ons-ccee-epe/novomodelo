@@ -2169,6 +2169,16 @@ fn parse_generic_from_str_with_params(
     .expect("parse generic constraints")
 }
 
+/// Parse `json` through the real scalar-parameter loader, so an expression body
+/// reaches the resolver exactly as an authored `generic_parameters.json` does.
+fn parse_scalar_parameters_from_str(json: &str) -> Vec<novomodelo_core::ScalarParameter> {
+    use std::io::Write;
+
+    let mut file = tempfile::NamedTempFile::new().expect("create tempfile");
+    file.write_all(json.as_bytes()).expect("write json fixture");
+    novomodelo_io::parse_scalar_parameters_json(file.path()).expect("parse scalar parameters")
+}
+
 /// A decision-variable RHS (`thermal_generation(0) <= 0.5 * hydro_generation(1) +
 /// 12`) normalizes onto the LHS with the RHS variable sign-flipped and the
 /// constant remainder assigned to the upper endpoint — byte-identical to writing
@@ -2597,5 +2607,218 @@ fn block_varying_zero_parameter_coefficient_has_no_entry() {
         csc_entries_at(&templates[0], 4, 3),
         vec![3.0],
         "block 1: the nonzero coefficient is stored"
+    );
+}
+
+/// A summed parameter used as a coefficient builds the same LP as the inline sum. The body
+/// is written in the inline form's association, because floating-point addition is not
+/// associative.
+#[test]
+fn expression_parameter_sum_coefficient_matches_inline_sum_in_the_same_association() {
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use std::collections::HashMap;
+
+    let scalar_params = parse_scalar_parameters_from_str(
+        r#"{
+      "scalar_parameters": [
+        { "id": 230, "name": "a", "kind": "constant", "value": 0.1 },
+        { "id": 231, "name": "b", "kind": "constant", "value": 0.2 },
+        { "id": 232, "name": "c", "kind": "constant", "value": 0.3 },
+        { "id": 233, "name": "e", "kind": "expression", "expression": "@a + @b + @c" }
+      ]
+    }"#,
+    );
+    let name_to_id: HashMap<String, EntityId> = scalar_params
+        .iter()
+        .map(|param| (param.name.clone(), param.id))
+        .collect();
+    let params = resolved_params_single_stage(1, &scalar_params);
+
+    let inline_constraints = parse_generic_from_str_with_params(
+        r#"{
+      "constraints": [
+        { "id": 7, "name": "inline_sum", "expression": "(@a + @b + @c) * bus_excess(1) <= 400", "slack": { "enabled": false } }
+      ]
+    }"#,
+        &name_to_id,
+    );
+    let expression_constraints = parse_generic_from_str_with_params(
+        r#"{
+      "constraints": [
+        { "id": 7, "name": "inline_sum", "expression": "@e * bus_excess(1) <= 400", "slack": { "enabled": false } }
+      ]
+    }"#,
+        &name_to_id,
+    );
+    let id_map: HashMap<i32, usize> = [(7_i32, 0)].into_iter().collect();
+    let rows = vec![(7_i32, 0_i32, None::<i32>, None, None)];
+    let inline_bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.clone().into_iter());
+    let expression_bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter());
+
+    let (excess_col, generic_row) = (2_usize, 1_usize);
+    let expression_tpl = build_templates_with_params(
+        &one_bus_system_n_blks_with_generic(
+            1,
+            expression_constraints.clone(),
+            expression_bounds.clone(),
+        ),
+        &params,
+    );
+    let entries = csc_entries_at(&expression_tpl[0], excess_col, generic_row);
+    assert_eq!(
+        entries.len(),
+        1,
+        "sum-coefficient twin: the expression row must hold one entry on bus_excess(1)"
+    );
+    assert_eq!(
+        entries[0].to_bits(),
+        ((0.1_f64 + 0.2) + 0.3).to_bits(),
+        "sum-coefficient twin: the entry must be the sum in the inline association"
+    );
+
+    assert_desugaring_twin_builds_identical_lp(
+        1,
+        inline_constraints,
+        inline_bounds,
+        &params,
+        expression_constraints,
+        expression_bounds,
+        &params,
+    );
+}
+
+/// A parameter built from a block-varying leaf resolves per block, and a coefficient that
+/// reads it builds the same LP as the inline product.
+#[test]
+fn block_varying_expression_parameter_coefficient_matches_inline_product() {
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use std::collections::HashMap;
+
+    let scalar_params = parse_scalar_parameters_from_str(
+        r#"{
+      "scalar_parameters": [
+        { "id": 240, "name": "k", "kind": "per_stage_block", "block_values": [[0, 0, 1.5], [0, 1, 2.5]] },
+        { "id": 241, "name": "e", "kind": "expression", "expression": "@k * 2" }
+      ]
+    }"#,
+    );
+    let name_to_id: HashMap<String, EntityId> = scalar_params
+        .iter()
+        .map(|param| (param.name.clone(), param.id))
+        .collect();
+    let params = resolved_params_single_stage(2, &scalar_params);
+    assert!(
+        params.is_block_varying(EntityId(241)),
+        "block-varying twin: an expression over a block-varying leaf must be block-varying"
+    );
+    assert_eq!(
+        params.get(EntityId(241), 0, 0).to_bits(),
+        3.0_f64.to_bits(),
+        "block-varying twin: block 0 must resolve to 1.5 * 2"
+    );
+    assert_eq!(
+        params.get(EntityId(241), 0, 1).to_bits(),
+        5.0_f64.to_bits(),
+        "block-varying twin: block 1 must resolve to 2.5 * 2"
+    );
+
+    let inline_constraints = parse_generic_from_str_with_params(
+        r#"{
+      "constraints": [
+        { "id": 8, "name": "block_product", "expression": "@k * 2 * bus_excess(1) <= 400", "slack": { "enabled": false } }
+      ]
+    }"#,
+        &name_to_id,
+    );
+    let expression_constraints = parse_generic_from_str_with_params(
+        r#"{
+      "constraints": [
+        { "id": 8, "name": "block_product", "expression": "@e * bus_excess(1) <= 400", "slack": { "enabled": false } }
+      ]
+    }"#,
+        &name_to_id,
+    );
+    let id_map: HashMap<i32, usize> = [(8_i32, 0)].into_iter().collect();
+    let rows = vec![(8_i32, 0_i32, None::<i32>, None, None)];
+    let inline_bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.clone().into_iter());
+    let expression_bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter());
+
+    assert_desugaring_twin_builds_identical_lp(
+        2,
+        inline_constraints,
+        inline_bounds,
+        &params,
+        expression_constraints,
+        expression_bounds,
+        &params,
+    );
+}
+
+/// A parameter that sums two constants used as a bound builds the same LP as the inline sum
+/// on the right-hand side.
+#[test]
+fn expression_parameter_bound_matches_inline_bound_sum() {
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use std::collections::HashMap;
+
+    let scalar_params = parse_scalar_parameters_from_str(
+        r#"{
+      "scalar_parameters": [
+        { "id": 250, "name": "a", "kind": "constant", "value": 0.1 },
+        { "id": 251, "name": "b", "kind": "constant", "value": 0.2 },
+        { "id": 252, "name": "e", "kind": "expression", "expression": "@a + @b" }
+      ]
+    }"#,
+    );
+    let name_to_id: HashMap<String, EntityId> = scalar_params
+        .iter()
+        .map(|param| (param.name.clone(), param.id))
+        .collect();
+    let params = resolved_params_single_stage(1, &scalar_params);
+
+    let inline_constraints = parse_generic_from_str_with_params(
+        r#"{
+      "constraints": [
+        { "id": 9, "name": "bound_sum", "expression": "bus_excess(1) <= @a + @b", "slack": { "enabled": false } }
+      ]
+    }"#,
+        &name_to_id,
+    );
+    let expression_constraints = parse_generic_from_str_with_params(
+        r#"{
+      "constraints": [
+        { "id": 9, "name": "bound_sum", "expression": "bus_excess(1) <= @e", "slack": { "enabled": false } }
+      ]
+    }"#,
+        &name_to_id,
+    );
+    let id_map: HashMap<i32, usize> = [(9_i32, 0)].into_iter().collect();
+    let rows = vec![(9_i32, 0_i32, None::<i32>, None, None)];
+    let inline_bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.clone().into_iter());
+    let expression_bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter());
+
+    let generic_row = 1_usize;
+    let expression_tpl = build_templates_with_params(
+        &one_bus_system_n_blks_with_generic(
+            1,
+            expression_constraints.clone(),
+            expression_bounds.clone(),
+        ),
+        &params,
+    );
+    assert_eq!(
+        expression_tpl[0].row_upper[generic_row].to_bits(),
+        (0.1_f64 + 0.2).to_bits(),
+        "bound twin: the row's upper bound must be the sum in the inline association"
+    );
+
+    assert_desugaring_twin_builds_identical_lp(
+        1,
+        inline_constraints,
+        inline_bounds,
+        &params,
+        expression_constraints,
+        expression_bounds,
+        &params,
     );
 }
