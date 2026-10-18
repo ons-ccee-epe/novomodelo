@@ -84,7 +84,7 @@ parquet = { version = "60", default-features = false, features = ["arrow", "zstd
 proptest = "1"
 rand = "0.10"
 rand_distr = "0.6"
-serde_json = "1"
+serde_json = { workspace = true }
 sha2 = "0.11"
 tempfile = "3"
 tracing-subscriber = "0.3"

@@ -42,7 +42,7 @@ parquet = { version = "60", default-features = false, features = ["arrow", "zstd
 postcard = { version = "1", features = ["alloc"] }
 schemars = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["float_roundtrip"] }
+serde_json = { workspace = true }
 tempfile = { version = "3", optional = true }
 thiserror = "2"
 tracing = "0.1"
