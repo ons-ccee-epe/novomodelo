@@ -917,6 +917,7 @@ mod tests {
             [
                 "computed",
                 "constant",
+                "expression",
                 "per_stage",
                 "per_stage_block",
                 "seasonal"

@@ -559,7 +559,7 @@ mod b6a_hydro_inflow_parity {
     use std::sync::mpsc;
 
     use novomodelo_core::scenario::ScenarioSource;
-    use novomodelo_core::{CoefficientRef, EntityId, VariableRef};
+    use novomodelo_core::{EntityId, VariableRef};
     use novomodelo_sddp::{
         SimulationWeighting, aggregate_simulation, hydro_models::prepare_hydro_models,
         setup::prepare_stochastic,
@@ -626,14 +626,9 @@ mod b6a_hydro_inflow_parity {
             "fixture constraint must reference hydro_inflow(1) (cascade target H1) with no explicit block"
         );
         assert_eq!(
-            term.coefficient,
-            CoefficientRef::Literal(1.0),
+            term.coefficient.as_literal(),
+            Some(1.0),
             "the hydro_inflow term coefficient must be the literal +1.0"
-        );
-        assert!(
-            (term.scale - 1.0).abs() < f64::EPSILON,
-            "the hydro_inflow term scale must be +1.0, got {}",
-            term.scale
         );
     }
 
@@ -784,7 +779,8 @@ mod determinism {
         },
     };
     use novomodelo_sddp::{
-        Phase, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
+        LoadedPolicy, Phase, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet,
+        TrainingConfig,
         config::{CutManagementConfig, EventConfig, LoopConfig},
         context::TrainingContext,
         cut::FutureCostFunction,
@@ -1329,7 +1325,7 @@ mod determinism {
                     },
                     &comm,
                     || Ok(MockSolver3H::new(100.0)),
-                    None,
+                    LoadedPolicy::default(),
                     SolverProfiles::default(),
                 )
             })

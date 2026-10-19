@@ -25,17 +25,17 @@ pub mod bounds;
 pub mod generic;
 pub mod generic_bounds;
 pub mod hydro_unit_group_bounds;
-pub(crate) mod named_expression_inline;
 pub mod ncs_bounds;
 pub mod penalty_overrides;
-pub(crate) mod rhs_normalize;
+pub(crate) mod reference_cycles;
 
+pub use crate::expression::catalog::{LineBusPairIndex, build_line_bus_pair_index};
 pub use bounds::{
     ContractBoundsRow, HydroBoundsRow, LineBoundsRow, PumpingBoundsRow, ThermalBoundsRow,
     parse_contract_bounds, parse_hydro_bounds, parse_line_bounds, parse_pumping_bounds,
     parse_thermal_bounds,
 };
-pub use generic::{LineBusPairIndex, build_line_bus_pair_index, parse_generic_constraints};
+pub use generic::parse_generic_constraints;
 pub use generic_bounds::{GenericConstraintBoundsRow, parse_generic_constraint_bounds};
 pub use hydro_unit_group_bounds::{HydroUnitGroupBoundsRow, parse_hydro_unit_group_bounds};
 pub use ncs_bounds::{NcsBoundsRow, parse_ncs_bounds};

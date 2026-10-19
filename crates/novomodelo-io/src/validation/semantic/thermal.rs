@@ -3822,8 +3822,8 @@ mod tests {
                 )],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         let stage_ids: Vec<i32> = (0..5).collect();
         let mut data = make_data(
@@ -3900,8 +3900,8 @@ mod tests {
                 )],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         let mut data = make_data_anticipated(vec![thermal], 5, commitments(3, &[0.0, 0.0]));
         data.generic_constraints = vec![constraint];
@@ -3954,8 +3954,8 @@ mod tests {
                 )],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         let mut data = make_data_anticipated(vec![thermal], 5, commitments(5, &[0.0]));
         data.generic_constraints = vec![constraint];
@@ -4032,8 +4032,8 @@ mod tests {
                 )],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         let stage_ids: Vec<i32> = (0..5).collect();
         let mut data = make_data(

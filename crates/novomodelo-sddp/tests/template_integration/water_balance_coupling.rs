@@ -1,7 +1,7 @@
 //! `water_balance_coupling` section tests.
 //!
 //! Every water-balance row reads the realized inflow through the `z_h`
-//! column (`push_z_inflow_coupling` in `lp/builder/entries.rs`) rather than
+//! column (`push_local_inflow_coupling` in `lp/builder/entries.rs`) rather than
 //! an AR-lag column or a PAR base baked into the row's own RHS.
 
 use std::collections::HashSet;

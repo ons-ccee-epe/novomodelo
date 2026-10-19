@@ -1,11 +1,13 @@
 //! Input and output record types for value-function artifact serialization.
 //!
-//! Input types (`PolicyCutRecord`, `PolicyBasisRecord`, `StageStatesPayload`,
-//! `StageCutsPayload`) borrow from caller-owned buffers; owned output types
+//! Input types (`PolicyCutRecord`, `PolicyBasisRecord`, `BasisEntry`,
+//! `StageStatesPayload`, `StageCutsPayload`) borrow from caller-owned buffers; owned output types
 //! (`Owned*`, `*ReadResult`, `PolicyCheckpoint`) own their vectors. All use
 //! generic names to maintain infrastructure crate genericity; conversion from
 //! algorithm-specific types is the calling crate's responsibility. Field names
 //! correspond to the tables in `schemas/policy.fbs`.
+
+use std::num::NonZeroU32;
 
 use chrono::{Datelike, NaiveDate};
 
@@ -16,9 +18,10 @@ use crate::output::SoftwareIdentity;
 /// [`CheckpointManifest::format_version`] must equal this;
 /// [`crate::read_policy_checkpoint`] rejects any other value — and absence —
 /// with a named error before parsing any payload, so a pre-marker artifact is
-/// cleanly rejected, never read positionally. Version 3 records
-/// `StageBasis.num_cut_rows` as the basis's own trailing affine-piece row count.
-pub const FORMAT_VERSION: u32 = 3;
+/// cleanly rejected, never read positionally. Version 4 stores every piece's
+/// `intercept` and `coefficients` in the writing study's scaled units, the
+/// scale its pool's [`StageCutsPayload::cost_scale_factor`] names.
+pub const FORMAT_VERSION: u32 = 4;
 
 /// Sentinel [`EntitySlot`] date-field value — [`EntitySlot::reference_date`],
 /// [`EntitySlot::interval_start`], and [`EntitySlot::interval_end`] all
@@ -193,10 +196,10 @@ impl EntitySlot {
 /// One affine-piece record for value-function artifact serialization.
 ///
 /// `'a` borrows the coefficient slice without copying (vectors can be large).
+/// `intercept` and `coefficients` are in the writer's scaled units, the scale
+/// [`StageCutsPayload::cost_scale_factor`] names.
 #[derive(Debug, Clone)]
 pub struct PolicyCutRecord<'a> {
-    /// Unique identifier for this piece across all iterations.
-    pub cut_id: u64,
     /// LP row position (required for artifact reproducibility).
     pub slot_index: u32,
     /// Training iteration that generated this piece.
@@ -205,7 +208,7 @@ pub struct PolicyCutRecord<'a> {
     pub forward_pass_index: u32,
     /// Pre-computed affine intercept.
     pub intercept: f64,
-    /// Gradient coefficients, length must equal `state_dimension`.
+    /// Gradient coefficients; length equals the pool's `entity_manifest` length.
     ///
     /// Positional only: index `i` is the i-th state-vector dimension, whose
     /// identity is carried by slot `i` of the co-located [`EntitySlot`] manifest
@@ -213,27 +216,47 @@ pub struct PolicyCutRecord<'a> {
     pub coefficients: &'a [f64],
     /// Whether this piece is currently active in the LP.
     pub is_active: bool,
+    /// Whether the writer stored a trial point for this piece when it wrote the
+    /// piece's slot; kept when that point is later dropped, and read as written,
+    /// never inferred from the states table.
+    pub scored: bool,
+    /// The writer's count of the piece's activity; `None` when the checkpoint
+    /// carries no activity counters ([`ProducerBlock::activity_counters`]).
+    pub active_count: Option<u64>,
+    /// The writer's last iteration of the piece's activity; `None` when the
+    /// checkpoint carries no activity counters.
+    pub last_active_iteration: Option<u64>,
 }
 
-/// One stage's solver basis for value-function artifact serialization.
+/// One scenario's solver basis at a node. Element type of
+/// [`PolicyBasisRecord::entries`].
 #[derive(Debug, Clone)]
-pub struct PolicyBasisRecord<'a> {
-    /// Stage index (0-based).
-    pub stage_id: u32,
-    /// Training iteration that produced this basis.
-    pub iteration: u32,
+pub struct BasisEntry<'a> {
+    /// Global scenario index holding this basis.
+    pub scenario: u32,
     /// One status code per LP column (variable). Encoding is solver-specific.
     pub column_status: &'a [u8],
     /// One status code per LP row (constraint). Encoding is solver-specific.
     pub row_status: &'a [u8],
-    /// Number of trailing rows in `row_status` that correspond to affine-piece rows.
-    pub num_cut_rows: u32,
+    /// Pool slot of each trailing affine-piece row of `row_status`: entry `i`
+    /// is the slot of the `i`-th piece row.
+    pub piece_row_slots: &'a [u32],
+}
+
+/// One node's solver bases for value-function artifact serialization.
+#[derive(Debug, Clone)]
+pub struct PolicyBasisRecord<'a> {
+    /// Node position (0-based) — the storage-unit key naming `basis/<node>.bin`.
+    pub stage_id: u32,
+    /// Training iteration that produced these bases.
+    pub iteration: u32,
+    /// One entry per scenario holding a basis at the node, ascending by
+    /// `scenario`.
+    pub entries: &'a [BasisEntry<'a>],
 }
 
 /// Sentinel [`StageStatesPayload::node_id`]/[`StageStatesReadResult::node_id`]
-/// value for a policy-graph node identity absent from the write path (a
-/// caller that never resolved one) or from a pre-`id:5` buffer
-/// (forward-compatible default).
+/// value for a pool with no single owning node, or a buffer without the field.
 pub const STAGE_STATES_NODE_ID_SENTINEL: i32 = -1;
 
 /// Sentinel [`StageCutsPayload::node_id`]/[`StageCutsReadResult::node_id`] value
@@ -279,19 +302,19 @@ pub fn decode_slot_date(value: i32) -> Option<NaiveDate> {
     NaiveDate::from_ymd_opt(year, month, day)
 }
 
-/// Payload for writing per-stage visited states to a value-function artifact.
+/// Payload for writing one pool's stored trial points to a value-function
+/// artifact, `states/<pool>.bin`.
 ///
 /// The `data` slice contains the flat state vectors (row-major, each of length
 /// `state_dimension`). The total number of stored states is `count`.
 #[derive(Debug, Clone)]
 pub struct StageStatesPayload<'a> {
-    /// Study stage index (0-based).
+    /// Pool id (0-based) — the same key as [`StageCutsPayload::stage_id`].
     pub stage_id: u32,
-    /// Policy-graph node identity (the declared node id on a branching graph;
-    /// [`STAGE_STATES_NODE_ID_SENTINEL`] when absent). Distinct from
-    /// `stage_id` the moment a graph carries more than one node per stage.
+    /// Declared id of the pool's sole owning node, or
+    /// [`STAGE_STATES_NODE_ID_SENTINEL`] for a shared pool.
     pub node_id: i32,
-    /// Length of each state vector.
+    /// Length of each state vector: the pool's `entity_manifest` length.
     pub state_dimension: u32,
     /// Number of states stored.
     pub count: u32,
@@ -300,6 +323,8 @@ pub struct StageStatesPayload<'a> {
     /// Per-slot entity identity; length equals `state_dimension` when populated.
     /// An empty slice means no manifest is written.
     pub entity_manifest: &'a [EntitySlot],
+    /// Pool slot of each stored row, strictly ascending; length equals `count`.
+    pub slots: &'a [u32],
 }
 
 /// Per-pool affine-piece data payload for [`crate::write_policy_checkpoint`],
@@ -309,23 +334,23 @@ pub struct StageCutsPayload<'a> {
     /// Pool id (0-based) — the storage-unit key naming this payload's file
     /// `cuts/<pool>.bin`. Equals the stage index on a chain.
     pub stage_id: u32,
-    /// Number of state variables; determines coefficient vector length per piece.
+    /// The writing study's global state-vector length; a pool that projects
+    /// fewer dimensions holds shorter coefficient vectors, of its
+    /// `entity_manifest`'s length.
     pub state_dimension: u32,
     /// Total preallocated affine-piece slots in the pool.
     pub capacity: u32,
-    /// Number of slots `[0..warm_start_count)` loaded from a prior artifact.
+    /// Protected-prefix length: the leading slots the writing run started with.
     pub warm_start_count: u32,
     /// Slice of affine-piece records to serialize; length equals `populated_count`.
     pub cuts: &'a [PolicyCutRecord<'a>],
-    /// Indices of pieces currently active in the LP.
-    pub active_cut_indices: &'a [u32],
-    /// Number of filled slots in the pool.
+    /// Number of affine-piece records.
     pub populated_count: u32,
-    /// Per-slot entity identity; length equals `state_dimension` when populated.
-    /// An empty slice means no manifest is written.
+    /// Per-slot entity identity; length equals each piece's coefficient count
+    /// when populated. An empty slice means no manifest is written.
     pub entity_manifest: &'a [EntitySlot],
-    /// Objective cost-scale factor the writing study resolved; the provenance
-    /// marker making each affine piece scale-independent at rest.
+    /// The scale of every piece's `intercept` and `coefficients`: the objective
+    /// cost-scale factor of the writing study, whose scaled units they are in.
     pub cost_scale_factor: f64,
     /// Owning node's policy-graph id, or [`STAGE_CUTS_NODE_ID_SENTINEL`] for a
     /// shared pool.
@@ -486,13 +511,11 @@ pub struct ProducerBlock {
     /// Populated only for mixed-mode studies.
     pub training_block_mode_per_stage: Vec<String>,
     /// Objective cost-scale factor the writing study resolved
-    /// (`modeling.cost_scale_factor`) — the provenance marker that makes piece
-    /// `coefficients`/`intercept` scale-independent at rest (canonical
-    /// currency units, not the writer's internal scaled cost space).
+    /// (`modeling.cost_scale_factor`): the scale of the writer's scaled units,
+    /// which every piece's `intercept` and `coefficients` are in. Each pool
+    /// carries its own copy, [`StageCutsPayload::cost_scale_factor`].
     ///
-    /// Absent when unmarked; a missing marker is interpreted as
-    /// scaled-at-`1_000_000.0`, the constant every unmarked artifact was
-    /// unconditionally written under.
+    /// Absent when unmarked.
     pub cost_scale_factor: Option<f64>,
     /// Lower bound after each recorded iteration, oldest first; the last entry
     /// is iteration [`completed_iterations`]. A writer records every completed
@@ -501,6 +524,73 @@ pub struct ProducerBlock {
     ///
     /// [`completed_iterations`]: Self::completed_iterations
     pub lower_bound_history: Vec<f64>,
+    /// Which trial points the pools that are neither the root's nor the
+    /// terminal's store.
+    pub state_history: StateHistory,
+    /// Whether every piece of every pool carries both activity counters.
+    pub activity_counters: bool,
+    /// Whether the writing run gathered the bases of every rank into `basis/`.
+    /// Unset when the run ended in failure, which keeps the writing rank's own.
+    pub basis_store_complete: bool,
+}
+
+/// [`StateHistory`] wire code: no pool stores trial points.
+pub const STATE_HISTORY_SCOPE_NONE: u8 = 0;
+/// [`StateHistory`] wire code: each pool stores the trial points of a window
+/// of iterations.
+pub const STATE_HISTORY_SCOPE_WINDOW: u8 = 1;
+/// [`StateHistory`] wire code: each pool stores every trial point.
+pub const STATE_HISTORY_SCOPE_WHOLE: u8 = 2;
+
+/// Which trial points a checkpoint's pools store, stated over the pools that
+/// are neither the root's nor the terminal's. On the wire it is the raw code
+/// `state_history_scope` (one of the `STATE_HISTORY_SCOPE_*` constants) plus
+/// `state_history_window`, read only under the window code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateHistory {
+    /// No pool stores trial points.
+    None,
+    /// Each pool stores the trial points of the last `n` iterations.
+    Window(NonZeroU32),
+    /// Each pool stores every trial point.
+    Whole,
+}
+
+impl StateHistory {
+    /// The raw `state_history_scope` code.
+    #[must_use]
+    pub const fn scope_code(self) -> u8 {
+        match self {
+            Self::None => STATE_HISTORY_SCOPE_NONE,
+            Self::Window(_) => STATE_HISTORY_SCOPE_WINDOW,
+            Self::Whole => STATE_HISTORY_SCOPE_WHOLE,
+        }
+    }
+
+    /// The raw `state_history_window` value: the window, `0` for every other
+    /// scope.
+    #[must_use]
+    pub const fn window(self) -> u32 {
+        match self {
+            Self::Window(window) => window.get(),
+            Self::None | Self::Whole => 0,
+        }
+    }
+
+    /// The scope for a raw code and window, or `None` for an unknown code or a
+    /// window code with a zero window.
+    #[must_use]
+    pub const fn from_codes(scope_code: u8, window: u32) -> Option<Self> {
+        match scope_code {
+            STATE_HISTORY_SCOPE_NONE => Some(Self::None),
+            STATE_HISTORY_SCOPE_WHOLE => Some(Self::Whole),
+            STATE_HISTORY_SCOPE_WINDOW => match NonZeroU32::new(window) {
+                Some(window) => Some(Self::Window(window)),
+                None => None,
+            },
+            _ => None,
+        }
+    }
 }
 
 /// Study-global checkpoint metadata carried on the `FlatBuffers`
@@ -547,8 +637,6 @@ pub struct CheckpointManifest {
 /// input buffer.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OwnedPolicyCutRecord {
-    /// Unique identifier for this piece across all iterations.
-    pub cut_id: u64,
     /// LP row position (required for artifact reproducibility).
     pub slot_index: u32,
     /// Training iteration that generated this piece.
@@ -561,24 +649,38 @@ pub struct OwnedPolicyCutRecord {
     pub coefficients: Vec<f64>,
     /// Whether this piece is currently active in the LP.
     pub is_active: bool,
+    /// Per the [`PolicyCutRecord::scored`] contract.
+    pub scored: bool,
+    /// Per the [`PolicyCutRecord::active_count`] contract.
+    pub active_count: Option<u64>,
+    /// Per the [`PolicyCutRecord::last_active_iteration`] contract.
+    pub last_active_iteration: Option<u64>,
 }
 
-/// Owned version of [`PolicyBasisRecord`] returned by [`crate::deserialize_stage_basis`].
-///
-/// Unlike [`PolicyBasisRecord<'a>`], this type owns its status byte vectors so it
-/// can be returned from a deserialization function.
+/// Owned version of [`BasisEntry`]. Element type of
+/// [`OwnedPolicyBasisRecord::entries`].
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct OwnedPolicyBasisRecord {
-    /// Stage index (0-based).
-    pub stage_id: u32,
-    /// Training iteration that produced this basis.
-    pub iteration: u32,
+pub struct OwnedBasisEntry {
+    /// Global scenario index holding this basis.
+    pub scenario: u32,
     /// One status code per LP column (variable). Encoding is solver-specific.
     pub column_status: Vec<u8>,
     /// One status code per LP row (constraint). Encoding is solver-specific.
     pub row_status: Vec<u8>,
-    /// Number of trailing rows in `row_status` that correspond to affine-piece rows.
-    pub num_cut_rows: u32,
+    /// Per the [`BasisEntry::piece_row_slots`] contract.
+    pub piece_row_slots: Vec<u32>,
+}
+
+/// Owned version of [`PolicyBasisRecord`] returned by [`crate::deserialize_stage_basis`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OwnedPolicyBasisRecord {
+    /// Node position (0-based).
+    pub stage_id: u32,
+    /// Training iteration that produced these bases.
+    pub iteration: u32,
+    /// One entry per scenario holding a basis at the node, ascending by
+    /// `scenario`.
+    pub entries: Vec<OwnedBasisEntry>,
 }
 
 /// Stage-level metadata and affine-piece records returned by [`crate::deserialize_stage_cuts`].
@@ -589,19 +691,20 @@ pub struct OwnedPolicyBasisRecord {
 pub struct StageCutsReadResult {
     /// Pool id (0-based), as written by the pool-keyed payload.
     pub stage_id: u32,
-    /// Number of state variables; equals the length of each piece's `coefficients` vector.
+    /// Per the [`StageCutsPayload::state_dimension`] contract.
     pub state_dimension: u32,
     /// Total preallocated affine-piece slots in the pool.
     pub capacity: u32,
-    /// Number of slots loaded from a prior artifact.
+    /// Per the [`StageCutsPayload::warm_start_count`] contract.
     pub warm_start_count: u32,
-    /// Number of filled slots in the pool.
+    /// Number of affine-piece records.
     pub populated_count: u32,
     /// Deserialized affine-piece records.
     pub cuts: Vec<OwnedPolicyCutRecord>,
     /// Per-slot entity identity; empty when the field is absent from the buffer.
     pub entity_manifest: Vec<EntitySlot>,
-    /// Cost-scale provenance factor; `None` when absent from a pre-`id:8` buffer.
+    /// The scale of every piece's `intercept` and `coefficients`, per the
+    /// [`StageCutsPayload::cost_scale_factor`] contract; `None` when absent.
     pub cost_scale_factor: Option<f64>,
     /// Owning node's policy-graph id; [`STAGE_CUTS_NODE_ID_SENTINEL`] for a shared
     /// pool or a pre-`id:8` buffer.
@@ -618,10 +721,9 @@ pub struct StageCutsReadResult {
 /// Owned version of [`StageStatesPayload`] returned by [`crate::deserialize_stage_states`].
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StageStatesReadResult {
-    /// Study stage index (0-based).
+    /// Pool id (0-based).
     pub stage_id: u32,
-    /// Policy-graph node identity; [`STAGE_STATES_NODE_ID_SENTINEL`] when the
-    /// field is absent from the buffer (a pre-`id:5` artifact).
+    /// Per the [`StageStatesPayload::node_id`] contract.
     pub node_id: i32,
     /// Length of each state vector.
     pub state_dimension: u32,
@@ -631,6 +733,8 @@ pub struct StageStatesReadResult {
     pub data: Vec<f64>,
     /// Per-slot entity identity; empty when the field is absent from the buffer.
     pub entity_manifest: Vec<EntitySlot>,
+    /// Per the [`StageStatesPayload::slots`] contract.
+    pub slots: Vec<u32>,
 }
 
 /// Complete deserialized value-function artifact returned by [`crate::read_policy_checkpoint`].
@@ -640,11 +744,11 @@ pub struct PolicyCheckpoint {
     pub metadata: CheckpointManifest,
     /// Per-pool affine-piece collections, sorted by pool id.
     pub stage_cuts: Vec<StageCutsReadResult>,
-    /// Per-stage solver bases, sorted by `stage_id`.
+    /// Per-node solver bases, sorted by node position (`stage_id`).
     pub stage_bases: Vec<OwnedPolicyBasisRecord>,
-    /// Per-stage visited states, sorted by `stage_id`.
+    /// Per-pool stored trial points, sorted by pool id (`stage_id`).
     ///
-    /// Empty when the artifact was written without visited states.
+    /// Empty when no pool stores trial points.
     pub stage_states: Vec<StageStatesReadResult>,
 }
 
@@ -653,9 +757,30 @@ pub struct PolicyCheckpoint {
 mod tests {
     use chrono::NaiveDate;
 
+    use std::num::NonZeroU32;
+
     use super::{
-        ENTITY_SLOT_DATE_SENTINEL, EntitySlot, StateFamily, decode_slot_date, encode_slot_date,
+        ENTITY_SLOT_DATE_SENTINEL, EntitySlot, STATE_HISTORY_SCOPE_NONE, STATE_HISTORY_SCOPE_WHOLE,
+        STATE_HISTORY_SCOPE_WINDOW, StateFamily, StateHistory, decode_slot_date, encode_slot_date,
     };
+
+    #[test]
+    fn state_history_codes_round_trip_and_reject_a_zero_window_or_unknown_code() {
+        let window = NonZeroU32::new(6).unwrap();
+        for (scope, code, raw_window) in [
+            (StateHistory::None, STATE_HISTORY_SCOPE_NONE, 0),
+            (StateHistory::Window(window), STATE_HISTORY_SCOPE_WINDOW, 6),
+            (StateHistory::Whole, STATE_HISTORY_SCOPE_WHOLE, 0),
+        ] {
+            assert_eq!((scope.scope_code(), scope.window()), (code, raw_window));
+            assert_eq!(StateHistory::from_codes(code, raw_window), Some(scope));
+        }
+        assert_eq!(
+            StateHistory::from_codes(STATE_HISTORY_SCOPE_WINDOW, 0),
+            None
+        );
+        assert_eq!(StateHistory::from_codes(3, 0), None);
+    }
 
     #[test]
     fn state_family_codes_match_policy_fbs_entity_type() {

@@ -11,6 +11,7 @@ vertical is SDDP-based hydrothermal dispatch.
 - **Build**: `cargo build --workspace`
 - **Test**: `cargo test --workspace --features "mpi numa shared-memory serde schema slow-tests flatc-conformance test-support"`
 - **Format**: `cargo fmt --all` (CI enforces `--check`)
+- **Dependencies**: `bash scripts/ci/check-deny.sh` (cargo-deny at the version CI pins; refuses any other)
 
 ## Hard Rules
 

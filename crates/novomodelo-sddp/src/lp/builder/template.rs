@@ -275,19 +275,18 @@ pub(crate) fn models_from_normal<M>(
 /// incoming-storage, theta, turbine, and spillage columns carry zero or small
 /// regularization costs drawn from the resolved penalty tables.
 ///
-/// When the penalty method is active, each inflow slack column `sigma_inf_h`
-/// carries objective coefficient `penalty_cost * total_stage_hours`.
+/// Each inflow-slack column costs `inflow_nonnegativity_cost` times the stage
+/// hours under `penalty` and `truncation_with_penalty`, and 0 under `truncation`.
 ///
 /// FPHA generation columns carry objective coefficient 0.0 by default.
 ///
 /// ## Inflow non-negativity
 ///
-/// When `inflow_method.has_slack_columns()` is `true` (i.e., the `Penalty`
-/// variant), `N` slack columns `sigma_inf_h >= 0`
-/// are appended at the end of the column layout.  Each slack enters the water
-/// balance row for hydro `h` with coefficient `+tau_total * M3S_TO_HM3`,
-/// acting as virtual inflow that prevents infeasibility when the PAR(p) noise
-/// is sufficiently negative.
+/// When `inflow_method.has_slack_columns()` is `true`, there is one inflow-slack
+/// column per hydro, carrying exactly the water-row entries of that hydro's
+/// `z_inflow` column.  Its template bounds are `[0, ∞)` under `penalty` and
+/// `[0, 0]` under `truncation` and `truncation_with_penalty`, whose bounds are
+/// patched per solve.
 ///
 /// ## FPHA hydros
 ///
@@ -399,6 +398,7 @@ fn build_template_build_ctx<'a>(
             resolved_ncs_bounds: system.resolved_ncs_bounds(),
             resolved_ncs_factors: system.resolved_ncs_factors(),
             resolved_parameters: inputs.resolved_parameters,
+            resolved_generic_coefficients: inputs.resolved_generic_coefficients,
         },
         positions: &inputs.positions,
         par_lp,

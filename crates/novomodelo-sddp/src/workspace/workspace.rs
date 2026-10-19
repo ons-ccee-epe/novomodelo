@@ -38,8 +38,7 @@ use crate::solver_stats::SolverStatsDelta;
 /// `node_id` differs from the node being solved as cold, never warm-started
 /// from it — a resampled path visiting a different node than the one that
 /// captured the basis. Carried on the broadcast wire (see
-/// [`CapturedBasis::to_broadcast_payload`]), so the decode side is
-/// self-describing rather than positionally filled.
+/// [`CapturedBasis::to_broadcast_payload`]).
 #[derive(Clone, Debug)]
 pub struct CapturedBasis {
     /// Row and column statuses from the solver.
@@ -63,10 +62,7 @@ pub struct CapturedBasis {
 /// the presence sentinel (`1_i32`). Bump this constant and update
 /// `try_from_broadcast_payload` whenever the field layout changes.
 ///
-/// Version 2 carries: the generating/capture `node_id` (making each entry
-/// self-describing rather than positionally filled by the caller), column
-/// statuses, template-row statuses, cut-row statuses, `cut_row_slots`, and
-/// `state_at_capture`. `cut_row_slots` is the load-bearing reconstruction key —
+/// `cut_row_slots` is the load-bearing reconstruction key —
 /// `build_slot_lookup` binds stored cut-row statuses to target-LP cut rows by
 /// slot id. `state_at_capture` is not read by any current reconstruction
 /// reader; it is retained for diagnostics and to allow re-introducing a
@@ -123,8 +119,7 @@ impl CapturedBasis {
     /// Pushes the following into `i32_buf` in order:
     /// - `1_i32` sentinel (present)
     /// - [`BASIS_BROADCAST_FORMAT_TAG`] as `i32` (format tag)
-    /// - `node_id` as `i32` (the generating/capture node — self-describing
-    ///   header, so the decode side no longer fills it positionally)
+    /// - `node_id` as `i32` (the capture node)
     /// - `col_status.len()` as `i32`
     /// - `row_status.len()` as `i32`
     /// - `base_row_count` as `i32`
@@ -136,9 +131,8 @@ impl CapturedBasis {
     ///
     /// Pushes `state_at_capture[..]` into `f64_buf`.
     ///
-    /// The callers (currently `broadcast_basis_cache`) are
-    /// responsible for writing the `0_i32` "no basis" sentinel
-    /// when `Option<CapturedBasis>` is `None`.
+    /// Callers write the `0_i32` "no basis" sentinel when
+    /// `Option<CapturedBasis>` is `None`.
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     pub fn to_broadcast_payload(&self, i32_buf: &mut Vec<i32>, f64_buf: &mut Vec<f64>) {
         i32_buf.push(1_i32);
@@ -370,13 +364,20 @@ pub enum NoisePreallocation {
 /// exclusive [`SolverWorkspace`] and therefore an exclusive instance, so the
 /// per-worker fields need no synchronisation; the sequential merge phase after
 /// the parallel region sums their contributions.
+///
+/// `slot_increments`, `metadata_sync_contribution` and `cut_duals_buf` are
+/// grown, zeroed and filled only while the pass records binding activity (the
+/// successor view's `cut_activity_tolerance` is `Some`).
 #[derive(Default)]
 pub(crate) struct BackwardAccumulators {
     /// Per-opening backward outcomes, grown to the maximum `n_openings` seen.
     pub(crate) outcomes: Vec<BackwardOutcome>,
     /// Per-slot binding count over the node's successor pool regions, concatenated
     /// per child (`SuccessorChild::metadata_offset + slot`), so a fan's distinct
-    /// sibling pools never collide on a shared slot index; zeroed per trial point.
+    /// sibling pools never collide on a shared slot index. Filled only while
+    /// [`tracks_binding_activity`](crate::config::CutManagementConfig::tracks_binding_activity)
+    /// holds; zeroed per trial point by the by-scenario path, once per stage by
+    /// the by-node path.
     pub(crate) slot_increments: Vec<u64>,
     /// Aggregated cut coefficients (`n_state` entries), written by
     /// `aggregate_weighted_into` then copied into [`agg_arena`](Self::agg_arena)
@@ -610,8 +611,6 @@ pub struct ScratchBuffers {
     pub(crate) inflow_m3s_buf: Vec<f64>,
     pub(crate) lag_matrix_buf: Vec<f64>,
     pub(crate) par_inflow_buf: Vec<f64>,
-    pub(crate) eta_floor_buf: Vec<f64>,
-    pub(crate) zero_targets_buf: Vec<f64>,
     pub(crate) ncs_col_upper_buf: Vec<f64>,
     pub(crate) ncs_col_lower_buf: Vec<f64>,
     pub(crate) ncs_col_indices_buf: Vec<usize>,
@@ -639,10 +638,20 @@ pub struct ScratchBuffers {
     // `ncs_col_upper_buf`. `ncs_col_upper_buf` (slot order) cannot be consumed
     // directly because extraction indexes by active-local column.
     pub(crate) ncs_col_upper_extract_buf: Vec<f64>,
+    // Per-hydro physical slack bounds (m3/s) written by `transform_inflow_noise`;
+    // the `_col_*` buffers are `apply_inflow_slack_col_bounds`'s dense-column
+    // targets, divided by `col_scale`.
+    pub(crate) inflow_slack_lower_buf: Vec<f64>,
+    pub(crate) inflow_slack_upper_buf: Vec<f64>,
+    pub(crate) inflow_slack_col_indices_buf: Vec<usize>,
+    pub(crate) inflow_slack_col_lower_scaled_buf: Vec<f64>,
+    pub(crate) inflow_slack_col_upper_scaled_buf: Vec<f64>,
+    /// Stage slack-column start `inflow_slack_col_indices_buf` was last built for;
+    /// `usize::MAX` initially. Keyed on the start, not the length (always `hydro_count`).
+    pub(crate) last_inflow_slack_col_start: usize,
     pub(crate) load_rhs_buf: Vec<f64>,
     pub(crate) row_lower_buf: Vec<f64>,
     pub(crate) z_inflow_rhs_buf: Vec<f64>,
-    pub(crate) effective_eta_buf: Vec<f64>,
     pub(crate) unscaled_primal: Vec<f64>,
     pub(crate) unscaled_dual: Vec<f64>,
     pub(crate) lag_accumulator: Vec<f64>,
@@ -790,8 +799,6 @@ impl ScratchBuffers {
             inflow_m3s_buf: Vec::with_capacity(hydro_count),
             lag_matrix_buf: Vec::with_capacity(max_par_order * hydro_count),
             par_inflow_buf: Vec::with_capacity(hydro_count),
-            eta_floor_buf: Vec::with_capacity(hydro_count),
-            zero_targets_buf: vec![0.0_f64; hydro_count],
             ncs_col_upper_buf: Vec::new(),
             ncs_col_lower_buf: Vec::new(),
             ncs_col_indices_buf: Vec::new(),
@@ -799,10 +806,15 @@ impl ScratchBuffers {
             ncs_col_upper_active_buf: Vec::new(),
             last_ncs_col_start: usize::MAX,
             ncs_col_upper_extract_buf: Vec::new(),
+            inflow_slack_lower_buf: Vec::with_capacity(hydro_count),
+            inflow_slack_upper_buf: Vec::with_capacity(hydro_count),
+            inflow_slack_col_indices_buf: Vec::with_capacity(hydro_count),
+            inflow_slack_col_lower_scaled_buf: Vec::with_capacity(hydro_count),
+            inflow_slack_col_upper_scaled_buf: Vec::with_capacity(hydro_count),
+            last_inflow_slack_col_start: usize::MAX,
             load_rhs_buf: Vec::with_capacity(load_row_capacity),
             row_lower_buf: Vec::new(),
             z_inflow_rhs_buf: Vec::with_capacity(hydro_count),
-            effective_eta_buf: Vec::with_capacity(hydro_count),
             unscaled_primal: Vec::new(),
             unscaled_dual: Vec::new(),
             lag_accumulator: vec![0.0_f64; hydro_count],
@@ -1146,6 +1158,47 @@ impl BasisStoreSliceMut<'_> {
             self.scenario_end
         );
         (scenario - self.scenario_offset) * self.num_nodes + node.0
+    }
+}
+
+#[cfg(test)]
+impl ScratchBuffers {
+    #[must_use]
+    pub(crate) fn for_test(hydro_count: usize) -> Self {
+        Self {
+            inflow_m3s_buf: Vec::with_capacity(hydro_count),
+            lag_matrix_buf: Vec::new(),
+            par_inflow_buf: Vec::with_capacity(hydro_count),
+            ncs_col_upper_buf: Vec::new(),
+            ncs_col_lower_buf: Vec::new(),
+            ncs_col_indices_buf: Vec::new(),
+            ncs_col_lower_active_buf: Vec::new(),
+            ncs_col_upper_active_buf: Vec::new(),
+            last_ncs_col_start: usize::MAX,
+            ncs_col_upper_extract_buf: Vec::new(),
+            inflow_slack_lower_buf: Vec::with_capacity(hydro_count),
+            inflow_slack_upper_buf: Vec::with_capacity(hydro_count),
+            inflow_slack_col_indices_buf: Vec::with_capacity(hydro_count),
+            inflow_slack_col_lower_scaled_buf: Vec::with_capacity(hydro_count),
+            inflow_slack_col_upper_scaled_buf: Vec::with_capacity(hydro_count),
+            last_inflow_slack_col_start: usize::MAX,
+            load_rhs_buf: Vec::new(),
+            row_lower_buf: Vec::new(),
+            z_inflow_rhs_buf: Vec::with_capacity(hydro_count),
+            unscaled_primal: Vec::new(),
+            unscaled_dual: Vec::new(),
+            lag_accumulator: Vec::new(),
+            lag_weight_accum: Vec::new(),
+            downstream_accumulator: Vec::new(),
+            downstream_weight_accum: 0.0,
+            downstream_completed_lags: Vec::new(),
+            downstream_n_completed: 0,
+            recon_slot_lookup: Vec::new(),
+            trajectory_costs_buf: Vec::new(),
+            raw_noise_buf: Vec::new(),
+            corr_scratch: Vec::new(),
+            current_node_buf: Vec::new(),
+        }
     }
 }
 

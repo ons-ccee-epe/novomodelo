@@ -152,10 +152,10 @@ impl CutRowMap {
     /// shrinks), clears every entry to `None`, and rewinds `next_row` to
     /// `base_row_offset`. After `reset` the map is equivalent to
     /// `CutRowMap::new(pool_capacity, base_row_offset)` but retains its
-    /// allocation. The DCS lazy solve holds one map in per-worker scratch and
-    /// resets it per (stage, solve) instead of allocating a fresh map each call;
-    /// the Dynamic Cut Selection opening-reuse path also relies on the map
-    /// persisting (un-reset) across a backward trial point's openings.
+    /// allocation. The lazy solve of the `dynamic` method holds one map in
+    /// per-worker scratch and resets it per (stage, solve) instead of allocating
+    /// a fresh map each call; it also relies on the map persisting (un-reset)
+    /// across a backward trial point's openings.
     pub fn reset(&mut self, pool_capacity: usize, base_row_offset: usize) {
         if self.slot_to_row.len() < pool_capacity {
             self.slot_to_row.resize(pool_capacity, None);

@@ -7,13 +7,14 @@
 //! [`BroadcastParameterKind`] and [`BroadcastComputedParameter`] mirror them
 //! with externally-tagged encoding instead, convertible via `From` in both
 //! directions. This is the same pattern as `BroadcastConfig` in `novomodelo-cli`,
-//! used for [`crate::Config`].
+//! used for [`crate::Config`]. [`ScalarExpr`] crosses without a mirror, because
+//! its serde form is already an externally tagged op sequence.
 //!
 //! A postcard round-trip of a [`novomodelo_core::System`] returns a value whose
 //! lookup indices are rebuilt by its `Deserialize` impl, so `system.bus(id)`
 //! works immediately.
 
-use novomodelo_core::{ComputedParameter, EntityId, ParameterKind, ScalarParameter};
+use novomodelo_core::{ComputedParameter, EntityId, ParameterKind, ScalarExpr, ScalarParameter};
 use serde::{Deserialize, Serialize};
 
 // ── Broadcast mirror types (tag-free, postcard-compatible) ──────────────────
@@ -44,6 +45,8 @@ pub enum BroadcastParameterKind {
     Computed(BroadcastComputedParameter),
     /// Sorted, unique-keyed `(stage_id, block_id, value)` triples.
     PerStageBlock(Vec<(i32, i32, f64)>),
+    /// Postfix program over other scalar parameters.
+    Expression(ScalarExpr),
 }
 
 /// Postcard-safe mirror of [`ComputedParameter`]. Externally-tagged.
@@ -107,6 +110,7 @@ impl From<&ParameterKind> for BroadcastParameterKind {
                 Self::Computed(BroadcastComputedParameter::from(*computed_spec))
             }
             ParameterKind::PerStageBlock { values } => Self::PerStageBlock(values.clone()),
+            ParameterKind::Expression { expression } => Self::Expression(expression.clone()),
         }
     }
 }
@@ -121,6 +125,7 @@ impl From<BroadcastParameterKind> for ParameterKind {
                 computed_spec: ComputedParameter::from(c),
             },
             BroadcastParameterKind::PerStageBlock(values) => Self::PerStageBlock { values },
+            BroadcastParameterKind::Expression(expression) => Self::Expression { expression },
         }
     }
 }
@@ -339,39 +344,37 @@ mod tests {
         assert_eq!(restored, system);
     }
 
-    /// A generic constraint's affine bound remainder (`bound_upper_affine`) rides the
-    /// constraint's derived serde through the `System` postcard wire — there is no
-    /// hand-written mirror for `GenericConstraint`, so the restored System must equal
-    /// the original. Uses a genuine multi-component remainder (a nonzero constant, a
-    /// scaled term and a parameter product), not just the `single` special case, to
-    /// prove the whole shape round-trips.
+    /// A generic constraint's coefficient and bound programs ride the constraint's derived
+    /// serde through the `System` postcard wire — there is no hand-written mirror for
+    /// `GenericConstraint`, so the restored System must equal the original. The term
+    /// coefficient is `2 * @p7` and `bound_upper` is `12 + 0.5 * @p7 + 0.25 * @p7 * @p8`: a
+    /// literal, a scaled parameter and a parameter product, so every op kind of the program
+    /// encoding crosses the wire.
     #[test]
     fn test_round_trip_generic_constraint_bound_ref() {
-        use novomodelo_core::{
-            AffineBound, ConstraintExpression, GenericConstraint, LinearTerm, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
+        let param = |id| ScalarExpr::param(EntityId(id));
+        let bound = ScalarExpr::literal(12.0)
+            + ScalarExpr::literal(0.5) * param(7)
+            + ScalarExpr::literal(0.25) * param(7) * param(8);
         let gc = GenericConstraint {
             id: EntityId(0),
             name: "demand_cap".to_string(),
             description: None,
             expression: ConstraintExpression {
-                terms: vec![LinearTerm::literal(
-                    1.0,
-                    VariableRef::HydroGeneration {
+                terms: vec![LinearTerm {
+                    coefficient: ScalarExpr::literal(2.0) * param(7),
+                    variable: VariableRef::HydroGeneration {
                         hydro_id: EntityId(1),
                         block_id: None,
                         bus_id: None,
                     },
-                )],
+                }],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: Some(AffineBound {
-                constant: 12.0,
-                terms: vec![(0.5, EntityId(7))],
-                products: vec![(0.25, EntityId(7), EntityId(8))],
-            }),
+            bound_lower: None,
+            bound_upper: Some(bound.clone()),
         };
 
         let system = SystemBuilder::new()
@@ -386,13 +389,9 @@ mod tests {
 
         assert_eq!(restored, system);
         assert_eq!(
-            restored.generic_constraints()[0].bound_upper_affine,
-            Some(AffineBound {
-                constant: 12.0,
-                terms: vec![(0.5, EntityId(7))],
-                products: vec![(0.25, EntityId(7), EntityId(8))],
-            }),
-            "affine bound remainder must survive broadcast round-trip"
+            restored.generic_constraints()[0].bound_upper,
+            Some(bound),
+            "bound program must survive broadcast round-trip"
         );
     }
 
@@ -443,10 +442,8 @@ mod tests {
         assert!(bytes.len() < 1024);
     }
 
-    /// Build a `Vec<ScalarParameter>` with one instance of each of the five
-    /// `ParameterKind` variants, covering all code paths through the
-    /// postcard serialization layer.
-    fn five_kinds_fixture() -> Vec<ScalarParameter> {
+    /// One parameter of every `ParameterKind` variant.
+    fn every_kind_fixture() -> Vec<ScalarParameter> {
         vec![
             ScalarParameter {
                 id: EntityId(1),
@@ -481,12 +478,21 @@ mod tests {
                     values: vec![(0, 0, 1.0), (0, 1, 2.0), (1, 0, 3.0)],
                 },
             },
+            ScalarParameter {
+                id: EntityId(6),
+                name: "expression_param".to_string(),
+                kind: ParameterKind::Expression {
+                    expression: (-ScalarExpr::param(EntityId(1)) + ScalarExpr::literal(2.0))
+                        * ScalarExpr::param(EntityId(2))
+                        - ScalarExpr::param(EntityId(3)) / ScalarExpr::param(EntityId(4)),
+                },
+            },
         ]
     }
 
     #[test]
-    fn round_trip_all_five_parameter_kinds() {
-        let original = five_kinds_fixture();
+    fn round_trip_every_parameter_kind() {
+        let original = every_kind_fixture();
         let mirror: Vec<BroadcastScalarParameter> = original
             .iter()
             .map(BroadcastScalarParameter::from)
@@ -503,7 +509,7 @@ mod tests {
 
     #[test]
     fn mirror_parameter_encoding_is_deterministic() {
-        let params = five_kinds_fixture();
+        let params = every_kind_fixture();
         let mirror: Vec<BroadcastScalarParameter> =
             params.iter().map(BroadcastScalarParameter::from).collect();
         let bytes_a = postcard::to_allocvec(&mirror).unwrap();
@@ -511,12 +517,85 @@ mod tests {
         assert_eq!(bytes_a, bytes_b);
     }
 
-    /// Pins the postcard discriminant (first byte) of every
-    /// `BroadcastComputedParameter` variant. Postcard encodes the variant index
-    /// as a varint; for indices `< 0x80` the first byte equals the index. The
-    /// integrated tags and `MaxStoredEnergy` are appended at the tail (0x07,
-    /// 0x08, 0x09), so every existing variant keeps its byte and a previously
-    /// serialized parameter still decodes.
+    /// Each variant keeps its postcard first byte because the enum is append-only.
+    #[test]
+    fn broadcast_parameter_kind_postcard_discriminant_pin() {
+        let cases: &[(BroadcastParameterKind, u8)] = &[
+            (BroadcastParameterKind::Constant(0.0), 0x00),
+            (BroadcastParameterKind::PerStage(vec![]), 0x01),
+            (BroadcastParameterKind::Seasonal(vec![]), 0x02),
+            (
+                BroadcastParameterKind::Computed(
+                    BroadcastComputedParameter::EquivalentProductivity(EntityId(0)),
+                ),
+                0x03,
+            ),
+            (BroadcastParameterKind::PerStageBlock(vec![]), 0x04),
+            (
+                BroadcastParameterKind::Expression(ScalarExpr::param(EntityId(0))),
+                0x05,
+            ),
+        ];
+        for (variant, discriminant) in cases {
+            let bytes = postcard::to_allocvec(variant).unwrap();
+            assert_eq!(
+                bytes[0], *discriminant,
+                "{variant:?} must serialize to postcard discriminant {discriminant:#04x}"
+            );
+        }
+    }
+
+    #[test]
+    fn broadcast_parameter_kind_expression_round_trip() {
+        let original = every_kind_fixture()
+            .into_iter()
+            .find(|p| matches!(p.kind, ParameterKind::Expression { .. }))
+            .unwrap();
+        let ParameterKind::Expression { expression } = &original.kind else {
+            panic!("the fixture entry must be an expression parameter");
+        };
+        assert_eq!(expression.op_count(), 10);
+
+        let bytes = postcard::to_allocvec(&BroadcastScalarParameter::from(&original)).unwrap();
+        let decoded = postcard::from_bytes::<BroadcastScalarParameter>(&bytes).unwrap();
+        assert!(matches!(
+            decoded.kind,
+            BroadcastParameterKind::Expression(_)
+        ));
+        assert_eq!(ScalarParameter::from(decoded), original);
+    }
+
+    #[test]
+    fn broadcast_parameter_kind_expression_rejects_a_malformed_program() {
+        let prefix = postcard::to_allocvec(&(EntityId(1), "p".to_string())).unwrap();
+        let decode = |tail: &[u8]| {
+            let mut bytes = prefix.clone();
+            bytes.extend_from_slice(tail);
+            postcard::from_bytes::<BroadcastScalarParameter>(&bytes)
+        };
+        let one = 1.0_f64.to_le_bytes();
+        let two = 2.0_f64.to_le_bytes();
+
+        let control = decode(&[&[0x05, 0x01, 0x00][..], &one].concat()).unwrap();
+        assert_eq!(
+            control.kind,
+            BroadcastParameterKind::Expression(ScalarExpr::literal(1.0))
+        );
+
+        let malformed: [(&str, Vec<u8>); 3] = [
+            ("empty program", vec![0x05, 0x00]),
+            ("operator underflow", vec![0x05, 0x01, 0x03]),
+            (
+                "two values left",
+                [&[0x05, 0x02, 0x00][..], &one, &[0x00], &two].concat(),
+            ),
+        ];
+        for (case, tail) in &malformed {
+            assert!(decode(tail).is_err(), "{case} must not decode");
+        }
+    }
+
+    /// Each variant keeps its postcard first byte because the enum is append-only.
     #[test]
     fn broadcast_computed_parameter_postcard_discriminant_pin() {
         let cases: &[(BroadcastComputedParameter, u8)] = &[

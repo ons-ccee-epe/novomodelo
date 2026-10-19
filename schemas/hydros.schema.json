@@ -10,14 +10,16 @@
           "type": "integer"
         },
         "max_flow_m3s": {
-          "description": "Maximum diversion flow capacity (m³/s).",
+          "description": "Maximum diversion flow capacity (m³/s). `null` or absent = no upper bound.",
           "format": "double",
-          "type": "number"
+          "type": [
+            "number",
+            "null"
+          ]
         }
       },
       "required": [
-        "downstream_id",
-        "max_flow_m3s"
+        "downstream_id"
       ],
       "type": "object"
     },
@@ -125,44 +127,6 @@
             },
             "model": {
               "const": "constant_productivity",
-              "type": "string"
-            }
-          },
-          "required": [
-            "model",
-            "min_turbined_m3s",
-            "max_turbined_m3s",
-            "min_generation_mw",
-            "max_generation_mw"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "Head-dependent productivity linearized around an operating point.\n\nThe productivity coefficient is read from\n`system/hydro_production_models.json` per `(hydro, stage)`. It is not\naccepted in `hydros.json`; supplying `productivity_mw_per_m3s` here\nproduces a hard parse error.",
-          "properties": {
-            "max_generation_mw": {
-              "description": "Maximum electrical generation (MW).",
-              "format": "double",
-              "type": "number"
-            },
-            "max_turbined_m3s": {
-              "description": "Maximum turbined flow (m³/s).",
-              "format": "double",
-              "type": "number"
-            },
-            "min_generation_mw": {
-              "description": "Minimum electrical generation (MW).",
-              "format": "double",
-              "type": "number"
-            },
-            "min_turbined_m3s": {
-              "description": "Minimum turbined flow (m³/s).",
-              "format": "double",
-              "type": "number"
-            },
-            "model": {
-              "const": "linearized_head",
               "type": "string"
             }
           },
@@ -381,7 +345,7 @@
         },
         "specific_productivity_mw_per_m3s_per_m": {
           "default": null,
-          "description": "Specific productivity `ρ_esp` (MW / ((m³/s) · m)).\n\n**Resolution cascade** (first source that supplies a non-`null` value wins):\n\n1. Per-`(hydro, stage)` row in `system/hydro_energy_productivity.parquet`\n   (loaded at study setup time by the solver).\n2. This field — a single value applied uniformly across all stages.\n\nAbsent or `null` means this fallback level is skipped.  If the cascade\nfinds no value for a hydro whose generation model requires one\n(`constant_productivity` or `linearized_head`), study setup fails with an\nexplicit error.",
+          "description": "Specific productivity `ρ_esp` (MW / ((m³/s) · m)).\n\n**Resolution** (first non-`null` value wins):\n\n1. The `(hydro, stage)` row in `system/hydro_energy_productivity.parquet`.\n2. That file's per-hydro row (`stage_id` null).\n3. This field, applied to every stage.\n\nWith VHA geometry rows, `ρ_esp` gives any hydro its useful-range mean\nproductivity. An `fpha` hydro also derives its reference-point `ρ_eq`\nfrom it; setup fails when neither `ρ_esp` with geometry nor a `ρ_eq`\noverride supplies that value. A `constant_productivity` hydro dispatches on\nits declared `ρ_eq`, never on this value.",
           "format": "double",
           "type": [
             "number",

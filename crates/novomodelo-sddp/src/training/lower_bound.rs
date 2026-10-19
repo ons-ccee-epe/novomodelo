@@ -10,7 +10,6 @@
 
 use novomodelo_comm::Communicator;
 use novomodelo_solver::{RowBatch, SolverError, SolverInterface};
-use novomodelo_stochastic::{evaluate_par_batch, solve_par_noise_batch};
 
 use crate::cut::CutRowMap;
 use crate::cut::row::append_new_cuts_to_lp;
@@ -20,17 +19,15 @@ use crate::{
     cut::FutureCostFunction,
     cut::row::build_cut_row_batch_into,
     error::SddpError,
-    inflow_method::InflowNonNegativityMethod,
     lp::builder::PatchBuffer,
     lp::indexer::StateSpace,
-    noise::{compute_effective_eta, has_par_model},
     rank_reconcile::reconcile_error_flag,
     risk_measure::{RiskMeasure, RiskMeasureScratch},
     setup::{
         NodeGraph, NodeSuccessor, OpeningSource,
         node_graph::{NodePos, StageIdx, assemble_outcome_weights},
     },
-    training::stage_solve_prep::{InflowNoise, StageSolvePrep, StageSolvePrepParams, StateSource},
+    training::stage_solve_prep::{StageSolvePrep, StageSolvePrepParams, StateSource},
     workspace::ScratchBuffers,
 };
 
@@ -166,8 +163,8 @@ fn lb_init_rank0<S: SolverInterface>(
     Ok(())
 }
 
-/// Truncation precompute then per-opening stage-0 LP solve via [`StageSolvePrep::run`],
-/// writing objectives into `objectives_buf`.
+/// Solves the stage-0 LP once per root opening through [`StageSolvePrep::run`],
+/// writing each objective into `objectives_buf`.
 ///
 /// # Errors
 ///
@@ -181,7 +178,6 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
     scratch: &mut ScratchBuffers,
     objectives_buf: &mut Vec<f64>,
 ) -> Result<(), SddpError> {
-    let n_hydros = training_ctx.state.hydro_count;
     let initial_state = training_ctx.initial_state;
     let opening_tree = training_ctx.stochastic.opening_tree();
     // Enumerate the ROOT NODE's own Ω, not the stage-0 generated tree: an External
@@ -192,38 +188,6 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
     let root_openings = training_ctx.node_graph.nodes[root_pos].openings;
     let root_node_id = training_ctx.node_graph.node_ids[root_pos];
     let n_openings = root_openings.len;
-
-    let needs_truncation = matches!(
-        training_ctx.inflow_method,
-        InflowNonNegativityMethod::Truncation | InflowNonNegativityMethod::TruncationWithPenalty
-    );
-    let par_lp = training_ctx.stochastic.par();
-    let has_par = has_par_model(training_ctx.stochastic);
-    let truncation_par = (needs_truncation && has_par).then_some(par_lp);
-
-    scratch.par_inflow_buf.clear();
-    scratch.par_inflow_buf.resize(n_hydros, 0.0);
-
-    if let Some(par_lp) = truncation_par {
-        let max_order = training_ctx.state.max_par_order;
-        scratch.lag_matrix_buf.clear();
-        scratch
-            .lag_matrix_buf
-            .extend_from_slice(&initial_state[training_ctx.state.inflow_lags.clone()]);
-        debug_assert_eq!(scratch.lag_matrix_buf.len(), max_order * n_hydros);
-
-        scratch.eta_floor_buf.clear();
-        scratch.eta_floor_buf.resize(n_hydros, f64::NEG_INFINITY);
-        scratch.zero_targets_buf.clear();
-        scratch.zero_targets_buf.resize(n_hydros, 0.0);
-        solve_par_noise_batch(
-            par_lp,
-            0,
-            &scratch.lag_matrix_buf,
-            &scratch.zero_targets_buf,
-            &mut scratch.eta_floor_buf,
-        );
-    }
 
     // An External root reads its pinned column (assembled once, `len == 1`); a
     // Generated root reads the generated tree opening-by-opening. `raw_noise_buf`
@@ -239,8 +203,6 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
         )?;
     }
 
-    let hydro = training_ctx.stochastic.class_dimensions().hydro_range();
-
     objectives_buf.clear();
 
     for opening_idx in 0..n_openings {
@@ -250,38 +212,8 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
             opening_tree.opening(0, root_openings.offset + opening_idx)
         };
 
-        if let Some(par_lp) = truncation_par {
-            evaluate_par_batch(
-                par_lp,
-                0,
-                &scratch.lag_matrix_buf,
-                &raw_noise[hydro.clone()],
-                &mut scratch.par_inflow_buf,
-            );
-        }
-
-        compute_effective_eta(
-            &raw_noise[hydro.clone()],
-            *training_ctx.inflow_method,
-            &scratch.par_inflow_buf,
-            &scratch.eta_floor_buf,
-            &mut scratch.effective_eta_buf,
-        );
-
-        scratch.z_inflow_rhs_buf.clear();
-        for h in 0..n_hydros {
-            let eta_eff = scratch.effective_eta_buf[h];
-            let z_rhs = if has_par {
-                par_lp.deterministic_base(0, h) + par_lp.sigma(0, h) * eta_eff
-            } else {
-                0.0
-            };
-            scratch.z_inflow_rhs_buf.push(z_rhs);
-        }
-
         let prep_params = StageSolvePrepParams {
             state_source: StateSource(initial_state),
-            inflow_noise: InflowNoise::PreBuilt,
             raw_noise,
         };
         StageSolvePrep::run(
@@ -1592,11 +1524,6 @@ mod tests {
     // ── Inflow truncation tests ─────────────────────────────────────────────
 
     /// `None` method passes raw noise through unchanged (regression test).
-    ///
-    /// With the degenerate wrapped stochastic context, the truncation path is a
-    /// no-op since `has_par_model` reports no PAR model. This validates that
-    /// the `compute_effective_eta` control flow works correctly when no PAR
-    /// model applies.
     #[test]
     fn test_lb_none_method_unchanged() {
         let fixture = SimpleLbFixture::new(
@@ -1643,12 +1570,7 @@ mod tests {
         );
     }
 
-    /// `Truncation` method does not cause a crash or infeasibility.
-    ///
-    /// With the degenerate wrapped stochastic context, the truncation path is a
-    /// no-op since `has_par_model` reports no PAR model, but this validates that
-    /// the control flow (`needs_truncation` = true, `truncation_par` = `None`)
-    /// does not panic.
+    /// `Truncation` over a context with no PAR model does not panic or fail.
     #[test]
     fn test_lb_truncation_no_crash() {
         let fixture = SimpleLbFixture::new(

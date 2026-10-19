@@ -41,7 +41,7 @@ use crate::{
     },
     training::{
         backward::extract_state_duals_only,
-        stage_solve_prep::{InflowNoise, StageSolvePrep, StageSolvePrepParams, StateSource},
+        stage_solve_prep::{StageSolvePrep, StageSolvePrepParams, StateSource},
     },
     trajectory::TrajectoryRecord,
     workspace::{BasisStore, CapturedBasis, SolverWorkspace},
@@ -302,7 +302,6 @@ fn solve_forward_node<S: SolverInterface + Send>(
 
     let prep_params = StageSolvePrepParams {
         state_source: StateSource(&ws.current_state),
-        inflow_noise: InflowNoise::Transform,
         raw_noise,
     };
     StageSolvePrep::run(
@@ -314,7 +313,7 @@ fn solve_forward_node<S: SolverInterface + Send>(
         t,
         &prep_params,
     );
-    if is_terminal && !pool.has_warm_start_cuts() {
+    if is_terminal && !pool.has_prefix_cuts() {
         ws.solver.set_col_bounds(&[state.theta], &[0.0], &[0.0]);
     }
 
@@ -325,7 +324,7 @@ fn solve_forward_node<S: SolverInterface + Send>(
         build_initial_resident_set(
             pool,
             params.iteration,
-            dcs_params.k2,
+            dcs_params.seed_window,
             &mut ws.backward_accum.dcs_initial_resident,
         );
         let dcs_ctx = DcsSolveContext {
@@ -376,7 +375,7 @@ fn solve_forward_node<S: SolverInterface + Send>(
     // Terminal boundary θ prices the post-horizon value-to-go: KEEP it in the cost
     // (subtracting it, the interior form, drops it from the UB only — understating
     // it below the LB). sddp.md "Terminal boundary FCF in the reported total cost".
-    let stage_cost = if is_terminal && pool.has_warm_start_cuts() {
+    let stage_cost = if is_terminal && pool.has_prefix_cuts() {
         view_objective * ctx.cost_scale_factor
     } else {
         (view_objective - d_t * unscaled_primal[state.theta]) * ctx.cost_scale_factor
@@ -876,6 +875,7 @@ mod tests {
         indexer::StateSpace,
         lead_time::AnticipatedResolution,
         setup::{StudySetup, node_graph::Traversal},
+        solver_phase::Phase,
         test_support,
         training::forward::build_sampler_from_ctx,
         workspace::WorkspacePool,
@@ -1012,7 +1012,10 @@ mod tests {
         let total_forward_passes =
             usize::try_from(test_support::node_scenario_count(node_graph).expect("scenario count"))
                 .expect("fits usize");
-        let dcs = training_ctx.dcs.filter(|p| p.is_active(iteration));
+        let dcs = training_ctx
+            .dcs
+            .map(|p| p.resolve(Phase::Forward.profile().primal_feasibility_tolerance))
+            .filter(|p| p.is_active(iteration));
         let mut noise_tables = ForwardNoiseTables::default();
         sampler
             .rebuild_noise_tables(

@@ -38,13 +38,13 @@ pub struct GenericConstraintEchoRow {
     pub constraint_id: i32,
     /// Generic constraint name.
     pub constraint_name: String,
-    /// Term position in the resolved LHS.
+    /// Position in the merged left-hand side; see the output dictionary for the row contract.
     pub term_index: Option<i32>,
     /// `VariableRef` discriminant (e.g. `"thermal_generation"`).
     pub variable_kind: Option<String>,
     /// Rendered variable label.
     pub variable: Option<String>,
-    /// Resolved numeric coefficient.
+    /// Resolved coefficient, before any per-column LP factor.
     pub coefficient: Option<f64>,
     /// Lower interval endpoint; `None` when unbounded below.
     pub bound_lower: Option<f64>,
@@ -64,8 +64,8 @@ pub struct GenericConstraintEchoRow {
 /// Write a slice of [`GenericConstraintEchoRow`] to a Parquet file at `path`.
 ///
 /// Rows are written in the order given; the caller emits them in canonical
-/// `(constraint, stage, block)` order. An empty slice produces a valid 0-row
-/// file. The parent directory is created if absent; the write is atomic.
+/// `(constraint, stage, block, term_index)` order. An empty slice produces a valid
+/// 0-row file. The parent directory is created if absent; the write is atomic.
 ///
 /// # Errors
 ///

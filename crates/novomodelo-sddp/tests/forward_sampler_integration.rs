@@ -40,6 +40,7 @@ use novomodelo_core::{
 };
 use novomodelo_sddp::{
     InflowNonNegativityMethod, StoppingMode, StoppingRule, StoppingRuleSet, StudySetup,
+    cut::CutSet,
     hydro_models::PrepareHydroModelsResult,
     setup::{SimulationEnumeratedRequest, StudyParams},
 };
@@ -541,6 +542,7 @@ fn run_programmatic(
         stopping_rule_set,
         n_scenarios: 0, // simulation disabled
         simulation_enumerated: SimulationEnumeratedRequest::Sampled,
+        simulation_cut_set: CutSet::All,
         io_channel_capacity: 0,
         policy_path: String::new(),
         inflow_method,
@@ -887,6 +889,7 @@ fn run_with_setup(
         stopping_rule_set,
         n_scenarios: 0,
         simulation_enumerated: SimulationEnumeratedRequest::Sampled,
+        simulation_cut_set: CutSet::All,
         io_channel_capacity: 0,
         policy_path: String::new(),
         inflow_method: InflowNonNegativityMethod::None,

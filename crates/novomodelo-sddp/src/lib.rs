@@ -67,7 +67,6 @@ pub(crate) use stochastic::{noise, stochastic_summary};
 
 pub(crate) use training::{
     backward, backward_pass_state, forward_pass_state, rank_reconcile, state_exchange, trajectory,
-    visited_states,
 };
 pub use training::{forward, lower_bound};
 
@@ -101,8 +100,8 @@ pub use policy::policy_load::{
     LEGACY_COST_SCALE_FACTOR, PolicyLoadKind, PolicyLoadProof, PolicyStageManifest,
     StoredBasisLoad, StoredBasisMisfit, UnusedStoredBases, ValidatedBoundaryCuts,
     boundary_policy_required_lag_depth, build_basis_cache_from_checkpoint,
-    checkpoint_terminal_cost_scale_factor, compare_manifest_slot_identity, inject_boundary_cuts,
-    load_boundary_cuts, reconcile_boundary_policy, rescale_checkpoint_cuts_for_load,
+    compare_manifest_slot_identity, inject_boundary_cuts, load_boundary_cuts,
+    pool_cost_scale_factor, reconcile_boundary_policy, rescale_checkpoint_cuts_for_load,
     resolve_boundary_state_requirements, validate_policy_load,
 };
 pub use policy::provenance::{
@@ -150,7 +149,9 @@ pub use stochastic::stochastic_summary::{
 pub use training::forward::SyncResult;
 pub use training::rank_reconcile::reconcile_global_ok;
 pub use training::state_exchange::ExchangeBuffers;
-pub use training::training::{TrainingOutcome, TrainingResult, train};
+pub use training::training::{
+    CheckpointBasisStore, LoadedPolicy, TrainingOutcome, TrainingResult, train,
+};
 pub use training::training_output::{
     PhaseTimingTotals, build_training_output, sum_phase_timing_ms,
 };

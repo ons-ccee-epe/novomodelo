@@ -51,22 +51,21 @@ pub mod system;
 pub mod test_support;
 pub mod topology;
 
-pub use model::{parameters, penalty, resolved, scenario, temporal};
+pub use model::{parameters, penalty, resolved, scalar_expr, scenario, temporal};
 
 pub use constraints::{generic_constraint, initial_conditions, training_event};
 
 pub use constraints::generic_constraint::{
-    AffineBound, ConstraintExpression, GenericConstraint, LinearTerm, PenaltyBasis, SlackConfig,
-    VariableRef,
+    ConstraintExpression, GenericConstraint, LinearTerm, PenaltyBasis, SlackConfig, VariableRef,
 };
 pub use constraints::initial_conditions::{
     AnticipatedCommitmentHistory, HydroPastDefluence, HydroStorage, InitialConditions,
     RecentObservation,
 };
 pub use constraints::training_event::{
-    StageRowSelectionRecord, TrainingEvent, WORKER_TIMING_SLOT_BWD_SETUP,
-    WORKER_TIMING_SLOT_BWD_WALL, WORKER_TIMING_SLOT_COUNT, WORKER_TIMING_SLOT_FWD_SETUP,
-    WORKER_TIMING_SLOT_FWD_WALL, WORKER_TIMING_SLOT_SCORING, WorkerPhaseTimings, WorkerTimingPhase,
+    PoolRowCounts, TrainingEvent, WORKER_TIMING_SLOT_BWD_SETUP, WORKER_TIMING_SLOT_BWD_WALL,
+    WORKER_TIMING_SLOT_COUNT, WORKER_TIMING_SLOT_FWD_SETUP, WORKER_TIMING_SLOT_FWD_WALL,
+    WORKER_TIMING_SLOT_SCORING, WorkerPhaseTimings, WorkerTimingPhase,
 };
 pub use entities::{
     AnticipatedConfig, Bus, ContractType, DeficitSegment, DiversionChannel, EfficiencyModel,
@@ -77,7 +76,9 @@ pub use entities::{
 pub use entity_id::EntityId;
 pub use error::ValidationError;
 pub use model::horizon::HorizonGraph;
-pub use model::parameters::{CoefficientRef, ComputedParameter, ParameterKind, ScalarParameter};
+pub use model::parameters::{
+    ComputedParameter, ParameterKind, ScalarParameter, expand_expression_parameters,
+};
 pub use model::penalty::{
     GlobalPenaltyDefaults, HydroPenaltyOverrides, resolve_bus_deficit_segments,
     resolve_bus_excess_cost, resolve_hydro_penalties, resolve_line_exchange_cost,
@@ -94,6 +95,7 @@ pub use model::resolved::{
     ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors, ResolvedPenalties,
     ThermalBlockBounds, ThermalBlockOverride, ThermalStageBounds,
 };
+pub use model::scalar_expr::{ScalarExpr, is_exact_zero};
 pub use model::scenario::{
     CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile,
     CorrelationScheduleEntry, ExternalLoadRow, ExternalNcsRow, ExternalScenarioRow,

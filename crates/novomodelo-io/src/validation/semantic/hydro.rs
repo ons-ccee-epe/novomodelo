@@ -133,10 +133,11 @@ pub(super) fn check_hydro_bounds(data: &ParsedData, ctx: &mut ValidationContext)
     }
 }
 
-/// Rule 46: rejects a `min_diversion_m3s` override on a hydro that declares no `diversion`
-/// channel: with no channel, [`resolve_bounds`](crate::resolution::resolve_bounds)
-/// pins the diversion column to `[0, 0]`, so a positive floor is the infeasible
-/// `[min > 0, 0]`.
+/// Rule 46: rejects a positive `min_diversion_m3s` or `max_diversion_m3s` override
+/// on a hydro that declares no `diversion` channel. Without a channel
+/// [`resolve_bounds`](crate::resolution::resolve_bounds) seeds the diversion column
+/// at `[0, 0]`, and an override replaces that seed: a positive floor is infeasible,
+/// and a positive ceiling diverts water that no plant receives.
 ///
 /// This is a same-column, override-vs-declaration check only. Cross-row and
 /// cross-source min/max inversion — an override floor exceeding a maximum
@@ -144,35 +145,39 @@ pub(super) fn check_hydro_bounds(data: &ParsedData, ctx: &mut ValidationContext)
 /// entity's own `DiversionChannel.max_flow_m3s` — is deliberately not validated
 /// here: a combinatorial checker re-implementing the resolver's precedence would
 /// duplicate it and drift. That residual surfaces as LP infeasibility instead.
-pub(super) fn check_diversion_floor_requires_channel(
-    data: &ParsedData,
-    ctx: &mut ValidationContext,
-) {
+pub(super) fn check_diversion_requires_channel(data: &ParsedData, ctx: &mut ValidationContext) {
     let declared: HashMap<EntityId, &Hydro> = data.hydros.iter().map(|h| (h.id, h)).collect();
 
     for row in &data.hydro_bounds {
-        let Some(min_diversion) = row.min_diversion_m3s.filter(|&m| m > 0.0) else {
-            continue;
-        };
         let Some(&hydro) = declared.get(&row.hydro_id) else {
             continue;
         };
         if hydro.diversion.is_some() {
             continue;
         }
-
         let entity_str = format!("Hydro {}", hydro.id.0);
-        ctx.emit(
-            &rules::SEMANTIC_HYDRO_DIVERSION_FLOOR_WITHOUT_CHANNEL,
-            "constraints/hydro_bounds.parquet",
-            Some(&entity_str),
-            format!(
-                "{entity_str}: hydro_bounds row at stage_id={} sets min_diversion_m3s=\
-                 {min_diversion}, but the hydro declares no diversion channel; diversion is \
-                 pinned [0, 0] with no channel, making a positive floor infeasible",
-                row.stage_id
-            ),
-        );
+        let block = row
+            .block_id
+            .map_or(String::new(), |b| format!(" block_id={b}"));
+        for (field, value) in [
+            ("min_diversion_m3s", row.min_diversion_m3s),
+            ("max_diversion_m3s", row.max_diversion_m3s),
+        ] {
+            let Some(value) = value.filter(|&v| v > 0.0) else {
+                continue;
+            };
+            ctx.emit(
+                &rules::SEMANTIC_HYDRO_DIVERSION_WITHOUT_CHANNEL,
+                "constraints/hydro_bounds.parquet",
+                Some(&entity_str),
+                format!(
+                    "{entity_str}: hydro_bounds row at stage_id={}{block} sets {field}={value}, \
+                     but the hydro declares no diversion channel; without a channel the \
+                     diversion column is [0, 0]",
+                    row.stage_id
+                ),
+            );
+        }
     }
 }
 
@@ -999,7 +1004,7 @@ mod tests {
         assert!(ctx.has_errors());
     }
 
-    // ── Diversion floor requires channel tests ────────────────────────────────
+    // ── Diversion requires channel tests ──────────────────────────────────────
 
     /// A `min_diversion_m3s` override on a hydro declaring no `diversion` channel
     /// emits exactly one InvalidValue finding naming the hydro and the column.
@@ -1082,7 +1087,7 @@ mod tests {
         let mut hydro = make_hydro(7, None);
         hydro.diversion = Some(DiversionChannel {
             downstream_id: EntityId::from(9),
-            max_flow_m3s: 10.0,
+            max_flow_m3s: Some(10.0),
         });
         let mut data = make_data(
             vec![hydro],
@@ -1110,6 +1115,106 @@ mod tests {
              no-channel finding, got: {:?}",
             ctx.errors()
         );
+    }
+
+    fn diversion_findings(row: HydroBoundsRow, channel: Option<DiversionChannel>) -> Vec<String> {
+        let mut hydro = make_hydro(7, None);
+        hydro.diversion = channel;
+        let mut data = make_data(
+            vec![hydro],
+            vec![],
+            vec![],
+            make_stages(vec![0]),
+            vec![],
+            vec![],
+        );
+        data.hydro_bounds = vec![row];
+        let mut ctx = ValidationContext::new();
+        validate_semantic_hydro_thermal(&data, &mut ctx);
+        ctx.errors()
+            .into_iter()
+            .filter(|e| e.kind == ErrorKind::InvalidValue && e.message.contains("diversion"))
+            .map(|e| e.message.clone())
+            .collect()
+    }
+
+    #[test]
+    fn test_max_diversion_without_channel_is_rejected() {
+        let findings = diversion_findings(
+            HydroBoundsRow {
+                hydro_id: EntityId::from(7),
+                stage_id: 0,
+                max_diversion_m3s: Some(25.0),
+                ..Default::default()
+            },
+            None,
+        );
+        assert_eq!(findings.len(), 1, "got: {findings:?}");
+        assert!(findings[0].contains("Hydro 7") && findings[0].contains("max_diversion_m3s"));
+    }
+
+    #[test]
+    fn test_max_diversion_without_channel_on_block_row_is_rejected() {
+        let findings = diversion_findings(
+            HydroBoundsRow {
+                hydro_id: EntityId::from(7),
+                stage_id: 0,
+                block_id: Some(0),
+                max_diversion_m3s: Some(25.0),
+                ..Default::default()
+            },
+            None,
+        );
+        assert_eq!(findings.len(), 1, "got: {findings:?}");
+        assert!(findings[0].contains("block_id=0"), "got: {}", findings[0]);
+    }
+
+    #[test]
+    fn test_zero_max_diversion_without_channel_is_accepted() {
+        let findings = diversion_findings(
+            HydroBoundsRow {
+                hydro_id: EntityId::from(7),
+                stage_id: 0,
+                max_diversion_m3s: Some(0.0),
+                ..Default::default()
+            },
+            None,
+        );
+        assert!(findings.is_empty(), "got: {findings:?}");
+    }
+
+    #[test]
+    fn test_max_diversion_with_channel_is_accepted() {
+        let findings = diversion_findings(
+            HydroBoundsRow {
+                hydro_id: EntityId::from(7),
+                stage_id: 0,
+                max_diversion_m3s: Some(25.0),
+                ..Default::default()
+            },
+            Some(DiversionChannel {
+                downstream_id: EntityId::from(9),
+                max_flow_m3s: Some(10.0),
+            }),
+        );
+        assert!(findings.is_empty(), "got: {findings:?}");
+    }
+
+    #[test]
+    fn test_min_and_max_diversion_without_channel_give_one_finding_each() {
+        let findings = diversion_findings(
+            HydroBoundsRow {
+                hydro_id: EntityId::from(7),
+                stage_id: 0,
+                min_diversion_m3s: Some(5.0),
+                max_diversion_m3s: Some(25.0),
+                ..Default::default()
+            },
+            None,
+        );
+        assert_eq!(findings.len(), 2, "got: {findings:?}");
+        assert!(findings.iter().any(|m| m.contains("min_diversion_m3s")));
+        assert!(findings.iter().any(|m| m.contains("max_diversion_m3s")));
     }
 
     // ── Lifecycle consistency tests ───────────────────────────────────────────

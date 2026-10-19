@@ -45,8 +45,8 @@
 //!   bounds (`volume_min_percentile` / `volume_max_percentile`) are mutually exclusive.
 //! - `productivity_mw_per_m3s` is **rejected** for `"fpha"` entries (both stage-range and
 //!   seasonal); FPHA derives productivity from its hyperplane geometry.
-//! - `productivity_mw_per_m3s` is **optional** for `"constant_productivity"` and
-//!   `"linearized_head"` entries. When omitted or `null`, the value is expected to be supplied by
+//! - `productivity_mw_per_m3s` is **optional** for `"constant_productivity"` entries. When
+//!   omitted or `null`, the value is expected to be supplied by
 //!   `system/hydro_energy_productivity.parquet`; cross-file resolution is enforced by
 //!   `validation::productivity_resolution`.
 //! - When `productivity_mw_per_m3s` is present for a non-FPHA entry it must be finite and
@@ -59,7 +59,7 @@
 //! - That exactly one source (JSON or parquet) provides `productivity_mw_per_m3s` for each
 //!   `(hydro, stage)` pair — `validation::productivity_resolution`.
 
-use novomodelo_core::EntityId;
+use novomodelo_core::{EntityId, HydroGenerationModel};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::Path;
@@ -120,7 +120,7 @@ pub enum SelectionMode {
     /// Models are selected by season index, with a fallback default.
     Seasonal {
         /// Fallback model for seasons not listed in `seasons`.
-        default_model: String,
+        default_model: HydroGenerationModel,
         /// Season-specific overrides.
         seasons: Vec<SeasonConfig>,
     },
@@ -133,8 +133,8 @@ pub struct StageRange {
     pub start_stage_id: i32,
     /// Last stage (inclusive) to which this entry applies. `None` means "until end of horizon".
     pub end_stage_id: Option<i32>,
-    /// Model name: `"constant_productivity"`, `"linearized_head"`, or `"fpha"`.
-    pub model: String,
+    /// Production model for this entry.
+    pub model: HydroGenerationModel,
     /// FPHA configuration, required when `model == "fpha"`.
     pub fpha_config: Option<FphaColumnLayout>,
     /// Optional reference operating volume, a sibling of `fpha_config`. `None`
@@ -150,8 +150,8 @@ pub struct StageRange {
 pub struct SeasonConfig {
     /// Season index (0-based, matching `stages.json` season map).
     pub season_id: i32,
-    /// Model name: `"constant_productivity"`, `"linearized_head"`, or `"fpha"`.
-    pub model: String,
+    /// Production model for this entry.
+    pub model: HydroGenerationModel,
     /// FPHA configuration, required when `model == "fpha"`.
     pub fpha_config: Option<FphaColumnLayout>,
     /// Optional reference operating volume, a sibling of `fpha_config`. `None`
@@ -297,9 +297,8 @@ enum RawSelectionMode {
     },
     /// Seasonal selection: each stage maps to a model via its season index.
     Seasonal {
-        /// Fallback model for seasons not listed in `seasons`. One of
-        /// `"constant_productivity"`, `"linearized_head"`, or `"fpha"`.
-        default_model: String,
+        /// Fallback model for seasons not listed in `seasons`.
+        default_model: HydroGenerationModel,
         /// Season-specific model overrides.
         seasons: Vec<RawSeasonConfig>,
     },
@@ -316,8 +315,8 @@ struct RawStageRange {
     /// Last stage (inclusive) to which this entry applies. `null` = until end
     /// of horizon.
     end_stage_id: Option<i32>,
-    /// Model name: `"constant_productivity"`, `"linearized_head"`, or `"fpha"`.
-    model: String,
+    /// Production model: `"constant_productivity"` or `"fpha"`.
+    model: HydroGenerationModel,
     /// FPHA configuration. Required when `model` is `"fpha"`. Absent or null
     /// otherwise.
     fpha_config: Option<RawFphaColumnLayout>,
@@ -326,10 +325,11 @@ struct RawStageRange {
     /// hm³) or `percentile` (`[0.0, 1.0]`). Absent or null = no reference volume
     /// declared.
     reference_volume: Option<RawReferenceVolume>,
-    /// Per-stage productivity coefficient (MW/(m³/s)). Optional for
-    /// `"constant_productivity"` and `"linearized_head"` models; when absent or
-    /// null the value is expected from `system/hydro_energy_productivity.parquet`.
-    /// When present must be `> 0.0` and finite. Must be absent or null for `"fpha"`.
+    /// Per-stage productivity coefficient (MW/(m³/s)). Optional for a
+    /// `"constant_productivity"` model; when absent or null the value is
+    /// expected from `system/hydro_energy_productivity.parquet`. When present
+    /// must be finite and `>= 0.0` (`0.0` marks a planned outage). Must be
+    /// absent or null for `"fpha"`.
     productivity_mw_per_m3s: Option<f64>,
 }
 
@@ -340,8 +340,8 @@ struct RawStageRange {
 struct RawSeasonConfig {
     /// Season index (0-based, matching the `stages.json` season map).
     season_id: i32,
-    /// Model name: `"constant_productivity"`, `"linearized_head"`, or `"fpha"`.
-    model: String,
+    /// Production model: `"constant_productivity"` or `"fpha"`.
+    model: HydroGenerationModel,
     /// FPHA configuration. Required when `model` is `"fpha"`. Absent or null
     /// otherwise.
     fpha_config: Option<RawFphaColumnLayout>,
@@ -350,10 +350,11 @@ struct RawSeasonConfig {
     /// `percentile` (`[0.0, 1.0]`). Absent or null = no reference volume
     /// declared.
     reference_volume: Option<RawReferenceVolume>,
-    /// Per-season productivity coefficient (MW/(m³/s)). Optional for
-    /// `"constant_productivity"` and `"linearized_head"` models; when absent or
-    /// null the value is expected from `system/hydro_energy_productivity.parquet`.
-    /// When present must be `> 0.0` and finite. Must be absent or null for `"fpha"`.
+    /// Per-season productivity coefficient (MW/(m³/s)). Optional for a
+    /// `"constant_productivity"` model; when absent or null the value is
+    /// expected from `system/hydro_energy_productivity.parquet`. When present
+    /// must be finite and `>= 0.0` (`0.0` marks a planned outage). Must be
+    /// absent or null for `"fpha"`.
     productivity_mw_per_m3s: Option<f64>,
 }
 
@@ -485,9 +486,14 @@ pub fn parse_production_models(path: &Path) -> Result<ProductionModelFile, LoadE
     let raw: RawProductionModelFile = serde_json::from_str(&raw_text).map_err(|e| {
         let msg = e.to_string();
         if msg.contains("unknown variant") {
+            let field = if msg.contains("`constant_productivity`") {
+                "model"
+            } else {
+                "selection_mode"
+            };
             LoadError::SchemaError {
                 path: path.to_path_buf(),
-                field: "selection_mode".to_string(),
+                field: field.to_string(),
                 message: msg,
             }
         } else {
@@ -551,7 +557,7 @@ fn validate_production_models(
             RawSelectionMode::Seasonal { seasons, .. } => {
                 for (season_idx, season) in seasons.iter().enumerate() {
                     validate_model_fields(
-                        &season.model,
+                        season.model,
                         season.productivity_mw_per_m3s,
                         season.fpha_config.as_ref(),
                         season.reference_volume.as_ref(),
@@ -596,7 +602,7 @@ fn validate_stage_range(
     }
 
     validate_model_fields(
-        &range.model,
+        range.model,
         range.productivity_mw_per_m3s,
         range.fpha_config.as_ref(),
         range.reference_volume.as_ref(),
@@ -609,7 +615,7 @@ fn validate_stage_range(
 /// Validate the model/productivity/`fpha_config`/`reference_volume` fields
 /// shared by a stage range and a season entry.
 fn validate_model_fields(
-    model: &str,
+    model: HydroGenerationModel,
     productivity_mw_per_m3s: Option<f64>,
     fpha_config: Option<&RawFphaColumnLayout>,
     reference_volume: Option<&RawReferenceVolume>,
@@ -619,7 +625,8 @@ fn validate_model_fields(
 ) -> Result<(), LoadError> {
     let field_base = format!("{field_prefix}.productivity_mw_per_m3s");
 
-    if model == "fpha" && productivity_mw_per_m3s.is_some() {
+    let is_fpha = model == HydroGenerationModel::Fpha;
+    if is_fpha && productivity_mw_per_m3s.is_some() {
         return Err(LoadError::SchemaError {
             path: path.to_path_buf(),
             field: field_base,
@@ -628,7 +635,7 @@ fn validate_model_fields(
     }
 
     // `0.0` is a planned-outage marker; reject only negative or non-finite.
-    if model != "fpha"
+    if !is_fpha
         && let Some(val) = productivity_mw_per_m3s
         && (val < 0.0 || !val.is_finite())
     {
@@ -969,7 +976,7 @@ mod tests {
                 assert_eq!(ranges.len(), 2);
                 assert_eq!(ranges[0].start_stage_id, 0);
                 assert_eq!(ranges[0].end_stage_id, Some(24));
-                assert_eq!(ranges[0].model, "fpha");
+                assert_eq!(ranges[0].model, HydroGenerationModel::Fpha);
                 let fpha = ranges[0].fpha_config.as_ref().unwrap();
                 assert_eq!(fpha.source, "computed");
                 assert_eq!(fpha.volume_discretization_points, Some(7));
@@ -981,7 +988,7 @@ mod tests {
 
                 assert_eq!(ranges[1].start_stage_id, 25);
                 assert!(ranges[1].end_stage_id.is_none());
-                assert_eq!(ranges[1].model, "constant_productivity");
+                assert_eq!(ranges[1].model, HydroGenerationModel::ConstantProductivity);
                 assert!(ranges[1].fpha_config.is_none());
                 assert_eq!(ranges[1].productivity_mw_per_m3s, Some(0.9));
             }
@@ -999,7 +1006,7 @@ mod tests {
           "production_models": [{
             "hydro_id": 5,
             "selection_mode": "seasonal",
-            "default_model": "linearized_head",
+            "default_model": "constant_productivity",
             "seasons": [
               {
                 "season_id": 0,
@@ -1024,10 +1031,10 @@ mod tests {
                 default_model,
                 seasons,
             } => {
-                assert_eq!(default_model, "linearized_head");
+                assert_eq!(*default_model, HydroGenerationModel::ConstantProductivity);
                 assert_eq!(seasons.len(), 2);
                 assert_eq!(seasons[0].season_id, 0);
-                assert_eq!(seasons[0].model, "fpha");
+                assert_eq!(seasons[0].model, HydroGenerationModel::Fpha);
                 let fpha0 = seasons[0].fpha_config.as_ref().unwrap();
                 assert_eq!(fpha0.source, "computed");
                 assert_eq!(fpha0.volume_discretization_points, Some(5));
@@ -1324,6 +1331,34 @@ mod tests {
         );
     }
 
+    fn assert_model_name_rejected(model_json: &str) {
+        let json = format!(
+            r#"{{
+          "production_models": [{{
+            "hydro_id": 0,
+            "selection_mode": "stage_ranges",
+            "stage_ranges": [{{ "start_stage_id": 0, "end_stage_id": null, {model_json} }}]
+          }}]
+        }}"#
+        );
+        let f = write_json(&json);
+        let err = parse_production_models(f.path()).unwrap_err();
+        match err {
+            LoadError::SchemaError { field, .. } => assert_eq!(field, "model"),
+            other => panic!("expected SchemaError on model for {model_json}, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn misspelled_model_name_is_rejected() {
+        assert_model_name_rejected(r#""model": "fhpa""#);
+    }
+
+    #[test]
+    fn retired_linearized_head_model_name_is_rejected() {
+        assert_model_name_rejected(r#""model": "linearized_head""#);
+    }
+
     // ── AC: empty production_models array -> Ok(vec![]) ──────────────────────
 
     /// An empty `production_models` array deserialises to `Ok(Vec::new())`.
@@ -1473,7 +1508,7 @@ mod tests {
             "stage_ranges": [
               {
                 "start_stage_id": 0, "end_stage_id": 24,
-                "model": "linearized_head",
+                "model": "constant_productivity",
                 "productivity_mw_per_m3s": null
               }
             ]

@@ -544,8 +544,37 @@ See `.claude/architecture-rules.md` for the full Python parity checklist.
 ### Dependencies
 
 - Prefer well-maintained crates with minimal transitive dependencies.
-- New dependencies are checked for license compliance by `cargo-deny` in CI.
+- New dependencies are checked by `cargo-deny` for advisories, licenses, bans and sources
+  (`deny.toml`), on the workspace and on `crates/novomodelo-python`'s own lockfile. The bans include
+  the BLAS backends, `multiversion` and every `matrixmultiply` feature, because each would
+  change the floating-point kernel (see [Floating-point kernel](#floating-point-kernel)).
+- Run the same check locally with `bash scripts/ci/check-deny.sh`. It needs the cargo-deny
+  version CI installs: `cargo install cargo-deny --version "$(bash scripts/ci/check-deny.sh --print-version)" --locked`.
+  The pre-commit hook runs it when a commit stages a `Cargo.toml`, a `Cargo.lock` or `deny.toml`.
 - Feature-gate optional heavy dependencies (solver backends, MPI, PyO3, ratatui).
+
+### Floating-point kernel
+
+Cut selection compares cut values exactly, so the `dgemm` kernel that evaluates them decides
+which cuts a run selects.
+
+- No file in the repository sets target features, and `scripts/ci/check-cut-selection-determinism.sh`
+  rejects a target feature or CPU in a build input. `matrixmultiply` is built without runtime
+  CPU detection (`deny.toml`).
+- Every x86_64 build of the workspace therefore resolves the same `dgemm` kernel. The test
+  `gemm::tests::resolved_kernel_is_the_unfused_baseline` in `crates/novomodelo-sddp/src/gemm.rs`
+  checks it in the test build, and `scripts/ci/check-release-kernel.sh` checks it in the
+  built release artifacts.
+- The determinism gates run that kernel.
+- A build on another architecture, or one given `-C target-feature` or `-C target-cpu`
+  (`cargo install` with such `RUSTFLAGS` included), can resolve another kernel and select
+  different, equally valid cuts. Reproducibility is per build, and a checkpoint carries no
+  kernel stamp.
+- A change that adds a target feature, a BLAS backend or runtime CPU detection changes
+  results and needs the maintainer's decision.
+
+For what a resume reproduces, see "Cut selection" in
+[`crates/novomodelo-sddp/README.md`](crates/novomodelo-sddp/README.md).
 
 ## Domain Knowledge
 

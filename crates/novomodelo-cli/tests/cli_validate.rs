@@ -2,9 +2,8 @@
 
 #![allow(clippy::unwrap_used)]
 
-use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use assert_cmd::prelude::*;
@@ -12,7 +11,9 @@ use predicates::prelude::*;
 use tempfile::TempDir;
 
 mod common;
-use common::{PENALTIES_JSON, copy_dir_recursive, write_supplied_opening_tree_case};
+use common::{
+    PENALTIES_JSON, copy_dir_recursive, snapshot_files, write_supplied_opening_tree_case,
+};
 
 // ── fixture helpers ───────────────────────────────────────────────────────────
 
@@ -346,6 +347,334 @@ fn removed_cut_selection_field_fails_validate() {
         .failure();
 }
 
+/// The `cut_selection config error` prefix pins the path every front end shares;
+/// the same case with a zero tolerance validates.
+#[test]
+fn validate_reports_a_negative_row_activity_tolerance() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+    config["training"]["cut_selection"] = serde_json::json!({ "row_activity_tolerance": 0.0 });
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    config["training"]["cut_selection"]["row_activity_tolerance"] = serde_json::json!(-1.0);
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("cut_selection config error"))
+        .stdout(predicate::str::contains("row_activity_tolerance"));
+}
+
+/// A `level1` selection that still sets the removed key fails at load naming
+/// it; the same selection without the key validates.
+#[test]
+fn validate_rejects_the_removed_tie_tolerance_key() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+    config["training"]["cut_selection"] = serde_json::json!({
+        "selection": { "method": "level1", "check_frequency": 2 }
+    });
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    config["training"]["cut_selection"]["selection"]["tie_tolerance"] = serde_json::json!(1e6);
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains(
+            "the key `tie_tolerance` was removed: `level1` compares row values exactly; \
+             delete the key (`training.cut_selection.selection`)",
+        ));
+}
+
+/// Writes a `level1` selection with `lookback_iterations` set to `lookback`
+/// and returns the result of `novomodelo validate` on the case.
+fn validate_level1_lookback(dir: &TempDir, lookback: u32) -> assert_cmd::assert::Assert {
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+    config["training"]["cut_selection"] = serde_json::json!({
+        "selection": { "method": "level1", "check_frequency": 2, "lookback_iterations": lookback }
+    });
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+}
+
+/// A zero window fails at load naming the key; a window equal to
+/// `check_frequency` validates.
+#[test]
+fn validate_rejects_a_zero_lookback_window() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+    validate_level1_lookback(&dir, 2).success();
+    validate_level1_lookback(&dir, 0)
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("lookback_iterations"))
+        .stdout(predicate::str::contains(">= 1"));
+}
+
+/// A window shorter than `check_frequency` fails at load naming both keys; a
+/// window equal to it validates.
+#[test]
+fn validate_rejects_a_lookback_window_below_the_check_frequency() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+    validate_level1_lookback(&dir, 2).success();
+    validate_level1_lookback(&dir, 1)
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("lookback_iterations"))
+        .stdout(predicate::str::contains("check_frequency"));
+}
+
+/// A zero count fails at load naming its key; the same selection with `1`
+/// validates.
+#[test]
+fn validate_rejects_a_zero_selection_count() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+    for (method, key) in [
+        ("level1", "check_frequency"),
+        ("dynamic", "start_iteration"),
+        ("dynamic", "candidate_recency"),
+        ("dynamic", "max_added_per_round"),
+    ] {
+        let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+        config["training"]["cut_selection"] = serde_json::json!({
+            "selection": { "method": method, key: 1 }
+        });
+        write_file(dir.path(), "config.json", &config.to_string());
+        novomodelo()
+            .args(["validate", dir.path().to_str().unwrap()])
+            .assert()
+            .success()
+            .code(0);
+
+        config["training"]["cut_selection"]["selection"][key] = serde_json::json!(0);
+        write_file(dir.path(), "config.json", &config.to_string());
+        novomodelo()
+            .args(["validate", dir.path().to_str().unwrap()])
+            .assert()
+            .failure()
+            .code(1)
+            .stdout(predicate::str::contains(format!(
+                "training.cut_selection.selection.{key}"
+            )))
+            .stdout(predicate::str::contains(">= 1"));
+    }
+}
+
+/// The pairing is rejected by the admission gate every front end shares; the
+/// same selection without the budget validates.
+#[test]
+fn validate_rejects_a_budget_with_dynamic_selection() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+    config["training"]["cut_selection"] = serde_json::json!({
+        "selection": { "method": "dynamic" }
+    });
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    config["training"]["cut_selection"]["max_active_per_stage"] = serde_json::json!(5);
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("max_active_per_stage"))
+        .stdout(predicate::str::contains("dynamic"));
+}
+
+#[test]
+fn validate_rejects_an_unknown_simulation_cut_set() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+    config["simulation"]["cut_set"] = serde_json::json!("active");
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    config["simulation"]["cut_set"] = serde_json::json!("every");
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("cut_set"));
+}
+
+/// Enumerated training with a budget is rejected by the admission gate every
+/// front end shares; the same enumerated deck without the budget validates.
+#[test]
+fn validate_rejects_a_budget_with_enumerated_training() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+
+    let mut stages: serde_json::Value = serde_json::from_str(STAGES_JSON).unwrap();
+    for stage in stages["stages"].as_array_mut().unwrap() {
+        stage["num_openings"] = serde_json::json!(1);
+    }
+    write_file(dir.path(), "stages.json", &stages.to_string());
+
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+    config["training"]["selection"] = serde_json::json!({ "method": "enumerated" });
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    config["training"]["cut_selection"] = serde_json::json!({ "max_active_per_stage": 5 });
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("max_active_per_stage"))
+        .stdout(predicate::str::contains("enumerated"));
+}
+
+/// A `dynamic` violation tolerance below a phase's primal feasibility tolerance
+/// is rejected by the setup every front end builds; the key absent and a value
+/// above the default tolerance validate. Per-phase solver overrides are
+/// `highs`-only, so the forward-phase leg is too.
+#[test]
+fn validate_rejects_a_violation_tolerance_below_the_solver_tolerance() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+    let validate = || {
+        novomodelo()
+            .args(["validate", dir.path().to_str().unwrap()])
+            .assert()
+    };
+
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+    config["training"]["cut_selection"] = serde_json::json!({
+        "selection": { "method": "dynamic" }
+    });
+    write_file(dir.path(), "config.json", &config.to_string());
+    validate().success();
+
+    config["training"]["cut_selection"]["selection"]["violation_tolerance"] =
+        serde_json::json!(1e-6);
+    write_file(dir.path(), "config.json", &config.to_string());
+    validate().success();
+
+    config["training"]["cut_selection"]["selection"]["violation_tolerance"] =
+        serde_json::json!(1e-10);
+    write_file(dir.path(), "config.json", &config.to_string());
+    validate()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("violation_tolerance"))
+        .stdout(predicate::str::contains("primal feasibility tolerance"));
+
+    #[cfg(feature = "highs")]
+    {
+        config["training"]["solver"] = serde_json::json!({
+            "forward": { "primal_feasibility_tolerance": 1e-7 }
+        });
+        config["training"]["cut_selection"]["selection"]["violation_tolerance"] =
+            serde_json::json!(1e-7);
+        write_file(dir.path(), "config.json", &config.to_string());
+        validate().success();
+
+        config["training"]["cut_selection"]["selection"]["violation_tolerance"] =
+            serde_json::json!(1e-8);
+        write_file(dir.path(), "config.json", &config.to_string());
+        validate()
+            .failure()
+            .code(1)
+            .stdout(predicate::str::contains("of the forward solver profile"));
+    }
+}
+
+/// A removed selection method fails at load naming `level1`; the same case with
+/// `level1` validates.
+#[test]
+fn validate_rejects_a_removed_selection_method() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+    config["training"]["cut_selection"] = serde_json::json!({
+        "selection": { "method": "level1" }
+    });
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    for removed in ["lml1", "domination"] {
+        config["training"]["cut_selection"]["selection"] = serde_json::json!({ "method": removed });
+        write_file(dir.path(), "config.json", &config.to_string());
+        novomodelo()
+            .args(["validate", dir.path().to_str().unwrap()])
+            .assert()
+            .failure()
+            .code(1)
+            .stdout(predicate::str::contains(format!("`{removed}` was removed")))
+            .stdout(predicate::str::contains("use `level1`"));
+    }
+}
+
+/// A warning raised while the study parameters are extracted from `config.json`
+/// is printed once, not once per extraction.
+#[test]
+fn validate_prints_the_budget_below_forward_passes_warning_once() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+    config["training"]["cut_selection"] = serde_json::json!({ "max_active_per_stage": 5 });
+    write_file(dir.path(), "config.json", &config.to_string());
+    let output = novomodelo()
+        .env_remove("RUST_LOG")
+        .args(["validate", dir.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        stderr
+            .matches("max_active_per_stage (5) is less than forward_passes (10)")
+            .count(),
+        1,
+        "{stderr}"
+    );
+}
+
 /// An invalid `simulation.scenario_source` must be rejected by both `validate`
 /// and `run`, carrying the same rule message — the training half of the
 /// config stays valid so the failure is unambiguously the simulation source.
@@ -438,17 +767,7 @@ fn checkpointing_enabled_without_interval_exits_1() {
 /// `fpha_hyperplanes.parquet` is absent) and is rejected only at Phase 10 by
 /// `prepare_hydro_models_from_artifacts` → `determine_source`.
 fn write_fpha_hydro_without_production_models_case(dir: &TempDir) {
-    write_file(dir.path(), "config.json", CONFIG_JSON);
-    write_file(dir.path(), "penalties.json", PENALTIES_JSON);
-    write_file(dir.path(), "stages.json", STAGES_JSON);
-    write_file(
-        dir.path(),
-        "initial_conditions.json",
-        INITIAL_CONDITIONS_JSON,
-    );
-    write_file(dir.path(), "system/buses.json", BUSES_JSON);
-    write_file(dir.path(), "system/lines.json", LINES_JSON);
-    write_file(dir.path(), "system/thermals.json", THERMALS_JSON);
+    make_valid_case(dir);
 
     let fpha_hydros_json = r#"{
         "hydros": [
@@ -742,25 +1061,6 @@ fn append_simulation_only_policy(dir: &Path) {
     );
 }
 
-/// Every file under `dir` keyed by its path relative to `dir`, with its bytes:
-/// two equal snapshots hold the same relative paths, lengths and contents.
-fn snapshot_files(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
-    fn walk(root: &Path, dir: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
-        for entry in fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                walk(root, &path, files);
-            } else {
-                let relative = path.strip_prefix(root).unwrap().to_path_buf();
-                files.insert(relative, fs::read(&path).unwrap());
-            }
-        }
-    }
-    let mut files = BTreeMap::new();
-    walk(dir, dir, &mut files);
-    files
-}
-
 fn validate_json(dir: &Path) -> (std::process::Output, serde_json::Value) {
     let output = novomodelo()
         .args(["validate", dir.to_str().unwrap(), "--json"])
@@ -874,6 +1174,39 @@ fn boundary_mismatched_hydro_set_exits_nonzero_and_names_hydro() {
         .code(1)
         .stdout(predicate::str::contains("hydro 0"))
         .stdout(predicate::str::contains("different set of plants"));
+}
+
+/// A run that does not train never injects its boundary, so `validate` does not
+/// reconcile it: the mismatched boundary of the test above is refused only while
+/// training is enabled.
+#[test]
+fn boundary_is_reconciled_only_when_the_run_trains() {
+    let target_dir = TempDir::new().unwrap();
+    write_boundary_case(target_dir.path(), 0);
+    run_case(target_dir.path());
+
+    let source_dir = TempDir::new().unwrap();
+    write_boundary_case(source_dir.path(), 1);
+    run_case(source_dir.path());
+
+    append_boundary_policy(target_dir.path(), &source_dir.path().join("output/policy"));
+    novomodelo()
+        .args(["validate", target_dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("different set of plants"));
+
+    let config_path = target_dir.path().join("config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    config["training"]["enabled"] = serde_json::json!(false);
+    fs::write(&config_path, config.to_string()).unwrap();
+
+    let (output, value) = validate_json(target_dir.path());
+    assert!(output.status.success(), "{value}");
+    assert_eq!(value["configured"], serde_json::json!(false));
+    assert!(value["boundary_date"].is_null());
 }
 
 /// The same mismatched-hydro-set boundary reject under `--json` emits a
@@ -1222,9 +1555,227 @@ fn validate_refuses_a_resume_policy_written_by_another_version() {
     );
 }
 
-/// A simulation-only load shares the warm-start kind: there is no third kind.
+fn edit_json(path: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+    let mut value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    edit(&mut value);
+    fs::write(path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+}
+
+/// Asserts that `validate --json` refuses the case in `dir` under the resume
+/// phase with a message containing `fragment`.
+fn assert_resume_refused(dir: &Path, fragment: &str) {
+    let (output, value) = validate_json(dir);
+    assert_eq!(output.status.code(), Some(1), "{value}");
+    assert_eq!(value["error"]["phase"], "ResumeIncompatible");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(fragment),
+        "got: {value}"
+    );
+}
+
+/// A `level1` resume of a checkpoint written by a run without `level1` holds no
+/// trial-state history to continue from; the same resume without `level1`
+/// validates.
 #[test]
-fn validate_refuses_a_simulation_only_policy_under_the_warm_start_kind() {
+fn validate_rejects_a_resume_without_the_trial_state_history() {
+    let dir = TempDir::new().unwrap();
+    copy_dir_recursive(&common::case_dir("1dtoy"), dir.path());
+    let config = dir.path().join("config.json");
+    edit_json(&config, |config| {
+        config["training"]["stopping_rules"] =
+            serde_json::json!([{ "type": "iteration_limit", "limit": 1 }]);
+        config["simulation"]["enabled"] = serde_json::json!(false);
+    });
+    run_case(dir.path());
+
+    edit_json(&config, |config| {
+        config["policy"] = serde_json::json!({ "mode": "resume" });
+    });
+    let (output, value) = validate_json(dir.path());
+    assert_eq!(output.status.code(), Some(0), "{value}");
+
+    edit_json(&config, |config| {
+        config["training"]["cut_selection"] =
+            serde_json::json!({ "selection": { "method": "level1", "check_frequency": 1 } });
+    });
+    assert_resume_refused(
+        dir.path(),
+        "resume needs the trial-state history of training.cut_selection.selection.method = \
+         level1; the checkpoint holds none",
+    );
+}
+
+/// A `dynamic` simulation of every cut reads only the active cuts of a pool, so it
+/// is refused over the policy of a `level1` run that deactivated cuts; the same
+/// policy validates under `simulation.cut_set = active`.
+#[test]
+fn validate_rejects_a_dynamic_simulation_over_deactivated_cuts() {
+    let dir = TempDir::new().unwrap();
+    copy_dir_recursive(&common::case_dir("1dtoy"), dir.path());
+    let config = dir.path().join("config.json");
+    edit_json(&config, |config| {
+        config["training"]["stopping_rules"] =
+            serde_json::json!([{ "type": "iteration_limit", "limit": 4 }]);
+        config["training"]["cut_selection"] =
+            serde_json::json!({ "selection": { "method": "level1", "check_frequency": 1 } });
+        config["simulation"]["enabled"] = serde_json::json!(false);
+    });
+    run_case(dir.path());
+
+    edit_json(&config, |config| {
+        config["training"]["enabled"] = serde_json::json!(false);
+        config["training"]["cut_selection"] =
+            serde_json::json!({ "selection": { "method": "dynamic" } });
+        config["simulation"]["enabled"] = serde_json::json!(true);
+        config["simulation"]["selection"] =
+            serde_json::json!({ "method": "sampled", "num_scenarios": 1 });
+        config["simulation"]["cut_set"] = serde_json::json!("active");
+    });
+    let (output, value) = validate_json(dir.path());
+    assert_eq!(output.status.code(), Some(0), "{value}");
+
+    edit_json(&config, |config| {
+        config["simulation"]["cut_set"] = serde_json::json!("all");
+    });
+    let (output, value) = validate_json(dir.path());
+    assert_eq!(output.status.code(), Some(1), "{value}");
+    assert_eq!(value["error"]["phase"], "SimulationPolicyIncompatible");
+    let message = value["error"]["message"].as_str().unwrap();
+    for fragment in [
+        "training.cut_selection.selection.method = dynamic cannot simulate \
+         simulation.cut_set = all over this policy: pool",
+        "a dynamic lazy solve reads only the active cuts; set simulation.cut_set = active or \
+         use the level1 method",
+    ] {
+        assert!(message.contains(fragment), "got: {value}");
+    }
+}
+
+/// A `dynamic` simulation of every cut reads only the active cuts of the terminal
+/// pool, so it is refused over the `policy.boundary` rows of a `level1` run that
+/// deactivated one; the same boundary validates under `simulation.cut_set = active`.
+#[test]
+fn validate_rejects_a_dynamic_simulation_over_deactivated_boundary_cuts() {
+    let dir = TempDir::new().unwrap();
+    copy_dir_recursive(&common::case_dir("1dtoy"), dir.path());
+    let config = dir.path().join("config.json");
+    edit_json(&config, |config| {
+        config["training"]["stopping_rules"] =
+            serde_json::json!([{ "type": "iteration_limit", "limit": 4 }]);
+        config["training"]["cut_selection"] =
+            serde_json::json!({ "selection": { "method": "level1", "check_frequency": 1 } });
+        config["simulation"]["enabled"] = serde_json::json!(false);
+    });
+    run_case(dir.path());
+
+    edit_json(&dir.path().join("stages.json"), |stages| {
+        stages["stages"].as_array_mut().unwrap().truncate(2);
+    });
+    edit_json(&config, |config| {
+        config["training"]["cut_selection"] =
+            serde_json::json!({ "selection": { "method": "dynamic" } });
+        config["simulation"]["enabled"] = serde_json::json!(true);
+        config["simulation"]["selection"] =
+            serde_json::json!({ "method": "sampled", "num_scenarios": 1 });
+        config["simulation"]["cut_set"] = serde_json::json!("active");
+        config["policy"] = serde_json::json!({ "boundary": { "path": "output/policy" } });
+    });
+    let (output, value) = validate_json(dir.path());
+    assert_eq!(output.status.code(), Some(0), "{value}");
+
+    edit_json(&config, |config| {
+        config["simulation"]["cut_set"] = serde_json::json!("all");
+    });
+    let (output, value) = validate_json(dir.path());
+    assert_eq!(output.status.code(), Some(1), "{value}");
+    assert_eq!(value["error"]["phase"], "BoundaryReconciliationError");
+    let message = value["error"]["message"].as_str().unwrap();
+    for fragment in [
+        "training.cut_selection.selection.method = dynamic cannot simulate \
+         simulation.cut_set = all over this policy: the policy.boundary pool holds",
+        "a dynamic lazy solve reads only the active cuts; set simulation.cut_set = active or \
+         use the level1 method",
+    ] {
+        assert!(message.contains(fragment), "got: {value}");
+    }
+}
+
+/// A run that fails in-band writes its policy to `policy.partial`, whose bases
+/// are not whole: a resume from it is refused, while a resume from the whole
+/// checkpoint beside it validates.
+#[test]
+fn validate_rejects_a_resume_from_a_partial_policy() {
+    let dir = TempDir::new().unwrap();
+    copy_dir_recursive(
+        &common::case_dir("deterministic/d13-generic-constraint"),
+        dir.path(),
+    );
+    let healthy = TempDir::new().unwrap();
+    copy_dir_recursive(dir.path(), healthy.path());
+    let config = dir.path().join("config.json");
+    edit_json(&config, |config| {
+        config["training"]["stopping_rules"] =
+            serde_json::json!([{ "type": "iteration_limit", "limit": 1 }]);
+    });
+    run_case(dir.path());
+
+    edit_json(&config, |config| {
+        config["training"]["stopping_rules"] =
+            serde_json::json!([{ "type": "iteration_limit", "limit": 2 }]);
+        config["policy"] = serde_json::json!({ "mode": "resume" });
+    });
+    make_training_lp_infeasible(dir.path());
+    novomodelo()
+        .args(["run", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(3);
+    assert!(
+        dir.path()
+            .join("output/policy.partial/manifest.bin")
+            .is_file()
+    );
+    for file in [
+        "system/thermals.json",
+        "constraints/generic_constraints.json",
+    ] {
+        fs::copy(healthy.path().join(file), dir.path().join(file)).unwrap();
+    }
+    let (output, value) = validate_json(dir.path());
+    assert_eq!(output.status.code(), Some(0), "{value}");
+
+    edit_json(&config, |config| {
+        config["policy"]["path"] = serde_json::json!("policy.partial");
+    });
+    assert_resume_refused(
+        dir.path(),
+        "resume needs a whole checkpoint; the checkpoint's per-scenario bases are not whole \
+         (it was written when a run failed); resume from the last whole checkpoint or continue \
+         with policy.mode = warm_start",
+    );
+}
+
+/// With the generic constraint's slack disabled and a thermal minimum of 20 MW,
+/// every stage-0 training solve of the d13 deck is infeasible.
+fn make_training_lp_infeasible(case: &Path) {
+    edit_json(
+        &case.join("constraints/generic_constraints.json"),
+        |constraints| {
+            constraints["constraints"][0]["slack"] = serde_json::json!({ "enabled": false });
+        },
+    );
+    edit_json(&case.join("system/thermals.json"), |thermals| {
+        thermals["thermals"][0]["generation"]["min_mw"] = serde_json::json!(20.0);
+    });
+}
+
+/// A simulation-only load has its own kind, apart from a warm start.
+#[test]
+fn validate_refuses_a_simulation_only_policy_under_the_simulation_kind() {
     let dir = TempDir::new().unwrap();
     write_boundary_case(dir.path(), 0);
     run_case(dir.path());
@@ -1233,7 +1784,7 @@ fn validate_refuses_a_simulation_only_policy_under_the_warm_start_kind() {
 
     let (output, value) = validate_json(dir.path());
     assert_eq!(output.status.code(), Some(1));
-    assert_eq!(value["error"]["phase"], "WarmStartIncompatible");
+    assert_eq!(value["error"]["phase"], "SimulationPolicyIncompatible");
     assert!(
         value["error"]["message"]
             .as_str()

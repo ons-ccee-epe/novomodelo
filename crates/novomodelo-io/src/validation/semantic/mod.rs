@@ -48,7 +48,7 @@ pub use inflow_seeding::seed_lag_state_depth;
 pub(crate) fn validate_semantic_hydro_thermal(data: &ParsedData, ctx: &mut ValidationContext) {
     hydro::check_cascade_acyclic(data, ctx);
     hydro::check_hydro_bounds(data, ctx);
-    hydro::check_diversion_floor_requires_channel(data, ctx);
+    hydro::check_diversion_requires_channel(data, ctx);
     hydro::check_lifecycle_consistency(data, ctx);
     hydro::check_lifecycle_consistency_remaining(data, ctx);
     hydro::check_filling_config(data, ctx);

@@ -5,12 +5,20 @@
 //!
 //! The `equivalent_productivity_mw_per_m3s` column applies to **all** hydro
 //! generation models. For FPHA hydros it overrides the `ρ_eq` value otherwise
-//! derived from VHA geometry and `ρ_esp`. For non-FPHA hydros
-//! (`constant_productivity`, `linearized_head`) it supplies `ρ_eq` directly
+//! derived from VHA geometry and `ρ_esp`. For a `constant_productivity` hydro
+//! it supplies `ρ_eq` directly
 //! when `productivity_mw_per_m3s` is omitted from
 //! `system/hydro_production_models.json`. Load-time validation enforces that
 //! exactly one source supplies the value for each non-FPHA `(hydro, stage)`
 //! pair — see [`crate::validation::productivity_resolution`].
+//!
+//! `equivalent_productivity_mw_per_m3s` reaches only the reference-point
+//! productivity. The useful-range mean productivity (the integrated computed
+//! tags and output columns) still integrates the forebay height whenever the
+//! hydro has VHA geometry and a resolved `ρ_esp`; the
+//! `integrated_equivalent_productivity_mw_per_m3s` column overrides that
+//! plant's own mean term directly, and the cascade sum is still computed from
+//! it.
 //!
 //! The `specific_productivity_mw_per_m3s_per_m` (`ρ_esp`) override feeds the
 //! head-derived productivity of both the reference-point and mean
@@ -27,13 +35,14 @@
 //!
 //! ## Parquet schema
 //!
-//! | Column                                    | Parquet type | Nullable | Description                                     |
-//! |-------------------------------------------|--------------|----------|-------------------------------------------------|
-//! | `hydro_id`                                | INT32        | no       | Hydro plant identifier                          |
-//! | `stage_id`                                | INT32        | yes      | Stage; NULL means "applies to all stages"       |
-//! | `equivalent_productivity_mw_per_m3s`      | DOUBLE       | yes      | Direct `ρ_eq` override; finite and `>= 0.0`     |
-//! | `reference_outflow_m3s`                   | DOUBLE       | yes      | `Q_ref` override; finite and `>= 0.0`           |
-//! | `specific_productivity_mw_per_m3s_per_m`  | DOUBLE       | yes      | `ρ_esp` override; finite and `>= 0.0`           |
+//! | Column                                          | Parquet type | Nullable | Description                                           |
+//! |-------------------------------------------------|--------------|----------|-------------------------------------------------------|
+//! | `hydro_id`                                      | INT32        | no       | Hydro plant identifier                                |
+//! | `stage_id`                                      | INT32        | yes      | Stage; NULL means "applies to all stages"             |
+//! | `equivalent_productivity_mw_per_m3s`            | DOUBLE       | yes      | Reference-point `ρ_eq` override; finite and `>= 0.0`  |
+//! | `reference_outflow_m3s`                         | DOUBLE       | yes      | `Q_ref` override; finite and `>= 0.0`                 |
+//! | `specific_productivity_mw_per_m3s_per_m`        | DOUBLE       | yes      | `ρ_esp` override; finite and `>= 0.0`                 |
+//! | `integrated_equivalent_productivity_mw_per_m3s` | DOUBLE       | yes      | Mean-evaluator own-term override; finite and `>= 0.0` |
 //!
 //! ## Validation
 //!
@@ -71,6 +80,8 @@ pub struct HydroEnergyProductivityRow {
     pub reference_outflow_m3s: Option<f64>,
     /// `ρ_esp` override \[MW/(m³/s)/m\].
     pub specific_productivity_mw_per_m3s_per_m: Option<f64>,
+    /// Useful-range mean own-term override \[MW/(m³/s)\].
+    pub integrated_equivalent_productivity_mw_per_m3s: Option<f64>,
 }
 
 /// Parse `system/hydro_energy_productivity.parquet`, sorted by `(hydro_id,
@@ -101,6 +112,11 @@ pub fn parse_hydro_energy_productivity(
         let q_ref_col = extract_required_float64(&batch, "reference_outflow_m3s", path)?;
         let rho_esp_col =
             extract_required_float64(&batch, "specific_productivity_mw_per_m3s_per_m", path)?;
+        let integrated_rho_eq_col = extract_required_float64(
+            &batch,
+            "integrated_equivalent_productivity_mw_per_m3s",
+            path,
+        )?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();
@@ -143,12 +159,21 @@ pub fn parse_hydro_energy_productivity(
                 path,
             )?;
 
+            let integrated_equivalent_productivity_mw_per_m3s = extract_nonnegative_override(
+                integrated_rho_eq_col,
+                i,
+                row_idx,
+                "integrated_equivalent_productivity_mw_per_m3s",
+                path,
+            )?;
+
             rows.push(HydroEnergyProductivityRow {
                 hydro_id,
                 stage_id,
                 equivalent_productivity_mw_per_m3s,
                 reference_outflow_m3s,
                 specific_productivity_mw_per_m3s_per_m,
+                integrated_equivalent_productivity_mw_per_m3s,
             });
         }
     }
@@ -251,6 +276,11 @@ mod tests {
                 DataType::Float64,
                 true,
             ),
+            Field::new(
+                "integrated_equivalent_productivity_mw_per_m3s",
+                DataType::Float64,
+                true,
+            ),
         ]))
     }
 
@@ -261,6 +291,24 @@ mod tests {
         q_refs: &[Option<f64>],
         rho_esps: &[Option<f64>],
     ) -> RecordBatch {
+        make_batch_with_integrated(
+            hydro_ids,
+            stage_ids,
+            rho_eqs,
+            q_refs,
+            rho_esps,
+            &vec![None; hydro_ids.len()],
+        )
+    }
+
+    fn make_batch_with_integrated(
+        hydro_ids: &[i32],
+        stage_ids: &[Option<i32>],
+        rho_eqs: &[Option<f64>],
+        q_refs: &[Option<f64>],
+        rho_esps: &[Option<f64>],
+        integrated_rho_eqs: &[Option<f64>],
+    ) -> RecordBatch {
         let schema = make_schema();
         RecordBatch::try_new(
             schema,
@@ -270,6 +318,7 @@ mod tests {
                 Arc::new(Float64Array::from(rho_eqs.to_vec())),
                 Arc::new(Float64Array::from(q_refs.to_vec())),
                 Arc::new(Float64Array::from(rho_esps.to_vec())),
+                Arc::new(Float64Array::from(integrated_rho_eqs.to_vec())),
             ],
         )
         .expect("valid batch construction")
@@ -336,7 +385,7 @@ mod tests {
 
     /// Builds a batch that still physically carries the retired
     /// `reference_volume_hm3` column (6 columns) to exercise the
-    /// warn-and-ignore forward-compat path.
+    /// warn-and-ignore path.
     fn make_stale_batch(
         hydro_ids: &[i32],
         stage_ids: &[Option<i32>],
@@ -360,6 +409,11 @@ mod tests {
                 DataType::Float64,
                 true,
             ),
+            Field::new(
+                "integrated_equivalent_productivity_mw_per_m3s",
+                DataType::Float64,
+                true,
+            ),
         ]));
         RecordBatch::try_new(
             schema,
@@ -370,6 +424,7 @@ mod tests {
                 Arc::new(Float64Array::from(v_refs.to_vec())),
                 Arc::new(Float64Array::from(q_refs.to_vec())),
                 Arc::new(Float64Array::from(rho_esps.to_vec())),
+                Arc::new(Float64Array::from(vec![None::<f64>; hydro_ids.len()])),
             ],
         )
         .expect("valid stale batch construction")
@@ -417,7 +472,7 @@ mod tests {
         );
     }
 
-    /// A row where all three override columns are NULL is accepted.
+    /// A row where every override column is NULL is accepted.
     #[test]
     fn test_all_overrides_null_accepted() {
         let batch = make_batch(&[1], &[Some(0)], &[None], &[None], &[None]);
@@ -430,6 +485,7 @@ mod tests {
         assert!(row.equivalent_productivity_mw_per_m3s.is_none());
         assert!(row.reference_outflow_m3s.is_none());
         assert!(row.specific_productivity_mw_per_m3s_per_m.is_none());
+        assert!(row.integrated_equivalent_productivity_mw_per_m3s.is_none());
     }
 
     /// A null `hydro_id` must be rejected.
@@ -450,12 +506,18 @@ mod tests {
                 DataType::Float64,
                 true,
             ),
+            Field::new(
+                "integrated_equivalent_productivity_mw_per_m3s",
+                DataType::Float64,
+                true,
+            ),
         ]));
         let batch = RecordBatch::try_new(
             schema,
             vec![
                 Arc::new(Int32Array::from(vec![None::<i32>])),
                 Arc::new(Int32Array::from(vec![None::<i32>])),
+                Arc::new(Float64Array::from(vec![None::<f64>])),
                 Arc::new(Float64Array::from(vec![None::<f64>])),
                 Arc::new(Float64Array::from(vec![None::<f64>])),
                 Arc::new(Float64Array::from(vec![None::<f64>])),
@@ -524,5 +586,64 @@ mod tests {
         assert_eq!(rows[1].stage_id, Some(5));
         assert_eq!(rows[2].hydro_id, EntityId::from(2));
         assert_eq!(rows[2].stage_id, None);
+    }
+    #[test]
+    fn integrated_override_is_read_independently_of_rho_eq() {
+        let batch = make_batch_with_integrated(
+            &[1, 2],
+            &[Some(0), None],
+            &[Some(3.6), None],
+            &[None, None],
+            &[None, None],
+            &[Some(3.2), Some(0.0)],
+        );
+        let tmp = write_parquet(&batch);
+        let rows = parse_hydro_energy_productivity(tmp.path()).unwrap();
+        assert_eq!(rows[0].equivalent_productivity_mw_per_m3s, Some(3.6));
+        assert_eq!(
+            rows[0].integrated_equivalent_productivity_mw_per_m3s,
+            Some(3.2)
+        );
+        assert_eq!(rows[1].equivalent_productivity_mw_per_m3s, None);
+        assert_eq!(
+            rows[1].integrated_equivalent_productivity_mw_per_m3s,
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn negative_integrated_override_is_rejected_naming_the_column() {
+        let batch =
+            make_batch_with_integrated(&[1], &[Some(0)], &[None], &[None], &[None], &[Some(-1.0)]);
+        let tmp = write_parquet(&batch);
+        match parse_hydro_energy_productivity(tmp.path()).unwrap_err() {
+            LoadError::SchemaError { field, .. } => assert!(
+                field.ends_with(".integrated_equivalent_productivity_mw_per_m3s"),
+                "field should name the column, got: {field}"
+            ),
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_integrated_column_is_rejected() {
+        let schema = Arc::new(Schema::new(make_schema().fields()[..5].to_vec()));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1])),
+                Arc::new(Int32Array::from(vec![None::<i32>])),
+                Arc::new(Float64Array::from(vec![Some(1.0)])),
+                Arc::new(Float64Array::from(vec![None::<f64>])),
+                Arc::new(Float64Array::from(vec![None::<f64>])),
+            ],
+        )
+        .expect("valid batch");
+        let tmp = write_parquet(&batch);
+        let err = parse_hydro_energy_productivity(tmp.path()).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("integrated_equivalent_productivity_mw_per_m3s"),
+            "error should name the missing column, got: {err:?}"
+        );
     }
 }

@@ -244,6 +244,10 @@ jobs:
           tar czf "$ARCHIVE" -C staging .
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
+      - name: Probe the dgemm kernel of the archive
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: bash scripts/ci/check-release-kernel.sh "$ARCHIVE"
+
       - name: Upload to GitHub Release
         run: |
           # Wait for the main release workflow (cargo-dist) to create the

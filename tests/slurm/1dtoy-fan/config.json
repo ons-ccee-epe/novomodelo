@@ -1,0 +1,46 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/config.schema.json",
+  "training": {
+    "selection": {
+      "method": "sampled",
+      "forward_passes": 8
+    },
+    "stopping_rules": [
+      {
+        "type": "iteration_limit",
+        "limit": 48
+      }
+    ],
+    "scenario_source": {
+      "seed": 42,
+      "inflow": {
+        "scheme": "in_sample"
+      },
+      "load": {
+        "scheme": "in_sample"
+      },
+      "ncs": {
+        "scheme": "in_sample"
+      }
+    },
+    "cut_selection": {
+      "selection": {
+        "method": "level1",
+        "check_frequency": 2
+      },
+      "max_active_per_stage": 20
+    }
+  },
+  "simulation": {
+    "enabled": true,
+    "selection": {
+      "method": "sampled",
+      "num_scenarios": 20
+    }
+  },
+  "modeling": {
+    "inflow_non_negativity": {
+      "method": "none"
+    }
+  }
+}

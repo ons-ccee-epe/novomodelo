@@ -9,7 +9,9 @@
 //! lower bound's root-opening LPs to the forward pass's own patched root
 //! templates, bound by bound. A fourth test,
 //! `every_deck_workspace_pool_is_sized_from_its_owners`, pins each deck's
-//! workspace pool to the sizes its owners declare.
+//! workspace pool to the sizes its owners declare. A fifth,
+//! `truncation_slack_bounds_are_identical_across_solve_sites`, pins the
+//! inflow-slack column bounds each solve site derives from its own pinned lags.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -20,6 +22,8 @@ use std::ops::Range;
 use std::path::Path;
 
 use novomodelo_core::{BlockMode, EntityId};
+use novomodelo_io::config::{InflowNonNegativityMethod as CfgInflowMethod, SimulationSelection};
+use novomodelo_sddp::InflowNonNegativityMethod;
 use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::indexer::{BlockIdx, BusSys, HydroSys, NcsSys, StateSpace};
 use novomodelo_sddp::lp::StageGeometry;
@@ -32,10 +36,11 @@ use novomodelo_sddp::test_support::{
 use novomodelo_solver::{ActiveSolver, StageTemplate};
 
 use common::in_code_studies::{
-    ChronologicalNoiseSpec, chronological_noise_study, mixed_lead_anticipated_study,
-    stochastic_parallel_study,
+    ChronologicalNoiseSpec, NEGATIVE_DRAW_INFLOW_MEAN_M3S, NEGATIVE_DRAW_LAG_SEED_M3S,
+    chronological_noise_study, mixed_lead_anticipated_study, negative_draw_par1_spec,
+    negative_draw_raw_inflow, stochastic_parallel_study,
 };
-use common::{build_setup_in_code, fresh_setup_with};
+use common::{build_setup_in_code, fresh_setup_with, run_simulation};
 
 #[test]
 fn capture_at_initial_state_matches_node_capture() {
@@ -158,14 +163,17 @@ fn check_inflow(
     dim: usize,
     h: usize,
     state: &StateSpace,
+    own_slack: Option<usize>,
     changed: &ChangedIndices,
     violations: &mut Vec<String>,
 ) {
-    if !changed.cols.is_empty() {
-        violations.push(format!(
-            "{deck} node={pos} dim={dim} (inflow h={h}): unexpected column changes {:?}",
-            changed.cols
-        ));
+    for &col in &changed.cols {
+        if Some(col) != own_slack {
+            violations.push(format!(
+                "{deck} node={pos} dim={dim} (inflow h={h}): column {col} outside own slack \
+                 column {own_slack:?}"
+            ));
+        }
     }
     let z = z_row(state, h);
     for &row in &changed.rows {
@@ -243,6 +251,10 @@ fn sweep_setup(
     let n_dims = dims.total();
     let initial_state = oracle_initial_state(setup);
     let zero_noise = vec![0.0_f64; n_dims];
+    let truncates = matches!(
+        *setup.training_ctx().inflow_method,
+        InflowNonNegativityMethod::Truncation | InflowNonNegativityMethod::TruncationWithPenalty
+    );
 
     for pos in (0..setup.inputs.node_graph.nodes.len()).map(NodePos) {
         let stage = setup.inputs.node_graph.nodes[pos].stage.0;
@@ -270,12 +282,18 @@ fn sweep_setup(
 
             if dims.hydro_range().contains(&dim) {
                 *vacuity.entry((mode_tag, "inflow")).or_insert(0) += 1;
+                let own_slack = (truncates && !geom.inflow_slack.is_empty())
+                    .then(|| geom.inflow_slack_col(HydroSys::new(dim)));
+                if own_slack.is_some_and(|c| changed.cols.contains(&c)) {
+                    *vacuity.entry((mode_tag, "inflow_slack")).or_insert(0) += 1;
+                }
                 check_inflow(
                     deck_key,
                     pos,
                     dim,
                     dim,
                     state_space(setup),
+                    own_slack,
                     &changed,
                     violations,
                 );
@@ -299,10 +317,47 @@ fn sweep_setup(
     }
 }
 
+/// Each cell must credit `(block_mode, inflow_slack)` on its own: the aggregate
+/// guard alone lets one cell's count hide another's silence.
+fn sweep_negative_inflow_cells(
+    swept: &mut Vec<String>,
+    violations: &mut Vec<String>,
+    vacuity: &mut BTreeMap<(&'static str, &'static str), usize>,
+) {
+    for (method, method_tag) in [
+        (CfgInflowMethod::TruncationWithPenalty, "twp"),
+        (CfgInflowMethod::Truncation, "truncation"),
+    ] {
+        for (block_mode, mode_word) in [
+            (BlockMode::Chronological, "chronological"),
+            (BlockMode::Parallel, "parallel"),
+        ] {
+            let label = format!("in-code/{method_tag}-negative-inflow-{mode_word}");
+            let (system, config) = chronological_noise_study(&ChronologicalNoiseSpec {
+                block_modes: [block_mode; 2],
+                inflow_method: method,
+                inflow_mean_m3s: NEGATIVE_DRAW_INFLOW_MEAN_M3S,
+                ..ChronologicalNoiseSpec::default()
+            });
+            let setup = build_setup_in_code(system, &config);
+            swept.push(label.clone());
+            let key = (block_mode_tag(block_mode), "inflow_slack");
+            let before = vacuity.get(&key).copied().unwrap_or(0);
+            sweep_setup(&label, &setup, &[], violations, vacuity);
+            assert!(
+                vacuity.get(&key).copied().unwrap_or(0) > before,
+                "{label}: no own-slack-bound change credited"
+            );
+        }
+    }
+}
+
 /// On every deck, each noise dimension, on its own, changes only the bounds
 /// the layout assigns to that dimension's entity. Ownership is defined by
 /// row/column families (`z_row`/`load_chunk`/`ncs_chunk`
-/// above), never by the patch buffers themselves.
+/// above), never by the patch buffers themselves. A hydro's inflow-noise
+/// ownership is its z row, plus its own inflow-slack column under the
+/// truncation methods.
 #[test]
 fn every_noise_dimension_patches_only_its_own_entity() {
     let slow_tests_enabled = cfg!(feature = "slow-tests");
@@ -373,6 +428,8 @@ fn every_noise_dimension_patches_only_its_own_entity() {
         &mut vacuity,
     );
 
+    sweep_negative_inflow_cells(&mut swept, &mut violations, &mut vacuity);
+
     eprintln!("swept labels: {swept:?}");
     eprintln!("patch-ownership vacuity counts, (block_mode, family) -> nonvacuous triples:");
     for (&(mode, family), count) in &vacuity {
@@ -396,6 +453,14 @@ fn every_noise_dimension_patches_only_its_own_entity() {
         "vacuity guard: (Chronological, inflow) has no nonvacuous (deck, node, dimension) \
          triple — the sweep has no power on this family"
     );
+    for mode in ["Parallel", "Chronological"] {
+        let count = vacuity.get(&(mode, "inflow_slack")).copied().unwrap_or(0);
+        assert!(
+            count >= 1,
+            "vacuity guard: ({mode}, inflow_slack) has no nonvacuous (deck, node, dimension) \
+             triple — the sweep has no power on the own-slack-bound family"
+        );
+    }
 
     assert!(
         violations.is_empty(),
@@ -525,6 +590,199 @@ fn lower_bound_root_lp_matches_the_forward_root_lp() {
         "lower-bound vs forward root LP mismatches:\n{}",
         violations.join("\n")
     );
+}
+
+// ── Inflow-slack bounds across solve sites ───────────────────────────────────
+
+const NEGATIVE_DRAW_OPENINGS: usize = 3;
+const SIMULATED_SCENARIOS: u32 = 4;
+
+fn negative_draw_spec(method: CfgInflowMethod) -> ChronologicalNoiseSpec {
+    ChronologicalNoiseSpec {
+        branching_factor: NEGATIVE_DRAW_OPENINGS,
+        ..negative_draw_par1_spec(method)
+    }
+}
+
+fn assert_lower_bound_matches_forward_at_root(method: CfgInflowMethod) {
+    let label = format!("in-code/negative-draw-par1-{method:?}");
+    let (system, config) = chronological_noise_study(&negative_draw_spec(method));
+    let setup = build_setup_in_code(system, &config);
+
+    let mut violations: Vec<String> = Vec::new();
+    let compared = compare_lower_bound_to_forward_root_lp(&label, &setup, &mut violations);
+    assert_eq!(compared, NEGATIVE_DRAW_OPENINGS, "{label}: root openings");
+    assert!(
+        violations.is_empty(),
+        "{label}: lower-bound vs forward root LP mismatches:\n{}",
+        violations.join("\n")
+    );
+
+    let root = root_node(&setup);
+    let initial_state = oracle_initial_state(&setup);
+    let geom = &setup.inputs.stage_data.stage_templates.geometry_per_stage[0];
+    let has_positive_bound = (0..compared).any(|opening| {
+        let noise = node_opening_noise(&setup, root, opening);
+        let forward = capture_patched_node_template_at(&setup, root, &noise, &initial_state);
+        (0..state_space(&setup).hydro_count)
+            .any(|h| forward.col_upper[geom.inflow_slack_col(HydroSys::new(h))] > 0.0)
+    });
+    assert!(
+        has_positive_bound,
+        "{label}: no root opening has a positive slack upper bound"
+    );
+}
+
+fn assert_stage_one_bounds_follow_the_pinned_lags(method: CfgInflowMethod) {
+    let label = format!("in-code/negative-draw-par1-{method:?}");
+    let (system, config) = chronological_noise_study(&negative_draw_spec(method));
+    let setup = build_setup_in_code(system, &config);
+    let layout = state_space(&setup);
+    let hydro_range = setup.inputs.stochastic.class_dimensions().hydro_range();
+
+    let eta_0 = &node_opening_noise(&setup, root_node(&setup), 0)[hydro_range.clone()];
+    assert_eq!(eta_0.len(), layout.hydro_count, "{label}: hydro noise");
+    let raw_0: Vec<f64> = eta_0
+        .iter()
+        .enumerate()
+        .map(|(h, &eta)| negative_draw_raw_inflow(h, NEGATIVE_DRAW_LAG_SEED_M3S[h], eta))
+        .collect();
+    let mut incoming = oracle_initial_state(&setup);
+    for (h, &raw) in raw_0.iter().enumerate() {
+        incoming[layout.inflow_lags.start + h] = raw;
+    }
+
+    let node = NodePos(1);
+    let n_openings = setup.inputs.node_graph.nodes[node].openings.len;
+    assert_eq!(
+        n_openings, NEGATIVE_DRAW_OPENINGS,
+        "{label}: stage-1 openings"
+    );
+    let geom = &setup.inputs.stage_data.stage_templates.geometry_per_stage
+        [setup.inputs.node_graph.nodes[node].stage.0];
+
+    let mut checked = 0_usize;
+    let mut discriminating: Vec<(usize, usize, f64, f64)> = Vec::new();
+    for opening in 0..n_openings {
+        let noise = node_opening_noise(&setup, node, opening);
+        let template = capture_patched_node_template_at(&setup, node, &noise, &incoming);
+        for (h, &raw) in raw_0.iter().enumerate() {
+            let eta_1 = noise[hydro_range.start + h];
+            let expected = (-negative_draw_raw_inflow(h, raw, eta_1)).max(0.0);
+            let at_lag_seed =
+                (-negative_draw_raw_inflow(h, NEGATIVE_DRAW_LAG_SEED_M3S[h], eta_1)).max(0.0);
+            let col = geom.inflow_slack_col(HydroSys::new(h));
+            let scale = template.col_scale.get(col).copied().unwrap_or(1.0);
+            let (lower, upper) = (template.col_lower[col], template.col_upper[col]);
+            assert!(
+                (upper * scale - expected).abs() <= 1e-12 * expected.max(1.0),
+                "{label} opening {opening} hydro {h}: applied upper bound {} != l* {expected}",
+                upper * scale
+            );
+            let expected_lower_bits = if method == CfgInflowMethod::Truncation {
+                upper.to_bits()
+            } else {
+                0.0_f64.to_bits()
+            };
+            assert_eq!(
+                lower.to_bits(),
+                expected_lower_bits,
+                "{label} opening {opening} hydro {h}: lower bound {lower}, upper bound {upper}"
+            );
+            if expected > 1.0 && (expected - at_lag_seed).abs() > 1e-3 {
+                discriminating.push((opening, h, expected, at_lag_seed));
+            }
+            checked += 1;
+        }
+    }
+    assert_eq!(
+        checked,
+        NEGATIVE_DRAW_OPENINGS * NEGATIVE_DRAW_LAG_SEED_M3S.len(),
+        "{label}: cells"
+    );
+    assert!(
+        !discriminating.is_empty(),
+        "{label}: no (opening, hydro) has l* > 1 that differs from its value at the lag seed"
+    );
+}
+
+fn assert_simulated_slack_follows_the_incremental_inflow() {
+    let (system, mut config) =
+        chronological_noise_study(&negative_draw_spec(CfgInflowMethod::Truncation));
+    config.simulation.enabled = true;
+    config.simulation.selection = Some(SimulationSelection::Sampled {
+        num_scenarios: SIMULATED_SCENARIOS,
+    });
+    let mut setup = build_setup_in_code(system, &config);
+    let results = run_simulation(&mut setup, 1);
+    assert_eq!(results.len(), SIMULATED_SCENARIOS as usize, "scenarios");
+
+    let mut checked = 0_usize;
+    for scenario in &results {
+        for stage in &scenario.stages {
+            for record in &stage.hydros {
+                let z = record.incremental_inflow_m3s;
+                let expected = (-z).max(0.0);
+                assert!(
+                    (record.inflow_nonnegativity_slack_m3s - expected).abs()
+                        <= 1e-6 * z.abs().max(1.0),
+                    "scenario {} stage {} hydro {}: slack {} != max(-z, 0) = {expected} (z = {z})",
+                    scenario.scenario_id,
+                    stage.stage_id,
+                    record.hydro_id,
+                    record.inflow_nonnegativity_slack_m3s
+                );
+                checked += 1;
+            }
+        }
+    }
+    let blocks_per_run: usize = setup
+        .inputs
+        .stage_data
+        .stage_templates
+        .geometry_per_stage
+        .iter()
+        .map(|geom| geom.n_blks)
+        .sum();
+    assert_eq!(
+        checked,
+        results.len() * state_space(&setup).hydro_count * blocks_per_run,
+        "hydro records checked"
+    );
+
+    let exercises_raw_negative_lag = results
+        .iter()
+        .flat_map(|scenario| &scenario.stages)
+        .filter(|stage| stage.stage_id == 1)
+        .any(|stage| {
+            stage
+                .hydros
+                .iter()
+                .filter(|record| record.inflow_nonnegativity_slack_m3s > 1.0)
+                .any(|record| {
+                    stage.inflow_lags.iter().any(|lag| {
+                        lag.hydro_id == record.hydro_id
+                            && lag.lag_index == 0
+                            && lag.inflow_m3s < -1.0
+                    })
+                })
+        });
+    assert!(
+        exercises_raw_negative_lag,
+        "no stage-1 hydro record has slack > 1 on an incoming lag 0 below -1"
+    );
+}
+
+#[test]
+fn truncation_slack_bounds_are_identical_across_solve_sites() {
+    for method in [
+        CfgInflowMethod::Truncation,
+        CfgInflowMethod::TruncationWithPenalty,
+    ] {
+        assert_lower_bound_matches_forward_at_root(method);
+        assert_stage_one_bounds_follow_the_pinned_lags(method);
+    }
+    assert_simulated_slack_follows_the_incremental_inflow();
 }
 
 fn active_decks() -> Vec<Deck> {

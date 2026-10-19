@@ -27,12 +27,14 @@ mod simulation_only {
 
     use novomodelo_core::scenario::ScenarioSource;
     use novomodelo_io::output::policy::{read_policy_checkpoint, write_policy_checkpoint};
+    use novomodelo_io::test_support::producer_block_defaults;
+    use novomodelo_sddp::policy::full_fcf_load::{FullFcfLoadKind, LoadedSlotMap};
     use novomodelo_sddp::{
         FutureCostFunction, StudySetup, build_basis_cache_from_checkpoint,
         hydro_models::prepare_hydro_models,
         policy_export::{
-            build_active_indices, build_stage_basis_records, build_stage_cut_records,
-            build_stage_cuts_payloads, convert_basis_cache,
+            BindingCounters, build_basis_store_entries, build_stage_basis_records,
+            build_stage_cut_records, build_stage_cuts_payloads, convert_basis_store,
         },
         setup::{NodePos, prepare_stochastic},
     };
@@ -107,8 +109,7 @@ mod simulation_only {
         let policy_dir = tmpdir.path().join("policy");
 
         let fcf = &setup.fcf;
-        let stage_records = build_stage_cut_records(fcf);
-        let stage_active_indices = build_active_indices(&stage_records);
+        let stage_records = build_stage_cut_records(fcf, BindingCounters::Omitted).expect("export");
         let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); fcf.pools.len()];
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
@@ -120,19 +121,16 @@ mod simulation_only {
             &study_stage_end_dates,
             1_000_000.0,
             &stage_records,
-            &stage_active_indices,
             &stage_manifests,
         );
 
-        let (basis_col_u8, basis_row_u8) = convert_basis_cache(&training_result.basis_cache);
-        let stage_bases = build_stage_basis_records(
-            &training_result.basis_cache,
-            training_result.iterations,
-            &basis_col_u8,
-            &basis_row_u8,
-        );
+        let basis_statuses = convert_basis_store(&training_result.checkpoint_bases);
+        let basis_entries =
+            build_basis_store_entries(&training_result.checkpoint_bases, &basis_statuses);
+        let stage_bases =
+            build_stage_basis_records(&basis_entries, training_result.iterations).expect("bases");
 
-        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
+        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
         let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             n_stages as u32,
             setup.build_graph_manifest(),
@@ -145,11 +143,8 @@ mod simulation_only {
                 warm_start_cuts: warm_start_counts.iter().copied().max().unwrap_or(0),
                 warm_start_counts,
                 rng_seed: 42,
-                total_visited_states: 0,
-                training_block_mode: "parallel".to_string(),
-                training_block_mode_per_stage: vec![],
                 cost_scale_factor: None,
-                lower_bound_history: Vec::new(),
+                ..producer_block_defaults()
             },
         );
 
@@ -201,7 +196,7 @@ mod simulation_only {
 
         let load = build_basis_cache_from_checkpoint(
             &checkpoint.stage_bases,
-            &checkpoint.stage_cuts,
+            &LoadedSlotMap::for_pools(FullFcfLoadKind::SimulationOnly, &checkpoint.stage_cuts),
             &setup,
         );
         assert!(
@@ -666,10 +661,18 @@ mod multi_resolution_integration {
     use std::sync::mpsc;
 
     use novomodelo_core::temporal::SeasonCycleType;
-    use novomodelo_sddp::{
-        StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
+    use novomodelo_sddp::indexer::CutSlot;
+    use novomodelo_sddp::setup::{NodePos, StageIdx};
+    use novomodelo_sddp::test_support::{
+        node_opening_noise, oracle_initial_state, patch_backward_opening_for_probe,
+        solve_stage_for_probe, state_space,
     };
-    use novomodelo_solver::ActiveSolver;
+    use novomodelo_sddp::{
+        InflowNonNegativityMethod, StudySetup, hydro_models::prepare_hydro_models,
+        setup::prepare_stochastic,
+    };
+    use novomodelo_solver::{ActiveSolver, SolverInterface};
+    use novomodelo_stochastic::evaluate_par_batch;
 
     use super::common::StubComm;
 
@@ -895,6 +898,176 @@ mod multi_resolution_integration {
             scenario_results.len()
         );
     }
+
+    // ---------------------------------------------------------------------------
+    // Test: out-of-LP PAR value against the z row
+    // ---------------------------------------------------------------------------
+
+    fn trained_incoming_states(case_dir: &Path, config: &novomodelo_io::Config) -> Vec<Vec<f64>> {
+        let mut trained = build_setup(case_dir, config);
+        trained.set_export_states(true);
+        let mut solver = ActiveSolver::new().expect("solver");
+        let outcome = trained
+            .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
+            .expect("D30: train must not return Err");
+        assert!(
+            outcome.error.is_none(),
+            "D30: training outcome must have no error; got: {:?}",
+            outcome.error
+        );
+        let training_ctx = trained.training_ctx();
+        let n_state = trained.stage_state().n_state;
+
+        (0..trained.num_stages())
+            .map(|t| {
+                if t == 0 {
+                    return oracle_initial_state(&trained);
+                }
+                let pool_id = trained.inputs.node_graph.nodes[NodePos(t - 1)].pool_id;
+                let pool = &trained.fcf.pools[pool_id];
+                let layout = &training_ctx.cut_state_layouts[pool_id];
+                assert_eq!(
+                    layout.n_slots(),
+                    n_state,
+                    "D30: pool {pool_id} must project every state dimension"
+                );
+                let row = (0..pool.populated())
+                    .rev()
+                    .find_map(|slot| pool.trial_state(slot))
+                    .unwrap_or_else(|| panic!("D30: pool {pool_id} stored no state"));
+                let mut state = vec![0.0; n_state];
+                for (j, &value) in row.iter().enumerate() {
+                    state[layout.global_state_index(CutSlot::new(j)).get()] = value;
+                }
+                state
+            })
+            .collect()
+    }
+
+    #[test]
+    fn truncation_out_of_lp_par_value_matches_the_z_row() {
+        let case_dir = d30_case_dir();
+        let config = novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config");
+        let incoming_states = trained_incoming_states(&case_dir, &config);
+
+        let probe = build_setup(&case_dir, &config);
+        assert_eq!(
+            *probe.training_ctx().inflow_method,
+            InflowNonNegativityMethod::Truncation,
+            "D30 must run the truncation method"
+        );
+        let ctx = probe.stage_ctx();
+        let first_quarterly = 6;
+        assert_eq!(
+            ctx.stage_lag_transitions
+                .iter()
+                .position(|transition| transition.rebuild_from_downstream),
+            Some(first_quarterly),
+            "D30: stage {first_quarterly} must be the first to rebuild its lag from the monthly stages"
+        );
+
+        let training_ctx = probe.training_ctx();
+        let layout = state_space(&probe);
+        let par = probe.inputs.stochastic.par();
+        let hydro_range = probe.inputs.stochastic.class_dimensions().hydro_range();
+        let n_hydros = par.n_hydros();
+        let n_stages = probe.num_stages();
+
+        for t in 0..n_stages {
+            for h in 0..n_hydros {
+                let order = par.psi_slice(t, h).len();
+                assert!(
+                    order <= layout.max_par_order,
+                    "stage {t} hydro {h}: PAR order {order} exceeds the lag state depth {} \
+                     the z row reads",
+                    layout.max_par_order
+                );
+            }
+        }
+
+        let mut workspace_pool = probe
+            .create_workspace_pool(&StubComm, 1, ActiveSolver::new)
+            .expect("create_workspace_pool");
+        let ws = &mut workspace_pool.workspaces[0];
+        let mut r = vec![0.0_f64; n_hydros];
+        let mut solves = [0_usize; 2];
+        let mut negative_r = [0_usize; 2];
+        let mut max_lag_term = [0.0_f64; 2];
+
+        assert_eq!(
+            incoming_states.len(),
+            n_stages,
+            "one trained incoming state per stage"
+        );
+        for (t, incoming) in incoming_states.iter().enumerate() {
+            let class = usize::from(t >= first_quarterly);
+            let lags = &incoming[layout.inflow_lags.clone()];
+            let node = NodePos(t);
+            let node_id = probe.inputs.node_graph.node_ids[node];
+            let template = &ctx.templates[t];
+
+            for opening in 0..probe.inputs.node_graph.nodes[node].openings.len {
+                let raw_noise = node_opening_noise(&probe, node, opening);
+                ws.solver.reset_solver_state();
+                ws.solver.load_model(template);
+                patch_backward_opening_for_probe(
+                    ws,
+                    &ctx,
+                    &training_ctx,
+                    StageIdx(t),
+                    incoming,
+                    &raw_noise,
+                );
+                let view = solve_stage_for_probe(
+                    ws,
+                    &ctx,
+                    &probe.fcf.pools[t],
+                    None,
+                    StageIdx(t),
+                    0,
+                    node_id,
+                )
+                .unwrap_or_else(|err| panic!("stage {t} opening {opening}: probe failed: {err}"));
+                evaluate_par_batch(par, t, lags, &raw_noise[hydro_range.clone()], &mut r);
+
+                solves[class] += 1;
+                for (h, &r_h) in r.iter().enumerate() {
+                    let col = layout.z_inflow.start + h;
+                    let z_h =
+                        view.primal[col] * template.col_scale.get(col).copied().unwrap_or(1.0);
+                    assert!(
+                        (z_h - r_h).abs() <= 1e-6 * r_h.abs().max(1.0),
+                        "stage {t} opening {opening} hydro {h}: the z row solved {z_h}, \
+                         the PAR value computed outside the LP is {r_h}"
+                    );
+                    negative_r[class] += usize::from(r_h < 0.0);
+                    let lag_term: f64 = par
+                        .psi_slice(t, h)
+                        .iter()
+                        .enumerate()
+                        .map(|(lag, psi)| psi * lags[lag * layout.hydro_count + h])
+                        .sum();
+                    max_lag_term[class] = max_lag_term[class].max(lag_term.abs());
+                }
+            }
+        }
+
+        eprintln!(
+            "d30 out-of-LP check: solves={} negative_r_monthly={} negative_r_quarterly={}",
+            solves[0] + solves[1],
+            negative_r[0],
+            negative_r[1]
+        );
+        for (class, name) in ["monthly", "quarterly"].into_iter().enumerate() {
+            assert!(solves[class] > 0, "no probe was checked on a {name} stage");
+            assert!(
+                max_lag_term[class] > 1.0,
+                "no checked {name} (stage, hydro) has a lag term above 1.0 m3/s; \
+                 the largest is {}",
+                max_lag_term[class]
+            );
+        }
+    }
 }
 
 mod sparse_dense {
@@ -988,6 +1161,7 @@ mod decomp_integration {
 
     use novomodelo_core::temporal::SeasonCycleType;
     use novomodelo_io::output::policy::write_policy_checkpoint;
+    use novomodelo_io::test_support::producer_block_defaults;
     use novomodelo_sddp::{
         StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
     };
@@ -1038,12 +1212,11 @@ mod decomp_integration {
         stage_manifests: &[Vec<novomodelo_io::EntitySlot>],
     ) {
         use novomodelo_sddp::policy_export::{
-            build_active_indices, build_stage_basis_records, build_stage_cut_records,
-            build_stage_cuts_payloads, convert_basis_cache,
+            BindingCounters, build_basis_store_entries, build_stage_basis_records,
+            build_stage_cut_records, build_stage_cuts_payloads, convert_basis_store,
         };
         let fcf = &setup.fcf;
-        let stage_records = build_stage_cut_records(fcf);
-        let stage_active_indices = build_active_indices(&stage_records);
+        let stage_records = build_stage_cut_records(fcf, BindingCounters::Omitted).expect("export");
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
         let study_stage_end_dates = ascending_stage_end_dates(fcf.pools.len());
         let stage_cuts = build_stage_cuts_payloads(
@@ -1053,17 +1226,13 @@ mod decomp_integration {
             &study_stage_end_dates,
             1_000_000.0,
             &stage_records,
-            &stage_active_indices,
             stage_manifests,
         );
-        let (basis_col, basis_row) = convert_basis_cache(&result.basis_cache);
-        let stage_bases = build_stage_basis_records(
-            &result.basis_cache,
-            result.iterations,
-            &basis_col,
-            &basis_row,
-        );
-        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
+        let basis_statuses = convert_basis_store(&result.checkpoint_bases);
+        let basis_entries = build_basis_store_entries(&result.checkpoint_bases, &basis_statuses);
+        let stage_bases =
+            build_stage_basis_records(&basis_entries, result.iterations).expect("bases");
+        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
         let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             fcf.pools.len() as u32,
             setup.build_graph_manifest(),
@@ -1076,11 +1245,8 @@ mod decomp_integration {
                 warm_start_cuts: warm_start_counts.iter().copied().max().unwrap_or(0),
                 warm_start_counts,
                 rng_seed: seed,
-                total_visited_states: 0,
-                training_block_mode: "parallel".to_string(),
-                training_block_mode_per_stage: vec![],
                 cost_scale_factor: None,
-                lower_bound_history: Vec::new(),
+                ..producer_block_defaults()
             },
         );
         write_policy_checkpoint(policy_dir, &stage_cuts, &stage_bases, &metadata, &[])
@@ -1306,14 +1472,14 @@ mod decomp_integration {
         let terminal_pool_id = setup_c.inputs.node_graph.terminal_pool(num_stages).unwrap();
         let terminal_pool = &setup_c.fcf.pools[terminal_pool_id];
         assert!(
-            terminal_pool.has_warm_start_cuts(),
-            "terminal pool must have boundary cuts after injection; warm_start_count == 0"
+            terminal_pool.has_prefix_cuts(),
+            "terminal pool must have boundary cuts after injection; prefix_len == 0"
         );
         assert!(
-            terminal_pool.populated() >= terminal_pool.warm_start_count as usize,
-            "populated_count ({}) must include boundary cuts (warm_start_count = {})",
+            terminal_pool.populated() >= terminal_pool.prefix_len(),
+            "populated_count ({}) must include boundary cuts (prefix_len = {})",
             terminal_pool.populated(),
-            terminal_pool.warm_start_count
+            terminal_pool.prefix_len()
         );
 
         let mut solver_c = ActiveSolver::new().expect("solver C");
@@ -2503,7 +2669,7 @@ mod diversion_outflow_bounds {
     /// headroom to absorb the whole diverted flow. Neither generates (default
     /// zero productivity): the operative economics are spill-vs-divert cost, which
     /// is all the floor semantics need to be exercised.
-    fn build_system(bound: Bound) -> System {
+    fn build_system(bound: Bound, diversion_cap_m3s: Option<f64>) -> System {
         let (entity_min, entity_max) = match bound {
             Bound::Min => (MIN_OUTFLOW_M3S, None),
             Bound::Max => (0.0, Some(MAX_OUTFLOW_M3S)),
@@ -2531,7 +2697,7 @@ mod diversion_outflow_bounds {
                 max_generation_mw: 500.0,
                 diversion: Some(DiversionChannel {
                     downstream_id: EntityId(TARGET_ID),
-                    max_flow_m3s: DIVERSION_CAP_M3S,
+                    max_flow_m3s: diversion_cap_m3s,
                 }),
                 generation_model: HydroGenerationModel::ConstantProductivity,
                 ..Default::default()
@@ -2612,7 +2778,7 @@ mod diversion_outflow_bounds {
         for stage_idx in 0..n_stages {
             let src = bounds.hydro_block_base_mut(0, stage_idx);
             src.max_turbined_m3s = MAX_TURBINED_M3S;
-            src.max_diversion_m3s = Some(DIVERSION_CAP_M3S);
+            src.max_diversion_m3s = diversion_cap_m3s;
             match bound {
                 Bound::Min => src.min_outflow_m3s = MIN_OUTFLOW_M3S,
                 Bound::Max => src.max_outflow_m3s = Some(MAX_OUTFLOW_M3S),
@@ -2708,7 +2874,8 @@ mod diversion_outflow_bounds {
     /// zero below-slack — the silent Volta Grande under-release.
     #[test]
     fn min_outflow_binds_the_non_diverted_flow_on_a_diverter() {
-        let mut setup = build_setup_in_code(build_system(Bound::Min), &config());
+        let mut setup =
+            build_setup_in_code(build_system(Bound::Min, Some(DIVERSION_CAP_M3S)), &config());
         let results = run_simulation(&mut setup, 1);
         assert_eq!(results.len(), 1, "exactly one scenario must be produced");
         let scenario: &SimulationScenarioResult = &results[0];
@@ -2759,7 +2926,8 @@ mod diversion_outflow_bounds {
     /// diversion — the total-release cap this change removes.
     #[test]
     fn max_outflow_binds_the_non_diverted_flow_on_a_diverter() {
-        let mut setup = build_setup_in_code(build_system(Bound::Max), &config());
+        let mut setup =
+            build_setup_in_code(build_system(Bound::Max, Some(DIVERSION_CAP_M3S)), &config());
         let results = run_simulation(&mut setup, 1);
         assert_eq!(results.len(), 1, "exactly one scenario must be produced");
         let scenario: &SimulationScenarioResult = &results[0];
@@ -2804,6 +2972,70 @@ mod diversion_outflow_bounds {
                 "total release (q + s + d = {}) must exceed the {MAX_OUTFLOW_M3S} cap via the \
                  diversion canal, proving the maximum bounds only the non-diverted flow",
                 non_diverted + diverted
+            );
+        }
+    }
+
+    /// Diverted flow per block of the source, and the target's received release
+    /// (`q + s`; the target has no inflow of its own).
+    fn diverted_and_received(diversion_cap_m3s: Option<f64>) -> Vec<(f64, f64, f64)> {
+        let mut setup = build_setup_in_code(build_system(Bound::Max, diversion_cap_m3s), &config());
+        let results = run_simulation(&mut setup, 1);
+        let scenario: &SimulationScenarioResult = &results[0];
+        scenario
+            .stages
+            .iter()
+            .flat_map(|stage| {
+                let source = stage
+                    .hydros
+                    .iter()
+                    .find(|h| h.hydro_id == SOURCE_ID)
+                    .expect("source in output");
+                let target = stage
+                    .hydros
+                    .iter()
+                    .find(|h| h.hydro_id == TARGET_ID)
+                    .expect("target in output");
+                [(
+                    source
+                        .diverted_outflow_m3s
+                        .expect("a diverting plant reports its diverted outflow"),
+                    target.turbined_m3s + target.spillage_m3s,
+                    source.outflow_slack_above_m3s,
+                )]
+            })
+            .collect()
+    }
+
+    /// A channel without a capacity limit carries the whole forced surplus
+    /// `INFLOW − MAX_OUTFLOW`, and the target releases exactly what it receives.
+    /// The twin capped below that surplus pays the rest as an above-violation,
+    /// so the unlimited result is not an accident of the fixture.
+    #[test]
+    fn unlimited_diversion_channel_carries_the_whole_surplus() {
+        /// derived: run-of-river balance with `q + s` held at the natural-channel cap.
+        const SURPLUS_M3S: f64 = INFLOW_M3S - MAX_OUTFLOW_M3S;
+        const TWIN_CAP_M3S: f64 = 50.0;
+
+        for (diverted, received, slack_above) in diverted_and_received(None) {
+            assert!(
+                (diverted - SURPLUS_M3S).abs() < 1e-3,
+                "unlimited channel must divert {SURPLUS_M3S}, got {diverted}"
+            );
+            assert!(
+                (received - diverted).abs() < 1e-3,
+                "target must release the diverted {diverted}, got {received}"
+            );
+            assert!(slack_above < 1e-3, "no above-violation, got {slack_above}");
+        }
+        for (diverted, _, slack_above) in diverted_and_received(Some(TWIN_CAP_M3S)) {
+            assert!(
+                diverted <= TWIN_CAP_M3S + 1e-3,
+                "capped twin must divert at most {TWIN_CAP_M3S}, got {diverted}"
+            );
+            assert!(
+                (slack_above - (SURPLUS_M3S - TWIN_CAP_M3S)).abs() < 1e-3,
+                "capped twin pays the uncarried surplus, got {slack_above}"
             );
         }
     }
@@ -3612,6 +3844,444 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
     }
 }
 
+mod water_balance_from_written_outputs {
+    //! Recomputes the water balance of simulated studies from the written
+    //! `simulation/hydros` parquet columns alone. The results go through
+    //! `SimulationParquetWriter`, the writer the CLI and the Python bindings
+    //! share; this is not evidence about the Python bindings, since no Python
+    //! test runs a truncation study's `simulation/hydros` output.
+
+    use std::collections::BTreeMap;
+    use std::path::Path;
+
+    use arrow::array::{Array, Float64Array, Int32Array, RecordBatch};
+    use novomodelo_core::{BlockMode, System};
+    use novomodelo_io::config::{InflowNonNegativityMethod, SimulationSelection};
+    use novomodelo_io::output::simulation_writer::{ScenarioWritePayload, SimulationParquetWriter};
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    use super::common::in_code_studies::{
+        CHRONOLOGICAL_NOISE_BLOCK_HOURS, ChronologicalNoiseSpec, chronological_noise_hydro_models,
+        chronological_noise_study, negative_draw_par1_spec, negative_draw_water_value_spec,
+    };
+    use super::common::{build_setup_in_code_with_models, run_simulation};
+
+    const BLOCK_MODE_ASSIGNMENTS: [[BlockMode; 2]; 2] = [
+        [BlockMode::Parallel, BlockMode::Chronological],
+        [BlockMode::Chronological, BlockMode::Parallel],
+    ];
+    const METHOD_MEANS: [(InflowNonNegativityMethod, f64); 4] = [
+        (InflowNonNegativityMethod::None, -30.0),
+        (InflowNonNegativityMethod::Penalty, -1000.0),
+        (InflowNonNegativityMethod::Truncation, -1000.0),
+        (InflowNonNegativityMethod::TruncationWithPenalty, -1000.0),
+    ];
+    const NUM_SCENARIOS: usize = 4;
+    const N_STAGES: usize = 2;
+    const N_HYDROS: usize = 2;
+    const ROWS_PER_SCENARIO: usize = N_STAGES * N_HYDROS * CHRONOLOGICAL_NOISE_BLOCK_HOURS.len();
+    const WITHDRAWAL_M3S: f64 = 2.0;
+    /// At zero cost the over-withdrawal column drains the reservoir for free, and a
+    /// backend that lands on that vertex leaves the next stage infeasible under `none`.
+    const OVER_WITHDRAWAL_COST: f64 = 1.0;
+    const WITHDRAWN_HYDRO_ID: i32 = 1;
+    const HM3_PER_M3S_HOUR: f64 = 0.0036;
+    const CLOSURE_RELATIVE_TOLERANCE: f64 = 1e-6;
+    const RELEASE_METHODS: [InflowNonNegativityMethod; 2] = [
+        InflowNonNegativityMethod::Truncation,
+        InflowNonNegativityMethod::TruncationWithPenalty,
+    ];
+    /// Share of the initial storage each hydro must release on the loaded stage.
+    const MIN_RELEASED_SHARE: f64 = 0.5;
+
+    struct HydroRow {
+        stage_id: usize,
+        block_id: usize,
+        hydro_id: i32,
+        outflow_m3s: f64,
+        evaporation_m3s: f64,
+        diverted_inflow_m3s: f64,
+        diverted_outflow_m3s: f64,
+        incremental_inflow_m3s: f64,
+        storage_initial_hm3: f64,
+        storage_final_hm3: f64,
+        inflow_nonnegativity_slack_m3s: f64,
+        water_withdrawal_violation_pos_m3s: f64,
+        water_withdrawal_violation_neg_m3s: f64,
+    }
+
+    fn assert_isolated_hydros(system: &System) {
+        for hydro in system.hydros() {
+            assert!(
+                hydro.downstream_id.is_none()
+                    && hydro.travel_time_hours.is_none()
+                    && hydro.diversion.is_none()
+                    && hydro.filling.is_none()
+                    && hydro.entry_stage_id.is_none()
+                    && hydro.exit_stage_id.is_none(),
+                "hydro {} must have no downstream plant, travel time, diversion, filling \
+                 phase or entry/exit stage",
+                hydro.id.0
+            );
+        }
+    }
+
+    fn column<'a, T: Array + 'static>(batch: &'a RecordBatch, name: &str) -> &'a T {
+        batch
+            .column_by_name(name)
+            .unwrap_or_else(|| panic!("hydros parquet has no {name} column"))
+            .as_any()
+            .downcast_ref::<T>()
+            .unwrap_or_else(|| panic!("hydros parquet column {name} has an unexpected type"))
+    }
+
+    fn or_zero(column: &Float64Array, row: usize) -> f64 {
+        if column.is_null(row) {
+            0.0
+        } else {
+            column.value(row)
+        }
+    }
+
+    fn read_hydro_rows(path: &Path) -> Vec<HydroRow> {
+        let file = std::fs::File::open(path).expect("hydros parquet must exist");
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .expect("hydros parquet must have a valid footer")
+            .build()
+            .expect("hydros parquet reader must build");
+        let mut rows = Vec::new();
+        for batch in reader {
+            let batch = batch.expect("hydros parquet batch must decode");
+            let stage_id = column::<Int32Array>(&batch, "stage_id");
+            let block_id = column::<Int32Array>(&batch, "block_id");
+            let hydro_id = column::<Int32Array>(&batch, "hydro_id");
+            let float = |name: &str| column::<Float64Array>(&batch, name);
+            let outflow = float("outflow_m3s");
+            let evaporation = float("evaporation_m3s");
+            let diverted_inflow = float("diverted_inflow_m3s");
+            let diverted_outflow = float("diverted_outflow_m3s");
+            let incremental_inflow = float("incremental_inflow_m3s");
+            let storage_initial = float("storage_initial_hm3");
+            let storage_final = float("storage_final_hm3");
+            let slack = float("inflow_nonnegativity_slack_m3s");
+            let withdrawal_pos = float("water_withdrawal_violation_pos_m3s");
+            let withdrawal_neg = float("water_withdrawal_violation_neg_m3s");
+            assert_eq!(
+                block_id.null_count(),
+                0,
+                "block_id must be populated on every hydros row"
+            );
+            for i in 0..batch.num_rows() {
+                rows.push(HydroRow {
+                    stage_id: usize::try_from(stage_id.value(i)).expect("stage_id is non-negative"),
+                    block_id: usize::try_from(block_id.value(i)).expect("block_id is non-negative"),
+                    hydro_id: hydro_id.value(i),
+                    outflow_m3s: outflow.value(i),
+                    evaporation_m3s: or_zero(evaporation, i),
+                    diverted_inflow_m3s: or_zero(diverted_inflow, i),
+                    diverted_outflow_m3s: or_zero(diverted_outflow, i),
+                    incremental_inflow_m3s: incremental_inflow.value(i),
+                    storage_initial_hm3: storage_initial.value(i),
+                    storage_final_hm3: storage_final.value(i),
+                    inflow_nonnegativity_slack_m3s: slack.value(i),
+                    water_withdrawal_violation_pos_m3s: withdrawal_pos.value(i),
+                    water_withdrawal_violation_neg_m3s: withdrawal_neg.value(i),
+                });
+            }
+        }
+        rows
+    }
+
+    fn simulate_and_read_hydros(spec: &ChronologicalNoiseSpec) -> Vec<(u32, Vec<HydroRow>)> {
+        let (system, mut config) = chronological_noise_study(spec);
+        let (writer_system, _) = chronological_noise_study(spec);
+        assert_isolated_hydros(&system);
+        assert_isolated_hydros(&writer_system);
+        config.simulation.enabled = true;
+        config.simulation.selection = Some(SimulationSelection::Sampled {
+            num_scenarios: u32::try_from(NUM_SCENARIOS).expect("scenario count fits u32"),
+        });
+
+        let hydro_models = chronological_noise_hydro_models(spec, &system);
+        let mut setup = build_setup_in_code_with_models(system, &config, hydro_models);
+        let results = run_simulation(&mut setup, 1);
+        assert_eq!(results.len(), NUM_SCENARIOS, "simulated scenario count");
+        let scenario_ids: Vec<u32> = results.iter().map(|result| result.scenario_id).collect();
+
+        let tmp = tempfile::tempdir().expect("tempdir must succeed");
+        let mut writer = SimulationParquetWriter::new(tmp.path(), &writer_system)
+            .expect("SimulationParquetWriter::new must succeed");
+        for result in results {
+            writer
+                .write_scenario(ScenarioWritePayload::from(result))
+                .expect("write_scenario must succeed");
+        }
+        let _ = writer.finalize(0);
+
+        let hydros_dir = tmp.path().join("simulation/hydros");
+        let partitions = std::fs::read_dir(&hydros_dir)
+            .expect("simulation/hydros must exist")
+            .count();
+        assert_eq!(partitions, NUM_SCENARIOS, "scenario partitions written");
+        scenario_ids
+            .into_iter()
+            .map(|id| {
+                let path = hydros_dir.join(format!("scenario_id={id:04}/data.parquet"));
+                (id, read_hydro_rows(&path))
+            })
+            .collect()
+    }
+
+    fn stage_level_terms(row: &HydroRow, withdrawal_m3s: f64, hours: f64) -> [f64; 6] {
+        let hm3_per_m3s = HM3_PER_M3S_HOUR * hours;
+        [
+            hm3_per_m3s * row.incremental_inflow_m3s,
+            hm3_per_m3s * row.inflow_nonnegativity_slack_m3s,
+            -hm3_per_m3s * row.evaporation_m3s,
+            -hm3_per_m3s * withdrawal_m3s,
+            hm3_per_m3s * row.water_withdrawal_violation_neg_m3s,
+            -hm3_per_m3s * row.water_withdrawal_violation_pos_m3s,
+        ]
+    }
+
+    fn block_level_terms(row: &HydroRow, hours: f64) -> [f64; 3] {
+        let hm3_per_m3s = HM3_PER_M3S_HOUR * hours;
+        [
+            hm3_per_m3s * row.diverted_inflow_m3s,
+            -hm3_per_m3s * row.outflow_m3s,
+            -hm3_per_m3s * row.diverted_outflow_m3s,
+        ]
+    }
+
+    fn assert_closes(location: &str, storage_initial: f64, storage_final: f64, terms: &[f64]) {
+        let storage_change = storage_final - storage_initial;
+        let flow_sum: f64 = terms.iter().sum();
+        let magnitude = storage_initial.abs()
+            + storage_final.abs()
+            + terms.iter().map(|term| term.abs()).sum::<f64>();
+        let tolerance = CLOSURE_RELATIVE_TOLERANCE * (1.0 + magnitude);
+        assert!(
+            (storage_change - flow_sum).abs() <= tolerance,
+            "{location}: storage change {storage_change} != flow sum {flow_sum} \
+             (residual {}, tolerance {tolerance})",
+            (storage_change - flow_sum).abs()
+        );
+    }
+
+    fn assert_scenario_closes(
+        case: &str,
+        spec: &ChronologicalNoiseSpec,
+        scenario_id: u32,
+        rows: &[HydroRow],
+    ) {
+        let block_hours = CHRONOLOGICAL_NOISE_BLOCK_HOURS;
+        let stage_hours: f64 = block_hours.iter().sum();
+
+        let mut groups: BTreeMap<(usize, i32), Vec<&HydroRow>> = BTreeMap::new();
+        for row in rows {
+            groups
+                .entry((row.stage_id, row.hydro_id))
+                .or_default()
+                .push(row);
+        }
+        assert_eq!(
+            groups.len(),
+            N_STAGES * N_HYDROS,
+            "{case} scenario {scenario_id}: (stage, hydro) groups"
+        );
+
+        for ((stage_id, hydro_id), mut blocks) in groups {
+            blocks.sort_by_key(|row| row.block_id);
+            let block_ids: Vec<usize> = blocks.iter().map(|row| row.block_id).collect();
+            assert_eq!(
+                block_ids,
+                (0..block_hours.len()).collect::<Vec<_>>(),
+                "{case} scenario {scenario_id} stage {stage_id} hydro {hydro_id}: block ids"
+            );
+            let withdrawal_m3s = if stage_id == 0 && hydro_id == WITHDRAWN_HYDRO_ID {
+                spec.water_withdrawal_m3s
+            } else {
+                0.0
+            };
+            let location =
+                format!("{case} scenario {scenario_id} stage {stage_id} hydro {hydro_id}");
+
+            match spec.block_modes[stage_id] {
+                BlockMode::Parallel => {
+                    let stage_row = blocks[0];
+                    let mut terms =
+                        stage_level_terms(stage_row, withdrawal_m3s, stage_hours).to_vec();
+                    for (row, hours) in blocks.iter().zip(block_hours) {
+                        terms.extend(block_level_terms(row, hours));
+                    }
+                    assert_closes(
+                        &format!("{location} blocks 0..{}", block_hours.len()),
+                        stage_row.storage_initial_hm3,
+                        stage_row.storage_final_hm3,
+                        &terms,
+                    );
+                }
+                BlockMode::Chronological => {
+                    for (row, hours) in blocks.iter().zip(block_hours) {
+                        let mut terms = stage_level_terms(row, withdrawal_m3s, hours).to_vec();
+                        terms.extend(block_level_terms(row, hours));
+                        assert_closes(
+                            &format!("{location} block {}", row.block_id),
+                            row.storage_initial_hm3,
+                            row.storage_final_hm3,
+                            &terms,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn assert_guards(
+        case: &str,
+        method: InflowNonNegativityMethod,
+        spec: &ChronologicalNoiseSpec,
+        scenarios: &[(u32, Vec<HydroRow>)],
+    ) {
+        for mode in [BlockMode::Parallel, BlockMode::Chronological] {
+            let rows: Vec<&HydroRow> = scenarios
+                .iter()
+                .flat_map(|(_, rows)| rows)
+                .filter(|row| spec.block_modes[row.stage_id] == mode)
+                .collect();
+            assert_eq!(
+                rows.len(),
+                NUM_SCENARIOS * ROWS_PER_SCENARIO / N_STAGES,
+                "{case} {mode:?}: rows read back"
+            );
+            let negative_inflow = rows
+                .iter()
+                .filter(|row| row.incremental_inflow_m3s < 0.0)
+                .count();
+            let positive_slack = rows
+                .iter()
+                .filter(|row| row.inflow_nonnegativity_slack_m3s > 0.0)
+                .count();
+            let nonzero_slack = rows
+                .iter()
+                .filter(|row| row.inflow_nonnegativity_slack_m3s != 0.0)
+                .count();
+            assert!(
+                negative_inflow > 0,
+                "{case} {mode:?}: no row has a negative incremental inflow"
+            );
+            if method == InflowNonNegativityMethod::None {
+                assert_eq!(
+                    nonzero_slack, 0,
+                    "{case} {mode:?}: rows with a non-zero slack under method none"
+                );
+            } else {
+                assert!(
+                    positive_slack > 0,
+                    "{case} {mode:?}: no row has a positive inflow slack"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn simulated_water_balance_closes_from_outputs() {
+        for block_modes in BLOCK_MODE_ASSIGNMENTS {
+            for (method, mean_m3s) in METHOD_MEANS {
+                let spec = ChronologicalNoiseSpec {
+                    block_modes,
+                    branching_factor: 3,
+                    water_withdrawal_m3s: WITHDRAWAL_M3S,
+                    over_withdrawal_cost: OVER_WITHDRAWAL_COST,
+                    inflow_mean_m3s: mean_m3s,
+                    ..negative_draw_par1_spec(method)
+                };
+                let case = format!("{method:?} {block_modes:?}");
+                let scenarios = simulate_and_read_hydros(&spec);
+                for (scenario_id, rows) in &scenarios {
+                    assert_eq!(
+                        rows.len(),
+                        ROWS_PER_SCENARIO,
+                        "{case} scenario {scenario_id}: rows read back"
+                    );
+                    assert_scenario_closes(&case, &spec, *scenario_id, rows);
+                }
+                assert_guards(&case, method, &spec, &scenarios);
+            }
+        }
+    }
+
+    fn assert_release_guards(
+        case: &str,
+        spec: &ChronologicalNoiseSpec,
+        scenarios: &[(u32, Vec<HydroRow>)],
+    ) {
+        let mut releases_checked = 0;
+        let mut withheld_withdrawals = 0;
+        for (scenario_id, rows) in scenarios {
+            let mut released_hm3: BTreeMap<i32, f64> = BTreeMap::new();
+            for row in rows {
+                if spec.load_mw[row.stage_id] > 0.0 {
+                    *released_hm3.entry(row.hydro_id).or_default() += HM3_PER_M3S_HOUR
+                        * CHRONOLOGICAL_NOISE_BLOCK_HOURS[row.block_id]
+                        * row.outflow_m3s;
+                }
+                if row.stage_id == 0
+                    && row.hydro_id == WITHDRAWN_HYDRO_ID
+                    && row.water_withdrawal_violation_neg_m3s > 0.5 * spec.water_withdrawal_m3s
+                {
+                    withheld_withdrawals += 1;
+                }
+            }
+            for (hydro_id, volume_hm3) in released_hm3 {
+                assert!(
+                    volume_hm3 > MIN_RELEASED_SHARE * spec.initial_storage_hm3,
+                    "{case} scenario {scenario_id} hydro {hydro_id}: released {volume_hm3} hm3 \
+                     on the loaded stage"
+                );
+                releases_checked += 1;
+            }
+        }
+        assert_eq!(
+            releases_checked,
+            NUM_SCENARIOS * N_HYDROS,
+            "{case}: (scenario, hydro) releases checked"
+        );
+        assert_eq!(
+            withheld_withdrawals,
+            NUM_SCENARIOS * CHRONOLOGICAL_NOISE_BLOCK_HOURS.len(),
+            "{case}: stage-0 rows of the withdrawn hydro that withhold the withdrawal"
+        );
+    }
+
+    #[test]
+    fn simulated_water_balance_closes_with_a_nonzero_release() {
+        for block_modes in BLOCK_MODE_ASSIGNMENTS {
+            for method in RELEASE_METHODS {
+                let spec = ChronologicalNoiseSpec {
+                    block_modes,
+                    branching_factor: 3,
+                    water_withdrawal_m3s: WITHDRAWAL_M3S,
+                    over_withdrawal_cost: OVER_WITHDRAWAL_COST,
+                    ..negative_draw_water_value_spec(method)
+                };
+                let case = format!("water value {method:?} {block_modes:?}");
+                let scenarios = simulate_and_read_hydros(&spec);
+                for (scenario_id, rows) in &scenarios {
+                    assert_eq!(
+                        rows.len(),
+                        ROWS_PER_SCENARIO,
+                        "{case} scenario {scenario_id}: rows read back"
+                    );
+                    assert_scenario_closes(&case, &spec, *scenario_id, rows);
+                }
+                assert_guards(&case, method, &spec, &scenarios);
+                assert_release_guards(&case, &spec, &scenarios);
+            }
+        }
+    }
+}
+
 mod generic_slack_penalty_basis {
     //! A soft generic-constraint row's reported violation cost follows its
     //! declared `penalty_basis` on stages of different lengths: a `per_unit`
@@ -3628,13 +4298,13 @@ mod generic_slack_penalty_basis {
         StageStateConfig,
     };
     use novomodelo_core::{
-        AffineBound, BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ComputedParameter,
+        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ComputedParameter,
         ConstraintExpression, ContractBlockBounds, DeficitSegment, EntityId, GenericConstraint,
         HydroBlockBounds, HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds,
         LineStagePenalties, LinearTerm, NcsStagePenalties, ParameterKind, PenaltiesCountsSpec,
         PenaltiesDefaults, PenaltyBasis, PumpingBlockBounds, ResolvedBounds,
-        ResolvedGenericConstraintBounds, ResolvedPenalties, ScalarParameter, SlackConfig, System,
-        SystemBuilder, ThermalBlockBounds, ThermalStageBounds, VariableRef,
+        ResolvedGenericConstraintBounds, ResolvedPenalties, ScalarExpr, ScalarParameter,
+        SlackConfig, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds, VariableRef,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -3733,8 +4403,8 @@ mod generic_slack_penalty_basis {
                 penalty: PENALTY,
                 penalty_basis,
             }),
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         }
     }
 
@@ -3745,28 +4415,22 @@ mod generic_slack_penalty_basis {
             name: "stored_energy_floor".to_string(),
             description: None,
             expression: ConstraintExpression {
-                terms: vec![LinearTerm::parameter(
-                    EntityId(RHO_MWH_ID),
-                    1.0,
-                    VariableRef::HydroStorage {
+                terms: vec![LinearTerm {
+                    coefficient: ScalarExpr::param(EntityId(RHO_MWH_ID)),
+                    variable: VariableRef::HydroStorage {
                         hydro_id: EntityId(HYDRO_ID),
                     },
-                )],
+                }],
             },
             slack: Some(SlackConfig {
                 penalty: PENALTY,
                 penalty_basis,
             }),
-            bound_lower_affine: Some(AffineBound {
-                constant: 0.0,
-                terms: vec![],
-                products: vec![(
-                    1.0,
-                    EntityId(FLOOR_SHARE_ID),
-                    EntityId(MAX_STORED_ENERGY_MWH_ID),
-                )],
-            }),
-            bound_upper_affine: None,
+            bound_lower: Some(
+                ScalarExpr::param(EntityId(FLOOR_SHARE_ID))
+                    * ScalarExpr::param(EntityId(MAX_STORED_ENERGY_MWH_ID)),
+            ),
+            bound_upper: None,
         }
     }
 

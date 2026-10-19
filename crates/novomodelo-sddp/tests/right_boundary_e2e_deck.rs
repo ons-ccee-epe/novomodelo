@@ -87,7 +87,7 @@ mod deck_smoke {
     use novomodelo_io::{StateFamily, encode_slot_date};
     use novomodelo_sddp::indexer::StateDim;
     use novomodelo_sddp::policy_export::{
-        build_active_indices, build_stage_cut_records, build_stage_cuts_payloads,
+        BindingCounters, build_stage_cut_records, build_stage_cuts_payloads,
     };
 
     use crate::common::fresh_setup_with;
@@ -141,8 +141,8 @@ mod deck_smoke {
             .filter(|s| s.id >= 0)
             .map(|s| s.end_date)
             .collect();
-        let stage_records = build_stage_cut_records(&setup.fcf);
-        let stage_active_indices = build_active_indices(&stage_records);
+        let stage_records =
+            build_stage_cut_records(&setup.fcf, BindingCounters::Omitted).expect("export");
         let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); setup.fcf.pools.len()];
         let stage_cuts = build_stage_cuts_payloads(
@@ -152,7 +152,6 @@ mod deck_smoke {
             &study_stage_end_dates,
             1_000_000.0,
             &stage_records,
-            &stage_active_indices,
             &stage_manifests,
         );
         let last_end_date = *study_stage_end_dates
@@ -215,6 +214,7 @@ mod anticipated_fanout_readback {
     use std::path::{Path, PathBuf};
 
     use chrono::NaiveDate;
+    use novomodelo_io::test_support::{piece_defaults, stage_cuts_payload_defaults};
     use novomodelo_io::{
         ENTITY_SLOT_DATE_SENTINEL, EntitySlot, PolicyCutRecord, ProducerBlock, StageCutsPayload,
         StateFamily, decode_slot_date, encode_slot_date, write_policy_checkpoint,
@@ -271,28 +271,25 @@ mod anticipated_fanout_readback {
     ) {
         let state_dimension = u32::try_from(coefficients.len()).expect("small coefficient count");
         let cut = PolicyCutRecord {
-            cut_id: 0,
             slot_index: 0,
             iteration: 0,
-            forward_pass_index: 0,
             intercept: 1.0,
             coefficients,
             is_active: true,
+            ..piece_defaults()
         };
         let cuts = vec![cut];
         let payload = StageCutsPayload {
             stage_id: 0,
             state_dimension,
             capacity: 1,
-            warm_start_count: 0,
             cuts: &cuts,
-            active_cut_indices: &[0],
             populated_count: 1,
             entity_manifest: manifest,
             cost_scale_factor: 1_000_000.0,
             node_id: 0,
-            graph_stage_id: -1,
             priced_state_date: encode_slot_date(priced_date),
+            ..stage_cuts_payload_defaults()
         };
         let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             1,

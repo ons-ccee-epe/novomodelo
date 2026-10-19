@@ -9,7 +9,7 @@ use crate::{
     context::{StageContext, TrainingContext},
     error::SddpError,
     setup::{NodeId, NodePos, StageIdx},
-    training::stage_solve_prep::{InflowNoise, StageSolvePrep, StageSolvePrepParams, StateSource},
+    training::stage_solve_prep::{StageSolvePrep, StageSolvePrepParams, StateSource},
     workspace::{BasisStoreSliceMut, CapturedBasis, SolverWorkspace},
 };
 
@@ -44,7 +44,6 @@ pub(crate) fn patch_opening_bounds<S: SolverInterface + Send>(
 ) {
     let prep_params = StageSolvePrepParams {
         state_source: StateSource(x_hat),
-        inflow_noise: InflowNoise::Transform,
         raw_noise,
     };
     StageSolvePrep::run(

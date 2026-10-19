@@ -12,7 +12,8 @@
 use std::fs;
 use std::path::Path;
 
-use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, StringArray};
+use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray};
+use arrow::record_batch::RecordBatch;
 use assert_cmd::prelude::*;
 use novomodelo_io::scenarios::parse_inflow_annual_component;
 use novomodelo_io::{EntitySlot, StateFamily, deserialize_stage_cuts};
@@ -22,8 +23,8 @@ use tempfile::TempDir;
 
 mod common;
 use common::{
-    case_dir, copy_dir_recursive, make_valid_case, novomodelo, restamp_policy_version, write_file,
-    write_supplied_opening_tree_case,
+    case_dir, copy_dir_recursive, make_valid_case, novomodelo, restamp_policy_version,
+    snapshot_files, write_file, write_supplied_opening_tree_case,
 };
 
 #[test]
@@ -2077,6 +2078,268 @@ fn run_clears_cut_selection_output_after_cut_selection_is_disabled() {
     assert!(!out.path().join("training/cut_selection").exists());
 }
 
+/// derived: the iteration limit `copy_of_1dtoy_training_six_iterations` sets.
+const SELECTION_ITERATIONS: i32 = 6;
+
+/// derived: 1dtoy is a chain of four stages with one node each, so pool 0 is the root, pools 1
+/// and 2 are interior and pool 3 is the terminal.
+const SELECTION_POOLS: i32 = 4;
+
+const SELECTION_CHECK_FREQUENCY: i32 = 2;
+
+#[derive(Debug)]
+struct SelectionRow {
+    iteration: i32,
+    pool_id: i32,
+    stage_id: i32,
+    node_id: Option<i32>,
+    cuts_active_before: i32,
+    cuts_deactivated: Option<i32>,
+    cuts_reactivated: Option<i32>,
+    cuts_active_after: i32,
+    has_selection_time: bool,
+    budget_evicted: Option<i32>,
+    active_after_budget: Option<i32>,
+    cuts_in_lp: Option<i32>,
+}
+
+impl SelectionRow {
+    fn is_interior(&self) -> bool {
+        (1..SELECTION_POOLS - 1).contains(&self.pool_id)
+    }
+
+    fn is_check_iteration(&self) -> bool {
+        self.iteration % SELECTION_CHECK_FREQUENCY == 0
+    }
+
+    fn final_active(&self) -> i32 {
+        self.active_after_budget.unwrap_or(self.cuts_active_after)
+    }
+}
+
+fn read_batches(path: &Path) -> Vec<RecordBatch> {
+    let file =
+        fs::File::open(path).unwrap_or_else(|e| panic!("failed to open {}: {e}", path.display()));
+    ParquetRecordBatchReaderBuilder::try_new(file)
+        .expect("build parquet reader")
+        .build()
+        .expect("build reader")
+        .map(|batch| batch.expect("read record batch"))
+        .collect()
+}
+
+fn int32_column<'a>(batch: &'a RecordBatch, name: &str) -> &'a Int32Array {
+    batch
+        .column_by_name(name)
+        .unwrap_or_else(|| panic!("missing column {name}"))
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .unwrap_or_else(|| panic!("{name} must be Int32Array"))
+}
+
+fn nullable(column: &Int32Array, row: usize) -> Option<i32> {
+    column.is_valid(row).then(|| column.value(row))
+}
+
+fn read_selection_rows(out: &Path) -> Vec<SelectionRow> {
+    let mut rows = Vec::new();
+    for batch in read_batches(&out.join("training/cut_selection/iterations.parquet")) {
+        let time = batch
+            .column_by_name("selection_time_ms")
+            .expect("missing column selection_time_ms")
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .expect("selection_time_ms must be Float64Array");
+        for i in 0..batch.num_rows() {
+            let nullable_at = |name: &str| nullable(int32_column(&batch, name), i);
+            rows.push(SelectionRow {
+                iteration: int32_column(&batch, "iteration").value(i),
+                pool_id: int32_column(&batch, "pool_id").value(i),
+                stage_id: int32_column(&batch, "stage_id").value(i),
+                node_id: nullable_at("node_id"),
+                cuts_active_before: int32_column(&batch, "cuts_active_before").value(i),
+                cuts_deactivated: nullable_at("cuts_deactivated"),
+                cuts_reactivated: nullable_at("cuts_reactivated"),
+                cuts_active_after: int32_column(&batch, "cuts_active_after").value(i),
+                has_selection_time: time.is_valid(i),
+                budget_evicted: nullable_at("budget_evicted"),
+                active_after_budget: nullable_at("active_after_budget"),
+                cuts_in_lp: nullable_at("cuts_in_lp"),
+            });
+        }
+    }
+    rows
+}
+
+fn read_convergence_cuts(out: &Path) -> Vec<(i32, i64, i32)> {
+    let mut rows = Vec::new();
+    for batch in read_batches(&out.join("training/convergence.parquet")) {
+        let iteration = int32_column(&batch, "iteration");
+        let removed = int32_column(&batch, "cuts_removed");
+        let active = batch
+            .column_by_name("cuts_active")
+            .expect("missing column cuts_active")
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("cuts_active must be Int64Array");
+        rows.extend(
+            (0..batch.num_rows()).map(|i| (iteration.value(i), active.value(i), removed.value(i))),
+        );
+    }
+    rows
+}
+
+fn active_cuts_in_pool(out: &Path, pool: i32) -> i32 {
+    let path = out.join(format!("policy/cuts/{pool:03}.bin"));
+    let bytes =
+        fs::read(&path).unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    let stage_cuts = deserialize_stage_cuts(&bytes)
+        .unwrap_or_else(|e| panic!("failed to decode {}: {e:?}", path.display()));
+    i32::try_from(stage_cuts.cuts.iter().filter(|cut| cut.is_active).count()).unwrap()
+}
+
+fn run_selection_case(cut_selection: serde_json::Value) -> TempDir {
+    let case = copy_of_1dtoy_training_six_iterations();
+    rewrite_json(&case.path().join("config.json"), |config| {
+        config["training"]["cut_selection"] = cut_selection;
+    });
+    let out = TempDir::new().unwrap();
+    run_case(case.path(), out.path());
+    out
+}
+
+fn assert_one_row_per_pool_and_iteration(rows: &[SelectionRow]) {
+    let expected: Vec<(i32, i32)> = (1..=SELECTION_ITERATIONS)
+        .flat_map(|iteration| (0..SELECTION_POOLS).map(move |pool| (iteration, pool)))
+        .collect();
+    let written: Vec<(i32, i32)> = rows
+        .iter()
+        .map(|row| (row.iteration, row.pool_id))
+        .collect();
+    assert_eq!(
+        written, expected,
+        "one row per (iteration, pool), ascending"
+    );
+    for row in rows {
+        assert_eq!(row.stage_id, row.pool_id, "{row:?}");
+        assert_eq!(row.node_id, Some(row.pool_id), "{row:?}");
+    }
+}
+
+fn sum_by_pool(rows: &[SelectionRow], value: impl Fn(&SelectionRow) -> Option<i32>) -> Vec<i32> {
+    (0..SELECTION_POOLS)
+        .map(|pool| {
+            rows.iter()
+                .filter(|row| row.pool_id == pool)
+                .filter_map(&value)
+                .sum()
+        })
+        .collect()
+}
+
+#[test]
+fn run_writes_one_selection_row_per_pool_and_iteration() {
+    let out = run_selection_case(serde_json::json!({
+        "selection": { "method": "level1", "check_frequency": SELECTION_CHECK_FREQUENCY },
+        "max_active_per_stage": 2
+    }));
+    let rows = read_selection_rows(out.path());
+
+    assert_one_row_per_pool_and_iteration(&rows);
+    for row in &rows {
+        let selected = row.is_interior() && row.is_check_iteration();
+        assert_eq!(row.cuts_deactivated.is_some(), selected, "{row:?}");
+        assert_eq!(row.cuts_reactivated.is_some(), selected, "{row:?}");
+        assert_eq!(row.has_selection_time, selected, "{row:?}");
+        assert_eq!(row.budget_evicted.is_some(), row.is_interior(), "{row:?}");
+        assert_eq!(
+            row.active_after_budget.is_some(),
+            row.is_interior(),
+            "{row:?}"
+        );
+        assert_eq!(
+            row.cuts_active_after,
+            row.cuts_active_before - row.cuts_deactivated.unwrap_or(0)
+                + row.cuts_reactivated.unwrap_or(0),
+            "{row:?}"
+        );
+        if let (Some(evicted), Some(kept)) = (row.budget_evicted, row.active_after_budget) {
+            assert_eq!(kept, row.cuts_active_after - evicted, "{row:?}");
+        }
+        assert_eq!(row.cuts_in_lp, Some(row.final_active()), "{row:?}");
+    }
+
+    let deactivated = sum_by_pool(&rows, |row| row.cuts_deactivated);
+    let off_schedule_evicted = sum_by_pool(&rows, |row| {
+        row.budget_evicted.filter(|_| !row.is_check_iteration())
+    });
+    assert!(
+        deactivated.iter().any(|&count| count > 0),
+        "no selection pass deactivated a cut: deactivations per pool {deactivated:?}"
+    );
+    assert!(
+        off_schedule_evicted.iter().any(|&count| count > 0),
+        "the cap evicted nothing outside a selection iteration: evictions per pool \
+         {off_schedule_evicted:?}"
+    );
+
+    for pool in 0..SELECTION_POOLS {
+        let last = rows
+            .iter()
+            .find(|row| row.iteration == SELECTION_ITERATIONS && row.pool_id == pool)
+            .unwrap();
+        assert_eq!(
+            active_cuts_in_pool(out.path(), pool),
+            last.final_active(),
+            "pool {pool}: active records of the policy against its row of the last iteration"
+        );
+    }
+    let convergence = read_convergence_cuts(out.path());
+    assert_eq!(
+        i32::try_from(convergence.len()).unwrap(),
+        SELECTION_ITERATIONS
+    );
+    for (iteration, cuts_active, cuts_removed) in convergence {
+        let pools = || rows.iter().filter(|row| row.iteration == iteration);
+        assert_eq!(
+            cuts_active,
+            i64::from(pools().map(SelectionRow::final_active).sum::<i32>()),
+            "iteration {iteration}: cuts_active"
+        );
+        assert_eq!(
+            cuts_removed,
+            pools()
+                .map(|row| row.cuts_deactivated.unwrap_or(0) + row.budget_evicted.unwrap_or(0))
+                .sum::<i32>(),
+            "iteration {iteration}: cuts_removed"
+        );
+    }
+}
+
+#[test]
+fn run_with_only_a_budget_writes_the_selection_output() {
+    let out = run_selection_case(serde_json::json!({ "max_active_per_stage": 2 }));
+    let rows = read_selection_rows(out.path());
+
+    assert_one_row_per_pool_and_iteration(&rows);
+    for row in &rows {
+        assert!(row.cuts_deactivated.is_none(), "{row:?}");
+        assert!(row.cuts_reactivated.is_none(), "{row:?}");
+        assert!(!row.has_selection_time, "{row:?}");
+        assert_eq!(row.budget_evicted.is_some(), row.is_interior(), "{row:?}");
+        assert_eq!(
+            row.active_after_budget.is_some(),
+            row.is_interior(),
+            "{row:?}"
+        );
+    }
+    let evicted = sum_by_pool(&rows, |row| row.budget_evicted);
+    assert!(
+        evicted.iter().any(|&count| count > 0),
+        "the cap evicted nothing: evictions per pool {evicted:?}"
+    );
+}
+
 #[test]
 fn run_clears_fpha_hyperplanes_after_switching_to_constant_productivity() {
     let case = TempDir::new().unwrap();
@@ -2134,6 +2397,86 @@ fn run_accepts_a_supplied_opening_tree_with_historical_residuals_stages() {
         .stdout(predicate::str::contains("V2.").not())
         .stderr(predicate::str::contains("historical windows").not())
         .stderr(predicate::str::contains("V2.").not());
+}
+
+// ── A failed run keeps the last whole checkpoint ──────────────────────────────
+
+/// The deck of `infeasible_training_lp_exits_3_naming_stage_iteration_and_scenario`: with
+/// the generic constraint's slack disabled and a thermal minimum of 20 MW, every stage-0
+/// solve is infeasible.
+fn make_training_lp_infeasible(case: &Path) {
+    rewrite_json(
+        &case.join("constraints/generic_constraints.json"),
+        |constraints| {
+            constraints["constraints"][0]["slack"] = serde_json::json!({ "enabled": false });
+        },
+    );
+    rewrite_json(&case.join("system/thermals.json"), |thermals| {
+        thermals["thermals"][0]["generation"]["min_mw"] = serde_json::json!(20.0);
+    });
+}
+
+#[test]
+fn a_failed_run_keeps_the_last_whole_checkpoint() {
+    let case = TempDir::new().unwrap();
+    copy_dir_recursive(
+        &case_dir("deterministic/d13-generic-constraint"),
+        case.path(),
+    );
+    let healthy = TempDir::new().unwrap();
+    copy_dir_recursive(case.path(), healthy.path());
+    rewrite_json(&case.path().join("config.json"), |config| {
+        config["training"]["stopping_rules"] =
+            serde_json::json!([{ "type": "iteration_limit", "limit": 3 }]);
+        config["policy"] =
+            serde_json::json!({ "checkpointing": { "enabled": true, "interval_iterations": 1 } });
+    });
+    let out = TempDir::new().unwrap();
+    run_case(case.path(), out.path());
+    let policy_dir = out.path().join("policy");
+    let whole = snapshot_files(&policy_dir);
+    assert!(whole.contains_key(Path::new("manifest.bin")));
+
+    rewrite_json(&case.path().join("config.json"), |config| {
+        config["training"]["stopping_rules"] =
+            serde_json::json!([{ "type": "iteration_limit", "limit": 6 }]);
+        config["policy"]["mode"] = serde_json::json!("resume");
+    });
+    make_training_lp_infeasible(case.path());
+    novomodelo()
+        .args(["run", case.path().to_str().unwrap()])
+        .args(["--output", out.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(3)
+        .stderr(predicate::str::contains(
+            "LP infeasible at stage 0, iteration 4, scenario 0",
+        ))
+        .stderr(predicate::str::contains("policy.partial"));
+
+    assert_eq!(
+        snapshot_files(&policy_dir),
+        whole,
+        "the policy directory is byte for byte what the first run wrote"
+    );
+    assert!(out.path().join("policy.partial/manifest.bin").is_file());
+
+    fs::copy(
+        healthy.path().join("system/thermals.json"),
+        case.path().join("system/thermals.json"),
+    )
+    .unwrap();
+    fs::copy(
+        healthy.path().join("constraints/generic_constraints.json"),
+        case.path().join("constraints/generic_constraints.json"),
+    )
+    .unwrap();
+    novomodelo()
+        .args(["run", case.path().to_str().unwrap()])
+        .args(["--output", out.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("resuming from iteration 3."));
 }
 
 #[cfg(feature = "mpi")]

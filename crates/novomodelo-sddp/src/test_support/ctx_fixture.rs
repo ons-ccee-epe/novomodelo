@@ -5,10 +5,12 @@ use std::collections::{BTreeMap, HashMap};
 use novomodelo_core::{
     Bus, CascadeTopology, EnergyContract, EntityId, GenericConstraint, Hydro, Line, LoadModel,
     NonControllableSource, PumpingStation, ResolvedBounds, ResolvedGenericConstraintBounds,
-    ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors, ResolvedPenalties, Thermal,
+    ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors, ResolvedPenalties, StageId,
+    Thermal,
 };
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
+use crate::InflowNonNegativityMethod;
 use crate::bucket_topology::TransitBucketTopology;
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
 use crate::indexer::{
@@ -16,6 +18,7 @@ use crate::indexer::{
 };
 use crate::lead_time::AnticipatedResolution;
 use crate::lp::builder::{ResolvedTables, TemplateBuildCtx};
+use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::ResolvedParameters;
 use crate::test_support::constant_lead_resolution;
 use crate::time_value::{PostStudyResolved, TimeValue};
@@ -44,6 +47,10 @@ pub(crate) struct CtxFixture {
     pub(crate) resolved_ncs_bounds: ResolvedNcsBounds,
     pub(crate) resolved_ncs_factors: ResolvedNcsFactors,
     pub(crate) resolved_parameters: ResolvedParameters,
+    /// Derived fresh, from `generic_constraints` and `resolved_parameters`, on
+    /// every [`Self::ctx`] call — the backing store
+    /// [`ResolvedTables::resolved_generic_coefficients`] borrows.
+    pub(crate) resolved_generic_coefficients: ResolvedGenericCoefficients,
     pub(crate) par_lp: PrecomputedPar,
     pub(crate) production_models: ProductionModelSet,
     pub(crate) evaporation_models: EvaporationModelSet,
@@ -58,8 +65,8 @@ pub(crate) struct CtxFixture {
     /// [`constant_lead_resolution`] every other fixture gets.
     pub(crate) anticipated_resolution: AnticipatedResolution,
     pub(crate) anticipated_plants: AnticipatedPlants,
-    pub(crate) has_penalty: bool,
-    /// Derived fresh, from `anticipated_plants`/`has_penalty` and the slices
+    pub(crate) inflow_method: InflowNonNegativityMethod,
+    /// Derived fresh, from `anticipated_plants`/`inflow_method` and the slices
     /// below, on every [`Self::ctx`] call — the backing store
     /// [`TemplateBuildCtx::study_dims`] borrows.
     pub(crate) study_dims: StudyDimensions,
@@ -104,6 +111,7 @@ impl Default for CtxFixture {
             resolved_ncs_bounds: ResolvedNcsBounds::empty(),
             resolved_ncs_factors: ResolvedNcsFactors::empty(),
             resolved_parameters: ResolvedParameters::default(),
+            resolved_generic_coefficients: ResolvedGenericCoefficients::default(),
             par_lp: PrecomputedPar::default(),
             production_models: ProductionModelSet::new(Vec::new(), &[], 0),
             evaporation_models: EvaporationModelSet::new(Vec::new()),
@@ -115,7 +123,7 @@ impl Default for CtxFixture {
             anticipated_lead_stages: Vec::new(),
             anticipated_resolution: AnticipatedResolution::default(),
             anticipated_plants: AnticipatedPlants::default(),
-            has_penalty: false,
+            inflow_method: InflowNonNegativityMethod::None,
             study_dims: StudyDimensions::default(),
             time_value: TimeValue::from_parts(
                 Vec::new(),
@@ -134,18 +142,29 @@ impl Default for CtxFixture {
 impl CtxFixture {
     /// Derives `positions`, `state`, and `study_dims` from this fixture's own
     /// slices, the way [`EntityPositions::build`]/`build_study_dimensions` do,
-    /// and `time_value`'s one-step discount factors as one `1.0` per `bounds`
-    /// stage; every other field is copied through unchanged. `&mut self`: all
-    /// four are recomputed into `self`'s own fields on every call, so
-    /// [`TemplateBuildCtx::positions`]/`state`/`study_dims` can borrow a
-    /// backing store with `self`'s own lifetime. `state` attaches
+    /// `time_value`'s one-step discount factors as one `1.0` per `bounds`
+    /// stage, and `resolved_generic_coefficients` over stage ids `0..n` with a
+    /// uniform block count, `n` and the count each the widest of `bounds` and
+    /// `resolved_parameters`; every other field is copied through unchanged.
+    /// `&mut self`: all five are recomputed into `self`'s own fields on every
+    /// call, so [`TemplateBuildCtx::positions`]/`state`/`study_dims` can borrow
+    /// a backing store with `self`'s own lifetime. `state` attaches
     /// `self.anticipated_resolution` as-is when a test set it explicitly (it
     /// is no longer `AnticipatedResolution::default`), else the
     /// saturating-default [`constant_lead_resolution`] over this fixture's
     /// own `anticipated_lead_stages`. A test that needs a derived field's
     /// value to disagree with its own slices sets the fixture's owner field
-    /// (e.g. `self.has_penalty`) before calling [`Self::ctx`], never the
+    /// (e.g. `self.inflow_method`) before calling [`Self::ctx`], never the
     /// returned context's field.
+    ///
+    /// # Panics
+    ///
+    /// When `generic_constraints` reads a parameter `resolved_parameters`
+    /// does not hold, or resolves to a non-finite value.
+    #[expect(
+        clippy::panic,
+        reason = "a fixture whose generic constraints do not resolve is a broken test setup, not a runtime condition to recover from"
+    )]
     pub(crate) fn ctx(&mut self) -> TemplateBuildCtx<'_> {
         self.positions = EntityPositions::from_slices(
             self.hydros.iter().map(|h| h.id),
@@ -176,14 +195,24 @@ impl CtxFixture {
                 .map(|b| b.deficit_segments.len())
                 .max()
                 .unwrap_or(0),
-            inflow_method: if self.has_penalty {
-                crate::InflowNonNegativityMethod::Penalty
-            } else {
-                crate::InflowNonNegativityMethod::None
-            },
+            inflow_method: self.inflow_method,
             anticipated_plants: self.anticipated_plants.clone(),
             ..StudyDimensions::default()
         };
+        let per_param = &self.resolved_parameters.per_param;
+        let n_stages = per_param
+            .iter()
+            .map(Vec::len)
+            .fold(self.bounds.n_stages().max(1), usize::max);
+        let n_blocks = per_param.iter().flatten().map(Vec::len).fold(1, usize::max);
+        let stage_ids: Vec<StageId> = (0..).take(n_stages).map(StageId).collect();
+        self.resolved_generic_coefficients = ResolvedGenericCoefficients::build(
+            &self.generic_constraints,
+            &self.resolved_parameters,
+            &stage_ids,
+            &vec![n_blocks; n_stages],
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
         TemplateBuildCtx {
             hydros: &self.hydros,
             thermals: &self.thermals,
@@ -200,6 +229,7 @@ impl CtxFixture {
                 resolved_ncs_bounds: &self.resolved_ncs_bounds,
                 resolved_ncs_factors: &self.resolved_ncs_factors,
                 resolved_parameters: &self.resolved_parameters,
+                resolved_generic_coefficients: &self.resolved_generic_coefficients,
             },
             positions: &self.positions,
             par_lp: &self.par_lp,

@@ -28,8 +28,8 @@ use novomodelo_sddp::policy::full_fcf_load::{
 };
 use novomodelo_sddp::validate_phases::check_configured_policy_load;
 use novomodelo_sddp::{
-    FutureCostFunction, HydroModelSummary, ModelProvenanceReport, StochasticSummary, StudySetup,
-    TrainingResult,
+    CheckpointBasisStore, FutureCostFunction, HydroModelSummary, ModelProvenanceReport,
+    StochasticSummary, StudySetup, TrainingResult,
 };
 
 use crate::convert::pydict_to_json_map;
@@ -291,7 +291,7 @@ impl Study {
     // converts under the GIL and `run_via_study` already holds.
     #[allow(clippy::needless_pass_by_value)]
     pub(crate) fn new_native(
-        case_dir: &std::path::Path,
+        case_dir: &Path,
         output_dir: Option<PathBuf>,
         threads: Option<u32>,
         overrides: Option<serde_json::Map<String, serde_json::Value>>,
@@ -344,7 +344,7 @@ impl Study {
                 Vec::new(),
                 Vec::new(),
                 None,
-                None,
+                CheckpointBasisStore::default(),
             );
             return Ok(Policy {
                 training_result: synthetic,
@@ -363,7 +363,7 @@ impl Study {
         let system = self.system.as_ref();
         let config = &self.config;
 
-        let phase_result: Result<(TrainingPhaseResult, Option<PyErr>), PhaseError> =
+        let phase_result: Result<(TrainingPhaseResult, Option<PyErr>, PathBuf), PhaseError> =
             run_in_scoped_pool(threads, |n| {
                 remove_success_marker(&output_dir.join("training")).map_err(|e| {
                     format!("{OUTPUT_WRITE_ERROR_PREFIX}: stale training marker: {e}")
@@ -381,7 +381,7 @@ impl Study {
                     None => (run_training_phase_py(setup, n, shutdown_flag)?, None),
                 };
 
-                write_training_outputs(
+                let policy_dir = write_training_outputs(
                     &output_dir,
                     system,
                     config,
@@ -392,10 +392,10 @@ impl Study {
                     n,
                 )?;
 
-                Ok::<_, PhaseError>((training, callback_error))
+                Ok::<_, PhaseError>((training, callback_error, policy_dir))
             })?;
 
-        let (mut training, callback_error) = phase_result?;
+        let (mut training, callback_error, policy_dir) = phase_result?;
 
         if let Some(err) = callback_error {
             return Err(RunError::Callback(err));
@@ -403,7 +403,10 @@ impl Study {
 
         if let Some(error) = training.error.take() {
             let iterations = training.result.iterations;
-            let message = format!("training failed after {iterations} iterations: {error}");
+            let message = format!(
+                "training failed after {iterations} iterations: {error}; the partial policy is in {}",
+                policy_dir.display()
+            );
             return Err(RunError::Sddp { error, message });
         }
 
@@ -622,8 +625,8 @@ impl Study {
     /// `training/solver/retry_histogram.parquet`, and the four
     /// `training/dictionaries/` files (`variables.csv`, `entities.csv`,
     /// `codes.json`, `bounds.parquet`). The following are written only when the
-    /// run has rows for them: `training/cut_selection/iterations.parquet` (cut
-    /// selection),
+    /// run has rows for them: `training/cut_selection/iterations.parquet` (when
+    /// the run sets a selection method or `max_active_per_stage`),
     /// `hydro_models/fpha_hyperplanes.parquet` (FPHA planes),
     /// `hydro_models/evaporation_models.parquet` (evaporation models),
     /// `hydro_models/fpha_deviation_points.parquet` (FPHA deviation tracking,

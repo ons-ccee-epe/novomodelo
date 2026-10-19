@@ -160,7 +160,7 @@ pub struct HydroWriteRecord {
     pub diverted_inflow_m3s: Option<f64>,
     /// Diverted outflow in m³/s, or `None` if no diversion.
     pub diverted_outflow_m3s: Option<f64>,
-    /// Incremental natural inflow in m³/s.
+    /// Incremental (local) inflow in m³/s as the inflow model gives it; may be negative.
     pub incremental_inflow_m3s: f64,
     /// Incremental (local) natural inflow in m³/s; the same value as
     /// `incremental_inflow_m3s`.
@@ -175,7 +175,7 @@ pub struct HydroWriteRecord {
     pub equivalent_productivity_mw_per_m3s: f64,
     /// Accumulated productivity (VHA `ρ_acc`) in MW/(m³/s).
     pub accumulated_productivity_mw_per_m3s: f64,
-    /// Incremental inflow energy equivalent in MW.
+    /// Incremental inflow energy equivalent in MW; may be negative.
     pub incremental_inflow_energy_mw: f64,
     /// Stored energy at block start in `MWh`.
     pub stored_energy_initial_mwh: f64,
@@ -211,7 +211,8 @@ pub struct HydroWriteRecord {
     pub evaporation_violation_pos_m3s: f64,
     /// Under-evaporation violation in m³/s.
     pub evaporation_violation_neg_m3s: f64,
-    /// Inflow non-negativity slack in m³/s.
+    /// Water added to the incremental inflow in the water balance, in m³/s: the
+    /// truncation correction or the penalty slack; `0` when the method has neither.
     pub inflow_nonnegativity_slack_m3s: f64,
     /// Over-withdrawal violation in m³/s.
     pub water_withdrawal_violation_pos_m3s: f64,
@@ -370,7 +371,8 @@ pub struct InflowLagWriteRecord {
     pub hydro_id: i32,
     /// Lag index within the AR model (0 = most recent past period).
     pub lag_index: u32,
-    /// Observed inflow at this lag in m³/s.
+    /// Incremental inflow at this lag as the stage receives it, in m³/s: history at
+    /// the start of the horizon, simulated values afterwards; may be negative.
     pub inflow_m3s: f64,
 }
 

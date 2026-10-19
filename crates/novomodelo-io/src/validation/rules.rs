@@ -182,7 +182,7 @@ declare_rules! {
         "An FPHA-configured hydro with turbine capacity has no rows in fpha_hyperplanes.parquet";
     DIMENSIONAL_GEOMETRY_ROWS = "dimensional.7",
         Dimensional, DimensionMismatch, Error,
-        "An FPHA or linearized-head hydro has too few hydro_geometry.parquet rows (at least 1 for FPHA, 2 otherwise)";
+        "An FPHA hydro has no hydro_geometry.parquet rows";
     SEMANTIC_HYDRO_CASCADE_CYCLE = "semantic.5a.1",
         Semantic, CycleDetected, Error,
         "The hydro cascade formed by downstream links contains a cycle";
@@ -301,9 +301,9 @@ declare_rules! {
     SEMANTIC_BOUND_ROW_RAISES_GROUP_CAPACITY = "semantic.5a.45",
         Semantic, InvalidValue, Error,
         "A hydro_unit_group_bounds row raises max_turbined_m3s or max_generation_mw above the unit group's declared value";
-    SEMANTIC_HYDRO_DIVERSION_FLOOR_WITHOUT_CHANNEL = "semantic.5a.46",
+    SEMANTIC_HYDRO_DIVERSION_WITHOUT_CHANNEL = "semantic.5a.46",
         Semantic, InvalidValue, Error,
-        "A hydro_bounds row sets min_diversion_m3s for a hydro that declares no diversion channel";
+        "A hydro_bounds row sets a positive min_diversion_m3s or max_diversion_m3s for a hydro that declares no diversion channel";
     POST_STUDY_BOUNDARY_INCONSISTENT = "semantic.5a.47",
         Semantic, BusinessRuleViolation, Error,
         "post_study_stages.json is not date-contiguous from the study horizon end, lacks a bound an anticipated lead reaches, or its commitments mis-tile post-study stages or fall outside the commissioning window";

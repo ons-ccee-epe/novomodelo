@@ -22,6 +22,7 @@
 
 mod common;
 
+use novomodelo_io::config::InflowNonNegativityMethod;
 use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::indexer::StateDim;
 use novomodelo_sddp::setup::{NodePos, StageIdx};
@@ -35,7 +36,9 @@ use common::build_setup_in_code;
 use common::in_code_studies::{
     CHRONOLOGICAL_NOISE_BLOCK_HOURS, CHRONOLOGICAL_NOISE_INFLOW_MEAN_M3S,
     CHRONOLOGICAL_NOISE_INFLOW_STD_M3S, CHRONOLOGICAL_NOISE_INITIAL_STORAGE_HM3,
-    CHRONOLOGICAL_NOISE_RELEASE_COST, ChronologicalNoiseSpec, chronological_noise_study,
+    CHRONOLOGICAL_NOISE_RELEASE_COST, ChronologicalNoiseSpec, NEGATIVE_DRAW_AR_COEFFICIENT,
+    NEGATIVE_DRAW_INFLOW_MEAN_M3S, NEGATIVE_DRAW_LAG_SEED_M3S, chronological_noise_study,
+    negative_draw_par1_spec, negative_draw_raw_inflow,
 };
 
 const M3S_TO_HM3: f64 = 0.0036;
@@ -163,4 +166,77 @@ fn chronological_noise_lower_bound_is_the_mean_root_objective() {
         (lb - analytic).abs() <= 1e-6 * lb.abs(),
         "lower bound {lb} must equal the analytic inflow-release cost {analytic}"
     );
+}
+
+#[test]
+fn negative_draw_par1_study_carries_its_closed_form() {
+    let spec = ChronologicalNoiseSpec {
+        branching_factor: 4,
+        ..negative_draw_par1_spec(InflowNonNegativityMethod::Truncation)
+    };
+    let (system, config) = chronological_noise_study(&spec);
+    let setup = build_setup_in_code(system, &config);
+    let n_hydros = CHRONOLOGICAL_NOISE_INFLOW_STD_M3S.len();
+    let close = |got: f64, expected: f64| (got - expected).abs() <= 1e-12 * expected.abs().max(1.0);
+
+    let layout = setup.stage_state();
+    assert_eq!(layout.max_par_order, 1);
+    let initial_state = oracle_initial_state(&setup);
+    for h in 0..n_hydros {
+        let seed = initial_state[layout.inflow_lags.start + h];
+        assert!(
+            close(seed, NEGATIVE_DRAW_LAG_SEED_M3S[h]),
+            "hydro {h}: lag seed {seed}, expected {}",
+            NEGATIVE_DRAW_LAG_SEED_M3S[h]
+        );
+    }
+
+    let par = setup.inputs.stochastic.par();
+    for t in 0..2 {
+        for h in 0..n_hydros {
+            let phi = NEGATIVE_DRAW_AR_COEFFICIENT[h];
+            let psi = par.psi_slice(t, h);
+            assert_eq!(psi.len(), 1, "stage {t} hydro {h}: PAR order");
+            assert!(close(psi[0], phi), "stage {t} hydro {h}: psi {}", psi[0]);
+            let base = par.deterministic_base(t, h);
+            let expected_base = NEGATIVE_DRAW_INFLOW_MEAN_M3S * (1.0 - phi);
+            assert!(
+                close(base, expected_base),
+                "stage {t} hydro {h}: base {base}, expected {expected_base}"
+            );
+            let sigma = par.sigma(t, h);
+            assert!(
+                close(sigma, CHRONOLOGICAL_NOISE_INFLOW_STD_M3S[h]),
+                "stage {t} hydro {h}: sigma {sigma}"
+            );
+        }
+    }
+
+    let hydro_range = setup.inputs.stochastic.class_dimensions().hydro_range();
+    let draws = |t: usize| -> Vec<Vec<f64>> {
+        let node = NodePos(t);
+        (0..setup.inputs.node_graph.nodes[node].openings.len)
+            .map(|o| node_opening_noise(&setup, node, o)[hydro_range.clone()].to_vec())
+            .collect()
+    };
+    let (root_draws, next_draws) = (draws(0), draws(1));
+    assert_eq!(root_draws.len(), 4);
+    assert_eq!(next_draws.len(), 4);
+    for (o, root) in root_draws.iter().enumerate() {
+        let stage_0_hydro_0 = negative_draw_raw_inflow(0, NEGATIVE_DRAW_LAG_SEED_M3S[0], root[0]);
+        assert!(
+            stage_0_hydro_0 < -1.0,
+            "root opening {o}: stage-0 raw inflow of hydro 0 is {stage_0_hydro_0}"
+        );
+        for (p, next) in next_draws.iter().enumerate() {
+            for h in 0..n_hydros {
+                let stage_0 = negative_draw_raw_inflow(h, NEGATIVE_DRAW_LAG_SEED_M3S[h], root[h]);
+                let stage_1 = negative_draw_raw_inflow(h, stage_0, next[h]);
+                assert!(
+                    stage_1 < -1.0,
+                    "root opening {o}, stage-1 opening {p}, hydro {h}: raw inflow {stage_1}"
+                );
+            }
+        }
+    }
 }

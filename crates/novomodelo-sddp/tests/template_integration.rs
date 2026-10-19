@@ -2232,8 +2232,8 @@ fn make_constraint_with_expr(
             penalty: 5000.0,
             penalty_basis: PenaltyBasis::PerHour,
         }),
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     }
 }
 

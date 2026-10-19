@@ -7,6 +7,7 @@ use novomodelo_core::EntityId;
 use novomodelo_core::scenario::LoadModel;
 
 use crate::indexer::{EntityPositions, HydroCellIndex, StudyDimensions};
+use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::ResolvedParameters;
 use crate::time_value::TimeValue;
 
@@ -40,4 +41,7 @@ pub(crate) struct LpBuildInputs<'a> {
     /// Resolved `(parameter_id, stage_idx, block_idx)` table, from
     /// [`crate::resolved_parameters::build_resolved_parameters`].
     pub(crate) resolved_parameters: &'a ResolvedParameters,
+    /// Per-`(stage, block)` generic-constraint term values and bound
+    /// remainders, from [`ResolvedGenericCoefficients::build`].
+    pub(crate) resolved_generic_coefficients: &'a ResolvedGenericCoefficients,
 }

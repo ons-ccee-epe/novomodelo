@@ -7,9 +7,7 @@ use std::sync::mpsc::{Sender, SyncSender};
 use novomodelo_comm::Communicator;
 use novomodelo_core::TrainingEvent;
 use novomodelo_io::TrainingOutput;
-use novomodelo_solver::ActiveProfile;
-use novomodelo_solver::StageTemplate;
-use novomodelo_solver::{SolverError, SolverInterface};
+use novomodelo_solver::{ActiveProfile, SolverError, SolverInterface, StageTemplate};
 
 use crate::{
     config::{CutManagementConfig, EventConfig, LoopConfig, TrainingConfig},
@@ -28,7 +26,8 @@ use crate::{
 use super::node_graph::pool_fill_basis_cache;
 use super::{SimulationEnumeratedRequest, StudySetup, Traversal};
 use crate::build_training_output;
-use crate::simulate;
+use crate::simulation::pipeline::run_simulation;
+use crate::simulation::state::SimulationInputs;
 use crate::train;
 
 impl StudySetup {
@@ -140,8 +139,6 @@ impl StudySetup {
         let stage_ctx = self.inputs.stage_ctx();
         let training_ctx = self.inputs.training_ctx();
 
-        let warm_start_basis_cache = self.warm_start_basis_cache.take();
-
         train(
             solver,
             training_config,
@@ -150,7 +147,7 @@ impl StudySetup {
             &training_ctx,
             comm,
             solver_factory,
-            warm_start_basis_cache,
+            std::mem::take(&mut self.loaded),
             solver_profiles,
         )
     }
@@ -158,8 +155,9 @@ impl StudySetup {
     /// Run simulation using the trained future cost function.
     ///
     /// The caller provides channels, event sender, and thread management.
-    /// `frozen_templates` enables the frozen-template LP load path (no `add_rows`
-    /// per stage); pass `None` for the legacy `load_model + add_rows` fallback.
+    /// `frozen_templates` is used only when it holds the cuts of
+    /// [`simulation_cut_set`](Self::simulation_cut_set); otherwise, and with
+    /// `None`, simulation builds its own templates from that set.
     /// `stage_bases` enables warm-start; pass `&[]` for cold-start.
     ///
     /// # Errors
@@ -232,18 +230,19 @@ impl StudySetup {
             study_stage_dates: &self.study_stage_dates,
         };
 
-        simulate(
+        run_simulation(&mut SimulationInputs {
             workspaces,
-            &stage_ctx,
-            &self.fcf,
-            &training_ctx,
-            self.simulation_config(),
+            ctx: &stage_ctx,
+            fcf: &self.fcf,
+            training_ctx: &training_ctx,
+            config: self.simulation_config(),
             output,
             frozen_templates,
-            stage_bases,
+            cut_set: self.simulation_cut_set,
+            node_bases: stage_bases,
             comm,
-            &traversal,
-        )
+            traversal: &traversal,
+        })
     }
 
     /// Convert [`TrainingResult`] and events into training output.
