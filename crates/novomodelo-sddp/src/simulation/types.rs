@@ -131,8 +131,8 @@ pub struct SimulationHydroResult {
     pub storage_final_hm3: f64,
     /// Active power generation in MW.
     pub generation_mw: f64,
-    /// Equivalent productivity `ρ_eq` \[MW/(m³/s)\]. For `ConstantProductivity` /
-    /// `LinearizedHead` models this is the stored input scalar; for FPHA models
+    /// Equivalent productivity `ρ_eq` \[MW/(m³/s)\]. For `ConstantProductivity`
+    /// models this is the stored input scalar; for FPHA models
     /// it is derived from VHA geometry, `ρ_esp`, `V_ref`, and `Q_ref` by
     /// `EnergyConversionSet`. Always populated.
     pub equivalent_productivity_mw_per_m3s: f64,

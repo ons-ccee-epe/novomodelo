@@ -222,6 +222,11 @@ fn write_energy_productivity_override(
             DataType::Float64,
             true,
         ),
+        Field::new(
+            "integrated_equivalent_productivity_mw_per_m3s",
+            DataType::Float64,
+            true,
+        ),
     ]));
 
     let batch = RecordBatch::try_new(
@@ -230,6 +235,7 @@ fn write_energy_productivity_override(
             Arc::new(Int32Array::from(vec![hydro_id])),
             Arc::new(Int32Array::from(vec![None::<i32>])),
             Arc::new(Float64Array::from(vec![equivalent_productivity_mw_per_m3s])),
+            Arc::new(Float64Array::from(vec![None::<f64>])),
             Arc::new(Float64Array::from(vec![None::<f64>])),
             Arc::new(Float64Array::from(vec![None::<f64>])),
             Arc::new(Float64Array::from(vec![None::<f64>])),
@@ -8405,6 +8411,7 @@ mod nonzero_stage_fpha_override_regression {
             equivalent_productivity_mw_per_m3s: Some(OVERRIDE_RHO_EQ),
             reference_outflow_m3s: None,
             specific_productivity_mw_per_m3s_per_m: None,
+            integrated_equivalent_productivity_mw_per_m3s: None,
         };
         let table = build_hydro_energy_productivity_override(&[row]).expect("override builds");
 
@@ -11481,10 +11488,14 @@ mod security_curve_integrated_productivity_equivalence {
         BUSES_JSON, INITIAL_CONDITIONS_JSON, LINES_JSON, PENALTIES_JSON, STAGES_JSON,
     };
 
-    /// `(hydro_id, stage_id, equivalent_productivity_mw_per_m3s override,
-    /// specific_productivity_mw_per_m3s_per_m override)` — `reference_outflow_m3s`
-    /// stays `NULL` for every row (Q_ref override is out of this fixture's scope).
-    fn write_hydro_energy_productivity(dest: &Path, rows: &[(i32, i32, Option<f64>, Option<f64>)]) {
+    /// `(hydro_id, stage_id, equivalent_productivity_mw_per_m3s,
+    /// specific_productivity_mw_per_m3s_per_m,
+    /// integrated_equivalent_productivity_mw_per_m3s)` overrides —
+    /// `reference_outflow_m3s` stays `NULL` for every row (Q_ref override is out of
+    /// this fixture's scope).
+    type ProductivityOverrideRow = (i32, i32, Option<f64>, Option<f64>, Option<f64>);
+
+    fn write_hydro_energy_productivity(dest: &Path, rows: &[ProductivityOverrideRow]) {
         let schema = Arc::new(Schema::new(vec![
             Field::new("hydro_id", DataType::Int32, false),
             Field::new("stage_id", DataType::Int32, true),
@@ -11496,6 +11507,11 @@ mod security_curve_integrated_productivity_equivalence {
             Field::new("reference_outflow_m3s", DataType::Float64, true),
             Field::new(
                 "specific_productivity_mw_per_m3s_per_m",
+                DataType::Float64,
+                true,
+            ),
+            Field::new(
+                "integrated_equivalent_productivity_mw_per_m3s",
                 DataType::Float64,
                 true,
             ),
@@ -11515,6 +11531,9 @@ mod security_curve_integrated_productivity_equivalence {
                 Arc::new(Float64Array::from(vec![None::<f64>; rows.len()])),
                 Arc::new(Float64Array::from(
                     rows.iter().map(|r| r.3).collect::<Vec<_>>(),
+                )),
+                Arc::new(Float64Array::from(
+                    rows.iter().map(|r| r.4).collect::<Vec<_>>(),
                 )),
             ],
         )
@@ -11728,9 +11747,10 @@ mod security_curve_integrated_productivity_equivalence {
             &root.join("system/hydro_energy_productivity.parquet"),
             &[
                 // Hydro 0: ρ_esp override at stage 1 only; stage 0 uses the entity value.
-                (0, 1, None, Some(0.375)),
-                // Hydro 1: ρ_eq override at stage 1, the sole productivity source there.
-                (1, 1, Some(0.75), None),
+                (0, 1, None, Some(0.375), None),
+                // Hydro 1: ρ_eq override at stage 1, the sole productivity source
+                // there, plus a separate integrated own-term override.
+                (1, 1, Some(0.75), None, Some(0.5)),
             ],
         );
         write_hydro_bounds_max_storage(&root.join("constraints/hydro_bounds.parquet"), 0, 0, 700.0);
@@ -11794,6 +11814,7 @@ mod security_curve_integrated_productivity_equivalence {
         const OVERRIDE_RHO_ESP: f64 = 0.375;
         const PCT: f64 = 0.5;
         const HYDRO1_OVERRIDE_RHO_EQ: f64 = 0.75;
+        const HYDRO1_OVERRIDE_INTEGRATED_RHO_EQ: f64 = 0.5;
 
         let mean_height = (0.5 * (H_LO + H_MID) * (V_MID - V_LO)
             + 0.5 * (H_MID + H_HI) * (V_HI - V_MID))
@@ -11914,12 +11935,15 @@ mod security_curve_integrated_productivity_equivalence {
         assert_eq!(after0_coef.to_bits(), int_rho_stage0.to_bits());
         assert_eq!(after1_coef.to_bits(), int_rho_stage1.to_bits());
 
-        // A non-FPHA ρ_eq override wins both evaluators (the resolved
-        // reference-point and integrated own terms) for its own (hydro, stage).
+        // The ρ_eq override reaches only the reference-point tag; the integrated
+        // tag reads the integrated own-term override on the same row.
         let h1_ref = find(3, 1).coefficient.expect("h1_ref coefficient");
         let h1_int = find(4, 1).coefficient.expect("h1_int coefficient");
         assert_eq!(h1_ref.to_bits(), HYDRO1_OVERRIDE_RHO_EQ.to_bits());
-        assert_eq!(h1_int.to_bits(), HYDRO1_OVERRIDE_RHO_EQ.to_bits());
+        assert_eq!(
+            h1_int.to_bits(),
+            HYDRO1_OVERRIDE_INTEGRATED_RHO_EQ.to_bits()
+        );
     }
 }
 
@@ -12194,5 +12218,549 @@ mod stored_energy_columns_determinism {
         let run_b = sorted_hydro_rows(&train_and_simulate(dir.path()));
 
         assert_six_columns_bit_identical("run-to-run reproducibility", &run_a, &run_b);
+    }
+}
+
+/// D59: a useful-volume floor on H0 whose coefficient is the sum of two scalar
+/// parameters, softened by a `per_unit` slack, with no inflow and a 100 MW load.
+mod parameter_sum_useful_volume_floor {
+    use std::path::Path;
+
+    use novomodelo_io::GenericConstraintEchoRow;
+    use novomodelo_sddp::build_generic_constraint_echo_rows;
+    use novomodelo_sddp::test_support::assert_all_templates_byte_identical;
+
+    use crate::common::fresh_system_and_setup_with;
+
+    use super::{assert_cost, copy_case_dir, run_with_simulation};
+
+    const CASE_DIR: &str = "../../examples/deterministic/d59-parameter-sum-useful-volume-floor";
+
+    const HOURS: f64 = 250.0;
+    const TAU: f64 = HOURS * 3600.0 / 1e6;
+    const V_LO: f64 = 100.0;
+    const V_INIT: f64 = 245.0;
+    const RHS: f64 = 200.0;
+    const WEIGHT_A: f64 = 0.5;
+    const WEIGHT_B: f64 = 1.5;
+    const PENALTY: f64 = 10_000.0;
+    const THERMAL_COST: f64 = 100.0;
+    const LOAD_MW: f64 = 100.0;
+
+    /// derived: the row coefficient is the parameter sum `a + b = 0.5 + 1.5 = 2`.
+    const D59_COEFFICIENT: f64 = WEIGHT_A + WEIGHT_B;
+    /// derived: `coef · (V − V_lo) ≥ RHS` folds to `coef · V ≥ RHS + coef · V_lo`,
+    /// `200 + 2 · 100 = 400`.
+    const D59_BOUND_LOWER: f64 = RHS + D59_COEFFICIENT * V_LO;
+    /// derived: the floor on storage, `V ≥ (RHS + coef · V_lo) / coef = 200` hm³.
+    const D59_FLOOR_HM3: f64 = D59_BOUND_LOWER / D59_COEFFICIENT;
+    /// derived: a m³/s turbined over a stage displaces `H · c_th = 25,000` of
+    /// thermal, while under `per_unit` the same m³/s below the floor costs
+    /// `coef · τ · penalty = 2 · 0.9 · 10,000 = 18,000` at every stage it stays
+    /// short. The last stage violates (`18,000 < 25,000`) and H0 serves the whole
+    /// load; a stage-0 shortfall also lowers the last stage's end storage, so it
+    /// costs `36,000 > 25,000` and H0 stops at the floor, `(245 − 200) / 0.9 = 50`.
+    const D59_TURBINED_M3S: [f64; 2] = [(V_INIT - D59_FLOOR_HM3) / TAU, LOAD_MW];
+    /// derived: `V_t = V_{t−1} − τ · q_t` from `V_init`, with no inflow.
+    const D59_STORAGE_FINAL_HM3: [f64; 2] = [
+        V_INIT - TAU * D59_TURBINED_M3S[0],
+        V_INIT - TAU * D59_TURBINED_M3S[0] - TAU * D59_TURBINED_M3S[1],
+    ];
+    /// derived: T0 covers the load H0 does not, `L − ρ · q_t` with `ρ = 1`.
+    const D59_THERMAL_MW: [f64; 2] = [LOAD_MW - D59_TURBINED_M3S[0], LOAD_MW - D59_TURBINED_M3S[1]];
+    /// derived: the floor shortfall `RHS + coef · V_lo − coef · V_t`, zero at the floor.
+    const D59_SLACK: [f64; 2] = [
+        D59_BOUND_LOWER - D59_COEFFICIENT * D59_STORAGE_FINAL_HM3[0],
+        D59_BOUND_LOWER - D59_COEFFICIENT * D59_STORAGE_FINAL_HM3[1],
+    ];
+    /// derived: `Σ_t (H · c_th · g_t + penalty · s_t)`, the `per_unit` slack
+    /// carrying no stage hours: `1,250,000 + 1,800,000 = 3,050,000`.
+    const D59_TOTAL_COST: f64 = HOURS * THERMAL_COST * D59_THERMAL_MW[0]
+        + PENALTY * D59_SLACK[0]
+        + HOURS * THERMAL_COST * D59_THERMAL_MW[1]
+        + PENALTY * D59_SLACK[1];
+
+    fn case_dir() -> &'static Path {
+        Path::new(CASE_DIR)
+    }
+
+    fn echo_rows(case_dir: &Path) -> Vec<GenericConstraintEchoRow> {
+        let (system, setup) = fresh_system_and_setup_with(case_dir, |_| {});
+        build_generic_constraint_echo_rows(&setup, &system)
+    }
+
+    fn assert_floor_echo(rows: &[GenericConstraintEchoRow], label: &str) {
+        assert_eq!(rows.len(), 2, "{label}: one echo row per stage");
+        for (stage, row) in rows.iter().enumerate() {
+            assert_eq!(
+                row.stage_id,
+                i32::try_from(stage).expect("stage index fits i32"),
+                "{label} stage {stage}: echo stage id"
+            );
+            assert_eq!(row.constraint_id, 1, "{label} stage {stage}: constraint id");
+            assert_eq!(row.block_id, None, "{label} stage {stage}: block id");
+            assert_eq!(row.term_index, Some(0), "{label} stage {stage}: term index");
+            assert_eq!(
+                row.variable_kind.as_deref(),
+                Some("hydro_useful_volume_final"),
+                "{label} stage {stage}: variable kind"
+            );
+            assert_eq!(
+                row.coefficient.map(f64::to_bits),
+                Some(D59_COEFFICIENT.to_bits()),
+                "{label} stage {stage}: coefficient"
+            );
+            assert_eq!(
+                row.bound_lower.map(f64::to_bits),
+                Some(D59_BOUND_LOWER.to_bits()),
+                "{label} stage {stage}: bound_lower"
+            );
+            assert_eq!(row.bound_upper, None, "{label} stage {stage}: bound_upper");
+            assert_eq!(
+                row.derived_shape, "floor",
+                "{label} stage {stage}: derived shape"
+            );
+            assert_eq!(
+                row.slack_penalty_basis.as_deref(),
+                Some("per_unit"),
+                "{label} stage {stage}: slack penalty basis"
+            );
+        }
+    }
+
+    /// Materializes the deck with the parameter sum declared once as an
+    /// expression parameter and the constraint reading it.
+    fn expression_parameter_twin(case_dir: &Path) -> tempfile::TempDir {
+        let twin = copy_case_dir(case_dir);
+
+        let parameters_path = twin.path().join("constraints/generic_parameters.json");
+        let mut parameters: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&parameters_path).expect("read generic_parameters.json"),
+        )
+        .expect("generic_parameters.json is JSON");
+        parameters["scalar_parameters"]
+            .as_array_mut()
+            .expect("generic_parameters.json has a scalar_parameters array")
+            .push(serde_json::json!({
+                "id": 3,
+                "name": "weight_sum",
+                "kind": "expression",
+                "expression": "@weight_a + @weight_b"
+            }));
+        std::fs::write(
+            &parameters_path,
+            serde_json::to_string_pretty(&parameters).expect("serialize generic_parameters.json"),
+        )
+        .expect("write generic_parameters.json");
+
+        let constraints_path = twin.path().join("constraints/generic_constraints.json");
+        let mut constraints: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&constraints_path).expect("read generic_constraints.json"),
+        )
+        .expect("generic_constraints.json is JSON");
+        constraints["constraints"][0]["expression"] =
+            serde_json::Value::from("@weight_sum * hydro_useful_volume_final(0) >= 200");
+        std::fs::write(
+            &constraints_path,
+            serde_json::to_string_pretty(&constraints).expect("serialize generic_constraints.json"),
+        )
+        .expect("write generic_constraints.json");
+
+        twin
+    }
+
+    /// Trains and simulates D59 against its closed form: H0 stops at the floor at
+    /// stage 0 and violates it at the last stage, where a `per_unit` shortfall is
+    /// cheaper than thermal. The echo carries the parameter sum and the folded bound.
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    #[test]
+    fn d59_parameter_sum_floor_matches_closed_form() {
+        let case_dir = case_dir();
+        let (result, scenario_results, summary) = run_with_simulation(case_dir);
+
+        assert_cost(
+            result.final_lb,
+            D59_TOTAL_COST,
+            1e-6 * D59_TOTAL_COST,
+            "D59",
+        );
+        assert_cost(
+            summary.mean_cost,
+            D59_TOTAL_COST,
+            1e-6 * D59_TOTAL_COST,
+            "D59-sim",
+        );
+
+        assert_eq!(
+            scenario_results.len(),
+            1,
+            "D59: simulation must produce exactly 1 scenario"
+        );
+        let stages = &scenario_results[0].stages;
+        assert_eq!(stages.len(), 2, "D59: expected 2 stages");
+        for (stage, stage_result) in stages.iter().enumerate() {
+            let hydro = {
+                let rows: Vec<_> = stage_result
+                    .hydros
+                    .iter()
+                    .filter(|h| h.hydro_id == 0)
+                    .collect();
+                assert_eq!(rows.len(), 1, "D59 stage {stage}: one H0 row");
+                rows[0]
+            };
+            assert!(
+                (hydro.storage_final_hm3 - D59_STORAGE_FINAL_HM3[stage]).abs() < 1e-6,
+                "D59 stage {stage}: storage_final_hm3 expected {}, got {}",
+                D59_STORAGE_FINAL_HM3[stage],
+                hydro.storage_final_hm3
+            );
+            assert!(
+                (hydro.turbined_m3s - D59_TURBINED_M3S[stage]).abs() < 1e-6,
+                "D59 stage {stage}: turbined_m3s expected {}, got {}",
+                D59_TURBINED_M3S[stage],
+                hydro.turbined_m3s
+            );
+
+            let thermal = {
+                let rows: Vec<_> = stage_result
+                    .thermals
+                    .iter()
+                    .filter(|t| t.thermal_id == 0)
+                    .collect();
+                assert_eq!(rows.len(), 1, "D59 stage {stage}: one T0 row");
+                rows[0]
+            };
+            assert!(
+                (thermal.generation_mw - D59_THERMAL_MW[stage]).abs() < 1e-6,
+                "D59 stage {stage}: T0 generation_mw expected {}, got {}",
+                D59_THERMAL_MW[stage],
+                thermal.generation_mw
+            );
+
+            assert_eq!(
+                stage_result.generic_violations.len(),
+                1,
+                "D59 stage {stage}: exactly one generic violation record"
+            );
+            let violation = &stage_result.generic_violations[0];
+            assert_eq!(
+                violation.constraint_id, 1,
+                "D59 stage {stage}: violation constraint id"
+            );
+            assert_eq!(
+                violation.block_id, None,
+                "D59 stage {stage}: violation block id"
+            );
+            assert!(
+                (violation.slack_value - D59_SLACK[stage]).abs() < 1e-6,
+                "D59 stage {stage}: slack_value expected {}, got {}",
+                D59_SLACK[stage],
+                violation.slack_value
+            );
+            assert!(
+                (violation.slack_cost - PENALTY * violation.slack_value).abs()
+                    <= 1e-6 * PENALTY * D59_SLACK[stage].max(1.0),
+                "D59 stage {stage}: slack_cost expected {}, got {}",
+                PENALTY * violation.slack_value,
+                violation.slack_cost
+            );
+        }
+
+        assert_floor_echo(&echo_rows(case_dir), "D59 echo");
+    }
+
+    /// Declaring the parameter sum as an expression parameter builds the same
+    /// stage templates, bit for bit, and the same echo as the inline sum.
+    #[test]
+    fn d59_expression_parameter_twin_matches_inline_sum() {
+        let case_dir = case_dir();
+        let twin = expression_parameter_twin(case_dir);
+
+        let (inline_system, inline) = fresh_system_and_setup_with(case_dir, |_| {});
+        let (twin_system, twin_setup) = fresh_system_and_setup_with(twin.path(), |_| {});
+        let inline_rows = build_generic_constraint_echo_rows(&inline, &inline_system);
+        let twin_rows = build_generic_constraint_echo_rows(&twin_setup, &twin_system);
+        assert_floor_echo(&inline_rows, "D59 inline echo");
+        assert_floor_echo(&twin_rows, "D59 twin echo");
+
+        assert_all_templates_byte_identical(
+            &inline.inputs.stage_data.stage_templates.templates,
+            &twin_setup.inputs.stage_data.stage_templates.templates,
+            "d59 expression-parameter twin",
+        );
+
+        assert_eq!(
+            format!("{inline_rows:?}"),
+            format!("{twin_rows:?}"),
+            "D59: the twin's echo rows must match the inline sum's"
+        );
+    }
+
+    /// The expression-parameter twin trains to the inline deck's lower bound,
+    /// bit for bit.
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    #[test]
+    fn d59_expression_parameter_twin_trains_to_the_same_bound() {
+        let case_dir = case_dir();
+        let twin = expression_parameter_twin(case_dir);
+
+        let (inline, _, _) = run_with_simulation(case_dir);
+        let (twin_result, _, _) = run_with_simulation(twin.path());
+
+        assert_eq!(
+            inline.final_lb.to_bits(),
+            twin_result.final_lb.to_bits(),
+            "D59: the twin's final lower bound must match the inline sum's bit for bit"
+        );
+    }
+}
+
+mod d58_stored_energy_bound_composition {
+    use std::path::Path;
+
+    use novomodelo_sddp::build_generic_constraint_echo_rows;
+
+    use crate::common::fresh_system_and_setup_with;
+
+    use super::run_with_simulation;
+
+    const CASE_DIR: &str = "../../examples/deterministic/d58-stored-energy-coefficient";
+    const CONSTRAINT_ID: i32 = 1;
+
+    const HOURS_PER_HM3_AT_ONE_M3S: f64 = 1e6 / 3600.0;
+    const LOSS_FACTOR: f64 = 0.03;
+    const SPECIFIC_PRODUCTIVITY: [f64; 2] = [0.0085, 0.009];
+    const TAILRACE_M: [f64; 2] = [300.0, 280.0];
+    const FOREBAY_HEIGHTS_M: [[f64; 5]; 2] = [
+        [350.0, 370.0, 385.0, 395.0, 400.0],
+        [280.0, 295.0, 310.0, 320.0, 330.0],
+    ];
+    const MIN_STORAGE_HM3: [f64; 2] = [0.0, 0.0];
+    const MAX_STORAGE_HM3: [f64; 2] = [200.0, 150.0];
+    const PCT_VMINOP: [f64; 2] = [0.25, 0.30];
+    const PARQUET_BASE: f64 = 0.0;
+    const PENALTY: f64 = 5000.0;
+
+    /// derived: the trapezoid mean head over four equal volume steps,
+    /// `(h_0/2 + h_1 + h_2 + h_3 + h_4/2) / 4`: 381.25 m for H0, 307.5 m for H1.
+    const MEAN_HEAD_M: [f64; 2] = [
+        (FOREBAY_HEIGHTS_M[0][0] / 2.0
+            + FOREBAY_HEIGHTS_M[0][1]
+            + FOREBAY_HEIGHTS_M[0][2]
+            + FOREBAY_HEIGHTS_M[0][3]
+            + FOREBAY_HEIGHTS_M[0][4] / 2.0)
+            / 4.0,
+        (FOREBAY_HEIGHTS_M[1][0] / 2.0
+            + FOREBAY_HEIGHTS_M[1][1]
+            + FOREBAY_HEIGHTS_M[1][2]
+            + FOREBAY_HEIGHTS_M[1][3]
+            + FOREBAY_HEIGHTS_M[1][4] / 2.0)
+            / 4.0,
+    ];
+    /// derived: the integrated productivity in MWh per hm³,
+    /// `ρ_h = ρ_esp,h · (h̄_h − h_tail,h) · (1 − loss) · 10⁶ / 3600`.
+    const RHO_MWH_PER_HM3: [f64; 2] = [
+        SPECIFIC_PRODUCTIVITY[0]
+            * (MEAN_HEAD_M[0] - TAILRACE_M[0])
+            * (1.0 - LOSS_FACTOR)
+            * HOURS_PER_HM3_AT_ONE_M3S,
+        SPECIFIC_PRODUCTIVITY[1]
+            * (MEAN_HEAD_M[1] - TAILRACE_M[1])
+            * (1.0 - LOSS_FACTOR)
+            * HOURS_PER_HM3_AT_ONE_M3S,
+    ];
+
+    /// derived: `bound_t = base_t + pct_t · Σ_h V̄_h · ρ_h + Σ_h ρ_h · V_lo,h`, with
+    /// the deck's Parquet base `0.0` and `V_lo,h = 0.0`; `stage_idx` is the study
+    /// index, equal to the `pct_vminop` stage id here.
+    fn derived_bound(stage_idx: usize) -> f64 {
+        PARQUET_BASE
+            + PCT_VMINOP[stage_idx]
+                * (MAX_STORAGE_HM3[0] * RHO_MWH_PER_HM3[0]
+                    + MAX_STORAGE_HM3[1] * RHO_MWH_PER_HM3[1])
+            + (RHO_MWH_PER_HM3[0] * MIN_STORAGE_HM3[0] + RHO_MWH_PER_HM3[1] * MIN_STORAGE_HM3[1])
+    }
+
+    fn close(value: f64, expected: f64) -> bool {
+        (value - expected).abs() <= 1e-12 * expected.abs()
+    }
+
+    /// The stored-energy floor's row bound is the Parquet base plus the
+    /// remainder program read at the row's own stage plus the useful-volume
+    /// shift, in the row entry, the unscaled template row and the echo alike.
+    #[test]
+    fn d58_bound_composition_matches_the_derived_fold() {
+        let case_dir = Path::new(CASE_DIR);
+        let (system, setup) = fresh_system_and_setup_with(case_dir, |_| {});
+        let stage_templates = &setup.inputs.stage_data.stage_templates;
+        let echo_rows = build_generic_constraint_echo_rows(&setup, &system);
+
+        let mut entry_bounds = [0.0; 2];
+        for (stage_idx, entry_bound) in entry_bounds.iter_mut().enumerate() {
+            let expected = derived_bound(stage_idx);
+
+            let entries = &stage_templates.generic_constraint_row_entries[stage_idx];
+            assert_eq!(
+                entries.len(),
+                1,
+                "D58 stage {stage_idx}: generic row entry count"
+            );
+            let entry = &entries[0];
+            assert_eq!(
+                entry.entity_id, CONSTRAINT_ID,
+                "D58 stage {stage_idx}: row entry constraint id"
+            );
+            assert!(
+                entry.is_stage_level,
+                "D58 stage {stage_idx}: row entry must be stage-level"
+            );
+            let lower = entry
+                .bound_lower
+                .expect("D58: the row entry carries a lower bound");
+            assert!(
+                close(lower, expected),
+                "D58 stage {stage_idx}: row entry bound_lower expected {expected}, got {lower}"
+            );
+            assert_eq!(
+                entry.bound_upper, None,
+                "D58 stage {stage_idx}: row entry bound_upper"
+            );
+            *entry_bound = lower;
+
+            let template = &stage_templates.templates[stage_idx];
+            let row = template.num_rows - entries.len();
+            let row_scale = template.row_scale.get(row).copied().unwrap_or(1.0);
+            let row_lower = template.row_lower[row] / row_scale;
+            assert!(
+                close(row_lower, expected),
+                "D58 stage {stage_idx}: unscaled template row_lower expected {expected}, got {row_lower}"
+            );
+
+            let stage_id = i32::try_from(stage_idx).expect("stage index fits i32");
+            let mut rows: Vec<_> = echo_rows
+                .iter()
+                .filter(|r| r.constraint_id == CONSTRAINT_ID && r.stage_id == stage_id)
+                .collect();
+            rows.sort_by_key(|r| r.term_index);
+            assert_eq!(rows.len(), 2, "D58 stage {stage_idx}: echo row count");
+            for (term, row) in rows.iter().enumerate() {
+                assert_eq!(
+                    row.term_index,
+                    Some(i32::try_from(term).expect("term index fits i32")),
+                    "D58 stage {stage_idx}: echo term index"
+                );
+                let coefficient = row
+                    .coefficient
+                    .expect("D58: echo row carries a coefficient");
+                assert!(
+                    close(coefficient, RHO_MWH_PER_HM3[term]),
+                    "D58 stage {stage_idx} term {term}: echo coefficient expected {}, got {coefficient}",
+                    RHO_MWH_PER_HM3[term]
+                );
+                let echo_lower = row
+                    .bound_lower
+                    .expect("D58: echo row carries a lower bound");
+                assert!(
+                    close(echo_lower, expected),
+                    "D58 stage {stage_idx} term {term}: echo bound_lower expected {expected}, got {echo_lower}"
+                );
+            }
+        }
+
+        assert!(
+            entry_bounds[0] != entry_bounds[1],
+            "D58: the two stages' bounds must differ, got {} at both",
+            entry_bounds[0]
+        );
+        let ratio = entry_bounds[1] / entry_bounds[0];
+        let expected_ratio = PCT_VMINOP[1] / PCT_VMINOP[0];
+        assert!(
+            close(ratio, expected_ratio),
+            "D58: stage 1 to stage 0 bound ratio expected {expected_ratio}, got {ratio}"
+        );
+    }
+
+    /// The solved run brackets its bounds, and at every stage the floor holds
+    /// against the derived bound once its slack is counted, with the slack
+    /// priced at the `per_unit` penalty.
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    #[test]
+    fn d58_generic_rows_hold_or_price_their_slack() {
+        let case_dir = Path::new(CASE_DIR);
+        let (result, scenarios, _) = run_with_simulation(case_dir);
+
+        assert!(
+            result.final_lb.is_finite(),
+            "D58: final_lb must be finite, got {}",
+            result.final_lb
+        );
+        assert!(
+            result.final_lb <= result.final_ub + 1e-6 * result.final_ub.abs().max(1.0),
+            "D58: final_lb {} exceeds final_ub {}",
+            result.final_lb,
+            result.final_ub
+        );
+
+        assert_eq!(scenarios.len(), 1, "D58: simulated scenario count");
+        let stages = &scenarios[0].stages;
+        assert_eq!(stages.len(), 2, "D58: simulated stage count");
+        for (stage_idx, stage) in stages.iter().enumerate() {
+            assert_eq!(
+                stage.generic_violations.len(),
+                1,
+                "D58 stage {stage_idx}: generic violation record count"
+            );
+            let violation = &stage.generic_violations[0];
+            assert_eq!(
+                violation.constraint_id, CONSTRAINT_ID,
+                "D58 stage {stage_idx}: violation constraint id"
+            );
+            assert_eq!(
+                violation.block_id, None,
+                "D58 stage {stage_idx}: violation block id"
+            );
+            assert!(
+                violation.slack_value >= -1e-9,
+                "D58 stage {stage_idx}: slack_value must be non-negative, got {}",
+                violation.slack_value
+            );
+            assert!(
+                (violation.slack_cost - PENALTY * violation.slack_value).abs() <= 1e-6,
+                "D58 stage {stage_idx}: slack_cost expected {}, got {}",
+                PENALTY * violation.slack_value,
+                violation.slack_cost
+            );
+
+            let mut stored_energy = 0.0;
+            for (hydro, (&rho, &v_lo)) in RHO_MWH_PER_HM3.iter().zip(&MIN_STORAGE_HM3).enumerate() {
+                let hydro_id = i32::try_from(hydro).expect("hydro index fits i32");
+                let rows: Vec<_> = stage
+                    .hydros
+                    .iter()
+                    .filter(|h| h.hydro_id == hydro_id)
+                    .collect();
+                assert_eq!(
+                    rows.len(),
+                    1,
+                    "D58 stage {stage_idx}: hydro {hydro_id} row count"
+                );
+                stored_energy += rho * (rows[0].storage_final_hm3 - v_lo);
+            }
+            let bound = derived_bound(stage_idx);
+            let lhs = stored_energy + violation.slack_value;
+            assert!(
+                lhs >= bound - 1e-6 * bound,
+                "D58 stage {stage_idx}: stored energy plus slack {lhs} below the derived bound {bound}"
+            );
+        }
     }
 }

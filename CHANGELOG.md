@@ -17,12 +17,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same name times 10⁶/3600. With them a stored-energy constraint states its
   amounts in MWh and no stage duration enters either side; price its slack with
   `"penalty_basis": "per_unit"` so the penalty is a price per MWh on every stage.
-- A generic-constraint right-hand side accepts a product of two scalar
-  parameters, `@p * @q` or `coefficient * @p * @q` (for example
-  `@pct * @emax`). A product must be a top-level right-hand-side term.
+- A generic-constraint expression accepts arithmetic over numbers and
+  `@parameters` on both sides of the relation: `+`, `-`, `*`, `/`, parentheses
+  and unary minus, for example
+  `(@weight_a + @weight_b) * hydro_useful_volume_final(0) >= @pct * @emax`. It
+  must stay linear in LP variables: a product of two variables, or a division
+  by one, is rejected at load. A constant that divides by zero or is not finite
+  is rejected at load, and a value that resolves from parameters to a
+  non-finite number stops setup with an error naming the stage and block.
+- A scalar parameter in `constraints/generic_parameters.json` may be
+  `kind: "expression"`, a formula over other parameters, for example
+  `{ "id": 5, "name": "scaled_demand", "kind": "expression", "expression": "@discount_rate * @demand" }`.
+  A constraint reads it like any other parameter. A reference cycle or an LP
+  variable in the formula is rejected at load. The value is stored per block
+  when a parameter it reads varies by block, and the stored-energy pairing
+  warning (rule 51) checks the tags it reads.
+- `system/hydro_energy_productivity.parquet` has a new
+  `integrated_equivalent_productivity_mw_per_m3s` column. A value sets that
+  plant's own useful-range mean productivity for the stage outright; the
+  cascade sum, `max_stored_energy*`, the `integrated_*` tags and output
+  columns and `stored_energy_*` are computed from it. Use it when a source
+  model's stored-energy convention differs from integrating the plant's
+  geometry over its physical range. Finite and `>= 0.0`; NULL means no
+  override.
 
 ### Changed
 
+- **BREAKING:** `equivalent_productivity_mw_per_m3s` in
+  `system/hydro_energy_productivity.parquet` sets only the reference-point
+  productivity. A plant with VHA geometry and a specific productivity now
+  integrates its useful-range mean productivity even when this override is
+  present, so its `integrated_*` and `max_stored_energy*` tags, the
+  `integrated_*_productivity_mw_per_m3s` output columns and
+  `stored_energy_*` change wherever the override differed from the integral.
+  The same productivity supplied from `hydro_production_models.json` already
+  behaved this way. To keep a study's previous values, write the same number
+  to the new `integrated_equivalent_productivity_mw_per_m3s` column.
+- **BREAKING:** `system/hydro_energy_productivity.parquet` must carry the
+  `integrated_equivalent_productivity_mw_per_m3s` column; a file without it
+  is rejected at load. Add it as an all-NULL column to keep current behavior
+  for the reference-point productivity.
+- A plant whose geometry gives a non-positive useful-range mean head is
+  rejected at setup even when it has an `equivalent_productivity_mw_per_m3s`
+  override; the error names the plant and the integrated column that
+  supplies its value instead.
+- **BREAKING:** the `linearized_head` production model is removed. Both
+  `hydros.json` and `hydro_production_models.json` accepted it, but it always
+  ran as `constant_productivity`, in training and in simulation. A file that
+  names it is rejected at load; write `constant_productivity` instead, which
+  gives the same results. Such a hydro no longer needs two rows in
+  `system/hydro_geometry.parquet`.
+- **BREAKING:** `model` and `default_model` in
+  `system/hydro_production_models.json` accept only `constant_productivity`
+  and `fpha`. Any other name used to run silently as constant productivity;
+  it is now rejected at load, naming the `model` field.
 - The stored-energy pairing warning (rule 51) also flags a constraint that
   mixes raw and MWh stored-energy tags, and a `max_stored_energy*` tag beside a
   same-unit productivity tag of another scope or evaluator for the same hydro.
@@ -52,6 +100,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from stderr must read stdout instead. `--color` now applies to both streams.
 - The training gap in the progress lines and the training summary is printed
   with 5 decimals instead of 1, so small gaps no longer round to `0.0%`.
+- A generic constraint written without a relational operator now drops a
+  variable whose coefficient is exactly zero, such as `0 * x` or `x - x`, as a
+  relation already did. When every remaining variable is stage-level and
+  no coefficient or bound resolves to a per-block value, the row now collapses
+  to one stage-level row, so under `"penalty_basis": "per_unit"` a violation of
+  it costs the penalty once instead of once per block.
+- A generic-constraint expression nested deeper than 256 levels, counting
+  parentheses and unary operators alike, is rejected with a diagnostic.
+  Expanding named expressions into a constraint is likewise refused once the
+  expansion exceeds an operation budget set far above the size of an authored
+  constraint.
+- **BREAKING:** in `constraints/generic_parameters.json`, a payload field that
+  does not belong to the entry's kind (for example `values` on a `constant`)
+  stops the load. Only `block_values` was rejected before; the other fields
+  were ignored.
 
 ### Fixed
 
@@ -66,6 +129,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A rank that panics during `cobre run` under MPI aborts the whole job
   with exit code 101. The other ranks used to wait in a collective until the
   job was killed.
+- A generic constraint whose terms land on the same LP column (a repeated
+  variable, or an aliased pair such as `hydro_storage` and `hydro_storage_final`)
+  no longer aborts the run when HiGHS loads the LP. The terms are summed into one
+  coefficient per column, and a column whose coefficients sum to exactly zero
+  gets no entry.
 
 ## [0.18.0] - 2026-10-07
 

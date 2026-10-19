@@ -399,6 +399,7 @@ fn build_template_build_ctx<'a>(
             resolved_ncs_bounds: system.resolved_ncs_bounds(),
             resolved_ncs_factors: system.resolved_ncs_factors(),
             resolved_parameters: inputs.resolved_parameters,
+            resolved_generic_coefficients: inputs.resolved_generic_coefficients,
         },
         positions: &inputs.positions,
         par_lp,
