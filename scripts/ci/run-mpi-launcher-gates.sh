@@ -22,9 +22,11 @@
 # runs from crates/novomodelo-sddp (where `cargo test` runs that package's tests) under
 # a 600 s timeout, so a rank left waiting on a panicked peer fails the gate.
 #
-# Every rank prints its own libtest summary, and a filter that matches nothing or
-# an ignored test also exits 0 with `0 passed`, so a launch passes only when its
-# log holds exactly one `test result: ok. 1 passed;` line per rank.
+# Each rank writes its own log under $TMPDIR, so every rank must see that
+# directory: ranks sharing the launcher's output interleave libtest's summary
+# line mid-line, so a merged log cannot be counted. A filter that matches nothing
+# or an ignored test also exits 0 with `0 passed`, so a launch passes only when
+# there is one log per rank and each holds `test result: ok. 1 passed;`.
 #
 # Needs cargo, jq, timeout and the launcher (MPIEXEC, default `mpiexec`).
 #
@@ -84,6 +86,15 @@ WORK_DIR="$(mktemp -d -t mpi_launcher_gates.XXXXXX)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 readonly BUILD_JSON="$WORK_DIR/build.json"
 readonly LOG="$WORK_DIR/launch.log"
+readonly RANK_LOG_DIR="$WORK_DIR/ranks"
+readonly RANK_WRAPPER="$WORK_DIR/rank-wrapper.sh"
+
+# shellcheck disable=SC2016 # expanded by each rank, not here
+printf '%s\n' '#!/bin/sh' \
+    'rank="${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-${SLURM_PROCID:-unknown}}}"' \
+    'exec "$@" >"$(mktemp "$RANK_LOG_DIR/rank.$rank.XXXXXX")" 2>&1' >"$RANK_WRAPPER"
+chmod +x "$RANK_WRAPPER"
+export RANK_LOG_DIR
 
 echo "Building the workspace test executables (features: $TEST_FEATURES)"
 (cd "$ROOT" && cargo test --workspace --features "$TEST_FEATURES" --no-run --message-format=json) >"$BUILD_JSON" \
@@ -106,13 +117,32 @@ launch() {
     echo "--- $test_name on $ranks ranks"
     local started_us="${EPOCHREALTIME//[!0-9]/}"
     status=0
+    rm -rf "$RANK_LOG_DIR"
+    mkdir "$RANK_LOG_DIR"
     timeout --kill-after=30 "$LAUNCH_TIMEOUT_S" \
-        "$MPIEXEC" -n "$ranks" "${EXECUTABLE[$target]}" --exact "$test_name" --test-threads=1 \
+        "$MPIEXEC" -n "$ranks" "$RANK_WRAPPER" "${EXECUTABLE[$target]}" --exact "$test_name" --test-threads=1 \
         >"$LOG" 2>&1 || status=$?
     elapsed_us=$((${EPOCHREALTIME//[!0-9]/} - started_us))
     cat "$LOG"
+    rank_logs=()
+    local rank_log
+    for rank_log in "$RANK_LOG_DIR"/rank.*; do
+        [[ -e "$rank_log" ]] || continue
+        rank_logs+=("$rank_log")
+        echo "[${rank_log##*/}]"
+        cat "$rank_log"
+    done
     [[ $status -ne 124 && $status -ne 137 ]] \
         || fail "$test_name timed out on $ranks ranks after ${LAUNCH_TIMEOUT_S} s"
+}
+
+# Prints how many rank logs hold a line matching $1.
+count_rank_logs_matching() {
+    if [[ ${#rank_logs[@]} -eq 0 ]]; then
+        echo 0
+        return
+    fi
+    { grep -l -- "$1" "${rank_logs[@]}" || true; } | wc -l
 }
 
 report() {
@@ -126,7 +156,9 @@ for gate in "${GATES[@]}"; do
     for ranks in "${RANK_COUNTS[@]}"; do
         launch "$target" "$test_name" "$ranks"
         [[ $status -eq 0 ]] || fail "$test_name failed on $ranks ranks (launcher exit $status)"
-        passed="$(grep -c 'test result: ok\. 1 passed;' "$LOG" || true)"
+        [[ ${#rank_logs[@]} -eq "$ranks" ]] \
+            || fail "$test_name: $ranks ranks launched but ${#rank_logs[@]} wrote a log"
+        passed="$(count_rank_logs_matching 'test result: ok\. 1 passed;')"
         [[ "$passed" -eq "$ranks" ]] \
             || fail "$test_name: rank count mismatch, $ranks ranks launched but $passed reported '1 passed' (the filter matched nothing or the test is ignored)"
         report "$test_name" "$ranks"
@@ -135,7 +167,7 @@ done
 
 launch "${OVERSIZED_GATE%% *}" "${OVERSIZED_GATE#* }" "$OVERSIZED_RANKS"
 [[ $status -ne 0 ]] || fail "${OVERSIZED_GATE#* } passed on $OVERSIZED_RANKS ranks, a world larger than its forward passes"
-refused="$(grep -c "$OVERSIZED_REFUSAL" "$LOG" || true)"
+refused="$(count_rank_logs_matching "$OVERSIZED_REFUSAL")"
 [[ "$refused" -eq "$OVERSIZED_RANKS" ]] \
     || fail "${OVERSIZED_GATE#* } on $OVERSIZED_RANKS ranks: $refused ranks reported '$OVERSIZED_REFUSAL', expected every rank"
 report "${OVERSIZED_GATE#* } refused" "$OVERSIZED_RANKS"
