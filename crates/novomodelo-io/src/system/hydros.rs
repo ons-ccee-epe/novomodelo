@@ -138,16 +138,18 @@ pub(crate) struct RawHydro {
     unit_groups: Option<Vec<RawUnitGroup>>,
     /// Specific productivity `ρ_esp` (MW / ((m³/s) · m)).
     ///
-    /// **Resolution cascade** (first source that supplies a non-`null` value wins):
+    /// **Resolution** (first non-`null` value wins):
     ///
-    /// 1. Per-`(hydro, stage)` row in `system/hydro_energy_productivity.parquet`
-    ///    (loaded at study setup time by the solver).
-    /// 2. This field — a single value applied uniformly across all stages.
+    /// 1. The `(hydro, stage)` row in `system/hydro_energy_productivity.parquet`.
+    /// 2. That file's per-hydro row (`stage_id` null).
+    /// 3. This field, applied to every stage.
     ///
-    /// Absent or `null` means this fallback level is skipped.  If the cascade
-    /// finds no value for a hydro whose generation model requires one
-    /// (`constant_productivity` or `linearized_head`), study setup fails with an
-    /// explicit error.
+    /// With VHA geometry rows, `ρ_esp` gives any hydro its useful-range mean
+    /// productivity. An `fpha` hydro also derives its reference-point `ρ_eq`
+    /// from it; setup fails when neither `ρ_esp` with geometry nor a `ρ_eq`
+    /// override supplies that value. `constant_productivity` and
+    /// `linearized_head` dispatch on the coefficient in
+    /// `system/hydro_production_models.json`, never on this value.
     #[serde(default)]
     specific_productivity_mw_per_m3s_per_m: Option<f64>,
     /// Entity-level penalty overrides. When absent, every penalty uses the `hydro` section of `penalties.json`.

@@ -1252,6 +1252,7 @@ mod tests {
                 equivalent_productivity_mw_per_m3s: None,
                 reference_outflow_m3s: Some(override_q_ref),
                 specific_productivity_mw_per_m3s_per_m: None,
+                integrated_equivalent_productivity_mw_per_m3s: None,
             }])
             .unwrap();
 
@@ -1306,6 +1307,7 @@ mod tests {
                 equivalent_productivity_mw_per_m3s: None,
                 reference_outflow_m3s: Some(override_q_ref),
                 specific_productivity_mw_per_m3s_per_m: Some(override_esp),
+                integrated_equivalent_productivity_mw_per_m3s: None,
             }])
             .unwrap();
 
@@ -1432,6 +1434,7 @@ mod tests {
                 equivalent_productivity_mw_per_m3s: None,
                 reference_outflow_m3s: None,
                 specific_productivity_mw_per_m3s_per_m: Some(override_esp),
+                integrated_equivalent_productivity_mw_per_m3s: None,
             }])
             .expect("override builds");
         let stage_ids = stage_ids_0_based(1);

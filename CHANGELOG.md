@@ -32,8 +32,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   variable in the formula is rejected at load. The value is stored per block
   when a parameter it reads varies by block, and the stored-energy pairing
   warning (rule 51) checks the tags it reads.
+- `system/hydro_energy_productivity.parquet` has a new
+  `integrated_equivalent_productivity_mw_per_m3s` column. A value sets that
+  plant's own useful-range mean productivity for the stage outright; the
+  cascade sum, `max_stored_energy*`, the `integrated_*` tags and output
+  columns and `stored_energy_*` are computed from it. Use it when a source
+  model's stored-energy convention differs from integrating the plant's
+  geometry over its physical range. Finite and `>= 0.0`; NULL means no
+  override.
 
 ### Changed
+
+- **BREAKING:** `equivalent_productivity_mw_per_m3s` in
+  `system/hydro_energy_productivity.parquet` sets only the reference-point
+  productivity. A plant with VHA geometry and a specific productivity now
+  integrates its useful-range mean productivity even when this override is
+  present, so its `integrated_*` and `max_stored_energy*` tags, the
+  `integrated_*_productivity_mw_per_m3s` output columns and
+  `stored_energy_*` change wherever the override differed from the integral.
+  The same productivity supplied from `hydro_production_models.json` already
+  behaved this way. To keep a study's previous values, write the same number
+  to the new `integrated_equivalent_productivity_mw_per_m3s` column.
+- **BREAKING:** `system/hydro_energy_productivity.parquet` must carry the
+  `integrated_equivalent_productivity_mw_per_m3s` column; a file without it
+  is rejected at load. Add it as an all-NULL column to keep current behavior
+  for the reference-point productivity.
+- A plant whose geometry gives a non-positive useful-range mean head is
+  rejected at setup even when it has an `equivalent_productivity_mw_per_m3s`
+  override; the error names the plant and the integrated column that
+  supplies its value instead.
 
 - The stored-energy pairing warning (rule 51) also flags a constraint that
   mixes raw and MWh stored-energy tags, and a `max_stored_energy*` tag beside a

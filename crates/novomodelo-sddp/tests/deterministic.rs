@@ -222,6 +222,11 @@ fn write_energy_productivity_override(
             DataType::Float64,
             true,
         ),
+        Field::new(
+            "integrated_equivalent_productivity_mw_per_m3s",
+            DataType::Float64,
+            true,
+        ),
     ]));
 
     let batch = RecordBatch::try_new(
@@ -230,6 +235,7 @@ fn write_energy_productivity_override(
             Arc::new(Int32Array::from(vec![hydro_id])),
             Arc::new(Int32Array::from(vec![None::<i32>])),
             Arc::new(Float64Array::from(vec![equivalent_productivity_mw_per_m3s])),
+            Arc::new(Float64Array::from(vec![None::<f64>])),
             Arc::new(Float64Array::from(vec![None::<f64>])),
             Arc::new(Float64Array::from(vec![None::<f64>])),
             Arc::new(Float64Array::from(vec![None::<f64>])),
@@ -8405,6 +8411,7 @@ mod nonzero_stage_fpha_override_regression {
             equivalent_productivity_mw_per_m3s: Some(OVERRIDE_RHO_EQ),
             reference_outflow_m3s: None,
             specific_productivity_mw_per_m3s_per_m: None,
+            integrated_equivalent_productivity_mw_per_m3s: None,
         };
         let table = build_hydro_energy_productivity_override(&[row]).expect("override builds");
 
@@ -11481,10 +11488,14 @@ mod security_curve_integrated_productivity_equivalence {
         BUSES_JSON, INITIAL_CONDITIONS_JSON, LINES_JSON, PENALTIES_JSON, STAGES_JSON,
     };
 
-    /// `(hydro_id, stage_id, equivalent_productivity_mw_per_m3s override,
-    /// specific_productivity_mw_per_m3s_per_m override)` — `reference_outflow_m3s`
-    /// stays `NULL` for every row (Q_ref override is out of this fixture's scope).
-    fn write_hydro_energy_productivity(dest: &Path, rows: &[(i32, i32, Option<f64>, Option<f64>)]) {
+    /// `(hydro_id, stage_id, equivalent_productivity_mw_per_m3s,
+    /// specific_productivity_mw_per_m3s_per_m,
+    /// integrated_equivalent_productivity_mw_per_m3s)` overrides —
+    /// `reference_outflow_m3s` stays `NULL` for every row (Q_ref override is out of
+    /// this fixture's scope).
+    type ProductivityOverrideRow = (i32, i32, Option<f64>, Option<f64>, Option<f64>);
+
+    fn write_hydro_energy_productivity(dest: &Path, rows: &[ProductivityOverrideRow]) {
         let schema = Arc::new(Schema::new(vec![
             Field::new("hydro_id", DataType::Int32, false),
             Field::new("stage_id", DataType::Int32, true),
@@ -11496,6 +11507,11 @@ mod security_curve_integrated_productivity_equivalence {
             Field::new("reference_outflow_m3s", DataType::Float64, true),
             Field::new(
                 "specific_productivity_mw_per_m3s_per_m",
+                DataType::Float64,
+                true,
+            ),
+            Field::new(
+                "integrated_equivalent_productivity_mw_per_m3s",
                 DataType::Float64,
                 true,
             ),
@@ -11515,6 +11531,9 @@ mod security_curve_integrated_productivity_equivalence {
                 Arc::new(Float64Array::from(vec![None::<f64>; rows.len()])),
                 Arc::new(Float64Array::from(
                     rows.iter().map(|r| r.3).collect::<Vec<_>>(),
+                )),
+                Arc::new(Float64Array::from(
+                    rows.iter().map(|r| r.4).collect::<Vec<_>>(),
                 )),
             ],
         )
@@ -11728,9 +11747,10 @@ mod security_curve_integrated_productivity_equivalence {
             &root.join("system/hydro_energy_productivity.parquet"),
             &[
                 // Hydro 0: ρ_esp override at stage 1 only; stage 0 uses the entity value.
-                (0, 1, None, Some(0.375)),
-                // Hydro 1: ρ_eq override at stage 1, the sole productivity source there.
-                (1, 1, Some(0.75), None),
+                (0, 1, None, Some(0.375), None),
+                // Hydro 1: ρ_eq override at stage 1, the sole productivity source
+                // there, plus a separate integrated own-term override.
+                (1, 1, Some(0.75), None, Some(0.5)),
             ],
         );
         write_hydro_bounds_max_storage(&root.join("constraints/hydro_bounds.parquet"), 0, 0, 700.0);
@@ -11794,6 +11814,7 @@ mod security_curve_integrated_productivity_equivalence {
         const OVERRIDE_RHO_ESP: f64 = 0.375;
         const PCT: f64 = 0.5;
         const HYDRO1_OVERRIDE_RHO_EQ: f64 = 0.75;
+        const HYDRO1_OVERRIDE_INTEGRATED_RHO_EQ: f64 = 0.5;
 
         let mean_height = (0.5 * (H_LO + H_MID) * (V_MID - V_LO)
             + 0.5 * (H_MID + H_HI) * (V_HI - V_MID))
@@ -11914,12 +11935,15 @@ mod security_curve_integrated_productivity_equivalence {
         assert_eq!(after0_coef.to_bits(), int_rho_stage0.to_bits());
         assert_eq!(after1_coef.to_bits(), int_rho_stage1.to_bits());
 
-        // A non-FPHA ρ_eq override wins both evaluators (the resolved
-        // reference-point and integrated own terms) for its own (hydro, stage).
+        // The ρ_eq override reaches only the reference-point tag; the integrated
+        // tag reads the integrated own-term override on the same row.
         let h1_ref = find(3, 1).coefficient.expect("h1_ref coefficient");
         let h1_int = find(4, 1).coefficient.expect("h1_int coefficient");
         assert_eq!(h1_ref.to_bits(), HYDRO1_OVERRIDE_RHO_EQ.to_bits());
-        assert_eq!(h1_int.to_bits(), HYDRO1_OVERRIDE_RHO_EQ.to_bits());
+        assert_eq!(
+            h1_int.to_bits(),
+            HYDRO1_OVERRIDE_INTEGRATED_RHO_EQ.to_bits()
+        );
     }
 }
 

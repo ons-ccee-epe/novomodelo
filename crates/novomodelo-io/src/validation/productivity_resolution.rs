@@ -254,6 +254,7 @@ mod tests {
             equivalent_productivity_mw_per_m3s: rho_eq,
             reference_outflow_m3s: None,
             specific_productivity_mw_per_m3s_per_m: None,
+            integrated_equivalent_productivity_mw_per_m3s: None,
         }
     }
 

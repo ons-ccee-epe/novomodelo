@@ -256,9 +256,11 @@ pub struct Hydro {
     pub max_turbined_m3s: f64,
     /// Specific productivity `ρ_esp` \[MW / ((m³/s) · m)\].
     ///
-    /// FPHA hydros derive `ρ_eq` = `ρ_esp` · `h_eq(V_ref, Q_ref)` from this, or may
-    /// supply `ρ_eq` directly via `system/hydro_energy_productivity.parquet`; if
-    /// neither is supplied the case is rejected. Non-FPHA hydros ignore this field.
+    /// FPHA hydros derive the reference-point `ρ_eq` = `ρ_esp` · `h_eq(V_ref, Q_ref)`
+    /// from this, or may supply `ρ_eq` directly via
+    /// `system/hydro_energy_productivity.parquet`; if neither is supplied the case is
+    /// rejected. Any hydro with VHA geometry also derives its useful-range mean
+    /// productivity from this.
     #[cfg_attr(feature = "serde", serde(default))]
     pub specific_productivity_mw_per_m3s_per_m: Option<f64>,
     /// Minimum electrical generation \[MW\].

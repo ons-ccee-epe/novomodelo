@@ -862,6 +862,7 @@ fn test_resolve_stage_model_uses_parquet_override_when_json_omits_productivity()
             equivalent_productivity_mw_per_m3s: Some(0.42),
             reference_outflow_m3s: None,
             specific_productivity_mw_per_m3s_per_m: None,
+            integrated_equivalent_productivity_mw_per_m3s: None,
         }])
         .expect("override builds");
 
