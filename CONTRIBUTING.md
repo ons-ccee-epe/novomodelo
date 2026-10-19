@@ -544,9 +544,13 @@ See `.claude/architecture-rules.md` for the full Python parity checklist.
 ### Dependencies
 
 - Prefer well-maintained crates with minimal transitive dependencies.
-- New dependencies are checked by `cargo-deny` in CI for licenses and bans (`deny.toml`). The
-  bans include the BLAS backends, `multiversion` and every `matrixmultiply` feature, because
-  each would change the floating-point kernel (see [Floating-point kernel](#floating-point-kernel)).
+- New dependencies are checked by `cargo-deny` for advisories, licenses, bans and sources
+  (`deny.toml`), on the workspace and on `crates/novomodelo-python`'s own lockfile. The bans include
+  the BLAS backends, `multiversion` and every `matrixmultiply` feature, because each would
+  change the floating-point kernel (see [Floating-point kernel](#floating-point-kernel)).
+- Run the same check locally with `bash scripts/ci/check-deny.sh`. It needs the cargo-deny
+  version CI installs: `cargo install cargo-deny --version "$(bash scripts/ci/check-deny.sh --print-version)" --locked`.
+  The pre-commit hook runs it when a commit stages a `Cargo.toml`, a `Cargo.lock` or `deny.toml`.
 - Feature-gate optional heavy dependencies (solver backends, MPI, PyO3, ratatui).
 
 ### Floating-point kernel
