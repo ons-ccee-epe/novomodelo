@@ -61,7 +61,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejected at setup even when it has an `equivalent_productivity_mw_per_m3s`
   override; the error names the plant and the integrated column that
   supplies its value instead.
-
+- **BREAKING:** the `linearized_head` production model is removed. Both
+  `hydros.json` and `hydro_production_models.json` accepted it, but it always
+  ran as `constant_productivity`, in training and in simulation. A file that
+  names it is rejected at load; write `constant_productivity` instead, which
+  gives the same results. Such a hydro no longer needs two rows in
+  `system/hydro_geometry.parquet`.
+- **BREAKING:** `model` and `default_model` in
+  `system/hydro_production_models.json` accept only `constant_productivity`
+  and `fpha`. Any other name used to run silently as constant productivity;
+  it is now rejected at load, naming the `model` field.
 - The stored-energy pairing warning (rule 51) also flags a constraint that
   mixes raw and MWh stored-energy tags, and a `max_stored_energy*` tag beside a
   same-unit productivity tag of another scope or evaluator for the same hydro.

@@ -147,9 +147,8 @@ pub(crate) struct RawHydro {
     /// With VHA geometry rows, `ρ_esp` gives any hydro its useful-range mean
     /// productivity. An `fpha` hydro also derives its reference-point `ρ_eq`
     /// from it; setup fails when neither `ρ_esp` with geometry nor a `ρ_eq`
-    /// override supplies that value. `constant_productivity` and
-    /// `linearized_head` dispatch on the coefficient in
-    /// `system/hydro_production_models.json`, never on this value.
+    /// override supplies that value. A `constant_productivity` hydro dispatches on
+    /// its declared `ρ_eq`, never on this value.
     #[serde(default)]
     specific_productivity_mw_per_m3s_per_m: Option<f64>,
     /// Entity-level penalty overrides. When absent, every penalty uses the `hydro` section of `penalties.json`.
@@ -207,22 +206,6 @@ pub(crate) enum RawGeneration {
         /// Maximum electrical generation (MW).
         max_generation_mw: f64,
     },
-    /// Head-dependent productivity linearized around an operating point.
-    ///
-    /// The productivity coefficient is read from
-    /// `system/hydro_production_models.json` per `(hydro, stage)`. It is not
-    /// accepted in `hydros.json`; supplying `productivity_mw_per_m3s` here
-    /// produces a hard parse error.
-    LinearizedHead {
-        /// Minimum turbined flow (m³/s).
-        min_turbined_m3s: f64,
-        /// Maximum turbined flow (m³/s).
-        max_turbined_m3s: f64,
-        /// Minimum electrical generation (MW).
-        min_generation_mw: f64,
-        /// Maximum electrical generation (MW).
-        max_generation_mw: f64,
-    },
     /// Full production function with head-area-productivity tables (FPHA model).
     ///
     /// Productivity is derived from the FPHA tables in
@@ -245,12 +228,6 @@ impl RawGeneration {
     fn bounds(&self) -> (f64, f64, f64, f64) {
         match self {
             Self::ConstantProductivity {
-                min_turbined_m3s,
-                max_turbined_m3s,
-                min_generation_mw,
-                max_generation_mw,
-            }
-            | Self::LinearizedHead {
                 min_turbined_m3s,
                 max_turbined_m3s,
                 min_generation_mw,
@@ -865,7 +842,6 @@ fn convert_hydros(
 fn convert_generation(raw: &RawGeneration) -> (HydroGenerationModel, f64, f64, f64, f64) {
     let model = match raw {
         RawGeneration::ConstantProductivity { .. } => HydroGenerationModel::ConstantProductivity,
-        RawGeneration::LinearizedHead { .. } => HydroGenerationModel::LinearizedHead,
         RawGeneration::Fpha { .. } => HydroGenerationModel::Fpha,
     };
     let (min_turbined_m3s, max_turbined_m3s, min_generation_mw, max_generation_mw) = raw.bounds();
@@ -1135,11 +1111,8 @@ mod tests {
         assert!((hydros[0].max_turbined_m3s - 2000.0).abs() < f64::EPSILON);
     }
 
-    // ── AC: linearized_head generation model ─────────────────────────────────
-
-    /// Given a hydro with `generation.model: "linearized_head"`, it parses correctly.
     #[test]
-    fn test_parse_linearized_head_generation_model() {
+    fn test_retired_linearized_head_generation_model_is_rejected() {
         let json = r#"{
           "hydros": [{
             "id": 0, "name": "LH Plant",
@@ -1163,15 +1136,10 @@ mod tests {
         }"#;
         let f = write_json(json);
         let global = make_global();
-        let hydros = parse_hydros(f.path(), &global).unwrap();
-
-        assert_eq!(hydros.len(), 1);
+        let err = parse_hydros(f.path(), &global).unwrap_err();
         assert!(
-            matches!(
-                &hydros[0].generation_model,
-                HydroGenerationModel::LinearizedHead
-            ),
-            "expected LinearizedHead generation model"
+            matches!(err, LoadError::SchemaError { .. }),
+            "linearized_head should produce SchemaError, got: {err:?}"
         );
     }
 

@@ -587,35 +587,6 @@ mod tests {
     }
 
     #[test]
-    fn linearized_head_yields_input_scalar() {
-        let n_stages = 1;
-        let hydros = vec![make_hydro_with(
-            1,
-            HydroGenerationModel::LinearizedHead,
-            100.0,
-            200.0,
-            40.0,
-            None,
-        )];
-        let cascade = CascadeTopology::build(&hydros);
-        let resolver = constant_resolver(&hydros, 0.5, n_stages);
-        let pm = production_set(&[1.2], n_stages);
-
-        let set = build_energy_conversion_set(
-            &hydros,
-            &stage_ids_0_based(n_stages),
-            &cascade,
-            &resolver,
-            &HashMap::new(),
-            None,
-            Some(&pm),
-        )
-        .expect("builder succeeds");
-
-        assert_eq!(set.conversion(0, 0).equivalent_productivity_mw_per_m3s, 1.2);
-    }
-
-    #[test]
     fn reference_volume_uses_fraction() {
         let hydros = vec![make_hydro_with(
             1,

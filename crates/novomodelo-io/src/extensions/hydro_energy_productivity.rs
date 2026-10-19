@@ -5,8 +5,8 @@
 //!
 //! The `equivalent_productivity_mw_per_m3s` column applies to **all** hydro
 //! generation models. For FPHA hydros it overrides the `ρ_eq` value otherwise
-//! derived from VHA geometry and `ρ_esp`. For non-FPHA hydros
-//! (`constant_productivity`, `linearized_head`) it supplies `ρ_eq` directly
+//! derived from VHA geometry and `ρ_esp`. For a `constant_productivity` hydro
+//! it supplies `ρ_eq` directly
 //! when `productivity_mw_per_m3s` is omitted from
 //! `system/hydro_production_models.json`. Load-time validation enforces that
 //! exactly one source supplies the value for each non-FPHA `(hydro, stage)`

@@ -139,44 +139,6 @@
         },
         {
           "additionalProperties": false,
-          "description": "Head-dependent productivity linearized around an operating point.\n\nThe productivity coefficient is read from\n`system/hydro_production_models.json` per `(hydro, stage)`. It is not\naccepted in `hydros.json`; supplying `productivity_mw_per_m3s` here\nproduces a hard parse error.",
-          "properties": {
-            "max_generation_mw": {
-              "description": "Maximum electrical generation (MW).",
-              "format": "double",
-              "type": "number"
-            },
-            "max_turbined_m3s": {
-              "description": "Maximum turbined flow (m³/s).",
-              "format": "double",
-              "type": "number"
-            },
-            "min_generation_mw": {
-              "description": "Minimum electrical generation (MW).",
-              "format": "double",
-              "type": "number"
-            },
-            "min_turbined_m3s": {
-              "description": "Minimum turbined flow (m³/s).",
-              "format": "double",
-              "type": "number"
-            },
-            "model": {
-              "const": "linearized_head",
-              "type": "string"
-            }
-          },
-          "required": [
-            "model",
-            "min_turbined_m3s",
-            "max_turbined_m3s",
-            "min_generation_mw",
-            "max_generation_mw"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
           "description": "Full production function with head-area-productivity tables (FPHA model).\n\nProductivity is derived from the FPHA tables in\n`system/hydro_production_models.json`. The `productivity_mw_per_m3s`\nfield is not accepted here or in any other `generation` variant.",
           "properties": {
             "max_generation_mw": {
@@ -381,7 +343,7 @@
         },
         "specific_productivity_mw_per_m3s_per_m": {
           "default": null,
-          "description": "Specific productivity `ρ_esp` (MW / ((m³/s) · m)).\n\n**Resolution** (first non-`null` value wins):\n\n1. The `(hydro, stage)` row in `system/hydro_energy_productivity.parquet`.\n2. That file's per-hydro row (`stage_id` null).\n3. This field, applied to every stage.\n\nWith VHA geometry rows, `ρ_esp` gives any hydro its useful-range mean\nproductivity. An `fpha` hydro also derives its reference-point `ρ_eq`\nfrom it; setup fails when neither `ρ_esp` with geometry nor a `ρ_eq`\noverride supplies that value. `constant_productivity` and\n`linearized_head` dispatch on the coefficient in\n`system/hydro_production_models.json`, never on this value.",
+          "description": "Specific productivity `ρ_esp` (MW / ((m³/s) · m)).\n\n**Resolution** (first non-`null` value wins):\n\n1. The `(hydro, stage)` row in `system/hydro_energy_productivity.parquet`.\n2. That file's per-hydro row (`stage_id` null).\n3. This field, applied to every stage.\n\nWith VHA geometry rows, `ρ_esp` gives any hydro its useful-range mean\nproductivity. An `fpha` hydro also derives its reference-point `ρ_eq`\nfrom it; setup fails when neither `ρ_esp` with geometry nor a `ρ_eq`\noverride supplies that value. A `constant_productivity` hydro dispatches on\nits declared `ρ_eq`, never on this value.",
           "format": "double",
           "type": [
             "number",
