@@ -4,13 +4,11 @@ use novomodelo_core::{BlockMode, Stage};
 use crate::hydro_models::EvaporationModel;
 use crate::indexer::{
     BlockIdx, BusSys, EvapLocal, FillingTargetLocal, FloorLocal, HydroCell, HydroSys,
+    PlantFloorLocal,
 };
 
 use super::fpha_cursor::for_each_fpha_plane;
-use super::hydro_state::{
-    GroupBoundLookup, cell_min_generation, cell_min_turbined, hydro_phase,
-    resolve_shortcircuit_target,
-};
+use super::hydro_state::{MinFloor, hydro_phase, resolve_shortcircuit_target};
 use super::layout::{StageLayout, TemplateBuildCtx, position_table_row};
 
 /// Fill row lower/upper bounds for one stage.
@@ -433,23 +431,18 @@ fn fill_z_inflow_rows(
 /// Fill row bounds for the 6 operational violation constraint families.
 ///
 /// The two flow families are per-hydro per-block; RHS is in rate units
-/// (m3/s). The two power families (min-turbine, min-generation) are per-hydro
-/// CELL per-block: each cell's RHS is the PLAIN SUM of its own member groups'
-/// resolved minimum (`cell_min_turbined`/`cell_min_generation`), never the
-/// plant's declared `min_turbined_m3s`/`min_generation_mw` — see the
-/// min-floor contract
-///
-/// The two plant-level families (min-turbine-plant, min-generation-plant) are
-/// per-hydro per-block ADDITIVE floors on the plant's total: RHS is the
-/// plant's resolved `min_turbined_m3s`/`min_generation_mw` from `hydro_bounds`.
+/// (m3/s). The power families (min-turbine, min-generation) are per-hydro
+/// CELL per-block, plus one residual row per plant-floor hydro per block; the
+/// RHS of both comes from [`PlantFloor`] — see the min-floor contract.
 ///
 /// - **Min outflow** (`>=`): `row_lower = min_outflow_m3s`, `row_upper = +INF`.
 /// - **Max outflow** (`<=`): `row_lower = -INF`, `row_upper = max_outflow_m3s`
 ///   (or `+INF` when the bound is absent, making the row non-binding).
-/// - **Min turbine** (`>=`, per cell): `row_lower = cell_min_turbined`, `row_upper = +INF`.
-/// - **Min generation** (`>=`, per cell): `row_lower = cell_min_generation`, `row_upper = +INF`.
-/// - **Min turbine plant** (`>=`): `row_lower = min_turbined_m3s`, `row_upper = +INF`.
-/// - **Min generation plant** (`>=`): `row_lower = min_generation_mw`, `row_upper = +INF`.
+/// - **Min turbine / generation** (`>=`, per cell): `row_lower =
+///   PlantFloor::cell_rhs`, `row_upper = +INF`.
+/// - **Plant min turbine / generation** (`>=`, per plant-floor hydro):
+///   `row_lower = PlantFloor::residual_rhs`, or `-INF` (a free row) at a
+///   block where the cells already cover the plant minimum.
 pub(super) fn fill_operational_violation_rows(
     ctx: &TemplateBuildCtx<'_>,
     stage_idx: usize,
@@ -486,35 +479,32 @@ pub(super) fn fill_operational_violation_rows(
             }
         }
 
-        let hydro = &ctx.hydros[h_idx];
-        for blk in 0..layout.clock.n_blks() {
-            let b = BlockIdx::new(blk);
-            let lookup =
-                GroupBoundLookup::new(ctx.resolved.bounds.group_overlay(), h_idx, stage_idx, blk);
-            for cell_idx in ctx.hydro_cell_index.cells_of(hydro_sys) {
-                let cell = HydroCell::new(cell_idx);
-                let positions = ctx.hydro_cell_index.groups_of(cell);
-
-                let row_t = layout.min_turbine_row(cell, b);
-                row_lower[row_t] = cell_min_turbined(&hydro.unit_groups, positions, lookup);
-                row_upper[row_t] = f64::INFINITY;
-
-                let row_g = layout.min_generation_row(cell, b);
-                row_lower[row_g] = cell_min_generation(&hydro.unit_groups, positions, lookup);
-                row_upper[row_g] = f64::INFINITY;
+        for kind in MinFloor::ALL {
+            for blk in 0..layout.clock.n_blks() {
+                let b = BlockIdx::new(blk);
+                let floor = ctx.plant_floor(stage_idx, kind, hydro_sys, blk);
+                for cell_idx in ctx.hydro_cell_index.cells_of(hydro_sys) {
+                    let cell = HydroCell::new(cell_idx);
+                    let row = layout.min_floor_row(kind, cell, b);
+                    row_lower[row] = floor.cell_rhs(cell);
+                    row_upper[row] = f64::INFINITY;
+                }
             }
+        }
+    }
 
-            let hb = ctx
-                .resolved
-                .bounds
-                .hydro_bounds_at_block(h_idx, stage_idx, blk);
-            let row_turbine_plant = layout.min_turbine_plant_row(hydro_sys, b);
-            row_lower[row_turbine_plant] = hb.min_turbined_m3s;
-            row_upper[row_turbine_plant] = f64::INFINITY;
-
-            let row_generation_plant = layout.min_generation_plant_row(hydro_sys, b);
-            row_lower[row_generation_plant] = hb.min_generation_mw;
-            row_upper[row_generation_plant] = f64::INFINITY;
+    for (local, &hydro_sys) in layout.geometry.plant_floor_hydro_indices.iter().enumerate() {
+        for kind in MinFloor::ALL {
+            for blk in 0..layout.clock.n_blks() {
+                let floor = ctx.plant_floor(stage_idx, kind, hydro_sys, blk);
+                let row = layout.plant_min_floor_row(
+                    kind,
+                    PlantFloorLocal::new(local),
+                    BlockIdx::new(blk),
+                );
+                row_lower[row] = floor.residual_rhs().unwrap_or(f64::NEG_INFINITY);
+                row_upper[row] = f64::INFINITY;
+            }
         }
     }
 }

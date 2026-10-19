@@ -272,6 +272,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `min_turbined_m3s` or `min_generation_mw` value in
+  `constraints/hydro_bounds.parquet` had no effect: the LP read only the unit
+  groups' minima. A plant minimum above the sum of its groups' minima now
+  binds on the plant's total, and a shortfall is charged once, at the plant's
+  penalty, in `turbined_slack_m3s` and `generation_slack_mw`. A value below
+  that sum cannot loosen the groups' minima, and setup now warns about it.
 - `truncation` corrects a negative inflow when the hydro's PAR residual
   standard deviation is zero. Such a study could stop on an infeasible LP
   before.

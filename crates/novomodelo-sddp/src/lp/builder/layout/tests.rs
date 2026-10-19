@@ -914,6 +914,7 @@ impl TwoHydroFixtures {
         let production_models = ProductionModelSet::new(models, &hydros, 1);
         Self {
             base: CtxFixture {
+                bounds: bounds_with_entities(hydros.len(), 0, 1),
                 hydros,
                 hydro_cell_index,
                 cascade,
@@ -1325,6 +1326,7 @@ impl FphaMixFixtures {
         let production_models = ProductionModelSet::new(models, &hydros, 1);
         Self {
             base: CtxFixture {
+                bounds: bounds_with_entities(hydros.len(), 0, 1),
                 hydros,
                 hydro_cell_index,
                 cascade,
@@ -1577,7 +1579,7 @@ fn filling_target_row_and_col_below_structural_bounds() {
         );
     }
     assert_eq!(
-        row_start, layout.oper_violation.min_generation_plant.end,
+        row_start, layout.oper_violation.min_generation.end,
         "σ_fill rows follow the operational-violation rows directly"
     );
 
@@ -2739,9 +2741,15 @@ fn test_layout_no_anticipated_unchanged_num_cols() {
 /// count (all other entity tables empty). `table.n_pumping()` recovers
 /// `n_pumping` from the `pumping` Vec length divided by `n_stages`.
 fn bounds_with_pumping(n_pumping: usize, n_stages: usize) -> ResolvedBounds {
+    bounds_with_entities(0, n_pumping, n_stages)
+}
+
+/// Build an all-zero `ResolvedBounds` sized for `n_hydros` plants and
+/// `n_pumping` stations over `n_stages` stages.
+fn bounds_with_entities(n_hydros: usize, n_pumping: usize, n_stages: usize) -> ResolvedBounds {
     ResolvedBounds::new(
         &BoundsCountsSpec {
-            n_hydros: 0,
+            n_hydros,
             n_thermals: 0,
             n_lines: 0,
             n_pumping,
@@ -3384,6 +3392,7 @@ impl TwoHydroMultiBusFixtures {
         let production_models = ProductionModelSet::new(models, &hydros, 1);
         Self {
             base: CtxFixture {
+                bounds: bounds_with_entities(hydros.len(), 0, 1),
                 hydros,
                 hydro_cell_index,
                 cascade,
@@ -3559,6 +3568,7 @@ impl FphaMultiBusFixtures {
 
         Self {
             base: CtxFixture {
+                bounds: bounds_with_entities(hydros.len(), 0, 1),
                 hydros,
                 hydro_cell_index,
                 cascade,

@@ -186,16 +186,16 @@ fn fpha_ac5_mixed_system_load_balance_uses_generation_col() {
 
     // Base (constant) num_cols = 13 + 4*1*3 (turbine+spillage+diversion per hydro/block)
     // + 1*1*2 = 27; + 2 FPHA generation = 29; + 2*N=8 withdrawal = 37;
-    // + 6*N=24 op-violation slacks = 61.
+    // + 4*N=16 op-violation slacks = 53.
     // num_rows (no state-fixing rows) = N z_inflow(4) + N water balance(4) + load balance(1)
-    // = 9; + 2*3 FPHA = 15; + 6*N=24 op-violation = 39.
+    // = 9; + 2*3 FPHA = 15; + 4*N=16 op-violation = 31.
     assert_eq!(
-        tmpl.num_cols, 61,
-        "4-hydro mixed system: num_cols should be 61 (includes diversion, 2*4 withdrawal, and operational slacks)"
+        tmpl.num_cols, 53,
+        "4-hydro mixed system: num_cols should be 53 (includes diversion, 2*4 withdrawal, and operational slacks)"
     );
     assert_eq!(
-        tmpl.num_rows, 39,
-        "4-hydro mixed system: num_rows should be 39 (no state-fixing rows)"
+        tmpl.num_rows, 31,
+        "4-hydro mixed system: num_rows should be 31 (no state-fixing rows)"
     );
 
     let row_lb = 8_usize; // N z_inflow(4) + N water balance(4) + bus_blk_idx(0)

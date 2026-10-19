@@ -107,7 +107,7 @@ impl ResolverFixture {
         // CtxFixture::default's 1-long bounds/time_value axis.
         let bounds = ResolvedBounds::new(
             &BoundsCountsSpec {
-                n_hydros: 0,
+                n_hydros: hydros.len(),
                 n_thermals: 0,
                 n_lines: 0,
                 n_pumping: 0,

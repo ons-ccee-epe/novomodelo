@@ -436,13 +436,13 @@ rule-41 equality, no override), which pins the group term binding, and by
 `test_cell_columns_take_their_own_group_box`'s block-2 override, which pins
 the plant term binding.
 
-### The per-cell floor is a plain sum, never a fold or a plant clamp
+### The per-cell floor is a plain sum; the plant floor adds only where it is tighter
 
-`cell_min_turbined`/`cell_min_generation` (`lp/builder/columns.rs`) are the
+`cell_min_turbined`/`cell_min_generation` (`lp/builder/hydro_state.rs`) are the
 MIN-side mirror of `cell_max_turbined`/`cell_max_generation` above, and
 deliberately do NOT mirror their shape: a cell's min-turbine/min-generation
-floor is `Σ_{g∈cell} resolved_min_*(g)` — the cell's OWN member groups' resolved
-minima, summed, with no fold and no closing `.min(plant)` term at all. This is
+floor `F_c` is `Σ_{g∈cell} resolved_min_*(g)` — the cell's OWN member groups'
+resolved minima, summed, with no fold and no closing `.min(plant)` term. This is
 the correct shape because the floor bounds a SUM of variables: the cell's
 member groups all feed one shared aggregate column (one turbine column, one
 FPHA-generation column, or the same column read at ρ for
@@ -450,18 +450,45 @@ FPHA-generation column, or the same column read at ρ for
 others' — it is not one quantity two caps compete to bound tighter, which is
 what licenses a `min` fold on the MAX side.
 
-Four wrong-but-compiling alternatives, each of which has a close MAX-side
-cousin that makes it easy to copy over by habit:
+The plant's resolved minimum `P` (`hydro_bounds_at_block`: the `hydro_bounds`
+override, else the declared value) is a second floor on the plant's total, and
+the TIGHTER of the two wins. `PlantFloor` owns the decision: `P` binds only
+where `P > Σ_c F_c + envelope_tolerance(P)` — the same tolerance rule 44 admits
+a declared minimum with (`P_declared ≤ Σ F_declared + tolerance`), so a
+declared minimum never changes the LP and every study without a raising
+override builds byte-identical rows and columns. Where `P` binds:
 
-- **`.min(plant)` clamp** — closing the sum with `.min(hydro.min_turbined_m3s /
-min_generation_mw)`, copying `cell_max_turbined`'s closing term verbatim.
-  Wrong: the plant's declared minimum has no role in the per-cell floor at
-  all (validation rule 44 checks it can be REACHED by the groups' sum, but the
-  LP itself never reads it here). A `.min(plant)` clamp silently loosens the
-  floor whenever the plant's own declared minimum is lower than a cell's
-  group-sum, and clamps to that plant value uniformly on every cell —
-  understating the true floor without invalidating it that the group data
-  independently supports.
+- **A single-cell plant folds `P` into its one cell row** (`cell_rhs`); no
+  row is added. Every plant without multi-bus groups takes this path.
+- **A multi-cell plant gets one residual row per `MinFloor` and block**,
+  `Σ_c LHS_c + σ_plant ≥ P`, where `LHS_c` repeats cell `c`'s own row terms —
+  the turbine column (or FPHA generation column, or `ρ·q_c`; nothing for a
+  dormant plant) **and the cell's own slack `σ_c`** (`push_cell_floor_lhs`, the
+  single owner of a cell's floor LHS for both row kinds). Carrying `σ_c` is
+  what makes the charge `max(P − Σq, Σ_c σ_c)`: `σ_plant` tops up only what
+  the cell slacks leave. The wrong-but-compiling alternative — a residual row
+  on the bare columns, `Σ_c q_c + σ_plant ≥ P` — charges every unit of a cell
+  shortfall twice whenever both floors bind.
+
+A plant joins `plant_floor_hydro_indices` for a stage when its residual binds
+at any block; at a block where the cells cover `P` its row is free (`−∞`) and
+its slack pinned `[0, 0]`. Both slacks are priced at the plant's FULL penalty
+per hour (`MinFloor::below_cost`). An override that LOWERS `P` below `Σ F_c`
+cannot loosen the floor — the groups' minima still bind — so setup emits one
+warning per plant and `MinFloor` (`warn_on_inert_plant_floor_overrides`)
+pointing at `hydro_unit_group_bounds` instead. The MAX side has no aggregate
+row (see the section above); a plant cap below its cells' summed caps binds
+only through each cell's own `sum.min(hb...)`.
+
+Four wrong-but-compiling alternatives for the cell floor, each with a close
+MAX-side cousin that makes it easy to copy over by habit:
+
+- **`.min(plant)` clamp** — closing the sum with `.min(P)`, copying
+  `cell_max_turbined`'s closing term verbatim. It silently loosens the floor
+  whenever `P` is lower than a cell's group-sum, clamping every cell to that
+  plant value. A lower `P` never loosens a cell floor; a higher `P` tightens
+  the plant total through the fold or the residual row above, never by
+  raising one cell's own floor.
 - **`max`-fold over a cell's own groups** — `max_{g∈cell} min_*(g)` instead of
   `Σ_{g∈cell} min_*(g)`. Wrong for the reason above: each group's own mandatory
   floor adds to the cell's aggregate minimum, so `max` understates a
@@ -469,57 +496,51 @@ min_generation_mw)`, copying `cell_max_turbined`'s closing term verbatim.
   largest.
 - **ρ-folding the generation floor** — computing `cell_min_generation` by
   folding each group's turbined-derived floor through `ConstantProductivity`'s
-  ρ (mirroring the MAX-side fold that combines two independent caps into one
-  tighter one) instead of summing `group.min_generation_mw` directly. The
-  min-generation row's LHS already carries `ρ * q_c` for a
-  `ConstantProductivity` cell (`fill_operational_violation_entries`); folding
-  ρ into the RHS too double-prices the productivity and produces a floor with
-  no physical meaning.
+  ρ instead of summing `group.min_generation_mw` directly. The min-generation
+  row's LHS already carries `ρ * q_c` for a `ConstantProductivity` cell;
+  folding ρ into the RHS too double-prices the productivity.
 - **`1/|cells|` price or RHS apportionment** — dividing the penalty
   (`turbined_violation_below_cost`/`generation_violation_below_cost`, both
   plant-level `HydroPenalties`) or the RHS by the plant's cell count before
   applying it per cell. The penalty is priced at FULL magnitude on every one
   of the plant's cells (mirroring how an arc's `k_d` release-weight replicates
   onto every cell's turbine column, never apportioned — see the water
-  travel-time section below); apportioning it discounts the true cost of a
-  multi-cell plant's violation by `|cells|`, and apportioning the RHS instead
-  of summing it produces a floor with no basis in either the cell's own
-  groups or the plant's declared value.
+  travel-time section below).
 
-Two per-cell soft rows exist per the same design that governs the MAX-side
-columns — never folded into one: `min_turbine_rows` couples the cell's own
-turbine column (`+1`) to the cell's own `turbine_below_slack` (`+1`);
-`min_generation_rows` couples the cell's own generation column — the cell's
-FPHA-generation column (`+1`) or the cell's turbine column at `ρ` for
-`ConstantProductivity` — to the cell's own `generation_below_slack` (`+1`).
-Both families are sized `n_cells * n_blks` (`OperViolationRanges::new`'s
-`n_op_cell` parameter), never `n_h * n_blks` — the two flow families
-(min/max-outflow) stay hydro-keyed at `n_op_hydro`, since outflow has no
-per-cell column to attribute to.
+The cell rows `min_turbine`/`min_generation` are sized `n_cells * n_blks`
+(`OperViolationSizes::cells`) and the residual rows
+`plant_min_turbine`/`plant_min_generation` `n_plant_floor * n_blks`
+(`plant_floors`); the min/max-outflow families stay hydro-keyed
+(`hydros`), since outflow has no per-cell column to attribute to.
 
 Output stays plant-keyed: `simulation/hydros/**.parquet`'s
-`turbined_slack_m3s`/`generation_slack_mw` columns are unchanged in shape —
-extraction sums a plant's own cells' slack columns into the existing
-plant-level field (`sum_cell_slack` in `simulation/extraction.rs`), the same
-pattern `turbined_m3s`/`generation_mw` already use for the max-side columns.
-This differs from the same-bus generation-split problem the output-axis
-decision (§7.10 of the blocks-and-units design) rules out: that problem is
-genuinely UNDETERMINED (several same-bus groups sharing one column have no
-basis to split by), while a per-cell floor VIOLATION is DETERMINED — each
-cell owns its own row and its own slack column, so there is exactly one
-correct per-cell slack value to sum, never a manufactured one.
+`turbined_slack_m3s`/`generation_slack_mw` and the `turbined`/`generation`
+violation costs read a plant's own cells' slacks (`sum_cell_slack`) plus its
+residual slack when it owns one (`hydro_operational_slacks`,
+`compute_hydro_violation_costs`) — the plant's whole shortfall, the same
+pattern `turbined_m3s`/`generation_mw` use for the max-side columns. A per-cell
+floor VIOLATION is DETERMINED (each cell owns its own row and slack), unlike
+the undetermined same-bus generation split the output-axis decision (§7.10 of
+the blocks-and-units design) rules out.
 
 Read: `crates/novomodelo-sddp/src/lp/builder/hydro_state.rs` (`cell_min_turbined`,
-`cell_min_generation`), `crates/novomodelo-sddp/src/lp/builder/columns.rs`
-(`fill_cell_block_family`), `crates/novomodelo-sddp/src/lp/builder/rows.rs`
-(`fill_operational_violation_rows`), `crates/novomodelo-sddp/src/lp/builder/entries.rs`
-(`fill_operational_violation_entries`), `crates/novomodelo-sddp/src/lp/builder/layout.rs`
-(`OperViolationRanges`), `crates/novomodelo-sddp/src/simulation/extraction.rs`
-(`sum_cell_slack`, `hydro_operational_slacks`), `crates/novomodelo-io/src/validation/semantic/hydro.rs`
-(rule 44). Pinned by the per-cell analytical row/coefficient test in
-`crates/novomodelo-sddp/src/lp/builder/entries.rs` (mutation-verified against the
-`.min(plant)` clamp, the `max`-fold, the ρ-fold, and `1/|cells|`
-apportionment), the d53 binding fixture, and the group-declaration-order
+`cell_min_generation`, `MinFloor`, `PlantFloor`,
+`warn_on_inert_plant_floor_overrides`), `crates/novomodelo-sddp/src/lp/builder/columns.rs`
+(`fill_cell_floor_slacks`, `fill_plant_floor_slacks`),
+`crates/novomodelo-sddp/src/lp/builder/rows.rs` (`fill_operational_violation_rows`),
+`crates/novomodelo-sddp/src/lp/builder/entries.rs` (`push_cell_floor_lhs`),
+`crates/novomodelo-sddp/src/lp/builder/layout.rs` (`identify_plant_floor_hydros`,
+`OperViolationRanges`), `crates/novomodelo-sddp/src/simulation/extraction.rs`
+(`sum_cell_slack`, `hydro_operational_slacks`),
+`crates/novomodelo-io/src/validation/semantic/hydro.rs` (rule 44) and
+`crates/novomodelo-io/src/validation/semantic/mod.rs` (`envelope_tolerance`).
+Pinned by `test_min_floor_rhs_is_the_cells_own_group_sum` (mutation-verified
+against the `.min(plant)` clamp, the `max`-fold, the ρ-fold, and `1/|cells|`
+apportionment), `test_floor_shortfall_is_charged_once_as_the_larger_of_plant_and_cells`
+(fails at 16 against 12 when the residual row drops `σ_c`), the
+`*_residual_rows_sum_their_cell_rows` trio (constant, FPHA, dormant),
+`test_plant_floor_the_cells_cover_leaves_the_stage_lp_unchanged` (the shared
+tolerance), the d53 binding fixture, and the group-declaration-order
 determinism regression.
 
 ### Both outflow rows bind the non-diverted river-remnant flow

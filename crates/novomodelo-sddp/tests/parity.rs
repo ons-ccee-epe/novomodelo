@@ -856,21 +856,21 @@ mod determinism {
     //   storage_in   = 6..9
     //   theta        = 9
     //   then the decoupled hydro+bus equipment padding `test_support::geometry`
-    //   addresses for N=3 hydros, 1 bus, 1 block (cols 10-44), so per-block
+    //   addresses for N=3 hydros, 1 bus, 1 block (cols 10-38), so per-block
     //   hydro/bus extraction addresses real columns instead of an empty family.
-    //   num_cols     = 45
+    //   num_cols     = 39
     //
-    // The primal must have 45 entries so simulation's per-block extraction can
+    // The primal must have 39 entries so simulation's per-block extraction can
     // address every equipment column. The dual must have at least 7 entries
     // to cover the widened geometry's water-balance/load-balance row family.
     // ===========================================================================
 
-    const PRIMAL_3H: &[f64] = &[0.0; 45];
+    const PRIMAL_3H: &[f64] = &[0.0; 39];
     // The dual must cover the widened row family plus max cuts per stage
     // (10 iterations × 1 pass = 10). Use 64 to cover any reasonable iteration
     // count without tight sizing.
     const DUAL_3H: &[f64] = &[0.0; 64];
-    const REDUCED_COSTS_3H: &[f64] = &[0.0; 45];
+    const REDUCED_COSTS_3H: &[f64] = &[0.0; 39];
 
     /// Mock solver returning a fixed objective on every solve, so any output
     /// variation across thread counts comes from the orchestration layer alone.
@@ -1124,7 +1124,7 @@ mod determinism {
     /// 3..6   z_inflow     (realized inflow variables, N=3, free)
     /// 6..9   storage_in   (incoming storage, N=3, L=0 → no lag cols)
     /// 9      theta
-    /// 10..44 decoupled hydro+bus equipment padding `test_support::geometry`
+    /// 10..39 decoupled hydro+bus equipment padding `test_support::geometry`
     ///        addresses for N=3 hydros, 1 bus, 1 block (zero cost, zero NZ):
     ///        `MockSolver3H` never reads the coefficients.
     /// ```
@@ -1140,9 +1140,9 @@ mod determinism {
     /// per storage_in pin row (column = `storage_in[h]`), each coefficient 1.0, so
     /// the patch buffer has something to patch.
     fn template_3h() -> StageTemplate {
-        let num_cols = 45;
+        let num_cols = 39;
         let num_rows = 7;
-        // CSC col_starts: 45 columns + 1 sentinel; z_inflow and storage_in cols
+        // CSC col_starts: 39 columns + 1 sentinel; z_inflow and storage_in cols
         // each carry one NZ, cols 9 (theta) onward carry none.
         let col_starts = {
             let mut v = vec![6_i32; num_cols + 1];

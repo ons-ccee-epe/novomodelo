@@ -1608,19 +1608,19 @@ mod cell_partition_gates {
 
         // Water balance: both cells' turbine columns credit the SAME
         // plant-level row (shared, unlike the per-cell FPHA/load-balance
-        // rows), at the SAME tau. The two turbine columns share FOUR
+        // rows), at the SAME tau. The two turbine columns share THREE
         // plant-keyed rows in total -- water-balance (coefficient tau_h) and
-        // the three hydro-keyed soft floors that also sum every cell's
-        // turbine column (min_outflow_rows, max_outflow_rows, min_turbine_plant_rows,
-        // each coefficient exactly 1.0, `fill_operational_violation_entries`).
+        // the two hydro-keyed outflow soft floors that also sum every cell's
+        // turbine column (min_outflow_rows, max_outflow_rows, each
+        // coefficient exactly 1.0, `fill_operational_violation_entries`).
         // min_turbine_rows is NOT among them: it is cell-keyed, so each
         // cell owns its own row rather than sharing the plant's. Disambiguated
         // by value since tau_h != 1.0 for this fixture's block duration.
         let shared_turbine_rows = common_rows(&turb_first_rows, &turb_second_rows);
         assert_eq!(
             shared_turbine_rows.len(),
-            4,
-            "turbine columns must share exactly 4 plant-keyed rows"
+            3,
+            "turbine columns must share exactly 3 plant-keyed rows"
         );
         let water_balance_row = shared_turbine_rows
             .into_iter()

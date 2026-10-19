@@ -4,15 +4,14 @@ use novomodelo_core::{BlockMode, ContractType, Stage};
 use crate::hydro_models::EvaporationModel;
 use crate::indexer::{
     AnticipatedLocal, BlockIdx, Boundary, BusSys, EvapLocal, FillingTargetLocal, FloorLocal,
-    FphaCellLocal, FphaLocal, HydroCell, HydroSys, LineSys, NcsSys, PumpingSys, ThermalSys,
-    for_each_ring_residue, is_anticipated_decision_active_for_delivery,
+    FphaCellLocal, FphaLocal, HydroCell, HydroSys, LineSys, NcsSys, PlantFloorLocal, PumpingSys,
+    ThermalSys, for_each_ring_residue, is_anticipated_decision_active_for_delivery,
 };
 
 use super::EVAPORATION_FLOW_SAFETY_MARGIN;
 use super::delivery_ring::{ColumnBufs, DeliveryRing};
 use super::hydro_state::{
-    GroupBoundLookup, cell_max_generation, cell_max_turbined, cell_min_generation,
-    cell_min_turbined, hydro_phase,
+    GroupBoundLookup, MinFloor, cell_max_generation, cell_max_turbined, hydro_phase,
 };
 use super::layout::{
     StageLayout, TemplateBuildCtx, contract_direction_counts, contract_family_slot,
@@ -784,9 +783,9 @@ fn fill_withdrawal_slack_columns(
 /// never a stage-level read hoisted above the loop (drops a block-only floor,
 /// e.g. `min_outflow_m3s > 0.0` on one block only, leaving no slack column to
 /// relax it); either alternative compiles and silently mis-activates the column.
-/// The power-side families (min-turbine, min-generation) are CELL-keyed —
-/// see [`CellSlackFamily`] — because a plant's floor is a per-cell sum, not a
-/// plant-level aggregate; only the two flow families stay hydro-keyed here.
+/// The power-side families (min-turbine, min-generation) are CELL-keyed, plus
+/// a residual per plant-floor hydro — see [`fill_cell_floor_slacks`] and
+/// [`fill_plant_floor_slacks`]; only the two flow families stay hydro-keyed here.
 #[derive(Clone, Copy)]
 enum BlockSlackFamily {
     /// Active iff resolved `min_outflow_m3s > 0.0`.
@@ -796,33 +795,10 @@ enum BlockSlackFamily {
     OutflowAbove,
 }
 
-/// The two cell-keyed operational-violation slack families, addressing a
-/// disjoint `n_cells * n_blks` column range — the min-floor mirror of
-/// [`BlockSlackFamily`]'s hydro-keyed families. See the min-floor contract.
-#[derive(Clone, Copy)]
-enum CellSlackFamily {
-    /// Active iff the cell's resolved `cell_min_turbined` sum is `> 0.0`.
-    TurbineBelow,
-    /// Active iff the cell's resolved `cell_min_generation` sum is `> 0.0`.
-    GenerationBelow,
-}
-
-/// The two plant-keyed operational-violation slack families for plant-total
-/// floors, addressing a disjoint `n_h * n_blks` column range. The plant floor
-/// uses `hydro_bounds.min_turbined_m3s` / `min_generation_mw` as RHS — additive
-/// to the per-cell group floors in [`CellSlackFamily`].
-#[derive(Clone, Copy)]
-enum PlantSlackFamily {
-    /// Active iff the plant's resolved `min_turbined_m3s > 0.0`.
-    TurbineBelowPlant,
-    /// Active iff the plant's resolved `min_generation_mw > 0.0`.
-    GenerationBelowPlant,
-}
-
 /// Operational violation slack columns: the two hydro-keyed flow families
 /// (`n_h * n_blks` each), the two cell-keyed power families (`n_cells *
-/// n_blks` each), and the two plant-keyed power families (`n_h * n_blks` each),
-/// all six disjoint ranges so call order does not affect the result.
+/// n_blks` each), and the two plant residual families, all disjoint ranges so
+/// call order does not affect the result.
 fn fill_operational_slack_columns(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
@@ -836,17 +812,9 @@ fn fill_operational_slack_columns(
     ] {
         fill_block_family(ctx, stage, stage_idx, layout, bufs, family);
     }
-    for family in [
-        CellSlackFamily::TurbineBelow,
-        CellSlackFamily::GenerationBelow,
-    ] {
-        fill_cell_block_family(ctx, stage, stage_idx, layout, bufs, family);
-    }
-    for family in [
-        PlantSlackFamily::TurbineBelowPlant,
-        PlantSlackFamily::GenerationBelowPlant,
-    ] {
-        fill_plant_block_family(ctx, stage, stage_idx, layout, bufs, family);
+    for kind in MinFloor::ALL {
+        fill_cell_floor_slacks(ctx, stage, stage_idx, layout, bufs, kind);
+        fill_plant_floor_slacks(ctx, stage, stage_idx, layout, bufs, kind);
     }
 }
 
@@ -889,94 +857,59 @@ fn fill_block_family(
     }
 }
 
-/// Fill one cell-keyed operational-violation slack family's `n_cells * n_blks`
-/// columns; `col_lower` stays at the `0.0` vec default. The cost is the
-/// PLANT's own penalty (`HydroPenalties` is plant-level) at FULL magnitude —
-/// never divided by the plant's cell count — replicated onto every one of the
-/// plant's cells; see the min-floor contract.
-fn fill_cell_block_family(
+/// Fill one cell-keyed `kind` slack family's `n_cells * n_blks` columns,
+/// active iff the cell row's RHS is `> 0.0`; `col_lower` stays at the `0.0`
+/// vec default. The cost is the PLANT's own penalty (`HydroPenalties` is
+/// plant-level) at FULL magnitude — never divided by the plant's cell count —
+/// replicated onto every one of the plant's cells; see the min-floor contract.
+fn fill_cell_floor_slacks(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
     stage_idx: usize,
     layout: &StageLayout,
     bufs: &mut ColumnBufs<'_>,
-    family: CellSlackFamily,
+    kind: MinFloor,
 ) {
     for h_idx in 0..layout.state.hydro_count {
-        let hydro = &ctx.hydros[h_idx];
-        let hp = ctx.resolved.penalties.hydro_penalties(h_idx, stage_idx);
-        let cost = match family {
-            CellSlackFamily::TurbineBelow => hp.turbined_violation_below_cost,
-            CellSlackFamily::GenerationBelow => hp.generation_violation_below_cost,
-        };
+        let h = HydroSys::new(h_idx);
+        let cost = kind.below_cost(ctx.resolved.penalties.hydro_penalties(h_idx, stage_idx));
         for blk in 0..layout.clock.n_blks() {
-            let lookup =
-                GroupBoundLookup::new(ctx.resolved.bounds.group_overlay(), h_idx, stage_idx, blk);
+            let floor = ctx.plant_floor(stage_idx, kind, h, blk);
             let block_hours = stage.blocks[blk].duration_hours;
-            for cell_idx in ctx.hydro_cell_index.cells_of(HydroSys::new(h_idx)) {
+            for cell_idx in ctx.hydro_cell_index.cells_of(h) {
                 let cell = HydroCell::new(cell_idx);
-                let positions = ctx.hydro_cell_index.groups_of(cell);
-                let cell_min = match family {
-                    CellSlackFamily::TurbineBelow => {
-                        cell_min_turbined(&hydro.unit_groups, positions, lookup)
-                    }
-                    CellSlackFamily::GenerationBelow => {
-                        cell_min_generation(&hydro.unit_groups, positions, lookup)
-                    }
+                let col = layout.cell_below_col(kind, cell, BlockIdx::new(blk));
+                bufs.col_upper[col] = if floor.cell_rhs(cell) > 0.0 {
+                    f64::INFINITY
+                } else {
+                    0.0
                 };
-                let col = match family {
-                    CellSlackFamily::TurbineBelow => {
-                        layout.geometry.turbine_below_col(cell, BlockIdx::new(blk))
-                    }
-                    CellSlackFamily::GenerationBelow => layout
-                        .geometry
-                        .generation_below_col(cell, BlockIdx::new(blk)),
-                };
-                bufs.col_upper[col] = if cell_min > 0.0 { f64::INFINITY } else { 0.0 };
                 bufs.objective[col] = cost * block_hours;
             }
         }
     }
 }
 
-/// Fill one plant-keyed operational-violation slack family's `n_h * n_blks`
-/// columns; `col_lower` stays at the `0.0` vec default. The plant floor uses
-/// `hydro_bounds.min_turbined_m3s` / `min_generation_mw` as the activation
-/// threshold and RHS source — additive to the per-cell group floors.
-fn fill_plant_block_family(
+/// Fill the plant residual `kind` slack columns, one per plant-floor hydro per
+/// block, at the same plant penalty as its cell slacks: active only at a block
+/// whose residual row binds, `[0, 0]` where that row is free.
+fn fill_plant_floor_slacks(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
     stage_idx: usize,
     layout: &StageLayout,
     bufs: &mut ColumnBufs<'_>,
-    family: PlantSlackFamily,
+    kind: MinFloor,
 ) {
-    for h_idx in 0..layout.state.hydro_count {
-        let hp = ctx.resolved.penalties.hydro_penalties(h_idx, stage_idx);
-        let cost = match family {
-            PlantSlackFamily::TurbineBelowPlant => hp.turbined_violation_below_cost,
-            PlantSlackFamily::GenerationBelowPlant => hp.generation_violation_below_cost,
-        };
+    for (local, &h) in layout.geometry.plant_floor_hydro_indices.iter().enumerate() {
+        let cost = kind.below_cost(ctx.resolved.penalties.hydro_penalties(h.get(), stage_idx));
         for blk in 0..layout.clock.n_blks() {
-            let hb = ctx
-                .resolved
-                .bounds
-                .hydro_bounds_at_block(h_idx, stage_idx, blk);
-            let (active, col) = match family {
-                PlantSlackFamily::TurbineBelowPlant => (
-                    hb.min_turbined_m3s > 0.0,
-                    layout
-                        .geometry
-                        .turbine_below_plant_col(HydroSys::new(h_idx), BlockIdx::new(blk)),
-                ),
-                PlantSlackFamily::GenerationBelowPlant => (
-                    hb.min_generation_mw > 0.0,
-                    layout
-                        .geometry
-                        .generation_below_plant_col(HydroSys::new(h_idx), BlockIdx::new(blk)),
-                ),
-            };
-            bufs.col_upper[col] = if active { f64::INFINITY } else { 0.0 };
+            let col = layout.plant_below_col(kind, PlantFloorLocal::new(local), BlockIdx::new(blk));
+            let binds = ctx
+                .plant_floor(stage_idx, kind, h, blk)
+                .residual_rhs()
+                .is_some();
+            bufs.col_upper[col] = if binds { f64::INFINITY } else { 0.0 };
             bufs.objective[col] = cost * stage.blocks[blk].duration_hours;
         }
     }
@@ -6726,10 +6659,11 @@ mod cell_column_bound_tests {
     use crate::test_support::make_unit_group;
     use crate::time_value::TimeValue;
 
+    use super::super::hydro_state::{cell_min_generation, cell_min_turbined};
     use super::super::test_support::{BLOCK_HOURS, three_block_stage, zero_hydro_penalties};
     use super::{
-        ColumnBufs, GroupBoundLookup, StageLayout, TemplateBuildCtx, cell_min_generation,
-        cell_min_turbined, fill_fpha_generation_columns, fill_turbine_columns,
+        ColumnBufs, GroupBoundLookup, StageLayout, TemplateBuildCtx, fill_fpha_generation_columns,
+        fill_turbine_columns,
     };
 
     const N_STAGES: usize = 1;

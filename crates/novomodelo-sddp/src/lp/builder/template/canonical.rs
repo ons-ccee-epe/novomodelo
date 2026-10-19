@@ -258,8 +258,8 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
         outflow_above_slack,
         turbine_below_slack,
         generation_below_slack,
-        turbine_below_plant_slack: _,
-        generation_below_plant_slack: _,
+        plant_turbine_below_slack,
+        plant_generation_below_slack,
         contract_import,
         contract_export,
         water_balance,
@@ -276,6 +276,7 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
         evap_hydro_indices,
         filling_target_hydro_indices,
         filled_min_storage_floor_hydro_indices,
+        plant_floor_hydro_indices,
     } = geometry;
 
     put_usize(buf, state.theta);
@@ -302,6 +303,8 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
     put_range(buf, outflow_above_slack);
     put_range(buf, turbine_below_slack);
     put_range(buf, generation_below_slack);
+    put_range(buf, plant_turbine_below_slack);
+    put_range(buf, plant_generation_below_slack);
     put_range(buf, contract_import);
     put_range(buf, contract_export);
     put_block_row_family(buf, *water_balance);
@@ -330,6 +333,7 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
     put_hydro_sys_slice(buf, evap_hydro_indices);
     put_hydro_sys_slice(buf, filling_target_hydro_indices);
     put_hydro_sys_slice(buf, filled_min_storage_floor_hydro_indices);
+    put_hydro_sys_slice(buf, plant_floor_hydro_indices);
 }
 
 /// Encode every fact of [`StageTemplates`] — the LP templates plus every

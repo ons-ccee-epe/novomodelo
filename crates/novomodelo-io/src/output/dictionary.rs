@@ -389,16 +389,6 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     ),
     (
         "costs",
-        "turbined_violation_plant_cost",
-        "Cost of plant-level minimum turbining violations",
-    ),
-    (
-        "costs",
-        "generation_violation_plant_cost",
-        "Cost of plant-level minimum generation violations",
-    ),
-    (
-        "costs",
         "evaporation_violation_cost",
         "Cost of evaporation constraint violations",
     ),
@@ -549,16 +539,6 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "Outflow above-maximum slack",
     ),
     ("hydros", "generation_slack_mw", "Generation minimum slack"),
-    (
-        "hydros",
-        "turbined_slack_plant_m3s",
-        "Plant-level turbining minimum slack",
-    ),
-    (
-        "hydros",
-        "generation_slack_plant_mw",
-        "Plant-level generation minimum slack",
-    ),
     (
         "hydros",
         "storage_violation_below_hm3",
