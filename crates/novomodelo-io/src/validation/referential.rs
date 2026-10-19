@@ -1533,7 +1533,7 @@ mod tests {
         let mut hydro = make_hydro(10, None);
         hydro.diversion = Some(DiversionChannel {
             downstream_id: EntityId::from(999), // does not exist
-            max_flow_m3s: 100.0,
+            max_flow_m3s: Some(100.0),
         });
         data.hydros = vec![hydro];
         let mut ctx = ValidationContext::new();
