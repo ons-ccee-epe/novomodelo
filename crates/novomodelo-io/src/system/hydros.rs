@@ -41,7 +41,7 @@
 //!
 //! 1. No two hydros share the same `id`.
 //! 2. `min_storage_hm3 >= 0`, `max_storage_hm3 >= 0`, `min_storage_hm3 <= max_storage_hm3`.
-//! 3. `min_outflow_m3s >= 0`.
+//! 3. `min_outflow_m3s >= 0`; `diversion.max_flow_m3s >= 0` when present.
 //! 4. `min_turbined_m3s >= 0`, `max_turbined_m3s >= 0`, `min_turbined_m3s <= max_turbined_m3s`.
 //! 5. `min_generation_mw <= max_generation_mw`.
 //! 6. Evaporation array, if present, must have exactly 12 elements.
@@ -329,8 +329,8 @@ pub(crate) struct RawEvaporation {
 pub(crate) struct RawDiversionChannel {
     /// Identifier of the downstream hydro plant receiving diverted water.
     downstream_id: i32,
-    /// Maximum diversion flow capacity (m³/s).
-    max_flow_m3s: f64,
+    /// Maximum diversion flow capacity (m³/s). `null` or absent = no upper bound.
+    max_flow_m3s: Option<f64>,
 }
 
 /// The `filling` sub-object.
@@ -437,6 +437,7 @@ pub(crate) struct RawHydroPenaltyOverrides {
 /// | `min_storage_hm3 < 0` or `max_storage_hm3 < 0`    | [`LoadError::SchemaError`] |
 /// | `min_storage_hm3 > max_storage_hm3`                | [`LoadError::SchemaError`] |
 /// | `min_outflow_m3s < 0`                              | [`LoadError::SchemaError`] |
+/// | `diversion.max_flow_m3s < 0`                       | [`LoadError::SchemaError`] |
 /// | `min_turbined_m3s < 0` or `max_turbined_m3s < 0`  | [`LoadError::SchemaError`] |
 /// | `max_turbined_m3s < min_turbined_m3s`              | [`LoadError::SchemaError`] |
 /// | `max_generation_mw < min_generation_mw`            | [`LoadError::SchemaError`] |
@@ -489,6 +490,7 @@ fn validate_raw_hydros(raw: &RawHydroFile, path: &Path) -> Result<(), LoadError>
     for (i, hydro) in raw.hydros.iter().enumerate() {
         validate_reservoir(&hydro.reservoir, i, path)?;
         validate_outflow(&hydro.outflow, i, path)?;
+        validate_diversion(hydro.diversion.as_ref(), i, path)?;
         validate_generation(&hydro.generation, i, path)?;
         if let Some(evap) = &hydro.evaporation {
             validate_evaporation(
@@ -609,6 +611,23 @@ fn validate_outflow(
                 "min_outflow_m3s must be >= 0, got {}",
                 outflow.min_outflow_m3s
             ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_diversion(
+    diversion: Option<&RawDiversionChannel>,
+    hydro_index: usize,
+    path: &Path,
+) -> Result<(), LoadError> {
+    if let Some(max_flow) = diversion.and_then(|d| d.max_flow_m3s)
+        && max_flow < 0.0
+    {
+        return Err(LoadError::SchemaError {
+            path: path.to_path_buf(),
+            field: format!("hydros[{hydro_index}].diversion.max_flow_m3s"),
+            message: format!("max_flow_m3s must be >= 0, got {max_flow}"),
         });
     }
     Ok(())
@@ -1048,7 +1067,7 @@ mod tests {
         assert!(matches!(
             &h0.diversion,
             Some(DiversionChannel { downstream_id, max_flow_m3s })
-            if *downstream_id == EntityId(3) && (max_flow_m3s - 200.0).abs() < f64::EPSILON
+            if *downstream_id == EntityId(3) && *max_flow_m3s == Some(200.0)
         ));
         assert!(matches!(
             &h0.filling,
@@ -1672,6 +1691,61 @@ mod tests {
         assert!(
             matches!(&err, LoadError::SchemaError { field, .. } if field.contains("min_outflow_m3s")),
             "expected SchemaError for negative min_outflow_m3s, got: {err:?}"
+        );
+    }
+
+    fn parse_with_diversion(diversion: &str) -> Result<Vec<Hydro>, LoadError> {
+        let json = format!(
+            r#"{{
+          "hydros": [{{
+            "id": 0, "name": "Diverting",
+            "operational_start_date": "2024-01-01",
+            "downstream_id": null,
+            "reservoir": {{ "min_storage_hm3": 0.0, "max_storage_hm3": 1000.0 }},
+            "outflow": {{ "min_outflow_m3s": 0.0, "max_outflow_m3s": null }},
+            "generation": {{
+              "model": "fpha",
+              "min_turbined_m3s": 0.0, "max_turbined_m3s": 500.0,
+              "min_generation_mw": 0.0, "max_generation_mw": 250.0
+            }},
+            "unit_groups": [
+              {{ "id": 0, "name": "G", "bus_id": 0,
+                "min_generation_mw": 0.0, "max_generation_mw": 250.0,
+                "min_turbined_m3s": 0.0, "max_turbined_m3s": 500.0 }}
+            ],
+            "diversion": {diversion}
+          }}]
+        }}"#
+        );
+        let f = write_json(&json);
+        parse_hydros(f.path(), &make_global())
+    }
+
+    #[test]
+    fn test_diversion_null_or_absent_max_flow_parses_as_unlimited() {
+        for diversion in [
+            r#"{ "downstream_id": 3, "max_flow_m3s": null }"#,
+            r#"{ "downstream_id": 3 }"#,
+        ] {
+            let hydros = parse_with_diversion(diversion).unwrap();
+            assert_eq!(
+                hydros[0].diversion,
+                Some(DiversionChannel {
+                    downstream_id: EntityId(3),
+                    max_flow_m3s: None,
+                }),
+                "diversion = {diversion}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_diversion_negative_max_flow_is_rejected() {
+        let err =
+            parse_with_diversion(r#"{ "downstream_id": 3, "max_flow_m3s": -1.0 }"#).unwrap_err();
+        assert!(
+            matches!(&err, LoadError::SchemaError { field, .. } if field == "hydros[0].diversion.max_flow_m3s"),
+            "got: {err:?}"
         );
     }
 

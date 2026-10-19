@@ -70,6 +70,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model's stored-energy convention differs from integrating the plant's
   geometry over its physical range. Finite and `>= 0.0`; NULL means no
   override.
+- A hydro's `diversion` channel in `system/hydros.json` may leave out
+  `max_flow_m3s` or set it to `null` to mean the channel has no capacity limit.
+  A per-stage or per-block `max_diversion_m3s` in
+  `constraints/hydro_bounds.parquet` still caps it.
 
 ### Changed
 
@@ -179,6 +183,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cargo install` included, no longer enable AVX2 and FMA. Every x86_64 build
   of a version now uses one floating-point kernel, so they select the same
   cuts. Results of those builds can differ from 0.18.0's.
+- **BREAKING:** `constraints/hydro_bounds.parquet` rejects a positive
+  `max_diversion_m3s` on a hydro with no `diversion` channel, as it already
+  rejected a positive `min_diversion_m3s` (rule 46). Before, the diverted water
+  left the system without reaching any plant.
+- **BREAKING:** a negative `diversion.max_flow_m3s` in `system/hydros.json` is
+  rejected at load.
 - **BREAKING:** `equivalent_productivity_mw_per_m3s` in
   `system/hydro_energy_productivity.parquet` sets only the reference-point
   productivity. A plant with VHA geometry and a specific productivity now

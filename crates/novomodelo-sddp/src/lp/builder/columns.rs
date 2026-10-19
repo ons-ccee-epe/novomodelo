@@ -269,8 +269,8 @@ fn fill_spillage_columns(
     }
 }
 
-/// Diversion columns per hydro per block (dense; non-diverting hydros get `[0, 0]`
-/// and are presolve-eliminated).
+/// Diversion columns per hydro per block (dense; a hydro without a channel resolves
+/// `[0, 0]` and is presolve-eliminated; an unlimited channel is open above).
 ///
 /// A dormant hydro (`hydro.filling.is_some()` OR suspended) forces BOTH bounds to
 /// `[0, 0]`: both must drop, or a positive `min_diversion_m3s` floor leaves the
@@ -304,7 +304,7 @@ fn fill_diversion_columns(
                     .hydro_bounds_at_block(h_idx, stage_idx, blk);
                 (
                     hb.min_diversion_m3s.unwrap_or(0.0),
-                    hb.max_diversion_m3s.unwrap_or(0.0),
+                    hb.max_diversion_m3s.unwrap_or(f64::INFINITY),
                 )
             };
             let col = layout
@@ -1610,7 +1610,7 @@ mod diversion_bound_tests {
             evaporation_reference_volumes_hm3: None,
             diversion: Some(DiversionChannel {
                 downstream_id: EntityId(2),
-                max_flow_m3s: DECLARATION_MAX_FLOW_M3S,
+                max_flow_m3s: Some(DECLARATION_MAX_FLOW_M3S),
             }),
             filling: None,
             penalties: zero_hydro_penalties(),
@@ -1771,7 +1771,7 @@ mod diversion_bound_tests {
         let ctx = fixtures.make_ctx();
         let layout = StageLayout::new(&ctx, &stage, STAGE_IDX);
         let mut col_lower = vec![0.0_f64; layout.num_cols];
-        let mut col_upper = vec![f64::INFINITY; layout.num_cols];
+        let mut col_upper = vec![-1.0_f64; layout.num_cols];
         let mut objective = vec![0.0_f64; layout.num_cols];
         let mut bufs = ColumnBufs {
             col_lower: &mut col_lower,
@@ -1830,6 +1830,26 @@ mod diversion_bound_tests {
                 "blk {blk}: col_upper[{col}] must equal the declaration default \
                  {DECLARATION_MAX_FLOW_M3S} when no override tightens it"
             );
+        }
+    }
+
+    /// An unlimited channel (`None`) opens the column above; a closed one
+    /// (`Some(0.0)`, the resolver's seed for a hydro without a channel) is `[0, 0]`.
+    #[test]
+    fn unset_diversion_cap_is_unbounded_and_zero_cap_is_closed() {
+        for (resolved, expected_upper) in [(None, f64::INFINITY), (Some(0.0), 0.0)] {
+            let mut fixtures = DivFixtures::new();
+            fixtures.set_resolved_diversion(resolved);
+
+            let (col_lower, col_upper, n_blks, col_diversion_start) = run_fill(&mut fixtures);
+            for blk in 0..n_blks {
+                let col = col_diversion_start + blk;
+                assert_eq!(col_lower[col], 0.0, "resolved {resolved:?} blk {blk}");
+                assert_eq!(
+                    col_upper[col], expected_upper,
+                    "resolved {resolved:?} blk {blk}"
+                );
+            }
         }
     }
 
@@ -2471,6 +2491,24 @@ mod filling_phase_gating_tests {
                 upper[col], 0.0,
                 "diversion col_upper blk {blk} at Operating with a floor set"
             );
+        }
+    }
+
+    /// A filling hydro with an unlimited channel is still `[0, 0]` at every phase.
+    #[test]
+    fn filling_hydro_with_unlimited_channel_diversion_zeroed() {
+        let mut fixtures = Fixtures::new(Some(filling_config()), Some(ENTRY_STAGE_ID), true);
+        fixtures
+            .base
+            .bounds
+            .hydro_block_base_mut(0, STAGE_IDX)
+            .max_diversion_m3s = None;
+        for stage_id in [PREFILLING_ID, FILLING_ID, OPERATING_ID] {
+            let (lower, upper, [_turb, div, _gen_col]) = run_fills(&mut fixtures, stage_id);
+            for blk in 0..2 {
+                assert_eq!(lower[div + blk], 0.0, "col_lower blk {blk} at {stage_id}");
+                assert_eq!(upper[div + blk], 0.0, "col_upper blk {blk} at {stage_id}");
+            }
         }
     }
 
@@ -6156,7 +6194,7 @@ mod hydro_block_bound_tests {
         fixtures.set_hydro_bounds(
             0,
             STAGE_IDX,
-            hydro_block_bounds(10.0, 200.0, 12.0, None, 0.0, 190.0, None),
+            hydro_block_bounds(10.0, 200.0, 12.0, None, 0.0, 190.0, Some(0.0)),
         );
         fixtures.set_hydro_penalties(
             0,
@@ -6176,7 +6214,7 @@ mod hydro_block_bound_tests {
         fixtures.set_hydro_bounds(
             2,
             STAGE_IDX,
-            hydro_block_bounds(0.0, 0.0, 0.0, Some(0.0), 0.0, 0.0, None),
+            hydro_block_bounds(0.0, 0.0, 0.0, Some(0.0), 0.0, 0.0, Some(0.0)),
         );
         fixtures.set_hydro_penalties(
             2,
