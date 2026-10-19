@@ -387,6 +387,43 @@ mod tests {
         );
     }
 
+    // ── Warm-start choice survives retry escalation ──────────────────────────
+    //
+    // Extended retry levels (5-11) start from `restore_default_settings()`,
+    // whose table carries its own `use_warm_start`. The profile's value must
+    // win at every level and after finalization, whichever way it is set.
+
+    #[test]
+    fn profile_warm_start_kept_by_extended_retry_levels_and_finalization() {
+        for use_warm_start in [true, false] {
+            let mut solver = make_solver();
+            solver.apply_profile(&HighsProfile {
+                use_warm_start,
+                ..Default::default()
+            });
+
+            for level in 5..=11 {
+                solver.apply_extended_retry_options_for_test(level);
+                let applied = solver
+                    .get_bool_option(c"use_warm_start")
+                    .expect("use_warm_start must be readable");
+                assert_eq!(
+                    applied, use_warm_start,
+                    "retry level {level} must keep the profile's use_warm_start={use_warm_start}"
+                );
+            }
+
+            solver.restore_defaults_then_reapply_profile_for_test();
+            let applied = solver
+                .get_bool_option(c"use_warm_start")
+                .expect("use_warm_start must be readable");
+            assert_eq!(
+                applied, use_warm_start,
+                "retry finalization must restore the profile's use_warm_start={use_warm_start}"
+            );
+        }
+    }
+
     // ── Full-field profile-seam readback ─────────────────────────────────────
     //
     // Power statement: catches a `HighsProfile` field that `reapply_profile`

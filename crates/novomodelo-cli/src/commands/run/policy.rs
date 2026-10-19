@@ -54,7 +54,7 @@ pub(super) fn apply_training_policy(
             let policy_dir = locate_policy_dir(FullFcfLoadKind::WarmStart, &ctx.output_dir, setup)?;
             if ctx.is_root && !ctx.quiet {
                 let _ = ctx
-                    .stderr
+                    .stdout
                     .write_line("Loading prior policy for warm-start training...");
             }
             let checked =
@@ -63,7 +63,7 @@ pub(super) fn apply_training_policy(
             if ctx.is_root && !ctx.quiet {
                 // pools[0] as representative; this is not a per-pool count.
                 let warm_count = setup.fcf.pools[0].prefix_len();
-                let _ = ctx.stderr.write_line(&format!(
+                let _ = ctx.stdout.write_line(&format!(
                     "Warm-start: loaded {warm_count} cuts per stage from prior policy."
                 ));
             }
@@ -72,7 +72,7 @@ pub(super) fn apply_training_policy(
             let policy_dir = locate_policy_dir(FullFcfLoadKind::Resume, &ctx.output_dir, setup)?;
             if ctx.is_root && !ctx.quiet {
                 let _ = ctx
-                    .stderr
+                    .stdout
                     .write_line("Loading prior checkpoint for resume training...");
             }
             let checked =
@@ -88,7 +88,7 @@ pub(super) fn apply_training_policy(
             checked.apply_to_training(setup);
             if ctx.is_root && !ctx.quiet {
                 let warm_count = setup.fcf.pools[0].prefix_len();
-                let _ = ctx.stderr.write_line(&format!(
+                let _ = ctx.stdout.write_line(&format!(
                     "Resume: loaded {warm_count} cuts per stage, \
                      resuming from iteration {completed}."
                 ));
@@ -117,7 +117,7 @@ pub(super) fn apply_training_policy(
                 .map_err(CliError::from)?;
             if !ctx.quiet {
                 print_boundary_summary(
-                    &ctx.stderr,
+                    &ctx.stdout,
                     reconciled.cuts.len(),
                     reconciled.boundary_date,
                     &reconciled.checkpoint_path,
@@ -150,7 +150,7 @@ pub(super) fn load_policy_for_simulation(
 ) -> Result<TrainingResult, CliError> {
     if ctx.is_root && !ctx.quiet {
         let _ = ctx
-            .stderr
+            .stdout
             .write_line("Training disabled. Loading policy for simulation-only mode...");
     }
 

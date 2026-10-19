@@ -237,6 +237,14 @@ int32_t novomodelo_highs_get_double_option(
     return (int32_t)Highs_getDoubleOptionValue(highs, option, value);
 }
 
+int32_t novomodelo_highs_get_bool_option(
+    const void* highs,
+    const char* option,
+    int32_t*    value
+) {
+    return (int32_t)Highs_getBoolOptionValue(highs, option, (HighsInt*)value);
+}
+
 /* =========================================================================
  * Diagnostics
  * ========================================================================= */

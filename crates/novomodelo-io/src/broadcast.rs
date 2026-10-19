@@ -69,6 +69,12 @@ pub enum BroadcastComputedParameter {
     IntegratedAccumulatedProductivity(EntityId),
     /// Maximum stored energy over the physical per-stage storage range.
     MaxStoredEnergy(EntityId),
+    /// Storage-range mean accumulated productivity in `MWh/hm³`.
+    IntegratedAccumulatedProductivityMwhPerHm3(EntityId),
+    /// Maximum stored energy in `MWh`.
+    MaxStoredEnergyMwh(EntityId),
+    /// Storage-range mean equivalent productivity in `MWh/hm³`.
+    IntegratedEquivalentProductivityMwhPerHm3(EntityId),
 }
 
 impl From<&ScalarParameter> for BroadcastScalarParameter {
@@ -142,6 +148,15 @@ impl From<ComputedParameter> for BroadcastComputedParameter {
                 Self::IntegratedAccumulatedProductivity(hydro_id)
             }
             ComputedParameter::MaxStoredEnergy { hydro_id } => Self::MaxStoredEnergy(hydro_id),
+            ComputedParameter::IntegratedAccumulatedProductivityMwhPerHm3 { hydro_id } => {
+                Self::IntegratedAccumulatedProductivityMwhPerHm3(hydro_id)
+            }
+            ComputedParameter::MaxStoredEnergyMwh { hydro_id } => {
+                Self::MaxStoredEnergyMwh(hydro_id)
+            }
+            ComputedParameter::IntegratedEquivalentProductivityMwhPerHm3 { hydro_id } => {
+                Self::IntegratedEquivalentProductivityMwhPerHm3(hydro_id)
+            }
         }
     }
 }
@@ -174,6 +189,15 @@ impl From<BroadcastComputedParameter> for ComputedParameter {
             }
             BroadcastComputedParameter::MaxStoredEnergy(hydro_id) => {
                 Self::MaxStoredEnergy { hydro_id }
+            }
+            BroadcastComputedParameter::IntegratedAccumulatedProductivityMwhPerHm3(hydro_id) => {
+                Self::IntegratedAccumulatedProductivityMwhPerHm3 { hydro_id }
+            }
+            BroadcastComputedParameter::MaxStoredEnergyMwh(hydro_id) => {
+                Self::MaxStoredEnergyMwh { hydro_id }
+            }
+            BroadcastComputedParameter::IntegratedEquivalentProductivityMwhPerHm3(hydro_id) => {
+                Self::IntegratedEquivalentProductivityMwhPerHm3 { hydro_id }
             }
         }
     }
@@ -318,14 +342,13 @@ mod tests {
     /// A generic constraint's affine bound remainder (`bound_upper_affine`) rides the
     /// constraint's derived serde through the `System` postcard wire — there is no
     /// hand-written mirror for `GenericConstraint`, so the restored System must equal
-    /// the original. Uses a genuine multi-component remainder (a nonzero constant plus
-    /// a scaled term), not just the `single` special case, to prove the whole shape
-    /// round-trips.
+    /// the original. Uses a genuine multi-component remainder (a nonzero constant, a
+    /// scaled term and a parameter product), not just the `single` special case, to
+    /// prove the whole shape round-trips.
     #[test]
     fn test_round_trip_generic_constraint_bound_ref() {
         use novomodelo_core::{
-            AffineBound, ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig,
-            VariableRef,
+            AffineBound, ConstraintExpression, GenericConstraint, LinearTerm, VariableRef,
         };
 
         let gc = GenericConstraint {
@@ -342,14 +365,12 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: Some(AffineBound {
                 constant: 12.0,
                 terms: vec![(0.5, EntityId(7))],
+                products: vec![(0.25, EntityId(7), EntityId(8))],
             }),
         };
 
@@ -369,6 +390,7 @@ mod tests {
             Some(AffineBound {
                 constant: 12.0,
                 terms: vec![(0.5, EntityId(7))],
+                products: vec![(0.25, EntityId(7), EntityId(8))],
             }),
             "affine bound remainder must survive broadcast round-trip"
         );
@@ -532,6 +554,18 @@ mod tests {
                 BroadcastComputedParameter::MaxStoredEnergy(EntityId(0)),
                 0x09,
             ),
+            (
+                BroadcastComputedParameter::IntegratedAccumulatedProductivityMwhPerHm3(EntityId(0)),
+                0x0A,
+            ),
+            (
+                BroadcastComputedParameter::MaxStoredEnergyMwh(EntityId(0)),
+                0x0B,
+            ),
+            (
+                BroadcastComputedParameter::IntegratedEquivalentProductivityMwhPerHm3(EntityId(0)),
+                0x0C,
+            ),
         ];
         for (variant, discriminant) in cases {
             let bytes = postcard::to_allocvec(variant).unwrap();
@@ -560,6 +594,19 @@ mod tests {
         let bytes = postcard::to_allocvec(&variant).unwrap();
         let restored: BroadcastComputedParameter = postcard::from_bytes(&bytes).unwrap();
         assert_eq!(restored, variant);
+    }
+
+    #[test]
+    fn broadcast_computed_parameter_mwh_tags_round_trip() {
+        for variant in [
+            BroadcastComputedParameter::IntegratedAccumulatedProductivityMwhPerHm3(EntityId(23)),
+            BroadcastComputedParameter::MaxStoredEnergyMwh(EntityId(42)),
+            BroadcastComputedParameter::IntegratedEquivalentProductivityMwhPerHm3(EntityId(19)),
+        ] {
+            let bytes = postcard::to_allocvec(&variant).unwrap();
+            let restored: BroadcastComputedParameter = postcard::from_bytes(&bytes).unwrap();
+            assert_eq!(restored, variant);
+        }
     }
 
     #[test]

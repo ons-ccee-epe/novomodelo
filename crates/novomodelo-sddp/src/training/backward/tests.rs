@@ -4281,7 +4281,7 @@ fn run_one_trial_state_with_stores(
     let child0 = outcomes.child(0);
 
     // Derive a single-worker BasisStoreSliceMut covering all scenarios.
-    let mut basis_slices = basis_store.split_workers_mut(1, basis_store.num_scenarios());
+    let mut basis_slices = basis_store.split_workers_mut(basis_store.num_scenarios(), 1);
     let mut basis_slice = basis_slices.remove(0);
 
     let ws = &mut workspaces[0];
@@ -4531,7 +4531,7 @@ fn per_child_backward_isolates_column_basis_and_pool_metadata() {
 
     // Basis node axis covers the child node positions (1, 2), not just n_stages.
     let mut basis_store = BasisStore::new(exchange.local_count(), 3);
-    let mut basis_slices = basis_store.split_workers_mut(1, basis_store.num_scenarios());
+    let mut basis_slices = basis_store.split_workers_mut(basis_store.num_scenarios(), 1);
 
     let mut workspaces = single_workspace(PerChildProbeSolver::new(1.0), n_state);
     let ws = &mut workspaces[0];
@@ -4625,7 +4625,7 @@ fn resolve_backward_basis_returns_some_when_slot_is_populated() {
     let mut store = BasisStore::new(1, 2);
     *store.get_mut(0, NodePos(1)) = Some(b);
 
-    let slices = store.split_workers_mut(1, store.num_scenarios());
+    let slices = store.split_workers_mut(store.num_scenarios(), 1);
     let slice = &slices[0];
     let basis_ref = super::resolve_backward_basis(slice, 0, NodePos(1));
 
@@ -4635,7 +4635,7 @@ fn resolve_backward_basis_returns_some_when_slot_is_populated() {
 #[test]
 fn resolve_backward_basis_returns_none_when_slot_is_empty() {
     let mut store = BasisStore::new(1, 2);
-    let slices = store.split_workers_mut(1, store.num_scenarios());
+    let slices = store.split_workers_mut(store.num_scenarios(), 1);
     let slice = &slices[0];
     let basis_ref = super::resolve_backward_basis(slice, 0, NodePos(1));
 
@@ -5255,7 +5255,7 @@ fn run_dcs_backward_trial_state_at(
     let outcomes = single.outcomes(&fcf.pools, template_num_rows, 0.0);
     let child0 = outcomes.child(0);
 
-    let mut basis_slices = basis_store.split_workers_mut(1, basis_store.num_scenarios());
+    let mut basis_slices = basis_store.split_workers_mut(basis_store.num_scenarios(), 1);
     let ws = &mut workspaces[0];
     // Choose the opening-solve strategy exactly as the driver does, then issue
     // the per-child prepare/load (mirrors process_by_scenario_backward's per-child
@@ -5757,7 +5757,7 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
     let outcomes = single.outcomes(&fcf.pools, template_num_rows, 0.0);
     let child0 = outcomes.child(0);
 
-    let mut basis_slices = basis_store.split_workers_mut(1, basis_store.num_scenarios());
+    let mut basis_slices = basis_store.split_workers_mut(basis_store.num_scenarios(), 1);
     let ws = &mut workspaces[0];
     // Choose the opening-solve strategy as the driver does, then issue the
     // per-child prepare/load (mirrors process_by_scenario_backward's per-child

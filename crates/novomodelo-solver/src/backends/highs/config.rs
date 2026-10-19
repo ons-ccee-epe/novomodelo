@@ -46,8 +46,8 @@ pub struct HighsProfile {
     pub refactor_error_tolerance: f64,
     /// `HiGHS` `factor_pivot_threshold`: matrix factorization pivot threshold.
     pub factor_pivot_threshold: f64,
-    /// `HiGHS` `use_warm_start`. Diagnostic-only: setting `false` forces every
-    /// solve cold and is never the intended production configuration.
+    /// `HiGHS` `use_warm_start`. Defaults to `true`; `false` makes every
+    /// solve start cold, ignoring any basis handed to the solver.
     pub use_warm_start: bool,
     /// `HiGHS` `dual_steepest_edge_weight_log_error_threshold`: the dual
     /// steepest-edge weight log-error threshold above which `HiGHS` falls back

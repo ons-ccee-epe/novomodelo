@@ -508,6 +508,47 @@ fn test_solve_warm_start_reproduces_cold_objective() {
     );
 }
 
+/// A cold profile ignores an offered basis, even an undersized one: the solve
+/// still reaches the optimum and nothing is counted as offered or rejected.
+#[test]
+fn test_solve_cold_profile_ignores_offered_basis() {
+    use crate::HighsProfile;
+
+    let mut solver = HighsSolver::new().expect("HighsSolver::new() must succeed");
+    solver.apply_profile(&HighsProfile {
+        use_warm_start: false,
+        ..HighsProfile::default()
+    });
+    let template = make_fixture_stage_template();
+    solver.load_model(&template);
+    solver.solve(None).expect("cold-start solve must succeed");
+    let mut basis = Basis::new(0, 0);
+    solver.get_basis(&mut basis);
+
+    solver.load_model(&template);
+    let objective = solver
+        .solve(Some(&basis))
+        .expect("solve with an ignored basis must succeed")
+        .objective;
+    assert!(
+        (objective - 100.0).abs() < 1e-8,
+        "objective must be 100.0, got {objective}"
+    );
+
+    solver.load_model(&template);
+    solver.add_rows(&make_fixture_row_batch());
+    solver
+        .solve(Some(&basis))
+        .expect("an undersized basis must be ignored, not rejected");
+
+    let stats = solver.statistics();
+    assert_eq!(stats.basis_offered, 0, "no basis may count as offered");
+    assert_eq!(
+        stats.basis_consistency_failures, 0,
+        "no basis may count as rejected"
+    );
+}
+
 /// Undersized basis (2 rows vs 4 after `add_rows`) is rejected with `BasisRowCountMismatch`.
 /// Increments `basis_consistency_failures`; `basis_offered` unchanged (rejected before offer).
 #[test]

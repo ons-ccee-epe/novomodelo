@@ -3806,9 +3806,7 @@ mod tests {
     /// the constraint and the thermal ID.
     #[test]
     fn test_anticipated_decision_on_non_anticipated_thermal_error() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let thermal = make_thermal(7, 0.0, 500.0); // NOT anticipated
         let constraint = GenericConstraint {
@@ -3823,10 +3821,7 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         };
@@ -3884,7 +3879,7 @@ mod tests {
     #[test]
     fn test_anticipated_decision_on_anticipated_thermal_ok() {
         use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
+            ConstraintExpression, GenericConstraint, LinearTerm, VariableRef,
             entities::AnticipatedConfig,
         };
 
@@ -3904,10 +3899,7 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         };
@@ -3940,7 +3932,7 @@ mod tests {
     #[test]
     fn test_thermal_generation_on_anticipated_thermal_warns() {
         use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
+            ConstraintExpression, GenericConstraint, LinearTerm, VariableRef,
             entities::AnticipatedConfig,
         };
 
@@ -3961,10 +3953,7 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         };
@@ -4026,9 +4015,7 @@ mod tests {
     /// thermal `N` is NOT anticipated produces no `SemanticAmbiguity` warning.
     #[test]
     fn test_thermal_generation_on_non_anticipated_thermal_no_warn() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let thermal = make_thermal(9, 0.0, 200.0); // NOT anticipated
         let constraint = GenericConstraint {
@@ -4044,10 +4031,7 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         };

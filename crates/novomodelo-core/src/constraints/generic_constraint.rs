@@ -35,7 +35,7 @@
 //! ```
 //! use novomodelo_core::{
 //!     EntityId, GenericConstraint, ConstraintExpression,
-//!     LinearTerm, SlackConfig, VariableRef,
+//!     LinearTerm, PenaltyBasis, SlackConfig, VariableRef,
 //! };
 //!
 //! let expr = ConstraintExpression {
@@ -60,7 +60,7 @@
 //!     name: "min_southeast_hydro".to_string(),
 //!     description: Some("Minimum hydro generation in Southeast region".to_string()),
 //!     expression: expr,
-//!     slack: SlackConfig { enabled: true, penalty: Some(5_000.0) },
+//!     slack: Some(SlackConfig { penalty: 5_000.0, penalty_basis: PenaltyBasis::PerHour }),
 //!     bound_lower_affine: None,
 //!     bound_upper_affine: None,
 //! };
@@ -506,10 +506,11 @@ fn canonical_term_key(term: &LinearTerm) -> ((u8, i32, i64, i64), u8, u64, u64) 
     )
 }
 
-/// A generic constraint's symbolic bound endpoint: `constant + Σ coefᵢ·@paramᵢ`.
+/// A generic constraint's symbolic bound endpoint: `constant + Σ coefᵢ·@paramᵢ + Σ scaleⱼ·@leftⱼ·@rightⱼ`.
 ///
 /// Each `(coef, param_id)` term resolves through `param_id`'s `(stage, block)`
-/// axis and is summed with `constant`. [`AffineBound::single`] is the
+/// axis and is summed with `constant`. Each `(scale, left, right)` product
+/// resolves both parameters and multiplies them. [`AffineBound::single`] is the
 /// single-`@name`-ref special case: `constant = 0.0` and one term at
 /// coefficient `1.0`, which resolves to exactly the named parameter's value
 /// (`0.0 + 1.0 * x == x` in `f64`).
@@ -520,6 +521,10 @@ pub struct AffineBound {
     pub constant: f64,
     /// Ordered `(coefficient, parameter_id)` terms summed onto `constant`.
     pub terms: Vec<(f64, EntityId)>,
+    /// Ordered `(scale, left_param_id, right_param_id)` product terms.
+    /// Each product resolves to `scale * resolve(left) * resolve(right)`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub products: Vec<(f64, EntityId, EntityId)>,
 }
 
 impl AffineBound {
@@ -529,27 +534,64 @@ impl AffineBound {
         Self {
             constant: 0.0,
             terms: vec![(1.0, id)],
+            products: vec![],
         }
     }
 
-    /// Iterate over the parameter ids referenced by this bound's terms.
+    /// Every parameter id the bound reads: each term's id, then both operands of
+    /// each product.
     pub fn params(&self) -> impl Iterator<Item = EntityId> + '_ {
-        self.terms.iter().map(|&(_, id)| id)
+        let term_ids = self.terms.iter().map(|&(_, id)| id);
+        let product_ids = self
+            .products
+            .iter()
+            .flat_map(|&(_, left, right)| [left, right]);
+        term_ids.chain(product_ids)
+    }
+
+    /// `true` when the bound reads no parameter, so it resolves to `constant`
+    /// on every `(stage, block)`.
+    #[must_use]
+    pub fn is_constant(&self) -> bool {
+        self.terms.is_empty() && self.products.is_empty()
     }
 }
 
-/// Slack variable configuration for a generic constraint.
+/// What one unit of a generic-constraint violation is charged.
 ///
-/// An enabled slack lets the constraint be violated at a cost (entering the LP
-/// objective), preventing infeasibility under tight or conflicting bounds.
-/// `penalty` must be `Some(positive)` when `enabled`, `None` otherwise.
-#[derive(Debug, Clone, PartialEq)]
+/// The row's quantity decides the basis: a rate (MW, m³/s) is integrated over the
+/// hours its row spans, an amount (`MWh`, hm³) is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum PenaltyBasis {
+    /// `penalty × hours` per unit of violation, for rate rows.
+    PerHour,
+    /// `penalty` per unit of violation, for amount rows.
+    PerUnit,
+}
+
+/// Slack configuration for a soft generic constraint: the violation enters the LP
+/// objective at a cost instead of making the stage infeasible.
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SlackConfig {
-    /// Whether a slack variable is added to allow soft violation of the constraint.
-    pub enabled: bool,
-    /// Penalty cost per unit of constraint violation.
-    pub penalty: Option<f64>,
+    /// Penalty per unit of violation (`> 0`), charged per [`PenaltyBasis`].
+    pub penalty: f64,
+    /// Whether `penalty` is also charged per hour of the row.
+    pub penalty_basis: PenaltyBasis,
+}
+
+impl SlackConfig {
+    /// Cost of one unit of violation on a row spanning `hours`.
+    #[must_use]
+    pub fn unit_cost(&self, hours: f64) -> f64 {
+        match self.penalty_basis {
+            PenaltyBasis::PerHour => self.penalty * hours,
+            PenaltyBasis::PerUnit => self.penalty,
+        }
+    }
 }
 
 /// A user-defined generic linear constraint.
@@ -567,8 +609,8 @@ pub struct GenericConstraint {
     pub description: Option<String>,
     /// Parsed left-hand-side expression of the constraint.
     pub expression: ConstraintExpression,
-    /// Slack variable configuration.
-    pub slack: SlackConfig,
+    /// Slack of a soft constraint; `None` for a hard one.
+    pub slack: Option<SlackConfig>,
     /// Lower RHS bound as an affine remainder, composed with any numeric
     /// parquet base on the same endpoint: the LP builder's `fold_endpoint`
     /// resolves the endpoint to `base + bound` when both are present, or
@@ -929,10 +971,10 @@ mod tests {
             name: "min_southeast_hydro".to_string(),
             description: Some("Minimum hydro generation in Southeast region".to_string()),
             expression: expr,
-            slack: SlackConfig {
-                enabled: true,
-                penalty: Some(5_000.0),
-            },
+            slack: Some(SlackConfig {
+                penalty: 5_000.0,
+                penalty_basis: PenaltyBasis::PerHour,
+            }),
             bound_lower_affine: None,
             bound_upper_affine: None,
         };
@@ -941,8 +983,7 @@ mod tests {
         assert_eq!(gc.id, EntityId(0));
         assert_eq!(gc.name, "min_southeast_hydro");
         assert!(gc.description.is_some());
-        assert!(gc.slack.enabled);
-        assert_eq!(gc.slack.penalty, Some(5_000.0));
+        assert_eq!(gc.slack.map(|s| s.penalty), Some(5_000.0));
     }
 
     #[test]
@@ -1100,13 +1141,23 @@ mod tests {
     }
 
     #[test]
-    fn test_slack_config_disabled_has_no_penalty() {
+    fn test_slack_unit_cost_per_hour_scales_with_row_hours() {
         let slack = SlackConfig {
-            enabled: false,
-            penalty: None,
+            penalty: 5_000.0,
+            penalty_basis: PenaltyBasis::PerHour,
         };
-        assert!(!slack.enabled);
-        assert!(slack.penalty.is_none());
+        assert_eq!(slack.unit_cost(168.0), 840_000.0);
+        assert_eq!(slack.unit_cost(744.0), 3_720_000.0);
+    }
+
+    #[test]
+    fn test_slack_unit_cost_per_unit_ignores_row_hours() {
+        let slack = SlackConfig {
+            penalty: 5_000.0,
+            penalty_basis: PenaltyBasis::PerUnit,
+        };
+        assert_eq!(slack.unit_cost(168.0), 5_000.0);
+        assert_eq!(slack.unit_cost(744.0), 5_000.0);
     }
 
     fn lit(term: &LinearTerm) -> f64 {
@@ -1301,10 +1352,10 @@ mod tests {
                     ),
                 ],
             },
-            slack: SlackConfig {
-                enabled: true,
-                penalty: Some(5_000.0),
-            },
+            slack: Some(SlackConfig {
+                penalty: 5_000.0,
+                penalty_basis: PenaltyBasis::PerUnit,
+            }),
             bound_lower_affine: None,
             bound_upper_affine: Some(AffineBound::single(EntityId(42))),
         };
@@ -1331,11 +1382,41 @@ mod tests {
         let bound = AffineBound {
             constant: 12.0,
             terms: vec![(0.5, EntityId(7)), (-2.0, EntityId(9))],
+            products: vec![],
         };
         assert_eq!(
             bound.params().collect::<Vec<_>>(),
             vec![EntityId(7), EntityId(9)]
         );
+    }
+
+    #[test]
+    fn affine_bound_params_include_both_product_operands() {
+        let bound = AffineBound {
+            constant: 0.0,
+            terms: vec![(1.0, EntityId(3))],
+            products: vec![(2.0, EntityId(5), EntityId(6))],
+        };
+        assert_eq!(
+            bound.params().collect::<Vec<_>>(),
+            vec![EntityId(3), EntityId(5), EntityId(6)]
+        );
+    }
+
+    #[test]
+    fn affine_bound_with_only_products_is_not_constant() {
+        let constant = AffineBound {
+            constant: 4.0,
+            terms: vec![],
+            products: vec![],
+        };
+        let product_only = AffineBound {
+            products: vec![(1.0, EntityId(5), EntityId(6))],
+            ..constant.clone()
+        };
+        assert!(constant.is_constant());
+        assert!(!product_only.is_constant());
+        assert!(!AffineBound::single(EntityId(1)).is_constant());
     }
 
     /// The byte-neutral load-bearing identity for `AffineBound::single`: any

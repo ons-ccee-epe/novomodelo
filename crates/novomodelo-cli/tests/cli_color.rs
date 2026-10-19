@@ -78,9 +78,8 @@ fn color_always_flag_forces_ansi_in_banner() {
         ])
         .assert()
         .success()
-        // Auto-detection would disable color on a piped stderr subprocess; the
-        // 256-color orange busbar escape is present only when color is forced on.
-        .stderr(predicate::str::contains("\x1b[38;5;172m"));
+        // `--color always` forces the escape on a piped (non-TTY) stdout.
+        .stdout(predicate::str::contains("\x1b[38;5;172m"));
 }
 
 /// `--quiet` suppresses the `indicatif` progress bar, whose cursor-movement
@@ -104,7 +103,7 @@ fn color_never_flag_suppresses_ansi_in_banner() {
         ])
         .assert()
         .success()
-        .stderr(predicate::str::contains("\x1b[").not());
+        .stdout(predicate::str::contains("\x1b[").not());
 }
 
 #[test]
@@ -124,5 +123,5 @@ fn color_always_global_flag_before_subcommand_is_accepted() {
         ])
         .assert()
         .success()
-        .stderr(predicate::str::contains("\x1b[38;5;172m"));
+        .stdout(predicate::str::contains("\x1b[38;5;172m"));
 }

@@ -15,6 +15,26 @@ pub fn novomodelo() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("novomodelo"))
 }
 
+/// Resolves the MPI launcher: MPICH's `/opt/mpich/bin/mpiexec`, else an
+/// `mpiexec` on `PATH`.
+#[cfg(feature = "mpi")]
+pub fn mpiexec() -> PathBuf {
+    let mpich = PathBuf::from("/opt/mpich/bin/mpiexec");
+    if mpich.is_file() {
+        return mpich;
+    }
+    let on_path = Command::new("mpiexec")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    assert!(
+        on_path.is_ok_and(|status| status.success()),
+        "the MPI tests need /opt/mpich/bin/mpiexec or an mpiexec on PATH"
+    );
+    PathBuf::from("mpiexec")
+}
+
 /// Resolves `examples/<name>` relative to the repository root.
 pub fn case_dir(name: &str) -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

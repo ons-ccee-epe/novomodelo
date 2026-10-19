@@ -92,6 +92,7 @@ use novomodelo_io::write_training_results;
 use novomodelo_sddp::HydroFitTimings;
 use novomodelo_sddp::SddpError;
 use novomodelo_sddp::SimulationWeighting;
+use novomodelo_sddp::StatsFoldMode;
 use novomodelo_sddp::TrainingResult;
 use novomodelo_sddp::aggregate_simulation;
 use novomodelo_sddp::aggregate_solver_stats_log;
@@ -311,7 +312,7 @@ fn build_training_phase_result(
         .map(|r| u64::from(r.lp_solves))
         .sum();
     let (first_try, retried, failed, forward_solve_seconds, backward_solve_seconds) =
-        aggregate_solver_stats_log(&training_result.solver_stats_log, None);
+        aggregate_solver_stats_log(&training_result.solver_stats_log, StatsFoldMode::AllEntries);
     training_output.training_solve_stats = MetadataTrainingSolveStats {
         total_lp_solves: Some(total_lp_solves),
         first_try: Some(first_try),
@@ -1532,7 +1533,7 @@ mod tests {
     use novomodelo_sddp::config::ShutdownSource;
     use novomodelo_sddp::setup::prepare_stochastic;
     use novomodelo_sddp::{
-        SddpError, SolverStatsDelta, SolverStatsLogEntry, aggregate_solver_stats_log,
+        SddpError, SolverStatsDelta, SolverStatsLogEntry, StatsFoldMode, aggregate_solver_stats_log,
     };
 
     use novomodelo_core::TrainingEvent;
@@ -1886,7 +1887,7 @@ mod tests {
         // sourced at the call site from the per-iteration convergence records
         // to mirror the CLI (see `aggregate_solver_stats_log`'s doc).
         let (first_try, retried, failed, forward_seconds, backward_seconds) =
-            aggregate_solver_stats_log(&stats_log, None);
+            aggregate_solver_stats_log(&stats_log, StatsFoldMode::AllEntries);
 
         // first_try = 7 + 2; retried = (9-7) + (4-2) = 4; failed = 1 + 0.
         assert_eq!(first_try, 9);

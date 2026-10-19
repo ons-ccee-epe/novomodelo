@@ -17,7 +17,9 @@ use novomodelo_core::{
 };
 use thiserror::Error;
 
-use crate::energy_conversion::{EnergyConversionSet, HydroEnergyProductivityOverride};
+use crate::energy_conversion::{
+    ENERGY_FACTOR_MWH_PER_HM3_PER_MW_PER_M3S, EnergyConversionSet, HydroEnergyProductivityOverride,
+};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -476,7 +478,10 @@ fn resolve_computed(
         | ComputedParameter::SpecificProductivity { hydro_id }
         | ComputedParameter::IntegratedEquivalentProductivity { hydro_id }
         | ComputedParameter::IntegratedAccumulatedProductivity { hydro_id }
-        | ComputedParameter::MaxStoredEnergy { hydro_id } => hydro_id,
+        | ComputedParameter::MaxStoredEnergy { hydro_id }
+        | ComputedParameter::IntegratedAccumulatedProductivityMwhPerHm3 { hydro_id }
+        | ComputedParameter::MaxStoredEnergyMwh { hydro_id }
+        | ComputedParameter::IntegratedEquivalentProductivityMwhPerHm3 { hydro_id } => hydro_id,
     };
 
     let hydro_idx = hydro_index.get(&hydro_id).copied().ok_or_else(|| {
@@ -500,7 +505,6 @@ fn resolve_computed(
         _ => {}
     }
 
-    // Stage-varying resolution for the remaining five variants.
     let mut values = Vec::with_capacity(stage_ids.len());
     for (t, &stage_id) in stage_ids.iter().enumerate() {
         let value = match cp {
@@ -560,6 +564,19 @@ fn resolve_computed(
             ComputedParameter::MaxStoredEnergy { .. } => {
                 energy_conversion.integrated_accumulated_productivity(hydro_idx, t)
                     * (hydro.max_storage_hm3 - hydro.min_storage_hm3)
+            }
+            ComputedParameter::IntegratedAccumulatedProductivityMwhPerHm3 { .. } => {
+                energy_conversion.integrated_accumulated_productivity(hydro_idx, t)
+                    * ENERGY_FACTOR_MWH_PER_HM3_PER_MW_PER_M3S
+            }
+            ComputedParameter::MaxStoredEnergyMwh { .. } => {
+                energy_conversion.integrated_accumulated_productivity(hydro_idx, t)
+                    * (hydro.max_storage_hm3 - hydro.min_storage_hm3)
+                    * ENERGY_FACTOR_MWH_PER_HM3_PER_MW_PER_M3S
+            }
+            ComputedParameter::IntegratedEquivalentProductivityMwhPerHm3 { .. } => {
+                energy_conversion.integrated_equivalent_productivity(hydro_idx, t)
+                    * ENERGY_FACTOR_MWH_PER_HM3_PER_MW_PER_M3S
             }
         };
         values.push(value);
@@ -1429,6 +1446,89 @@ mod tests {
             assert!(
                 (table.get(EntityId(1), t, 0) - 5000.0).abs() < 1e-12,
                 "max_storage mismatch at stage {t}"
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // MWh tags: the raw tag times 10^6/3600
+    // -------------------------------------------------------------------------
+
+    /// derived: `hm3 * MW/(m3/s)` to `MWh` is `10^6 m3/hm3 / 3600 s/h`.
+    const MWH_PER_HM3_PER_MW_PER_M3S: f64 = 1.0e6 / 3600.0;
+
+    #[test]
+    fn mwh_tags_are_the_raw_tags_times_the_energy_factor() {
+        let n_stages = 4;
+        let (hydros, base_ec, override_table, stage_to_season, stage_ids) =
+            make_setup_inputs(n_stages);
+        let integrated_equivalent: Vec<Vec<f64>> = (0..2_u32)
+            .map(|h| {
+                (0..n_stages)
+                    .map(|t| 50.0 + f64::from(h) + 0.1 * t as f64)
+                    .collect()
+            })
+            .collect();
+        let integrated_accumulated: Vec<Vec<f64>> = (0..2_u32)
+            .map(|h| {
+                (0..n_stages)
+                    .map(|t| 100.0 + 10.0 * f64::from(h) + t as f64)
+                    .collect()
+            })
+            .collect();
+        let energy_conversion = base_ec.with_integrated(
+            integrated_equivalent.clone(),
+            integrated_accumulated.clone(),
+        );
+
+        let hydro_id = EntityId(1);
+        let computed =
+            |id, computed_spec| make_param(id, ParameterKind::Computed { computed_spec });
+        let params = vec![
+            computed(
+                0,
+                ComputedParameter::IntegratedAccumulatedProductivityMwhPerHm3 { hydro_id },
+            ),
+            computed(
+                1,
+                ComputedParameter::IntegratedEquivalentProductivityMwhPerHm3 { hydro_id },
+            ),
+            computed(2, ComputedParameter::MaxStoredEnergyMwh { hydro_id }),
+        ];
+
+        let table = build_resolved_parameters(
+            &params,
+            &energy_conversion,
+            &override_table,
+            &hydros,
+            &stage_to_season,
+            &stage_ids,
+            &one_block_per_stage(n_stages),
+            1_000_000.0,
+        )
+        .unwrap();
+
+        let physical_range = hydros[1].max_storage_hm3 - hydros[1].min_storage_hm3;
+        let grids = integrated_accumulated[1]
+            .iter()
+            .zip(&integrated_equivalent[1]);
+        for (t, (&rho_acum, &rho_eq)) in grids.enumerate() {
+            let expected = [
+                rho_acum * MWH_PER_HM3_PER_MW_PER_M3S,
+                rho_eq * MWH_PER_HM3_PER_MW_PER_M3S,
+                rho_acum * physical_range * MWH_PER_HM3_PER_MW_PER_M3S,
+            ];
+            for (id, value) in (0..).zip(expected) {
+                assert_eq!(
+                    table.get(EntityId(id), t, 0).to_bits(),
+                    value.to_bits(),
+                    "param {id}, stage {t}"
+                );
+            }
+            assert_ne!(
+                table.get(EntityId(0), t, 0).to_bits(),
+                table.get(EntityId(1), t, 0).to_bits(),
+                "cascade and own scope must differ on this fixture"
             );
         }
     }

@@ -484,7 +484,7 @@
         },
         "use_warm_start": {
           "default": null,
-          "description": "Warm-start override. This is a diagnostic setting: disabling it forces\nevery solve cold.",
+          "description": "Warm-start override. By default backward solves warm-start from the\nstored basis and forward and simulation solves are cold.",
           "type": [
             "boolean",
             "null"

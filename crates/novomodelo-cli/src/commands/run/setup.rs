@@ -83,7 +83,7 @@ fn load_case_and_config(
     args: &RunArgs,
     output_dir: &Path,
     quiet: bool,
-    stderr: &Term,
+    out: &Term,
 ) -> Result<LoadedCase, CliError> {
     if !args.case_dir.exists() {
         return Err(CliError::Io {
@@ -95,7 +95,7 @@ fn load_case_and_config(
         });
     }
     if !quiet {
-        let _ = stderr.write_line(&format!("Loading case: {}", args.case_dir.display()));
+        let _ = out.write_line(&format!("Loading case: {}", args.case_dir.display()));
     }
     let mut timings = SetupTimings::default();
 
@@ -114,7 +114,7 @@ fn load_case_and_config(
     // every rank.
     let boundary_requirements = resolve_boundary_state_requirements(&args.case_dir, &config)?;
     if !quiet && let Some(d) = boundary_requirements.inflow_lag_depth() {
-        let _ = stderr.write_line(&format!("Boundary policy: inflow-lag depth {d}"));
+        let _ = out.write_line(&format!("Boundary policy: inflow-lag depth {d}"));
     }
 
     let mut bcast = BroadcastConfig::from_config(&config)?;
@@ -177,13 +177,15 @@ pub(super) fn setup_communicator(
     let is_root = comm.rank() == 0;
     let quiet = args.quiet || !is_root;
 
-    // mpiexec pipes rank 0's stderr without a PTY, so force colors on; console
-    // would otherwise disable them on the non-TTY pipe.
+    // mpiexec pipes rank 0's stdout and stderr without a PTY, so force colors
+    // on; console would otherwise disable them on the non-TTY pipes.
     let mpi_active = comm.size() > 1;
     if mpi_active && is_root && !args.quiet {
+        console::set_colors_enabled(true);
         console::set_colors_enabled_stderr(true);
     }
 
+    let stdout = Term::stdout();
     let stderr = Term::stderr();
 
     // Gather topology while the concrete backend type is still in scope.
@@ -215,9 +217,9 @@ pub(super) fn setup_communicator(
     let solver_version = active_solver_version();
 
     if !quiet {
-        print_banner(&stderr);
+        print_banner(&stdout);
         print_execution_topology(
-            &stderr,
+            &stdout,
             &topology,
             actual_threads,
             active_solver_name(),
@@ -237,6 +239,7 @@ pub(super) fn setup_communicator(
         output_dir,
         case_dir: args.case_dir.clone(),
         term_width,
+        stdout,
         stderr,
         render_mode,
         topology,
@@ -267,7 +270,7 @@ pub(super) fn broadcast_and_build_setup(
         raw_scalar_parameters,
         load_err,
     ) = if ctx.is_root {
-        match load_case_and_config(args, &ctx.output_dir, ctx.quiet, &ctx.stderr) {
+        match load_case_and_config(args, &ctx.output_dir, ctx.quiet, &ctx.stdout) {
             Ok((prepared, hydro_models, bcast, config, scalar_parameters, timings)) => {
                 root_setup_timings = Some(timings);
                 let bcast_tree = if prepared.stochastic.provenance().opening_tree
@@ -485,7 +488,7 @@ pub(super) fn run_pre_training(
         && !ctx.quiet
         && let Some(timings) = setup_timings
     {
-        print_setup_summary(&ctx.stderr, timings);
+        print_setup_summary(&ctx.stdout, timings);
     }
 
     let export_result: Result<(), CliError> = if ctx.is_root {
@@ -553,7 +556,7 @@ fn run_root_exports(
     // output file, not just the optional print.
     let hydro_summary = build_hydro_model_summary(&setup.hydro_models, system);
     if !ctx.quiet {
-        print_hydro_model_summary(&ctx.stderr, &hydro_summary);
+        print_hydro_model_summary(&ctx.stdout, &hydro_summary);
     }
     let hydro_models_path = ctx.output_dir.join("training/hydro_models.json");
     write_hydro_model_summary(&hydro_models_path, &hydro_summary).map_err(|e| {
@@ -579,7 +582,7 @@ fn run_root_exports(
             .as_ref()
             .map(HistoricalScenarioLibrary::seed_digest);
         if !ctx.quiet {
-            print_provenance_summary(&ctx.stderr, &provenance);
+            print_provenance_summary(&ctx.stdout, &provenance);
         }
         let provenance_path = ctx.output_dir.join("training/model_provenance.json");
         write_provenance_report(&provenance_path, &provenance).map_err(|e| CliError::Internal {
@@ -589,7 +592,7 @@ fn run_root_exports(
 
     if root_config.is_some_and(|c| c.exports.stochastic) {
         if !ctx.quiet {
-            let _ = ctx.stderr.write_line("Exporting stochastic artifacts...");
+            let _ = ctx.stdout.write_line("Exporting stochastic artifacts...");
         }
         let stderr = &ctx.stderr;
         let quiet = ctx.quiet;

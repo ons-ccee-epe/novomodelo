@@ -10,6 +10,7 @@ use novomodelo_io::MetadataTrainingSolveStats;
 use novomodelo_io::TrainingOutput;
 use novomodelo_sddp::SddpError;
 use novomodelo_sddp::SolverStatsDelta;
+use novomodelo_sddp::StatsFoldMode;
 use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::TrainingResult;
 use novomodelo_sddp::aggregate_solver_stats_log;
@@ -114,26 +115,20 @@ pub(super) fn run_training_phase(
     };
     let mut training_output = setup.build_training_output(&training_result, &events);
 
-    let local_lp_solves: u64 = training_output
+    // Already allreduce(Sum)'d per iteration in run_iteration; a second
+    // allreduce here would multiply the total by world_size.
+    let global_lp_solves: u64 = training_output
         .convergence_records
         .iter()
         .map(|r| u64::from(r.lp_solves))
         .sum();
-    let mut global_lp_solves = [0u64];
-    ctx.comm
-        .allreduce(&[local_lp_solves], &mut global_lp_solves, ReduceOp::Sum)
-        .map_err(|e| CliError::Internal {
-            message: format!("LP solve count allreduce error: {e}"),
-        })?;
-    let global_lp_solves = global_lp_solves[0];
 
     ctx.comm.barrier().map_err(|e| CliError::Internal {
         message: format!("post-training barrier error: {e}"),
     })?;
 
-    // Backward entries are allgatherv-replicated across every rank, so filter to
-    // this rank's own contribution before allreduce(Sum); summing the replicated
-    // entries would multiply backward stats by world_size.
+    // Per-rank fold; the allreduce(Sum) below reassembles each phase once
+    // (see StatsFoldMode::MpiRank).
     let my_rank = u32::try_from(ctx.comm.rank()).unwrap_or(u32::MAX);
     let (
         local_first_try,
@@ -141,7 +136,10 @@ pub(super) fn run_training_phase(
         local_failed,
         local_forward_solve_s,
         local_backward_solve_s,
-    ) = aggregate_solver_stats_log(&training_result.solver_stats_log, Some(my_rank));
+    ) = aggregate_solver_stats_log(
+        &training_result.solver_stats_log,
+        StatsFoldMode::MpiRank { rank: my_rank },
+    );
 
     let training_guard_delta = SolverStatsDelta {
         lp_successes: local_first_try.saturating_add(local_retried),
@@ -231,7 +229,7 @@ pub(super) fn run_training_phase(
         serial_scheduling_seconds: Some(global_stats.serial_scheduling_ms as f64 / 1000.0),
     };
     if !ctx.quiet && ctx.is_root {
-        print_training_summary(&ctx.stderr, &training_summary);
+        print_training_summary(&ctx.stdout, &training_summary);
     }
 
     // Assign only this field; `final_upper_bound_std` is populated upstream and

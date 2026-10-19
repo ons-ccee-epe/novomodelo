@@ -40,7 +40,9 @@ use common::selection_fingerprint::{
     OwnershipPower, SelectionFingerprint, SelectionPower, row_management_events,
     selection_ran_at_the_last_iteration,
 };
-use common::{StubComm, fresh_system_and_setup_with, positive, truncated_toy_case};
+use common::{
+    StubComm, enable_forward_warm_start, fresh_system_and_setup_with, positive, truncated_toy_case,
+};
 
 fn toy_case() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/1dtoy")
@@ -723,6 +725,7 @@ impl Leg {
         iteration_limit: u32,
     ) -> (System, StudySetup) {
         fresh_system_and_setup_with(case, |config| {
+            enable_forward_warm_start(config);
             config.training.selection = Some(TrainingSelection::Sampled {
                 forward_passes: self.forward_passes,
             });

@@ -121,6 +121,11 @@ types, or schemars-visible doc comments), regenerate the committed schemas —
 CI's `schemas` job diffs `schemas/` against the live export and fails on drift:
 → `cargo build --release --bin novomodelo && ./target/release/novomodelo schema export --output-dir schemas`
 
+When editing any rule here or under `.claude/rules/`, regenerate the Kiro
+steering mirror — `.claude/` is the single source of truth and `.kiro/steering/`
+is generated from it:
+→ `python scripts/gen/sync-kiro-steering.py` (never hand-edit `.kiro/steering/`)
+
 ---
 
 ## Key References

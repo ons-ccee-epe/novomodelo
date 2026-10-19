@@ -196,9 +196,11 @@ impl HighsSolver {
 
     /// Re-applies every `current_profile` field `HiGHS` exposes as an option;
     /// restoring any of them anywhere else after `restore_default_settings`
-    /// runs is a determinism bug. The profile's iteration limits are the one
-    /// sanctioned exception — `restore_iteration_limits` re-installs them
-    /// immediately after this call.
+    /// runs is a determinism bug. Two exceptions are sanctioned: the profile's
+    /// iteration limits (`restore_iteration_limits` re-installs them
+    /// immediately after this call) and `use_warm_start`, which
+    /// `apply_warm_start` re-installs at the start of every extended retry
+    /// level so a retry never flips the phase's warm-start choice.
     pub(super) fn reapply_profile(&mut self) {
         // SAFETY: `self.handle` is a valid, non-null HiGHS pointer obtained from
         // `novomodelo_highs_create()`. Option names are static C string literals with no
@@ -235,11 +237,6 @@ impl HighsSolver {
                 c"presolve".as_ptr(),
                 self.current_profile.presolve.as_option().as_ptr(),
             );
-            ffi::novomodelo_highs_set_bool_option(
-                self.handle,
-                c"use_warm_start".as_ptr(),
-                i32::from(self.current_profile.use_warm_start),
-            );
             #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
             let simplex_update_limit = self
                 .current_profile
@@ -269,6 +266,20 @@ impl HighsSolver {
                 self.handle,
                 c"dual_steepest_edge_weight_log_error_threshold".as_ptr(),
                 self.current_profile.steepest_edge_devex_fallback_threshold,
+            );
+        }
+        self.apply_warm_start();
+    }
+
+    /// Installs `current_profile.use_warm_start` on the handle.
+    pub(super) fn apply_warm_start(&mut self) {
+        // SAFETY: `self.handle` is a valid, non-null HiGHS pointer; the option
+        // name is a static C string literal with no retained pointer.
+        unsafe {
+            ffi::novomodelo_highs_set_bool_option(
+                self.handle,
+                c"use_warm_start".as_ptr(),
+                i32::from(self.current_profile.use_warm_start),
             );
         }
     }
@@ -652,6 +663,26 @@ impl HighsSolver {
             None
         } else {
             Some(out)
+        }
+    }
+
+    /// Read a boolean-valued `HiGHS` option by name.
+    ///
+    /// Returns `None` if the option name is unknown to `HiGHS`; `Some(value)`
+    /// on success.
+    #[must_use]
+    pub fn get_bool_option(&self, option: &CStr) -> Option<bool> {
+        let mut out = 0_i32;
+        // SAFETY: handle is valid non-null HiGHS pointer; option is a valid
+        // null-terminated C string borrowed for the duration of the call;
+        // `out` is stack-allocated and written by HiGHS on success.
+        let status = unsafe {
+            ffi::novomodelo_highs_get_bool_option(self.handle, option.as_ptr(), &raw mut out)
+        };
+        if status == ffi::HIGHS_STATUS_ERROR {
+            None
+        } else {
+            Some(out != 0)
         }
     }
 }

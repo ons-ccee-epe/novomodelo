@@ -250,6 +250,14 @@ unsafe extern "C" {
         value: *mut c_double,
     ) -> c_int;
 
+    /// Get a boolean-valued `HiGHS` option (written as `0` or `1`). Wraps
+    /// `Highs_getBoolOptionValue()`.
+    pub fn novomodelo_highs_get_bool_option(
+        highs: *const c_void,
+        option: *const c_char,
+        value: *mut c_int,
+    ) -> c_int;
+
     // ============================================================
     // Diagnostics
     // ============================================================

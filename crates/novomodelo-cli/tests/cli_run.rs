@@ -208,6 +208,26 @@ fn test_run_quiet_suppresses_banner_and_summary() {
         ])
         .assert()
         .success()
+        .stdout(predicate::str::contains("NOVOMODELO v").not())
+        .stdout(predicate::str::contains("Training complete in").not());
+}
+
+#[test]
+fn informational_output_goes_to_stdout_not_stderr() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(dir.path(), None, None, None, None);
+    let out = TempDir::new().unwrap();
+    novomodelo()
+        .args([
+            "run",
+            dir.path().to_str().unwrap(),
+            "--output",
+            out.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("NOVOMODELO v"))
+        .stdout(predicate::str::contains("Training complete in"))
         .stderr(predicate::str::contains("NOVOMODELO v").not())
         .stderr(predicate::str::contains("Training complete in").not());
 }
@@ -1059,7 +1079,7 @@ fn run_case(case: &Path, out: &Path) {
 
 /// `novomodelo run` emits `generic_constraints/resolved_echo.parquet` for a study
 /// with generic constraints; the echo is a training-side sidecar carrying the
-/// 13-column echo schema and the resolved interval a reader can compare
+/// 14-column echo schema and the resolved interval a reader can compare
 /// against the deck.
 #[test]
 fn cli_writes_generic_constraint_echo_for_d13() {
@@ -1087,8 +1107,8 @@ fn cli_writes_generic_constraint_echo_for_d13() {
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).expect("build parquet reader");
     assert_eq!(
         builder.schema().fields().len(),
-        13,
-        "echo must carry the 13-column schema"
+        14,
+        "echo must carry the 14-column schema"
     );
     let reader = builder.build().expect("build reader");
 
@@ -1197,7 +1217,7 @@ fn run_produces_deterministic_end_block_and_metadata() {
     let out = TempDir::new().unwrap();
     let out_path = out.path();
 
-    let (_, run_stderr) = run_ok(&[
+    let (run_stdout, _) = run_ok(&[
         "run",
         case.to_str().unwrap(),
         "--output",
@@ -1229,14 +1249,14 @@ fn run_produces_deterministic_end_block_and_metadata() {
         "user_stats_white_noise",
     ] {
         assert!(
-            run_stderr.contains(needle),
-            "live run stderr must contain {needle:?}"
+            run_stdout.contains(needle),
+            "live run stdout must contain {needle:?}"
         );
     }
 
-    let forward_line = find_line(&run_stderr, "Forward");
-    let backward_line = find_line(&run_stderr, "Backward");
-    let serial_line = find_line(&run_stderr, "Serial");
+    let forward_line = find_line(&run_stdout, "Forward");
+    let backward_line = find_line(&run_stdout, "Backward");
+    let serial_line = find_line(&run_stdout, "Serial");
 
     for (label, line) in [
         ("Forward", forward_line),
@@ -1256,8 +1276,8 @@ fn run_produces_deterministic_end_block_and_metadata() {
         backward_line.contains("solve") && backward_line.contains("wait"),
         "Backward line must show the solve/wait decomposition, got: {backward_line:?}"
     );
-    assert_ordered(&run_stderr, "Forward", "Backward");
-    assert_ordered(&run_stderr, "Backward", "Serial");
+    assert_ordered(&run_stdout, "Forward", "Backward");
+    assert_ordered(&run_stdout, "Backward", "Serial");
 
     let sim_metadata_content =
         std::fs::read_to_string(out_path.join("simulation/metadata.json")).unwrap();
@@ -2456,5 +2476,109 @@ fn a_failed_run_keeps_the_last_whole_checkpoint() {
         .args(["--output", out.path().to_str().unwrap()])
         .assert()
         .success()
-        .stderr(predicate::str::contains("resuming from iteration 3."));
+        .stdout(predicate::str::contains("resuming from iteration 3."));
+}
+
+#[cfg(feature = "mpi")]
+mod mpi {
+    use std::process::Command;
+
+    use super::common::mpiexec;
+    use super::*;
+
+    /// Trains `examples/1dtoy` for three iterations with `forward_passes`
+    /// forward passes, on two ranks under `launcher` or as a single process,
+    /// and returns the output directory.
+    fn train_1dtoy(launcher: Option<&Path>, forward_passes: u32, extra_args: &[&str]) -> TempDir {
+        let case = TempDir::new().unwrap();
+        copy_dir_recursive(&case_dir("1dtoy"), case.path());
+        rewrite_json(&case.path().join("config.json"), |config| {
+            config["training"]["selection"]["forward_passes"] = serde_json::json!(forward_passes);
+            config["training"]["stopping_rules"] =
+                serde_json::json!([{ "type": "iteration_limit", "limit": 3 }]);
+            config["simulation"]["enabled"] = serde_json::json!(false);
+        });
+        let out = TempDir::new().unwrap();
+        let binary = novomodelo();
+        let mut command = match launcher {
+            Some(launcher) => {
+                let mut command = Command::new(launcher);
+                command.args(["-n", "2"]).arg(binary.get_program());
+                command
+            }
+            None => binary,
+        };
+        command
+            .args(["run", case.path().to_str().unwrap()])
+            .args(["--output", out.path().to_str().unwrap(), "--quiet"])
+            .args(extra_args)
+            .assert()
+            .success();
+        out
+    }
+
+    fn training_solve_counts(out: &Path) -> [u64; 4] {
+        let metadata: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(out.join("training/metadata.json")).unwrap())
+                .unwrap();
+        ["total_lp_solves", "first_try", "retried", "failed"].map(|key| {
+            metadata["solve_stats"][key]
+                .as_u64()
+                .unwrap_or_else(|| panic!("solve_stats.{key} must be a count: {metadata}"))
+        })
+    }
+
+    /// Each iteration's `[lower_bound, upper_bound]` from
+    /// `training/convergence.parquet`, as bits.
+    fn bound_bits(out: &Path) -> Vec<[u64; 2]> {
+        let file = fs::File::open(out.join("training/convergence.parquet")).unwrap();
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .unwrap()
+            .build()
+            .unwrap();
+        let mut bounds = Vec::new();
+        for batch in reader {
+            let batch = batch.unwrap();
+            let bits = |name: &str| -> Vec<u64> {
+                batch
+                    .column_by_name(name)
+                    .unwrap_or_else(|| panic!("convergence.parquet must have {name}"))
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap_or_else(|| panic!("{name} must be Float64"))
+                    .values()
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .collect()
+            };
+            let (lower, upper) = (bits("lower_bound"), bits("upper_bound"));
+            bounds.extend(lower.into_iter().zip(upper).map(|(l, u)| [l, u]));
+        }
+        bounds
+    }
+
+    #[test]
+    fn training_solve_counts_do_not_scale_with_the_rank_count() {
+        let single = training_solve_counts(train_1dtoy(None, 2, &[]).path());
+        let two_ranks = training_solve_counts(train_1dtoy(Some(&mpiexec()), 2, &[]).path());
+
+        assert_eq!(two_ranks, single, "[total, first_try, retried, failed]");
+        let [total, first_try, retried, failed] = two_ranks;
+        assert_eq!(first_try + retried + failed, total);
+    }
+
+    /// Five passes split 3 + 2, and the short rank needs two workers for its
+    /// basis-store windows to differ from its trajectory windows.
+    #[test]
+    fn training_bounds_match_a_single_rank_when_ranks_hold_unequal_forward_passes() {
+        let threads = ["--threads", "2"];
+        let single = bound_bits(train_1dtoy(None, 5, &threads).path());
+        let two_ranks = bound_bits(train_1dtoy(Some(&mpiexec()), 5, &threads).path());
+
+        assert_eq!(single.len(), 3);
+        assert_eq!(
+            two_ranks, single,
+            "[lower_bound, upper_bound] bits per iteration"
+        );
+    }
 }

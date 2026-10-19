@@ -25,6 +25,7 @@ mod setup;
 mod simulation;
 mod training;
 
+use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 
 use clap::{Args, ValueEnum};
@@ -102,12 +103,20 @@ pub(super) struct RunContext<C: Communicator> {
     /// Input root every path resolves against, never the output directory.
     pub(super) case_dir: PathBuf,
     pub(super) term_width: u16,
+    /// Split from `stderr` so a SLURM `--output`/`--error` run does not file
+    /// informational lines as errors.
+    pub(super) stdout: Term,
+    /// Warnings and `CliError` reporting.
     pub(super) stderr: Term,
-    /// Progress strategy: non-TTY stderr gets append-only lines, not bars.
+    /// Progress strategy: bars on a TTY stderr, append-only stdout lines otherwise.
     pub(super) render_mode: RenderMode,
     pub(super) topology: ExecutionTopology,
     pub(super) solver_version: String,
 }
+
+/// The code a panicking rank aborts an MPI job with: the one a panic exits a
+/// single process with.
+const PANIC_EXIT_CODE: i32 = 101;
 
 /// How a `novomodelo run` that returned no error ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,8 +146,22 @@ impl RunOutcome {
 /// Returns [`CliError`] when loading, training, simulation, or I/O fails.
 pub fn execute(args: &RunArgs) -> Result<RunOutcome, CliError> {
     let ctx = setup_communicator(args)?;
-    let result = graceful_stop::install(ctx.comm.size() == 1)
-        .and_then(|signals| execute_inner(&ctx, args, signals));
+    let result = match panic::catch_unwind(AssertUnwindSafe(|| {
+        graceful_stop::install(ctx.comm.size() == 1)
+            .and_then(|signals| execute_inner(&ctx, args, signals))
+    })) {
+        Ok(result) => result,
+        // A rank that unwound would finalize and exit while its peers wait in a
+        // collective forever; the panic hook has already printed the message.
+        Err(_) if ctx.comm.size() > 1 => {
+            let _ = ctx.stderr.write_line(&format!(
+                "rank {}: panicked; aborting the MPI job",
+                ctx.comm.rank()
+            ));
+            ctx.comm.abort(PANIC_EXIT_CODE);
+        }
+        Err(payload) => panic::resume_unwind(payload),
+    };
     if let Err(ref e) = result
         && ctx.comm.size() > 1
     {
@@ -198,7 +221,7 @@ fn execute_inner<C: Communicator>(
         RunPhasePlan::Nothing => {
             if ctx.is_root && !ctx.quiet {
                 let _ = ctx
-                    .stderr
+                    .stdout
                     .write_line("Training disabled, simulation disabled — nothing to do.");
             }
             Ok(RunOutcome::Completed)
@@ -263,7 +286,7 @@ fn train_then_simulate<C: Communicator>(
                     training_result: &training.result,
                     output_ctx: &training_ctx,
                     quiet: ctx.quiet,
-                    stderr: &ctx.stderr,
+                    out: &ctx.stdout,
                 })
                 .map(|dir| policy_dir = Some(dir))
             })

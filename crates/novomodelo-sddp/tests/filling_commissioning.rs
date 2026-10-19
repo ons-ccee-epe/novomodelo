@@ -1727,7 +1727,10 @@ mod filling_cut_validity {
     #[test]
     fn filling_cascade_lower_bound_monotone_no_basis_spike() {
         let system = build_system();
-        let config = build_config();
+        let mut config = build_config();
+        // The warm-start-validity contract covers forward basis reuse across the
+        // filling boundaries, so warm-start the forward pass.
+        super::common::enable_forward_warm_start(&mut config);
         let mut setup = build_setup_in_code(system, &config);
         // Store each pool's trial states so the control hydro's forward-pass
         // storage trajectory is observable for the parity-neutrality assertion below.

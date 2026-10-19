@@ -306,10 +306,28 @@ pub fn delta_to_stats_row(
     }
 }
 
+/// How [`aggregate_solver_stats_log`] folds entries across the MPI rank axis.
+#[derive(Clone, Copy, Debug)]
+pub enum StatsFoldMode {
+    /// Single process: fold every entry exactly once (the Python caller).
+    AllEntries,
+    /// One rank of a multi-rank fold whose result is `allreduce(Sum)`'d by the
+    /// caller. `"backward"` entries are allgatherv-replicated and stamped with
+    /// their originating rank, so each rank keeps only its own. `"forward"`
+    /// entries are already cross-rank `allreduce(Sum)` totals duplicated on
+    /// every rank, and the lower bound is solved on rank 0 alone, so only
+    /// `rank == 0` keeps `"forward"` and `"lower_bound"` entries — otherwise the
+    /// caller's `allreduce(Sum)` would multiply the forward stats by
+    /// `world_size`.
+    MpiRank {
+        /// This process's MPI rank.
+        rank: u32,
+    },
+}
+
 /// Fold a solver-stats log into the five phase-derived training-summary
 /// counts: `(first_try, retried, failed, forward_solve_seconds,
-/// backward_solve_seconds)`. `rank_filter = Some(rank)` keeps only entries
-/// from that rank (CLI backward-entry filter); `None` folds every entry.
+/// backward_solve_seconds)`.
 ///
 /// `total_lp_solves` is deliberately NOT derived here — it stays sourced from
 /// the per-iteration convergence records (`IterationRecord.lp_solves`), which
@@ -318,16 +336,24 @@ pub fn delta_to_stats_row(
 #[must_use]
 pub fn aggregate_solver_stats_log(
     entries: &[SolverStatsLogEntry],
-    rank_filter: Option<u32>,
+    mode: StatsFoldMode,
 ) -> (u64, u64, u64, f64, f64) {
-    let rank_filter = rank_filter.map(|r| i32::try_from(r).unwrap_or(i32::MAX));
+    let my_rank = match mode {
+        StatsFoldMode::AllEntries => None,
+        StatsFoldMode::MpiRank { rank } => Some(i32::try_from(rank).unwrap_or(i32::MAX)),
+    };
     let mut first_try = 0u64;
     let mut retried = 0u64;
     let mut failed = 0u64;
     let mut forward_solve_ms = 0.0_f64;
     let mut backward_solve_ms = 0.0_f64;
     for entry in entries {
-        if rank_filter.is_some_and(|rank| entry.rank != rank) {
+        let keep = match (my_rank, entry.phase) {
+            (None, _) => true,
+            (Some(rank), "backward") => entry.rank == rank,
+            (Some(rank), _) => rank == 0,
+        };
+        if !keep {
             continue;
         }
         let delta = &entry.delta;
@@ -1128,7 +1154,7 @@ mod tests {
         ];
 
         let (first_try, retried, failed, forward_seconds, backward_seconds) =
-            aggregate_solver_stats_log(&log, None);
+            aggregate_solver_stats_log(&log, StatsFoldMode::AllEntries);
 
         assert_eq!(first_try, 9); // 7 + 2
         assert_eq!(retried, 4); // (9-7) + (4-2)
@@ -1139,17 +1165,121 @@ mod tests {
 
     #[test]
     fn aggregate_solver_stats_log_all_ranks_identity_on_one_rank_log() {
-        // On a one-rank log, folding all ranks (None) must equal folding
-        // filtered to that one rank (Some(rank)).
+        // On a one-rank log, AllEntries must equal the rank-0 MpiRank fold.
         let log = vec![
             SolverStatsLogEntry::from_raw(0, "forward", Some(0), -1, 0, -1, make_delta(6)),
             SolverStatsLogEntry::from_raw(0, "backward", Some(0), 0, 0, 0, make_delta(3)),
         ];
 
         assert_eq!(
-            aggregate_solver_stats_log(&log, None),
-            aggregate_solver_stats_log(&log, Some(0))
+            aggregate_solver_stats_log(&log, StatsFoldMode::AllEntries),
+            aggregate_solver_stats_log(&log, StatsFoldMode::MpiRank { rank: 0 })
         );
+    }
+
+    #[test]
+    fn aggregate_solver_stats_log_mpi_fold_is_rank_count_invariant() {
+        // The per-rank MpiRank folds, summed as the CLI allreduce does, must
+        // reconstruct each phase once regardless of the backward rank split.
+        let global_forward = SolverStatsDelta {
+            first_try_successes: 100,
+            lp_successes: 110,
+            lp_failures: 1,
+            ..SolverStatsDelta::default()
+        };
+        let global_lb = SolverStatsDelta {
+            first_try_successes: 20,
+            lp_successes: 20,
+            ..SolverStatsDelta::default()
+        };
+
+        // Backward: 30 first-try, 6 retried (36 - 30).
+        let single = vec![
+            SolverStatsLogEntry::from_raw(0, "forward", Some(0), -1, 0, -1, global_forward.clone()),
+            SolverStatsLogEntry::from_raw(0, "lower_bound", None, -1, 0, -1, global_lb.clone()),
+            SolverStatsLogEntry::from_raw(
+                0,
+                "backward",
+                Some(0),
+                0,
+                0,
+                0,
+                SolverStatsDelta {
+                    first_try_successes: 30,
+                    lp_successes: 36,
+                    ..SolverStatsDelta::default()
+                },
+            ),
+        ];
+        let (first_try, retried, failed, ..) =
+            aggregate_solver_stats_log(&single, StatsFoldMode::MpiRank { rank: 0 });
+
+        let backward_entries = || {
+            vec![
+                SolverStatsLogEntry::from_raw(
+                    0,
+                    "backward",
+                    Some(0),
+                    0,
+                    0,
+                    0,
+                    SolverStatsDelta {
+                        first_try_successes: 20,
+                        lp_successes: 24,
+                        ..SolverStatsDelta::default()
+                    },
+                ),
+                SolverStatsLogEntry::from_raw(
+                    0,
+                    "backward",
+                    Some(0),
+                    0,
+                    1,
+                    0,
+                    SolverStatsDelta {
+                        first_try_successes: 10,
+                        lp_successes: 12,
+                        ..SolverStatsDelta::default()
+                    },
+                ),
+            ]
+        };
+        let rank_log = |rank: i32| {
+            let mut log = vec![
+                SolverStatsLogEntry::from_raw(
+                    0,
+                    "forward",
+                    Some(0),
+                    -1,
+                    rank,
+                    -1,
+                    global_forward.clone(),
+                ),
+                SolverStatsLogEntry::from_raw(
+                    0,
+                    "lower_bound",
+                    None,
+                    -1,
+                    rank,
+                    -1,
+                    // The lower bound is solved on rank 0 alone.
+                    if rank == 0 {
+                        global_lb.clone()
+                    } else {
+                        SolverStatsDelta::default()
+                    },
+                ),
+            ];
+            log.extend(backward_entries());
+            log
+        };
+        let r0 = aggregate_solver_stats_log(&rank_log(0), StatsFoldMode::MpiRank { rank: 0 });
+        let r1 = aggregate_solver_stats_log(&rank_log(1), StatsFoldMode::MpiRank { rank: 1 });
+
+        // first-try: forward 100 + lb 20 + backward 30 = 150; retried: forward
+        // 10 + backward 6 = 16; failed: forward 1 — on both shapes.
+        assert_eq!((first_try, retried, failed), (150, 16, 1));
+        assert_eq!((r0.0 + r1.0, r0.1 + r1.1, r0.2 + r1.2), (150, 16, 1));
     }
 
     #[test]
@@ -1188,8 +1318,8 @@ mod tests {
         );
 
         assert_eq!(
-            aggregate_solver_stats_log(&[low], None),
-            aggregate_solver_stats_log(&[high], None)
+            aggregate_solver_stats_log(&[low], StatsFoldMode::AllEntries),
+            aggregate_solver_stats_log(&[high], StatsFoldMode::AllEntries)
         );
     }
 

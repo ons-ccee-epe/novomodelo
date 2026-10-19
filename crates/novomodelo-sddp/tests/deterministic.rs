@@ -3778,7 +3778,7 @@ fn d43_observation_free_final_lb_is_bit_exact() {
 
     assert_eq!(
         result.final_lb.to_bits(),
-        0x4166_3c9e_e81a_8359u64,
+        0x4166_3c9e_e81a_8358u64,
         "D43 final_lb must reproduce its recorded value bit-for-bit: got {} ({:#018x})",
         result.final_lb,
         result.final_lb.to_bits()

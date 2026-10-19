@@ -35,7 +35,6 @@ use crate::{
         StageKey, run_enumerated_forward, run_forward_stage,
     },
     setup::node_graph::{EnumeratedPlan, NodePos, StageIdx, Traversal, advance_sampled_node},
-    solve::partition,
     solver_phase::Phase,
     solver_stats::SolverStatsDelta,
     trajectory::TrajectoryRecord,
@@ -120,12 +119,8 @@ impl<'a, S: SolverInterface + Send> ForwardPassInputs<'a, S> {
 /// Built once before the parallel region and passed by shared reference to every
 /// [`run_forward_worker`] invocation; no field is mutated inside the worker.
 pub(crate) struct ForwardWorkerParams<'a> {
-    /// Number of forward passes assigned to this rank (local partition size).
-    pub forward_passes: usize,
     /// Total forward passes across all MPI ranks (for seed derivation).
     pub total_forward_passes: usize,
-    /// Number of rayon worker threads on this rank.
-    pub n_workers: usize,
     /// Current training iteration index (1-based).
     pub iteration: u64,
     /// Global index of this rank's first forward pass (for seed derivation).
@@ -422,19 +417,20 @@ impl ForwardPassState {
         let n_workers = inputs.workspaces.len().max(1);
         let start = Instant::now();
 
+        let root_node = Self::resolve_root_node(training_ctx)?;
+
+        let basis_slices = inputs
+            .basis_store
+            .split_workers_mut(forward_passes, n_workers);
         let mut remaining: &mut [TrajectoryRecord] = inputs.records;
         let mut record_slices: Vec<&mut [TrajectoryRecord]> = Vec::with_capacity(n_workers);
-        for w in 0..n_workers {
-            let (start_m, end_m) = partition(forward_passes, n_workers, w);
+        for basis_slice in &basis_slices {
+            let (start_m, end_m) = basis_slice.scenario_window();
             let (slice, rest) = remaining.split_at_mut((end_m - start_m) * num_stages);
             record_slices.push(slice);
             remaining = rest;
         }
-        let basis_slices = inputs
-            .basis_store
-            .split_workers_mut(n_workers, forward_passes);
-
-        let root_node = Self::resolve_root_node(training_ctx)?;
+        debug_assert!(remaining.is_empty(), "worker windows must tile the records");
 
         // The worker count may differ from `new()` if the pool shrank.
         let shape_matches = self.worker_stage_stats.len() == n_workers
@@ -479,9 +475,7 @@ impl ForwardPassState {
             std::mem::take(&mut self.worker_stage_stats);
 
         let params = ForwardWorkerParams {
-            forward_passes,
             total_forward_passes: inputs.total_forward_passes,
-            n_workers,
             iteration: inputs.iteration,
             fwd_offset: inputs.fwd_offset,
             root_node,
@@ -502,11 +496,9 @@ impl ForwardPassState {
             .zip(record_slices.par_iter_mut())
             .zip(basis_slices.into_par_iter())
             .zip(worker_stage_stats_for_par.into_par_iter())
-            .enumerate()
             .map(
-                |(w, (((ws, worker_records), mut basis_slice), mut per_stage_stats))| {
+                |(((ws, worker_records), mut basis_slice), mut per_stage_stats)| {
                     run_forward_worker(
-                        w,
                         ws,
                         worker_records,
                         &mut basis_slice,
@@ -768,8 +760,9 @@ impl ForwardPassState {
     }
 }
 
-/// Execute the forward pass for one rayon worker's scenario partition, through
-/// every stage, accumulating trajectory costs and per-stage solver statistics.
+/// Execute the forward pass for one rayon worker's scenarios — the
+/// `basis_slice` window, which `worker_records` covers — through every stage,
+/// accumulating trajectory costs and per-stage solver statistics.
 ///
 /// `per_stage_stats` (length `num_stages`) is accumulated in place and taken via
 /// `mem::take` into the result at return, recycling the allocation across
@@ -785,7 +778,6 @@ impl ForwardPassState {
 // itself is already delegated to `run_forward_stage`/`advance_sampled_node`.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn run_forward_worker<S: SolverInterface + Send>(
-    w: usize,
     ws: &mut SolverWorkspace<S>,
     worker_records: &mut [TrajectoryRecord],
     basis_slice: &mut BasisStoreSliceMut<'_>,
@@ -798,7 +790,7 @@ pub(crate) fn run_forward_worker<S: SolverInterface + Send>(
     // never reset, so a snapshot-delta is the only correct attribution; it stays
     // zero on the frozen path.
     let scoring_seconds_before = ws.backward_accum.dcs_solve.scoring_time_seconds;
-    let (start_m, end_m) = partition(params.forward_passes, params.n_workers, w);
+    let (start_m, end_m) = basis_slice.scenario_window();
     let n_local = end_m - start_m;
     let num_stages = params.training_ctx.horizon.num_stages();
 
@@ -1427,6 +1419,89 @@ mod tests {
         );
     }
 
+    /// A rank holding fewer trajectories than the rank-uniform basis store — the
+    /// second rank of an 11-pass, 2-rank run (6 + 5) — splits its 5 records and its
+    /// basis store into the same worker windows, so every worker warm-starts from
+    /// its own trajectories' slots and the spare slot stays empty.
+    #[test]
+    fn forward_pass_on_a_rank_with_fewer_passes_than_store_rows_captures_its_own_slots() {
+        let mut fx = ForwardFixture::new();
+        let (store_rows, local_passes, n_workers) = (6_usize, 5_usize, 4_usize);
+        fx.workspaces = (0..n_workers)
+            .map(|w| {
+                let mut ws =
+                    single_workspace(MockSolver::always_ok(fixed_solution_1_0()), &fx.state);
+                ws.worker_id = i32::try_from(w).expect("fits i32");
+                ws
+            })
+            .collect();
+        fx.basis_store = BasisStore::new(store_rows, fx.n_stages);
+        fx.records = (0..local_passes * fx.n_stages)
+            .map(|_| TrajectoryRecord {
+                primal: Vec::new(),
+                dual: Vec::new(),
+                stage_cost: 0.0,
+                node_id: NodeId(0),
+                state: Vec::new(),
+            })
+            .collect();
+        let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
+        let geometry = equipment_free_geometry(&vec![0; fx.templates.len()]);
+        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let ctx = fixture.ctx();
+        let study_dims = study_dims();
+        let training_ctx = TrainingContext {
+            node_graph: &crate::test_support::chain_node_graph(&fx.stochastic),
+            horizon: &fx.horizon,
+            state: &fx.state,
+            cut_state_layouts: &[],
+            study_dims: &study_dims,
+            inflow_method: &InflowNonNegativityMethod::None,
+            stochastic: &fx.stochastic,
+            initial_state: &fx.initial_state,
+            inflow_scheme: SamplingScheme::InSample,
+            load_scheme: SamplingScheme::InSample,
+            ncs_scheme: SamplingScheme::InSample,
+            stages: &fx.stages,
+            historical_library: None,
+            external_inflow_library: None,
+            external_load_library: None,
+            external_ncs_library: None,
+            lag_accum_seed: &[],
+            lag_weight_seed: &[],
+            dcs: None,
+        };
+
+        let mut state = ForwardPassState::new(n_workers, fx.n_stages, store_rows);
+        let mut inputs = ForwardPassInputs {
+            workspaces: &mut fx.workspaces,
+            basis_store: &mut fx.basis_store,
+            ctx: &ctx,
+            frozen: &fx.templates,
+            fcf: &fx.fcf,
+            training_ctx: &training_ctx,
+            records: &mut fx.records,
+            local_forward_passes: local_passes,
+            total_forward_passes: store_rows + local_passes,
+            iteration: 1,
+            fwd_offset: store_rows,
+            event_sender: None,
+        };
+
+        let result = state.run(&mut inputs).expect("forward pass must not error");
+
+        assert_eq!(result.scenario_costs.len(), local_passes);
+        for m in 0..store_rows {
+            for t in 0..fx.n_stages {
+                assert_eq!(
+                    fx.basis_store.get(m, NodePos(t)).is_some(),
+                    m < local_passes,
+                    "basis slot (scenario {m}, stage {t}) is populated iff the rank owns scenario {m}"
+                );
+            }
+        }
+    }
+
     /// A profile installed via `set_profile` before `run()` is the one
     /// `ProfiledSolver::current_profile()` reports afterwards.
     #[test]
@@ -1560,9 +1635,7 @@ mod tests {
             .expect("test fixture never exceeds the Sobol dimension cap");
 
         let params = ForwardWorkerParams {
-            forward_passes: fx.n_scenarios,
             total_forward_passes: fx.n_scenarios,
-            n_workers: 1,
             iteration: 1,
             fwd_offset: 0,
             root_node: NodePos(0),
@@ -1578,7 +1651,7 @@ mod tests {
         // Mutable per-call state: independent allocations, not borrows of fx.
         let mut ws = single_workspace(MockSolver::always_ok(fixed_solution_1_0()), &fx.state);
         let mut basis_store = BasisStore::new(fx.n_scenarios, fx.n_stages);
-        let mut basis_slices = basis_store.split_workers_mut(1, fx.n_scenarios);
+        let mut basis_slices = basis_store.split_workers_mut(fx.n_scenarios, 1);
         let mut basis_slice = basis_slices.remove(0);
         let mut records: Vec<TrajectoryRecord> = (0..fx.n_scenarios * fx.n_stages)
             .map(|_| TrajectoryRecord {
@@ -1594,7 +1667,6 @@ mod tests {
             .collect();
 
         let result = run_forward_worker(
-            0,
             &mut ws,
             &mut records,
             &mut basis_slice,
@@ -2055,9 +2127,7 @@ mod tests {
             .expect("test fixture never exceeds the Sobol dimension cap");
 
         let params = ForwardWorkerParams {
-            forward_passes: 1,
             total_forward_passes: 1,
-            n_workers: 1,
             iteration: 1,
             fwd_offset: 0,
             root_node: NodePos(0),
@@ -2094,7 +2164,6 @@ mod tests {
         // Reset happens at trajectory start (t == 0), before any LP solve;
         // the mock solver's outcome is irrelevant to this assertion.
         let _ = run_forward_worker(
-            0,
             &mut ws,
             &mut records,
             &mut basis_slice,
@@ -2338,9 +2407,7 @@ mod tests {
             )
             .expect("test fixture never exceeds the Sobol dimension cap");
         let params = ForwardWorkerParams {
-            forward_passes,
             total_forward_passes: forward_passes,
-            n_workers: 1,
             iteration: pinned_iteration,
             fwd_offset: 0,
             root_node: root,
@@ -2357,7 +2424,7 @@ mod tests {
         // Basis store axis is NODE: the K-fan visits leaf nodes at positions
         // beyond `num_stages`, so the store must span every node, not the stages.
         let mut basis_store = BasisStore::new(forward_passes, node_graph.nodes.len());
-        let mut basis_slices = basis_store.split_workers_mut(1, forward_passes);
+        let mut basis_slices = basis_store.split_workers_mut(forward_passes, 1);
         let mut basis_slice = basis_slices.remove(0);
         let mut records: Vec<TrajectoryRecord> = (0..forward_passes * 2)
             .map(|_| TrajectoryRecord {
@@ -2371,7 +2438,6 @@ mod tests {
         let mut per_stage_stats = vec![SolverStatsDelta::default(); 2];
 
         run_forward_worker(
-            0,
             &mut ws,
             &mut records,
             &mut basis_slice,

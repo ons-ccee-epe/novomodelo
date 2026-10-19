@@ -23,10 +23,10 @@ fn hydro_model_summary_lines(summary: &HydroModelSummary) -> Vec<String> {
     ]
 }
 
-/// Print hydro model summary to `stderr`.
-pub fn print_hydro_model_summary(stderr: &Term, summary: &HydroModelSummary) {
+/// Print hydro model summary to `out`.
+pub fn print_hydro_model_summary(out: &Term, summary: &HydroModelSummary) {
     for line in hydro_model_summary_lines(summary) {
-        let _ = stderr.write_line(&line);
+        let _ = out.write_line(&line);
     }
 }
 
@@ -72,7 +72,7 @@ fn format_rank_list(ranks: &[usize]) -> String {
     segments.join(", ")
 }
 
-/// Print the execution topology summary to `stderr`.
+/// Print the execution topology summary to `out`.
 ///
 /// Renders a bold header followed by indented detail lines showing the
 /// communication backend, threading configuration, and process layout.
@@ -99,7 +99,7 @@ fn format_rank_list(ranks: &[usize]) -> String {
 /// For **MPI** across multiple nodes, a per-host breakdown is added, and an
 /// optional SLURM line is appended when scheduler metadata is present.
 pub fn print_execution_topology(
-    stderr: &Term,
+    out: &Term,
     topology: &ExecutionTopology,
     n_threads: usize,
     solver_name: &str,
@@ -113,19 +113,19 @@ pub fn print_execution_topology(
         "rayon threads"
     };
 
-    let _ = stderr.write_line(&console::style("Execution").bold().to_string());
+    let _ = out.write_line(&console::style("Execution").bold().to_string());
 
     let solver_line = match solver_version {
         Some(v) => format!("{solver_name} {v}"),
         None => solver_name.to_string(),
     };
-    let _ = stderr.write_line(&format!("  Solver:    {solver_line}"));
+    let _ = out.write_line(&format!("  Solver:    {solver_line}"));
 
     match topology.backend {
         BackendKind::Local => {
-            let _ = stderr.write_line("  Backend:   local");
-            let _ = stderr.write_line(&format!("  Host:      {}", topology.leader_hostname()));
-            let _ = stderr.write_line(&format!("  Threads:   {n_threads} {thread_word}"));
+            let _ = out.write_line("  Backend:   local");
+            let _ = out.write_line(&format!("  Host:      {}", topology.leader_hostname()));
+            let _ = out.write_line(&format!("  Threads:   {n_threads} {thread_word}"));
         }
         BackendKind::Mpi => {
             let backend_detail = if let Some(ref mpi) = topology.mpi {
@@ -133,32 +133,32 @@ pub fn print_execution_topology(
             } else {
                 "MPI".to_string()
             };
-            let _ = stderr.write_line(&format!("  Backend:   {backend_detail}"));
+            let _ = out.write_line(&format!("  Backend:   {backend_detail}"));
 
             let thread_line = if let Some(ref mpi) = topology.mpi {
                 format!("{}, {n_threads} {thread_word} per rank", mpi.thread_level)
             } else {
                 format!("{n_threads} {thread_word} per rank")
             };
-            let _ = stderr.write_line(&format!("  Threads:   {thread_line}"));
+            let _ = out.write_line(&format!("  Threads:   {thread_line}"));
 
             let world_size = topology.world_size;
             let rank_word = if world_size == 1 { "rank" } else { "ranks" };
             let num_hosts = topology.num_hosts();
             if num_hosts <= 1 {
-                let _ = stderr.write_line(&format!(
+                let _ = out.write_line(&format!(
                     "  Layout:    {world_size} {rank_word} on {}",
                     topology.leader_hostname()
                 ));
             } else {
-                let _ = stderr.write_line(&format!(
+                let _ = out.write_line(&format!(
                     "  Layout:    {world_size} {rank_word} across {num_hosts} nodes"
                 ));
                 for host in &topology.hosts {
                     let count = host.ranks.len();
                     let rank_count_word = if count == 1 { "rank" } else { "ranks" };
                     let range = format_rank_list(&host.ranks);
-                    let _ = stderr.write_line(&format!(
+                    let _ = out.write_line(&format!(
                         "    {}: ranks {range}  ({count} {rank_count_word})",
                         host.hostname
                     ));
@@ -173,12 +173,12 @@ pub fn print_execution_topology(
                 if let Some(cpus) = slurm.cpus_per_task {
                     slurm_parts.push(format!("{cpus} CPUs/task"));
                 }
-                let _ = stderr.write_line(&format!("  SLURM:     {}", slurm_parts.join(", ")));
+                let _ = out.write_line(&format!("  SLURM:     {}", slurm_parts.join(", ")));
             }
         }
         BackendKind::Auto => {
-            let _ = stderr.write_line(&format!("  Backend:   {:?}", topology.backend));
-            let _ = stderr.write_line(&format!("  Threads:   {n_threads} {thread_word}"));
+            let _ = out.write_line(&format!("  Backend:   {:?}", topology.backend));
+            let _ = out.write_line(&format!("  Threads:   {n_threads} {thread_word}"));
         }
     }
 }
@@ -232,10 +232,10 @@ fn setup_summary_lines(timings: &SetupTimings) -> Vec<String> {
     ]
 }
 
-/// Print setup timing summary to `stderr`.
-pub fn print_setup_summary(stderr: &Term, timings: &SetupTimings) {
+/// Print setup timing summary to `out`.
+pub fn print_setup_summary(out: &Term, timings: &SetupTimings) {
     for line in setup_summary_lines(timings) {
-        let _ = stderr.write_line(&line);
+        let _ = out.write_line(&line);
     }
 }
 
@@ -263,10 +263,10 @@ fn provenance_summary_lines(report: &ModelProvenanceReport) -> Vec<String> {
     ]
 }
 
-/// Print model provenance summary to `stderr`.
-pub fn print_provenance_summary(stderr: &Term, report: &ModelProvenanceReport) {
+/// Print model provenance summary to `out`.
+pub fn print_provenance_summary(out: &Term, report: &ModelProvenanceReport) {
     for line in provenance_summary_lines(report) {
-        let _ = stderr.write_line(&line);
+        let _ = out.write_line(&line);
     }
 }
 
@@ -300,16 +300,16 @@ fn boundary_summary_lines(
     ]
 }
 
-/// Print boundary-policy load summary to `stderr`.
+/// Print boundary-policy load summary to `out`.
 pub fn print_boundary_summary(
-    stderr: &Term,
+    out: &Term,
     loaded: usize,
     boundary_date: NaiveDate,
     path: &Path,
     report: &BoundaryReconciliationReport,
 ) {
     for line in boundary_summary_lines(loaded, boundary_date, path, report) {
-        let _ = stderr.write_line(&line);
+        let _ = out.write_line(&line);
     }
 }
 
@@ -702,11 +702,11 @@ fn training_summary_lines(t: &TrainingSummary) -> Vec<String> {
     ));
     if let Some(initial) = t.initial_gap_percent {
         lines.push(format!(
-            "  Gap:          {:.1}% (started at {:.1}%)",
+            "  Gap:          {:.5}% (started at {:.5}%)",
             t.gap_percent, initial
         ));
     } else {
-        lines.push(format!("  Gap:          {:.1}%", t.gap_percent));
+        lines.push(format!("  Gap:          {:.5}%", t.gap_percent));
     }
     lines.extend(policy_rows_lines(t));
     lines.push(format!(
@@ -722,10 +722,10 @@ fn training_summary_lines(t: &TrainingSummary) -> Vec<String> {
     lines
 }
 
-/// Print training summary to `stderr`.
-pub fn print_training_summary(stderr: &Term, t: &TrainingSummary) {
+/// Print training summary to `out`.
+pub fn print_training_summary(out: &Term, t: &TrainingSummary) {
     for line in training_summary_lines(t) {
-        let _ = stderr.write_line(&line);
+        let _ = out.write_line(&line);
     }
 }
 
@@ -778,10 +778,10 @@ fn simulation_summary_lines(sim: &SimulationSummary) -> Vec<String> {
     lines
 }
 
-/// Print simulation summary to `stderr`.
-pub fn print_simulation_summary(stderr: &Term, sim: &SimulationSummary) {
+/// Print simulation summary to `out`.
+pub fn print_simulation_summary(out: &Term, sim: &SimulationSummary) {
     for line in simulation_summary_lines(sim) {
-        let _ = stderr.write_line(&line);
+        let _ = out.write_line(&line);
     }
 }
 
@@ -794,9 +794,9 @@ fn output_path_line(output_dir: &Path, write_secs: f64) -> String {
     )
 }
 
-/// Print output path and write duration to `stderr`.
-pub fn print_output_path(stderr: &Term, output_dir: &Path, write_secs: f64) {
-    let _ = stderr.write_line(&output_path_line(output_dir, write_secs));
+/// Print output path and write duration to `out`.
+pub fn print_output_path(out: &Term, output_dir: &Path, write_secs: f64) {
+    let _ = out.write_line(&output_path_line(output_dir, write_secs));
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

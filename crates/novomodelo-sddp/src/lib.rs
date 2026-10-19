@@ -136,7 +136,7 @@ pub use simulation::{
 pub use solve::solver_phase::{BACKWARD_PROFILE, FORWARD_PROFILE, SIMULATION_PROFILE};
 pub use solve::solver_phase::{Phase, SolverProfiles};
 pub use solver_stats::{
-    SOLVER_STATS_DELTA_SCALAR_FIELDS, SolverStatsDelta, SolverStatsLogEntry,
+    SOLVER_STATS_DELTA_SCALAR_FIELDS, SolverStatsDelta, SolverStatsLogEntry, StatsFoldMode,
     aggregate_solver_stats_log, delta_to_stats_row, pack_delta_scalars, pack_scenario_stats,
     solver_stats_log_to_rows, unpack_delta_scalars, unpack_scenario_stats,
 };

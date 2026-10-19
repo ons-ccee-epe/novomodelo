@@ -3395,7 +3395,7 @@ mod scalar_parameter_construction_tests {
     use novomodelo_core::scenario::SamplingScheme;
     use novomodelo_core::{
         AffineBound, ComputedParameter, ConstraintExpression, EntityId, GenericConstraint,
-        ParameterKind, ScalarParameter, SlackConfig, SystemBuilder,
+        ParameterKind, ScalarParameter, SystemBuilder,
     };
     use novomodelo_io::Config;
     use novomodelo_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
@@ -3512,10 +3512,7 @@ mod scalar_parameter_construction_tests {
             name: "probe_constraint".to_string(),
             description: None,
             expression: ConstraintExpression { terms: vec![] },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: Some(AffineBound::single(EntityId(999))),
             bound_upper_affine: None,
         };
@@ -3549,10 +3546,7 @@ mod scalar_parameter_construction_tests {
             name: "probe_constraint".to_string(),
             description: None,
             expression: ConstraintExpression { terms: vec![] },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: Some(AffineBound::single(EntityId(999))),
             bound_upper_affine: None,
         };

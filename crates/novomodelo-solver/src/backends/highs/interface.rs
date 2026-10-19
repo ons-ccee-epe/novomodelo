@@ -389,6 +389,10 @@ impl SolverInterface for HighsSolver {
         self.stats.total_set_bounds_time_seconds += t0.elapsed().as_secs_f64();
     }
 
+    /// Under a profile with `use_warm_start == false` the offered `basis` is
+    /// ignored and the solve runs cold: nothing is installed, validated, or
+    /// counted in `basis_offered`.
+    ///
     /// # Preconditions
     ///
     /// When `basis` is `Some(b)`, the caller should size `b.row_status` to at
@@ -413,6 +417,9 @@ impl SolverInterface for HighsSolver {
             "solve called without a loaded model — call load_model first"
         );
 
+        // HiGHS clears an installed basis when `use_warm_start` is off, so
+        // installing and counting it would report a warm start that never ran.
+        let basis = basis.filter(|_| self.current_profile.use_warm_start);
         if let Some(basis) = basis {
             assert!(
                 basis.col_status.len() == self.num_cols,

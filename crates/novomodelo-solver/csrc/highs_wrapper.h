@@ -227,6 +227,15 @@ int32_t novomodelo_highs_get_double_option(
     double*     value
 );
 
+/** Get a boolean-valued HiGHS option (written as 0 or 1).
+ *  Wraps Highs_getBoolOptionValue().
+ *  Returns a kHighsStatus constant. */
+int32_t novomodelo_highs_get_bool_option(
+    const void* highs,
+    const char* option,
+    int32_t*    value
+);
+
 /* =========================================================================
  * Diagnostics
  * ========================================================================= */

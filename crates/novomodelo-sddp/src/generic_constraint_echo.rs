@@ -8,7 +8,7 @@
 //! `(constraint, stage, block, term)` order and declaration-order invariant.
 
 use novomodelo_core::{
-    CoefficientRef, EntityId, GenericConstraint, LinearTerm, System, VariableRef,
+    CoefficientRef, EntityId, GenericConstraint, LinearTerm, PenaltyBasis, System, VariableRef,
 };
 use novomodelo_io::GenericConstraintEchoRow;
 
@@ -60,11 +60,8 @@ fn build_echo_rows_from_parts(
                 Some(entry.block_idx as i32)
             };
             let shape = derived_shape(entry.bound_lower, entry.bound_upper);
-            let slack_penalty = if entry.slack_enabled {
-                Some(entry.slack_penalty)
-            } else {
-                None
-            };
+            let slack_penalty = entry.slack.map(|s| s.penalty);
+            let slack_penalty_basis = entry.slack.map(|s| penalty_basis_label(s.penalty_basis));
 
             if constraint.expression.terms.is_empty() {
                 rows.push(GenericConstraintEchoRow {
@@ -79,8 +76,9 @@ fn build_echo_rows_from_parts(
                     bound_lower: entry.bound_lower,
                     bound_upper: entry.bound_upper,
                     derived_shape: shape.to_string(),
-                    slack_enabled: entry.slack_enabled,
+                    slack_enabled: entry.slack.is_some(),
                     slack_penalty,
+                    slack_penalty_basis: slack_penalty_basis.map(str::to_string),
                 });
                 continue;
             }
@@ -99,8 +97,9 @@ fn build_echo_rows_from_parts(
                     bound_lower: entry.bound_lower,
                     bound_upper: entry.bound_upper,
                     derived_shape: shape.to_string(),
-                    slack_enabled: entry.slack_enabled,
+                    slack_enabled: entry.slack.is_some(),
                     slack_penalty,
+                    slack_penalty_basis: slack_penalty_basis.map(str::to_string),
                 });
             }
         }
@@ -159,6 +158,14 @@ fn derived_shape(bound_lower: Option<f64>, bound_upper: Option<f64>) -> &'static
             );
             "open"
         }
+    }
+}
+
+/// The `penalty_basis` spelling of `generic_constraints.json`.
+fn penalty_basis_label(basis: PenaltyBasis) -> &'static str {
+    match basis {
+        PenaltyBasis::PerHour => "per_hour",
+        PenaltyBasis::PerUnit => "per_unit",
     }
 }
 
@@ -324,6 +331,11 @@ mod tests {
     use super::*;
     use novomodelo_core::{ConstraintExpression, SlackConfig};
 
+    const PER_UNIT_5000: Option<SlackConfig> = Some(SlackConfig {
+        penalty: 5000.0,
+        penalty_basis: PenaltyBasis::PerUnit,
+    });
+
     fn entry(
         constraint_idx: usize,
         entity_id: i32,
@@ -331,8 +343,7 @@ mod tests {
         is_stage_level: bool,
         bound_lower: Option<f64>,
         bound_upper: Option<f64>,
-        slack_enabled: bool,
-        slack_penalty: f64,
+        slack: Option<SlackConfig>,
     ) -> GenericConstraintRowEntry {
         GenericConstraintRowEntry {
             constraint_idx,
@@ -341,8 +352,7 @@ mod tests {
             is_stage_level,
             bound_lower,
             bound_upper,
-            slack_enabled,
-            slack_penalty,
+            slack,
             slack_plus_col: None,
             slack_minus_col: None,
         }
@@ -354,10 +364,7 @@ mod tests {
             name: name.to_string(),
             description: None,
             expression: ConstraintExpression { terms },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
+            slack: None,
             bound_lower_affine: None,
             bound_upper_affine: None,
         }
@@ -379,7 +386,7 @@ mod tests {
             "d13",
             vec![LinearTerm::literal(1.0, thermal(0))],
         )];
-        let entries = vec![vec![entry(0, 13, 0, true, None, Some(10.0), true, 5000.0)]];
+        let entries = vec![vec![entry(0, 13, 0, true, None, Some(10.0), PER_UNIT_5000)]];
         let resolved = ResolvedParameters::default();
 
         let rows = build_echo_rows_from_parts(&entries, &[7], &resolved, &constraints);
@@ -402,6 +409,7 @@ mod tests {
         assert_eq!(r.coefficient, Some(1.0));
         assert!(r.slack_enabled);
         assert_eq!(r.slack_penalty, Some(5000.0));
+        assert_eq!(r.slack_penalty_basis.as_deref(), Some("per_unit"));
     }
 
     /// The echo shows the POST-NORMALIZATION flat form, not the authored
@@ -415,7 +423,7 @@ mod tests {
             "cap73",
             vec![LinearTerm::literal(1.0, thermal(0))],
         )];
-        let entries = vec![vec![entry(0, 1, 0, true, None, Some(73.0), false, 0.0)]];
+        let entries = vec![vec![entry(0, 1, 0, true, None, Some(73.0), None)]];
         let resolved = ResolvedParameters::default();
 
         let rows = build_echo_rows_from_parts(&entries, &[0], &resolved, &constraints);
@@ -439,7 +447,7 @@ mod tests {
             "folded",
             vec![LinearTerm::literal(1.0, thermal(0))],
         )];
-        let entries = vec![vec![entry(0, 2, 0, true, None, Some(95.0), false, 0.0)]];
+        let entries = vec![vec![entry(0, 2, 0, true, None, Some(95.0), None)]];
         let resolved = ResolvedParameters::default();
 
         let rows = build_echo_rows_from_parts(&entries, &[0], &resolved, &constraints);
@@ -466,7 +474,7 @@ mod tests {
         )];
         // 20.0 (raw) + 1.0 * V_lo(9) = 32.5, already folded by the time it reaches
         // this row entry.
-        let entries = vec![vec![entry(0, 9, 0, true, Some(32.5), None, false, 0.0)]];
+        let entries = vec![vec![entry(0, 9, 0, true, Some(32.5), None, None)]];
         let resolved = ResolvedParameters::default();
 
         let rows = build_echo_rows_from_parts(&entries, &[0], &resolved, &constraints);
@@ -489,16 +497,7 @@ mod tests {
             "d54",
             vec![LinearTerm::literal(1.0, thermal(3))],
         )];
-        let entries = vec![vec![entry(
-            0,
-            54,
-            1,
-            false,
-            Some(35.0),
-            Some(100.0),
-            false,
-            0.0,
-        )]];
+        let entries = vec![vec![entry(0, 54, 1, false, Some(35.0), Some(100.0), None)]];
         let resolved = ResolvedParameters::default();
 
         let rows = build_echo_rows_from_parts(&entries, &[2], &resolved, &constraints);
@@ -511,6 +510,7 @@ mod tests {
         assert_eq!(r.bound_upper, Some(100.0));
         assert!(!r.slack_enabled);
         assert_eq!(r.slack_penalty, None);
+        assert_eq!(r.slack_penalty_basis, None);
     }
 
     /// A `Parameter(id)` term resolves to `resolved.get(id, stage, block) * scale`,
@@ -524,8 +524,8 @@ mod tests {
             vec![LinearTerm::parameter(EntityId(42), scale, thermal(0))],
         )];
         let entries = vec![
-            vec![entry(0, 1, 0, true, Some(0.0), None, false, 0.0)],
-            vec![entry(0, 1, 0, true, Some(0.0), None, false, 0.0)],
+            vec![entry(0, 1, 0, true, Some(0.0), None, None)],
+            vec![entry(0, 1, 0, true, Some(0.0), None, None)],
         ];
         // Two stages, one block each (length-1 inner), so any block broadcasts.
         let resolved = ResolvedParameters {
@@ -562,8 +562,8 @@ mod tests {
         )];
         // One stage, two per-block rows (is_stage_level = false) at blocks 0 and 1.
         let entries = vec![vec![
-            entry(0, 1, 0, false, Some(0.0), None, false, 0.0),
-            entry(0, 1, 1, false, Some(0.0), None, false, 0.0),
+            entry(0, 1, 0, false, Some(0.0), None, None),
+            entry(0, 1, 1, false, Some(0.0), None, None),
         ]];
         // Slot 0, stage 0 carries two blocks: [10.0, 20.0].
         let resolved = ResolvedParameters {
@@ -604,16 +604,16 @@ mod tests {
 
         let constraints_a = vec![c1.clone(), c2.clone()];
         let entries_a = vec![vec![
-            entry(0, 1, 0, true, None, Some(10.0), false, 0.0),
-            entry(1, 2, 0, true, Some(5.0), None, false, 0.0),
+            entry(0, 1, 0, true, None, Some(10.0), None),
+            entry(1, 2, 0, true, Some(5.0), None, None),
         ]];
 
         // Reverse the constraint order AND the entry order, with each entry's
         // `constraint_idx` re-pointed so it still names its own logical constraint.
         let constraints_b = vec![c2, c1];
         let entries_b = vec![vec![
-            entry(0, 2, 0, true, Some(5.0), None, false, 0.0),
-            entry(1, 1, 0, true, None, Some(10.0), false, 0.0),
+            entry(0, 2, 0, true, Some(5.0), None, None),
+            entry(1, 1, 0, true, None, Some(10.0), None),
         ]];
 
         let rows_a = build_echo_rows_from_parts(&entries_a, &[0], &resolved, &constraints_a);
@@ -632,8 +632,8 @@ mod tests {
     fn empty_terms_constraint_emits_one_placeholder_per_block() {
         let constraints = vec![constraint(7, "const_only", vec![])];
         let entries = vec![vec![
-            entry(0, 7, 0, false, Some(5.0), None, false, 0.0),
-            entry(0, 7, 1, false, Some(5.0), None, false, 0.0),
+            entry(0, 7, 0, false, Some(5.0), None, None),
+            entry(0, 7, 1, false, Some(5.0), None, None),
         ]];
         let resolved = ResolvedParameters::default();
 

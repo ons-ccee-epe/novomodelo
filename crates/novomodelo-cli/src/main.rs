@@ -25,23 +25,25 @@ use commands::{
 };
 use error::CliError;
 
-/// Color output mode for stderr (no environment variable override).
+/// Color output mode for stdout and stderr (no environment variable override).
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub(crate) enum ColorWhen {
-    /// Enable color when stderr is connected to a TTY (default).
+    /// Enable color on each of stdout and stderr that is a TTY (default).
     Auto,
-    /// Always emit ANSI color escapes, even when stderr is not a TTY.
+    /// Always emit ANSI color escapes, even on a stream that is not a TTY.
     Always,
     /// Never emit ANSI color escapes.
     Never,
 }
 
 pub(crate) fn resolve_color(cli_color: ColorWhen) {
-    match cli_color {
-        ColorWhen::Always => console::set_colors_enabled_stderr(true),
-        ColorWhen::Never => console::set_colors_enabled_stderr(false),
-        ColorWhen::Auto => {}
-    }
+    let enabled = match cli_color {
+        ColorWhen::Always => true,
+        ColorWhen::Never => false,
+        ColorWhen::Auto => return,
+    };
+    console::set_colors_enabled(enabled);
+    console::set_colors_enabled_stderr(enabled);
 }
 
 #[derive(Debug, Parser)]
@@ -50,9 +52,9 @@ pub(crate) fn resolve_color(cli_color: ColorWhen) {
     about = "Open infrastructure for power system computation"
 )]
 struct Cli {
-    /// Control ANSI color output on stderr.
+    /// Control ANSI color output on stdout and stderr.
     ///
-    /// `always` forces color on (useful under `mpiexec` which pipes stderr through
+    /// `always` forces color on (useful under `mpiexec` which pipes output through
     /// a non-TTY). `never` disables all color. `auto` lets the terminal detection
     /// decide.
     #[arg(long, global = true, default_value = "auto")]
@@ -117,8 +119,8 @@ mod tests {
     fn test_resolve_color_always_enables_color() {
         resolve_color(ColorWhen::Always);
         assert!(
-            console::colors_enabled_stderr(),
-            "Always must set colors_enabled_stderr to true"
+            console::colors_enabled() && console::colors_enabled_stderr(),
+            "Always must enable color on stdout and stderr"
         );
     }
 
@@ -126,8 +128,8 @@ mod tests {
     fn test_resolve_color_never_disables_color() {
         resolve_color(ColorWhen::Never);
         assert!(
-            !console::colors_enabled_stderr(),
-            "Never must set colors_enabled_stderr to false"
+            !console::colors_enabled() && !console::colors_enabled_stderr(),
+            "Never must disable color on stdout and stderr"
         );
     }
 }

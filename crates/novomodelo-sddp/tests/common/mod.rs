@@ -153,6 +153,43 @@ impl Communicator for Rank0Of2 {
 /// stages and blocks for both hydros).
 pub const D03_EXPECTED_COST: f64 = 1_391_697.766_666_667_3;
 
+/// Re-enables forward warm start for tests that exercise forward basis reuse.
+/// `HiGHS` forward solves are cold by default; CLP has no such switch (it always
+/// reuses an offered basis) and rejects every profile override, so this is a
+/// no-op there.
+#[cfg_attr(not(feature = "highs"), allow(unused_variables))]
+pub fn enable_forward_warm_start(config: &mut novomodelo_io::config::Config) {
+    #[cfg(feature = "highs")]
+    {
+        config.training.solver.forward = Some(novomodelo_io::config::PhaseSolverProfileConfig {
+            dual_edge_weight: None,
+            scale: None,
+            price: None,
+            primal_feasibility_tolerance: None,
+            dual_feasibility_tolerance: None,
+            presolve: None,
+            simplex_update_limit: None,
+            cost_perturbation: None,
+            refactor_error_tolerance: None,
+            factor_pivot_threshold: None,
+            use_warm_start: Some(true),
+            steepest_edge_devex_fallback_threshold: None,
+        });
+    }
+}
+
+/// Re-enables simulation warm start for tests that exercise stored-basis reuse
+/// in simulation, on a built setup because some fixtures expose no config.
+/// `HiGHS` simulation solves are cold by default; CLP always reuses an offered
+/// basis, so this is a no-op there.
+#[cfg_attr(not(feature = "highs"), allow(unused_variables))]
+pub fn enable_simulation_warm_start(setup: &mut StudySetup) {
+    #[cfg(feature = "highs")]
+    {
+        setup.simulation_config.profile.use_warm_start = true;
+    }
+}
+
 /// Resolve the boundary state requirements for a test case, tolerating a
 /// placeholder boundary path: a test that installs a fake `policy.boundary` and
 /// injects cuts manually must not trigger a read of the missing checkpoint. The

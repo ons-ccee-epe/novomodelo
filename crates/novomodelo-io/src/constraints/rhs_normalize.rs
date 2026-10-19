@@ -24,6 +24,12 @@ pub(crate) enum SideTerm {
     Constant(f64),
     /// A resolved `(coefficient, parameter_id)` scalar with no variable.
     Param(f64, EntityId),
+    /// A resolved `scale * @left * @right` product of two scalar parameters.
+    ParamProduct {
+        scale: f64,
+        left: EntityId,
+        right: EntityId,
+    },
 }
 
 /// The relational operator splitting an authored `LHS op RHS` expression.
@@ -49,12 +55,16 @@ pub(crate) fn normalize(
     let mut variable_terms: Vec<LinearTerm> = Vec::with_capacity(lhs.len() + rhs.len());
     let mut constant = 0.0_f64;
     let mut param_terms: Vec<(f64, EntityId)> = Vec::new();
+    let mut product_terms: Vec<(f64, EntityId, EntityId)> = Vec::new();
 
     for term in rhs {
         match term {
             SideTerm::Variable(lt) => variable_terms.push(negate_variable_term(lt)),
             SideTerm::Constant(v) => constant += v,
             SideTerm::Param(coef, id) => param_terms.push((coef, id)),
+            SideTerm::ParamProduct { scale, left, right } => {
+                product_terms.push((scale, left, right));
+            }
         }
     }
     for term in lhs {
@@ -62,6 +72,9 @@ pub(crate) fn normalize(
             SideTerm::Variable(lt) => variable_terms.push(lt),
             SideTerm::Constant(v) => constant -= v,
             SideTerm::Param(coef, id) => param_terms.push((-coef, id)),
+            SideTerm::ParamProduct { scale, left, right } => {
+                product_terms.push((-scale, left, right));
+            }
         }
     }
 
@@ -69,6 +82,7 @@ pub(crate) fn normalize(
     let bound = AffineBound {
         constant,
         terms: param_terms,
+        products: product_terms,
     };
     let (lower, upper) = match op {
         RelOp::Le => (None, Some(bound)),
@@ -191,7 +205,8 @@ mod tests {
             upper,
             Some(AffineBound {
                 constant: 0.0,
-                terms: vec![]
+                terms: vec![],
+                products: vec![],
             })
         );
     }
@@ -225,7 +240,8 @@ mod tests {
             upper,
             Some(AffineBound {
                 constant: 5.0,
-                terms: vec![]
+                terms: vec![],
+                products: vec![],
             })
         );
     }
@@ -293,7 +309,8 @@ mod tests {
             upper,
             Some(AffineBound {
                 constant: -10.0,
-                terms: vec![(-2.0, EntityId(7))]
+                terms: vec![(-2.0, EntityId(7))],
+                products: vec![],
             })
         );
     }
@@ -306,8 +323,41 @@ mod tests {
         let expected = Some(AffineBound {
             constant: 3.0,
             terms: vec![],
+            products: vec![],
         });
         assert_eq!(lower, expected);
         assert_eq!(upper, expected);
+    }
+
+    /// A product on the left-hand side negates into the bound like any other
+    /// non-variable term (the parser keeps products to the right-hand side).
+    #[test]
+    fn normalize_lhs_param_product_negates_into_bound() {
+        let lhs = vec![SideTerm::ParamProduct {
+            scale: 1.5,
+            left: EntityId(1),
+            right: EntityId(2),
+        }];
+        let (_, _, upper) = normalize(lhs, vec![], RelOp::Le);
+        assert_eq!(
+            upper.map(|b| b.products),
+            Some(vec![(-1.5, EntityId(1), EntityId(2))])
+        );
+    }
+
+    /// A parameter product on the RHS is collected into the bound's `products` field.
+    #[test]
+    fn normalize_param_product_on_rhs_collected() {
+        let lhs = vec![SideTerm::Variable(LinearTerm::literal(1.0, hg(0)))];
+        let rhs = vec![SideTerm::ParamProduct {
+            scale: 2.5,
+            left: EntityId(1),
+            right: EntityId(2),
+        }];
+        let (terms, lower, _upper) = normalize(lhs, rhs, RelOp::Ge);
+        assert_eq!(terms.len(), 1);
+        let bound = lower.as_ref().unwrap();
+        assert_eq!(bound.products.len(), 1);
+        assert_eq!(bound.products[0], (2.5, EntityId(1), EntityId(2)));
     }
 }

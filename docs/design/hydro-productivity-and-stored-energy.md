@@ -30,6 +30,11 @@ existed before the mean evaluator was added. Scope is expressed entirely by
 the tag name, not by a field on the tag. The cascade mean-evaluator cell also
 feeds a fifth computed tag, `max_stored_energy`, described below.
 
+The two mean-evaluator cells and `max_stored_energy` each have an `MWh` form,
+the same value times `10^6/3600`:
+`integrated_equivalent_productivity_mwh_per_hm3`,
+`integrated_accumulated_productivity_mwh_per_hm3` and `max_stored_energy_mwh`.
+
 Two simulation output columns mirror the mean-evaluator pair, tail-appended
 after the existing reference-point pair, so the cascade recurrence is
 checkable on disk for both evaluators:
@@ -111,11 +116,19 @@ row of this parquet's `rho_esp` column NULL is byte-neutral: the resolved
 
 `max_stored_energy(h)` is `integrated_accumulated_productivity(h, t) * (V_hi -
 V_lo)` over the physical range. Its unit is the raw `productivity * volume`
-product — not MWh. A security-curve constraint built from this coefficient
-and the matching mean-evaluator tag (below) keeps both sides in this same raw
-unit, so the per-hydro coefficient cancels out of the ratio the constraint
-expresses; converting either side to MWh independently would reintroduce a
-unit mismatch the raw form avoids.
+product — not MWh. `max_stored_energy_mwh(h)` is the same quantity in MWh, and
+`integrated_accumulated_productivity_mwh_per_hm3(h)` is its matching
+coefficient. A security-curve constraint stays consistent as long as every
+stored-energy tag in it comes from one family: all raw, or all MWh. Mixing the
+families puts a factor of `10^6/3600` between the two sides, which rule 51
+flags.
+
+The MWh family makes a constraint's amounts absolute energy: a left-hand side
+`integrated_accumulated_productivity_mwh_per_hm3(h) *
+hydro_useful_volume_final(h)` equals the `stored_energy_final_mwh` output for
+that hydro, and no stage duration enters either side. Its slack should be
+priced with `penalty_basis: per_unit`, so the penalty is a price per MWh of
+shortfall on every stage regardless of the stage's length.
 
 ## Stored-energy output units
 
@@ -222,11 +235,15 @@ reference-point `accumulated_productivity(h)` tag for the same hydro on the
 other is a mismatch: the two ride different evaluators and would not cancel
 the way the authoring recipe above relies on. The matching (cancelling)
 coefficient for `max_stored_energy` is `integrated_accumulated_productivity`,
-never `accumulated_productivity`. This mismatch is what rule 51
-(`crates/novomodelo-io/src/validation/semantic/constraints.rs`) detects, reporting
-it as a non-blocking warning — it never rejects the constraint outright,
-since a study author may have a reason to combine them that the checker
-cannot see.
+and for `max_stored_energy_mwh` it is
+`integrated_accumulated_productivity_mwh_per_hm3` — same unit, cascade scope,
+mean evaluator. Rule 51
+(`crates/novomodelo-io/src/validation/semantic/constraints.rs`) warns when a
+ceiling sits beside another same-unit productivity tag for the same hydro
+(another scope or evaluator), and when one constraint mixes raw and MWh
+stored-energy tags on any hydros. It is a non-blocking warning — it never
+rejects the constraint outright, since a study author may have a reason to
+combine them that the checker cannot see.
 
 Separately, rule 52 (`crates/novomodelo-io/src/validation/semantic/stages.rs`)
 requires every study stage to declare at least one block, and every declared

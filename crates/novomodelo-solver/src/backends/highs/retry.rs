@@ -178,11 +178,13 @@ impl HighsSolver {
     /// Apply Phase 2 extended retry strategy options for levels 5-11.
     ///
     /// Each level starts from restored defaults with presolve and iteration
-    /// limits, then applies level-specific scaling, tolerance, and solver
-    /// options. Wall-clock budgets are managed by the caller.
+    /// limits, keeps the profile's `use_warm_start`, then applies
+    /// level-specific scaling, tolerance, and solver options. Wall-clock
+    /// budgets are managed by the caller.
     pub(super) fn apply_extended_retry_options(&mut self, level: u32) {
         self.restore_default_settings();
         self.set_iteration_limits();
+        self.apply_warm_start();
         // SAFETY: handle is valid non-null HiGHS pointer; option names/values
         // are static C strings; no retained pointers after call.
         unsafe {

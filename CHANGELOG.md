@@ -41,6 +41,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checkpoint. A resume whose `modeling.cost_scale_factor` differs from the run
   that wrote the checkpoint is refused only when the boundary rows then
   differ. The resume applies the scale of its own configuration.
+- Computed scalar parameters in MWh: `max_stored_energy_mwh`,
+  `integrated_accumulated_productivity_mwh_per_hm3` and
+  `integrated_equivalent_productivity_mwh_per_hm3`. Each is the raw tag of the
+  same name times 10⁶/3600. With them a stored-energy constraint states its
+  amounts in MWh and no stage duration enters either side; price its slack with
+  `"penalty_basis": "per_unit"` so the penalty is a price per MWh on every stage.
+- A generic-constraint right-hand side accepts a product of two scalar
+  parameters, `@p * @q` or `coefficient * @p * @q` (for example
+  `@pct * @emax`). A product must be a top-level right-hand-side term.
 
 ### Changed
 
@@ -150,6 +159,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cargo install` included, no longer enable AVX2 and FMA. Every x86_64 build
   of a version now uses one floating-point kernel, so they select the same
   cuts. Results of those builds can differ from 0.18.0's.
+- The stored-energy pairing warning (rule 51) also flags a constraint that
+  mixes raw and MWh stored-energy tags, and a `max_stored_energy*` tag beside a
+  same-unit productivity tag of another scope or evaluator for the same hydro.
+- **BREAKING:** an enabled generic-constraint slack must declare
+  `slack.penalty_basis`. `per_hour` charges the penalty for every hour the
+  row covers, as before: the stage's total hours for a stage-level row and
+  the block's hours for a block row. Use it for a row in MW or m³/s.
+  `per_unit` charges the penalty once per unit of violation, whatever the
+  stage length. Use it for a row in MWh or hm³. To keep a study's current
+  costs, add `"penalty_basis": "per_hour"` to every enabled slack.
+- **BREAKING:** a disabled generic-constraint slack that sets `penalty` or
+  `penalty_basis` is rejected. These fields used to be ignored.
+- `generic_constraints/resolved_echo.parquet` has a new
+  `slack_penalty_basis` column, null for a hard constraint.
+- HiGHS forward and simulation solves are cold by default: `use_warm_start`
+  now defaults to `false` for those phases, so their LPs ignore the stored
+  basis and run presolve. Backward solves still warm-start. Set
+  `"use_warm_start": true` in `training.solver.forward` or `simulation.solver`
+  to restore warm-starting for that phase. A cold solve can stop at a
+  different but equally optimal vertex, so simulated duals and the final
+  lower bound may differ slightly from 0.18.0 on the same inputs.
+- HiGHS retry escalation keeps the phase's `use_warm_start` at every retry
+  level; levels 5-11 previously reset it to the solver default.
+- `cobre run` writes its banner, progress lines and summaries to stdout;
+  warnings and errors stay on stderr, and progress bars on an interactive
+  terminal still draw on stderr. Scripts and job logs that read the run report
+  from stderr must read stdout instead. `--color` now applies to both streams.
+- The training gap in the progress lines and the training summary is printed
+  with 5 decimals instead of 1, so small gaps no longer round to `0.0%`.
 
 ### Removed
 
@@ -177,10 +215,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A checkpoint write refuses a payload a load would reject, and a file over the
   2 GiB limit of the policy format, naming the file. The writers refuse an
   entity manifest whose dates are inconsistent and repeated ids.
-- A run whose forward-pass count is not a multiple of the rank count, with 2 or
-  more threads per rank, no longer panics in the forward pass.
 - A basis-store decode failure at the end of a multi-rank run no longer
   leaves the other ranks blocked.
+- Under MPI, training multiplied its LP-solve count by the number of ranks, and
+  the first-try/retried/failed split and the forward solve seconds with it. The
+  training summary and `solve_stats` in `training/metadata.json` now report the
+  same counts for any rank count, and the split adds up to the total.
+- `cobre run` under MPI no longer panics when the forward passes do not
+  divide evenly across ranks. A rank holding fewer passes than another could
+  index its stored warm-start bases out of bounds, and the job then hung. Such
+  a run now writes the same outputs as a single-process run.
+- A rank that panics during `cobre run` under MPI aborts the whole job
+  with exit code 101. The other ranks used to wait in a collective until the
+  job was killed.
 
 ## [0.18.0] - 2026-10-07
 

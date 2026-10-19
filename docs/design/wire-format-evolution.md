@@ -22,6 +22,9 @@ pin plus a full encode → decode → equality round-trip.
 | `IntegratedEquivalentProductivity`   | `BroadcastComputedParameter`  | `0x07`                  | `broadcast_computed_parameter_postcard_discriminant_pin` (pin); `broadcast_computed_parameter_integrated_tags_round_trip` (round-trip) |
 | `IntegratedAccumulatedProductivity`  | `BroadcastComputedParameter`  | `0x08`                  | `broadcast_computed_parameter_postcard_discriminant_pin` (pin); `broadcast_computed_parameter_integrated_tags_round_trip` (round-trip) |
 | `MaxStoredEnergy`                    | `BroadcastComputedParameter`  | `0x09`                  | `broadcast_computed_parameter_postcard_discriminant_pin` (pin); `broadcast_computed_parameter_max_stored_energy_round_trip` (round-trip) |
+| `IntegratedAccumulatedProductivityMwhPerHm3` | `BroadcastComputedParameter` | `0x0A` | `broadcast_computed_parameter_postcard_discriminant_pin` (pin); `broadcast_computed_parameter_mwh_tags_round_trip` (round-trip) |
+| `MaxStoredEnergyMwh` | `BroadcastComputedParameter` | `0x0B` | `broadcast_computed_parameter_postcard_discriminant_pin` (pin); `broadcast_computed_parameter_mwh_tags_round_trip` (round-trip) |
+| `IntegratedEquivalentProductivityMwhPerHm3` | `BroadcastComputedParameter` | `0x0C` | `broadcast_computed_parameter_postcard_discriminant_pin` (pin); `broadcast_computed_parameter_mwh_tags_round_trip` (round-trip) |
 
 ## Why no reject-old-version test applies
 

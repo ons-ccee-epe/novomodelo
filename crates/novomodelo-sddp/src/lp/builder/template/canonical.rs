@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-use novomodelo_core::{BlockMode, EntityId, PostStudyThermalBound};
+use novomodelo_core::{BlockMode, EntityId, PenaltyBasis, PostStudyThermalBound, SlackConfig};
 use novomodelo_solver::StageTemplate;
 
 use crate::lp::builder::{GenericConstraintRowEntry, StageGeometry, StateBox};
@@ -194,8 +194,7 @@ fn put_gc_entry(buf: &mut Vec<u8>, entry: &GenericConstraintRowEntry) {
         is_stage_level,
         bound_lower,
         bound_upper,
-        slack_enabled,
-        slack_penalty,
+        slack,
         slack_plus_col,
         slack_minus_col,
     } = entry;
@@ -205,10 +204,26 @@ fn put_gc_entry(buf: &mut Vec<u8>, entry: &GenericConstraintRowEntry) {
     put_bool(buf, *is_stage_level);
     put_option_f64(buf, *bound_lower);
     put_option_f64(buf, *bound_upper);
-    put_bool(buf, *slack_enabled);
-    put_f64(buf, *slack_penalty);
+    put_option_slack(buf, *slack);
     put_option_usize(buf, *slack_plus_col);
     put_option_usize(buf, *slack_minus_col);
+}
+
+fn put_option_slack(buf: &mut Vec<u8>, value: Option<SlackConfig>) {
+    match value {
+        Some(SlackConfig {
+            penalty,
+            penalty_basis,
+        }) => {
+            buf.push(1);
+            put_f64(buf, penalty);
+            buf.push(match penalty_basis {
+                PenaltyBasis::PerHour => 0,
+                PenaltyBasis::PerUnit => 1,
+            });
+        }
+        None => buf.push(0),
+    }
 }
 
 fn entities_per_block(

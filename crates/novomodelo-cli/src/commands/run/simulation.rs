@@ -192,7 +192,7 @@ pub(super) fn run_simulation_phase(
 
     if !ctx.quiet && ctx.is_root {
         print_sim_summary(
-            &ctx.stderr,
+            &ctx.stdout,
             n_scenarios,
             sim_time_ms,
             &global_agg,
@@ -234,7 +234,7 @@ fn write_sim_outputs_on_root(
         sim_scenario_costs: gathered_scenario_costs,
         output_ctx: &simulation_output_context(ctx, hostname, sim_started_at),
         quiet: ctx.quiet,
-        stderr: &ctx.stderr,
+        out: &ctx.stdout,
     })
 }
 
@@ -279,7 +279,7 @@ fn write_skipped_simulation_outputs(
 
 /// Print the simulation summary from aggregated solver stats and cost statistics.
 fn print_sim_summary(
-    stderr: &Term,
+    out: &Term,
     n_scenarios: u32,
     sim_time_ms: u64,
     agg: &SolverStatsDelta,
@@ -287,7 +287,7 @@ fn print_sim_summary(
     parallelism: u32,
 ) {
     print_simulation_summary(
-        stderr,
+        out,
         &SimulationSummary {
             n_scenarios,
             completed: n_scenarios,
@@ -555,6 +555,7 @@ mod tests {
             output_dir: output_dir.to_path_buf(),
             case_dir: case_dir.to_path_buf(),
             term_width: 80,
+            stdout: Term::stdout(),
             stderr: Term::stderr(),
             render_mode: RenderMode::auto(),
             topology: ExecutionTopology {

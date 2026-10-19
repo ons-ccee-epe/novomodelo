@@ -90,6 +90,7 @@ mod common;
 use common::Rank0Of2;
 use common::StubComm;
 use common::builders::{BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage};
+use common::enable_simulation_warm_start;
 use common::fresh_system_and_setup_with;
 
 /// Mirrors the gated `test_support::state_layout_for` via the public
@@ -1840,7 +1841,8 @@ fn enumerated_census_pool_fill_warms_previously_cold_leaves() {
     );
     let sparse = outcome.result.basis_cache;
 
-    let setup = as_enumerated_census(setup);
+    let mut setup = as_enumerated_census(setup);
+    enable_simulation_warm_start(&mut setup);
 
     let leaves: Vec<usize> = (0..setup.inputs.node_graph.successors.len())
         .filter(|&i| setup.inputs.node_graph.successors[NodePos(i)].is_empty())
@@ -1945,6 +1947,7 @@ fn simulation_only_with_partly_dropped_stored_bases_is_bit_identical_across_thre
         "the dropped nodes must have no cached basis"
     );
 
+    enable_simulation_warm_start(&mut setup);
     let one = run_census_with_bases(&setup, &StubComm, 1, &load.cache);
     let four = run_census_with_bases(&setup, &StubComm, 4, &load.cache);
 
