@@ -21,8 +21,8 @@ pub struct TailracePoint {
 pub struct DiversionChannel {
     /// Identifier of the downstream hydro plant receiving diverted water.
     pub downstream_id: EntityId,
-    /// Maximum diversion flow capacity \[m³/s\].
-    pub max_flow_m3s: f64,
+    /// Maximum diversion flow capacity \[m³/s\]; `None` = no capacity limit.
+    pub max_flow_m3s: Option<f64>,
 }
 
 /// Configuration for a commissioned reservoir that impounds water toward its
@@ -443,7 +443,7 @@ mod tests {
             ]),
             diversion: Some(DiversionChannel {
                 downstream_id: EntityId::from(4),
-                max_flow_m3s: 200.0,
+                max_flow_m3s: Some(200.0),
             }),
             filling: Some(FillingConfig {
                 start_stage_id: 48,
@@ -574,11 +574,11 @@ mod tests {
     fn test_diversion_channel() {
         let channel = DiversionChannel {
             downstream_id: EntityId::from(7),
-            max_flow_m3s: 350.0,
+            max_flow_m3s: Some(350.0),
         };
 
         assert_eq!(channel.downstream_id, EntityId::from(7));
-        assert!((channel.max_flow_m3s - 350.0).abs() < f64::EPSILON);
+        assert_eq!(channel.max_flow_m3s, Some(350.0));
     }
 
     #[cfg(feature = "serde")]
@@ -617,7 +617,7 @@ mod tests {
             ]),
             diversion: Some(DiversionChannel {
                 downstream_id: EntityId::from(4),
-                max_flow_m3s: 200.0,
+                max_flow_m3s: Some(200.0),
             }),
             filling: Some(FillingConfig {
                 start_stage_id: 48,

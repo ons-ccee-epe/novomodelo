@@ -10,14 +10,16 @@
           "type": "integer"
         },
         "max_flow_m3s": {
-          "description": "Maximum diversion flow capacity (m³/s).",
+          "description": "Maximum diversion flow capacity (m³/s). `null` or absent = no upper bound.",
           "format": "double",
-          "type": "number"
+          "type": [
+            "number",
+            "null"
+          ]
         }
       },
       "required": [
-        "downstream_id",
-        "max_flow_m3s"
+        "downstream_id"
       ],
       "type": "object"
     },

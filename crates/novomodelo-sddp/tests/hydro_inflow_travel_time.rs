@@ -506,7 +506,7 @@ fn build_prefilling_system(
         HydroSpec {
             diversion: Some(DiversionChannel {
                 downstream_id: EntityId(PREFILLING_UPSTREAM_A_ID),
-                max_flow_m3s: DIVERSION_SOURCE_MAX_FLOW_M3S,
+                max_flow_m3s: Some(DIVERSION_SOURCE_MAX_FLOW_M3S),
             }),
             ..prefilling_hydro_defaults()
         },

@@ -20,9 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A generic-constraint right-hand side accepts a product of two scalar
   parameters, `@p * @q` or `coefficient * @p * @q` (for example
   `@pct * @emax`). A product must be a top-level right-hand-side term.
+- A hydro's `diversion` channel in `system/hydros.json` may leave out
+  `max_flow_m3s` or set it to `null` to mean the channel has no capacity limit.
+  A per-stage or per-block `max_diversion_m3s` in
+  `constraints/hydro_bounds.parquet` still caps it.
 
 ### Changed
 
+- **BREAKING:** `constraints/hydro_bounds.parquet` rejects a positive
+  `max_diversion_m3s` on a hydro with no `diversion` channel, as it already
+  rejected a positive `min_diversion_m3s` (rule 46). Before, the diverted water
+  left the system without reaching any plant.
+- **BREAKING:** a negative `diversion.max_flow_m3s` in `system/hydros.json` is
+  rejected at load.
 - The stored-energy pairing warning (rule 51) also flags a constraint that
   mixes raw and MWh stored-energy tags, and a `max_stored_energy*` tag beside a
   same-unit productivity tag of another scope or evaluator for the same hydro.
