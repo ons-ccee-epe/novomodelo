@@ -62,7 +62,7 @@ pub(super) fn apply_training_policy(
             checked.apply_to_training(setup);
             if ctx.is_root && !ctx.quiet {
                 // pools[0] as representative; this is not a per-pool count.
-                let warm_count = setup.fcf.pools[0].warm_start_count;
+                let warm_count = setup.fcf.pools[0].prefix_len();
                 let _ = ctx.stdout.write_line(&format!(
                     "Warm-start: loaded {warm_count} cuts per stage from prior policy."
                 ));
@@ -87,7 +87,7 @@ pub(super) fn apply_training_policy(
             }
             checked.apply_to_training(setup);
             if ctx.is_root && !ctx.quiet {
-                let warm_count = setup.fcf.pools[0].warm_start_count;
+                let warm_count = setup.fcf.pools[0].prefix_len();
                 let _ = ctx.stdout.write_line(&format!(
                     "Resume: loaded {warm_count} cuts per stage, \
                      resuming from iteration {completed}."

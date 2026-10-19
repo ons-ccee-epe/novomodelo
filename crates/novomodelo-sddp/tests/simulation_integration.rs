@@ -15,6 +15,7 @@
 #![allow(clippy::needless_update)]
 
 use novomodelo_io::config::{SimulationSelection, StoppingRuleConfig, TrainingSelection};
+use novomodelo_io::test_support::{producer_block_defaults, stage_cuts_payload_defaults};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::mpsc;
@@ -49,9 +50,10 @@ use novomodelo_io::{
     STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, SimulationOutput, StageCutsPayload,
     read_policy_checkpoint, write_policy_checkpoint, write_results,
 };
+use novomodelo_sddp::policy::full_fcf_load::{FullFcfLoadKind, LoadedSlotMap};
 use novomodelo_sddp::{
-    CapturedBasis, Phase, PrepareHydroModelsResult, ResolvedParameters, SimulationSummary,
-    SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
+    CapturedBasis, LoadedPolicy, Phase, PrepareHydroModelsResult, ResolvedParameters,
+    SimulationSummary, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
     aggregate_simulation, build_basis_cache_from_checkpoint, build_training_output,
     config::{CutManagementConfig, EventConfig, LoopConfig},
     context::TrainingContext,
@@ -489,6 +491,7 @@ fn make_config() -> Config {
             scenario_source: None,
             solver: None,
             selection: Some(SimulationSelection::Sampled { num_scenarios: 0 }),
+            cut_set: novomodelo_io::config::SimulationRowSet::All,
         },
         exports: ExportsConfig::default(),
         estimation: EstimationConfig::default(),
@@ -668,7 +671,7 @@ fn train_simulate_write_cycle() {
         &training_context,
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .expect("train must succeed");
@@ -692,26 +695,17 @@ fn train_simulate_write_cycle() {
                 .map(|slot| {
                     let meta = pool.metadata(slot);
                     PolicyCutRecord {
-                        cut_id: slot as u64,
                         slot_index: slot as u32,
                         iteration: meta.iteration_generated as u32,
                         forward_pass_index: meta.forward_pass_index,
                         intercept: pool.intercept(slot),
                         coefficients: pool.coefficient_row(slot),
                         is_active: pool.is_active(slot),
+                        scored: pool.role(slot).scored,
+                        active_count: None,
+                        last_active_iteration: None,
                     }
                 })
-                .collect()
-        })
-        .collect();
-
-    let active_indices_per_stage: Vec<Vec<u32>> = fcf
-        .pools
-        .iter()
-        .map(|pool| {
-            (0..pool.populated())
-                .filter(|&slot| pool.is_active(slot))
-                .map(|slot| slot as u32)
                 .collect()
         })
         .collect();
@@ -724,19 +718,18 @@ fn train_simulate_write_cycle() {
             stage_id: stage_idx as u32,
             state_dimension: pool.state_dimension as u32,
             capacity: pool.capacity as u32,
-            warm_start_count: pool.warm_start_count,
+            warm_start_count: pool.prefix_len() as u32,
             cuts: &cut_records_per_stage[stage_idx],
-            active_cut_indices: &active_indices_per_stage[stage_idx],
             populated_count: pool.populated() as u32,
             entity_manifest: &[],
             cost_scale_factor: 1_000_000.0,
             node_id: i32::try_from(stage_idx).unwrap_or(-1),
-            graph_stage_id: -1,
             priced_state_date: STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+            ..stage_cuts_payload_defaults()
         })
         .collect();
 
-    let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
+    let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
     let policy_metadata = novomodelo_sddp::test_support::checkpoint_metadata(
         fx.n_stages as u32,
         novomodelo_io::GraphManifest::default(),
@@ -749,11 +742,8 @@ fn train_simulate_write_cycle() {
             warm_start_cuts: warm_start_counts.iter().copied().max().unwrap_or(0),
             warm_start_counts,
             rng_seed: 42,
-            total_visited_states: 0,
-            training_block_mode: "parallel".to_string(),
-            training_block_mode_per_stage: vec![],
             cost_scale_factor: None,
-            lower_bound_history: Vec::new(),
+            ..producer_block_defaults()
         },
     );
 
@@ -1344,7 +1334,7 @@ fn simulation_min_outflow_slack_extracted_from_primal() {
         &training_context,
         &StubComm,
         || Ok(SizedMockSolver::new(t0.num_cols, t0.num_rows)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .expect("training must succeed");
@@ -1509,7 +1499,7 @@ fn enumerated_census_k1_matches_sampled_single_scenario() {
         &training_context,
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .expect("train must succeed");
@@ -1924,7 +1914,6 @@ fn simulation_only_with_partly_dropped_stored_bases_is_bit_identical_across_thre
         max_iterations: setup.loop_params.max_iterations,
         forward_passes: setup.loop_params.forward_passes,
         seed: setup.loop_params.seed,
-        export_states: false,
     };
     write_checkpoint(policy_dir.path(), &setup, &system, &outcome.result, &params)
         .expect("write_checkpoint must succeed");
@@ -1933,10 +1922,12 @@ fn simulation_only_with_partly_dropped_stored_bases_is_bit_identical_across_thre
 
     let mut records = checkpoint.stage_bases.clone();
     for record in records.iter_mut().filter(|r| matches!(r.stage_id, 1 | 2)) {
-        let code = record.column_status[0];
-        record.column_status.push(code);
+        let code = record.entries[0].column_status[0];
+        record.entries[0].column_status.push(code);
     }
-    let load = build_basis_cache_from_checkpoint(&records, &checkpoint.stage_cuts, &setup);
+    let slot_maps =
+        LoadedSlotMap::for_pools(FullFcfLoadKind::SimulationOnly, &checkpoint.stage_cuts);
+    let load = build_basis_cache_from_checkpoint(&records, &slot_maps, &setup);
     let unused = load
         .unused
         .as_ref()

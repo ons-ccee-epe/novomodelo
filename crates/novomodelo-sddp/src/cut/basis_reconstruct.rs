@@ -21,11 +21,11 @@
 //!
 //! ## DCS path: uniform-BASIC, slot-identity-free
 //!
-//! [`reconstruct_basis_uniform_basic`] is the Dynamic Cut Selection (DCS) variant
-//! for the initial solve of each (stage, solve). It takes no `slot_lookup` and
-//! reads none of [`CapturedBasis::cut_row_slots`]: DCS adds its cut rows fresh
-//! each solve and does not guess which will bind, so slot alignment is
-//! unnecessary and every resident cut row is seeded BASIC.
+//! [`reconstruct_basis_uniform_basic`] is the variant for the lazy path of the
+//! `dynamic` method (DCS), for the initial solve of each (stage, solve). It
+//! takes no `slot_lookup` and reads none of [`CapturedBasis::cut_row_slots`]:
+//! DCS adds its cut rows fresh each solve and does not guess which will bind, so
+//! slot alignment is unnecessary and every resident cut row is seeded BASIC.
 //!
 //! ## Basic-count invariant
 //!
@@ -177,9 +177,9 @@ where
 // reconstruct_basis_uniform_basic (DCS path)
 // ---------------------------------------------------------------------------
 
-/// Reconstruct a [`Basis`] for the **Dynamic Cut Selection (DCS)** initial solve,
-/// seeding every cut row uniform [`BasisStatus::Basic`] — slot-identity-free, see
-/// the module docs.
+/// Reconstruct a [`Basis`] for the initial solve of the `dynamic` method's lazy
+/// path, seeding every cut row uniform [`BasisStatus::Basic`] —
+/// slot-identity-free, see the module docs.
 ///
 /// Does **not** repair the basic count: the caller must pair this with
 /// [`enforce_basic_count_invariant`]`(out, target.base_row_count + cut_row_count,

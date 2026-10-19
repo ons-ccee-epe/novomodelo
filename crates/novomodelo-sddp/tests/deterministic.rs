@@ -15,7 +15,8 @@
     clippy::too_many_lines
 )]
 
-use novomodelo_io::config::SimulationSelection;
+use novomodelo_io::config::{SimulationSelection, StoppingRuleConfig};
+use novomodelo_io::test_support::{producer_block_defaults, stage_cuts_payload_defaults};
 use std::path::Path;
 use std::sync::mpsc;
 
@@ -32,7 +33,7 @@ use novomodelo_sddp::{
 use novomodelo_solver::{ActiveSolver, SolverInterface};
 
 mod common;
-use common::{StubComm, build_setup_for_case, fresh_setup_with};
+use common::{D03_EXPECTED_COST, StubComm, build_setup_for_case, fresh_setup_with};
 
 /// Train a case (`StubComm`, `ActiveSolver`, seed 42, 1 thread) and return the
 /// setup, the canonicalized system, the training result, and the live solver.
@@ -461,18 +462,6 @@ fn d02_single_hydro_cost_scale_invariant() {
         );
     }
 }
-
-/// Three-stage cascade hydrothermal dispatch (2 hydros in series).
-/// Combined capacity 70 MW < demand 75 MW. Cascade coupling: H1 receives H0's
-/// discharge. Terminal stages: full capacity (thermal = 5 MW). Stage 0 binding
-/// storage constraints yield thermal ≈ 28.09 MW.
-///
-/// Analytical thermal + deficit cost is `4_171_000 / 3 ≈ 1_390_333.33`. With
-/// `turbined_cost` applied to every hydro's turbine column,
-/// the deterministic LB adds a fixed regularization contribution that lifts
-/// the total by `+1_364.4333…` (= turbined_cost × turbined MWh summed over
-/// stages and blocks for both hydros).
-pub const D03_EXPECTED_COST: f64 = 1_391_697.766_666_667_3;
 
 #[cfg_attr(
     not(feature = "slow-tests"),
@@ -1427,26 +1416,17 @@ fn d12_checkpoint_round_trip() {
                 .map(|slot| {
                     let meta = pool.metadata(slot);
                     PolicyCutRecord {
-                        cut_id: slot as u64,
                         slot_index: slot as u32,
                         iteration: meta.iteration_generated as u32,
                         forward_pass_index: meta.forward_pass_index,
                         intercept: pool.intercept(slot),
                         coefficients: pool.coefficient_row(slot),
                         is_active: pool.is_active(slot),
+                        scored: pool.role(slot).scored,
+                        active_count: None,
+                        last_active_iteration: None,
                     }
                 })
-                .collect()
-        })
-        .collect();
-
-    let active_indices_per_stage: Vec<Vec<u32>> = fcf
-        .pools
-        .iter()
-        .map(|pool| {
-            (0..pool.populated())
-                .filter(|&slot| pool.is_active(slot))
-                .map(|slot| slot as u32)
                 .collect()
         })
         .collect();
@@ -1459,20 +1439,19 @@ fn d12_checkpoint_round_trip() {
             stage_id: stage_idx as u32,
             state_dimension: pool.state_dimension as u32,
             capacity: pool.capacity as u32,
-            warm_start_count: pool.warm_start_count,
+            warm_start_count: pool.prefix_len() as u32,
             cuts: &cut_records_per_stage[stage_idx],
-            active_cut_indices: &active_indices_per_stage[stage_idx],
             populated_count: pool.populated() as u32,
             entity_manifest: &[],
             cost_scale_factor: 1_000_000.0,
             node_id: i32::try_from(stage_idx).unwrap_or(-1),
-            graph_stage_id: -1,
             priced_state_date: STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+            ..stage_cuts_payload_defaults()
         })
         .collect();
 
     let n_stages = fcf.pools.len();
-    let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
+    let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
     let policy_metadata = novomodelo_sddp::test_support::checkpoint_metadata(
         n_stages as u32,
         novomodelo_io::GraphManifest::default(),
@@ -1485,11 +1464,8 @@ fn d12_checkpoint_round_trip() {
             warm_start_cuts: warm_start_counts.iter().copied().max().unwrap_or(0),
             warm_start_counts,
             rng_seed: 42,
-            total_visited_states: 0,
-            training_block_mode: "parallel".to_string(),
-            training_block_mode_per_stage: vec![],
             cost_scale_factor: None,
-            lower_bound_history: Vec::new(),
+            ..producer_block_defaults()
         },
     );
 
@@ -2258,60 +2234,154 @@ fn incremental_lb_reduces_load_model_count() {
     );
 }
 
-/// Multi-hydro PAR(2) regression test with inflow truncation.
+/// Trains a copy of the D19 deck edited in place by `edit`, to a converged optimum:
+/// `bound_stalling` under a 500-iteration cap, so the returned bound is a fixed
+/// point of the algorithm rather than a solve-path value.
+fn train_d19_variant(edit: impl FnOnce(&Path)) -> novomodelo_sddp::TrainingResult {
+    let tmp = copy_case_dir(Path::new(
+        "../../examples/deterministic/d19-multi-hydro-par",
+    ));
+    edit(tmp.path());
+    let mut setup = fresh_setup_with(tmp.path(), |config| {
+        config.training.stopping_rules = Some(vec![
+            StoppingRuleConfig::IterationLimit { limit: 500 },
+            StoppingRuleConfig::BoundStalling {
+                iterations: 5,
+                tolerance: 1e-9,
+            },
+        ]);
+    });
+    let comm = StubComm;
+    let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+    let outcome = setup
+        .train(&mut solver, &comm, 1, ActiveSolver::new, None, None)
+        .expect("train must return Ok");
+    assert!(outcome.error.is_none(), "expected no training error");
+    outcome.result
+}
+
+fn edit_json(path: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+    let mut json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("read json"))
+            .expect("json must parse");
+    edit(&mut json);
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(&json).expect("serialize json"),
+    )
+    .expect("write json");
+}
+
+/// D19 (2 hydros, PAR(2), truncation): the inflow-lag seed reaches the bound
+/// through the lag-major state layout (`StateSpace::lag_state_dim`). The seed in
+/// `initial_conditions.json` is hydro 0 `[Dec 50, Nov 45]`, hydro 1 `[Dec 30, Nov 28]`,
+/// stored lag-major as `[50, 30, 45, 28]`. Four converged runs (`bound_stalling`):
 ///
-/// ## Case setup
+/// - `real`: the deck as committed.
+/// - `zero`: every seed value `0.0`.
+/// - `wrong-major`: the same four values read hydro-major, hydro 0 `[50, 30]`,
+///   hydro 1 `[45, 28]`.
+/// - `permuted`: the two hydros' `operational_start_date` swapped, so the
+///   canonical order flips; every input is keyed by hydro id, so the bound may move
+///   only by the opening-noise reassignment (SAA noise is drawn by canonical
+///   position).
 ///
-/// - 1 bus (B0), 1 thermal (T0: 200 MW at $50/MWh), 2 hydros:
-///   - H0: constant productivity 1.0 MW/(m3/s), max turbined 100 m3/s,
-///     storage 0–200 hm3, PAR(2) with psi = [0.5, 0.3], mean = 40 m3/s
-///   - H1: constant productivity 0.8 MW/(m3/s), max turbined 80 m3/s,
-///     storage 0–150 hm3, PAR(2) with psi = [0.4, 0.2], mean = 25 m3/s
-/// - Deterministic load: 100 MW per stage
-/// - Initial storage: H0 = 100 hm3, H1 = 75 hm3
-/// - Pre-study lag seed (Nov/Dec 2023 `recent_observations`): H0 = [50, 45] m3/s,
-///   H1 = [30, 28] m3/s
-/// - 3 stages × 730 h, `inflow_non_negativity: {method: "truncation"}`
-///
-/// ## What this tests
-///
-/// With 2 hydros and PAR(2), the lag state indices are:
-///   - `inflow_lags.start + 0*2 + 0` = hydro 0, lag 0
-///   - `inflow_lags.start + 0*2 + 1` = hydro 0, lag 1  (BUG: was hydro 1, lag 0)
-///   - `inflow_lags.start + 1*2 + 0` = hydro 1, lag 0
-///   - `inflow_lags.start + 1*2 + 1` = hydro 1, lag 1  (BUG: was hydro 0, lag 1)
-///
-/// If the hydro-major/lag-major bug regressed, the wrong lag values would be
-/// used in PAR evaluation, producing a different optimal cost.
+/// The twins must differ from `real` by more than the run's own gap; `permuted`
+/// must match it to `1e-3`, a tolerance the `wrong-major` shift exceeds tenfold,
+/// which is what gives the anchor power to expose a positional lag-indexing defect.
 #[cfg_attr(
     not(feature = "slow-tests"),
     ignore = "slow: run with --features slow-tests"
 )]
 #[test]
 fn d19_multi_hydro_par_truncation() {
-    let case_dir = Path::new("../../examples/deterministic/d19-multi-hydro-par");
-    let result = run_deterministic(case_dir);
+    let real = train_d19_variant(|_| {});
+    let zero = train_d19_variant(|dir| {
+        edit_json(&dir.join("initial_conditions.json"), |json| {
+            for obs in json["recent_observations"].as_array_mut().unwrap() {
+                obs["value_m3s"] = serde_json::Value::from(0.0);
+            }
+        });
+    });
+    let wrong_major = train_d19_variant(|dir| {
+        edit_json(&dir.join("initial_conditions.json"), |json| {
+            let seed = [
+                (0, "2023-12-01", 50.0),
+                (0, "2023-11-01", 30.0),
+                (1, "2023-12-01", 45.0),
+                (1, "2023-11-01", 28.0),
+            ];
+            for obs in json["recent_observations"].as_array_mut().unwrap() {
+                let (_, _, value) = seed
+                    .iter()
+                    .find(|(h, start, _)| obs["hydro_id"] == *h && obs["start_date"] == *start)
+                    .expect("seed entry");
+                obs["value_m3s"] = serde_json::Value::from(*value);
+            }
+        });
+    });
+    let permuted = train_d19_variant(|dir| {
+        edit_json(&dir.join("system/hydros.json"), |json| {
+            let hydros = json["hydros"].as_array_mut().unwrap();
+            let first = hydros[0]["operational_start_date"].clone();
+            hydros[0]["operational_start_date"] = hydros[1]["operational_start_date"].clone();
+            hydros[1]["operational_start_date"] = first;
+        });
+    });
 
-    // The system with PAR(2) truncation and 2 hydros must produce a positive cost.
+    for (name, run) in [
+        ("real", &real),
+        ("zero", &zero),
+        ("wrong-major", &wrong_major),
+        ("permuted", &permuted),
+    ] {
+        assert_eq!(
+            run.reason, "bound_stalling",
+            "D19 {name}: must converge by bound_stalling, got {}",
+            run.reason
+        );
+    }
+
+    let lb = real.final_lb;
+    assert!(lb > 0.0, "D19: lower bound must be positive, got {lb}");
+    let gap_dollars = (real.final_gap * lb).abs();
+    for (name, twin) in [("zero", &zero), ("wrong-major", &wrong_major)] {
+        let diff = (lb - twin.final_lb).abs();
+        assert!(
+            diff > 100.0 && diff > 10.0 * gap_dollars,
+            "D19 {name} twin: |LB_real - LB_twin| = {diff} must exceed 100.0 and \
+             10 * |gap * LB| = {} (real {lb}, twin {})",
+            10.0 * gap_dollars,
+            twin.final_lb
+        );
+    }
+    let wrong_major_shift = (lb - wrong_major.final_lb).abs();
     assert!(
-        result.final_lb > 0.0,
-        "D19: lower bound must be positive, got {}",
-        result.final_lb
+        wrong_major_shift > 1e-2 * lb.abs(),
+        "D19 power guard: a hydro-major seed must move the bound by more than 1e-2 * |LB|, \
+         got {wrong_major_shift} (LB_real {lb})"
     );
-    // No iteration bound: the 2-hydro × 2-lag state space need not converge
-    // within 50 iterations. The LB match is the lag-major indexing regression check.
-    assert_cost(result.final_lb, D19_EXPECTED_COST, 1.0, "D19");
-}
+    let permuted_shift = (lb - permuted.final_lb).abs();
+    assert!(
+        permuted_shift <= 1e-3 * lb.abs(),
+        "D19 anchor: canonical-order permutation must leave the bound within 1e-3 * |LB|, \
+         got {permuted_shift} (real {lb}, permuted {})",
+        permuted.final_lb
+    );
 
-/// Expected lower bound for D19 (2-hydro PAR(2) with truncation, 3 stages).
-///
-/// Empirical, not hand-computable (2-hydro × 2-lag state space). D19 is a
-/// 2-hydro AR(2) windowed case whose stage-0 lags reference the pre-study
-/// Nov/Dec 2023 seasons (`stage_id = -1, -2`); the seed `[50, 45, 30, 28]`
-/// (hydro 0 then hydro 1, most-recent-lag-first) produces this cost, while a
-/// zero seed or a wrong-hydro-major seed produces a materially different one
-/// — the hydro-major/lag-major lag-indexing regression guard.
-pub const D19_EXPECTED_COST: f64 = 1_334_568.013_586_834_3;
+    for pair in real.lower_bound_history.windows(2) {
+        assert!(
+            pair[1] >= pair[0] - 1e-9 * pair[0].abs(),
+            "D19: the lower bound must not decrease: {} -> {}",
+            pair[0],
+            pair[1]
+        );
+    }
+    assert!(
+        real.lower_bound_history.len() > 1,
+        "D19: the lower bound history must be recorded"
+    );
+}
 
 /// Operational violation slacks: 1 hydro with active min_outflow, max_outflow,
 /// min_turbined, and min_generation bounds.
@@ -3694,13 +3764,13 @@ fn d43_storage_only_cut_converges() {
     }
 }
 
-/// D43's stage 0 starts exactly on a month boundary, so the windowed accumulator
-/// seed is inert (`accum = weight = 0.0`, per `derive_inflow_seeds`) and the
-/// windowed cast collapses to a plain month lookup — an observation-free case
-/// whose `final_lb` is pinned bit-for-bit. The `to_bits`
-/// golden is HiGHS-only (`#[cfg]`-gated): bit-exactness is backend-specific — CLP's
-/// simplex reaches a different-but-valid vertex — so removing the gate breaks the
-/// CLP suite. D43's `assert_cost` above tolerance-pins the same value for both
+/// D43's `final_lb` pinned bit-for-bit on the golden HiGHS path. Stage 0 starts
+/// exactly on a month boundary, so the windowed accumulator seed is inert
+/// (`accum = weight = 0.0`, per `derive_inflow_seeds`) and the windowed cast
+/// collapses to the month lookup. The `to_bits` golden is HiGHS-only
+/// (`#[cfg]`-gated): bit-exactness is backend-specific — CLP's simplex reaches a
+/// different-but-valid vertex — so removing the gate breaks the CLP suite.
+/// `d43_storage_only_cut_converges` tolerance-pins the same value for both
 /// backends; this adds the bit-for-bit no-drift gate on the golden HiGHS path.
 #[cfg(feature = "highs")]
 #[cfg_attr(
@@ -3708,14 +3778,14 @@ fn d43_storage_only_cut_converges() {
     ignore = "slow: run with --features slow-tests"
 )]
 #[test]
-fn test_observation_free_case_final_lb_bit_exact() {
+fn d43_observation_free_final_lb_is_bit_exact() {
     let case_dir = Path::new("../../examples/deterministic/d43-storage-only-cut");
     let result = run_deterministic(case_dir);
 
     assert_eq!(
         result.final_lb.to_bits(),
         0x4166_3c9e_e81a_8358u64,
-        "D43 final_lb must reproduce its pinned value bit-for-bit: got {} ({:#018x})",
+        "D43 final_lb must reproduce its recorded value bit-for-bit: got {} ({:#018x})",
         result.final_lb,
         result.final_lb.to_bits()
     );
@@ -5912,7 +5982,7 @@ mod chronological_telescoping {
     use novomodelo_io::{PolicyCheckpoint, read_policy_checkpoint};
     use novomodelo_sddp::FutureCostFunction;
     use novomodelo_sddp::policy::orchestration::{CheckpointParams, write_checkpoint};
-    use novomodelo_sddp::policy_export::build_stage_cut_records;
+    use novomodelo_sddp::policy_export::{BindingCounters, build_stage_cut_records};
     use tempfile::TempDir;
 
     use super::common::builders::{
@@ -6473,7 +6543,6 @@ mod chronological_telescoping {
             max_iterations: setup.loop_params.max_iterations,
             forward_passes: setup.loop_params.forward_passes,
             seed: setup.loop_params.seed,
-            export_states: config.exports.states,
         };
         write_checkpoint(policy_dir.path(), &setup, &system, &result, &params)
             .expect("write_checkpoint must succeed");
@@ -6492,23 +6561,10 @@ mod chronological_telescoping {
     }
 
     /// Assert every checkpoint cut's coefficients and intercept are bit-for-bit
-    /// identical to `scale * (the records written from fcf)` (`f64::to_bits`,
-    /// never `==`).
-    ///
-    /// `scale == 1.0` compares raw internal-scaled values (a `checkpoint`
-    /// whose cuts were never routed through the canonical-currency export
-    /// transform, e.g. `FutureCostFunction::new_with_warm_start` fed
-    /// `checkpoint.stage_cuts` directly). `scale ==
-    /// setup.inputs.stage_data.stage_templates.cost_scale_factor` compares against a
-    /// checkpoint written by [`write_checkpoint`] (`orchestration.rs`), which
-    /// multiplies every value by that same factor at export — a single
-    /// multiply, so the comparison is exact, not tolerance-based.
-    fn assert_cuts_bit_identical(
-        fcf: &FutureCostFunction,
-        checkpoint: &PolicyCheckpoint,
-        scale: f64,
-    ) {
-        let written = build_stage_cut_records(fcf);
+    /// identical to the records written from `fcf` (`f64::to_bits`, never
+    /// `==`): [`write_checkpoint`] writes the values as held in memory.
+    fn assert_cuts_bit_identical(fcf: &FutureCostFunction, checkpoint: &PolicyCheckpoint) {
+        let written = build_stage_cut_records(fcf, BindingCounters::Omitted).expect("export");
         assert_eq!(
             written.len(),
             checkpoint.stage_cuts.len(),
@@ -6524,9 +6580,9 @@ mod chronological_telescoping {
             );
             for (cut_idx, (w, r)) in stage_written.iter().zip(stage_read.cuts.iter()).enumerate() {
                 assert_eq!(
-                    (w.intercept * scale).to_bits(),
+                    w.intercept.to_bits(),
                     r.intercept.to_bits(),
-                    "stage {stage} cut {cut_idx}: intercept bits differ ({} * {scale} vs {})",
+                    "stage {stage} cut {cut_idx}: intercept bits differ ({} vs {})",
                     w.intercept,
                     r.intercept
                 );
@@ -6537,9 +6593,9 @@ mod chronological_telescoping {
                 );
                 for (k, (wc, rc)) in w.coefficients.iter().zip(r.coefficients.iter()).enumerate() {
                     assert_eq!(
-                        (wc * scale).to_bits(),
+                        wc.to_bits(),
                         rc.to_bits(),
-                        "stage {stage} cut {cut_idx} coeff {k}: bits differ ({wc} * {scale} vs {rc})"
+                        "stage {stage} cut {cut_idx} coeff {k}: bits differ ({wc} vs {rc})"
                     );
                 }
             }
@@ -6549,9 +6605,8 @@ mod chronological_telescoping {
     /// Train in `train_mode`, checkpoint, then load into a `load_mode` study and
     /// evaluate `theta` against the load-mode LP.
     ///
-    /// Asserts (1) the written checkpoint holds the trained FCF's cuts scaled
-    /// by the writing study's `cost_scale_factor` (canonical
-    /// currency units at rest — exact, a single multiply), (2) the cross-mode
+    /// Asserts (1) the written checkpoint holds the trained FCF's cuts as held
+    /// in memory, bit for bit, (2) the cross-mode
     /// warm-start load succeeds, (3) `FutureCostFunction::new_with_warm_start`
     /// (constructor fidelity only, bypassing the load-side rescale this
     /// narrow test does not exercise) copies the checkpoint's raw bytes
@@ -6561,12 +6616,7 @@ mod chronological_telescoping {
     /// intentionally not asserted.
     fn assert_cross_mode_load_preserves_cut_bytes(train_mode: BlockMode, load_mode: BlockMode) {
         let (trained_setup, checkpoint, _policy_dir) = train_and_checkpoint(train_mode);
-        let cost_scale_factor = trained_setup
-            .inputs
-            .stage_data
-            .stage_templates
-            .cost_scale_factor;
-        assert_cuts_bit_identical(&trained_setup.fcf, &checkpoint, cost_scale_factor);
+        assert_cuts_bit_identical(&trained_setup.fcf, &checkpoint);
 
         let config = build_config();
         let mut setup2 = build_setup_in_code(build_system(load_mode), &config);
@@ -6593,7 +6643,7 @@ mod chronological_telescoping {
         )
         .expect("cross-mode warm-start load must succeed (cuts are n_blks-independent)");
 
-        assert_cuts_bit_identical(&warm_fcf, &checkpoint, 1.0);
+        assert_cuts_bit_identical(&warm_fcf, &checkpoint);
 
         setup2.replace_fcf(warm_fcf);
         setup2.simulation_config.n_scenarios = 1;
@@ -6987,7 +7037,6 @@ mod season_descriptor_checkpoint_round_trip {
             max_iterations: setup.loop_params.max_iterations,
             forward_passes: setup.loop_params.forward_passes,
             seed: setup.loop_params.seed,
-            export_states: config.exports.states,
         };
         write_checkpoint(policy_dir.path(), &setup, &system, &result, &params)
             .expect("write_checkpoint must succeed");
@@ -7363,7 +7412,6 @@ mod boundary_season_gate_round_trip {
             max_iterations: setup.loop_params.max_iterations,
             forward_passes: setup.loop_params.forward_passes,
             seed: setup.loop_params.seed,
-            export_states: config.exports.states,
         };
         write_checkpoint(policy_dir.path(), &setup, &system, &result, &params)
             .expect("write_checkpoint must succeed");
@@ -7735,7 +7783,6 @@ mod transit_arrival_interval_checkpoint_round_trip {
             max_iterations: setup.loop_params.max_iterations,
             forward_passes: setup.loop_params.forward_passes,
             seed: setup.loop_params.seed,
-            export_states: config.exports.states,
         };
         write_checkpoint(policy_dir.path(), &setup, &system, &result, &params)
             .expect("write_checkpoint must succeed");
@@ -9283,20 +9330,32 @@ mod visit_bound_overflow_guard {
 }
 
 mod heterogeneous_visit_bound_resume {
-    //! `FutureCostFunction::new_with_warm_start` threads the study's
+    //! `FutureCostFunction::new_resumed` threads the study's
     //! per-pool state-dimension and visit-bound arrays — the same per-pool
     //! contract `new_per_pool` takes — so a resumed run's pool geometry
     //! matches the cold-start run's. Exercised on the K-fan's HETEROGENEOUS
     //! per-pool strides (declared non-uniform branch weights): the shape the
     //! pre-fix scalar substitution (every resumed pool given `forward_passes`
-    //! uniformly as its stride) silently broke.
+    //! uniformly as its stride) silently broke. A fan checkpoint also holds
+    //! vacant slots below its slot bound, which a resume leaves vacant.
 
     use novomodelo_io::{
         STAGE_CUTS_NODE_ID_SENTINEL, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, StageCutsReadResult,
+        read_policy_checkpoint, write_policy_checkpoint,
     };
-    use novomodelo_sddp::FutureCostFunction;
+    use novomodelo_sddp::cut::SlotOrigin;
+    use novomodelo_sddp::policy_export::{
+        BindingCounters, build_stage_cut_records, build_stage_cuts_payloads,
+    };
     use novomodelo_sddp::setup::NodeId;
-    use novomodelo_sddp::test_support::{k_fan_setup, trivial_full_fcf_proof};
+    use novomodelo_sddp::test_support::{
+        checkpoint_metadata, fixture_priced_date, k_fan_setup, producer_block,
+        trivial_full_fcf_proof, ymd,
+    };
+    use novomodelo_sddp::{CutPool, FutureCostFunction};
+    use novomodelo_solver::ActiveSolver;
+
+    use crate::common::StubComm;
 
     const K: usize = 4;
     const FORWARD_PASSES: u32 = 3;
@@ -9336,22 +9395,12 @@ mod heterogeneous_visit_bound_resume {
             u32::try_from(cold.setup.num_stages()).expect("stage count fits u32"),
         );
 
-        // Mirrors `sole_pool_owner_node_id` (the production writer's
-        // algorithm in `policy_export.rs`): every pool has exactly one
-        // owning node EXCEPT the K-fan's shared terminal leaf pool, which
-        // `k` distinct leaf nodes own jointly and must therefore keep the
-        // sentinel.
         let pool_owner_node_id = |pool: usize| -> i32 {
-            let mut owner: Option<i32> = None;
-            for (pos, node) in cold.setup.inputs.node_graph.nodes.iter_indexed() {
-                if node.pool_id == pool {
-                    if owner.is_some() {
-                        return STAGE_CUTS_NODE_ID_SENTINEL;
-                    }
-                    owner = Some(cold.setup.inputs.node_graph.node_ids[pos].0);
-                }
-            }
-            owner.unwrap_or(STAGE_CUTS_NODE_ID_SENTINEL)
+            cold.setup
+                .inputs
+                .node_graph
+                .sole_pool_owner(pool)
+                .map_or(STAGE_CUTS_NODE_ID_SENTINEL, |node| node.0)
         };
 
         // A checkpoint with no warm-start cuts: this test's concern is the
@@ -9378,7 +9427,7 @@ mod heterogeneous_visit_bound_resume {
             .collect();
         let visit_bounds: Vec<u64> = cold_strides.iter().map(|&s| u64::from(s)).collect();
 
-        let mut resumed = FutureCostFunction::new_with_warm_start(
+        let mut resumed = FutureCostFunction::new_resumed(
             &proof,
             &stage_results,
             &cold_dims,
@@ -9386,7 +9435,7 @@ mod heterogeneous_visit_bound_resume {
             FORWARD_PASSES,
             u64::from(MAX_ITERATIONS),
         )
-        .expect("new_with_warm_start must build from the injected per-pool arrays");
+        .expect("new_resumed must build from the injected per-pool arrays");
 
         let resumed_strides: Vec<u32> = resumed.pools.iter().map(|p| p.visit_stride).collect();
         assert_eq!(
@@ -9396,11 +9445,11 @@ mod heterogeneous_visit_bound_resume {
              forward_passes ({FORWARD_PASSES}) uniformly"
         );
 
-        // Slot-index equivalence: the resumed pool's warm_start_count is 0
+        // Slot-index equivalence: the resumed pool's slot_base is 0
         // (no warm-start cuts here) and its iteration_base defaults to 0,
         // exactly like a fresh cold pool — so a cut at (iteration=1,
         // forward_pass_index=0) must land at the documented formula's slot,
-        // `warm_start_count + iteration * stride + forward_pass_index`,
+        // `slot_base + iteration * stride + forward_pass_index`,
         // using the COLD-START run's own per-pool stride.
         for (pool_id, &stride) in cold_strides.iter().enumerate() {
             resumed.add_cut(
@@ -9415,9 +9464,120 @@ mod heterogeneous_visit_bound_resume {
             assert!(
                 resumed.pools[pool_id].is_active(expected_slot),
                 "pool {pool_id}: a cut at iteration 1, forward_pass_index 0 must land at slot \
-                 {expected_slot} (warm_start_count 0 + iteration 1 * stride {stride} + \
+                 {expected_slot} (slot_base 0 + iteration 1 * stride {stride} + \
                  forward_pass_index 0) — the cold-start run's own stride"
             );
+        }
+    }
+
+    #[test]
+    fn a_fan_checkpoint_resumes_every_record_at_its_slot() {
+        const FAN_ITERATIONS: u32 = 3;
+        let mut fixture = k_fan_setup(8, 6, FAN_ITERATIONS);
+        let setup = &mut fixture.setup;
+        let mut solver = ActiveSolver::new().expect("ActiveSolver::new");
+        let outcome = setup
+            .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
+            .expect("train must return Ok");
+        assert!(outcome.error.is_none(), "{:?}", outcome.error);
+
+        let trained = &setup.fcf.pools;
+        assert!(
+            trained.iter().any(|pool| (0..pool.populated())
+                .any(|slot| pool.role(slot).origin == SlotOrigin::Vacant)),
+            "power: some pool must hold a vacant slot below its slot bound"
+        );
+
+        let node_graph = &setup.inputs.node_graph;
+        let n_stages = setup.num_stages();
+        let stage_ids: Vec<i32> = (0..).take(n_stages).collect();
+        let stage_end_dates: Vec<_> = (0..)
+            .take(n_stages)
+            .map(|stage| fixture_priced_date(ymd(2030, 1, 1), stage))
+            .collect();
+        let cost_scale_factor = setup.inputs.stage_data.stage_templates.cost_scale_factor;
+        let stage_records =
+            build_stage_cut_records(&setup.fcf, BindingCounters::Omitted).expect("export");
+        let stage_manifests = vec![Vec::new(); trained.len()];
+        let payloads = build_stage_cuts_payloads(
+            &setup.fcf,
+            node_graph,
+            &stage_ids,
+            &stage_end_dates,
+            cost_scale_factor,
+            &stage_records,
+            &stage_manifests,
+        );
+        let metadata = checkpoint_metadata(
+            n_stages as u32,
+            setup.build_graph_manifest(),
+            novomodelo_io::ProducerBlock {
+                cost_scale_factor: Some(cost_scale_factor),
+                ..producer_block()
+            },
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_policy_checkpoint(dir.path(), &payloads, &[], &metadata, &[])
+            .expect("write_policy_checkpoint");
+        let checkpoint = read_policy_checkpoint(dir.path()).expect("read_policy_checkpoint");
+        assert_eq!(checkpoint.stage_cuts.len(), trained.len());
+
+        let shared: Vec<usize> = (0..trained.len())
+            .filter(|&pool| node_graph.sole_pool_owner(pool).is_none())
+            .collect();
+        assert_eq!(shared.len(), 1, "power: the fan's leaves share one pool");
+        for (pool, read) in checkpoint.stage_cuts.iter().enumerate() {
+            let expected = match node_graph.sole_pool_owner(pool) {
+                None => STAGE_CUTS_NODE_ID_SENTINEL,
+                Some(owner) => owner.0,
+            };
+            assert_eq!(read.node_id, expected, "pool {pool}: owning node id");
+        }
+        assert_eq!(
+            checkpoint.stage_cuts[shared[0]].node_id, STAGE_CUTS_NODE_ID_SENTINEL,
+            "the shared leaf pool names no node"
+        );
+
+        for (pool_id, (read, trained)) in checkpoint.stage_cuts.iter().zip(trained).enumerate() {
+            let resumed = CutPool::new_resumed(
+                trained.state_dimension,
+                trained.visit_stride,
+                u64::from(FAN_ITERATIONS) + 1,
+                read.warm_start_count,
+                read.capacity,
+                &read.cuts,
+            )
+            .expect("a recorded pool must resume");
+            assert_eq!(resumed.capacity, trained.capacity, "pool {pool_id}");
+            assert_eq!(resumed.populated(), trained.populated(), "pool {pool_id}");
+            assert_eq!(resumed.generated(), trained.generated(), "pool {pool_id}");
+            assert_eq!(resumed.prefix_len(), trained.prefix_len(), "pool {pool_id}");
+            assert_eq!(
+                resumed.active_count(),
+                trained.active_count(),
+                "pool {pool_id}"
+            );
+            for slot in 0..trained.populated() {
+                let at = format!("pool {pool_id} slot {slot}");
+                assert_eq!(resumed.role(slot), trained.role(slot), "{at}: role");
+                assert_eq!(
+                    resumed.is_active(slot),
+                    trained.is_active(slot),
+                    "{at}: flag"
+                );
+                assert_eq!(
+                    resumed.intercept(slot).to_bits(),
+                    trained.intercept(slot).to_bits(),
+                    "{at}: intercept"
+                );
+                let bits = |pool: &CutPool| -> Vec<u64> {
+                    pool.coefficient_row(slot)
+                        .iter()
+                        .map(|c| c.to_bits())
+                        .collect()
+                };
+                assert_eq!(bits(&resumed), bits(trained), "{at}: coefficients");
+            }
         }
     }
 }
@@ -9449,6 +9609,7 @@ mod enumerated_external {
     use novomodelo_sddp::{
         DEFAULT_COST_SCALE_FACTOR, InflowNonNegativityMethod, SimulationScenarioResult,
         StoppingMode, StoppingRule, StoppingRuleSet, StudySetup,
+        cut::CutSet,
         hydro_models::PrepareHydroModelsResult,
         setup::{SimulationEnumeratedRequest, StudyParams},
     };
@@ -9714,6 +9875,7 @@ mod enumerated_external {
             },
             n_scenarios,
             simulation_enumerated: SimulationEnumeratedRequest::Sampled,
+            simulation_cut_set: CutSet::All,
             io_channel_capacity: 0,
             policy_path: String::new(),
             inflow_method: InflowNonNegativityMethod::None,
@@ -9945,106 +10107,6 @@ mod enumerated_external {
             );
         }
     }
-}
-
-/// A reduced-projection pool (storage-only cut state, `n_slots < n_state`) must
-/// score cuts against trial states read in its OWN projected space. The
-/// visited-states archive is packed at the global StateDim stride; striding it
-/// by the pool's projected dimension — the pre-fix behavior — reads misaligned
-/// memory and deactivates the wrong cuts. This pins the projected read against
-/// that misaligned read on the storage-only cut-state axis, where they differ.
-#[test]
-fn cut_selection_scores_reduced_projection_in_projected_space() {
-    use novomodelo_core::temporal::StageStateConfig;
-    use novomodelo_sddp::cut::CutPool;
-    use novomodelo_sddp::cut_selection::CutSelectionStrategy;
-    use novomodelo_sddp::indexer::{CutSlot, CutStateProjection, StateSpace};
-    use novomodelo_sddp::lead_time::AnticipatedResolution;
-    use novomodelo_sddp::setup::NodeId;
-
-    // 1 hydro, PAR(1): global state = [storage, lag] → n_state = 2.
-    let global = StateSpace::new(
-        1,
-        1,
-        Vec::new(),
-        Vec::new(),
-        AnticipatedResolution::default(),
-        &[1],
-    );
-    assert_eq!(global.n_state, 2);
-
-    let proj = CutStateProjection::new(
-        &global,
-        StageStateConfig {
-            storage: true,
-            inflow_lags: false,
-        },
-    );
-    let n_slots = proj.n_slots();
-    assert!(
-        n_slots < global.n_state,
-        "precondition: strictly reduced projection (n_slots {n_slots} < n_state {})",
-        global.n_state
-    );
-
-    // 1-D cuts: cut0 = x, cut1 = 3, cut2 = 0.5. Over the storage values only,
-    // cut1 is always at-max, so cut0 and cut2 are dominated.
-    let mut pool = CutPool::new(3, n_slots, 1, 0);
-    pool.add_cut(NodeId(0), 0, 0, 0.0, &[1.0]);
-    pool.add_cut(NodeId(0), 1, 0, 3.0, &[0.0]);
-    pool.add_cut(NodeId(0), 2, 0, 0.5, &[0.0]);
-
-    let strategy = CutSelectionStrategy::Level1 {
-        check_frequency: 1,
-        tie_tolerance: 0.0,
-    };
-
-    // Two trial points, packed at the global StateDim stride [storage, lag]:
-    // small storage, large lag so the misalignment is observable.
-    let n_trials = 2;
-    let global_states = [1.0, 10.0, 2.0, 20.0];
-
-    let mut projected = Vec::new();
-    for m in 0..n_trials {
-        for s in 0..n_slots {
-            let g = proj.global_state_index(CutSlot::new(s)).get();
-            projected.push(global_states[m * global.n_state + g]);
-        }
-    }
-    assert_eq!(
-        projected,
-        vec![1.0, 2.0],
-        "storage-only projection selects the storage StateDim, not a prefix stride"
-    );
-
-    let mut projected_deact = strategy
-        .select_for_stage(&pool, &projected, n_trials, 10, 0)
-        .updates;
-    projected_deact.sort_unstable();
-
-    // Pre-fix misaligned read: stride the global buffer by the pool dim,
-    // treating the 4 packed values as 4 one-dim states {1, 10, 2, 20}. cut0 is
-    // at-max at the large lag values, so it survives — the wrong deactivation set.
-    let derived_trials = global_states.len() / n_slots;
-    let mut misaligned_deact = strategy
-        .select_for_stage(&pool, &global_states, derived_trials, 10, 0)
-        .updates;
-    misaligned_deact.sort_unstable();
-
-    assert_eq!(
-        projected_deact,
-        vec![0, 2],
-        "projected read deactivates cut0 (never at-max among the storage states) and cut2"
-    );
-    assert_eq!(
-        misaligned_deact,
-        vec![2],
-        "misaligned read wrongly keeps cut0 (at-max at lag values read as storage)"
-    );
-    assert_ne!(
-        projected_deact, misaligned_deact,
-        "the projection must change the deactivation set on a reduced pool"
-    );
 }
 
 /// Dual-folding verification.
@@ -10388,11 +10450,11 @@ mod f36_gap_attainability {
 }
 
 /// Enumerated-study checkpoint export→re-load round-trip under the stride-1
-/// `cut_id` numbering. The sampled half is `d12_checkpoint_round_trip`; this pins
-/// the enumerated half — an enumerated policy's dense stride-1 `cut_id`
-/// (`iteration_generated * visit_stride + forward_pass_index` with `visit_stride
-/// == 1` and `forward_pass_index == 0`, so `cut_id == iteration` for a non-leaf
-/// pool, never `iteration ×` a larger stride) survives write→read intact. The
+/// slot numbering. The sampled half is `d12_checkpoint_round_trip`; this pins
+/// the enumerated half — an enumerated non-leaf pool writes one cut per
+/// iteration at forward pass 0, so its slot advances by one per iteration
+/// (`visit_stride == 1`, never a larger stride), and `(slot_index, iteration,
+/// forward_pass_index)` survives write→read intact. The
 /// trunk+fan enumerated graph carries several non-leaf pools (root plus each
 /// fan node) and one shared leaf pool, so the round-trip is pinned across both
 /// stride-1 and stride-0 pools on both backends.
@@ -10400,12 +10462,13 @@ mod f36_gap_attainability {
 mod enumerated_checkpoint {
     use std::collections::HashSet;
 
+    use novomodelo_io::test_support::{producer_block_defaults, stage_cuts_payload_defaults};
     use novomodelo_io::{
         GraphManifest, ProducerBlock, STAGE_CUTS_NODE_ID_SENTINEL,
         STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, StageCutsPayload, read_policy_checkpoint,
         write_policy_checkpoint,
     };
-    use novomodelo_sddp::policy_export::build_stage_cut_records;
+    use novomodelo_sddp::policy_export::{BindingCounters, build_stage_cut_records};
     use novomodelo_sddp::setup::NodePos;
     use novomodelo_sddp::test_support::k_fan_setup_enumerated;
     use novomodelo_solver::ActiveSolver;
@@ -10417,7 +10480,7 @@ mod enumerated_checkpoint {
         ignore = "slow: run with --features slow-tests"
     )]
     #[test]
-    fn enumerated_checkpoint_round_trips_under_stride_one_cut_ids() {
+    fn enumerated_checkpoint_round_trips_slot_and_iteration_under_stride_one() {
         const K: usize = 3;
         const MAX_ITERATIONS: u32 = 4;
 
@@ -10456,7 +10519,7 @@ mod enumerated_checkpoint {
         );
 
         let fcf = &fixture.setup.fcf;
-        // The stride that drives the enumerated cut_id numbering.
+        // The stride that drives the enumerated slot numbering.
         for &p in &nonleaf_pools {
             assert_eq!(
                 fcf.pools[p].visit_stride, 1,
@@ -10470,19 +10533,29 @@ mod enumerated_checkpoint {
             );
         }
 
-        // The real export path: cut_id = iteration_generated * visit_stride + fp.
-        let cut_records_per_stage = build_stage_cut_records(fcf);
+        // The real export path.
+        let cut_records_per_stage =
+            build_stage_cut_records(fcf, BindingCounters::Omitted).expect("export");
 
-        // Write-side stride-1 pin: a non-leaf pool's cut_id is dense (== its
-        // iteration), never iteration × a larger stride; the leaf pool emits none.
+        // Write-side stride-1 pin: a non-leaf pool's slot advances by one per
+        // iteration at forward pass 0, never by a larger stride; the leaf pool
+        // emits none.
         let mut nonleaf_cut_count = 0usize;
         for (pool_idx, records) in cut_records_per_stage.iter().enumerate() {
             if nonleaf_pools.contains(&pool_idx) {
                 for rec in records {
                     assert_eq!(
-                        rec.cut_id,
-                        u64::from(rec.iteration),
-                        "non-leaf pool {pool_idx}: stride-1 cut_id must equal its iteration"
+                        (
+                            rec.slot_index - records[0].slot_index,
+                            rec.iteration - records[0].iteration,
+                            rec.forward_pass_index
+                        ),
+                        (
+                            rec.iteration - records[0].iteration,
+                            rec.iteration - records[0].iteration,
+                            0
+                        ),
+                        "non-leaf pool {pool_idx}: stride-1 slots follow the iteration at pass 0"
                     );
                     nonleaf_cut_count += 1;
                 }
@@ -10498,32 +10571,10 @@ mod enumerated_checkpoint {
             "training must produce non-leaf cuts for the round-trip to pin"
         );
 
-        let active_indices_per_stage: Vec<Vec<u32>> = fcf
-            .pools
-            .iter()
-            .map(|pool| {
-                (0..pool.populated())
-                    .filter(|&slot| pool.is_active(slot))
-                    .map(|slot| slot as u32)
-                    .collect()
-            })
-            .collect();
-
-        // Mirrors `sole_pool_owner_node_id` (the production writer's
-        // algorithm in `policy_export.rs`): every non-leaf pool has exactly
-        // one owning node; the shared leaf pool the fixture doc above
-        // names keeps the sentinel.
         let pool_owner_node_id = |pool: usize| -> i32 {
-            let mut owner: Option<i32> = None;
-            for (pos, node) in node_graph.nodes.iter_indexed() {
-                if node.pool_id == pool {
-                    if owner.is_some() {
-                        return STAGE_CUTS_NODE_ID_SENTINEL;
-                    }
-                    owner = Some(node_graph.node_ids[pos].0);
-                }
-            }
-            owner.unwrap_or(STAGE_CUTS_NODE_ID_SENTINEL)
+            node_graph
+                .sole_pool_owner(pool)
+                .map_or(STAGE_CUTS_NODE_ID_SENTINEL, |node| node.0)
         };
 
         let stage_cuts_payloads: Vec<StageCutsPayload<'_>> = fcf
@@ -10534,20 +10585,19 @@ mod enumerated_checkpoint {
                 stage_id: pool_idx as u32,
                 state_dimension: pool.state_dimension as u32,
                 capacity: pool.capacity as u32,
-                warm_start_count: pool.warm_start_count,
+                warm_start_count: pool.prefix_len() as u32,
                 cuts: &cut_records_per_stage[pool_idx],
-                active_cut_indices: &active_indices_per_stage[pool_idx],
                 populated_count: pool.populated() as u32,
                 entity_manifest: &[],
                 cost_scale_factor: 1_000_000.0,
                 node_id: pool_owner_node_id(pool_idx),
-                graph_stage_id: -1,
                 priced_state_date: STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+                ..stage_cuts_payload_defaults()
             })
             .collect();
 
         let n_pools = fcf.pools.len();
-        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
+        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
         let policy_metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             n_pools as u32,
             GraphManifest::default(),
@@ -10560,11 +10610,8 @@ mod enumerated_checkpoint {
                 warm_start_cuts: warm_start_counts.iter().copied().max().unwrap_or(0),
                 warm_start_counts,
                 rng_seed: 42,
-                total_visited_states: 0,
-                training_block_mode: "parallel".to_string(),
-                training_block_mode_per_stage: vec![],
                 cost_scale_factor: None,
-                lower_bound_history: Vec::new(),
+                ..producer_block_defaults()
             },
         );
 
@@ -10588,7 +10635,7 @@ mod enumerated_checkpoint {
         assert_eq!(checkpoint.stage_cuts.len(), n_pools, "one payload per pool");
 
         // Every pool's cuts round-trip byte-for-byte, and every reloaded non-leaf
-        // cut still carries the dense stride-1 cut_id (== its iteration).
+        // cut keeps its stride-1 slot, iteration and forward pass.
         for (pool_idx, stage) in checkpoint.stage_cuts.iter().enumerate() {
             let written = &cut_records_per_stage[pool_idx];
             assert_eq!(
@@ -10601,9 +10648,15 @@ mod enumerated_checkpoint {
                 "pool {pool_idx} state_dimension round-trips"
             );
             for (loaded, w) in stage.cuts.iter().zip(written) {
-                assert_eq!(loaded.cut_id, w.cut_id, "cut_id round-trips");
-                assert_eq!(loaded.slot_index, w.slot_index, "slot_index round-trips");
-                assert_eq!(loaded.iteration, w.iteration, "iteration round-trips");
+                assert_eq!(
+                    (
+                        loaded.slot_index,
+                        loaded.iteration,
+                        loaded.forward_pass_index
+                    ),
+                    (w.slot_index, w.iteration, w.forward_pass_index),
+                    "slot_index, iteration and forward_pass_index round-trip"
+                );
                 assert_eq!(
                     loaded.intercept.to_bits(),
                     w.intercept.to_bits(),
@@ -10618,9 +10671,12 @@ mod enumerated_checkpoint {
             if nonleaf_pools.contains(&pool_idx) {
                 for loaded in &stage.cuts {
                     assert_eq!(
-                        loaded.cut_id,
-                        u64::from(loaded.iteration),
-                        "reloaded non-leaf pool {pool_idx}: stride-1 cut_id survives the round-trip"
+                        (
+                            loaded.slot_index - stage.cuts[0].slot_index,
+                            loaded.forward_pass_index
+                        ),
+                        (loaded.iteration - stage.cuts[0].iteration, 0),
+                        "reloaded non-leaf pool {pool_idx}: stride-1 slots survive the round-trip"
                     );
                 }
             }

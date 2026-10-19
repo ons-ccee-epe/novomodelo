@@ -20,6 +20,7 @@
 use std::path::Path;
 
 use chrono::NaiveDate;
+use novomodelo_io::test_support::{piece_defaults, stage_cuts_payload_defaults};
 use novomodelo_io::{
     GraphManifest, PolicyCutRecord, STAGE_CUTS_NODE_ID_SENTINEL, StageCutsPayload,
     encode_slot_date, write_policy_checkpoint,
@@ -44,7 +45,7 @@ fn fixture_priced_date(pool: u32) -> NaiveDate {
 /// `graph_nodes` (`(node_id, stage_id, pool_id)` triples all naming
 /// `pool_id`): `graph_stage_id` is their shared `stage_id`; `node_id` is the
 /// sole owner's id, or [`STAGE_CUTS_NODE_ID_SENTINEL`] when more than one node
-/// owns the pool — mirroring the real writer's `sole_pool_owner_node_id`, so
+/// owns the pool — mirroring `NodeGraph::sole_pool_owner`, so
 /// `load_boundary_cuts` resolves and single-node-checks this pool exactly as
 /// it would a genuinely exported one. Carries no entity manifest (the
 /// identity check is out of this probe's scope; covered by the
@@ -61,16 +62,14 @@ fn write_synthetic_checkpoint(
         .iter()
         .enumerate()
         .map(|(i, &intercept)| PolicyCutRecord {
-            cut_id: i as u64,
             slot_index: i as u32,
             iteration: 0,
-            forward_pass_index: 0,
             intercept,
             coefficients: &coefficients,
             is_active: true,
+            ..piece_defaults()
         })
         .collect();
-    let active_cut_indices: Vec<u32> = (0..intercepts.len() as u32).collect();
 
     let mut owner_node_id: Option<i32> = None;
     let mut owner_stage_id: Option<i32> = None;
@@ -95,15 +94,14 @@ fn write_synthetic_checkpoint(
         stage_id: pool_id,
         state_dimension,
         capacity: intercepts.len() as u32,
-        warm_start_count: 0,
         cuts: &cuts,
-        active_cut_indices: &active_cut_indices,
         populated_count: intercepts.len() as u32,
         entity_manifest: &[],
         cost_scale_factor: 1_000_000.0,
         node_id,
         graph_stage_id,
         priced_state_date: encode_slot_date(fixture_priced_date(pool_id)),
+        ..stage_cuts_payload_defaults()
     };
     let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
         1,
@@ -189,14 +187,14 @@ fn single_node_source_injects_into_the_one_pool_every_terminal_fan_leaf_shares()
         "injection must not fan out into per-leaf pools"
     );
     assert!(
-        setup.fcf.pools[terminal_idx].has_warm_start_cuts(),
+        setup.fcf.pools[terminal_idx].has_prefix_cuts(),
         "inject_boundary_cuts must write into the pool NodeGraph::terminal_pool resolves"
     );
 
     for &pool_id in &leaf_pool_ids {
         let pool = &setup.fcf.pools[pool_id];
         assert_eq!(
-            pool.warm_start_count as usize,
+            pool.prefix_len(),
             boundary_cuts.len(),
             "every terminal fan leaf's own pool must carry the injected boundary cuts"
         );

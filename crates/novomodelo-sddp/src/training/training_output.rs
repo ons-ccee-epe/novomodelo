@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use novomodelo_core::TrainingEvent;
 use novomodelo_io::{
     IterationRecord, MetadataTrainingSolveStats, RowPoolStatistics, RowSelectionRecord, RunStatus,
-    TrainingOutput,
+    TrainingOutput, WorkerTimingRecord,
 };
 
 use crate::stopping_rule::StopMask;
@@ -33,13 +33,14 @@ struct PartialRecord {
     cuts_added: u32,
     cuts_removed: u32,
     cuts_active: u32,
+    /// The iteration's `PolicyPoolSummary` set `cuts_removed` and `cuts_active`.
+    pool_summary_seen: bool,
     /// Scalar bound-statistic `allreduce` time — not the `allgatherv` scenario exchange.
     forward_sync_ms: u64,
     /// Policy sync allgatherv time.
     cut_sync_ms: u64,
     /// Local row selection time.
     cut_selection_ms: u64,
-    cut_selection_allgatherv_ms: u64,
     /// Cumulative LP solve wall-clock time for this iteration.
     solve_time_ms: f64,
     state_exchange_ms: u64,
@@ -55,6 +56,8 @@ struct PartialRecord {
     rows_in_lp_count: u64,
     /// Running peak resident rows-in-LP through this iteration (all ranks); `max`-folds to the run-level peak. Zero for non-lazy methods.
     rows_in_lp_max: u64,
+    /// This iteration's lazy solves (all ranks) that reached the round cap with a row still violated.
+    lazy_round_cap_hits: u64,
 }
 
 /// Accumulate per-iteration partial records from the event log, returning
@@ -81,6 +84,7 @@ fn accumulate_partial_records(events: &[TrainingEvent]) -> (BTreeMap<u64, Partia
                 rows_in_lp_sum,
                 rows_in_lp_count,
                 rows_in_lp_max,
+                lazy_round_cap_hits,
                 ..
             } => {
                 let record = partials.entry(*iteration).or_default();
@@ -98,6 +102,7 @@ fn accumulate_partial_records(events: &[TrainingEvent]) -> (BTreeMap<u64, Partia
                 record.rows_in_lp_sum = *rows_in_lp_sum;
                 record.rows_in_lp_count = *rows_in_lp_count;
                 record.rows_in_lp_max = *rows_in_lp_max;
+                record.lazy_round_cap_hits = *lazy_round_cap_hits;
             }
 
             TrainingEvent::ForwardSyncComplete {
@@ -140,28 +145,40 @@ fn accumulate_partial_records(events: &[TrainingEvent]) -> (BTreeMap<u64, Partia
             TrainingEvent::PolicySyncComplete {
                 iteration,
                 rows_active,
-                rows_removed,
                 sync_time_ms,
                 ..
             } => {
                 let record = partials.entry(*iteration).or_default();
-                record.cuts_active = *rows_active;
-                record.cuts_removed = *rows_removed;
+                if !record.pool_summary_seen {
+                    record.cuts_active = *rows_active;
+                }
                 record.cut_sync_ms = *sync_time_ms;
                 peak_active = peak_active.max(u64::from(*rows_active));
             }
 
             TrainingEvent::PolicySelectionComplete {
                 iteration,
-                rows_deactivated,
                 selection_time_ms,
-                allgatherv_time_ms,
                 ..
             } => {
                 let record = partials.entry(*iteration).or_default();
                 record.cut_selection_ms = *selection_time_ms;
-                record.cut_selection_allgatherv_ms = *allgatherv_time_ms;
-                record.cuts_active = record.cuts_active.saturating_sub(*rows_deactivated);
+            }
+
+            TrainingEvent::PolicyPoolSummary { iteration, pools } => {
+                let record = partials.entry(*iteration).or_default();
+                record.cuts_removed = pools
+                    .iter()
+                    .map(|pool| {
+                        pool.rows_deactivated.unwrap_or(0) + pool.budget_evicted.unwrap_or(0)
+                    })
+                    .sum();
+                record.cuts_active = pools
+                    .iter()
+                    .map(|pool| pool.active_after_budget.unwrap_or(pool.rows_active_after))
+                    .sum();
+                record.pool_summary_seen = true;
+                peak_active = peak_active.max(u64::from(record.cuts_active));
             }
 
             _ => {}
@@ -190,7 +207,6 @@ fn partial_to_iteration_record(iter: u64, partial: &PartialRecord) -> IterationR
         .forward_ms
         .saturating_add(partial.backward_ms)
         .saturating_add(partial.cut_selection_ms)
-        .saturating_add(partial.cut_selection_allgatherv_ms)
         .saturating_add(partial.forward_sync_ms)
         .saturating_add(partial.lower_bound_eval_ms);
     let overhead_ms = partial.iteration_time_ms.saturating_sub(attributed_ms);
@@ -231,6 +247,7 @@ fn partial_to_iteration_record(iter: u64, partial: &PartialRecord) -> IterationR
         time_overhead_ms: overhead_ms,
         solve_time_ms: partial.solve_time_ms,
         mean_rows_in_lp,
+        lazy_round_cap_hits: partial.lazy_round_cap_hits,
     }
 }
 
@@ -240,7 +257,7 @@ fn partial_to_iteration_record(iter: u64, partial: &PartialRecord) -> IterationR
 /// # Examples
 ///
 /// ```rust
-/// use novomodelo_sddp::{build_training_output, TrainingResult, FutureCostFunction};
+/// use novomodelo_sddp::{build_training_output, CheckpointBasisStore, TrainingResult, FutureCostFunction};
 /// use novomodelo_core::TrainingEvent;
 ///
 /// let result = TrainingResult::new(
@@ -254,7 +271,7 @@ fn partial_to_iteration_record(iter: u64, partial: &PartialRecord) -> IterationR
 ///     Vec::new(),
 ///     Vec::new(),
 ///     None,
-///     None,
+///     CheckpointBasisStore::default(),
 /// );
 ///
 /// let events = vec![TrainingEvent::IterationSummary {
@@ -275,6 +292,7 @@ fn partial_to_iteration_record(iter: u64, partial: &PartialRecord) -> IterationR
 ///     rows_in_lp_sum: 0,
 ///     rows_in_lp_count: 0,
 ///     rows_in_lp_max: 0,
+///     lazy_round_cap_hits: 0,
 /// }];
 ///
 /// let fcf = FutureCostFunction::new(2, 1, 4, 1, &[0; 2]);
@@ -328,7 +346,7 @@ pub fn build_training_output(
         rows_in_lp_total,
         rows_in_lp_solve_count,
         rows_in_lp_max,
-        total_loaded: fcf.total_warm_start_cuts() as u64,
+        total_loaded: fcf.total_loaded_cuts() as u64,
     };
 
     let mask = result.stop_decision.mask();
@@ -355,23 +373,21 @@ pub fn build_training_output(
     let cut_selection_records: Vec<RowSelectionRecord> = events
         .iter()
         .filter_map(|event| {
-            if let TrainingEvent::PolicySelectionComplete {
-                iteration,
-                per_stage,
-                ..
-            } = event
-            {
-                Some(per_stage.iter().map(move |rec| RowSelectionRecord {
+            if let TrainingEvent::PolicyPoolSummary { iteration, pools } = event {
+                Some(pools.iter().map(move |pool| RowSelectionRecord {
                     iteration: *iteration as u32,
-                    stage: rec.stage,
-                    cuts_populated: rec.rows_populated,
-                    cuts_active_before: rec.rows_active_before,
-                    cuts_deactivated: rec.rows_deactivated,
-                    cuts_reactivated: rec.rows_reactivated,
-                    cuts_active_after: rec.rows_active_after,
-                    selection_time_ms: rec.selection_time_ms,
-                    budget_evicted: rec.budget_evicted,
-                    active_after_budget: rec.active_after_budget,
+                    pool_id: pool.pool_id,
+                    stage_id: pool.stage_id,
+                    node_id: pool.node_id,
+                    cuts_in_pool: pool.rows_in_pool,
+                    cuts_active_before: pool.rows_active_before,
+                    cuts_deactivated: pool.rows_deactivated,
+                    cuts_reactivated: pool.rows_reactivated,
+                    cuts_active_after: pool.rows_active_after,
+                    selection_time_ms: pool.selection_time_ms,
+                    budget_evicted: pool.budget_evicted,
+                    active_after_budget: pool.active_after_budget,
+                    cuts_in_lp: pool.rows_in_lp,
                 }))
             } else {
                 None
@@ -473,7 +489,7 @@ pub fn sum_phase_timing_ms(records: &[IterationRecord]) -> PhaseTimingTotals {
 fn build_worker_timing_records(
     events: &[TrainingEvent],
     convergence_records: &[IterationRecord],
-) -> Vec<novomodelo_io::WorkerTimingRecord> {
+) -> Vec<WorkerTimingRecord> {
     use novomodelo_core::{
         WORKER_TIMING_SLOT_BWD_SETUP, WORKER_TIMING_SLOT_BWD_WALL, WORKER_TIMING_SLOT_COUNT,
         WORKER_TIMING_SLOT_FWD_SETUP, WORKER_TIMING_SLOT_FWD_WALL, WORKER_TIMING_SLOT_SCORING,
@@ -511,7 +527,7 @@ fn build_worker_timing_records(
         }
     }
 
-    let mut out: Vec<novomodelo_io::WorkerTimingRecord> =
+    let mut out: Vec<WorkerTimingRecord> =
         Vec::with_capacity(convergence_records.len() + per_worker.len());
 
     for record in convergence_records {
@@ -527,7 +543,7 @@ fn build_worker_timing_records(
         timings[12] = record.time_fwd_load_imbalance_ms;
         timings[13] = record.time_fwd_scheduling_overhead_ms;
         timings[14] = record.time_overhead_ms;
-        out.push(novomodelo_io::WorkerTimingRecord {
+        out.push(WorkerTimingRecord {
             iteration: record.iteration,
             rank: 0,
             worker_id: None,
@@ -536,7 +552,7 @@ fn build_worker_timing_records(
     }
 
     for ((iteration, rank, worker_id), timings) in per_worker {
-        out.push(novomodelo_io::WorkerTimingRecord {
+        out.push(WorkerTimingRecord {
             iteration,
             rank,
             worker_id: Some(worker_id),
@@ -550,16 +566,20 @@ fn build_worker_timing_records(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic, clippy::doc_markdown)]
 mod tests {
-    use novomodelo_core::TrainingEvent;
+    use novomodelo_core::{PoolRowCounts, TrainingEvent};
     use novomodelo_io::{IterationRecord, RunStatus};
 
-    use super::{PhaseTimingTotals, build_training_output, sum_phase_timing_ms};
+    use super::{
+        PhaseTimingTotals, accumulate_partial_records, build_training_output, sum_phase_timing_ms,
+    };
     use crate::config::ShutdownSource;
     use crate::setup::NodeId;
     use crate::stopping_rule::{
         MonitorState, StopDecision, StoppingMode, StoppingRule, StoppingRuleSet,
     };
-    use crate::{ConvergenceMonitor, FutureCostFunction, SyncResult, TrainingResult};
+    use crate::{
+        CheckpointBasisStore, ConvergenceMonitor, FutureCostFunction, SyncResult, TrainingResult,
+    };
 
     fn make_result(reason: &str, lb: f64, ub: f64, gap: f64, iterations: u64) -> TrainingResult {
         TrainingResult::new(
@@ -573,7 +593,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             None,
-            None,
+            CheckpointBasisStore::default(),
         )
     }
 
@@ -596,11 +616,59 @@ mod tests {
             rows_in_lp_sum: 0,
             rows_in_lp_count: 0,
             rows_in_lp_max: 0,
+            lazy_round_cap_hits: 0,
         }
     }
 
     fn make_empty_fcf() -> FutureCostFunction {
         FutureCostFunction::new(2, 1, 4, 10, &[0; 2])
+    }
+
+    fn pool_counts(pool_id: u32, rows_active_before: u32) -> PoolRowCounts {
+        PoolRowCounts {
+            pool_id,
+            stage_id: 0,
+            node_id: None,
+            rows_in_pool: rows_active_before,
+            rows_active_before,
+            rows_deactivated: None,
+            rows_reactivated: None,
+            selection_time_ms: None,
+            rows_active_after: rows_active_before,
+            budget_evicted: None,
+            active_after_budget: None,
+            rows_in_lp: None,
+        }
+    }
+
+    /// derived: the pools hold 5 + 11 + 8 = 24 active rows before row management
+    /// and 24 - 3 deactivated + 2 reactivated - 2 evicted = 21 after it; the
+    /// two pools the cap does not visit report `rows_active_after`.
+    fn pool_summary_of_21_active_rows(iteration: u64) -> TrainingEvent {
+        TrainingEvent::PolicyPoolSummary {
+            iteration,
+            pools: vec![
+                pool_counts(0, 5),
+                PoolRowCounts {
+                    rows_deactivated: Some(3),
+                    rows_reactivated: Some(2),
+                    rows_active_after: 10,
+                    budget_evicted: Some(2),
+                    active_after_budget: Some(8),
+                    ..pool_counts(1, 11)
+                },
+                pool_counts(2, 8),
+            ],
+        }
+    }
+
+    fn sync_event(iteration: u64, rows_active: u32) -> TrainingEvent {
+        TrainingEvent::PolicySyncComplete {
+            iteration,
+            rows_distributed: 12,
+            rows_active,
+            sync_time_ms: 4,
+        }
     }
 
     #[test]
@@ -989,8 +1057,8 @@ mod tests {
     }
 
     #[test]
-    fn cut_fields_from_backward_and_sync_events() {
-        let result = make_result("iteration_limit", 100.0, 110.0, 0.1, 1);
+    fn removed_and_active_rows_come_from_the_pool_summary() {
+        let result = make_result("iteration_limit", 100.0, 110.0, 0.1, 2);
         let events = vec![
             make_iteration_summary(1, 100.0, 110.0, 0.1),
             TrainingEvent::BackwardPassComplete {
@@ -1004,58 +1072,71 @@ mod tests {
                 load_imbalance_ms: 0,
                 scheduling_overhead_ms: 0,
             },
-            TrainingEvent::PolicySyncComplete {
-                iteration: 1,
-                rows_distributed: 12,
-                rows_active: 24,
-                rows_removed: 2,
-                sync_time_ms: 4,
-            },
+            sync_event(1, 24),
+            pool_summary_of_21_active_rows(1),
+            make_iteration_summary(2, 101.0, 109.0, 0.08),
+            sync_event(2, 33),
+        ];
+        let fcf = make_empty_fcf();
+
+        let output = build_training_output(&result, &events, &fcf, false);
+
+        let with_summary = &output.convergence_records[0];
+        assert_eq!(with_summary.cuts_added, 12);
+        assert_eq!(with_summary.cuts_removed, 5);
+        assert_eq!(with_summary.cuts_active, 21);
+        let without_summary = &output.convergence_records[1];
+        assert_eq!(without_summary.cuts_removed, 0);
+        assert_eq!(without_summary.cuts_active, 33);
+    }
+
+    #[test]
+    fn the_pool_summary_wins_whatever_its_order_in_the_log() {
+        let result = make_result("iteration_limit", 100.0, 110.0, 0.1, 1);
+        let events = vec![
+            make_iteration_summary(1, 100.0, 110.0, 0.1),
+            pool_summary_of_21_active_rows(1),
+            sync_event(1, 24),
         ];
         let fcf = make_empty_fcf();
 
         let output = build_training_output(&result, &events, &fcf, false);
 
         let rec = &output.convergence_records[0];
-        assert_eq!(rec.cuts_added, 12);
-        assert_eq!(rec.cuts_removed, 2);
-        assert_eq!(rec.cuts_active, 24);
+        assert_eq!(rec.cuts_removed, 5);
+        assert_eq!(rec.cuts_active, 21);
     }
 
     #[test]
     fn peak_active_tracks_maximum_cuts_active() {
-        let result = make_result("iteration_limit", 100.0, 110.0, 0.1, 3);
+        let result = make_result("iteration_limit", 100.0, 110.0, 0.1, 4);
         let events = vec![
             make_iteration_summary(1, 95.0, 112.0, 0.15),
-            TrainingEvent::PolicySyncComplete {
-                iteration: 1,
-                rows_distributed: 10,
-                rows_active: 10,
-                rows_removed: 0,
-                sync_time_ms: 2,
-            },
+            sync_event(1, 10),
             make_iteration_summary(2, 98.0, 111.0, 0.12),
-            TrainingEvent::PolicySyncComplete {
-                iteration: 2,
-                rows_distributed: 10,
-                rows_active: 20,
-                rows_removed: 0,
-                sync_time_ms: 2,
-            },
+            sync_event(2, 20),
             make_iteration_summary(3, 100.0, 110.0, 0.1),
-            TrainingEvent::PolicySyncComplete {
-                iteration: 3,
-                rows_distributed: 5,
-                rows_active: 18, // peak was 20 in iteration 2
-                rows_removed: 7,
-                sync_time_ms: 2,
+            sync_event(3, 18), // peak was 20 in iteration 2
+            make_iteration_summary(4, 101.0, 109.0, 0.08),
+            sync_event(4, 25),
+            // 25 - 1 deactivated + 6 reactivated: above every sync count
+            TrainingEvent::PolicyPoolSummary {
+                iteration: 4,
+                pools: vec![PoolRowCounts {
+                    rows_deactivated: Some(1),
+                    rows_reactivated: Some(6),
+                    rows_active_after: 30,
+                    budget_evicted: Some(0),
+                    active_after_budget: Some(30),
+                    ..pool_counts(0, 25)
+                }],
             },
         ];
         let fcf = make_empty_fcf();
 
         let output = build_training_output(&result, &events, &fcf, false);
 
-        assert_eq!(output.cut_stats.peak_active, 20);
+        assert_eq!(output.cut_stats.peak_active, 30);
     }
 
     #[test]
@@ -1100,6 +1181,7 @@ mod tests {
                 rows_in_lp_sum: 0,
                 rows_in_lp_count: 0,
                 rows_in_lp_max: 0,
+                lazy_round_cap_hits: 0,
             },
             TrainingEvent::ForwardSyncComplete {
                 iteration: 1,
@@ -1111,7 +1193,6 @@ mod tests {
                 iteration: 1,
                 rows_distributed: 10,
                 rows_active: 10,
-                rows_removed: 0,
                 sync_time_ms: 5,
             },
             TrainingEvent::PolicySelectionComplete {
@@ -1119,8 +1200,6 @@ mod tests {
                 rows_deactivated: 3,
                 stages_processed: 2,
                 selection_time_ms: 8,
-                allgatherv_time_ms: 2,
-                per_stage: vec![],
             },
         ];
         let fcf = make_empty_fcf();
@@ -1155,8 +1234,8 @@ mod tests {
         let result = make_result("iteration_limit", 100.0, 110.0, 0.1, 1);
         // Top-level non-overlapping phases:
         //   forward=40, backward=50, allreduce=7, selection=8,
-        //   allgatherv=2, lower_bound=3 → attributed=110
-        // total=120 → overhead=10; cut_sync(5) is a sub-component of
+        //   lower_bound=3 → attributed=108
+        // total=120 → overhead=12; cut_sync(5) is a sub-component of
         // backward(50) and is NOT in the attributed sum.
         let events = vec![
             TrainingEvent::IterationSummary {
@@ -1177,6 +1256,7 @@ mod tests {
                 rows_in_lp_sum: 0,
                 rows_in_lp_count: 0,
                 rows_in_lp_max: 0,
+                lazy_round_cap_hits: 0,
             },
             TrainingEvent::ForwardSyncComplete {
                 iteration: 1,
@@ -1188,7 +1268,6 @@ mod tests {
                 iteration: 1,
                 rows_distributed: 10,
                 rows_active: 10,
-                rows_removed: 0,
                 sync_time_ms: 5,
             },
             TrainingEvent::PolicySelectionComplete {
@@ -1196,8 +1275,6 @@ mod tests {
                 rows_deactivated: 3,
                 stages_processed: 2,
                 selection_time_ms: 8,
-                allgatherv_time_ms: 2,
-                per_stage: vec![],
             },
         ];
         let fcf = make_empty_fcf();
@@ -1206,8 +1283,8 @@ mod tests {
         let rec = &output.convergence_records[0];
 
         assert_eq!(
-            rec.time_overhead_ms, 10,
-            "overhead_ms must equal total(120) - attributed(110) = 10"
+            rec.time_overhead_ms, 12,
+            "overhead_ms must equal total(120) - attributed(108) = 12"
         );
     }
 
@@ -1232,6 +1309,7 @@ mod tests {
             rows_in_lp_sum: 0,
             rows_in_lp_count: 0,
             rows_in_lp_max: 0,
+            lazy_round_cap_hits: 0,
         }];
         let fcf = make_empty_fcf();
 
@@ -1246,43 +1324,41 @@ mod tests {
 
     #[test]
     fn cut_selection_records_extracted_from_events() {
-        use novomodelo_core::StageRowSelectionRecord;
-
         let result = make_result("iteration_limit", 100.0, 110.0, 0.1, 3);
         let events = vec![
             make_iteration_summary(1, 95.0, 112.0, 0.15),
             make_iteration_summary(2, 98.0, 111.0, 0.12),
             make_iteration_summary(3, 100.0, 110.0, 0.1),
-            TrainingEvent::PolicySelectionComplete {
+            TrainingEvent::PolicyPoolSummary {
                 iteration: 2,
-                rows_deactivated: 3,
-                stages_processed: 2,
-                selection_time_ms: 10,
-                allgatherv_time_ms: 0,
-                per_stage: vec![
-                    StageRowSelectionRecord {
-                        stage: 0,
-                        rows_populated: 5,
+                pools: vec![
+                    PoolRowCounts {
+                        pool_id: 0,
+                        stage_id: 10,
+                        node_id: Some(100),
+                        rows_in_pool: 5,
                         rows_active_before: 5,
-                        rows_deactivated: 0,
-                        rows_reactivated: 0,
+                        rows_deactivated: None,
+                        rows_reactivated: None,
+                        selection_time_ms: None,
                         rows_active_after: 5,
-                        selection_time_ms: 0.0,
                         budget_evicted: None,
                         active_after_budget: None,
-                        rows_in_lp: 5,
+                        rows_in_lp: Some(5),
                     },
-                    StageRowSelectionRecord {
-                        stage: 1,
-                        rows_populated: 8,
+                    PoolRowCounts {
+                        pool_id: 1,
+                        stage_id: 20,
+                        node_id: None,
+                        rows_in_pool: 9,
                         rows_active_before: 8,
-                        rows_deactivated: 3,
-                        rows_reactivated: 0,
-                        rows_active_after: 5,
-                        selection_time_ms: 2.5,
-                        budget_evicted: None,
-                        active_after_budget: None,
-                        rows_in_lp: 8,
+                        rows_deactivated: Some(3),
+                        rows_reactivated: Some(1),
+                        selection_time_ms: Some(2.5),
+                        rows_active_after: 6,
+                        budget_evicted: Some(1),
+                        active_after_budget: Some(5),
+                        rows_in_lp: Some(5),
                     },
                 ],
             },
@@ -1291,12 +1367,34 @@ mod tests {
         let output = build_training_output(&result, &events, &fcf, false);
 
         assert_eq!(output.cut_selection_records.len(), 2);
-        assert_eq!(output.cut_selection_records[0].iteration, 2);
-        assert_eq!(output.cut_selection_records[0].stage, 0);
-        assert_eq!(output.cut_selection_records[0].cuts_deactivated, 0);
-        assert_eq!(output.cut_selection_records[1].stage, 1);
-        assert_eq!(output.cut_selection_records[1].cuts_deactivated, 3);
-        assert_eq!(output.cut_selection_records[1].cuts_active_after, 5);
+        let root = &output.cut_selection_records[0];
+        assert_eq!(root.iteration, 2);
+        assert_eq!(root.pool_id, 0);
+        assert_eq!(root.stage_id, 10);
+        assert_eq!(root.node_id, Some(100));
+        assert_eq!(root.cuts_in_pool, 5);
+        assert_eq!(root.cuts_active_before, 5);
+        assert_eq!(root.cuts_deactivated, None);
+        assert_eq!(root.cuts_reactivated, None);
+        assert_eq!(root.cuts_active_after, 5);
+        assert_eq!(root.selection_time_ms, None);
+        assert_eq!(root.budget_evicted, None);
+        assert_eq!(root.active_after_budget, None);
+        assert_eq!(root.cuts_in_lp, Some(5));
+        let interior = &output.cut_selection_records[1];
+        assert_eq!(interior.iteration, 2);
+        assert_eq!(interior.pool_id, 1);
+        assert_eq!(interior.stage_id, 20);
+        assert_eq!(interior.node_id, None);
+        assert_eq!(interior.cuts_in_pool, 9);
+        assert_eq!(interior.cuts_active_before, 8);
+        assert_eq!(interior.cuts_deactivated, Some(3));
+        assert_eq!(interior.cuts_reactivated, Some(1));
+        assert_eq!(interior.cuts_active_after, 6);
+        assert_eq!(interior.selection_time_ms, Some(2.5));
+        assert_eq!(interior.budget_evicted, Some(1));
+        assert_eq!(interior.active_after_budget, Some(5));
+        assert_eq!(interior.cuts_in_lp, Some(5));
     }
 
     #[test]
@@ -1339,6 +1437,7 @@ mod tests {
             lp_solves: 0,
             solve_time_ms: 0.0,
             mean_rows_in_lp: 0.0,
+            lazy_round_cap_hits: 0,
         }
     }
 
@@ -1397,5 +1496,35 @@ mod tests {
     fn sum_phase_timing_ms_empty_slice_returns_zero() {
         let totals = sum_phase_timing_ms(&[]);
         assert_eq!(totals, PhaseTimingTotals::default());
+    }
+
+    #[test]
+    fn round_cap_hits_reach_the_convergence_record() {
+        let with_hits = |iteration, hits| {
+            let mut event = make_iteration_summary(iteration, 100.0, 110.0, 0.1);
+            if let TrainingEvent::IterationSummary {
+                lazy_round_cap_hits,
+                ..
+            } = &mut event
+            {
+                *lazy_round_cap_hits = hits;
+            }
+            event
+        };
+
+        let events = [with_hits(1, 2), with_hits(2, 0)];
+        let (partials, _) = accumulate_partial_records(&events);
+
+        assert_eq!(partials[&1].lazy_round_cap_hits, 2);
+        assert_eq!(partials[&2].lazy_round_cap_hits, 0);
+
+        let result = make_result("iteration_limit", 100.0, 110.0, 0.1, 2);
+        let output = build_training_output(&result, &events, &make_empty_fcf(), false);
+        let hits: Vec<u64> = output
+            .convergence_records
+            .iter()
+            .map(|record| record.lazy_round_cap_hits)
+            .collect();
+        assert_eq!(hits, [2, 0]);
     }
 }

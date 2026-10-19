@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 // Items may be unused in one binary but used in another.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -51,6 +52,25 @@ pub fn write_file(root: &Path, relative: &str, content: &str) {
         fs::create_dir_all(parent).unwrap();
     }
     fs::write(&full, content).unwrap();
+}
+
+/// Every file under `dir` keyed by its path relative to `dir`, with its bytes:
+/// two equal snapshots hold the same relative paths, lengths and contents.
+pub fn snapshot_files(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn walk(root: &Path, dir: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(root, &path, files);
+            } else {
+                let relative = path.strip_prefix(root).unwrap().to_path_buf();
+                files.insert(relative, fs::read(&path).unwrap());
+            }
+        }
+    }
+    let mut files = BTreeMap::new();
+    walk(dir, dir, &mut files);
+    files
 }
 
 /// Recursively copies `src` into `dst` without following symlinks.

@@ -3,7 +3,7 @@
 //! Python-parity contract: every file written here must also be written by
 //! `novomodelo-python`'s `run.rs`; the two writers must stay mirrored.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use console::Term;
 
@@ -56,8 +56,9 @@ pub(super) struct WriteTrainingArgs<'a> {
     pub(super) out: &'a Term,
 }
 
-/// Write the training artifacts (policy checkpoint, results, sidecars, stats).
-pub(super) fn write_training_outputs(args: &WriteTrainingArgs<'_>) -> Result<(), CliError> {
+/// Write the training artifacts (policy checkpoint, results, sidecars, stats),
+/// returning the directory the policy checkpoint was written to.
+pub(super) fn write_training_outputs(args: &WriteTrainingArgs<'_>) -> Result<PathBuf, CliError> {
     if !args.quiet {
         use std::io::Write;
         let _ = args.out.write_line("Writing training outputs...");
@@ -65,9 +66,8 @@ pub(super) fn write_training_outputs(args: &WriteTrainingArgs<'_>) -> Result<(),
     }
     let write_start = std::time::Instant::now();
 
-    let policy_dir = args.output_dir.join(&args.setup.policy_path);
-    write_checkpoint(
-        &policy_dir,
+    let policy_dir = write_checkpoint(
+        &args.output_dir.join(&args.setup.policy_path),
         args.setup,
         args.system,
         args.training_result,
@@ -75,7 +75,6 @@ pub(super) fn write_training_outputs(args: &WriteTrainingArgs<'_>) -> Result<(),
             max_iterations: args.setup.loop_params.max_iterations,
             forward_passes: args.setup.loop_params.forward_passes,
             seed: args.setup.loop_params.seed,
-            export_states: args.config.exports.states,
         },
     )
     .map_err(CliError::from)?;
@@ -139,7 +138,7 @@ pub(super) fn write_training_outputs(args: &WriteTrainingArgs<'_>) -> Result<(),
         print_output_path(args.out, args.output_dir, write_secs);
     }
 
-    Ok(())
+    Ok(policy_dir)
 }
 
 /// Arguments for [`write_simulation_outputs`].

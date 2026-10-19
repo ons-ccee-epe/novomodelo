@@ -1,9 +1,11 @@
 //! Training-phase configuration types for `config.json → training`.
 
 use std::fmt;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 
+use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{Map, Value};
 
 use super::scenario_source::RawScenarioSourceConfig;
 
@@ -144,121 +146,335 @@ impl fmt::Display for StoppingMode {
 
 /// Row-selection settings (`config.json → training.cut_selection`).
 ///
-/// Row selection bounds the per-solve LP size by limiting how many constraint
-/// rows from the row pool are carried into each solve. `selection` chooses the
-/// method and carries only that method's parameters; omitting it (the default)
-/// disables row selection.
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+/// `selection` chooses the method and carries only that method's parameters;
+/// omitting it (the default) disables row selection.
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RowSelectionConfig {
-    /// Minimum dual-multiplier magnitude for a constraint row to count as
-    /// binding at a solution point. Rows whose dual value falls below this are
-    /// treated as inactive in activity tracking. Default `0.0` when absent.
-    #[serde(default)]
-    pub row_activity_tolerance: Option<f64>,
+    /// Binding threshold for activity tracking: a constraint row counts as
+    /// binding at a solution point when its dual multiplier is strictly greater
+    /// than this value (a signed comparison; a multiplier equal to the
+    /// threshold does not bind). In one solve the multipliers of a stage's pool
+    /// rows are non-negative weights whose sum is at most that stage's discount
+    /// factor, so the threshold is dimensionless. The recorded activity is read
+    /// only by `max_active_per_stage` and by the `seed_window` of the `dynamic`
+    /// method, and it is recorded, and written to the policy checkpoint, only
+    /// when one of them is configured. Must be `>= 0`. A value of `0` counts a
+    /// multiplier at solver rounding level as binding.
+    pub row_activity_tolerance: f64,
 
-    /// Hard cap on active rows per stage LP, enforced after the selection
-    /// method runs. Rows are evicted least-recently-active first, tie-broken by
-    /// least-frequently-active; rows added in the current iteration are never
-    /// evicted. Absent (default): no cap.
-    #[serde(default)]
+    /// Cap on the active rows that the current run has added to a stage's row
+    /// pool. Absent (default): no cap.
+    ///
+    /// The cap applies to the row pool of every stage strictly between the
+    /// first and the last; the pools of the first stage and of the last stage
+    /// are not capped. Where the policy graph has several nodes at such a
+    /// stage, each node has its own pool and the cap applies to each pool
+    /// separately. Rows loaded from a policy (`policy.mode` set to
+    /// `warm_start`, or `policy.boundary`) are never evicted and do not count
+    /// toward the cap, so a pool can hold more active rows than the cap. Under
+    /// `resume` each reloaded row keeps the role it had in the run that wrote
+    /// the checkpoint: the rows that run added count toward the cap and can be
+    /// evicted, and the rows it loaded do not.
+    ///
+    /// The cap is applied in every training iteration, after that iteration's
+    /// rows have been added, whether or not a selection method is configured;
+    /// in an iteration where the selection method runs its periodic pass, the
+    /// cap is applied after that pass. Rows added in the current iteration
+    /// count toward the cap and are never evicted, so the count stays above
+    /// the cap when those rows alone exceed it.
+    ///
+    /// When the count exceeds the cap, the excess is evicted from the rows
+    /// added in earlier iterations, in ascending order of the iteration in
+    /// which a row was last binding; ties go to the row that was binding in
+    /// fewer solves, then to the row at the lower position in the pool. A row
+    /// that has never been binding ranks by the iteration that added it.
+    /// `row_activity_tolerance` decides whether a row is binding.
+    ///
+    /// The cap is rejected at load when set together with
+    /// `training.cut_selection.selection.method` = `dynamic` or with
+    /// `training.selection.method` set to `enumerated`.
+    ///
+    /// Eviction deactivates a row and keeps it in the pool. With no selection
+    /// method an evicted row does not become active again during training.
+    /// With `level1`, a later selection pass may reactivate it, and the cap is
+    /// then applied again in the same iteration.
     pub max_active_per_stage: Option<u32>,
 
     /// Active selection method and its parameters. Absent/`null` (default)
     /// disables row selection.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_selection_method")]
     pub selection: Option<SelectionMethod>,
+}
+
+impl Default for RowSelectionConfig {
+    fn default() -> Self {
+        Self {
+            row_activity_tolerance: 1e-6,
+            max_active_per_stage: None,
+            selection: None,
+        }
+    }
+}
+
+/// Methods that left the config surface; naming one is a load error that names
+/// `level1`, never a silent mapping onto it.
+const REMOVED_SELECTION_METHODS: [&str; 2] = ["lml1", "domination"];
+
+/// A `level1` key that left the config surface; setting it is a load error,
+/// never a silently dropped key.
+const REMOVED_LEVEL1_KEY: &str = "tie_tolerance";
+
+/// Deserializes `selection`, rejecting a removed `method` or `level1` key
+/// before the derived [`SelectionMethod`] implementation reports it as an
+/// unknown variant or field.
+fn deserialize_selection_method<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<SelectionMethod>, D::Error> {
+    let Some(SelectionEntries(entries)) = Option::<SelectionEntries>::deserialize(deserializer)?
+    else {
+        return Ok(None);
+    };
+    let method = entries.get("method").and_then(Value::as_str);
+    if let Some(removed) = method.filter(|method| REMOVED_SELECTION_METHODS.contains(method)) {
+        return Err(de::Error::custom(format_args!(
+            "the row-selection method `{removed}` was removed: use `level1` \
+             (key `training.cut_selection.selection.method`)"
+        )));
+    }
+    if method == Some("level1") && entries.contains_key(REMOVED_LEVEL1_KEY) {
+        return Err(de::Error::custom(format_args!(
+            "the key `{REMOVED_LEVEL1_KEY}` was removed: `level1` compares row values \
+             exactly; delete the key (`training.cut_selection.selection`)"
+        )));
+    }
+    SelectionMethod::deserialize(Value::Object(entries))
+        .map(Some)
+        .map_err(de::Error::custom)
+}
+
+/// The entries of a `selection` object, read one key at a time so that a
+/// repeated key is serde's `duplicate field` error: collecting into a
+/// [`Value`] would keep the last occurrence silently.
+struct SelectionEntries(Map<String, Value>);
+
+impl<'de> Deserialize<'de> for SelectionEntries {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct EntriesVisitor;
+
+        impl<'de> Visitor<'de> for EntriesVisitor {
+            type Value = SelectionEntries;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("internally tagged enum SelectionMethod")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut entries = Map::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if entries.contains_key(&key) {
+                        return Err(de::Error::custom(format_args!("duplicate field `{key}`")));
+                    }
+                    let value = map.next_value()?;
+                    entries.insert(key, value);
+                }
+                Ok(SelectionEntries(entries))
+            }
+        }
+
+        deserializer.deserialize_map(EntriesVisitor)
+    }
 }
 
 /// Row-selection method and its method-specific parameters.
 ///
 /// The `method` key selects the method, and each method accepts only its own
-/// parameters: a parameter of another method is a load-time error, and a
-/// misspelled `method` is an `unknown variant` error at parse time.
+/// parameters: a parameter of another method, a misspelled `method` and a
+/// removed `method` are load-time errors.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SelectionMethod {
-    /// Level-1: retain any row near-optimal at some visited state.
+    /// Level 1: every row the run adds to the row pool of a stage strictly
+    /// between the first and the last is scored: the pool stores the trial
+    /// state the row was computed at, for the whole run or, with
+    /// `lookback_iterations`, for the iterations that key sets. A row loaded
+    /// from a policy is scored when the policy records it so (`scored`), which
+    /// it does for the rows its writing run added to a pool that stored trial
+    /// states, under `level1` or with `exports.states`; the state the policy
+    /// holds for such a row, if any, is stored with it. At each stored state,
+    /// the row with the highest value there owns the state, among the scored
+    /// rows of that pool, active or not, and its other loaded rows that are
+    /// active; of rows whose values there are exactly equal, the one at the
+    /// lowest pool position owns it. Every `check_frequency` iterations, a
+    /// scored row of such a pool is deactivated when it owns no stored state
+    /// and reactivated when it is inactive and owns one, also once its own
+    /// state has been dropped. Values are compared exactly, with no tolerance,
+    /// and a row of the current iteration is judged like any other. A loaded
+    /// row that is not scored keeps the activity it was loaded with. Under
+    /// `resume` a reloaded row is selected as it would have been in the run
+    /// that wrote the checkpoint.
     Level1 {
-        /// Tie tolerance: a row is active at a state when within this of the
-        /// best row value there. Default `1e-10`.
-        #[serde(default = "default_tie_tolerance")]
-        tie_tolerance: f64,
-        /// Iterations between periodic pruning checks. Must be `> 0`. Default `5`.
-        #[serde(default = "default_check_frequency")]
-        check_frequency: u32,
+        /// Iterations between periodic pruning checks. Default `5`.
+        #[serde(
+            default = "default_check_frequency",
+            deserialize_with = "deserialize_check_frequency"
+        )]
+        check_frequency: NonZeroU32,
+        /// Iterations of the current run whose rows keep their trial states.
+        /// Absent (default): the trial state of every row the run added is
+        /// kept, and the memory of a run grows with its row count. A value `w`
+        /// keeps the trial states of the rows added in the last `w` iterations
+        /// of the current run and drops the older states, never a row: a row
+        /// whose state was dropped stays in the pool and still competes at the
+        /// states that remain. A state loaded with a row under `warm_start`
+        /// counts as one from before the run's first iteration, so it leaves
+        /// the window at the run's iteration `w`; under `resume` a reloaded
+        /// state leaves it when it would have in the run that wrote the
+        /// checkpoint. The memory holding the trial states of a pool is then
+        /// bounded by `(lookback_iterations + check_frequency)` times the most
+        /// rows the run can add to that pool in one iteration, times the state
+        /// dimension, times 8 bytes, plus the states loaded with its rows. Must
+        /// be at least `check_frequency`.
+        #[serde(default, deserialize_with = "deserialize_lookback_iterations")]
+        lookback_iterations: Option<NonZeroU32>,
     },
-    /// Limited-memory Level-1: retain only the oldest eligible near-optimal row
-    /// per visited state.
-    Lml1 {
-        /// Tie tolerance: a row is active at a state when within this of the
-        /// best row value there. Default `1e-10`.
-        #[serde(default = "default_tie_tolerance")]
-        tie_tolerance: f64,
-        /// Iterations between periodic pruning checks. Must be `> 0`. Default `5`.
-        #[serde(default = "default_check_frequency")]
-        check_frequency: u32,
-    },
-    /// Domination: remove rows dominated at all visited states.
-    Domination {
-        /// Activity tolerance: a row survives if within this of the maximum at
-        /// any visited state. Required (no default).
-        domination_tolerance: f64,
-        /// Iterations between periodic pruning checks. Must be `> 0`. Default `5`.
-        #[serde(default = "default_check_frequency")]
-        check_frequency: u32,
-    },
-    /// Dynamic: a per-solve lazy loop that loads only a small resident subset of
-    /// rows per solve while retaining the full pool.
+    /// Dynamic: a per-solve lazy loop, this software's own lazy row generation.
+    /// From `start_iteration` on, each training solve starts with the seed rows
+    /// described under `seed_window`, adds the candidate rows that its solution
+    /// violates, at most `max_added_per_round` per round, and solves again; it
+    /// returns when no candidate is violated. After a fixed number of rounds
+    /// the per-round limit is lifted. A simulation solve starts with every
+    /// active row, so `seed_window` and `candidate_recency` apply to training
+    /// only. The method never deactivates a row, and the pool keeps every row.
     Dynamic {
-        /// First 1-based iteration at which the lazy loop becomes active.
-        /// Must be `>= 1`. Default `2`.
-        #[serde(default = "default_start_iteration")]
-        start_iteration: u32,
-        /// Number of most-recent iterations whose rows seed the initial resident
-        /// set. `0` is valid (seeds only the current iteration). Default `5`.
+        /// First 1-based iteration at which the lazy loop becomes active. Default `2`.
+        #[serde(
+            default = "default_start_iteration",
+            deserialize_with = "deserialize_start_iteration"
+        )]
+        start_iteration: NonZeroU32,
+        /// A solve starts with the active rows whose last binding was at most
+        /// `seed_window` iterations ago (a row that has not bound counts from
+        /// the iteration that added it), plus the rows added in the current
+        /// iteration. `row_activity_tolerance` decides whether a row binds. `0`
+        /// seeds the rows of the current iteration and those that bound in it.
+        /// A row loaded from a policy counts from the start of the run under
+        /// `warm_start` and for `policy.boundary` rows. Under `resume` a
+        /// reloaded row counts as it did in the run that wrote the checkpoint,
+        /// which stores each row's binding record. Default `5`.
         #[serde(default = "default_seed_window")]
         seed_window: u32,
-        /// Only rows generated within the last `candidate_recency` iterations are
-        /// scored. Absent (default): unbounded, so every pool row is a candidate,
-        /// which preserves exactness. A value `n` (must be `>= 1`) makes the loop
-        /// deliberately inexact — rows older than the window are never added.
+        /// Absent (default): every active row is a candidate and a solve returns
+        /// the optimum over them. A value `n` restricts the candidates to the
+        /// rows added in the last `n` iterations and loaded rows, and the result
+        /// is then the optimum over those rows together with the seed rows.
+        /// Under `resume` a reloaded row is a loaded row only when the run that
+        /// wrote the checkpoint loaded it.
+        #[serde(default, deserialize_with = "deserialize_candidate_recency")]
+        candidate_recency: Option<NonZeroU32>,
+        /// Maximum rows added per lazy-solve round. Default `10`.
+        #[serde(
+            default = "default_max_added_per_round",
+            deserialize_with = "deserialize_max_added_per_round"
+        )]
+        max_added_per_round: NonZeroU32,
+        /// A relative factor: a candidate row is added when its value exceeds
+        /// the future-cost value by more than the factor times the larger of
+        /// the two magnitudes. Absent (default): each phase uses the primal
+        /// feasibility tolerance of its solver profile. A value must be finite
+        /// and greater than `0`. It must also be less than 1 and at least the
+        /// primal feasibility tolerance of every phase's solver profile.
         #[serde(default)]
-        candidate_recency: Option<u32>,
-        /// Maximum rows added per lazy-solve round. Must be `>= 1`. Default `10`.
-        #[serde(default = "default_max_added_per_round")]
-        max_added_per_round: u32,
-        /// Violation tolerance for accepting a candidate row. Must be `> 0`.
-        /// Default `1e-10`.
-        #[serde(default = "default_violation_tolerance")]
-        violation_tolerance: f64,
+        violation_tolerance: Option<f64>,
     },
 }
 
-fn default_tie_tolerance() -> f64 {
-    1e-10
+fn default_check_frequency() -> NonZeroU32 {
+    const { NonZeroU32::new(5).expect("5 is nonzero") }
 }
 
-fn default_check_frequency() -> u32 {
-    5
-}
-
-fn default_start_iteration() -> u32 {
-    2
+fn default_start_iteration() -> NonZeroU32 {
+    const { NonZeroU32::new(2).expect("2 is nonzero") }
 }
 
 fn default_seed_window() -> u32 {
     5
 }
 
-fn default_max_added_per_round() -> u32 {
-    10
+fn default_max_added_per_round() -> NonZeroU32 {
+    const { NonZeroU32::new(10).expect("10 is nonzero") }
 }
 
-fn default_violation_tolerance() -> f64 {
-    1e-10
+/// `value` as a count of at least 1, or the load error naming `key`, the full
+/// dotted path of the config key.
+fn positive_count<E: de::Error>(key: &str, value: u32) -> Result<NonZeroU32, E> {
+    NonZeroU32::new(value)
+        .ok_or_else(|| E::custom(format_args!("{key} must be >= 1 (got {value})")))
+}
+
+/// Deserializes a count of at least 1 through [`positive_count`].
+fn required_positive_count<'de, D: Deserializer<'de>>(
+    deserializer: D,
+    key: &str,
+) -> Result<NonZeroU32, D::Error> {
+    positive_count(key, u32::deserialize(deserializer)?)
+}
+
+/// Deserializes an optional count of at least 1 through [`positive_count`].
+fn optional_positive_count<'de, D: Deserializer<'de>>(
+    deserializer: D,
+    key: &str,
+) -> Result<Option<NonZeroU32>, D::Error> {
+    Option::<u32>::deserialize(deserializer)?
+        .map(|value| positive_count(key, value))
+        .transpose()
+}
+
+fn deserialize_check_frequency<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<NonZeroU32, D::Error> {
+    required_positive_count(
+        deserializer,
+        "training.cut_selection.selection.check_frequency",
+    )
+}
+
+fn deserialize_lookback_iterations<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<NonZeroU32>, D::Error> {
+    optional_positive_count(
+        deserializer,
+        "training.cut_selection.selection.lookback_iterations",
+    )
+}
+
+fn deserialize_start_iteration<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<NonZeroU32, D::Error> {
+    required_positive_count(
+        deserializer,
+        "training.cut_selection.selection.start_iteration",
+    )
+}
+
+fn deserialize_candidate_recency<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<NonZeroU32>, D::Error> {
+    optional_positive_count(
+        deserializer,
+        "training.cut_selection.selection.candidate_recency",
+    )
+}
+
+fn deserialize_max_added_per_round<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<NonZeroU32, D::Error> {
+    required_positive_count(
+        deserializer,
+        "training.cut_selection.selection.max_added_per_round",
+    )
 }
 
 /// LP solver settings (`config.json → training.solver`): retry policy plus
@@ -552,12 +768,19 @@ pub struct LipschitzConfig {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp
+)]
 mod tests {
     use super::{
-        BackwardScheduler, DualEdgeWeight, NonZeroUsize, PresolveMode, PriceStrategy,
-        ScaleStrategy, SelectionMethod, StoppingRuleConfig, TrainingConfig, TrainingSelection,
+        BackwardScheduler, DualEdgeWeight, NonZeroU32, NonZeroUsize, PresolveMode, PriceStrategy,
+        RowSelectionConfig, ScaleStrategy, SelectionMethod, StoppingRuleConfig, TrainingConfig,
+        TrainingSelection,
     };
+    use crate::config::tests::removed_selection_method_names;
 
     /// A `dynamic` selection block round-trips through the tagged enum, with
     /// every method-specific field landing in the `Dynamic` variant.
@@ -581,7 +804,7 @@ mod tests {
         }"#;
         let cfg: TrainingConfig = serde_json::from_str(json).unwrap();
         let cs = &cfg.cut_selection;
-        assert_eq!(cs.row_activity_tolerance, Some(1e-6));
+        assert_eq!(cs.row_activity_tolerance, 1e-6);
         assert_eq!(cs.max_active_per_stage, Some(4000));
         match cs.selection.as_ref().expect("selection present") {
             SelectionMethod::Dynamic {
@@ -591,13 +814,13 @@ mod tests {
                 max_added_per_round,
                 violation_tolerance,
             } => {
-                assert_eq!(*start_iteration, 5);
+                assert_eq!(start_iteration.get(), 5);
                 assert_eq!(*seed_window, 0);
-                assert_eq!(*candidate_recency, Some(20));
-                assert_eq!(*max_added_per_round, 3);
-                assert!((*violation_tolerance - 1e-9).abs() < f64::EPSILON);
+                assert_eq!(*candidate_recency, NonZeroU32::new(20));
+                assert_eq!(max_added_per_round.get(), 3);
+                assert_eq!(*violation_tolerance, Some(1e-9));
             }
-            other => panic!("expected Dynamic, got {other:?}"),
+            other @ SelectionMethod::Level1 { .. } => panic!("expected Dynamic, got {other:?}"),
         }
     }
 
@@ -618,13 +841,82 @@ mod tests {
             .expect("selection present")
         {
             SelectionMethod::Level1 {
-                tie_tolerance,
                 check_frequency,
+                lookback_iterations,
             } => {
-                assert!((*tie_tolerance - 1e-10).abs() < 1e-20);
-                assert_eq!(*check_frequency, 5);
+                assert_eq!(check_frequency.get(), 5);
+                assert_eq!(*lookback_iterations, None);
             }
-            other => panic!("expected Level1, got {other:?}"),
+            other @ SelectionMethod::Dynamic { .. } => panic!("expected Level1, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_dynamic_selection_without_a_violation_tolerance_leaves_it_absent() {
+        let json = training_json_with_selection(r#"{ "method": "dynamic" }"#);
+        let cfg: TrainingConfig = serde_json::from_str(&json).unwrap();
+        match cfg.cut_selection.selection.expect("selection present") {
+            SelectionMethod::Dynamic {
+                violation_tolerance,
+                ..
+            } => assert_eq!(violation_tolerance, None),
+            other @ SelectionMethod::Level1 { .. } => panic!("expected Dynamic, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_level1_lookback_window_round_trips() {
+        let json = training_json_with_selection(
+            r#"{ "method": "level1", "check_frequency": 2, "lookback_iterations": 7 }"#,
+        );
+        let cfg: TrainingConfig = serde_json::from_str(&json).unwrap();
+        match cfg.cut_selection.selection.expect("selection present") {
+            SelectionMethod::Level1 {
+                check_frequency,
+                lookback_iterations,
+            } => {
+                assert_eq!(check_frequency.get(), 2);
+                assert_eq!(lookback_iterations, NonZeroU32::new(7));
+            }
+            other @ SelectionMethod::Dynamic { .. } => panic!("expected Level1, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_zero_lookback_window_names_its_key() {
+        let err = selection_error(r#"{ "method": "level1", "lookback_iterations": 0 }"#);
+        assert!(
+            err.contains(
+                "training.cut_selection.selection.lookback_iterations must be >= 1 (got 0)"
+            ),
+            "unexpected message: {err}"
+        );
+    }
+
+    #[test]
+    fn row_selection_defaults_the_activity_tolerance_to_1e_6() {
+        let loaded: RowSelectionConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(loaded.row_activity_tolerance, 1e-6);
+        assert_eq!(RowSelectionConfig::default().row_activity_tolerance, 1e-6);
+    }
+
+    #[test]
+    fn a_zero_count_names_its_key() {
+        for (method, key) in [
+            ("level1", "check_frequency"),
+            ("dynamic", "start_iteration"),
+            ("dynamic", "candidate_recency"),
+            ("dynamic", "max_added_per_round"),
+        ] {
+            let selection = |value: u32| format!(r#"{{ "method": "{method}", "{key}": {value} }}"#);
+            serde_json::from_str::<TrainingConfig>(&training_json_with_selection(&selection(1)))
+                .unwrap_or_else(|err| panic!("{key} = 1 must load: {err}"));
+            let err = selection_error(&selection(0));
+            assert!(
+                err.contains(&format!("training.cut_selection.selection.{key}"))
+                    && err.contains(">= 1"),
+                "unexpected message for {key}: {err}"
+            );
         }
     }
 
@@ -669,18 +961,112 @@ mod tests {
         assert!(result.is_err(), "an unknown method tag must be rejected");
     }
 
+    fn training_json_with_selection(selection: &str) -> String {
+        format!(
+            r#"{{
+                "selection": {{ "method": "sampled", "forward_passes": 4 }},
+                "stopping_rules": [{{ "type": "iteration_limit", "limit": 100 }}],
+                "cut_selection": {{ "selection": {selection} }}
+            }}"#
+        )
+    }
+
+    /// A removed method is rejected with the message that names it and
+    /// `level1`, with or without the parameters it used to take.
     #[test]
-    fn domination_without_tolerance_is_missing_field_error() {
-        let json = r#"{
-            "selection": { "method": "sampled", "forward_passes": 4 },
-            "stopping_rules": [{ "type": "iteration_limit", "limit": 100 }],
-            "cut_selection": { "selection": { "method": "domination" } }
-        }"#;
-        let result = serde_json::from_str::<TrainingConfig>(json);
+    fn a_removed_selection_method_names_level1() {
+        for removed in removed_selection_method_names() {
+            for selection in [
+                format!(r#"{{ "method": "{removed}" }}"#),
+                format!(r#"{{ "method": "{removed}", "check_frequency": 2 }}"#),
+            ] {
+                let err = serde_json::from_str::<TrainingConfig>(&training_json_with_selection(
+                    &selection,
+                ))
+                .expect_err("a removed method must be rejected")
+                .to_string();
+                assert!(
+                    err.contains(&format!(
+                        "the row-selection method `{removed}` was removed: use `level1` \
+                         (key `training.cut_selection.selection.method`)"
+                    )),
+                    "unexpected message for {selection}: {err}"
+                );
+            }
+        }
+    }
+
+    /// A misspelled method stays serde's unknown-variant error listing the
+    /// accepted spellings, and is not reported as a removed method.
+    #[test]
+    fn a_misspelled_selection_method_is_still_an_unknown_variant() {
+        let err = serde_json::from_str::<TrainingConfig>(&training_json_with_selection(
+            r#"{ "method": "lml2" }"#,
+        ))
+        .expect_err("a misspelled method must be rejected")
+        .to_string();
         assert!(
-            result.is_err(),
-            "domination requires domination_tolerance; absence must be rejected"
+            err.contains("unknown variant `lml2`, expected `level1` or `dynamic`"),
+            "unexpected message: {err}"
         );
+        assert!(!err.contains("was removed"), "unexpected message: {err}");
+    }
+
+    fn selection_error(selection: &str) -> String {
+        serde_json::from_str::<TrainingConfig>(&training_json_with_selection(selection))
+            .expect_err("the selection object must be rejected")
+            .to_string()
+    }
+
+    /// The removed key is rejected by name under `level1`, even when it comes
+    /// before the method tag.
+    #[test]
+    fn the_removed_tie_tolerance_key_is_rejected_by_name() {
+        let err = selection_error(
+            r#"{ "tie_tolerance": 1e6, "check_frequency": 2, "method": "level1" }"#,
+        );
+        assert!(
+            err.contains(
+                "the key `tie_tolerance` was removed: `level1` compares row values \
+                 exactly; delete the key (`training.cut_selection.selection`)"
+            ),
+            "unexpected message: {err}"
+        );
+    }
+
+    /// Any other key under `level1` stays serde's unknown-field error, whose
+    /// list of expected fields is the variant's own.
+    #[test]
+    fn a_foreign_level1_key_is_still_an_unknown_field() {
+        let err = selection_error(r#"{ "method": "level1", "tie_tolrance": 1 }"#);
+        assert!(
+            err.contains("unknown field `tie_tolrance`, expected `check_frequency`"),
+            "unexpected message: {err}"
+        );
+        assert!(!err.contains("was removed"), "unexpected message: {err}");
+    }
+
+    /// A key repeated inside the selection object is a duplicate-field error
+    /// naming the key, the method tag included.
+    #[test]
+    fn a_repeated_selection_key_is_a_duplicate_field() {
+        let [removed, _] = removed_selection_method_names();
+        for (selection, key) in [
+            (
+                r#"{ "method": "level1", "check_frequency": 2, "check_frequency": 3 }"#.to_string(),
+                "check_frequency",
+            ),
+            (
+                format!(r#"{{ "method": "{removed}", "method": "level1" }}"#),
+                "method",
+            ),
+        ] {
+            let err = selection_error(&selection);
+            assert!(
+                err.contains(&format!("duplicate field `{key}`")),
+                "unexpected message for {selection}: {err}"
+            );
+        }
     }
 
     /// A full `training.solver.backward` block round-trips: every per-field

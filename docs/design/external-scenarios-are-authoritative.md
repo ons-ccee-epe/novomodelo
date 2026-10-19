@@ -124,9 +124,13 @@ and the PAR ψ coefficients price those lag-state dimensions into the Benders cu
 ψ structure and residual σ are model artifacts that cannot be recovered from realized
 samples. So for AR(p > 0):
 
-- σ > 0 is **unchanged** — the seasonal-stats + AR coefficients define the dynamics
-  and the truncation floor; the external file supplies the realizations, which
-  round-trip as today. This path is not touched (byte-neutral).
+- σ > 0 is **unchanged** — the seasonal-stats + AR coefficients define the dynamics;
+  the external file supplies the realizations, which round-trip as today. This path
+  is not touched (byte-neutral). Under `truncation` and `truncation_with_penalty` a
+  negative realization is not moved either: the inflow and its lags keep it, and a
+  per-hydro inflow-slack column bounded by the truncation amount adds the water in
+  the water balance (`.claude/rules/sddp.md`, "Truncation keeps the PAR state raw;
+  the correction is a bounded column").
 - σ = 0 is **kept rejected** (decision, §7): a deterministic AR(p > 0) inflow would
   require the external series to follow the exact deterministic PAR recursion at every
   stage — a whole-trajectory constraint of marginal value. The rejection stays; only
@@ -175,8 +179,9 @@ samples. So for AR(p > 0):
 - Moment derivation is a deterministic reduction over the scenario axis in canonical
   order, preserving the declaration-order-invariance and run-to-run reproducibility
   contracts.
-- The AR(p > 0) σ > 0 inflow path is not modified, so its truncation/state behavior
-  is untouched.
+- The AR(p > 0) σ > 0 inflow path is not modified by this design. Its truncation and
+  lag-state behavior is owned by `.claude/rules/sddp.md` ("Truncation keeps the PAR
+  state raw; the correction is a bounded column").
 
 ## 7. Decisions
 

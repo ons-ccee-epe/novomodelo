@@ -248,10 +248,11 @@ fn resolve_hydro_storage_boundary(
 }
 
 /// Resolve `HydroInflow` to the cascade total-inflow expression at `blk`: the
-/// incremental (local) `z_inflow` column, plants diverting into `h`, each
-/// upstream release weighted — for an operating reservoir — by the share the
-/// downstream balance row credits to this block, and the maturing transit water
-/// entering as a rate.
+/// incremental (local) `z_inflow` column, the same plant's inflow-slack column
+/// under the truncation methods only ([`push_local_inflow_rate`]), plants
+/// diverting into `h`, each upstream release weighted — for an operating
+/// reservoir — by the share the downstream balance row credits to this block,
+/// and the maturing transit water entering as a rate.
 ///
 /// Each hydro `u` whose `PreFilling` short-circuit targets `h`
 /// ([`resolve_shortcircuit_target`]) also adds its own local inflow, diverted
@@ -326,10 +327,10 @@ fn resolve_hydro_inflow(
     result
 }
 
-/// Push plant `plant_idx`'s own local inflow rate onto `out`: its `z_inflow`
-/// column, then each `diversion_upstream` source into it, both at `1.0`
-/// (mirrors `push_z_inflow_coupling`'s z coupling and the diversion-inflow
-/// loop in `fill_state_and_water_entries`, both `lp/builder/entries.rs`).
+/// Push plant `plant_idx`'s local inflow rate onto `out`, each at `1.0`: `z_inflow`, the
+/// inflow-slack column under the truncation methods only (never `penalty`, whose slack
+/// would buy water), then each diversion source (mirrors `push_local_inflow_coupling` and
+/// the diversion-inflow loop in `fill_state_and_water_entries`, both `lp/builder/entries.rs`).
 fn push_local_inflow_rate(
     plant_idx: usize,
     blk: BlockIdx,
@@ -337,10 +338,11 @@ fn push_local_inflow_rate(
     layout: &StageLayout<'_>,
     out: &mut Vec<(usize, f64)>,
 ) {
-    out.push((
-        layout.state.z_inflow_col(HydroSys::new(plant_idx)).get(),
-        1.0,
-    ));
+    let plant = HydroSys::new(plant_idx);
+    out.push((layout.state.z_inflow_col(plant).get(), 1.0));
+    if ctx.study_dims.inflow_method.truncates() {
+        out.push((layout.geometry.inflow_slack_col(plant), 1.0));
+    }
 
     if !layout.geometry.diversion.is_empty() {
         let diversion_into = ctx

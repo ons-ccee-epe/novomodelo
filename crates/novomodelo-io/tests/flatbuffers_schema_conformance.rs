@@ -23,16 +23,20 @@
     clippy::unreadable_literal
 )]
 
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use novomodelo_io::test_support::{piece_defaults, stage_cuts_payload_defaults};
 use novomodelo_io::{
-    CheckpointManifest, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, FORMAT_VERSION, GraphManifest,
-    HydroSeasonOrders, ManifestEdge, ManifestNode, OwnedPolicyBasisRecord, OwnedPolicyCutRecord,
-    PolicyBasisRecord, PolicyCutRecord, ProducerBlock, SEASON_CYCLE_CODE_MONTHLY,
-    SEASON_CYCLE_CODE_WEEKLY, STAGE_CUTS_GRAPH_STAGE_ID_SENTINEL, STAGE_CUTS_NODE_ID_SENTINEL,
-    STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, STAGE_STATES_NODE_ID_SENTINEL, SeasonManifest,
-    StageCutsPayload, StageCutsReadResult, StageStatesPayload, StageStatesReadResult,
+    BasisEntry, CheckpointManifest, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, FORMAT_VERSION,
+    GraphManifest, HydroSeasonOrders, ManifestEdge, ManifestNode, OwnedBasisEntry,
+    OwnedPolicyBasisRecord, OwnedPolicyCutRecord, PolicyBasisRecord, PolicyCutRecord,
+    ProducerBlock, SEASON_CYCLE_CODE_MONTHLY, SEASON_CYCLE_CODE_WEEKLY,
+    STAGE_CUTS_GRAPH_STAGE_ID_SENTINEL, STAGE_CUTS_NODE_ID_SENTINEL,
+    STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, STAGE_STATES_NODE_ID_SENTINEL, STATE_HISTORY_SCOPE_NONE,
+    STATE_HISTORY_SCOPE_WHOLE, STATE_HISTORY_SCOPE_WINDOW, SeasonManifest, StageCutsPayload,
+    StageCutsReadResult, StageStatesPayload, StageStatesReadResult, StateHistory,
     deserialize_checkpoint_manifest, deserialize_stage_basis, deserialize_stage_cuts,
     deserialize_stage_states, serialize_checkpoint_manifest, serialize_stage_basis,
     serialize_stage_cuts, serialize_stage_states,
@@ -251,7 +255,6 @@ fn ser_cuts(
     capacity: u32,
     warm_start_count: u32,
     cuts: &[PolicyCutRecord<'_>],
-    active_cut_indices: &[u32],
     populated_count: u32,
     entity_manifest: &[EntitySlot],
 ) -> Vec<u8> {
@@ -261,13 +264,10 @@ fn ser_cuts(
         capacity,
         warm_start_count,
         cuts,
-        active_cut_indices,
         populated_count,
         entity_manifest,
         cost_scale_factor: 1_000_000.0,
-        node_id: -1,
-        graph_stage_id: -1,
-        priced_state_date: STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+        ..stage_cuts_payload_defaults()
     })
 }
 
@@ -277,27 +277,30 @@ fn stage_cuts_writer_matches_schema() {
     let coeffs_b = [-0.5, 0.25, 0.125, 0.0625];
     let cuts = [
         PolicyCutRecord {
-            cut_id: 7,
             slot_index: 0,
             iteration: 1,
             forward_pass_index: 0,
             intercept: 100.5,
             coefficients: &coeffs_a,
             is_active: true,
+            scored: true,
+            active_count: Some(3),
+            last_active_iteration: Some(1),
         },
         PolicyCutRecord {
-            cut_id: 8,
             slot_index: 1,
             iteration: 1,
             forward_pass_index: 1,
             intercept: -42.0,
             coefficients: &coeffs_b,
             is_active: false,
+            scored: false,
+            active_count: None,
+            last_active_iteration: None,
         },
     ];
-    let active = [0_u32];
     let manifest = conformance_manifest();
-    let buf = ser_cuts(3, 4, 16, 0, &cuts, &active, 2, &manifest);
+    let buf = ser_cuts(3, 4, 16, 0, &cuts, 2, &manifest);
 
     let json = flatc_decode(&buf, "StageCuts");
 
@@ -306,26 +309,39 @@ fn stage_cuts_writer_matches_schema() {
     assert_eq!(as_u64(&json, "capacity"), 16);
     assert_eq!(as_u64(&json, "warm_start_count"), 0);
     assert_eq!(as_u64(&json, "populated_count"), 2);
-    assert_eq!(get(&json, "active_cut_indices"), &json!([0]));
+    assert!(
+        json.get("active_cut_indices").is_none(),
+        "the burned id 5 must not be written"
+    );
     assert_manifest_json_matches(get(&json, "entity_manifest"), &manifest);
 
     let cuts_json = get(&json, "cuts").as_array().expect("cuts is an array");
     assert_eq!(cuts_json.len(), 2);
 
     let c0 = &cuts_json[0];
-    assert_eq!(as_u64(c0, "piece_id"), 7);
+    assert!(
+        c0.get("piece_id").is_none(),
+        "the burned id 0 must not be written"
+    );
     assert_eq!(as_u64(c0, "slot_index"), 0);
     assert_eq!(as_u64(c0, "iteration"), 1);
     assert_eq!(as_u64(c0, "forward_pass_index"), 0);
     assert!((as_f64(c0, "intercept") - 100.5).abs() < 1e-12);
     assert_eq!(get(c0, "coefficients"), &json!([1.0, 2.0, 3.0, 4.0]));
     assert!(as_bool(c0, "is_active"));
+    assert!(as_bool(c0, "scored"));
+    assert_eq!(as_u64(c0, "active_count"), 3);
+    assert_eq!(as_u64(c0, "last_active_iteration"), 1);
 
     let c1 = &cuts_json[1];
-    assert_eq!(as_u64(c1, "piece_id"), 8);
     assert_eq!(as_u64(c1, "slot_index"), 1);
     assert!((as_f64(c1, "intercept") - (-42.0)).abs() < 1e-12);
     assert!(!as_bool(c1, "is_active"));
+    assert!(!bool_or(c1, "scored", false));
+    assert!(
+        c1.get("active_count").is_none() && c1.get("last_active_iteration").is_none(),
+        "absent counters must not be written"
+    );
 }
 
 #[test]
@@ -345,7 +361,10 @@ fn stage_cuts_reader_consumes_flatc_buffer() {
                 "forward_pass_index": 2,
                 "intercept": 12.5,
                 "coefficients": [0.1, 0.2, 0.3],
-                "is_active": true
+                "is_active": true,
+                "scored": true,
+                "active_count": 0,
+                "last_active_iteration": 4
             }
         ],
         "entity_manifest": [
@@ -366,13 +385,19 @@ fn stage_cuts_reader_consumes_flatc_buffer() {
     assert_eq!(result.cuts.len(), 1);
 
     let cut: &OwnedPolicyCutRecord = &result.cuts[0];
-    assert_eq!(cut.cut_id, 99);
     assert_eq!(cut.slot_index, 0);
     assert_eq!(cut.iteration, 4);
     assert_eq!(cut.forward_pass_index, 2);
     assert!((cut.intercept - 12.5).abs() < 1e-12);
     assert_eq!(cut.coefficients, vec![0.1, 0.2, 0.3]);
     assert!(cut.is_active);
+    assert!(cut.scored);
+    assert_eq!(
+        cut.active_count,
+        Some(0),
+        "a written zero count is a count, not an absent one"
+    );
+    assert_eq!(cut.last_active_iteration, Some(4));
 
     assert_eq!(result.entity_manifest.len(), 3);
     let m0 = &result.entity_manifest[0];
@@ -404,17 +429,13 @@ fn reduced_storage_manifest() -> Vec<EntitySlot> {
 fn stage_cuts_reduced_dimension_writer_matches_schema() {
     let coeffs = [3.5, -1.25];
     let cuts = [PolicyCutRecord {
-        cut_id: 42,
-        slot_index: 0,
         iteration: 2,
-        forward_pass_index: 0,
         intercept: 7.0,
         coefficients: &coeffs,
-        is_active: true,
+        ..piece_defaults()
     }];
-    let active = [0_u32];
     let manifest = reduced_storage_manifest();
-    let buf = ser_cuts(1, 2, 8, 0, &cuts, &active, 1, &manifest);
+    let buf = ser_cuts(1, 2, 8, 0, &cuts, 1, &manifest);
 
     let json = flatc_decode(&buf, "StageCuts");
 
@@ -486,27 +507,22 @@ fn stage_cuts_reduced_dimension_reader_consumes_flatc_buffer() {
 fn stage_cuts_self_describing_facts_round_trip() {
     let coeffs = [1.0, 2.0, 3.0];
     let cuts = [PolicyCutRecord {
-        cut_id: 5,
-        slot_index: 0,
         iteration: 2,
-        forward_pass_index: 0,
         intercept: 9.0,
         coefficients: &coeffs,
-        is_active: true,
+        ..piece_defaults()
     }];
     let payload = StageCutsPayload {
         stage_id: 4,
         state_dimension: 3,
         capacity: 8,
-        warm_start_count: 0,
         cuts: &cuts,
-        active_cut_indices: &[0],
         populated_count: 1,
-        entity_manifest: &[],
         cost_scale_factor: 1_000_000.0,
         node_id: 3,
         graph_stage_id: 7,
         priced_state_date: 20_311_201,
+        ..stage_cuts_payload_defaults()
     };
     let buf = serialize_stage_cuts(&payload);
 
@@ -677,12 +693,24 @@ table StageCuts {
 fn stage_basis_writer_matches_schema() {
     let cols = [0_u8, 1, 2, 3];
     let rows = [4_u8, 5, 6, 0, 1];
+    let entries = [
+        BasisEntry {
+            scenario: 0,
+            column_status: &cols,
+            row_status: &rows,
+            piece_row_slots: &[3, 8],
+        },
+        BasisEntry {
+            scenario: 6,
+            column_status: &cols[..2],
+            row_status: &rows[..3],
+            piece_row_slots: &[],
+        },
+    ];
     let record = PolicyBasisRecord {
         stage_id: 11,
         iteration: 23,
-        column_status: &cols,
-        row_status: &rows,
-        num_cut_rows: 2,
+        entries: &entries,
     };
     let buf = serialize_stage_basis(&record);
 
@@ -690,11 +718,28 @@ fn stage_basis_writer_matches_schema() {
 
     assert_eq!(as_u64(&json, "stage_id"), 11);
     assert_eq!(as_u64(&json, "iteration"), 23);
-    assert_eq!(as_u64(&json, "num_columns"), 4);
-    assert_eq!(as_u64(&json, "num_rows"), 5);
-    assert_eq!(as_u64(&json, "num_cut_rows"), 2);
-    assert_eq!(get(&json, "column_status"), &json!([0, 1, 2, 3]));
-    assert_eq!(get(&json, "row_status"), &json!([4, 5, 6, 0, 1]));
+    for burned in [
+        "num_columns",
+        "num_rows",
+        "column_status",
+        "row_status",
+        "num_cut_rows",
+    ] {
+        assert!(
+            json.get(burned).is_none(),
+            "burned {burned} must not be written"
+        );
+    }
+    let entries_json = get(&json, "entries")
+        .as_array()
+        .expect("entries is an array");
+    assert_eq!(entries_json.len(), 2);
+    assert_eq!(u64_or(&entries_json[0], "scenario", 0), 0);
+    assert_eq!(get(&entries_json[0], "column_status"), &json!([0, 1, 2, 3]));
+    assert_eq!(get(&entries_json[0], "row_status"), &json!([4, 5, 6, 0, 1]));
+    assert_eq!(get(&entries_json[0], "piece_row_slots"), &json!([3, 8]));
+    assert_eq!(as_u64(&entries_json[1], "scenario"), 6);
+    assert_eq!(get(&entries_json[1], "row_status"), &json!([4, 5, 6]));
 }
 
 #[test]
@@ -702,11 +747,19 @@ fn stage_basis_reader_consumes_flatc_buffer() {
     let document = json!({
         "stage_id": 7,
         "iteration": 3,
-        "num_columns": 3,
-        "num_rows": 4,
-        "column_status": [1, 2, 3],
-        "row_status": [0, 1, 1, 2],
-        "num_cut_rows": 1
+        "entries": [
+            {
+                "scenario": 2,
+                "column_status": [1, 2, 3],
+                "row_status": [0, 1, 1, 2],
+                "piece_row_slots": [5]
+            },
+            {
+                "scenario": 9,
+                "column_status": [3],
+                "row_status": [1, 0]
+            }
+        ]
     });
     let buf = flatc_encode(&document, "StageBasis");
     let result: OwnedPolicyBasisRecord =
@@ -714,9 +767,33 @@ fn stage_basis_reader_consumes_flatc_buffer() {
 
     assert_eq!(result.stage_id, 7);
     assert_eq!(result.iteration, 3);
-    assert_eq!(result.column_status, vec![1, 2, 3]);
-    assert_eq!(result.row_status, vec![0, 1, 1, 2]);
-    assert_eq!(result.num_cut_rows, 1);
+    assert_eq!(result.entries.len(), 2);
+    let first: &OwnedBasisEntry = &result.entries[0];
+    assert_eq!(first.scenario, 2);
+    assert_eq!(first.column_status, vec![1, 2, 3]);
+    assert_eq!(first.row_status, vec![0, 1, 1, 2]);
+    assert_eq!(first.piece_row_slots, vec![5]);
+    assert_eq!(result.entries[1].scenario, 9);
+    assert!(result.entries[1].piece_row_slots.is_empty());
+}
+
+/// A `flatc`-built basis that still carries the burned single-basis fields
+/// (ids 2-6) decodes with no entry: the reader never reads a burned slot.
+#[test]
+fn flatc_written_burned_basis_fields_are_ignored() {
+    let document = json!({
+        "stage_id": 1,
+        "iteration": 2,
+        "num_columns": 2,
+        "num_rows": 2,
+        "column_status": [1, 1],
+        "row_status": [0, 1],
+        "num_cut_rows": 1
+    });
+    let buf = flatc_encode(&document, "StageBasis");
+    let result = deserialize_stage_basis(&buf).expect("a burned-field buffer must still decode");
+    assert_eq!((result.stage_id, result.iteration), (1, 2));
+    assert!(result.entries.is_empty());
 }
 
 // ─── StageStates ─────────────────────────────────────────────────────────────
@@ -732,6 +809,7 @@ fn stage_states_writer_matches_schema() {
         count: 2,
         data: &data,
         entity_manifest: &manifest,
+        slots: &[1, 4],
     };
     let buf = serialize_stage_states(&payload);
 
@@ -743,6 +821,7 @@ fn stage_states_writer_matches_schema() {
     assert_eq!(get(&json, "data"), &json!([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]));
     assert_manifest_json_matches(get(&json, "entity_manifest"), &manifest);
     assert_eq!(i64_or(&json, "node_id", -1), 5);
+    assert_eq!(get(&json, "slots"), &json!([1, 4]));
 }
 
 #[test]
@@ -753,6 +832,7 @@ fn stage_states_reader_consumes_flatc_buffer() {
         "state_dimension": 2,
         "count": 3,
         "data": [10.0, 11.0, 12.0, 13.0, 14.0, 15.0],
+        "slots": [0, 2, 7],
         "entity_manifest": [
             {"entity_type": "HydroStorage", "entity_id": 4, "subindex": 0, "was_active": true},
             {"entity_type": "HydroStorage", "entity_id": 5, "subindex": 0, "was_active": true}
@@ -767,6 +847,7 @@ fn stage_states_reader_consumes_flatc_buffer() {
     assert_eq!(result.state_dimension, 2);
     assert_eq!(result.count, 3);
     assert_eq!(result.data, vec![10.0, 11.0, 12.0, 13.0, 14.0, 15.0]);
+    assert_eq!(result.slots, vec![0, 2, 7]);
 
     assert_eq!(result.entity_manifest.len(), 2);
     assert_eq!(result.entity_manifest[0].entity_type, 0);
@@ -896,6 +977,9 @@ fn conformance_manifest_value() -> CheckpointManifest {
             ],
             cost_scale_factor: Some(1_000_000.0),
             lower_bound_history: vec![1300.5, 1250.25, 1234.5],
+            state_history: StateHistory::Window(NonZeroU32::new(5).unwrap()),
+            activity_counters: true,
+            basis_store_complete: true,
         },
         season_manifest: SeasonManifest {
             cycle_code: SEASON_CYCLE_CODE_MONTHLY,
@@ -991,6 +1075,9 @@ fn assert_manifest_eq(actual: &CheckpointManifest, expected: &CheckpointManifest
             .map(f64::to_bits)
             .collect::<Vec<_>>()
     );
+    assert_eq!(ap.state_history, ep.state_history);
+    assert_eq!(ap.activity_counters, ep.activity_counters);
+    assert_eq!(ap.basis_store_complete, ep.basis_store_complete);
 
     let (asm, esm) = (&actual.season_manifest, &expected.season_manifest);
     assert_eq!(asm.cycle_code, esm.cycle_code);
@@ -1050,6 +1137,13 @@ fn checkpoint_manifest_round_trip() {
         .map(|v| v.as_f64().expect("lower_bound_history entries are numbers"))
         .collect();
     assert_eq!(lower_bound_history, vec![1300.5, 1250.25, 1234.5]);
+    assert_eq!(
+        as_u64(&json, "state_history_scope"),
+        u64::from(STATE_HISTORY_SCOPE_WINDOW)
+    );
+    assert_eq!(as_u64(&json, "state_history_window"), 5);
+    assert!(as_bool(&json, "activity_counters"));
+    assert!(as_bool(&json, "basis_store_complete"));
 
     let nodes = get(&json, "nodes").as_array().expect("nodes is an array");
     assert_eq!(nodes.len(), 2);
@@ -1114,6 +1208,10 @@ fn checkpoint_manifest_round_trip() {
         "training_block_mode_per_stage": ["parallel", "chronological"],
         "cost_scale_factor": 1_000_000.0,
         "lower_bound_history": [1300.5, 1250.25, 1234.5],
+        "state_history_scope": 1,
+        "state_history_window": 5,
+        "activity_counters": true,
+        "basis_store_complete": true,
         "season_manifest": {
             "cycle_code": 0,
             "n_seasons": 12,
@@ -1230,6 +1328,127 @@ fn checkpoint_manifest_rejects_stale_format_version() {
     );
 }
 
+/// The `None` and `Whole` scopes read back from a `flatc`-built buffer, and a
+/// buffer that omits every version-4 manifest field (the schema defaults) reads
+/// as no state history, no counters and an incomplete basis store.
+#[test]
+fn checkpoint_manifest_state_history_scopes_read_from_flatc() {
+    let mut expected = conformance_manifest_value();
+    let json = flatc_decode(
+        &serialize_checkpoint_manifest(&expected),
+        "CheckpointManifest",
+    );
+    for (scope_code, scope) in [
+        (STATE_HISTORY_SCOPE_NONE, StateHistory::None),
+        (STATE_HISTORY_SCOPE_WHOLE, StateHistory::Whole),
+    ] {
+        let mut document = json.clone();
+        document["state_history_scope"] = json!(scope_code);
+        document["state_history_window"] = json!(0);
+        let decoded =
+            deserialize_checkpoint_manifest(&flatc_encode(&document, "CheckpointManifest"))
+                .expect("a flatc-built manifest must decode");
+        expected.producer.state_history = scope;
+        assert_manifest_eq(&decoded, &expected);
+    }
+
+    let mut document = json;
+    let fields = document.as_object_mut().unwrap();
+    for field in [
+        "state_history_scope",
+        "state_history_window",
+        "activity_counters",
+        "basis_store_complete",
+    ] {
+        fields.remove(field);
+    }
+    let decoded = deserialize_checkpoint_manifest(&flatc_encode(&document, "CheckpointManifest"))
+        .expect("a manifest without the version-4 fields must decode to their defaults");
+    assert_eq!(decoded.producer.state_history, StateHistory::None);
+    assert!(!decoded.producer.activity_counters);
+    assert!(!decoded.producer.basis_store_complete);
+}
+
+/// A `flatc`-built piece without the two activity counters reads them as
+/// absent (`None`), never as `0`.
+#[test]
+fn a_flatc_piece_without_activity_counters_reads_them_as_absent() {
+    let document = json!({
+        "stage_id": 0,
+        "capacity": 2,
+        "populated_count": 1,
+        "cuts": [{"slot_index": 1, "iteration": 2, "scored": true}]
+    });
+    let result = deserialize_stage_cuts(&flatc_encode(&document, "StageCuts"))
+        .expect("hand-rolled reader must consume flatc-built buffer");
+    let piece = &result.cuts[0];
+    assert!(piece.scored);
+    assert_eq!(piece.active_count, None);
+    assert_eq!(piece.last_active_iteration, None);
+}
+
+/// The two burned piece-level fields a `flatc` writer can still emit (`piece_id`
+/// at id 0 and `StageCuts.active_cut_indices` at id 5) change nothing the
+/// hand-rolled reader decodes.
+#[test]
+fn flatc_written_burned_piece_fields_are_ignored() {
+    let with_burned = json!({
+        "stage_id": 2,
+        "capacity": 4,
+        "populated_count": 1,
+        "active_cut_indices": [0, 3],
+        "cuts": [{"piece_id": 77, "slot_index": 3, "iteration": 2, "intercept": 4.5, "is_active": true}]
+    });
+    let mut without_burned = with_burned.clone();
+    without_burned
+        .as_object_mut()
+        .unwrap()
+        .remove("active_cut_indices");
+    without_burned["cuts"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("piece_id");
+
+    let read = |document: &Value| {
+        let result = deserialize_stage_cuts(&flatc_encode(document, "StageCuts")).unwrap();
+        serde_json::to_value(&result).unwrap()
+    };
+    assert_eq!(read(&with_burned), read(&without_burned));
+}
+
+fn version_three_manifest() -> Vec<u8> {
+    let mut manifest = conformance_manifest_value();
+    manifest.format_version = 3;
+    serialize_checkpoint_manifest(&manifest)
+}
+
+fn assert_refuses_version_three(buf: &[u8], writer: &str) {
+    let msg = deserialize_checkpoint_manifest(buf)
+        .expect_err("a version-3 manifest must be refused")
+        .to_string();
+    assert!(
+        msg.contains("format_version 3") && msg.contains("expected 4"),
+        "{writer}-built version-3 manifest: the refusal must name 3 and 4: {msg}"
+    );
+}
+
+/// A version-3 manifest built by the hand-rolled writer is refused, naming the
+/// version found and the one expected.
+#[test]
+fn a_hand_built_version_three_manifest_is_refused() {
+    assert_refuses_version_three(&version_three_manifest(), "hand-rolled");
+}
+
+/// A version-3 manifest built by `flatc` is refused, naming the version found
+/// and the one expected.
+#[test]
+fn a_flatc_built_version_three_manifest_is_refused() {
+    let mut document = flatc_decode(&version_three_manifest(), "CheckpointManifest");
+    assert_eq!(as_u64(&document, "format_version"), 3);
+    document["format_version"] = json!(3);
+    assert_refuses_version_three(&flatc_encode(&document, "CheckpointManifest"), "flatc");
+}
+
 // ─── Schema neutrality (value-function artifact) ─────────────────────────────
 
 /// The published schema speaks affine-piece vocabulary: no standalone `Cut`
@@ -1296,19 +1515,16 @@ fn schema_burns_delivery_anchor_and_declares_file_identifier() {
 fn entity_slot_per_family_dates_round_trip() {
     let coeffs = [1.0, 2.0];
     let cuts = [PolicyCutRecord {
-        cut_id: 1,
-        slot_index: 0,
         iteration: 1,
-        forward_pass_index: 0,
         intercept: 3.0,
         coefficients: &coeffs,
-        is_active: true,
+        ..piece_defaults()
     }];
     let manifest = vec![
         EntitySlot::inflow_lag(5, 3, true).with_reference_date(20_310_401),
         EntitySlot::transit_bucket(9, 2, true).with_interval(20_311_201, 20_320_101),
     ];
-    let buf = ser_cuts(3, 2, 8, 0, &cuts, &[0], 1, &manifest);
+    let buf = ser_cuts(3, 2, 8, 0, &cuts, 1, &manifest);
 
     let result: StageCutsReadResult =
         deserialize_stage_cuts(&buf).expect("hand-rolled reader must consume its own buffer");

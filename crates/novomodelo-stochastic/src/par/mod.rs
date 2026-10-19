@@ -27,7 +27,6 @@ pub use contribution::{
 #[allow(deprecated)]
 pub use evaluate::{
     evaluate_par, evaluate_par_batch, evaluate_par_inflow, evaluate_par_inflows, solve_par_noise,
-    solve_par_noise_batch, solve_par_noises,
 };
 pub use fitting::{
     AicSelectionResult, AnnualSeasonalStats, ArCoefficientEstimate, ArEstimationConfig,

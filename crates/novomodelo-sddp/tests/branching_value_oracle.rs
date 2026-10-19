@@ -67,9 +67,12 @@
 mod common;
 
 use novomodelo_io::config::BackwardScheduler;
+use novomodelo_io::test_support::owned_piece_defaults;
 use novomodelo_sddp::CutPool;
 use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::cut::SlotOrigin;
 use novomodelo_sddp::hydro_models::ResolvedProductionModel;
+use novomodelo_sddp::policy_export::{BindingCounters, build_stage_cut_records};
 use novomodelo_sddp::setup::{NodePos, OpeningSource, StageIdx};
 use novomodelo_sddp::test_support::{
     dcs_k_fan_setup, extensive_form_optimum, external_distinct_fan_setup,
@@ -348,6 +351,44 @@ fn dcs_arm_generated_fan_value_matches_oracle() {
         "DCS-arm final_lb {lb} != extensive-form optimum {optimum} (gap {})",
         lb - optimum
     );
+}
+
+// ── Sampled fan checkpoint ───────────────────────────────────────────────────
+
+/// A node visited fewer times than its pool's visit stride leaves the tail of its
+/// iteration block unwritten; the checkpoint holds one record per written slot.
+#[test]
+fn sampled_fan_checkpoint_holds_no_never_written_slot() {
+    let mut fixture = k_fan_setup(8, 6, 3);
+    let _ = train_bounds(&mut fixture.setup);
+    let pools = &fixture.setup.fcf.pools;
+
+    let is_vacant = |pool: &CutPool, slot: usize| pool.role(slot).origin == SlotOrigin::Vacant;
+    assert!(
+        pools
+            .iter()
+            .any(|pool| (0..pool.populated()).any(|slot| is_vacant(pool, slot))),
+        "power: some pool must hold a vacant slot below its slot bound"
+    );
+
+    let records =
+        build_stage_cut_records(&fixture.setup.fcf, BindingCounters::Omitted).expect("export");
+    for (pool_id, (pool, records)) in pools.iter().zip(&records).enumerate() {
+        let written: Vec<u32> = (0..pool.populated())
+            .filter(|&slot| !is_vacant(pool, slot))
+            .map(|slot| slot as u32)
+            .collect();
+        let exported: Vec<u32> = records.iter().map(|record| record.slot_index).collect();
+        assert_eq!(
+            exported, written,
+            "pool {pool_id}: one record per written slot"
+        );
+        assert_eq!(
+            records.len(),
+            pool.generated(),
+            "pool {pool_id}: one record per cut inserted"
+        );
+    }
 }
 
 // ── All-External fan train-smoke gates ───────────────────────────────────────
@@ -722,7 +763,7 @@ fn external_distinct_fan_heterogeneous_cut_state_matches_extensive_form() {
 // Structural invariant: on a study whose leaves share one terminal `CutPool` —
 // the trailing shared leaf pool the node graph assigns to every
 // all-successor-less stage — training must leave the terminal pool's
-// `capacity`, `warm_start_count`, `active_count()`, and `populated()` unchanged
+// `capacity`, `prefix_len()`, `active_count()`, and `populated()` unchanged
 // from their pre-training values: a leaf never receives a new cut
 // (`enumerated_pool_cut_stride` sizes a leaf pool's per-iteration stride at
 // zero), so there is no growable training slack to consume and no new cut to
@@ -782,7 +823,7 @@ const DISTINCT_FAN_K: usize = 3;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TerminalPoolShape {
     capacity: usize,
-    warm_start_count: u32,
+    prefix_len: usize,
     active_count: usize,
     populated: usize,
 }
@@ -791,7 +832,7 @@ impl TerminalPoolShape {
     fn capture(pool: &CutPool) -> Self {
         Self {
             capacity: pool.capacity,
-            warm_start_count: pool.warm_start_count,
+            prefix_len: pool.prefix_len(),
             active_count: pool.active_count(),
             populated: pool.populated(),
         }
@@ -799,17 +840,17 @@ impl TerminalPoolShape {
 }
 
 /// Asserts the fixed-capacity, no-boundary-cut shape both fixtures below start
-/// from: no warm-started cuts, so `capacity == warm_start_count == 0`
+/// from: no warm-started cuts, so `capacity == prefix_len == 0`
 /// (`CutPool::new_with_warm_start`'s `max_iterations = 0` construction leaves
 /// no growable training slack), and no populated or active slot.
 fn assert_fixed_no_boundary_shape(shape: TerminalPoolShape) {
     assert_eq!(
-        shape.warm_start_count, 0,
+        shape.prefix_len, 0,
         "fixture carries no boundary-injected cuts"
     );
     assert_eq!(
-        shape.capacity, shape.warm_start_count as usize,
-        "a leaf pool's capacity must equal its warm_start_count (0 here) -- no \
+        shape.capacity, shape.prefix_len,
+        "a leaf pool's capacity must equal its prefix_len (0 here) -- no \
          growable training slack"
     );
     assert_eq!(
@@ -823,7 +864,7 @@ fn assert_fixed_no_boundary_shape(shape: TerminalPoolShape) {
 }
 
 /// A wide (`k = 8`) terminal-Generated fan: the primary AC-mandated fixture.
-/// Training must leave the shared terminal pool's capacity, warm-start count,
+/// Training must leave the shared terminal pool's capacity, loaded-cut count,
 /// active-cut count, and populated high-water mark bit-for-bit unchanged.
 #[test]
 #[ignore = "trains a wide terminal fan; run with `-- --ignored`"]
@@ -844,7 +885,7 @@ fn terminal_generated_fan_pool_stays_fixed_and_single_materialized() {
     assert_fixed_no_boundary_shape(after);
     assert_eq!(
         after, before,
-        "the terminal pool's capacity/warm_start_count/active_count/populated must \
+        "the terminal pool's capacity/prefix_len/active_count/populated must \
          be unchanged across the full training run -- no growth, no \
          re-materialization"
     );
@@ -873,7 +914,7 @@ fn external_distinct_fan_terminal_pool_stays_fixed_and_single_materialized() {
     assert_fixed_no_boundary_shape(after);
     assert_eq!(
         after, before,
-        "the terminal pool's capacity/warm_start_count/active_count/populated must \
+        "the terminal pool's capacity/prefix_len/active_count/populated must \
          be unchanged across the full training run on a distinct-successor \
          terminal fan too"
     );
@@ -903,13 +944,12 @@ fn inject_constant_terminal_boundary_fcf(setup: &mut StudySetup, intercept: f64,
     let state_dim = setup.fcf.state_dimension;
     let forward_passes = setup.fcf.forward_passes;
     let record = novomodelo_io::OwnedPolicyCutRecord {
-        cut_id: 0,
         slot_index: 0,
         coefficients: vec![0.0; state_dim],
         intercept,
         iteration: 0,
-        forward_pass_index: 0,
         is_active,
+        ..owned_piece_defaults()
     };
     setup.fcf.pools[terminal] =
         CutPool::new_with_warm_start(state_dim, forward_passes, 0, &[record]);
@@ -1010,11 +1050,12 @@ fn assert_inactive_boundary_record_leaves_bounds_unchanged(
         "the injected record is inactive"
     );
     assert_eq!(
-        inactive.fcf.pools[terminal].warm_start_count, 1,
-        "the injected record still counts as a warm-started slot"
+        inactive.fcf.pools[terminal].prefix_len(),
+        1,
+        "the injected record still counts as a loaded cut"
     );
     assert!(
-        inactive.fcf.pools[terminal].has_warm_start_cuts(),
+        inactive.fcf.pools[terminal].has_prefix_cuts(),
         "the owner must still read the pool as boundary-loaded despite the inactive record"
     );
 
@@ -1031,7 +1072,7 @@ fn assert_inactive_boundary_record_leaves_bounds_unchanged(
 }
 
 /// The one input where the terminal-boundary flag's two formulas disagree
-/// (`CutPool::active_count() > 0` vs `warm_start_count > 0`): a terminal pool
+/// (`CutPool::active_count() > 0` vs `prefix_len() > 0`): a terminal pool
 /// whose only boundary record is `is_active: false`. Both leave terminal θ at
 /// 0 — the inactive record contributes no active LP row either way, and θ's
 /// own lower bound is `0.0` — so training must close to the plain chain's

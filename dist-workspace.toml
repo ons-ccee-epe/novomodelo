@@ -23,6 +23,9 @@ changelog = true
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
+# Probes the built x86_64 Linux gnu archive for packed FMA instructions before
+# `host` publishes; release.yml is regenerated with `dist generate --mode ci`.
+global-artifacts-jobs = ["./kernel-probe"]
 # Third-party attribution bundled into every CLI archive, alongside the
 # auto-included LICENSE and README — the statically-linked binary carries its
 # dependencies' notices with it. Paths are relative to the workspace root. This

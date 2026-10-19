@@ -9,8 +9,8 @@ use crate::indexer::{CutStateProjection, StateSpace};
 /// Fill a pre-allocated [`RowBatch`] with only the Benders cut rows generated
 /// in `current_iteration`, for appending to a frozen template via `add_rows`.
 ///
-/// Warm-start cuts (sentinel `iteration_generated == u64::MAX`) are always
-/// excluded. The CSR layout and coefficient transformation mirror
+/// A loaded cut (`CutPool::is_prefix_slot`) is excluded, whatever its
+/// iteration. The CSR layout and coefficient transformation mirror
 /// [`build_cut_row_batch_into`](crate::cut::row::build_cut_row_batch_into); when
 /// the pool holds only `current_iteration` cuts the two produce byte-identical
 /// output. `cut_state` is pool `pool`'s projection; `coefficients` has length
@@ -33,7 +33,7 @@ pub fn build_delta_cut_row_batch_into(
     let n_cut_state = cut_state.n_slots();
     let theta_col = state.theta;
 
-    let num_cuts: usize = fcf.pools[pool].active_delta_cuts(current_iteration).count();
+    let num_cuts = fcf.pools[pool].active_delta_cuts(current_iteration).count();
 
     if num_cuts == 0 {
         batch.row_starts.push(0_i32);

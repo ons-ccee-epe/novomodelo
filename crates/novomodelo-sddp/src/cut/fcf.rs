@@ -33,7 +33,6 @@
 //! let cuts: Vec<_> = fcf.active_cuts(1).collect();
 //! assert_eq!(cuts.len(), 1);
 //! assert_eq!(fcf.total_active_cuts(), 1);
-//! assert_eq!(fcf.cuts_in_lp(1), 1);
 //! ```
 
 use super::pool::CutPool;
@@ -73,14 +72,14 @@ pub struct FutureCostFunction {
 
 impl FutureCostFunction {
     /// Construct a `FutureCostFunction` with pre-allocated pools, one per pool id,
-    /// each sized `warm_start_counts[i] + max_iterations * forward_passes` via
+    /// each sized `slot_bases[i] + max_iterations * forward_passes` via
     /// [`pool_capacity`] — the chain-degenerate case, where every pool's visit
     /// bound is `forward_passes` uniformly.
     ///
     /// # Parameters
     ///
-    /// - `warm_start_counts`: per-pool warm-start cut counts; length must equal
-    ///   `num_pools`. Pass `&vec![0; num_pools]` for the no-warm-start case.
+    /// - `slot_bases`: per-pool slot base (reserved leading slots); length must
+    ///   equal `num_pools`. Pass `&vec![0; num_pools]` for none.
     ///
     /// # Example
     ///
@@ -98,14 +97,14 @@ impl FutureCostFunction {
         state_dimension: usize,
         forward_passes: u32,
         max_iterations: u64,
-        warm_start_counts: &[u32],
+        slot_bases: &[u32],
     ) -> Self {
         Self::new_per_pool(
             &vec![state_dimension; num_pools],
             state_dimension,
             forward_passes,
             max_iterations,
-            warm_start_counts,
+            slot_bases,
             &vec![u64::from(forward_passes); num_pools],
         )
     }
@@ -133,14 +132,14 @@ impl FutureCostFunction {
     ///
     /// # Parameters
     ///
-    /// - `warm_start_counts`: per-pool warm-start cut counts; length must equal
-    ///   `pool_state_dimensions.len()`. Pass `&vec![0; n]` for no warm-start.
+    /// - `slot_bases`: per-pool slot base (reserved leading slots); length must
+    ///   equal `pool_state_dimensions.len()`. Pass `&vec![0; n]` for none.
     /// - `visit_bounds`: per-pool visit bound; length must equal
     ///   `pool_state_dimensions.len()`.
     ///
     /// # Panics (debug builds only)
     ///
-    /// Panics if `warm_start_counts.len() != pool_state_dimensions.len()` or
+    /// Panics if `slot_bases.len() != pool_state_dimensions.len()` or
     /// `visit_bounds.len() != pool_state_dimensions.len()`.
     #[must_use]
     pub fn new_per_pool(
@@ -148,14 +147,14 @@ impl FutureCostFunction {
         global_state_dimension: usize,
         forward_passes: u32,
         max_iterations: u64,
-        warm_start_counts: &[u32],
+        slot_bases: &[u32],
         visit_bounds: &[u64],
     ) -> Self {
         debug_assert_eq!(
-            warm_start_counts.len(),
+            slot_bases.len(),
             pool_state_dimensions.len(),
-            "warm_start_counts.len() ({}) != pool_state_dimensions.len() ({})",
-            warm_start_counts.len(),
+            "slot_bases.len() ({}) != pool_state_dimensions.len() ({})",
+            slot_bases.len(),
             pool_state_dimensions.len()
         );
         debug_assert_eq!(
@@ -166,18 +165,18 @@ impl FutureCostFunction {
             pool_state_dimensions.len()
         );
 
-        let pools = warm_start_counts
+        let pools = slot_bases
             .iter()
             .zip(pool_state_dimensions)
             .zip(visit_bounds)
-            .map(|((&wsc, &pool_dim), &visit_bound)| {
-                let capacity = pool_capacity(wsc, max_iterations, visit_bound);
-                // The live (sampled) arm caps visit_bound at forward_passes per
-                // pool, and a chain's visit_bound equals forward_passes exactly
-                // (pool_cut_stride), so this never truncates on that path.
-                #[allow(clippy::cast_possible_truncation)]
-                let stride = visit_bound as u32;
-                CutPool::new(capacity, pool_dim, stride, wsc)
+            .map(|((&slot_base, &pool_dim), &visit_bound)| {
+                let capacity = pool_capacity(slot_base, max_iterations, visit_bound);
+                CutPool::new(
+                    capacity,
+                    pool_dim,
+                    pool_visit_stride(visit_bound),
+                    slot_base,
+                )
             })
             .collect();
 
@@ -192,7 +191,8 @@ impl FutureCostFunction {
     /// via [`CutPool::from_deserialized`] (tightly sized, no training capacity),
     /// each pool sized by the study's OWN `pool_state_dimensions[p]` — the same
     /// per-pool array [`Self::new_per_pool`] takes — never a single dimension
-    /// broadcast to every pool.
+    /// broadcast to every pool. Each pool takes its recorded `warm_start_count` as
+    /// the prefix length.
     ///
     /// `_proof` is compile-time evidence from
     /// [`validate_policy_load`](crate::validate_policy_load) that
@@ -229,7 +229,9 @@ impl FutureCostFunction {
         let pools = stage_results
             .iter()
             .zip(pool_state_dimensions)
-            .map(|(sr, &pool_dim)| CutPool::from_deserialized(pool_dim, &sr.cuts))
+            .map(|(sr, &pool_dim)| {
+                CutPool::from_deserialized(pool_dim, sr.warm_start_count, &sr.cuts)
+            })
             .collect();
 
         Ok(Self {
@@ -315,15 +317,85 @@ impl FutureCostFunction {
             .zip(pool_state_dimensions)
             .zip(visit_bounds)
             .map(|((sr, &pool_dim), &visit_bound)| {
-                // The live (sampled) arm caps visit_bound at forward_passes per
-                // pool, and a chain's visit_bound equals forward_passes exactly
-                // (pool_cut_stride), so this never truncates on that path — the
-                // same cap `new_per_pool` relies on.
-                #[allow(clippy::cast_possible_truncation)]
-                let stride = visit_bound as u32;
-                CutPool::new_with_warm_start(pool_dim, stride, max_iterations, &sr.cuts)
+                CutPool::new_with_warm_start(
+                    pool_dim,
+                    pool_visit_stride(visit_bound),
+                    max_iterations,
+                    &sr.cuts,
+                )
             })
             .collect();
+
+        Ok(Self {
+            pools,
+            state_dimension,
+            forward_passes,
+        })
+    }
+
+    /// Build the FCF a checkpoint recorded through [`CutPool::new_resumed`]: each
+    /// pool takes its own `warm_start_count` and `capacity`, and its
+    /// `pool_state_dimensions[p]` and `visit_bounds[p]` as in
+    /// [`Self::new_with_warm_start`], so every record sits at its recorded slot.
+    ///
+    /// `_proof` is the same compile-time evidence
+    /// [`Self::new_with_warm_start`] takes.
+    ///
+    /// # Errors
+    ///
+    /// [`SddpError::Validation`] if `stage_results` is empty, its own per-stage
+    /// `state_dimension` field is inconsistent across stages, or a pool's records
+    /// are refused by [`CutPool::new_resumed`] (the message names the pool).
+    ///
+    /// # Panics (debug builds only)
+    ///
+    /// Panics if `pool_state_dimensions.len() != stage_results.len()` or
+    /// `visit_bounds.len() != stage_results.len()`.
+    ///
+    /// [`SddpError::Validation`]: crate::SddpError::Validation
+    pub fn new_resumed(
+        _proof: &PolicyLoadProof<FullFcf>,
+        stage_results: &[StageCutsReadResult],
+        pool_state_dimensions: &[usize],
+        visit_bounds: &[u64],
+        forward_passes: u32,
+        max_iterations: u64,
+    ) -> Result<Self, SddpError> {
+        let state_dimension = validate_consistent_state_dimension("new_resumed", stage_results)?;
+        debug_assert_eq!(
+            pool_state_dimensions.len(),
+            stage_results.len(),
+            "pool_state_dimensions.len() ({}) != stage_results.len() ({})",
+            pool_state_dimensions.len(),
+            stage_results.len()
+        );
+        debug_assert_eq!(
+            visit_bounds.len(),
+            stage_results.len(),
+            "visit_bounds.len() ({}) != stage_results.len() ({})",
+            visit_bounds.len(),
+            stage_results.len()
+        );
+
+        let pools = stage_results
+            .iter()
+            .zip(pool_state_dimensions)
+            .zip(visit_bounds)
+            .map(|((sr, &pool_dim), &visit_bound)| {
+                CutPool::new_resumed(
+                    pool_dim,
+                    pool_visit_stride(visit_bound),
+                    max_iterations,
+                    sr.warm_start_count,
+                    sr.capacity,
+                    &sr.cuts,
+                )
+                .map_err(|err| match err {
+                    Validation(detail) => Validation(format!("pool {}: {detail}", sr.stage_id)),
+                    other => other,
+                })
+            })
+            .collect::<Result<_, _>>()?;
 
         Ok(Self {
             pools,
@@ -414,16 +486,16 @@ impl FutureCostFunction {
         self.pools.iter().map(|p| p.generated_count).sum()
     }
 
-    /// Return the total warm-start (loaded boundary) cuts across all pools
-    /// (sums `warm_start_count`) — the subset of [`Self::total_generated_cuts`]
+    /// Return the total cuts loaded before the run across all pools (sums
+    /// [`CutPool::prefix_len`]) — the subset of [`Self::total_generated_cuts`]
     /// that predates this run rather than being produced by it.
     #[must_use]
-    pub fn total_warm_start_cuts(&self) -> usize {
-        self.pools.iter().map(|p| p.warm_start_count as usize).sum()
+    pub fn total_loaded_cuts(&self) -> usize {
+        self.pools.iter().map(CutPool::prefix_len).sum()
     }
 
     /// Propagate [`CutPool::set_iteration_base`] to every pool. Call once before
-    /// training with `start_iteration + 1` for dense slot packing.
+    /// training with 1 for dense slot packing, on a resumed run too.
     pub fn set_iteration_base(&mut self, iteration_base: u64) {
         for pool in &mut self.pools {
             pool.set_iteration_base(iteration_base);
@@ -461,24 +533,6 @@ impl FutureCostFunction {
         self.pools[pool].set_active(slot, active);
     }
 
-    /// Return the LP-row count (populated slots, independent of activity) for the
-    /// given (0-based) pool id via [`CutPool::cuts_in_lp`].
-    ///
-    /// # Panics (debug builds only)
-    ///
-    /// Panics if `pool >= pools.len()`.
-    ///
-    /// [`CutPool::cuts_in_lp`]: super::pool::CutPool::cuts_in_lp
-    #[must_use]
-    pub fn cuts_in_lp(&self, pool: usize) -> usize {
-        debug_assert!(
-            pool < self.pools.len(),
-            "pool id {pool} is out of bounds (num_pools = {})",
-            self.pools.len()
-        );
-        self.pools[pool].cuts_in_lp()
-    }
-
     /// One [`SparsityReport`] per pool, in pool-id order.
     ///
     /// [`SparsityReport`]: super::pool::SparsityReport
@@ -488,15 +542,23 @@ impl FutureCostFunction {
     }
 }
 
-/// One pool's capacity: `warm_start_count + max_iterations * visit_bound` —
+/// One pool's capacity: `slot_base + max_iterations * visit_bound` —
 /// exact where `visit_bound` is a chain's `forward_passes` or a declared
 /// graph's static per-node visit count, an expected-value-plus-margin floor
 /// where it is not (sampled general, inert until a general-graph traversal
 /// supplies realized visit counts). `u64` arithmetic guards the product
 /// against overflow before the `usize` cast.
 #[allow(clippy::cast_possible_truncation)]
-fn pool_capacity(warm_start_count: u32, max_iterations: u64, visit_bound: u64) -> usize {
-    (u64::from(warm_start_count) + max_iterations * visit_bound) as usize
+fn pool_capacity(slot_base: u32, max_iterations: u64, visit_bound: u64) -> usize {
+    (u64::from(slot_base) + max_iterations * visit_bound) as usize
+}
+
+/// The sampled arm caps `visit_bound` at `forward_passes` per pool and a chain's
+/// equals `forward_passes` exactly (`NodeGraph::pool_cut_stride`), so the cast
+/// never truncates on that path.
+#[allow(clippy::cast_possible_truncation)]
+fn pool_visit_stride(visit_bound: u64) -> u32 {
+    visit_bound as u32
 }
 
 fn validate_consistent_state_dimension(
@@ -524,6 +586,7 @@ fn validate_consistent_state_dimension(
 #[cfg(test)]
 mod tests {
     use super::{FutureCostFunction, NodeId};
+    use novomodelo_io::test_support::owned_piece_defaults;
 
     #[test]
     fn new_creates_correct_number_of_pools() {
@@ -539,7 +602,7 @@ mod tests {
             assert_eq!(pool.capacity, 1000);
             assert_eq!(pool.state_dimension, 9);
             assert_eq!(pool.visit_stride, 10);
-            assert_eq!(pool.warm_start_count, 0);
+            assert_eq!(pool.slot_base, 0);
         }
     }
 
@@ -549,7 +612,7 @@ mod tests {
         let fcf = FutureCostFunction::new(3, 4, 10, 100, &[5; 3]);
         for pool in &fcf.pools {
             assert_eq!(pool.capacity, 1005);
-            assert_eq!(pool.warm_start_count, 5);
+            assert_eq!(pool.slot_base, 5);
         }
     }
 
@@ -567,18 +630,18 @@ mod tests {
     }
 
     #[test]
-    fn new_non_uniform_warm_start_counts_per_pool_capacity() {
-        // warm_start_counts = [5, 3, 0], max_iterations = 10, forward_passes = 2
+    fn new_non_uniform_slot_bases_per_pool_capacity() {
+        // slot_bases = [5, 3, 0], max_iterations = 10, forward_passes = 2
         // capacity[0] = 5 + 10*2 = 25
         // capacity[1] = 3 + 10*2 = 23
         // capacity[2] = 0 + 10*2 = 20
         let fcf = FutureCostFunction::new(3, 4, 2, 10, &[5, 3, 0]);
         assert_eq!(fcf.pools[0].capacity, 25);
-        assert_eq!(fcf.pools[0].warm_start_count, 5);
+        assert_eq!(fcf.pools[0].slot_base, 5);
         assert_eq!(fcf.pools[1].capacity, 23);
-        assert_eq!(fcf.pools[1].warm_start_count, 3);
+        assert_eq!(fcf.pools[1].slot_base, 3);
         assert_eq!(fcf.pools[2].capacity, 20);
-        assert_eq!(fcf.pools[2].warm_start_count, 0);
+        assert_eq!(fcf.pools[2].slot_base, 0);
     }
 
     #[test]
@@ -587,13 +650,13 @@ mod tests {
         for pool in &fcf.pools {
             // capacity = 0 + 10*2 = 20
             assert_eq!(pool.capacity, 20);
-            assert_eq!(pool.warm_start_count, 0);
+            assert_eq!(pool.slot_base, 0);
         }
     }
 
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "warm_start_counts.len()")]
+    #[should_panic(expected = "slot_bases.len()")]
     fn new_mismatched_length_panics_in_debug() {
         // Length 2 != num_pools 3: should trigger debug_assert_eq!
         let _ = FutureCostFunction::new(3, 4, 2, 10, &[0, 0]);
@@ -674,20 +737,43 @@ mod tests {
         assert_eq!(fcf.total_active_cuts(), 2);
     }
 
-    #[test]
-    fn total_warm_start_cuts_sums_across_pools() {
-        let fcf = FutureCostFunction::new(4, 1, 1, 20, &[0, 3, 0, 7]);
-        assert_eq!(fcf.total_warm_start_cuts(), 10);
+    fn fcf_loaded_with(records_per_pool: &[usize]) -> FutureCostFunction {
+        let stages: Vec<_> = records_per_pool
+            .iter()
+            .enumerate()
+            .map(|(stage, &records)| {
+                let cuts = (0..records)
+                    .map(|_| make_record(1.0, vec![1.0], true))
+                    .collect();
+                make_stage(stage as u32, 1, cuts)
+            })
+            .collect();
+        let pools = records_per_pool.len();
+        let proof = crate::test_support::trivial_full_fcf_proof(1, pools as u32);
+        FutureCostFunction::new_with_warm_start(
+            &proof,
+            &stages,
+            &vec![1; pools],
+            &vec![1; pools],
+            1,
+            20,
+        )
+        .unwrap()
     }
 
     #[test]
-    fn total_warm_start_cuts_is_unaffected_by_cuts_added_this_run() {
-        let mut fcf = FutureCostFunction::new(2, 1, 1, 20, &[0, 5]);
+    fn total_loaded_cuts_sums_across_pools() {
+        let fcf = fcf_loaded_with(&[0, 3, 0, 7]);
+        assert_eq!(fcf.total_loaded_cuts(), 10);
+    }
+
+    #[test]
+    fn total_loaded_cuts_is_unaffected_by_cuts_added_this_run() {
+        let mut fcf = fcf_loaded_with(&[0, 5]);
         fcf.add_cut(NodeId(0), 0, 0, 0, 1.0, &[1.0]);
         fcf.add_cut(NodeId(0), 1, 0, 0, 2.0, &[2.0]);
 
-        // warm_start_count is fixed at construction; only generated_count grows.
-        assert_eq!(fcf.total_warm_start_cuts(), 5);
+        assert_eq!(fcf.total_loaded_cuts(), 5);
         assert_eq!(fcf.total_generated_cuts(), 7);
     }
 
@@ -778,13 +864,12 @@ mod tests {
         is_active: bool,
     ) -> novomodelo_io::OwnedPolicyCutRecord {
         novomodelo_io::OwnedPolicyCutRecord {
-            cut_id: 0,
             slot_index: 0,
             iteration: 0,
-            forward_pass_index: 0,
             intercept,
             coefficients,
             is_active,
+            ..owned_piece_defaults()
         }
     }
 
@@ -913,6 +998,30 @@ mod tests {
         assert_eq!(fcf.evaluate_at_state(0, &[1.0, 2.0, 3.0]), 21.0);
     }
 
+    #[test]
+    fn from_deserialized_gives_each_pool_its_recorded_prefix() {
+        let record_at = |slot_index| novomodelo_io::OwnedPolicyCutRecord {
+            slot_index,
+            coefficients: vec![1.0],
+            ..make_record(1.0, vec![1.0], true)
+        };
+        let mut first = make_stage(0, 1, vec![record_at(0), record_at(1), record_at(2)]);
+        first.warm_start_count = 2;
+        let second = make_stage(1, 1, vec![record_at(0), record_at(1)]);
+        let stages = vec![first, second];
+
+        let proof = crate::test_support::trivial_full_fcf_proof(1, 2);
+        let fcf = FutureCostFunction::from_deserialized(&proof, &stages, &[1, 1]).unwrap();
+
+        assert_eq!(fcf.pools[0].prefix_len(), 2);
+        assert_eq!(
+            fcf.pools[0].role(2).origin,
+            crate::cut::SlotOrigin::Generated
+        );
+        assert_eq!(fcf.pools[1].prefix_len(), 0);
+        assert!(!fcf.pools[1].has_prefix_cuts());
+    }
+
     // ── new_with_warm_start tests ────────────────────────────────────────
 
     #[test]
@@ -932,7 +1041,7 @@ mod tests {
         assert_eq!(fcf.pools.len(), 1);
         // capacity = 2 warm-start + 10*4 training = 42
         assert_eq!(fcf.pools[0].capacity, 42);
-        assert_eq!(fcf.pools[0].warm_start_count, 2);
+        assert_eq!(fcf.pools[0].prefix_len(), 2);
         assert_eq!(fcf.pools[0].visit_stride, 4);
         assert_eq!(fcf.pools[0].populated(), 2);
         assert_eq!(fcf.total_active_cuts(), 2);
@@ -945,7 +1054,7 @@ mod tests {
         let proof = crate::test_support::trivial_full_fcf_proof(1, 1);
         let mut fcf =
             FutureCostFunction::new_with_warm_start(&proof, &stages, &[1], &[2], 2, 5).unwrap();
-        // warm_start_count = 1, forward_passes = 2
+        // slot_base = 1, forward_passes = 2
         // Training cut at iteration=0, fwd_idx=0: slot = 1 + 0*2 + 0 = 1
         fcf.add_cut(NodeId(0), 0, 0, 0, 20.0, &[2.0]);
         // Training cut at iteration=0, fwd_idx=1: slot = 1 + 0*2 + 1 = 2
@@ -972,10 +1081,10 @@ mod tests {
             .unwrap();
         // Stage 0: warm_start=1, capacity=1+15=16
         assert_eq!(fcf.pools[0].capacity, 16);
-        assert_eq!(fcf.pools[0].warm_start_count, 1);
+        assert_eq!(fcf.pools[0].prefix_len(), 1);
         // Stage 1: warm_start=0, capacity=0+15=15
         assert_eq!(fcf.pools[1].capacity, 15);
-        assert_eq!(fcf.pools[1].warm_start_count, 0);
+        assert_eq!(fcf.pools[1].prefix_len(), 0);
     }
 
     #[test]
@@ -992,8 +1101,45 @@ mod tests {
         let proof = crate::test_support::trivial_full_fcf_proof(2, 1);
         let fcf =
             FutureCostFunction::new_with_warm_start(&proof, &stages, &[2], &[1], 1, 5).unwrap();
-        assert_eq!(fcf.pools[0].warm_start_count, 2);
+        assert_eq!(fcf.pools[0].prefix_len(), 2);
         assert_eq!(fcf.total_active_cuts(), 1); // only the active one
+    }
+
+    // ── new_resumed tests ────────────────────────────────────────────────
+
+    #[test]
+    fn new_resumed_gives_each_pool_its_own_prefix_and_capacity() {
+        let mut first = make_stage(0, 1, vec![make_record(10.0, vec![1.0], true)]);
+        first.warm_start_count = 1;
+        first.capacity = 30;
+        let mut second = make_stage(1, 1, vec![]);
+        second.capacity = 2;
+        let stages = vec![first, second];
+
+        let proof = crate::test_support::trivial_full_fcf_proof(1, 2);
+        let fcf = FutureCostFunction::new_resumed(&proof, &stages, &[1, 1], &[3, 3], 3, 5).unwrap();
+
+        assert_eq!(fcf.pools[0].capacity, 30, "the stored capacity is larger");
+        assert_eq!(fcf.pools[0].prefix_len(), 1);
+        assert_eq!(fcf.pools[0].slot_base, 1);
+        assert_eq!(fcf.pools[1].capacity, 15, "the fresh capacity is larger");
+        assert_eq!(fcf.pools[1].prefix_len(), 0);
+        assert_eq!(fcf.pools[1].slot_base, 0);
+        assert_eq!(fcf.total_active_cuts(), 1);
+    }
+
+    #[test]
+    fn new_resumed_names_the_pool_whose_records_it_refuses() {
+        let mut refused = make_stage(1, 1, vec![]);
+        refused.warm_start_count = 1;
+        let stages = vec![make_stage(0, 1, vec![]), refused];
+
+        let proof = crate::test_support::trivial_full_fcf_proof(1, 2);
+        let err =
+            FutureCostFunction::new_resumed(&proof, &stages, &[1, 1], &[1, 1], 1, 5).unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("pool 1: slot 0"), "{msg}");
     }
 
     // ── set_active tests ────────────────────────────────────────────────────
@@ -1020,17 +1166,17 @@ mod tests {
         // Three pools with distinct dimensions (e.g. a declared graph's
         // per-pool successor `state_config` projections), a global
         // `state_dimension` that need not match any single pool's,
-        // non-uniform warm-start counts, and non-uniform visit bounds
+        // non-uniform slot bases, and non-uniform visit bounds
         // (independent of both the dimension and the global forward_passes).
         let pool_state_dimensions = [2usize, 5usize, 1usize];
-        let warm_start_counts = [1u32, 0u32, 3u32];
+        let slot_bases = [1u32, 0u32, 3u32];
         let visit_bounds = [4u64, 2u64, 6u64];
         let fcf = FutureCostFunction::new_per_pool(
             &pool_state_dimensions,
             9,
             4,
             10,
-            &warm_start_counts,
+            &slot_bases,
             &visit_bounds,
         );
 
@@ -1039,19 +1185,19 @@ mod tests {
             fcf.state_dimension, 9,
             "global dimension is stored verbatim"
         );
-        for (pool, ((&dim, &wsc), &vb)) in fcf.pools.iter().zip(
+        for (pool, ((&dim, &base), &vb)) in fcf.pools.iter().zip(
             pool_state_dimensions
                 .iter()
-                .zip(&warm_start_counts)
+                .zip(&slot_bases)
                 .zip(&visit_bounds),
         ) {
             assert_eq!(
                 pool.state_dimension, dim,
                 "each pool keeps its own dimension"
             );
-            assert_eq!(pool.warm_start_count, wsc);
-            // capacity = warm_start_count + max_iterations * visit_bound
-            assert_eq!(pool.capacity, wsc as usize + 10 * vb as usize);
+            assert_eq!(pool.slot_base, base);
+            // capacity = slot_base + max_iterations * visit_bound
+            assert_eq!(pool.capacity, base as usize + 10 * vb as usize);
             assert_eq!(pool.visit_stride, vb as u32);
         }
     }

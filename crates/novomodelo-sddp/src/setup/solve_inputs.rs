@@ -7,7 +7,7 @@ use novomodelo_stochastic::StochasticContext;
 use crate::{
     config::CutManagementConfig,
     context::{StageContext, TrainingContext},
-    dcs::DcsParams,
+    dcs::DcsConfig,
     horizon_mode::HorizonMode,
     lp::indexer::CutStateProjection,
 };
@@ -94,7 +94,7 @@ impl SolveInputs {
                 .cut_management
                 .cut_selection
                 .as_ref()
-                .and_then(DcsParams::from_strategy),
+                .and_then(DcsConfig::from_strategy),
             node_graph: &self.node_graph,
         }
     }

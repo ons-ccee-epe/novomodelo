@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 use std::sync::mpsc;
 
+use crate::test_support::RankStub;
 use chrono::NaiveDate;
 use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
 use novomodelo_core::{
@@ -33,7 +34,7 @@ use novomodelo_stochastic::{
     ClassSchemes, OpeningTreeInputs, StochasticContext, build_stochastic_context,
 };
 
-use super::train;
+use super::{LoadedPolicy, train};
 use crate::{
     SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
     config::{CutManagementConfig, EventConfig, LoopConfig},
@@ -469,7 +470,7 @@ fn ac_train_completes_with_iteration_limit() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -551,7 +552,7 @@ fn ac_train_returns_partial_on_infeasible() {
         },
         &comm,
         || Ok(MockSolver::infeasible()),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     );
 
@@ -646,7 +647,7 @@ fn ac_train_emits_correct_event_sequence() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -825,7 +826,7 @@ fn ac_worker_timing_per_worker_event_count_and_setup_invariant() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -975,7 +976,7 @@ fn ac_train_result_fields_populated() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -983,6 +984,13 @@ fn ac_train_result_fields_populated() {
     assert!(result.error.is_none(), "expected no error");
     assert_eq!(result.result.iterations, 5);
     assert!(!result.result.reason.is_empty(), "reason must not be empty");
+    let bases = &result.result.checkpoint_bases;
+    assert!(bases.complete, "a clean end gathers the whole basis store");
+    assert_eq!(bases.nodes.len(), n_stages);
+    assert!(
+        bases.nodes.iter().any(|entries| !entries.is_empty()),
+        "the gathered store holds the bases the forward pass captured"
+    );
 }
 
 #[test]
@@ -1057,7 +1065,7 @@ fn ac_train_with_no_event_sender() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     );
 
@@ -1136,7 +1144,7 @@ fn ac_total_time_ms_is_non_negative() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -1223,7 +1231,7 @@ fn cut_selection_none_skips_step() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -1237,233 +1245,6 @@ fn cut_selection_none_skips_step() {
     assert_eq!(
         cut_sel_count, 0,
         "expected no PolicySelectionComplete events with cut_selection: None"
-    );
-}
-
-#[test]
-fn cut_selection_level1_runs_at_frequency() {
-    use crate::cut_selection::CutSelectionStrategy;
-
-    let n_stages = 2;
-    let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
-    let initial_state = vec![0.0_f64; state.n_state];
-    let stochastic = make_stochastic_context(n_stages, 1);
-    let stages = make_stages(n_stages);
-    let horizon = HorizonMode::Finite {
-        num_stages: n_stages,
-    };
-    let mut fcf = make_fcf(n_stages, state.n_state, 1, 10);
-
-    let (tx, rx) = mpsc::channel::<TrainingEvent>();
-
-    let config = TrainingConfig {
-        loop_config: LoopConfig {
-            forward_passes: 1,
-            training_enumerated: false,
-            max_iterations: 10,
-            start_iteration: 0,
-            resume_lower_bound_history: Vec::new(),
-            n_fwd_threads: 1,
-            stopping_rules: iteration_limit_rules(5),
-        },
-        cut_management: CutManagementConfig {
-            cut_selection: Some(CutSelectionStrategy::Level1 {
-                check_frequency: 3,
-                tie_tolerance: 1e-10,
-            }),
-            budget: None,
-            cut_activity_tolerance: 0.0,
-            risk_measures: vec![RiskMeasure::Expectation; n_stages],
-        },
-        events: EventConfig {
-            event_sender: Some(tx),
-            periodic_checkpoint: None,
-            shutdown_flag: None,
-            export_states: false,
-        },
-    };
-
-    let mut solver = MockSolver::with_fixed(100.0);
-    let comm = StubComm;
-
-    let state_boxes = permissive_state_boxes(state.n_state, n_stages);
-    let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    let stage_ctx = fixture.ctx();
-    train(
-        &mut solver,
-        config,
-        &mut fcf,
-        &stage_ctx,
-        &TrainingContext {
-            node_graph: &crate::test_support::chain_node_graph(&stochastic),
-            horizon: &horizon,
-            state: &state,
-            cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
-            study_dims: &test_support::study_dims(),
-            inflow_method: &InflowNonNegativityMethod::None,
-            stochastic: &stochastic,
-            initial_state: &initial_state,
-            inflow_scheme: SamplingScheme::InSample,
-            load_scheme: SamplingScheme::InSample,
-            ncs_scheme: SamplingScheme::InSample,
-            stages: &stages,
-            historical_library: None,
-            external_inflow_library: None,
-            external_load_library: None,
-            external_ncs_library: None,
-            lag_accum_seed: &[],
-            lag_weight_seed: &[],
-            dcs: None,
-        },
-        &comm,
-        || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        SolverProfiles::default(),
-    )
-    .unwrap();
-
-    let events: Vec<TrainingEvent> = rx.try_iter().collect();
-    let sel_events: Vec<&TrainingEvent> = events
-        .iter()
-        .filter(|e| matches!(e, TrainingEvent::PolicySelectionComplete { .. }))
-        .collect();
-
-    assert_eq!(
-        sel_events.len(),
-        1,
-        "expected exactly 1 PolicySelectionComplete event for check_frequency=3 over 5 iterations"
-    );
-
-    let TrainingEvent::PolicySelectionComplete { iteration, .. } = sel_events[0] else {
-        panic!("wrong variant");
-    };
-    assert_eq!(
-        *iteration, 3,
-        "PolicySelectionComplete must fire at iteration 3"
-    );
-}
-
-#[test]
-fn cut_selection_stage0_exempt_preserves_cuts() {
-    use crate::cut_selection::CutSelectionStrategy;
-
-    let n_stages = 2;
-    let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
-    let initial_state = vec![0.0_f64; state.n_state];
-    let stochastic = make_stochastic_context(n_stages, 1);
-    let stages = make_stages(n_stages);
-    let horizon = HorizonMode::Finite {
-        num_stages: n_stages,
-    };
-    let mut fcf = make_fcf(n_stages, state.n_state, 1, 10);
-
-    let (tx, rx) = mpsc::channel::<TrainingEvent>();
-
-    let config = TrainingConfig {
-        loop_config: LoopConfig {
-            forward_passes: 1,
-            training_enumerated: false,
-            max_iterations: 10,
-            start_iteration: 0,
-            resume_lower_bound_history: Vec::new(),
-            n_fwd_threads: 1,
-            stopping_rules: iteration_limit_rules(2),
-        },
-        cut_management: CutManagementConfig {
-            cut_selection: Some(CutSelectionStrategy::Level1 {
-                check_frequency: 2,
-                tie_tolerance: 1e-10,
-            }),
-            budget: None,
-            cut_activity_tolerance: 0.0,
-            risk_measures: vec![RiskMeasure::Expectation; n_stages],
-        },
-        events: EventConfig {
-            event_sender: Some(tx),
-            periodic_checkpoint: None,
-            shutdown_flag: None,
-            export_states: false,
-        },
-    };
-
-    let mut solver = MockSolver::with_fixed(100.0);
-    let comm = StubComm;
-
-    let state_boxes = permissive_state_boxes(state.n_state, n_stages);
-    let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    let stage_ctx = fixture.ctx();
-    train(
-        &mut solver,
-        config,
-        &mut fcf,
-        &stage_ctx,
-        &TrainingContext {
-            node_graph: &crate::test_support::chain_node_graph(&stochastic),
-            horizon: &horizon,
-            state: &state,
-            cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
-            study_dims: &test_support::study_dims(),
-            inflow_method: &InflowNonNegativityMethod::None,
-            stochastic: &stochastic,
-            initial_state: &initial_state,
-            inflow_scheme: SamplingScheme::InSample,
-            load_scheme: SamplingScheme::InSample,
-            ncs_scheme: SamplingScheme::InSample,
-            stages: &stages,
-            historical_library: None,
-            external_inflow_library: None,
-            external_load_library: None,
-            external_ncs_library: None,
-            lag_accum_seed: &[],
-            lag_weight_seed: &[],
-            dcs: None,
-        },
-        &comm,
-        || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        SolverProfiles::default(),
-    )
-    .unwrap();
-
-    let events: Vec<TrainingEvent> = rx.try_iter().collect();
-    let sel_events: Vec<&TrainingEvent> = events
-        .iter()
-        .filter(|e| matches!(e, TrainingEvent::PolicySelectionComplete { .. }))
-        .collect();
-
-    assert_eq!(
-        sel_events.len(),
-        1,
-        "expected exactly 1 PolicySelectionComplete event at iteration 2"
-    );
-
-    let TrainingEvent::PolicySelectionComplete {
-        iteration,
-        rows_deactivated,
-        per_stage,
-        ..
-    } = sel_events[0]
-    else {
-        panic!("wrong variant");
-    };
-
-    assert_eq!(*iteration, 2, "selection must fire at iteration 2");
-    assert_eq!(
-        *rows_deactivated, 0,
-        "stage 0 is exempt from cut selection, so no cuts should be deactivated"
-    );
-    assert!(
-        !per_stage.is_empty(),
-        "per_stage must contain at least the stage 0 record"
-    );
-    assert_eq!(per_stage[0].stage, 0, "first record must be stage 0");
-    assert_eq!(
-        per_stage[0].rows_deactivated, 0,
-        "stage 0 must have zero deactivations"
     );
 }
 
@@ -1539,7 +1320,7 @@ fn existing_train_tests_pass_with_none() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -1627,7 +1408,7 @@ fn ac_train_partial_result_on_mid_iteration_failure() {
         },
         &comm,
         || Ok(MockSolver::infeasible()),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -1641,6 +1422,10 @@ fn ac_train_partial_result_on_mid_iteration_failure() {
     assert!(
         outcome.result.total_time_ms > 0,
         "total_time_ms must be > 0"
+    );
+    assert!(
+        !outcome.result.checkpoint_bases.complete,
+        "a failure exit gathers nothing, so its checkpoint bases are not whole"
     );
 
     let events: Vec<TrainingEvent> = rx.try_iter().collect();
@@ -1728,7 +1513,7 @@ fn start_iteration_resumes_from_offset() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -1812,7 +1597,7 @@ fn start_iteration_at_or_beyond_max_runs_zero_iterations() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -2448,10 +2233,10 @@ fn broadcast_basis_cache_truncated_state_returns_validation() {
 
 #[test]
 fn broadcast_basis_cache_rejects_oversized_i32_payload() {
-    use super::checked_broadcast_len;
+    use super::checked_mpi_count;
 
     let oversized: usize = (i32::MAX as usize) + 1;
-    let result = checked_broadcast_len(oversized, "broadcast_basis_cache_i32");
+    let result = checked_mpi_count(oversized, "broadcast_basis_cache_i32");
 
     match result {
         Err(SddpError::Communication(CommError::InvalidBufferSize {
@@ -2551,7 +2336,7 @@ fn template_freeze_event_emitted() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -2641,8 +2426,8 @@ fn ac_training_result_new_assigns_all_fields() {
         9_999_u64,                     // total_time_ms
         basis_cache,
         solver_stats_log,
-        None, // visited_archive
         None, // frozen_templates
+        super::CheckpointBasisStore::default(),
     );
 
     assert_eq!(result.final_lb, 1.5_f64, "final_lb");
@@ -2660,6 +2445,442 @@ fn ac_training_result_new_assigns_all_fields() {
         result.solver_stats_log[0].iteration, 7_u64,
         "solver_stats_log[0].iteration"
     );
-    assert!(result.visited_archive.is_none(), "visited_archive");
     assert!(result.frozen_templates.is_none(), "frozen_templates");
+}
+
+// ── gather_basis_store unit tests ────────────────────────────────────────
+
+/// A basis whose every field depends on `seed`, with a non-empty
+/// `state_at_capture` the gather drops.
+fn seeded_basis(seed: usize) -> crate::workspace::CapturedBasis {
+    const VARIANTS: [BasisStatus; 4] = [
+        BasisStatus::Lower,
+        BasisStatus::Basic,
+        BasisStatus::Upper,
+        BasisStatus::Nonbasic,
+    ];
+    crate::workspace::CapturedBasis {
+        basis: Basis {
+            col_status: vec![VARIANTS[seed % 4], VARIANTS[(seed + 1) % 4]],
+            row_status: vec![VARIANTS[(seed + 2) % 4]; 2 + seed % 3],
+        },
+        base_row_count: 2,
+        cut_row_slots: (0..(seed % 3) as u32).map(|s| s + seed as u32).collect(),
+        state_at_capture: vec![seed as f64; 1 + seed % 2],
+        node_id: NodeId(seed as i32),
+    }
+}
+
+/// A store of `rows` rows over `num_nodes` nodes holding `seeded_basis(seed)`
+/// at each `(row, node, seed)`.
+fn store_with(
+    rows: usize,
+    num_nodes: usize,
+    bases: &[(usize, usize, usize)],
+) -> crate::workspace::BasisStore {
+    let mut store = crate::workspace::BasisStore::new(rows, num_nodes);
+    for &(row, node, seed) in bases {
+        *store.get_mut(row, crate::setup::NodePos(node)) = Some(seeded_basis(seed));
+    }
+    store
+}
+
+/// `gathered` holds exactly `(scenario, seed)` at each node, every basis equal
+/// to `seeded_basis(seed)` without its capture state.
+fn assert_gathered(gathered: &super::CheckpointBasisStore, expected: &[&[(u32, usize)]]) {
+    assert_eq!(
+        gathered.nodes.len(),
+        expected.len(),
+        "one entry list per node"
+    );
+    for (node, (entries, want)) in gathered.nodes.iter().zip(expected).enumerate() {
+        assert_eq!(
+            entries.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+            want.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+            "node {node}: the scenarios holding a basis, ascending"
+        );
+        for ((scenario, got), &(_, seed)) in entries.iter().zip(want.iter()) {
+            let expected = seeded_basis(seed);
+            assert_eq!(
+                got.basis.col_status, expected.basis.col_status,
+                "node {node} scenario {scenario}"
+            );
+            assert_eq!(
+                got.basis.row_status, expected.basis.row_status,
+                "node {node} scenario {scenario}"
+            );
+            assert_eq!(
+                got.base_row_count, expected.base_row_count,
+                "node {node} scenario {scenario}"
+            );
+            assert_eq!(
+                got.cut_row_slots, expected.cut_row_slots,
+                "node {node} scenario {scenario}"
+            );
+            assert_eq!(
+                got.node_id, expected.node_id,
+                "node {node} scenario {scenario}"
+            );
+            assert!(
+                got.state_at_capture.is_empty(),
+                "node {node} scenario {scenario}: the capture state is dropped"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_single_rank_gather_keeps_every_stored_row_with_its_scenario() {
+    use super::gather_basis_store;
+    use crate::training::session::rank_distribution::RankDistribution;
+
+    let store = store_with(
+        3,
+        3,
+        &[(0, 0, 1), (2, 0, 2), (0, 1, 3), (1, 1, 4), (2, 1, 5)],
+    );
+    let ranks = RankDistribution::new(&StubComm, 3);
+
+    let gathered = gather_basis_store(&store, &ranks, &StubComm)
+        .unwrap()
+        .expect("rank 0 receives the gathered store");
+
+    assert!(gathered.complete);
+    assert_gathered(
+        &gathered,
+        &[&[(0, 1), (2, 2)], &[(0, 3), (1, 4), (2, 5)], &[]],
+    );
+}
+
+#[test]
+fn a_rank_zero_of_two_gather_reads_an_empty_peer_segment_as_no_entries() {
+    use super::gather_basis_store;
+    use crate::training::session::rank_distribution::RankDistribution;
+
+    let store = store_with(2, 2, &[(0, 0, 1), (1, 0, 2), (1, 1, 3)]);
+    let ranks = RankDistribution::new(&RankStub::of_two(0), 3);
+    assert_eq!(ranks.my_actual_fwd, 2, "fixture: the peer owns scenario 2");
+
+    let gathered = gather_basis_store(&store, &ranks, &RankStub::of_two(0))
+        .unwrap()
+        .expect("rank 0 receives the gathered store");
+
+    assert!(gathered.complete);
+    assert_gathered(&gathered, &[&[(0, 1), (1, 2)], &[(1, 3)]]);
+}
+
+/// One of two cooperating ranks in one process. Rank 1 records every buffer
+/// it sends; rank 0, built from that record, writes rank 1's buffer of each
+/// collective into the peer segment, in call order.
+struct TwoRankReplay {
+    rank: usize,
+    peer_sends: std::sync::Mutex<std::collections::VecDeque<MockPayload>>,
+}
+
+impl TwoRankReplay {
+    fn recording_peer() -> Self {
+        Self {
+            rank: 1,
+            peer_sends: std::sync::Mutex::new(std::collections::VecDeque::new()),
+        }
+    }
+
+    fn root_replaying(peer: Self) -> Self {
+        Self {
+            rank: 0,
+            peer_sends: peer.peer_sends,
+        }
+    }
+}
+
+fn erase_comm_data<T: CommData>(values: &[T]) -> MockPayload {
+    use std::any::Any;
+    let probe = T::default();
+    let probe: &dyn Any = &probe;
+    if probe.is::<i32>() {
+        MockPayload::Ints(
+            values
+                .iter()
+                .map(|v| *(v as &dyn Any).downcast_ref::<i32>().unwrap())
+                .collect(),
+        )
+    } else if probe.is::<f64>() {
+        MockPayload::Floats(
+            values
+                .iter()
+                .map(|v| *(v as &dyn Any).downcast_ref::<f64>().unwrap())
+                .collect(),
+        )
+    } else {
+        panic!("TwoRankReplay: unsupported element type (expected i32 or f64)")
+    }
+}
+
+fn restore_comm_data<T: CommData>(payload: &MockPayload, dst: &mut [T]) {
+    use std::any::Any;
+    for (i, slot) in dst.iter_mut().enumerate() {
+        let slot: &mut dyn Any = slot;
+        match payload {
+            MockPayload::Ints(v) => *slot.downcast_mut::<i32>().unwrap() = v[i],
+            MockPayload::Floats(v) => *slot.downcast_mut::<f64>().unwrap() = v[i],
+        }
+    }
+}
+
+impl Communicator for TwoRankReplay {
+    fn allgatherv<T: CommData>(
+        &self,
+        send: &[T],
+        recv: &mut [T],
+        counts: &[usize],
+        displs: &[usize],
+    ) -> Result<(), CommError> {
+        let own = displs[self.rank];
+        recv[own..own + send.len()].clone_from_slice(send);
+        let mut peer_sends = self.peer_sends.lock().unwrap();
+        if self.rank == 1 {
+            peer_sends.push_back(erase_comm_data(send));
+        } else {
+            let peer = peer_sends
+                .pop_front()
+                .expect("TwoRankReplay: rank 0 issued more collectives than rank 1");
+            restore_comm_data(&peer, &mut recv[displs[1]..displs[1] + counts[1]]);
+        }
+        Ok(())
+    }
+
+    fn allreduce<T: CommData>(
+        &self,
+        _send: &[T],
+        _recv: &mut [T],
+        _op: ReduceOp,
+    ) -> Result<(), CommError> {
+        unreachable!("gather_basis_store does not call allreduce")
+    }
+
+    fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
+        unreachable!("gather_basis_store does not call broadcast")
+    }
+
+    fn barrier(&self) -> Result<(), CommError> {
+        Ok(())
+    }
+
+    fn rank(&self) -> usize {
+        self.rank
+    }
+
+    fn size(&self) -> usize {
+        2
+    }
+
+    fn abort(&self, code: i32) -> ! {
+        std::process::exit(code)
+    }
+}
+
+#[test]
+fn a_two_rank_gather_numbers_each_peer_row_from_its_offset() {
+    use super::gather_basis_store;
+    use crate::training::session::rank_distribution::RankDistribution;
+
+    // Three passes over two ranks: rank 0 owns scenarios 0 and 1, rank 1
+    // scenario 2 in its row 0; rank 1's row 1 is padding and is never sent.
+    let peer = TwoRankReplay::recording_peer();
+    let peer_ranks = RankDistribution::new(&peer, 3);
+    assert_eq!((peer_ranks.my_actual_fwd, peer_ranks.max_local_fwd), (1, 2));
+    let peer_store = store_with(2, 3, &[(0, 0, 7), (0, 1, 8), (1, 0, 99), (1, 2, 99)]);
+    assert!(
+        gather_basis_store(&peer_store, &peer_ranks, &peer)
+            .unwrap()
+            .is_none(),
+        "only rank 0 receives the gathered store"
+    );
+
+    let root = TwoRankReplay::root_replaying(peer);
+    let root_ranks = RankDistribution::new(&root, 3);
+    let root_store = store_with(2, 3, &[(0, 0, 1), (1, 0, 2), (1, 1, 3)]);
+    let gathered = gather_basis_store(&root_store, &root_ranks, &root)
+        .unwrap()
+        .expect("rank 0 receives the gathered store");
+
+    assert!(
+        root.peer_sends.lock().unwrap().is_empty(),
+        "both ranks issue the same collectives"
+    );
+    assert!(gathered.complete);
+    assert_gathered(
+        &gathered,
+        &[&[(0, 1), (1, 2), (2, 7)], &[(1, 3), (2, 8)], &[]],
+    );
+}
+
+#[test]
+fn a_gather_that_cannot_decode_a_peer_segment_still_issues_every_collective() {
+    use super::gather_basis_store;
+    use crate::training::session::rank_distribution::RankDistribution;
+    use crate::workspace::BASIS_BROADCAST_FORMAT_TAG;
+
+    let peer = TwoRankReplay::recording_peer();
+    let peer_ranks = RankDistribution::new(&peer, 3);
+    let peer_store = store_with(2, 3, &[(0, 0, 7), (0, 1, 8), (0, 2, 9)]);
+    gather_basis_store(&peer_store, &peer_ranks, &peer).unwrap();
+    {
+        let mut sends = peer.peer_sends.lock().unwrap();
+        // Node 0's `i32` payload is the second collective; its second value is
+        // the format tag.
+        let MockPayload::Ints(payload) = &mut sends[1] else {
+            panic!("node 0's second collective carries the i32 payload");
+        };
+        assert_eq!(payload[1], BASIS_BROADCAST_FORMAT_TAG);
+        payload[1] = BASIS_BROADCAST_FORMAT_TAG + 1;
+    }
+
+    let root = TwoRankReplay::root_replaying(peer);
+    let root_ranks = RankDistribution::new(&root, 3);
+    let root_store = store_with(2, 3, &[(0, 0, 1)]);
+    let err = gather_basis_store(&root_store, &root_ranks, &root)
+        .expect_err("rank 0 cannot decode the peer's node-0 segment");
+
+    assert!(
+        matches!(&err, SddpError::Validation(msg) if msg.contains("unsupported wire version")),
+        "{err:?}"
+    );
+    assert!(
+        root.peer_sends.lock().unwrap().is_empty(),
+        "rank 0 gathers every node before it reports the decode failure"
+    );
+}
+
+#[test]
+fn a_payload_length_that_does_not_fit_an_i32_count_fails_naming_its_rank() {
+    use super::segment_layout;
+
+    let (mut counts, mut displs) = (vec![0_usize; 2], vec![0_usize; 2]);
+    let err = segment_layout(
+        [5_i32, -1].iter(),
+        4,
+        "gather_basis_store_i32",
+        &mut counts,
+        &mut displs,
+    )
+    .expect_err("a -1 length is a payload past the i32 count limit");
+
+    assert!(
+        matches!(&err, SddpError::Validation(msg)
+            if msg.contains("rank 1") && msg.contains("node 4")),
+        "{err:?}"
+    );
+}
+
+/// One rank of a world whose only collective is a broadcast of one `i32` from
+/// rank 0; a non-root rank receives `root_sends`.
+struct LengthBroadcast {
+    rank: usize,
+    root_sends: i32,
+    broadcasts: std::sync::atomic::AtomicUsize,
+}
+
+impl LengthBroadcast {
+    fn new(rank: usize, root_sends: i32) -> Self {
+        Self {
+            rank,
+            root_sends,
+            broadcasts: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn broadcasts(&self) -> usize {
+        self.broadcasts.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Communicator for LengthBroadcast {
+    fn allgatherv<T: CommData>(
+        &self,
+        _send: &[T],
+        _recv: &mut [T],
+        _counts: &[usize],
+        _displs: &[usize],
+    ) -> Result<(), CommError> {
+        unreachable!("broadcast_len issues only a broadcast")
+    }
+
+    fn allreduce<T: CommData>(
+        &self,
+        _send: &[T],
+        _recv: &mut [T],
+        _op: ReduceOp,
+    ) -> Result<(), CommError> {
+        unreachable!("broadcast_len issues only a broadcast")
+    }
+
+    fn broadcast<T: CommData>(&self, buf: &mut [T], _root: usize) -> Result<(), CommError> {
+        use std::any::Any;
+        self.broadcasts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if self.rank != 0 {
+            let slot: &mut dyn Any = &mut buf[0];
+            *slot.downcast_mut::<i32>().unwrap() = self.root_sends;
+        }
+        Ok(())
+    }
+
+    fn barrier(&self) -> Result<(), CommError> {
+        Ok(())
+    }
+
+    fn rank(&self) -> usize {
+        self.rank
+    }
+
+    fn size(&self) -> usize {
+        2
+    }
+
+    fn abort(&self, code: i32) -> ! {
+        std::process::exit(code)
+    }
+}
+
+#[test]
+fn an_oversized_payload_fails_every_rank_after_the_same_broadcast() {
+    use super::broadcast_len;
+
+    let oversized = (i32::MAX as usize) + 1;
+    let root = LengthBroadcast::new(0, 0);
+    let err = broadcast_len(&root, oversized, "broadcast_basis_cache_i32")
+        .expect_err("a length past the i32 count limit is refused");
+    assert!(
+        matches!(
+            err,
+            SddpError::Communication(CommError::InvalidBufferSize { actual, .. })
+                if actual == oversized
+        ),
+        "{err:?}"
+    );
+    assert_eq!(root.broadcasts(), 1, "rank 0 broadcasts before it fails");
+
+    let peer = LengthBroadcast::new(1, -1);
+    let err = broadcast_len(&peer, 0, "broadcast_basis_cache_i32")
+        .expect_err("the peer reads the refusal rank 0 broadcast");
+    assert!(
+        matches!(&err, SddpError::Validation(msg) if msg.contains("does not fit an i32 count")),
+        "{err:?}"
+    );
+    assert_eq!(peer.broadcasts(), 1);
+}
+
+#[test]
+fn a_representable_payload_length_reaches_every_rank() {
+    use super::broadcast_len;
+
+    assert_eq!(
+        broadcast_len(&LengthBroadcast::new(0, 0), 7, "op").unwrap(),
+        7
+    );
+    assert_eq!(
+        broadcast_len(&LengthBroadcast::new(1, 7), 0, "op").unwrap(),
+        7
+    );
 }

@@ -2,8 +2,8 @@
 //!
 //! The single entry point [`gemm_block`] is the only call site in
 //! `novomodelo-sddp` for [`matrixmultiply::dgemm`]. The wrapper isolates the
-//! one `unsafe` block this crate's `cut_selection.rs` needs so the call
-//! site itself stays in safe code.
+//! one `unsafe` block that the ownership record (`cut/ownership.rs`) and
+//! `dynamic` scoring (`cut/dcs.rs`) need so the call sites stay in safe code.
 
 /// Compute `v_block` (`k_rows × m_len`, row-major) = `coef` · `state_blockᵀ`.
 ///
@@ -28,9 +28,13 @@
 /// # Determinism
 ///
 /// `matrixmultiply` is single-threaded (the workspace pins
-/// `default-features = false`) and uses a fixed cache-blocked algorithm.
-/// Same input → bit-identical f64 output on any IEEE-754 target compiled
-/// with `target-feature=+avx2,+fma`.
+/// `default-features = false`) and uses a fixed cache-blocked algorithm, so
+/// one build returns a bit-identical f64 output for the same input, run to
+/// run. The microkernel is chosen at compile time from the target features.
+/// No file of the repository sets one, so every `x86_64` build resolves the
+/// same unfused kernel. A build given other target features, or built for
+/// another architecture, resolves a different kernel and can differ in the
+/// last bit.
 ///
 /// # Panics
 ///
@@ -110,10 +114,25 @@ pub(crate) fn gemm_block(
     }
 }
 
+/// derived: the `f64` kernel an `x86_64` build without target features resolves
+/// (`KernelSse2` in `dgemm_kernel.rs`) takes its blocking from
+/// `archparam_defaults.rs` of `matrixmultiply` 0.3.10: output rows in blocks of
+/// `D_MC = 64`, inner dimension in blocks of `D_KC = 256`. 80 cuts cross the row
+/// block. A `matrixmultiply` version bump must re-run the block-shape property.
+#[cfg(test)]
+pub(crate) const PINNED_MAX_ROWS: usize = 80;
+
+/// derived: below the kernel's column block, `D_NC = 1024`.
+#[cfg(test)]
+pub(crate) const PINNED_MAX_COLUMNS: usize = 20;
+
 #[cfg(test)]
 #[allow(clippy::cast_precision_loss)]
 mod tests {
-    use super::gemm_block;
+    use proptest::prelude::*;
+    use proptest::test_runner::RngSeed;
+
+    use super::{PINNED_MAX_COLUMNS, PINNED_MAX_ROWS, gemm_block};
 
     #[test]
     fn gemm_block_matches_naive_reference_small() {
@@ -161,5 +180,138 @@ mod tests {
 
         let mut v3 = vec![2.0_f64; 0];
         gemm_block(&[], &[], 5, 3, 0, &mut v3);
+    }
+
+    // A runtime assert, not `const { assert!(..) }`: a fused build must fail this one
+    // test, not the whole test build.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    #[allow(clippy::assertions_on_constants)]
+    fn resolved_kernel_is_the_unfused_baseline() {
+        const TWO_POW_M26: f64 = 1.0 / (1_u64 << 26) as f64;
+        const TWO_POW_M27: f64 = 1.0 / (1_u64 << 27) as f64;
+        const A: f64 = 1.0 + TWO_POW_M27;
+        const ROW: [f64; 2] = [1.0, A];
+        const STATE: [f64; 2] = [-(1.0 + TWO_POW_M26), A];
+        /// derived: with `a = 1 + 2^-27`, `a·a = 1 + 2^-26 + 2^-54` exactly, so the
+        /// row `[1, a]` against the state `[-(1 + 2^-26), a]` has the exact dot
+        /// product `2^-54`. An unfused kernel rounds `a·a` to `1 + 2^-26` and
+        /// returns `0`; a fused multiply-add keeps the last term and returns `2^-54`.
+        const UNFUSED_DOT: f64 = 0.0;
+
+        assert!(
+            !cfg!(target_feature = "fma") && !cfg!(target_feature = "avx"),
+            "this build was given x86_64 target features (fma: {}, avx: {}): an exported \
+             RUSTFLAGS or a Cargo config rustflags entry with target-feature or target-cpu \
+             does this, and results are then not comparable with the official builds",
+            cfg!(target_feature = "fma"),
+            cfg!(target_feature = "avx"),
+        );
+
+        for (k_rows, m_len) in [(1, 1), (4, 1), (1, 8), (5, 9)] {
+            let coef = ROW.repeat(k_rows);
+            let state = STATE.repeat(m_len);
+            let mut v = vec![f64::NAN; k_rows * m_len];
+
+            gemm_block(&coef, &state, k_rows, ROW.len(), m_len, &mut v);
+
+            for (i, x) in v.iter().enumerate() {
+                assert_eq!(
+                    x.to_bits(),
+                    UNFUSED_DOT.to_bits(),
+                    "shape ({k_rows}, {m_len}) element {i} = {x:e}, expected the unfused 0",
+                );
+            }
+        }
+    }
+
+    /// derived: straddles `D_KC = 256` (`archparam_defaults.rs`), so 257 and above
+    /// sum the inner dimension in two blocks.
+    const INNER_DIMS: [usize; 5] = [255, 256, 257, 300, 513];
+
+    fn value() -> impl Strategy<Value = f64> {
+        (any::<bool>(), 1000..10_000_i32, -6..=2_i32).prop_map(|(negative, mantissa, exponent)| {
+            let magnitude = f64::from(mantissa) * 10_f64.powi(exponent);
+            if negative { -magnitude } else { magnitude }
+        })
+    }
+
+    fn problem() -> impl Strategy<Value = (usize, usize, usize, Vec<f64>, Vec<f64>)> {
+        (
+            1..=PINNED_MAX_ROWS,
+            1..=PINNED_MAX_COLUMNS,
+            prop_oneof![1..=8_usize, prop::sample::select(INNER_DIMS.to_vec())],
+        )
+            .prop_flat_map(|(k_rows, m_len, d)| {
+                (
+                    Just(k_rows),
+                    Just(m_len),
+                    Just(d),
+                    prop::collection::vec(value(), k_rows * d),
+                    prop::collection::vec(value(), m_len * d),
+                )
+            })
+    }
+
+    fn block(coef: &[f64], states: &[f64], k_rows: usize, d: usize, m_len: usize) -> Vec<f64> {
+        let mut v = vec![f64::NAN; k_rows * m_len];
+        gemm_block(coef, states, k_rows, d, m_len, &mut v);
+        v
+    }
+
+    fn same_bits(part: &str, got: &[f64], whole: &[f64]) -> Result<(), TestCaseError> {
+        prop_assert_eq!(got.len(), whole.len());
+        for (i, (g, w)) in got.iter().zip(whole).enumerate() {
+            prop_assert_eq!(
+                g.to_bits(),
+                w.to_bits(),
+                "{} element {}: {:e} against {:e} in the whole block",
+                part,
+                i,
+                g,
+                w
+            );
+        }
+        Ok(())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            rng_seed: RngSeed::Fixed(42),
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn gemm_block_element_is_independent_of_the_block_shape(
+            (k_rows, m_len, d, coef, states) in problem(),
+        ) {
+            let whole = block(&coef, &states, k_rows, d, m_len);
+
+            for k in 0..k_rows {
+                for j in 0..m_len {
+                    let alone = block(&coef[k * d..][..d], &states[j * d..][..d], 1, d, 1);
+                    same_bits("alone", &alone, &whole[k * m_len + j..][..1])?;
+                }
+            }
+
+            for (c, chunk) in states.chunks(8 * d).enumerate() {
+                let cols = chunk.len() / d;
+                let part = block(&coef, chunk, k_rows, d, cols);
+                for k in 0..k_rows {
+                    same_bits(
+                        "column chunk",
+                        &part[k * cols..][..cols],
+                        &whole[k * m_len + 8 * c..][..cols],
+                    )?;
+                }
+            }
+
+            for (r, chunk) in coef.chunks(3 * d).enumerate() {
+                let rows = chunk.len() / d;
+                let part = block(chunk, &states, rows, d, m_len);
+                same_bits("row chunk", &part, &whole[3 * r * m_len..][..rows * m_len])?;
+            }
+        }
     }
 }

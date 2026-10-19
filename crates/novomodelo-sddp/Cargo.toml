@@ -52,7 +52,7 @@ slow-tests = []
 ## `#[cfg(any(test, feature = "test-support"))]`, so plain `cargo test` sees
 ## them via `test` and downstream integration tests see them via this feature.
 ## Must NOT be enabled in production builds.
-test-support = ["novomodelo-core/test-support"]
+test-support = ["novomodelo-core/test-support", "novomodelo-io/test-support"]
 
 [dependencies]
 novomodelo-core = { version = "0.18.0", path = "../novomodelo-core" }
@@ -75,6 +75,7 @@ cc = "1.2"
 arrow = { version = "60", default-features = false, features = ["prettyprint"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 novomodelo-core = { version = "0.18.0", path = "../novomodelo-core", features = ["test-support"] }
+novomodelo-io = { version = "0.18.0", path = "../novomodelo-io", features = ["test-support"] }
 criterion = { version = "0.8", default-features = false }
 # Used only by the `dcs_batched_scoring` bench to reproduce the pre-batching
 # per-candidate `dgemm` baseline (the crate's own `gemm_block` wrapper is
@@ -99,12 +100,9 @@ harness = false
 required-features = ["test-support"]
 
 [[bench]]
-name = "cut_selection"
-harness = false
-
-[[bench]]
 name = "cut_selection_kernel"
 harness = false
+required-features = ["test-support"]
 
 [[bench]]
 name = "dcs_batched_scoring"

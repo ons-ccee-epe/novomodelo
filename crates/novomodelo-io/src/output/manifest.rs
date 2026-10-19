@@ -180,7 +180,8 @@ pub struct MetadataRowPool {
     pub total_generated: u64,
     /// Rows still active in the pool at termination.
     pub total_active: u64,
-    /// Highest number of simultaneously active rows observed.
+    /// Highest number of active rows at an iteration's row exchange or after its
+    /// selection and cap.
     pub peak_active: u64,
     /// Rows currently active in the LP at termination.
     #[serde(default)]

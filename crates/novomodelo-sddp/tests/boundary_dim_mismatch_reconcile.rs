@@ -42,6 +42,7 @@ use novomodelo_io::config::{
     SimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
     TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
+use novomodelo_io::test_support::{piece_defaults, stage_cuts_payload_defaults};
 use novomodelo_io::{
     ENTITY_SLOT_DATE_SENTINEL, EntitySlot, PolicyCutRecord, ProducerBlock, StageCutsPayload,
     StateFamily, encode_slot_date, write_policy_checkpoint,
@@ -91,28 +92,25 @@ fn write_source_checkpoint(
 ) {
     let state_dimension = u32::try_from(coefficients.len()).expect("small coefficient count");
     let cut = PolicyCutRecord {
-        cut_id: 0,
         slot_index: 0,
         iteration: 0,
-        forward_pass_index: 0,
         intercept: 1.0,
         coefficients,
         is_active: true,
+        ..piece_defaults()
     };
     let cuts = vec![cut];
     let payload = StageCutsPayload {
         stage_id: 0,
         state_dimension,
         capacity: 1,
-        warm_start_count: 0,
         cuts: &cuts,
-        active_cut_indices: &[0],
         populated_count: 1,
         entity_manifest: manifest,
         cost_scale_factor: cost_scale_factor.unwrap_or(1_000_000.0),
         node_id: 0,
-        graph_stage_id: -1,
         priced_state_date: encode_slot_date(fixture_priced_date(0)),
+        ..stage_cuts_payload_defaults()
     };
     let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
         1,
@@ -719,7 +717,7 @@ fn run_injected_decomp() -> f64 {
         .terminal_pool(setup.num_stages())
         .unwrap();
     assert!(
-        setup.fcf.pools[terminal].has_warm_start_cuts(),
+        setup.fcf.pools[terminal].has_prefix_cuts(),
         "injecting the boundary must make the terminal pool boundary-loaded"
     );
 

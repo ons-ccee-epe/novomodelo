@@ -263,7 +263,7 @@ pub fn evaluate_par_inflows(
 ///
 /// # Examples
 ///
-/// Solve for noise that produces zero output (truncation):
+/// Solve for the noise that produces a zero output:
 ///
 /// ```
 /// use novomodelo_stochastic::solve_par_noise;
@@ -321,145 +321,6 @@ pub fn solve_par_noise(
     (target - deterministic_value) / sigma
 }
 
-/// Solve the PAR(p) equation for each series element's noise at `stage`, writing
-/// into `output` without allocating. `lag_matrix` uses the [`evaluate_par_batch`]
-/// layout `[lag * n_series + element]`.
-///
-/// # Examples
-///
-/// ```
-/// use novomodelo_core::{EntityId, scenario::InflowModel, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
-/// use novomodelo_stochastic::par::precompute::PrecomputedPar;
-/// use novomodelo_stochastic::{solve_par_noise, solve_par_noise_batch};
-/// use chrono::NaiveDate;
-///
-/// let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
-/// let stage = Stage {
-///     index: 0, id: 0,
-///     start_date: date,
-///     end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-///     season_id: Some(0),
-///     blocks: vec![Block { index: 0, name: "SINGLE".to_string(), duration_hours: 744.0 }],
-///     block_mode: BlockMode::Parallel,
-///     state_config: StageStateConfig { storage: true, inflow_lags: false },
-///     risk_config: StageRiskConfig::Expectation,
-///     scenario_config: ScenarioSourceConfig { branching_factor: 10, noise_method: NoiseMethod::Saa },
-/// };
-/// let model = InflowModel {
-///     hydro_id: EntityId(1), stage_id: 0,
-///     mean_m3s: 100.0, std_m3s: 30.0,
-///     ar_coefficients: vec![],
-///     residual_std_ratio: 1.0,
-///     annual: None,
-/// };
-/// let par_lp = PrecomputedPar::build(&[model], &[stage], &[EntityId(1)], None).unwrap();
-///
-/// let lag_matrix: Vec<f64> = vec![]; // no lags for AR(0)
-/// let targets = vec![0.0]; // solve for zero output (truncation)
-/// let mut output = vec![0.0];
-/// solve_par_noise_batch(&par_lp, 0, &lag_matrix, &targets, &mut output);
-/// // η = (0.0 - 100.0) / 30.0
-/// assert!((output[0] - (-100.0 / 30.0)).abs() < 1e-10);
-/// ```
-pub fn solve_par_noise_batch(
-    par_lp: &PrecomputedPar,
-    stage: usize,
-    lag_matrix: &[f64],
-    targets: &[f64],
-    output: &mut [f64],
-) {
-    let n_series = par_lp.n_hydros();
-    debug_assert!(
-        targets.len() == n_series,
-        "targets.len() ({}) must equal n_series ({})",
-        targets.len(),
-        n_series
-    );
-    debug_assert!(
-        output.len() == n_series,
-        "output.len() ({}) must equal n_series ({})",
-        output.len(),
-        n_series
-    );
-
-    for h in 0..n_series {
-        let base = par_lp.deterministic_base(stage, h);
-        let sigma = par_lp.sigma(stage, h);
-        let psi = par_lp.psi_slice(stage, h);
-
-        let mut deterministic_value = base;
-        for (l, &p) in psi.iter().enumerate() {
-            deterministic_value += p * lag_matrix[l * n_series + h];
-        }
-        if sigma == 0.0 {
-            output[h] = if (targets[h] - deterministic_value).abs() < 1e-10 {
-                0.0
-            } else {
-                f64::NEG_INFINITY
-            };
-            continue;
-        }
-        output[h] = (targets[h] - deterministic_value) / sigma;
-    }
-}
-
-/// Solve the PAR(p) equation for all series elements at a given stage.
-///
-/// # Deprecation
-///
-/// Renamed to [`solve_par_noise_batch`] for naming consistency with
-/// [`evaluate_par_batch`]. This alias will be removed in a future minor
-/// version.
-///
-/// # Examples
-///
-/// ```
-/// use novomodelo_core::{EntityId, scenario::InflowModel, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
-/// use novomodelo_stochastic::par::precompute::PrecomputedPar;
-/// #[allow(deprecated)]
-/// use novomodelo_stochastic::{solve_par_noise, solve_par_noises};
-/// use chrono::NaiveDate;
-///
-/// let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
-/// let stage = Stage {
-///     index: 0, id: 0,
-///     start_date: date,
-///     end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-///     season_id: Some(0),
-///     blocks: vec![Block { index: 0, name: "SINGLE".to_string(), duration_hours: 744.0 }],
-///     block_mode: BlockMode::Parallel,
-///     state_config: StageStateConfig { storage: true, inflow_lags: false },
-///     risk_config: StageRiskConfig::Expectation,
-///     scenario_config: ScenarioSourceConfig { branching_factor: 10, noise_method: NoiseMethod::Saa },
-/// };
-/// let model = InflowModel {
-///     hydro_id: EntityId(1), stage_id: 0,
-///     mean_m3s: 100.0, std_m3s: 30.0,
-///     ar_coefficients: vec![],
-///     residual_std_ratio: 1.0,
-///     annual: None,
-/// };
-/// let par_lp = PrecomputedPar::build(&[model], &[stage], &[EntityId(1)], None).unwrap();
-///
-/// let lag_matrix: Vec<f64> = vec![]; // no lags for AR(0)
-/// let targets = vec![0.0]; // solve for zero output (truncation)
-/// let mut output = vec![0.0];
-/// #[allow(deprecated)]
-/// solve_par_noises(&par_lp, 0, &lag_matrix, &targets, &mut output);
-/// // η = (0.0 - 100.0) / 30.0
-/// assert!((output[0] - (-100.0 / 30.0)).abs() < 1e-10);
-/// ```
-#[deprecated(since = "0.1.2", note = "use solve_par_noise_batch instead")]
-pub fn solve_par_noises(
-    par_lp: &PrecomputedPar,
-    stage: usize,
-    lag_matrix: &[f64],
-    targets: &[f64],
-    output: &mut [f64],
-) {
-    solve_par_noise_batch(par_lp, stage, lag_matrix, targets, output);
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -476,7 +337,7 @@ mod tests {
 
     use super::{
         evaluate_par, evaluate_par_batch, evaluate_par_inflow, evaluate_par_inflows,
-        solve_par_noise, solve_par_noise_batch, solve_par_noises,
+        solve_par_noise,
     };
     use crate::par::precompute::PrecomputedPar;
     use crate::test_support::InflowModelSpec;
@@ -894,54 +755,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
-    fn test_solve_par_noise_batch_sigma_zero_matching_target() {
-        // Build a single-hydro, single-stage PAR with sigma=0 (std_m3s=0 → sigma=0).
-        // AR(0) with mean=125.0, std=0.0 → deterministic_value=125.0.
-        use novomodelo_core::{EntityId, scenario::InflowModel};
-
-        let stage = make_stage(0, 0, Some(0));
-        let model = InflowModel {
-            hydro_id: EntityId(1),
-            stage_id: 0,
-            mean_m3s: 125.0,
-            std_m3s: 0.0,
-            ar_coefficients: vec![],
-            residual_std_ratio: 1.0,
-            annual: None,
-        };
-        let par_lp = PrecomputedPar::build(&[model], &[stage], &[EntityId(1)], None).unwrap();
-
-        let lag_matrix: Vec<f64> = vec![];
-        // Matching target: deterministic_value = 125.0
-        let targets_match = vec![125.0_f64];
-        let mut output_match = vec![0.0_f64];
-        solve_par_noise_batch(&par_lp, 0, &lag_matrix, &targets_match, &mut output_match);
-        assert_eq!(
-            output_match[0], 0.0_f64,
-            "batch sigma=0, matching target: expected 0.0, got {}",
-            output_match[0]
-        );
-
-        // Non-matching target: deterministic_value = 125.0, target = 200.0
-        let targets_no_match = vec![200.0_f64];
-        let mut output_no_match = vec![0.0_f64];
-        solve_par_noise_batch(
-            &par_lp,
-            0,
-            &lag_matrix,
-            &targets_no_match,
-            &mut output_no_match,
-        );
-        assert_eq!(
-            output_no_match[0],
-            f64::NEG_INFINITY,
-            "batch sigma=0, non-matching target: expected NEG_INFINITY, got {}",
-            output_no_match[0]
-        );
-    }
-
-    #[test]
     fn solve_noise_positive_deterministic_gives_negative_eta_for_zero() {
         // Positive deterministic inflow → need large negative noise to reach zero.
         let det_base = 100.0_f64;
@@ -963,112 +776,6 @@ mod tests {
             "negative deterministic inflow: η for zero target must be positive, got {eta}"
         );
         assert!((eta - 2.5).abs() < 1e-10, "expected 2.5, got {eta}");
-    }
-
-    // -----------------------------------------------------------------------
-    // solve_par_noises batch unit tests (deprecated alias)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn batch_solve_matches_single_hydro_at_stage_0() {
-        let par_lp = make_two_hydro_three_stage_par();
-        let n_hydros = par_lp.n_hydros();
-
-        // Stage 0: hydro 3 (h_idx=0) has AR(2), hydro 5 (h_idx=1) has AR(1).
-        let lag0_h0 = 90.0_f64;
-        let lag0_h1 = 58.0_f64;
-        let lag1_h0 = 78.0_f64;
-        let lag_matrix = vec![lag0_h0, lag0_h1, lag1_h0, 0.0];
-        let targets = vec![0.0_f64; n_hydros];
-
-        let mut output = vec![0.0_f64; n_hydros];
-        solve_par_noises(&par_lp, 0, &lag_matrix, &targets, &mut output);
-
-        // Per-hydro single-call references. Lag buffer length = psi.len().
-        let psi_h0 = par_lp.psi_slice(0, 0);
-        let lags_for_h0: Vec<f64> = (0..psi_h0.len())
-            .map(|l| lag_matrix[l * n_hydros])
-            .collect();
-        let expected_h0 = solve_par_noise(
-            par_lp.deterministic_base(0, 0),
-            psi_h0,
-            &lags_for_h0,
-            par_lp.sigma(0, 0),
-            0.0,
-        );
-        let psi_h1 = par_lp.psi_slice(0, 1);
-        let lags_for_h1: Vec<f64> = (0..psi_h1.len())
-            .map(|l| lag_matrix[l * n_hydros + 1])
-            .collect();
-        let expected_h1 = solve_par_noise(
-            par_lp.deterministic_base(0, 1),
-            psi_h1,
-            &lags_for_h1,
-            par_lp.sigma(0, 1),
-            0.0,
-        );
-
-        assert!(
-            (output[0] - expected_h0).abs() < 1e-10,
-            "batch h0 stage0: expected {expected_h0}, got {}",
-            output[0]
-        );
-        assert!(
-            (output[1] - expected_h1).abs() < 1e-10,
-            "batch h1 stage0: expected {expected_h1}, got {}",
-            output[1]
-        );
-    }
-
-    #[test]
-    fn batch_solve_roundtrip_makes_all_inflows_hit_target() {
-        let par_lp = make_two_hydro_three_stage_par();
-        let n_hydros = par_lp.n_hydros();
-
-        let lag_matrix = vec![
-            85.0, // lag0, hydro 3
-            55.0, // lag0, hydro 5
-            0.0,  // lag1, hydro 3 (unused for AR(1))
-            0.0,  // lag1, hydro 5 (unused for AR(1))
-        ];
-        let targets = vec![0.0_f64; n_hydros];
-
-        let mut eta = vec![0.0_f64; n_hydros];
-        solve_par_noises(&par_lp, 1, &lag_matrix, &targets, &mut eta);
-
-        let mut inflows = vec![0.0_f64; n_hydros];
-        evaluate_par_inflows(&par_lp, 1, &lag_matrix, &eta, &mut inflows);
-
-        for (h, &inflow) in inflows.iter().enumerate() {
-            assert!(
-                (inflow - targets[h]).abs() < 1e-10,
-                "batch roundtrip: h={h} inflow must be {}, got {inflow}",
-                targets[h]
-            );
-        }
-    }
-
-    #[test]
-    fn batch_solve_roundtrip_nonzero_targets() {
-        let par_lp = make_two_hydro_three_stage_par();
-        let n_hydros = par_lp.n_hydros();
-
-        let lag_matrix = vec![85.0, 55.0, 0.0, 0.0];
-        let targets = vec![42.0_f64, 17.5_f64];
-
-        let mut eta = vec![0.0_f64; n_hydros];
-        solve_par_noises(&par_lp, 1, &lag_matrix, &targets, &mut eta);
-
-        let mut inflows = vec![0.0_f64; n_hydros];
-        evaluate_par_inflows(&par_lp, 1, &lag_matrix, &eta, &mut inflows);
-
-        for (h, &inflow) in inflows.iter().enumerate() {
-            assert!(
-                (inflow - targets[h]).abs() < 1e-10,
-                "batch roundtrip nonzero: h={h} expected {}, got {inflow}",
-                targets[h]
-            );
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -1121,29 +828,5 @@ mod tests {
             output_old[1].to_bits(),
             "evaluate_par_batch / evaluate_par_inflows mismatch at h=1"
         );
-    }
-
-    /// `solve_par_noise_batch` and `solve_par_noises` must fill output slices
-    /// with bitwise identical values.
-    #[test]
-    fn test_solve_par_noise_batch_matches_noises() {
-        let par_lp = make_two_hydro_three_stage_par();
-        let n_hydros = par_lp.n_hydros();
-
-        let lag_matrix = vec![85.0, 55.0, 0.0, 0.0];
-        let targets = vec![0.0_f64; n_hydros];
-        let mut output_new = vec![0.0_f64; n_hydros];
-        let mut output_old = vec![0.0_f64; n_hydros];
-
-        solve_par_noise_batch(&par_lp, 1, &lag_matrix, &targets, &mut output_new);
-        solve_par_noises(&par_lp, 1, &lag_matrix, &targets, &mut output_old);
-
-        for h in 0..n_hydros {
-            assert_eq!(
-                output_new[h].to_bits(),
-                output_old[h].to_bits(),
-                "solve_par_noise_batch / solve_par_noises mismatch at h={h}"
-            );
-        }
     }
 }

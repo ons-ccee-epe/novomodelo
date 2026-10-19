@@ -106,9 +106,7 @@ pub fn write_training_results(
         production_fit_deviation: ctx.production_fit_deviation.clone(),
         distribution: ctx.distribution.clone(),
     };
-    write_training_metadata(&output_dir.join("training/metadata.json"), &metadata)?;
-
-    Ok(())
+    write_training_metadata(&output_dir.join("training/metadata.json"), &metadata)
 }
 
 pub(crate) const SIMULATION_METADATA_FILE: &str = "simulation/metadata.json";
@@ -127,9 +125,7 @@ pub fn write_simulation_results(
     ctx: &OutputContext,
 ) -> Result<(), OutputError> {
     let metadata = simulation_metadata(simulation_output, RunStatus::Complete, ctx);
-    write_simulation_metadata(&output_dir.join(SIMULATION_METADATA_FILE), &metadata)?;
-
-    Ok(())
+    write_simulation_metadata(&output_dir.join(SIMULATION_METADATA_FILE), &metadata)
 }
 
 /// Write the metadata of a simulation that was skipped before any scenario
@@ -308,6 +304,7 @@ mod tests {
             time_overhead_ms: 0,
             solve_time_ms: 0.0,
             mean_rows_in_lp: 0.0,
+            lazy_round_cap_hits: 0,
         }
     }
 
@@ -582,8 +579,8 @@ mod tests {
         assert_eq!(total_rows, 0, "empty training must produce 0 rows");
         assert_eq!(
             schema.fields().len(),
-            15,
-            "convergence schema must have 15 columns"
+            16,
+            "convergence schema must have 16 columns"
         );
     }
 

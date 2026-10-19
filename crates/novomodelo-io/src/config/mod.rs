@@ -44,7 +44,9 @@ pub use scenario_source::{
     HistoricalYearRange, Openings, RawClassConfigEntry, RawHistoricalYearsConfig,
     RawSamplingScheme, RawScenarioSourceConfig,
 };
-pub use simulation::{NumScenariosResolution, SimulationConfig, SimulationSelection};
+pub use simulation::{
+    NumScenariosResolution, SimulationConfig, SimulationRowSet, SimulationSelection,
+};
 pub use training::{
     BackwardScheduler, DualEdgeWeight, ForwardPassesResolution, LipschitzConfig, ParallelismConfig,
     PhaseSolverProfileConfig, PresolveMode, PriceStrategy, RowSelectionConfig, ScaleStrategy,
@@ -227,14 +229,10 @@ fn convert_scenario_source_config(
         return Ok(ScenarioSource::default());
     };
 
-    let inflow_scheme = convert_class_scheme_cfg(r.inflow.as_ref());
-    let load_scheme = convert_class_scheme_cfg(r.load.as_ref());
-    let ncs_scheme = convert_class_scheme_cfg(r.ncs.as_ref());
-
     let source = ScenarioSource {
-        inflow_scheme,
-        load_scheme,
-        ncs_scheme,
+        inflow_scheme: convert_class_scheme_cfg(r.inflow.as_ref()),
+        load_scheme: convert_class_scheme_cfg(r.load.as_ref()),
+        ncs_scheme: convert_class_scheme_cfg(r.ncs.as_ref()),
         seed: r.seed,
         historical_years: r.historical_years.as_ref().map(|hy| match hy {
             RawHistoricalYearsConfig::List(years) => HistoricalYears::List(years.clone()),
@@ -600,11 +598,13 @@ impl Config {
     clippy::expect_used,
     clippy::panic,
     clippy::too_many_lines,
-    clippy::doc_markdown
+    clippy::doc_markdown,
+    clippy::float_cmp
 )]
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::num::NonZeroU32;
     use tempfile::NamedTempFile;
 
     fn write_config(content: &str) -> NamedTempFile {
@@ -792,8 +792,8 @@ mod tests {
             "stopping_mode": "any",
             "cut_selection": {
               "selection": {
-                "method": "domination",
-                "domination_tolerance": 1e-6
+                "method": "level1",
+                "check_frequency": 3
               }
             }
           },
@@ -840,14 +840,14 @@ mod tests {
         assert_eq!(rules.len(), 2);
         let cut_sel = &cfg.training.cut_selection;
         match cut_sel.selection.as_ref().expect("selection present") {
-            SelectionMethod::Domination {
-                domination_tolerance,
+            SelectionMethod::Level1 {
                 check_frequency,
+                lookback_iterations,
             } => {
-                assert!((domination_tolerance - 1e-6).abs() < f64::EPSILON);
-                assert_eq!(*check_frequency, 5);
+                assert_eq!(check_frequency.get(), 3);
+                assert_eq!(*lookback_iterations, None);
             }
-            other => panic!("expected Domination, got {other:?}"),
+            other @ SelectionMethod::Dynamic { .. } => panic!("expected Level1, got {other:?}"),
         }
 
         assert_eq!(cfg.upper_bound_evaluation.enabled, Some(true));
@@ -1650,26 +1650,26 @@ mod tests {
     #[test]
     fn row_selection_config_serde_roundtrip() {
         let original = RowSelectionConfig {
-            row_activity_tolerance: Some(1e-6),
+            row_activity_tolerance: 1e-6,
             max_active_per_stage: Some(100),
             selection: Some(SelectionMethod::Level1 {
-                tie_tolerance: 1e-9,
-                check_frequency: 7,
+                check_frequency: NonZeroU32::new(7).unwrap(),
+                lookback_iterations: NonZeroU32::new(9),
             }),
         };
         let json = serde_json::to_string(&original).unwrap();
         let roundtripped: RowSelectionConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(roundtripped.max_active_per_stage, Some(100));
-        assert_eq!(roundtripped.row_activity_tolerance, Some(1e-6));
+        assert_eq!(roundtripped.row_activity_tolerance, 1e-6);
         match roundtripped.selection.expect("selection present") {
             SelectionMethod::Level1 {
-                tie_tolerance,
                 check_frequency,
+                lookback_iterations,
             } => {
-                assert!((tie_tolerance - 1e-9).abs() < f64::EPSILON);
-                assert_eq!(check_frequency, 7);
+                assert_eq!(check_frequency.get(), 7);
+                assert_eq!(lookback_iterations, NonZeroU32::new(9));
             }
-            other => panic!("expected Level1, got {other:?}"),
+            other @ SelectionMethod::Dynamic { .. } => panic!("expected Level1, got {other:?}"),
         }
     }
 
@@ -2138,6 +2138,197 @@ mod tests {
             }
             other => panic!("expected SchemaError, got: {other:?}"),
         }
+    }
+
+    /// The two removed row-selection method names, spelled from characters so
+    /// that the list in `training.rs` is their only occurrence in this crate.
+    pub(super) fn removed_selection_method_names() -> [String; 2] {
+        [
+            ['l', 'm', 'l', '1'].iter().collect(),
+            ['d', 'o', 'm', 'i', 'n', 'a', 't', 'i', 'o', 'n']
+                .iter()
+                .collect(),
+        ]
+    }
+
+    fn assert_names_the_removed_method(err: &LoadError, removed: &str) {
+        let message = err.to_string();
+        assert!(
+            message.contains(&format!("`{removed}` was removed"))
+                && message.contains("use `level1`")
+                && message.contains("training.cut_selection.selection.method"),
+            "unexpected message for {removed}: {message}"
+        );
+    }
+
+    #[test]
+    fn with_overrides_rejects_a_removed_selection_method() {
+        let base = base_value(OVERRIDE_BASE_CONFIG);
+        for removed in removed_selection_method_names() {
+            let overrides = override_map(&[(
+                "training.cut_selection.selection",
+                serde_json::json!({ "method": removed }),
+            )]);
+            let err = Config::with_overrides(&base, &overrides).unwrap_err();
+            assert!(
+                matches!(&err, LoadError::SchemaError { path, .. }
+                    if path == std::path::Path::new("<config_overrides>")),
+                "expected SchemaError on the override path, got: {err:?}"
+            );
+            assert_names_the_removed_method(&err, &removed);
+        }
+    }
+
+    #[test]
+    fn parse_config_rejects_a_removed_selection_method() {
+        let mut config = base_value(OVERRIDE_BASE_CONFIG);
+        for removed in removed_selection_method_names() {
+            config["training"]["cut_selection"] =
+                serde_json::json!({ "selection": { "method": removed } });
+            let f = write_config(&config.to_string());
+            let err = parse_config(f.path()).unwrap_err();
+            assert_names_the_removed_method(&err, &removed);
+        }
+    }
+
+    const REMOVED_TIE_TOLERANCE_MESSAGE: &str = "the key `tie_tolerance` was removed: `level1` \
+         compares row values exactly; delete the key (`training.cut_selection.selection`)";
+
+    #[test]
+    fn with_overrides_rejects_the_removed_tie_tolerance_key() {
+        let overrides = override_map(&[(
+            "training.cut_selection.selection",
+            serde_json::json!({ "method": "level1", "tie_tolerance": 1e6 }),
+        )]);
+        let err =
+            Config::with_overrides(&base_value(OVERRIDE_BASE_CONFIG), &overrides).unwrap_err();
+        assert!(
+            matches!(&err, LoadError::SchemaError { path, message, .. }
+                if path == std::path::Path::new("<config_overrides>")
+                    && message.contains(REMOVED_TIE_TOLERANCE_MESSAGE)),
+            "expected the removed-key SchemaError on the override path, got: {err:?}"
+        );
+    }
+
+    /// The removed key is named under `level1` only; under `dynamic`, which
+    /// never took it, it stays an unknown field.
+    #[test]
+    fn parse_config_rejects_the_removed_tie_tolerance_key() {
+        let mut config = base_value(OVERRIDE_BASE_CONFIG);
+        config["training"]["cut_selection"] = serde_json::json!({
+            "selection": { "method": "level1", "tie_tolerance": 1e6 }
+        });
+        let f = write_config(&config.to_string());
+        let message = parse_config(f.path()).unwrap_err().to_string();
+        assert!(
+            message.contains(REMOVED_TIE_TOLERANCE_MESSAGE),
+            "unexpected message: {message}"
+        );
+
+        config["training"]["cut_selection"]["selection"]["method"] = serde_json::json!("dynamic");
+        let f = write_config(&config.to_string());
+        let message = parse_config(f.path()).unwrap_err().to_string();
+        assert!(
+            message.contains("unknown field `tie_tolerance`") && !message.contains("was removed"),
+            "unexpected message: {message}"
+        );
+    }
+
+    /// A key repeated inside the selection object fails to load, naming the
+    /// key. The override path takes a [`serde_json::Value`], whose object map
+    /// holds each key once, so a repeated key reaches only this entry point.
+    #[test]
+    fn parse_config_rejects_a_repeated_selection_key() {
+        let [removed, _] = removed_selection_method_names();
+        for (selection, key) in [
+            (
+                r#"{ "method": "level1", "check_frequency": 2, "check_frequency": 3 }"#.to_string(),
+                "check_frequency",
+            ),
+            (
+                format!(r#"{{ "method": "{removed}", "method": "level1" }}"#),
+                "method",
+            ),
+        ] {
+            let config = OVERRIDE_BASE_CONFIG.replacen(
+                r#""training": {"#,
+                &format!(r#""training": {{ "cut_selection": {{ "selection": {selection} }},"#),
+                1,
+            );
+            let f = write_config(&config);
+            let message = parse_config(f.path()).unwrap_err().to_string();
+            assert!(
+                message.contains(&format!("duplicate field `{key}`")),
+                "unexpected message for {selection}: {message}"
+            );
+        }
+    }
+
+    const ZERO_LOOKBACK_MESSAGE: &str =
+        "training.cut_selection.selection.lookback_iterations must be >= 1 (got 0)";
+
+    #[test]
+    fn with_overrides_rejects_a_zero_lookback_window() {
+        let overrides = override_map(&[(
+            "training.cut_selection.selection",
+            serde_json::json!({ "method": "level1", "lookback_iterations": 0 }),
+        )]);
+        let err =
+            Config::with_overrides(&base_value(OVERRIDE_BASE_CONFIG), &overrides).unwrap_err();
+        assert!(
+            matches!(&err, LoadError::SchemaError { path, message, .. }
+                if path == std::path::Path::new("<config_overrides>")
+                    && message.contains(ZERO_LOOKBACK_MESSAGE)),
+            "expected the zero-count SchemaError on the override path, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn with_overrides_names_the_simulation_cut_set_key() {
+        let overrides = override_map(&[("simulation.cut_set", serde_json::json!("every"))]);
+        let err =
+            Config::with_overrides(&base_value(OVERRIDE_BASE_CONFIG), &overrides).unwrap_err();
+        assert!(
+            matches!(&err, LoadError::SchemaError { field, message, .. }
+                if field == "simulation.cut_set" && message.contains("unknown variant `every`")),
+            "expected the unknown-value SchemaError naming the key, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn with_overrides_rejects_a_zero_selection_count() {
+        let overrides = override_map(&[(
+            "training.cut_selection.selection.check_frequency",
+            serde_json::json!(0),
+        )]);
+        let mut base = base_value(OVERRIDE_BASE_CONFIG);
+        base["training"]["cut_selection"] = serde_json::json!({
+            "selection": { "method": "level1", "check_frequency": 1 }
+        });
+        Config::with_overrides(&base, &override_map(&[])).expect("check_frequency = 1 must load");
+        let err = Config::with_overrides(&base, &overrides).unwrap_err();
+        assert!(
+            matches!(&err, LoadError::SchemaError { path, message, .. }
+            if path == std::path::Path::new("<config_overrides>")
+                && message.contains(
+                    "training.cut_selection.selection.check_frequency must be >= 1 (got 0)"
+                )),
+            "expected the zero-count SchemaError on the override path, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_config_rejects_a_zero_lookback_window() {
+        let mut config = base_value(OVERRIDE_BASE_CONFIG);
+        config["training"]["cut_selection"] = serde_json::json!({
+            "selection": { "method": "level1", "lookback_iterations": 0 }
+        });
+        let f = write_config(&config.to_string());
+        let message = parse_config(f.path()).unwrap_err().to_string();
+        assert!(
+            message.contains(ZERO_LOOKBACK_MESSAGE),
+            "unexpected message: {message}"
+        );
     }
 
     // ── policy.checkpointing schedule ─────────────────────────────────────────
@@ -2610,7 +2801,7 @@ mod tests {
                     "row_activity_tolerance": 1e-6,
                     "max_active_per_stage": 1000,
                     "selection": {
-                        "method": "level1", "tie_tolerance": 1e-10, "check_frequency": 5
+                        "method": "level1", "check_frequency": 5
                     }
                 },
                 "solver": {
@@ -2667,8 +2858,7 @@ mod tests {
                     "historical_years": [1940, 1953],
                     "inflow": { "scheme": "historical" }
                 },
-                "solver": { "price": "row" },
-                "selection": { "method": "sampled", "num_scenarios": 100 }
+                "solver": { "price": "row" }
             },
             "exports": { "states": true, "stochastic": true, "fpha_deviation_points": true },
             "estimation": {
@@ -2688,8 +2878,7 @@ mod tests {
                         "start_iteration": 2,
                         "seed_window": 5,
                         "candidate_recency": 20,
-                        "max_added_per_round": 10,
-                        "violation_tolerance": 1e-10
+                        "max_added_per_round": 10
                     }
                 },
                 "parallelism": {

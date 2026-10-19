@@ -779,7 +779,8 @@ mod determinism {
         },
     };
     use novomodelo_sddp::{
-        Phase, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
+        LoadedPolicy, Phase, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet,
+        TrainingConfig,
         config::{CutManagementConfig, EventConfig, LoopConfig},
         context::TrainingContext,
         cut::FutureCostFunction,
@@ -1324,7 +1325,7 @@ mod determinism {
                     },
                     &comm,
                     || Ok(MockSolver3H::new(100.0)),
-                    None,
+                    LoadedPolicy::default(),
                     SolverProfiles::default(),
                 )
             })

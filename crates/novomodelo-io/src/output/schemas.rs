@@ -480,9 +480,11 @@ pub(crate) fn scenario_summary_schema() -> Schema {
     ])
 }
 
-/// Schema of the iteration-level convergence log.
+/// Schema of the iteration-level convergence log, one row per `iteration`.
 ///
-/// See output-schemas.md SS6.1.
+/// `upper_bound_std` is null under an exact bound and `gap_percent` where the
+/// gap is undefined (a lower bound at or below zero); every other column is
+/// non-null. See output-schemas.md SS6.1.
 pub(crate) fn convergence_schema() -> Schema {
     Schema::new(vec![
         Field::new("iteration", DataType::Int32, false),
@@ -500,6 +502,7 @@ pub(crate) fn convergence_schema() -> Schema {
         Field::new("forward_passes", DataType::Int32, false),
         Field::new("lp_solves", DataType::Int64, false),
         Field::new("mean_rows_in_lp", DataType::Float64, false),
+        Field::new("lazy_round_cap_hits", DataType::Int64, false),
     ])
 }
 
@@ -590,22 +593,29 @@ pub(crate) fn retry_histogram_schema() -> Schema {
     ])
 }
 
-/// Schema of the per-stage row-selection statistics.
+/// Schema of the per-pool row-selection statistics.
 ///
-/// One row per (iteration, `stage_id`) pair. The nullable `budget_evicted` and
-/// `active_after_budget` columns are `None` when budget enforcement is disabled.
+/// One row per (`iteration`, `pool_id`) pair, in ascending `iteration` then
+/// `pool_id`. A nullable column is null where the step it reports did not run
+/// on the pool: `node_id` when several nodes share the pool,
+/// `cuts_deactivated`, `cuts_reactivated` and `selection_time_ms` when no
+/// selection pass ran, `budget_evicted` and `active_after_budget` when
+/// `max_active_per_stage` was not applied, and `cuts_in_lp` under a lazy method.
 pub(crate) fn row_selection_schema() -> Schema {
     Schema::new(vec![
         Field::new("iteration", DataType::Int32, false),
+        Field::new("pool_id", DataType::Int32, false),
         Field::new("stage_id", DataType::Int32, false),
-        Field::new("cuts_populated", DataType::Int32, false),
+        Field::new("node_id", DataType::Int32, true),
+        Field::new("cuts_in_pool", DataType::Int32, false),
         Field::new("cuts_active_before", DataType::Int32, false),
-        Field::new("cuts_deactivated", DataType::Int32, false),
-        Field::new("cuts_reactivated", DataType::Int32, false),
+        Field::new("cuts_deactivated", DataType::Int32, true),
+        Field::new("cuts_reactivated", DataType::Int32, true),
         Field::new("cuts_active_after", DataType::Int32, false),
-        Field::new("selection_time_ms", DataType::Float64, false),
+        Field::new("selection_time_ms", DataType::Float64, true),
         Field::new("budget_evicted", DataType::Int32, true),
         Field::new("active_after_budget", DataType::Int32, true),
+        Field::new("cuts_in_lp", DataType::Int32, true),
     ])
 }
 
@@ -1457,8 +1467,8 @@ mod tests {
         let schema = convergence_schema();
         assert_eq!(
             schema.fields().len(),
-            15,
-            "convergence schema must have 15 fields"
+            16,
+            "convergence schema must have 16 fields"
         );
         assert_eq!(field_type(&schema, "iteration"), DataType::Int32);
         assert_eq!(field_type(&schema, "lower_bound"), DataType::Float64);
@@ -1469,6 +1479,12 @@ mod tests {
         assert_eq!(field_type(&schema, "time_forward_ms"), DataType::Int64);
         assert_eq!(field_type(&schema, "lp_solves"), DataType::Int64);
         assert_eq!(field_type(&schema, "forward_passes"), DataType::Int32);
+        let names = field_names(&schema);
+        assert_eq!(
+            &names[names.len() - 2..],
+            ["mean_rows_in_lp", "lazy_round_cap_hits"]
+        );
+        assert_eq!(field_type(&schema, "lazy_round_cap_hits"), DataType::Int64);
     }
 
     #[test]
@@ -1491,6 +1507,8 @@ mod tests {
             "time_total_ms",
             "forward_passes",
             "lp_solves",
+            "mean_rows_in_lp",
+            "lazy_round_cap_hits",
         ] {
             assert!(
                 !is_nullable(&schema, name),
@@ -1536,30 +1554,37 @@ mod tests {
         let schema = row_selection_schema();
         assert_eq!(
             schema.fields().len(),
-            10,
-            "cut_selection schema must have 10 fields"
+            13,
+            "cut_selection schema must have 13 fields"
         );
-        for field in &schema.fields()[..7] {
-            assert_eq!(field.data_type(), &DataType::Int32);
-            assert!(!field.is_nullable());
-        }
-        assert_eq!(schema.fields()[7].name(), "selection_time_ms");
-        assert_eq!(schema.fields()[7].data_type(), &DataType::Float64);
-        assert!(!schema.fields()[7].is_nullable());
-        for &name in &["budget_evicted", "active_after_budget"] {
-            let field = schema
-                .field_with_name(name)
-                .unwrap_or_else(|_| panic!("field '{name}' not found"));
+        let expected: &[(&str, DataType, bool)] = &[
+            ("iteration", DataType::Int32, false),
+            ("pool_id", DataType::Int32, false),
+            ("stage_id", DataType::Int32, false),
+            ("node_id", DataType::Int32, true),
+            ("cuts_in_pool", DataType::Int32, false),
+            ("cuts_active_before", DataType::Int32, false),
+            ("cuts_deactivated", DataType::Int32, true),
+            ("cuts_reactivated", DataType::Int32, true),
+            ("cuts_active_after", DataType::Int32, false),
+            ("selection_time_ms", DataType::Float64, true),
+            ("budget_evicted", DataType::Int32, true),
+            ("active_after_budget", DataType::Int32, true),
+            ("cuts_in_lp", DataType::Int32, true),
+        ];
+        for (i, (name, dtype, nullable)) in expected.iter().enumerate() {
+            let field = &schema.fields()[i];
+            assert_eq!(field.name(), name, "field {i} name mismatch");
+            assert_eq!(field.data_type(), dtype, "field {i} ({name}) type mismatch");
             assert_eq!(
-                field.data_type(),
-                &DataType::Int32,
-                "field '{name}' must be Int32"
+                field.is_nullable(),
+                *nullable,
+                "field {i} ({name}) nullability mismatch"
             );
-            assert!(field.is_nullable(), "field '{name}' must be nullable");
         }
         assert!(
-            schema.field_with_name("cuts_in_lp").is_err(),
-            "cuts_in_lp must not be present in schema"
+            schema.field_with_name("cuts_populated").is_err(),
+            "cuts_populated must not be present in schema"
         );
     }
 
@@ -1681,9 +1706,9 @@ mod tests {
             ("in_transit", 7),
             ("generic_violations", 7),
             ("paths", 3),
-            ("convergence", 15),
+            ("convergence", 16),
             ("iteration_timing", 19),
-            ("cut_selection", 10),
+            ("cut_selection", 13),
             ("solver_iterations", 19),
             ("retry_histogram", 5),
             ("generic_constraint_echo", 14),

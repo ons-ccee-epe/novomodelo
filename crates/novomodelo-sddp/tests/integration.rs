@@ -42,7 +42,7 @@ use novomodelo_stochastic::{
 };
 
 use novomodelo_sddp::{
-    SddpError, SolverProfiles, StopMask, StoppingMode, StoppingRule, StoppingRuleSet,
+    LoadedPolicy, SddpError, SolverProfiles, StopMask, StoppingMode, StoppingRule, StoppingRuleSet,
     TrainingConfig,
     config::{CutManagementConfig, EventConfig, LoopConfig, ShutdownSource},
     context::TrainingContext,
@@ -597,7 +597,7 @@ fn run_one_deterministic_pass(
         },
         &StubComm,
         || Ok(MockSolver::with_fixed(50.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap()
@@ -666,7 +666,7 @@ fn train_converges_with_mock_solver() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -764,7 +764,7 @@ fn train_lb_monotonically_nondecreasing() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -851,7 +851,7 @@ fn train_emits_correct_event_sequence() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -944,7 +944,7 @@ fn train_stops_at_iteration_limit() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -1028,7 +1028,7 @@ fn train_with_a_shutdown_during_iteration_1(
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .unwrap();
@@ -1190,7 +1190,7 @@ fn train_propagates_infeasible_error() {
         },
         &comm,
         || Ok(MockSolver::infeasible_on_first()),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     );
 
@@ -1206,366 +1206,6 @@ fn train_propagates_infeasible_error() {
         "no iterations should have completed"
     );
     assert_eq!(outcome.result.reason, "error");
-}
-
-/// D17: Level1 cut selection produces convergent results. With the stub kernel,
-/// no cuts are deactivated by Level1 selection (the value-based kernel that
-/// drives deactivation lives elsewhere).
-#[test]
-#[allow(clippy::too_many_lines)]
-fn d17_level1_cut_selection_convergence() {
-    use novomodelo_sddp::CutSelectionStrategy;
-
-    let fx = Fixture::new(2);
-    let mut fcf = make_fcf(fx.n_stages);
-    let mut solver = MockSolver::with_fixed(100.0);
-    let comm = StubComm;
-
-    let (tx, rx) = mpsc::channel::<TrainingEvent>();
-    let config = TrainingConfig {
-        loop_config: LoopConfig {
-            forward_passes: 1,
-            training_enumerated: false,
-            max_iterations: 10,
-            start_iteration: 0,
-            resume_lower_bound_history: Vec::new(),
-            n_fwd_threads: 1,
-            stopping_rules: iteration_limit(10),
-        },
-        cut_management: CutManagementConfig {
-            cut_selection: Some(CutSelectionStrategy::Level1 {
-                check_frequency: 2,
-                tie_tolerance: 1e-10,
-            }),
-            budget: None,
-            cut_activity_tolerance: 0.0,
-            risk_measures: fx.risk_measures.clone(),
-        },
-        events: EventConfig {
-            event_sender: Some(tx),
-            periodic_checkpoint: None,
-            shutdown_flag: None,
-            export_states: false,
-        },
-    };
-
-    let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
-    let geometry = equipment_free_geometry(&[1usize, 1]);
-    let stage_ctx_fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
-    let stage_ctx = stage_ctx_fixture.ctx();
-    let result = train(
-        &mut solver,
-        config,
-        &mut fcf,
-        &stage_ctx,
-        &TrainingContext {
-            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&fx.stochastic),
-            horizon: &fx.horizon,
-            state: &fx.state,
-            cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
-            study_dims: &study_dims(),
-            inflow_method: &InflowNonNegativityMethod::None,
-            stochastic: &fx.stochastic,
-            initial_state: &fx.initial_state,
-            inflow_scheme: SamplingScheme::InSample,
-            load_scheme: SamplingScheme::InSample,
-            ncs_scheme: SamplingScheme::InSample,
-            historical_library: None,
-            external_inflow_library: None,
-            external_load_library: None,
-            external_ncs_library: None,
-            lag_accum_seed: &[],
-            lag_weight_seed: &[],
-            dcs: None,
-            stages: &[],
-        },
-        &comm,
-        || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        SolverProfiles::default(),
-    )
-    .unwrap();
-
-    assert!(
-        result.result.iterations <= 10,
-        "training must complete within limit"
-    );
-
-    let events: Vec<TrainingEvent> = rx.try_iter().collect();
-    let lower_bounds: Vec<f64> = events
-        .iter()
-        .filter_map(|e| {
-            if let TrainingEvent::ConvergenceUpdate { lower_bound, .. } = e {
-                Some(*lower_bound)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    assert!(
-        !lower_bounds.is_empty(),
-        "must have at least one ConvergenceUpdate event"
-    );
-    for window in lower_bounds.windows(2) {
-        assert!(
-            window[1] >= window[0],
-            "lower bound must be non-decreasing: {} -> {}",
-            window[0],
-            window[1]
-        );
-    }
-
-    let sel_events: Vec<&TrainingEvent> = events
-        .iter()
-        .filter(|e| matches!(e, TrainingEvent::PolicySelectionComplete { .. }))
-        .collect();
-
-    assert!(
-        !sel_events.is_empty(),
-        "must have at least one PolicySelectionComplete event"
-    );
-
-    // Stage 0 is exempt from cut selection. The populated count may include a
-    // warm-start slot, so the check is `>=` (iterations * forward_passes), not `==`.
-    assert!(
-        fcf.pools[0].active_count() >= result.result.iterations as usize,
-        "stage 0 must be exempt: expected at least {} active cuts, got {} \
-         (populated={})",
-        result.result.iterations,
-        fcf.pools[0].active_count(),
-        fcf.pools[0].populated(),
-    );
-
-    // Informational only: the mock never tracks basis ops, so this never fires.
-    // It would flag warm-start degradation under a real solver (see BasisStore).
-    let stats = solver.statistics();
-    if stats.basis_offered > 0 && stats.basis_consistency_failures > stats.basis_offered / 2 {
-        eprintln!(
-            "WARNING: basis rejection rate after cut selection is {}/{}. \
-             Consider implementing option 3 (discard cut row statuses).",
-            stats.basis_consistency_failures, stats.basis_offered
-        );
-    }
-}
-
-/// D17 with basis reconstruction always active: the truncation guard does not
-/// corrupt convergence, and reconstruction produces accepted warm-start bases
-/// (zero rejections).
-#[test]
-fn d17_level1_cut_selection_reconstruction() {
-    use novomodelo_sddp::CutSelectionStrategy;
-
-    let fx = Fixture::new(2);
-    let mut fcf = make_fcf(fx.n_stages);
-    let mut solver = MockSolver::with_fixed(100.0);
-    let comm = StubComm;
-
-    let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
-    let geometry = equipment_free_geometry(&[1usize, 1]);
-    let stage_ctx_fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
-    let stage_ctx = stage_ctx_fixture.ctx();
-
-    let result = train(
-        &mut solver,
-        TrainingConfig {
-            loop_config: LoopConfig {
-                forward_passes: 1,
-                training_enumerated: false,
-                max_iterations: 10,
-                start_iteration: 0,
-                resume_lower_bound_history: Vec::new(),
-                n_fwd_threads: 1,
-                stopping_rules: iteration_limit(10),
-            },
-            cut_management: CutManagementConfig {
-                cut_selection: Some(CutSelectionStrategy::Level1 {
-                    check_frequency: 2,
-                    tie_tolerance: 1e-10,
-                }),
-                budget: None,
-                cut_activity_tolerance: 0.0,
-                risk_measures: fx.risk_measures.clone(),
-            },
-            events: EventConfig {
-                event_sender: None,
-                periodic_checkpoint: None,
-                shutdown_flag: None,
-                export_states: false,
-            },
-        },
-        &mut fcf,
-        &stage_ctx,
-        &TrainingContext {
-            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&fx.stochastic),
-            horizon: &fx.horizon,
-            state: &fx.state,
-            cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
-            study_dims: &study_dims(),
-            inflow_method: &InflowNonNegativityMethod::None,
-            stochastic: &fx.stochastic,
-            initial_state: &fx.initial_state,
-            inflow_scheme: SamplingScheme::InSample,
-            load_scheme: SamplingScheme::InSample,
-            ncs_scheme: SamplingScheme::InSample,
-            historical_library: None,
-            external_inflow_library: None,
-            external_load_library: None,
-            external_ncs_library: None,
-            lag_accum_seed: &[],
-            lag_weight_seed: &[],
-            dcs: None,
-            stages: &[],
-        },
-        &comm,
-        || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        SolverProfiles::default(),
-    )
-    .unwrap();
-
-    assert!(
-        result.result.final_lb.is_finite(),
-        "D17+reconstruction: lower bound must be finite, got {}",
-        result.result.final_lb,
-    );
-
-    let stats = solver.statistics();
-    assert_eq!(
-        stats.basis_consistency_failures, 0,
-        "D17+reconstruction: expected 0 basis rejections, got {}",
-        stats.basis_consistency_failures,
-    );
-}
-
-/// D18: Lml1 cut selection produces convergent results. With the stub kernel,
-/// no cuts are deactivated by Lml1 selection (the value-based kernel that drives
-/// deactivation lives elsewhere).
-#[test]
-#[allow(clippy::too_many_lines)]
-fn d18_lml1_cut_selection_convergence() {
-    use novomodelo_sddp::CutSelectionStrategy;
-
-    let fx = Fixture::new(2);
-    let mut fcf = make_fcf(fx.n_stages);
-    let mut solver = MockSolver::with_fixed(100.0);
-    let comm = StubComm;
-
-    let (tx, rx) = mpsc::channel::<TrainingEvent>();
-    let config = TrainingConfig {
-        loop_config: LoopConfig {
-            forward_passes: 1,
-            training_enumerated: false,
-            max_iterations: 10,
-            start_iteration: 0,
-            resume_lower_bound_history: Vec::new(),
-            n_fwd_threads: 1,
-            stopping_rules: iteration_limit(10),
-        },
-        cut_management: CutManagementConfig {
-            cut_selection: Some(CutSelectionStrategy::Lml1 {
-                check_frequency: 2,
-                tie_tolerance: 1e-10,
-            }),
-            budget: None,
-            cut_activity_tolerance: 0.0,
-            risk_measures: fx.risk_measures.clone(),
-        },
-        events: EventConfig {
-            event_sender: Some(tx),
-            periodic_checkpoint: None,
-            shutdown_flag: None,
-            export_states: false,
-        },
-    };
-
-    let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
-    let geometry = equipment_free_geometry(&[1usize, 1]);
-    let stage_ctx_fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
-    let stage_ctx = stage_ctx_fixture.ctx();
-    let result = train(
-        &mut solver,
-        config,
-        &mut fcf,
-        &stage_ctx,
-        &TrainingContext {
-            node_graph: &novomodelo_sddp::test_support::chain_node_graph(&fx.stochastic),
-            horizon: &fx.horizon,
-            state: &fx.state,
-            cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
-            study_dims: &study_dims(),
-            inflow_method: &InflowNonNegativityMethod::None,
-            stochastic: &fx.stochastic,
-            initial_state: &fx.initial_state,
-            inflow_scheme: SamplingScheme::InSample,
-            load_scheme: SamplingScheme::InSample,
-            ncs_scheme: SamplingScheme::InSample,
-            historical_library: None,
-            external_inflow_library: None,
-            external_load_library: None,
-            external_ncs_library: None,
-            lag_accum_seed: &[],
-            lag_weight_seed: &[],
-            dcs: None,
-            stages: &[],
-        },
-        &comm,
-        || Ok(MockSolver::with_fixed(100.0)),
-        None,
-        SolverProfiles::default(),
-    )
-    .unwrap();
-
-    assert!(
-        result.result.iterations <= 10,
-        "training must complete within limit"
-    );
-
-    let events: Vec<TrainingEvent> = rx.try_iter().collect();
-    let lower_bounds: Vec<f64> = events
-        .iter()
-        .filter_map(|e| {
-            if let TrainingEvent::ConvergenceUpdate { lower_bound, .. } = e {
-                Some(*lower_bound)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    assert!(
-        !lower_bounds.is_empty(),
-        "must have at least one ConvergenceUpdate event"
-    );
-    for window in lower_bounds.windows(2) {
-        assert!(
-            window[1] >= window[0],
-            "lower bound must be non-decreasing: {} -> {}",
-            window[0],
-            window[1]
-        );
-    }
-
-    let sel_events: Vec<&TrainingEvent> = events
-        .iter()
-        .filter(|e| matches!(e, TrainingEvent::PolicySelectionComplete { .. }))
-        .collect();
-
-    assert!(
-        !sel_events.is_empty(),
-        "must have at least one PolicySelectionComplete event"
-    );
-
-    // Stage 0 is exempt from cut selection. The populated count may include a
-    // warm-start slot, so the check is `>=` (iterations * forward_passes), not `==`.
-    assert!(
-        fcf.pools[0].active_count() >= result.result.iterations as usize,
-        "stage 0 must be exempt: expected at least {} active cuts, got {} \
-         (populated={})",
-        result.result.iterations,
-        fcf.pools[0].active_count(),
-        fcf.pools[0].populated(),
-    );
 }
 
 /// D01 must produce a bit-identical lower bound (reference 182,500 $) when the
@@ -1693,7 +1333,7 @@ fn frozen_backward_pass_smoke_test() {
         },
         &StubComm,
         || Ok(ExpandingMockSolver::with_objectives(vec![50.0])),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .expect("frozen backward pass smoke: train must not error");

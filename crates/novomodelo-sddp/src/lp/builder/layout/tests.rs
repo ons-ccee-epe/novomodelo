@@ -1152,7 +1152,7 @@ fn chronological_water_balance_row_count() {
     );
 }
 
-/// In parallel mode `push_z_inflow_coupling` loops
+/// In parallel mode `push_local_inflow_coupling` loops
 /// `0..water_balance.rows_per_entity(n_blks) == 1`, so `z_h`'s column carries
 /// exactly one WATER-ROW entry per target hydro regardless of `n_blks` — a
 /// `Σ_k` per-block loop would inflate the routed-entry count instead. `z_h`
@@ -3773,7 +3773,7 @@ fn column_address_pins_cover_every_family() {
     let mut totals = ColumnAddressCounts::default();
 
     let mut filling_fixtures = FillingMembershipFixtures::new();
-    filling_fixtures.base.has_penalty = true;
+    filling_fixtures.base.inflow_method = crate::InflowNonNegativityMethod::Penalty;
     let ctx = filling_fixtures.make_ctx();
 
     let filling_stage = stage_with_id(1);

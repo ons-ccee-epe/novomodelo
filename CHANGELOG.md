@@ -11,6 +11,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `training.cut_selection.selection.lookback_iterations` for `level1`: the
+  trial states of a run are kept only for the rows added in the last
+  `lookback_iterations` iterations of that run, which bounds the memory they
+  take. Absent, the run keeps every trial state. A zero, or a value below
+  `check_frequency`, is refused.
+- `simulation.cut_set`, `all` or `active`, chooses which rows of each stage
+  the simulation loads. `all` loads every row training added, including rows
+  the selection method deactivated and rows `max_active_per_stage` evicted;
+  `active` loads the rows that were active when training ended.
+- `training/convergence.parquet` has a `lazy_round_cap_hits` column: the
+  lazy-selection LP solves of the iteration that reached the round cap with a
+  candidate row still violated.
+- A resumed or warm-started `level1` run restores the stored trial states, and
+  a resumed run with `max_active_per_stage` or the `dynamic` method restores
+  the binding counters of each row.
+- Checkpoints hold one solver basis per forward pass and node from every rank,
+  and record whether the set is whole. A resumed run with several forward
+  passes starts each pass from its own basis, and a warm start or resume
+  restores the bases of a policy trained with a selection method, with their
+  row slots. The unused-bases warning counts per scenario.
+- `policy.mode = resume` is refused, with a message naming what is missing and
+  the way out, when the checkpoint lacks the `level1` trial-state history the
+  run needs, lacks the binding counters the run reads, holds a lookback window
+  shorter than the run's, holds an incomplete basis store, or was written with
+  another `training.selection.forward_passes`.
+- `policy.mode = resume` is refused by `cobre validate` and `cobre run` when
+  the rows of `policy.boundary` differ from the terminal pool of the
+  checkpoint. A resume whose `modeling.cost_scale_factor` differs from the run
+  that wrote the checkpoint is refused only when the boundary rows then
+  differ. The resume applies the scale of its own configuration.
 - Computed scalar parameters in MWh: `max_stored_energy_mwh`,
   `integrated_accumulated_productivity_mwh_per_hm3` and
   `integrated_equivalent_productivity_mwh_per_hm3`. Each is the raw tag of the
@@ -47,6 +77,112 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING:** `truncation` and `truncation_with_penalty` follow
+  Larroyd et al. (2022): a negative inflow is no longer raised to zero.
+  `incremental_inflow_m3s` reports the inflow model's value, which can be
+  negative, the inflow lags are built from it, and
+  `inflow_nonnegativity_slack_m3s` reports the water added to it. `truncation`
+  adds exactly the amount that lifts the inflow to zero, at no cost;
+  `truncation_with_penalty` adds at most that amount, priced at
+  `inflow_nonnegativity_cost`. Results change for studies using either
+  method when an inflow draw is negative. Retrain policies trained with either
+  method. Known limitation (the paper's §2.5): the lower bound can exceed the
+  upper bound, and a `gap` stopping rule, admitted only under enumerated
+  forward selection, can then report convergence that has not occurred.
+- Under `penalty`, the `inflow_nonnegativity_slack_m3s` of a PreFilling plant
+  adds water at the downstream plant that receives its inflow, if there is
+  one. It added none before, so results can change for `penalty` studies with
+  PreFilling plants.
+- **BREAKING:** `level1` keeps exactly the cuts that own a stored trial state.
+  At each trial state the run stored, the cut with the highest value owns it,
+  and the lowest position wins an exact tie. The run stores the trial states
+  of the whole run unless `lookback_iterations` sets a window. Results change
+  for every study that uses `level1`. Retrain policies trained with `level1`.
+- **BREAKING:** `simulation.cut_set` defaults to `all`. A run with `level1` or
+  `max_active_per_stage` now simulates with every row training added,
+  including deactivated and evicted ones. Set `simulation.cut_set` to
+  `active` for the earlier behaviour. Runs without a selection method or cap
+  and runs under `dynamic` are unchanged. A simulation over a loaded policy
+  also includes the rows the writing run deactivated or evicted, as in the
+  `warm_start` entry below.
+- **BREAKING:** `violation_tolerance` of the `dynamic` method is a relative
+  factor, absent by default. Absent, each phase uses the primal feasibility
+  tolerance of its solver profile. A value of 1 or more, or below the primal
+  feasibility tolerance of any phase's solver profile, is refused at load.
+  Runs can return different cuts and bounds, and a value written for the
+  earlier absolute tolerance can now fail at load: delete the key or raise it.
+- **BREAKING:** `row_activity_tolerance` defaults to 1e-6 instead of 0, and an
+  explicit `null` is refused. A run that sets `max_active_per_stage` or uses
+  `dynamic` and omits the key can evict and seed other rows. Set the key to 0
+  to keep the earlier behaviour.
+- **BREAKING:** a zero in `check_frequency`, `lookback_iterations`,
+  `start_iteration`, `candidate_recency` or `max_added_per_round` is a parse
+  error that names the key path. Set the key to 1 or more, or delete it to use
+  its default.
+- **BREAKING:** a `selection` object given as an array is refused. Write it as
+  an object with a `method` key.
+- **BREAKING:** `max_active_per_stage` is refused at load with `dynamic` and
+  with `training.selection.method` set to `enumerated`. Remove the cap, or use
+  `level1`; for enumerated, set `training.selection.method` to `sampled`.
+- `max_active_per_stage` applies to the rows the current run added to each
+  stage strictly between the first and the last, and not to loaded rows. Ties
+  for eviction go to the row binding in fewer solves, then to the lower
+  position in the pool.
+- Loaded cuts keep the `iteration` they were generated in on export. The cuts
+  loaded by `policy.boundary` and by a warm start restart their activity clock.
+- **BREAKING:** `training/cut_selection/iterations.parquet` has one row per
+  `(iteration, pool_id)` on every iteration of a run with a selection method or
+  a cap. `cuts_in_pool` replaces `cuts_populated`, and `stage_id` is joined by
+  `pool_id` and a nullable `node_id`. `cuts_deactivated`, `cuts_reactivated`
+  and `selection_time_ms` are null where no selection pass ran on the pool;
+  `budget_evicted` and `active_after_budget` are null where the cap was not
+  applied; `cuts_in_lp` is null under `dynamic`. Update readers of the file.
+- **BREAKING:** policy checkpoints are written with `format_version` 4, and
+  version-3 checkpoints are refused. Cut values are stored in the scaled units
+  of the run that wrote them, so a resume with the same
+  `modeling.cost_scale_factor` is exact. Each file in the policy's `states/`
+  directory is keyed by pool and holds each stored trial state with its slot,
+  and each file in `basis/` holds one entry per scenario. Re-run the program
+  that produced the policy.
+- **BREAKING:** a resumed run places every cut at its original position and
+  restores the prefix the original run started with. `level1` and
+  `max_active_per_stage` treat the reloaded cuts as the uninterrupted run
+  does; a resumed run with a cap used to count only the cuts added after the
+  resume.
+- **BREAKING:** under `warm_start`, a loaded cut its source scored is selected
+  by `level1` like a generated cut, and can be deactivated and reactivated.
+  `simulation.cut_set = all` over a loaded policy includes the cuts the
+  writing run deactivated or evicted.
+- **BREAKING:** `exports.states` writes each pool's stored trial states, by
+  position and at the pool's state dimension, for every selection setting, the
+  root pool included. A `dynamic` run or a run without selection now writes
+  them. The per-stage visited-states export at full dimension is removed.
+- A resumed run starts a scenario that has no basis of its own cold, as the
+  original run did, instead of from another scenario's basis.
+- **BREAKING:** a run that fails writes its partial policy to
+  `<policy.path>.partial` and leaves the last whole checkpoint in
+  `policy.path`. The failure message names the directory.
+- A `dynamic` run that simulates with `simulation.cut_set = all` is refused
+  when the pool it loads holds inactive rows that `all` includes, and only
+  when the run simulates. For a policy loaded to resume or only to simulate,
+  these are the rows a selection method deactivated or `max_active_per_stage`
+  evicted in the run that wrote it. For a `warm_start` policy and for
+  `policy.boundary` rows, they are the scored inactive rows; inactive rows
+  that were never scored, such as those a capped source leaves, are not
+  included. The terminal pool of a checkpoint is not checked when
+  `policy.boundary` replaces it. Set `simulation.cut_set` to `active` or use
+  `level1`.
+- `cobre validate` reconciles `policy.boundary` only when the run trains.
+- **BREAKING:** a refused policy loaded only to simulate is reported by
+  `cobre validate --json` and `cobre.io.validate` as
+  `SimulationPolicyIncompatible`, no longer as `WarmStartIncompatible`, which
+  now covers only `policy.mode = warm_start`. The warnings of an accepted
+  simulation-only load, which the Python validation also returns, change kind
+  the same way. Filter on both kinds to keep the previous behaviour.
+- x86_64 Linux builds of the MPI release archive and builds from source,
+  `cargo install` included, no longer enable AVX2 and FMA. Every x86_64 build
+  of a version now uses one floating-point kernel, so they select the same
+  cuts. Results of those builds can differ from 0.18.0's.
 - **BREAKING:** `constraints/hydro_bounds.parquet` rejects a positive
   `max_diversion_m3s` on a hydro with no `diversion` channel, as it already
   rejected a positive `min_diversion_m3s` (rule 46). Before, the diverted water
@@ -126,8 +262,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stops the load. Only `block_values` was rejected before; the other fields
   were ignored.
 
+### Removed
+
+- **BREAKING:** the `lml1` and `domination` values of
+  `training.cut_selection.selection.method`. A config naming either fails at
+  load and points to `level1`.
+- **BREAKING:** `tie_tolerance` of `level1`. A config that sets it fails at
+  load. `level1` compares row values exactly: delete the key.
+
 ### Fixed
 
+- `truncation` corrects a negative inflow when the hydro's PAR residual
+  standard deviation is zero. Such a study could stop on an infeasible LP
+  before.
+- `cuts_removed` in `training/convergence.parquet` was always 0.
+  `cuts_active` in the same file ignored evictions and reactivations, and
+  `row_pool.peak_active` in `training/metadata.json` missed a peak reached
+  after a reactivation.
+- A `max_active_per_stage` below the number of cuts loaded by `policy.boundary`
+  aborted training on a basis row-count mismatch. The cap now counts and
+  evicts only the rows the run generated.
+- A lazy solve under `dynamic` that reached the round cap returned a relaxed
+  result. It now ends only when no candidate row is violated.
+- `cobre validate` printed two warnings twice.
+- A checkpoint write refuses a payload a load would reject, and a file over the
+  2 GiB limit of the policy format, naming the file. The writers refuse an
+  entity manifest whose dates are inconsistent and repeated ids.
+- A basis-store decode failure at the end of a multi-rank run no longer
+  leaves the other ranks blocked.
 - Under MPI, training multiplied its LP-solve count by the number of ranks, and
   the first-try/retried/failed split and the forward solve seconds with it. The
   training summary and `solve_stats` in `training/metadata.json` now report the

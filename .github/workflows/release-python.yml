@@ -124,6 +124,10 @@ jobs:
           python scripts/gen/inject_wheel_licenses.py crates/novomodelo-python/dist \
             LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.md
 
+      - name: Probe the dgemm kernel of the wheels
+        if: startsWith(matrix.target, 'x86_64-unknown-linux')
+        run: bash scripts/ci/check-release-kernel.sh crates/novomodelo-python/dist/*.whl
+
       - uses: actions/upload-artifact@v6
         with:
           name: wheels-${{ matrix.target }}

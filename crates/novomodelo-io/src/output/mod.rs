@@ -155,10 +155,12 @@ pub struct IterationRecord {
     /// Rows added to the pool.
     pub cuts_added: u32,
 
-    /// Rows removed from the pool.
+    /// Rows deactivated in this iteration by the selection method or by
+    /// `max_active_per_stage`.
     pub cuts_removed: u32,
 
-    /// Total number of active rows in the pool after this iteration.
+    /// Active rows after this iteration's selection and cap, reactivations
+    /// included.
     pub cuts_active: u32,
 
     /// Forward pass wall-clock time (ms).
@@ -225,6 +227,11 @@ pub struct IterationRecord {
     /// per-solve LP size the lazy selector actually carried, which (unlike the
     /// pool-level active count) shrinks well below the generated total.
     pub mean_rows_in_lp: f64,
+
+    /// Lazy-selection LP solves of this iteration, on all ranks, that reached
+    /// the round cap with a candidate row still violated; `0` when no lazy
+    /// selection ran.
+    pub lazy_round_cap_hits: u64,
 }
 
 /// Summary statistics for the row pool at the end of a training run.
@@ -238,7 +245,8 @@ pub struct RowPoolStatistics {
     /// Number of rows still active in the pool at the end of training.
     pub total_active: u64,
 
-    /// Highest number of active rows observed at any point during training.
+    /// Highest number of active rows at an iteration's row exchange or after its
+    /// selection and cap.
     pub peak_active: u64,
 
     /// Total rows currently active in the LP.
@@ -264,36 +272,44 @@ pub struct RowPoolStatistics {
     pub total_loaded: u64,
 }
 
-/// One row in `training/cut_selection/iterations.parquet`.
+/// One row of `training/cut_selection/iterations.parquet`, keyed by
+/// `(iteration, pool_id)`.
 ///
-/// Represents per-stage row-selection statistics for a single iteration.
-/// Only populated when row selection is enabled.
+/// An optional field is `None` when the step it reports did not run on the
+/// pool: the selection fields (`cuts_deactivated`, `cuts_reactivated`,
+/// `selection_time_ms`) when no selection pass ran, the cap fields
+/// (`budget_evicted`, `active_after_budget`) when `max_active_per_stage` was not
+/// applied, and `cuts_in_lp` under a lazy method.
 #[derive(Debug, Clone)]
 pub struct RowSelectionRecord {
     /// Iteration number (1-based).
     pub iteration: u32,
-    /// 0-based stage index.
-    pub stage: u32,
-    /// Total cuts ever generated at this stage.
-    pub cuts_populated: u32,
-    /// Active cuts before selection ran.
+    /// 0-based row-pool id.
+    pub pool_id: u32,
+    /// Declared study stage id of the pool's nodes.
+    pub stage_id: i32,
+    /// Declared id of the pool's sole owning node; `None` when several nodes
+    /// share the pool.
+    pub node_id: Option<i32>,
+    /// Rows the pool holds, loaded and generated.
+    pub cuts_in_pool: u32,
+    /// Active rows when row management starts.
     pub cuts_active_before: u32,
-    /// Cuts deactivated by selection at this stage.
-    pub cuts_deactivated: u32,
-    /// Number of cuts reactivated this iteration.
-    pub cuts_reactivated: u32,
-    /// Active cuts after selection.
+    /// Rows the selection pass deactivated.
+    pub cuts_deactivated: Option<u32>,
+    /// Rows the selection pass reactivated.
+    pub cuts_reactivated: Option<u32>,
+    /// Active rows after the selection pass; equal to `cuts_active_before`
+    /// when none ran.
     pub cuts_active_after: u32,
-    /// Wall-clock time for selection at this stage, in milliseconds.
-    pub selection_time_ms: f64,
-    /// Cuts evicted by budget enforcement at this stage.
-    ///
-    /// `None` when budget enforcement is disabled (`max_active_per_stage` is absent).
+    /// Wall-clock time of the selection pass on the pool, in milliseconds.
+    pub selection_time_ms: Option<f64>,
+    /// Rows `max_active_per_stage` evicted.
     pub budget_evicted: Option<u32>,
-    /// Active cuts after budget enforcement.
-    ///
-    /// `None` when budget enforcement is disabled.
+    /// Active rows after `max_active_per_stage`.
     pub active_after_budget: Option<u32>,
+    /// Rows of the pool in the LP the next iteration's solves load.
+    pub cuts_in_lp: Option<u32>,
 }
 
 /// One row in `training/timing/iterations.parquet`.
@@ -625,6 +641,7 @@ mod tests {
                 time_overhead_ms: 0,
                 solve_time_ms: 0.0,
                 mean_rows_in_lp: 0.0,
+                lazy_round_cap_hits: 0,
             })
             .collect();
         let output = TrainingOutput {
@@ -699,6 +716,7 @@ mod tests {
             time_overhead_ms: 400u64.saturating_sub(150 + 250 + 5 + 3 + 4),
             solve_time_ms: 0.0,
             mean_rows_in_lp: 0.0,
+            lazy_round_cap_hits: 0,
         };
 
         assert_eq!(record.iteration, 7);

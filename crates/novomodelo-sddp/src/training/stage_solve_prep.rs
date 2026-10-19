@@ -1,5 +1,5 @@
 //! Shared stage-LP solve-preparation pipeline (`pin → row_patches → ncs_patch →
-//! commit`): the single owner the forward pass, backward pass, simulation
+//! inflow_slack_patch → commit`): the single owner the forward pass, backward pass, simulation
 //! pipeline, and lower-bound evaluation all route through, so every solve site
 //! patches the LP identically (the "patch NCS identically" contract, D15).
 //!
@@ -15,7 +15,8 @@ use crate::{
     lp::builder::{PatchBuffer, StateBox},
     lp::indexer::BlockGrid,
     noise::{
-        apply_ncs_col_bounds, transform_inflow_noise, transform_load_noise, transform_ncs_noise,
+        apply_inflow_slack_col_bounds, apply_ncs_col_bounds, transform_inflow_noise,
+        transform_load_noise, transform_ncs_noise,
     },
     setup::node_graph::StageIdx,
     workspace::ScratchBuffers,
@@ -27,28 +28,16 @@ use crate::{
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct StateSource<'a>(pub &'a [f64]);
 
-/// How the water-balance noise buffer this solve reads
-/// (`scratch.z_inflow_rhs_buf`) is populated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum InflowNoise {
-    /// Fill the buffers from `raw_noise` (forward, backward, simulation).
-    Transform,
-    /// The caller has already filled the buffers (the lower bound's PAR-batch
-    /// precompute).
-    PreBuilt,
-}
-
 /// Per-call variation points for [`StageSolvePrep::run`] — the divergences
 /// among the four solve sites.
 ///
-/// The NCS availability patch is not a variation point: [`StageSolvePrep::run`]
-/// gates it on `n_stochastic_ncs() > 0` internally, the same gate every solve
-/// site applies.
+/// The NCS availability patch and the inflow-slack bound patch are not variation
+/// points: [`StageSolvePrep::run`] gates them internally, on `n_stochastic_ncs() > 0`
+/// and on the method's `truncates()` respectively, the same gates every solve site
+/// applies.
 pub(crate) struct StageSolvePrepParams<'a> {
     /// Which slice this solve pins as incoming state.
     pub state_source: StateSource<'a>,
-    /// How the inflow-noise buffers are populated.
-    pub inflow_noise: InflowNoise,
     /// This solve's realized noise draw, laid out `[hydro | load-bus | NCS]`.
     pub raw_noise: &'a [f64],
 }
@@ -57,8 +46,8 @@ pub(crate) struct StageSolvePrepParams<'a> {
 pub(crate) struct StageSolvePrep;
 
 impl StageSolvePrep {
-    /// Executes `pin → row_patches → ncs_patch → commit` over caller-owned `&mut`
-    /// scratch: allocates nothing.
+    /// Executes `pin → row_patches → ncs_patch → inflow_slack_patch → commit` over
+    /// caller-owned `&mut` scratch: allocates nothing.
     pub(crate) fn run<S>(
         solver: &mut S,
         patch_buf: &mut PatchBuffer,
@@ -134,9 +123,7 @@ impl StageSolvePrep {
     {
         let pinned_state = params.state_source.0;
 
-        if params.inflow_noise == InflowNoise::Transform {
-            transform_inflow_noise(params.raw_noise, stage, pinned_state, training_ctx, scratch);
-        }
+        transform_inflow_noise(params.raw_noise, stage, pinned_state, training_ctx, scratch);
 
         let load_blocks = if ctx.load_bus_indices.is_empty() {
             0
@@ -212,6 +199,15 @@ impl StageSolvePrep {
                 ctx.ncs_stochastic_dense_col,
                 ctx.ncs_stochastic_windows,
                 stage_id,
+            );
+        }
+
+        if training_ctx.inflow_method.truncates() {
+            apply_inflow_slack_col_bounds(
+                solver,
+                scratch,
+                &ctx.geometry_per_stage[stage.0],
+                &ctx.template(stage).col_scale,
             );
         }
     }

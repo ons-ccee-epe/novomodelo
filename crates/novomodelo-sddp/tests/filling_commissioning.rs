@@ -1330,6 +1330,7 @@ mod filling_cut_validity {
         TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_sddp::SolverStatsDelta;
+    use novomodelo_sddp::indexer::CutSlot;
     use novomodelo_sddp::setup::NodePos;
     use novomodelo_solver::ActiveSolver;
 
@@ -1731,7 +1732,7 @@ mod filling_cut_validity {
         // filling boundaries, so warm-start the forward pass.
         super::common::enable_forward_warm_start(&mut config);
         let mut setup = build_setup_in_code(system, &config);
-        // Populate the visited-states archive so the control hydro's forward-pass
+        // Store each pool's trial states so the control hydro's forward-pass
         // storage trajectory is observable for the parity-neutrality assertion below.
         setup.set_export_states(true);
 
@@ -1818,32 +1819,36 @@ mod filling_cut_validity {
          across the phase change, breaking reconstruct_basis slot-identity matching)"
         );
 
-        // Read the control hydro's forward-pass storage from the visited archive at
-        // state index `state.storage.start + ctl_pos`; `ctl_pos` is its positional
-        // index in canonical id order (id 4 -> last of four hydros -> 3).
+        // Read the control hydro's forward-pass storage from the states each pool
+        // stores, at the pool's slot for global state index
+        // `state.storage.start + ctl_pos`; `ctl_pos` is its positional index in
+        // canonical id order (id 4 -> last of four hydros -> 3).
         let state = setup.stage_state();
         let ctl_pos = 3_usize;
         let ctl_storage_col = state.storage.start + ctl_pos;
-        let archive = result
-            .visited_archive
-            .as_ref()
-            .expect("export_states was enabled, so the visited archive is populated");
+        let training_ctx = setup.training_ctx();
+        let stored_at = |stage: usize, column: usize| -> Vec<f64> {
+            let pool_id = setup.inputs.node_graph.nodes[NodePos(stage)].pool_id;
+            let pool = &setup.fcf.pools[pool_id];
+            if !pool.stores_trial_states() {
+                return Vec::new();
+            }
+            let layout = &training_ctx.cut_state_layouts[pool_id];
+            let projected = (0..layout.n_slots())
+                .find(|&j| layout.global_state_index(CutSlot::new(j)).get() == column)
+                .unwrap_or_else(|| {
+                    panic!("pool {pool_id} must project the global state dimension {column}")
+                });
+            (0..pool.populated())
+                .filter_map(|slot| pool.trial_state(slot))
+                .map(|row| row[projected])
+                .collect()
+        };
 
         let init_storage = 100.0_f64;
         let mut control_moved = false;
         for stage in 0..N_STAGES {
-            let stage_states = archive.states_for_node(NodePos(stage));
-            if stage_states.is_empty() {
-                continue;
-            }
-            let dim = archive.node(NodePos(stage)).state_dimension();
-            assert!(
-                ctl_storage_col < dim,
-                "control storage column {ctl_storage_col} must lie within the state \
-             dimension {dim}"
-            );
-            for s in stage_states.chunks_exact(dim) {
-                let v = s[ctl_storage_col];
+            for v in stored_at(stage, ctl_storage_col) {
                 assert!(
                     (-1e-6..=200.0 + 1e-6).contains(&v),
                     "control hydro storage must stay within bounds [0, 200] hm3 at \
@@ -1877,23 +1882,15 @@ mod filling_cut_validity {
         let out_col_last_filling = state.storage.start + hf1_pos;
         let out_col_entry = state.storage.start + hf1_pos;
 
-        let last_filling_states = archive.states_for_node(NodePos(last_filling));
-        let entry_states = archive.states_for_node(NodePos(entry));
+        let last_filling_values = stored_at(last_filling, out_col_last_filling);
+        let entry_values = stored_at(entry, out_col_entry);
         assert!(
-            !last_filling_states.is_empty() && !entry_states.is_empty(),
-            "the visited archive must hold outgoing states at the last Filling stage \
+            !last_filling_values.is_empty() && !entry_values.is_empty(),
+            "the pools must store outgoing states at the last Filling stage \
          ({last_filling}) and the entry stage ({entry}) for the handoff check"
         );
-        let dim_lf = archive.node(NodePos(last_filling)).state_dimension();
-        let dim_e = archive.node(NodePos(entry)).state_dimension();
-        assert_eq!(
-            dim_lf, dim_e,
-            "state dimension must be identical across the boundary (the storage \
-         coordinate is not relocated): {dim_lf} vs {dim_e}"
-        );
         let filling_seed = 0.0_f64;
-        for s in last_filling_states.chunks_exact(dim_lf) {
-            let v_out_last_filling = s[out_col_last_filling];
+        for v_out_last_filling in last_filling_values {
             assert!(
                 (filling_seed - 1e-6..=200.0 + 1e-6).contains(&v_out_last_filling),
                 "end-of-filling outgoing storage at stage {last_filling} must be within \
@@ -1906,8 +1903,7 @@ mod filling_cut_validity {
              reset-to-seed value would fail this), got {v_out_last_filling}"
             );
         }
-        for s in entry_states.chunks_exact(dim_e) {
-            let v_out_entry = s[out_col_entry];
+        for v_out_entry in entry_values {
             assert!(
                 (-1e-6..=200.0 + 1e-6).contains(&v_out_entry),
                 "entry-stage (id {entry}) outgoing storage must stay within [0, 200] hm3 \

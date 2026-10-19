@@ -6,12 +6,13 @@ use novomodelo_core::ScalarParameter;
 use novomodelo_io::Config;
 use novomodelo_io::config::{
     BackwardScheduler, CheckpointSchedule, ForwardPassesResolution, NumScenariosResolution,
-    PhaseSolverProfileConfig, StoppingRuleConfig,
+    PhaseSolverProfileConfig, SimulationRowSet, StoppingRuleConfig,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
     InflowNonNegativityMethod, SddpError,
+    cut::CutSet,
     cut_selection::{CutSelectionStrategy, parse_cut_selection_config},
     stopping_rule::{StoppingMode, StoppingRule, StoppingRuleSet},
 };
@@ -132,6 +133,9 @@ pub struct StudyParams {
     /// [`Self::n_scenarios`] from the node graph once it exists when this is
     /// [`SimulationEnumeratedRequest::Enumerated`].
     pub simulation_enumerated: SimulationEnumeratedRequest,
+    /// `simulation.cut_set`. Described on
+    /// [`cut_set`](novomodelo_io::config::SimulationConfig::cut_set).
+    pub simulation_cut_set: CutSet,
     /// Buffer capacity for the simulation output channel.
     pub io_channel_capacity: usize,
     /// Policy directory path string.
@@ -140,12 +144,11 @@ pub struct StudyParams {
     pub inflow_method: InflowNonNegativityMethod,
     /// Optional cut selection strategy (None means cut selection is disabled).
     pub cut_selection: Option<CutSelectionStrategy>,
-    /// Minimum dual multiplier for a cut to count as binding (`0.0` if unset).
+    /// `training.cut_selection.row_activity_tolerance`. Described on
+    /// [`row_activity_tolerance`](novomodelo_io::config::RowSelectionConfig::row_activity_tolerance).
     pub cut_activity_tolerance: f64,
-    /// Maximum number of active cuts per stage (hard cap on LP size).
-    ///
-    /// `None` means no cap is enforced. Derived from
-    /// `config.training.cut_selection.max_active_per_stage`.
+    /// `training.cut_selection.max_active_per_stage`; `None` means no cap. Described on
+    /// [`max_active_per_stage`](novomodelo_io::config::RowSelectionConfig::max_active_per_stage).
     pub budget: Option<u32>,
     /// Backward-pass solver profile override (`training.solver.backward`).
     pub training_solver_backward: Option<PhaseSolverProfileConfig>,
@@ -166,8 +169,8 @@ pub struct StudyParams {
     /// [`StudySetup::new_with_boundary_requirements`](super::StudySetup::new_with_boundary_requirements)
     /// (local) or the broadcast carrier (MPI), before any consumer reads it.
     pub boundary: BoundaryStateRequirements,
-    /// Whether the visited-states archive is allocated for export
-    /// (`config.exports.states`). Overridable post-construction via
+    /// Whether every pool stores its trial states for the checkpoint's states
+    /// export (`config.exports.states`). Overridable post-construction via
     /// [`StudySetup::set_export_states`](super::StudySetup::set_export_states).
     pub export_states: bool,
     /// `policy.checkpointing`'s resolved schedule; `None` when periodic
@@ -262,6 +265,11 @@ impl StudyParams {
             (0, SimulationEnumeratedRequest::Sampled)
         };
 
+        let simulation_cut_set = match config.simulation.cut_set {
+            SimulationRowSet::All => CutSet::All,
+            SimulationRowSet::Active => CutSet::Active,
+        };
+
         let io_channel_capacity =
             usize::try_from(config.simulation.io_channel_capacity).unwrap_or(64);
 
@@ -272,11 +280,7 @@ impl StudyParams {
         let cut_selection = parse_cut_selection_config(&config.training.cut_selection)
             .map_err(|msg| SddpError::Validation(format!("cut_selection config error: {msg}")))?;
 
-        let cut_activity_tolerance = config
-            .training
-            .cut_selection
-            .row_activity_tolerance
-            .unwrap_or(0.0);
+        let cut_activity_tolerance = config.training.cut_selection.row_activity_tolerance;
 
         let budget = config.training.cut_selection.max_active_per_stage;
 
@@ -286,12 +290,14 @@ impl StudyParams {
         let backward_scheduler = config.training.parallelism.backward_scheduler;
 
         if let Some(b) = budget
-            && u64::from(b) < u64::from(forward_passes)
+            && b < forward_passes
         {
             tracing::warn!(
                 "max_active_per_stage ({b}) is less than forward_passes \
-                 ({forward_passes}); budget enforcement will evict all \
-                 non-current-iteration cuts every iteration"
+                 ({forward_passes}): in a stage whose row pool receives \
+                 {forward_passes} rows per iteration, the cap evicts at every \
+                 iteration every row this run added in an earlier iteration; \
+                 rows loaded from a policy are not affected"
             );
         }
 
@@ -323,6 +329,7 @@ impl StudyParams {
             stopping_rule_set,
             n_scenarios,
             simulation_enumerated,
+            simulation_cut_set,
             io_channel_capacity,
             policy_path,
             inflow_method,
@@ -352,13 +359,15 @@ mod tests {
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
         InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, ParallelismConfig,
-        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig, SimulationRowSet,
         SimulationSelection, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
         TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use tracing::{Event, Level, Metadata, Subscriber, span};
 
     use super::{BoundaryStateRequirements, StudyParams};
+    use crate::config::CutManagementConfig;
+    use crate::cut::CutSet;
 
     // ---------------------------------------------------------------------------
     // Minimal WARN-capturing subscriber for use in tests.
@@ -658,6 +667,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_activity_tolerance_has_one_default() {
+        let default = RowSelectionConfig::default().row_activity_tolerance;
+        let params = StudyParams::from_config(&base_test_config(), Vec::new())
+            .expect("base config is valid");
+        assert_eq!(params.cut_activity_tolerance, default);
+        assert_eq!(
+            CutManagementConfig::default().cut_activity_tolerance,
+            default
+        );
+
+        let mut config = base_test_config();
+        config.training.cut_selection.row_activity_tolerance = 0.0;
+        let params = StudyParams::from_config(&config, Vec::new()).expect("0 is a valid tolerance");
+        assert_eq!(params.cut_activity_tolerance, 0.0);
+    }
+
     /// `from_config` leaves `boundary` at the `none()` placeholder (the
     /// resolver, `resolve_boundary_state_requirements`, owns both boundary
     /// facts and the caller patches the resolved value in) and echoes the
@@ -890,6 +916,20 @@ mod tests {
             params.simulation_enumerated,
             super::SimulationEnumeratedRequest::Enumerated
         );
+    }
+
+    #[test]
+    fn from_config_maps_the_simulation_cut_set() {
+        for (row_set, cut_set) in [
+            (SimulationRowSet::All, CutSet::All),
+            (SimulationRowSet::Active, CutSet::Active),
+        ] {
+            let mut config = base_test_config();
+            config.simulation.cut_set = row_set;
+            let params = StudyParams::from_config(&config, Vec::new())
+                .expect("either simulation cut set is valid");
+            assert_eq!(params.simulation_cut_set, cut_set);
+        }
     }
 
     /// When `max_active_per_stage` is less than `forward_passes`, `StudyParams::from_config`

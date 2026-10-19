@@ -103,7 +103,7 @@ use crate::{
     InflowNonNegativityMethod,
     block_clock::M3S_TO_HM3,
     config::{CutManagementConfig, EventParams, ShutdownSource},
-    cut::FutureCostFunction,
+    cut::{CutSet, FutureCostFunction},
     cut_selection::CutSelectionStrategy,
     energy_conversion::{EnergyConversionSet, build_energy_conversion_set},
     error::SddpError,
@@ -123,7 +123,7 @@ use crate::{
     simulation::extraction::TransitSeedArc,
     stopping_rule::{StopDecision, StopMask, StoppingRule, StoppingRuleSet},
     time_value::{DeliveryCalendar, TimeValue},
-    workspace::CapturedBasis,
+    training::LoadedPolicy,
 };
 
 // ---------------------------------------------------------------------------
@@ -207,6 +207,9 @@ pub struct StudySetup {
     /// `aggregate_simulation`.
     pub simulation_enumerated: SimulationEnumeratedRequest,
 
+    /// The cuts simulation loads into each stage LP.
+    pub simulation_cut_set: CutSet,
+
     /// Relative path to the policy output directory (e.g. `"training/policy"`).
     pub policy_path: String,
 
@@ -250,14 +253,10 @@ pub struct StudySetup {
     /// the simulation pipeline for stored-energy calculations.
     pub(crate) hydro_min_storage_hm3: Vec<f64>,
 
-    /// Per-stage warm-start basis cache for warm-start / resume training.
-    ///
-    /// Populated by the CLI / Python paths via
-    /// [`StudySetup::set_warm_start_basis_cache`] from the checkpoint's stored
-    /// solver bases; [`StudySetup::train`] seeds it into the session's
-    /// [`BasisStore`](crate::workspace::BasisStore) so iteration 1's LPs warm-start.
-    /// `None` for a fresh start, leaving fresh-mode behavior untouched.
-    pub(crate) warm_start_basis_cache: Option<Vec<Option<CapturedBasis>>>,
+    /// The bases and trial states of a loaded checkpoint, set by
+    /// [`StudySetup::set_loaded_policy`] and moved into the training session
+    /// once by [`StudySetup::train`]; empty for a fresh start.
+    pub(crate) loaded: LoadedPolicy,
 
     /// Boundary-derived state requirements this study was built against, resolved
     /// once and carried identically on every rank. The boundary-cut load path
@@ -321,7 +320,20 @@ impl StudySetup {
         boundary: BoundaryStateRequirements,
         scalar_parameters: Vec<ScalarParameter>,
     ) -> Result<Self, SddpError> {
-        let mut params = StudyParams::from_config(config, scalar_parameters)?;
+        let params = StudyParams::from_config(config, scalar_parameters)?;
+        Self::new_from_params(system, config, stochastic, hydro_models, boundary, params)
+    }
+
+    /// [`Self::new_with_boundary_requirements`] from parameters the caller has
+    /// already extracted from `config`, so `StudyParams::from_config` runs once.
+    pub(crate) fn new_from_params(
+        system: &System,
+        config: &Config,
+        stochastic: StochasticContext,
+        hydro_models: PrepareHydroModelsResult,
+        boundary: BoundaryStateRequirements,
+        mut params: StudyParams,
+    ) -> Result<Self, SddpError> {
         params.boundary = boundary;
         // Sentinel: the scenario-source resolvers use the path only for error
         // messages and the historical-years look-up, neither exercised here with a
@@ -354,6 +366,8 @@ impl StudySetup {
     /// - [`SddpError::Validation`] — a per-phase solver profile config sets a
     ///   field the compiled backend does not support (see
     ///   `validate_phase_solver_config`).
+    /// - [`SddpError::Validation`] — the `dynamic` method's `violation_tolerance`
+    ///   is below a phase's primal feasibility tolerance.
     /// - [`SddpError::Validation`] — if the template list is empty ("system
     ///   has no study stages").
     /// - [`SddpError::Validation`] — if `stochastic`'s precomputed inflow
@@ -370,6 +384,12 @@ impl StudySetup {
 
         let (backward_profile, forward_profile, simulation_profile) =
             resolve_solver_profiles(&config)?;
+        reject_violation_tolerance_below_a_phase_solver_tolerance(
+            config.cut_selection.as_ref(),
+            backward_profile.primal_feasibility_tolerance,
+            forward_profile.primal_feasibility_tolerance,
+            simulation_profile.primal_feasibility_tolerance,
+        )?;
 
         // Keys are a pure function of the synced tree + fixed σ, so every rank
         // computes the identical permutation and cuts stay bit-identical across
@@ -439,6 +459,7 @@ impl StudySetup {
             &config.stopping_rule_set,
             config.training_enumerated,
             config.cut_selection.as_ref(),
+            config.budget,
         )?;
 
         let extended_delivery_anchors =
@@ -472,6 +493,7 @@ impl StudySetup {
             loop_params,
             simulation_config,
             simulation_enumerated: config.simulation_enumerated,
+            simulation_cut_set: config.simulation_cut_set,
             policy_path: config.policy_path,
             events: EventParams {
                 export_states: config.export_states,
@@ -484,7 +506,7 @@ impl StudySetup {
             hardest_first_claim_order: true,
             energy_conversion,
             hydro_min_storage_hm3: system.hydros().iter().map(|h| h.min_storage_hm3).collect(),
-            warm_start_basis_cache: None,
+            loaded: LoadedPolicy::default(),
             boundary_requirements: config.boundary,
         })
     }
@@ -1049,6 +1071,44 @@ fn resolve_solver_profiles(
     let simulation_profile = Phase::Simulation.resolve_profile(config.simulation_solver.as_ref());
 
     Ok((backward_profile, forward_profile, simulation_profile))
+}
+
+/// Reject a `dynamic` `violation_tolerance` below the primal feasibility
+/// tolerance of any phase's solver profile, compared in the order backward,
+/// forward, simulation whether or not that phase runs.
+///
+/// # Errors
+///
+/// [`SddpError::Validation`] naming the first phase whose tolerance exceeds the
+/// value.
+fn reject_violation_tolerance_below_a_phase_solver_tolerance(
+    cut_selection: Option<&CutSelectionStrategy>,
+    backward: f64,
+    forward: f64,
+    simulation: f64,
+) -> Result<(), SddpError> {
+    let Some(CutSelectionStrategy::Dynamic {
+        violation_tolerance: Some(value),
+        ..
+    }) = cut_selection
+    else {
+        return Ok(());
+    };
+    for (phase, tolerance) in [
+        ("backward", backward),
+        ("forward", forward),
+        ("simulation", simulation),
+    ] {
+        if *value < tolerance {
+            return Err(SddpError::Validation(format!(
+                "training.cut_selection.selection.violation_tolerance ({value}) is a relative \
+                 factor and must be at least the primal feasibility tolerance of the {phase} \
+                 solver profile ({tolerance}); raise it, or omit it to use each phase's solver \
+                 tolerance"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// `L_state = max(computed_order, boundary_depth)` — the single widening the
@@ -2164,26 +2224,28 @@ fn build_risk_measures(system: &System) -> Vec<RiskMeasure> {
 
 /// The setup-time admission gate: the permanent arms that survive the
 /// node-native collapse, evaluated once from
-/// [`StudySetup::from_broadcast_params`]. Absent the gated features (no `gap`
-/// stopping rule, an expectation measure at every stage, and no dynamic cut
-/// selection under enumerated forwards) it returns `Ok(())` unconditionally, so
-/// a default study is byte-neutral.
+/// [`StudySetup::from_broadcast_params`]. Absent every gated feature it returns
+/// `Ok(())`, so a default study is byte-neutral.
 ///
 /// # Errors
 ///
 /// Returns [`SddpError::Validation`] when a `gap` stopping rule is present under
 /// any stage's effective non-expectation risk measure, under sampled forward
-/// selection, or when dynamic cut selection is paired with enumerated forward
-/// traversal.
+/// selection, when dynamic cut selection is paired with enumerated forward
+/// traversal, or when `budget` is set together with dynamic cut selection or
+/// with enumerated forward traversal.
 fn admission_gate(
     risk_measures: &[RiskMeasure],
     stopping_rules: &StoppingRuleSet,
     training_enumerated: bool,
     cut_selection: Option<&CutSelectionStrategy>,
+    budget: Option<u32>,
 ) -> Result<(), SddpError> {
     reject_gap_under_effective_risk_aversion(risk_measures, stopping_rules, training_enumerated)?;
     reject_gap_under_sampled_selection(stopping_rules, training_enumerated)?;
-    reject_dynamic_cut_selection_under_enumerated(cut_selection, training_enumerated)
+    reject_dynamic_cut_selection_under_enumerated(cut_selection, training_enumerated)?;
+    reject_budget_under_dynamic_cut_selection(cut_selection, budget)?;
+    reject_budget_under_enumerated(budget, training_enumerated)
 }
 
 /// Reject a `gap` stopping rule that has no exact bound to compare against.
@@ -2285,14 +2347,16 @@ fn reject_gap_under_sampled_selection(
 }
 
 /// Reject dynamic cut selection paired with enumerated forward traversal. The
-/// enumerated engine seeds each pool at its node-native cut stride, while
-/// dynamic cut selection assumes the sampled-selection eviction-key discipline
-/// its downstream budget-eviction reader depends on; the pairing would drive
-/// that reader down an untested eviction path. Any non-[`Dynamic`] strategy (or
-/// none) under enumerated forwards, and [`Dynamic`] under sampled forwards, are
-/// admitted.
+/// enumerated backward never solves lazily and records no binding activity,
+/// while the enumerated forward has a lazy branch that would seed from a window
+/// whose clock ([`last_active_iter`]) then never advances past a cut's
+/// generating iteration. Admitting the pairing would run a path no test
+/// exercises; this reject is what makes it unreachable. Any non-[`Dynamic`]
+/// strategy (or none) under enumerated forwards, and [`Dynamic`] under sampled
+/// forwards, are admitted.
 ///
 /// [`Dynamic`]: CutSelectionStrategy::Dynamic
+/// [`last_active_iter`]: crate::cut_selection::CutMetadata::last_active_iter
 ///
 /// # Errors
 ///
@@ -2305,9 +2369,59 @@ fn reject_dynamic_cut_selection_under_enumerated(
     if training_enumerated && matches!(cut_selection, Some(CutSelectionStrategy::Dynamic { .. })) {
         return Err(SddpError::Validation(
             "dynamic cut selection is inadmissible under enumerated forward traversal; the \
-             enumerated engine seeds each cut pool at its node-native stride, whereas dynamic \
-             cut selection assumes the sampled-selection eviction-key discipline — pair \
-             enumerated forwards with a value-based cut selection strategy, or none"
+             enumerated backward never solves lazily and records no binding activity, so the \
+             seed window of the enumerated forward's lazy solve would never advance past a \
+             cut's generating iteration — pair enumerated forwards with the `level1` method, \
+             or with no selection method"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Reject an active-cut budget paired with dynamic cut selection. A lazy solve
+/// takes its candidates from the pool's active cuts and `dynamic` runs no
+/// selection pass, so a cut the budget deactivates is never a candidate again.
+///
+/// # Errors
+///
+/// Returns [`SddpError::Validation`] naming the pairing when `budget` is set and
+/// `cut_selection` is [`CutSelectionStrategy::Dynamic`].
+fn reject_budget_under_dynamic_cut_selection(
+    cut_selection: Option<&CutSelectionStrategy>,
+    budget: Option<u32>,
+) -> Result<(), SddpError> {
+    if budget.is_some() && matches!(cut_selection, Some(CutSelectionStrategy::Dynamic { .. })) {
+        return Err(SddpError::Validation(
+            "training.cut_selection.max_active_per_stage is inadmissible with the dynamic \
+             cut selection method; a lazy solve takes its candidates from the active rows and \
+             dynamic runs no selection pass, so an evicted row never returns — remove the cap, \
+             or use the `level1` method"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Reject an active-cut budget under enumerated forward traversal. The
+/// enumerated backward records no binding activity, so every cut keeps the
+/// generating iteration as its last-active iteration and the budget would evict
+/// in generation order alone.
+///
+/// # Errors
+///
+/// Returns [`SddpError::Validation`] naming the pairing when `budget` is set and
+/// `training_enumerated`.
+fn reject_budget_under_enumerated(
+    budget: Option<u32>,
+    training_enumerated: bool,
+) -> Result<(), SddpError> {
+    if budget.is_some() && training_enumerated {
+        return Err(SddpError::Validation(
+            "training.cut_selection.max_active_per_stage is inadmissible under enumerated \
+             forward traversal; enumerated traversal records no binding activity, so the cap \
+             would evict by generation order alone — remove the cap, or use sampled \
+             forward selection"
                 .to_string(),
         ));
     }
@@ -3592,7 +3706,10 @@ mod scalar_parameter_construction_tests {
 
 #[cfg(test)]
 mod admission_gate_dcs_tests {
-    use super::{CutSelectionStrategy, SddpError, admission_gate};
+    use super::{
+        CutSelectionStrategy, SddpError, admission_gate,
+        reject_violation_tolerance_below_a_phase_solver_tolerance,
+    };
     use crate::risk_measure::RiskMeasure;
     use crate::stopping_rule::{StoppingMode, StoppingRule, StoppingRuleSet};
 
@@ -3604,11 +3721,15 @@ mod admission_gate_dcs_tests {
     }
 
     fn dynamic() -> CutSelectionStrategy {
+        dynamic_with(None)
+    }
+
+    fn dynamic_with(violation_tolerance: Option<f64>) -> CutSelectionStrategy {
         CutSelectionStrategy::Dynamic {
-            k1: None,
-            k2: 1,
-            nadic: 1,
-            epsilon_viol: 1e-6,
+            candidate_recency: None,
+            seed_window: 1,
+            max_added_per_round: 1,
+            violation_tolerance,
             start_iteration: 1,
         }
     }
@@ -3616,7 +3737,7 @@ mod admission_gate_dcs_tests {
     fn level1() -> CutSelectionStrategy {
         CutSelectionStrategy::Level1 {
             check_frequency: 5,
-            tie_tolerance: 1e-10,
+            lookback_iterations: None,
         }
     }
 
@@ -3633,7 +3754,7 @@ mod admission_gate_dcs_tests {
         let dcs = dynamic();
         let l1 = level1();
 
-        match admission_gate(&measures, &rules, true, Some(&dcs)) {
+        match admission_gate(&measures, &rules, true, Some(&dcs), None) {
             Err(SddpError::Validation(msg)) => {
                 assert!(
                     msg.contains("dynamic cut selection"),
@@ -3648,16 +3769,138 @@ mod admission_gate_dcs_tests {
         }
 
         assert!(
-            admission_gate(&measures, &rules, true, None).is_ok(),
+            admission_gate(&measures, &rules, true, None, None).is_ok(),
             "enumerated forwards without dynamic cut selection must be admitted"
         );
         assert!(
-            admission_gate(&measures, &rules, true, Some(&l1)).is_ok(),
+            admission_gate(&measures, &rules, true, Some(&l1), None).is_ok(),
             "a value-based cut selection strategy under enumerated forwards must be admitted"
         );
         assert!(
-            admission_gate(&measures, &rules, false, Some(&dcs)).is_ok(),
+            admission_gate(&measures, &rules, false, Some(&dcs), None).is_ok(),
             "dynamic cut selection under sampled forwards must be admitted"
         );
+    }
+
+    /// A budget with `Dynamic` is rejected naming both settings; the same call
+    /// without the budget, with a value-based strategy, and with no strategy is
+    /// admitted, so the reject discriminates on the `Dynamic` variant.
+    #[test]
+    fn admission_gate_rejects_a_budget_with_dynamic_cut_selection() {
+        let measures = vec![RiskMeasure::Expectation, RiskMeasure::Expectation];
+        let rules = no_gap_rules();
+        let dcs = dynamic();
+        let l1 = level1();
+
+        match admission_gate(&measures, &rules, false, Some(&dcs), Some(5)) {
+            Err(SddpError::Validation(msg)) => {
+                assert!(
+                    msg.contains("max_active_per_stage"),
+                    "names the budget key: {msg}"
+                );
+                assert!(msg.contains("dynamic"), "names the dynamic method: {msg}");
+            }
+            other => panic!("expected a Validation reject for a budget + Dynamic, got {other:?}"),
+        }
+
+        assert!(
+            admission_gate(&measures, &rules, false, Some(&dcs), None).is_ok(),
+            "dynamic cut selection without a budget must be admitted"
+        );
+        assert!(
+            admission_gate(&measures, &rules, false, Some(&l1), Some(5)).is_ok(),
+            "a budget with a value-based cut selection strategy must be admitted"
+        );
+        assert!(
+            admission_gate(&measures, &rules, false, None, Some(5)).is_ok(),
+            "a budget with no cut selection strategy must be admitted"
+        );
+    }
+
+    /// A budget under enumerated forwards is rejected naming both settings;
+    /// enumerated forwards without the budget, and the budget under sampled
+    /// forwards, are admitted.
+    #[test]
+    fn admission_gate_rejects_a_budget_under_enumerated() {
+        let measures = vec![RiskMeasure::Expectation, RiskMeasure::Expectation];
+        let rules = no_gap_rules();
+
+        match admission_gate(&measures, &rules, true, None, Some(5)) {
+            Err(SddpError::Validation(msg)) => {
+                assert!(
+                    msg.contains("max_active_per_stage"),
+                    "names the budget key: {msg}"
+                );
+                assert!(
+                    msg.contains("enumerated"),
+                    "names enumerated traversal: {msg}"
+                );
+            }
+            other => {
+                panic!("expected a Validation reject for a budget + enumerated, got {other:?}")
+            }
+        }
+
+        assert!(
+            admission_gate(&measures, &rules, true, None, None).is_ok(),
+            "enumerated forwards without a budget must be admitted"
+        );
+        assert!(
+            admission_gate(&measures, &rules, false, None, Some(5)).is_ok(),
+            "a budget under sampled forwards must be admitted"
+        );
+    }
+
+    /// A value below the backward, forward or simulation tolerance is rejected
+    /// naming the first such phase in that order; a value equal to a tolerance,
+    /// an absent value and a non-`dynamic` strategy are admitted.
+    #[test]
+    fn a_violation_tolerance_below_a_phase_solver_tolerance_is_rejected() {
+        let rejection = |value: f64, [backward, forward, simulation]: [f64; 3]| {
+            let strategy = dynamic_with(Some(value));
+            match reject_violation_tolerance_below_a_phase_solver_tolerance(
+                Some(&strategy),
+                backward,
+                forward,
+                simulation,
+            ) {
+                Err(SddpError::Validation(msg)) => msg,
+                other => panic!("expected a Validation reject for {value}, got {other:?}"),
+            }
+        };
+
+        assert_eq!(
+            rejection(1e-10, [1e-9; 3]),
+            format!(
+                "training.cut_selection.selection.violation_tolerance ({}) is a relative factor \
+                 and must be at least the primal feasibility tolerance of the backward solver \
+                 profile ({}); raise it, or omit it to use each phase's solver tolerance",
+                1e-10, 1e-9
+            )
+        );
+        for (tolerances, phase) in [
+            ([1e-9, 1e-7, 1e-9], "forward"),
+            ([1e-9, 1e-7, 1e-7], "forward"),
+            ([1e-9, 1e-9, 1e-7], "simulation"),
+        ] {
+            let msg = rejection(1e-8, tolerances);
+            assert!(
+                msg.contains(&format!("of the {phase} solver profile")),
+                "names the {phase} profile: {msg}"
+            );
+        }
+
+        let at_the_tolerance = dynamic_with(Some(1e-9));
+        let absent = dynamic_with(None);
+        let level1 = level1();
+        for strategy in [Some(&at_the_tolerance), Some(&absent), Some(&level1), None] {
+            assert!(
+                reject_violation_tolerance_below_a_phase_solver_tolerance(
+                    strategy, 1e-9, 1e-9, 1e-9
+                )
+                .is_ok(),
+                "{strategy:?} must be admitted"
+            );
+        }
     }
 }

@@ -257,7 +257,7 @@ fn fill_parallel_water_entries(
                 }
             }
         }
-        push_z_inflow_coupling(stage, layout, h_idx, h_idx, col_entries);
+        push_local_inflow_coupling(stage, layout, h_idx, h_idx, col_entries);
     }
 
     // The PreFilling `continue` below keeps the frozen identity row free of slack/flow
@@ -267,9 +267,6 @@ fn fill_parallel_water_entries(
             continue;
         }
         let row = geom.water_balance_row(HydroSys::new(h_idx), BlockIdx::new(0));
-        if !geom.inflow_slack.is_empty() {
-            col_entries[geom.inflow_slack_col(HydroSys::new(h_idx))].push((row, -zeta));
-        }
         col_entries[geom.withdrawal_slack_neg_col(HydroSys::new(h_idx))].push((row, -zeta));
         col_entries[geom.withdrawal_slack_pos_col(HydroSys::new(h_idx))].push((row, zeta));
     }
@@ -456,7 +453,7 @@ fn fill_chronological_water_entries(
         }
 
         push_maturing_bucket_coupling(ctx, stage, stage_idx, layout, h_idx, h_idx, col_entries);
-        push_z_inflow_coupling(stage, layout, h_idx, h_idx, col_entries);
+        push_local_inflow_coupling(stage, layout, h_idx, h_idx, col_entries);
 
         for k in 1..=n_blks {
             let blk = k - 1;
@@ -498,9 +495,6 @@ fn fill_chronological_water_entries(
                 }
             }
 
-            if !geom.inflow_slack.is_empty() {
-                col_entries[geom.inflow_slack_col(HydroSys::new(h_idx))].push((row, -tau_k));
-            }
             col_entries[geom.withdrawal_slack_neg_col(HydroSys::new(h_idx))].push((row, -tau_k));
             col_entries[geom.withdrawal_slack_pos_col(HydroSys::new(h_idx))].push((row, tau_k));
         }
@@ -640,24 +634,28 @@ fn fill_arc_release_chrono_block_entries(
     }
 }
 
-/// Couple `z_h` (hydro `h_idx`'s realized-inflow column) onto `target_idx`'s water
-/// row(s): the hydro's own route (`target_idx == h_idx`) or the
-/// [`fill_prefilling_shortcircuit`] route (`target_idx == d_idx`). Emitted for every
-/// non-`PreFilling` hydro regardless of a PAR model (`z_h` is then pinned to `0` by
-/// its own row).
+/// Couple hydro `h_idx`'s local inflow — `z_h` (its realized-inflow column) and, when
+/// the method has an inflow-slack family, `h_idx`'s slack column — onto `target_idx`'s
+/// water row(s) with identical entries: the hydro's own route (`target_idx == h_idx`)
+/// or the [`fill_prefilling_shortcircuit`] route (`target_idx == d_idx`). Emitted for
+/// every non-`PreFilling` hydro regardless of a PAR model (`z_h` is then pinned to `0`
+/// by its own row).
 ///
 /// Parallel pushes the single stage-total `−ζ` (a `Σ_k −τ_k` loop would inflate
 /// `z_h`'s routed-entry count, pinned by
 /// `prefilling_upstream_inflow_lands_on_balance_row_only`); Chronological splits into
 /// per-block `−τ_k` (`Σ_k τ_k = ζ`).
-fn push_z_inflow_coupling(
+fn push_local_inflow_coupling(
     stage: &Stage,
     layout: &StageLayout,
     h_idx: usize,
     target_idx: usize,
     col_entries: &mut [Vec<(usize, f64)>],
 ) {
-    let z_h = layout.state.z_inflow_col(HydroSys::new(h_idx)).get();
+    let hydro = HydroSys::new(h_idx);
+    let z_h = layout.state.z_inflow_col(hydro).get();
+    let slack_h =
+        (!layout.geometry.inflow_slack.is_empty()).then(|| layout.geometry.inflow_slack_col(hydro));
     let target = HydroSys::new(target_idx);
     for blk in 0..layout
         .geometry
@@ -668,12 +666,13 @@ fn push_z_inflow_coupling(
             BlockMode::Parallel => -layout.clock.zeta(),
             BlockMode::Chronological => -layout.clock.tau(BlockIdx::new(blk)),
         };
-        col_entries[z_h].push((
-            layout
-                .geometry
-                .water_balance_row(target, BlockIdx::new(blk)),
-            coeff,
-        ));
+        let row = layout
+            .geometry
+            .water_balance_row(target, BlockIdx::new(blk));
+        col_entries[z_h].push((row, coeff));
+        if let Some(slack) = slack_h {
+            col_entries[slack].push((row, coeff));
+        }
     }
 }
 
@@ -745,7 +744,7 @@ fn push_maturing_bucket_coupling(
 /// releases, so a chain re-routes each link's inflow to `d` exactly once. Sink case (no
 /// non-`PreFilling` downstream): nothing routed, no panic.
 ///
-/// The `z_h` and maturing-bucket couplings are [`push_z_inflow_coupling`] and
+/// The `z_h` and maturing-bucket couplings are [`push_local_inflow_coupling`] and
 /// [`push_maturing_bucket_coupling`], shared with both water writers' own-row route.
 fn fill_prefilling_shortcircuit(
     ctx: &TemplateBuildCtx<'_>,
@@ -764,7 +763,7 @@ fn fill_prefilling_shortcircuit(
     let n_blks = layout.clock.n_blks();
     let target = HydroSys::new(d_idx);
 
-    push_z_inflow_coupling(stage, layout, h_idx, d_idx, col_entries);
+    push_local_inflow_coupling(stage, layout, h_idx, d_idx, col_entries);
     push_maturing_bucket_coupling(ctx, stage, stage_idx, layout, h_idx, d_idx, col_entries);
 
     for blk in 0..n_blks {
@@ -3276,6 +3275,7 @@ mod pumping_water_tests {
     };
     use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
+    use crate::InflowNonNegativityMethod;
     use crate::block_clock::{BlockClock, M3S_TO_HM3};
     use crate::hydro_models::{
         EvaporationModel, EvaporationModelSet, FphaPlane, ProductionModelSet,
@@ -8044,6 +8044,80 @@ mod pumping_water_tests {
             -1.0,
             "U's frozen-identity row keeps its incoming-storage −1 entry"
         );
+    }
+
+    /// A hydro's inflow-slack column carries exactly `z_h`'s water-row entries — the
+    /// target's rows for a `PreFilling` hydro, none at a sink — on Parallel and
+    /// Chronological stages, for every method that has the slack family.
+    #[test]
+    fn inflow_slack_follows_z_routing_for_prefilling() {
+        let single_hop = vec![
+            ret_hydro(1, Some(2), Some(RET_ENTRY_STAGE_ID), true),
+            ret_hydro(2, None, None, false),
+        ];
+        let chained = vec![
+            ret_hydro(1, Some(2), Some(RET_ENTRY_STAGE_ID), true),
+            ret_hydro(2, Some(3), Some(RET_ENTRY_STAGE_ID), true),
+            ret_hydro(3, None, None, false),
+        ];
+        let sink = vec![ret_hydro(1, None, Some(RET_ENTRY_STAGE_ID), true)];
+
+        for (hydros, is_sink) in [(single_hop, false), (chained, false), (sink, true)] {
+            for block_mode in [BlockMode::Parallel, BlockMode::Chronological] {
+                for method in [
+                    InflowNonNegativityMethod::None,
+                    InflowNonNegativityMethod::Penalty,
+                    InflowNonNegativityMethod::Truncation,
+                    InflowNonNegativityMethod::TruncationWithPenalty,
+                ] {
+                    let n_h = hydros.len();
+                    let mut fixtures = PumpFixtures::new(hydros.clone(), Vec::new());
+                    fixtures.base.inflow_method = method;
+                    let ctx = fixtures.make_ctx();
+                    let mut stage = two_block_stage(
+                        usize::try_from(RET_PREFILLING_ID).unwrap(),
+                        [300.0, 444.0],
+                    );
+                    stage.block_mode = block_mode;
+                    let layout = StageLayout::new(&ctx, &stage, 0);
+                    let mut entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+                    for col in &mut entries {
+                        col.sort_unstable_by_key(|&(row, _)| row);
+                    }
+                    let bits =
+                        |col: &[(usize, f64)], skip_row: Option<usize>| -> Vec<(usize, u64)> {
+                            col.iter()
+                                .filter(|&&(row, _)| Some(row) != skip_row)
+                                .map(|&(row, value)| (row, value.to_bits()))
+                                .collect()
+                        };
+
+                    if !method.has_slack_columns() {
+                        assert!(
+                            layout.geometry.inflow_slack.is_empty(),
+                            "{method:?}: no slack family"
+                        );
+                        continue;
+                    }
+                    for h in 0..n_h {
+                        let hydro = HydroSys::new(h);
+                        let z = layout.state.z_inflow_col(hydro).get();
+                        let slack = layout.geometry.inflow_slack_col(hydro);
+                        assert_eq!(
+                            bits(&entries[slack], None),
+                            bits(&entries[z], Some(layout.z_inflow_row(hydro))),
+                            "{method:?} {block_mode:?} h={h}: slack entries equal z's water-row entries"
+                        );
+                    }
+                    let slack_h0 = layout.geometry.inflow_slack_col(HydroSys::new(0));
+                    assert_eq!(
+                        entries[slack_h0].is_empty(),
+                        is_sink,
+                        "{method:?} {block_mode:?}: the PreFilling hydro's slack is routed unless it is a sink"
+                    );
+                }
+            }
+        }
     }
 
     // ── σ_fill terminal target row + column ──────────────────────────────────

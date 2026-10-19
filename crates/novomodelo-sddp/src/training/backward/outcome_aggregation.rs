@@ -15,8 +15,9 @@ use crate::{
 
 use super::SuccessorChild;
 
-/// Accumulate one opening's solve result (stats delta, outcome, and binding-cut
-/// slot increments) into the workspace accumulators. Call after `view` is dropped.
+/// Accumulate one opening's solve result (stats delta, outcome, and, when binding
+/// is tracked, binding-cut slot increments) into the workspace accumulators. Call
+/// after `view` is dropped.
 pub(crate) fn accumulate_opening_outcome<S: SolverInterface + Send>(
     ws: &mut SolverWorkspace<S>,
     succ: &SuccessorChild<'_>,
@@ -37,6 +38,9 @@ pub(crate) fn accumulate_opening_outcome<S: SolverInterface + Send>(
         stats_after,
     );
 
+    let Some(threshold) = succ.cut_activity_tolerance else {
+        return;
+    };
     // Bump the child's OWN pool region (`metadata_offset + slot`), so a fan's
     // sibling pools never collide on a shared slot index.
     for (cut_idx, &slot) in succ.successor_active_slots.iter().enumerate() {
@@ -44,7 +48,7 @@ pub(crate) fn accumulate_opening_outcome<S: SolverInterface + Send>(
             .backward_accum
             .cut_duals_buf
             .get(cut_idx)
-            .is_some_and(|&d| d > succ.cut_activity_tolerance)
+            .is_some_and(|&d| d > threshold)
         {
             ws.backward_accum.slot_increments[succ.metadata_offset + slot] += 1;
         }

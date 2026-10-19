@@ -12,6 +12,7 @@ use novomodelo_solver::{RowBatch, SolverInterface};
 
 use crate::cut::CutPool;
 use crate::cut::CutRowMap;
+use crate::cut::CutSet;
 use crate::cut::FutureCostFunction;
 use crate::indexer::{CutStateProjection, OutCol, StateSpace};
 
@@ -101,24 +102,50 @@ pub fn build_cut_row_batch_into(
     cut_state: &CutStateProjection,
     col_scale: &[f64],
 ) {
+    fill_cut_rows(batch, fcf.active_cuts(pool), state, cut_state, col_scale);
+}
+
+/// [`build_cut_row_batch_into`] over the cuts of `set` instead of the active
+/// cuts, in the order and count [`CutPool::cuts_in`] yields.
+///
+/// # Panics
+///
+/// Panics if the total number of non-zeros exceeds `i32::MAX`.
+pub(crate) fn build_cut_set_row_batch_into(
+    batch: &mut RowBatch,
+    fcf: &FutureCostFunction,
+    pool: usize,
+    set: CutSet,
+    state: &StateSpace,
+    cut_state: &CutStateProjection,
+    col_scale: &[f64],
+) {
+    fill_cut_rows(
+        batch,
+        fcf.pools[pool].cuts_in(set),
+        state,
+        cut_state,
+        col_scale,
+    );
+}
+
+fn fill_cut_rows<'a>(
+    batch: &mut RowBatch,
+    cuts: impl Iterator<Item = (usize, f64, &'a [f64])>,
+    state: &StateSpace,
+    cut_state: &CutStateProjection,
+    col_scale: &[f64],
+) {
     batch.clear();
 
     let n_cut_state = cut_state.n_slots();
     let theta_col = state.theta;
-
-    let num_cuts = fcf.pools[pool].active_count();
-
-    if num_cuts == 0 {
-        batch.row_starts.push(0_i32);
-        return;
-    }
-
     let nnz_per_cut = cut_state.render_len() + 1;
-    let total_nnz = num_cuts * nnz_per_cut;
 
     let mut nz_offset = 0;
+    let mut num_rows = 0;
 
-    for (_slot, intercept, coefficients) in fcf.active_cuts(pool) {
+    for (_slot, intercept, coefficients) in cuts {
         debug_assert_eq!(
             coefficients.len(),
             n_cut_state,
@@ -140,14 +167,15 @@ pub fn build_cut_row_batch_into(
         );
 
         nz_offset += nnz_per_cut;
+        num_rows += 1;
     }
 
     #[allow(clippy::expect_used)]
     batch.row_starts.push(
-        i32::try_from(total_nnz).expect("total_nnz exceeds i32::MAX; LP exceeds HiGHS API limit"),
+        i32::try_from(nz_offset).expect("total_nnz exceeds i32::MAX; LP exceeds HiGHS API limit"),
     );
 
-    batch.num_rows = num_cuts;
+    batch.num_rows = num_rows;
 }
 
 /// Build a fresh [`RowBatch`] of Benders cut rows from the FCF.

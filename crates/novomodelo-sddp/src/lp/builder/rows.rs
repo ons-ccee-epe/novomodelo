@@ -57,7 +57,7 @@ pub(super) fn fill_stage_rows(
 
 /// Fill water-balance row bounds: static RHS = `−(ζ · water_withdrawal_m3s_h)`.
 /// The realized inflow (deterministic base + noise) enters through the water
-/// row's own `z_h` coupling entry (`entries::push_z_inflow_coupling`),
+/// row's own `z_h` coupling entry (`entries::push_local_inflow_coupling`),
 /// never the RHS.
 ///
 /// A `PreFilling` hydro's row is the frozen identity `v_h − v_h_in = 0` (matrix

@@ -29,6 +29,7 @@ use novomodelo_io::config::{
     StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
     UpperBoundEvaluationConfig,
 };
+use novomodelo_io::test_support::owned_piece_defaults;
 use novomodelo_io::{
     EntitySlot, OwnedPolicyCutRecord, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, StageCutsReadResult,
 };
@@ -271,22 +272,20 @@ fn anticipated_ring_columns_carry_unit_col_scale() {
 fn sample_cut_records() -> Vec<OwnedPolicyCutRecord> {
     vec![
         OwnedPolicyCutRecord {
-            cut_id: 1,
             slot_index: 0,
             iteration: 0,
-            forward_pass_index: 0,
             intercept: 10.0,
             coefficients: vec![1.0, -2.0, 3.5],
             is_active: true,
+            ..owned_piece_defaults()
         },
         OwnedPolicyCutRecord {
-            cut_id: 2,
             slot_index: 1,
             iteration: 0,
-            forward_pass_index: 0,
             intercept: -4.0,
             coefficients: vec![0.0, 7.25, -1.0],
             is_active: true,
+            ..owned_piece_defaults()
         },
     ]
 }
@@ -316,11 +315,7 @@ fn rescale_checkpoint_cuts_scales_every_coefficient_uniformly_marked_source() {
     let mut stage_cuts = sample_stage_cuts();
     let loading_cost_scale_factor = 2_000_000.0;
 
-    rescale_checkpoint_cuts_for_load(
-        &mut stage_cuts,
-        Some(1_000_000.0),
-        loading_cost_scale_factor,
-    );
+    rescale_checkpoint_cuts_for_load(&mut stage_cuts, Some(1.0), loading_cost_scale_factor);
 
     for (b, a) in before.iter().zip(&stage_cuts[0].cuts) {
         assert_eq!(a.intercept, b.intercept / loading_cost_scale_factor);

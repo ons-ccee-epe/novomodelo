@@ -150,10 +150,10 @@ pub(crate) struct StageKey<'a> {
     pub(crate) basis_row_capacity: usize,
     /// Cut pool for stage `t`.
     pub(crate) pool: &'a CutPool,
-    /// Dynamic Cut Selection hyperparameters, `Some` only when the dynamic method
-    /// is configured AND active at this iteration. When `Some`, the stage is
-    /// solved lazily against the cut pool from the cut-free base template; when
-    /// `None`, the frozen all-cuts path is used.
+    /// Parameters of the `dynamic` method, `Some` only when it is configured AND
+    /// active at this iteration. When `Some`, the stage is solved lazily against
+    /// the cut pool from the cut-free base template; when `None`, the frozen
+    /// all-cuts path is used.
     pub(crate) dcs: Option<DcsParams>,
     /// Canonical node-graph position this visit resolved to
     /// (`NodeGraph::nodes` index) — the pool/node-id resolution site, never

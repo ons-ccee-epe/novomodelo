@@ -10,8 +10,9 @@ use std::time::Instant;
 use novomodelo_comm::{Communicator, ReduceOp};
 use novomodelo_core::{TrainingEvent, WorkerPhaseTimings, WorkerTimingPhase};
 use novomodelo_io::config::BackwardScheduler;
-use novomodelo_solver::ActiveProfile;
-use novomodelo_solver::{RowBatch, SolverInterface, SolverStatistics, StageTemplate};
+use novomodelo_solver::{
+    ActiveProfile, RowBatch, SolverInterface, SolverStatistics, StageTemplate,
+};
 use rayon::iter::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
 };
@@ -30,12 +31,13 @@ use crate::{
     },
     config::CutManagementConfig,
     context::{StageContext, TrainingContext},
-    cut::FutureCostFunction,
+    cut::{CutPool, FutureCostFunction},
     cut_sync::CutSyncBuffers,
+    dcs::DcsParams,
     error::SddpError,
     forward::EnumeratedForwardScratch,
     horizon_mode::HorizonMode,
-    lp::indexer::StateSpace,
+    lp::indexer::{CutStateProjection, StateSpace},
     rank_reconcile::reconcile_result,
     risk_measure::RiskMeasure,
     solver_phase::Phase,
@@ -46,7 +48,6 @@ use crate::{
     state_exchange::ExchangeBuffers,
     training_session::{rank_distribution::RankDistribution, runtime::RuntimeHandles},
     trajectory::TrajectoryRecord,
-    visited_states::VisitedStatesArchive,
     workspace::{BasisStore, BasisStoreSliceMut, ByNodeScratch, SolverWorkspace, WorkspacePool},
 };
 
@@ -88,9 +89,6 @@ pub struct BackwardPassInputs<'a, S: SolverInterface + Send, C: Communicator> {
 
     /// Pre-allocated cut synchronisation buffers for per-stage `allgatherv`.
     pub cut_sync_bufs: &'a mut CutSyncBuffers,
-
-    /// Optional visited-states archive for dominated cut selection.
-    pub visited_archive: Option<&'a mut VisitedStatesArchive>,
 
     /// Optional event channel for emitting [`TrainingEvent::WorkerTiming`] events.
     pub event_sender: Option<&'a Sender<TrainingEvent>>,
@@ -139,7 +137,6 @@ impl<'a, S: SolverInterface + Send, C: Communicator> BackwardPassInputs<'a, S, C
         fcf: &'a mut FutureCostFunction,
         exchange: &'a mut ExchangeBuffers,
         cut_sync_bufs: &'a mut CutSyncBuffers,
-        visited_archive: &'a mut Option<VisitedStatesArchive>,
         training_ctx: &'a TrainingContext<'a>,
         comm: &'a C,
         cut_mgmt: &'a CutManagementConfig,
@@ -161,7 +158,6 @@ impl<'a, S: SolverInterface + Send, C: Communicator> BackwardPassInputs<'a, S, C
             exchange,
             records,
             cut_sync_bufs,
-            visited_archive: visited_archive.as_mut(),
             event_sender: runtime.event_sender(),
             risk_measures: &cut_mgmt.risk_measures,
             cut_activity_tolerance: cut_mgmt.cut_activity_tolerance,
@@ -203,10 +199,6 @@ pub struct BackwardPassState {
     /// Receive buffer for the `allreduce(Sum)` aggregating per-slot binding
     /// increments across MPI ranks.
     pub(crate) global_increments_buf: Vec<u64>,
-
-    /// Packs real (non-padded) gathered state vectors when archiving visited
-    /// states for dominated cut selection.
-    pub(crate) real_states_buf: Vec<f64>,
 
     /// Per-(worker, opening) gather buffer for backward-pass solver stats.
     ///
@@ -281,6 +273,10 @@ pub struct BackwardPassState {
     /// before the first `run()` call.
     hardest_first_claim_order: bool,
 
+    /// Whether cut binding activity is recorded; set through
+    /// [`Self::set_binding_tracking`], which states the rank contract.
+    binding_tracking: bool,
+
     /// Maximum local forward-pass count across the run; with
     /// `bwd_max_openings` and `n_state`, sizes [`Self::by_node_scratch`] when
     /// [`Self::set_scheduler`] resolves `ByNode`.
@@ -332,22 +328,28 @@ pub struct BackwardPassState {
     /// visits to `level[i]` from strictly-lower ranks, so a cut's node-relative
     /// slot stays globally unique across ranks at the pool's own `visit_bound`
     /// stride. `fwd_offset` on a single-node level (every trial visits it), `0`
-    /// on a single rank; the allgathered per-node prefix otherwise. Reused across
-    /// levels alongside the buffers below (never a hot-path `Vec::new`).
+    /// on a single rank; the lower ranks' rows of [`Self::rank_node_visits`]
+    /// summed otherwise.
     node_visit_offsets: Vec<usize>,
 
-    /// This rank's per-node local visit counts, the send buffer for the per-node
-    /// count `allgatherv` (`u64`; `usize` is not an `MpiDatatype`). Reused.
-    bwd_visit_send: Vec<u64>,
+    // The per-trial node `allgatherv` of a multi-node level: `max_local_fwd`
+    // entries per rank (`u64`; `usize` is not an `MpiDatatype`), sized in `new`.
+    /// Level index of the node each local trial slot was routed to; [`NO_TRIAL`]
+    /// from `local_work` on.
+    trial_node_send: Vec<u64>,
+    /// Every rank's `trial_node_send`, rank-major. Starts as [`NO_TRIAL`], so a
+    /// segment a communicator leaves unwritten reads as a rank with no trial.
+    trial_node_recv: Vec<u64>,
+    trial_node_counts: Vec<usize>,
+    trial_node_displs: Vec<usize>,
 
-    /// Gathered per-`(rank, node)` visit counts for the current level, rank-major.
-    /// Reused.
-    bwd_visit_recv: Vec<u64>,
+    /// Visits per `(rank, level node)` of the current multi-node level, rank-major,
+    /// counted from `trial_node_recv`.
+    rank_node_visits: Vec<usize>,
 
-    /// Per-rank `counts`/`displs` for the per-node count `allgatherv` (uniform
-    /// `n_nodes` per rank). Reused.
-    bwd_visit_counts: Vec<usize>,
-    bwd_visit_displs: Vec<usize>,
+    /// Trials of each level node already stored while a level is filled, reused
+    /// across levels.
+    stored_trials_per_node: Vec<usize>,
 
     /// Scratch for the enumerated backward's replicated per-node solve
     /// (`run_backward_node_replicated`). Empty (zero footprint) under
@@ -361,6 +363,9 @@ pub struct BackwardPassState {
     /// `Traversal::Sampled`.
     enumerated_stage_stats: Vec<SolverStatsDelta>,
 }
+
+/// Entry of the per-trial node exchange for a trial slot with no real trial.
+const NO_TRIAL: u64 = u64::MAX;
 
 /// One successor child's cut-pool binding-metadata region: which pool, the base
 /// offset of its slots in the per-worker `metadata_sync_contribution` buffer, and
@@ -380,8 +385,6 @@ impl BackwardPassState {
     /// - `n_workers_local`: number of rayon worker threads on this rank.
     /// - `n_ranks`: total MPI rank count.
     /// - `bwd_max_openings`: maximum opening count across all stages.
-    /// - `real_states_capacity`: capacity hint for `real_states_buf`
-    ///   (`real_total_scenarios * n_state`).
     /// - `max_local_fwd`: maximum local forward-pass count across the run.
     /// - `state`: state-vector layout owner (`n_state` dimension).
     /// - `horizon`: horizon owner (`num_stages` dimension).
@@ -394,7 +397,6 @@ impl BackwardPassState {
         n_workers_local: usize,
         n_ranks: usize,
         bwd_max_openings: usize,
-        real_states_capacity: usize,
         max_local_fwd: usize,
         state: &StateSpace,
         horizon: &HorizonMode,
@@ -408,7 +410,6 @@ impl BackwardPassState {
             successor_active_slots_buf: Vec::new(),
             metadata_sync_buf: Vec::new(),
             global_increments_buf: Vec::new(),
-            real_states_buf: Vec::with_capacity(real_states_capacity),
             stage_worker_stats_buf: StageWorkerStatsBuffer::new(n_workers_local, bwd_max_openings),
             bwd_stats_send_buf: vec![0.0; send_stride],
             bwd_stats_recv_buf: vec![0.0; n_ranks * send_stride],
@@ -427,6 +428,7 @@ impl BackwardPassState {
             profile: Phase::Backward.profile(),
             scheduler: BackwardScheduler::default(),
             hardest_first_claim_order: true,
+            binding_tracking: true,
             max_local_fwd,
             bwd_max_openings,
             n_state,
@@ -437,10 +439,12 @@ impl BackwardPassState {
             routed_trials_scratch: Vec::new(),
             routed_offsets_scratch: Vec::new(),
             node_visit_offsets: Vec::new(),
-            bwd_visit_send: Vec::new(),
-            bwd_visit_recv: Vec::new(),
-            bwd_visit_counts: Vec::new(),
-            bwd_visit_displs: Vec::new(),
+            trial_node_send: vec![NO_TRIAL; max_local_fwd],
+            trial_node_recv: vec![NO_TRIAL; n_ranks * max_local_fwd],
+            trial_node_counts: vec![max_local_fwd; n_ranks],
+            trial_node_displs: (0..n_ranks).map(|r| r * max_local_fwd).collect(),
+            rank_node_visits: Vec::new(),
+            stored_trials_per_node: Vec::new(),
             level_pool_regions_scratch: Vec::new(),
             replicated_scratch: ReplicatedScratch::default(),
             enumerated_stage_stats: (0..num_stages)
@@ -485,6 +489,13 @@ impl BackwardPassState {
     /// block order — the byte-neutrality gate's off leg. Call before `run()`.
     pub fn set_hardest_first_claim_order(&mut self, enabled: bool) {
         self.hardest_first_claim_order = enabled;
+    }
+
+    /// Overrides whether cut binding activity is recorded (default `true`).
+    /// Pass a value every rank derives identically: `false` skips a
+    /// collective, so one rank disagreeing blocks the run. Call before `run()`.
+    pub fn set_binding_tracking(&mut self, enabled: bool) {
+        self.binding_tracking = enabled;
     }
 
     /// Execute the backward pass for one training iteration on this rank.
@@ -753,13 +764,6 @@ impl BackwardPassState {
 
                 let x_hat = inputs.enumerated_state.out_state(node_pos);
 
-                // A node on the enumerated path has ONE distinct incoming state,
-                // so archive that single vector (never `total_fwd` copies as the
-                // sampled level driver does).
-                if let Some(archive) = inputs.visited_archive.as_mut() {
-                    archive.archive_one_state(node_pos, x_hat);
-                }
-
                 assemble_successor_outcome_weights(
                     node_graph,
                     node_pos,
@@ -799,7 +803,8 @@ impl BackwardPassState {
                     &*inputs.cut_batches,
                     &inputs.fcf.pools,
                     template_num_rows,
-                    inputs.cut_activity_tolerance,
+                    self.binding_tracking
+                        .then_some(inputs.cut_activity_tolerance),
                 );
                 debug_assert_eq!(
                     outcomes.total_outcomes(),
@@ -847,6 +852,10 @@ impl BackwardPassState {
                     intercept,
                     &ws0.backward_accum.agg_coefficients[..n_state],
                 );
+                let pool = &mut inputs.fcf.pools[pool_id];
+                if pool.stores_trial_states() {
+                    pool.store_trial_state(inputs.iteration, 0, x_hat, succ_spec.cut_state);
+                }
                 cuts_generated += 1;
             }
         }
@@ -911,21 +920,27 @@ impl BackwardPassState {
     /// Degenerate by construction, not by shape dispatch: a single-node level's
     /// one node is visited by every trial, so lower ranks contribute exactly their
     /// full trial counts — `fwd_offset` — and no exchange is needed (the chain hot
-    /// path stays collective-free and byte-identical). A multi-node level
-    /// allgathers each rank's per-node local visit count (from `routed_offsets`)
-    /// and prefix-sums the strictly-lower ranks; on a single rank that prefix is
-    /// `0`, leaving the slot derivation `compacted` — the pre-change single-rank
-    /// branching layout, byte-for-byte.
+    /// path stays collective-free and touches no buffer). A multi-node level
+    /// allgathers the level index of the node each trial slot was routed to and
+    /// counts [`Self::rank_node_visits`] from the gathered positions; the offset
+    /// sums the strictly-lower ranks' rows, `0` on a single rank. Per-node counts
+    /// would give the same offsets and lose which gathered state a peer's cut was
+    /// computed at. Every rank sends `max_local_fwd` entries whatever its
+    /// `local_work` (sddp.md "Per-level exchange in the backward pass").
     ///
     /// # Errors
     ///
     /// Returns `Err(SddpError::Communication(_))` if the `allgatherv` fails, or
-    /// `Err(SddpError::Validation(_))` if a gathered count exceeds `usize`.
+    /// `Err(SddpError::Validation(_))` if a gathered entry is neither
+    /// [`NO_TRIAL`] nor a level index, or the gathered trials do not total
+    /// `real_trials`.
     fn compute_node_visit_offsets<C: Communicator>(
         &mut self,
+        routed_trials: &[usize],
         routed_offsets: &[usize],
         n_nodes: usize,
         fwd_offset: usize,
+        real_trials: usize,
         comm: &C,
     ) -> Result<(), SddpError> {
         self.node_visit_offsets.clear();
@@ -934,45 +949,62 @@ impl BackwardPassState {
             return Ok(());
         }
 
-        let my_rank = comm.rank();
-        let num_ranks = comm.size();
+        let n_ranks = self.trial_node_counts.len();
+        debug_assert_eq!(
+            comm.size(),
+            n_ranks,
+            "the state was built for another rank count"
+        );
 
-        self.bwd_visit_send.clear();
-        for i in 0..n_nodes {
-            self.bwd_visit_send
-                .push((routed_offsets[i + 1] - routed_offsets[i]) as u64);
+        self.trial_node_send.fill(NO_TRIAL);
+        for (node, bounds) in routed_offsets.windows(2).enumerate() {
+            for &trial in &routed_trials[bounds[0]..bounds[1]] {
+                self.trial_node_send[trial] = node as u64;
+            }
         }
-        let total = num_ranks * n_nodes;
-        if self.bwd_visit_recv.len() < total {
-            self.bwd_visit_recv.resize(total, 0);
-        }
-        self.bwd_visit_counts.clear();
-        self.bwd_visit_counts
-            .extend((0..num_ranks).map(|_| n_nodes));
-        self.bwd_visit_displs.clear();
-        self.bwd_visit_displs
-            .extend((0..num_ranks).map(|r| r * n_nodes));
 
         comm.allgatherv(
-            &self.bwd_visit_send,
-            &mut self.bwd_visit_recv[..total],
-            &self.bwd_visit_counts,
-            &self.bwd_visit_displs,
+            &self.trial_node_send,
+            &mut self.trial_node_recv,
+            &self.trial_node_counts,
+            &self.trial_node_displs,
         )?;
 
-        for node_i in 0..n_nodes {
-            let mut offset = 0usize;
-            for r in 0..my_rank {
-                offset +=
-                    usize::try_from(self.bwd_visit_recv[r * n_nodes + node_i]).map_err(|_| {
-                        SddpError::Validation(format!(
-                            "node-visit count exchange: rank {r}'s count for level node {node_i} \
-                         exceeds usize"
-                        ))
-                    })?;
+        self.rank_node_visits.clear();
+        self.rank_node_visits.resize(n_ranks * n_nodes, 0);
+        let mut gathered_trials = 0_usize;
+        for (flat, &entry) in self.trial_node_recv.iter().enumerate() {
+            if entry == NO_TRIAL {
+                continue;
             }
-            self.node_visit_offsets.push(offset);
+            let rank = flat / self.max_local_fwd;
+            let node = usize::try_from(entry)
+                .ok()
+                .filter(|&node| node < n_nodes)
+                .ok_or_else(|| {
+                    SddpError::Validation(format!(
+                        "trial-node exchange: rank {rank} sent {entry} for trial slot {}, which \
+                         is neither a level index below {n_nodes} nor the no-trial padding",
+                        flat % self.max_local_fwd
+                    ))
+                })?;
+            self.rank_node_visits[rank * n_nodes + node] += 1;
+            gathered_trials += 1;
         }
+        if gathered_trials != real_trials {
+            return Err(SddpError::Validation(format!(
+                "trial-node exchange: {gathered_trials} routed trials gathered, but the level's \
+                 real trial count is {real_trials}"
+            )));
+        }
+
+        let lower_ranks = &self.rank_node_visits[..comm.rank() * n_nodes];
+        self.node_visit_offsets.extend((0..n_nodes).map(|node| {
+            lower_ranks
+                .chunks_exact(n_nodes)
+                .map(|visits| visits[node])
+                .sum::<usize>()
+        }));
         Ok(())
     }
 
@@ -1292,10 +1324,10 @@ fn total_solve_count<S: SolverInterface>(workspaces: &[SolverWorkspace<S>]) -> u
 }
 
 /// Resolve the effective backward thread scheduler for the SAMPLED path
-/// (`compute_one_backward_node`'s only caller): an active Dynamic Cut
-/// Selection iteration always forces the by-scenario path (its cut-free lazy
-/// core is incompatible with the by-node frozen-LP load); otherwise the
-/// configured scheduler is unchanged.
+/// (`compute_one_backward_node`'s only caller): an active iteration of the
+/// `dynamic` method always forces the by-scenario path (its cut-free lazy core
+/// is incompatible with the by-node frozen-LP load); otherwise the configured
+/// scheduler is unchanged.
 fn resolve_backward_scheduler(
     dcs_active: bool,
     configured: BackwardScheduler,
@@ -1449,11 +1481,11 @@ fn build_trial_routing(
 /// A single-node level's total is `total_fwd` — every local trial routes to
 /// that sole node on every rank, so the level-wide real forward-pass count
 /// already equals it, with no extra collective. A multi-node level's per-node
-/// total is summed from `bwd_visit_recv`'s `(rank, node)` counts, gathered by
-/// the immediately-preceding [`BackwardPassState::compute_node_visit_offsets`]
-/// call for the SAME purpose — reading it here adds no collective either. A
-/// chain or `derived_count == 1` enumerated pool's reach probability is
-/// exactly `1`, so `pool_cut_stride`'s variance term is exactly `0` and its
+/// total is summed over the ranks of `rank_node_visits`, counted by the
+/// immediately-preceding [`BackwardPassState::compute_node_visit_offsets`]
+/// call from the positions it gathered — reading it here adds no collective
+/// either. A chain or `derived_count == 1` enumerated pool's reach probability
+/// is exactly `1`, so `pool_cut_stride`'s variance term is exactly `0` and its
 /// stride equals `total_fwd` bit-for-bit: the comparison below can only ever
 /// see equality on that shape, never an overflow — no shape predicate needed.
 ///
@@ -1470,8 +1502,7 @@ fn check_visit_bound(
     iteration: u64,
     fcf: &FutureCostFunction,
     total_fwd: usize,
-    bwd_visit_recv: &[u64],
-    num_ranks: usize,
+    rank_node_visits: &[usize],
 ) -> Result<(), SddpError> {
     let n_nodes = level.len();
     for (level_idx, &node_pos) in level.iter().enumerate() {
@@ -1479,8 +1510,9 @@ fn check_visit_bound(
         let routed: u64 = if n_nodes == 1 {
             total_fwd as u64
         } else {
-            (0..num_ranks)
-                .map(|r| bwd_visit_recv[r * n_nodes + level_idx])
+            rank_node_visits
+                .chunks_exact(n_nodes)
+                .map(|visits| visits[level_idx] as u64)
                 .sum()
         };
         let stride = u64::from(fcf.pools[pool_id].visit_stride);
@@ -1500,13 +1532,52 @@ fn check_visit_bound(
     Ok(())
 }
 
+/// Store, in every pool of the level that stores trial states, the gathered
+/// state each of its cuts was computed at, for this rank's cuts and its peers'
+/// alike. The real trials are walked rank-major, then local, so the number of
+/// trials already stored at a node is the node-relative index of the next cut.
+/// `trial_nodes` is the gathered level index of every trial slot; it is `None`
+/// on a single-node level, where every trial visits the sole node.
+fn store_level_trial_states(
+    pools: &mut [CutPool],
+    level_pools: &[usize],
+    projections: &[CutStateProjection],
+    exchange: &ExchangeBuffers,
+    trial_nodes: Option<&[u64]>,
+    stored_per_node: &mut Vec<usize>,
+    iteration: u64,
+) {
+    stored_per_node.clear();
+    stored_per_node.resize(level_pools.len(), 0);
+    let slots_per_rank = exchange.local_count();
+    for (rank, &real_trials) in exchange.actual_counts().iter().enumerate() {
+        for local in 0..real_trials {
+            #[allow(clippy::cast_possible_truncation)]
+            let node = trial_nodes.map_or(0, |nodes| nodes[rank * slots_per_rank + local] as usize);
+            let pass = stored_per_node[node];
+            stored_per_node[node] += 1;
+            let pool_id = level_pools[node];
+            let pool = &mut pools[pool_id];
+            if pool.stores_trial_states() {
+                #[allow(clippy::cast_possible_truncation)]
+                pool.store_trial_state(
+                    iteration,
+                    pass as u32,
+                    exchange.state_at(rank, local),
+                    &projections[pool_id],
+                );
+            }
+        }
+    }
+}
+
 /// Execute one reverse-topological cut-sharing level: one state exchange for the
 /// level, each node's backward cut computed independently over ONLY the trial
 /// points routed to its pool, ONE batched cut exchange over the level's
-/// trial-point-distributed pools, then per-node metadata/timing/stats. Absent
-/// `nodes[]` a level is one node (== stage) and every trial routes to it, so
-/// this is byte-for-byte the reversed stage loop (one state exchange, one cut
-/// exchange, one metadata/stats gather).
+/// trial-point-distributed pools, then per-node metadata (only when binding is
+/// tracked)/timing/stats. Absent `nodes[]` a level is one node (== stage) and
+/// every trial routes to it, so this is byte-for-byte the reversed stage loop
+/// (one state exchange, one cut exchange, one metadata/stats gather).
 fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
     state: &mut BackwardPassState,
     inputs: &mut BackwardPassInputs<'_, S, C>,
@@ -1532,22 +1603,6 @@ fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
     // against (every trial routes to that level's sole node).
     let total_fwd = inputs.exchange.real_total_scenarios();
 
-    if let Some(ref mut archive) = inputs.visited_archive {
-        inputs
-            .exchange
-            .pack_real_states_into(&mut state.real_states_buf);
-        // Archive by NODE position, not `level_stage` used as a node index:
-        // sibling nodes at one stage own distinct pools and cut regions, so each
-        // reads back its own archive (`states_for_node`). The exchange gathers the
-        // level's states without per-node split, so every node in a multi-node
-        // level receives the level's states — a conservative over-inclusion that
-        // never drops a binding cut. On a chain the level is one node, giving the
-        // former single stage-keyed bucket byte-for-byte.
-        for &node_pos in level {
-            archive.archive_gathered_states(node_pos, &state.real_states_buf, total_fwd);
-        }
-    }
-
     // Route this rank's trial points to the level's pools once (a mem-swapped
     // local so the borrow does not conflict with `&mut state` below); a
     // cut-generating node then anchors its cut ONLY at the states its own pool
@@ -1568,9 +1623,11 @@ fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
     // Base slot offset per level node so a cut's node-relative slot index stays
     // globally unique across ranks at the pool's own `visit_bound` stride.
     state.compute_node_visit_offsets(
+        &routed_trials,
         &routed_offsets,
         level.len(),
         inputs.fwd_offset,
+        total_fwd,
         inputs.comm,
     )?;
 
@@ -1583,8 +1640,7 @@ fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
         inputs.iteration,
         inputs.fcf,
         total_fwd,
-        &state.bwd_visit_recv,
-        inputs.comm.size(),
+        &state.rank_node_visits,
     )?;
 
     let node_visit_offsets = std::mem::take(&mut state.node_visit_offsets);
@@ -1633,6 +1689,16 @@ fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
     let cuts_generated = n_local_total + remote_total;
     let cut_sync_ms = ms_elapsed(sync_start);
 
+    store_level_trial_states(
+        &mut inputs.fcf.pools,
+        &level_pools,
+        training_ctx.cut_state_layouts,
+        inputs.exchange,
+        (level.len() > 1).then_some(&state.trial_node_recv[..]),
+        &mut state.stored_trials_per_node,
+        inputs.iteration,
+    );
+
     let mut stage_entries = Vec::with_capacity(nodes_out.len());
     let mut setup_ms = 0u64;
     let mut imbalance_ms = 0u64;
@@ -1641,18 +1707,24 @@ fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
     // `state.sync_stage_metadata`'s `&mut self`.
     let pool_regions = std::mem::take(&mut state.level_pool_regions_scratch);
     for nc in &nodes_out {
-        // Sync EACH successor child's own pool at its own metadata slot region, so a
-        // child's binding activity lands in its own pool (an empty pool early-returns).
-        for pr in &pool_regions[nc.pool_regions.clone()] {
-            state.sync_stage_metadata(
-                pr.pool_id,
-                pr.region_offset,
-                pr.populated_count,
-                inputs.iteration,
-                inputs.workspaces,
-                inputs.fcf,
-                inputs.comm,
-            )?;
+        // Guarded by the rank-uniform switch alone: a rank-local condition would
+        // let one rank skip a collective its peers enter (sddp.md "Binding
+        // activity is recorded only for a configured reader").
+        if state.binding_tracking {
+            // Sync EACH successor child's own pool at its own metadata slot region, so
+            // a child's binding activity lands in its own pool (an empty pool
+            // early-returns).
+            for pr in &pool_regions[nc.pool_regions.clone()] {
+                state.sync_stage_metadata(
+                    pr.pool_id,
+                    pr.region_offset,
+                    pr.populated_count,
+                    inputs.iteration,
+                    inputs.workspaces,
+                    inputs.fcf,
+                    inputs.comm,
+                )?;
+            }
         }
         setup_ms += nc.setup_ms;
         imbalance_ms += nc.imbalance_ms;
@@ -1742,8 +1814,6 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
         node_pos,
         inputs.iteration,
     );
-    // Successor binding-metadata regions; kept in this caller because the enumerated
-    // fork syncs metadata through run_backward_node_replicated instead.
     let pool_regions_start = state.level_pool_regions_scratch.len();
     for entry in &state.successor_meta_buf {
         state.level_pool_regions_scratch.push(PoolRegion {
@@ -1762,7 +1832,9 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
         &*inputs.cut_batches,
         &inputs.fcf.pools,
         template_num_rows,
-        inputs.cut_activity_tolerance,
+        state
+            .binding_tracking
+            .then_some(inputs.cut_activity_tolerance),
     );
     debug_assert_eq!(
         outcomes.total_outcomes(),
@@ -1781,12 +1853,12 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
     // `resolve_backward_scheduler` owns the DCS fallback: its cut-free lazy
     // core is incompatible with the by-node frozen-LP load (sddp.md "By-node
     // scheduler is warm-start-only").
-    let dcs_active = training_ctx
+    let dcs_params = training_ctx
         .dcs
-        .filter(|p| p.is_active(inputs.iteration))
-        .is_some();
+        .map(|p| p.resolve(state.profile.primal_feasibility_tolerance))
+        .filter(|p| p.is_active(inputs.iteration));
     let use_by_node = matches!(
-        resolve_backward_scheduler(dcs_active, state.scheduler),
+        resolve_backward_scheduler(dcs_params.is_some(), state.scheduler),
         BackwardScheduler::ByNode { .. }
     );
 
@@ -1874,6 +1946,7 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
             inputs.fwd_offset,
             node_visit_offset,
             inputs.iteration,
+            dcs_params,
             inputs.risk_measures,
             &succ_spec,
             &outcomes,
@@ -1932,6 +2005,7 @@ pub(crate) fn process_stage_backward<S: SolverInterface + Send>(
     fwd_offset: usize,
     node_visit_offset: usize,
     iteration: u64,
+    dcs_params: Option<DcsParams>,
     risk_measures: &[RiskMeasure],
     succ: &SuccessorSpec<'_>,
     outcomes: &SuccessorOutcomes<'_>,
@@ -1946,14 +2020,11 @@ pub(crate) fn process_stage_backward<S: SolverInterface + Send>(
     // Sized to the max populated pool across the node's children so a child with
     // more cuts than the first cannot index the binding-metadata buffer out of bounds.
     let pop = outcomes.total_metadata_len();
+    let tracks_binding = outcomes.cut_activity_tolerance.is_some();
 
     // Opening-solve strategy, chosen once per stage. The decision depends only on
     // `iteration`, so it is constant across workers and trial points.
-    let opening_solver = StageOpeningSolver::from_dcs_params(
-        training_ctx
-            .dcs
-            .filter(|params| params.is_active(iteration)),
-    );
+    let opening_solver = StageOpeningSolver::from_dcs_params(dcs_params);
 
     workspaces
         .par_iter_mut()
@@ -1973,18 +2044,20 @@ pub(crate) fn process_stage_backward<S: SolverInterface + Send>(
             for outcome in &mut ws.backward_accum.outcomes[..n_openings] {
                 outcome.coefficients.resize(cut_n_state, 0.0_f64);
             }
-            if ws.backward_accum.slot_increments.len() < pop {
-                ws.backward_accum.slot_increments.resize(pop, 0u64);
-            }
             ws.backward_accum
                 .agg_coefficients
                 .resize(cut_n_state, 0.0_f64);
-            if ws.backward_accum.metadata_sync_contribution.len() < pop {
-                ws.backward_accum
-                    .metadata_sync_contribution
-                    .resize(pop, 0u64);
+            if tracks_binding {
+                if ws.backward_accum.slot_increments.len() < pop {
+                    ws.backward_accum.slot_increments.resize(pop, 0u64);
+                }
+                if ws.backward_accum.metadata_sync_contribution.len() < pop {
+                    ws.backward_accum
+                        .metadata_sync_contribution
+                        .resize(pop, 0u64);
+                }
+                ws.backward_accum.metadata_sync_contribution[..pop].fill(0);
             }
-            ws.backward_accum.metadata_sync_contribution[..pop].fill(0);
             ws.backward_accum
                 .per_opening_stats
                 .resize_with(n_openings, SolverStatsDelta::default);
@@ -2032,7 +2105,9 @@ pub(crate) fn process_stage_backward<S: SolverInterface + Send>(
                 // the per-child loop in `process_by_scenario_backward` (a child loads a
                 // different LP, so its warm-start chain must start clean for CLP
                 // determinism).
-                ws.backward_accum.slot_increments[..pop].fill(0);
+                if tracks_binding {
+                    ws.backward_accum.slot_increments[..pop].fill(0);
+                }
                 // Call before the push to avoid a simultaneous mutable borrow of
                 // `staged_cuts_buf` (push receiver) and `ws` (function argument).
                 let arena_offset = local_i * cut_n_state;
@@ -2087,6 +2162,7 @@ pub(crate) fn process_stage_backward<S: SolverInterface + Send>(
 )]
 mod tests {
     use super::*;
+    use crate::test_support::RankStub;
     use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
     use novomodelo_core::scenario::{InflowModel, SamplingScheme};
     use novomodelo_solver::{
@@ -2157,40 +2233,35 @@ mod tests {
         }
     }
 
-    /// `size() == 2` sibling of [`StubComm`]: `allgatherv` writes only this
-    /// rank's own slot (`recv[displs[0]..displs[0] + send.len()]`), the faithful
-    /// single-process view of rank 0's contribution to a 2-rank collective.
-    struct Rank0Of2;
+    /// Rank 1 of 2 on which every collective panics.
+    struct NoCollective;
 
-    impl Communicator for Rank0Of2 {
+    impl Communicator for NoCollective {
         fn allgatherv<T: CommData>(
             &self,
-            send: &[T],
-            recv: &mut [T],
+            _send: &[T],
+            _recv: &mut [T],
             _counts: &[usize],
-            displs: &[usize],
+            _displs: &[usize],
         ) -> Result<(), CommError> {
-            let start = displs[0];
-            recv[start..start + send.len()].copy_from_slice(send);
-            Ok(())
+            panic!("allgatherv issued where no collective is allowed")
         }
         fn allreduce<T: CommData>(
             &self,
-            send: &[T],
-            recv: &mut [T],
+            _send: &[T],
+            _recv: &mut [T],
             _op: ReduceOp,
         ) -> Result<(), CommError> {
-            recv[..send.len()].copy_from_slice(send);
-            Ok(())
+            panic!("allreduce issued where no collective is allowed")
         }
         fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
-            Ok(())
+            panic!("broadcast issued where no collective is allowed")
         }
         fn barrier(&self) -> Result<(), CommError> {
-            Ok(())
+            panic!("barrier issued where no collective is allowed")
         }
         fn rank(&self) -> usize {
-            0
+            1
         }
         fn size(&self) -> usize {
             2
@@ -2343,37 +2414,7 @@ mod tests {
                 &[],
             ),
             current_state: Vec::with_capacity(n_state),
-            scratch: ScratchBuffers {
-                inflow_m3s_buf: Vec::new(),
-                lag_matrix_buf: Vec::new(),
-                par_inflow_buf: Vec::new(),
-                eta_floor_buf: Vec::new(),
-                zero_targets_buf: Vec::new(),
-                ncs_col_upper_buf: Vec::new(),
-                ncs_col_lower_buf: Vec::new(),
-                ncs_col_indices_buf: Vec::new(),
-                ncs_col_lower_active_buf: Vec::new(),
-                ncs_col_upper_active_buf: Vec::new(),
-                last_ncs_col_start: usize::MAX,
-                ncs_col_upper_extract_buf: Vec::new(),
-                load_rhs_buf: Vec::new(),
-                row_lower_buf: Vec::new(),
-                z_inflow_rhs_buf: Vec::new(),
-                effective_eta_buf: Vec::new(),
-                unscaled_primal: Vec::new(),
-                unscaled_dual: Vec::new(),
-                lag_accumulator: Vec::new(),
-                lag_weight_accum: Vec::new(),
-                downstream_accumulator: Vec::new(),
-                downstream_weight_accum: 0.0,
-                downstream_completed_lags: Vec::new(),
-                downstream_n_completed: 0,
-                recon_slot_lookup: Vec::new(),
-                trajectory_costs_buf: Vec::new(),
-                raw_noise_buf: Vec::new(),
-                corr_scratch: Vec::new(),
-                current_node_buf: Vec::new(),
-            },
+            scratch: ScratchBuffers::for_test(0),
             scratch_basis: Basis::new(0, 0),
             backward_accum: BackwardAccumulators::default(),
             worker_timing_buf: WorkerPhaseTimings::default(),
@@ -2561,13 +2602,11 @@ mod tests {
         let n_workers_local = 2_usize;
         let n_ranks = 3_usize;
         let bwd_max_openings = 5_usize;
-        let real_states_capacity = 10_usize;
 
         let state = BackwardPassState::new(
             n_workers_local,
             n_ranks,
             bwd_max_openings,
-            real_states_capacity,
             7,
             &state_layout(4, 0),
             &HorizonMode::Finite { num_stages: 3 },
@@ -2594,6 +2633,323 @@ mod tests {
             state.bwd_stats_unpack_buf.len(),
             n_ranks * n_workers_local * bwd_max_openings
         );
+    }
+
+    // ── per-trial node exchange of a multi-node level ───────────────────────
+
+    /// The level of the two-rank exchange tests: three nodes, at most three
+    /// trials per rank, five real trials. Rank 0's trials visit `RANK0_NODES`
+    /// and rank 1's `RANK1_NODES`, which leaves rank 1's third slot as padding.
+    const LEVEL_NODES: usize = 3;
+    const MAX_LOCAL_FWD: usize = 3;
+    const REAL_TRIALS: usize = 5;
+    const RANK0_NODES: [usize; 3] = [2, 0, 2];
+    const RANK1_NODES: [usize; 2] = [0, 1];
+    const RANK0_SEGMENT: [u64; 3] = [2, 0, 2];
+    const RANK1_SEGMENT: [u64; 3] = [0, 1, NO_TRIAL];
+
+    fn two_rank_state(max_local_fwd: usize) -> BackwardPassState {
+        BackwardPassState::new(
+            1,
+            2,
+            1,
+            max_local_fwd,
+            &state_layout(1, 0),
+            &HorizonMode::Finite { num_stages: 2 },
+        )
+    }
+
+    /// The CSR `build_trial_routing` produces for local trials visiting
+    /// `node_of_trial`: `(routed_trials, routed_offsets)`.
+    fn routing_of(node_of_trial: &[usize], n_nodes: usize) -> (Vec<usize>, Vec<usize>) {
+        let mut routed = Vec::new();
+        let mut offsets = vec![0];
+        for node in 0..n_nodes {
+            routed.extend((0..node_of_trial.len()).filter(|&trial| node_of_trial[trial] == node));
+            offsets.push(routed.len());
+        }
+        (routed, offsets)
+    }
+
+    /// The state one rank holds after the exchange on the level above: its own
+    /// trials go through `comm`, which writes this rank's segment only, and
+    /// `peer_segment` is what the other rank sent.
+    fn rank_view<C: Communicator>(
+        comm: &C,
+        node_of_trial: &[usize],
+        peer_segment: &[u64; MAX_LOCAL_FWD],
+    ) -> Result<BackwardPassState, SddpError> {
+        let mut state = two_rank_state(MAX_LOCAL_FWD);
+        let peer_start = (1 - comm.rank()) * MAX_LOCAL_FWD;
+        state.trial_node_recv[peer_start..peer_start + MAX_LOCAL_FWD].copy_from_slice(peer_segment);
+        let (routed, offsets) = routing_of(node_of_trial, LEVEL_NODES);
+        state.compute_node_visit_offsets(
+            &routed,
+            &offsets,
+            LEVEL_NODES,
+            comm.rank() * MAX_LOCAL_FWD,
+            REAL_TRIALS,
+            comm,
+        )?;
+        Ok(state)
+    }
+
+    fn both_rank_views() -> [Result<BackwardPassState, SddpError>; 2] {
+        [
+            rank_view(&RankStub::of_two(0), &RANK0_NODES, &RANK1_SEGMENT),
+            rank_view(&RankStub::of_two(1), &RANK1_NODES, &RANK0_SEGMENT),
+        ]
+    }
+
+    /// derived: by counting, rank 0 visits node 0 once and node 2 twice, rank 1
+    /// visits nodes 0 and 1 once each; rank 1's offsets are rank 0's counts.
+    #[test]
+    fn node_positions_give_every_rank_the_same_visit_counts() {
+        let offsets_of_rank = [[0, 0, 0], [1, 0, 2]];
+
+        for (rank, view) in both_rank_views().into_iter().enumerate() {
+            let view = view.unwrap_or_else(|e| panic!("rank {rank}'s view: {e}"));
+            assert_eq!(
+                view.trial_node_recv,
+                [2, 0, 2, 0, 1, NO_TRIAL],
+                "rank {rank}"
+            );
+            assert_eq!(view.rank_node_visits, [1, 0, 2, 1, 1, 0], "rank {rank}");
+            assert_eq!(
+                view.node_visit_offsets, offsets_of_rank[rank],
+                "rank {rank}"
+            );
+        }
+    }
+
+    /// The index a cut carries (`node_visit_offsets[node] + compacted`) is its
+    /// trial's rank among the trials of the same node in the gathered order,
+    /// rank-major then local.
+    #[test]
+    fn node_relative_indices_enumerate_each_node_without_collision() {
+        let views = both_rank_views().map(|view| view.expect("a well-formed exchange"));
+
+        let mut carried = Vec::new();
+        for (rank, node_of_trial) in [&RANK0_NODES[..], &RANK1_NODES[..]].iter().enumerate() {
+            let (routed, offsets) = routing_of(node_of_trial, LEVEL_NODES);
+            for node in 0..LEVEL_NODES {
+                let trials = &routed[offsets[node]..offsets[node + 1]];
+                for (compacted, &trial) in trials.iter().enumerate() {
+                    let index = views[rank].node_visit_offsets[node] + compacted;
+                    carried.push((rank, trial, node, index));
+                }
+            }
+        }
+        carried.sort_unstable();
+
+        let mut seen = [0_usize; LEVEL_NODES];
+        let mut walked = Vec::new();
+        for (flat, &entry) in views[0].trial_node_recv.iter().enumerate() {
+            if entry != NO_TRIAL {
+                let node = entry as usize;
+                walked.push((flat / MAX_LOCAL_FWD, flat % MAX_LOCAL_FWD, node, seen[node]));
+                seen[node] += 1;
+            }
+        }
+
+        assert_eq!(carried, walked);
+        assert_eq!(seen, [2, 1, 2]);
+        for (node, &visits) in seen.iter().enumerate() {
+            let mut indices: Vec<usize> = carried
+                .iter()
+                .filter(|&&(_, _, of_node, _)| of_node == node)
+                .map(|&(_, _, _, index)| index)
+                .collect();
+            indices.sort_unstable();
+            assert_eq!(indices, (0..visits).collect::<Vec<_>>(), "node {node}");
+        }
+    }
+
+    #[test]
+    fn a_single_node_level_issues_no_collective() {
+        let mut state = two_rank_state(MAX_LOCAL_FWD);
+        let (routed, offsets) = routing_of(&[0, 0], 1);
+
+        state
+            .compute_node_visit_offsets(&routed, &offsets, 1, 3, REAL_TRIALS, &NoCollective)
+            .expect("a single-node level needs no exchange");
+
+        assert_eq!(state.node_visit_offsets, [3]);
+        assert!(state.trial_node_send.iter().all(|&entry| entry == NO_TRIAL));
+        assert!(state.trial_node_recv.iter().all(|&entry| entry == NO_TRIAL));
+        assert!(state.rank_node_visits.is_empty());
+    }
+
+    #[test]
+    fn a_malformed_node_position_exchange_is_rejected() {
+        let rejection = |peer_segment: &[u64; MAX_LOCAL_FWD]| match rank_view(
+            &RankStub::of_two(0),
+            &RANK0_NODES,
+            peer_segment,
+        ) {
+            Err(SddpError::Validation(message)) => message,
+            Err(other) => panic!("expected a validation error, got {other:?}"),
+            Ok(_) => panic!("{peer_segment:?} must be rejected"),
+        };
+
+        let not_a_level_index = rejection(&[7, 1, NO_TRIAL]);
+        assert!(
+            not_a_level_index.contains("rank 1 sent 7 for trial slot 0"),
+            "{not_a_level_index}"
+        );
+
+        let one_trial_too_many = rejection(&[0, 1, 2]);
+        assert!(
+            one_trial_too_many
+                .contains("6 routed trials gathered, but the level's real trial count is 5"),
+            "{one_trial_too_many}"
+        );
+    }
+
+    /// derived: rank 0's one trial visits node 1 and rank 1's segment is never
+    /// written, so the level's one real trial is all that is counted.
+    #[test]
+    fn an_unwritten_peer_segment_reads_as_a_rank_with_no_trial() {
+        let mut state = two_rank_state(1);
+        let (routed, offsets) = routing_of(&[1], 2);
+
+        state
+            .compute_node_visit_offsets(&routed, &offsets, 2, 0, 1, &RankStub::of_two(0))
+            .expect("one real trial in the level");
+
+        assert_eq!(state.rank_node_visits, [0, 1, 0, 0]);
+        assert_eq!(state.node_visit_offsets, [0, 0]);
+    }
+
+    // ── trial states stored by slot ─────────────────────────────────────────
+
+    fn trial_records(states: &[[f64; 4]]) -> Vec<TrajectoryRecord> {
+        states
+            .iter()
+            .map(|state| TrajectoryRecord {
+                primal: Vec::new(),
+                dual: Vec::new(),
+                stage_cost: 0.0,
+                node_id: NodeId(0),
+                state: state.to_vec(),
+            })
+            .collect()
+    }
+
+    /// The exchange rank 0 holds after the level's state exchange: rank 1's
+    /// segment first, then its own.
+    fn rank0_exchange(
+        real_trials: &[usize; 2],
+        rank0: &[[f64; 4]],
+        rank1: &[[f64; 4]],
+    ) -> ExchangeBuffers {
+        let mut exchange =
+            ExchangeBuffers::with_actual_counts(&state_layout(2, 1), 2, 2, real_trials);
+        exchange
+            .exchange(&trial_records(rank1), StageIdx(0), 1, &RankStub::of_two(1))
+            .unwrap();
+        exchange
+            .exchange(&trial_records(rank0), StageIdx(0), 1, &RankStub::of_two(0))
+            .unwrap();
+        exchange
+    }
+
+    fn storing_pool(state_dimension: usize) -> CutPool {
+        let mut pool = CutPool::new(4, state_dimension, 4, 0);
+        pool.set_iteration_base(1);
+        pool.enable_trial_states();
+        pool
+    }
+
+    fn projection(storage: bool, inflow_lags: bool) -> CutStateProjection {
+        CutStateProjection::new(
+            &state_layout(2, 1),
+            novomodelo_core::temporal::StageStateConfig {
+                storage,
+                inflow_lags,
+            },
+        )
+    }
+
+    /// derived: the gathered trials, rank-major then local, are rank 0's trial
+    /// 0 (to B), rank 0's trial 1 (to A), rank 1's trial 0 (to A) and rank 1's
+    /// trial 1 (to B), so A's pass 0 is rank 0's trial 1, A's pass 1 is rank 1's
+    /// trial 0, B's pass 0 is rank 0's trial 0 and B's pass 1 is rank 1's trial
+    /// 1; B projects the two lag dimensions, global 2 and 3.
+    #[test]
+    fn a_rank_stores_the_state_of_a_peers_cut_at_a_sibling_node() {
+        const A: u64 = 0;
+        const B: u64 = 1;
+        let rank0 = [[10.0, 11.0, 12.0, 13.0], [20.0, 21.0, 22.0, 23.0]];
+        let rank1 = [[30.0, 31.0, 32.0, 33.0], [40.0, 41.0, 42.0, 43.0]];
+        let exchange = rank0_exchange(&[2, 2], &rank0, &rank1);
+
+        let mut state = two_rank_state(2);
+        state.trial_node_recv[2..].copy_from_slice(&[A, B]);
+        let (routed, offsets) = routing_of(&[B as usize, A as usize], 2);
+        state
+            .compute_node_visit_offsets(&routed, &offsets, 2, 0, 4, &RankStub::of_two(0))
+            .unwrap();
+        assert_eq!(state.trial_node_recv, [B, A, A, B]);
+
+        let mut pools = [storing_pool(4), storing_pool(2)];
+        for pass in 0..2 {
+            pools[0].add_cut(NodeId(0), 1, pass, 0.0, &[0.0; 4]);
+            pools[1].add_cut(NodeId(1), 1, pass, 0.0, &[0.0; 2]);
+        }
+        let projections = [projection(true, true), projection(false, true)];
+
+        store_level_trial_states(
+            &mut pools,
+            &[0, 1],
+            &projections,
+            &exchange,
+            Some(&state.trial_node_recv),
+            &mut state.stored_trials_per_node,
+            1,
+        );
+
+        assert_eq!(pools[0].trial_state(0), Some(&rank0[1][..]));
+        assert_eq!(pools[0].trial_state(1), Some(&rank1[0][..]));
+        assert_eq!(pools[1].trial_state(0), Some(&rank0[0][2..]));
+        assert_eq!(pools[1].trial_state(1), Some(&rank1[1][2..]));
+        assert_eq!(pools[0].stored_trial_states(), 2);
+        assert_eq!(pools[1].stored_trial_states(), 2);
+    }
+
+    /// derived: with 2 and 1 real trials the level's cuts take pass indices 0, 1
+    /// and 2 in gathered order, and rank 1's second slot is padding.
+    #[test]
+    fn a_single_node_level_stores_each_trial_state_at_its_cut() {
+        let rank0 = [[10.0, 11.0, 12.0, 13.0], [20.0, 21.0, 22.0, 23.0]];
+        let rank1 = [[30.0, 31.0, 32.0, 33.0], [99.0; 4]];
+        let exchange = rank0_exchange(&[2, 1], &rank0, &rank1);
+
+        let mut pools = [storing_pool(4)];
+        for pass in 0..3 {
+            pools[0].add_cut(NodeId(0), 1, pass, 0.0, &[0.0; 4]);
+        }
+        let mut stored_per_node = vec![7, 7];
+
+        store_level_trial_states(
+            &mut pools,
+            &[0],
+            &[projection(true, true)],
+            &exchange,
+            None,
+            &mut stored_per_node,
+            1,
+        );
+
+        assert_eq!(pools[0].trial_state(0), Some(&rank0[0][..]));
+        assert_eq!(pools[0].trial_state(1), Some(&rank0[1][..]));
+        assert_eq!(pools[0].trial_state(2), Some(&rank1[0][..]));
+        assert_eq!(
+            pools[0].trial_state(3),
+            None,
+            "the padded slot stores nothing"
+        );
+        assert_eq!(pools[0].stored_trial_states(), 3);
     }
 
     /// Verify that `BackwardPassState::run` on a minimal 2-stage, 1-hydro,
@@ -2667,15 +3023,8 @@ mod tests {
         let bwd_max_openings = n_openings;
         // Capture local_count before mutably borrowing exchange inside the struct literal.
         let local_count = exchange.local_count();
-        let mut state = BackwardPassState::new(
-            1,
-            1,
-            bwd_max_openings,
-            n_state,
-            local_count,
-            &state,
-            &horizon,
-        );
+        let mut state =
+            BackwardPassState::new(1, 1, bwd_max_openings, local_count, &state, &horizon);
 
         let mut inputs = BackwardPassInputs {
             workspaces: &mut workspaces,
@@ -2689,7 +3038,6 @@ mod tests {
             exchange: &mut exchange,
             records: &records,
             cut_sync_bufs: &mut csb,
-            visited_archive: None,
             event_sender: None,
             risk_measures: &risk_measures,
             cut_activity_tolerance: 0.0,
@@ -2822,15 +3170,8 @@ mod tests {
         };
 
         let local_count = exchange.local_count();
-        let mut state_machine = BackwardPassState::new(
-            1,
-            1,
-            bwd_max_openings,
-            n_state,
-            local_count,
-            state,
-            &horizon,
-        );
+        let mut state_machine =
+            BackwardPassState::new(1, 1, bwd_max_openings, local_count, state, &horizon);
 
         let mut inputs = BackwardPassInputs {
             workspaces: &mut workspaces,
@@ -2844,7 +3185,6 @@ mod tests {
             exchange: &mut exchange,
             records,
             cut_sync_bufs: &mut csb,
-            visited_archive: None,
             event_sender: None,
             risk_measures: &risk_measures,
             cut_activity_tolerance: 0.0,
@@ -3211,15 +3551,8 @@ mod tests {
         };
 
         let local_count = exchange.local_count();
-        let mut state_machine = BackwardPassState::new(
-            n_workers,
-            1,
-            bwd_max_openings,
-            n_state,
-            local_count,
-            state,
-            &horizon,
-        );
+        let mut state_machine =
+            BackwardPassState::new(n_workers, 1, bwd_max_openings, local_count, state, &horizon);
         state_machine.set_scheduler(scheduler);
 
         let mut inputs = BackwardPassInputs {
@@ -3234,7 +3567,6 @@ mod tests {
             exchange: &mut exchange,
             records,
             cut_sync_bufs: &mut csb,
-            visited_archive: None,
             event_sender: None,
             risk_measures: &risk_measures,
             cut_activity_tolerance: 0.0,
@@ -3447,8 +3779,7 @@ mod tests {
             .max()
             .unwrap_or(0)
             .max(1);
-        let mut state_machine =
-            BackwardPassState::new(1, 1, bwd_max_openings, n_state, 1, &state, &horizon);
+        let mut state_machine = BackwardPassState::new(1, 1, bwd_max_openings, 1, &state, &horizon);
 
         let mut inputs = BackwardPassInputs {
             workspaces: &mut workspaces,
@@ -3462,7 +3793,6 @@ mod tests {
             exchange: &mut exchange,
             records: &[],
             cut_sync_bufs: &mut csb,
-            visited_archive: None,
             event_sender: None,
             risk_measures: &risk_measures,
             cut_activity_tolerance: 0.0,
@@ -3550,7 +3880,7 @@ mod tests {
             &stochastic,
             &traversal,
             &enumerated_state,
-            &Rank0Of2,
+            &RankStub::of_two(0),
         );
         let world1 = world1.expect("world=1 enumerated backward must not error");
         let world2 = world2.expect("world=2 enumerated backward must not error");
@@ -3935,7 +4265,6 @@ mod tests {
             1,
             1,
             bwd_max_openings,
-            n_state,
             local_count,
             &state_layout_fixture,
             &horizon,
@@ -3970,7 +4299,6 @@ mod tests {
             exchange: &mut exchange,
             records: &records,
             cut_sync_bufs: &mut csb,
-            visited_archive: None,
             event_sender: None,
             risk_measures: &risk_measures,
             cut_activity_tolerance: 0.0,
@@ -4060,15 +4388,8 @@ mod tests {
 
         let bwd_max_openings = n_openings;
         let local_count = exchange.local_count();
-        let mut state = BackwardPassState::new(
-            1,
-            1,
-            bwd_max_openings,
-            n_state,
-            local_count,
-            &state,
-            &horizon,
-        );
+        let mut state =
+            BackwardPassState::new(1, 1, bwd_max_openings, local_count, &state, &horizon);
 
         let mut inputs = BackwardPassInputs {
             workspaces: &mut workspaces,
@@ -4082,7 +4403,6 @@ mod tests {
             exchange: &mut exchange,
             records: &records,
             cut_sync_bufs: &mut csb,
-            visited_archive: None,
             event_sender: None,
             risk_measures: &risk_measures,
             cut_activity_tolerance: 0.0,
@@ -4164,7 +4484,6 @@ mod tests {
             1,
             1,
             n_openings,
-            n_state,
             1,
             &state_layout(n_state, 0),
             &HorizonMode::Finite {
@@ -4509,16 +4828,16 @@ mod tests {
         let horizon = HorizonMode::Finite { num_stages: 5 };
 
         // No scheduler set ⇒ empty (the pre-existing ByScenario/sampled default).
-        let baseline = BackwardPassState::new(1, 1, 4, 0, 2, &state, &horizon);
+        let baseline = BackwardPassState::new(1, 1, 4, 2, &state, &horizon);
         assert_eq!(baseline.by_node_scratch_arena_capacity(), 0);
 
         // set_scheduler(ByNode) sizes it.
-        let mut by_node_only = BackwardPassState::new(1, 1, 4, 0, 2, &state, &horizon);
+        let mut by_node_only = BackwardPassState::new(1, 1, 4, 2, &state, &horizon);
         by_node_only.set_scheduler(BackwardScheduler::ByNode { block_size: None });
         assert!(by_node_only.by_node_scratch_arena_capacity() > 0);
 
         // set_scheduler(ByScenario) keeps it empty.
-        let mut by_scenario_only = BackwardPassState::new(1, 1, 4, 0, 2, &state, &horizon);
+        let mut by_scenario_only = BackwardPassState::new(1, 1, 4, 2, &state, &horizon);
         by_scenario_only.set_scheduler(BackwardScheduler::ByScenario {});
         assert_eq!(by_scenario_only.by_node_scratch_arena_capacity(), 0);
     }
@@ -4777,7 +5096,6 @@ mod tests {
             1,
             1,
             bwd_max_openings,
-            n_state,
             total_forward_passes,
             training_ctx.state,
             training_ctx.horizon,
@@ -4795,7 +5113,6 @@ mod tests {
             exchange: &mut exchange,
             records: &records,
             cut_sync_bufs: &mut csb,
-            visited_archive: None,
             event_sender,
             risk_measures: &risk_measures,
             cut_activity_tolerance: 0.0,

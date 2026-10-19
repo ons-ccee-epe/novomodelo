@@ -10,6 +10,7 @@ use novomodelo_core::{
 };
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
+use crate::InflowNonNegativityMethod;
 use crate::bucket_topology::TransitBucketTopology;
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
 use crate::indexer::{
@@ -64,8 +65,8 @@ pub(crate) struct CtxFixture {
     /// [`constant_lead_resolution`] every other fixture gets.
     pub(crate) anticipated_resolution: AnticipatedResolution,
     pub(crate) anticipated_plants: AnticipatedPlants,
-    pub(crate) has_penalty: bool,
-    /// Derived fresh, from `anticipated_plants`/`has_penalty` and the slices
+    pub(crate) inflow_method: InflowNonNegativityMethod,
+    /// Derived fresh, from `anticipated_plants`/`inflow_method` and the slices
     /// below, on every [`Self::ctx`] call — the backing store
     /// [`TemplateBuildCtx::study_dims`] borrows.
     pub(crate) study_dims: StudyDimensions,
@@ -122,7 +123,7 @@ impl Default for CtxFixture {
             anticipated_lead_stages: Vec::new(),
             anticipated_resolution: AnticipatedResolution::default(),
             anticipated_plants: AnticipatedPlants::default(),
-            has_penalty: false,
+            inflow_method: InflowNonNegativityMethod::None,
             study_dims: StudyDimensions::default(),
             time_value: TimeValue::from_parts(
                 Vec::new(),
@@ -153,7 +154,7 @@ impl CtxFixture {
     /// saturating-default [`constant_lead_resolution`] over this fixture's
     /// own `anticipated_lead_stages`. A test that needs a derived field's
     /// value to disagree with its own slices sets the fixture's owner field
-    /// (e.g. `self.has_penalty`) before calling [`Self::ctx`], never the
+    /// (e.g. `self.inflow_method`) before calling [`Self::ctx`], never the
     /// returned context's field.
     ///
     /// # Panics
@@ -194,11 +195,7 @@ impl CtxFixture {
                 .map(|b| b.deficit_segments.len())
                 .max()
                 .unwrap_or(0),
-            inflow_method: if self.has_penalty {
-                crate::InflowNonNegativityMethod::Penalty
-            } else {
-                crate::InflowNonNegativityMethod::None
-            },
+            inflow_method: self.inflow_method,
             anticipated_plants: self.anticipated_plants.clone(),
             ..StudyDimensions::default()
         };

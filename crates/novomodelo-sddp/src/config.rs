@@ -37,7 +37,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::Sender;
 
 use novomodelo_core::TrainingEvent;
-use novomodelo_io::config::CheckpointSchedule;
+use novomodelo_io::config::{CheckpointSchedule, RowSelectionConfig};
 
 use crate::cut_selection::CutSelectionStrategy;
 use crate::policy::orchestration::PeriodicCheckpoint;
@@ -136,14 +136,20 @@ impl Default for LoopConfig {
 /// ```
 #[derive(Debug)]
 pub struct CutManagementConfig {
-    /// Cut selection strategy for deactivating dominated cuts; `None` keeps all cuts active.
+    /// Cut selection strategy: `Level1` deactivates the cuts that own no stored
+    /// trial state, `Dynamic` adds violated cuts to each solve lazily; `None` keeps
+    /// all cuts active.
     pub cut_selection: Option<CutSelectionStrategy>,
 
-    /// Hard cap on active cuts per stage (cut-selection stage 2); `None` is uncapped.
-    /// Cuts from the current iteration are never evicted.
+    /// `training.cut_selection.max_active_per_stage`; `None` means no cap. Described on
+    /// [`max_active_per_stage`](novomodelo_io::config::RowSelectionConfig::max_active_per_stage).
     pub budget: Option<u32>,
 
-    /// Activity (dual-value) threshold below which a cut is a deactivation candidate.
+    /// Binding threshold: a cut row is binding at a backward solve when its dual is
+    /// strictly greater than this value (signed). The backward pass reads it only while
+    /// [`tracks_binding_activity`](Self::tracks_binding_activity) holds. Its scale is
+    /// documented on
+    /// [`row_activity_tolerance`](novomodelo_io::config::RowSelectionConfig::row_activity_tolerance).
     pub cut_activity_tolerance: f64,
 
     /// Per-stage backward-pass risk measures; length must equal `num_stages`.
@@ -155,8 +161,20 @@ impl Default for CutManagementConfig {
         Self {
             cut_selection: None,
             budget: None,
-            cut_activity_tolerance: 1e-6,
+            cut_activity_tolerance: RowSelectionConfig::default().row_activity_tolerance,
             risk_measures: vec![RiskMeasure::Expectation],
+        }
+    }
+}
+
+impl CutManagementConfig {
+    /// Whether the backward pass records per-cut binding activity: only the
+    /// budget's eviction key and the `Dynamic` seed window read it.
+    #[must_use]
+    pub fn tracks_binding_activity(&self) -> bool {
+        match &self.cut_selection {
+            None | Some(CutSelectionStrategy::Level1 { .. }) => self.budget.is_some(),
+            Some(CutSelectionStrategy::Dynamic { .. }) => true,
         }
     }
 }
@@ -190,9 +208,9 @@ pub struct EventConfig {
     /// and a cooperative writer never stores the signal level.
     pub shutdown_flag: Option<Arc<AtomicUsize>>,
 
-    /// Allocate the visited-states archive for state export. Also forced on when any
-    /// [`CutSelectionStrategy`] is enabled — the value-evaluation kernel scores every
-    /// cut at every archived state. Default `false`.
+    /// Force every pool the backward pass fills, the root's included, to store
+    /// the trial state of each cut under any cut-selection setting, so the
+    /// checkpoint's states files hold them. Default `false`.
     pub export_states: bool,
 }
 
@@ -277,6 +295,7 @@ pub struct TrainingConfig {
 #[cfg(test)]
 mod tests {
     use super::{CutManagementConfig, EventConfig, LoopConfig, TrainingConfig};
+    use crate::cut_selection::CutSelectionStrategy;
     use novomodelo_core::TrainingEvent;
 
     // ── Field access ─────────────────────────────────────────────────────────
@@ -337,6 +356,38 @@ mod tests {
 
         let received = rx.recv().unwrap();
         assert!(matches!(received, TrainingEvent::TrainingFinished { .. }));
+    }
+
+    // ── Binding-activity predicate ───────────────────────────────────────────
+
+    #[test]
+    fn tracks_binding_activity_only_for_a_budget_or_the_dynamic_method() {
+        let tracks = |cut_selection: Option<CutSelectionStrategy>, budget: Option<u32>| {
+            CutManagementConfig {
+                cut_selection,
+                budget,
+                ..CutManagementConfig::default()
+            }
+            .tracks_binding_activity()
+        };
+        let level1 = CutSelectionStrategy::Level1 {
+            check_frequency: 1,
+            lookback_iterations: None,
+        };
+        let dynamic = CutSelectionStrategy::Dynamic {
+            candidate_recency: None,
+            seed_window: 1,
+            max_added_per_round: 1,
+            violation_tolerance: None,
+            start_iteration: 1,
+        };
+
+        assert!(!tracks(None, None));
+        assert!(tracks(None, Some(1)));
+        assert!(!tracks(Some(level1.clone()), None), "{level1:?}");
+        assert!(tracks(Some(level1), Some(1)));
+        assert!(tracks(Some(dynamic.clone()), None));
+        assert!(tracks(Some(dynamic), Some(1)));
     }
 
     // ── Debug output ─────────────────────────────────────────────────────────
