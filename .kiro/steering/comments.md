@@ -486,28 +486,28 @@ The same default-delete applies inside functions — this is **not** struct-only
 ```rust
 // BEFORE — the doc narrates the loop body; an orphaned "why it's long" note with
 // no #[allow]; call sites and body lines restate what the code does.
-/// Step 2 — truncation precompute and per-opening LP evaluation.
-/// Precomputes the PAR lag matrix and eta floor (constant across openings), then
-/// iterates over all stage-0 openings. For each opening: evaluates PAR inflows,
-/// computes effective eta, patches row bounds, patches NCS column bounds
-/// (correctness-critical per-opening step), solves, and records the objective.
-/// Writes the per-opening objectives into `scratch.objectives_buf`.
+/// Step 2 — per-opening LP evaluation.
+/// Resolves the root node's openings, then iterates over all of them. For each
+/// opening: reads the raw noise, pins the state, patches row bounds, patches NCS
+/// column bounds (correctness-critical per-opening step), solves, and records
+/// the objective.
+/// Writes the per-opening objectives into `objectives_buf`.
 /// # Errors
 /// Returns [`SddpError::Infeasible`] ... or [`SddpError::Solver`] ...
 // The per-opening loop body accounts for the length; it cannot be meaningfully
 // split without fragmenting correctness-critical sequential steps ...
 fn lb_evaluate_stage_0(...) { ...
-    // Build noise_buf and z_inflow_rhs_buf from effective eta.
-    for (h, &eta_eff) in ...
+    // Pin the state and patch this opening's noise into the LP.
+    StageSolvePrep::run(...);
 
 // AFTER — one-line purpose + the # Errors contract; the narration, the orphaned
 // rationale (no #[allow] is firing), and the call-naming body comment are gone.
-/// Truncation precompute (PAR lag matrix + eta floor, constant across openings),
-/// then a per-opening LP solve writing each objective into `scratch.objectives_buf`.
+/// Solves the stage-0 LP once per root opening through [`StageSolvePrep::run`],
+/// writing each objective into `objectives_buf`.
 /// # Errors
 /// Returns [`SddpError::Infeasible`] ... or [`SddpError::Solver`] ...
 fn lb_evaluate_stage_0(...) { ...
-    for (h, &eta_eff) in ...
+    StageSolvePrep::run(...);
 ```
 
 And at the caller, the comment that merely names the callee is deleted:
