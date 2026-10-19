@@ -184,27 +184,16 @@ pub(crate) fn validate_dimensional_consistency(data: &ParsedData, ctx: &mut Vali
             *geometry_row_counts.entry(row.hydro_id.0).or_insert(0) += 1;
         }
 
-        let head_hydro_ids =
-            collect_head_dependent_hydro_ids(&data.hydros, &data.production_models);
         let fpha_hydro_ids = collect_fpha_hydro_ids(&data.hydros, &data.production_models);
 
-        for &hydro_id in &head_hydro_ids {
-            let count = geometry_row_counts.get(&hydro_id).copied().unwrap_or(0);
-            // FPHA accepts a single geometry row (constant run-of-river forebay,
-            // γ_V = 0); `linearized_head` needs ≥ 2 because it fits a head slope in
-            // volume, which one point cannot define.
-            let min_required = if fpha_hydro_ids.contains(&hydro_id) {
-                1
-            } else {
-                2
-            };
-            if count < min_required {
+        for &hydro_id in &fpha_hydro_ids {
+            if !geometry_row_counts.contains_key(&hydro_id) {
                 ctx.emit(
                     &rules::DIMENSIONAL_GEOMETRY_ROWS,
                     "system/hydro_geometry.parquet",
                     Some(format!("Hydro {hydro_id}")),
                     format!(
-                        "Hydro {hydro_id} requires head-dependent model but has {count} hydro geometry row(s) (minimum {min_required} required)"
+                        "Hydro {hydro_id} uses the fpha production model but has no hydro geometry rows (minimum 1 required)"
                     ),
                 );
             }
@@ -235,61 +224,23 @@ fn collect_fpha_hydro_ids(
     ids
 }
 
-fn collect_head_dependent_hydro_ids(
-    hydros: &[Hydro],
-    production_models: &[ProductionModelConfig],
-) -> HashSet<i32> {
-    let mut ids = HashSet::new();
-
-    for hydro in hydros {
-        if matches!(
-            hydro.generation_model,
-            HydroGenerationModel::Fpha | HydroGenerationModel::LinearizedHead
-        ) {
-            ids.insert(hydro.id.0);
-        }
-    }
-
-    for config in production_models {
-        if production_model_uses_head_dependent(config) {
-            ids.insert(config.hydro_id.0);
-        }
-    }
-
-    ids
-}
-
-// `production_model_uses_fpha` and `production_model_uses_head_dependent`
-// mirror the solver crate's `resolve_stage`/`selection_entries` resolver: a
-// Seasonal season miss falls back to `default_model`, so each fold reads
+// Mirrors the solver crate's `resolve_stage`/`selection_entries` resolver: a
+// Seasonal season miss falls back to `default_model`, so the fold reads
 // `default_model` too — keep in agreement with that resolver's season-miss
 // semantics, not just the declared seasons.
 fn production_model_uses_fpha(config: &ProductionModelConfig) -> bool {
     match &config.selection_mode {
-        SelectionMode::StageRanges { ranges } => ranges.iter().any(|r| r.model == "fpha"),
-        SelectionMode::Seasonal {
-            default_model,
-            seasons,
-        } => default_model == "fpha" || seasons.iter().any(|s| s.model == "fpha"),
-    }
-}
-
-// Same mirror contract as `production_model_uses_fpha` above, extended to
-// `linearized_head`.
-fn production_model_uses_head_dependent(config: &ProductionModelConfig) -> bool {
-    match &config.selection_mode {
-        SelectionMode::StageRanges { ranges } => ranges
-            .iter()
-            .any(|r| r.model == "fpha" || r.model == "linearized_head"),
+        SelectionMode::StageRanges { ranges } => {
+            ranges.iter().any(|r| r.model == HydroGenerationModel::Fpha)
+        }
         SelectionMode::Seasonal {
             default_model,
             seasons,
         } => {
-            default_model == "fpha"
-                || default_model == "linearized_head"
+            *default_model == HydroGenerationModel::Fpha
                 || seasons
                     .iter()
-                    .any(|s| s.model == "fpha" || s.model == "linearized_head")
+                    .any(|s| s.model == HydroGenerationModel::Fpha)
         }
     }
 }
@@ -910,39 +861,9 @@ mod tests {
         );
     }
 
-    // ── AC 13: LinearizedHead hydro missing geometry rows ────────────────────
-
-    /// A hydro using LinearizedHead model must have at least 2 geometry rows.
-    /// Missing rows produce a DimensionMismatch error.
-    #[test]
-    fn test_linearized_head_hydro_missing_geometry() {
-        let mut data = crate::test_support::base_parsed_data(stages(), vec![]);
-
-        data.hydros = vec![make_hydro(
-            1,
-            HydroGenerationModel::LinearizedHead,
-            None,
-            None,
-        )];
-
-        data.hydro_geometry = vec![geometry_row(1, 100.0)];
-
-        let mut ctx = ValidationContext::new();
-        validate_dimensional_consistency(&data, &mut ctx);
-
-        let errors = ctx.errors();
-        assert_eq!(
-            errors.len(),
-            1,
-            "expected 1 error for insufficient geometry rows, got: {:?}",
-            errors
-        );
-        assert_eq!(errors[0].kind, ErrorKind::DimensionMismatch);
-    }
-
     /// An FPHA hydro with a SINGLE geometry row is accepted: a run-of-river plant
     /// has one operating volume → a constant forebay → a valid single-volume FPHA
-    /// fit. This is the relaxation that `linearized_head` does NOT share.
+    /// fit.
     #[test]
     fn test_fpha_hydro_single_geometry_row_accepted() {
         let mut data = crate::test_support::base_parsed_data(stages(), vec![]);
@@ -1033,10 +954,10 @@ mod tests {
         let config = ProductionModelConfig {
             hydro_id: EntityId(0),
             selection_mode: SelectionMode::Seasonal {
-                default_model: "fpha".to_string(),
+                default_model: HydroGenerationModel::Fpha,
                 seasons: vec![SeasonConfig {
                     season_id: 1,
-                    model: "constant_productivity".to_string(),
+                    model: HydroGenerationModel::ConstantProductivity,
                     fpha_config: None,
                     reference_volume: None,
                     productivity_mw_per_m3s: Some(0.5),

@@ -1,5 +1,20 @@
 {
   "$defs": {
+    "HydroGenerationModel": {
+      "description": "Production function model selector for a hydro plant.\n\nA pure selector carrying no numeric coefficients: the productivity coefficient\nis supplied externally via `system/hydro_production_models.json`, never by the\nvariant itself.",
+      "oneOf": [
+        {
+          "const": "constant_productivity",
+          "description": "Constant power per unit flow, independent of reservoir head.",
+          "type": "string"
+        },
+        {
+          "const": "fpha",
+          "description": "Full production function with head-area-productivity tables (FPHA model).\n\nRequires forebay and tailrace elevation tables for high-fidelity head effects.",
+          "type": "string"
+        }
+      ]
+    },
     "RawFittingWindow": {
       "additionalProperties": false,
       "description": "Volume fitting window restricting the range used for FPHA hyperplane\ncomputation.\n\nAbsolute bounds (`volume_min_hm3` / `volume_max_hm3`) and percentile bounds\n(`volume_min_percentile` / `volume_max_percentile`) are mutually exclusive:\nset one pair or the other, not both for the same bound.",
@@ -176,8 +191,8 @@
           "description": "Seasonal selection: each stage maps to a model via its season index.",
           "properties": {
             "default_model": {
-              "description": "Fallback model for seasons not listed in `seasons`. One of\n`\"constant_productivity\"`, `\"linearized_head\"`, or `\"fpha\"`.",
-              "type": "string"
+              "$ref": "#/$defs/HydroGenerationModel",
+              "description": "Fallback model for seasons not listed in `seasons`."
             },
             "seasons": {
               "description": "Season-specific model overrides.",
@@ -250,11 +265,11 @@
           "description": "FPHA configuration. Required when `model` is `\"fpha\"`. Absent or null\notherwise."
         },
         "model": {
-          "description": "Model name: `\"constant_productivity\"`, `\"linearized_head\"`, or `\"fpha\"`.",
-          "type": "string"
+          "$ref": "#/$defs/HydroGenerationModel",
+          "description": "Production model: `\"constant_productivity\"` or `\"fpha\"`."
         },
         "productivity_mw_per_m3s": {
-          "description": "Per-season productivity coefficient (MW/(m³/s)). Optional for\n`\"constant_productivity\"` and `\"linearized_head\"` models; when absent or\nnull the value is expected from `system/hydro_energy_productivity.parquet`.\nWhen present must be `> 0.0` and finite. Must be absent or null for `\"fpha\"`.",
+          "description": "Per-season productivity coefficient (MW/(m³/s)). Optional for a\n`\"constant_productivity\"` model; when absent or null the value is\nexpected from `system/hydro_energy_productivity.parquet`. When present\nmust be finite and `>= 0.0` (`0.0` marks a planned outage). Must be\nabsent or null for `\"fpha\"`.",
           "format": "double",
           "type": [
             "number",
@@ -308,11 +323,11 @@
           "description": "FPHA configuration. Required when `model` is `\"fpha\"`. Absent or null\notherwise."
         },
         "model": {
-          "description": "Model name: `\"constant_productivity\"`, `\"linearized_head\"`, or `\"fpha\"`.",
-          "type": "string"
+          "$ref": "#/$defs/HydroGenerationModel",
+          "description": "Production model: `\"constant_productivity\"` or `\"fpha\"`."
         },
         "productivity_mw_per_m3s": {
-          "description": "Per-stage productivity coefficient (MW/(m³/s)). Optional for\n`\"constant_productivity\"` and `\"linearized_head\"` models; when absent or\nnull the value is expected from `system/hydro_energy_productivity.parquet`.\nWhen present must be `> 0.0` and finite. Must be absent or null for `\"fpha\"`.",
+          "description": "Per-stage productivity coefficient (MW/(m³/s)). Optional for a\n`\"constant_productivity\"` model; when absent or null the value is\nexpected from `system/hydro_energy_productivity.parquet`. When present\nmust be finite and `>= 0.0` (`0.0` marks a planned outage). Must be\nabsent or null for `\"fpha\"`.",
           "format": "double",
           "type": [
             "number",

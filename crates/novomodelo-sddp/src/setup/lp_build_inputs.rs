@@ -4,10 +4,10 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-#[cfg(any(test, feature = "test-support"))]
-use novomodelo_core::Stage;
 use novomodelo_core::scenario::LoadModel;
 use novomodelo_core::{EntityId, Hydro, ResolvedBounds, System};
+#[cfg(any(test, feature = "test-support"))]
+use novomodelo_core::{Stage, StageId};
 use novomodelo_io::StageIdResolver;
 #[cfg(any(test, feature = "test-support"))]
 use novomodelo_stochastic::normal::precompute::PrecomputedNormal;
@@ -26,6 +26,7 @@ use crate::lp::builder::LpBuildInputs;
 #[cfg(any(test, feature = "test-support"))]
 use crate::lp::builder::{StageTemplates, build_stage_templates};
 use crate::lp::indexer::{EntityPositions, HydroCellIndex, StudyDimensions};
+use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::ResolvedParameters;
 #[cfg(any(test, feature = "test-support"))]
 use crate::time_value::DeliveryCalendar;
@@ -173,9 +174,9 @@ fn resolve_hydro_productivities_per_stage(
 /// consumes already-resolved input instead of re-deriving it per stage.
 /// `load_bus_ids` is the stochastic owner's load-noise membership list (the
 /// caller's single authority — this function resolves no membership of its
-/// own). `study_dims`/`time_value`/`hydro_cell_index`/`resolved_parameters`
-/// are borrowed through unchanged, from the same `resolve_stage_data` step
-/// that built them.
+/// own). `study_dims`/`time_value`/`hydro_cell_index`/`resolved_parameters`/
+/// `resolved_generic_coefficients` are borrowed through unchanged, from the
+/// same `resolve_stage_data` step that built them.
 pub(crate) fn resolve_lp_build_inputs<'a>(
     system: &System,
     load_bus_ids: &[EntityId],
@@ -184,6 +185,7 @@ pub(crate) fn resolve_lp_build_inputs<'a>(
     time_value: &'a TimeValue,
     hydro_cell_index: &'a HydroCellIndex,
     resolved_parameters: &'a ResolvedParameters,
+    resolved_generic_coefficients: &'a ResolvedGenericCoefficients,
 ) -> LpBuildInputs<'a> {
     let n_study = system.stages().iter().filter(|s| s.id >= 0).count();
     let positions = EntityPositions::build(system);
@@ -202,6 +204,7 @@ pub(crate) fn resolve_lp_build_inputs<'a>(
         time_value,
         hydro_cell_index,
         resolved_parameters,
+        resolved_generic_coefficients,
     }
 }
 
@@ -224,7 +227,9 @@ pub(crate) fn resolve_in_sample_load_bus_ids(system: &System) -> Vec<EntityId> {
 /// # Errors
 ///
 /// Propagates [`super::resolve_state_and_topology`]'s `LeadTime` fan-out
-/// rejection.
+/// rejection; [`SddpError::Validation`] on a generic-constraint coefficient or
+/// bound that references an unresolved parameter or resolves to a non-finite
+/// value.
 #[cfg(any(test, feature = "test-support"))]
 pub fn build_stage_templates_resolving_layout(
     system: &System,
@@ -257,6 +262,15 @@ pub fn build_stage_templates_resolving_layout(
         downstream_par_order,
     );
     let time_value = TimeValue::from_system(system, &study_dims.anticipated_plants, calendar);
+    let study_stage_ids: Vec<StageId> = stages.iter().map(|s| StageId(s.id)).collect();
+    let stage_block_counts: Vec<usize> = stages.iter().map(|s| s.blocks.len()).collect();
+    let resolved_generic_coefficients = ResolvedGenericCoefficients::build(
+        system.generic_constraints(),
+        resolved_parameters,
+        &study_stage_ids,
+        &stage_block_counts,
+    )
+    .map_err(|e| SddpError::Validation(e.to_string()))?;
     let inputs = resolve_lp_build_inputs(
         system,
         &resolve_in_sample_load_bus_ids(system),
@@ -265,6 +279,7 @@ pub fn build_stage_templates_resolving_layout(
         &time_value,
         &hydro_cell_index,
         resolved_parameters,
+        &resolved_generic_coefficients,
     );
     debug_assert_eq!(
         normal_lp.n_entities(),

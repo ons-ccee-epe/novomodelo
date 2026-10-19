@@ -10,17 +10,7 @@ use novomodelo_sddp::test_support::assert_all_templates_byte_identical;
 /// fixtures carry no `@param` coefficients) and the line topology is empty (no
 /// `line_exchange(source_bus=…, target_bus=…)` form).
 fn parse_generic_from_str(json: &str) -> Vec<novomodelo_core::GenericConstraint> {
-    use std::collections::HashMap;
-    use std::io::Write;
-
-    let mut file = tempfile::NamedTempFile::new().expect("create tempfile");
-    file.write_all(json.as_bytes()).expect("write json fixture");
-    novomodelo_io::constraints::parse_generic_constraints(
-        file.path(),
-        &HashMap::new(),
-        &novomodelo_io::constraints::LineBusPairIndex::default(),
-    )
-    .expect("parse generic constraints")
+    parse_generic_from_str_with_params(json, &std::collections::HashMap::new())
 }
 
 /// Discharge the desugaring invariant on one twin pair: a sugared study and its
@@ -84,18 +74,10 @@ fn desugared_named_expression_lp_matches_hand_flattened_twin() {
 
 /// Declaration-order invariance: three named expressions, each a single term on the
 /// SAME LP column (`bus_excess` of the one bus) with DISTINCT literal coefficients
-/// (1, 2, 4). Distinct coefficients give distinct `canonical_term_key`s and distinct
-/// CSC entries, and with `n_blks = 1` all three land on the SAME generic-constraint
-/// row. The constraint sums all three in the permuted order, so their CSC `values`
-/// sequence for that column is observable and order-sensitive. Every one of the
-/// `3! = 6` permutations of the declaration-and-reference order must build a
-/// byte-identical `StageTemplates`.
-///
-/// Guarded mutation: skipping `ConstraintExpression::canonicalize` lets the
-/// inline/reference order — a pure function of write order — leak into the term
-/// sequence, so the six permutations produce six different CSC `values` orderings
-/// and this assertion fails. `canonicalize` sorts the terms by content, collapsing
-/// every write order to one; that is what this test pins.
+/// (1, 2, 4). The expression engine merges the three references into one
+/// `bus_excess(1)` term per load, and with `n_blks = 1` it lands on a single
+/// generic-constraint row. Every one of the `3! = 6` permutations of the
+/// declaration-and-reference order must build a byte-identical `StageTemplates`.
 #[test]
 fn declaration_order_permutation_is_invariant_in_lp() {
     use novomodelo_core::ResolvedGenericConstraintBounds;
@@ -549,8 +531,8 @@ fn generic_constraint_thermal_le_row_bounds_and_csc_entry() {
             )],
         },
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(10_i32, 0)].into_iter().collect();
@@ -617,8 +599,8 @@ fn generic_constraint_thermal_le_slack_column_and_csc_entry() {
             penalty,
             penalty_basis: PenaltyBasis::PerHour,
         }),
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(20_i32, 0)].into_iter().collect();
@@ -689,8 +671,8 @@ fn generic_constraint_thermal_ge_row_bounds() {
             )],
         },
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(30_i32, 0)].into_iter().collect();
@@ -745,8 +727,8 @@ fn generic_constraint_thermal_ge_slack_column_and_csc_entry() {
             penalty,
             penalty_basis: PenaltyBasis::PerHour,
         }),
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(35_i32, 0)].into_iter().collect();
@@ -811,8 +793,8 @@ fn generic_constraint_two_sided_thermal_row_bounds_and_csc_entry() {
             )],
         },
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(72_i32, 0)].into_iter().collect();
@@ -868,8 +850,8 @@ fn generic_constraint_degenerate_band_thermal_two_slacks() {
             penalty,
             penalty_basis: PenaltyBasis::PerHour,
         }),
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(40_i32, 0)].into_iter().collect();
@@ -958,8 +940,8 @@ fn generic_constraint_two_sided_thermal_two_slacks() {
             penalty,
             penalty_basis: PenaltyBasis::PerHour,
         }),
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(73_i32, 0)].into_iter().collect();
@@ -1053,8 +1035,8 @@ fn generic_constraint_degenerate_band_gets_equality_row_and_two_slacks() {
             penalty,
             penalty_basis: PenaltyBasis::PerHour,
         }),
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
     let id_map: HashMap<i32, usize> = [(id, 0_usize)].into_iter().collect();
     let rows = vec![(id, 0_i32, None::<i32>, Some(10.0_f64), Some(10.0_f64))];
@@ -1286,8 +1268,8 @@ fn generic_constraint_two_hydros_sum_csc_entries() {
             ],
         },
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(100_i32, 0)].into_iter().collect();
@@ -1609,8 +1591,8 @@ fn generic_constraint_chronological_stage_net_storage_one_row() {
             ],
         },
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(100_i32, 0)].into_iter().collect();
@@ -1689,8 +1671,8 @@ fn generic_constraint_chronological_specific_block_ramp_one_row() {
             ],
         },
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(100_i32, 0)].into_iter().collect();
@@ -1764,8 +1746,8 @@ fn storage_slack_objective(n_blks: usize, penalty_basis: novomodelo_core::Penalt
             penalty: 40.0,
             penalty_basis,
         }),
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
     let id_map: HashMap<i32, usize> = [(100_i32, 0)].into_iter().collect();
     let rows = vec![(100_i32, 0_i32, None::<i32>, None, Some(150.0_f64))];
@@ -1909,16 +1891,16 @@ fn assert_desugaring_twin_builds_identical_lp(
 
 /// A `PerStageBlock` parameter used as a coefficient resolves to its own block's
 /// value on each per-block row. The sugared study places two terms — each a
-/// distinct block-varying parameter — on the SAME excess column, so the CSC values
-/// sequence for that column (column-major with a per-column row sort) is
-/// order-observable; a single-term twin cannot detect a term-ordering regression.
-/// The hand-flattened twin writes the resolved per-block literals directly, one
-/// block-confined constraint per block, and must build the identical LP.
+/// distinct block-varying parameter — on the SAME excess column; the two terms
+/// merge into one entry per block row, so the twin checks the summed per-block
+/// value. The hand-flattened twin writes the resolved per-block literals
+/// directly, one block-confined constraint per block, and must build the
+/// identical LP.
 #[test]
 fn per_stage_block_coefficient_twin_matches_hand_flattened_literals() {
     use novomodelo_core::{
         ConstraintExpression, GenericConstraint, LinearTerm, ParameterKind,
-        ResolvedGenericConstraintBounds, ScalarParameter, VariableRef,
+        ResolvedGenericConstraintBounds, ScalarExpr, ScalarParameter, VariableRef,
     };
     use std::collections::HashMap;
 
@@ -1935,8 +1917,14 @@ fn per_stage_block_coefficient_twin_matches_hand_flattened_literals() {
     // and literal-keyed canonical orders agree.
     let mut sugared_expr = ConstraintExpression {
         terms: vec![
-            LinearTerm::parameter(EntityId(200), 1.0, excess(None)),
-            LinearTerm::parameter(EntityId(201), 1.0, excess(None)),
+            LinearTerm {
+                coefficient: ScalarExpr::param(EntityId(200)),
+                variable: excess(None),
+            },
+            LinearTerm {
+                coefficient: ScalarExpr::param(EntityId(201)),
+                variable: excess(None),
+            },
         ],
     };
     sugared_expr.canonicalize();
@@ -1946,8 +1934,8 @@ fn per_stage_block_coefficient_twin_matches_hand_flattened_literals() {
         description: None,
         expression: sugared_expr,
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
     let sugared_id_map: HashMap<i32, usize> = [(300_i32, 0)].into_iter().collect();
     let sugared_rows = vec![(300_i32, 0_i32, None::<i32>, None, Some(upper))];
@@ -1990,8 +1978,8 @@ fn per_stage_block_coefficient_twin_matches_hand_flattened_literals() {
             description: None,
             expression: expr,
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         }
     };
     let flat_constraints = vec![
@@ -2016,7 +2004,7 @@ fn per_stage_block_coefficient_twin_matches_hand_flattened_literals() {
     );
 }
 
-/// A symbolic upper bound (`bound_upper_affine` naming a `PerStageBlock` parameter,
+/// A symbolic upper bound (`bound_upper` naming a `PerStageBlock` parameter,
 /// with the numeric `bound_upper` left null in the activation rows) resolves per
 /// `(stage, block)` and builds the identical LP to a study whose rows carry the
 /// resolved literal `bound_upper` per block and no reference. The block-varying
@@ -2024,8 +2012,8 @@ fn per_stage_block_coefficient_twin_matches_hand_flattened_literals() {
 #[test]
 fn symbolic_upper_bound_ref_twin_matches_literal_per_block_bounds() {
     use novomodelo_core::{
-        AffineBound, ConstraintExpression, GenericConstraint, LinearTerm, ParameterKind,
-        ResolvedGenericConstraintBounds, ScalarParameter, VariableRef,
+        ConstraintExpression, GenericConstraint, LinearTerm, ParameterKind,
+        ResolvedGenericConstraintBounds, ScalarExpr, ScalarParameter, VariableRef,
     };
     use std::collections::HashMap;
 
@@ -2050,8 +2038,8 @@ fn symbolic_upper_bound_ref_twin_matches_literal_per_block_bounds() {
         description: None,
         expression: expr(),
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: Some(AffineBound::single(EntityId(200))),
+        bound_lower: None,
+        bound_upper: Some(ScalarExpr::param(EntityId(200))),
     };
     let sugared_id_map: HashMap<i32, usize> = [(300_i32, 0)].into_iter().collect();
     let sugared_rows = vec![(300_i32, 0_i32, None::<i32>, None, None)];
@@ -2075,8 +2063,8 @@ fn symbolic_upper_bound_ref_twin_matches_literal_per_block_bounds() {
         description: None,
         expression: expr(),
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
     let flat_id_map: HashMap<i32, usize> = [(300_i32, 0)].into_iter().collect();
     let flat_rows = vec![
@@ -2096,7 +2084,7 @@ fn symbolic_upper_bound_ref_twin_matches_literal_per_block_bounds() {
     );
 }
 
-/// A block-independent expression whose symbolic lower bound (`bound_lower_affine`)
+/// A block-independent expression whose symbolic lower bound (`bound_lower`)
 /// names a stage-level (broadcast) parameter collapses to a single stage-level row,
 /// and the collapse path resolves the reference to the parameter's one-per-stage
 /// value — byte-identical to the same study written with a literal `bound_lower`
@@ -2104,8 +2092,8 @@ fn symbolic_upper_bound_ref_twin_matches_literal_per_block_bounds() {
 #[test]
 fn symbolic_lower_bound_ref_stage_level_collapse_twin() {
     use novomodelo_core::{
-        AffineBound, ConstraintExpression, GenericConstraint, ParameterKind,
-        ResolvedGenericConstraintBounds, ScalarParameter,
+        ConstraintExpression, GenericConstraint, ParameterKind, ResolvedGenericConstraintBounds,
+        ScalarExpr, ScalarParameter,
     };
     use std::collections::HashMap;
 
@@ -2121,8 +2109,8 @@ fn symbolic_lower_bound_ref_stage_level_collapse_twin() {
         description: None,
         expression: empty_expr(),
         slack: None,
-        bound_lower_affine: Some(AffineBound::single(EntityId(200))),
-        bound_upper_affine: None,
+        bound_lower: Some(ScalarExpr::param(EntityId(200))),
+        bound_upper: None,
     };
     let sugared_id_map: HashMap<i32, usize> = [(300_i32, 0)].into_iter().collect();
     let sugared_rows = vec![(300_i32, 0_i32, None::<i32>, None, None)];
@@ -2144,8 +2132,8 @@ fn symbolic_lower_bound_ref_stage_level_collapse_twin() {
         description: None,
         expression: empty_expr(),
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
     let flat_id_map: HashMap<i32, usize> = [(300_i32, 0)].into_iter().collect();
     let flat_rows = vec![(300_i32, 0_i32, None::<i32>, Some(floor), None)];
@@ -2181,6 +2169,26 @@ fn parse_generic_from_str_with_params(
     .expect("parse generic constraints")
 }
 
+/// Parse `json` through the real scalar-parameter loader, so an expression body
+/// reaches the resolver exactly as an authored `generic_parameters.json` does.
+fn parse_scalar_parameters_from_str(json: &str) -> Vec<novomodelo_core::ScalarParameter> {
+    use std::io::Write;
+
+    let mut file = tempfile::NamedTempFile::new().expect("create tempfile");
+    file.write_all(json.as_bytes()).expect("write json fixture");
+    novomodelo_io::parse_scalar_parameters_json(file.path()).expect("parse scalar parameters")
+}
+
+/// The `@name` resolution table for `params`, as `parse_generic_from_str_with_params` consumes it.
+fn name_to_id_of(
+    params: &[novomodelo_core::ScalarParameter],
+) -> std::collections::HashMap<String, novomodelo_core::EntityId> {
+    params
+        .iter()
+        .map(|param| (param.name.clone(), param.id))
+        .collect()
+}
+
 /// A decision-variable RHS (`thermal_generation(0) <= 0.5 * hydro_generation(1) +
 /// 12`) normalizes onto the LHS with the RHS variable sign-flipped and the
 /// constant remainder assigned to the upper endpoint — byte-identical to writing
@@ -2214,7 +2222,7 @@ fn decision_variable_rhs_normalizes_to_hand_flattened_form() {
 /// separate columns.
 #[test]
 fn same_variable_repeat_merges_to_summed_coefficient() {
-    use novomodelo_core::{CoefficientRef, ResolvedGenericConstraintBounds};
+    use novomodelo_core::ResolvedGenericConstraintBounds;
     use std::collections::HashMap;
 
     let sugared = r#"{
@@ -2231,8 +2239,8 @@ fn same_variable_repeat_merges_to_summed_coefficient() {
     let parsed = parse_generic_from_str(sugared);
     assert_eq!(parsed[0].expression.terms.len(), 1);
     assert_eq!(
-        parsed[0].expression.terms[0].coefficient,
-        CoefficientRef::Literal(1.0)
+        parsed[0].expression.terms[0].coefficient.as_literal(),
+        Some(1.0)
     );
 
     let id_map: HashMap<i32, usize> = [(2_i32, 0)].into_iter().collect();
@@ -2272,8 +2280,8 @@ fn full_cancellation_drops_net_zero_column() {
         description: None,
         expression: ConstraintExpression { terms: vec![] },
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
     let flat_id_map: HashMap<i32, usize> = [(3_i32, 0)].into_iter().collect();
     let flat_rows = vec![(3_i32, 0_i32, None::<i32>, None, Some(5.0_f64))];
@@ -2291,10 +2299,9 @@ fn full_cancellation_drops_net_zero_column() {
 }
 
 /// A coefficient-scaled paren group (`2 * (hydro_generation(0) -
-/// hydro_generation(1))`) distributes onto a `LinearTerm` as `coefficient: 1.0,
-/// scale: 2.0` — the paren-group shape — while the same effective value written
-/// directly (`2 * hydro_generation(0)`) parses as `coefficient: 2.0, scale: 1.0`;
-/// the two ASTs differ but must build the identical LP.
+/// hydro_generation(1))`) distributes to the same per-variable coefficients as
+/// the hand-flattened `2 * hydro_generation(0) - 2 * hydro_generation(1)`, and
+/// both must build the identical LP.
 #[test]
 fn paren_distribution_normalizes_to_hand_flattened_terms() {
     use novomodelo_core::ResolvedGenericConstraintBounds;
@@ -2329,7 +2336,7 @@ fn paren_distribution_normalizes_to_hand_flattened_terms() {
 /// A parquet-base upper endpoint (`100`) folds with an inline affine remainder
 /// established from the LHS constant (`+ 5`, negated to `-5`) to the same
 /// effective bound as the pre-folded literal `95` — `fold_endpoint`'s `base +
-/// resolve_affine` arm, not the base or the remainder alone.
+/// remainder` arm, not the base or the remainder alone.
 #[test]
 fn parquet_base_folds_with_inline_affine_remainder() {
     use novomodelo_core::{
@@ -2363,8 +2370,8 @@ fn parquet_base_folds_with_inline_affine_remainder() {
             )],
         },
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
     let flat_id_map: HashMap<i32, usize> = [(5_i32, 0)].into_iter().collect();
     let flat_rows = vec![(5_i32, 0_i32, None::<i32>, None, Some(95.0_f64))];
@@ -2382,18 +2389,18 @@ fn parquet_base_folds_with_inline_affine_remainder() {
 }
 
 /// A parameter-coefficient RHS (`@a * bus_excess(1) <= -@b * bus_excess(1) +
-/// 400`) normalizes to two DISTINCT-parameter terms on the same `bus_excess(1)`
-/// column, never merged — different `@param` references have no common scalar
-/// to sum. Two terms sharing one column with distinct effective values makes
-/// the CSC storage order for that column observable; a single-term twin could
-/// not catch a regression there.
+/// 400`) lowers to one `bus_excess(1)` term whose coefficient program reads
+/// both `@a` and `@b`. The sugared template holds a single value on that column
+/// and matches the hand-flattened twin.
+///
+/// derived: 2.0 + 6.0
 ///
 /// Guarded mutation: changing the hand-flattened side's second literal away
 /// from `@b`'s resolved value (`6.0`, independent of the first term's `2.0`)
-/// desyncs that column's second stored entry and fails the digest comparison —
-/// this twin is sensitive to both terms' values, not merely their count.
+/// changes the merged entry and fails the digest comparison — this twin is
+/// sensitive to both terms' values, not merely their count.
 #[test]
-fn parameter_rhs_places_two_distinct_terms_on_one_column() {
+fn parameter_rhs_terms_on_one_column_merge_to_one_entry() {
     use novomodelo_core::{
         ConstraintExpression, GenericConstraint, LinearTerm, ParameterKind,
         ResolvedGenericConstraintBounds, ScalarParameter, VariableRef,
@@ -2450,12 +2457,25 @@ fn parameter_rhs_places_two_distinct_terms_on_one_column() {
         description: None,
         expression: flat_expr,
         slack: None,
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        bound_lower: None,
+        bound_upper: None,
     };
     let flat_id_map: HashMap<i32, usize> = [(6_i32, 0)].into_iter().collect();
     let flat_rows = vec![(6_i32, 0_i32, None::<i32>, None, Some(400.0_f64))];
     let flat_bounds = ResolvedGenericConstraintBounds::new(&flat_id_map, flat_rows.into_iter());
+
+    // Layout (N=0, T=0, B=1, K=1): theta=0, deficit=1, excess=2; load_balance row 0,
+    // generic row 1.
+    let (excess_col, generic_row) = (2_usize, 1_usize);
+    let sugared_tpl = build_templates_with_params(
+        &one_bus_system_n_blks_with_generic(1, sugared_constraints.clone(), sugared_bounds.clone()),
+        &sugared_params,
+    );
+    assert_eq!(
+        csc_entries_at(&sugared_tpl[0], excess_col, generic_row),
+        vec![8.0],
+        "the two terms on bus_excess(1) must merge into one entry"
+    );
 
     assert_desugaring_twin_builds_identical_lp(
         1,
@@ -2509,4 +2529,297 @@ fn declaration_order_and_rhs_term_order_are_invariant_in_lp() {
     let tpl_a = build_templates_for(&one_bus_system_n_blks_with_generic(1, parsed_a, bounds_a));
     let tpl_b = build_templates_for(&one_bus_system_n_blks_with_generic(1, parsed_b, bounds_b));
     assert_all_templates_byte_identical(&tpl_a, &tpl_b, "declaration order and commutative RHS");
+}
+
+/// An operator-free expression repeating one variable (`bus_excess(1) +
+/// bus_excess(1)`) keeps both terms through the loader, so the builder alone
+/// merges them: the template holds one entry on the excess column and loads and
+/// solves on the active backend.
+///
+/// derived: 1.0 + 1.0
+#[test]
+fn operator_free_repeated_variable_loads_one_entry_and_solves() {
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use novomodelo_solver::{ActiveSolver, SolverInterface};
+    use std::collections::HashMap;
+
+    let json = r#"{
+      "constraints": [
+        { "id": 8, "name": "repeat", "expression": "bus_excess(1) + bus_excess(1)", "slack": { "enabled": false } }
+      ]
+    }"#;
+    let constraints = parse_generic_from_str(json);
+    let id_map: HashMap<i32, usize> = [(8_i32, 0)].into_iter().collect();
+    let rows = vec![(8_i32, 0_i32, None::<i32>, None, Some(400.0_f64))];
+    let bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter());
+
+    // Layout (N=0, T=0, B=1, K=1): theta=0, deficit=1, excess=2; load_balance row 0,
+    // generic row 1.
+    let (excess_col, generic_row) = (2_usize, 1_usize);
+    let templates =
+        build_templates_for(&one_bus_system_n_blks_with_generic(1, constraints, bounds));
+    assert_eq!(
+        csc_entries_at(&templates[0], excess_col, generic_row),
+        vec![2.0],
+        "the two terms on bus_excess(1) must merge into one entry"
+    );
+
+    let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+    solver.load_model(&templates[0]);
+    solver
+        .solve(None)
+        .expect("merged generic row must load and solve");
+}
+
+/// A coefficient parameter resolving to exactly zero on one block stores no entry
+/// on that block's row, while the block where it resolves nonzero keeps its value.
+///
+/// derived: block 0 coefficient 0.0 stores nothing; block 1 coefficient 3.0
+#[test]
+fn block_varying_zero_parameter_coefficient_has_no_entry() {
+    use novomodelo_core::{ParameterKind, ResolvedGenericConstraintBounds, ScalarParameter};
+    use std::collections::HashMap;
+
+    let json = r#"{
+      "constraints": [
+        { "id": 9, "name": "zero_coef", "expression": "@a * bus_excess(1) <= 400", "slack": { "enabled": false } }
+      ]
+    }"#;
+    let name_to_id: HashMap<String, EntityId> =
+        [("a".to_string(), EntityId(230))].into_iter().collect();
+    let constraints = parse_generic_from_str_with_params(json, &name_to_id);
+    let id_map: HashMap<i32, usize> = [(9_i32, 0)].into_iter().collect();
+    let rows = vec![(9_i32, 0_i32, None::<i32>, None, None)];
+    let bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter());
+    let params = resolved_params_single_stage(
+        2,
+        &[ScalarParameter {
+            id: EntityId(230),
+            name: "a".to_string(),
+            kind: ParameterKind::PerStageBlock {
+                values: vec![(0, 0, 0.0), (0, 1, 3.0)],
+            },
+        }],
+    );
+
+    // Layout (N=0, T=0, B=1, K=2): theta=0, deficit=[1,3), excess=[3,5); load_balance
+    // rows 0..2, generic rows 2 (block 0) and 3 (block 1).
+    let templates = build_templates_with_params(
+        &one_bus_system_n_blks_with_generic(2, constraints, bounds),
+        &params,
+    );
+    assert_eq!(
+        csc_entries_at(&templates[0], 3, 2),
+        Vec::<f64>::new(),
+        "block 0: a coefficient resolving to exactly zero stores no entry"
+    );
+    assert_eq!(
+        csc_entries_at(&templates[0], 4, 3),
+        vec![3.0],
+        "block 1: the nonzero coefficient is stored"
+    );
+}
+
+/// A summed parameter used as a coefficient builds the same LP as the inline sum. The body
+/// is written in the inline form's association, because floating-point addition is not
+/// associative.
+#[test]
+fn expression_parameter_sum_coefficient_matches_inline_sum_in_the_same_association() {
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use std::collections::HashMap;
+
+    let scalar_params = parse_scalar_parameters_from_str(
+        r#"{
+      "scalar_parameters": [
+        { "id": 230, "name": "a", "kind": "constant", "value": 0.1 },
+        { "id": 231, "name": "b", "kind": "constant", "value": 0.2 },
+        { "id": 232, "name": "c", "kind": "constant", "value": 0.3 },
+        { "id": 233, "name": "e", "kind": "expression", "expression": "@a + @b + @c" }
+      ]
+    }"#,
+    );
+    let name_to_id = name_to_id_of(&scalar_params);
+    let params = resolved_params_single_stage(1, &scalar_params);
+
+    let inline_constraints = parse_generic_from_str_with_params(
+        r#"{
+      "constraints": [
+        { "id": 7, "name": "inline_sum", "expression": "(@a + @b + @c) * bus_excess(1) <= 400", "slack": { "enabled": false } }
+      ]
+    }"#,
+        &name_to_id,
+    );
+    let expression_constraints = parse_generic_from_str_with_params(
+        r#"{
+      "constraints": [
+        { "id": 7, "name": "inline_sum", "expression": "@e * bus_excess(1) <= 400", "slack": { "enabled": false } }
+      ]
+    }"#,
+        &name_to_id,
+    );
+    let id_map: HashMap<i32, usize> = [(7_i32, 0)].into_iter().collect();
+    let rows = vec![(7_i32, 0_i32, None::<i32>, None, None)];
+    let inline_bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.clone().into_iter());
+    let expression_bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter());
+
+    let (excess_col, generic_row) = (2_usize, 1_usize);
+    let expression_tpl = build_templates_with_params(
+        &one_bus_system_n_blks_with_generic(
+            1,
+            expression_constraints.clone(),
+            expression_bounds.clone(),
+        ),
+        &params,
+    );
+    let entries = csc_entries_at(&expression_tpl[0], excess_col, generic_row);
+    assert_eq!(
+        entries.len(),
+        1,
+        "sum-coefficient twin: the expression row must hold one entry on bus_excess(1)"
+    );
+    assert_eq!(
+        entries[0].to_bits(),
+        ((0.1_f64 + 0.2) + 0.3).to_bits(),
+        "sum-coefficient twin: the entry must be the sum in the inline association"
+    );
+
+    assert_desugaring_twin_builds_identical_lp(
+        1,
+        inline_constraints,
+        inline_bounds,
+        &params,
+        expression_constraints,
+        expression_bounds,
+        &params,
+    );
+}
+
+/// A parameter built from a block-varying leaf resolves per block, and a coefficient that
+/// reads it builds the same LP as the inline product.
+#[test]
+fn block_varying_expression_parameter_coefficient_matches_inline_product() {
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use std::collections::HashMap;
+
+    let scalar_params = parse_scalar_parameters_from_str(
+        r#"{
+      "scalar_parameters": [
+        { "id": 240, "name": "k", "kind": "per_stage_block", "block_values": [[0, 0, 1.5], [0, 1, 2.5]] },
+        { "id": 241, "name": "e", "kind": "expression", "expression": "@k * 2" }
+      ]
+    }"#,
+    );
+    let name_to_id = name_to_id_of(&scalar_params);
+    let params = resolved_params_single_stage(2, &scalar_params);
+    assert!(
+        params.is_block_varying(EntityId(241)),
+        "block-varying twin: an expression over a block-varying leaf must be block-varying"
+    );
+    assert_eq!(
+        params.get(EntityId(241), 0, 0).to_bits(),
+        3.0_f64.to_bits(),
+        "block-varying twin: block 0 must resolve to 1.5 * 2"
+    );
+    assert_eq!(
+        params.get(EntityId(241), 0, 1).to_bits(),
+        5.0_f64.to_bits(),
+        "block-varying twin: block 1 must resolve to 2.5 * 2"
+    );
+
+    let inline_constraints = parse_generic_from_str_with_params(
+        r#"{
+      "constraints": [
+        { "id": 8, "name": "block_product", "expression": "@k * 2 * bus_excess(1) <= 400", "slack": { "enabled": false } }
+      ]
+    }"#,
+        &name_to_id,
+    );
+    let expression_constraints = parse_generic_from_str_with_params(
+        r#"{
+      "constraints": [
+        { "id": 8, "name": "block_product", "expression": "@e * bus_excess(1) <= 400", "slack": { "enabled": false } }
+      ]
+    }"#,
+        &name_to_id,
+    );
+    let id_map: HashMap<i32, usize> = [(8_i32, 0)].into_iter().collect();
+    let rows = vec![(8_i32, 0_i32, None::<i32>, None, None)];
+    let inline_bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.clone().into_iter());
+    let expression_bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter());
+
+    assert_desugaring_twin_builds_identical_lp(
+        2,
+        inline_constraints,
+        inline_bounds,
+        &params,
+        expression_constraints,
+        expression_bounds,
+        &params,
+    );
+}
+
+/// A parameter that sums two constants used as a bound builds the same LP as the inline sum
+/// on the right-hand side.
+#[test]
+fn expression_parameter_bound_matches_inline_bound_sum() {
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use std::collections::HashMap;
+
+    let scalar_params = parse_scalar_parameters_from_str(
+        r#"{
+      "scalar_parameters": [
+        { "id": 250, "name": "a", "kind": "constant", "value": 0.1 },
+        { "id": 251, "name": "b", "kind": "constant", "value": 0.2 },
+        { "id": 252, "name": "e", "kind": "expression", "expression": "@a + @b" }
+      ]
+    }"#,
+    );
+    let name_to_id = name_to_id_of(&scalar_params);
+    let params = resolved_params_single_stage(1, &scalar_params);
+
+    let inline_constraints = parse_generic_from_str_with_params(
+        r#"{
+      "constraints": [
+        { "id": 9, "name": "bound_sum", "expression": "bus_excess(1) <= @a + @b", "slack": { "enabled": false } }
+      ]
+    }"#,
+        &name_to_id,
+    );
+    let expression_constraints = parse_generic_from_str_with_params(
+        r#"{
+      "constraints": [
+        { "id": 9, "name": "bound_sum", "expression": "bus_excess(1) <= @e", "slack": { "enabled": false } }
+      ]
+    }"#,
+        &name_to_id,
+    );
+    let id_map: HashMap<i32, usize> = [(9_i32, 0)].into_iter().collect();
+    let rows = vec![(9_i32, 0_i32, None::<i32>, None, None)];
+    let inline_bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.clone().into_iter());
+    let expression_bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter());
+
+    let generic_row = 1_usize;
+    let expression_tpl = build_templates_with_params(
+        &one_bus_system_n_blks_with_generic(
+            1,
+            expression_constraints.clone(),
+            expression_bounds.clone(),
+        ),
+        &params,
+    );
+    assert_eq!(
+        expression_tpl[0].row_upper[generic_row].to_bits(),
+        (0.1_f64 + 0.2).to_bits(),
+        "bound twin: the row's upper bound must be the sum in the inline association"
+    );
+
+    assert_desugaring_twin_builds_identical_lp(
+        1,
+        inline_constraints,
+        inline_bounds,
+        &params,
+        expression_constraints,
+        expression_bounds,
+        &params,
+    );
 }

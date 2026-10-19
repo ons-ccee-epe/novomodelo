@@ -70,6 +70,11 @@ fn write_productivity_parquet(dir: &TempDir, rows: &[(i32, Option<i32>, Option<f
             DataType::Float64,
             true,
         ),
+        Field::new(
+            "integrated_equivalent_productivity_mw_per_m3s",
+            DataType::Float64,
+            true,
+        ),
     ]));
 
     let hydro_ids = Int32Array::from(rows.iter().map(|r| r.0).collect::<Vec<_>>());
@@ -83,6 +88,7 @@ fn write_productivity_parquet(dir: &TempDir, rows: &[(i32, Option<i32>, Option<f
             Arc::new(hydro_ids),
             Arc::new(stage_ids),
             Arc::new(rho_eqs),
+            Arc::new(nulls.clone()),
             Arc::new(nulls.clone()),
             Arc::new(nulls.clone()),
             Arc::new(nulls),

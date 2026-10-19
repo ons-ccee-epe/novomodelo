@@ -30,8 +30,8 @@ use crate::constraints::GenericConstraintBoundsRow;
 ///     description: None,
 ///     expression: ConstraintExpression { terms: vec![] },
 ///     slack: None,
-///     bound_lower_affine: None,
-///     bound_upper_affine: None,
+///     bound_lower: None,
+///     bound_upper: None,
 /// };
 ///
 /// let row = GenericConstraintBoundsRow {
@@ -101,8 +101,8 @@ mod tests {
             description: None,
             expression: ConstraintExpression { terms: vec![] },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         }
     }
 
@@ -204,7 +204,7 @@ mod tests {
     }
 
     /// `bound_upper`, when the row carries one, flows through resolution into the
-    /// resolved entry alongside `bound` — the widened pipe's actual contract.
+    /// resolved entry alongside `bound_lower`.
     #[test]
     fn test_bound_upper_flows_through_resolution() {
         let constraints = vec![make_constraint(0)];
@@ -259,7 +259,7 @@ mod tests {
         assert!(!table.is_active(1, 0));
     }
 
-    /// Acceptance criterion: `bounds_for_stage` returns (None, 100.0) for single bound row.
+    /// Acceptance criterion: `bounds_for_stage` returns `bound_lower = Some(100.0)` and no `bound_upper` for a single bound row.
     #[test]
     fn test_ac_bounds_for_stage() {
         let constraints = vec![make_constraint(0)];

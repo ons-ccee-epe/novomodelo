@@ -86,7 +86,8 @@ write_table(hyperplanes_table, "system/fpha_hyperplanes.parquet")
 # Schema: hydro_id (INT32), stage_id (INT32, nullable),
 #         equivalent_productivity_mw_per_m3s (FLOAT64, nullable),
 #         reference_outflow_m3s (FLOAT64, nullable),
-#         specific_productivity_mw_per_m3s_per_m (FLOAT64, nullable)
+#         specific_productivity_mw_per_m3s_per_m (FLOAT64, nullable),
+#         integrated_equivalent_productivity_mw_per_m3s (FLOAT64, nullable)
 #
 # Inert for FPHA hydros (Layer 6 productivity resolution skips them), carried
 # only for parity with every other FPHA example deck's file set.
@@ -98,6 +99,7 @@ productivity_schema = pa.schema(
         pa.field("equivalent_productivity_mw_per_m3s", pa.float64(), nullable=True),
         pa.field("reference_outflow_m3s", pa.float64(), nullable=True),
         pa.field("specific_productivity_mw_per_m3s_per_m", pa.float64(), nullable=True),
+        pa.field("integrated_equivalent_productivity_mw_per_m3s", pa.float64(), nullable=True),
     ]
 )
 
@@ -108,6 +110,7 @@ productivity_table = pa.table(
         "equivalent_productivity_mw_per_m3s": pa.array([1.0], type=pa.float64()),
         "reference_outflow_m3s": pa.array([None], type=pa.float64()),
         "specific_productivity_mw_per_m3s_per_m": pa.array([None], type=pa.float64()),
+        "integrated_equivalent_productivity_mw_per_m3s": pa.array([None], type=pa.float64()),
     },
     schema=productivity_schema,
 )
