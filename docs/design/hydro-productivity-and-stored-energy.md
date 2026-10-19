@@ -95,13 +95,15 @@ for the case of a genuine mid-study physical capacity enlargement.
 ## The per-column override table
 
 `system/hydro_energy_productivity.parquet` (parsed by
-`crates/novomodelo-io/src/extensions/hydro_energy_productivity.rs`) carries three
-optional per-`(hydro, stage)` override columns, each reaching a distinct,
-non-overlapping set of consumers:
+`crates/novomodelo-io/src/extensions/hydro_energy_productivity.rs`) carries four
+per-`(hydro, stage)` override columns. Every column must be present; a NULL
+value means "no override". Each column reaches a distinct, non-overlapping set
+of consumers:
 
 | Column | Symbol | Reaches |
 |---|---|---|
-| `equivalent_productivity_mw_per_m3s` (rho_eq) | direct productivity override | Both evaluators' own term, outright — see "geometry gates the mean evaluator" below — AND the `equivalent_productivity` output column. |
+| `equivalent_productivity_mw_per_m3s` (rho_eq) | direct productivity override | The reference-point own term only (the `equivalent_productivity` / `accumulated_productivity` tags and output columns) and, for a non-FPHA plant, the dispatch coefficient. It never reaches the mean evaluator. |
+| `integrated_equivalent_productivity_mw_per_m3s` | mean-evaluator own-term override | The mean evaluator's own term, outright, and through the cascade sum every consumer of the `integrated_accumulated_productivity` grid (`max_stored_energy*`, the `*_mwh_per_hm3` tags, the `stored_energy_*` output columns). It never reaches the reference-point evaluator or the dispatch. |
 | `specific_productivity_mw_per_m3s_per_m` (rho_esp) | head-derived productivity coefficient | Both evaluators' head-derived productivity (the reference-point FPHA derivation and the mean own term above) AND the `specific_productivity` computed tag, through one shared resolver — `HydroEnergyProductivityOverride::resolve_specific_productivity` — so the tag and the builder can never disagree. |
 | `reference_outflow_m3s` (Q_ref) | reference turbine flow override | The `reference_turbine` computed tag only. The head evaluation — both evaluators — always reads `Hydro.max_turbined_m3s`, never this column. |
 
@@ -161,22 +163,28 @@ per-plant evaluator-selection field anywhere in novomodelo's input surface.
 The mean-evaluator own term is computed for any hydro that has VHA geometry
 rows and a resolvable `rho_esp` at one or more stages — regardless of that
 plant's generation model (FPHA, `constant_productivity`, or any other). The
-resolution order per `(hydro, stage)` is: an explicit `rho_eq` override wins
-outright and is copied bit-for-bit into both evaluators; otherwise, a
-collapsed range or missing geometry/`rho_esp` copies the reference-point own
-value bit-for-bit (the collapsed-range rule above); otherwise the quadrature
-above computes `rho_esp * (mean_head - cf - losses)`. A VHA table that fails
-to build is an error for every hydro it would otherwise cover — never a
-silent fall-back to the reference-point value. The reference-point path
-itself is unchanged: whether that value derives from FPHA geometry or from a
-non-FPHA production model still depends solely on the plant's generation
-model, as it always has.
+resolution order per `(hydro, stage)` is: an
+`integrated_equivalent_productivity_mw_per_m3s` override wins outright;
+otherwise, with geometry, a resolved `rho_esp` and a genuine range, the
+quadrature above computes `rho_esp * (mean_head - cf - losses)`; otherwise
+(collapsed range, or missing geometry/`rho_esp`) the reference-point own value
+is copied bit-for-bit (the collapsed-range rule above). A reference-point
+`rho_eq` override never enters this order, so the same dispatch productivity
+yields the same mean term whether it comes from
+`hydro_production_models.json` or from the parquet. A non-positive mean head
+on a plant that reaches the quadrature is an error
+(`EnergyConversionError::NonPositiveMeanEquivalentHead`); the integrated
+override is the way to supply that plant's value instead. A VHA table that
+fails to build is an error for every hydro it would otherwise cover — never a
+silent fall-back to the reference-point value. Whether the reference-point
+value derives from FPHA geometry or from a non-FPHA production model depends
+solely on the plant's generation model.
 
 ## The `hydro_useful_volume_*` fold
 
 `hydro_useful_volume_{initial,final}(id[, block])` are authorable generic
-constraint variable references, parsed in
-`crates/novomodelo-io/src/constraints/generic.rs` and resolving to
+constraint variable references, matched by name in
+`crates/novomodelo-io/src/expression/catalog.rs` and resolving to
 `VariableRef::HydroUsefulVolumeInitial` / `HydroUsefulVolumeFinal`. Each
 resolves to the exact same LP column as the corresponding
 `hydro_storage_{initial,final}` reference (coefficient multiplier `1.0`), and
@@ -184,21 +192,29 @@ receives the same referential and per-block validation the storage pair
 already receives — it names no new LP variable. What differs is the bound: at
 LP build time, `useful_volume_bound_shift` (in
 `crates/novomodelo-sddp/src/lp/builder/layout.rs`) moves each term's dead volume
-onto the bound: a term `coef * hydro_useful_volume_*(h)` stands for
-`coef * (storage - V_lo)`, so `coef * V_lo` — with `V_lo` the entity physical
-`Hydro.min_storage_hm3` — is ADDED to every resolved bound endpoint the
-constraint carries, one such term per `hydro_useful_volume_*` reference. The
-constraint reads as a useful-volume (above-dead-storage) quantity while the
-underlying LP column still carries the absolute storage value; a negative
-coefficient lowers the bound by the same rule.
+onto the bound. A term `coef * hydro_useful_volume_*(h)` stands for
+`coef * (storage - V_lo)`, with `V_lo` the entity physical
+`Hydro.min_storage_hm3`. The shift is therefore `coef * V_lo` per term, summed
+over the constraint's `hydro_useful_volume_*` terms. The builder first merges
+each endpoint's declared bound with its resolved bound remainder, then adds
+the shift to every endpoint that carries a bound; an untargeted (open)
+endpoint stays open. `coef` is the
+term's resolved coefficient at the row's stage and block, read through
+`ResolvedGenericCoefficients::term_value`
+(`crates/novomodelo-sddp/src/policy/resolved_generic_coefficients.rs`): a
+coefficient that reads a per-stage or per-block parameter shifts a different
+amount on each row. The constraint reads as a useful-volume
+(above-dead-storage) quantity while the underlying LP column still carries
+the absolute storage value; a negative coefficient lowers the bound by the
+same rule.
 
 The folded bound is publicly observable: `build_generic_constraint_echo_rows`
 (`crates/novomodelo-sddp/src/generic_constraint_echo.rs`) reports the
-post-fold value on `GenericConstraintEchoRow.bound_lower`, written to the same
-`generic_constraint_echo` output by both the CLI and the Python bindings. This
-echo output is the intended way to observe the folded bound — reading the
-declared bound directly from the input constraint would show the pre-fold
-value.
+post-fold value on `GenericConstraintEchoRow.bound_lower`, written to
+`generic_constraints/resolved_echo.parquet` by both the CLI and the Python
+bindings. This echo output is the intended way to observe the folded bound —
+reading the declared bound directly from the input constraint would show the
+pre-fold value.
 
 ## The security-curve authoring recipe
 
@@ -206,24 +222,36 @@ A security curve is authored as a generic constraint with three ingredients:
 a `computed` scalar parameter with `"tag": "integrated_accumulated_productivity"`
 as the per-hydro coefficient, a `computed` scalar parameter with `"tag":
 "max_stored_energy"` as the right-hand-side reference, and
-`hydro_useful_volume_final(id)` as the left-hand-side variable — for example,
-a constraint of the shape `coeff * hydro_useful_volume_final(id) >= pct *
-max_energy`. Because `max_stored_energy` and
+`hydro_useful_volume_final(id)` as the left-hand-side variable. In the
+engine's arithmetic the constraint is
+`@rho * hydro_useful_volume_final(id) >= @pct * @emax`, with `@rho` the
+`integrated_accumulated_productivity` parameter, `@emax` the
+`max_stored_energy` one, and `@pct` the required fraction. The coefficient and
+the right-hand side may each be any arithmetic over numbers and parameters;
+the language is described in the module doc of
+`crates/novomodelo-io/src/expression/mod.rs`. A combination reused across
+constraints, such as a weighted sum of two productivities, can be declared
+once as a `kind: "expression"` parameter (see the module doc of
+`crates/novomodelo-io/src/extensions/scalar_parameters.rs`). The deck
+`examples/deterministic/d58-stored-energy-coefficient` is a worked instance of
+this recipe, and `examples/deterministic/d59-parameter-sum-useful-volume-floor`
+shows a parameter-sum coefficient on a useful-volume term against a literal
+floor. Because `max_stored_energy` and
 `integrated_accumulated_productivity` ride the same raw `productivity *
 volume` unit (see above), and `hydro_useful_volume_final` reads as an
 above-dead-storage quantity (see the fold above), this constraint expresses "at
 least `pct` of the plant's useful volume, in energy terms" without any unit
 conversion in the input.
 
-The bridge's hand-folded equivalent — the form used before this feature
-existed, still valid today — expresses the same constraint as a literal
-coefficient on `hydro_storage_final(id)` with the plant's dead volume
-pre-subtracted into the coefficient by hand. The two forms are equivalent by
+The bridge's hand-folded equivalent expresses the same constraint on
+`hydro_storage_final(id)`, with `coeff * V_lo` added to the bound by hand
+and the coefficient unchanged. The two forms are equivalent by
 construction; `crates/novomodelo-sddp/tests/deterministic.rs`'s
 `security_curve_integrated_productivity_equivalence` module builds an
 end-to-end deck exercising both forms side by side (non-uniform VHA geometry,
 an entity `rho_esp` plus a stage-specific override, an operative ceiling below
-the entity's physical maximum, and a non-FPHA `rho_eq` override) and owns the
+the entity's physical maximum, and a non-FPHA `rho_eq` override beside an
+integrated own-term override on the same row) and owns the
 resulting worked numbers. This page points at that module rather than
 reproducing any of its figures; a reader who needs the actual resolved
 values should read the module directly.
@@ -275,9 +303,10 @@ the flood-control ceiling and similar per-stage operative limits out of
 `hydro_bounds` into a separate physical-range-purity channel (see "The
 physical/operative split" above — the two ranges stay exactly where they
 are); and a per-plant basis or participation field selecting which evaluator
-a plant uses (the collapsed-range rule above already makes this unnecessary —
-a plant with a collapsed range gets point-equal-to-mean behavior with no
-field to set).
+a plant uses (the collapsed-range rule above gives a collapsed plant
+point-equal-to-mean behavior with no field to set, and a source model that
+point-evaluates a plant whose range stays open supplies that value through the
+integrated own-term override).
 
 ## Corner cases
 
@@ -286,14 +315,15 @@ volume (its declared minimum and maximum storage coincide) falls under the
 collapsed-range rule: its mean evaluator equals its reference-point evaluator
 exactly, with no separate code path for "this plant does not regulate."
 
-A reservoir whose source model pins only its tailrace elevation (its forebay
-still varies with volume, so its reference-point and mean productivities
-genuinely differ) has no exact single-value representation in the override
-table: an explicit `equivalent_productivity_mw_per_m3s` override wins outright
-over both evaluators with the same value, which is exact for a collapsed range
-and an approximation for such a reservoir. A per-stage forebay/tailrace
-elevation override applied before the head derivation would make both
-evaluators exact; no such input exists today.
+A reservoir whose source model applies a per-stage head convention that the
+entity geometry does not carry (a pinned tailrace or forebay elevation for some
+stages) is expressed with one value per evaluator:
+`equivalent_productivity_mw_per_m3s` carries the source model's
+reference-point productivity and
+`integrated_equivalent_productivity_mw_per_m3s` its useful-range mean, both
+computed under that convention. Without the integrated column the mean
+evaluator integrates the entity geometry, which ignores the per-stage
+convention.
 
 A genuine mid-study enlargement of a plant's physical storage capacity — as
 opposed to an operative, per-stage tightening — is a reserved, not-built

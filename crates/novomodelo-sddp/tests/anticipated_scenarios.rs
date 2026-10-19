@@ -1998,8 +1998,8 @@ mod anticipated_generic_constraint_e2e {
                 )],
             },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         };
 
         let config = build_config();

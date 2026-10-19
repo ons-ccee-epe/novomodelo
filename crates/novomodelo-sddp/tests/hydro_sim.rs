@@ -4232,13 +4232,13 @@ mod generic_slack_penalty_basis {
         StageStateConfig,
     };
     use novomodelo_core::{
-        AffineBound, BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ComputedParameter,
+        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ComputedParameter,
         ConstraintExpression, ContractBlockBounds, DeficitSegment, EntityId, GenericConstraint,
         HydroBlockBounds, HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds,
         LineStagePenalties, LinearTerm, NcsStagePenalties, ParameterKind, PenaltiesCountsSpec,
         PenaltiesDefaults, PenaltyBasis, PumpingBlockBounds, ResolvedBounds,
-        ResolvedGenericConstraintBounds, ResolvedPenalties, ScalarParameter, SlackConfig, System,
-        SystemBuilder, ThermalBlockBounds, ThermalStageBounds, VariableRef,
+        ResolvedGenericConstraintBounds, ResolvedPenalties, ScalarExpr, ScalarParameter,
+        SlackConfig, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds, VariableRef,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -4337,8 +4337,8 @@ mod generic_slack_penalty_basis {
                 penalty: PENALTY,
                 penalty_basis,
             }),
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         }
     }
 
@@ -4349,28 +4349,22 @@ mod generic_slack_penalty_basis {
             name: "stored_energy_floor".to_string(),
             description: None,
             expression: ConstraintExpression {
-                terms: vec![LinearTerm::parameter(
-                    EntityId(RHO_MWH_ID),
-                    1.0,
-                    VariableRef::HydroStorage {
+                terms: vec![LinearTerm {
+                    coefficient: ScalarExpr::param(EntityId(RHO_MWH_ID)),
+                    variable: VariableRef::HydroStorage {
                         hydro_id: EntityId(HYDRO_ID),
                     },
-                )],
+                }],
             },
             slack: Some(SlackConfig {
                 penalty: PENALTY,
                 penalty_basis,
             }),
-            bound_lower_affine: Some(AffineBound {
-                constant: 0.0,
-                terms: vec![],
-                products: vec![(
-                    1.0,
-                    EntityId(FLOOR_SHARE_ID),
-                    EntityId(MAX_STORED_ENERGY_MWH_ID),
-                )],
-            }),
-            bound_upper_affine: None,
+            bound_lower: Some(
+                ScalarExpr::param(EntityId(FLOOR_SHARE_ID))
+                    * ScalarExpr::param(EntityId(MAX_STORED_ENERGY_MWH_ID)),
+            ),
+            bound_upper: None,
         }
     }
 

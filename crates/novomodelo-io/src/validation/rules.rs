@@ -182,7 +182,7 @@ declare_rules! {
         "An FPHA-configured hydro with turbine capacity has no rows in fpha_hyperplanes.parquet";
     DIMENSIONAL_GEOMETRY_ROWS = "dimensional.7",
         Dimensional, DimensionMismatch, Error,
-        "An FPHA or linearized-head hydro has too few hydro_geometry.parquet rows (at least 1 for FPHA, 2 otherwise)";
+        "An FPHA hydro has no hydro_geometry.parquet rows";
     SEMANTIC_HYDRO_CASCADE_CYCLE = "semantic.5a.1",
         Semantic, CycleDetected, Error,
         "The hydro cascade formed by downstream links contains a cycle";

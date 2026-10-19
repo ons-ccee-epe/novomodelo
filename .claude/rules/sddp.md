@@ -270,7 +270,7 @@ objective (`fill_generic_constraint_entries`) and the simulation's reported
 
 `PerUnit` is charged once per violated LP row. A block-independent row whose
 bound or coefficient uses a per-(stage, block) parameter is split into one row
-per block (`expression_collapses_to_stage_level`), and each violated block row
+per block (`constraint_collapses_to_stage_level`), and each violated block row
 is charged `penalty`. This is the intended meaning: each block row is its own
 constraint with its own bound. Scaling a split row by its block's share of the
 stage would require reading the row's terms, which this contract forbids.

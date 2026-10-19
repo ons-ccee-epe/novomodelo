@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/generic_constraints.schema.json",
+  "constraints": [
+    {
+      "id": 1,
+      "name": "useful_volume_floor",
+      "description": "Minimum useful volume of H0 weighted by the sum of two scalar parameters, softened by a per-unit slack.",
+      "expression": "(@weight_a + @weight_b) * hydro_useful_volume_final(0) >= 200",
+      "slack": {
+        "enabled": true,
+        "penalty": 10000.0,
+        "penalty_basis": "per_unit"
+      }
+    }
+  ]
+}

@@ -133,7 +133,7 @@ fn precomputed_fpha_config(hydro_id: i32) -> ProductionModelConfig {
             ranges: vec![StageRange {
                 start_stage_id: 0,
                 end_stage_id: None,
-                model: "fpha".to_string(),
+                model: HydroGenerationModel::Fpha,
                 fpha_config: Some(FphaColumnLayout {
                     source: "precomputed".to_string(),
                     volume_discretization_points: None,
@@ -156,7 +156,7 @@ fn computed_fpha_config(hydro_id: i32) -> ProductionModelConfig {
             ranges: vec![StageRange {
                 start_stage_id: 0,
                 end_stage_id: None,
-                model: "fpha".to_string(),
+                model: HydroGenerationModel::Fpha,
                 fpha_config: Some(FphaColumnLayout {
                     source: "computed".to_string(),
                     volume_discretization_points: None,
@@ -183,14 +183,6 @@ fn all_constant_no_config_returns_default_constant_provenance() {
     let src1 = determine_source(&hydro1, None).expect("should succeed");
     assert_eq!(src0, ProductionModelSource::DefaultConstant);
     assert_eq!(src1, ProductionModelSource::DefaultConstant);
-}
-
-#[test]
-fn linearized_head_entity_resolves_to_constant_productivity() {
-    let hydro = make_hydro(0, HydroGenerationModel::LinearizedHead);
-
-    let src = determine_source(&hydro, None).expect("should succeed");
-    assert_eq!(src, ProductionModelSource::DefaultConstant);
 }
 
 #[test]
@@ -310,7 +302,7 @@ fn find_fpha_config_for_stage_returns_none_outside_range() {
             ranges: vec![StageRange {
                 start_stage_id: 5,
                 end_stage_id: Some(10),
-                model: "fpha".to_string(),
+                model: HydroGenerationModel::Fpha,
                 fpha_config: Some(FphaColumnLayout {
                     source: "computed".to_string(),
                     volume_discretization_points: None,
@@ -667,11 +659,14 @@ fn precomputed_stage_needs_a_flow_dependent_plane() {
 }
 
 #[test]
-fn find_model_for_stage_returns_correct_model_name_in_range() {
+fn find_model_for_stage_returns_correct_model_in_range() {
     let config = precomputed_fpha_config(0);
     let stage = make_stage(3);
     let result = find_model_for_stage(&config, &stage);
-    assert_eq!(result.as_ref().map(|(name, _)| name.as_str()), Some("fpha"));
+    assert_eq!(
+        result.map(|(model, _)| model),
+        Some(HydroGenerationModel::Fpha)
+    );
 }
 
 #[test]
@@ -682,7 +677,7 @@ fn find_model_for_stage_returns_none_when_before_range_start() {
             ranges: vec![StageRange {
                 start_stage_id: 5,
                 end_stage_id: Some(10),
-                model: "fpha".to_string(),
+                model: HydroGenerationModel::Fpha,
                 fpha_config: None,
                 reference_volume: None,
                 productivity_mw_per_m3s: None,
@@ -705,7 +700,7 @@ fn find_model_for_stage_open_ended_range_covers_all_stages() {
             ranges: vec![StageRange {
                 start_stage_id: 0,
                 end_stage_id: None,
-                model: "constant_productivity".to_string(),
+                model: HydroGenerationModel::ConstantProductivity,
                 fpha_config: None,
                 reference_volume: None,
                 productivity_mw_per_m3s: None,
@@ -716,8 +711,8 @@ fn find_model_for_stage_open_ended_range_covers_all_stages() {
         let stage = make_stage(stage_id);
         let result = find_model_for_stage(&config, &stage);
         assert_eq!(
-            result.as_ref().map(|(name, _)| name.as_str()),
-            Some("constant_productivity"),
+            result.map(|(model, _)| model),
+            Some(HydroGenerationModel::ConstantProductivity),
             "open-ended range must cover stage {stage_id}"
         );
     }
@@ -735,7 +730,7 @@ fn resolve_stage_model_uses_productivity_override() {
             ranges: vec![StageRange {
                 start_stage_id: 0,
                 end_stage_id: None,
-                model: "constant_productivity".to_string(),
+                model: HydroGenerationModel::ConstantProductivity,
                 fpha_config: None,
                 reference_volume: None,
                 productivity_mw_per_m3s: Some(0.55),
@@ -775,7 +770,7 @@ fn test_resolve_stage_model_returns_sentinel_when_json_lacks_productivity() {
             ranges: vec![StageRange {
                 start_stage_id: 0,
                 end_stage_id: None,
-                model: "constant_productivity".to_string(),
+                model: HydroGenerationModel::ConstantProductivity,
                 fpha_config: None,
                 reference_volume: None,
                 productivity_mw_per_m3s: None,
@@ -847,7 +842,7 @@ fn test_resolve_stage_model_uses_parquet_override_when_json_omits_productivity()
             ranges: vec![StageRange {
                 start_stage_id: 0,
                 end_stage_id: None,
-                model: "constant_productivity".to_string(),
+                model: HydroGenerationModel::ConstantProductivity,
                 fpha_config: None,
                 reference_volume: None,
                 productivity_mw_per_m3s: None,
@@ -862,6 +857,7 @@ fn test_resolve_stage_model_uses_parquet_override_when_json_omits_productivity()
             equivalent_productivity_mw_per_m3s: Some(0.42),
             reference_outflow_m3s: None,
             specific_productivity_mw_per_m3s_per_m: None,
+            integrated_equivalent_productivity_mw_per_m3s: None,
         }])
         .expect("override builds");
 
@@ -956,7 +952,7 @@ fn find_model_for_stage_returns_override_in_tuple() {
             ranges: vec![StageRange {
                 start_stage_id: 0,
                 end_stage_id: None,
-                model: "constant_productivity".to_string(),
+                model: HydroGenerationModel::ConstantProductivity,
                 fpha_config: None,
                 reference_volume: None,
                 productivity_mw_per_m3s: Some(0.75),
@@ -967,7 +963,7 @@ fn find_model_for_stage_returns_override_in_tuple() {
     let result = find_model_for_stage(&config, &stage);
     assert_eq!(
         result,
-        Some(("constant_productivity".to_string(), Some(0.75)))
+        Some((HydroGenerationModel::ConstantProductivity, Some(0.75)))
     );
 }
 
@@ -976,10 +972,10 @@ fn find_model_for_stage_seasonal_with_override() {
     let config = ProductionModelConfig {
         hydro_id: EntityId::from(0),
         selection_mode: SelectionMode::Seasonal {
-            default_model: "constant_productivity".to_string(),
+            default_model: HydroGenerationModel::ConstantProductivity,
             seasons: vec![SeasonConfig {
                 season_id: 1,
-                model: "constant_productivity".to_string(),
+                model: HydroGenerationModel::ConstantProductivity,
                 fpha_config: None,
                 reference_volume: None,
                 productivity_mw_per_m3s: Some(0.60),
@@ -991,13 +987,16 @@ fn find_model_for_stage_seasonal_with_override() {
     let result = find_model_for_stage(&config, &stage_match);
     assert_eq!(
         result,
-        Some(("constant_productivity".to_string(), Some(0.60)))
+        Some((HydroGenerationModel::ConstantProductivity, Some(0.60)))
     );
 
     let mut stage_default = make_stage(0);
     stage_default.season_id = Some(99);
     let result = find_model_for_stage(&config, &stage_default);
-    assert_eq!(result, Some(("constant_productivity".to_string(), None)));
+    assert_eq!(
+        result,
+        Some((HydroGenerationModel::ConstantProductivity, None))
+    );
 }
 
 // ── Canonical resolver (resolve_stage / selection_entries) ────────────────
@@ -1007,10 +1006,10 @@ fn resolve_stage_seasonal_season_miss_uses_default_model() {
     let config = ProductionModelConfig {
         hydro_id: EntityId::from(0),
         selection_mode: SelectionMode::Seasonal {
-            default_model: "constant_productivity".to_string(),
+            default_model: HydroGenerationModel::ConstantProductivity,
             seasons: vec![SeasonConfig {
                 season_id: 1,
-                model: "fpha".to_string(),
+                model: HydroGenerationModel::Fpha,
                 fpha_config: Some(FphaColumnLayout {
                     source: "precomputed".to_string(),
                     volume_discretization_points: None,
@@ -1029,7 +1028,10 @@ fn resolve_stage_seasonal_season_miss_uses_default_model() {
 
     let resolution = resolve_stage(&config, &stage);
 
-    assert_eq!(resolution.model, Some("constant_productivity"));
+    assert_eq!(
+        resolution.model,
+        Some(HydroGenerationModel::ConstantProductivity)
+    );
     assert!(resolution.fpha_config.is_none());
     assert!(resolution.reference_volume.is_none());
     assert!(resolution.productivity.is_none());
@@ -1040,10 +1042,10 @@ fn resolve_stage_seasonal_matching_season_passes_through() {
     let config = ProductionModelConfig {
         hydro_id: EntityId::from(0),
         selection_mode: SelectionMode::Seasonal {
-            default_model: "constant_productivity".to_string(),
+            default_model: HydroGenerationModel::Fpha,
             seasons: vec![SeasonConfig {
                 season_id: 2,
-                model: "linearized_head".to_string(),
+                model: HydroGenerationModel::ConstantProductivity,
                 fpha_config: None,
                 reference_volume: Some(ReferenceVolume::AbsoluteHm3(1200.0)),
                 productivity_mw_per_m3s: Some(0.77),
@@ -1055,7 +1057,10 @@ fn resolve_stage_seasonal_matching_season_passes_through() {
 
     let resolution = resolve_stage(&config, &stage);
 
-    assert_eq!(resolution.model, Some("linearized_head"));
+    assert_eq!(
+        resolution.model,
+        Some(HydroGenerationModel::ConstantProductivity)
+    );
     assert!(resolution.fpha_config.is_none());
     assert_eq!(
         resolution.reference_volume,
@@ -1072,10 +1077,10 @@ fn selection_entries_classifies_default_fpha_as_precomputed() {
     let config = ProductionModelConfig {
         hydro_id: EntityId::from(0),
         selection_mode: SelectionMode::Seasonal {
-            default_model: "fpha".to_string(),
+            default_model: HydroGenerationModel::Fpha,
             seasons: vec![SeasonConfig {
                 season_id: 1,
-                model: "constant_productivity".to_string(),
+                model: HydroGenerationModel::ConstantProductivity,
                 fpha_config: None,
                 reference_volume: None,
                 productivity_mw_per_m3s: Some(0.5),
@@ -1085,7 +1090,7 @@ fn selection_entries_classifies_default_fpha_as_precomputed() {
 
     let uses_precomputed = selection_entries(&config).any(|entry| {
         entry.fpha_config.is_some_and(|f| f.source == "precomputed")
-            || (entry.model == "fpha" && entry.fpha_config.is_none())
+            || (entry.model == HydroGenerationModel::Fpha && entry.fpha_config.is_none())
     });
 
     assert!(
@@ -1111,10 +1116,10 @@ fn seasonal_default_fpha_classifies_as_precomputed_source() {
     let config = ProductionModelConfig {
         hydro_id: EntityId::from(0),
         selection_mode: SelectionMode::Seasonal {
-            default_model: "fpha".to_string(),
+            default_model: HydroGenerationModel::Fpha,
             seasons: vec![SeasonConfig {
                 season_id: 1,
-                model: "constant_productivity".to_string(),
+                model: HydroGenerationModel::ConstantProductivity,
                 fpha_config: None,
                 reference_volume: None,
                 productivity_mw_per_m3s: Some(0.5),
@@ -1135,7 +1140,7 @@ fn resolve_stage_stage_ranges_covering_and_uncovered() {
             ranges: vec![StageRange {
                 start_stage_id: 0,
                 end_stage_id: Some(10),
-                model: "constant_productivity".to_string(),
+                model: HydroGenerationModel::ConstantProductivity,
                 fpha_config: Some(FphaColumnLayout {
                     source: "precomputed".to_string(),
                     volume_discretization_points: None,
@@ -1152,7 +1157,10 @@ fn resolve_stage_stage_ranges_covering_and_uncovered() {
 
     let covered = make_stage(5);
     let resolution = resolve_stage(&config, &covered);
-    assert_eq!(resolution.model, Some("constant_productivity"));
+    assert_eq!(
+        resolution.model,
+        Some(HydroGenerationModel::ConstantProductivity)
+    );
     assert_eq!(
         resolution.fpha_config.map(|f| f.source.as_str()),
         Some("precomputed")
@@ -1659,7 +1667,7 @@ fn per_range_fits_differ_when_windows_differ() {
                 StageRange {
                     start_stage_id: 0,
                     end_stage_id: Some(1),
-                    model: "fpha".to_string(),
+                    model: HydroGenerationModel::Fpha,
                     fpha_config: Some(computed_layout_with_window(Some(100.0), Some(8_000.0))),
                     reference_volume: None,
                     productivity_mw_per_m3s: None,
@@ -1667,7 +1675,7 @@ fn per_range_fits_differ_when_windows_differ() {
                 StageRange {
                     start_stage_id: 2,
                     end_stage_id: None,
-                    model: "fpha".to_string(),
+                    model: HydroGenerationModel::Fpha,
                     fpha_config: Some(computed_layout_with_window(Some(100.0), Some(20_000.0))),
                     reference_volume: None,
                     productivity_mw_per_m3s: None,
@@ -1716,18 +1724,18 @@ fn per_season_fits_differ_when_season_configs_differ() {
     let config = ProductionModelConfig {
         hydro_id: EntityId::from(0),
         selection_mode: SelectionMode::Seasonal {
-            default_model: "fpha".to_string(),
+            default_model: HydroGenerationModel::Fpha,
             seasons: vec![
                 SeasonConfig {
                     season_id: 0,
-                    model: "fpha".to_string(),
+                    model: HydroGenerationModel::Fpha,
                     fpha_config: Some(computed_layout_with_window(Some(100.0), Some(8_000.0))),
                     reference_volume: None,
                     productivity_mw_per_m3s: None,
                 },
                 SeasonConfig {
                     season_id: 1,
-                    model: "fpha".to_string(),
+                    model: HydroGenerationModel::Fpha,
                     fpha_config: Some(computed_layout_with_window(Some(100.0), Some(20_000.0))),
                     reference_volume: None,
                     productivity_mw_per_m3s: None,
@@ -1887,7 +1895,7 @@ fn coverage_gap_returns_validation_error() {
             ranges: vec![StageRange {
                 start_stage_id: 0,
                 end_stage_id: Some(1),
-                model: "fpha".to_string(),
+                model: HydroGenerationModel::Fpha,
                 fpha_config: Some(computed_layout_with_window(None, None)),
                 reference_volume: None,
                 productivity_mw_per_m3s: None,
@@ -2605,7 +2613,7 @@ fn config_with_reference_volume(rv: Option<ReferenceVolume>) -> ProductionModelC
             ranges: vec![StageRange {
                 start_stage_id: 0,
                 end_stage_id: None,
-                model: "constant_productivity".to_string(),
+                model: HydroGenerationModel::ConstantProductivity,
                 fpha_config: None,
                 reference_volume: rv,
                 productivity_mw_per_m3s: Some(0.5),
@@ -2639,7 +2647,7 @@ fn find_reference_volume_for_stage_returns_none_outside_coverage() {
             ranges: vec![StageRange {
                 start_stage_id: 5,
                 end_stage_id: Some(10),
-                model: "constant_productivity".to_string(),
+                model: HydroGenerationModel::ConstantProductivity,
                 fpha_config: None,
                 reference_volume: Some(ReferenceVolume::AbsoluteHm3(800.0)),
                 productivity_mw_per_m3s: Some(0.5),
@@ -2707,7 +2715,7 @@ fn ref_vol_artifacts(rv: Option<ReferenceVolume>) -> novomodelo_io::CaseArtifact
                 ranges: vec![StageRange {
                     start_stage_id: 0,
                     end_stage_id: None,
-                    model: "constant_productivity".to_string(),
+                    model: HydroGenerationModel::ConstantProductivity,
                     fpha_config: None,
                     reference_volume: rv,
                     productivity_mw_per_m3s: Some(1.0),
@@ -2802,18 +2810,18 @@ fn seasonal_reference_volume_supports_nonzero_start_season() {
         production_models: vec![ProductionModelConfig {
             hydro_id: EntityId::from(0),
             selection_mode: SelectionMode::Seasonal {
-                default_model: "constant_productivity".to_string(),
+                default_model: HydroGenerationModel::ConstantProductivity,
                 seasons: vec![
                     SeasonConfig {
                         season_id: 1,
-                        model: "constant_productivity".to_string(),
+                        model: HydroGenerationModel::ConstantProductivity,
                         fpha_config: None,
                         reference_volume: Some(ReferenceVolume::Percentile(0.8)),
                         productivity_mw_per_m3s: Some(1.0),
                     },
                     SeasonConfig {
                         season_id: 2,
-                        model: "constant_productivity".to_string(),
+                        model: HydroGenerationModel::ConstantProductivity,
                         fpha_config: None,
                         reference_volume: Some(ReferenceVolume::Percentile(0.2)),
                         productivity_mw_per_m3s: Some(1.0),

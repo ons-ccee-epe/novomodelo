@@ -849,8 +849,8 @@ mod proptests {
             description: None,
             expression: ConstraintExpression { terms: vec![] },
             slack: None,
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            bound_lower: None,
+            bound_upper: None,
         }
     }
 

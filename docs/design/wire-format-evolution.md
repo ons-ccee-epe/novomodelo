@@ -5,13 +5,18 @@
 > assignments of policy checkpoint manifest fields; re-derive against the live
 > tree before acting.
 
-`VariableRef` (`novomodelo-core`) and `BroadcastComputedParameter` (`novomodelo-io`) are
-postcard-encoded enums with no version byte: postcard serializes a variant as
-its positional index, so inserting a variant mid-enum silently shifts every
-later discriminant and reinterprets previously serialized values as the wrong
-variant. Both enums are therefore append-only — a new variant is added at the
-tail only — and each tail assignment is guarded by a first-byte discriminant
-pin plus a full encode → decode → equality round-trip.
+Every postcard-encoded enum this register tracks — every enum named in the
+Enum column of the table below — has no version byte: postcard serializes a
+variant as its positional index, so inserting a variant mid-enum silently
+shifts every later discriminant and reinterprets previously serialized values
+as the wrong variant. Each such enum is therefore append-only — a new variant
+is added at the tail only — and each tail assignment is guarded by a
+first-byte discriminant pin plus a full encode → decode → equality round-trip.
+
+A `ScalarExpr` serializes as the bare sequence of its `ScalarOp`s and
+deserializes by replaying that sequence through its constructors, so a
+malformed op list (empty, an operator with too few operands, or more than one
+value left) is a decoding error, never a value.
 
 ## Tail assignments
 
@@ -25,13 +30,21 @@ pin plus a full encode → decode → equality round-trip.
 | `IntegratedAccumulatedProductivityMwhPerHm3` | `BroadcastComputedParameter` | `0x0A` | `broadcast_computed_parameter_postcard_discriminant_pin` (pin); `broadcast_computed_parameter_mwh_tags_round_trip` (round-trip) |
 | `MaxStoredEnergyMwh` | `BroadcastComputedParameter` | `0x0B` | `broadcast_computed_parameter_postcard_discriminant_pin` (pin); `broadcast_computed_parameter_mwh_tags_round_trip` (round-trip) |
 | `IntegratedEquivalentProductivityMwhPerHm3` | `BroadcastComputedParameter` | `0x0C` | `broadcast_computed_parameter_postcard_discriminant_pin` (pin); `broadcast_computed_parameter_mwh_tags_round_trip` (round-trip) |
+| `Literal` | `ScalarOp` | `0x00` | `scalar_op_postcard_discriminant_pin` (pin); `scalar_expr_postcard_round_trip` (round-trip) |
+| `Param` | `ScalarOp` | `0x01` | `scalar_op_postcard_discriminant_pin` (pin); `scalar_expr_postcard_round_trip` (round-trip) |
+| `Neg` | `ScalarOp` | `0x02` | `scalar_op_postcard_discriminant_pin` (pin); `scalar_expr_postcard_round_trip` (round-trip) |
+| `Add` | `ScalarOp` | `0x03` | `scalar_op_postcard_discriminant_pin` (pin); `scalar_expr_postcard_round_trip` (round-trip) |
+| `Sub` | `ScalarOp` | `0x04` | `scalar_op_postcard_discriminant_pin` (pin); `scalar_expr_postcard_round_trip` (round-trip) |
+| `Mul` | `ScalarOp` | `0x05` | `scalar_op_postcard_discriminant_pin` (pin); `scalar_expr_postcard_round_trip` (round-trip) |
+| `Div` | `ScalarOp` | `0x06` | `scalar_op_postcard_discriminant_pin` (pin); `scalar_expr_postcard_round_trip` (round-trip) |
+| `Expression` | `BroadcastParameterKind` | `0x05` | `broadcast_parameter_kind_postcard_discriminant_pin` (pin); `broadcast_parameter_kind_expression_round_trip` (round-trip) |
 
 ## Why no reject-old-version test applies
 
 A dual-owned wire format normally carries both a round-trip test and a
 reject-old-version test (a stale version byte must fail decoding rather than
 silently corrupt). Neither obligation is missing here — it does not apply, for
-two reasons specific to these two enums:
+two reasons that hold for every enum this register tracks:
 
 - **No version byte to reject on.** Postcard encodes an enum variant purely as
   its positional index; there is no separate version field in the payload for
@@ -39,16 +52,15 @@ two reasons specific to these two enums:
   test has nothing to assert against — the discriminant pin already covers the
   failure mode a version byte would guard (a shifted index reinterpreting a
   byte as the wrong variant).
-- **Same-version-ranks-only, never persisted.** `VariableRef` values travel
-  inside the in-process constraint model built and consumed within one solver
-  build. `BroadcastComputedParameter` values travel only between MPI ranks of
-  a single running solve, broadcast from the same binary that constructed
-  them. Neither payload is written to disk and read back by a possibly older
-  or newer build, so there is no cross-version compatibility surface to test.
+- **Same-version-ranks-only, never persisted.** Every tracked enum travels
+  only within one build, either inside the in-process model or between the
+  MPI ranks of one solve broadcast from the same binary, and none is written
+  to disk and read back by a possibly older or newer build, so there is no
+  cross-version compatibility surface to test.
 
-A future reader should not file a "missing reject-test" finding against either
-enum on this basis; the discriminant pin plus the full round-trip is the
-complete discipline for an append-only, non-versioned, non-persisted wire
+A future reader should not file a "missing reject-test" finding against any
+tracked enum on this basis; the discriminant pin plus the full round-trip is
+the complete discipline for an append-only, non-versioned, non-persisted wire
 enum.
 
 ## How to append a new variant

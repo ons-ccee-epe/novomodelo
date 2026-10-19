@@ -254,6 +254,7 @@ mod tests {
             equivalent_productivity_mw_per_m3s: rho_eq,
             reference_outflow_m3s: None,
             specific_productivity_mw_per_m3s_per_m: None,
+            integrated_equivalent_productivity_mw_per_m3s: None,
         }
     }
 
@@ -264,7 +265,7 @@ mod tests {
                 ranges: vec![StageRange {
                     start_stage_id: 0,
                     end_stage_id: None,
-                    model: "constant_productivity".to_string(),
+                    model: HydroGenerationModel::ConstantProductivity,
                     fpha_config: None,
                     reference_volume: None,
                     productivity_mw_per_m3s: productivity,
@@ -439,7 +440,7 @@ mod tests {
         let mut data = crate::test_support::base_parsed_data(stages(), buses());
         data.hydros = vec![
             make_hydro(0, HydroGenerationModel::ConstantProductivity),
-            make_hydro(1, HydroGenerationModel::LinearizedHead),
+            make_hydro(1, HydroGenerationModel::ConstantProductivity),
         ];
         // Hydro 0: conflict — JSON Some(0.9), parquet Some(1.1).
         data.production_models = vec![
@@ -488,7 +489,7 @@ mod tests {
                 ranges: vec![StageRange {
                     start_stage_id: 0,
                     end_stage_id: Some(5),
-                    model: "constant_productivity".to_string(),
+                    model: HydroGenerationModel::ConstantProductivity,
                     fpha_config: None,
                     reference_volume: None,
                     productivity_mw_per_m3s: Some(0.5),
@@ -505,10 +506,10 @@ mod tests {
         let config = ProductionModelConfig {
             hydro_id: EntityId(0),
             selection_mode: SelectionMode::Seasonal {
-                default_model: "constant_productivity".to_string(),
+                default_model: HydroGenerationModel::ConstantProductivity,
                 seasons: vec![SeasonConfig {
                     season_id: 0,
-                    model: "constant_productivity".to_string(),
+                    model: HydroGenerationModel::ConstantProductivity,
                     fpha_config: None,
                     reference_volume: None,
                     productivity_mw_per_m3s: Some(0.8),
@@ -526,10 +527,10 @@ mod tests {
         let config = ProductionModelConfig {
             hydro_id: EntityId(0),
             selection_mode: SelectionMode::Seasonal {
-                default_model: "constant_productivity".to_string(),
+                default_model: HydroGenerationModel::ConstantProductivity,
                 seasons: vec![SeasonConfig {
                     season_id: 5,
-                    model: "constant_productivity".to_string(),
+                    model: HydroGenerationModel::ConstantProductivity,
                     fpha_config: None,
                     reference_volume: None,
                     productivity_mw_per_m3s: Some(0.8),

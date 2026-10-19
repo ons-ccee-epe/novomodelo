@@ -43,6 +43,7 @@ pub mod broadcast;
 pub mod config;
 pub mod constraints;
 pub mod error;
+pub(crate) mod expression;
 pub mod extensions;
 pub mod initial_conditions;
 pub mod output;

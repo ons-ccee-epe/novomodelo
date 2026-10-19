@@ -130,11 +130,10 @@ impl HydroPenalties {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum HydroGenerationModel {
     /// Constant power per unit flow, independent of reservoir head.
     ConstantProductivity,
-    /// Head-dependent productivity linearized around the head at each time step.
-    LinearizedHead,
     /// Full production function with head-area-productivity tables (FPHA model).
     ///
     /// Requires forebay and tailrace elevation tables for high-fidelity head effects.
@@ -256,9 +255,11 @@ pub struct Hydro {
     pub max_turbined_m3s: f64,
     /// Specific productivity `ρ_esp` \[MW / ((m³/s) · m)\].
     ///
-    /// FPHA hydros derive `ρ_eq` = `ρ_esp` · `h_eq(V_ref, Q_ref)` from this, or may
-    /// supply `ρ_eq` directly via `system/hydro_energy_productivity.parquet`; if
-    /// neither is supplied the case is rejected. Non-FPHA hydros ignore this field.
+    /// FPHA hydros derive the reference-point `ρ_eq` = `ρ_esp` · `h_eq(V_ref, Q_ref)`
+    /// from this, or may supply `ρ_eq` directly via
+    /// `system/hydro_energy_productivity.parquet`; if neither is supplied the case is
+    /// rejected. Any hydro with VHA geometry also derives its useful-range mean
+    /// productivity from this.
     #[cfg_attr(feature = "serde", serde(default))]
     pub specific_productivity_mw_per_m3s_per_m: Option<f64>,
     /// Minimum electrical generation \[MW\].
@@ -422,7 +423,7 @@ mod tests {
             max_storage_hm3: 45_000.0,
             min_outflow_m3s: 1000.0,
             max_outflow_m3s: Some(100_000.0),
-            generation_model: HydroGenerationModel::LinearizedHead,
+            generation_model: HydroGenerationModel::Fpha,
             min_turbined_m3s: 500.0,
             max_turbined_m3s: 22_500.0,
             specific_productivity_mw_per_m3s_per_m: None,
@@ -745,13 +746,6 @@ mod tests {
         let cp_rt: HydroGenerationModel =
             serde_json::from_str(&cp_json).expect("deserialize constant_productivity");
         assert_eq!(cp_rt, HydroGenerationModel::ConstantProductivity);
-
-        let lh_json =
-            serde_json::to_string(&HydroGenerationModel::LinearizedHead).expect("serialize");
-        assert_eq!(lh_json, r#""linearized_head""#);
-        let lh_rt: HydroGenerationModel =
-            serde_json::from_str(&lh_json).expect("deserialize linearized_head");
-        assert_eq!(lh_rt, HydroGenerationModel::LinearizedHead);
 
         let fpha_json = serde_json::to_string(&HydroGenerationModel::Fpha).expect("serialize");
         assert_eq!(fpha_json, r#""fpha""#);
