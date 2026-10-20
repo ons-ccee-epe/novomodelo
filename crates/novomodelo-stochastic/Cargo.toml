@@ -26,7 +26,7 @@ slow-tests = []
 test-support = ["novomodelo-core/test-support"]
 
 [dependencies]
-novomodelo-core = { version = "0.18.1", path = "../novomodelo-core" }
+novomodelo-core = { version = "0.19.0", path = "../novomodelo-core" }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 siphasher = "1"
 rand = "0.10"
@@ -38,7 +38,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 chrono = "0.4"
-novomodelo-core = { version = "0.18.1", path = "../novomodelo-core", features = ["test-support"] }
+novomodelo-core = { version = "0.19.0", path = "../novomodelo-core", features = ["test-support"] }
 novomodelo-stochastic = { path = ".", features = ["test-support"] }
 proptest = "1"
 

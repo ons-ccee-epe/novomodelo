@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-20
+
 ### Added
 
 - `training.cut_selection.selection.lookback_iterations` for `level1`: the
@@ -1892,7 +1894,8 @@ target_bus)`.
 
 <!-- next-url -->
 
-[Unreleased]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.18.1...HEAD
+[Unreleased]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/ons-ccee-epe/novomodelo/compare/fork-point...v0.18.0
 [Cobre 0.18.0]: https://github.com/cobre-rs/cobre/compare/v0.17.0...v0.18.0
