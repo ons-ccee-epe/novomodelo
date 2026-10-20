@@ -170,11 +170,14 @@ write) and `inflow_slack_index_buffer_rebuilds_on_start_change_at_equal_length`
 `inflow_slack_bounds_for_probe_evaluates_the_given_state` (`l*` follows the
 pinned lags of the given state — forbids a precomputed scenario path),
 `frozen_inflow_slack_bounds_reach_the_successor_lp`,
-`cut_oracles_hold_on_every_committed_deck_with_lag_or_anticipated_state` and
-`frozen_correction_resolves_cuts_at_their_own_trial_lags` (each stored cut is a
-minorant of its own frozen-correction successor value; the last one, on the
-negative-draw PAR(1) study, re-solves at other cuts' frozen corrections, so the
-comparator has power). On solved LPs: in `tests/inflow_nonnegativity.rs`,
+`cut_oracles_hold_on_every_committed_deck_with_lag_or_anticipated_state`,
+`frozen_correction_resolves_cuts_at_their_own_trial_lags` and
+`cut_oracles_hold_with_sloped_cuts_on_the_negative_draw_water_value_study` (each
+stored cut is a minorant of its own frozen-correction successor value; the last
+two, on the negative-draw PAR(1) study and its water-value variant, re-solve at
+other cuts' frozen corrections, and the variant's cuts are sloped, so the
+comparator can tell a right reference from a wrong one). On solved LPs: in
+`tests/inflow_nonnegativity.rs`,
 `truncation_slack_is_fixed_at_the_negated_raw_inflow`,
 `truncation_with_penalty_slack_is_capped_by_the_truncation_amount`,
 `truncation_with_penalty_slack_is_zero_for_non_negative_inflow` and
@@ -182,7 +185,9 @@ comparator has power). On solved LPs: in `tests/inflow_nonnegativity.rs`,
 `truncation_keeps_the_raw_par_value_as_the_next_lag` (a raw negative lag reaches
 the next z row), `truncation_simulated_slack_matches_the_negated_inflow_at_raw_lags`,
 `simulated_water_balance_closes_from_outputs` (the balance closes from the written
-outputs under every method, warm start on and off) and
+outputs under every method, warm start on and off),
+`simulated_water_balance_closes_with_a_nonzero_release` (the same with water
+released and a withdrawal withheld) and
 `truncation_lag_sequence_is_order_invariant`;
 `truncation_out_of_lp_par_value_matches_the_z_row` (`tests/hydro_sim.rs`, the
 out-of-LP `r` equals the solved z on monthly and quarterly stages); and
