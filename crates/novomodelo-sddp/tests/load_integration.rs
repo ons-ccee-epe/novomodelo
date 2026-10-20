@@ -30,7 +30,7 @@ use novomodelo_core::{
     },
 };
 use novomodelo_sddp::{
-    SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
+    LoadedPolicy, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
     config::{CutManagementConfig, EventConfig, LoopConfig},
     context::TrainingContext,
     cut::fcf::FutureCostFunction,
@@ -438,7 +438,7 @@ fn test_stochastic_load_training_completes() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .expect("train must succeed with stochastic load");
@@ -551,7 +551,7 @@ fn test_deterministic_load_training_matches_baseline() {
         },
         &comm,
         || Ok(MockSolver::with_fixed(100.0)),
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
     .expect("train must succeed with deterministic load");
@@ -647,7 +647,7 @@ fn test_stochastic_load_seed_determinism() {
             },
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
-            None,
+            LoadedPolicy::default(),
             SolverProfiles::default(),
         )
         .expect("train must succeed");

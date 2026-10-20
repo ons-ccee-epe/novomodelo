@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-use novomodelo_core::{BlockMode, EntityId, PostStudyThermalBound};
+use novomodelo_core::{BlockMode, EntityId, PenaltyBasis, PostStudyThermalBound, SlackConfig};
 use novomodelo_solver::StageTemplate;
 
 use crate::lp::builder::{GenericConstraintRowEntry, StageGeometry, StateBox};
@@ -194,8 +194,7 @@ fn put_gc_entry(buf: &mut Vec<u8>, entry: &GenericConstraintRowEntry) {
         is_stage_level,
         bound_lower,
         bound_upper,
-        slack_enabled,
-        slack_penalty,
+        slack,
         slack_plus_col,
         slack_minus_col,
     } = entry;
@@ -205,10 +204,26 @@ fn put_gc_entry(buf: &mut Vec<u8>, entry: &GenericConstraintRowEntry) {
     put_bool(buf, *is_stage_level);
     put_option_f64(buf, *bound_lower);
     put_option_f64(buf, *bound_upper);
-    put_bool(buf, *slack_enabled);
-    put_f64(buf, *slack_penalty);
+    put_option_slack(buf, *slack);
     put_option_usize(buf, *slack_plus_col);
     put_option_usize(buf, *slack_minus_col);
+}
+
+fn put_option_slack(buf: &mut Vec<u8>, value: Option<SlackConfig>) {
+    match value {
+        Some(SlackConfig {
+            penalty,
+            penalty_basis,
+        }) => {
+            buf.push(1);
+            put_f64(buf, penalty);
+            buf.push(match penalty_basis {
+                PenaltyBasis::PerHour => 0,
+                PenaltyBasis::PerUnit => 1,
+            });
+        }
+        None => buf.push(0),
+    }
 }
 
 fn entities_per_block(
@@ -243,6 +258,8 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
         outflow_above_slack,
         turbine_below_slack,
         generation_below_slack,
+        plant_turbine_below_slack,
+        plant_generation_below_slack,
         contract_import,
         contract_export,
         water_balance,
@@ -252,6 +269,8 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
         filling_target_col,
         filled_min_storage_floor,
         filled_min_storage_floor_col,
+        plant_max_turbine,
+        plant_max_generation,
         n_blks,
         storage_internal_start,
         block_mode,
@@ -259,6 +278,8 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
         evap_hydro_indices,
         filling_target_hydro_indices,
         filled_min_storage_floor_hydro_indices,
+        plant_floor_hydro_indices,
+        plant_cap_hydro_indices,
     } = geometry;
 
     put_usize(buf, state.theta);
@@ -285,6 +306,8 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
     put_range(buf, outflow_above_slack);
     put_range(buf, turbine_below_slack);
     put_range(buf, generation_below_slack);
+    put_range(buf, plant_turbine_below_slack);
+    put_range(buf, plant_generation_below_slack);
     put_range(buf, contract_import);
     put_range(buf, contract_export);
     put_block_row_family(buf, *water_balance);
@@ -294,6 +317,8 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
     put_range(buf, filling_target_col);
     put_range(buf, filled_min_storage_floor);
     put_range(buf, filled_min_storage_floor_col);
+    put_range(buf, plant_max_turbine);
+    put_range(buf, plant_max_generation);
 
     put_usize(buf, state.z_inflow_rows().start);
     put_usize(buf, *n_blks);
@@ -313,6 +338,8 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
     put_hydro_sys_slice(buf, evap_hydro_indices);
     put_hydro_sys_slice(buf, filling_target_hydro_indices);
     put_hydro_sys_slice(buf, filled_min_storage_floor_hydro_indices);
+    put_hydro_sys_slice(buf, plant_floor_hydro_indices);
+    put_hydro_sys_slice(buf, plant_cap_hydro_indices);
 }
 
 /// Encode every fact of [`StageTemplates`] — the LP templates plus every

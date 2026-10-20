@@ -3,9 +3,19 @@ use crate::SddpError;
 /// Test-only backward-pass shim that owns per-call scratch, so the tests in
 /// this module can exercise the backward pass without threading a full
 /// `TrainingSession` through every fixture.
-#[cfg(test)]
 fn run_backward_pass<S, C: Communicator>(
     inputs: &mut BackwardPassInputs<'_, S, C>,
+) -> Result<BackwardResult, SddpError>
+where
+    S: SolverInterface<Profile = novomodelo_solver::ActiveProfile> + Send,
+{
+    run_backward_pass_configured(inputs, |_| {})
+}
+
+/// [`run_backward_pass`] with `configure` applied to the state before the run.
+fn run_backward_pass_configured<S, C: Communicator>(
+    inputs: &mut BackwardPassInputs<'_, S, C>,
+    configure: impl FnOnce(&mut BackwardPassState),
 ) -> Result<BackwardResult, SddpError>
 where
     S: SolverInterface<Profile = novomodelo_solver::ActiveProfile> + Send,
@@ -17,19 +27,20 @@ where
         .map(|t| inputs.training_ctx.stochastic.opening_tree().n_openings(t))
         .max()
         .unwrap_or(0);
-    let real_states_capacity =
-        inputs.exchange.real_total_scenarios() * inputs.training_ctx.state.n_state;
     let mut bwd_state = BackwardPassState::new(
         n_workers_local,
         n_ranks,
         bwd_max_openings,
-        real_states_capacity,
         inputs.local_work,
         inputs.training_ctx.state,
         inputs.training_ctx.horizon,
     );
+    configure(&mut bwd_state);
     bwd_state.run(inputs)
 }
+
+use std::any::TypeId;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
 use novomodelo_solver::{
@@ -39,6 +50,7 @@ use novomodelo_solver::{
 
 use novomodelo_core::scenario::SamplingScheme;
 use novomodelo_core::{StageStateConfig, WorkerPhaseTimings};
+use novomodelo_io::config::BackwardScheduler;
 
 use super::BackwardResult;
 use crate::{
@@ -127,7 +139,7 @@ impl SingleSuccessor {
             &self.cut_batches,
             pools,
             template_num_rows,
-            cut_activity_tolerance,
+            Some(cut_activity_tolerance),
         )
     }
 }
@@ -203,7 +215,7 @@ impl MultiSuccessor {
             &self.cut_batches,
             pools,
             template_num_rows,
-            cut_activity_tolerance,
+            Some(cut_activity_tolerance),
         )
     }
 }
@@ -972,7 +984,6 @@ fn single_stage_system_produces_no_cuts() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1055,7 +1066,6 @@ fn two_stage_system_two_trial_states_generates_two_cuts_at_stage_0() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1145,7 +1155,6 @@ fn cut_inserted_with_correct_stage_iteration_and_forward_pass_index() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1229,7 +1238,6 @@ fn no_cuts_generated_at_last_stage() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1314,7 +1322,6 @@ fn elapsed_ms_is_non_negative() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1394,7 +1401,6 @@ fn infeasible_solver_returns_sddp_infeasible_error() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1509,7 +1515,6 @@ fn cut_coefficients_and_intercept_match_dual_extraction_formula() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1605,7 +1610,6 @@ fn cut_gradient_sign_physically_correct() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1712,7 +1716,6 @@ fn cut_is_tight_at_trial_state() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1809,7 +1812,6 @@ fn single_rank_backward_pass_with_local_backend_produces_correct_fcf() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -1917,7 +1919,6 @@ fn forward_pass_index_matches_global_scenario_index() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -2011,7 +2012,6 @@ fn warm_start_uses_prepopulated_forward_basis() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -2098,7 +2098,6 @@ fn multi_opening_subsequent_openings_use_internal_hotstart() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -2191,7 +2190,6 @@ fn backward_solver_error_propagates() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -2213,7 +2211,7 @@ fn backward_solver_error_propagates() {
 
 // ── Parallel cut determinism ──────────────────────────────────────────────
 
-/// AC: When `run_backward_pass` runs with 1 workspace vs 4 workspaces given
+/// When `run_backward_pass` runs with 1 workspace vs 4 workspaces given
 /// the same input data, the FCF pools contain identical cuts (same intercept,
 /// coefficient vectors, and slot assignments for each trial point).
 #[test]
@@ -2304,7 +2302,6 @@ fn test_backward_pass_parallel_cut_determinism() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -2367,7 +2364,6 @@ fn test_backward_pass_parallel_cut_determinism() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -2592,7 +2588,7 @@ fn make_stochastic_context_with_load(
     .unwrap()
 }
 
-/// AC: Given a backward pass with 1 stochastic load bus and opening noise
+/// Given a backward pass with 1 stochastic load bus and opening noise
 /// that includes a load component eta, the load balance row RHS in the patch
 /// buffer is set to `max(0, mean + std * eta) * block_factor` before the solve.
 ///
@@ -2708,7 +2704,6 @@ fn backward_pass_load_patches_applied() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -2730,7 +2725,7 @@ fn backward_pass_load_patches_applied() {
     );
 }
 
-/// AC: Given a backward pass with 0 stochastic load buses, `patch_count`
+/// Given a backward pass with 0 stochastic load buses, `patch_count`
 /// equals `N` (z-inflow only, no load patches) and `load_rhs_buf` stays empty.
 ///
 /// N=1 → `patch_count = 1`.
@@ -2834,7 +2829,6 @@ fn backward_pass_no_load_buses_unchanged() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -2856,7 +2850,7 @@ fn backward_pass_no_load_buses_unchanged() {
     );
 }
 
-/// AC: Given a backward pass with stochastic load, when Benders cut
+/// Given a backward pass with stochastic load, when Benders cut
 /// coefficients are extracted, the cut coefficient array has length `n_state`
 /// unchanged — load adds no state variables.
 ///
@@ -2961,7 +2955,6 @@ fn backward_pass_cut_coefficients_unaffected() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -3075,7 +3068,6 @@ fn per_stage_cut_sync_invariant_after_bug1_fix() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -3109,23 +3101,28 @@ fn per_stage_cut_sync_invariant_after_bug1_fix() {
     );
 }
 
-/// Acceptance criterion: within a single backward
-/// iteration on a 3-stage system with `LocalBackend` (single-rank),
-/// cuts generated at stage t=1 are visible at stage t=0 and appear
-/// binding (mock returns positive cut duals). The metadata sync
-/// correctly accumulates `active_count` and sets `last_active_iter`.
-///
-/// Uses `MockSolver::always_ok_with_binding_cuts` so that cut rows
-/// return positive duals, making them appear binding when evaluated.
-#[test]
-#[allow(clippy::too_many_lines)]
-fn metadata_sync_updates_active_count_and_last_active_iter() {
-    use novomodelo_comm::LocalBackend;
+/// What [`backward_iteration_3_over_three_old_cuts`] leaves behind.
+struct BindingFixtureRun {
+    result: BackwardResult,
+    fcf: FutureCostFunction,
+    workspaces: Vec<SolverWorkspace<MockSolver>>,
+}
 
+/// One backward pass at iteration 3 over a 3-stage chain whose pool 1 already
+/// holds 3 cuts generated at iteration 1, with 3 trial points and 2 openings.
+/// `MockSolver::always_ok_with_binding_cuts` returns a positive dual on every
+/// cut row, so every cut a solve carries appears binding.
+#[allow(clippy::too_many_lines)]
+fn backward_iteration_3_over_three_old_cuts<C: Communicator>(
+    comm: &C,
+    configure: impl FnOnce(&mut BackwardPassState),
+) -> BindingFixtureRun {
     // 3-stage system: backward loop processes t=1 then t=0.
+    // Pool[1] already holds 3 cuts generated at iteration 1, which the iteration-3
+    // frozen LP of stage 1 carries as 3 extra rows.
     // At t=1: generates cuts into pool[1], successor pool[2] is empty.
-    // At t=0: generates cuts into pool[0], successor pool[1] has cuts
-    //         from t=1. Mock duals make those cuts appear binding.
+    // At t=0: generates cuts into pool[0], successor pool[1] has the old and the
+    //         new cuts. Mock duals make them appear binding.
     let n_stages = 3_usize;
     let n_openings = 2_usize;
     let stochastic = make_stochastic_context(n_stages, n_openings);
@@ -3136,6 +3133,18 @@ fn metadata_sync_updates_active_count_and_last_active_iter() {
     let forward_passes = 3_u32;
     let mut fcf =
         FutureCostFunction::new(n_stages, n_state, forward_passes, 20, &vec![0; n_stages]);
+    for forward_pass_index in 0..forward_passes {
+        fcf.add_cut(
+            NodeId(1),
+            1,
+            1,
+            forward_pass_index,
+            0.0,
+            &vec![0.0; n_state],
+        );
+    }
+    let mut frozen = templates.clone();
+    frozen[1].num_rows += forward_passes as usize;
     let (mut exchange, records) =
         exchange_and_records(n_state, &[vec![10.0], vec![20.0], vec![30.0]], n_stages);
 
@@ -3146,16 +3155,304 @@ fn metadata_sync_updates_active_count_and_last_active_iter() {
 
     let solution = solution_1_0(100.0, -5.0);
     let solver = MockSolver::always_ok_with_binding_cuts(solution);
-    let comm = LocalBackend;
     let mut workspaces = single_workspace(solver, n_state);
     let mut basis_store = empty_basis_store(exchange.local_count(), n_stages);
 
     let mut csb = CutSyncBuffers::new(n_state, forward_passes as usize, 1);
     let state_boxes = permissive_state_boxes(n_state, n_stages);
 
-    // Run a single backward iteration. The backward loop visits t=1
-    // (cuts go to pool[1]), then t=0 (cuts go to pool[0], binding
-    // checked against pool[1]).
+    let result = run_backward_pass_configured(
+        &mut BackwardPassInputs {
+            workspaces: &mut workspaces,
+            basis_store: &mut basis_store,
+            ctx: &StageContextFixture::new(
+                &templates,
+                &state_boxes,
+                &equipment_free_geometry(&vec![0; templates.len()]),
+            )
+            .ctx(),
+            frozen: &mut frozen,
+            fcf: &mut fcf,
+            cut_batches: &mut empty_cut_batches(templates.len()),
+            training_ctx: &TrainingContext {
+                node_graph: &crate::test_support::chain_node_graph(&stochastic),
+                horizon: &horizon,
+                state: &state,
+                cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
+                study_dims: &test_support::study_dims(),
+                inflow_method: &InflowNonNegativityMethod::None,
+                stochastic: &stochastic,
+                initial_state: &[],
+                inflow_scheme: SamplingScheme::InSample,
+                load_scheme: SamplingScheme::InSample,
+                ncs_scheme: SamplingScheme::InSample,
+                stages: &[],
+                historical_library: None,
+                external_inflow_library: None,
+                external_load_library: None,
+                external_ncs_library: None,
+                lag_accum_seed: &[],
+                lag_weight_seed: &[],
+                dcs: None,
+            },
+            comm,
+            records: &records,
+            iteration: 3,
+            local_work: exchange.local_count(),
+            fwd_offset: 0,
+            risk_measures: &risk_measures,
+            exchange: &mut exchange,
+            cut_activity_tolerance: 0.0,
+            cut_sync_bufs: &mut csb,
+            event_sender: None,
+
+            traversal: &Traversal::default(),
+            enumerated_state: &EnumeratedForwardScratch::default(),
+        },
+        configure,
+    )
+    .unwrap();
+
+    BindingFixtureRun {
+        result,
+        fcf,
+        workspaces,
+    }
+}
+
+/// Cuts generated at iteration 1 and found binding at iteration 3 carry
+/// `last_active_iter == 3`, a value only the metadata sync can have written
+/// (`add_cut` stamps the generating iteration), and the sync accumulates
+/// `active_count`.
+#[test]
+fn metadata_sync_advances_last_active_iter_past_the_generating_iteration() {
+    use novomodelo_comm::LocalBackend;
+
+    let BindingFixtureRun { result, fcf, .. } =
+        backward_iteration_3_over_three_old_cuts(&LocalBackend, |_| {});
+
+    // 3 stages × (n_stages-1=2 non-terminal) × 3 trial points = 6 cuts.
+    assert_eq!(result.cuts_generated, 6);
+
+    // Pool[1] holds the 3 cuts generated at iteration 1 and the 3 generated by
+    // this pass at iteration 3.
+    // Slot formula: warm_start(0) + iteration * fwd_passes(3) + fpi
+    // → slots 3, 4, 5 and 9, 10, 11. Populated count = 12 (high-water mark).
+    assert_eq!(fcf.pools[1].populated(), 12);
+
+    // At t=0, the 3 cuts in pool[1] generated at iteration 1 (slots 3,4,5)
+    // were evaluated for binding. The mock solver returns positive duals
+    // (cut_dual_padding = 1.0) for all cut rows. Each trial point has
+    // n_openings=2 openings, and the binding check runs per opening. So each
+    // slot gets 3 trial points × 2 openings = 6 increments.
+    for slot in 3..6 {
+        assert!(
+            fcf.pools[1].metadata(slot).active_count > 0,
+            "slot {slot} active_count should be > 0 (cuts were binding)"
+        );
+        assert_eq!(
+            fcf.pools[1].metadata(slot).active_count,
+            6,
+            "slot {slot} active_count should be 6 (3 trial points × 2 openings)"
+        );
+        assert_eq!(
+            fcf.pools[1].metadata(slot).last_active_iter,
+            3,
+            "slot {slot} was generated at iteration 1 and found binding at iteration 3"
+        );
+    }
+
+    // Pool[2] (terminal successor) received no cuts and no binding
+    // was checked against it — metadata should be at defaults.
+    assert_eq!(fcf.pools[2].populated(), 0);
+}
+
+/// Single-rank communicator counting the `u64` `Sum` reductions; the binding
+/// metadata sync issues the only ones of a backward pass (the worker-count
+/// check reduces `u64` with `Min`/`Max`, every other `Sum` reduces `f64`).
+#[derive(Default)]
+struct MetadataReductionCountingComm {
+    metadata_reductions: AtomicUsize,
+}
+
+impl Communicator for MetadataReductionCountingComm {
+    fn allgatherv<T: CommData>(
+        &self,
+        send: &[T],
+        recv: &mut [T],
+        _counts: &[usize],
+        _displs: &[usize],
+    ) -> Result<(), CommError> {
+        recv[..send.len()].copy_from_slice(send);
+        Ok(())
+    }
+
+    fn allreduce<T: CommData>(
+        &self,
+        send: &[T],
+        recv: &mut [T],
+        op: ReduceOp,
+    ) -> Result<(), CommError> {
+        if matches!(op, ReduceOp::Sum) && TypeId::of::<T>() == TypeId::of::<u64>() {
+            self.metadata_reductions.fetch_add(1, Ordering::Relaxed);
+        }
+        recv[..send.len()].copy_from_slice(send);
+        Ok(())
+    }
+
+    fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
+        unreachable!("the backward pass issues no broadcast")
+    }
+
+    fn barrier(&self) -> Result<(), CommError> {
+        Ok(())
+    }
+
+    fn rank(&self) -> usize {
+        0
+    }
+
+    fn size(&self) -> usize {
+        1
+    }
+
+    fn abort(&self, error_code: i32) -> ! {
+        std::process::exit(error_code)
+    }
+}
+
+/// With binding tracking off the backward pass issues no metadata reduction,
+/// writes no binding metadata, copies no cut-row dual and never touches the
+/// workers' binding buffers, and it generates the same cuts as with tracking on;
+/// under either scheduler.
+#[test]
+fn binding_is_recorded_only_when_tracking_is_on() {
+    let cut_bits = |fcf: &FutureCostFunction| -> Vec<(Vec<u64>, Vec<u64>)> {
+        fcf.pools
+            .iter()
+            .map(|pool| {
+                (
+                    pool.intercepts_prefix()
+                        .iter()
+                        .map(|v| v.to_bits())
+                        .collect(),
+                    pool.coefficients_prefix()
+                        .iter()
+                        .map(|v| v.to_bits())
+                        .collect(),
+                )
+            })
+            .collect()
+    };
+    let binding_buffers = |workspaces: &[SolverWorkspace<MockSolver>]| -> Vec<u64> {
+        workspaces
+            .iter()
+            .flat_map(|ws| {
+                ws.backward_accum
+                    .slot_increments
+                    .iter()
+                    .chain(&ws.backward_accum.metadata_sync_contribution)
+                    .copied()
+            })
+            .collect()
+    };
+
+    for scheduler in [
+        BackwardScheduler::ByScenario {},
+        BackwardScheduler::ByNode { block_size: None },
+    ] {
+        let comm_on = MetadataReductionCountingComm::default();
+        let on = backward_iteration_3_over_three_old_cuts(&comm_on, |state| {
+            state.set_scheduler(scheduler);
+        });
+        assert!(
+            comm_on.metadata_reductions.load(Ordering::Relaxed) >= 1,
+            "{scheduler:?}"
+        );
+        for slot in 3..6 {
+            let metadata = on.fcf.pools[1].metadata(slot);
+            assert!(metadata.active_count > 0, "{scheduler:?} slot {slot}");
+            assert_eq!(metadata.last_active_iter, 3, "{scheduler:?} slot {slot}");
+        }
+        assert!(
+            binding_buffers(&on.workspaces).iter().any(|&v| v > 0),
+            "{scheduler:?}: the fixture must fill a binding buffer for the off leg to have power"
+        );
+        assert!(
+            on.workspaces
+                .iter()
+                .any(|ws| !ws.backward_accum.cut_duals_buf.is_empty()),
+            "{scheduler:?}: the fixture must copy cut-row duals for the off leg to have power"
+        );
+
+        let comm_off = MetadataReductionCountingComm::default();
+        let off = backward_iteration_3_over_three_old_cuts(&comm_off, |state| {
+            state.set_scheduler(scheduler);
+            state.set_binding_tracking(false);
+        });
+        assert_eq!(
+            comm_off.metadata_reductions.load(Ordering::Relaxed),
+            0,
+            "{scheduler:?}"
+        );
+        for (pool_id, pool) in off.fcf.pools.iter().enumerate() {
+            for slot in 0..pool.populated() {
+                let metadata = pool.metadata(slot);
+                assert_eq!(
+                    metadata.active_count, 0,
+                    "{scheduler:?} pool {pool_id} slot {slot}"
+                );
+                assert_eq!(
+                    metadata.last_active_iter, metadata.iteration_generated,
+                    "{scheduler:?} pool {pool_id} slot {slot}"
+                );
+            }
+        }
+        // The fixture's buffers start empty, so an empty buffer is an untouched one.
+        assert!(
+            binding_buffers(&off.workspaces).is_empty(),
+            "{scheduler:?}: a worker grew, scanned or folded a binding buffer with tracking off"
+        );
+        assert!(
+            off.workspaces
+                .iter()
+                .all(|ws| ws.backward_accum.cut_duals_buf.is_empty()),
+            "{scheduler:?}: cut-row duals were copied with tracking off"
+        );
+
+        assert_eq!(on.result.cuts_generated, off.result.cuts_generated);
+        assert_eq!(cut_bits(&on.fcf), cut_bits(&off.fcf), "{scheduler:?}");
+    }
+}
+
+/// One backward pass over a 3-stage chain with a single trial point and a single
+/// opening: stage 1 stores one cut, stage 0 solves against it once, and the mock
+/// returns `cut_row_dual` as that cut row's dual. Returns the stored cut's
+/// `active_count` after the metadata sync.
+///
+/// The mock supplies the dual because a real optimum never makes it negative.
+fn active_count_after_one_binding_solve(cut_row_dual: f64, tolerance: f64) -> u64 {
+    use novomodelo_comm::LocalBackend;
+
+    let n_stages = 3_usize;
+    let stochastic = make_stochastic_context(n_stages, 1);
+    let state = test_support::state_layout(1, 0);
+    let templates = vec![minimal_template_1_0(); n_stages];
+    let n_state = state.n_state;
+    let mut fcf = FutureCostFunction::new(n_stages, n_state, 1, 20, &vec![0; n_stages]);
+    let (mut exchange, records) = exchange_and_records(n_state, &[vec![10.0]], n_stages);
+    let horizon = HorizonMode::Finite {
+        num_stages: n_stages,
+    };
+    let risk_measures = vec![RiskMeasure::Expectation; n_stages];
+    let mut solver = MockSolver::always_ok(solution_1_0(100.0, -5.0));
+    solver.cut_dual_padding = cut_row_dual;
+    let comm = LocalBackend;
+    let mut workspaces = single_workspace(solver, n_state);
+    let mut basis_store = empty_basis_store(exchange.local_count(), n_stages);
+    let mut csb = CutSyncBuffers::new(n_state, 1, 1);
+    let state_boxes = permissive_state_boxes(n_state, n_stages);
+
     let result = run_backward_pass(&mut BackwardPassInputs {
         workspaces: &mut workspaces,
         basis_store: &mut basis_store,
@@ -3191,14 +3488,13 @@ fn metadata_sync_updates_active_count_and_last_active_iter() {
         },
         comm: &comm,
         records: &records,
-        iteration: 1,
+        iteration: 0,
         local_work: exchange.local_count(),
         fwd_offset: 0,
         risk_measures: &risk_measures,
         exchange: &mut exchange,
-        cut_activity_tolerance: 0.0,
+        cut_activity_tolerance: tolerance,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -3206,39 +3502,41 @@ fn metadata_sync_updates_active_count_and_last_active_iter() {
     })
     .unwrap();
 
-    // 3 stages × (n_stages-1=2 non-terminal) × 3 trial points = 6 cuts.
-    assert_eq!(result.cuts_generated, 6);
+    assert_eq!(
+        result.cuts_generated, 2,
+        "1 trial point × 2 non-terminal stages"
+    );
+    assert_eq!(
+        fcf.pools[1].populated(),
+        1,
+        "pool 1 must hold exactly the one cut stage 0 solves against, in slot 0"
+    );
+    fcf.pools[1].metadata(0).active_count
+}
 
-    // Pool[1] received 3 cuts from t=1 backward pass.
-    // Slot formula: warm_start(0) + iteration(1) * fwd_passes(3) + fpi
-    // → slots 3, 4, 5. Populated count = 6 (high-water mark).
-    assert_eq!(fcf.pools[1].populated(), 6);
+#[test]
+fn a_negative_cut_row_dual_is_not_binding() {
+    assert_eq!(active_count_after_one_binding_solve(-0.5, 0.0), 0);
+}
 
-    // At t=0, the 3 cuts in pool[1] (slots 3,4,5) were evaluated for
-    // binding. The mock solver returns positive duals (cut_dual_padding
-    // = 1.0) for all cut rows. Each trial point has n_openings=2
-    // openings, and the binding check runs per opening. So each slot
-    // gets 3 trial points × 2 openings = 6 increments.
-    for slot in 3..6 {
-        assert!(
-            fcf.pools[1].metadata(slot).active_count > 0,
-            "slot {slot} active_count should be > 0 (cuts were binding)"
-        );
-        assert_eq!(
-            fcf.pools[1].metadata(slot).active_count,
-            6,
-            "slot {slot} active_count should be 6 (3 trial points × 2 openings)"
-        );
-        assert_eq!(
-            fcf.pools[1].metadata(slot).last_active_iter,
-            1,
-            "slot {slot} last_active_iter should be 1 (current iteration)"
-        );
-    }
-
-    // Pool[2] (terminal successor) received no cuts and no binding
-    // was checked against it — metadata should be at defaults.
-    assert_eq!(fcf.pools[2].populated(), 0);
+#[test]
+fn a_cut_row_dual_at_or_below_the_tolerance_is_not_binding() {
+    let tolerance = 0.5;
+    assert_eq!(
+        active_count_after_one_binding_solve(0.25, tolerance),
+        0,
+        "a dual below the tolerance must not bind"
+    );
+    assert_eq!(
+        active_count_after_one_binding_solve(0.5, tolerance),
+        0,
+        "a dual equal to the tolerance must not bind"
+    );
+    assert_eq!(
+        active_count_after_one_binding_solve(0.75, tolerance),
+        1,
+        "a dual above the tolerance must bind once"
+    );
 }
 
 /// Build N identical `SolverWorkspace<MockSolver>` instances and run a
@@ -3345,7 +3643,6 @@ fn run_backward_pass_with_n_workers(n_workers: usize) -> FutureCostFunction {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -3665,7 +3962,6 @@ fn allgatherv_single_rank_two_workers_stage_stats_has_per_worker_entries() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -3848,7 +4144,6 @@ fn allgatherv_dual_rank_stub_stage_stats_contains_both_ranks() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -4512,7 +4807,6 @@ fn handshake_passes_with_local_backend() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -4661,7 +4955,6 @@ fn handshake_rejects_nonuniform_workers() {
         exchange: &mut exchange,
         cut_activity_tolerance: 0.0,
         cut_sync_bufs: &mut csb,
-        visited_archive: None,
         event_sender: None,
 
         traversal: &Traversal::default(),
@@ -4742,7 +5035,8 @@ fn cut_coefficient_sign_convention_slot_zero_k2() {
 // -----------------------------------------------------------------------
 
 use crate::cut_selection::{CutMetadata, CutSelectionStrategy};
-use crate::dcs::DcsParams;
+use crate::dcs::{DcsConfig, DcsParams};
+use crate::solver_phase::Phase;
 use crate::workspace::{NoisePreallocation, WorkspaceSizing};
 use novomodelo_solver::ActiveSolver;
 
@@ -4791,7 +5085,7 @@ fn dcs_two_stage_fcf() -> FutureCostFunction {
     fcf.add_cut(NodeId(0), 1, 0, 1, 0.0, &[2.0]);
     fcf.add_cut(NodeId(0), 1, 0, 2, 3.0, &[0.0]);
     // Seed metadata: slots 0 and 2 are "recently active"; the binding slot 1
-    // is stale so the k2 window excludes it (forcing the lazy add). All were
+    // is stale so the seed window excludes it (forcing the lazy add). All were
     // generated before the current iteration so none is current-iteration
     // protected.
     let meta = |generated: u64, last: u64| CutMetadata {
@@ -4802,7 +5096,7 @@ fn dcs_two_stage_fcf() -> FutureCostFunction {
         last_active_iter: last,
     };
     fcf.pools[1].set_metadata_for_test(0, meta(1, 5));
-    fcf.pools[1].set_metadata_for_test(1, meta(1, 1)); // stale → outside k2=2 window at iter 5
+    fcf.pools[1].set_metadata_for_test(1, meta(1, 1)); // stale → outside seed_window=2 at iter 5
     fcf.pools[1].set_metadata_for_test(2, meta(1, 5));
     fcf
 }
@@ -4887,7 +5181,7 @@ fn run_dcs_backward_trial_state_at(
     let horizon = HorizonMode::Finite { num_stages: 2 };
     let risk_measures = vec![RiskMeasure::Expectation; 2];
 
-    let mut fcf = dcs_two_stage_fcf();
+    let fcf = dcs_two_stage_fcf();
     // All-cuts batch for the frozen path (delta == all cuts here).
     let cut_batch = build_cut_row_batch(
         &fcf,
@@ -4899,7 +5193,7 @@ fn run_dcs_backward_trial_state_at(
     let successor_active_slots: Vec<usize> = (0..fcf.pools[1].populated()).collect();
     let num_cuts = successor_active_slots.len();
 
-    let mut exchange = exchange_with_states(n_state, vec![vec![x_hat]]);
+    let exchange = exchange_with_states(n_state, vec![vec![x_hat]]);
     let mut workspaces = dcs_active_workspace();
     let mut basis_store = empty_basis_store(exchange.local_count(), 2);
     let state_boxes = permissive_state_boxes(n_state, n_stages);
@@ -4927,7 +5221,7 @@ fn run_dcs_backward_trial_state_at(
         external_ncs_library: None,
         lag_accum_seed: &[],
         lag_weight_seed: &[],
-        dcs,
+        dcs: None,
     };
 
     let probabilities = vec![1.0_f64];
@@ -5028,23 +5322,14 @@ fn run_dcs_backward_trial_state_at(
     // still in scope (the bytes the FCF merge would read).
     let coefficients = staged_cut_coefficients(&cut, &ws.backward_accum.agg_arena).to_vec();
     let meta_sync = ws.backward_accum.metadata_sync_contribution[..pop].to_vec();
-    // Touch fcf/exchange so the borrows live to here.
-    let _ = (&mut fcf, &mut exchange);
     (cut, coefficients, meta_sync)
 }
 
 fn dcs_params(start_iteration: u64) -> DcsParams {
-    DcsParams {
-        k1: None,
-        k2: 2,
-        nadic: 10,
-        epsilon_viol: 1e-10,
-        start_iteration,
-        max_inner_iterations: 50,
-    }
+    dcs_params_with_candidate_recency(start_iteration, None)
 }
 
-/// AC3 (exactness, real solver, both backends via the active solver): the
+/// Exactness (real solver, both backends via the active solver): the
 /// DCS-built cut equals the all-cuts cut (intercept + every coefficient
 /// within 1e-9). DCS seeds an initial set that omits the binding cut; the
 /// lazy loop must add it and reach the same dual.
@@ -5108,7 +5393,7 @@ fn backward_dcs_inactive_before_start_iteration() {
     assert_eq!(frozen_meta, early_meta);
 }
 
-/// AC1: the DCS path extracts the cut gradient from the final all-satisfied
+/// The DCS path extracts the cut gradient from the final all-satisfied
 /// LP AND maintains the binding-count metadata slot-correct under the
 /// resident `CutRowMap`. For this fixture the only cut that binds at the
 /// converged optimum (`x_hat` = 2, theta = 4) is the binding slot 1; slots 0
@@ -5138,47 +5423,50 @@ fn backward_dcs_binding_counts_match_frozen() {
 }
 
 /// `parse_cut_selection_config` for `method = "dynamic"` flows into
-/// `DcsParams::from_strategy`, so the backward context's `dcs` is `Some`
+/// `DcsConfig::from_strategy`, so the backward context's `dcs` is `Some`
 /// for the dynamic variant and `None` otherwise.
 #[test]
 fn from_strategy_gates_the_backward_dcs_field() {
     let dynamic = CutSelectionStrategy::Dynamic {
-        k1: None,
-        k2: 5,
-        nadic: 10,
-        epsilon_viol: 1e-10,
+        candidate_recency: None,
+        seed_window: 5,
+        max_added_per_round: 10,
+        violation_tolerance: None,
         start_iteration: 2,
     };
-    assert!(DcsParams::from_strategy(&dynamic).is_some());
+    assert!(DcsConfig::from_strategy(&dynamic).is_some());
     let level1 = CutSelectionStrategy::Level1 {
         check_frequency: 5,
-        tie_tolerance: 1e-10,
+        lookback_iterations: None,
     };
-    assert!(DcsParams::from_strategy(&level1).is_none());
+    assert!(DcsConfig::from_strategy(&level1).is_none());
 }
 
 // -----------------------------------------------------------------------
-// DCS backward validation gates (exactness / finite-k1 / determinism /
-// slow sweep). Default `k1 = None` (∞) — exactness holds only when every
-// pool cut is a candidate.
+// DCS backward validation gates (exactness / finite candidate_recency /
+// determinism / slow sweep). Default `candidate_recency = None` (∞) —
+// exactness holds only when every pool cut is a candidate.
 // -----------------------------------------------------------------------
 
-/// `DcsParams` with an explicit finite `k1` candidate-recency window.
-fn dcs_params_k1(start_iteration: u64, k1: Option<u32>) -> DcsParams {
+/// `DcsParams` with an explicit `candidate_recency` window.
+fn dcs_params_with_candidate_recency(
+    start_iteration: u64,
+    candidate_recency: Option<u32>,
+) -> DcsParams {
     DcsParams {
-        k1,
-        k2: 2,
-        nadic: 10,
-        epsilon_viol: 1e-10,
+        candidate_recency,
+        seed_window: 2,
+        max_added_per_round: 10,
+        violation_tolerance: 1e-9,
         start_iteration,
         max_inner_iterations: 50,
     }
 }
 
-/// Exactness + "never spins": with `k1 = None` the DCS backward cut equals
+/// Exactness + "never spins": with `candidate_recency = None` the DCS backward cut equals
 /// the all-cuts cut (intercept + every coefficient within 1e-9), and the
-/// lazy loop terminates — even with `max_inner_iterations = 1`, which forces
-/// the bounded TC-fallback branch — so it can never spin unbounded.
+/// lazy loop terminates — even with `max_inner_iterations = 1`, which lifts
+/// the per-round limit after one round — so it can never spin unbounded.
 #[test]
 fn backward_dcs_exactness_and_terminates() {
     let iteration = 5;
@@ -5191,8 +5479,8 @@ fn backward_dcs_exactness_and_terminates() {
         assert!((b - d).abs() < 1e-9, "coeff mismatch frozen {b} vs DCS {d}");
     }
 
-    // A 1-iteration cap forces the bounded TC fallback; the call must still
-    // return (no spin) and land on the exact all-cuts cut.
+    // A round cap of 1 lifts the per-round limit after one round; the call must
+    // still return (no spin) and land on the exact all-cuts cut.
     let tight = DcsParams {
         max_inner_iterations: 1,
         ..dcs_params(2)
@@ -5202,33 +5490,36 @@ fn backward_dcs_exactness_and_terminates() {
     for (b, d) in frozen_coefficients.iter().zip(&dcs_tc_coefficients) {
         assert!(
             (b - d).abs() < 1e-9,
-            "TC-fallback coeff mismatch frozen {b} vs DCS {d}"
+            "round-cap-1 coeff mismatch frozen {b} vs DCS {d}"
         );
     }
 }
 
-/// A finite `k1` window demonstrably takes effect (guards against `k1`
-/// being silently ignored): with `k1 = Some(1)` at iteration 5, the binding
-/// cut (slot 1, generated at iteration 1 → age 4 ≥ 1) is windowed out of
-/// candidacy and is also outside the `k2 = 2` initial-set window, so it is
-/// never added. The DCS optimum then differs from the all-cuts optimum —
-/// the deliberately-non-exact windowed mode.
+/// A finite `candidate_recency` window demonstrably takes effect (guards
+/// against `candidate_recency` being silently ignored): with
+/// `candidate_recency = Some(1)` at iteration 5, the binding cut (slot 1,
+/// generated at iteration 1 → age 4 ≥ 1) is windowed out of candidacy and is
+/// also outside the `seed_window = 2` initial-set window, so it is never
+/// added. The DCS optimum then differs from the all-cuts optimum — the
+/// deliberately-non-exact windowed mode.
 #[test]
-fn backward_dcs_finite_k1_window_takes_effect() {
+fn backward_dcs_finite_candidate_recency_takes_effect() {
     let iteration = 5;
     let (frozen, frozen_coefficients, _) = run_dcs_backward_trial_state(None, iteration);
-    // Sanity: the all-cuts (and k1=None DCS) gradient is the binding cut's 2.0.
+    // Sanity: the all-cuts (and candidate_recency=None DCS) gradient is the binding cut's 2.0.
     assert!((frozen_coefficients[0] - 2.0).abs() < 1e-9);
 
-    let (windowed, windowed_coefficients, _) =
-        run_dcs_backward_trial_state(Some(dcs_params_k1(2, Some(1))), iteration);
+    let (windowed, windowed_coefficients, _) = run_dcs_backward_trial_state(
+        Some(dcs_params_with_candidate_recency(2, Some(1))),
+        iteration,
+    );
     // The binding cut is windowed out, so the windowed optimum differs:
     // the surviving cuts (slots 0,2, both gradient 0) give a 0 gradient and
     // a different intercept than the all-cuts cut.
     assert!(
         (windowed_coefficients[0] - frozen_coefficients[0]).abs() > 1e-6
             || (windowed.intercept - frozen.intercept).abs() > 1e-6,
-        "finite k1 must change the cut vs all-cuts (windowed coeff {} intercept {}; \
+        "finite candidate_recency must change the cut vs all-cuts (windowed coeff {} intercept {}; \
          all-cuts coeff {} intercept {})",
         windowed_coefficients[0],
         windowed.intercept,
@@ -5266,7 +5557,7 @@ fn backward_dcs_run_to_run_determinism() {
 }
 
 /// Slow exactness sweep: across a handful of pinned incoming states (which
-/// vary the binding cut), the `k1 = None` DCS backward cut equals the
+/// vary the binding cut), the `candidate_recency = None` DCS backward cut equals the
 /// all-cuts cut within 1e-9 at every point. Gated behind `slow-tests`.
 #[test]
 #[cfg_attr(not(feature = "slow-tests"), ignore = "slow DCS exactness sweep")]
@@ -5380,7 +5671,7 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
     let horizon = HorizonMode::Finite { num_stages: 2 };
     let risk_measures = vec![RiskMeasure::Expectation; 2];
 
-    let mut fcf = dcs_two_stage_fcf();
+    let fcf = dcs_two_stage_fcf();
     // All-cuts batch (delta) for the frozen path; with frozen carrying the
     // binding cut, the delta is the remaining (non-frozen) cuts. For the DCS
     // exactness comparison we only need the all-cuts reference, computed
@@ -5395,7 +5686,7 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
     let successor_active_slots: Vec<usize> = (0..fcf.pools[1].populated()).collect();
     let num_cuts = successor_active_slots.len();
 
-    let mut exchange = exchange_with_states(n_state, vec![vec![2.0]]);
+    let exchange = exchange_with_states(n_state, vec![vec![2.0]]);
     let mut workspaces = dcs_active_workspace();
     let mut basis_store = empty_basis_store(exchange.local_count(), 2);
     let state_boxes = permissive_state_boxes(n_state, n_stages);
@@ -5423,7 +5714,13 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
         external_ncs_library: None,
         lag_accum_seed: &[],
         lag_weight_seed: &[],
-        dcs: Some(dcs_params(2)),
+        dcs: Some(DcsConfig {
+            candidate_recency: None,
+            seed_window: 2,
+            max_added_per_round: 10,
+            violation_tolerance: None,
+            start_iteration: 2,
+        }),
     };
 
     let probabilities = vec![1.0_f64];
@@ -5464,11 +5761,12 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
     let ws = &mut workspaces[0];
     // Choose the opening-solve strategy as the driver does, then issue the
     // per-child prepare/load (mirrors process_by_scenario_backward's per-child
-    // load). `dcs = Some(dcs_params(2))` with `iteration = 5` selects `Lazy`,
+    // load). A dynamic `dcs` active from iteration 2 with `iteration = 5` selects `Lazy`,
     // whose prepare loads the cut-free core + builds the metadata seed.
     let opening_solver = super::StageOpeningSolver::from_dcs_params(
         training_ctx
             .dcs
+            .map(|config| config.resolve(Phase::Backward.profile().primal_feasibility_tolerance))
             .filter(|params| params.is_active(iteration)),
     );
     opening_solver.prepare(ws, &ctx, &succ, &child0, iteration);
@@ -5524,7 +5822,6 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
     // Resolve the DCS coefficient slice from the worker arena while `ws` is
     // still in scope.
     let dcs_coefficients = staged_cut_coefficients(&dcs_cut, &ws.backward_accum.agg_arena).to_vec();
-    let _ = (&mut fcf, &mut exchange);
 
     // The all-cuts reference cut (cut-free base + full pool, no DCS).
     let (allcuts, allcuts_coefficients, _) = run_dcs_backward_trial_state(None, iteration);

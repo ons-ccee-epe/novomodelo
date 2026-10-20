@@ -1,12 +1,15 @@
-//! Dynamic Cut Selection (DCS): a per-solve lazy selection loop that grows the
-//! LP's active cut set within each solve until no candidate cut is violated by
-//! more than `epsilon_viol` (or a bounded inner-iteration cap is hit), rather
-//! than deactivating cuts at the pool level.
+//! Lazy row generation of the `dynamic` selection method: each LP solve starts
+//! from a seed of active cuts and appends the candidates it violates by more
+//! than `violation_tolerance` times the larger of the candidate's and the
+//! future-cost value's magnitudes, until none is. It is this software's own
+//! method, not the Dynamic Cut Selection of de Matos, Philpott and Finardi
+//! (2015), and it never deactivates a cut.
 //!
-//! [`DcsParams`] is a `Copy`, allocation-free carrier for the DCS
-//! hyperparameters, decoupled from the serde-stable
-//! [`CutSelectionStrategy::Dynamic`] config so the hot path is not coupled to
-//! config parsing. Construct one via [`DcsParams::from_strategy`].
+//! [`DcsParams`] is a `Copy`, allocation-free carrier for the method's
+//! parameters, decoupled from [`CutSelectionStrategy::Dynamic`] so the hot path
+//! is not coupled to config parsing. A phase builds one with
+//! [`DcsConfig::resolve`] from the [`DcsConfig`] that
+//! [`DcsConfig::from_strategy`] derives from the strategy.
 
 use std::time::Instant;
 
@@ -26,83 +29,112 @@ use crate::indexer::{CutSlot, CutStateProjection, StateSpace};
 use crate::setup::{NodeId, StageIdx};
 use crate::workspace::CapturedBasis;
 
-/// Dynamic Cut Selection hyperparameters.
+/// Parameters of the `dynamic` lazy row generation, as a phase runs them.
 ///
-/// Field invariants (`nadic >= 1`, `epsilon_viol > 0`, `k1` either `None` or
-/// `Some(>= 1)`) are enforced by the config-parse step that produces
-/// [`CutSelectionStrategy::Dynamic`]; `DcsParams` trusts its inputs.
+/// Field invariants (`max_added_per_round >= 1`, `violation_tolerance > 0`,
+/// `candidate_recency` either `None` or `Some(>= 1)`) are enforced where
+/// [`CutSelectionStrategy::Dynamic`] is built: the counts by the config types,
+/// the tolerance by `parse_cut_selection_config`. `DcsParams` trusts its inputs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DcsParams {
-    /// Candidate-recency window. `None` ⇒ ∞ (every pool cut a candidate;
+    /// Candidate-recency window. `None` ⇒ ∞ (every active cut a candidate;
     /// exactness-preserving). `Some(n)` ⇒ only cuts generated within the last
-    /// `n` iterations are candidates (deliberately non-exact).
-    pub k1: Option<u32>,
+    /// `n` iterations, and loaded cuts, are candidates (deliberately
+    /// non-exact).
+    pub candidate_recency: Option<u32>,
 
     /// Initial-set history window: how far back to seed the active set at the
     /// start of a lazy solve.
-    pub k2: u32,
+    pub seed_window: u32,
 
     /// Maximum number of cuts added per inner iteration (`>= 1`).
-    pub nadic: u32,
+    pub max_added_per_round: u32,
 
-    /// Violation tolerance for accepting a candidate cut (`> 0`, and at least
-    /// the LP dual-feasibility tolerance).
-    pub epsilon_viol: f64,
+    /// Relative violation factor, resolved for the phase: a candidate is
+    /// violated when `alpha - theta > violation_tolerance * max(|theta|, |alpha|)`.
+    pub violation_tolerance: f64,
 
-    /// First SDDP iteration (1-based) at which DCS is applied.
+    /// First SDDP iteration (1-based) at which the lazy loop is applied.
     pub start_iteration: u64,
 
-    /// Bounded inner-loop cap: maximum number of lazy add-and-resolve rounds
-    /// before falling back to a terminating-condition solve.
+    /// Number of add-and-resolve rounds of at most `max_added_per_round` cuts
+    /// each before the per-round limit is lifted. Not an exit: the solve still
+    /// returns only when no candidate is violated.
     pub max_inner_iterations: u32,
 }
 
-impl Default for DcsParams {
-    fn default() -> Self {
-        Self {
-            k1: None,
-            k2: 5,
-            nadic: 10,
-            epsilon_viol: 1e-10,
-            start_iteration: 2,
-            max_inner_iterations: 50,
-        }
-    }
-}
+/// [`DcsParams::max_inner_iterations`] of every phase.
+const MAX_INNER_ITERATIONS: u32 = 50;
 
 impl DcsParams {
-    /// Build [`DcsParams`] from a cut-selection strategy: `Some` for the
-    /// [`Dynamic`](crate::cut_selection::CutSelectionStrategy::Dynamic) variant
-    /// (with `max_inner_iterations` from [`DcsParams::default`]), `None`
-    /// otherwise.
-    #[must_use]
-    pub fn from_strategy(strategy: &CutSelectionStrategy) -> Option<Self> {
-        match strategy {
-            CutSelectionStrategy::Dynamic {
-                k1,
-                k2,
-                nadic,
-                epsilon_viol,
-                start_iteration,
-            } => Some(Self {
-                k1: *k1,
-                k2: *k2,
-                nadic: *nadic,
-                epsilon_viol: *epsilon_viol,
-                start_iteration: *start_iteration,
-                max_inner_iterations: Self::default().max_inner_iterations,
-            }),
-            CutSelectionStrategy::Level1 { .. }
-            | CutSelectionStrategy::Lml1 { .. }
-            | CutSelectionStrategy::Dominated { .. } => None,
-        }
-    }
-
-    /// Return whether DCS is active at the given 1-based SDDP `iteration`
+    /// Return whether the lazy loop is active at the given 1-based SDDP `iteration`
     /// (`iteration >= self.start_iteration`).
     #[must_use]
     pub fn is_active(&self, iteration: u64) -> bool {
         iteration >= self.start_iteration
+    }
+}
+
+/// The `dynamic` parameters as configured: the violation tolerance is still
+/// absent when the config leaves it out, and each phase resolves it against
+/// its own solver profile through [`DcsConfig::resolve`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DcsConfig {
+    /// See [`DcsParams::candidate_recency`].
+    pub candidate_recency: Option<u32>,
+
+    /// See [`DcsParams::seed_window`].
+    pub seed_window: u32,
+
+    /// See [`DcsParams::max_added_per_round`].
+    pub max_added_per_round: u32,
+
+    /// Configured relative violation factor; `None` takes the primal
+    /// feasibility tolerance of the resolving phase's solver profile.
+    pub violation_tolerance: Option<f64>,
+
+    /// See [`DcsParams::start_iteration`].
+    pub start_iteration: u64,
+}
+
+impl DcsConfig {
+    /// Build a [`DcsConfig`] from a cut-selection strategy: `Some` for the
+    /// [`Dynamic`](crate::cut_selection::CutSelectionStrategy::Dynamic) variant,
+    /// `None` otherwise.
+    #[must_use]
+    pub fn from_strategy(strategy: &CutSelectionStrategy) -> Option<Self> {
+        match strategy {
+            CutSelectionStrategy::Dynamic {
+                candidate_recency,
+                seed_window,
+                max_added_per_round,
+                violation_tolerance,
+                start_iteration,
+            } => Some(Self {
+                candidate_recency: *candidate_recency,
+                seed_window: *seed_window,
+                max_added_per_round: *max_added_per_round,
+                violation_tolerance: *violation_tolerance,
+                start_iteration: *start_iteration,
+            }),
+            CutSelectionStrategy::Level1 { .. } => None,
+        }
+    }
+
+    /// The parameters a phase runs with. The only place an absent violation
+    /// tolerance takes a value: `solver_tolerance`, the
+    /// `primal_feasibility_tolerance` of the profile the resolving phase's own
+    /// solver runs with.
+    #[must_use]
+    pub fn resolve(&self, solver_tolerance: f64) -> DcsParams {
+        DcsParams {
+            candidate_recency: self.candidate_recency,
+            seed_window: self.seed_window,
+            max_added_per_round: self.max_added_per_round,
+            violation_tolerance: self.violation_tolerance.unwrap_or(solver_tolerance),
+            start_iteration: self.start_iteration,
+            max_inner_iterations: MAX_INNER_ITERATIONS,
+        }
     }
 }
 
@@ -131,7 +163,7 @@ pub struct DcsScoringScratch {
     pub cand_slots: Vec<u32>,
 
     /// `(violation_magnitude, slot)` for each violated candidate, before the
-    /// top-`nadic` truncation.
+    /// top-`max_added_per_round` truncation.
     pub violations: Vec<(f64, u32)>,
 }
 
@@ -169,14 +201,15 @@ impl DcsScoringScratch {
 // ---------------------------------------------------------------------------
 
 /// Score the non-resident cut candidates at the current LP optimum and select
-/// the most-violated `nadic` to add.
+/// the most-violated `max_added_per_round` to add.
 ///
 /// # Sign & scale contract
 ///
 /// Cut coefficients are stored **raw** (`∂Q/∂x`); the LP solves in **scaled**
 /// space. The cut row is `−∇·x + θ ≥ intercept`, so the cut's `θ`-floor at the
 /// raw optimum is `alpha = intercept + ∇·x*_raw` and a candidate is **violated**
-/// when `v = alpha − theta_raw > epsilon_viol` (strict). Both `θ*` and every
+/// when `v = alpha − theta_raw > violation_tolerance · max(|theta_raw|, |alpha|)`
+/// (strict; at `theta_raw = 0` that is `alpha > 0`). Both `θ*` and every
 /// state column are unscaled by `col_scale` before scoring
 /// (`x_raw = col_scale[c] · x_scaled`, empty ⇒ factor 1.0) — **mixing scaled
 /// state with raw coefficients is the classic silent bug.** Reduced index → LP
@@ -193,25 +226,27 @@ impl DcsScoringScratch {
 /// product is independent, so a candidate's activity is bit-identical batched or
 /// scored alone; the intercept is added afterward, outside the GEMM.
 ///
-/// # `k1` candidate-recency window
+/// # `candidate_recency` window
 ///
-/// Applied first. A cut at slot `s` is eligible only when `params.k1` is `None`
-/// (∞, the exactness path) or its age
+/// Applied first. A cut at slot `s` is eligible only when
+/// `params.candidate_recency` is `None` (∞, the exactness path) or its age
 /// `current_iteration.saturating_sub(pool.metadata(s).iteration_generated)` is
-/// `< k1`. Warm-start cuts (`iteration_generated == u64::MAX`) saturate to age 0
-/// and stay inside any finite window. Out-of-window cuts are never scored.
+/// `< candidate_recency`. A loaded cut ([`CutPool::is_prefix_slot`]) has age 0 whatever its
+/// generating iteration and stays inside any finite window. Out-of-window cuts
+/// are never scored.
 ///
 /// # Selection & determinism
 ///
 /// Violated candidates are sorted by violation **descending**, ties by
 /// **ascending slot id** via [`f64::total_cmp`] (panic-free and NaN-stable —
 /// never `partial_cmp().unwrap()`). The choice is a deterministic function of
-/// `(pool contents, x*, ε_viol, nadic, k1, current_iteration)`.
+/// `(pool contents, x*, violation_tolerance, max_added_per_round,
+/// candidate_recency, current_iteration)`.
 ///
 /// # Returns
 ///
 /// The total count of violated candidates (≥ `out_selected.len()`), used to
-/// detect the no-violation stop and drive the TC fallback.
+/// detect the no-violation stop.
 ///
 /// # Allocation
 ///
@@ -281,9 +316,13 @@ pub fn score_violated_candidates(
     }
 
     for (slot, _intercept, coefficients) in pool.active_cuts() {
-        if let Some(k1) = params.k1 {
-            let age = current_iteration.saturating_sub(pool.metadata(slot).iteration_generated);
-            if age >= u64::from(k1) {
+        if let Some(candidate_recency) = params.candidate_recency {
+            let age = if pool.is_prefix_slot(slot) {
+                0
+            } else {
+                current_iteration.saturating_sub(pool.metadata(slot).iteration_generated)
+            };
+            if age >= u64::from(candidate_recency) {
                 continue;
             }
         }
@@ -312,7 +351,7 @@ pub fn score_violated_candidates(
     for (i, &slot) in scratch.cand_slots.iter().enumerate() {
         let alpha = pool.intercept(slot as usize) + scratch.alpha[i];
         let v = alpha - theta_raw;
-        if v > params.epsilon_viol {
+        if v > params.violation_tolerance * theta_raw.abs().max(alpha.abs()) {
             scratch.violations.push((v, slot));
         }
     }
@@ -325,7 +364,7 @@ pub fn score_violated_candidates(
         .violations
         .sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
 
-    let take = (params.nadic as usize).min(violated_count);
+    let take = (params.max_added_per_round as usize).min(violated_count);
     out_selected.extend(scratch.violations[..take].iter().map(|&(_, slot)| slot));
 
     violated_count
@@ -343,9 +382,9 @@ pub struct DcsSolveContext {
     pub stage_index: StageIdx,
     /// Scenario index `m`.
     pub scenario_index: usize,
-    /// Training iteration (1-based) feeding the `k1` recency window, or `None`
-    /// off the training path (e.g. simulation). `None` is treated as `0`, which
-    /// disables the window (every cut age saturates to 0 ⇒ eligible).
+    /// Training iteration (1-based) feeding the `candidate_recency` window, or
+    /// `None` off the training path (e.g. simulation). `None` is treated as `0`,
+    /// which disables the window (every cut age saturates to 0 ⇒ eligible).
     pub iteration: Option<u64>,
 
     /// Continue from a carried LP instead of starting a fresh solve.
@@ -407,6 +446,10 @@ pub struct DcsSolveScratch {
     /// Cumulative wall time spent in `score_violated_candidates`. A per-worker
     /// accumulator: never reset by the solve loop. Pure measurement.
     pub scoring_time_seconds: f64,
+    /// Number of solves that reached the round cap with a candidate still
+    /// violated. A per-worker accumulator: never reset by the solve loop. Pure
+    /// measurement.
+    pub round_cap_hits: u64,
     /// Cumulative sum of `row_map.total_cut_rows()`, one term per
     /// [`lazy_solve_preloaded`] completion; with [`Self::rows_in_lp_count`]
     /// yields the mean rows-in-LP. Never reset by the solve loop.
@@ -439,6 +482,7 @@ impl Default for DcsSolveScratch {
             res_iterations: 0,
             res_solve_time_seconds: 0.0,
             scoring_time_seconds: 0.0,
+            round_cap_hits: 0,
             rows_in_lp_sum: 0,
             rows_in_lp_count: 0,
             rows_in_lp_max: 0,
@@ -507,7 +551,7 @@ impl DcsSolveScratch {
         self.res_reduced_costs.extend_from_slice(view.reduced_costs);
 
         // Folded here because `store_result` is the single completion point of
-        // every lazy solve (both the exact-optimum and TC-fallback exits).
+        // every lazy solve.
         let rows_in_lp = self.row_map.total_cut_rows() as u64;
         self.rows_in_lp_sum += rows_in_lp;
         self.rows_in_lp_count += 1;
@@ -540,7 +584,7 @@ fn solve_mapped<'a, S: SolverInterface>(
     solver.solve(basis).map_err(|e| map_solver_error(e, ctx))
 }
 
-/// Solve one (stage, solve) lazily under Dynamic Cut Selection, given an
+/// Solve one (stage, solve) lazily under the `dynamic` method, given an
 /// already-loaded core LP.
 ///
 /// **The caller owns the model load and any bounds patch.** This routine does
@@ -554,20 +598,20 @@ fn solve_mapped<'a, S: SolverInterface>(
 /// [`DcsSolveScratch::result_view`]. Post-solve extraction (backward = dual,
 /// forward/simulation = primal) is the caller's job.
 ///
-/// # Algorithm
+/// Returns only when [`score_violated_candidates`] reports no violated candidate at
+/// the returned point, so the result is the optimum over the candidate set (the
+/// whole pool when `params.candidate_recency` is `None`). After
+/// `params.max_inner_iterations` rounds the per-round limit is lifted and the
+/// cycle continues, counted in [`DcsSolveScratch::round_cap_hits`]; it ends
+/// because scoring reports only non-resident candidates beyond the relative
+/// tolerance and every one reported is appended, so each cycle shrinks the
+/// finite non-resident set.
 ///
-/// Append `initial_resident`, then run the initial solve: warm with a
-/// uniform-BASIC reconstruction of `stored_basis`
-/// ([`reconstruct_basis_uniform_basic`] + [`enforce_basic_count_invariant`]) if
-/// present, else cold. Then, up to `params.max_inner_iterations`:
-/// [`score_violated_candidates`] at the live primal; when none is violated (the
-/// exact optimum) copy the live view and return with NO re-solve, else add the
-/// top-`nadic` slots and warm-`solve(None)`. **TC fallback**: if the cap is hit
-/// with violations remaining, add ALL remaining candidates and solve once,
-/// preserving exactness.
-///
-/// A cold mid-loop re-solve (warm basis discarded by the retry ladder) is
-/// tolerated — the loop never reads a stale basis between solves.
+/// The initial solve is warm from a uniform-BASIC reconstruction of
+/// `stored_basis` ([`reconstruct_basis_uniform_basic`] +
+/// [`enforce_basic_count_invariant`]) if present, else cold. A cold mid-loop
+/// re-solve (warm basis discarded by the retry ladder) is tolerated — the loop
+/// never reads a stale basis between solves.
 ///
 /// # Errors
 ///
@@ -637,7 +681,15 @@ pub fn lazy_solve_preloaded<S: SolverInterface>(
         }
     };
 
-    for _ in 0..params.max_inner_iterations {
+    let mut lifted_params = *params;
+    lifted_params.max_added_per_round = u32::MAX;
+    let mut round = 0_u32;
+    loop {
+        let scoring_params = if round < params.max_inner_iterations {
+            params
+        } else {
+            &lifted_params
+        };
         let t0 = Instant::now();
         let violated = score_violated_candidates(
             pool,
@@ -646,7 +698,7 @@ pub fn lazy_solve_preloaded<S: SolverInterface>(
             view.primal,
             col_scale,
             &scratch.row_map,
-            params,
+            scoring_params,
             current_iteration,
             &mut scratch.scoring,
             &mut scratch.out_selected,
@@ -654,15 +706,14 @@ pub fn lazy_solve_preloaded<S: SolverInterface>(
         scratch.scoring_time_seconds += t0.elapsed().as_secs_f64();
 
         if violated == 0 {
-            // Exact: the resident subset reproduces the all-cuts optimum, already
-            // held in `view`. Copy and return with no re-solve.
             scratch.store_result(&view);
             return Ok(());
         }
+        if round == params.max_inner_iterations {
+            scratch.round_cap_hits += 1;
+        }
+        round = round.saturating_add(1);
 
-        // End the view's solver borrow before mutating the solver, then append
-        // the top-`nadic` slots and re-solve.
-        let _ = view;
         append_slots_to_lp(
             solver,
             pool,
@@ -675,65 +726,32 @@ pub fn lazy_solve_preloaded<S: SolverInterface>(
         );
         view = solve_mapped(solver, None, ctx)?;
     }
-
-    // TC fallback (cap hit with violations remaining): add ALL remaining
-    // candidates (effective nadic = ∞) and solve once, preserving exactness.
-    let mut all_params = *params;
-    all_params.nadic = u32::MAX;
-    let t0 = Instant::now();
-    let remaining = score_violated_candidates(
-        pool,
-        state,
-        cut_state,
-        view.primal,
-        col_scale,
-        &scratch.row_map,
-        &all_params,
-        current_iteration,
-        &mut scratch.scoring,
-        &mut scratch.out_selected,
-    );
-    scratch.scoring_time_seconds += t0.elapsed().as_secs_f64();
-    let _ = view;
-    if remaining > 0 {
-        append_slots_to_lp(
-            solver,
-            pool,
-            &scratch.out_selected,
-            state,
-            cut_state,
-            col_scale,
-            &mut scratch.row_map,
-            &mut scratch.batch,
-        );
-    }
-    let view = solve_mapped(solver, None, ctx)?;
-    scratch.store_result(&view);
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // build_initial_resident_set
 // ---------------------------------------------------------------------------
 
-/// Build the DCS initial resident-cut set (the warm-start hint
+/// Build the initial resident-cut set of a lazy solve (the seed
 /// [`lazy_solve_preloaded`] consumes as `initial_resident`).
 ///
 /// Exactness makes the converged optimum independent of the seed, but the seed
 /// MUST be a deterministic function of pool metadata only — never of any solve
 /// trace, worker id, or MPI rank — so results stay invariant to the rank count
-/// (D5). It reads only `last_active_iter` and `iteration_generated`, both
-/// maintained deterministically, and emits slots in ascending order.
+/// (D5). It reads only `last_active_iter`, `iteration_generated` and
+/// [`CutPool::is_prefix_slot`], all maintained deterministically, and emits
+/// slots in ascending order.
 ///
-/// A populated slot `s` is included iff `pool.is_active(s)` AND it was active within
-/// the last `k2` iterations OR generated in the current iteration (current-iter
-/// cuts are untested, always seeded — mirroring `cut_selection`'s protection).
-/// `saturating_sub` guards the underflow when `last_active_iter` exceeds
-/// `current_iteration` for current-iteration cuts.
+/// The seed is the active cuts whose `last_active_iter` is at most
+/// `seed_window` iterations old, plus the active cuts of the current iteration.
+/// A loaded cut is tested by its role ([`CutPool::is_prefix_slot`]) before its
+/// iteration: it is never a cut of the current iteration, whatever its
+/// generating iteration. `saturating_sub` guards the underflow when
+/// `last_active_iter` exceeds `current_iteration` for current-iteration cuts.
 pub fn build_initial_resident_set(
     pool: &CutPool,
     current_iteration: u64,
-    k2: u32,
+    seed_window: u32,
     out: &mut Vec<u32>,
 ) {
     debug_assert!(
@@ -744,7 +762,7 @@ pub fn build_initial_resident_set(
     );
 
     out.clear();
-    let window = u64::from(k2);
+    let window = u64::from(seed_window);
     #[allow(clippy::cast_possible_truncation)]
     for s in 0..pool.populated() {
         if !pool.is_active(s) {
@@ -752,7 +770,8 @@ pub fn build_initial_resident_set(
         }
         let meta = pool.metadata(s);
         let within_window = current_iteration.saturating_sub(meta.last_active_iter) <= window;
-        let is_current_iter = meta.iteration_generated == current_iteration;
+        let is_current_iter =
+            !pool.is_prefix_slot(s) && meta.iteration_generated == current_iteration;
         if within_window || is_current_iter {
             out.push(s as u32);
         }
@@ -762,15 +781,17 @@ pub fn build_initial_resident_set(
 #[cfg(test)]
 #[allow(clippy::doc_markdown)]
 mod tests {
+    use novomodelo_io::OwnedPolicyCutRecord;
+    use novomodelo_io::test_support::owned_piece_defaults;
     use novomodelo_solver::{
         ActiveProfile, ActiveSolver, Basis, ProfiledSolver, RowBatch, SolverError, SolverInterface,
         SolverStatistics, StageTemplate,
     };
 
     use super::{
-        DcsParams, DcsScoringScratch, DcsSolveContext, DcsSolveScratch, ReconstructionTarget,
-        build_initial_resident_set, lazy_solve_preloaded, reconstruct_basis_uniform_basic,
-        score_violated_candidates,
+        DcsConfig, DcsParams, DcsScoringScratch, DcsSolveContext, DcsSolveScratch,
+        MAX_INNER_ITERATIONS, ReconstructionTarget, build_initial_resident_set,
+        lazy_solve_preloaded, reconstruct_basis_uniform_basic, score_violated_candidates,
     };
     use novomodelo_core::temporal::StageStateConfig;
 
@@ -794,80 +815,129 @@ mod tests {
         )
     }
 
+    fn base_params() -> DcsParams {
+        DcsParams {
+            candidate_recency: None,
+            seed_window: 5,
+            max_added_per_round: 10,
+            violation_tolerance: 1e-9,
+            start_iteration: 2,
+            max_inner_iterations: MAX_INNER_ITERATIONS,
+        }
+    }
+
     #[test]
-    fn default_matches_spec() {
-        let params = DcsParams::default();
-        assert_eq!(
-            params,
-            DcsParams {
-                k1: None,
-                k2: 5,
-                nadic: 10,
-                epsilon_viol: 1e-10,
-                start_iteration: 2,
-                max_inner_iterations: 50,
-            }
-        );
-        assert_eq!(params.k1, None);
+    fn base_params_match_a_resolved_default_config() {
+        let config = DcsConfig {
+            candidate_recency: None,
+            seed_window: 5,
+            max_added_per_round: 10,
+            violation_tolerance: None,
+            start_iteration: 2,
+        };
+        assert_eq!(base_params(), config.resolve(1e-9));
     }
 
     #[test]
     fn from_strategy_dynamic_copies_fields() {
-        // k1 = Some(n)
         let strategy = CutSelectionStrategy::Dynamic {
-            k1: Some(20),
-            k2: 7,
-            nadic: 3,
-            epsilon_viol: 1e-9,
+            candidate_recency: Some(20),
+            seed_window: 7,
+            max_added_per_round: 3,
+            violation_tolerance: Some(1e-8),
             start_iteration: 4,
         };
-        let params = DcsParams::from_strategy(&strategy)
+        let config = DcsConfig::from_strategy(&strategy)
             .expect("from_strategy must return Some for the Dynamic variant");
         assert_eq!(
-            params,
+            config,
+            DcsConfig {
+                candidate_recency: Some(20),
+                seed_window: 7,
+                max_added_per_round: 3,
+                violation_tolerance: Some(1e-8),
+                start_iteration: 4,
+            }
+        );
+        assert_eq!(
+            config.resolve(1e-7),
             DcsParams {
-                k1: Some(20),
-                k2: 7,
-                nadic: 3,
-                epsilon_viol: 1e-9,
+                candidate_recency: Some(20),
+                seed_window: 7,
+                max_added_per_round: 3,
+                violation_tolerance: 1e-8,
                 start_iteration: 4,
                 max_inner_iterations: 50,
             }
         );
 
-        // k1 = None passes through as None.
         let strategy_inf = CutSelectionStrategy::Dynamic {
-            k1: None,
-            k2: 5,
-            nadic: 10,
-            epsilon_viol: 1e-10,
+            candidate_recency: None,
+            seed_window: 5,
+            max_added_per_round: 10,
+            violation_tolerance: None,
             start_iteration: 2,
         };
-        let params_inf = DcsParams::from_strategy(&strategy_inf)
+        let config_inf = DcsConfig::from_strategy(&strategy_inf)
             .expect("from_strategy must return Some for the Dynamic variant");
-        assert_eq!(params_inf.k1, None);
+        assert_eq!(config_inf.candidate_recency, None);
+        assert_eq!(config_inf.violation_tolerance, None);
     }
 
     #[test]
     fn from_strategy_non_dynamic_is_none() {
         let level1 = CutSelectionStrategy::Level1 {
             check_frequency: 5,
-            tie_tolerance: 1e-10,
+            lookback_iterations: None,
         };
-        assert!(DcsParams::from_strategy(&level1).is_none());
+        assert!(DcsConfig::from_strategy(&level1).is_none());
+    }
 
-        let dominated = CutSelectionStrategy::Dominated {
-            threshold: 1e-6,
-            check_frequency: 10,
+    #[test]
+    fn an_absent_violation_tolerance_resolves_to_the_phase_solver_tolerance() {
+        let absent = DcsConfig {
+            candidate_recency: None,
+            seed_window: 5,
+            max_added_per_round: 10,
+            violation_tolerance: None,
+            start_iteration: 2,
         };
-        assert!(DcsParams::from_strategy(&dominated).is_none());
+        let present = DcsConfig {
+            violation_tolerance: Some(1e-6),
+            ..absent
+        };
+        assert_eq!(absent.resolve(1e-7).violation_tolerance, 1e-7);
+        assert_eq!(present.resolve(1e-7).violation_tolerance, 1e-6);
+
+        #[cfg(feature = "highs")]
+        {
+            use crate::solver_phase::Phase;
+
+            let forward_override: novomodelo_io::config::PhaseSolverProfileConfig =
+                serde_json::from_str(r#"{ "primal_feasibility_tolerance": 1e-7 }"#)
+                    .expect("a profile with one tolerance parses");
+            let forward = Phase::Forward.resolve_profile(Some(&forward_override));
+            let backward = Phase::Backward.profile();
+            assert_eq!(
+                absent
+                    .resolve(forward.primal_feasibility_tolerance)
+                    .violation_tolerance,
+                1e-7
+            );
+            assert_eq!(
+                absent
+                    .resolve(backward.primal_feasibility_tolerance)
+                    .violation_tolerance,
+                1e-9
+            );
+        }
     }
 
     #[test]
     fn is_active_threshold() {
         let params = DcsParams {
             start_iteration: 2,
-            ..DcsParams::default()
+            ..base_params()
         };
         assert_eq!(
             [
@@ -884,6 +954,7 @@ mod tests {
     fn dcs_params_is_copy() {
         fn assert_copy<T: Copy>() {}
         assert_copy::<DcsParams>();
+        assert_copy::<DcsConfig>();
     }
 
     // -----------------------------------------------------------------------
@@ -928,12 +999,16 @@ mod tests {
         CutRowMap::new(16, 0)
     }
 
-    fn params(nadic: u32, epsilon_viol: f64, k1: Option<u32>) -> DcsParams {
+    fn params(
+        max_added_per_round: u32,
+        violation_tolerance: f64,
+        candidate_recency: Option<u32>,
+    ) -> DcsParams {
         DcsParams {
-            k1,
-            nadic,
-            epsilon_viol,
-            ..DcsParams::default()
+            candidate_recency,
+            max_added_per_round,
+            violation_tolerance,
+            ..base_params()
         }
     }
 
@@ -943,8 +1018,8 @@ mod tests {
 
     /// Two non-resident active cuts, violations 5.0 (slot A) and 2.0
     /// (slot B). With coeffs [0,0] and theta_raw = 0, alpha == intercept, so
-    /// the intercepts ARE the violations. nadic = 10 → both selected, ordered
-    /// descending.
+    /// the intercepts ARE the violations. max_added_per_round = 10 → both
+    /// selected, ordered descending.
     #[test]
     fn scores_and_orders_two_violated_descending() {
         let idx = indexer();
@@ -978,10 +1053,10 @@ mod tests {
         );
     }
 
-    /// Same pool, nadic = 1. Full violated count is still 2, but only the
-    /// top-1 slot is selected.
+    /// Same pool, max_added_per_round = 1. Full violated count is still 2, but
+    /// only the top-1 slot is selected.
     #[test]
-    fn respects_nadic_cap_returns_full_violated_count() {
+    fn respects_the_per_round_limit_and_returns_the_full_violated_count() {
         let idx = indexer();
         let mut pool = empty_pool();
         add(&mut pool, 0, 5.0, &[0.0, 0.0], 1);
@@ -1005,12 +1080,12 @@ mod tests {
             &mut out,
         );
 
-        assert_eq!(count, 2, "full violated count regardless of nadic");
+        assert_eq!(count, 2, "violated count regardless of max_added_per_round");
         assert_eq!(out, vec![0], "top-1 only");
     }
 
-    /// Equal violation 3.0 at slots 7 and 4, nadic = 1 → ascending slot id
-    /// tie-break selects slot 4.
+    /// Equal violation 3.0 at slots 7 and 4, max_added_per_round = 1 → ascending
+    /// slot id tie-break selects slot 4.
     #[test]
     fn tie_break_ascending_slot_id() {
         let idx = indexer();
@@ -1117,12 +1192,12 @@ mod tests {
         assert_eq!(out, vec![1]);
     }
 
-    /// k1 window. Two violated cuts: slot 0 generated at iteration 8
-    /// (age 2), slot 1 generated at iteration 2 (age 8). current_iteration = 10,
-    /// k1 = Some(5) → only the age-2 cut (slot 0) is in window. With k1 = None
-    /// both are eligible.
+    /// candidate_recency window. Two violated cuts: slot 0 generated at
+    /// iteration 8 (age 2), slot 1 generated at iteration 2 (age 8).
+    /// current_iteration = 10, candidate_recency = Some(5) → only the age-2 cut
+    /// (slot 0) is in window. With candidate_recency = None both are eligible.
     #[test]
-    fn k1_window_filters_old_cuts() {
+    fn candidate_recency_window_filters_old_cuts() {
         let idx = indexer();
         let mut pool = empty_pool();
         add(&mut pool, 0, 5.0, &[0.0, 0.0], 8); // age 2 at iter 10
@@ -1132,7 +1207,7 @@ mod tests {
         let mut scratch = DcsScoringScratch::default();
         let mut out = Vec::new();
 
-        // Finite window k1 = 5: slot 1 (age 8 >= 5) skipped entirely.
+        // Finite window candidate_recency = 5: slot 1 (age 8 >= 5) skipped entirely.
         let p_finite = params(10, 1e-10, Some(5));
         let count_finite = score_violated_candidates(
             &pool,
@@ -1149,7 +1224,7 @@ mod tests {
         assert_eq!(count_finite, 1, "only the in-window cut is counted");
         assert_eq!(out, vec![0]);
 
-        // k1 = None: exactness path, both eligible.
+        // candidate_recency = None: exactness path, both eligible.
         let p_inf = params(10, 1e-10, None);
         let count_inf = score_violated_candidates(
             &pool,
@@ -1163,17 +1238,27 @@ mod tests {
             &mut scratch,
             &mut out,
         );
-        assert_eq!(count_inf, 2, "k1 = None ⇒ all cuts eligible");
+        assert_eq!(count_inf, 2, "candidate_recency = None ⇒ all cuts eligible");
         assert_eq!(out, vec![0, 1]);
     }
 
-    /// k1 window keeps warm-start cuts (iteration_generated == u64::MAX) inside
-    /// any finite window via saturating_sub (age 0).
+    /// candidate_recency window keeps a loaded cut inside any finite window
+    /// whatever its real generating iteration (age 0), while a trained cut of
+    /// the same iteration is outside it.
     #[test]
-    fn k1_window_keeps_warm_start_cuts() {
+    fn candidate_recency_window_keeps_warm_start_cuts() {
         let idx = indexer();
-        let mut pool = empty_pool();
-        add(&mut pool, 0, 5.0, &[0.0, 0.0], u64::MAX); // warm-start sentinel
+        let loaded = OwnedPolicyCutRecord {
+            slot_index: 0,
+            iteration: 2,
+            intercept: 5.0,
+            coefficients: vec![0.0, 0.0],
+            is_active: true,
+            ..owned_piece_defaults()
+        };
+        let mut pool = CutPool::new_with_warm_start(N_STATE, 16, 1, &[loaded]);
+        pool.add_cut(NodeId(0), 0, 0, 7.0, &[0.0, 0.0]);
+        pool.set_iteration_generated_for_test(1, 2);
         let primal = vec![0.0_f64; PRIMAL_LEN];
         let resident = empty_resident();
         let p = params(10, 1e-10, Some(1)); // tightest finite window
@@ -1193,24 +1278,85 @@ mod tests {
             &mut out,
         );
 
-        assert_eq!(count, 1, "warm-start cut (age 0) is always in window");
+        assert_eq!(count, 1, "only the loaded cut is inside the window");
         assert_eq!(out, vec![0]);
     }
 
-    /// Violation exactly equal to epsilon_viol is NOT counted (strict >).
+    /// The violation test is strict at its relative boundary.
+    ///
+    /// derived: with `violation_tolerance = 0.5` and `theta = 0.5`, `alpha = 1`
+    /// gives `v = 0.5` against `0.5 * max(0.5, 1) = 0.5` (`0.5 > 0.5` is false)
+    /// and `alpha = 1.5` gives `v = 1` against `0.5 * 1.5 = 0.75`. Every value is
+    /// exact in binary.
     #[test]
-    fn epsilon_viol_is_strict() {
+    fn violation_tolerance_is_strict() {
+        for (alpha, violated) in [(1.0, false), (1.5, true)] {
+            let idx = indexer();
+            let mut pool = empty_pool();
+            add(&mut pool, 0, alpha, &[0.0, 0.0], 1);
+            let mut primal = vec![0.0_f64; PRIMAL_LEN];
+            primal[THETA_COL] = 0.5;
+            let resident = empty_resident();
+            let p = params(10, 0.5, None);
+            let mut scratch = DcsScoringScratch::default();
+            let mut out = Vec::new();
+
+            let count = score_violated_candidates(
+                &pool,
+                &idx,
+                &cut_state(&idx),
+                &primal,
+                &[],
+                &resident,
+                &p,
+                10,
+                &mut scratch,
+                &mut out,
+            );
+
+            assert_eq!(count, usize::from(violated), "alpha = {alpha}");
+            assert_eq!(out, if violated { vec![0] } else { Vec::new() });
+        }
+    }
+
+    /// `(intercept, [c0, c1])` of the cuts of
+    /// [`scoring_is_invariant_to_the_cost_scale`], scored at `x = (1, 2)`,
+    /// `theta = 3`.
+    const SCALE_CUTS: [(f64, [f64; 2]); 7] = [
+        (2.0, [1.0, 0.5]),
+        (1.0, [0.0, 1.0]),
+        (5.0, [1.0, 1.0]),
+        (-1.0, [0.5, 0.25]),
+        (2.0, [0.5, 0.5]),
+        (3.0 + 1.5e-9, [0.0, 0.0]),
+        (3.0 + 1.5e-8, [0.0, 0.0]),
+    ];
+
+    /// The violated slots, in selection order, of `SCALE_CUTS` with every
+    /// intercept, coefficient and `theta` multiplied by `2^k`, at
+    /// `violation_tolerance = 1e-9`.
+    fn scaled_selection(k: i32) -> Vec<u32> {
+        let scale = 2.0_f64.powi(k);
         let idx = indexer();
         let mut pool = empty_pool();
-        // alpha = 1.0, theta_raw = 0 → v = 1.0; epsilon_viol = 1.0 → v == eps.
-        add(&mut pool, 0, 1.0, &[0.0, 0.0], 1);
-        let primal = vec![0.0_f64; PRIMAL_LEN];
+        for (slot, &(intercept, [c0, c1])) in SCALE_CUTS.iter().enumerate() {
+            add(
+                &mut pool,
+                slot as u32,
+                intercept * scale,
+                &[c0 * scale, c1 * scale],
+                1,
+            );
+        }
+        let mut primal = vec![0.0_f64; PRIMAL_LEN];
+        primal[0] = 1.0;
+        primal[1] = 2.0;
+        primal[THETA_COL] = 3.0 * scale;
         let resident = empty_resident();
-        let p = params(10, 1.0, None);
+        let p = params(10, 1e-9, None);
         let mut scratch = DcsScoringScratch::default();
         let mut out = Vec::new();
-
-        let count = score_violated_candidates(
+        score_violated_candidates(
             &pool,
             &idx,
             &cut_state(&idx),
@@ -1222,9 +1368,24 @@ mod tests {
             &mut scratch,
             &mut out,
         );
+        out
+    }
 
-        assert_eq!(count, 0, "v == epsilon_viol is NOT strictly greater");
-        assert!(out.is_empty());
+    /// The violated set and its order do not depend on the cost scale.
+    ///
+    /// derived: at `x = (1, 2)` and `theta = 3` the cuts evaluate to `alpha = 4,
+    /// 3, 8, 0, 3.5, 3 + 1.5e-9, 3 + 1.5e-8`, so `v = 1, 0, 5, -3, 0.5, 1.5e-9,
+    /// 1.5e-8` against `1e-9 * max(3, alpha)`, about `3e-9` to `8e-9`: slots 2, 0,
+    /// 4 and 6 are violated, in that order. The absolute test with `1e-9` also
+    /// reports slot 5 and, at `k = -40`, reports nothing. A power of two scales
+    /// every value exactly.
+    #[test]
+    fn scoring_is_invariant_to_the_cost_scale() {
+        let expected = vec![2, 0, 4, 6];
+        assert_eq!(scaled_selection(0), expected);
+        for k in [-40, -20, 20, 40] {
+            assert_eq!(scaled_selection(k), expected, "k = {k}");
+        }
     }
 
     /// No candidate violated → empty out_selected, return 0.
@@ -1321,9 +1482,9 @@ mod tests {
         let mut alpha_bits = Vec::new();
         let mut violations: Vec<(f64, u32)> = Vec::new();
         for (slot, intercept, coefficients) in pool.active_cuts() {
-            if let Some(k1) = p.k1 {
+            if let Some(candidate_recency) = p.candidate_recency {
                 let age = current_iteration.saturating_sub(pool.metadata(slot).iteration_generated);
-                if age >= u64::from(k1) {
+                if age >= u64::from(candidate_recency) {
                     continue;
                 }
             }
@@ -1337,12 +1498,12 @@ mod tests {
             alpha_bits.push(dot[0].to_bits());
             let alpha = intercept + dot[0];
             let v = alpha - theta_raw;
-            if v > p.epsilon_viol {
+            if v > p.violation_tolerance * theta_raw.abs().max(alpha.abs()) {
                 violations.push((v, slot as u32));
             }
         }
         violations.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-        let take = (p.nadic as usize).min(violations.len());
+        let take = (p.max_added_per_round as usize).min(violations.len());
         let out_selected = violations[..take].iter().map(|&(_, s)| s).collect();
         (alpha_bits, out_selected)
     }
@@ -1369,7 +1530,8 @@ mod tests {
     /// bits) and its `out_selected` are bit-identical to a per-row reference that
     /// scores each candidate with an individual `gemm_block(.., 1, n_state, 1, ..)`
     /// call — over a randomized pool with a non-trivial primal and col_scale, a
-    /// mix of resident / non-resident slots, and a finite k1 window.
+    /// mix of resident / non-resident slots, and a finite candidate_recency
+    /// window.
     #[test]
     fn batched_scoring_bit_identical_to_per_row_reference() {
         let idx = indexer();
@@ -1388,7 +1550,7 @@ mod tests {
             *v = 0.5 + (draw_f64(&mut prng) + 1.5) * 0.5; // strictly positive
         }
         // Drive theta_raw strongly negative so most candidates are violated
-        // (v = alpha - theta_raw > 0): this makes the selection/sort/nadic path a
+        // (v = alpha - theta_raw > 0): this makes the selection/sort/limit path a
         // non-vacuous witness, not just the all-empty case. col_scale[theta] > 0,
         // so a negative scaled theta yields a negative theta_raw.
         primal[THETA_COL] = -50.0;
@@ -1400,7 +1562,8 @@ mod tests {
         }
 
         let current_iteration = 10;
-        // Finite k1 window so the recency filter is exercised alongside residency.
+        // Finite candidate_recency window so the recency filter is exercised
+        // alongside residency.
         let p = params(7, 1e-9, Some(5));
 
         let (ref_alpha_bits, ref_selected) = per_row_reference(
@@ -1450,7 +1613,7 @@ mod tests {
 
         // Witness guard: the fixture must actually exercise the batched path —
         // multiple candidates gathered, at least one violation selected, and the
-        // nadic cap engaged — so equality is non-vacuous.
+        // per-round limit engaged — so equality is non-vacuous.
         assert!(
             scratch.alpha.len() > 1,
             "fixture must gather >1 candidate (got {})",
@@ -1462,7 +1625,7 @@ mod tests {
         );
         assert!(
             count > out.len(),
-            "fixture must have more violations ({count}) than the nadic cap ({})",
+            "fixture must have more violations ({count}) than the per-round limit ({})",
             out.len()
         );
     }
@@ -1531,7 +1694,7 @@ mod tests {
         let primal = vec![0.0_f64; PRIMAL_LEN];
         let mut resident = empty_resident();
         resident.insert(2); // slot 2 resident
-        let p = params(10, 1e-10, Some(5)); // k1 = 5
+        let p = params(10, 1e-10, Some(5)); // candidate_recency = 5
         let mut scratch = DcsScoringScratch::default();
         let mut out = Vec::new();
 
@@ -1774,20 +1937,25 @@ mod tests {
         }
     }
 
+    /// `core_template()` with the state column free in `[0, 10]` and cost 1, and
+    /// theta bounded below by 0 with cost 1: `min x + theta`, so the primal moves
+    /// between rounds of a lazy solve.
+    fn free_state_template() -> StageTemplate {
+        StageTemplate {
+            col_lower: vec![0.0, 0.0, 0.0, 0.0],
+            col_upper: vec![10.0, 0.0, 0.0, 1.0e6],
+            objective: vec![1.0, 0.0, 0.0, 1.0],
+            ..core_template()
+        }
+    }
+
     /// Three cuts (state_dim = 1), floors at x0 = 2.0:
     ///   slot 0: intercept 1, coeff [0]   → floor 1.0
     ///   slot 1: intercept 0, coeff [1]   → floor 2.0
     ///   slot 2: intercept 5, coeff [0]   → floor 5.0  (the binding cut)
     /// All-cuts optimum: theta = 5.0, objective = 5.0; binding slot = 2.
     fn make_three_cut_pool() -> CutPool {
-        let mut pool = CutPool::new(16, 1, 16, 0);
-        pool.add_cut(NodeId(0), 0, 0, 1.0, &[0.0]);
-        pool.add_cut(NodeId(0), 0, 1, 0.0, &[1.0]);
-        pool.add_cut(NodeId(0), 0, 2, 5.0, &[0.0]);
-        for slot in 0..3 {
-            pool.set_iteration_generated_for_test(slot, 1);
-        }
-        pool
+        cuts_pool(&[(1.0, 0.0), (0.0, 1.0), (5.0, 0.0)])
     }
 
     /// Four cuts (state_dim = 1) whose binding cut depends on x0:
@@ -1798,15 +1966,7 @@ mod tests {
     /// At x0 = 2 the binding cut is slot 2 (floor 5); at x0 = 10 it is slot 3
     /// (floor 20). Used to exercise the opening-reuse continue path.
     fn make_four_cut_pool() -> CutPool {
-        let mut pool = CutPool::new(16, 1, 16, 0);
-        pool.add_cut(NodeId(0), 0, 0, 1.0, &[0.0]);
-        pool.add_cut(NodeId(0), 0, 1, 0.0, &[1.0]);
-        pool.add_cut(NodeId(0), 0, 2, 5.0, &[0.0]);
-        pool.add_cut(NodeId(0), 0, 3, 0.0, &[2.0]);
-        for slot in 0..4 {
-            pool.set_iteration_generated_for_test(slot, 1);
-        }
-        pool
+        cuts_pool(&[(1.0, 0.0), (0.0, 1.0), (5.0, 0.0), (0.0, 2.0)])
     }
 
     fn active_profiled() -> ProfiledSolver<ActiveSolver> {
@@ -1823,20 +1983,23 @@ mod tests {
         }
     }
 
-    fn lazy_params(nadic: u32, max_inner: u32) -> DcsParams {
+    fn lazy_params(max_added_per_round: u32, max_inner: u32) -> DcsParams {
         DcsParams {
-            k1: None,
-            nadic,
+            candidate_recency: None,
+            max_added_per_round,
             max_inner_iterations: max_inner,
-            ..DcsParams::default()
+            ..base_params()
         }
     }
 
     /// Reference all-cuts optimum: load core, append every active slot, solve.
     fn solve_all_cuts(pool: &CutPool, state: &StateSpace) -> (f64, f64) {
+        solve_all_cuts_on(&core_template(), pool, state)
+    }
+
+    fn solve_all_cuts_on(core: &StageTemplate, pool: &CutPool, state: &StateSpace) -> (f64, f64) {
         let mut solver = active_profiled();
-        let core = core_template();
-        solver.load_model(&core);
+        solver.load_model(core);
         let mut row_map = CutRowMap::new(pool.populated(), core.num_rows);
         let mut batch = RowBatch {
             num_rows: 0,
@@ -1860,6 +2023,242 @@ mod tests {
         );
         let view = solver.solve(None).expect("all-cuts solve must succeed");
         (view.objective, view.primal[LAZY_THETA_COL])
+    }
+
+    fn cuts_pool(cuts: &[(f64, f64)]) -> CutPool {
+        let mut pool = CutPool::new(16, 1, 16, 0);
+        for (slot, &(intercept, slope)) in cuts.iter().enumerate() {
+            pool.add_cut(NodeId(0), 0, slot as u32, intercept, &[slope]);
+            pool.set_iteration_generated_for_test(slot, 1);
+        }
+        pool
+    }
+
+    /// Cuts `theta >= intercept + slope * x` as (intercept, slope): A (10, -2),
+    /// B (6, -0.5), C (1, 0), in slots 0 to 2, on `min x + theta`, `x` in `[0, 10]`.
+    ///
+    /// derived: with no cut the optimum is `x = 0`, where A is the most violated
+    /// (10); with A the optimum is `x = 5`, `theta = 0`, where B is violated by 3.5;
+    /// with A and B the optimum is their intersection `x = 8/3`, `theta = 14/3`,
+    /// objective `22/3`; C is worth 1 there, below `14/3`.
+    #[test]
+    fn lazy_solve_follows_a_moving_primal_to_the_all_cuts_optimum() {
+        let indexer = lazy_indexer();
+        let pool = cuts_pool(&[(10.0, -2.0), (6.0, -0.5), (1.0, 0.0)]);
+        let core = free_state_template();
+        let (all_obj, _) = solve_all_cuts_on(&core, &pool, &indexer);
+
+        let mut solver = active_profiled();
+        let mut scratch = DcsSolveScratch::default();
+        solver.load_model(&core);
+        let solves_before = solver.statistics().solve_count;
+        lazy_solve_preloaded(
+            &mut solver,
+            &core,
+            &pool,
+            &indexer,
+            &cut_state(&indexer),
+            &[],
+            None,
+            &[],
+            &lazy_params(1, MAX_INNER_ITERATIONS),
+            &mut scratch,
+            ctx(),
+        )
+        .expect("lazy_solve_preloaded must succeed");
+        let solve_delta = solver.statistics().solve_count - solves_before;
+        let view = scratch.result_view();
+
+        assert!(
+            (view.objective - 22.0 / 3.0).abs() < 1e-9,
+            "{}",
+            view.objective
+        );
+        assert!(
+            (view.primal[0] - 8.0 / 3.0).abs() < 1e-9,
+            "{}",
+            view.primal[0]
+        );
+        assert!(
+            (view.primal[LAZY_THETA_COL] - 14.0 / 3.0).abs() < 1e-9,
+            "{}",
+            view.primal[LAZY_THETA_COL]
+        );
+        let resident: Vec<bool> = (0..3)
+            .map(|slot| scratch.row_map.lp_row_for_slot(slot).is_some())
+            .collect();
+        assert_eq!(resident, [true, true, false]);
+        assert_eq!(solve_delta, 3);
+        assert!((view.objective - all_obj).abs() < 1e-9);
+    }
+
+    /// Cuts `theta >= intercept + slope * x` as (intercept, slope): (15, -3),
+    /// (6, -0.5), (20, -4), in slots 0 to 2, seed `[0]`, no round before the
+    /// per-round limit is lifted.
+    ///
+    /// derived: the seed alone gives `x = 5`, `theta = 0`, objective 5, where only
+    /// the second cut is violated (by 3.5; the third evaluates to 0). With the
+    /// first two the optimum is their intersection `x = 3.6`, `theta = 4.2`,
+    /// objective 7.8, where the third is violated by 1.4. With all three it is the
+    /// intersection of the second and third, `x = 4`, `theta = 4`, objective 8,
+    /// where the first evaluates to 3. Three solves, one cap hit.
+    #[test]
+    fn lazy_solve_is_exact_after_the_round_cap() {
+        let indexer = lazy_indexer();
+        let pool = cuts_pool(&[(15.0, -3.0), (6.0, -0.5), (20.0, -4.0)]);
+        let core = free_state_template();
+        let (all_obj, all_theta) = solve_all_cuts_on(&core, &pool, &indexer);
+
+        let mut solver = active_profiled();
+        let mut scratch = DcsSolveScratch::default();
+        solver.load_model(&core);
+        let solves_before = solver.statistics().solve_count;
+        lazy_solve_preloaded(
+            &mut solver,
+            &core,
+            &pool,
+            &indexer,
+            &cut_state(&indexer),
+            &[],
+            None,
+            &[0],
+            &lazy_params(1, 0),
+            &mut scratch,
+            ctx(),
+        )
+        .expect("lazy_solve_preloaded must succeed");
+        let solve_delta = solver.statistics().solve_count - solves_before;
+        let view = scratch.result_view();
+
+        assert!((view.objective - 8.0).abs() < 1e-9, "{}", view.objective);
+        assert!((view.primal[0] - 4.0).abs() < 1e-9, "{}", view.primal[0]);
+        assert!(
+            (view.primal[LAZY_THETA_COL] - 4.0).abs() < 1e-9,
+            "{}",
+            view.primal[LAZY_THETA_COL]
+        );
+        assert_eq!(scratch.round_cap_hits, 1);
+        assert_eq!(solve_delta, 3);
+        assert!((view.objective - all_obj).abs() < 1e-9);
+        assert!((view.primal[LAZY_THETA_COL] - all_theta).abs() < 1e-9);
+    }
+
+    /// A tolerance wide enough to leave a violated candidate unappended returns an
+    /// objective below the all-cuts optimum by at most the relative bound.
+    ///
+    /// derived: with cuts `(15, -3)` and `(6, -0.5)` resident and `(20, -4)` the
+    /// only candidate, the lazy optimum is their intersection `x = 9 / 2.5 = 3.6`,
+    /// `theta = 15 - 3 * 3.6 = 4.2`, objective `7.8`. There the candidate is worth
+    /// `20 - 4 * 3.6 = 5.6`, a violation of `1.4` against `0.3 * 5.6 = 1.68`, so it
+    /// stays out. With it the optimum is the intersection of the last two cuts,
+    /// `x = 14 / 3.5 = 4`, `theta = 4`, objective `8`. The bound is
+    /// `7.8 + 1 * 0.3 / 0.7 * 4.2 = 9.6`, with `d = 1`.
+    #[test]
+    fn a_lazy_solve_stays_within_the_relative_bound() {
+        let eps = 0.3;
+        let indexer = lazy_indexer();
+        let pool = cuts_pool(&[(15.0, -3.0), (6.0, -0.5), (20.0, -4.0)]);
+        let core = free_state_template();
+        let (all_obj, _) = solve_all_cuts_on(&core, &pool, &indexer);
+
+        let mut solver = active_profiled();
+        let mut scratch = DcsSolveScratch::default();
+        solver.load_model(&core);
+        lazy_solve_preloaded(
+            &mut solver,
+            &core,
+            &pool,
+            &indexer,
+            &cut_state(&indexer),
+            &[],
+            None,
+            &[0, 1],
+            &DcsParams {
+                violation_tolerance: eps,
+                ..lazy_params(10, 50)
+            },
+            &mut scratch,
+            ctx(),
+        )
+        .expect("lazy_solve_preloaded must succeed");
+        let view = scratch.result_view();
+
+        let x_lazy = (15.0 - 6.0) / (3.0 - 0.5);
+        let theta_lazy = 15.0 - 3.0 * x_lazy;
+        let lazy_obj = x_lazy + theta_lazy;
+        let x_all = (20.0 - 6.0) / (4.0 - 0.5);
+        let all_derived = x_all + (20.0 - 4.0 * x_all);
+        let d = core.objective[LAZY_THETA_COL];
+        let bound = lazy_obj + d * eps / (1.0 - eps) * theta_lazy;
+
+        assert!(
+            (view.objective - lazy_obj).abs() < 1e-9,
+            "{}",
+            view.objective
+        );
+        assert!((all_obj - all_derived).abs() < 1e-9, "{all_obj}");
+        assert!(scratch.row_map.lp_row_for_slot(2).is_none());
+        assert!(view.objective < all_obj - 0.1);
+        assert!(all_obj <= bound, "{all_obj} > {bound}");
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: 64,
+            rng_seed: proptest::test_runner::RngSeed::Fixed(42),
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        #[test]
+        fn lazy_objective_equals_the_all_cuts_objective(
+            cuts in proptest::collection::vec((0..=20i32, -4..=0i32), 1..=12),
+            seed_mask in proptest::collection::vec(proptest::bool::ANY, 12),
+            max_added_per_round in 1..=3u32,
+            round_cap in 0..=3u32,
+        ) {
+            let cuts: Vec<(f64, f64)> =
+                cuts.iter().map(|&(i, s)| (f64::from(i), f64::from(s))).collect();
+            let seed: Vec<u32> = (0..cuts.len() as u32)
+                .filter(|&slot| seed_mask[slot as usize])
+                .collect();
+            let indexer = lazy_indexer();
+            let pool = cuts_pool(&cuts);
+            let core = free_state_template();
+            let (all_obj, _) = solve_all_cuts_on(&core, &pool, &indexer);
+            let params = lazy_params(max_added_per_round, round_cap);
+
+            let mut solver = active_profiled();
+            let mut scratch = DcsSolveScratch::default();
+            solver.load_model(&core);
+            lazy_solve_preloaded(
+                &mut solver,
+                &core,
+                &pool,
+                &indexer,
+                &cut_state(&indexer),
+                &[],
+                None,
+                &seed,
+                &params,
+                &mut scratch,
+                ctx(),
+            )
+            .expect("lazy_solve_preloaded must succeed");
+
+            let view = scratch.result_view();
+            let (objective, theta) = (view.objective, view.primal[LAZY_THETA_COL]);
+            let eps = params.violation_tolerance;
+            let d = core.objective[LAZY_THETA_COL];
+            let allowance = 1e-9 * all_obj.abs().max(1.0);
+            proptest::prop_assert!(
+                objective <= all_obj + allowance,
+                "lazy {objective} above all-cuts {all_obj}"
+            );
+            proptest::prop_assert!(
+                all_obj <= objective + d * eps / (1.0 - eps) * theta.abs() + allowance,
+                "all-cuts {all_obj} beyond the bound of lazy {objective} at theta {theta}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2024,6 +2423,7 @@ mod tests {
         // Bit-identical with trivial epsilon/scale.
         assert_eq!(view.objective, all_obj);
         assert_eq!(view.primal[LAZY_THETA_COL], all_theta);
+        assert_eq!(scratch.round_cap_hits, 0);
     }
 
     /// With an initial subset that already contains the binding cut, the loop
@@ -2375,15 +2775,15 @@ mod tests {
         );
     }
 
-    /// max_inner_iterations = 1 forces the TC fallback after one inner add; it
-    /// must terminate and still return the all-cuts-equivalent optimum.
+    /// One round of one cut, then the cap: the solve returns the all-cuts optimum.
     ///
-    /// The cap-hit fallback scores the live primal, appends remaining
-    /// violated slots, and solves once to return — preserving the all-cuts
-    /// optimum. The TC path issues initial + one capped add/resolve + the final
-    /// TC solve = 3.
+    /// derived: no cut is resident, so the first solve sits at `theta = -1e6` and
+    /// all three floors (1, 2, 5) are violated; the round adds the largest (5),
+    /// the second solve gives `theta = 5`, and the other two floors are below it.
+    /// At the cap nothing is violated, so the solve returns without another solve:
+    /// two solves, no cap hit.
     #[test]
-    fn lazy_solve_tc_fallback_terminates() {
+    fn lazy_solve_terminates_after_the_round_cap() {
         let indexer = lazy_indexer();
         let pool = make_three_cut_pool();
         let (all_obj, all_theta) = solve_all_cuts(&pool, &indexer);
@@ -2391,8 +2791,6 @@ mod tests {
         let mut solver = active_profiled();
         let core = core_template();
         let mut scratch = DcsSolveScratch::default();
-        // nadic = 1 + cap = 1: the loop can add at most one slot before the cap
-        // fires, then the TC fallback adds the rest.
         let params = lazy_params(1, 1);
 
         solver.load_model(&core);
@@ -2405,22 +2803,19 @@ mod tests {
             &cut_state(&indexer),
             &[],
             None,
-            &[], // omit ALL cuts to force ≥2 inner iterations without the cap
+            &[],
             &params,
             &mut scratch,
             ctx(),
         )
-        .expect("lazy_solve_preloaded TC fallback must succeed");
+        .expect("lazy_solve_preloaded must succeed");
         let solve_delta = solver.statistics().solve_count - solves_before;
         let view = scratch.result_view();
 
         assert!((view.objective - all_obj).abs() < 1e-9);
         assert!((view.primal[LAZY_THETA_COL] - all_theta).abs() < 1e-9);
-        // TC fallback solve count is preserved (initial + capped add + final).
-        assert_eq!(
-            solve_delta, 3,
-            "TC fallback issues initial + one capped add/resolve + final TC solve = 3"
-        );
+        assert_eq!(solve_delta, 2);
+        assert_eq!(scratch.round_cap_hits, 0);
     }
 
     /// Determinism: identical inputs → identical objective across two runs.
@@ -2617,9 +3012,7 @@ mod tests {
     fn lazy_solve_tolerates_cold_mid_loop_resolve() {
         let indexer = lazy_indexer();
         // One cut: intercept 5, coeff [0] → floor 5.0 at x0 = 2.
-        let mut pool = CutPool::new(16, 1, 16, 0);
-        pool.add_cut(NodeId(0), 0, 0, 5.0, &[0.0]);
-        pool.set_iteration_generated_for_test(0, 1);
+        let pool = cuts_pool(&[(5.0, 0.0)]);
 
         // Primal layout: [x0, c1, c2, theta]. First solve reports theta = 0
         // (cut 0 floor 5 > 0 → violated). After adding cut 0, the mock reports
@@ -2659,26 +3052,25 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Build a pool of `n` populated, state_dim-1 cuts with explicit per-slot
-    /// `(active, iteration_generated, last_active_iter)` metadata. Local copy of
-    /// the `cut_selection` test-helper pattern (kept private to this module).
+    /// `(active, iteration_generated, last_active_iter)` metadata.
     #[allow(clippy::cast_possible_truncation)]
     fn seed_pool(specs: &[(bool, u64, u64)]) -> CutPool {
         let n = specs.len();
         let mut pool = CutPool::new(n.max(1), 1, n.max(1) as u32, 0);
-        let mut metadata = Vec::with_capacity(n);
-        let mut active = Vec::with_capacity(n);
         for (i, &(is_active, iteration_generated, last_active_iter)) in specs.iter().enumerate() {
             pool.add_cut(NodeId(0), 0, i as u32, 0.0, &[0.0]);
-            metadata.push(CutMetadata {
-                iteration_generated,
-                forward_pass_index: i as u32,
-                node: NodeId(0),
-                active_count: 0,
-                last_active_iter,
-            });
-            active.push(is_active);
+            pool.set_metadata_for_test(
+                i,
+                CutMetadata {
+                    iteration_generated,
+                    forward_pass_index: i as u32,
+                    node: NodeId(0),
+                    active_count: 0,
+                    last_active_iter,
+                },
+            );
+            pool.set_active(i as u32, is_active);
         }
-        pool.replace_selection(&metadata, &active);
         pool
     }
 
@@ -2687,10 +3079,10 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Slots 0..4 with last_active_iter = [10, 8, 3, 10, 6], all active,
-    /// all generated at iter 1, current = 10, k2 = 5. Slot 2 excluded
+    /// all generated at iter 1, current = 10, seed_window = 5. Slot 2 excluded
     /// (10 - 3 = 7 > 5); the rest are within the window.
     #[test]
-    fn seeds_within_k2_window() {
+    fn seeds_within_the_seed_window() {
         let pool = seed_pool(&[
             (true, 1, 10),
             (true, 1, 8),
@@ -2719,7 +3111,67 @@ mod tests {
         );
     }
 
-    /// An inactive slot within the k2 window is never included.
+    fn loaded_record(iteration: u32) -> OwnedPolicyCutRecord {
+        OwnedPolicyCutRecord {
+            slot_index: 0,
+            iteration,
+            intercept: 0.0,
+            coefficients: vec![0.0],
+            is_active: true,
+            ..owned_piece_defaults()
+        }
+    }
+
+    /// A loaded cut whose real generating iteration equals the current one is
+    /// not a current-iteration cut: its restarted clock leaves it outside the
+    /// window, while a cut of the same iteration is seeded.
+    #[test]
+    fn a_loaded_slot_is_not_seeded_as_a_current_iteration_cut() {
+        let mut pool = CutPool::new_with_warm_start(1, 1, 4, &[loaded_record(10)]);
+        pool.restart_activity_clock();
+        pool.set_iteration_base(10);
+        pool.add_cut(NodeId(0), 10, 0, 0.0, &[0.0]);
+        let mut out = Vec::new();
+
+        build_initial_resident_set(&pool, 10, 2, &mut out);
+
+        assert_eq!(out, vec![1]);
+    }
+
+    /// derived: `current.saturating_sub(last_active_iter) <= seed_window`, with
+    /// `seed_window = 2`. After the restart `last_active_iter` is 0, so
+    /// iterations 1 and 2 are seeded and 3 is not (3 > 2). `record_binding(0,
+    /// 1, 5)` sets it to 5: iterations 5, 6 and 7 give 0, 1 and 2 (seeded), 8
+    /// gives 3. Without the restart it stays 40: iteration 3 saturates to 0
+    /// and the cut is seeded through iteration 42, not 43.
+    #[test]
+    fn a_warm_started_cut_is_seeded_in_the_first_window_and_after_it_binds() {
+        let seeded = |pool: &CutPool, iteration: u64| {
+            let mut out = Vec::new();
+            build_initial_resident_set(pool, iteration, 2, &mut out);
+            out == vec![0]
+        };
+        let mut restarted = CutPool::new_with_warm_start(1, 1, 4, &[loaded_record(40)]);
+        let stored_clock = CutPool::new_with_warm_start(1, 1, 4, &[loaded_record(40)]);
+        restarted.restart_activity_clock();
+
+        assert!(seeded(&restarted, 1));
+        assert!(seeded(&restarted, 2));
+        assert!(!seeded(&restarted, 3));
+
+        restarted.record_binding(0, 1, 5);
+
+        assert!(seeded(&restarted, 5));
+        assert!(seeded(&restarted, 6));
+        assert!(seeded(&restarted, 7));
+        assert!(!seeded(&restarted, 8));
+
+        assert!(seeded(&stored_clock, 3));
+        assert!(seeded(&stored_clock, 42));
+        assert!(!seeded(&stored_clock, 43));
+    }
+
+    /// An inactive slot within the seed window is never included.
     #[test]
     fn excludes_inactive_slots() {
         // Slot 0 active in window; slot 1 inactive in window; slot 2 active.
@@ -2754,15 +3206,15 @@ mod tests {
 
     /// The seed keys on **binding recency** via
     /// `last_active_iter`, NOT on generation iteration. A cut generated long ago
-    /// (`iteration_generated` well outside the k2 window) but binding recently
+    /// (`iteration_generated` well outside the seed window) but binding recently
     /// (`last_active_iter == i`) must be seeded at iteration `i + d` for
-    /// `0 < d <= k2`. The companion "generated but never re-bound" cut, whose
+    /// `0 < d <= seed_window`. The companion "generated but never re-bound" cut, whose
     /// `last_active_iter` stayed at its old generation iteration, is correctly
     /// excluded once it falls outside the window.
     #[test]
     fn seeds_old_generation_cut_that_bound_recently() {
-        // current = i + d = 12, k2 = 3 → window covers last_active_iter >= 9.
-        //   slot 0: generated at iter 1 (age 11 ≫ k2), but bound at iter 11
+        // current = i + d = 12, seed_window = 3 → window covers last_active_iter >= 9.
+        //   slot 0: generated at iter 1 (age 11 ≫ seed_window), but bound at iter 11
         //           → 12 - 11 = 1 <= 3 → SEEDED (recently binding, old gen).
         //   slot 1: generated at iter 1, never re-bound (last_active 1)
         //           → 12 - 1 = 11 > 3, not current-iter → EXCLUDED.
@@ -2774,16 +3226,16 @@ mod tests {
         assert_eq!(
             out,
             vec![0, 2],
-            "old-generation cuts that bound within the last k2 iterations are \
-             seeded by binding recency; the never-re-bound cut is excluded"
+            "old-generation cuts that bound within the last seed_window iterations \
+             are seeded by binding recency; the never-re-bound cut is excluded"
         );
     }
 
-    /// k2 = 0 boundary. Only slots active in the current iteration
+    /// seed_window = 0 boundary. Only slots active in the current iteration
     /// (last_active_iter >= current) plus current-iteration cuts are included.
     #[test]
-    fn k2_zero_window_boundary() {
-        // current = 10, k2 = 0:
+    fn a_zero_seed_window_seeds_only_the_current_iteration() {
+        // current = 10, seed_window = 0:
         //   slot 0: last_active_iter 10 → 10 - 10 = 0 <= 0 → included.
         //   slot 1: last_active_iter 9  → 10 - 9  = 1 >  0 → excluded (not current-iter).
         //   slot 2: last_active_iter 11 → saturating_sub → 0 <= 0 → included.

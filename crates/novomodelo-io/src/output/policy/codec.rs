@@ -16,12 +16,13 @@ use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use super::super::error::OutputError;
 use super::super::software::policy_checkpoint_remedy;
 use super::records::{
-    CheckpointManifest, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, FORMAT_VERSION, GraphManifest,
-    HydroSeasonOrders, ManifestEdge, ManifestNode, OwnedPolicyBasisRecord, OwnedPolicyCutRecord,
-    PolicyBasisRecord, PolicyCutRecord, ProducerBlock, SEASON_CYCLE_CODE_ABSENT,
-    STAGE_CUTS_GRAPH_STAGE_ID_SENTINEL, STAGE_CUTS_NODE_ID_SENTINEL,
-    STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, STAGE_STATES_NODE_ID_SENTINEL, SeasonManifest,
-    StageCutsPayload, StageCutsReadResult, StageStatesPayload, StageStatesReadResult,
+    BasisEntry, CheckpointManifest, ENTITY_SLOT_DATE_SENTINEL, EntitySlot, FORMAT_VERSION,
+    GraphManifest, HydroSeasonOrders, ManifestEdge, ManifestNode, OwnedBasisEntry,
+    OwnedPolicyBasisRecord, OwnedPolicyCutRecord, PolicyBasisRecord, PolicyCutRecord,
+    ProducerBlock, SEASON_CYCLE_CODE_ABSENT, STAGE_CUTS_GRAPH_STAGE_ID_SENTINEL,
+    STAGE_CUTS_NODE_ID_SENTINEL, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+    STAGE_STATES_NODE_ID_SENTINEL, SeasonManifest, StageCutsPayload, StageCutsReadResult,
+    StageStatesPayload, StageStatesReadResult, StateHistory,
 };
 
 use std::path::Path;
@@ -33,21 +34,20 @@ const POLICY_FILE_IDENTIFIER: &str = "CBVF";
 
 // ── FlatBuffers vtable slot offsets ──────────────────────────────────────────
 //
-// slot = (id + 2) * 2. Three slots are permanently burned and never read or
+// slot = (id + 2) * 2. The schema's `deprecated` placeholders are never read or
 // written here — reusing any would diverge the hand-written layout from the
-// schema's `deprecated` placeholder: `AffinePiece` id 7 (slot 18), the former
-// `state_at_generation`; `EntitySlot` id 4 (slot 12), the former month-integer
-// `delivery_anchor`; and `EntitySlot` id 5 (slot 14), the former single-field
-// `delivery_date` anchor replaced by `reference_date`/`interval_start`/
-// `interval_end` at ids 6/7/8.
+// schema: `AffinePiece` ids 0 and 7, `EntitySlot` ids 4 and 5, `StageCuts` id 5
+// and `StageBasis` ids 2-6.
 
-const CUT_FIELD_CUT_ID: u16 = 4;
 const CUT_FIELD_SLOT_INDEX: u16 = 6;
 const CUT_FIELD_ITERATION: u16 = 8;
 const CUT_FIELD_FORWARD_PASS_IDX: u16 = 10;
 const CUT_FIELD_INTERCEPT: u16 = 12;
 const CUT_FIELD_COEFFICIENTS: u16 = 14;
 const CUT_FIELD_IS_ACTIVE: u16 = 16;
+const CUT_FIELD_SCORED: u16 = 20;
+const CUT_FIELD_ACTIVE_COUNT: u16 = 22;
+const CUT_FIELD_LAST_ACTIVE_ITERATION: u16 = 24;
 
 const ENTITY_SLOT_FIELD_ENTITY_TYPE: u16 = 4;
 const ENTITY_SLOT_FIELD_ENTITY_ID: u16 = 6;
@@ -62,7 +62,6 @@ const STAGE_CUTS_FIELD_STATE_DIMENSION: u16 = 6;
 const STAGE_CUTS_FIELD_CAPACITY: u16 = 8;
 const STAGE_CUTS_FIELD_WARM_START_COUNT: u16 = 10;
 const STAGE_CUTS_FIELD_CUTS: u16 = 12;
-const STAGE_CUTS_FIELD_ACTIVE_CUT_INDICES: u16 = 14;
 const STAGE_CUTS_FIELD_POPULATED_COUNT: u16 = 16;
 const STAGE_CUTS_FIELD_ENTITY_MANIFEST: u16 = 18;
 const STAGE_CUTS_FIELD_COST_SCALE_FACTOR: u16 = 20;
@@ -72,11 +71,12 @@ const STAGE_CUTS_FIELD_PRICED_STATE_DATE: u16 = 26;
 
 const BASIS_FIELD_STAGE_ID: u16 = 4;
 const BASIS_FIELD_ITERATION: u16 = 6;
-const BASIS_FIELD_NUM_COLUMNS: u16 = 8;
-const BASIS_FIELD_NUM_ROWS: u16 = 10;
-const BASIS_FIELD_COLUMN_STATUS: u16 = 12;
-const BASIS_FIELD_ROW_STATUS: u16 = 14;
-const BASIS_FIELD_NUM_CUT_ROWS: u16 = 16;
+const BASIS_FIELD_ENTRIES: u16 = 18;
+
+const BASIS_ENTRY_FIELD_SCENARIO: u16 = 4;
+const BASIS_ENTRY_FIELD_COLUMN_STATUS: u16 = 6;
+const BASIS_ENTRY_FIELD_ROW_STATUS: u16 = 8;
+const BASIS_ENTRY_FIELD_PIECE_ROW_SLOTS: u16 = 10;
 
 const STATES_FIELD_STAGE_ID: u16 = 4;
 const STATES_FIELD_STATE_DIMENSION: u16 = 6;
@@ -84,6 +84,7 @@ const STATES_FIELD_COUNT: u16 = 8;
 const STATES_FIELD_DATA: u16 = 10;
 const STATES_FIELD_ENTITY_MANIFEST: u16 = 12;
 const STATES_FIELD_NODE_ID: u16 = 14;
+const STATES_FIELD_SLOTS: u16 = 16;
 
 // CheckpointManifest ids start fresh at 0; its own vtable is distinct from the
 // AffinePiece/EntitySlot vtables, so its id 4 / id 7 collide with no burned slot.
@@ -109,6 +110,10 @@ const MANIFEST_FIELD_COST_SCALE_FACTOR: u16 = 40;
 const MANIFEST_FIELD_SEASON_MANIFEST: u16 = 42;
 const MANIFEST_FIELD_SOFTWARE: u16 = 44;
 const MANIFEST_FIELD_LOWER_BOUND_HISTORY: u16 = 46;
+const MANIFEST_FIELD_STATE_HISTORY_SCOPE: u16 = 48;
+const MANIFEST_FIELD_STATE_HISTORY_WINDOW: u16 = 50;
+const MANIFEST_FIELD_ACTIVITY_COUNTERS: u16 = 52;
+const MANIFEST_FIELD_BASIS_STORE_COMPLETE: u16 = 54;
 
 const MANIFEST_NODE_FIELD_ID: u16 = 4;
 const MANIFEST_NODE_FIELD_STAGE_ID: u16 = 6;
@@ -138,13 +143,39 @@ fn build_cut_table(
 
     let tab = builder.start_table();
 
-    builder.push_slot_always::<u64>(CUT_FIELD_CUT_ID, piece.cut_id);
     builder.push_slot_always::<u32>(CUT_FIELD_SLOT_INDEX, piece.slot_index);
     builder.push_slot_always::<u32>(CUT_FIELD_ITERATION, piece.iteration);
     builder.push_slot_always::<u32>(CUT_FIELD_FORWARD_PASS_IDX, piece.forward_pass_index);
     builder.push_slot_always::<f64>(CUT_FIELD_INTERCEPT, piece.intercept);
     builder.push_slot_always(CUT_FIELD_COEFFICIENTS, coefficients_vec);
     builder.push_slot_always::<bool>(CUT_FIELD_IS_ACTIVE, piece.is_active);
+    builder.push_slot_always::<bool>(CUT_FIELD_SCORED, piece.scored);
+    // `push_slot_always` only when present: a pushed 0 would read back as a
+    // recorded count, not as an absent one.
+    if let Some(count) = piece.active_count {
+        builder.push_slot_always::<u64>(CUT_FIELD_ACTIVE_COUNT, count);
+    }
+    if let Some(iteration) = piece.last_active_iteration {
+        builder.push_slot_always::<u64>(CUT_FIELD_LAST_ACTIVE_ITERATION, iteration);
+    }
+
+    builder.end_table(tab)
+}
+
+fn build_basis_entry_table(
+    builder: &mut FlatBufferBuilder<'_>,
+    entry: &BasisEntry<'_>,
+) -> WIPOffset<flatbuffers::TableFinishedWIPOffset> {
+    let col_vec = builder.create_vector(entry.column_status);
+    let row_vec = builder.create_vector(entry.row_status);
+    let slots_vec = builder.create_vector(entry.piece_row_slots);
+
+    let tab = builder.start_table();
+
+    builder.push_slot_always::<u32>(BASIS_ENTRY_FIELD_SCENARIO, entry.scenario);
+    builder.push_slot_always(BASIS_ENTRY_FIELD_COLUMN_STATUS, col_vec);
+    builder.push_slot_always(BASIS_ENTRY_FIELD_ROW_STATUS, row_vec);
+    builder.push_slot_always(BASIS_ENTRY_FIELD_PIECE_ROW_SLOTS, slots_vec);
 
     builder.end_table(tab)
 }
@@ -248,13 +279,135 @@ fn check_file_identifier(buf: &[u8], ctx: &str) -> Result<(), OutputError> {
     }
 }
 
+// ── Encoded-size bounds ───────────────────────────────────────────────────────
+//
+// Each `*_size_bound` is at least the `finished_data().len()` of the matching
+// `build_*`, computed from the payload's lengths alone. A table counts every
+// vtable slot up to its last as a field at the widest scalar plus its padding,
+// and writes its own vtable (no sharing); a vector or string counts its length
+// prefix and its leading padding.
+
+/// `f64` and `u64`.
+const WIDEST_SCALAR_BYTES: usize = 8;
+const MAX_PADDING_BYTES: usize = WIDEST_SCALAR_BYTES - 1;
+const UOFFSET_BYTES: usize = 4;
+const VOFFSET_BYTES: usize = 2;
+/// The root offset and the file identifier `finish` writes, with their padding.
+const FINISH_BYTES: usize = UOFFSET_BYTES + POLICY_FILE_IDENTIFIER.len() + MAX_PADDING_BYTES;
+
+fn vector_bound(len: usize, element_bytes: usize) -> usize {
+    UOFFSET_BYTES + MAX_PADDING_BYTES + len * element_bytes
+}
+
+/// Strings carry a trailing nul byte.
+fn string_bound(value: &str) -> usize {
+    UOFFSET_BYTES + MAX_PADDING_BYTES + value.len() + 1
+}
+
+/// `last_slot` is the highest `*_FIELD_*` slot of the table.
+fn table_bound(last_slot: u16) -> usize {
+    let last_slot = usize::from(last_slot);
+    let slots = last_slot / VOFFSET_BYTES - 1;
+    let soffset = UOFFSET_BYTES + MAX_PADDING_BYTES;
+    let vtable = last_slot + VOFFSET_BYTES;
+    slots * (WIDEST_SCALAR_BYTES + MAX_PADDING_BYTES) + soffset + vtable
+}
+
+fn entity_manifest_bound(entity_manifest: &[EntitySlot]) -> usize {
+    entity_manifest.len() * table_bound(ENTITY_SLOT_FIELD_INTERVAL_END)
+        + vector_bound(entity_manifest.len(), UOFFSET_BYTES)
+}
+
+/// Upper bound in bytes of the buffer [`serialize_stage_cuts`] builds.
+pub(super) fn stage_cuts_size_bound(payload: &StageCutsPayload<'_>) -> usize {
+    let pieces: usize = payload
+        .cuts
+        .iter()
+        .map(|piece| {
+            vector_bound(piece.coefficients.len(), size_of::<f64>())
+                + table_bound(CUT_FIELD_LAST_ACTIVE_ITERATION)
+        })
+        .sum();
+    pieces
+        + vector_bound(payload.cuts.len(), UOFFSET_BYTES)
+        + entity_manifest_bound(payload.entity_manifest)
+        + table_bound(STAGE_CUTS_FIELD_PRICED_STATE_DATE)
+        + FINISH_BYTES
+}
+
+/// Upper bound in bytes of the buffer [`serialize_stage_basis`] builds.
+pub(super) fn stage_basis_size_bound(record: &PolicyBasisRecord<'_>) -> usize {
+    let entries: usize = record
+        .entries
+        .iter()
+        .map(|entry| {
+            vector_bound(entry.column_status.len(), size_of::<u8>())
+                + vector_bound(entry.row_status.len(), size_of::<u8>())
+                + vector_bound(entry.piece_row_slots.len(), size_of::<u32>())
+                + table_bound(BASIS_ENTRY_FIELD_PIECE_ROW_SLOTS)
+        })
+        .sum();
+    entries
+        + vector_bound(record.entries.len(), UOFFSET_BYTES)
+        + table_bound(BASIS_FIELD_ENTRIES)
+        + FINISH_BYTES
+}
+
+/// Upper bound in bytes of the buffer [`serialize_stage_states`] builds.
+pub(super) fn stage_states_size_bound(payload: &StageStatesPayload<'_>) -> usize {
+    vector_bound(payload.data.len(), size_of::<f64>())
+        + vector_bound(payload.slots.len(), size_of::<u32>())
+        + entity_manifest_bound(payload.entity_manifest)
+        + table_bound(STATES_FIELD_SLOTS)
+        + FINISH_BYTES
+}
+
+/// Upper bound in bytes of the buffer [`serialize_checkpoint_manifest`] builds.
+pub(super) fn checkpoint_manifest_size_bound(manifest: &CheckpointManifest) -> usize {
+    let graph = &manifest.graph_manifest;
+    let producer = &manifest.producer;
+    let hydro_orders = &manifest.season_manifest.hydro_orders;
+    let season: usize = hydro_orders
+        .iter()
+        .map(|h| {
+            vector_bound(h.orders.len(), size_of::<u32>())
+                + table_bound(HYDRO_SEASON_ORDERS_FIELD_ORDERS)
+        })
+        .sum::<usize>()
+        + vector_bound(hydro_orders.len(), UOFFSET_BYTES)
+        + table_bound(SEASON_MANIFEST_FIELD_HYDRO_ORDERS);
+    let per_stage_modes = &producer.training_block_mode_per_stage;
+    let strings: usize = manifest.software.as_deref().map_or(0, string_bound)
+        + string_bound(&manifest.software_version)
+        + string_bound(&manifest.created_at)
+        + string_bound(&producer.training_block_mode)
+        + per_stage_modes
+            .iter()
+            .map(|mode| string_bound(mode))
+            .sum::<usize>()
+        + vector_bound(per_stage_modes.len(), UOFFSET_BYTES);
+    graph.nodes.len() * table_bound(MANIFEST_NODE_FIELD_POOL_ID)
+        + vector_bound(graph.nodes.len(), UOFFSET_BYTES)
+        + graph.edges.len() * table_bound(MANIFEST_EDGE_FIELD_PROBABILITY)
+        + vector_bound(graph.edges.len(), UOFFSET_BYTES)
+        + season
+        + strings
+        + vector_bound(producer.warm_start_counts.len(), size_of::<u32>())
+        + vector_bound(producer.lower_bound_history.len(), size_of::<f64>())
+        + table_bound(MANIFEST_FIELD_BASIS_STORE_COMPLETE)
+        + FINISH_BYTES
+}
+
 // ── Serializers ───────────────────────────────────────────────────────────────
 
 /// Serialize all cuts for one stage into a root `StageCuts` `FlatBuffers` buffer,
 /// ready to write directly to a `.bin` policy file.
 ///
-/// Infallible: the builder only allocates and writes. Any I/O error is the
-/// caller's responsibility.
+/// # Panics
+///
+/// When the buffer could exceed the 2 GiB `FlatBuffers` limit;
+/// [`write_policy_checkpoint`](crate::write_policy_checkpoint) refuses such a
+/// payload with an error before building it.
 ///
 /// # Examples
 ///
@@ -265,13 +418,15 @@ fn check_file_identifier(buf: &[u8], ctx: &str) -> Result<(), OutputError> {
 /// };
 ///
 /// let piece = PolicyCutRecord {
-///     cut_id: 1,
 ///     slot_index: 5,
 ///     iteration: 3,
 ///     forward_pass_index: 0,
 ///     intercept: 42.0,
 ///     coefficients: &[1.0, 2.0, 3.0],
 ///     is_active: true,
+///     scored: false,
+///     active_count: None,
+///     last_active_iteration: None,
 /// };
 /// let buf = serialize_stage_cuts(&StageCutsPayload {
 ///     stage_id: 0,
@@ -279,7 +434,6 @@ fn check_file_identifier(buf: &[u8], ctx: &str) -> Result<(), OutputError> {
 ///     capacity: 100,
 ///     warm_start_count: 0,
 ///     cuts: &[piece],
-///     active_cut_indices: &[0],
 ///     populated_count: 1,
 ///     entity_manifest: &[],
 ///     cost_scale_factor: 1_000_000.0,
@@ -294,15 +448,8 @@ pub fn serialize_stage_cuts(payload: &StageCutsPayload<'_>) -> Vec<u8> {
     build_stage_cuts(payload).finished_data().to_vec()
 }
 
-#[allow(clippy::cast_possible_truncation)]
 pub(super) fn build_stage_cuts(payload: &StageCutsPayload<'_>) -> FlatBufferBuilder<'static> {
-    let estimated = 64
-        + payload.cuts.len()
-            * (96usize + payload.state_dimension as usize * std::mem::size_of::<f64>())
-        + std::mem::size_of_val(payload.active_cut_indices)
-        + payload.entity_manifest.len() * 32usize;
-
-    let mut builder = FlatBufferBuilder::with_capacity(estimated);
+    let mut builder = FlatBufferBuilder::with_capacity(stage_cuts_size_bound(payload));
 
     let cut_offsets: Vec<WIPOffset<flatbuffers::TableFinishedWIPOffset>> = payload
         .cuts
@@ -316,7 +463,6 @@ pub(super) fn build_stage_cuts(payload: &StageCutsPayload<'_>) -> FlatBufferBuil
         .collect();
 
     let cuts_vec = builder.create_vector(&cut_offsets);
-    let active_vec = builder.create_vector(payload.active_cut_indices);
     let manifest_vec = builder.create_vector(&manifest_offsets);
 
     let root = builder.start_table();
@@ -326,7 +472,6 @@ pub(super) fn build_stage_cuts(payload: &StageCutsPayload<'_>) -> FlatBufferBuil
     builder.push_slot_always::<u32>(STAGE_CUTS_FIELD_CAPACITY, payload.capacity);
     builder.push_slot_always::<u32>(STAGE_CUTS_FIELD_WARM_START_COUNT, payload.warm_start_count);
     builder.push_slot_always(STAGE_CUTS_FIELD_CUTS, cuts_vec);
-    builder.push_slot_always(STAGE_CUTS_FIELD_ACTIVE_CUT_INDICES, active_vec);
     builder.push_slot_always::<u32>(STAGE_CUTS_FIELD_POPULATED_COUNT, payload.populated_count);
     builder.push_slot_always(STAGE_CUTS_FIELD_ENTITY_MANIFEST, manifest_vec);
     builder.push_slot_always::<f64>(
@@ -346,23 +491,30 @@ pub(super) fn build_stage_cuts(payload: &StageCutsPayload<'_>) -> FlatBufferBuil
     builder
 }
 
-/// Serialize one stage's solver basis into a root `StageBasis` `FlatBuffers`
+/// Serialize one node's solver bases into a root `StageBasis` `FlatBuffers`
 /// buffer, ready to write directly to a `.bin` policy file under `basis/`.
 ///
-/// `num_columns` and `num_rows` are inferred from the status slice lengths, not
-/// supplied separately. Infallible: the builder only allocates and writes.
+/// # Panics
+///
+/// When the buffer could exceed the 2 GiB `FlatBuffers` limit;
+/// [`write_policy_checkpoint`](crate::write_policy_checkpoint) refuses such a
+/// payload with an error before building it.
 ///
 /// # Examples
 ///
 /// ```
-/// use novomodelo_io::{PolicyBasisRecord, serialize_stage_basis};
+/// use novomodelo_io::{BasisEntry, PolicyBasisRecord, serialize_stage_basis};
 ///
+/// let entry = BasisEntry {
+///     scenario: 0,
+///     column_status: &[0, 1, 2],
+///     row_status: &[1, 1, 0, 0],
+///     piece_row_slots: &[0, 1],
+/// };
 /// let record = PolicyBasisRecord {
 ///     stage_id: 0,
 ///     iteration: 5,
-///     column_status: &[0, 1, 2],
-///     row_status: &[1, 1, 0, 0],
-///     num_cut_rows: 2,
+///     entries: &[entry],
 /// };
 /// let buf = serialize_stage_basis(&record);
 /// assert!(!buf.is_empty());
@@ -372,25 +524,21 @@ pub fn serialize_stage_basis(record: &PolicyBasisRecord<'_>) -> Vec<u8> {
     build_stage_basis(record).finished_data().to_vec()
 }
 
-#[allow(clippy::cast_possible_truncation)]
 pub(super) fn build_stage_basis(record: &PolicyBasisRecord<'_>) -> FlatBufferBuilder<'static> {
-    let estimated =
-        64 + std::mem::size_of_val(record.column_status) + std::mem::size_of_val(record.row_status);
+    let mut builder = FlatBufferBuilder::with_capacity(stage_basis_size_bound(record));
 
-    let mut builder = FlatBufferBuilder::with_capacity(estimated);
-
-    let col_vec = builder.create_vector(record.column_status);
-    let row_vec = builder.create_vector(record.row_status);
+    let entry_offsets: Vec<WIPOffset<flatbuffers::TableFinishedWIPOffset>> = record
+        .entries
+        .iter()
+        .map(|e| build_basis_entry_table(&mut builder, e))
+        .collect();
+    let entries_vec = builder.create_vector(&entry_offsets);
 
     let root = builder.start_table();
 
     builder.push_slot_always::<u32>(BASIS_FIELD_STAGE_ID, record.stage_id);
     builder.push_slot_always::<u32>(BASIS_FIELD_ITERATION, record.iteration);
-    builder.push_slot_always::<u32>(BASIS_FIELD_NUM_COLUMNS, record.column_status.len() as u32);
-    builder.push_slot_always::<u32>(BASIS_FIELD_NUM_ROWS, record.row_status.len() as u32);
-    builder.push_slot_always(BASIS_FIELD_COLUMN_STATUS, col_vec);
-    builder.push_slot_always(BASIS_FIELD_ROW_STATUS, row_vec);
-    builder.push_slot_always::<u32>(BASIS_FIELD_NUM_CUT_ROWS, record.num_cut_rows);
+    builder.push_slot_always(BASIS_FIELD_ENTRIES, entries_vec);
 
     let root_offset = builder.end_table(root);
     builder.finish(root_offset, Some(POLICY_FILE_IDENTIFIER));
@@ -398,18 +546,22 @@ pub(super) fn build_stage_basis(record: &PolicyBasisRecord<'_>) -> FlatBufferBui
     builder
 }
 
-/// Serialize one stage's visited states into a root `StageStates` `FlatBuffers`
-/// buffer, ready to write directly to a `.bin` policy file under `states/`.
+/// Serialize one pool's stored trial points into a root `StageStates`
+/// `FlatBuffers` buffer, ready to write directly to a `.bin` policy file under
+/// `states/`.
+///
+/// # Panics
+///
+/// When the buffer could exceed the 2 GiB `FlatBuffers` limit;
+/// [`write_policy_checkpoint`](crate::write_policy_checkpoint) refuses such a
+/// payload with an error before building it.
 #[must_use]
 pub fn serialize_stage_states(payload: &StageStatesPayload<'_>) -> Vec<u8> {
     build_stage_states(payload).finished_data().to_vec()
 }
 
-#[allow(clippy::cast_possible_truncation)]
 pub(super) fn build_stage_states(payload: &StageStatesPayload<'_>) -> FlatBufferBuilder<'static> {
-    let estimated =
-        64 + std::mem::size_of_val(payload.data) + payload.entity_manifest.len() * 32usize;
-    let mut builder = FlatBufferBuilder::with_capacity(estimated);
+    let mut builder = FlatBufferBuilder::with_capacity(stage_states_size_bound(payload));
 
     let manifest_offsets: Vec<WIPOffset<flatbuffers::TableFinishedWIPOffset>> = payload
         .entity_manifest
@@ -419,6 +571,7 @@ pub(super) fn build_stage_states(payload: &StageStatesPayload<'_>) -> FlatBuffer
 
     let data_vec = builder.create_vector(payload.data);
     let manifest_vec = builder.create_vector(&manifest_offsets);
+    let slots_vec = builder.create_vector(payload.slots);
 
     let root = builder.start_table();
     builder.push_slot_always::<u32>(STATES_FIELD_STAGE_ID, payload.stage_id);
@@ -427,6 +580,7 @@ pub(super) fn build_stage_states(payload: &StageStatesPayload<'_>) -> FlatBuffer
     builder.push_slot_always(STATES_FIELD_DATA, data_vec);
     builder.push_slot_always(STATES_FIELD_ENTITY_MANIFEST, manifest_vec);
     builder.push_slot_always::<i32>(STATES_FIELD_NODE_ID, payload.node_id);
+    builder.push_slot_always(STATES_FIELD_SLOTS, slots_vec);
 
     let root_offset = builder.end_table(root);
     builder.finish(root_offset, Some(POLICY_FILE_IDENTIFIER));
@@ -439,8 +593,13 @@ pub(super) fn build_stage_states(payload: &StageStatesPayload<'_>) -> FlatBuffer
 ///
 /// The two `Option<f64>` provenance fields (`best_upper_bound`,
 /// `cost_scale_factor`) are written only when `Some`, so absence round-trips as
-/// `None` rather than a spurious `0.0`. Infallible: the builder only allocates
-/// and writes.
+/// `None` rather than a spurious `0.0`.
+///
+/// # Panics
+///
+/// When the buffer could exceed the 2 GiB `FlatBuffers` limit;
+/// [`write_policy_checkpoint`](crate::write_policy_checkpoint) refuses such a
+/// payload with an error before building it.
 #[must_use]
 pub fn serialize_checkpoint_manifest(manifest: &CheckpointManifest) -> Vec<u8> {
     build_checkpoint_manifest(manifest).finished_data().to_vec()
@@ -452,29 +611,7 @@ pub(super) fn build_checkpoint_manifest(
     let graph = &manifest.graph_manifest;
     let producer = &manifest.producer;
 
-    let season_manifest = &manifest.season_manifest;
-
-    let estimated = 128
-        + graph.nodes.len() * 32
-        + graph.edges.len() * 40
-        + manifest.software.as_ref().map_or(0, String::len)
-        + manifest.software_version.len()
-        + manifest.created_at.len()
-        + producer.training_block_mode.len()
-        + producer.warm_start_counts.len() * std::mem::size_of::<u32>()
-        + producer.lower_bound_history.len() * std::mem::size_of::<f64>()
-        + producer
-            .training_block_mode_per_stage
-            .iter()
-            .map(|s| s.len() + 8)
-            .sum::<usize>()
-        + season_manifest
-            .hydro_orders
-            .iter()
-            .map(|h| 16 + h.orders.len() * std::mem::size_of::<u32>())
-            .sum::<usize>();
-
-    let mut builder = FlatBufferBuilder::with_capacity(estimated);
+    let mut builder = FlatBufferBuilder::with_capacity(checkpoint_manifest_size_bound(manifest));
 
     let node_offsets: Vec<WIPOffset<flatbuffers::TableFinishedWIPOffset>> = graph
         .nodes
@@ -486,7 +623,8 @@ pub(super) fn build_checkpoint_manifest(
         .iter()
         .map(|e| build_manifest_edge_table(&mut builder, e))
         .collect();
-    let season_manifest_offset = build_season_manifest_table(&mut builder, season_manifest);
+    let season_manifest_offset =
+        build_season_manifest_table(&mut builder, &manifest.season_manifest);
 
     let software = manifest
         .software
@@ -543,6 +681,19 @@ pub(super) fn build_checkpoint_manifest(
         builder.push_slot_always(MANIFEST_FIELD_SOFTWARE, software);
     }
     builder.push_slot_always(MANIFEST_FIELD_LOWER_BOUND_HISTORY, lower_bound_history_vec);
+    builder.push_slot_always::<u8>(
+        MANIFEST_FIELD_STATE_HISTORY_SCOPE,
+        producer.state_history.scope_code(),
+    );
+    builder.push_slot_always::<u32>(
+        MANIFEST_FIELD_STATE_HISTORY_WINDOW,
+        producer.state_history.window(),
+    );
+    builder.push_slot_always::<bool>(MANIFEST_FIELD_ACTIVITY_COUNTERS, producer.activity_counters);
+    builder.push_slot_always::<bool>(
+        MANIFEST_FIELD_BASIS_STORE_COMPLETE,
+        producer.basis_store_complete,
+    );
 
     let root_offset = builder.end_table(root);
     builder.finish(root_offset, Some(POLICY_FILE_IDENTIFIER));
@@ -650,7 +801,7 @@ fn field_data_offset(buf: &[u8], vtable_pos: usize, slot: u16) -> Option<u16> {
 fn field_pos(buf: &[u8], table_pos: usize, vtable_pos: usize, slot: u16) -> Option<usize> {
     let data_off = field_data_offset(buf, vtable_pos, slot)?;
     if data_off == 0 {
-        return None; // field absent
+        return None;
     }
     table_pos.checked_add(data_off as usize)
 }
@@ -1168,13 +1319,15 @@ fn deserialize_hydro_season_orders_table(
 /// };
 ///
 /// let piece = PolicyCutRecord {
-///     cut_id: 7,
 ///     slot_index: 5,
 ///     iteration: 3,
 ///     forward_pass_index: 1,
 ///     intercept: 42.0,
 ///     coefficients: &[1.0, 2.0, 3.0],
 ///     is_active: true,
+///     scored: true,
+///     active_count: None,
+///     last_active_iteration: None,
 /// };
 /// let buf = serialize_stage_cuts(&StageCutsPayload {
 ///     stage_id: 2,
@@ -1182,7 +1335,6 @@ fn deserialize_hydro_season_orders_table(
 ///     capacity: 100,
 ///     warm_start_count: 0,
 ///     cuts: &[piece],
-///     active_cut_indices: &[0],
 ///     populated_count: 1,
 ///     entity_manifest: &[],
 ///     cost_scale_factor: 1_000_000.0,
@@ -1193,7 +1345,8 @@ fn deserialize_hydro_season_orders_table(
 /// let result = deserialize_stage_cuts(&buf).expect("round-trip must succeed");
 /// assert_eq!(result.stage_id, 2);
 /// assert_eq!(result.cuts.len(), 1);
-/// assert_eq!(result.cuts[0].cut_id, 7);
+/// assert_eq!(result.cuts[0].slot_index, 5);
+/// assert!(result.cuts[0].scored);
 /// assert_eq!(result.cuts[0].coefficients, &[1.0, 2.0, 3.0]);
 /// assert_eq!(result.cost_scale_factor, Some(1_000_000.0));
 /// assert_eq!(result.priced_state_date, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL);
@@ -1312,10 +1465,6 @@ pub fn deserialize_stage_cuts(buf: &[u8]) -> Result<StageCutsReadResult, OutputE
 fn deserialize_cut_table(buf: &[u8], cut_table_pos: usize) -> Option<OwnedPolicyCutRecord> {
     let vtable_pos = resolve_vtable_pos(buf, cut_table_pos)?;
 
-    let cut_id = field_pos(buf, cut_table_pos, vtable_pos, CUT_FIELD_CUT_ID)
-        .and_then(|p| read_u64_le(buf, p))
-        .unwrap_or(0);
-
     let slot_index = field_pos(buf, cut_table_pos, vtable_pos, CUT_FIELD_SLOT_INDEX)
         .and_then(|p| read_u32_le(buf, p))
         .unwrap_or(0);
@@ -1345,14 +1494,31 @@ fn deserialize_cut_table(buf: &[u8], cut_table_pos: usize) -> Option<OwnedPolicy
         .and_then(|p| read_bool_byte(buf, p))
         .unwrap_or(false);
 
+    let scored = field_pos(buf, cut_table_pos, vtable_pos, CUT_FIELD_SCORED)
+        .and_then(|p| read_bool_byte(buf, p))
+        .unwrap_or(false);
+
+    let active_count = field_pos(buf, cut_table_pos, vtable_pos, CUT_FIELD_ACTIVE_COUNT)
+        .and_then(|p| read_u64_le(buf, p));
+
+    let last_active_iteration = field_pos(
+        buf,
+        cut_table_pos,
+        vtable_pos,
+        CUT_FIELD_LAST_ACTIVE_ITERATION,
+    )
+    .and_then(|p| read_u64_le(buf, p));
+
     Some(OwnedPolicyCutRecord {
-        cut_id,
         slot_index,
         iteration,
         forward_pass_index,
         intercept,
         coefficients,
         is_active,
+        scored,
+        active_count,
+        last_active_iteration,
     })
 }
 
@@ -1366,20 +1532,24 @@ fn deserialize_cut_table(buf: &[u8], cut_table_pos: usize) -> Option<OwnedPolicy
 /// # Examples
 ///
 /// ```
-/// use novomodelo_io::{PolicyBasisRecord, serialize_stage_basis, deserialize_stage_basis};
+/// use novomodelo_io::{BasisEntry, PolicyBasisRecord, deserialize_stage_basis, serialize_stage_basis};
 ///
-/// let record = PolicyBasisRecord {
-///     stage_id: 0,
-///     iteration: 5,
+/// let entry = BasisEntry {
+///     scenario: 3,
 ///     column_status: &[0, 1, 2],
 ///     row_status: &[1, 1, 0, 0],
-///     num_cut_rows: 2,
+///     piece_row_slots: &[4, 7],
 /// };
-/// let buf = serialize_stage_basis(&record);
+/// let buf = serialize_stage_basis(&PolicyBasisRecord {
+///     stage_id: 0,
+///     iteration: 5,
+///     entries: &[entry],
+/// });
 /// let owned = deserialize_stage_basis(&buf).expect("round-trip must succeed");
 /// assert_eq!(owned.stage_id, 0);
-/// assert_eq!(owned.column_status, &[0, 1, 2]);
-/// assert_eq!(owned.row_status, &[1, 1, 0, 0]);
+/// assert_eq!(owned.entries[0].scenario, 3);
+/// assert_eq!(owned.entries[0].row_status, &[1, 1, 0, 0]);
+/// assert_eq!(owned.entries[0].piece_row_slots, &[4, 7]);
 /// ```
 pub fn deserialize_stage_basis(buf: &[u8]) -> Result<OwnedPolicyBasisRecord, OutputError> {
     let ctx = "stage_basis";
@@ -1399,44 +1569,72 @@ pub fn deserialize_stage_basis(buf: &[u8]) -> Result<OwnedPolicyBasisRecord, Out
         .and_then(|p| read_u32_le(buf, p))
         .unwrap_or(0);
 
-    let column_status = if let Some(col_field_pos) =
-        field_pos(buf, table_pos, vtable_pos, BASIS_FIELD_COLUMN_STATUS)
-    {
-        let vec_pos = follow_uoffset(buf, col_field_pos).ok_or_else(|| {
-            OutputError::serialization(ctx, "invalid uoffset for column_status vector")
-        })?;
-        read_u8_vector(buf, vec_pos)
-            .ok_or_else(|| OutputError::serialization(ctx, "column_status vector truncated"))?
-    } else {
-        Vec::new()
+    let entries = match field_pos(buf, table_pos, vtable_pos, BASIS_FIELD_ENTRIES) {
+        None => Vec::new(),
+        Some(entries_field_pos) => {
+            let vec_pos = follow_uoffset(buf, entries_field_pos).ok_or_else(|| {
+                OutputError::serialization(ctx, "invalid uoffset for entries vector")
+            })?;
+            let positions = read_table_vector_positions(buf, vec_pos).ok_or_else(|| {
+                OutputError::serialization(ctx, "entries vector header truncated or corrupt")
+            })?;
+            let mut out = Vec::with_capacity(positions.len());
+            for (idx, &entry_pos) in positions.iter().enumerate() {
+                out.push(
+                    deserialize_basis_entry_table(buf, entry_pos).ok_or_else(|| {
+                        OutputError::serialization(
+                            ctx,
+                            format!("basis entry table {idx} truncated or corrupt"),
+                        )
+                    })?,
+                );
+            }
+            out
+        }
     };
-
-    let row_status = if let Some(row_field_pos) =
-        field_pos(buf, table_pos, vtable_pos, BASIS_FIELD_ROW_STATUS)
-    {
-        let vec_pos = follow_uoffset(buf, row_field_pos).ok_or_else(|| {
-            OutputError::serialization(ctx, "invalid uoffset for row_status vector")
-        })?;
-        read_u8_vector(buf, vec_pos)
-            .ok_or_else(|| OutputError::serialization(ctx, "row_status vector truncated"))?
-    } else {
-        Vec::new()
-    };
-
-    let num_cut_rows = field_pos(buf, table_pos, vtable_pos, BASIS_FIELD_NUM_CUT_ROWS)
-        .and_then(|p| read_u32_le(buf, p))
-        .unwrap_or(0);
 
     Ok(OwnedPolicyBasisRecord {
         stage_id,
         iteration,
-        column_status,
-        row_status,
-        num_cut_rows,
+        entries,
     })
 }
 
-/// Deserialize one stage's visited states from a `StageStates` `FlatBuffers` buffer.
+fn deserialize_basis_entry_table(buf: &[u8], entry_pos: usize) -> Option<OwnedBasisEntry> {
+    let vtable_pos = resolve_vtable_pos(buf, entry_pos)?;
+    let vector_at = |slot: u16| -> Option<Option<usize>> {
+        match field_pos(buf, entry_pos, vtable_pos, slot) {
+            None => Some(None),
+            Some(pos) => follow_uoffset(buf, pos).map(Some),
+        }
+    };
+
+    let scenario = field_pos(buf, entry_pos, vtable_pos, BASIS_ENTRY_FIELD_SCENARIO)
+        .and_then(|p| read_u32_le(buf, p))
+        .unwrap_or(0);
+    let column_status = match vector_at(BASIS_ENTRY_FIELD_COLUMN_STATUS)? {
+        None => Vec::new(),
+        Some(vec_pos) => read_u8_vector(buf, vec_pos)?,
+    };
+    let row_status = match vector_at(BASIS_ENTRY_FIELD_ROW_STATUS)? {
+        None => Vec::new(),
+        Some(vec_pos) => read_u8_vector(buf, vec_pos)?,
+    };
+    let piece_row_slots = match vector_at(BASIS_ENTRY_FIELD_PIECE_ROW_SLOTS)? {
+        None => Vec::new(),
+        Some(vec_pos) => read_u32_vector(buf, vec_pos)?,
+    };
+
+    Some(OwnedBasisEntry {
+        scenario,
+        column_status,
+        row_status,
+        piece_row_slots,
+    })
+}
+
+/// Deserialize one pool's stored trial points from a `StageStates` `FlatBuffers`
+/// buffer.
 ///
 /// # Errors
 ///
@@ -1483,11 +1681,12 @@ pub fn deserialize_stage_states(buf: &[u8]) -> Result<StageStatesReadResult, Out
         ctx,
     )?;
 
-    // Absent in a pre-`id:5` buffer (FlatBuffers graceful absence): default to
-    // the sentinel, never a bare 0 — 0 is a valid node id.
+    // Absent: the sentinel, never a bare 0 — 0 is a valid node id.
     let node_id = field_pos(buf, table_pos, vtable_pos, STATES_FIELD_NODE_ID)
         .and_then(|p| read_i32_le(buf, p))
         .unwrap_or(STAGE_STATES_NODE_ID_SENTINEL);
+
+    let slots = read_u32_vector_field(buf, table_pos, vtable_pos, STATES_FIELD_SLOTS, ctx)?;
 
     Ok(StageStatesReadResult {
         stage_id,
@@ -1496,6 +1695,7 @@ pub fn deserialize_stage_states(buf: &[u8]) -> Result<StageStatesReadResult, Out
         count,
         data,
         entity_manifest,
+        slots,
     })
 }
 
@@ -1633,6 +1833,9 @@ pub fn deserialize_checkpoint_manifest(buf: &[u8]) -> Result<CheckpointManifest,
         ctx,
     )?;
 
+    let (state_history, activity_counters, basis_store_complete) =
+        read_store_descriptors(buf, table_pos, vtable_pos, ctx)?;
+
     Ok(CheckpointManifest {
         format_version,
         software,
@@ -1658,9 +1861,50 @@ pub fn deserialize_checkpoint_manifest(buf: &[u8]) -> Result<CheckpointManifest,
             training_block_mode_per_stage,
             cost_scale_factor,
             lower_bound_history,
+            state_history,
+            activity_counters,
+            basis_store_complete,
         },
         season_manifest,
     })
+}
+
+/// The manifest's trial-state history and its two store flags; each absent
+/// field reads as its schema default (no history, `false`, `false`).
+///
+/// # Errors
+///
+/// [`OutputError::SerializationError`] when the history scope code is unknown
+/// or names a window of zero iterations.
+fn read_store_descriptors(
+    buf: &[u8],
+    table_pos: usize,
+    vtable_pos: usize,
+    ctx: &str,
+) -> Result<(StateHistory, bool, bool), OutputError> {
+    let byte_at =
+        |slot: u16| field_pos(buf, table_pos, vtable_pos, slot).and_then(|p| buf.get(p).copied());
+    let scope = byte_at(MANIFEST_FIELD_STATE_HISTORY_SCOPE).unwrap_or(0);
+    let window = field_pos(
+        buf,
+        table_pos,
+        vtable_pos,
+        MANIFEST_FIELD_STATE_HISTORY_WINDOW,
+    )
+    .and_then(|p| read_u32_le(buf, p))
+    .unwrap_or(0);
+    let state_history = StateHistory::from_codes(scope, window).ok_or_else(|| {
+        OutputError::serialization(
+            ctx,
+            format!(
+                "state_history_scope {scope} with state_history_window {window} names no state \
+                 history"
+            ),
+        )
+    })?;
+    let activity_counters = byte_at(MANIFEST_FIELD_ACTIVITY_COUNTERS).is_some_and(|b| b != 0);
+    let basis_store_complete = byte_at(MANIFEST_FIELD_BASIS_STORE_COMPLETE).is_some_and(|b| b != 0);
+    Ok((state_history, activity_counters, basis_store_complete))
 }
 
 /// Read all `*.bin` files from `dir`, deserialize each with `deser_fn`, and return a `Vec`.
@@ -1703,6 +1947,10 @@ where
 mod tests {
     use super::super::records::SEASON_CYCLE_CODE_MONTHLY;
     use super::*;
+    use crate::test_support::{
+        checkpoint_manifest_defaults, piece_defaults, producer_block_defaults,
+        stage_cuts_payload_defaults,
+    };
 
     /// The reject-old-version half of the dual-owned wire-format checklist: a
     /// buffer without the `CBVF` `file_identifier` (a pre-0.14 `finish_minimal`
@@ -1712,27 +1960,18 @@ mod tests {
     fn deserialize_rejects_buffer_without_cbvf_identifier() {
         let coeffs = [1.0_f64, 2.0];
         let cut = PolicyCutRecord {
-            cut_id: 1,
-            slot_index: 0,
             iteration: 1,
-            forward_pass_index: 0,
             intercept: 3.0,
             coefficients: &coeffs,
-            is_active: true,
+            ..piece_defaults()
         };
         let mut buf = serialize_stage_cuts(&StageCutsPayload {
-            stage_id: 0,
             state_dimension: 2,
             capacity: 8,
-            warm_start_count: 0,
             cuts: &[cut],
-            active_cut_indices: &[0],
             populated_count: 1,
-            entity_manifest: &[],
             cost_scale_factor: 1_000_000.0,
-            node_id: -1,
-            graph_stage_id: -1,
-            priced_state_date: STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+            ..stage_cuts_payload_defaults()
         });
         assert_eq!(
             buf.get(4..8),
@@ -1757,31 +1996,23 @@ mod tests {
     fn entity_slot_new_date_fields_round_trip() {
         let coeffs = [1.0_f64, 2.0];
         let cut = PolicyCutRecord {
-            cut_id: 1,
-            slot_index: 0,
             iteration: 1,
-            forward_pass_index: 0,
             intercept: 3.0,
             coefficients: &coeffs,
-            is_active: true,
+            ..piece_defaults()
         };
         let manifest = [
             EntitySlot::inflow_lag(5, 3, true).with_reference_date(20_310_401),
             EntitySlot::transit_bucket(9, 2, true).with_interval(20_311_201, 20_320_101),
         ];
         let buf = serialize_stage_cuts(&StageCutsPayload {
-            stage_id: 0,
             state_dimension: 2,
             capacity: 8,
-            warm_start_count: 0,
             cuts: &[cut],
-            active_cut_indices: &[0],
             populated_count: 1,
             entity_manifest: &manifest,
             cost_scale_factor: 1_000_000.0,
-            node_id: -1,
-            graph_stage_id: -1,
-            priced_state_date: STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+            ..stage_cuts_payload_defaults()
         });
 
         let result = deserialize_stage_cuts(&buf).expect("round-trip must succeed");
@@ -1806,27 +2037,19 @@ mod tests {
     fn stage_cuts_priced_state_date_round_trips() {
         let coeffs = [1.0_f64, 2.0];
         let cut = PolicyCutRecord {
-            cut_id: 1,
-            slot_index: 0,
             iteration: 1,
-            forward_pass_index: 0,
             intercept: 3.0,
             coefficients: &coeffs,
-            is_active: true,
+            ..piece_defaults()
         };
         let buf = serialize_stage_cuts(&StageCutsPayload {
-            stage_id: 0,
             state_dimension: 2,
             capacity: 8,
-            warm_start_count: 0,
             cuts: &[cut],
-            active_cut_indices: &[0],
             populated_count: 1,
-            entity_manifest: &[],
             cost_scale_factor: 1_000_000.0,
-            node_id: -1,
-            graph_stage_id: -1,
             priced_state_date: 20_311_201,
+            ..stage_cuts_payload_defaults()
         });
 
         let result = deserialize_stage_cuts(&buf).expect("round-trip must succeed");
@@ -1839,7 +2062,6 @@ mod tests {
     fn stage_cuts_absent_priced_state_date_reads_as_sentinel() {
         let mut builder = FlatBufferBuilder::with_capacity(64);
         let cuts_vec = builder.create_vector::<WIPOffset<flatbuffers::TableFinishedWIPOffset>>(&[]);
-        let active_vec = builder.create_vector::<u32>(&[]);
         let manifest_vec =
             builder.create_vector::<WIPOffset<flatbuffers::TableFinishedWIPOffset>>(&[]);
 
@@ -1849,7 +2071,6 @@ mod tests {
         builder.push_slot_always::<u32>(STAGE_CUTS_FIELD_CAPACITY, 0);
         builder.push_slot_always::<u32>(STAGE_CUTS_FIELD_WARM_START_COUNT, 0);
         builder.push_slot_always(STAGE_CUTS_FIELD_CUTS, cuts_vec);
-        builder.push_slot_always(STAGE_CUTS_FIELD_ACTIVE_CUT_INDICES, active_vec);
         builder.push_slot_always::<u32>(STAGE_CUTS_FIELD_POPULATED_COUNT, 0);
         builder.push_slot_always(STAGE_CUTS_FIELD_ENTITY_MANIFEST, manifest_vec);
         builder.push_slot_always::<f64>(STAGE_CUTS_FIELD_COST_SCALE_FACTOR, 1_000_000.0);
@@ -1868,36 +2089,15 @@ mod tests {
         );
     }
 
-    fn minimal_manifest_producer() -> ProducerBlock {
-        ProducerBlock {
-            completed_iterations: 0,
-            final_lower_bound: 0.0,
-            best_upper_bound: None,
-            max_iterations: 0,
-            forward_passes: 0,
-            warm_start_cuts: 0,
-            warm_start_counts: vec![],
-            rng_seed: 0,
-            total_visited_states: 0,
-            training_block_mode: "parallel".to_string(),
-            training_block_mode_per_stage: vec![],
-            cost_scale_factor: None,
-            lower_bound_history: Vec::new(),
-        }
-    }
-
     #[test]
     fn checkpoint_manifest_software_round_trips_and_absent_reads_as_none() {
         for software in [Some("novomodelo".to_string()), None] {
             let manifest = CheckpointManifest {
-                format_version: FORMAT_VERSION,
                 software: software.clone(),
                 software_version: "0.14.0".to_string(),
                 created_at: "2026-09-15T00:00:00Z".to_string(),
                 num_stages: 1,
-                graph_manifest: GraphManifest::default(),
-                producer: minimal_manifest_producer(),
-                season_manifest: SeasonManifest::default(),
+                ..checkpoint_manifest_defaults()
             };
 
             let buf = serialize_checkpoint_manifest(&manifest);
@@ -1912,17 +2112,14 @@ mod tests {
     fn checkpoint_manifest_round_trips_the_lower_bound_history_bitwise() {
         let history = [1.5, -0.0, f64::MIN_POSITIVE, 1.0e300];
         let manifest = CheckpointManifest {
-            format_version: FORMAT_VERSION,
-            software: Some("novomodelo".to_string()),
             software_version: "0.18.0".to_string(),
             created_at: "2026-10-06T00:00:00Z".to_string(),
             num_stages: 1,
-            graph_manifest: GraphManifest::default(),
             producer: ProducerBlock {
                 lower_bound_history: history.to_vec(),
-                ..minimal_manifest_producer()
+                ..producer_block_defaults()
             },
-            season_manifest: SeasonManifest::default(),
+            ..checkpoint_manifest_defaults()
         };
 
         let buf = serialize_checkpoint_manifest(&manifest);
@@ -1994,13 +2191,9 @@ mod tests {
     #[test]
     fn checkpoint_manifest_season_descriptor_round_trips() {
         let manifest = CheckpointManifest {
-            format_version: FORMAT_VERSION,
-            software: Some("novomodelo".to_string()),
             software_version: "0.14.0".to_string(),
             created_at: "2026-09-15T00:00:00Z".to_string(),
             num_stages: 2,
-            graph_manifest: GraphManifest::default(),
-            producer: minimal_manifest_producer(),
             season_manifest: SeasonManifest {
                 cycle_code: SEASON_CYCLE_CODE_MONTHLY,
                 n_seasons: 12,
@@ -2015,6 +2208,7 @@ mod tests {
                     },
                 ],
             },
+            ..checkpoint_manifest_defaults()
         };
 
         let buf = serialize_checkpoint_manifest(&manifest);
@@ -2045,13 +2239,9 @@ mod tests {
     #[test]
     fn checkpoint_manifest_rejects_unsorted_season_hydro_orders() {
         let manifest = CheckpointManifest {
-            format_version: FORMAT_VERSION,
-            software: Some("novomodelo".to_string()),
             software_version: "0.14.0".to_string(),
             created_at: "2026-09-16T00:00:00Z".to_string(),
             num_stages: 1,
-            graph_manifest: GraphManifest::default(),
-            producer: minimal_manifest_producer(),
             season_manifest: SeasonManifest {
                 cycle_code: SEASON_CYCLE_CODE_MONTHLY,
                 n_seasons: 2,
@@ -2066,6 +2256,7 @@ mod tests {
                     },
                 ],
             },
+            ..checkpoint_manifest_defaults()
         };
         let buf = serialize_checkpoint_manifest(&manifest);
 
@@ -2084,13 +2275,9 @@ mod tests {
     #[test]
     fn checkpoint_manifest_rejects_season_orders_length_mismatch() {
         let manifest = CheckpointManifest {
-            format_version: FORMAT_VERSION,
-            software: Some("novomodelo".to_string()),
             software_version: "0.14.0".to_string(),
             created_at: "2026-09-16T00:00:00Z".to_string(),
             num_stages: 1,
-            graph_manifest: GraphManifest::default(),
-            producer: minimal_manifest_producer(),
             season_manifest: SeasonManifest {
                 cycle_code: SEASON_CYCLE_CODE_MONTHLY,
                 n_seasons: 4,
@@ -2099,6 +2286,7 @@ mod tests {
                     orders: vec![1, 1, 1],
                 }],
             },
+            ..checkpoint_manifest_defaults()
         };
         let buf = serialize_checkpoint_manifest(&manifest);
 

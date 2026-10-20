@@ -330,7 +330,7 @@ pub struct NodeRuntime {
     /// stage id.
     pub stage: StageIdx,
     /// Pool id into `FutureCostFunction::pools` (pool *contents* — capacity,
-    /// archives, basis tagging — are out of scope here). Leaves
+    /// trial states, basis tagging — are out of scope here). Leaves
     /// share one id; a node with successors always owns its own.
     pub pool_id: usize,
     /// This node's Ω view.
@@ -373,10 +373,26 @@ impl NodeGraph {
     /// Node → pool map, one entry per canonical node position
     /// (`nodes[i].pool_id`). The load-path basis reconstruction
     /// ([`build_basis_cache_from_checkpoint`](crate::build_basis_cache_from_checkpoint))
-    /// keys each node's cut records through this.
+    /// picks each node's pool slot map through this.
     #[must_use]
     pub fn node_pool_ids(&self) -> TypedVec<NodePos, usize> {
         self.nodes.iter().map(|n| n.pool_id).collect()
+    }
+
+    /// The declared id of the only node whose pool is `pool`; `None` when no
+    /// node holds it or several nodes share it.
+    #[must_use]
+    pub fn sole_pool_owner(&self, pool: usize) -> Option<NodeId> {
+        let mut owner = None;
+        for (pos, node) in self.nodes.iter_indexed() {
+            if node.pool_id == pool {
+                if owner.is_some() {
+                    return None;
+                }
+                owner = Some(self.node_ids[pos]);
+            }
+        }
+        owner
     }
 }
 
@@ -3066,5 +3082,55 @@ mod tests {
             enumerated.simulation_weighting(),
             SimulationWeighting::Census { .. }
         ));
+    }
+
+    #[test]
+    fn sole_pool_owner_names_the_only_node_of_a_pool() {
+        let node = |stage, pool_id| NodeRuntime {
+            stage: StageIdx(stage),
+            pool_id,
+            openings: NodeOpenings::new(OpeningSource::Generated, 0, 1),
+        };
+        let edge = |child| NodeSuccessor {
+            child: NodePos(child),
+            probability: 0.5,
+        };
+        let ng = NodeGraph {
+            node_ids: vec![
+                NodeId(10),
+                NodeId(20),
+                NodeId(21),
+                NodeId(30),
+                NodeId(31),
+                NodeId(32),
+            ]
+            .into(),
+            nodes: vec![
+                node(0, 2),
+                node(1, 0),
+                node(1, 1),
+                node(2, 3),
+                node(2, 3),
+                node(2, 3),
+            ]
+            .into(),
+            successors: vec![
+                vec![edge(1), edge(2)],
+                vec![edge(3), edge(4)],
+                vec![edge(5)],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ]
+            .into(),
+            n_pools: 4,
+            pool_stage: vec![StageIdx(1), StageIdx(1), StageIdx(0), StageIdx(2)],
+        };
+
+        assert_eq!(ng.sole_pool_owner(0), Some(NodeId(20)));
+        assert_eq!(ng.sole_pool_owner(1), Some(NodeId(21)));
+        assert_eq!(ng.sole_pool_owner(2), Some(NodeId(10)));
+        assert_eq!(ng.sole_pool_owner(3), None, "three leaves share pool 3");
+        assert_eq!(ng.sole_pool_owner(4), None, "no node holds pool 4");
     }
 }

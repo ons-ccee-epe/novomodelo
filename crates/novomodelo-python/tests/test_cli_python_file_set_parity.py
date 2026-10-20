@@ -35,6 +35,13 @@ The second case (`examples/deterministic/d57-fpha-zero-turbine-capacity`) has
 one plant that requests FPHA but has no turbine capacity. It is here to check
 that both write paths list that plant under the `no_turbine_capacity` key of
 `training/hydro_models.json`.
+
+The third case (`examples/deterministic/d59-parameter-sum-useful-volume-floor`)
+declares a generic constraint with a parameter-sum coefficient on a
+useful-volume term and a `per_unit` slack, and its simulation writes a
+generic-violation partition. It is here to check that both write paths emit
+`generic_constraints/resolved_echo.parquet` and the
+`simulation/violations/generic/` partition.
 """
 
 from __future__ import annotations
@@ -51,13 +58,16 @@ from _novomodelo_cli import resolve_cli_binary, run_cli
 _REPO_ROOT = pathlib.Path(__file__).parents[3]
 D28_CASE = _REPO_ROOT / "examples" / "deterministic" / "d28-decomp-weekly-monthly"
 D57_CASE = _REPO_ROOT / "examples" / "deterministic" / "d57-fpha-zero-turbine-capacity"
+D59_CASE = (
+    _REPO_ROOT / "examples" / "deterministic" / "d59-parameter-sum-useful-volume-floor"
+)
 
 _SCENARIO_PARTITION_RE = re.compile(r"scenario_id=(\d{4})")
 
 # The per-entity simulation subdirectories D28 (training + simulation, 5
-# scenarios) is known to populate -- part of the drift-prone surface R3
-# targets, alongside scenario_summary.parquet, paths.parquet, and the Hive
-# scenario_id=NNNN/ partitions asserted below.
+# scenarios) populates. With scenario_summary.parquet, paths.parquet and the
+# Hive scenario_id=NNNN/ partitions asserted below, they are the drift-prone
+# surface.
 _EXPECTED_SIMULATION_ENTITY_DIRS = (
     "buses",
     "costs",
@@ -143,7 +153,29 @@ def d57_python_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     return output_dir
 
 
-@pytest.mark.parametrize("case", ["d28", "d57"])
+@pytest.fixture(scope="module")
+def d59_cli_output(
+    tmp_path_factory: pytest.TempPathFactory, cli_binary: pathlib.Path
+) -> pathlib.Path:
+    """Run D59 (a parameter-sum useful-volume floor) through the compiled CLI binary."""
+    assert D59_CASE.is_dir(), f"the D59 fixture must exist at {D59_CASE}"
+    output_dir = tmp_path_factory.mktemp("d59_cli_out")
+    run_cli(D59_CASE, output_dir, cli_binary)
+    return output_dir
+
+
+@pytest.fixture(scope="module")
+def d59_python_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
+    """Run D59 through the module-level Python bindings entry point."""
+    import novomodelo.run  # noqa: PLC0415
+
+    assert D59_CASE.is_dir(), f"the D59 fixture must exist at {D59_CASE}"
+    output_dir = tmp_path_factory.mktemp("d59_python_out")
+    novomodelo.run.run(str(D59_CASE), output_dir=str(output_dir))
+    return output_dir
+
+
+@pytest.mark.parametrize("case", ["d28", "d57", "d59"])
 def test_cli_python_output_file_sets_are_equal(
     case: str, request: pytest.FixtureRequest
 ) -> None:
@@ -180,6 +212,25 @@ def test_zero_turbine_case_lists_the_plant_on_both_paths(
         assert summary["no_turbine_capacity"] == expected, (
             f"unexpected no_turbine_capacity in {root}"
         )
+
+
+def test_generic_constraint_case_writes_the_echo_and_the_violations_on_both_paths(
+    d59_cli_output: pathlib.Path, d59_python_output: pathlib.Path
+) -> None:
+    """Both write paths emit D59's generic-constraint echo and violation partition.
+
+    Non-vacuity check for the D59 file-set case: without these two paths on
+    both sides, the file-set equality test would pass on a case that never
+    reached the generic-constraint outputs.
+    """
+    expected = (
+        "generic_constraints/resolved_echo.parquet",
+        "simulation/violations/generic/scenario_id=0000/data.parquet",
+    )
+    for root in (d59_cli_output, d59_python_output):
+        files = _relative_files(root)
+        for rel in expected:
+            assert rel in files, f"D59 output {root} is missing {rel}"
 
 
 def test_case_exercises_the_drift_prone_output_surface(

@@ -19,6 +19,7 @@ use novomodelo_stochastic::StochasticContext;
 use novomodelo_stochastic::context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
 
 use novomodelo_comm::LocalBackend;
+use novomodelo_io::test_support::owned_piece_defaults;
 
 use super::stats_aggregation::weighted_cost_reduction;
 use super::{
@@ -2883,17 +2884,16 @@ fn test_build_delta_excludes_warm_start_cuts() {
     use novomodelo_io::OwnedPolicyCutRecord;
 
     let warm_record = OwnedPolicyCutRecord {
-        cut_id: 0,
         slot_index: 0,
         coefficients: vec![5.0],
         intercept: 99.0,
         iteration: 0,
-        forward_pass_index: 0,
         is_active: true,
+        ..owned_piece_defaults()
     };
     let mut pool = CutPool::new_with_warm_start(1, 2, 10, &[warm_record]);
     // Now add a training cut at iteration=1, fwd_idx=0:
-    // slot = warm_start_count(1) + 1*2 + 0 = 3
+    // slot = slot_base(1) + 1*2 + 0 = 3
     pool.add_cut(NodeId(0), 1, 0, 7.0, &[1.0]);
 
     // Build an FCF with 2 stages (n_state=1, 2 fwd passes, 10 max iters).
@@ -3072,17 +3072,15 @@ fn build_delta_cut_row_batch_into_skips_warm_start_slots() {
 
     // One warm-start cut at slot 0.
     let ws_record = OwnedPolicyCutRecord {
-        cut_id: 0,
         slot_index: 0,
         coefficients: vec![1.0],
         intercept: 99.0,
         iteration: 0,
-        forward_pass_index: 0,
         is_active: true,
+        ..owned_piece_defaults()
     };
     let mut pool = CutPool::new_with_warm_start(1, 1, 10, &[ws_record]);
-    // One iteration-1 cut at slot 1 (warm_start_count=1, so slot = 1+1*1+0 = 2,
-    // but new_with_warm_start sets warm_start_count=1 → slot = 1+1*1+0 = 2).
+    // One iteration-1 cut: slot = slot_base(1) + 1*1 + 0 = 2.
     pool.add_cut(NodeId(0), 1, 0, 7.0, &[1.0]);
 
     let mut fcf = FutureCostFunction::new(2, 1, 1, 10, &[0; 2]);
@@ -3232,7 +3230,7 @@ mod dcs_forward {
             last_active_iter: last,
         };
         fcf.pools[0].set_metadata_for_test(0, meta(1, 5));
-        fcf.pools[0].set_metadata_for_test(1, meta(1, 1)); // stale → outside k2=2 window at iter 5
+        fcf.pools[0].set_metadata_for_test(1, meta(1, 1)); // stale → outside seed_window=2 at iter 5
         fcf.pools[0].set_metadata_for_test(2, meta(1, 5));
         fcf
     }
@@ -3287,10 +3285,10 @@ mod dcs_forward {
 
     fn dcs_params(start_iteration: u64) -> DcsParams {
         DcsParams {
-            k1: None,
-            k2: 2,
-            nadic: 10,
-            epsilon_viol: 1e-10,
+            candidate_recency: None,
+            seed_window: 2,
+            max_added_per_round: 10,
+            violation_tolerance: 1e-9,
             start_iteration,
             max_inner_iterations: 50,
         }
@@ -3373,7 +3371,7 @@ mod dcs_forward {
             external_ncs_library: None,
             lag_accum_seed: &[],
             lag_weight_seed: &[],
-            dcs,
+            dcs: None,
         };
 
         // Frozen path: mirror run_forward_worker's per-scenario frozen load.

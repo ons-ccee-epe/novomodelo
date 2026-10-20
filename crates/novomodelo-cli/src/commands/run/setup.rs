@@ -447,6 +447,7 @@ fn build_study_setup(
         stopping_rule_set,
         n_scenarios: bcast_config.n_scenarios,
         simulation_enumerated: bcast_config.simulation_enumerated,
+        simulation_cut_set: bcast_config.simulation_cut_set,
         io_channel_capacity: usize::try_from(bcast_config.io_channel_capacity).unwrap_or(64),
         policy_path: bcast_config.policy_path.clone(),
         inflow_method: bcast_config.inflow_method,
@@ -631,6 +632,7 @@ mod tests {
     use novomodelo_core::ScalarParameter;
     use novomodelo_io::BroadcastScalarParameter;
     use novomodelo_sddp::PrepareStochasticResult;
+    use novomodelo_sddp::cut::CutSet;
     use novomodelo_sddp::prepare_hydro_models;
     use novomodelo_sddp::setup::study_stage_noise_group_ids;
     use novomodelo_sddp::test_support::decks::{Deck, SLOW_DECKS, committed_decks};
@@ -866,5 +868,51 @@ mod tests {
             failures.len(),
             failures.join("\n")
         );
+    }
+
+    #[test]
+    fn non_root_rebuild_carries_the_simulation_cut_set() {
+        let case_dir = d29_case_dir();
+        let args = RunArgs {
+            case_dir: case_dir.clone(),
+            output: None,
+            quiet: true,
+            threads: None,
+            comm_backend: CommBackendArg::Local,
+        };
+        let (prepared, _hydro_models, mut bcast, _config, scalars, _timings) =
+            load_case_and_config(
+                &args,
+                &resolve_output_dir(&args.case_dir, None),
+                true,
+                &Term::stderr(),
+            )
+            .expect("D29 must load on rank 0");
+        let system = broadcast_round_trip(&prepared.system).expect("system round trip");
+
+        for cut_set in [CutSet::All, CutSet::Active] {
+            bcast.simulation_cut_set = cut_set;
+            let mut non_root_bcast = broadcast_round_trip(&bcast).expect("config round trip");
+            let stochastic = reconstruct_stochastic_context_non_root(
+                &system,
+                &non_root_bcast,
+                None,
+                non_root_bcast.seed,
+                &case_dir,
+            )
+            .expect("non-root reconstruction must succeed for D29");
+            let hydro_models = prepare_hydro_models(&system, &case_dir, false)
+                .expect("hydro model preprocessing must succeed for D29");
+            let setup = build_study_setup(
+                &system,
+                &mut non_root_bcast,
+                stochastic,
+                hydro_models,
+                scalars.clone(),
+            )
+            .expect("non-root setup must build for D29");
+
+            assert_eq!(setup.simulation_cut_set, cut_set);
+        }
     }
 }

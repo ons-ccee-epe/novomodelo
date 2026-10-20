@@ -13,7 +13,10 @@ use std::path::Path;
 
 use novomodelo_core::System;
 use novomodelo_io::Config;
-use novomodelo_io::config::InflowNonNegativityMethod as CfgInflowMethod;
+use novomodelo_io::config::{
+    InflowNonNegativityMethod as CfgInflowMethod, SelectionMethod, StoppingRuleConfig,
+    TrainingSelection,
+};
 use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::setup::{NodePos, StageIdx};
 use novomodelo_sddp::test_support::decks::committed_decks;
@@ -23,15 +26,31 @@ use novomodelo_sddp::test_support::{
 };
 use novomodelo_solver::ActiveSolver;
 
-use common::cut_oracles::{apply_oracle_config, run_cut_oracles};
+use common::cut_oracles::{
+    apply_oracle_config, apply_oracle_config_with_selection, run_cut_oracles,
+};
 use common::in_code_studies::{
     ChronologicalNoiseSpec, chronological_noise_study, discounted_anticipated_study,
     mixed_lead_anticipated_study, negative_draw_par1_spec, parallel_multiblock_evaporation_study,
     stochastic_parallel_study,
 };
-use common::{StubComm, build_setup_in_code, build_setup_in_code_with_models, fresh_setup_with};
+use common::{
+    StubComm, build_setup_in_code, build_setup_in_code_with_models, fresh_setup_with, positive,
+};
 
 const D19_DIR: &str = "../../examples/deterministic/d19-multi-hydro-par";
+const ONE_D_TOY: &str = "examples/1dtoy";
+const LEVEL1_FORWARD_PASSES: u32 = 2;
+const LEVEL1_ITERATIONS: u32 = 10;
+
+fn deck_setup(key: &str, mutate: impl FnOnce(&mut Config)) -> StudySetup {
+    let decks = committed_decks();
+    let deck = decks
+        .iter()
+        .find(|deck| deck.key == key)
+        .unwrap_or_else(|| panic!("committed deck {key} is absent"));
+    fresh_setup_with(&deck.dir, mutate)
+}
 
 fn oracle_setup(system: System, mut config: Config) -> StudySetup {
     apply_oracle_config(&mut config);
@@ -60,6 +79,36 @@ fn cut_oracles_hold_on_the_stochastic_parallel_study() {
     let (system, config) = stochastic_parallel_study();
     let setup = oracle_setup(system, config);
     run_cut_oracles("stochastic_parallel_study", setup).assert_sound("stochastic_parallel_study");
+}
+
+#[test]
+fn cut_oracles_hold_on_deactivated_cuts_under_level1() {
+    let setup = deck_setup(ONE_D_TOY, |config| {
+        apply_oracle_config_with_selection(
+            config,
+            SelectionMethod::Level1 {
+                check_frequency: positive(1),
+                lookback_iterations: None,
+            },
+        );
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: LEVEL1_ITERATIONS,
+        }]);
+        config.training.selection = Some(TrainingSelection::Sampled {
+            forward_passes: LEVEL1_FORWARD_PASSES,
+        });
+    });
+    let report = run_cut_oracles(ONE_D_TOY, setup);
+    assert!(
+        report.inactive_cuts_checked > 0,
+        "{ONE_D_TOY}: level1 left no inactive cut, so the oracle checked none"
+    );
+    assert!(
+        report.pools_with_inactive_successor_cuts > 0,
+        "{ONE_D_TOY}: no checked pool's successor holds an inactive cut, so validity ran \
+         against the active templates only"
+    );
+    report.assert_sound(ONE_D_TOY);
 }
 
 #[test]
@@ -129,17 +178,12 @@ fn cut_oracles_hold_on_the_chronological_pumping_study() {
 
 #[test]
 fn cut_oracles_hold_on_the_chronological_and_parallel_storage_decks() {
-    let decks = committed_decks();
     for key in [
         "crates/novomodelo-sddp/tests/fixtures/chronological_storage",
         "crates/novomodelo-sddp/tests/fixtures/parallel_storage",
     ] {
-        let deck = decks
-            .iter()
-            .find(|deck| deck.key == key)
-            .unwrap_or_else(|| panic!("committed deck {key} is absent"));
-        let setup = fresh_setup_with(&deck.dir, apply_oracle_config);
-        run_cut_oracles(&deck.key, setup).assert_sound(&deck.key);
+        let setup = deck_setup(key, apply_oracle_config);
+        run_cut_oracles(key, setup).assert_sound(key);
     }
 }
 

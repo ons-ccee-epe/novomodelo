@@ -15,45 +15,15 @@
 //! - **Consumption** (substituting resolved values into LP rows) belongs to the
 //!   LP builder in the solver crate.
 //!
-//! This module defines only the structural types — it contains no I/O, no
-//! resolution logic, and no LP wiring.
+//! This module defines the structural types and the walk over the parameters
+//! they reference — it contains no I/O, no resolution logic, and no LP wiring.
 
-use crate::EntityId;
+use std::collections::{BTreeSet, HashMap};
+
+use crate::{EntityId, ScalarExpr};
 
 #[cfg(feature = "serde")]
 use serde::Deserializer;
-
-/// Reference to a scalar coefficient in a linear term.
-///
-/// Allows constraint coefficients to be either a literal `f64` value known at
-/// input time, or a named parameter whose value is resolved later. The `Parameter`
-/// variant carries the [`EntityId`] of a [`ScalarParameter`] stored in the
-/// study's parameter collection.
-///
-/// # Examples
-///
-/// ```
-/// use novomodelo_core::{CoefficientRef, EntityId};
-///
-/// // A literal coefficient of 3.6:
-/// let literal = CoefficientRef::Literal(3.6);
-///
-/// // A parameter-backed coefficient referencing parameter ID 42:
-/// let param = CoefficientRef::Parameter(EntityId(42));
-///
-/// // CoefficientRef is Copy, so it can be used after moving:
-/// let a = CoefficientRef::Literal(1.0);
-/// let b = a;
-/// assert_eq!(a, b);
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum CoefficientRef {
-    /// A constant scalar value known at input parse time.
-    Literal(f64),
-    /// An indirect reference to a [`ScalarParameter`] by its entity ID.
-    Parameter(EntityId),
-}
 
 /// A Novomodelo-computed quantity indexed by hydro plant.
 ///
@@ -133,8 +103,28 @@ pub enum ComputedParameter {
     /// Maximum stored energy: `integrated_accumulated_productivity * (V_hi -
     /// V_lo)` over the hydro plant's physical storage range (stage-invariant).
     /// Unit is productivity `[MW/(m3/s)]` times volume `[hm3]` — the same unit
-    /// as a productivity-times-storage-volume constraint term, not `MWh`.
+    /// as a productivity-times-storage-volume constraint term, not `MWh`
+    /// (`max_stored_energy_mwh` is the `MWh` form).
     MaxStoredEnergy {
+        /// Hydro plant identifier.
+        hydro_id: EntityId,
+    },
+    /// `integrated_accumulated_productivity` in `[MWh/hm3]` (times `10⁶/3600`):
+    /// times a useful volume `[hm3]` it gives stored energy `[MWh]` (cascade scope).
+    IntegratedAccumulatedProductivityMwhPerHm3 {
+        /// Hydro plant identifier.
+        hydro_id: EntityId,
+    },
+    /// `max_stored_energy` in `[MWh]` (times `10⁶/3600`): the energy stored over
+    /// the plant's physical storage range, valued with the cascade's productivity.
+    MaxStoredEnergyMwh {
+        /// Hydro plant identifier.
+        hydro_id: EntityId,
+    },
+    /// `integrated_equivalent_productivity` in `[MWh/hm3]` (times `10⁶/3600`):
+    /// times a useful volume `[hm3]` it gives the plant's own stored energy
+    /// `[MWh]`, without the cascade below it.
+    IntegratedEquivalentProductivityMwhPerHm3 {
         /// Hydro plant identifier.
         hydro_id: EntityId,
     },
@@ -155,6 +145,8 @@ pub enum ComputedParameter {
 ///   hydro geometry data; no explicit user value is required.
 /// - [`PerStageBlock`](ParameterKind::PerStageBlock) — one value per
 ///   `(stage_id, block_id)` pair, keys unique and stored sorted.
+/// - [`Expression`](ParameterKind::Expression) — a program over other scalar
+///   parameters, resolved after them in dependency order.
 ///
 /// # JSON schema
 ///
@@ -163,7 +155,7 @@ pub enum ComputedParameter {
 ///
 /// ```
 /// # #[cfg(feature = "serde")] {
-/// use novomodelo_core::{ComputedParameter, EntityId, ParameterKind};
+/// use novomodelo_core::{ComputedParameter, EntityId, ParameterKind, ScalarExpr};
 ///
 /// // {"kind":"constant","value":3.6}
 /// let c = ParameterKind::Constant { value: 3.6 };
@@ -201,11 +193,21 @@ pub enum ComputedParameter {
 ///     serde_json::to_string(&psb).unwrap(),
 ///     r#"{"kind":"per_stage_block","values":[[0,0,1.0],[0,1,2.0]]}"#
 /// );
+///
+/// // {"kind":"expression","expression":[{"param":1},{"param":2},"mul"]}
+/// let expr = ParameterKind::Expression {
+///     expression: ScalarExpr::param(EntityId(1)) * ScalarExpr::param(EntityId(2)),
+/// };
+/// assert_eq!(
+///     serde_json::to_string(&expr).unwrap(),
+///     r#"{"kind":"expression","expression":[{"param":1},{"param":2},"mul"]}"#
+/// );
 /// # }
 /// ```
 ///
 /// Every variant round-trips through `serde_json::from_str` back to the same
-/// in-memory value.
+/// in-memory value, provided every number in it is finite: `serde_json` writes
+/// `NaN` and the infinities as `null`, which does not deserialize.
 ///
 /// # Examples
 ///
@@ -265,6 +267,11 @@ pub enum ParameterKind {
     PerStageBlock {
         /// Sorted, unique-keyed `(stage_id, block_id, value)` triples.
         values: Vec<(i32, i32, f64)>,
+    },
+    /// A program over other scalar parameters, resolved after them.
+    Expression {
+        /// Postfix program whose leaves are the ids of the parameters it reads.
+        expression: ScalarExpr,
     },
 }
 
@@ -332,6 +339,33 @@ pub struct ScalarParameter {
     pub kind: ParameterKind,
 }
 
+/// The ids reachable from `roots` through expression parameters, including the roots.
+///
+/// An id no parameter declares is kept as a leaf, and a reference cycle terminates.
+#[must_use]
+pub fn expand_expression_parameters(
+    roots: impl IntoIterator<Item = EntityId>,
+    parameters: &[ScalarParameter],
+) -> BTreeSet<EntityId> {
+    let expressions: HashMap<EntityId, &ScalarExpr> = parameters
+        .iter()
+        .filter_map(|p| match &p.kind {
+            ParameterKind::Expression { expression } => Some((p.id, expression)),
+            _ => None,
+        })
+        .collect();
+    let mut pending: Vec<EntityId> = roots.into_iter().collect();
+    let mut reached = BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if reached.insert(id)
+            && let Some(expression) = expressions.get(&id)
+        {
+            pending.extend(expression.params());
+        }
+    }
+    reached
+}
+
 // Serde intermediate: `PerStage` is a dense `Vec<f64>` in memory but
 // `[[stage_id, value], ...]` on the wire; the other variants are shape-identical.
 
@@ -344,6 +378,7 @@ enum ParameterKindJson {
     Seasonal { values: Vec<(i32, f64)> },
     Computed { computed_spec: ComputedParameter },
     PerStageBlock { values: Vec<(i32, i32, f64)> },
+    Expression { expression: ScalarExpr },
 }
 
 #[cfg(feature = "serde")]
@@ -366,6 +401,9 @@ impl From<ParameterKind> for ParameterKindJson {
                 ParameterKindJson::Computed { computed_spec }
             }
             ParameterKind::PerStageBlock { values } => ParameterKindJson::PerStageBlock { values },
+            ParameterKind::Expression { expression } => {
+                ParameterKindJson::Expression { expression }
+            }
         }
     }
 }
@@ -436,15 +474,84 @@ impl<'de> serde::Deserialize<'de> for ParameterKind {
 
                 Ok(ParameterKind::PerStageBlock { values })
             }
+            ParameterKindJson::Expression { expression } => {
+                Ok(ParameterKind::Expression { expression })
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "serde")]
-    use super::ScalarParameter;
-    use super::{CoefficientRef, ComputedParameter, EntityId, ParameterKind};
+    use std::collections::BTreeSet;
+
+    use super::{
+        ComputedParameter, EntityId, ParameterKind, ScalarExpr, ScalarParameter,
+        expand_expression_parameters,
+    };
+
+    fn expression_param(id: i32, expression: ScalarExpr) -> ScalarParameter {
+        ScalarParameter {
+            id: EntityId(id),
+            name: format!("e{id}"),
+            kind: ParameterKind::Expression { expression },
+        }
+    }
+
+    fn ids(values: &[i32]) -> BTreeSet<EntityId> {
+        values.iter().copied().map(EntityId).collect()
+    }
+
+    fn expand(roots: &[i32], parameters: &[ScalarParameter]) -> BTreeSet<EntityId> {
+        expand_expression_parameters(roots.iter().copied().map(EntityId), parameters)
+    }
+
+    #[test]
+    fn expand_expression_parameters_includes_the_roots() {
+        let parameters = [ScalarParameter {
+            id: EntityId(1),
+            name: "c".to_string(),
+            kind: ParameterKind::Constant { value: 1.0 },
+        }];
+        assert_eq!(expand(&[1, 2], &parameters), ids(&[1, 2]));
+    }
+
+    #[test]
+    fn expand_expression_parameters_follows_a_chain() {
+        let parameters = [
+            expression_param(3, ScalarExpr::param(EntityId(2)) * ScalarExpr::literal(2.0)),
+            expression_param(2, ScalarExpr::param(EntityId(1)) + ScalarExpr::literal(1.0)),
+        ];
+        assert_eq!(expand(&[3], &parameters), ids(&[1, 2, 3]));
+    }
+
+    #[test]
+    fn expand_expression_parameters_visits_a_diamond_once() {
+        let parameters = [
+            expression_param(
+                4,
+                ScalarExpr::param(EntityId(2)) + ScalarExpr::param(EntityId(3)),
+            ),
+            expression_param(2, ScalarExpr::param(EntityId(1))),
+            expression_param(3, ScalarExpr::param(EntityId(1))),
+        ];
+        assert_eq!(expand(&[4], &parameters), ids(&[1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn expand_expression_parameters_terminates_on_a_cycle() {
+        let parameters = [
+            expression_param(1, ScalarExpr::param(EntityId(2))),
+            expression_param(2, ScalarExpr::param(EntityId(1))),
+        ];
+        assert_eq!(expand(&[1], &parameters), ids(&[1, 2]));
+    }
+
+    #[test]
+    fn expand_expression_parameters_keeps_an_undeclared_id() {
+        let parameters = [expression_param(1, ScalarExpr::param(EntityId(9)))];
+        assert_eq!(expand(&[1], &parameters), ids(&[1, 9]));
+    }
 
     #[test]
     fn computed_parameter_variant_coverage_is_exhaustive() {
@@ -479,12 +586,21 @@ mod tests {
             ComputedParameter::MaxStoredEnergy {
                 hydro_id: EntityId(10),
             },
+            ComputedParameter::IntegratedAccumulatedProductivityMwhPerHm3 {
+                hydro_id: EntityId(11),
+            },
+            ComputedParameter::MaxStoredEnergyMwh {
+                hydro_id: EntityId(12),
+            },
+            ComputedParameter::IntegratedEquivalentProductivityMwhPerHm3 {
+                hydro_id: EntityId(13),
+            },
         ];
 
         assert_eq!(
             variants.len(),
-            10,
-            "ComputedParameter must have exactly 10 variants"
+            13,
+            "ComputedParameter must have exactly 13 variants"
         );
 
         // No `_` arm: adding a variant without updating here is a compile error.
@@ -504,12 +620,19 @@ mod tests {
                     "IntegratedAccumulatedProductivity"
                 }
                 ComputedParameter::MaxStoredEnergy { .. } => "MaxStoredEnergy",
+                ComputedParameter::IntegratedAccumulatedProductivityMwhPerHm3 { .. } => {
+                    "IntegratedAccumulatedProductivityMwhPerHm3"
+                }
+                ComputedParameter::MaxStoredEnergyMwh { .. } => "MaxStoredEnergyMwh",
+                ComputedParameter::IntegratedEquivalentProductivityMwhPerHm3 { .. } => {
+                    "IntegratedEquivalentProductivityMwhPerHm3"
+                }
             };
         }
     }
 
     #[test]
-    fn parameter_kind_five_variants() {
+    fn parameter_kind_variant_coverage_is_exhaustive() {
         let variants = [
             ParameterKind::Constant { value: 1.0 },
             ParameterKind::PerStage {
@@ -526,6 +649,9 @@ mod tests {
             ParameterKind::PerStageBlock {
                 values: vec![(0, 0, 1.0)],
             },
+            ParameterKind::Expression {
+                expression: ScalarExpr::literal(1.0),
+            },
         ];
 
         // No `_` arm: adding a variant without updating here is a compile error.
@@ -536,6 +662,7 @@ mod tests {
                 ParameterKind::Seasonal { .. } => "Seasonal",
                 ParameterKind::Computed { .. } => "Computed",
                 ParameterKind::PerStageBlock { .. } => "PerStageBlock",
+                ParameterKind::Expression { .. } => "Expression",
             };
         }
     }
@@ -550,13 +677,6 @@ mod tests {
                 values: vec![(1, 0.5), (2, 1.0), (3, 1.5)]
             }
         );
-    }
-
-    #[test]
-    fn coefficient_ref_copy_semantics() {
-        let a = CoefficientRef::Literal(1.0);
-        let b = a;
-        assert_eq!(a, b);
     }
 
     #[cfg(feature = "serde")]
@@ -702,6 +822,49 @@ mod tests {
         );
         let roundtrip: ParameterKind = serde_json::from_str(&json).unwrap();
         assert_eq!(roundtrip, kind);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn parameter_kind_serde_expression_form() {
+        let kind = ParameterKind::Expression {
+            expression: ScalarExpr::param(EntityId(1)) * ScalarExpr::param(EntityId(2)),
+        };
+        let json = serde_json::to_string(&kind).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"expression","expression":[{"param":1},{"param":2},"mul"]}"#
+        );
+        let roundtrip: ParameterKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtrip, kind);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn parameter_kind_expression_with_a_non_finite_literal_does_not_round_trip() {
+        let kind = ParameterKind::Expression {
+            expression: ScalarExpr::literal(f64::NAN),
+        };
+        let json = serde_json::to_string(&kind).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"expression","expression":[{"literal":null}]}"#
+        );
+        assert!(serde_json::from_str::<ParameterKind>(&json).is_err());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn parameter_kind_rejects_a_malformed_expression_program() {
+        for json in [
+            r#"{"kind":"expression","expression":[]}"#,
+            r#"{"kind":"expression","expression":["add"]}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<ParameterKind>(json).is_err(),
+                "expected an error for {json}"
+            );
+        }
     }
 
     #[cfg(feature = "serde")]

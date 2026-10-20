@@ -184,7 +184,7 @@ outputs under every method, warm start on and off) and
 out-of-LP `r` equals the solved z on monthly and quarterly stages); and
 `truncation_slack_bounds_are_identical_across_solve_sites`
 (`tests/patch_ownership_sweep.rs`, lower bound vs forward at the root and the
-closed form at archived trial states).
+closed form at stored trial states).
 
 ## FPHA uses average storage
 
@@ -220,6 +220,47 @@ Read: `lp/builder/layout.rs` (`evaporation_slot_count`), `lp/builder/columns.rs`
 (`fill_evaporation_columns`).
 Pinned by `parallel_multi_block_evap_slack_price_matches_water_it_moves` and
 `parallel_multiblock_evaporation_study_has_one_priced_stage_slot`.
+
+## A generic-constraint slack is priced by its declared basis, never by its terms
+
+Each soft generic-constraint row prices its slack columns with
+`SlackConfig::unit_cost(row_hours)`, where `row_hours` is the stage's total
+hours for a stage-level row and the block's hours for a block row.
+`PenaltyBasis::PerHour` gives `penalty × row_hours`, for a rate row (MW, m³/s).
+`PenaltyBasis::PerUnit` gives `penalty` with no hours, for an amount row (MWh,
+hm³). This is the same no-hours convention as the filling-target and
+storage-floor slacks (`fill_filling_target_columns`,
+`fill_filled_min_storage_floor_columns` in `lp/builder/columns.rs`). The LP
+objective (`fill_generic_constraint_entries`) and the simulation's reported
+`slack_cost` (`extract_generic_violations`) both call `unit_cost` with the same
+`row_hours`, so the reported cost always matches the LP's price.
+
+`PerUnit` is charged once per violated LP row. A block-independent row whose
+bound or coefficient uses a per-(stage, block) parameter is split into one row
+per block (`constraint_collapses_to_stage_level`), and each violated block row
+is charged `penalty`. This is the intended meaning: each block row is its own
+constraint with its own bound. Scaling a split row by its block's share of the
+stage would require reading the row's terms, which this contract forbids.
+
+The user declares the basis; `novomodelo-io` rejects an enabled slack without one.
+Inferring it from the row's terms is the wrong-but-compiling alternative. An
+amount can be written with flow terms, for example a volume row built from
+hours-weighted turbined and spilled flow. Adding or removing one term would
+then silently change what the penalty means and rescale the slack price by the
+stage hours, which still compiles and still converges.
+
+Read: `crates/novomodelo-core/src/constraints/generic_constraint.rs`
+(`SlackConfig::unit_cost`, `PenaltyBasis`), `lp/builder/entries.rs`
+(`fill_generic_constraint_entries`), `simulation/extraction.rs`
+(`extract_generic_violations`), `crates/novomodelo-io/src/constraints/generic.rs`
+(`resolve_slack`). Pinned by `per_unit_storage_slack_price_ignores_stage_hours`
+(`tests/template_integration/generic_constraints.rs`, objective coefficient on
+720 h and 2160 h stages),
+`per_unit_storage_shortfall_costs_the_same_on_a_week_and_a_month` and
+`per_hour_storage_shortfall_cost_scales_with_stage_hours` (`tests/hydro_sim.rs`,
+reported cost on 168 h and 744 h stages), and
+`generic_constraint_collapsed_slack_priced_by_total_stage_hours` (a stage-level
+`per_hour` row prices at the total stage hours).
 
 ## Hydro-cell aggregation assumes one production map per cell
 
@@ -305,20 +346,18 @@ bound. Neither term is a redundant guard over the other — each dominates a
 disjoint regime, and dropping either one compiles and passes today's
 single-group fixtures.
 
-Drop the plant term (`min` degenerates to `sum`) and every lowering
-`hydro_bounds` override in a study is silently discarded: a mid-horizon
-capacity cut, declared exactly the way the no-raising rule's own rejection
-message prescribes (declare the plant at final capacity, tighten the earlier
-stages with override rows), stops reaching the LP the moment the plant
-declares more than one group.
+Drop the plant term (`min` degenerates to `sum`) and a lowering
+`hydro_bounds` override on a single-cell plant is silently discarded: a
+mid-horizon capacity cut, declared exactly the way the no-raising rule's own
+rejection message prescribes (declare the plant at final capacity, tighten the
+earlier stages with override rows), stops reaching the LP the moment the plant
+declares more than one group. A single-cell plant has no cap row (the section
+below), so its column bound is the only carrier of the plant maximum.
 
-Drop the group term (`min` degenerates to `hb...`) and a multi-cell plant can
-turbine or generate past its own declared capacity, because
-`cell_max_turbined`/`cell_max_generation` are the ONLY consumers of
-`hb.max_turbined_m3s`/`hb.max_generation_mw` in the hydro LP path — no
-plant-level aggregate-max row exists to catch the overshoot. Three
-independent, fully-valid-input mechanisms reach the group term, the third
-strictly inside a single cell:
+Drop the group term (`min` degenerates to `hb...`) and a cell can turbine or
+generate past its own groups' capacity: the plant cap row below bounds only the
+cells' total, never one cell. Three independent, fully-valid-input mechanisms
+reach the group term, the third strictly inside a single cell:
 
 - **Cell subsetting.** A two-bus plant's cell sums only its own bus's groups,
   necessarily less than the plant total whenever the other bus's groups are
@@ -358,13 +397,68 @@ rule-41 equality, no override), which pins the group term binding, and by
 `test_cell_columns_take_their_own_group_box`'s block-2 override, which pins
 the plant term binding.
 
-### The per-cell floor is a plain sum, never a fold or a plant clamp
+### A plant maximum below its cells' caps binds their total in one row
 
-`cell_min_turbined`/`cell_min_generation` (`lp/builder/columns.rs`) are the
+The per-cell `sum.min(hb...)` clamp above cannot hold a multi-cell plant's
+total: each cell is clamped to the plant maximum `P` alone, so `|C|` cells can
+reach `|C|·P` together. `plant_cap_rhs` (`lp/builder/hydro_state.rs`) owns the
+decision: a plant with two or more cells gets one hard `≤ P` row per `MaxCap`
+kind and block, without a slack, where
+`P + envelope_tolerance(P) < Σ_c cap_c` — the tolerance rule 41 admits a declared
+maximum with, so a declared maximum never changes the LP and every study without
+a lowering override builds byte-identical rows. `cap_c` is the largest value the
+cell's term on that row can take: `cell_max_turbined` for `Turbined`;
+`ρ · cell_max_turbined` (`ConstantProductivity`) or `cell_max_generation`
+(FPHA) for `Generation`. The kinds are decided independently. The row's LHS is
+`Σ_c` of the cell's production terms, the same terms its floor row carries
+(`push_cell_power_terms`, the one owner of both): the turbine column, or the FPHA
+generation column, or `ρ·q_c`, or nothing for a dormant plant. A single-cell
+plant gets no row; its column bound already clamps to `P`. A plant suspended at
+the stage (`PreFilling`/`Filling`, `is_suspended`) gets no row, since its
+turbines are pinned at 0.
+
+A plant joins `plant_cap_hydro_indices` for a stage when either kind binds at
+any block. Both families are sized `n_caps * n_blks`
+(`plant_max_turbine`/`plant_max_generation` in `StageGeometry`), and a row that
+does not bind at its block is free (`+∞`).
+
+The wrong-but-compiling alternatives:
+
+- relying on the per-cell clamp alone: a two-bus plant whose `P` is lowered
+  below each cell's own cap turbines `2P`. Every column bound holds, so nothing
+  fails, and the cost is understated (D51);
+- a cap row with a slack column: a priced slack lets the plant buy its way past
+  a capacity that is physical, unlike the floors, which are soft;
+- binding wherever `P < Σ_c cap_c` with no tolerance: a declared maximum at
+  rule 41's tolerance then adds a row and moves every such study's LP;
+- summing the raw group maxima for `cap_c` instead of the cell's own column
+  bound (the fold and the clamp): the decision then disagrees with what the
+  columns can carry, adding a row where the cells already fit under `P` or
+  skipping one where they do not.
+
+Read: `crates/novomodelo-sddp/src/lp/builder/hydro_state.rs` (`MaxCap`,
+`plant_cap_rhs`, `is_suspended`), `lp/builder/layout.rs`
+(`identify_plant_cap_hydros`, `StageLayout::plant_max_row`), `lp/builder/rows.rs`
+(`fill_plant_cap_rows`), `lp/builder/entries.rs` (`fill_plant_cap_entries`,
+`push_cell_power_terms`). Pinned by
+`test_plant_cap_holds_the_cells_total_at_the_plant_maximum` (a solve: the total
+stays at `P` and the shortfall moves to the floor slack; mutation-verified against
+a free cap row), `test_plant_cap_below_the_cells_gets_a_cap_row_free_where_they_fit`
+(the per-kind, per-block decision),
+`test_plant_cap_the_cells_fit_under_leaves_the_stage_lp_unchanged` (the shared
+tolerance), `test_single_cell_plant_clamps_its_column_instead_of_a_cap_row`,
+`test_suspended_plant_gets_no_cap_row`, the
+`*_cap_rows_sum_their_cells_production_terms` pair (constant, FPHA) and D51
+(`d51_split_plant_two_bus_converges_to_known_optimum`: the simulated stage-0
+plant totals stay within the lowered envelope and reach it).
+
+### The per-cell floor is a plain sum; the plant floor adds only where it is tighter
+
+`cell_min_turbined`/`cell_min_generation` (`lp/builder/hydro_state.rs`) are the
 MIN-side mirror of `cell_max_turbined`/`cell_max_generation` above, and
 deliberately do NOT mirror their shape: a cell's min-turbine/min-generation
-floor is `Σ_{g∈cell} resolved_min_*(g)` — the cell's OWN member groups' resolved
-minima, summed, with no fold and no closing `.min(plant)` term at all. This is
+floor `F_c` is `Σ_{g∈cell} resolved_min_*(g)` — the cell's OWN member groups'
+resolved minima, summed, with no fold and no closing `.min(plant)` term. This is
 the correct shape because the floor bounds a SUM of variables: the cell's
 member groups all feed one shared aggregate column (one turbine column, one
 FPHA-generation column, or the same column read at ρ for
@@ -372,18 +466,44 @@ FPHA-generation column, or the same column read at ρ for
 others' — it is not one quantity two caps compete to bound tighter, which is
 what licenses a `min` fold on the MAX side.
 
-Four wrong-but-compiling alternatives, each of which has a close MAX-side
-cousin that makes it easy to copy over by habit:
+The plant's resolved minimum `P` (`hydro_bounds_at_block`: the `hydro_bounds`
+override, else the declared value) is a second floor on the plant's total, and
+the TIGHTER of the two wins. `PlantFloor` owns the decision: `P` binds only
+where `P > Σ_c F_c + envelope_tolerance(P)` — the same tolerance rule 44 admits
+a declared minimum with (`P_declared ≤ Σ F_declared + tolerance`), so a
+declared minimum never changes the LP and every study without a raising
+override builds byte-identical rows and columns. Where `P` binds:
 
-- **`.min(plant)` clamp** — closing the sum with `.min(hydro.min_turbined_m3s /
-min_generation_mw)`, copying `cell_max_turbined`'s closing term verbatim.
-  Wrong: the plant's declared minimum has no role in the per-cell floor at
-  all (validation rule 44 checks it can be REACHED by the groups' sum, but the
-  LP itself never reads it here). A `.min(plant)` clamp silently loosens the
-  floor whenever the plant's own declared minimum is lower than a cell's
-  group-sum, and clamps to that plant value uniformly on every cell —
-  understating the true floor without invalidating it that the group data
-  independently supports.
+- **A single-cell plant folds `P` into its one cell row** (`cell_rhs`); no
+  row is added. Every plant without multi-bus groups takes this path.
+- **A multi-cell plant gets one residual row per `MinFloor` and block**,
+  `Σ_c LHS_c + σ_plant ≥ P`, where `LHS_c` repeats cell `c`'s own row terms —
+  the turbine column (or FPHA generation column, or `ρ·q_c`; nothing for a
+  dormant plant) **and the cell's own slack `σ_c`** (`push_cell_floor_lhs`, the
+  single owner of a cell's floor LHS for both row kinds). Carrying `σ_c` is
+  what makes the charge `max(P − Σq, Σ_c σ_c)`: `σ_plant` tops up only what
+  the cell slacks leave. The wrong-but-compiling alternative — a residual row
+  on the bare columns, `Σ_c q_c + σ_plant ≥ P` — charges every unit of a cell
+  shortfall twice whenever both floors bind.
+
+A plant joins `plant_floor_hydro_indices` for a stage when its residual binds
+at any block; at a block where the cells cover `P` its row is free (`−∞`) and
+its slack pinned `[0, 0]`. Both slacks are priced at the plant's FULL penalty
+per hour (`MinFloor::below_cost`). An override that LOWERS `P` below `Σ F_c`
+cannot loosen the floor — the groups' minima still bind — so setup emits one
+warning per plant and `MinFloor` (`warn_on_inert_plant_floor_overrides`)
+pointing at `hydro_unit_group_bounds` instead. The MAX side mirrors this
+decision with a hard row and no slack (the section above).
+
+Four wrong-but-compiling alternatives for the cell floor, each with a close
+MAX-side cousin that makes it easy to copy over by habit:
+
+- **`.min(plant)` clamp** — closing the sum with `.min(P)`, copying
+  `cell_max_turbined`'s closing term verbatim. It silently loosens the floor
+  whenever `P` is lower than a cell's group-sum, clamping every cell to that
+  plant value. A lower `P` never loosens a cell floor; a higher `P` tightens
+  the plant total through the fold or the residual row above, never by
+  raising one cell's own floor.
 - **`max`-fold over a cell's own groups** — `max_{g∈cell} min_*(g)` instead of
   `Σ_{g∈cell} min_*(g)`. Wrong for the reason above: each group's own mandatory
   floor adds to the cell's aggregate minimum, so `max` understates a
@@ -391,57 +511,51 @@ min_generation_mw)`, copying `cell_max_turbined`'s closing term verbatim.
   largest.
 - **ρ-folding the generation floor** — computing `cell_min_generation` by
   folding each group's turbined-derived floor through `ConstantProductivity`'s
-  ρ (mirroring the MAX-side fold that combines two independent caps into one
-  tighter one) instead of summing `group.min_generation_mw` directly. The
-  min-generation row's LHS already carries `ρ * q_c` for a
-  `ConstantProductivity` cell (`fill_operational_violation_entries`); folding
-  ρ into the RHS too double-prices the productivity and produces a floor with
-  no physical meaning.
+  ρ instead of summing `group.min_generation_mw` directly. The min-generation
+  row's LHS already carries `ρ * q_c` for a `ConstantProductivity` cell;
+  folding ρ into the RHS too double-prices the productivity.
 - **`1/|cells|` price or RHS apportionment** — dividing the penalty
   (`turbined_violation_below_cost`/`generation_violation_below_cost`, both
   plant-level `HydroPenalties`) or the RHS by the plant's cell count before
   applying it per cell. The penalty is priced at FULL magnitude on every one
   of the plant's cells (mirroring how an arc's `k_d` release-weight replicates
   onto every cell's turbine column, never apportioned — see the water
-  travel-time section below); apportioning it discounts the true cost of a
-  multi-cell plant's violation by `|cells|`, and apportioning the RHS instead
-  of summing it produces a floor with no basis in either the cell's own
-  groups or the plant's declared value.
+  travel-time section below).
 
-Two per-cell soft rows exist per the same design that governs the MAX-side
-columns — never folded into one: `min_turbine_rows` couples the cell's own
-turbine column (`+1`) to the cell's own `turbine_below_slack` (`+1`);
-`min_generation_rows` couples the cell's own generation column — the cell's
-FPHA-generation column (`+1`) or the cell's turbine column at `ρ` for
-`ConstantProductivity` — to the cell's own `generation_below_slack` (`+1`).
-Both families are sized `n_cells * n_blks` (`OperViolationRanges::new`'s
-`n_op_cell` parameter), never `n_h * n_blks` — the two flow families
-(min/max-outflow) stay hydro-keyed at `n_op_hydro`, since outflow has no
-per-cell column to attribute to.
+The cell rows `min_turbine`/`min_generation` are sized `n_cells * n_blks`
+(`OperViolationSizes::cells`) and the residual rows
+`plant_min_turbine`/`plant_min_generation` `n_plant_floor * n_blks`
+(`plant_floors`); the min/max-outflow families stay hydro-keyed
+(`hydros`), since outflow has no per-cell column to attribute to.
 
 Output stays plant-keyed: `simulation/hydros/**.parquet`'s
-`turbined_slack_m3s`/`generation_slack_mw` columns are unchanged in shape —
-extraction sums a plant's own cells' slack columns into the existing
-plant-level field (`sum_cell_slack` in `simulation/extraction.rs`), the same
-pattern `turbined_m3s`/`generation_mw` already use for the max-side columns.
-This differs from the same-bus generation-split problem the output-axis
-decision (§7.10 of the blocks-and-units design) rules out: that problem is
-genuinely UNDETERMINED (several same-bus groups sharing one column have no
-basis to split by), while a per-cell floor VIOLATION is DETERMINED — each
-cell owns its own row and its own slack column, so there is exactly one
-correct per-cell slack value to sum, never a manufactured one.
+`turbined_slack_m3s`/`generation_slack_mw` and the `turbined`/`generation`
+violation costs read a plant's own cells' slacks (`sum_cell_slack`) plus its
+residual slack when it owns one (`hydro_operational_slacks`,
+`compute_hydro_violation_costs`) — the plant's whole shortfall, the same
+pattern `turbined_m3s`/`generation_mw` use for the max-side columns. A per-cell
+floor VIOLATION is DETERMINED (each cell owns its own row and slack), unlike
+the undetermined same-bus generation split the output-axis decision (§7.10 of
+the blocks-and-units design) rules out.
 
 Read: `crates/novomodelo-sddp/src/lp/builder/hydro_state.rs` (`cell_min_turbined`,
-`cell_min_generation`), `crates/novomodelo-sddp/src/lp/builder/columns.rs`
-(`fill_cell_block_family`), `crates/novomodelo-sddp/src/lp/builder/rows.rs`
-(`fill_operational_violation_rows`), `crates/novomodelo-sddp/src/lp/builder/entries.rs`
-(`fill_operational_violation_entries`), `crates/novomodelo-sddp/src/lp/builder/layout.rs`
-(`OperViolationRanges`), `crates/novomodelo-sddp/src/simulation/extraction.rs`
-(`sum_cell_slack`, `hydro_operational_slacks`), `crates/novomodelo-io/src/validation/semantic/hydro.rs`
-(rule 44). Pinned by the per-cell analytical row/coefficient test in
-`crates/novomodelo-sddp/src/lp/builder/entries.rs` (mutation-verified against the
-`.min(plant)` clamp, the `max`-fold, the ρ-fold, and `1/|cells|`
-apportionment), the d53 binding fixture, and the group-declaration-order
+`cell_min_generation`, `MinFloor`, `PlantFloor`,
+`warn_on_inert_plant_floor_overrides`), `crates/novomodelo-sddp/src/lp/builder/columns.rs`
+(`fill_cell_floor_slacks`, `fill_plant_floor_slacks`),
+`crates/novomodelo-sddp/src/lp/builder/rows.rs` (`fill_operational_violation_rows`),
+`crates/novomodelo-sddp/src/lp/builder/entries.rs` (`push_cell_floor_lhs`),
+`crates/novomodelo-sddp/src/lp/builder/layout.rs` (`identify_plant_floor_hydros`,
+`OperViolationRanges`), `crates/novomodelo-sddp/src/simulation/extraction.rs`
+(`sum_cell_slack`, `hydro_operational_slacks`),
+`crates/novomodelo-io/src/validation/semantic/hydro.rs` (rule 44) and
+`crates/novomodelo-io/src/validation/semantic/mod.rs` (`envelope_tolerance`).
+Pinned by `test_min_floor_rhs_is_the_cells_own_group_sum` (mutation-verified
+against the `.min(plant)` clamp, the `max`-fold, the ρ-fold, and `1/|cells|`
+apportionment), `test_floor_shortfall_is_charged_once_as_the_larger_of_plant_and_cells`
+(fails at 16 against 12 when the residual row drops `σ_c`), the
+`*_residual_rows_sum_their_cell_rows` trio (constant, FPHA, dormant),
+`test_plant_floor_the_cells_cover_leaves_the_stage_lp_unchanged` (the shared
+tolerance), the d53 binding fixture, and the group-declaration-order
 determinism regression.
 
 ### Both outflow rows bind the non-diverted river-remnant flow
@@ -487,13 +601,15 @@ resolved from the node graph's `node → pool` map (`NodeGraph`,
 absent) `pool_id == stage`, so every read reduces byte-for-byte to the
 pre-node-native stage read. Sibling fan nodes at one level may share a pool.
 
-**Append-only within a pool.** Cuts are never removed from the LP. Deactivation
-toggles a cut row's RHS bounds to the `±f64::INFINITY` sentinel (trivially
-satisfied); every cut keeps a stable slot index for the lifetime of the run,
-placed by `slot_index`'s deterministic function of `warm_start_count`,
+**Append-only within a pool.** A cut is never removed from its pool. Deactivation
+clears the slot's activity flag (`CutPool::set_active`) and keeps the slot and
+its data; every cut keeps a stable slot index for the lifetime of the run,
+placed by `slot_index`'s deterministic function of `slot_base`,
 `iteration`, `iteration_base`, `visit_stride`, and `forward_pass_index`. The
 per-iteration template refreeze encodes **only active cuts** (one row per
-`active_cuts()` entry), not inactive cuts at sentinel bounds.
+`active_cuts()` entry), so a refrozen stage template holds no inactive cut. The
+lower-bound LP only appends rows (`append_new_cuts_to_lp`) and never removes
+one, so a root cut stays in it once added.
 
 **Growth is between-iteration and append-only.** A pool's capacity may grow
 between iterations (`CutPool::grow`, when a node's realized visit rate would
@@ -506,6 +622,263 @@ basis's slot-identity match. Each cut record also carries its generating
 **provenance only** (carried onto the MPI cut wire) and never affects which slot
 the cut lands in — the append-only, slot-identity contract is independent of
 `node_id`.
+
+Among generated slots, slot order refines generation order, also after growth,
+while every `forward_pass_index` is below the pool's `visit_stride`:
+`(iteration_generated, forward_pass_index)` increases with the slot, and a slot
+written in an iteration lies above every slot written in an earlier one, so the
+slot tie-break of the budget's eviction key is a generation-order tie-break.
+Swapping the roles of the iteration and the pass in `slot_index` is the
+wrong-but-compiling alternative: a later iteration's cut then lands below an
+earlier one's. Pinned by `generated_slots_follow_generation_order_across_growth`
+(`cut/pool.rs`).
+
+**A loaded cut keeps its real generating iteration; the loaded prefix is a
+stored role.** A cut loaded from a checkpoint (`warm_start` or `resume`) is stored
+with the `iteration` its record carries, in `CutMetadata.iteration_generated`.
+Whether a slot held a cut before the run started is the slot's role:
+`CutPool::is_prefix_slot` reads `SlotRole::origin`, which the loading
+constructors write and `add_cut` writes as `Generated`:
+`CutPool::new_with_warm_start` writes `Prefix` for every record's slot, while
+`CutPool::from_deserialized` and `CutPool::new_resumed` write `Prefix` for the
+records stored below the recorded prefix length (`warm_start_count`) and
+`Generated` for the others. Every load reads each record's `scored` flag as
+written and never infers it from the role. `LoadedSlotMap`
+(`policy/full_fcf_load.rs`) is the only translation from a stored slot to the slot
+its record occupies: the identity for a resume, the record's rank in ascending
+slot order for a warm start and a simulation-only load, which pack. The role is
+never a value of `iteration_generated`. Under `warm_start` the run's iteration
+counter restarts at 1, so a loaded cut's generating iteration can equal the
+current one; every reader that separates a loaded cut from a cut of this run
+tests the predicate before the iteration.
+
+A sentinel in `iteration_generated` (a value no iteration reaches) is the
+wrong-but-compiling alternative: it keeps loaded cuts out of the per-iteration
+sets, but the field reaches the checkpoint writer, which writes it as the cut's
+`iteration`, so every loaded cut is exported with a corrupted iteration, or the
+write is refused when the sentinel does not fit the record's 32-bit field.
+Comparing `iteration_generated` to the current iteration without the
+predicate is the second: a loaded cut whose generating iteration equals the
+current one is taken for a cut of this iteration, appended to the LP a second
+time as a delta row and packed for the cut exchange as a new cut. Answering by
+position (`slot < slot_base`) is the third: a pool built by `CutPool::new`
+with a non-zero `slot_base` reserves leading slots that no record fills,
+and the position test calls each of them a loaded cut. Writing every loaded
+record unscored is the fourth: a cut its source scored then keeps the flag it was
+loaded with, so a warm-started `level1` run never deactivates or reactivates it,
+and a simulation-only `all` sees only the stored flags.
+Read: `cut/pool.rs` (`SlotRole`, `CutPool::new_with_warm_start`,
+`CutPool::from_deserialized`, `CutPool::new_resumed`, `is_prefix_slot`,
+`active_delta_cuts`, `enforce_budget`), `cut/cut_sync.rs` (`pack_pool_into`),
+`cut/dcs.rs` (`score_violated_candidates`, `build_initial_resident_set`),
+`policy/policy_export.rs` (`build_stage_cut_records`), `policy/full_fcf_load.rs`
+(`LoadedSlotMap`). Pinned by
+`exported_loaded_cut_keeps_its_generating_iteration` (`policy/policy_export.rs`:
+a loaded cut is exported at its record's iteration),
+`a_loaded_cut_sharing_the_current_iteration_number_is_not_a_delta_cut`
+(`cut/pool.rs`) and `a_reserved_leading_slot_is_vacant_not_loaded` (`cut/pool.rs`:
+a reserved leading slot is vacant and no slot of the pool is a loaded cut), with
+one pin per other reader:
+`a_loaded_cut_is_never_packed_as_a_new_cut` (`cut/cut_sync.rs`),
+`enforce_budget_never_evicts_a_loaded_cut`
+(`cut/pool.rs`), `candidate_recency_window_keeps_warm_start_cuts` and
+`a_loaded_slot_is_not_seeded_as_a_current_iteration_cut` (`cut/dcs.rs`); and,
+for the role and the flag each load writes,
+`the_loading_constructors_read_each_records_scored_flag` (`cut/pool.rs`),
+`from_deserialized_gives_each_pool_its_recorded_prefix` (`cut/fcf.rs`),
+`a_slot_map_places_each_record_by_kind_and_leaves_a_gap_empty`
+(`policy/full_fcf_load.rs`) and, through the real writer and reader in
+`tests/cut_basis.rs`, `a_warm_started_scored_cut_is_selected_like_a_generated_one`
+and `a_warm_started_unscored_cut_keeps_its_flag`.
+
+**The activity clock is the current run's.** `CutMetadata::last_active_iter` and
+`CutMetadata::active_count` are on the current run's iteration clock. Two readers
+use them: the eviction key of the active-cut budget (`CutPool::enforce_budget`),
+and the seed window of a lazy solve under `dynamic`, which compares
+`last_active_iter` with the run's iteration counter and seeds an active cut when
+`current_iteration.saturating_sub(last_active_iter) <= seed_window`
+(`build_initial_resident_set`). `add_cut` starts a cut of this run at
+`last_active_iter = iteration_generated` and `active_count = 0`.
+
+A warm start and a boundary injection restart both counters at 0 for the loaded
+prefix (`CutPool::restart_activity_clock`), because their records carry the
+iterations of another run or study: `check_full_fcf_load` restarts every pool
+for `FullFcfLoadKind::WarmStart`, and `inject_boundary_cuts` restarts the
+terminal pool it installs. A resume restores the counters the checkpoint carries
+(below), the terminal pool's boundary rows included (the boundary section at the
+end of the resume sections); a simulation-only load keeps the record's
+iteration and reads no clock, since the simulation seeds at iteration 0. The
+restart touches the two counters of the prefix slots only:
+`iteration_generated` stays the record's iteration, as the paragraph above
+requires. A restarted active loaded cut is in the seed of iterations
+`1..=seed_window` and then of the `seed_window` iterations that follow each
+iteration in which it bound, and it is a candidate of every lazy solve
+throughout. `build_initial_resident_set` still tests `is_prefix_slot` before it
+compares `iteration_generated` with the current iteration: a restarted loaded
+cut whose generating iteration equals the current one lies outside the window
+and would otherwise be seeded as an untested cut of this iteration.
+
+Seeding a warm start from `record.iteration` is the wrong-but-compiling
+alternative: the run's counter restarts at 1, so the window's subtraction
+saturates to 0 until the new run passes the source run's iteration count, every
+loaded active cut is seeded in every lazy solve, and the window selects
+nothing. Restarting the clock under a resume is the opposite error: a reloaded
+cut the run generated would fall out of the seed window it was in before the
+checkpoint.
+
+**A checkpoint carries the counters while a reader is configured.**
+`CheckpointLayout::new` keeps `CutManagementConfig::tracks_binding_activity` of
+the setup's config. While it holds, `build_stage_cut_records` called with
+`BindingCounters::Carried` writes every piece's `active_count` and
+`last_active_iter` (`last_active_iteration` on disk) from its slot's metadata,
+and the manifest's `activity_counters` is set;
+otherwise no piece carries them and the flag is unset. The write issues no
+collective: every rank applies the same `CutPool::record_binding` after the
+reduction in `sync_stage_metadata`, inside the backward pass, so rank 0 holds the
+run's counters at the periodic and at the final write. `CutPool::new_resumed`
+writes a record's counters into its slot, so a resumed run with a budget or
+`dynamic` continues the eviction order and the seed window of the uninterrupted
+run, the prefix of a run that was itself warm-started included: its counters are
+on that run's clock. A record without counters resumes at `active_count = 0` and, in
+a slot below the recorded prefix length, at `last_active_iter = 0`, where the
+restart of a warm start or a boundary injection left it; in any other slot at
+`last_active_iter = iteration`, where `add_cut` starts a cut. Only a run with no
+reader configured writes such a record, and nothing reads either counter in
+that run. A resume whose run configures a reader refuses a checkpoint written
+without counters (the resume rejects below), since the recorded run did not count
+the iterations in which its cuts bound. A warm start, a boundary injection outside
+a resume and a simulation-only load read no counter.
+
+Writing the counters always and reading them under `warm_start` is the
+wrong-but-compiling alternative: the records carry the source run's clock, which
+the new run's counter does not continue (the seeding error above). No test pins
+this one: the restart of a warm start zeroes the prefix counters after the load,
+so a load that read them leaves the same pool. Not restoring
+them on a resume is the opposite one: a reloaded cut that had bound resumes at the
+iteration that generated it, so the budget evicts it ahead of cuts the
+uninterrupted run evicts and `dynamic` drops it from the seed window it was in.
+Resuming a prefix record without counters at its generating iteration is the
+last: no result moves, since no reader exists, but the resumed pool no longer
+equals the uninterrupted warm-started run's, whose prefix holds 0.
+
+Read: `cut/pool.rs` (`CutPool::restart_activity_clock`, `CutPool::new_resumed`,
+`add_cut`, `enforce_budget`), `cut/dcs.rs` (`build_initial_resident_set`),
+`policy/full_fcf_load.rs` (`check_full_fcf_load`), `policy/policy_load.rs`
+(`inject_boundary_cuts`), `policy/orchestration.rs` (`CheckpointLayout::new`,
+`CheckpointLayout::write`), `policy/policy_export.rs`
+(`build_stage_cut_records`). Pinned by
+`a_layout_with_a_budget_writes_both_counters_on_every_piece` and
+`a_layout_without_a_reader_writes_no_counter` (`policy/policy_export.rs`),
+`a_resumed_pool_restores_the_binding_counters_of_its_checkpoint`
+(`tests/full_fcf_load.rs`: after a resume of a budget run's checkpoint every slot
+holds that run's counters, some of them non-zero),
+`a_warm_start_restarts_the_binding_counters_and_its_resume_restores_them`
+(`tests/full_fcf_load.rs`: a warm start from that checkpoint holds 0 in every
+prefix slot, and a resume of the warm-started run restores its counters, some
+prefix cut's non-zero),
+`resumed_run_equals_the_uninterrupted_run_with_one_forward_pass`
+(`tests/periodic_checkpoint.rs`: without a reader, the counters of every slot
+equal the uninterrupted run's), `loaded_activity_clock_follows_the_load_kind`
+(`tests/full_fcf_load.rs`: after a load of a checkpoint without counters, every
+loaded slot has `active_count = 0`; under a resume the slots are not prefix slots
+and `last_active_iter` equals the record's iteration, under a warm start they are
+prefix slots and it is 0),
+`injected_boundary_cuts_start_on_this_runs_activity_clock`
+(`policy/policy_load.rs`), `restart_activity_clock_touches_only_the_loaded_prefix`
+(`cut/pool.rs`), `a_resumed_record_without_counters_resumes_on_the_clock_its_run_left_it`
+(`cut/pool.rs`: a record without counters resumes at 0 below the prefix length
+and at its iteration above it, one with counters at its counters),
+`a_resumed_warm_started_run_equals_its_uninterrupted_run`
+(`tests/periodic_checkpoint.rs`: the counters of every slot of a warm-started run
+without a reader, prefix included, equal the uninterrupted run's),
+`a_warm_started_cut_is_seeded_in_the_first_window_and_after_it_binds`
+(`cut/dcs.rs`: the window and its saturation under the stored clock) and
+`a_loaded_slot_is_not_seeded_as_a_current_iteration_cut` (`cut/dcs.rs`: the
+guard).
+
+**A never-written slot is not a cut.** A slot holds a cut only once `add_cut` or a
+loading constructor has written it; until then its role origin is `Vacant` and its
+intercept and coefficients are zero. A vacant slot lies below
+`CutPool::populated()` when a pool's slot block for an iteration is not filled:
+on a sampled branching graph the pool's `visit_stride` is a statistical floor
+(`NodeGraph::pool_cut_stride`), so a node visited fewer times than its stride
+leaves the tail of its block unwritten and the next iteration's block starts above
+it; and a `CutPool::new` pool with a non-zero `slot_base` leaves its
+leading slots unwritten. `populated()` is one past the highest written slot: it
+bounds slot-indexed reads and does not count cuts, which `generated()` does.
+Readers skip a vacant slot. The checkpoint writer (`build_stage_cut_records`)
+writes no record for it, and `build_stage_cuts_payloads` writes `populated_count`
+as the number of records. The ownership record treats it as not live (`is_live`),
+so its zero owns no state, and `CutPool::ownership_activity_updates` lists scored
+slots only, so it is never activated. A debug build refuses to activate a vacant
+slot (`CutPool::set_active`).
+
+Treating `populated()` as a cut count is the wrong-but-compiling alternative: the
+vacant zero then competes in the maximum and owns states, and the checkpoint
+exports it as an inactive zero record, which a load reads back as a loaded cut.
+Read: `cut/pool.rs` (`SlotRole`, `CutPool::role`, `CutPool::populated`),
+`cut/ownership.rs` (`is_live`), `policy/policy_export.rs`
+(`build_stage_cut_records`, `build_stage_cuts_payloads`). Pinned by
+`a_slot_role_is_fixed_when_the_slot_is_written` and
+`a_reserved_leading_slot_is_vacant_not_loaded` (`cut/pool.rs`: a role is written
+with its slot and by nothing else), `a_never_written_slot_is_not_exported`
+(`policy/policy_export.rs`: records at slots 0, 2 and 3 and a `populated_count`
+of 3) and `sampled_fan_checkpoint_holds_no_never_written_slot`
+(`tests/branching_value_oracle.rs`: on a trained sampled fan, one record per
+written slot), the `vacant_slot` fixture of
+`the_record_reproduces_every_reference_fixture` (`cut/ownership.rs`: the vacant
+zero owns no state) and `incremental_record_equals_rebuild_and_reference`
+(`cut/ownership.rs`: its draws leave vacant holes below the highest written
+slot), and `level1_follows_the_reference_rule_on_every_fixture`
+(`cut/cut_selection.rs`: the vacant slot of a fixture is in neither update list),
+with `activating_a_vacant_slot_panics_in_debug` (`cut/pool.rs`) for the debug
+assertion.
+
+**A resume places each cut at its slot.** `check_full_fcf_load` builds the FCF of
+a `resume` through `FutureCostFunction::new_resumed`, which builds every pool
+through `CutPool::new_resumed`; a `warm_start` keeps `new_with_warm_start`. A
+record goes to its own `slot_index`, not to its position in the list. The slot
+base is the pool's recorded `warm_start_count`, and the capacity is the larger of
+the recorded `capacity` and `slot_base + max_iterations * visit_stride`, so a pool
+that grew keeps its slots. A slot below `warm_start_count` is `Prefix`, every
+other record is `Generated`, and each keeps the `scored` flag it was written with.
+A slot with no record stays `Vacant`, so `populated()` is one past the highest
+record and `generated()` counts records. The constructor stores no trial state:
+the session does, once it has enabled the store (the trial-state section below).
+`TrainingSession::new` sets the iteration base to 1 on every run, so the slot of
+iteration `k` and pass `p` is
+`slot_base + (k - 1) * visit_stride + p` on a resumed run as in the uninterrupted
+one; `start_iteration` only drives the loop range. A record that shares a slot,
+lies at or above the capacity, or leaves a slot of the prefix empty is refused
+with `SddpError::Validation` naming the pool and slot.
+
+The wrong-but-compiling alternatives:
+
+- packing the records into slots `0..n`, as `new_with_warm_start` does: a cut
+  after a vacant slot moves down, so the loop's cuts no longer land where the
+  uninterrupted run's did and every stored basis's slot match breaks;
+- treating every reloaded cut as `Prefix`: the cuts the recorded run generated
+  become unselectable and unevictable, so selection and the budget treat the
+  resumed run differently;
+- an iteration base of `start_iteration + 1`: the first resumed iteration maps to
+  slot `slot_base`, which a reloaded cut holds, and the window boundary shifts by
+  the iterations before the checkpoint.
+
+Read: `cut/pool.rs` (`CutPool::new_resumed`), `cut/fcf.rs`
+(`FutureCostFunction::new_resumed`), `policy/full_fcf_load.rs`
+(`check_full_fcf_load`), `training/session/mod.rs` (`TrainingSession::new`).
+Pinned by `a_resumed_pool_keeps_each_record_at_its_slot_and_a_hole_vacant`,
+`a_resumed_pool_takes_the_loop_cuts_where_the_recorded_run_put_them` and the
+`a_resumed_pool_refuses_*` tests (`cut/pool.rs`),
+`new_resumed_names_the_pool_whose_records_it_refuses` (`cut/fcf.rs`),
+`a_resume_restores_the_prefix_length_of_a_warm_started_run`
+(`tests/full_fcf_load.rs`: the prefix length and the prefix slots of a resumed
+warm-started run), `a_fan_checkpoint_resumes_every_record_at_its_slot`
+(`tests/deterministic.rs`: a trained sampled fan written by the real writer and
+read back, every slot's role, flag and value bits, vacant slots included, and the
+node id of each pool) and `resumed_run_equals_the_uninterrupted_run_with_one_forward_pass`
+(`tests/periodic_checkpoint.rs`: the final checkpoint of the resumed run equals
+the uninterrupted run's).
 
 **Basis matches by slot, never by count or column.** Warm-start basis
 reconstruction matches stored cut rows to current LP rows by **`CutPool` slot
@@ -526,8 +899,10 @@ regressions in `tests/cut_basis.rs`.
 ### The terminal stage bypasses reconstruction with a 1:1 basis apply
 
 The terminal stage solves against a baked static template whose active-cut set
-is fixed once primed — a leaf never gains or loses a cut — so the template's
-shape never changes across iterations. There the slot-identity reconstruction
+is fixed once primed — a leaf never gains or loses a cut: no backward pass adds
+to a leaf pool, selection scores interior nodes only, and the budget visits
+interior pools only — so the template's shape never changes across iterations.
+There the slot-identity reconstruction
 above is REPLACED by a plain 1:1 basis apply (`run_stage_solve_terminal_static`,
 selected only at the terminal forward solve by `solve_forward_node`'s
 `is_terminal` gate): a node-matching stored basis maps onto the current LP by
@@ -556,48 +931,284 @@ for the interior path), `training/forward/enumerated.rs` (`solve_forward_node`'s
 warm start still invokes `reconstruct_basis`), plus
 `run_stage_solve_terminal_static_cross_node_stored_basis_is_treated_as_cold` and
 `run_stage_solve_terminal_static_shape_mismatch_is_treated_as_cold` (the
-node-tag and shape guards each drop to cold), all in `solve/stage_solve.rs`.
+node-tag and shape guards each drop to cold), all in `solve/stage_solve.rs`, and
+by `budget_caps_only_interior_pools_and_templates_match_their_pools`
+(`training/session/mod.rs`: after the budget runs, every pool's frozen template
+holds exactly its pool's active cuts, the terminal pool's included).
 
 ### A stored basis records its own cut-row count
 
-Each checkpoint `StageBasis` record carries `num_cut_rows =
-row_status.len() - base_row_count`, the trailing cut rows of the captured basis
-itself. Writing the node's pool count (`populated()`) instead is the
-wrong-but-compiling alternative: it overstates the basis's cut rows, because a
-forward-pass capture precedes that iteration's backward pass, which appends cuts
-to the pool afterwards. `FORMAT_VERSION` 3 marks this meaning. The loader still
-takes the template row count from the current LP (`node_dims`), never from the
-record. Read: `policy/policy_export.rs` (`build_stage_basis_records`). Pinned by
+Each checkpoint `StageBasis` record holds one `BasisEntry` per scenario, and each
+entry carries `piece_row_slots`, the pool slot of every trailing cut row of the
+captured basis itself (`CapturedBasis::cut_row_slots`, one per row of
+`row_status.len() - base_row_count`). Writing the node's pool count
+(`populated()`) instead is the wrong-but-compiling alternative: it overstates the
+basis's cut rows, because a forward-pass capture precedes that iteration's
+backward pass, which appends cuts to the pool afterwards. `FORMAT_VERSION` 4
+marks this layout. The loader still takes the template row count from the
+current LP (`node_dims`), never from the record. Read: `policy/policy_export.rs`
+(`basis_entry`, the one builder of an entry, `build_basis_store_entries`,
+`build_stage_basis_records`). Pinned by
 `build_stage_basis_records_writes_each_basis_own_trailing_cut_row_count`
-(`policy/policy_export.rs`) and
+(`policy/policy_export.rs`: two scenarios per node, each with its own slots) and
 `exported_basis_records_count_the_cut_rows_each_basis_was_captured_with`
-(`tests/cut_basis.rs`).
+(`tests/cut_basis.rs`, through the checkpoint's own `build_basis_store_entries`).
 
-The load uses a stored basis for its node only when it fits that node's LP
-exactly. `admit_stored_basis` checks, in order, `found_cols == template_cols`,
-`found_rows == template_rows + num_cut_rows`, and a basic count (column and row
-statuses decoding to `Basic`) equal to `found_rows`. A record that fails is not
-used for its node and the load proceeds: its slot stays `None`, and
-`UnusedStoredBases` owns the one aggregated warning, `stored bases not used: …`.
-The basic count is checked because `reconstruct_basis` assumes it and a deficit
+The load decodes every entry of every node record (`build_basis_cache_for_nodes`)
+and admits each by its stored slots. An entry's cut rows keep the slots it
+recorded, each translated through its node's pool's `LoadedSlotMap`
+(`policy/full_fcf_load.rs`), the only translation from a stored slot: the stored
+slot under a resume, the record's rank under a warm start and a simulation-only
+load, which pack. Its template row count is the current LP's (`node_dims`). An
+entry is used only when it fits that node's LP exactly: `admit_stored_basis`
+checks, in order, `found_cols == template_cols`,
+`found_rows == template_rows + piece_row_slots.len()`, and a basic count (column
+and row statuses decoding to `Basic`) equal to `found_rows`; then every recorded
+slot must map to a loaded cut (`StoredBasisMisfit::UnmappedSlot` otherwise). An
+entry that fails is left out and the load proceeds: `UnusedStoredBases` owns the
+one aggregated warning, `stored bases not used: …`, which counts entries. The
+basic count is checked because `reconstruct_basis` assumes it and a deficit
 aborts the run with `BasisShapeMismatch` (`cut/basis_reconstruct.rs`, "Basic-count
-invariant"); `reconstruct_basis` is never called for a dropped node, so the
-append-only pool and slot identity are untouched. The wrong-but-compiling
-alternatives: refusing the load over a basis, which only warm-starts a solve;
-admitting on shape alone, which lets a basic-count deficit reach
-`reconstruct_basis`; and adding a cold retry after `reconstruct_basis` fails,
-which hides a record this rule should have dropped. Read: `policy/policy_load.rs`
-(`build_basis_cache_for_nodes`, `admit_stored_basis`, `StoredBasisLoad`),
-`policy/full_fcf_load.rs` (`check_full_fcf_load`). Pinned by
-`stored_basis_whose_basic_count_differs_from_its_rows_is_dropped` and
-`unused_stored_bases_report_is_independent_of_record_order`
-(`policy/policy_load.rs`),
+invariant"); `reconstruct_basis` is never called with a dropped entry, so the
+append-only pool and slot identity are untouched.
+
+Each admitted entry seeds its own scenario. `StoredBasisLoad::store` keeps, per
+node, the admitted entries with their global scenario; a training load hands them
+to `train` in `LoadedPolicy::scenario_bases`, and `TrainingSession::seed_basis_store`
+fills, on every rank and before `prime_frozen_templates`, local row
+`m < my_actual_fwd` of each node with `LoadedPolicy::seed_basis` of global scenario
+`fwd_offset + m`: that scenario's own entry; when the node holds none for it, a
+`resume` seeds nothing (`MissingScenarioBasis::Cold`) and a `warm_start` seeds
+the node's lowest-scenario entry (a source that ran fewer forward passes). The
+padding rows
+`my_actual_fwd..max_local_fwd` stay empty. Simulation keeps one basis per node,
+the lowest-scenario admitted entry (`StoredBasisLoad::cache`).
+
+The wrong-but-compiling alternatives:
+
+- refusing a `warm_start`, simulation-only or boundary load over a basis, which
+  only warm-starts a solve. A `resume` is the one load that refuses over the store:
+  one whose `basis_store_complete` is unset (a failure exit's) is refused (the
+  resume rejects below);
+- seeding a resumed scenario from another scenario's entry where the node holds
+  none of its own: on a branching sampled graph the uninterrupted run holds no
+  basis for a node the scenario has not visited and solves it cold, and a seeded
+  solve can settle on another vertex;
+- admitting on shape alone, which lets a basic-count deficit reach
+  `reconstruct_basis`;
+- adding a cold retry after `reconstruct_basis` fails, which hides an entry this
+  rule should have dropped;
+- copying one basis to every scenario: a resumed run with several forward passes
+  restarts scenarios 1 and up from scenario 0's basis, and at a degenerate optimum
+  their solves settle on other vertices than the uninterrupted run's;
+- inferring a basis's cut-row slots from the pool's active set (its first slots
+  when the active slots are an unbroken prefix, no cut rows otherwise): a pool
+  under selection is not a prefix, so every stored basis loses its cut rows;
+- keying a row by its local index instead of its global scenario: every rank
+  but rank 0 restores rank 0's scenarios.
+
+Read: `policy/policy_load.rs` (`build_basis_cache_for_nodes`,
+`admit_stored_basis`, `StoredBasisLoad`), `policy/full_fcf_load.rs`
+(`check_full_fcf_load`, `LoadedSlotMap`), `training/training.rs`
+(`LoadedPolicy::seed_basis`), `training/session/mod.rs` (`seed_basis_store`).
+Pinned by, in `policy/policy_load.rs`:
+`stored_basis_whose_basic_count_differs_from_its_rows_is_dropped`,
+`unused_stored_bases_report_is_independent_of_record_order`,
+`a_stored_basis_is_admitted_at_its_translated_slots` (cut rows at slots that are
+not a prefix of the pool, each at its translated slot under every load kind),
+`a_stored_basis_with_an_unmapped_slot_is_left_out_and_counted` and
+`every_entry_of_a_record_is_kept_by_scenario_and_the_cache_takes_the_lowest_admitted`;
+`seeding_gives_each_local_row_its_global_scenario_and_leaves_padding_empty`
+(`training/session/mod.rs`: rank 1 of 2 seeds its row from scenario 2 and leaves
+its padding row empty, a node holding scenario 0 only seeds every row from it;
+fails under the local-row key and under seeding the padding rows);
+`resumed_run_equals_the_uninterrupted_run_with_several_forward_passes`
+(`tests/periodic_checkpoint.rs`: the resumed setup seeds every scenario and node
+with the interrupted run's checkpoint entry, and the resumed run equals the
+uninterrupted one bit for bit; under copying scenario 0's basis to every row the
+cut intercepts of pool 1 differ, and under decoding only the lowest-scenario entry
+the seeded basis of scenario 1 does);
+`a_resumed_fan_run_ends_with_the_cut_pools_of_the_uninterrupted_run`
+(`policy/full_fcf_load.rs`: on a sampled fan where some nodes hold the bases of
+some scenarios only, the resumed pools equal the uninterrupted run's slot by slot;
+the comparison passes under copying scenario 0's basis, so it pins the pools and
+not the seeding, which the next test checks);
+`only_a_resume_leaves_a_scenario_without_a_stored_basis_cold`
+(`policy/full_fcf_load.rs`: on the same fan a scenario with no entry at a node
+gets none under a resume and the node's lowest-scenario entry under a warm start);
+`a_resume_refuses_a_checkpoint_whose_bases_are_not_whole` (`tests/full_fcf_load.rs`:
+the resume is refused and a warm start of the same checkpoint loads);
 `warm_start_skips_a_stored_basis_with_too_few_basic_entries_instead_of_aborting`
 (`tests/cut_basis.rs`),
 `simulation_only_loads_a_policy_with_a_wider_stored_basis_and_warns`
 (`crates/novomodelo-cli/tests/cli_run.rs`) and
 `test_load_policy_with_a_wider_stored_basis_loads_and_warns_once`
 (`crates/novomodelo-python/tests/test_policy_load_validation.py`).
+
+### Simulation loads the cuts of one chosen set
+
+Simulation builds each stage LP from the cuts of a `CutSet`, the field
+`StudySetup::simulation_cut_set`. The key `simulation.cut_set` sets it, `all` or
+`active`, and `all` is the default (`SimulationConfig::cut_set` in `novomodelo-io`
+owns the description). `StudyParams::from_config` maps the key; the CLI carries
+it in `BroadcastConfig::simulation_cut_set`, and every rank builds its setup from
+that value (`build_study_setup`, `StudySetup::from_broadcast_params`), so every
+rank simulates the same set. `Active` is the cuts whose flag is set. `All` is
+decided by slot role (`CutPool::cuts_in`, `CutPool::count_in`): every `Generated`
+slot whatever its flag and whatever `SlotRole::scored` says, since a cut written
+before the pool stored trial states can be evicted by the cap too; every scored
+`Prefix` slot whatever its flag; every unscored `Prefix` slot whose flag is set;
+never a `Vacant` slot. `Active` is a subset of `All`, so equal counts mean equal
+sets. The choice changes no flag: it selects which slots a simulation LP holds
+and nothing else, and training, the lower bound, the checkpoint and the selection
+record never read it.
+
+The template, the basis reconstruction and the load read the same set.
+`refreeze_templates_if_needed` builds the template from `cuts_in(set)`, and the
+non-lazy branch of `solve_simulation_stage` reconstructs the stored basis over
+the same iterator (`run_stage_solve_over`), so a stored training basis applies by
+slot over the rows the template holds and a row training never had starts basic.
+The caller's templates are used only when they hold the chosen set: always under
+`Active`, and under `All` when `count_in(All) == active_count()` in every pool.
+The lazy branch under `dynamic` reads the active cuts and asserts that the two
+counts are equal. A run that trains under `dynamic` deactivates nothing, so a
+pool breaks the assert only through a cut it loaded, from a source that
+deactivated or evicted one. `check_full_fcf_load` refuses that pairing for every
+load kind, and `reconcile_boundary_policy` for `policy.boundary`
+(`check_dynamic_simulation_serves`, one function for both), when the run's
+strategy is `Dynamic`, the run simulates (`simulation_config.n_scenarios > 0`) with
+`simulation_cut_set = All`, and some loaded pool, or the terminal pool the
+boundary injection installs, has `count_in(All) != active_count()`. The loaded
+terminal pool is not checked in a warm start or a resume of a study that declares
+`policy.boundary`, which replaces it after the load; a simulation-only load
+injects no boundary and checks it. A load is
+refused as `FullFcfLoadError::Refused(SddpError::Validation(..))`, class
+`IncompatiblePolicy`; the boundary as `SddpError::Validation` of the boundary
+phase (`PrepPhase::Boundary`), which `novomodelo validate`, a training `novomodelo run` and
+the Python bindings reach through `reconcile_boundary_policy`. Both name both settings,
+the first such pool with its two counts (`the policy.boundary pool` for the
+boundary) and the way out: `simulation.cut_set = active`, or the `level1` method.
+The assert then never meets a pool a load or the boundary admitted. Under `Active`
+the two counts are equal by construction, and training under `dynamic` over loaded
+inactive cuts with no simulation of `All` is admitted: those cuts are valid, a
+subset of the pool.
+
+The boundary check runs on the pool `terminal_boundary_pool` builds, which
+`inject_boundary_cuts` installs, so what is checked is what is installed. Its
+rows are `Prefix` rows that keep the `scored` and active flags of their source
+records: a `level1` source of a longer horizon, whose interior pool is priced at
+the study's boundary date, supplies a scored inactive row, which `All` includes;
+a source that stored no trial states, such as a capped one, supplies an unscored
+inactive row, which `All` leaves out with its flag, and that pairing loads.
+
+The wrong-but-compiling alternatives:
+
+- reconstructing over `active_cuts()` against a template built from `All`: the
+  basis has the rows of the active cuts and the LP those of `All`, which differ in
+  length wherever a pool holds a cut outside its active cuts, and both backends
+  reject that with `BasisRowCountMismatch`. A simulation under `All` then fails
+  outright instead of warm-starting by slot;
+- reusing training's templates under `All` when the sets differ: the LP holds the
+  rows of the active cuts and the reconstruction counts the rows of `All`, so the
+  basis and the LP disagree in length. The stored basis is truncated to the LP's
+  rows, and the backends then differ: HiGHS rejects it with `BasisInconsistent`
+  and CLP accepts it;
+- including an unscored `Prefix` slot whose flag is off: on the terminal pool it
+  is a boundary record that training's LP left out, so the post-horizon is priced
+  differently from training;
+- honouring the cap under `All`: the cap clears the flag of cuts a run generated,
+  and `All` holds them whatever the flag. A set that leaves them out is `Active`
+  under another name;
+- `StudySetup::simulate` passing a fixed set instead of the field: the key then
+  changes nothing;
+- relaxing the lazy-branch assert in place of refusing the load: a debug build no
+  longer stops, and a release build simulates the active cuts of the pool under
+  the name `all`, silently, for the default value of the key;
+- checking the loaded pools only: `inject_boundary_cuts` replaces the terminal pool
+  after the load, and that pool is the one the assert meets at the last stage, so
+  a `policy.boundary` over a `level1` source breaks the assert for the default
+  value of the key;
+- refusing a boundary that holds any inactive record: an unscored inactive record
+  is in neither set, so the refusal is spurious;
+- checking the loaded terminal pool of a warm start or a resume under
+  `policy.boundary`: a checkpoint whose terminal pool holds boundary rows outside
+  its active set is refused for a boundary that replaces them, though the boundary
+  itself loads. Skipping it in a simulation-only load is the opposite error: no
+  boundary replaces the pool there, and the lazy-branch assert meets it.
+
+A simulation-only load restores each record's origin and scored flag
+(`CutPool::from_deserialized`: `Prefix` below the recorded `warm_start_count`,
+`Generated` above it, `scored` as written), so `all` over a loaded pool holds what
+training's `all` held, the cuts selection deactivated and the cap evicted
+included. Only the terminal pool's boundary records are `Prefix` there, and
+`has_prefix_cuts` still reads them. Writing every loaded record as an unscored
+`Prefix` is the wrong-but-compiling alternative: `All` then sees only the stored
+flags, and a simulation-only `all` simulates fewer cuts than the run that wrote
+the policy (`a_loaded_pool_keeps_the_cut_sets_of_its_run`).
+
+Read: `cut/pool.rs` (`CutSet`, `CutPool::cuts_in`, `CutPool::count_in`),
+`cut/row.rs` (`build_cut_set_row_batch_into`), `solve/stage_solve.rs`
+(`run_stage_solve_over`), `simulation/state.rs` (`refreeze_templates_if_needed`),
+`simulation/pipeline.rs` (`solve_simulation_stage`), `setup/orchestration.rs`
+(`StudySetup::simulate`), `policy/full_fcf_load.rs`
+(`check_dynamic_simulation_serves`), `policy/policy_load.rs`
+(`reconcile_boundary_policy`, `terminal_boundary_pool`). Pinned by `cuts_in_all_follows_the_slot_roles`,
+`cuts_in_active_equals_active_cuts` (`cut/pool.rs`: the rule by role),
+`a_loaded_pool_keeps_the_cut_sets_of_its_run` (`cut/pool.rs`: an inactive scored
+prefix cut and an inactive generated cut are in `All` and not in `Active`, an
+inactive unscored prefix cut is in neither),
+`stage_solve_applies_the_basis_over_the_given_cut_rows`
+(`solve/stage_solve.rs`), `simulation_builds_its_templates_from_the_chosen_cut_set`
+(`simulation/pipeline/tests.rs`: the templates simulation owns, and when the
+caller's are used) and, in `tests/cut_basis.rs`,
+`simulating_all_cuts_matches_the_flagged_twin` (an `All` simulation with training's
+templates and bases equals an `Active` simulation of a copy of the pools with every
+cut of `All` flagged, with no basis rejection),
+`selection_off_simulates_identically_under_either_cut_set`,
+`a_dynamic_run_has_one_cut_set`,
+`a_simulation_only_load_holds_the_cuts_training_all_held` (a load through the real
+writer and reader has the source's `All` and active counts in every pool) and
+`simulation_follows_the_cut_set_of_the_setup`
+(on a run whose sets differ, `StudySetup::simulate` under `All` and under `Active`
+gives different results). The load refusal is pinned by
+`a_dynamic_simulation_only_run_refuses_to_simulate_all_over_deactivated_cuts`
+(`tests/full_fcf_load.rs`: a `level1` checkpoint with a deactivated cut is refused
+for a `dynamic` simulation of `All` and loads under `Active`),
+`a_dynamic_warm_start_refuses_to_simulate_all_over_deactivated_cuts` and
+`a_dynamic_resume_refuses_to_simulate_all_over_deactivated_cuts` (the same for the
+other two load kinds) and
+`a_load_is_refused_for_a_dynamic_all_simulation_over_deactivated_cuts_only` (a
+warm start and a resume of a run that does not simulate, a `level1` run and a
+`dynamic` source load), and by
+`validate_rejects_a_dynamic_simulation_over_deactivated_cuts`
+(`crates/novomodelo-cli/tests/cli_validate.rs`, after a control that validates) with the
+row `dynamic_simulation_over_deactivated_cuts` of
+`crates/novomodelo-cli/tests/refusal_parity.rs` and
+`crates/novomodelo-python/tests/test_refusal_parity.py`. The boundary refusal is pinned
+by `a_dynamic_simulation_of_all_refuses_boundary_cuts_outside_the_active_set`
+(`tests/full_fcf_load.rs`: a `level1` source's pool as the boundary of a shorter
+study is refused under `All` and loads under `Active`),
+`a_dynamic_simulation_of_all_loads_boundary_cuts_a_cap_evicted` (the same with a
+capped source, whose inactive rows are unscored),
+`a_boundary_replaces_the_loaded_terminal_pool_the_dynamic_check_reads` (a
+checkpoint whose terminal pool holds a scored inactive boundary row warm-starts and
+resumes for a study whose own boundary is whole, and a simulation-only load of it is
+refused), and by
+`validate_rejects_a_dynamic_simulation_over_deactivated_boundary_cuts`
+(`crates/novomodelo-cli/tests/cli_validate.rs`, after a control that validates) with the
+row `dynamic_simulation_over_deactivated_boundary_cuts` of the two parity tables.
+The key is pinned by
+`simulation_cut_set_defaults_to_all` and `with_overrides_names_the_simulation_cut_set_key` (`novomodelo-io`: the default, the
+values, and an unknown value rejected naming the key),
+`from_config_maps_the_simulation_cut_set` (`setup/params.rs`),
+`broadcast_config_carries_the_simulation_cut_set`
+(`crates/novomodelo-cli/src/commands/broadcast.rs`: the postcard round trip),
+`non_root_rebuild_carries_the_simulation_cut_set`
+(`crates/novomodelo-cli/src/commands/run/setup.rs`: the setup a rank builds from the
+decoded config holds each value) and
+`validate_rejects_an_unknown_simulation_cut_set`
+(`crates/novomodelo-cli/tests/cli_validate.rs`: `active` validates, then an unknown
+value is rejected naming the key).
 
 ## A stored basis warm-starts only at its own node (node-tag)
 
@@ -700,6 +1311,852 @@ exchange and the one batched cut exchange per level; a per-node collective
 would scale the collective count with node count.
 Read: `training/backward_pass_state.rs` (`run_one_backward_level`).
 
+### A multi-node level exchanges the node of each trial
+
+A level with more than one node issues one `allgatherv` between the state
+exchange and the node solves (`BackwardPassState::compute_node_visit_offsets`).
+Each rank sends one `u64` per local trial slot, `max_local_fwd` entries: entry
+`m` is the level index (the position in the level list, not the node's declared
+id or its `NodePos`) of the node local trial `m` was routed to, and `NO_TRIAL`
+for a slot with no real trial (`m >= local_work`). The gathered buffer holds
+`num_ranks * max_local_fwd` entries, rank-major, with the same count and
+displacement stride for every rank: the layout of the state exchange
+(`ExchangeBuffers::state_at`), so entry `r * max_local_fwd + m` names the node
+of the gathered trial state of rank `r`, local trial `m`. A level with one node
+issues no such collective and touches none of its buffers: every trial visits
+the sole node, and the offset is `fwd_offset`.
+
+A cut's node-relative index (its `forward_pass_index` on a multi-node level) is
+the number of trials routed to the same node that precede its trial in
+rank-major, then local, order: the visits to the node from lower ranks
+(`node_visit_offsets`) plus the cut's position among this rank's own trials for
+the node. Each rank counts the per-`(rank, node)` visits (`rank_node_visits`)
+from the gathered positions in one pass; the offsets and `check_visit_bound`
+read that table, so the counts are not exchanged and have one source. A
+gathered entry that is neither `NO_TRIAL` nor below the level's node count, or
+a number of routed trials other than the level's real trial count
+(`ExchangeBuffers::real_total_scenarios`), fails with `SddpError::Validation`.
+
+Every rank enters the collective under the same condition and with the same
+length. The condition is `level.len() > 1`, and the level list is
+`NodeGraph::backward_cut_levels` of the graph every rank builds from the same
+broadcast system (`StudySetup::from_broadcast_params`). The length is
+`max_local_fwd`, which `RankDistribution::new` computes from the forward-pass
+count and the rank count; a rank with no real trial sends `max_local_fwd`
+padding entries. No config value, strategy, pool content or local trial count
+decides whether or how much a rank sends. The buffers are sized in
+`BackwardPassState::new` and the receive buffer starts filled with `NO_TRIAL`,
+so a segment an in-process communicator leaves unwritten reads as a rank with
+no trial.
+
+The wrong-but-compiling alternatives:
+
+- exchanging per-node counts: the offsets are right and no rank can tell which
+  gathered state a peer's cut was computed at. Counts sent through the position
+  buffer are read as positions: the visit counts and the indices come out
+  wrong, or the level is rejected for its total;
+- padding with a valid level index: the padded slots of a rank with fewer
+  trials are counted as visits to that node, and the level is rejected for one
+  routed trial too many per padded slot;
+- starting the receive buffer at a valid level index: a segment left unwritten
+  is counted as trials of that node;
+- deciding the exchange, or its length, from a value a rank computes locally
+  (its trial count, sending only its real trials): one rank skips a collective
+  its peers enter, or the uniform counts and displacements no longer describe
+  what was sent, and a multi-rank run blocks or gathers misaligned segments. No
+  single-process test sees it; the rank symmetry holds by the derivation above.
+
+Read: `training/backward_pass_state.rs` (`compute_node_visit_offsets`,
+`check_visit_bound`, `build_trial_routing`, `NO_TRIAL`,
+`BackwardPassState::new`), `training/state_exchange.rs` (`ExchangeBuffers`),
+`training/session/rank_distribution.rs` (`RankDistribution::new`),
+`setup/node_graph.rs` (`NodeGraph::backward_cut_levels`),
+`training/backward/by_scenario.rs` (`process_by_scenario_backward`),
+`training/backward/by_node.rs` (`by_node_finish`). Pinned by, in
+`training/backward_pass_state.rs`:
+`node_positions_give_every_rank_the_same_visit_counts` (two ranks' views of one
+level hold the same gathered positions and visit counts; the higher rank's
+offsets are the lower rank's counts),
+`node_relative_indices_enumerate_each_node_without_collision` (the index a cut
+carries is its trial's rank among the gathered positions of its node, and the
+two ranks' indices cover each node's range once),
+`a_single_node_level_issues_no_collective`,
+`a_malformed_node_position_exchange_is_rejected` and
+`an_unwritten_peer_segment_reads_as_a_rank_with_no_trial`. Every test is one
+rank's view through a communicator that writes that rank's segment only; no
+in-process test runs two cooperating ranks.
+
+## Each scored cut's trial state is stored by slot
+
+A pool that stores trial states (`CutPool::enable_trial_states`, or
+`CutPool::enable_trial_states_within` for a window) holds, for each slot whose
+cut was written scored, the state the cut was computed at, until a window drops
+it (the window section below; without a window every scored slot keeps its
+state): one row at the pool's projected dimension (`CutPool::state_dimension`),
+addressed by the slot (`CutPool::trial_state`) and written by
+`CutPool::store_trial_state` through `CutStateProjection::gather_trial_state`,
+the single owner of "global state to projected state". A pool's rows are those
+of its own cuts: it holds only the states of the trials routed to its node.
+`SlotRole::scored` records that the pool stored states when the slot was
+written (`add_cut` writes it); enabling the store afterwards does not change the
+flag of a cut already written, and a loaded cut keeps the flag its record
+carries. A loaded scored slot receives its stored row through
+`CutPool::load_trial_state` once the session has enabled the store (below); one
+the checkpoint holds no row for, because its source's window dropped the state,
+has none. A pool that does not store states allocates nothing. Enabling
+reserves `capacity * state_dimension * 8` bytes, of which
+`stored_trial_states() * state_dimension * 8` hold a state, and per slot one
+`u32` for the slot-to-row lookup and one `f64` and two `u32` for the ownership
+record. With a window the rows reserved are those of the window section.
+
+**Who enables it.** `TrainingSession::new` enables the store on every rank, on
+the pool of every node of `interior_cut_nodes` (stage 1 or later, with a
+successor), through one total match over the strategy variants: `Level1` stores,
+with `enable_trial_states_within` when the strategy carries a window and
+`enable_trial_states` otherwise; `Dynamic` and no strategy store, with
+`enable_trial_states`, only when `exports.states` is on. `exports.states` forces
+the store on whatever the strategy, and also on the root's pool (stage 0, with a
+successor), which stores without a window because selection never scores or
+expires it. The leaf pool receives no cut and never stores. The enabling in
+`TrainingSession::new` is the only place that decides which pools store, and
+nothing else allocates per-node states: the exported states are what the pools
+store, each pool's by slot at the pool's dimension, and a run without
+`exports.states` that is not `level1` allocates no row. A forced store only sets
+`scored` on the cuts a run generates, which `dynamic` and a run without selection
+never read, so forcing it changes no result. The strategy comes from the config
+the CLI broadcasts and the node set from the graph every rank builds from it, so
+the same pools store, with the same window, on every rank for the whole run.
+
+**Loaded rows.** A `resume` and a `warm_start` load carry the rows of the
+checkpoint's states files (a simulation-only load keeps none).
+`check_full_fcf_load` places each row at the slot its cut occupies in the loaded
+pool through `LoadedSlotMap::dest`, the stored slot under a resume and the
+record's rank under a warm start, which packs. It refuses, as
+`FullFcfLoadError::FcfConstruction` naming the pool, a states file of a pool the
+study does not have, of another row dimension than the study's, or with a row at
+a slot that holds no cut. Right after the enabling,
+`TrainingSession::new` stores each row with `CutPool::load_trial_state`
+in every pool that stores trial states and drops the rows of every other pool,
+so the enabling stays the one place that decides which pools store. The loader
+stores nothing: a store it created would be unbounded where the strategy asks for
+a window. No ownership rebuild follows: the record is empty and its scanned mark
+is 0, so the pool's first `update_ownership` scans every loaded slot against every
+loaded state, which is the rebuild. Every rank runs the load on the whole
+checkpoint, so every rank stores the same rows.
+
+**Two fill sites.** Sampled: `run_one_backward_level` calls
+`store_level_trial_states` once per level, after
+`CutSyncBuffers::sync_level_records`, on every rank. One loop walks the level's
+real trials rank-major, then local (`ExchangeBuffers::actual_counts`), takes
+each trial's level index from the gathered node positions
+(`BackwardPassState::trial_node_recv`) and counts the trials of each node; the
+count before a trial is the node-relative index of its cut, which is the cut's
+`forward_pass_index`, and the state is `ExchangeBuffers::state_at(rank, local)`.
+A single-node level has no positions to read (the buffer holds padding or an
+earlier level's content there): every trial visits the sole node, and the count
+is the global real-trial index its cut carries. The loop is the same for this
+rank's cuts and for the cuts of peers, which arrive without a state; the
+gathered buffers are the only place the state a cut was computed at exists on a
+rank that did not compute it. Enumerated: `run_enumerated_backward` calls
+`store_trial_state` right after `add_cut`, for pass index 0, with the node's
+persisted outgoing state the cut was computed at.
+
+Every condition that decides whether the fill runs or what it reads is the same
+on every rank: the pool's `stores_trial_states` (above), `level.len() > 1`,
+`actual_counts` (the forward-pass count and the rank count), and the gathered
+states and positions. The fill issues no collective. Selection runs on each
+rank's own pools with no collective, so a rank whose pools held other states
+than its peers' would select other cuts.
+
+The wrong-but-compiling alternatives:
+
+- the positional prefix `x_hat[..n_slots]` in place of the gather: it equals the
+  gather only for a pool that projects the leading dimensions, and a pool that
+  drops a leading region stores the wrong dimensions. Pinned by
+  `gather_trial_state_follows_the_projection_not_position` and
+  `a_rank_stores_the_state_of_a_peers_cut_at_a_sibling_node` (one pool projects
+  the lag dimensions), both of which fail under it.
+  `a_level1_run_stores_states_at_each_pools_projected_dimension` does not: its
+  reduced pool drops a trailing region, so its prefix is its gather, and the
+  test pins the projected dimension and the values, not the gather index;
+- on a multi-node level, the gathered row at the cut's node-relative index: it is
+  the row of the cut's trial only on a single-node level, and on a multi-node
+  level names a trial routed to another node. Pinned by
+  `a_rank_stores_the_state_of_a_peers_cut_at_a_sibling_node`, which fails under
+  it while the single-node test passes;
+- storing a state only for the cuts this rank generated: a peer's cut has no
+  state. The mutation shown is a fill that walks rank 0's trials only, which
+  `a_rank_stores_the_state_of_a_peers_cut_at_a_sibling_node` and
+  `a_single_node_level_stores_each_trial_state_at_its_cut` fail on the peer's
+  cuts (`None` for `Some`). Storing inside `by_scenario_finish` or
+  `by_node_finish` is the same alternative and is not itself pinned by a test.
+  That the ranks then select different cuts is not demonstrable in-process;
+- reading the gathered positions on a single-node level: the buffer is padding or
+  an earlier level's content, so the index is out of bounds or names another
+  node. A training run fails at the fill, in
+  `a_level1_run_stores_the_trial_state_of_every_generated_cut` among others;
+- walking the padded trial slots of a rank with fewer trials than
+  `max_local_fwd`: they have no cut, and a debug build of `store_trial_state`
+  refuses the slot. Pinned by
+  `a_single_node_level_stores_each_trial_state_at_its_cut`;
+- enabling the store for a strategy other than `Level1` when `exports.states` is
+  off, or setting `scored` on the cuts already written when the store is enabled.
+  Pinned by `a_run_without_level1_stores_no_trial_state`, which fails on its
+  `dynamic` leg under the first: the mutation shown admits `Dynamic` in the
+  enabling match of `TrainingSession::new` whatever `exports.states` says; and by
+  `a_slot_role_is_fixed_when_the_slot_is_written` and
+  `a_pool_that_stores_trial_states_marks_its_cuts_scored` under the second;
+- forcing the store for `exports.states` in the interior pools only: the root's
+  cuts keep no state and the checkpoint holds no states file for the root pool.
+  The mutation shown removes the root's arm of the enabling; under it
+  `a_level1_run_with_exported_states_keeps_every_trial_state`,
+  `a_dynamic_run_with_exported_states_stores_every_trial_state` and
+  `exported_states_make_every_pool_that_receives_cuts_store_without_level1` fail.
+  Leaving `dynamic` and the run without a strategy out of the forcing fails the
+  last two;
+- forcing the root's pool without `exports.states`, which `level1` selection never
+  scores: `level1_without_exported_states_stores_in_the_interior_pools_only` fails;
+- giving the root's pool the strategy's window: no step expires the root's states,
+  so a bounded store would claim a window it does not honour. Not pinned by a test;
+- deciding the enabling or the fill from a value a rank computes locally (its
+  trial count, the cuts it generated): the ranks' stores differ. Not
+  demonstrable in-process;
+- not storing the loaded rows: a resumed `level1` pool holds no state for the
+  scored cuts it loaded, so its first selection run scores them at the new run's
+  states only and deactivates cuts that owned a state. The mutation shown skips
+  the storing in `TrainingSession::new`; under it
+  `a_resumed_level1_pool_holds_the_states_and_record_of_the_interrupted_run`
+  fails on a stored state, and
+  `a_warm_started_cut_whose_state_aged_out_competes_at_the_new_states` on a
+  loaded state;
+- placing a row at its stored slot under a warm start: the load packs the cuts,
+  so after a vacant slot of the source every row sits on another cut. Pinned by
+  `a_stored_state_follows_its_cut_to_the_slot_the_load_puts_it_at`; no training
+  run shows it, since a chain source leaves no vacant slot;
+- creating the store in the loader, or storing before the enabling: the
+  store is unbounded where the strategy asks for a window, and the enabling is no
+  longer the one owner of who stores. The mutation shown has the loader call
+  `enable_trial_states` for each pool it holds rows for, before the enabling, which
+  then skips a pool that already stores. Pinned by
+  `level1_with_a_window_resume_equals_the_uninterrupted_run`
+  (`tests/periodic_checkpoint.rs`), which fails under it: the states of the
+  iterations after the resume never leave the window.
+
+Read: `cut/trial_states.rs`, `cut/pool.rs` (`CutPool::enable_trial_states`,
+`CutPool::enable_trial_states_within`, `CutPool::store_trial_state`,
+`CutPool::load_trial_state`, `CutPool::trial_state`, `add_cut`),
+`policy/full_fcf_load.rs` (`place_trial_states`, `LoadedSlotMap::dest`),
+`lp/indexer/cut_state_projection.rs` (`gather_trial_state`),
+`training/backward_pass_state.rs` (`store_level_trial_states`,
+`run_one_backward_level`, `run_enumerated_backward`),
+`training/state_exchange.rs` (`ExchangeBuffers::actual_counts`),
+`training/session/mod.rs` (`TrainingSession::new`). Pinned by
+`a_trial_state_row_is_addressed_by_its_slot` (`cut/trial_states.rs`),
+`a_pool_that_stores_trial_states_marks_its_cuts_scored` and
+`a_slot_role_is_fixed_when_the_slot_is_written` (`cut/pool.rs`),
+`a_loaded_state_is_stored_at_a_scored_prefix_slot_past_the_reserve` (`cut/pool.rs`:
+a row at a scored loaded slot of a bounded store past its reserve, and the first
+`update_ownership` equal to the rebuild),
+`loading_a_state_at_an_unscored_slot_panics_in_debug` (`cut/pool.rs`),
+`a_stored_state_follows_its_cut_to_the_slot_the_load_puts_it_at` and
+`a_stored_state_the_study_cannot_hold_is_refused_naming_its_pool`
+(`policy/full_fcf_load.rs`), and, in `tests/cut_basis.rs`,
+`a_resumed_level1_pool_holds_the_states_and_record_of_the_interrupted_run` (a
+resumed pool's roles, stored states and rebuilt record equal the interrupted
+run's, with and without a window) and
+`a_warm_started_cut_whose_state_aged_out_competes_at_the_new_states` (a warm
+start restores the source's rows at their slots, and cuts whose state the
+source's window dropped own states and are deactivated at the new run's),
+`gather_trial_state_follows_the_projection_not_position`
+(`lp/indexer/cut_state_projection.rs`),
+`a_rank_stores_the_state_of_a_peers_cut_at_a_sibling_node` and
+`a_single_node_level_stores_each_trial_state_at_its_cut`
+(`training/backward_pass_state.rs`: the gathered states of two ranks, two
+sibling nodes, one pool projecting a non-leading dimension, and a padded slot),
+and, in `tests/cut_basis.rs`,
+`a_level1_run_stores_the_trial_state_of_every_generated_cut`,
+`a_level1_run_stores_states_at_each_pools_projected_dimension`,
+`an_enumerated_level1_run_stores_one_trial_state_per_cut` and
+`a_sampled_fan_stores_only_each_nodes_own_trial_states` (the states sit at the
+generated slots, one per cut, at the pool's dimension; their values are pinned
+by the unit tests above), `a_run_without_level1_stores_no_trial_state` (no pool
+stores without `level1` and without `exports.states`),
+`level1_without_exported_states_stores_in_the_interior_pools_only`,
+`a_level1_run_with_exported_states_keeps_every_trial_state`,
+`a_dynamic_run_with_exported_states_stores_every_trial_state` and
+`exported_states_make_every_pool_that_receives_cuts_store_without_level1` (with
+`exports.states` every pool that receives cuts, the root's included, stores the
+state of each); and, in `tests/mpi_wire.rs` on a
+sampled fan whose two sibling nodes receive trials with different states,
+`level1_thread_shapes_agree_on_a_branching_fan` and
+`level1_declaration_order_is_invariant_on_a_branching_fan` (each sibling pool
+stores one state per generated cut, the two pools store different states, and
+the stored states do not depend on the thread count or the declaration order)
+and, under an MPI launcher only, as the ownership section below states,
+`level1_world_size_is_invariant_on_a_branching_fan` (nor on the rank count).
+
+## A cut's value at a state is canonical
+
+A cut's value at a stored state is the `gemm_block` element plus the cut's
+intercept, added once, and the ownership record (`cut/ownership.rs`) computes it
+no other way. Every call passes at most `ROW_BLOCK` slots and `M_BLOCK` states.
+An incremental update evaluates a few new cuts against many old states and a
+rebuild evaluates every cut against every state, so the two agree bit for bit
+only because an element of `gemm_block` does not depend on which other rows and
+columns share its call. That independence is a property of one build of the
+`matrixmultiply` kernel, single-threaded and unfused (`gemm_block`'s
+determinism section), not of the arithmetic.
+
+The independence is pinned for up to `PINNED_MAX_ROWS` rows,
+`PINNED_MAX_COLUMNS` columns and an inner dimension up to the largest of
+`INNER_DIMS` (`gemm.rs`), and nowhere else. The kernel's column block (`D_NC`)
+is never reached, because a call passes at most `M_BLOCK` states. An inner
+dimension above the largest of `INNER_DIMS` is summed in further blocks of
+`D_KC` and is drawn by no property; the inexact property draws 3, 257, 300 and
+600.
+
+The wrong-but-compiling alternatives:
+
+- a hand-written dot product in one of the two paths: for an inner dimension
+  above `D_KC` it rounds differently from the blocked kernel, so a state taken
+  over by a later cut carries another best value than the rebuilt record's. The
+  mutation shown computes the second step's value as a plain left-to-right dot
+  product, which `incremental_record_equals_rebuild_on_inexact_values` fails on
+  a case of dimension 300. The integer-valued property cannot show it, since
+  every summation order is exact there;
+- more rows or columns than the pinned ones in one call, such as all slots in
+  one block: the shape is outside what the block-shape property draws. The
+  mutation shown raises `ROW_BLOCK` above `PINNED_MAX_ROWS`: only
+  `ownership_blocks_stay_inside_the_pinned_gemm_envelope` fails and no
+  comparison of values does, so that test and the single value function are the
+  guard. More states than the column block in one call is not demonstrated.
+
+Read: `cut/ownership.rs` (`scan_block`, `ROW_BLOCK`, `M_BLOCK`), `gemm.rs`
+(`gemm_block`, `PINNED_MAX_ROWS`, `PINNED_MAX_COLUMNS`).
+Pinned by `gemm_block_element_is_independent_of_the_block_shape` (`gemm.rs`: an
+element equals the same element alone, in column chunks and in row chunks),
+`resolved_kernel_is_the_unfused_baseline` (`gemm.rs`: the kernel the build
+resolves rounds each product), `ownership_blocks_stay_inside_the_pinned_gemm_envelope`,
+`incremental_record_equals_rebuild_and_reference` (structure, on values every
+summation order computes exactly) and
+`incremental_record_equals_rebuild_on_inexact_values` (`cut/ownership.rs`).
+
+## The ownership record is a cache of the ownership function
+
+Under the Level 1 rule of de Matos, Philpott and Finardi (2015), a stored trial
+state has one owner: the lowest live slot whose value at the state equals the
+maximum over the live set, compared exactly, with no tolerance. A slot is live
+when it is scored, or when it is an unscored loaded (`Prefix`) slot whose
+activity flag is set; a `Vacant` slot and an unscored `Generated` slot are not
+live. `is_live` owns the predicate. The activity flag of a scored slot is never
+read: it is an output of selection, derived from this record by
+`CutPool::ownership_activity_updates`, and a deactivated scored cut still owns
+the states it wins. The flag of an unscored loaded slot is an input: a scan
+reads it once, so a flip after the scan leaves the record stale until
+`rebuild_ownership`. Nothing flips one during training: the budget skips loaded
+cuts and the derivation lists scored slots only.
+`selection_reference::owners` is the brute-force statement of the rule that the
+record is compared with.
+
+`CutPool` keeps, with the trial-state store, a record with one `f64` and two
+`u32` per slot: the best value and the owning slot of the state stored at the
+slot, and the number of states the slot's cut owns, plus the number of slots
+already scanned. It is allocated by `enable_trial_states` or
+`enable_trial_states_within`, extended by `grow`, and a pool without a store has
+no record, so `update_ownership` and `rebuild_ownership` are no-ops there. It is
+never written to a checkpoint and never exchanged between ranks: each rank
+derives it from its own pool.
+
+`update_ownership` takes the slots written since the last call in two steps,
+each state block being at most `M_BLOCK` states: each new stored state against
+every live slot below `populated()`, giving its owner and best value, then each
+new live slot against every state stored before the call, taking a state over
+only when `takes_over` says so. It then adjusts the counts and moves the
+scanned mark to `populated()`. The state blocks run in parallel with each
+state's result written to its own position, and the results are committed
+sequentially in slot order, so the record does not depend on the thread count.
+`rebuild_ownership` resets the record and runs the same update from slot 0; it
+costs about the pool's cut count squared times its dimension in multiply-adds
+on every rank. `state_owner` and `state_best_value` are `None` for a slot with
+no stored state or one the record has not scanned; bound slot-indexed reads by
+`populated()`, since like `trial_state` they panic at a slot at or above the
+capacity.
+
+`takes_over` is the only comparison of two cut values in the module, used by
+every scan in ascending slot order: a later cut takes a state only when
+strictly higher, so ties stay with the lowest slot. Reversing the tie direction
+is a change to `takes_over` and to the reference rule, nothing else. The
+update relies on every slot written since the last call lying at or above the
+scanned mark, which holds while every `forward_pass_index` is below the pool's
+`visit_stride` (the append-only section above), and on a state being stored
+before the update that passes its slot. A slot written or a state stored below
+the mark is not seen until `rebuild_ownership`. A debug build refuses the second
+case: `Ownership::update` asserts that no state stored below the mark lacks an
+owner, which `rebuild_ownership` never trips because it resets the mark first.
+A load needs no `rebuild_ownership`: its rows are stored while the mark is 0, so
+the first `update_ownership` scans them all.
+Dropping a stored state, which the window section below describes, clears its
+entry and its owner's count, so `state_owner` and `state_best_value` read `None`
+for it as for a slot that never stored one.
+
+The wrong-but-compiling alternatives:
+
+- `>=` in the takeover: ties then go to the highest slot among those scanned,
+  so the outcome follows arrival order and differs from the reference. Pinned
+  by `the_record_reproduces_every_reference_fixture` (on `ties`),
+  `a_new_cut_takes_a_state_only_when_strictly_higher` and
+  `incremental_record_equals_rebuild_and_reference`, which fail under it;
+- reading the activity flag of a scored cut in the live predicate: a
+  deactivated cut can never win a new state. Pinned by
+  `an_inactive_scored_cut_wins_a_new_state`, which fails under it, as does the
+  property through the update's assertion that a stored state's own slot is
+  live;
+- skipping the second step: states stored before a call never meet the cuts
+  written after it, and the record differs from a rebuild. Pinned by
+  `a_new_cut_takes_a_state_only_when_strictly_higher`,
+  `an_inactive_scored_cut_wins_a_new_state`, both properties and, through its
+  rebuild comparison, `ownership_record_is_identical_across_thread_counts`,
+  which fail under it;
+- counting a vacant slot as live: its zero intercept and coefficients compete
+  in the maximum and the vacant slot owns states. Pinned by the `vacant_slot`
+  fixture of `the_record_reproduces_every_reference_fixture` and by
+  `incremental_record_equals_rebuild_and_reference`, whose draws leave vacant
+  holes below the highest written slot, which fail under it;
+- a thread-count dependence in the commit (committing in arrival order): not
+  demonstrated, since no mutation of the shipped code depends on the thread
+  count; `ownership_record_is_identical_across_thread_counts` compares 1, 4 and
+  8 threads on a pool wider than `ROW_BLOCK` and with more states than
+  `M_BLOCK`.
+
+Read: `cut/ownership.rs` (`Ownership::update`, `is_live`, `takes_over`,
+`scan`), `cut/pool.rs` (`CutPool::enable_trial_states`, `grow`,
+`update_ownership`, `rebuild_ownership`, `state_owner`, `state_best_value`,
+`owned_states`), `cut/selection_reference.rs` (`owners`). Pinned by
+`the_record_reproduces_every_reference_fixture`,
+`an_inactive_scored_cut_wins_a_new_state`,
+`a_new_cut_takes_a_state_only_when_strictly_higher`,
+`incremental_record_equals_rebuild_and_reference`,
+`incremental_record_equals_rebuild_on_inexact_values`,
+`windowed_record_equals_rebuild_and_reference` (the same comparison with states
+dropped by a window),
+`a_state_stored_below_the_scanned_mark_panics_in_debug` and
+`ownership_record_is_identical_across_thread_counts` (`cut/ownership.rs`), and
+`no_live_cut_leaves_a_state_unowned` (`cut/selection_reference.rs`: the rule
+leaves a state unowned when no slot is live, which a stored state's scored slot
+rules out in the record).
+
+In a training run the record is pinned by the `level1_` gates of
+`selection_on_determinism` (`tests/mpi_wire.rs`), which read every slot's best
+value, owner and owned count through the public readers:
+`level1_thread_shapes_agree_on_the_uniform_fixture` and
+`level1_thread_shapes_agree_on_the_non_uniform_projection_fixture` (the record
+does not depend on the thread count),
+`level1_two_rank_stub_matches_single_rank_on_the_uniform_fixture` and
+`level1_two_rank_stub_matches_single_rank_on_the_non_uniform_projection_fixture`
+(nor on the two-rank buffer layout, with one trial on rank 0), and
+`level1_declaration_order_is_invariant_on_the_uniform_fixture`,
+`level1_declaration_order_is_invariant_on_the_non_uniform_projection_fixture`
+and `level1_declaration_order_is_invariant_on_a_two_hydro_fixture` (nor on the
+declaration order; the last on a state of two dimensions, where it also pins
+that of bit-identical cuts none above the lowest slot is active). Every run of
+those gates also asserts the rule from cut values the test sums itself: each
+stored state's owner attains the maximum of the live cuts within a rounding
+bound, and no live cut at a lower slot is bit-identical to it. No in-process
+test runs two cooperating ranks, so none shows two ranks that route trials to
+different sibling nodes deriving the same record, and no two-rank stub leg
+runs on a level with several nodes, where the stub reads a stale per-pool cut
+count. `level1_world_size_is_invariant_on_a_branching_fan` shows it only when
+its test binary, built with the `mpi` feature of `novomodelo-comm`, is launched
+under an MPI launcher with two or more ranks; under `cargo test` it is a
+single-rank pass and pins nothing here.
+
+## `level1` keeps one owner per stored state
+
+Under `level1` a selection run sets the activity flag of every scored cut of an
+interior pool from the ownership record (the section above): active when the
+cut owns at least one stored state, inactive when it owns none.
+`CutPool::ownership_activity_updates` is the derivation. It reads each slot's
+role, its flag and `owned_states`, and compares no cut values: an active scored
+slot that owns no state is a deactivation, an inactive scored slot that owns one
+is a reactivation. No tolerance, no iteration counter and no strategy parameter
+enter it, so a cut of the current iteration is judged like any other.
+
+By slot role:
+
+- generated and scored (every cut a `level1` run generates in an interior
+  pool): live whatever its flag, active after a run exactly when it owns a
+  state;
+- loaded and scored (a record written scored): the same: it competes at each
+  state the pool stores, the row loaded for it included, and is active after a
+  selection run exactly when it owns one; one whose row its source's window
+  dropped has no state of its own and competes at the stored ones;
+- loaded and stateless: live while its flag is set, and in neither list, so it
+  keeps the flag it was loaded with. While active it can own a state and keep a
+  tied generated cut above it inactive;
+- generated and stateless (written before the pool stored states): not live and
+  in neither list;
+- vacant: not live, in neither list, never activated.
+
+`run_cut_management` runs it in every iteration `should_run` holds, for the pool
+of each node of `interior_cut_nodes`: `expire_trial_states` (a no-op without a
+window), `update_ownership`, then
+`apply_updates(ownership_activity_updates())`. Selection drops no stored state,
+only the window of the lookback section does, so a `level1` run without a window
+exports every state of the run. The call site meets what the update relies on:
+
+- `TrainingSession::new` enabled the store on these pools before the first cut,
+  so every generated cut there is scored;
+- the backward pass has ended, so every cut of the iteration, a peer's
+  included, is written and its trial state stored;
+- every slot written since the last run lies above the slots written before it
+  (the append-only section);
+- nothing has flipped a loaded cut's flag since the last run;
+- the derivation walks slots below `populated()` and lists scored slots only,
+  so a vacant slot is never activated;
+- no collective is involved: every rank holds the same cuts and states and
+  runs selection in the same iterations, from the broadcast config.
+
+**Envelope invariant.** Right after a selection run in which the budget evicts
+nothing, each stored state's owner is active, so the active cuts of the pool
+attain the maximum of its live cuts at every stored state; with a window the
+stored states are those inside it (the section below). Both conditions are
+needed. A state stored after the run can be owned by an inactive cut until the
+next run. And the budget, which runs after selection in the same iteration,
+clears the flag of scored cuts that own states.
+
+**Budget.** The record does not read the flag the budget clears, so an evicted
+cut still owns its states. The next selection run finds it inactive and owning a
+state and reactivates it, and the budget is applied again in that iteration; the
+template refreeze that follows encodes the flags the budget left. With no budget
+a deactivated cut returns only when it comes to own a state.
+
+The wrong-but-compiling alternatives, each shown by a mutation:
+
+- a tolerance band in the derivation (keeping a scored cut whose value is
+  within a tolerance of some state's best): duplicates and near-ties stay
+  active and the active set is no longer the set of owners. Under it
+  `level1_gives_a_tied_state_to_the_lowest_slot`,
+  `level1_deactivates_a_generated_cut_tied_with_a_lower_loaded_cut`,
+  `level1_keeps_one_of_two_identical_cuts`,
+  `level1_follows_the_reference_rule_on_every_fixture`,
+  `level1_matches_the_reference_rule`,
+  `level1_deactivates_cuts_in_a_training_run`,
+  `level1_keeps_the_owner_of_every_stored_state_after_a_training_run` and both
+  `with_level1` oracle legs fail;
+- exempting the cuts of the latest iteration: a new cut that owns no state
+  stays active. Under it
+  `level1_deactivates_a_current_iteration_cut_that_owns_no_state` fails, with
+  `level1_gives_a_tied_state_to_the_lowest_slot`,
+  `level1_keeps_one_of_two_identical_cuts`, the reference tests, the two
+  training tests above and both oracle legs;
+- reading the activity flag of a scored cut when deciding who competes: a
+  deactivated cut can never win a state again. Under it
+  `level1_reactivates_the_owner_of_a_new_state`,
+  `level1_drops_the_owner_of_a_state_that_left_the_window`,
+  `level1_follows_the_reference_rule_on_every_fixture` (which starts every
+  scored cut inactive in one of its two passes), the `level1` properties and
+  `level1_keeps_the_owner_of_every_stored_state_after_a_training_run` fail;
+- giving a tie to the highest slot (`>=` in `takes_over`): of two identical
+  cuts the newer survives. Under it
+  `level1_gives_a_tied_state_to_the_lowest_slot`,
+  `level1_keeps_one_of_two_identical_cuts` and the reference tests fail, and so
+  does the lowest-slot assertion of one `with_level1` oracle leg: the leg in
+  which an active cut has an identical twin, which is not the same leg on both
+  solver backends;
+- a derivation that never emits a reactivation: an owner the budget evicted
+  stays inactive. Under it `level1_reactivates_an_owner_the_budget_evicted`,
+  `level1_reactivates_the_owner_of_a_new_state`,
+  `level1_drops_the_owner_of_a_state_that_left_the_window` and the reference
+  tests fail.
+
+Read: `cut/pool.rs` (`CutPool::ownership_activity_updates`, `update_ownership`,
+`apply_updates`, `enforce_budget`), `cut/ownership.rs` (`is_live`,
+`takes_over`), `cut/cut_selection.rs` (the module documentation),
+`training/session/mod.rs` (`run_cut_management`, `TrainingSession::new`),
+`cut/selection_reference.rs` (`active_after`). Pinned by, in
+`cut/cut_selection.rs`: `level1_selects_the_two_steep_cuts_of_paper_figure_four`,
+`level1_loses_the_middle_cut_of_paper_figure_four_at_an_unvisited_state`,
+`level1_reactivates_the_owner_of_a_new_state`,
+`level1_drops_the_owner_of_a_state_that_left_the_window`,
+`level1_gives_a_tied_state_to_the_lowest_slot`,
+`level1_deactivates_a_generated_cut_tied_with_a_lower_loaded_cut`,
+`level1_deactivates_a_current_iteration_cut_that_owns_no_state`,
+`level1_keeps_one_of_two_identical_cuts`,
+`level1_follows_the_reference_rule_on_every_fixture`,
+`level1_matches_the_reference_rule` and its sibling properties; in `cut/pool.rs`:
+`ownership_activity_updates_leave_an_unscored_generated_cut_alone`; in
+`tests/cut_basis.rs`: `level1_deactivates_cuts_in_a_training_run` (after a run,
+a scored cut is active exactly when it owns a stored state),
+`level1_keeps_the_owner_of_every_stored_state_after_a_training_run` (the
+envelope invariant, and the run's record against a rebuild),
+`level1_reactivates_an_owner_the_budget_evicted` (the budget paragraph, as
+existence over a run's events, which carry counts and no slot),
+`a_level1_run_with_exported_states_keeps_every_trial_state` (no selection run
+drops a stored state),
+`a_warm_started_scored_cut_is_selected_like_a_generated_one` (a loaded scored cut
+changes its flag in a warm-started run) and
+`a_warm_started_unscored_cut_keeps_its_flag` (a loaded unscored cut never does);
+in `tests/cut_oracles.rs`:
+`cut_oracles_hold_on_deactivated_cuts_under_level1` (the run leaves inactive cuts
+and the validity oracle checks them); in `tests/extensive_form_oracle.rs`:
+`branching_tree_with_level1_stays_below_and_closes_to_the_extensive_form` and
+`chain_with_level1_stays_below_and_closes_to_the_extensive_form` (among
+bit-identical cuts only the lowest slot is active, every stored state's owner is
+active, and both bounds close).
+
+## The lookback window removes trial states, never cuts
+
+A `level1` strategy with `lookback_iterations: Some(w)` keeps the trial states of
+the last `w` iterations of the run; with `None` every state of the run is kept
+and nothing below applies. The key
+`training.cut_selection.selection.lookback_iterations` sets the window: its
+config type (`SelectionMethod::Level1` in `novomodelo-io`) is `Option<NonZeroU32>`, so
+a zero fails at load with a message naming the key, and
+`parse_cut_selection_config` maps it onto the strategy. The parse rejects a value
+below `check_frequency`, because the states of the iterations between two
+selection runs would then be dropped before a run scores them; a value equal to
+`check_frequency` is admitted. The window counts iterations of the current run
+from its first, under every `policy.mode` and with `policy.boundary`; a resumed
+run counts the iterations before its checkpoint, as the uninterrupted run does.
+
+**The boundary.** The window is a slot boundary on this run's clock.
+`CutPool::window_start_slot`, beside `slot_index`, returns the first slot whose
+state is inside the window at a selection run of iteration `k`. With
+`r = k - iteration_base + 1`, the iterations this run has completed, it is slot 0
+while `r < w`, and `slot_base + (r - w) * visit_stride` from `r = w` on: the first
+slot of iteration `k - w + 1`. A generated cut's state is therefore inside
+exactly when its generating iteration exceeds `k - w`. A state loaded at a
+`Prefix` slot (`CutPool::load_trial_state`) is at iteration 0 of the run's clock,
+whatever iteration its record carries: it is inside while `r < w` and leaves at
+the run's iteration `w`. One loaded at a `Generated` slot, under a resume, is at
+the iteration its slot gives it, as in the uninterrupted run.
+
+**The step.** `CutPool::expire_trial_states(k)` removes the states that left. For
+each slot from the previous boundary up to the new one that holds a state, it
+decrements the count of the state's owner when the record has one, clears the
+entry and returns the row to the store; the boundary only moves up, and a pool
+without a window does nothing. It removes states and nothing else: the slot's
+role, coefficients, intercept and flag are untouched and `is_live` is unchanged,
+so a scored cut whose state left stays live and competes at every state that
+remains. The derivation of the section above then deactivates it when it owns
+none and keeps it active when it owns one. With a window the scored set of a pool
+is the states inside it, and the envelope invariant holds at those.
+`rebuild_ownership` needs no change: it resets the record and scans the stored
+states, which are those inside the window. On a pool given a window below
+`check_frequency` directly, which no configuration reaches, the states of the
+iterations between two runs are dropped before a run scores them, and the record
+still equals a rebuild.
+
+**Where it runs.** `run_cut_management` calls `expire_trial_states` for each
+interior pool before `update_ownership`; swapping the two scores states that are
+about to leave and ends in the same record, so the order is cost only.
+`windowed_record_equals_rebuild_and_reference` runs the swapped order on a clone
+at every run and compares the record, the stored states and the derived flags.
+`TrainingSession::new` enables the store with
+`enable_trial_states_within(w, check_frequency)` when the strategy carries
+`Some(w)`.
+
+**Memory.** `enable_trial_states_within` reserves
+`(w + check_frequency) * visit_stride` rows, never more than one per slot: the
+`w` iterations the previous run kept plus the `check_frequency` iterations added
+since, which is what a pool holds right before a run when selection runs on
+schedule and a pool receives at most `visit_stride` cuts per iteration. The store
+is a `u32` lookup per slot, cleared when a state is dropped, over rows handed out
+from a free list; `grow` extends the lookup, and a store without a window also
+appends a row per new slot. Past the reserve the store appends a row and never
+overwrites one, and that fill allocates; the reserve counts no loaded state, so a
+loaded state held beside a full reserve extends the store too. A clone of the
+pool, such as the one the Python `Policy` object holds, carries the reserved
+rows, so the window bounds it as well.
+
+**Same on every rank.** The window is a field of the strategy, which rank 0
+parses from the config and broadcasts in `BroadcastConfig::cut_selection`, and
+every rank builds its setup from that strategy, so each rank enables the same
+store with the same window. The boundary is a function of the window, the
+iteration and the slot layout; no collective reads the window and no value
+derived from it crosses ranks.
+
+The wrong-but-compiling alternatives:
+
+- clearing the scored flag of a cut when its state leaves: the cut is no longer
+  live and stops competing at the states that remain, so a state it would own
+  goes to another cut. Under it
+  `a_loaded_scored_cut_competes_only_at_this_runs_states_once_its_state_left_the_window`,
+  `level1_drops_the_owner_of_a_state_that_left_the_window`,
+  `windowed_record_equals_rebuild_and_reference` and
+  `a_level1_window_keeps_only_the_states_of_the_last_iterations` fail.
+  Deactivating the cut instead is shown only at the derivation's lists, since the
+  next run recomputes the flag: the two fixtures and the property fail, and
+  neither training test does;
+- dropping a state without taking it from its owner's count: the owner keeps
+  owning a state that is gone, stays active, and the record differs from a
+  rebuild. Under it
+  `level1_drops_the_owner_of_a_state_that_left_the_window`,
+  `a_loaded_scored_cut_competes_only_at_this_runs_states_once_its_state_left_the_window`,
+  `windowed_record_equals_rebuild_and_reference` and
+  `a_level1_window_keeps_only_the_states_of_the_last_iterations` fail;
+- reading the iteration a loaded record carries against this run's counter: the
+  record holds the iteration of the run that wrote it, so its state would leave
+  when this run's counter reaches that iteration plus `w`, not at the run's
+  iteration `w`. The mutation shown keeps a loaded state for good, as a record
+  of iteration 40 does in the fixture. Under it
+  `a_loaded_scored_cut_competes_only_at_this_runs_states_once_its_state_left_the_window`,
+  `a_loaded_state_leaves_a_window_at_the_runs_iteration_w` and
+  `windowed_record_equals_rebuild_and_reference` fail;
+- a boundary that keeps one iteration more or one fewer than the last `w`: under
+  both, `the_window_start_slot_agrees_with_the_slot_formula`,
+  `a_windowed_pool_never_holds_more_rows_than_its_reserve`,
+  `level1_drops_the_owner_of_a_state_that_left_the_window`,
+  `a_loaded_scored_cut_competes_only_at_this_runs_states_once_its_state_left_the_window`,
+  `windowed_record_equals_rebuild_and_reference` and
+  `a_level1_window_keeps_only_the_states_of_the_last_iterations` fail, and one
+  fewer also fails `a_window_longer_than_the_run_changes_nothing`;
+- returning a row to the free list and keeping the lookup entry: a dropped slot
+  still reads its state. Under it `a_bounded_store_frees_the_row_of_a_dropped_state`,
+  `a_windowed_pool_never_holds_more_rows_than_its_reserve`, both fixtures,
+  `windowed_record_equals_rebuild_and_reference` and
+  `a_level1_window_keeps_only_the_states_of_the_last_iterations` fail;
+- doing nothing when the window start lies above `populated()`, a tail of
+  never-written slots: the states older than the window stay stored and owned.
+  Under it `a_window_start_above_the_populated_slots_releases_every_older_state`
+  and `windowed_record_equals_rebuild_and_reference` fail. The `populated()`
+  bound that `expire_trial_states` puts on the start is not itself pinned: the
+  same tests pass without it, since a slot above `populated()` holds no state;
+- overwriting a row past the reserve instead of appending one: two slots share a
+  row. Under it `a_bounded_store_extends_when_more_states_are_held_than_reserved`
+  and `windowed_record_equals_rebuild_and_reference` fail;
+- deciding the window, or whether a rank enables the bounded store, from a value
+  a rank computes locally: the ranks then hold other states and select other
+  cuts. Not demonstrable in-process.
+
+Read: `cut/pool.rs` (`CutPool::window_start_slot`, `expire_trial_states`,
+`enable_trial_states_within`, `slot_index`), `cut/ownership.rs`
+(`Ownership::expire`), `cut/trial_states.rs` (`TrialStates::claim`, `release`,
+`grow`), `cut/cut_selection.rs` (`CutSelectionStrategy::Level1`,
+`parse_cut_selection_config`), `crates/novomodelo-io/src/config/training.rs`
+(`SelectionMethod::Level1`, `positive_count`),
+`crates/novomodelo-cli/src/commands/broadcast.rs` (`BroadcastConfig`),
+`training/session/mod.rs` (`run_cut_management`, `TrainingSession::new`). Pinned
+by, in `cut/trial_states.rs`: `a_bounded_store_frees_the_row_of_a_dropped_state`
+and `a_bounded_store_extends_when_more_states_are_held_than_reserved`; in
+`cut/pool.rs`: `the_window_start_slot_agrees_with_the_slot_formula` (the start
+against the slot formula, loaded slots included) and
+`a_windowed_pool_never_holds_more_rows_than_its_reserve` and
+`a_window_start_above_the_populated_slots_releases_every_older_state` (a start
+above `populated()` releases every older state, and the record equals a
+rebuild); in
+`cut/cut_selection.rs`: `level1_drops_the_owner_of_a_state_that_left_the_window`
+and
+`a_loaded_scored_cut_competes_only_at_this_runs_states_once_its_state_left_the_window`
+(a loaded cut deactivated when it owns none, then winning a later state); in
+`cut/ownership.rs`: `windowed_record_equals_rebuild_and_reference` (the record
+against a rebuild and the states of the window against the reference rule, under
+drawn windows, strides and run frequencies, with the swapped order of expiring
+and updating on a clone); in `tests/cut_basis.rs`:
+`a_level1_window_keeps_only_the_states_of_the_last_iterations` and
+`a_window_longer_than_the_run_changes_nothing`; in `tests/mpi_wire.rs`:
+`level1_window_thread_shapes_agree_on_the_uniform_fixture` and
+`level1_window_thread_shapes_agree_on_the_non_uniform_projection_fixture` (with
+a window, the states kept, the record and the activity flags do not depend on
+the thread count, in runs where states left and their cuts stayed scored; the
+first also requires a reactivation). The two load rejects are pinned by
+`parse_level1_lookback_below_check_frequency_is_rejected` and
+`parse_level1_lookback_equal_to_check_frequency_is_admitted`
+(`cut/cut_selection.rs`), `a_zero_lookback_window_names_its_key`
+(`crates/novomodelo-io/src/config/training.rs`),
+`parse_config_rejects_a_zero_lookback_window` and
+`with_overrides_rejects_a_zero_lookback_window`
+(`crates/novomodelo-io/src/config/mod.rs`), and
+`validate_rejects_a_zero_lookback_window` and
+`validate_rejects_a_lookback_window_below_the_check_frequency`
+(`crates/novomodelo-cli/tests/cli_validate.rs`, each after a window equal to
+`check_frequency` validates); the broadcast of the window by
+`broadcast_config_carries_the_level1_window`
+(`crates/novomodelo-cli/src/commands/broadcast.rs`: a `Level1` strategy with a window
+survives the postcard round trip).
+
+## Binding activity is recorded only for a configured reader
+
+A cut's binding activity (`CutMetadata::active_count`,
+`CutMetadata::last_active_iter`) has two readers: the eviction key of the
+active-cut budget (`CutPool::enforce_budget`) and the seed window of a lazy
+solve under the `dynamic` method (`build_initial_resident_set`).
+`CutManagementConfig::tracks_binding_activity` owns the predicate: true when a
+budget is set or the strategy is `CutSelectionStrategy::Dynamic`. It is a method
+over the two config values, not a stored flag, and matches every strategy
+variant by name, so a new variant must be classified to compile.
+
+`TrainingSession::new` passes the predicate's value once to
+`BackwardPassState::set_binding_tracking`, on every rank, and
+`CheckpointLayout::new` reads it to decide whether a checkpoint carries the
+counters (the activity clock paragraph above). Both inputs come from
+the config every rank holds identically: the CLI broadcasts one `BroadcastConfig`
+from rank 0, every rank builds its `StudySetup` from it
+(`StudySetup::from_broadcast_params`), no `StudySetup` setter changes the
+strategy variant or the budget, and the training entry
+points of `StudySetup` copy both into the `TrainingConfig` the session reads.
+The switch is therefore the same on every rank for the whole run. A `BackwardPassState` built without the session
+keeps the default, which records.
+
+With the switch off a sampled backward pass does none of the recording work:
+
+- `extract_duals_from_view` copies no cut-row dual;
+- `accumulate_opening_outcome` runs no slot loop;
+- neither scheduler grows or zero-fills a worker's `slot_increments` and
+  `metadata_sync_contribution`, or calls `fold_slot_increments_into_sync`;
+- `run_one_backward_level` does not call `sync_stage_metadata`, so no per-worker
+  sum, no `allreduce` and no `CutPool::record_binding` runs.
+
+The workers read the switch from the threshold on the successor view
+(`SuccessorOutcomes`, `SuccessorChild`), an option that is `None` when binding is
+not tracked; the lazy solve reads the same option before
+`accumulate_dcs_binding_counts`. Every cut then keeps `active_count = 0` and
+`last_active_iter` at the value it started with (the activity clock paragraph
+above). The state duals are
+filled by the same routine in both states, so the cuts and the bounds are
+bit-identical with the switch on and off. The worker buffers stay allocated.
+The enumerated backward records no binding activity in either state.
+
+The wrong-but-compiling alternatives:
+
+- deciding at the `sync_stage_metadata` call from a value a rank computes
+  locally (this rank's trial-point count, an empty contribution buffer, a
+  pool's local content): one rank then skips a collective its peers enter and
+  a multi-rank run blocks, which no single-process test sees. The early return
+  of `sync_stage_metadata` on an empty pool is not such a decision: it rests on
+  the populated count being the same on every rank, as the method's doc states;
+- skipping only the reduction while the workers keep scanning cut-row duals
+  and folding increments: no result changes and the work per solve stays.
+
+Read: `config.rs` (`CutManagementConfig::tracks_binding_activity`),
+`training/session/mod.rs` (`TrainingSession::new`),
+`training/backward_pass_state.rs` (`BackwardPassState::set_binding_tracking`,
+`run_one_backward_level`, `compute_one_backward_node`,
+`process_stage_backward`, `sync_stage_metadata`), `training/backward/mod.rs`
+(`SuccessorOutcomes`, `SuccessorChild`),
+`training/backward/duals_extraction.rs` (`extract_duals_from_view`),
+`training/backward/outcome_aggregation.rs` (`accumulate_opening_outcome`,
+`accumulate_dcs_binding_counts`, `fold_slot_increments_into_sync`),
+`training/backward/by_scenario.rs` (`process_by_scenario_backward`),
+`training/backward/by_node.rs` (`process_stage_backward_by_node`),
+`cut/pool.rs` (`CutPool::record_binding`, `CutPool::enforce_budget`),
+`cut/dcs.rs` (`build_initial_resident_set`), `setup/mod.rs`
+(`StudySetup::from_broadcast_params`), `setup/orchestration.rs`
+(`StudySetup::train`, `StudySetup::train_with_solver_profiles`),
+`crates/novomodelo-cli/src/commands/broadcast.rs` (`BroadcastConfig`,
+`broadcast_value`). Pinned by
+`tracks_binding_activity_only_for_a_budget_or_the_dynamic_method` (`config.rs`:
+the truth table over a budget and every strategy),
+`binding_is_recorded_only_when_tracking_is_on`
+(`training/backward/tests.rs`: with the switch off, under both schedulers, the
+pass issues no `u64` sum reduction, moves no slot's metadata, copies no
+cut-row dual and touches no worker buffer, and its cuts equal those of the
+pass with the switch on) and `binding_activity_is_recorded_only_for_a_reader`
+(`tests/cut_basis.rs`: a `level1` run without a budget records nothing, a
+budget-only run and a `dynamic` run record, and a budget that evicts nothing
+gives the cuts and bounds of a run without one). No in-process test can show
+one rank skipping alone; the rank symmetry holds by the derivation above.
+
 ## Backward opening order is warm-start-only
 
 A trial point's backward openings are SOLVED in the installed `solve_order`
@@ -754,9 +2211,9 @@ on the claim index instead of `(m, ω)`, is the wrong-but-compiling
 alternative — CVaR's tail weighting is order-sensitive, so it silently breaks
 CVaR reproducibility and declaration-order invariance the same way a
 solve-order-keyed aggregation would break the by-scenario path above. An
-active Dynamic Cut Selection iteration always falls back to the by-scenario
-path: the by-node scheduler's frozen-LP load is incompatible with
-DCS's cut-free lazy core.
+active `dynamic` iteration always falls back to the by-scenario path: the
+by-node scheduler's frozen-LP load is incompatible with the lazy solve's
+cut-free core.
 Read: `training/backward/by_node.rs`
 (`process_stage_backward_by_node`'s claim loop,
 `by_node_finish`'s per-`(m, ω)` arena and ascending-m aggregation),
@@ -950,26 +2407,221 @@ on a tree whose worst branch compounds), the `admission_gate_*` gate tests
 
 `admission_gate` (`setup/mod.rs`) rejects `Traversal::Enumerated` paired with
 `CutSelectionStrategy::Dynamic` as a hard `SddpError::Validation`, through
-`reject_dynamic_cut_selection_under_enumerated`. The enumerated engine seeds each
-cut pool at its node-native stride (`enumerated_pool_cut_stride`), whereas dynamic
-cut selection's lazy core drives `build_initial_resident_set` (`cut/dcs.rs`) and
-`CutPool::enforce_budget`'s eviction-key reader (`cut/pool.rs`) under the
-sampled-selection eviction-key discipline; the pairing would drive that reader
-down an untested eviction path. Admitting the pairing is the wrong-but-compiling
-alternative — it compiles and runs, exercising an unvalidated eviction path.
+`reject_dynamic_cut_selection_under_enumerated`. The enumerated backward never
+solves lazily: `run_backward_node_replicated` loads the frozen template of each
+successor it solves and reads state duals only, and nothing in
+`run_enumerated_backward` reaches `sync_stage_metadata`, the only caller of
+`CutPool::record_binding`, so no binding activity is recorded. The enumerated
+forward does have a lazy branch (`solve_forward_node`): it seeds its resident set
+through `build_initial_resident_set` from a window over each cut's
+`last_active_iter`, and under enumerated traversal that clock never advances past
+the cut's generating iteration. Admitting the pairing is the wrong-but-compiling
+alternative — it would run the lazy branch on a seed window whose activity clock
+nothing feeds, a path no test exercises; the reject is what makes it unreachable.
 No shipped deck pairs them, so the reject is byte-neutral. Any non-`Dynamic`
 strategy (or none) under enumerated forwards, and `Dynamic` under sampled
 forwards, are admitted — the reject discriminates on the `Dynamic` variant, not on
-any strategy being present, and does not change `enforce_budget` or
-`build_initial_resident_set`, which the gate protects.
+any strategy being present.
 
 Read: `setup/mod.rs` (`admission_gate`,
-`reject_dynamic_cut_selection_under_enumerated`), `cut/dcs.rs`
-(`build_initial_resident_set`), `cut/pool.rs` (`CutPool::enforce_budget`),
-`setup/node_graph.rs` (`enumerated_pool_cut_stride`). Pinned by
+`reject_dynamic_cut_selection_under_enumerated`), `training/forward/enumerated.rs`
+(`solve_forward_node`), `cut/dcs.rs` (`build_initial_resident_set`),
+`training/backward_pass_state.rs` (`run_enumerated_backward`,
+`sync_stage_metadata`), `training/backward/replicated.rs`
+(`run_backward_node_replicated`). Pinned by
 `admission_gate_rejects_dynamic_cut_selection_under_enumerated` (`setup/mod.rs` —
 the positive enumerated + `Dynamic` reject, plus the enumerated-only and
 dynamic-only negatives that do not reject).
+
+## A lazy solve returns only when no candidate is violated
+
+`lazy_solve_preloaded` returns only when `score_violated_candidates` reports no
+violated candidate at the point it returns, so its result is the optimum over the
+candidate set up to the tolerance below. A candidate is violated when
+`alpha - theta > eps * max(|theta|, |alpha|)`, strict, with `alpha` the cut's value
+and `theta` the future-cost value at the point, both in the unscaled units the
+function computes, and `eps` the resolved `violation_tolerance`. Candidates are
+reported by `alpha - theta` descending, ties to the lower slot. With `z_R` the
+objective returned, `z_C` the optimum over the candidate set, `theta*` the
+future-cost value at the returned point and `d` the objective coefficient of the
+future-cost column, `z_R <= z_C <= z_R + d * eps / (1 - eps) * |theta*|`, for
+`eps < 1`: the load enforces it for a present value; an absent value resolves to
+a profile's `primal_feasibility_tolerance`, which no check bounds above, and at 1
+or more no candidate is ever violated. At `theta* = 0` every candidate with a positive value is
+appended, which costs rows and rounds and never exactness.
+
+An absent `violation_tolerance` is resolved by `DcsConfig::resolve`, the only
+place that gives it a value, to the `primal_feasibility_tolerance` of the solver
+profile of the phase that derives its lazy parameters: the sampled and enumerated
+forward, the backward and simulation each use their own. The HiGHS retry ladder
+can solve a retried LP looser than its profile, so the test is then stricter than
+the solve's accuracy and can append a candidate that noise made look violated;
+that costs a row and cannot loop, because an appended candidate is resident.
+Simulation seeds every active cut, so its tolerance is never exercised.
+
+A present `violation_tolerance` is range-checked at load by two owners.
+`parse_cut_selection_config` rejects a value of 1 or more: the bound divides by
+`1 - eps`, and at 1 no candidate with a non-negative future cost is ever
+violated. `StudySetup::from_broadcast_params` rejects a value below the
+`primal_feasibility_tolerance` of the backward, forward or simulation profile,
+the first failing one in that order, whether or not that phase runs; it owns the
+floor because the resolved profiles exist only there (`admission_gate` receives
+none, and the config type cannot see the solver default). A value equal to a
+profile's tolerance is admitted. The wrong-but-compiling alternatives, each shown
+by a mutation: comparing only the backward profile admits a value that a forward
+or simulation override makes too small; `<=` in place of `<` rejects the equal
+value; dropping the upper bound admits a value of 1 or more.
+
+The rounds that add a bounded number of cuts each end at a cap; past it the
+per-round limit is lifted and the score, append, solve cycle continues, adding
+every violated candidate per cycle, until none is left. Each solve that reaches
+the cap with a candidate still violated is counted. The cycle ends because scoring
+reports only non-resident candidates beyond the tolerance and every one reported
+is appended, so each cycle shrinks the finite non-resident set; a candidate inside
+the tolerance is neither reported nor appended.
+
+Appending the cuts violated at the last point and returning after one solve is
+the wrong-but-compiling alternative: the new optimum moves, and a cut that was
+satisfied before can be violated there. On the cuts `(intercept, slope)`
+`(15, -3)`, `(6, -0.5)`, `(20, -4)` seeded with the first, the optimum is 5 at
+`x = 5`, where only the second cut is violated; one solve with it gives 7.8 at
+`x = 3.6`, where the third is violated by 1.4, against 8 at `x = 4` with all
+three. The returned value is a valid but loose relaxation, so nothing fails.
+
+The wrong-but-compiling alternatives for the test itself, each shown by a
+mutation: an absolute test `alpha - theta > eps` selects other candidates when the
+cost scale changes (`scoring_is_invariant_to_the_cost_scale` and
+`a_lazy_solve_stays_within_the_relative_bound` fail); `min` in place of `max` in
+the threshold appends a candidate the tolerance admits
+(`violation_tolerance_is_strict` and `a_lazy_solve_stays_within_the_relative_bound`
+fail); `>=` in place of `>` reports a candidate on the boundary, including one
+worth exactly `theta*` when `theta* = 0` (`violation_tolerance_is_strict` and
+`lazy_solve_is_exact_after_the_round_cap` fail).
+
+The claim is exact over the candidate set, which is the whole pool only when the
+candidate recency window is unset; with a finite window it holds over the cuts
+inside the window and the result is deliberately not the all-cuts optimum.
+Read: `cut/dcs.rs` (`lazy_solve_preloaded`, `score_violated_candidates`,
+`DcsConfig::resolve`, `DcsSolveScratch::round_cap_hits`,
+`DcsParams::max_inner_iterations`), `cut/cut_selection.rs`
+(`parse_cut_selection_config`), `setup/mod.rs`
+(`reject_violation_tolerance_below_a_phase_solver_tolerance`). Pinned by
+`lazy_solve_is_exact_after_the_round_cap`
+(`cut/dcs.rs`: 8 at `x = 4`, not 7.8, and one cap hit), with
+`lazy_objective_equals_the_all_cuts_objective` (random cuts, caps 0 to 3, the
+two-sided bound), `a_lazy_solve_stays_within_the_relative_bound` (an unappended
+candidate, 7.8 against 8 within the bound), `lazy_solve_terminates_after_the_round_cap`,
+`violation_tolerance_is_strict` (the relative boundary),
+`scoring_is_invariant_to_the_cost_scale`,
+`an_absent_violation_tolerance_resolves_to_the_phase_solver_tolerance`,
+`each_phase_resolves_a_dynamic_violation_tolerance_from_its_own_profile`
+(`tests/cut_basis.rs`, `highs` only: a profile tolerance of 1 leaves a phase's
+lazy solves on their seed and a tight one re-solves, so a forward or backward
+site that read the other phase's profile swaps the two LP-solve counts; the
+enumerated forward site is unreachable under `dynamic`, and the simulation site
+is not exercised),
+`parse_dynamic_rejects_a_violation_tolerance_of_one` (`cut/cut_selection.rs`),
+`a_violation_tolerance_below_a_phase_solver_tolerance_is_rejected` (`setup/mod.rs`:
+the per-phase order, the equal value, the absent value and a `level1` strategy
+admitted) and `validate_rejects_a_violation_tolerance_below_the_solver_tolerance`
+(`crates/novomodelo-cli/tests/cli_validate.rs`: two controls that validate, then the
+reject).
+
+## The active-cut budget caps only cuts this run generated in interior pools
+
+`run_cut_management` enforces `max_active_per_stage` every iteration when it is
+set, after selection and before the template refreeze, on the pools of
+`interior_cut_nodes` only. Every non-leaf node owns its own pool and all leaves
+share one, so those pools are distinct from each other, from the root's pool and
+from the shared leaf pool. In such a pool `CutPool::enforce_budget` counts and
+evicts the active non-prefix cuts only: a loaded cut (`CutPool::is_prefix_slot`)
+neither counts toward the cap nor is evicted, and a cut of the current iteration
+counts and is never evicted. A pool's active count can therefore exceed the
+budget by its loaded cuts. Under `resume` the prefix is the recorded run's own
+(`warm_start_count`), so the cap counts every cut that run generated, as in the
+uninterrupted run.
+
+The root pool is exempt because no solve records binding for it (`record_binding`
+runs for successor pools only), so its generated cuts would rank by generation
+age alone, and because the lower-bound LP only appends cuts: a root cut evicted
+after an earlier lower-bound solve stays in that LP while the refrozen stage-0
+template and the bitmap no longer hold it. The terminal pool is exempt because
+its template is baked once and the per-iteration refreeze skips it, so an
+eviction would leave the bitmap disagreeing with the LP the terminal node solves,
+and a simulation that builds its own templates would solve another LP.
+
+The evicted set is the lexicographic minimum of the candidates under
+`(last_active_iter, active_count, slot)`: the smallest keys go first, up to the
+excess over the cap. `add_cut` writes the generating iteration into
+`last_active_iter`, so a cut that never bound ranks by generation age, and the
+cuts of one iteration that share a key are told apart by slot. The key is total,
+so the evicted set is a function of the pool, the budget and the current
+iteration.
+
+The budget is rejected at load, as `SddpError::Validation` naming
+`training.cut_selection.max_active_per_stage`, when it is set together with the
+`dynamic` method (`reject_budget_under_dynamic_cut_selection`) or with enumerated
+training (`reject_budget_under_enumerated`). A lazy solve takes its candidates
+from the active cuts (`score_violated_candidates` iterates
+`CutPool::active_cuts`) and `dynamic` runs no selection pass
+(`CutSelectionStrategy::should_run` is false for it), so no step of the training
+loop reactivates a cut and one the budget deactivates is never a candidate again.
+The enumerated backward records no binding activity (`sync_stage_metadata`, the
+only caller of `record_binding`, runs in the sampled level driver only), so every
+cut this run generates keeps `active_count = 0` and its generating iteration as
+`last_active_iter`, and the eviction key reduces to generation order.
+
+The wrong-but-compiling alternatives:
+
+- enforcing on every pool: the loop then evicts root cuts, which no solve records
+  binding for and which rank by generation age alone;
+- letting a loaded cut be a candidate in a loop that also visits the terminal
+  pool: it deactivates boundary cuts the baked terminal LP keeps, so a basis has
+  fewer rows than that LP and the next iteration fails with
+  `BasisRowCountMismatch`;
+- counting prefix cuts toward the cap without evicting them: once the prefix
+  alone reaches the cap, every generated cut older than the current iteration is
+  evicted at each iteration;
+- the two-part key `(last_active_iter, active_count)`: equal keys are then ordered
+  by an unstable sort, which the language leaves unspecified, so the evicted set
+  can differ between toolchains while every build agrees with itself and no
+  same-build gate sees it;
+- admitting the budget with `dynamic`: the lazy solve returns the optimum over the
+  active cuts, and every cut the budget deactivates leaves the candidate set for
+  good. Every remaining cut is valid, so that optimum is a valid but looser
+  relaxation of the optimum over the whole pool, and nothing fails;
+- admitting the budget under enumerated training: the cap evicts the oldest
+  generated cuts first whatever their use, and nothing fails.
+
+Read: `training/session/mod.rs` (`run_cut_management`, `interior_cut_nodes`,
+`freeze_active_cuts_into_templates`), `cut/pool.rs` (`CutPool::enforce_budget`,
+`is_prefix_slot`), `setup/node_graph.rs` (the `node → pool` assignment),
+`training/backward_pass_state.rs` (`sync_stage_metadata`, the only caller of
+`record_binding`), `training/lower_bound.rs` (`lb_init_rank0`), `cut/row.rs`
+(`append_new_cuts_to_lp`), `simulation/state.rs` (`refreeze_templates_if_needed`),
+`setup/mod.rs` (`admission_gate`), `cut/dcs.rs` (`score_violated_candidates`),
+`cut/cut_selection.rs` (`CutSelectionStrategy::should_run`). Pinned by
+`enforce_budget_never_evicts_a_loaded_cut` (a loaded cut stays, including one
+whose generating iteration equals the current one) and
+`enforce_budget_does_not_count_loaded_cuts` (loaded cuts do not count toward the
+cap), both in `cut/pool.rs`;
+`enforce_budget_breaks_ties_by_lowest_slot` (ties go to the lowest slot, and the
+key parts rank in order, on hand-derived keys),
+`evicted_set_is_the_lexicographic_minimum` (random pools with frequent ties
+against a reference sorted from tuples; it is the pin against the two-part key,
+since a hand fixture of a few cuts sorts stably by accident) and
+`enforce_budget_tiebreaks_by_active_count` (the `active_count` part), all in
+`cut/pool.rs`;
+`budget_caps_only_interior_pools_and_templates_match_their_pools`
+(`training/session/mod.rs`: the root and terminal pools keep their cuts and
+every frozen template matches its pool); and
+`budget_below_the_boundary_cut_count_leaves_the_boundary_run_unchanged`
+(`tests/cut_basis.rs`: a budget below the boundary cut count trains without a
+basis rejection and leaves the run unchanged);
+`admission_gate_rejects_a_budget_with_dynamic_cut_selection` and
+`admission_gate_rejects_a_budget_under_enumerated` (`setup/mod.rs`: each pairing
+is rejected naming the key and the setting, and the neighbouring configs are
+admitted).
 
 ## Terminal boundary FCF is booked in the reported total cost
 
@@ -977,8 +2629,8 @@ The forward trajectory cost and the simulation per-scenario cost both reconstruc
 a path total as `Σ_t cum_d(t)·stage_cost(t)`, where the interior `stage_cost(t) =
 (view.objective − d_t·θ_t)·cost_scale` subtracts the discounted epigraph `θ_t` —
 the future cost-to-go a later stage realizes as its own immediate cost. At the
-TERMINAL stage under a boundary policy (`CutPool::has_warm_start_cuts` on the
-terminal stage's pool, i.e. `warm_start_count > 0`) `θ_t` prices the
+TERMINAL stage under a boundary policy (`CutPool::has_prefix_cuts` on the
+terminal stage's pool, i.e. `prefix_len() > 0`) `θ_t` prices the
 POST-HORIZON value-to-go, which no later stage realizes, so it is KEPT in the
 reported cost (`stage_cost = view.objective·cost_scale`) — matching the lower
 bound, which already carries it through `θ_0`'s cuts (`evaluate_lower_bound`
@@ -990,11 +2642,11 @@ Subtracting `θ_t` at the terminal boundary stage — the interior form — is t
 wrong-but-compiling alternative: it drops the post-horizon FCF from the UB /
 simulation cost alone, leaving `LB ≫ UB` (a NEGATIVE gap the stopping rule's
 `.max(0.0)` clamp then reads as "converged"). The branch is gated on
-`terminal && pool.has_warm_start_cuts()`; a non-boundary study pins terminal `θ`
+`terminal && pool.has_prefix_cuts()`; a non-boundary study pins terminal `θ`
 to `[0, 0]` (forward) or leaves the terminal pool empty with `θ`'s `0.0` lower
 bound driving it to `0` (simulation), so the fix is byte-neutral there.
 
-Read: `cut/pool.rs` (`CutPool::has_warm_start_cuts`, the flag's only formula),
+Read: `cut/pool.rs` (`CutPool::has_prefix_cuts`, the flag's only formula),
 `training/forward/enumerated.rs` (`solve_forward_node`),
 `training/forward/stage_solve.rs` (`run_forward_stage`), `simulation/pipeline.rs`
 (`extract_sim_stage_result`, flag read from the stage's pool in
@@ -1076,6 +2728,396 @@ machinery), whereas spillage is legitimately free in `Filling`.
 Read: `lp/builder/columns.rs` (`fill_spillage_columns`). Cases: D38, D39, D42
 (phantom PreFilling spill removed); D40 (legitimate Filling-phase spill retained).
 
+## Checkpoint cut values are stored in the run's scaled units
+
+A checkpoint stores every cut's intercept and coefficients as the pool holds them
+in memory, in the writing study's scaled units, and each pool's
+`StageCuts.cost_scale_factor` names that scale (`build_stage_cut_records`). A load
+converts each pool by its own factor (`rescale_cut_records_for_load`): when the
+pool's factor is bit-equal (`to_bits`) to the loading study's, the records are
+used unchanged, so a same-factor round trip, a resume included, is bit for bit;
+otherwise every value becomes `(value * source) / loading`, multiplying first.
+`value * (source / loading)` rounds the ratio first and moves the bits of a
+pool written at `1.0`.
+
+The wrong-but-compiling alternatives:
+
+- multiplying by the factor on export and dividing on load: the two roundings do
+  not cancel at a factor that is not a power of two, the default included, so a
+  resumed run drifts from the run it continues;
+- ignoring the source factor on load (dividing by the loading factor alone): a
+  checkpoint written at another factor loads at the wrong scale.
+
+Read: `policy/policy_export.rs` (`build_stage_cut_records`),
+`policy/policy_load.rs` (`rescale_cut_records_for_load`, `pool_cost_scale_factor`,
+`convert_checkpoint_cuts_for_load`), `policy/full_fcf_load.rs`
+(`check_full_fcf_load`). Pinned by `export_then_load_same_factor_round_trips_bit_for_bit`,
+`a_marked_checkpoint_converts_by_its_own_factor`,
+`a_cross_factor_load_multiplies_by_the_source_before_dividing` and
+`a_full_load_converts_each_pool_by_its_own_factor` (`policy/policy_load.rs`),
+`boundary_load_reads_cost_scale_from_bin`
+(`tests/boundary_self_describing_clean_break.rs`), and the one-pass resume leg
+`resumed_run_equals_the_uninterrupted_run_with_one_forward_pass`
+(`tests/periodic_checkpoint.rs`), which runs at the default factor.
+
+## The per-scenario basis store is gathered at every checkpoint write
+
+A checkpoint's `basis/` files hold one `BasisEntry` per (global scenario, node)
+whose basis the run's `BasisStore` holds. A rank's store is keyed by its local
+row `m`, and the global scenario of that row is `fwd_offset + m`
+(`RankDistribution`); rows `my_actual_fwd..max_local_fwd` are padding and never
+sent. `gather_basis_store` (`training/training.rs`) assembles the store on rank
+0: per canonical node, each rank packs its rows `0..my_actual_fwd` with
+`CapturedBasis::to_broadcast_payload`, the sole owner of the bytes (`0_i32` for a
+row with no basis), and the node issues one `allgatherv` of the two payload
+lengths of every rank, then one `allgatherv` each of the `i32` and the `f64`
+payloads at the displacements those lengths give. Rank 0 decodes each rank's
+segment with `CapturedBasis::try_from_broadcast_payload`, numbers its rows from
+the rank's first scenario (the ranks' scenarios are contiguous blocks in rank
+order, so no scenario index travels), drops `state_at_capture`, and keeps the
+rows that hold a basis, in a `CheckpointBasisStore` marked `complete`. The
+writer (`build_basis_store_entries`) writes one entry per kept row, and the
+manifest's `basis_store_complete` is the store's `complete`.
+`TrainingResult::basis_cache` and `broadcast_basis_cache` keep their own job:
+scenario 0 per node, for simulation.
+
+Every rank enters the gather under a condition all ranks share: the schedule in
+`write_periodic_checkpoint` (`PeriodicCheckpoint::fires_at`, built on every rank
+from the broadcast config), and the clean `finalize` once `reconcile_error_flag`
+has agreed, before `broadcast_basis_cache`. A length that does not fit an `i32`
+count travels as `-1`, so every rank fails at the same node; a segment rank 0
+cannot decode ends the gather only after the last node, so no rank leaves the
+collectives early. On the periodic path either failure is reconciled like a
+failed write; on the clean path `finalize` reconciles the gather result with
+`reconcile_result` before `broadcast_basis_cache`, whose length broadcast
+(`broadcast_len`) carries an oversized length as `-1` so every rank fails after
+it. The exits that skip the collectives, `finalize_with_error` and
+`finalize_without_broadcast`, gather nothing: `TrainingResult::checkpoint_bases`
+holds rank 0's own rows keyed by global scenario
+(`CheckpointBasisStore::rank_local`), marked not `complete`, which is also what a
+one-rank failure exit writes although it holds every scenario.
+
+The wrong-but-compiling alternatives:
+
+- keying an entry by the local row `m`: on one rank it is the global scenario,
+  so nothing fails there; on several ranks every rank's row 0 is written as
+  scenario 0, so the checkpoint depends on the writing run's rank count;
+- writing rank 0's rows only, skipping the gather: on one rank it is the whole
+  store; on several ranks the other ranks' scenarios are missing from a
+  checkpoint that says it is whole;
+- gathering on an error exit: a peer that failed never enters the collective, so
+  the ranks that reach it block;
+- returning rank 0's gather error from `finalize` before the broadcast: the other
+  ranks enter `broadcast_basis_cache` and block. Pinned by
+  `a_gather_failure_on_rank_zero_does_not_leave_a_peer_in_the_broadcast`
+  (`training/session/mod.rs`: two ranks' collective sequences, rank 0 meeting a
+  decode failure) and, for the length, by
+  `an_oversized_payload_fails_every_rank_after_the_same_broadcast`
+  (`training/training/tests.rs`).
+
+Read: `training/training.rs` (`gather_basis_store`, `CheckpointBasisStore`,
+`CheckpointBasisStore::rank_local`), `training/session/mod.rs`
+(`write_periodic_checkpoint`, `finalize`, `finalize_without_broadcast`),
+`workspace/workspace.rs` (`CapturedBasis::to_broadcast_payload`,
+`CapturedBasis::try_from_broadcast_payload`), `policy/orchestration.rs`
+(`CheckpointLayout::write`), `policy/policy_export.rs`
+(`build_basis_store_entries`). Pinned by, in `training/training/tests.rs`:
+`a_single_rank_gather_keeps_every_stored_row_with_its_scenario` (every stored row
+with its scenario, a node with no basis has no entry),
+`a_rank_zero_of_two_gather_reads_an_empty_peer_segment_as_no_entries` (a
+communicator that writes rank 0's segment only) and
+`a_two_rank_gather_numbers_each_peer_row_from_its_offset` (two cooperating ranks
+in one process, the peer's padding row stored and not sent: fails under the
+local-row key and under rank 0's rows only),
+`a_gather_that_cannot_decode_a_peer_segment_still_issues_every_collective` (rank
+0 returns the decode error after consuming every collective the peer issued) and
+`a_payload_length_that_does_not_fit_an_i32_count_fails_naming_its_rank` (a `-1`
+length is refused naming its rank and node), with the `complete` flag of a clean
+end and of a failure exit in `ac_train_result_fields_populated` and
+`ac_train_partial_result_on_mid_iteration_failure`; and by
+`periodic_checkpoint_with_several_forward_passes_holds_every_scenario_basis_and_equals_the_final_one`
+(`tests/periodic_checkpoint.rs`: three forward passes, the periodic and the final
+checkpoint at the same iteration hold scenarios 0, 1 and 2 at every node with a
+basis, both whole, and are equal). The clean end's gather runs under an MPI
+launcher in
+`a_failed_periodic_write_on_the_world_leaves_the_last_whole_checkpoint_and_a_partial_beside_it`
+(`tests/periodic_checkpoint.rs`, launched on 2 and 4 ranks by
+`scripts/ci/run-mpi-launcher-gates.sh`): rank 0's whole checkpoint holds every
+forward pass of every rank at each node record, which fails under the local-row
+key. Under `cargo test` it is a single-rank pass and pins nothing here. No test
+pins the error-exit alternative, which no single-process run can show.
+
+## A failed run never replaces a whole checkpoint
+
+A run that ends in an error (`TrainingOutcome::error`) writes its policy to the
+sibling `partial_policy_dir(policy_dir)`, `<policy dir name>` followed by
+`.partial`, and never to the policy directory. The policy directory only ever
+holds whole checkpoints: the periodic writes, the clean end and a graceful stop
+write it, and each of them holds every rank's bases
+(`CheckpointBasisStore::complete`). A failure exit holds rank 0's own rows,
+marked not complete, and the failed iteration may be half applied: the FCF can
+hold the cuts of an iteration that `completed_iterations` does not count.
+`write_checkpoint` is the single owner of the rule and of the name, for the CLI
+and the Python bindings alike. It decides the destination from
+`TrainingResult::checkpoint_bases.complete` alone, never from the directory's
+content, and returns the directory it wrote; both front ends name that directory
+in the failure message. A second failed run replaces the sibling, as the writer
+replaces any target. No load reads the sibling by itself: it is read only when
+`policy.path` names it.
+
+The wrong-but-compiling alternatives:
+
+- writing the failure exit's policy into the policy directory: it swaps a partial
+  policy over the last periodic checkpoint, so a multi-rank run that fails
+  in-band after a periodic write loses the one checkpoint it could resume from;
+- skipping the write when the policy directory already holds a checkpoint: the
+  destination then depends on the directory's content, a failed run with no
+  earlier checkpoint writes to the policy directory again, and the partial
+  policy of the other case is lost;
+- a collective on the error path, such as gathering the other ranks' bases to
+  make the failure checkpoint whole: a rank that failed never enters it, and the
+  ranks that reach it block.
+
+Read: `policy/orchestration.rs` (`write_checkpoint`, `partial_policy_dir`),
+`training/session/mod.rs` (`finalize_without_broadcast`),
+`crates/novomodelo-cli/src/commands/run/outputs.rs` (`write_training_outputs`),
+`crates/novomodelo-python/src/run.rs` (`write_training_outputs`). Pinned by, in
+`policy/orchestration.rs`,
+`a_result_without_every_ranks_bases_is_written_beside_the_policy_directory` (the
+whole checkpoint is byte for byte unchanged),
+`a_failed_runs_partial_policy_is_written_without_a_whole_checkpoint_present` and
+`a_result_with_every_ranks_bases_is_written_to_the_policy_directory`; by
+`a_failed_periodic_write_leaves_the_last_whole_checkpoint_and_a_partial_beside_it`
+(`tests/periodic_checkpoint.rs`: an in-band periodic write failure of a run that
+resumed a whole checkpoint) and, on 2 and 4 ranks under the MPI launcher gates,
+`a_failed_periodic_write_on_the_world_leaves_the_last_whole_checkpoint_and_a_partial_beside_it`
+(rank 0's write fails and every peer fails at the same iteration through the
+error reconciliation); and by
+`a_failed_run_keeps_the_last_whole_checkpoint`
+(`crates/novomodelo-cli/tests/cli_run.rs`) and
+`test_a_failed_run_keeps_the_last_whole_checkpoint`
+(`crates/novomodelo-python/tests/test_periodic_checkpoint.py`): a resumed run that
+fails in-band leaves the policy directory byte for byte and writes the sibling,
+and the next resume of the policy directory continues from the whole checkpoint.
+
+## A resume refuses a checkpoint that cannot continue the run identically
+
+A resume continues the run that wrote the checkpoint, so it reads state the file
+must carry. `check_full_fcf_load` refuses a `FullFcfLoadKind::Resume`, right after
+`validate_policy_load`, as `FullFcfLoadError::Refused(SddpError::Validation(..))`
+(class `IncompatiblePolicy`, phase `ResumeIncompatible`), on the first of these, in
+this order (`check_resume_serves`), reading the manifest's `ProducerBlock`:
+
+1. `forward_passes` differs from the run's `loop_params.forward_passes`: the slot
+   layout and the stored scenarios follow the count;
+2. the run's strategy is `Level1`, the study has an interior pool
+   (`interior_cut_nodes`), and `state_history` is `None`;
+3. the same run keeps every state (`lookback_iterations: None`) and the file holds
+   a `Window`, or the run's window is longer than the file's;
+4. `CutManagementConfig::tracks_binding_activity` holds and `activity_counters`
+   is unset;
+5. `basis_store_complete` is unset.
+
+Each message names the setting, what the checkpoint holds and the way out. A
+stored window longer than the run's is admitted: the extra states leave at the
+first selection pass, as they would have. A study with no interior pool stores no
+trial state under `level1`, so its `None` is not refused. `warm_start`,
+simulation-only and boundary loads read none of these fields. The run's own
+`check_frequency`, budget value and cost scale apply after a resume, and none of
+them is state the file must carry.
+
+The wrong-but-compiling alternatives:
+
+- deciding the history reject from missing state rows: a windowed source drops the
+  states of its older cuts, so a scored slot without a row is admitted by design.
+  `state_history` describes the interior pools only; the root's states, written
+  when `exports.states` is on, are unwindowed;
+- refusing a missing counter per generated record only: a checkpoint written
+  without a reader carries no counter on any record, and its warm-started prefix
+  cuts would restart at the source run's iterations;
+- refusing a store that is not whole for a `warm_start`: it seeds each scenario's
+  basis or none, never needs all of them, and only warm-starts a solve;
+- claiming that bases are missing: a one-rank failure exit holds every scenario
+  and is still marked not whole, so the message says the run failed.
+
+Read: `policy/full_fcf_load.rs` (`check_resume_serves`, `check_full_fcf_load`),
+`novomodelo_io::ProducerBlock`, `config.rs`
+(`CutManagementConfig::tracks_binding_activity`), `training/session/mod.rs`
+(`interior_cut_nodes`). Pinned by, in `tests/full_fcf_load.rs`, each with a warm
+start of the same checkpoint that loads:
+`a_resume_refuses_another_forward_pass_count`,
+`a_level1_resume_refuses_a_checkpoint_without_the_trial_state_history`,
+`a_level1_resume_refuses_a_shorter_stored_window` (a run keeping every state and
+one with a longer window are refused, the same and a shorter window resume),
+`a_resume_with_a_reader_refuses_a_checkpoint_without_the_binding_counters` (a
+budget and `dynamic`) and `a_resume_refuses_a_checkpoint_whose_bases_are_not_whole`;
+`a_whole_checkpoint_resumes_under_the_settings_that_wrote_it` (a `level1` run with
+a window and a budget resumes its own checkpoint),
+`a_level1_resume_of_a_study_without_an_interior_pool_needs_no_history`; and, in
+`crates/novomodelo-cli/tests/cli_validate.rs`,
+`validate_rejects_a_resume_without_the_trial_state_history` and
+`validate_rejects_a_resume_from_a_partial_policy` (each after a control that
+validates), with the rows `resume_without_the_trial_state_history` and
+`resume_from_a_partial_policy` of `crates/novomodelo-cli/tests/refusal_parity.rs` and
+`crates/novomodelo-python/tests/test_refusal_parity.py` (the same line from
+`novomodelo validate`, `novomodelo run` and the Python bindings).
+
+## A resume continues the uninterrupted run
+
+A run resumed from the checkpoint of iteration `k` and trained to iteration `n`
+holds what the run uninterrupted to `n` holds, both stopped by an iteration limit:
+a stopping rule that reads the lower bound can stop the two runs an iteration
+apart.
+
+Bit for bit:
+
+- in every pool, the cut values, the activity flags, the generating iteration and
+  forward pass of every slot, the binding counters, each slot's role, the stored
+  trial states and the ownership record (the owner, the best value and the owned
+  count of each state);
+- the final upper bound, the forward and backward simplex counts of the iterations
+  after `k`, and the pool row counts those iterations report
+  (`TrainingEvent::PolicyPoolSummary`, bar its wall-clock field);
+- the bases the resume seeds, per node and scenario, against the ones the
+  checkpoint holds;
+- the final checkpoint: manifest, cuts, bases, trial states and prefix length, bar
+  `created_at` and its lower-bound fields.
+
+Within a relative `1e-6`: the lower-bound series, and the checkpoint's copy of it.
+The uninterrupted run rebuilds the lower-bound LP warm and the resumed run builds
+it cold, so two solves of one LP start from different solver states. The simplex
+counts of the lower-bound solve are not compared.
+
+The resumed run's own settings apply after the resume: its iteration limit,
+`check_frequency`, budget value and cost scale. The state the resume rejects name
+(the forward-pass count, the trial-state history and window, the binding counters
+and a whole basis store) must come with the checkpoint; the legs resume under the
+settings that wrote it, which is what makes the comparison with the uninterrupted
+run one of equals.
+
+The wrong-but-compiling alternatives:
+
+- comparing the cuts and the bounds only: a counter, a role, a trial state or a
+  basis that differs changes no cut value until a later pass reads it;
+- comparing the lower bounds bit for bit: the cold rebuild differs in the last
+  digits.
+
+The legs catch each of these mutations of the resume:
+
+- every record loaded as `Prefix`: every leg fails, on the slot roles or, once a
+  budget evicts, on the cuts;
+- no trial state loaded: the legs that run `level1` fail on the cuts the first
+  selection pass deactivates, and the `dynamic` and selection-off legs, whose pools
+  store none, are unchanged;
+- an iteration base of `start_iteration + 1`: a `debug_assert` stops a debug build.
+  With debug assertions off the legs still fail: the resumed run aborts with
+  `BasisRowCountMismatch` in most, and in the `dynamic` and the warm-start legs,
+  whose runs complete, the comparison of the final checkpoints fails by itself.
+
+Read: `training/session/mod.rs` (`TrainingSession::new`), `cut/pool.rs`
+(`CutPool::new_resumed`), `policy/full_fcf_load.rs` (`check_full_fcf_load`).
+Pinned by, in `tests/periodic_checkpoint.rs`, the legs
+`level1_resume_equals_the_uninterrupted_run`,
+`level1_with_a_window_resume_equals_the_uninterrupted_run`,
+`level1_with_a_budget_resume_equals_the_uninterrupted_run`,
+`dynamic_resume_equals_the_uninterrupted_run`,
+`a_resume_on_more_threads_equals_the_uninterrupted_run` (checkpointed on one thread,
+resumed on two), `a_resumed_warm_started_run_equals_its_uninterrupted_run` and the
+selection-off legs `resumed_run_equals_the_uninterrupted_run_with_one_forward_pass`
+and `resumed_run_equals_the_uninterrupted_run_with_several_forward_passes`. Each
+`level1` leg asserts that a selection pass ran at the last iteration, so the
+ownership record is current, and that a slot generated by the checkpoint changed
+its flag afterwards; the window legs, that the window had dropped a state before
+the checkpoint (the warm-start leg, a loaded one); the budget leg, that an owner
+generated by the checkpoint is inactive at `n`, which only the final budget can
+have made it; the `dynamic` leg, that a slot generated by the checkpoint bound
+again.
+
+## A resume that declares a boundary keeps the terminal binding counters
+
+A run that declared `policy.boundary` trains against the boundary rows in its
+terminal pool, and its checkpoint carries those rows with the binding counters
+the run recorded for them. A resume continues that run, so the terminal pool it
+trains keeps the counters. The front ends load the checkpoint, reconcile the
+declared boundary and call `inject_boundary_cuts`, which replaces the terminal pool
+with the reconciled rows. When `loop_params.start_iteration` is above 0, which only
+a resume sets (`CheckedFullFcfLoad::apply_to_training`), it first compares the
+reconciled rows with the loaded terminal pool: the state dimension, the slot count
+and, slot by slot in order, the role, the active flag, the intercept bits and the
+coefficient bits. A difference is refused as `SddpError::Validation` naming the
+pool, the first difference and the way out: resume with the `policy.boundary` and
+the cost scale (`modeling.cost_scale_factor`) the interrupted run used, or continue
+with `policy.mode = warm_start`. Rows that match take the `active_count` and
+`last_active_iter` of the loaded row at the same slot, through
+`CutPool::record_binding` on the restarted pool. A warm start and a
+simulation-only load do not compare and keep the restart (the activity clock
+paragraph above).
+
+The compare is one function, `refuse_changed_boundary`, which
+`inject_boundary_cuts` runs on the pool it installs and `check_resume_boundary`
+runs on the pool it builds for `validate_study`, so `novomodelo validate`,
+`novomodelo run` and the Python bindings refuse the same resume with the same line.
+`validate_study` applies a resume load to its setup before it reconciles the
+boundary, in the order of a run; without that the setup it reconciles on has
+`start_iteration = 0` and the compare never fires there.
+
+A resume at another `modeling.cost_scale_factor` is not refused earlier
+(`check_resume_serves` reads no cost scale), and the compare fires on it only when
+the boundary file's factor differs from the interrupted run's and the interrupted
+run's differs from the resume's: the loaded checkpoint rows were converted twice
+(the boundary's factor to the run's, then the run's to the resume's) and the
+reconciled boundary rows once (the boundary's factor to the resume's), and two
+roundings are not one. The message therefore names the factor along with the
+boundary.
+
+Under a budget the counters of the terminal rows reach the checkpoint the resumed
+run writes, and under `dynamic` the seed window reads them.
+
+The wrong-but-compiling alternatives:
+
+- leaving the restart in place on a resume: the terminal rows restart at the
+  resume, so the checkpoint the resumed run writes carries lower counters than the
+  uninterrupted run's, and under `dynamic` the boundary rows leave the seed window
+  at the first resumed iteration, which moves the training numerics in the last
+  bits;
+- restoring without comparing: a boundary that changed between the interrupted run
+  and the resume gives its rows the counters of other rows;
+- comparing within a tolerance: the interrupted run trained against exactly these
+  bits, and a row that differs in the last bit is another row;
+- skipping the injection on a resume, so the loaded pool stays: the declared
+  boundary is then never read, and a boundary that changed is ignored without a
+  word;
+- comparing on a warm start: its loaded terminal pool is another run's, and a
+  warm start with a new boundary is legitimate;
+- reconciling on an unloaded setup in `validate_study`: `start_iteration` is 0
+  there, the compare does not fire, and `novomodelo validate` accepts a resume that
+  `novomodelo run` refuses.
+
+Read: `policy/policy_load.rs` (`inject_boundary_cuts`, `check_resume_boundary`,
+`refuse_changed_boundary`, `terminal_boundary_pool`), `validate_phases.rs` (`validate_study`,
+`check_configured_full_fcf_load`), `cut/pool.rs` (`CutPool::record_binding`,
+`CutPool::restart_activity_clock`).
+Pinned by `level1_with_a_budget_and_a_boundary_resume_equals_the_uninterrupted_run`
+(`tests/periodic_checkpoint.rs`: the resumed run's terminal counters equal the
+uninterrupted run's; with the restore removed the budget leg fails on a terminal
+`active_count`), with `dynamic_with_a_boundary_resume_equals_the_uninterrupted_run`
+(the seed window) and `level1_with_a_boundary_resume_equals_the_uninterrupted_run`
+(a run with no reader, which the restore leaves unchanged);
+`a_resume_refuses_a_boundary_that_no_longer_matches_its_checkpoint`
+(`tests/full_fcf_load.rs`: the boundary the run used is admitted and keeps the
+checkpoint's counters, another boundary is refused, and a warm start of the same
+checkpoint takes it and restarts them) and, in `policy/policy_load.rs`,
+`a_resume_keeps_the_binding_counters_of_the_checkpoints_terminal_rows`,
+`a_resume_refuses_a_boundary_that_differs_from_the_checkpoints_terminal_rows` (one
+case for each kind of difference),
+`a_resume_at_another_cost_scale_factor_is_refused_naming_the_factor` and
+`only_a_resume_compares_the_boundary_with_the_loaded_terminal_pool`; and by the row
+`resume_over_a_changed_boundary` of `crates/novomodelo-cli/tests/refusal_parity.rs` and
+`crates/novomodelo-python/tests/test_refusal_parity.py` (the same line from
+`novomodelo validate`, `novomodelo run` and the Python bindings), with
+`a_resume_over_the_boundary_it_was_interrupted_over_validates` (the control that
+validates).
+
 ## Policy-load compatibility validation is mandatory
 
 Every policy load — full-FCF warm-start/resume/simulation-only and terminal
@@ -1127,8 +3169,8 @@ and compared as an integer against each pool's own `priced_state_date`, walking
 `checkpoint.stage_cuts` in its pool-id-sorted order — an index into
 `graph_stage_id` or the raw pool id could silently pick a different, wrong
 future-cost function whose reconciliation tally is identical to the correct
-one. It then reads the selected pool's `cost_scale_factor` to feed
-`rescale_cut_records_for_load` — the additive `StageCuts`
+one. It then reads the selected pool's `cost_scale_factor` through
+`pool_cost_scale_factor` to feed `rescale_cut_records_for_load` — the additive `StageCuts`
 `cost_scale_factor`/`node_id`/`priced_state_date` fields make one
 `cuts/<pool>.bin` self-describing. Four named rejects guard the boundary load:
 every pool in the checkpoint carrying the `priced_state_date` sentinel (a
@@ -1141,9 +3183,10 @@ resolved pool whose `cost_scale_factor` reads `None` (a pre-self-describing
 re-export), never silently defaulting to `LEGACY_COST_SCALE_FACTOR`; and a
 resolved pool whose `node_id` is the `-1` sentinel (a shared, multi-owner
 pool) REJECTS — a boundary source must be a single-node terminal pool. The
-`FullFcf` path mirrors the `cost_scale_factor` read + `None`
-clean-break reject through `checkpoint_terminal_cost_scale_factor` (the terminal
-pool's own value). Resurrecting a read of `metadata.graph_manifest` or
+`FullFcf` path mirrors the `cost_scale_factor` read and its rejects through the
+per-pool check `pool_cost_scale_factor`, applied to every pool by
+`convert_checkpoint_cuts_for_load`: each pool converts by its own factor, and a
+factor that is absent, not finite or not positive is refused naming the pool. Resurrecting a read of `metadata.graph_manifest` or
 `metadata.producer.cost_scale_factor` on either load path is the
 wrong-but-compiling alternative this contract rules out: `metadata.json` is
 retired — the study-global graph, `num_stages`, and provenance now live on the
@@ -1156,7 +3199,8 @@ The shared-pool `node_id` reject above is pinned by
 `tests/shared_boundary_terminal_fan_probe.rs`.
 
 Read: `policy/policy_load.rs` (`validate_policy_load`, `slot_identity`,
-`checkpoint_terminal_cost_scale_factor`, `boundary_predates_self_describing_cuts`,
+`pool_cost_scale_factor`, `convert_checkpoint_cuts_for_load`,
+`boundary_predates_self_describing_cuts`,
 `PolicyLoadKind::CHECK_STATE_DIMENSION`,
 `PolicyLoadKind::CHECK_SLOT_IDENTITY_EXACT`), `policy/reconcile.rs`
 (`build_rebind`, `rebind_cut`). Pinned by the `validate_policy_load_full_fcf_*`

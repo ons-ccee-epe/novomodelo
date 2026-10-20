@@ -11,6 +11,7 @@ use std::path::Path;
 use std::process::Command;
 
 use chrono::NaiveDate;
+use novomodelo_io::test_support::{piece_defaults, stage_cuts_payload_defaults};
 use novomodelo_io::{
     ENTITY_SLOT_DATE_SENTINEL, FORMAT_VERSION, GraphManifest, PolicyCutRecord, ProducerBlock,
     StageCutsPayload, encode_slot_date, write_policy_checkpoint,
@@ -40,9 +41,9 @@ fn producer_block() -> ProducerBlock {
 /// `cuts/<pool>.bin` (`cost_scale_factor`), never from `metadata.producer`: a
 /// checkpoint with `metadata.producer.cost_scale_factor: None` (the legacy,
 /// now-unread field) but a marked `.bin` (`Some(_)`) still takes the MARKED
-/// rescale branch (plain division by the loading factor) rather than the
-/// LEGACY branch (a `LEGACY_COST_SCALE_FACTOR / loading_factor` ratio
-/// multiply) — the two disagree numerically at a non-default loading factor,
+/// conversion (`value * marker / loading_factor`) rather than the LEGACY branch
+/// (a `LEGACY_COST_SCALE_FACTOR / loading_factor` ratio multiply) — the two
+/// disagree numerically whenever the marker is not `LEGACY_COST_SCALE_FACTOR`,
 /// so this discriminates a regression that resurrects the
 /// `metadata.producer` read.
 #[test]
@@ -51,27 +52,25 @@ fn boundary_load_reads_cost_scale_from_bin() {
     let at_rest_intercept = 1_234_000.0;
     let at_rest_coefficients = [10_000.0_f64, -25_000.0];
     let cut = PolicyCutRecord {
-        cut_id: 0,
         slot_index: 0,
         iteration: 0,
-        forward_pass_index: 0,
         intercept: at_rest_intercept,
         coefficients: &at_rest_coefficients,
         is_active: true,
+        ..piece_defaults()
     };
     let payload = StageCutsPayload {
         stage_id: 0,
         state_dimension: 2,
         capacity: 1,
-        warm_start_count: 0,
         cuts: &[cut],
-        active_cut_indices: &[0],
         populated_count: 1,
         entity_manifest: &[],
         cost_scale_factor: 500_000.0,
         node_id: 0,
         graph_stage_id: 0,
         priced_state_date: encode_slot_date(fixture_priced_date(0)),
+        ..stage_cuts_payload_defaults()
     };
     let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
         1,
@@ -93,16 +92,17 @@ fn boundary_load_reads_cost_scale_from_bin() {
          still load via the .bin's own marked cost_scale_factor",
     );
 
-    let expected_intercept = at_rest_intercept / loading_factor;
+    let marker = 500_000.0;
+    let expected_intercept = at_rest_intercept * marker / loading_factor;
     assert!(
         (cuts[0].intercept - expected_intercept).abs() < expected_intercept.abs() * 1e-9,
-        "intercept {} must equal at_rest / loading_factor = {expected_intercept} (the MARKED \
-         rescale branch); a LEGACY-branch result would prove the load still reads \
+        "intercept {} must equal at_rest * marker / loading_factor = {expected_intercept} (the \
+         MARKED conversion); a LEGACY-branch result would prove the load still reads \
          metadata.producer.cost_scale_factor",
         cuts[0].intercept
     );
     for (c, &at_rest) in cuts[0].coefficients.iter().zip(&at_rest_coefficients) {
-        let expected = at_rest / loading_factor;
+        let expected = at_rest * marker / loading_factor;
         assert!(
             (c - expected).abs() < expected.abs() * 1e-9,
             "coefficient {c} != expected {expected}"
@@ -247,27 +247,25 @@ fn boundary_load_rejects_pre_self_describing_checkpoint() {
     // writes but must still detect on load.
     let placeholder_coeff = [1.0_f64];
     let cut = PolicyCutRecord {
-        cut_id: 0,
         slot_index: 0,
         iteration: 0,
-        forward_pass_index: 0,
         intercept: 1.0,
         coefficients: &placeholder_coeff,
         is_active: true,
+        ..piece_defaults()
     };
     let payload = StageCutsPayload {
         stage_id: 0,
         state_dimension: 1,
         capacity: 1,
-        warm_start_count: 0,
         cuts: &[cut],
-        active_cut_indices: &[0],
         populated_count: 1,
         entity_manifest: &[],
         cost_scale_factor: 1_000_000.0,
         node_id: 0,
         graph_stage_id: 0,
         priced_state_date: encode_slot_date(fixture_priced_date(0)),
+        ..stage_cuts_payload_defaults()
     };
     let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
         1,
@@ -313,27 +311,25 @@ fn boundary_load_rejects_pre_format_version_checkpoint() {
 
     let placeholder_coeff = [1.0_f64];
     let cut = PolicyCutRecord {
-        cut_id: 0,
         slot_index: 0,
         iteration: 0,
-        forward_pass_index: 0,
         intercept: 1.0,
         coefficients: &placeholder_coeff,
         is_active: true,
+        ..piece_defaults()
     };
     let payload = StageCutsPayload {
         stage_id: 0,
         state_dimension: 1,
         capacity: 1,
-        warm_start_count: 0,
         cuts: &[cut],
-        active_cut_indices: &[0],
         populated_count: 1,
         entity_manifest: &[],
         cost_scale_factor: 1_000_000.0,
         node_id: 0,
         graph_stage_id: 0,
         priced_state_date: encode_slot_date(fixture_priced_date(0)),
+        ..stage_cuts_payload_defaults()
     };
     let mut metadata = novomodelo_sddp::test_support::checkpoint_metadata(
         1,

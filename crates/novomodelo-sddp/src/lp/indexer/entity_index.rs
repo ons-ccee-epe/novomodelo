@@ -7,7 +7,7 @@
 //! vocabulary forbids still compiles and silently addresses the wrong LP
 //! column. [`HydroSys`], [`ThermalSys`], [`LineSys`], [`BusSys`], [`NcsSys`],
 //! and [`PumpingSys`] carry a system position; [`FphaLocal`], [`EvapLocal`],
-//! [`FillingTargetLocal`],
+//! [`FillingTargetLocal`], [`PlantFloorLocal`], [`PlantCapLocal`],
 //! [`FloorLocal`], and [`AnticipatedLocal`] each carry a position within their
 //! own named local list, and [`FphaCellLocal`] a position within the stage's
 //! plant-major FPHA-*cell* sequence (finer than [`FphaLocal`]: a split FPHA plant
@@ -340,6 +340,48 @@ impl FloorLocal {
     }
 }
 
+/// A hydro's position within a stage's plant-floor local list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct PlantFloorLocal(usize);
+
+impl PlantFloorLocal {
+    /// Wrap a raw plant-floor-local index.
+    #[inline]
+    #[must_use]
+    pub fn new(v: usize) -> Self {
+        Self(v)
+    }
+
+    /// Extract the raw plant-floor-local index.
+    #[inline]
+    #[must_use]
+    pub fn get(self) -> usize {
+        self.0
+    }
+}
+
+/// A hydro's position within a stage's plant-cap local list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct PlantCapLocal(usize);
+
+impl PlantCapLocal {
+    /// Wrap a raw plant-cap-local index.
+    #[inline]
+    #[must_use]
+    pub fn new(v: usize) -> Self {
+        Self(v)
+    }
+
+    /// Extract the raw plant-cap-local index.
+    #[inline]
+    #[must_use]
+    pub fn get(self) -> usize {
+        self.0
+    }
+}
+
 /// A thermal's position within a stage's anticipated-commitment local list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
@@ -365,7 +407,8 @@ impl AnticipatedLocal {
 mod tests {
     use super::{
         AnticipatedLocal, BusSys, EvapLocal, FillingTargetLocal, FloorLocal, FphaCellLocal,
-        FphaLocal, HydroCell, HydroSys, LineSys, NcsSys, PumpingSys, ThermalSys,
+        FphaLocal, HydroCell, HydroSys, LineSys, NcsSys, PlantCapLocal, PlantFloorLocal,
+        PumpingSys, ThermalSys,
     };
 
     #[test]
@@ -456,6 +499,24 @@ mod tests {
             std::mem::size_of::<usize>()
         );
         assert_eq!(FillingTargetLocal::new(8).get(), 8);
+    }
+
+    #[test]
+    fn plant_floor_local_is_zero_cost_and_round_trips() {
+        assert_eq!(
+            std::mem::size_of::<PlantFloorLocal>(),
+            std::mem::size_of::<usize>()
+        );
+        assert_eq!(PlantFloorLocal::new(4).get(), 4);
+    }
+
+    #[test]
+    fn plant_cap_local_is_zero_cost_and_round_trips() {
+        assert_eq!(
+            std::mem::size_of::<PlantCapLocal>(),
+            std::mem::size_of::<usize>()
+        );
+        assert_eq!(PlantCapLocal::new(5).get(), 5);
     }
 
     #[test]

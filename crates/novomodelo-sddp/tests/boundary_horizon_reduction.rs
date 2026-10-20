@@ -473,7 +473,6 @@ fn build_reduction_fixture(coverage: SeasonCoverage) -> ReductionFixture {
         max_iterations: full_setup.loop_params.max_iterations,
         forward_passes: full_setup.loop_params.forward_passes,
         seed: full_setup.loop_params.seed,
-        export_states: full_config.exports.states,
     };
     write_checkpoint(
         policy_dir.path(),

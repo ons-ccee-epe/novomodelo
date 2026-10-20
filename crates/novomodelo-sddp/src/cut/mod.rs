@@ -17,35 +17,34 @@
 //!   (`push_scaled_coefficient` negates the raw subgradient).
 //! - [`row_map`] — [`CutRowMap`]: slot-to-LP-row mapping that preserves cut-pool
 //!   slot identity for warm-start basis reconstruction.
-//! - [`cut_selection`] — [`CutSelectionStrategy`]: Level-1 / LML1 / domination
-//!   periodic cut-selection strategies.
-//! - [`dcs`] — Dynamic Cut Selection: scores all resident cuts per stage.
+//! - [`cut_selection`] — [`CutSelectionStrategy`]: the `Level1` periodic
+//!   selection pass and the `Dynamic` lazy-row method.
+//! - [`dcs`] — lazy row generation of the `dynamic` method.
 //! - [`cut_sync`] — [`CutSyncBuffers`]: MPI cut-synchronization scratch space.
 //! - [`basis_reconstruct`] — warm-start basis reconstruction for the frozen
 //!   hot path and the DCS path.
+//! - `trial_states` — the per-slot rows of the state each scored cut was
+//!   computed at, reached through [`CutPool`].
+//! - `ownership` — the per-state record of the Level 1 owner, a cache of the
+//!   ownership function, reached through [`CutPool`].
 
 pub mod basis_reconstruct;
 pub mod cut_selection;
 pub mod cut_sync;
 pub mod dcs;
 pub mod fcf;
+mod ownership;
 pub mod pool;
 pub mod row;
 pub mod row_map;
+#[cfg(test)]
+pub(crate) mod selection_reference;
+mod trial_states;
 pub mod wire;
 
 pub use cut_selection::CutSelectionStrategy;
 pub use cut_sync::CutSyncBuffers;
 pub use fcf::FutureCostFunction;
-pub use pool::{CutPool, SparsityReport};
+pub use pool::{CutPool, CutSet, SlotOrigin, SlotRole, SparsityReport};
 pub use row_map::CutRowMap;
 pub use wire::CutWireHeader;
-
-/// Sentinel value stored in [`crate::cut_selection::CutMetadata::iteration_generated`]
-/// for warm-start cuts loaded from a policy checkpoint.
-///
-/// Set to [`u64::MAX`] so that `WARM_START_ITERATION != current_iteration` is
-/// always true for any valid training iteration, allowing cut selection
-/// strategies to distinguish warm-start cuts from training-generated cuts
-/// without special casing.
-pub const WARM_START_ITERATION: u64 = u64::MAX;

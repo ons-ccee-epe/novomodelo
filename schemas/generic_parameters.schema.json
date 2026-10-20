@@ -166,7 +166,7 @@
           "type": "object"
         },
         {
-          "description": "Maximum stored energy: `integrated_accumulated_productivity * (V_hi -\nV_lo)` over the hydro plant's physical storage range (stage-invariant).\nUnit is productivity `[MW/(m3/s)]` times volume `[hm3]` — the same unit\nas a productivity-times-storage-volume constraint term, not `MWh`.",
+          "description": "Maximum stored energy: `integrated_accumulated_productivity * (V_hi -\nV_lo)` over the hydro plant's physical storage range (stage-invariant).\nUnit is productivity `[MW/(m3/s)]` times volume `[hm3]` — the same unit\nas a productivity-times-storage-volume constraint term, not `MWh`\n(`max_stored_energy_mwh` is the `MWh` form).",
           "properties": {
             "hydro_id": {
               "$ref": "#/$defs/EntityId",
@@ -174,6 +174,60 @@
             },
             "tag": {
               "const": "max_stored_energy",
+              "type": "string"
+            }
+          },
+          "required": [
+            "tag",
+            "hydro_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`integrated_accumulated_productivity` in `[MWh/hm3]` (times `10⁶/3600`):\ntimes a useful volume `[hm3]` it gives stored energy `[MWh]` (cascade scope).",
+          "properties": {
+            "hydro_id": {
+              "$ref": "#/$defs/EntityId",
+              "description": "Hydro plant identifier."
+            },
+            "tag": {
+              "const": "integrated_accumulated_productivity_mwh_per_hm3",
+              "type": "string"
+            }
+          },
+          "required": [
+            "tag",
+            "hydro_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`max_stored_energy` in `[MWh]` (times `10⁶/3600`): the energy stored over\nthe plant's physical storage range, valued with the cascade's productivity.",
+          "properties": {
+            "hydro_id": {
+              "$ref": "#/$defs/EntityId",
+              "description": "Hydro plant identifier."
+            },
+            "tag": {
+              "const": "max_stored_energy_mwh",
+              "type": "string"
+            }
+          },
+          "required": [
+            "tag",
+            "hydro_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`integrated_equivalent_productivity` in `[MWh/hm3]` (times `10⁶/3600`):\ntimes a useful volume `[hm3]` it gives the plant's own stored energy\n`[MWh]`, without the cascade below it.",
+          "properties": {
+            "hydro_id": {
+              "$ref": "#/$defs/EntityId",
+              "description": "Hydro plant identifier."
+            },
+            "tag": {
+              "const": "integrated_equivalent_productivity_mwh_per_hm3",
               "type": "string"
             }
           },
@@ -216,6 +270,11 @@
         {
           "const": "per_stage_block",
           "description": "One value per stage and block, in `block_values`.",
+          "type": "string"
+        },
+        {
+          "const": "expression",
+          "description": "A program over other scalar parameters, in `expression`.",
           "type": "string"
         }
       ]
@@ -261,6 +320,13 @@
           ],
           "description": "Computed-parameter specification. Required when `kind == \"computed\"`;\nmust be absent for all other kinds."
         },
+        "expression": {
+          "description": "Arithmetic over `@name` references to other parameters of this file.\nRequired when `kind == \"expression\"`; must be absent for all other kinds.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "id": {
           "description": "Stable numeric identifier; unique within the file.",
           "format": "int32",
@@ -268,7 +334,7 @@
         },
         "kind": {
           "$ref": "#/$defs/RawParameterKind",
-          "description": "Selects which payload field (`value`, `values`, `computed_spec` or\n`block_values`) the entry carries."
+          "description": "Selects the one payload field the entry carries; every other payload\nfield must be absent."
         },
         "name": {
           "description": "Human-readable name; unique within the file. Used as the `@name` reference\nfrom `generic_constraints.json`.",
@@ -283,7 +349,7 @@
           ]
         },
         "values": {
-          "description": "`[[key, value], ...]` pairs. Required when `kind == \"per_stage\"` (keys are\nstage ids, must be a contiguous range starting at 0) or\n`kind == \"seasonal\"` (keys are season ids, must be unique). Must be absent\nfor `\"constant\"` and `\"computed\"`.",
+          "description": "`[[key, value], ...]` pairs. Required when `kind == \"per_stage\"` (keys are\nstage ids, must be a contiguous range starting at 0) or\n`kind == \"seasonal\"` (keys are season ids, must be unique); must be absent\nfor all other kinds.",
           "items": {
             "maxItems": 2,
             "minItems": 2,

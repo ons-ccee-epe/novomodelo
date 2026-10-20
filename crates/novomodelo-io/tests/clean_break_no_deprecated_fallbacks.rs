@@ -12,7 +12,8 @@ use std::process::Command;
 ///
 /// Complements, and does not replace, the per-site behaviour tests that already
 /// pin the individual removals: `retired_scheduler_spellings_are_deserialize_error`
-/// (`src/config/training.rs`), `test_num_scenarios_removed_field_rejected`
+/// and `a_removed_selection_method_names_level1` (`src/config/training.rs`),
+/// `test_num_scenarios_removed_field_rejected`
 /// (`src/stages.rs`), and the `domination_count` `FlatBuffers` conformance check
 /// (`tests/flatbuffers_schema_conformance.rs`).
 fn novomodelo_io_src(workspace_root: &Path) -> std::path::PathBuf {

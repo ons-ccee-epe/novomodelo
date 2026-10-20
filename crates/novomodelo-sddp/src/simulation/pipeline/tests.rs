@@ -7,20 +7,20 @@ use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
 use novomodelo_core::WorkerPhaseTimings;
 use novomodelo_core::scenario::SamplingScheme;
 use novomodelo_solver::{
-    Basis, LpSolution, ProfiledSolver, RowBatch, SolverError, SolverInterface, SolverStatistics,
-    StageTemplate,
+    Basis, FreezeScratch, LpSolution, ProfiledSolver, RowBatch, SolverError, SolverInterface,
+    SolverStatistics, StageTemplate, freeze_rows_into_template,
 };
 use novomodelo_stochastic::StochasticContext;
 
 use super::SimulationOutputSpec;
 use crate::{
     context::{StageContext, TrainingContext},
-    cut::FutureCostFunction,
+    cut::{CutSet, FutureCostFunction, row::build_cut_row_batch},
     energy_conversion::EnergyConversionSet,
     horizon_mode::HorizonMode,
     inflow_method::InflowNonNegativityMethod,
     lp::builder::PatchBuffer,
-    setup::node_graph::Traversal,
+    setup::{NodeId, node_graph::Traversal},
     simulation::{
         config::SimulationConfig,
         error::SimulationError,
@@ -59,6 +59,7 @@ where
         config,
         output,
         frozen_templates,
+        cut_set: CutSet::Active,
         node_bases,
         comm,
         traversal,
@@ -97,6 +98,7 @@ where
         config,
         output,
         frozen_templates,
+        cut_set: CutSet::Active,
         node_bases,
         comm,
         traversal,
@@ -165,6 +167,7 @@ struct MockSolver {
     buf_dual: Vec<f64>,
     buf_reduced_costs: Vec<f64>,
     load_count: usize,
+    loaded: Vec<(usize, usize)>,
     add_rows_count: usize,
     solve_count: usize,
     solve_with_basis_count: usize,
@@ -185,6 +188,7 @@ impl MockSolver {
             buf_dual,
             buf_reduced_costs,
             load_count: 0,
+            loaded: Vec::new(),
             add_rows_count: 0,
             solve_count: 0,
             solve_with_basis_count: 0,
@@ -222,8 +226,10 @@ impl SolverInterface for MockSolver {
     fn solver_name_version(&self) -> String {
         "MockSolver 0.0.0".to_string()
     }
-    fn load_model(&mut self, _template: &StageTemplate) {
+    fn load_model(&mut self, template: &StageTemplate) {
         self.load_count += 1;
+        self.loaded
+            .push((std::ptr::from_ref(template).addr(), template.num_rows));
     }
     fn add_rows(&mut self, _cuts: &RowBatch) {
         self.add_rows_count += 1;
@@ -1020,6 +1026,142 @@ fn simulation_state_set_profile_reaches_current_profile_after_run() {
     );
 }
 
+/// `(address, row count)` of the template the one stage LP loads when a
+/// one-scenario simulation of `fcf` runs under `cut_set` with `caller`'s templates.
+fn loaded_template(
+    fcf: &FutureCostFunction,
+    cut_set: CutSet,
+    caller: Option<&[StageTemplate]>,
+) -> (usize, usize) {
+    let n_stages = 1;
+    let templates = vec![test_support::hydro_only_bus_template()];
+    let stochastic = make_stochastic_context(n_stages);
+    let state = test_support::state_layout(1, 0);
+    let config = SimulationConfig {
+        n_scenarios: 1,
+        io_channel_capacity: 4,
+        profile: Phase::Simulation.profile(),
+        forward_seed: None,
+    };
+    let horizon = HorizonMode::Finite {
+        num_stages: n_stages,
+    };
+    let initial_state = vec![50.0_f64];
+    let solver = MockSolver::always_ok(test_support::hydro_only_bus_solution(100.0, 30.0));
+    let entity_counts = entity_counts_1_hydro();
+    let (tx, _rx) = mpsc::sync_channel(4);
+    let hprod = hydro_productivities_1hydro(n_stages);
+    let ec = zero_energy_conversion(1, n_stages);
+    let mut workspaces = single_workspace(solver);
+    let state_boxes = permissive_state_boxes(state.n_state, templates.len());
+    let geometry = [test_support::hydro_only_bus_geometry()];
+    let stage_ctx = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    SimulationState::new(n_stages)
+        .run(&mut SimulationInputs {
+            workspaces: &mut workspaces,
+            ctx: &stage_ctx.ctx(),
+            fcf,
+            training_ctx: &TrainingContext {
+                node_graph: &crate::test_support::chain_node_graph(&stochastic),
+                horizon: &horizon,
+                state: &state,
+                cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
+                study_dims: &test_support::study_dims(),
+                inflow_method: &InflowNonNegativityMethod::None,
+                stochastic: &stochastic,
+                initial_state: &initial_state,
+                inflow_scheme: SamplingScheme::InSample,
+                load_scheme: SamplingScheme::InSample,
+                ncs_scheme: SamplingScheme::InSample,
+                stages: &[],
+                historical_library: None,
+                external_inflow_library: None,
+                external_load_library: None,
+                external_ncs_library: None,
+                lag_accum_seed: &[],
+                lag_weight_seed: &[],
+                dcs: None,
+            },
+            config: &config,
+            output: SimulationOutputSpec {
+                result_tx: &tx,
+                hydro_cell_index: &test_support::identity_hydro_cell_index(256),
+                block_hours_per_stage: &[vec![1.0]],
+                entity_counts: &entity_counts,
+                generic_constraint_row_entries: &[Vec::new()],
+                pumping_consumption_mw_per_m3s: &[],
+                contract_prices_per_stage: &[Vec::new()],
+                contract_slots: &[],
+                diversion_upstream: &HashMap::new(),
+                hydro_productivities_per_stage: &hprod,
+                energy_conversion: &ec,
+                hydro_min_storage_hm3: &[0.0],
+                event_sender: None,
+                extended_delivery_anchors: &[],
+                transit_seed_arcs: &[],
+                past_defluences: &[],
+                study_stage_dates: &[],
+            },
+            frozen_templates: caller,
+            cut_set,
+            node_bases: &[],
+            comm: &StubComm { rank: 0, size: 1 },
+            traversal: &Traversal::default(),
+        })
+        .unwrap();
+    workspaces[0].solver.inner().loaded[0]
+}
+
+#[test]
+fn simulation_builds_its_templates_from_the_chosen_cut_set() {
+    let base = test_support::hydro_only_bus_template();
+    let state = test_support::state_layout(1, 0);
+    let layouts = test_support::all_enabled_cut_state_layouts(&state, 1);
+    let training_templates = |fcf: &FutureCostFunction| {
+        let rows = build_cut_row_batch(fcf, 0, &state, &layouts[0], &[]);
+        let mut frozen = StageTemplate::empty();
+        freeze_rows_into_template(&base, &rows, &mut frozen, &mut FreezeScratch::new());
+        vec![frozen]
+    };
+    let address = |templates: &[StageTemplate]| std::ptr::from_ref(&templates[0]).addr();
+
+    let mut fcf = FutureCostFunction::new(1, 1, 3, 10, &[0]);
+    for pass in 0..3 {
+        fcf.add_cut(NodeId(0), 0, 0, pass, f64::from(pass), &[1.0]);
+    }
+    let caller = training_templates(&fcf);
+    assert_eq!(fcf.pools[0].count_in(CutSet::All), 3);
+    assert_eq!(
+        loaded_template(&fcf, CutSet::All, Some(&caller)),
+        (address(&caller), base.num_rows + 3),
+        "equal sets: the caller's templates"
+    );
+
+    fcf.pools[0].set_active(1, false);
+    let caller = training_templates(&fcf);
+    let (active, all) = (
+        fcf.pools[0].count_in(CutSet::Active),
+        fcf.pools[0].count_in(CutSet::All),
+    );
+    assert_eq!((active, all), (2, 3));
+    assert_eq!(
+        loaded_template(&fcf, CutSet::Active, Some(&caller)),
+        (address(&caller), base.num_rows + active),
+        "Active: the caller's templates"
+    );
+    assert_eq!(
+        loaded_template(&fcf, CutSet::Active, None).1,
+        base.num_rows + active
+    );
+    let (rebuilt, rows) = loaded_template(&fcf, CutSet::All, Some(&caller));
+    assert_ne!(rebuilt, address(&caller), "All differs: simulation's own");
+    assert_eq!(rows, base.num_rows + all);
+    assert_eq!(
+        loaded_template(&fcf, CutSet::All, None).1,
+        base.num_rows + all
+    );
+}
+
 /// When load noise is present,
 /// `z_inflow_rhs_buf` still contains only inflow values (not contaminated by
 /// load noise).
@@ -1555,12 +1697,13 @@ mod dcs_simulation {
         SimLookups, SimStageIds, SimStageLoadSpec, SimulationOutputSpec, solve_simulation_stage,
     };
     use crate::context::TrainingContext;
-    use crate::cut::FutureCostFunction;
+    use crate::cut::{CutSet, FutureCostFunction};
     use crate::cut_selection::CutMetadata;
-    use crate::dcs::DcsParams;
+    use crate::dcs::DcsConfig;
     use crate::energy_conversion::{EnergyConversion, EnergyConversionSet};
     use crate::horizon_mode::HorizonMode;
     use crate::setup::NodePos;
+    use crate::solver_phase::Phase;
     use crate::test_support::StageContextFixture;
 
     use crate::inflow_method::InflowNonNegativityMethod;
@@ -1764,14 +1907,13 @@ mod dcs_simulation {
         )
     }
 
-    fn dcs_params() -> DcsParams {
-        DcsParams {
-            k1: None,
-            k2: 2,
-            nadic: 10,
-            epsilon_viol: 1e-10,
+    fn dcs_config() -> DcsConfig {
+        DcsConfig {
+            candidate_recency: None,
+            seed_window: 2,
+            max_added_per_round: 10,
+            violation_tolerance: None,
             start_iteration: 2,
-            max_inner_iterations: 50,
         }
     }
 
@@ -1780,7 +1922,7 @@ mod dcs_simulation {
     // Builds the full two-branch (DCS vs frozen) stage-solve fixture inline;
     // extracting pieces would scatter the setup the branch comparison reads.
     fn run_one_sim_stage(
-        dcs: Option<DcsParams>,
+        dcs: Option<DcsConfig>,
         frozen: &StageTemplate,
     ) -> (f64, SimulationStageResult) {
         let state = test_support::state_layout(1, 0);
@@ -1888,6 +2030,8 @@ mod dcs_simulation {
         let load_spec = SimStageLoadSpec {
             frozen_template: frozen,
             warm_basis: None,
+            solver_tolerance: Phase::Simulation.profile().primal_feasibility_tolerance,
+            cut_set: CutSet::Active,
         };
         let lookups = SimLookups::build(
             &study_dims,
@@ -1925,7 +2069,7 @@ mod dcs_simulation {
     fn sim_dcs_exact_matches_all_cuts() {
         let all_cuts = sim_all_cuts_frozen();
         let (frozen_imm, frozen) = run_one_sim_stage(None, &all_cuts);
-        let (dcs_imm, dcs) = run_one_sim_stage(Some(dcs_params()), &all_cuts);
+        let (dcs_imm, dcs) = run_one_sim_stage(Some(dcs_config()), &all_cuts);
 
         assert!(
             (frozen_imm - dcs_imm).abs() < 1e-9,
@@ -1968,7 +2112,7 @@ mod dcs_simulation {
         let all_cuts_template = sim_all_cuts_frozen();
         let dominating = sim_frozen_dominating_cut();
         let (_, frozen) = run_one_sim_stage(None, &all_cuts_template);
-        let (_, dcs) = run_one_sim_stage(Some(dcs_params()), &dominating);
+        let (_, dcs) = run_one_sim_stage(Some(dcs_config()), &dominating);
 
         let ac = stage_cost(&frozen);
         let dc = stage_cost(&dcs);
@@ -1987,7 +2131,7 @@ mod dcs_simulation {
         );
     }
 
-    /// Complementary unit check of the `DcsParams::from_strategy` mapping
+    /// Complementary unit check of the `DcsConfig::from_strategy` mapping
     /// that `simulation_ctx()` applies (the end-to-end `simulation_ctx()`
     /// wiring is covered by `simulation_ctx_propagates_dynamic_dcs_from_setup`
     /// in `setup/mod.rs`): a dynamic strategy yields `Some`, any other
@@ -1996,20 +2140,20 @@ mod dcs_simulation {
     fn from_strategy_gates_dynamic_dcs() {
         use crate::cut_selection::CutSelectionStrategy;
         let dynamic = CutSelectionStrategy::Dynamic {
-            k1: None,
-            k2: 5,
-            nadic: 10,
-            epsilon_viol: 1e-10,
+            candidate_recency: None,
+            seed_window: 5,
+            max_added_per_round: 10,
+            violation_tolerance: None,
             start_iteration: 2,
         };
-        let params = DcsParams::from_strategy(&dynamic)
-            .expect("dynamic strategy must map to Some(DcsParams)");
-        assert_eq!(params.k2, 5);
-        let dominated = CutSelectionStrategy::Dominated {
-            threshold: 1e-6,
+        let config = DcsConfig::from_strategy(&dynamic)
+            .expect("dynamic strategy must map to Some(DcsConfig)");
+        assert_eq!(config.seed_window, 5);
+        let level1 = CutSelectionStrategy::Level1 {
             check_frequency: 10,
+            lookback_iterations: None,
         };
-        assert!(DcsParams::from_strategy(&dominated).is_none());
+        assert!(DcsConfig::from_strategy(&level1).is_none());
     }
 }
 
@@ -2034,7 +2178,7 @@ mod anticipated_ring_matches_forward_propagation {
         SimLookups, SimStageIds, SimStageLoadSpec, SimulationOutputSpec, solve_simulation_stage,
     };
     use crate::context::{StageContext, TrainingContext};
-    use crate::cut::FutureCostFunction;
+    use crate::cut::{CutSet, FutureCostFunction};
     use crate::energy_conversion::EnergyConversionSet;
     use crate::horizon_mode::HorizonMode;
     use crate::inflow_method::InflowNonNegativityMethod;
@@ -2044,6 +2188,7 @@ mod anticipated_ring_matches_forward_propagation {
     use crate::setup::NodePos;
     use crate::setup::node_graph::StageIdx;
     use crate::simulation::extraction::EntityCounts;
+    use crate::solver_phase::Phase;
     use crate::test_support;
     use crate::test_support::{StageContextFixture, equipment_free_geometry};
     use crate::training::forward::{StageKey, run_forward_stage};
@@ -2317,6 +2462,8 @@ mod anticipated_ring_matches_forward_propagation {
             let load_spec = SimStageLoadSpec {
                 frozen_template: template,
                 warm_basis: None,
+                solver_tolerance: Phase::Simulation.profile().primal_feasibility_tolerance,
+                cut_set: CutSet::Active,
             };
             let (_immediate, _result) = solve_simulation_stage(
                 &mut ws,

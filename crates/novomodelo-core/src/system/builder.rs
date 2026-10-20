@@ -831,7 +831,7 @@ mod proptests {
         make_bus, make_contract, make_hydro, make_line, make_ncs, make_pumping_station, make_stage,
         make_thermal,
     };
-    use crate::{ConstraintExpression, ContractType, DeficitSegment, SlackConfig};
+    use crate::{ConstraintExpression, ContractType, DeficitSegment};
     use proptest::prelude::*;
 
     fn date_early() -> NaiveDate {
@@ -848,12 +848,9 @@ mod proptests {
             name: format!("gc{id}"),
             description: None,
             expression: ConstraintExpression { terms: vec![] },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
         }
     }
 

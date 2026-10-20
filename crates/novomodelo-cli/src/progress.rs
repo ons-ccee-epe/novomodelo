@@ -37,15 +37,7 @@ const SIMULATION_TEMPLATE: &str =
 
 /// Format a floating-point value as scientific notation (6 significant digits).
 fn fmt_sci(v: f64) -> String {
-    let raw = format!("{v:.5e}");
-    if let Some(pos) = raw.find('e') {
-        let mantissa = &raw[..pos];
-        let exp_str = &raw[pos + 1..];
-        if let Ok(exp) = exp_str.parse::<i32>() {
-            return format!("{mantissa}e{exp}");
-        }
-    }
-    raw
+    format!("{v:.5e}")
 }
 
 /// Format a millisecond count as `HH:MM:SS`.
@@ -377,6 +369,7 @@ impl BarRenderer {
             | TrainingEvent::PolicySelectionComplete { .. }
             | TrainingEvent::PolicyBudgetEnforcementComplete { .. }
             | TrainingEvent::PolicyTemplateFreezeComplete { .. }
+            | TrainingEvent::PolicyPoolSummary { .. }
             | TrainingEvent::ConvergenceUpdate { .. }
             | TrainingEvent::CheckpointComplete { .. }
             | TrainingEvent::WorkerTiming { .. } => {}
@@ -507,6 +500,7 @@ impl LineRenderer {
             | TrainingEvent::PolicySelectionComplete { .. }
             | TrainingEvent::PolicyBudgetEnforcementComplete { .. }
             | TrainingEvent::PolicyTemplateFreezeComplete { .. }
+            | TrainingEvent::PolicyPoolSummary { .. }
             | TrainingEvent::ConvergenceUpdate { .. }
             | TrainingEvent::CheckpointComplete { .. }
             | TrainingEvent::WorkerTiming { .. } => {}
@@ -585,6 +579,7 @@ mod tests {
             rows_in_lp_sum: 0,
             rows_in_lp_count: 0,
             rows_in_lp_max: 0,
+            lazy_round_cap_hits: 0,
         }
     }
 

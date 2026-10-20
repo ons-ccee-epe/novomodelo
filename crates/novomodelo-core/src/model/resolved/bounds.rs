@@ -106,7 +106,8 @@ pub struct HydroBlockBounds {
     pub max_generation_mw: f64,
     /// Minimum diversion flow \[m³/s\]. `None` = unbounded below.
     pub min_diversion_m3s: Option<f64>,
-    /// Maximum diversion flow \[m³/s\]. Hard upper bound. `None` = no diversion channel.
+    /// Maximum diversion flow \[m³/s\]. Hard upper bound. `None` = unbounded above; a
+    /// hydro without a diversion channel resolves `Some(0.0)`.
     pub max_diversion_m3s: Option<f64>,
     /// Minimum spillage flow \[m³/s\]. `None` = unbounded below.
     pub min_spillage_m3s: Option<f64>,
@@ -114,8 +115,8 @@ pub struct HydroBlockBounds {
     pub max_spillage_m3s: Option<f64>,
 }
 
-/// Neutral test scaffold — `0.0` minima/maxima, `None` optionals — never a
-/// bound source; production sites construct `HydroBlockBounds` exhaustively.
+/// Neutral test scaffold — `0.0` minima/maxima, a closed diversion, `None` other
+/// optionals — never a bound source; production sites construct `HydroBlockBounds` exhaustively.
 impl Default for HydroBlockBounds {
     fn default() -> Self {
         Self {
@@ -126,7 +127,7 @@ impl Default for HydroBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 0.0,
             min_diversion_m3s: None,
-            max_diversion_m3s: None,
+            max_diversion_m3s: Some(0.0),
             min_spillage_m3s: None,
             max_spillage_m3s: None,
         }
@@ -1318,7 +1319,7 @@ mod tests {
         assert!((b.max_storage_hm3 - 200.0).abs() < f64::EPSILON);
         let block_base = table.hydro_block_base(0, 2);
         assert!(block_base.max_outflow_m3s.is_none());
-        assert!(block_base.max_diversion_m3s.is_none());
+        assert_eq!(block_base.max_diversion_m3s, Some(0.0));
 
         let t0 = table.thermal_block_base(0, 0);
         let t1 = table.thermal_block_base(1, 2);

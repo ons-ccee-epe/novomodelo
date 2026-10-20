@@ -5290,6 +5290,7 @@ mod anticipated_convergence_slow {
     use novomodelo_sddp::{
         InflowNonNegativityMethod, StoppingMode, StoppingRule, StoppingRuleSet, StudySetup,
         TrainingOutcome,
+        cut::CutSet,
         hydro_models::PrepareHydroModelsResult,
         setup::{SimulationEnumeratedRequest, StudyParams},
     };
@@ -5627,6 +5628,7 @@ mod anticipated_convergence_slow {
             stopping_rule_set,
             n_scenarios: 0,
             simulation_enumerated: SimulationEnumeratedRequest::Sampled,
+            simulation_cut_set: CutSet::All,
             io_channel_capacity: 0,
             policy_path: String::new(),
             inflow_method,

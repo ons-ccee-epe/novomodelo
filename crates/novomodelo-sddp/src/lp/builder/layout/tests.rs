@@ -8,13 +8,13 @@ use std::ops::Range;
 
 use chrono::NaiveDate;
 use novomodelo_core::{
-    AffineBound, Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, CascadeTopology,
-    ConstraintExpression, ContractBlockBounds, ContractType, EnergyContract, EntityId,
-    FillingConfig, GenericConstraint, Hydro, HydroBlockBounds, HydroGenerationModel,
-    HydroStageBounds, LineBlockBounds, LinearTerm, NoiseMethod, NonControllableSource,
-    PumpingBlockBounds, PumpingStation, ResolvedBounds, ResolvedGenericConstraintBounds,
-    ScenarioSourceConfig, SlackConfig, Stage, StageRiskConfig, StageStateConfig, Thermal,
-    ThermalBlockBounds, ThermalStageBounds, VariableRef,
+    Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, CascadeTopology, ConstraintExpression,
+    ContractBlockBounds, ContractType, EnergyContract, EntityId, FillingConfig, GenericConstraint,
+    Hydro, HydroBlockBounds, HydroGenerationModel, HydroStageBounds, LineBlockBounds, LinearTerm,
+    NoiseMethod, NonControllableSource, PenaltyBasis, PumpingBlockBounds, PumpingStation,
+    ResolvedBounds, ResolvedGenericConstraintBounds, ScalarExpr, ScenarioSourceConfig, SlackConfig,
+    Stage, StageRiskConfig, StageStateConfig, Thermal, ThermalBlockBounds, ThermalStageBounds,
+    VariableRef,
 };
 
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
@@ -97,12 +97,12 @@ impl ZeroEntityFixtures {
             name: "demand_cap".to_string(),
             description: None,
             expression: ConstraintExpression { terms: vec![] },
-            slack: SlackConfig {
-                enabled: true,
-                penalty: Some(10.0),
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: Some(AffineBound::single(EntityId(42))),
+            slack: Some(SlackConfig {
+                penalty: 10.0,
+                penalty_basis: PenaltyBasis::PerHour,
+            }),
+            bound_lower: None,
+            bound_upper: Some(ScalarExpr::param(EntityId(42))),
         }];
         let id_map: HashMap<i32, usize> = [(5, 0)].into_iter().collect();
         self.base.resolved_generic_bounds = ResolvedGenericConstraintBounds::new(
@@ -125,15 +125,9 @@ impl ZeroEntityFixtures {
             name: "folded_cap".to_string(),
             description: None,
             expression: ConstraintExpression { terms: vec![] },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: Some(AffineBound {
-                constant: -5.0,
-                terms: vec![],
-            }),
+            slack: None,
+            bound_lower: None,
+            bound_upper: Some(ScalarExpr::literal(-5.0)),
         }];
         let id_map: HashMap<i32, usize> = [(5, 0)].into_iter().collect();
         self.base.resolved_generic_bounds = ResolvedGenericConstraintBounds::new(
@@ -418,86 +412,53 @@ fn folded_upper_bound_constant_shifts_parquet_base() {
 
 // ── fold_endpoint ─────────────────────────────────────────────────────────
 
-/// A `ResolvedParameters` fixture with one `PerStageBlock` parameter at the
-/// given id, one stage of per-block values.
-fn resolved_with_param(id: i32, values: Vec<f64>) -> ResolvedParameters {
-    ResolvedParameters {
-        per_param: vec![vec![values]],
-        id_to_slot: vec![(id, 0)],
-        ..ResolvedParameters::default()
-    }
-}
-
 /// `(None, None)`: an endpoint neither side targets stays untargeted.
 #[test]
 fn fold_endpoint_both_absent_stays_none() {
-    let resolved = ResolvedParameters::default();
-    assert_eq!(fold_endpoint(None, None, &resolved, 0, 0), None);
+    assert_eq!(fold_endpoint(None, None), None);
 }
 
 /// `(Some(base), None)`: a pure literal passes through unchanged.
 #[test]
 fn fold_endpoint_pure_literal_is_unchanged() {
-    let resolved = ResolvedParameters::default();
-    assert_eq!(fold_endpoint(Some(95.0), None, &resolved, 0, 0), Some(95.0));
+    assert_eq!(fold_endpoint(Some(95.0), None), Some(95.0));
 }
 
-/// `(None, Some(bound))`: with no parquet base, the remainder alone
-/// establishes the endpoint.
+/// `(None, Some(remainder))`: with no parquet base, the remainder alone
+/// establishes the endpoint; `7.0` stands for a single-parameter remainder
+/// resolved to `7.0`.
 #[test]
 fn fold_endpoint_pure_affine_establishes_endpoint() {
-    let resolved = resolved_with_param(42, vec![7.0]);
-    let bound = AffineBound::single(EntityId(42));
-    assert_eq!(
-        fold_endpoint(None, Some(&bound), &resolved, 0, 0),
-        Some(7.0)
-    );
+    assert_eq!(fold_endpoint(None, Some(7.0)), Some(7.0));
 }
 
-/// `(Some(base), Some(bound))` with a constant-only remainder shifts the base
-/// by the constant — the fold is `base + R`, never `R` replacing `base`.
+/// `(Some(base), Some(remainder))` with a constant-only remainder (`-5.0`)
+/// shifts the base by the constant — the fold is `base + R`, never `R`
+/// replacing `base`.
 #[test]
 fn fold_endpoint_literal_and_constant_affine_composes() {
-    let resolved = ResolvedParameters::default();
-    let bound = AffineBound {
-        constant: -5.0,
-        terms: vec![],
-    };
-    assert_eq!(
-        fold_endpoint(Some(100.0), Some(&bound), &resolved, 0, 0),
-        Some(95.0)
-    );
+    assert_eq!(fold_endpoint(Some(100.0), Some(-5.0)), Some(95.0));
 }
 
-/// `(Some(base), Some(bound))` with a `@param`-bearing remainder folds the base
-/// with the resolved parameter value at `(stage_idx, block_idx)`, exactly as a
-/// constant-only remainder does — the fold does not distinguish the shape.
+/// `(Some(base), Some(remainder))` with a `@param`-bearing remainder (`4.0`,
+/// the parameter's value at block 1) folds exactly as a constant-only one does —
+/// the fold does not distinguish the shape.
 #[test]
 fn fold_endpoint_literal_and_param_affine_composes() {
-    let resolved = resolved_with_param(42, vec![3.0, 4.0]);
-    let bound = AffineBound::single(EntityId(42));
-    assert_eq!(
-        fold_endpoint(Some(100.0), Some(&bound), &resolved, 0, 1),
-        Some(104.0)
-    );
+    assert_eq!(fold_endpoint(Some(100.0), Some(4.0)), Some(104.0));
 }
 
-/// An `==`-normalized remainder assigned to both endpoints folds each
-/// independently against its own parquet base.
+/// An `==`-normalized constant remainder (`2.0`) assigned to both endpoints
+/// folds each independently against its own parquet base.
 #[test]
 fn fold_endpoint_equals_normalized_folds_both_endpoints() {
-    let resolved = ResolvedParameters::default();
-    let bound = AffineBound {
-        constant: 2.0,
-        terms: vec![],
-    };
     assert_eq!(
-        fold_endpoint(Some(10.0), Some(&bound), &resolved, 0, 0),
+        fold_endpoint(Some(10.0), Some(2.0)),
         Some(12.0),
         "lower endpoint folds against its own base"
     );
     assert_eq!(
-        fold_endpoint(Some(50.0), Some(&bound), &resolved, 0, 0),
+        fold_endpoint(Some(50.0), Some(2.0)),
         Some(52.0),
         "upper endpoint folds against its own base"
     );
@@ -613,12 +574,9 @@ impl UsefulVolumeFixtures {
             name: "useful_volume".to_string(),
             description: None,
             expression: ConstraintExpression { terms },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
         }];
         let id_map: HashMap<i32, usize> = [(5, 0)].into_iter().collect();
         self.base.resolved_generic_bounds = ResolvedGenericConstraintBounds::new(
@@ -873,12 +831,12 @@ fn useful_volume_fold_uses_entity_physical_v_lo_not_per_stage_operative_bounds()
     );
 }
 
-/// The fold uses the EFFECTIVE coefficient `resolved_coeff * term.scale` — the
-/// same value `fill_generic_constraint_entries` prices the storage column at
+/// The fold uses the EVALUATED coefficient program (`@p * 2.5` here) — the same
+/// value `fill_generic_constraint_entries` prices the storage column at
 /// (`resolve_variable_ref` resolves a useful-volume variant at multiplier
-/// `1.0`), not the raw resolved coefficient alone.
+/// `1.0`), not the bare resolved parameter alone.
 #[test]
-fn useful_volume_fold_effective_coefficient_includes_term_scale() {
+fn useful_volume_fold_uses_the_evaluated_coefficient_program() {
     let mut fixtures = UsefulVolumeFixtures::new(1, 1);
     let h = EntityId(1);
     fixtures.base.hydros[0].min_storage_hm3 = 3.0;
@@ -888,14 +846,13 @@ fn useful_volume_fold_effective_coefficient_includes_term_scale() {
         cost_scale_factor: 1_000_000.0,
     };
     fixtures.install_constraint(
-        vec![LinearTerm::parameter(
-            EntityId(9),
-            2.5,
-            VariableRef::HydroUsefulVolumeFinal {
+        vec![LinearTerm {
+            coefficient: ScalarExpr::param(EntityId(9)) * ScalarExpr::literal(2.5),
+            variable: VariableRef::HydroUsefulVolumeFinal {
                 hydro_id: h,
                 block_id: None,
             },
-        )],
+        }],
         vec![(0, None, Some(1.0), None)],
     );
     let ctx = fixtures.make_ctx();
@@ -906,7 +863,7 @@ fn useful_volume_fold_effective_coefficient_includes_term_scale() {
     assert_eq!(
         row.bound_lower.expect("lower present").to_bits(),
         31.0_f64.to_bits(),
-        "1.0 + (4.0 resolved * 2.5 scale) * 3.0 V_lo = 1 + 10*3 = 31"
+        "1.0 + (4.0 resolved * 2.5) * 3.0 V_lo = 1 + 10*3 = 31"
     );
 }
 
@@ -957,6 +914,7 @@ impl TwoHydroFixtures {
         let production_models = ProductionModelSet::new(models, &hydros, 1);
         Self {
             base: CtxFixture {
+                bounds: bounds_with_entities(hydros.len(), 0, 1),
                 hydros,
                 hydro_cell_index,
                 cascade,
@@ -1368,6 +1326,7 @@ impl FphaMixFixtures {
         let production_models = ProductionModelSet::new(models, &hydros, 1);
         Self {
             base: CtxFixture {
+                bounds: bounds_with_entities(hydros.len(), 0, 1),
                 hydros,
                 hydro_cell_index,
                 cascade,
@@ -2782,9 +2741,15 @@ fn test_layout_no_anticipated_unchanged_num_cols() {
 /// count (all other entity tables empty). `table.n_pumping()` recovers
 /// `n_pumping` from the `pumping` Vec length divided by `n_stages`.
 fn bounds_with_pumping(n_pumping: usize, n_stages: usize) -> ResolvedBounds {
+    bounds_with_entities(0, n_pumping, n_stages)
+}
+
+/// Build an all-zero `ResolvedBounds` sized for `n_hydros` plants and
+/// `n_pumping` stations over `n_stages` stages.
+fn bounds_with_entities(n_hydros: usize, n_pumping: usize, n_stages: usize) -> ResolvedBounds {
     ResolvedBounds::new(
         &BoundsCountsSpec {
-            n_hydros: 0,
+            n_hydros,
             n_thermals: 0,
             n_lines: 0,
             n_pumping,
@@ -3427,6 +3392,7 @@ impl TwoHydroMultiBusFixtures {
         let production_models = ProductionModelSet::new(models, &hydros, 1);
         Self {
             base: CtxFixture {
+                bounds: bounds_with_entities(hydros.len(), 0, 1),
                 hydros,
                 hydro_cell_index,
                 cascade,
@@ -3602,6 +3568,7 @@ impl FphaMultiBusFixtures {
 
         Self {
             base: CtxFixture {
+                bounds: bounds_with_entities(hydros.len(), 0, 1),
                 hydros,
                 hydro_cell_index,
                 cascade,
@@ -4289,12 +4256,12 @@ fn two_sided_real_layout_allocates_minus_slack_column() {
         name: "gc_range_test".to_string(),
         description: None,
         expression: ConstraintExpression { terms: vec![] },
-        slack: SlackConfig {
-            enabled: true,
-            penalty: Some(10.0),
-        },
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        slack: Some(SlackConfig {
+            penalty: 10.0,
+            penalty_basis: PenaltyBasis::PerHour,
+        }),
+        bound_lower: None,
+        bound_upper: None,
     };
 
     let id_map: HashMap<i32, usize> = [(1, 0)].into_iter().collect();

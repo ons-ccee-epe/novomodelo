@@ -39,8 +39,8 @@ use novomodelo_core::{
     },
 };
 use novomodelo_sddp::{
-    Phase, ResolvedParameters, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet,
-    TrainingConfig, build_stage_templates_resolving_layout,
+    LoadedPolicy, Phase, ResolvedParameters, SolverProfiles, StoppingMode, StoppingRule,
+    StoppingRuleSet, TrainingConfig, build_stage_templates_resolving_layout,
     config::{CutManagementConfig, EventConfig, LoopConfig},
     context::TrainingContext,
     cut::FutureCostFunction,
@@ -581,7 +581,7 @@ fn train_fixture_into(
         },
         &comm,
         ActiveSolver::new,
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
 }
@@ -1905,10 +1905,10 @@ mod truncation_order_invariance {
     use super::common::in_code_studies::{
         ChronologicalNoiseSpec, chronological_noise_study, negative_draw_par1_spec,
     };
-    use super::common::{StubComm, build_setup_in_code, run_simulation};
+    use super::common::{StubComm, build_setup_in_code, run_simulation, stored_trial_states};
 
     /// Per (scenario, stage, block, hydro id): slack, z and incoming lag-0 bits;
-    /// per (stage, archived state, opening, hydro id): the probe's slack bound bits.
+    /// per (stage, stored trial state, opening, hydro id): the probe's slack bound bits.
     struct Fingerprint {
         records: BTreeMap<(u32, u32, Option<u32>, i32), [u64; 3]>,
         bounds: BTreeMap<(usize, usize, usize, i32), [u64; 2]>,
@@ -1939,22 +1939,19 @@ mod truncation_order_invariance {
             "training error: {:?}",
             outcome.error
         );
-        let archive = outcome.result.visited_archive.expect("visited archive");
 
         let mut pool = setup
             .create_workspace_pool(&StubComm, 1, ActiveSolver::new)
             .expect("workspace pool");
         let ws = &mut pool.workspaces[0];
         let training_ctx = setup.training_ctx();
-        let n_state = training_ctx.state.n_state;
         let mut bounds = BTreeMap::new();
         let (mut max_bound, mut max_lstar_gap) = (0.0_f64, 0.0_f64);
         let n_stages = setup.inputs.node_graph.nodes.len();
         for stage in 1..n_stages {
             let n_openings = setup.inputs.node_graph.nodes[NodePos(stage)].openings.len;
-            for (k, x) in archive
-                .states_for_node(NodePos(stage - 1))
-                .chunks_exact(n_state)
+            for (k, x) in stored_trial_states(&setup, NodePos(stage - 1))
+                .iter()
                 .enumerate()
             {
                 for o in 0..n_openings {

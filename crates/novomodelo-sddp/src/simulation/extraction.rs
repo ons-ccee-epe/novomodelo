@@ -25,7 +25,7 @@ use novomodelo_core::ContractType;
 use novomodelo_core::EntityId;
 use novomodelo_core::HydroPastDefluence;
 
-use crate::energy_conversion::EnergyConversionSet;
+use crate::energy_conversion::{ENERGY_FACTOR_MWH_PER_HM3_PER_MW_PER_M3S, EnergyConversionSet};
 use crate::horizon_mode::HorizonMode;
 use crate::lp::builder::{
     GenericConstraintRowEntry, StageGeometry, evaporation_slot, evaporation_slot_count,
@@ -33,8 +33,8 @@ use crate::lp::builder::{
 use crate::lp::indexer::{
     AnticipatedLocal, AnticipatedPlants, BlockIdx, Boundary, BusSys, EvapLocal, FillingTargetLocal,
     FloorLocal, FphaCellLocal, FphaLocal, HydroCell, HydroCellIndex, HydroSys, LineSys, NcsSys,
-    PumpingSys, StateSpace, StudyDimensions, ThermalSys, anticipated_resolution_for,
-    is_anticipated_decision_active_for_delivery,
+    PlantFloorLocal, PumpingSys, StateSpace, StudyDimensions, ThermalSys,
+    anticipated_resolution_for, is_anticipated_decision_active_for_delivery,
 };
 use crate::setup::NodeId;
 use crate::simulation::types::{
@@ -70,6 +70,8 @@ pub(crate) struct HydroReverseLookup {
     pub(crate) filling_target: Vec<Option<FillingTargetLocal>>,
     /// `σ^{v-}` operating-floor slot per hydro, `None` if it owns no floor column at this stage.
     pub(crate) filled_min_storage_floor: Vec<Option<FloorLocal>>,
+    /// Plant residual floor slot per hydro, `None` if it owns no residual slack columns at this stage.
+    pub(crate) plant_floor: Vec<Option<PlantFloorLocal>>,
 }
 
 /// Map each system hydro index in `indices` to its local slot via `make`;
@@ -113,12 +115,18 @@ impl HydroReverseLookup {
             &geometry.filled_min_storage_floor_hydro_indices,
             FloorLocal::new,
         );
+        let plant_floor = build_reverse_slots(
+            n_hydros,
+            &geometry.plant_floor_hydro_indices,
+            PlantFloorLocal::new,
+        );
         Self {
             fpha,
             fpha_cell_local_start,
             evap,
             filling_target,
             filled_min_storage_floor,
+            plant_floor,
         }
     }
 
@@ -598,11 +606,6 @@ pub struct SolutionView<'a> {
     pub row_lower: &'a [f64],
 }
 
-/// Conversion factor from `hm³ · MW/(m³/s)` to `MWh`.
-///
-/// Unit cancellation: `hm³ × 10⁶ m³/hm³ ÷ 3600 s/h × MW/(m³/s) = MWh`.
-pub const ENERGY_FACTOR_MWH_PER_HM3_PER_MW_PER_M3S: f64 = 1.0e6 / 3600.0;
-
 /// `(storage - v_min) * rho_acum * ENERGY_FACTOR` — stored energy above the
 /// minimum operable volume, shared by the initial- and final-storage reads.
 #[inline]
@@ -747,21 +750,28 @@ fn sum_cell_slack(
 
 /// The four operational-violation slack values for plant `h` at block `b`:
 /// `(turbined_slack, outflow_slack_below, outflow_slack_above, generation_slack)`.
-/// `turbine_below_slack`/`generation_below_slack` are CELL-keyed, so those two
-/// sum `h`'s own cells via [`sum_cell_slack`]; the two outflow families stay
-/// hydro-keyed.
+/// The two power slacks are the plant's whole shortfall: its own cells' slacks
+/// ([`sum_cell_slack`]) plus its residual slack when it owns one; the two
+/// outflow families stay hydro-keyed.
 fn hydro_operational_slacks(
     view: &SolutionView<'_>,
     spec: &StageExtractionSpec<'_>,
+    lookup: &HydroReverseLookup,
     h: usize,
     b: usize,
 ) -> (f64, f64, f64, f64) {
     let blk = BlockIdx::new(b);
+    let mut turbined = sum_cell_slack(view, spec, StageGeometry::turbine_below_col, h, b);
+    let mut generation = sum_cell_slack(view, spec, StageGeometry::generation_below_col, h, b);
+    if let Some(local) = lookup.plant_floor[h] {
+        turbined += view.primal[spec.geometry.plant_turbine_below_col(local, blk)];
+        generation += view.primal[spec.geometry.plant_generation_below_col(local, blk)];
+    }
     (
-        sum_cell_slack(view, spec, StageGeometry::turbine_below_col, h, b),
+        turbined,
         view.primal[spec.geometry.outflow_below_col(HydroSys::new(h), blk)],
         view.primal[spec.geometry.outflow_above_col(HydroSys::new(h), blk)],
-        sum_cell_slack(view, spec, StageGeometry::generation_below_col, h, b),
+        generation,
     )
 }
 
@@ -948,7 +958,7 @@ fn extract_hydro_per_block<'a>(
         };
 
         let (turbined_slack, outflow_slack_below, outflow_slack_above, generation_slack) =
-            hydro_operational_slacks(view, spec, h, b);
+            hydro_operational_slacks(view, spec, lookup, h, b);
 
         // Chronological block `b` reports its own boundary pair `(Sᵇ, Sᵇ⁺¹)` via the
         // accessor (interior columns stride `n_blks − 1`, so the read cannot go
@@ -1431,8 +1441,12 @@ fn compute_hydro_violation_costs(
             (
                 range_sum(equipment.outflow_below_slack.clone()) * cost_scale_factor,
                 range_sum(equipment.outflow_above_slack.clone()) * cost_scale_factor,
-                range_sum(equipment.turbine_below_slack.clone()) * cost_scale_factor,
-                range_sum(equipment.generation_below_slack.clone()) * cost_scale_factor,
+                (range_sum(equipment.turbine_below_slack.clone())
+                    + range_sum(equipment.plant_turbine_below_slack.clone()))
+                    * cost_scale_factor,
+                (range_sum(equipment.generation_below_slack.clone())
+                    + range_sum(equipment.plant_generation_below_slack.clone()))
+                    * cost_scale_factor,
             )
         };
 
@@ -1580,9 +1594,8 @@ fn extract_generic_violations(
     let mut total_cost = 0.0;
 
     for entry in entries {
-        // A stage-level row is priced by total stage hours (matching the LP
-        // objective in `fill_generic_constraint_entries`); a per-block row by its block's.
-        let block_hours = if entry.is_stage_level {
+        // Same row hours as the LP objective in `fill_generic_constraint_entries`.
+        let row_hours = if entry.is_stage_level {
             spec.block_hours.iter().sum()
         } else {
             spec.block_hours
@@ -1590,16 +1603,17 @@ fn extract_generic_violations(
                 .copied()
                 .unwrap_or(0.0)
         };
-        let (slack_value, slack_cost) = if entry.slack_enabled {
+        let (slack_value, slack_cost) = if let Some(slack) = entry.slack {
+            let unit_cost = slack.unit_cost(row_hours);
             if let Some(minus_col) = entry.slack_minus_col {
                 let s_plus = entry.slack_plus_col.map_or(0.0, |col| view.primal[col]);
                 let s_minus = view.primal[minus_col];
                 let net = s_plus - s_minus;
-                let cost = (s_plus + s_minus) * entry.slack_penalty * block_hours;
+                let cost = (s_plus + s_minus) * unit_cost;
                 (net, cost)
             } else {
                 let s = entry.slack_plus_col.map_or(0.0, |col| view.primal[col]);
-                let cost = s * entry.slack_penalty * block_hours;
+                let cost = s * unit_cost;
                 (s, cost)
             }
         } else {

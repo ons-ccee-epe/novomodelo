@@ -9,13 +9,11 @@
 //! allocation occurs on the hot path.
 
 use novomodelo_comm::CommError::InvalidBufferSize;
-use novomodelo_comm::Communicator;
-use novomodelo_solver::ActiveProfile;
-use novomodelo_solver::SolverError;
-use novomodelo_solver::{SolverInterface, StageTemplate};
+use novomodelo_comm::{Communicator, per_rank_counts};
+use novomodelo_io::StageStatesReadResult;
+use novomodelo_solver::{ActiveProfile, SolverError, SolverInterface, StageTemplate};
 
-use crate::visited_states::VisitedStatesArchive;
-use crate::workspace::BasisStore;
+use crate::training::session::rank_distribution::RankDistribution;
 use crate::{
     SddpError, SolverProfiles, TrainingConfig,
     context::{StageContext, TrainingContext},
@@ -24,7 +22,7 @@ use crate::{
     solver_stats::SolverStatsLogEntry,
     stopping_rule::StopDecision,
     training_session::{IterationOutcome, TrainingSession},
-    workspace::CapturedBasis,
+    workspace::{BasisStore, CapturedBasis},
 };
 
 // ---------------------------------------------------------------------------
@@ -92,21 +90,22 @@ pub struct TrainingResult {
     /// `"lower_bound"` entries (rank-aggregated, no stage axis).
     pub solver_stats_log: Vec<SolverStatsLogEntry>,
 
-    /// Visited-states archive of all forward-pass trial points; the caller
-    /// decides whether to persist it based on `exports.states`.
-    pub visited_archive: Option<VisitedStatesArchive>,
-
     /// Final-iteration frozen templates, one per POOL (each is a pool's base
     /// stage template plus that pool's active cuts). Always `Some`: freeze runs
     /// unconditionally before the first iteration and is never reverted.
     pub frozen_templates: Option<Vec<StageTemplate>>,
+
+    /// The per-scenario bases the policy checkpoint writes, on rank 0; empty on
+    /// every other rank and when the result was not produced by a training loop.
+    pub checkpoint_bases: CheckpointBasisStore,
 }
 
 impl TrainingResult {
     /// Construct a `TrainingResult` with explicit field values.
     ///
     /// Prefer this over struct-literal syntax: adding a field then fails to
-    /// compile until every call site is updated.
+    /// compile until every call site is updated. `checkpoint_bases.complete`
+    /// decides where `write_checkpoint` puts the result, so every caller states it.
     #[must_use]
     // Rationale: the arguments are independently sourced phase outputs and every
     // call site constructs the full result, so a context struct would not reduce
@@ -122,8 +121,8 @@ impl TrainingResult {
         total_time_ms: u64,
         basis_cache: Vec<Option<CapturedBasis>>,
         solver_stats_log: Vec<SolverStatsLogEntry>,
-        visited_archive: Option<VisitedStatesArchive>,
         frozen_templates: Option<Vec<StageTemplate>>,
+        checkpoint_bases: CheckpointBasisStore,
     ) -> Self {
         Self {
             final_lb,
@@ -137,9 +136,95 @@ impl TrainingResult {
             total_time_ms,
             basis_cache,
             solver_stats_log,
-            visited_archive,
             frozen_templates,
+            checkpoint_bases,
         }
+    }
+}
+
+/// The solver bases a checkpoint holds: one per global scenario and node, each
+/// with an empty `state_at_capture`.
+#[derive(Debug, Clone, Default)]
+pub struct CheckpointBasisStore {
+    /// Per canonical node, `(global scenario, basis)` ascending by scenario.
+    pub nodes: Vec<Vec<(u32, CapturedBasis)>>,
+    /// Whether every rank's rows are held; a failure exit holds rank 0's only.
+    pub complete: bool,
+}
+
+impl CheckpointBasisStore {
+    /// This rank's rows keyed by global scenario, marked incomplete. Issues no
+    /// collective, so a failure exit can call it.
+    pub(crate) fn rank_local(basis_store: &BasisStore, ranks: &RankDistribution) -> Self {
+        let nodes = (0..basis_store.num_nodes())
+            .map(|node| {
+                (0..ranks.my_actual_fwd)
+                    .filter_map(|m| {
+                        basis_store.get(m, NodePos(node)).map(|captured| {
+                            (
+                                global_scenario(ranks.my_fwd_offset, m),
+                                CapturedBasis {
+                                    basis: captured.basis.clone(),
+                                    base_row_count: captured.base_row_count,
+                                    cut_row_slots: captured.cut_row_slots.clone(),
+                                    state_at_capture: Vec::new(),
+                                    node_id: captured.node_id,
+                                },
+                            )
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+        Self {
+            nodes,
+            complete: false,
+        }
+    }
+}
+
+/// What a policy load hands to [`train`].
+#[derive(Debug, Default)]
+pub struct LoadedPolicy {
+    /// Per canonical node, the stored bases with their global scenario,
+    /// ascending by scenario; empty for a fresh start.
+    pub scenario_bases: Vec<Vec<(u32, CapturedBasis)>>,
+
+    /// The stored trial states of the loaded pools, their slots already placed
+    /// in the loaded pools.
+    pub trial_states: Vec<StageStatesReadResult>,
+
+    /// `Cold` unless the load that built this sets the fallback: a warm start
+    /// and a simulation-only load do, a resume does not.
+    pub missing_scenario_basis: MissingScenarioBasis,
+}
+
+/// What seeds a scenario whose own basis a node's stored bases lack.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MissingScenarioBasis {
+    /// Nothing: the run that wrote a resumed checkpoint held no basis there
+    /// either, as for a node of a branching graph the scenario has not visited.
+    #[default]
+    Cold,
+    /// The node's lowest-scenario basis, for a warm start whose source ran
+    /// fewer forward passes.
+    NodeLowestScenario,
+}
+
+impl LoadedPolicy {
+    /// The basis that seeds global scenario `scenario`'s row of the basis store
+    /// at `node`: that scenario's own stored basis, else what
+    /// [`MissingScenarioBasis`] says.
+    #[must_use]
+    pub fn seed_basis(&self, node: NodePos, scenario: u32) -> Option<&CapturedBasis> {
+        let entries = self.scenario_bases.get(node.0)?;
+        let own = entries.binary_search_by_key(&scenario, |&(stored, _)| stored);
+        match (own, self.missing_scenario_basis) {
+            (Ok(i), _) => entries.get(i),
+            (Err(_), MissingScenarioBasis::NodeLowestScenario) => entries.first(),
+            (Err(_), MissingScenarioBasis::Cold) => None,
+        }
+        .map(|(_, basis)| basis)
     }
 }
 
@@ -147,13 +232,13 @@ impl TrainingResult {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Convert a buffer length to `i32` for use as an MPI broadcast count.
+/// Convert a buffer length to `i32` for use as an MPI count.
 ///
 /// # Errors
 ///
 /// Returns `SddpError::Communication(CommError::InvalidBufferSize { .. })`
 /// when `len > i32::MAX` (the MPI count limit).
-fn checked_broadcast_len(len: usize, operation: &'static str) -> Result<i32, SddpError> {
+fn checked_mpi_count(len: usize, operation: &'static str) -> Result<i32, SddpError> {
     i32::try_from(len).map_err(|_| {
         SddpError::Communication(InvalidBufferSize {
             operation,
@@ -163,11 +248,35 @@ fn checked_broadcast_len(len: usize, operation: &'static str) -> Result<i32, Sdd
     })
 }
 
+/// Broadcast rank 0's buffer length. A length past the `i32` count limit
+/// travels as `-1`, so every rank fails after the same broadcast instead of
+/// rank 0 leaving the peers blocked in it.
+///
+/// # Errors
+///
+/// Rank 0 gets `SddpError::Communication(CommError::InvalidBufferSize { .. })`
+/// for such a length; every other rank gets `SddpError::Validation`.
+fn broadcast_len<C: Communicator>(
+    comm: &C,
+    len: usize,
+    operation: &'static str,
+) -> Result<usize, SddpError> {
+    let own = checked_mpi_count(len, operation);
+    let mut buf = [own.as_ref().map_or(-1, |&count| count)];
+    comm.broadcast(&mut buf, 0).map_err(SddpError::from)?;
+    own?;
+    usize::try_from(buf[0]).map_err(|_| {
+        SddpError::Validation(format!(
+            "{operation}: rank 0's payload does not fit an i32 count"
+        ))
+    })
+}
+
 /// This rank's local scenario-0 basis at every node, metadata included
 /// (`cut_row_slots`, `state_at_capture`, `base_row_count`), so a reconstruction
 /// from it keeps full slot identity. On rank 0 it is what
 /// [`broadcast_basis_cache`] delivers to every rank.
-pub(crate) fn rank_local_basis_cache(basis_store: &BasisStore) -> Vec<Option<CapturedBasis>> {
+fn rank_local_basis_cache(basis_store: &BasisStore) -> Vec<Option<CapturedBasis>> {
     (0..basis_store.num_nodes())
         .map(|t| basis_store.get(0, NodePos(t)).cloned())
         .collect()
@@ -189,20 +298,18 @@ pub(crate) fn rank_local_basis_cache(basis_store: &BasisStore) -> Vec<Option<Cap
 /// for the i32 and f64 buffers). Single-rank runs skip the broadcast and return
 /// [`rank_local_basis_cache`].
 ///
-/// Each reconstructed basis's `node_id` now rides the wire payload
-/// (`try_from_broadcast_payload` reads it), so no out-of-band fill from a
-/// per-stage node array is needed. The single-rank clone path likewise keeps
-/// the `node_id` capture set via `write_capture_metadata`. The cache is sized
-/// and keyed by `basis_store.num_nodes()` (one slot per canonical node), so a
-/// branching graph's leaf nodes are broadcast too, never truncated at
-/// `num_stages`.
+/// The cache is sized and keyed by `basis_store.num_nodes()` (one slot per
+/// canonical node), so a branching graph's leaf nodes are broadcast too, never
+/// truncated at `num_stages`.
 ///
 /// # Errors
 ///
-/// Returns `SddpError::Communication(CommError::InvalidBufferSize { .. })` when
-/// a buffer length exceeds `i32::MAX`, `SddpError::Communication` when a
-/// `comm.broadcast` fails, or `SddpError::Validation` when a length prefix is
-/// inconsistent with the received buffer (naming the offending node).
+/// Returns `SddpError::Communication(CommError::InvalidBufferSize { .. })` on
+/// rank 0 when a buffer length exceeds `i32::MAX` (every other rank gets
+/// `SddpError::Validation` after the same broadcast, see [`broadcast_len`]),
+/// `SddpError::Communication` when a `comm.broadcast` fails, or
+/// `SddpError::Validation` when a length prefix is inconsistent with the
+/// received buffer (naming the offending node).
 pub(crate) fn broadcast_basis_cache<C: Communicator>(
     basis_store: &BasisStore,
     comm: &C,
@@ -212,13 +319,6 @@ pub(crate) fn broadcast_basis_cache<C: Communicator>(
         return Ok(rank_local_basis_cache(basis_store));
     }
 
-    // Multi-rank path: pack rank 0's scenario-0 full CapturedBasis into two
-    // flat buffers (one i32 for integer/status fields, one f64 for
-    // state_at_capture) and broadcast both.
-    //
-    // Wire format is owned by CapturedBasis::to_broadcast_payload /
-    // CapturedBasis::try_from_broadcast_payload. The None case writes a
-    // 0_i32 sentinel directly; the Some case delegates to the method.
     let mut buf: Vec<i32> = Vec::new();
     let mut f64_buf: Vec<f64> = Vec::new();
     if comm.rank() == 0 {
@@ -230,34 +330,11 @@ pub(crate) fn broadcast_basis_cache<C: Communicator>(
         }
     }
 
-    let mut len_buf = [checked_broadcast_len(
-        buf.len(),
-        "broadcast_basis_cache_i32",
-    )?];
-    comm.broadcast(&mut len_buf, 0).map_err(SddpError::from)?;
-    let total_len = usize::try_from(len_buf[0]).map_err(|_| {
-        SddpError::Validation(format!(
-            "broadcast_basis_cache_i32: received negative length {}",
-            len_buf[0]
-        ))
-    })?;
-
+    let total_len = broadcast_len(comm, buf.len(), "broadcast_basis_cache_i32")?;
     buf.resize(total_len, 0_i32);
     comm.broadcast(&mut buf, 0).map_err(SddpError::from)?;
 
-    let mut f64_len_buf = [checked_broadcast_len(
-        f64_buf.len(),
-        "broadcast_basis_cache_f64",
-    )?];
-    comm.broadcast(&mut f64_len_buf, 0)
-        .map_err(SddpError::from)?;
-    let f64_total_len = usize::try_from(f64_len_buf[0]).map_err(|_| {
-        SddpError::Validation(format!(
-            "broadcast_basis_cache_f64: received negative length {}",
-            f64_len_buf[0]
-        ))
-    })?;
-
+    let f64_total_len = broadcast_len(comm, f64_buf.len(), "broadcast_basis_cache_f64")?;
     f64_buf.resize(f64_total_len, 0.0_f64);
     comm.broadcast(&mut f64_buf, 0).map_err(SddpError::from)?;
 
@@ -276,6 +353,203 @@ pub(crate) fn broadcast_basis_cache<C: Communicator>(
     }
 
     Ok(cache)
+}
+
+/// Gather every rank's stored bases to rank 0, keyed by global scenario
+/// (`fwd_offset + m` for local row `m`). Every rank calls it under the same
+/// condition; per canonical node it issues one `allgatherv` of the two payload
+/// lengths and one each of the `i32` and `f64` payloads, whose layout
+/// [`CapturedBasis::to_broadcast_payload`] owns. Rank 0 returns the complete
+/// store, every other rank `None`.
+///
+/// # Errors
+///
+/// `SddpError::Communication` when a collective fails or a node's gathered
+/// payload exceeds an `i32` count, and `SddpError::Validation` when a rank's
+/// payload does not fit an `i32` count or rank 0 cannot decode a segment. Every
+/// rank meets a count error at the same node; a decode error is returned only
+/// after every node has been gathered, so no rank leaves the collectives early.
+pub(crate) fn gather_basis_store<C: Communicator>(
+    basis_store: &BasisStore,
+    ranks: &RankDistribution,
+    comm: &C,
+) -> Result<Option<CheckpointBasisStore>, SddpError> {
+    let num_ranks = ranks.num_ranks;
+    let num_nodes = basis_store.num_nodes();
+    let is_root = comm.rank() == 0;
+    let rank_passes = per_rank_counts(ranks.num_total_forward_passes, num_ranks);
+
+    let mut int_send: Vec<i32> = Vec::new();
+    let mut float_send: Vec<f64> = Vec::new();
+    let mut int_recv: Vec<i32> = Vec::new();
+    let mut float_recv: Vec<f64> = Vec::new();
+    let mut lengths = vec![0_i32; 2 * num_ranks];
+    let length_counts = vec![2_usize; num_ranks];
+    let length_displs: Vec<usize> = (0..num_ranks).map(|r| 2 * r).collect();
+    let (mut int_counts, mut int_displs) = (vec![0_usize; num_ranks], vec![0_usize; num_ranks]);
+    let (mut float_counts, mut float_displs) = (vec![0_usize; num_ranks], vec![0_usize; num_ranks]);
+
+    let mut gathered = CheckpointBasisStore {
+        nodes: Vec::with_capacity(if is_root { num_nodes } else { 0 }),
+        complete: true,
+    };
+    let mut decode_error = None;
+
+    for node in 0..num_nodes {
+        int_send.clear();
+        float_send.clear();
+        for m in 0..ranks.my_actual_fwd {
+            match basis_store.get(m, NodePos(node)) {
+                None => int_send.push(0_i32),
+                Some(captured) => captured.to_broadcast_payload(&mut int_send, &mut float_send),
+            }
+        }
+        // A length past `i32::MAX` travels as -1, so every rank fails at this node.
+        let own_lengths = [
+            i32::try_from(int_send.len()).unwrap_or(-1),
+            i32::try_from(float_send.len()).unwrap_or(-1),
+        ];
+        lengths.fill(0);
+        comm.allgatherv(&own_lengths, &mut lengths, &length_counts, &length_displs)
+            .map_err(SddpError::from)?;
+
+        let int_total = segment_layout(
+            lengths.iter().step_by(2),
+            node,
+            "gather_basis_store_i32",
+            &mut int_counts,
+            &mut int_displs,
+        )?;
+        let float_total = segment_layout(
+            lengths.iter().skip(1).step_by(2),
+            node,
+            "gather_basis_store_f64",
+            &mut float_counts,
+            &mut float_displs,
+        )?;
+        int_recv.resize(int_total, 0_i32);
+        float_recv.resize(float_total, 0.0_f64);
+        comm.allgatherv(&int_send, &mut int_recv, &int_counts, &int_displs)
+            .map_err(SddpError::from)?;
+        comm.allgatherv(&float_send, &mut float_recv, &float_counts, &float_displs)
+            .map_err(SddpError::from)?;
+
+        if !is_root || decode_error.is_some() {
+            continue;
+        }
+        let decode_node = || {
+            let mut entries = Vec::new();
+            let mut first_scenario = 0;
+            for (rank, &passes) in rank_passes.iter().enumerate() {
+                decode_rank_segment(
+                    node,
+                    rank,
+                    &int_recv[int_displs[rank]..int_displs[rank] + int_counts[rank]],
+                    &float_recv[float_displs[rank]..float_displs[rank] + float_counts[rank]],
+                    first_scenario,
+                    passes,
+                    &mut entries,
+                )?;
+                first_scenario += passes;
+            }
+            Ok::<_, SddpError>(entries)
+        };
+        match decode_node() {
+            Ok(entries) => gathered.nodes.push(entries),
+            Err(e) => decode_error = Some(e),
+        }
+    }
+
+    if let Some(e) = decode_error {
+        return Err(e);
+    }
+    Ok(is_root.then_some(gathered))
+}
+
+/// Fill one payload buffer's per-rank counts and displacements from the
+/// gathered lengths, returning the buffer's total length.
+///
+/// # Errors
+///
+/// `SddpError::Validation` naming the rank whose length is negative (it did
+/// not fit an `i32`), `SddpError::Communication` when the total exceeds
+/// `i32::MAX`.
+fn segment_layout<'a>(
+    lengths: impl Iterator<Item = &'a i32>,
+    node: usize,
+    operation: &'static str,
+    counts: &mut [usize],
+    displs: &mut [usize],
+) -> Result<usize, SddpError> {
+    let mut total = 0_usize;
+    for (rank, ((count, displ), &length)) in counts
+        .iter_mut()
+        .zip(displs.iter_mut())
+        .zip(lengths)
+        .enumerate()
+    {
+        *count = usize::try_from(length).map_err(|_| {
+            SddpError::Validation(format!(
+                "{operation}: rank {rank}'s basis payload at node {node} does not fit an i32 count"
+            ))
+        })?;
+        *displ = total;
+        total += *count;
+    }
+    checked_mpi_count(total, operation)?;
+    Ok(total)
+}
+
+/// Decode one rank's segment of a node into `entries`, numbering its rows from
+/// `first_scenario` and keeping the rows that hold a basis.
+///
+/// # Errors
+///
+/// `SddpError::Validation` when the segment holds more rows than the rank's
+/// `passes`, leaves `f64` values unread, or fails
+/// [`CapturedBasis::try_from_broadcast_payload`].
+fn decode_rank_segment(
+    node: usize,
+    rank: usize,
+    i32_segment: &[i32],
+    f64_segment: &[f64],
+    first_scenario: usize,
+    passes: usize,
+    entries: &mut Vec<(u32, CapturedBasis)>,
+) -> Result<(), SddpError> {
+    let (mut i32_pos, mut f64_pos) = (0_usize, 0_usize);
+    let mut row = 0_usize;
+    while i32_pos < i32_segment.len() {
+        if row == passes {
+            return Err(SddpError::Validation(format!(
+                "gather_basis_store: rank {rank} sent more than its {passes} rows at node {node}"
+            )));
+        }
+        if let Some(mut captured) = CapturedBasis::try_from_broadcast_payload(
+            node,
+            i32_segment,
+            &mut i32_pos,
+            f64_segment,
+            &mut f64_pos,
+        )? {
+            captured.state_at_capture = Vec::new();
+            entries.push((global_scenario(first_scenario, row), captured));
+        }
+        row += 1;
+    }
+    if f64_pos != f64_segment.len() {
+        return Err(SddpError::Validation(format!(
+            "gather_basis_store: rank {rank} sent {} f64 values its rows at node {node} do not read",
+            f64_segment.len() - f64_pos
+        )));
+    }
+    Ok(())
+}
+
+// Rationale: `LoopConfig::forward_passes` is a `u32`, so every global scenario fits.
+#[allow(clippy::cast_possible_truncation)]
+pub(crate) fn global_scenario(first_scenario: usize, row: usize) -> u32 {
+    (first_scenario + row) as u32
 }
 
 // ---------------------------------------------------------------------------
@@ -310,11 +584,15 @@ pub(crate) fn broadcast_basis_cache<C: Communicator>(
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use novomodelo_sddp::{train, TrainingConfig, LoopConfig, CutManagementConfig, EventConfig, SolverProfiles};
-/// use novomodelo_sddp::{StoppingRuleSet, StoppingRule, RiskMeasure, HorizonMode};
+/// `fcf`, `stage_ctx`, `training_ctx` and `comm` come from a built
+/// [`StudySetup`](crate::setup::StudySetup), so the example is not compiled.
 ///
-/// let mut solver = HiggsBackend::new();
+/// ```rust,ignore
+/// use novomodelo_sddp::config::{CutManagementConfig, EventConfig, LoopConfig};
+/// use novomodelo_sddp::{LoadedPolicy, RiskMeasure, SolverProfiles, TrainingConfig, train};
+/// use novomodelo_solver::ActiveSolver;
+///
+/// let mut solver = ActiveSolver::new()?;
 /// let config = TrainingConfig {
 ///     loop_config: LoopConfig { forward_passes: 100, max_iterations: 100, ..LoopConfig::default() },
 ///     cut_management: CutManagementConfig {
@@ -323,14 +601,13 @@ pub(crate) fn broadcast_basis_cache<C: Communicator>(
 ///     },
 ///     events: EventConfig::default(),
 /// };
-/// let mut fcf = FutureCostFunction::new(num_stages - 1, n_state, capacity);
 ///
-/// let result = train(
+/// let outcome = train(
 ///     &mut solver, config, &mut fcf, &stage_ctx, &training_ctx, &comm,
-///     || HiggsBackend::new(), None, SolverProfiles::default(),
+///     ActiveSolver::new, LoadedPolicy::default(), SolverProfiles::default(),
 /// )?;
 ///
-/// println!("converged in {} iterations, gap={:.4}", result.result.iterations, result.result.final_gap);
+/// println!("stopped after {} iterations, gap={:.4}", outcome.result.iterations, outcome.result.final_gap);
 /// ```
 ///
 /// # Panics
@@ -349,7 +626,7 @@ pub fn train<S, C: Communicator>(
     training_ctx: &TrainingContext<'_>,
     comm: &C,
     solver_factory: impl Fn() -> Result<S, SolverError>,
-    warm_start_basis_cache: Option<Vec<Option<CapturedBasis>>>,
+    mut loaded: LoadedPolicy,
     solver_profiles: SolverProfiles,
 ) -> Result<TrainingOutcome, SddpError>
 where
@@ -363,13 +640,12 @@ where
         training_ctx,
         comm,
         solver_factory,
+        std::mem::take(&mut loaded.trial_states),
         solver_profiles,
     )?;
     // Must seed the basis store before `prime_frozen_templates` freezes the loaded
     // cuts into the templates.
-    if let Some(cache) = warm_start_basis_cache {
-        session.seed_basis_store(&cache);
-    }
+    session.seed_basis_store(&loaded);
     session.prime_frozen_templates();
     for iteration in session.iteration_range() {
         match session.run_iteration(iteration) {

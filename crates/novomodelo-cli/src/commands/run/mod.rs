@@ -253,6 +253,7 @@ fn train_then_simulate<C: Communicator>(
             == PostTrainingSimulation::SkipAfterSignalStop;
 
     let mpi_world_size = u32::try_from(ctx.topology.world_size).unwrap_or(u32::MAX);
+    let mut policy_dir = None;
     let mut local = if ctx.is_root {
         root_config
             .take()
@@ -287,6 +288,7 @@ fn train_then_simulate<C: Communicator>(
                     quiet: ctx.quiet,
                     out: &ctx.stdout,
                 })
+                .map(|dir| policy_dir = Some(dir))
             })
     } else {
         Ok(())
@@ -307,11 +309,13 @@ fn train_then_simulate<C: Communicator>(
                 "training failed after {} iterations: {training_error}",
                 training.result.iterations
             );
-            if !ctx.quiet {
+            if let Some(policy_dir) = policy_dir.filter(|_| !ctx.quiet) {
                 let _ = ctx.stderr.write_line(&format!(
-                    "Training failed after {} iterations. Partial outputs written to {}.",
+                    "Training failed after {} iterations. Partial outputs written to {}; the \
+                     partial policy is in {}.",
                     training.result.iterations,
-                    ctx.output_dir.display()
+                    ctx.output_dir.display(),
+                    policy_dir.display()
                 ));
             }
         }

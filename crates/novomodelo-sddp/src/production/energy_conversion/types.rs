@@ -232,6 +232,20 @@ pub enum EnergyConversionError {
         /// Computed equivalent head \[m\].
         h_eq: f64,
     },
+    /// The useful-range mean equivalent head over the physical storage range is
+    /// non-positive, which would yield a non-physical integrated productivity.
+    #[error(
+        "hydro {hydro_id:?} has non-positive useful-range mean equivalent head \
+         h_mean={h_mean}; fix its geometry/tailrace or supply \
+         integrated_equivalent_productivity_mw_per_m3s in \
+         system/hydro_energy_productivity.parquet"
+    )]
+    NonPositiveMeanEquivalentHead {
+        /// Identifier of the offending hydro.
+        hydro_id: EntityId,
+        /// Computed mean equivalent head \[m\].
+        h_mean: f64,
+    },
     /// Building a `ForebayTable` from the VHA rows failed validation.
     #[error("hydro {hydro_id:?} forebay table construction failed: {message}")]
     ForebayTableInvalid {

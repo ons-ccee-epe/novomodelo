@@ -366,7 +366,7 @@ fn test_diversion_invalid_reference_rejected() {
     let mut hydro = sized_hydro(1, 1, None);
     hydro.diversion = Some(DiversionChannel {
         downstream_id: EntityId(999),
-        max_flow_m3s: 10.0,
+        max_flow_m3s: Some(10.0),
     });
 
     let result = SystemBuilder::new()

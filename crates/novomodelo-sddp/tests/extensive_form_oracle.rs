@@ -1,7 +1,7 @@
 //! Extensive-form LP oracle: closes node-native `enumerated` training's
 //! `final_lb`/`final_ub` to the graph's true first-stage value on three
-//! validation fixtures — (a) 2-stage K-fan (the DECOMP shape), (b) 3-stage
-//! binary tree branching at two stages, (d) chain.
+//! validation fixtures — (a) 3-stage K-fan (a root, K nodes, one leaf each: the
+//! DECOMP shape), (b) 3-stage binary tree branching at two stages, (d) chain.
 //!
 //! A fourth fixture, a fan-then-recombine DAG (a node reached from two or more
 //! parent nodes), is out of scope here: `setup::reject_recombining_node_enumeration`
@@ -32,6 +32,18 @@
 //! closing to the extensive-form optimum is the empirical discharge of that
 //! claim, and it runs in the same (un-`#[ignore]`d) mode as fixtures (a)/(d).
 //!
+//! # Selection on
+//!
+//! The three fixtures run with productivity `0.0`, so each of their pools
+//! holds one distinct cut and cut selection has nothing to choose between. The
+//! `with_level1` legs train the same two graphs on the kinked system of
+//! [`branching_tree_setup_enumerated_with_selection`] and
+//! [`oracle_chain_setup_with_selection`], whose pools hold cuts of several
+//! gradients, and assert that with selection on `final_lb` stays at or below
+//! the optimum, a cut is deactivated, both bounds still close, and of the
+//! bit-identical cuts a converged run keeps generating only the lowest slot
+//! stays active.
+//!
 //! # LP tolerance
 //!
 //! [`REL_TOL`]/[`ABS_TOL`] mirror `branching_value_oracle.rs`: both LP backends'
@@ -54,17 +66,26 @@
 
 mod common;
 
-use novomodelo_sddp::StudySetup;
+use std::collections::BTreeSet;
+use std::sync::mpsc::{self, Sender};
+
+use novomodelo_core::{PoolRowCounts, TrainingEvent};
+use novomodelo_io::config::SelectionMethod;
 use novomodelo_sddp::setup::{
     NodeGraph, NodeId, NodeOpenings, NodePos, NodeRuntime, NodeSuccessor, OpeningSource, StageIdx,
 };
 use novomodelo_sddp::test_support::{
-    branching_tree_setup_enumerated, extensive_form_optimum, k_fan_setup_enumerated,
-    node_prefix_counts, oracle_chain_setup, single_path_enumerated_setup,
+    branching_tree_setup_enumerated, branching_tree_setup_enumerated_with_selection,
+    extensive_form_optimum, k_fan_setup_enumerated, node_prefix_counts, oracle_chain_setup,
+    oracle_chain_setup_with_selection, single_path_enumerated_setup,
 };
+use novomodelo_sddp::{StudySetup, TrainingResult};
 use novomodelo_solver::ActiveSolver;
 
-use common::StubComm;
+use common::selection_fingerprint::{
+    SelectionPower, assert_identical_cuts_keep_their_lowest_slot, interior_pool_ids,
+};
+use common::{StubComm, positive};
 
 /// Relative + absolute LP tolerance for oracle-vs-engine value comparison. The
 /// backend primal/dual feasibility tolerance is `≈ 1e-9`; scaled by the objective
@@ -77,20 +98,25 @@ fn close(a: f64, b: f64) -> bool {
     (a - b).abs() <= ABS_TOL + REL_TOL * a.abs().max(b.abs())
 }
 
-/// Train `setup` single-rank/single-thread to convergence, returning
-/// `(final_lb, final_ub)`.
-fn train_bounds(setup: &mut StudySetup) -> (f64, f64) {
+/// Train `setup` single-rank/single-thread to its iteration limit.
+fn train(setup: &mut StudySetup, event_sender: Option<Sender<TrainingEvent>>) -> TrainingResult {
     let comm = StubComm;
     let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
     let outcome = setup
-        .train(&mut solver, &comm, 1, ActiveSolver::new, None, None)
+        .train(&mut solver, &comm, 1, ActiveSolver::new, event_sender, None)
         .expect("training must return Ok");
     assert!(
         outcome.error.is_none(),
         "training must not error: {:?}",
         outcome.error
     );
-    (outcome.result.final_lb, outcome.result.final_ub)
+    outcome.result
+}
+
+/// [`train`], returning `(final_lb, final_ub)`.
+fn train_bounds(setup: &mut StudySetup) -> (f64, f64) {
+    let result = train(setup, None);
+    (result.final_lb, result.final_ub)
 }
 
 /// Assert `graph`'s reachable `(node, realization)` prefix set matches
@@ -177,6 +203,207 @@ fn branching_tree_matches_extensive_form() {
 fn chain_matches_extensive_form() {
     let setup = oracle_chain_setup(30);
     assert_closes_to_extensive_form(setup, "chain");
+}
+
+// ── Selection on: the bound stays below the optimum and still closes ────
+
+const LEVEL1_MAX_ITERATIONS: u32 = 30;
+
+fn level1_every_iteration() -> SelectionMethod {
+    SelectionMethod::Level1 {
+        check_frequency: positive(1),
+        lookback_iterations: None,
+    }
+}
+
+/// Populated cuts of pool `pool_id` that differ in some coefficient bit.
+fn distinct_cut_gradients(setup: &StudySetup, pool_id: usize) -> usize {
+    let pool = &setup.fcf.pools[pool_id];
+    (0..pool.populated())
+        .map(|slot| {
+            pool.coefficient_row(slot)
+                .iter()
+                .map(|coefficient| coefficient.to_bits())
+                .collect::<Vec<u64>>()
+        })
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+/// derived: selection ran last at the final iteration, so the owner of every
+/// stored state is active.
+fn assert_stored_states_have_active_owners(setup: &StudySetup, fixture: &str) {
+    for pool_id in interior_pool_ids(setup) {
+        let pool = &setup.fcf.pools[pool_id];
+        assert!(
+            pool.stored_trial_states() > 0,
+            "{fixture} pool {pool_id} must store a trial state"
+        );
+        // `assert_identical_cuts_keep_their_lowest_slot` reads scored slots only.
+        assert!(
+            (0..pool.populated())
+                .all(|slot| pool.role(slot).scored && pool.trial_state(slot).is_some()),
+            "{fixture} pool {pool_id}: every populated slot must be scored and hold its trial state"
+        );
+        for slot in (0..pool.populated()).filter(|&slot| pool.trial_state(slot).is_some()) {
+            let owner = pool.state_owner(slot).unwrap_or_else(|| {
+                panic!("{fixture} pool {pool_id}: the state at slot {slot} is unowned")
+            });
+            assert!(
+                pool.is_active(owner),
+                "{fixture} pool {pool_id}: slot {owner} owns the state at slot {slot} and is \
+                 inactive"
+            );
+        }
+    }
+}
+
+/// Train `setup` with selection on and assert, in order: an interior node
+/// exists for selection to act on, an interior pool holds cuts of different
+/// gradients (the fixture's value function has a visited breakpoint),
+/// `final_lb` does not exceed `optimum`, selection deactivated an interior cut,
+/// each interior pool keeps the lowest slot of its bit-identical cuts and the
+/// owner of every stored state, and both bounds close to `optimum` within
+/// [`REL_TOL`]/[`ABS_TOL`]. Returns the pool counts of the last iteration.
+fn assert_selection_stays_below_and_closes(
+    mut setup: StudySetup,
+    optimum: f64,
+    fixture: &str,
+) -> Vec<PoolRowCounts> {
+    let interior_pools = interior_pool_ids(&setup);
+    assert!(
+        !interior_pools.is_empty(),
+        "{fixture} must have an interior cut-generating node for selection to act on"
+    );
+
+    let (tx, rx) = mpsc::channel();
+    let result = train(&mut setup, Some(tx));
+    let events: Vec<TrainingEvent> = rx.try_iter().collect();
+    let (lb, ub) = (result.final_lb, result.final_ub);
+
+    let distinct_gradients: Vec<usize> = interior_pools
+        .iter()
+        .map(|&pool_id| distinct_cut_gradients(&setup, pool_id))
+        .collect();
+    assert!(
+        distinct_gradients.iter().any(|&count| count >= 2),
+        "{fixture} must leave an interior pool holding cuts of at least two gradients, \
+         found {distinct_gradients:?} per interior pool"
+    );
+
+    assert!(
+        lb <= optimum + ABS_TOL,
+        "{fixture} final_lb {lb} must not exceed extensive-form optimum {optimum} (excess {})",
+        lb - optimum
+    );
+
+    let summaries: Vec<&Vec<PoolRowCounts>> = events
+        .iter()
+        .filter_map(|event| match event {
+            TrainingEvent::PolicyPoolSummary { pools, .. } => Some(pools),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !summaries.is_empty(),
+        "{fixture} must report its pools every iteration"
+    );
+    for pools in &summaries {
+        assert_eq!(
+            pools.len(),
+            setup.fcf.pools.len(),
+            "{fixture} every summary must hold one record per pool"
+        );
+    }
+    let power = SelectionPower::from_events(&events);
+    assert!(
+        power.deactivations > 0,
+        "{fixture} selection must deactivate an interior cut within \
+         {LEVEL1_MAX_ITERATIONS} iterations: {power:?}"
+    );
+    assert_identical_cuts_keep_their_lowest_slot(&setup, fixture);
+    assert_stored_states_have_active_owners(&setup, fixture);
+
+    assert!(
+        close(lb, optimum),
+        "{fixture} final_lb {lb} must equal extensive-form optimum {optimum} (gap {})",
+        lb - optimum
+    );
+    assert!(
+        close(ub, optimum),
+        "{fixture} final_ub {ub} must equal extensive-form optimum {optimum} (gap {})",
+        ub - optimum
+    );
+    summaries[summaries.len() - 1].clone()
+}
+
+/// derived: the tree declares the root as node 0 at stage 0, the two fan nodes
+/// as nodes 1 and 2 at stage 1, which each own their pool, and four leaves at
+/// stage 2, which share one.
+#[test]
+fn branching_tree_with_level1_stays_below_and_closes_to_the_extensive_form() {
+    let setup = branching_tree_setup_enumerated_with_selection(
+        LEVEL1_MAX_ITERATIONS,
+        level1_every_iteration(),
+    );
+    assert_reachable_prefixes_match(&setup.inputs.node_graph);
+    let optimum = extensive_form_optimum(&setup);
+    let pools = assert_selection_stays_below_and_closes(setup, optimum, "3-stage binary tree");
+
+    let node_ids_at = |stage_id: i32| -> Vec<Option<i32>> {
+        let mut ids: Vec<Option<i32>> = pools
+            .iter()
+            .filter(|record| record.stage_id == stage_id)
+            .map(|record| record.node_id)
+            .collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(node_ids_at(0), [Some(0)], "the root owns its pool");
+    assert_eq!(
+        node_ids_at(1),
+        [Some(1), Some(2)],
+        "each fan node owns its pool"
+    );
+    assert_eq!(node_ids_at(2), [None], "the four leaves share one pool");
+}
+
+/// derived: the kinked chain's optimum. Each stage turbines against an 80 MW
+/// load with a 100 m³/s limit and a 60 m³/s inflow, at 0.25, 0.5 and 0.75 MW
+/// per m³/s, so water is worth more the later it is used: stage 0 leaves the
+/// 200 hm³ storage limit (from 100 hm³), stage 1 leaves the volume stage 2 can
+/// still turbine (100 − 60 m³/s over the stage), and stage 2 turbines at its
+/// limit. Deficit costs 400 $/`MWh` up to 20 MW and 500 $/`MWh` beyond.
+fn kinked_chain_optimum() -> f64 {
+    const STAGE_HOURS: f64 = 744.0;
+    let hm3_per_m3s = STAGE_HOURS * 3600.0 / 1e6;
+    let turbined_m3s = [
+        60.0 + (100.0 - 200.0) / hm3_per_m3s,
+        60.0 + 200.0 / hm3_per_m3s - (100.0 - 60.0),
+        100.0,
+    ];
+    let productivity = [0.25, 0.5, 0.75];
+    turbined_m3s
+        .iter()
+        .zip(productivity)
+        .map(|(turbined, productivity)| {
+            let deficit_mw: f64 = 80.0 - productivity * turbined;
+            STAGE_HOURS * (400.0 * deficit_mw.min(20.0) + 500.0 * (deficit_mw - 20.0).max(0.0))
+        })
+        .sum()
+}
+
+#[test]
+fn chain_with_level1_stays_below_and_closes_to_the_extensive_form() {
+    let setup = oracle_chain_setup_with_selection(LEVEL1_MAX_ITERATIONS, level1_every_iteration());
+    assert_reachable_prefixes_match(&setup.inputs.node_graph);
+    let optimum = extensive_form_optimum(&setup);
+    let closed_form = kinked_chain_optimum();
+    assert!(
+        close(optimum, closed_form),
+        "chain extensive-form optimum {optimum} must equal the closed form {closed_form}"
+    );
+    assert_selection_stays_below_and_closes(setup, optimum, "chain");
 }
 
 // ── Reachable-prefix cross-check failure path ───────────────────────────

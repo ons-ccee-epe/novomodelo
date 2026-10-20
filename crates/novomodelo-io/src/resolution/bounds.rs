@@ -775,10 +775,10 @@ fn hydro_base_stage_bounds(hydro: &Hydro) -> HydroStageBounds {
 }
 
 /// Derive the base block-eligible [`HydroBlockBounds`] from a `Hydro` entity's
-/// fields. `max_diversion_m3s` is `None` without a diversion channel;
-/// `min_diversion_m3s`, `min_spillage_m3s`, and `max_spillage_m3s` have no
-/// entity-level declaration source at all, so they are always `None` here —
-/// `None` on that axis means "unbounded on that side".
+/// fields. `None` on any axis means "unbounded on that side". A hydro without a
+/// diversion channel is seeded `max_diversion_m3s = Some(0.0)`, not `None`: the
+/// diversion column is closed, not unbounded (rule 46 keeps an override from
+/// reopening it).
 #[inline]
 fn hydro_base_block_bounds(hydro: &Hydro) -> HydroBlockBounds {
     HydroBlockBounds {
@@ -789,7 +789,10 @@ fn hydro_base_block_bounds(hydro: &Hydro) -> HydroBlockBounds {
         min_generation_mw: hydro.min_generation_mw,
         max_generation_mw: hydro.max_generation_mw,
         min_diversion_m3s: None,
-        max_diversion_m3s: hydro.diversion.as_ref().map(|d| d.max_flow_m3s),
+        max_diversion_m3s: hydro
+            .diversion
+            .as_ref()
+            .map_or(Some(0.0), |d| d.max_flow_m3s),
         min_spillage_m3s: None,
         max_spillage_m3s: None,
     }
@@ -817,7 +820,7 @@ fn zero_hydro_block_bounds() -> HydroBlockBounds {
         min_generation_mw: 0.0,
         max_generation_mw: 0.0,
         min_diversion_m3s: None,
-        max_diversion_m3s: None,
+        max_diversion_m3s: Some(0.0),
         min_spillage_m3s: None,
         max_spillage_m3s: None,
     }
@@ -1154,7 +1157,7 @@ mod tests {
     fn test_hydro_with_diversion_and_filling() {
         let diversion = DiversionChannel {
             downstream_id: EntityId::from(2),
-            max_flow_m3s: 50.0,
+            max_flow_m3s: Some(50.0),
         };
         let filling = FillingConfig {
             start_stage_id: 0,
@@ -1191,10 +1194,44 @@ mod tests {
         assert!((b.water_withdrawal_m3s - 0.0).abs() < f64::EPSILON);
     }
 
+    /// A channel without a capacity limit resolves an unbounded diversion, and a
+    /// stage override still caps it at that stage only.
+    #[test]
+    fn test_unlimited_diversion_channel_resolves_unbounded_and_override_caps_it() {
+        let diversion = DiversionChannel {
+            downstream_id: EntityId::from(2),
+            max_flow_m3s: None,
+        };
+        let hydros = vec![make_hydro(0, 10.0, 100.0, None, Some(diversion), None)];
+        let override_row = HydroBoundsRow {
+            max_diversion_m3s: Some(25.0),
+            ..all_none_hydro_row(0, 1)
+        };
+
+        let result = resolve_bounds(
+            &hydros,
+            &[],
+            &[],
+            &[],
+            &[],
+            2,
+            0,
+            &[override_row],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+
+        assert_eq!(result.hydro_block_base(0, 0).max_diversion_m3s, None);
+        assert_eq!(result.hydro_block_base(0, 1).max_diversion_m3s, Some(25.0));
+    }
+
     // ── Test: hydro without diversion ─────────────────────────────────────────
 
     /// Given a hydro with no diversion channel and no filling config, base bounds
-    /// have max_diversion_m3s = None and filling_min_rate_m3s = 0.0.
+    /// close the diversion (`Some(0.0)`) and have filling_min_rate_m3s = 0.0.
     #[test]
     fn test_hydro_without_diversion() {
         let hydros = vec![make_hydro(0, 10.0, 100.0, None, None, None)];
@@ -1216,7 +1253,7 @@ mod tests {
         );
 
         let b = result.hydro_bounds(0, 0);
-        assert!(result.hydro_block_base(0, 0).max_diversion_m3s.is_none());
+        assert_eq!(result.hydro_block_base(0, 0).max_diversion_m3s, Some(0.0));
         assert!((b.filling_min_rate_m3s - 0.0).abs() < f64::EPSILON);
         assert!((b.water_withdrawal_m3s - 0.0).abs() < f64::EPSILON);
     }
@@ -1529,7 +1566,7 @@ mod tests {
     fn test_ac3_hydro_diversion_no_filling() {
         let diversion = DiversionChannel {
             downstream_id: EntityId::from(2),
-            max_flow_m3s: 50.0,
+            max_flow_m3s: Some(50.0),
         };
         let hydros = vec![make_hydro(0, 10.0, 100.0, None, Some(diversion), None)];
 

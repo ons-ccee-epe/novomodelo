@@ -71,9 +71,11 @@ pub struct SimulationCostResult {
     pub outflow_violation_below_cost: f64,
     /// Cost of maximum outflow violations: sum of `outflow_above_slack` * penalty.
     pub outflow_violation_above_cost: f64,
-    /// Cost of minimum turbining violations: sum of `turbine_below_slack` * penalty.
+    /// Cost of minimum turbining violations: the cell and plant residual
+    /// turbine-below slacks times their penalty.
     pub turbined_violation_cost: f64,
-    /// Cost of minimum generation violations: sum of `generation_below_slack` * penalty.
+    /// Cost of minimum generation violations: the cell and plant residual
+    /// generation-below slacks times their penalty.
     pub generation_violation_cost: f64,
     /// Cost of evaporation constraint violations.
     pub evaporation_violation_cost: f64,
@@ -131,8 +133,8 @@ pub struct SimulationHydroResult {
     pub storage_final_hm3: f64,
     /// Active power generation in MW.
     pub generation_mw: f64,
-    /// Equivalent productivity `ρ_eq` \[MW/(m³/s)\]. For `ConstantProductivity` /
-    /// `LinearizedHead` models this is the stored input scalar; for FPHA models
+    /// Equivalent productivity `ρ_eq` \[MW/(m³/s)\]. For `ConstantProductivity`
+    /// models this is the stored input scalar; for FPHA models
     /// it is derived from VHA geometry, `ρ_esp`, `V_ref`, and `Q_ref` by
     /// `EnergyConversionSet`. Always populated.
     pub equivalent_productivity_mw_per_m3s: f64,

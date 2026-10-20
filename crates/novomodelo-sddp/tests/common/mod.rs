@@ -5,6 +5,7 @@
 
 #![allow(clippy::expect_used, dead_code)]
 
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::mpsc;
 
@@ -15,13 +16,15 @@ use novomodelo_io::Config;
 use novomodelo_sddp::{
     BoundaryStateRequirements, SimulationScenarioResult, StudySetup,
     hydro_models::{PrepareHydroModelsResult, prepare_hydro_models},
-    setup::{StudyParams, prepare_stochastic},
+    indexer::CutSlot,
+    setup::{NodePos, StudyParams, prepare_stochastic},
     test_support::decks::{SLOW_DECKS, committed_decks},
 };
 use novomodelo_solver::ActiveSolver;
 use novomodelo_stochastic::{
     ClassSchemes, OpeningTreeInputs, StochasticContext, build_stochastic_context,
 };
+use tempfile::TempDir;
 
 pub mod anticipated_structural_assertions;
 pub mod builders;
@@ -30,6 +33,12 @@ pub mod in_code_studies;
 pub mod parity_hash;
 pub mod parquet_fixtures;
 pub mod permute;
+pub mod selection_fingerprint;
+
+/// `n` as a positive count; panics on zero.
+pub const fn positive(n: u32) -> NonZeroU32 {
+    NonZeroU32::new(n).expect("a positive count")
+}
 
 /// Single-rank `Communicator` stub: broadcasts/reductions copy data locally;
 /// other collectives are no-ops.
@@ -132,6 +141,18 @@ impl Communicator for Rank0Of2 {
         std::process::exit(error_code)
     }
 }
+
+/// Three-stage cascade hydrothermal dispatch (2 hydros in series).
+/// Combined capacity 70 MW < demand 75 MW. Cascade coupling: H1 receives H0's
+/// discharge. Terminal stages: full capacity (thermal = 5 MW). Stage 0 binding
+/// storage constraints yield thermal ≈ 28.09 MW.
+///
+/// derived: analytical thermal + deficit cost is `4_171_000 / 3 ≈ 1_390_333.33`.
+/// With `turbined_cost` applied to every hydro's turbine column,
+/// the deterministic LB adds a fixed regularization contribution that lifts
+/// the total by `+1_364.4333…` (= `turbined_cost` × turbined `MWh` summed over
+/// stages and blocks for both hydros).
+pub const D03_EXPECTED_COST: f64 = 1_391_697.766_666_667_3;
 
 /// Re-enables forward warm start for tests that exercise forward basis reuse.
 /// `HiGHS` forward solves are cold by default; CLP has no such switch (it always
@@ -274,6 +295,52 @@ pub fn fresh_setup_with(case_dir: &Path, mutate: impl FnOnce(&mut Config)) -> St
     fresh_system_and_setup_with(case_dir, mutate).1
 }
 
+/// Like [`fresh_setup_with`], on a temporary copy of `case_dir` whose
+/// `stages.json` gives every stage `num_openings` openings. The copy is
+/// dropped once the setup is built; `case_dir` is never modified.
+pub fn fresh_setup_with_openings(
+    case_dir: &Path,
+    num_openings: u32,
+    mutate: impl FnOnce(&mut Config),
+) -> StudySetup {
+    let tmp =
+        copy_case_with_stage_field(case_dir, "num_openings", &serde_json::json!(num_openings));
+    fresh_setup_with(tmp.path(), mutate)
+}
+
+pub fn copy_toy_case(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).expect("create dir");
+    for entry in std::fs::read_dir(src).expect("read dir") {
+        let entry = entry.expect("dir entry");
+        let target = dst.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            copy_toy_case(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).expect("copy file");
+        }
+    }
+}
+
+/// 1dtoy cut to its first `stages` stages, so its boundary date is the end of
+/// stage `stages - 1`: the date the 1dtoy pool with that index is priced at.
+pub fn truncated_toy_case(stages: usize) -> TempDir {
+    let case = TempDir::new().expect("tempdir");
+    copy_toy_case(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/1dtoy"),
+        case.path(),
+    );
+    let stages_file = case.path().join("stages.json");
+    let mut document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&stages_file).expect("read stages"))
+            .expect("parse stages");
+    document["stages"]
+        .as_array_mut()
+        .expect("stages array")
+        .truncate(stages);
+    std::fs::write(&stages_file, document.to_string()).expect("write stages");
+    case
+}
+
 /// Recursively copies `src` into `dst`, skipping any `output` subdirectory
 /// (`permute.rs`'s own copy discipline for that gitignored generated tree).
 fn copy_dir_recursive(src: &Path, dst: &Path) {
@@ -301,27 +368,22 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
     }
 }
 
-/// Builds `case_dir` with every `stages.json` stage forced to `mode`: copies
-/// the case into a temporary directory, rewrites its `"block_mode"` fields,
-/// and builds through [`fresh_system_and_setup_with`] under `catch_unwind`,
-/// turning a build panic into `Err(message)`.
-pub fn fresh_system_and_setup_in_block_mode(
+/// Copies `case_dir` into a temporary directory and sets `field` to `value` on
+/// every `stages.json` stage.
+fn copy_case_with_stage_field(
     case_dir: &Path,
-    mode: BlockMode,
-) -> Result<(System, StudySetup), String> {
+    field: &str,
+    value: &serde_json::Value,
+) -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir: {e}"));
     copy_dir_recursive(case_dir, tmp.path());
 
     let stages_path = tmp.path().join("stages.json");
     let text = std::fs::read_to_string(&stages_path)
         .unwrap_or_else(|e| panic!("read {}: {e}", stages_path.display()));
-    let mut value: serde_json::Value = serde_json::from_str(&text)
+    let mut document: serde_json::Value = serde_json::from_str(&text)
         .unwrap_or_else(|e| panic!("parse {}: {e}", stages_path.display()));
-    let mode_str = match mode {
-        BlockMode::Parallel => "parallel",
-        BlockMode::Chronological => "chronological",
-    };
-    let stages = value
+    let stages = document
         .get_mut("stages")
         .and_then(serde_json::Value::as_array_mut)
         .unwrap_or_else(|| {
@@ -334,15 +396,32 @@ pub fn fresh_system_and_setup_in_block_mode(
         stage
             .as_object_mut()
             .unwrap_or_else(|| panic!("{} stage entry is not a JSON object", stages_path.display()))
-            .insert(
-                "block_mode".to_string(),
-                serde_json::Value::String(mode_str.to_string()),
-            );
+            .insert(field.to_string(), value.clone());
     }
-    let rendered = serde_json::to_string_pretty(&value)
+    let rendered = serde_json::to_string_pretty(&document)
         .unwrap_or_else(|e| panic!("serialize {}: {e}", stages_path.display()));
     std::fs::write(&stages_path, rendered)
         .unwrap_or_else(|e| panic!("write {}: {e}", stages_path.display()));
+    tmp
+}
+
+/// Builds `case_dir` with every `stages.json` stage forced to `mode`: copies
+/// the case into a temporary directory, rewrites its `"block_mode"` fields,
+/// and builds through [`fresh_system_and_setup_with`] under `catch_unwind`,
+/// turning a build panic into `Err(message)`.
+pub fn fresh_system_and_setup_in_block_mode(
+    case_dir: &Path,
+    mode: BlockMode,
+) -> Result<(System, StudySetup), String> {
+    let mode_str = match mode {
+        BlockMode::Parallel => "parallel",
+        BlockMode::Chronological => "chronological",
+    };
+    let tmp = copy_case_with_stage_field(
+        case_dir,
+        "block_mode",
+        &serde_json::Value::String(mode_str.to_string()),
+    );
 
     let case_path = tmp.path().to_path_buf();
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -538,6 +617,35 @@ pub fn try_build_setup_in_code(
 ) -> Result<StudySetup, novomodelo_sddp::SddpError> {
     let hydro_models = PrepareHydroModelsResult::default_from_system(&system);
     try_build_setup_in_code_with_models(system, config, hydro_models)
+}
+
+/// The trial states the pool of `node` stored, in slot order, at the global state
+/// dimension; panics unless the pool stores states and projects every dimension.
+pub fn stored_trial_states(setup: &StudySetup, node: NodePos) -> Vec<Vec<f64>> {
+    let pool_id = setup.inputs.node_graph.nodes[node].pool_id;
+    let pool = &setup.fcf.pools[pool_id];
+    assert!(
+        pool.stores_trial_states(),
+        "pool {pool_id} stores no trial state"
+    );
+    let training_ctx = setup.training_ctx();
+    let n_state = training_ctx.state.n_state;
+    let layout = &training_ctx.cut_state_layouts[pool_id];
+    assert_eq!(
+        layout.n_slots(),
+        n_state,
+        "pool {pool_id} must project every state dimension"
+    );
+    (0..pool.populated())
+        .filter_map(|slot| pool.trial_state(slot))
+        .map(|row| {
+            let mut state = vec![0.0; n_state];
+            for (j, &value) in row.iter().enumerate() {
+                state[layout.global_state_index(CutSlot::new(j)).get()] = value;
+            }
+            state
+        })
+        .collect()
 }
 
 /// Train `iterations`, then run the one-scenario simulation and return the drained

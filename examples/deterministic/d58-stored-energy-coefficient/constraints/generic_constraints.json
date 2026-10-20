@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/generic_constraints.schema.json",
+  "constraints": [
+    {
+      "id": 1,
+      "name": "vminop_aggregate",
+      "description": "VminOP: aggregate minimum stored energy in MWh for 2 hydros with a stage-varying percentage. LHS sums the MWh productivity times useful volume; RHS is @pct_vminop times each hydro's maximum stored energy in MWh.",
+      "expression": "@rho_mwh_h0 * hydro_useful_volume_final(0) + @rho_mwh_h1 * hydro_useful_volume_final(1) >= @pct_vminop * @earm_max_h0 + @pct_vminop * @earm_max_h1",
+      "slack": {
+        "enabled": true,
+        "penalty": 5000.0,
+        "penalty_basis": "per_unit"
+      }
+    }
+  ]
+}

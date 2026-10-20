@@ -23,6 +23,8 @@ use pyo3::exceptions::{PyFileNotFoundError, PyIndexError, PyOSError, PyValueErro
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyList, PyString};
 
+use novomodelo_io::{EntitySlot, StateHistory};
+
 use crate::errors::{ErrorSource, convert_error};
 
 fn canonicalize_dir(path: &Path) -> PyResult<PathBuf> {
@@ -202,14 +204,15 @@ pub fn load_results(py: Python<'_>, output_dir: PathBuf) -> PyResult<Py<PyAny>> 
 /// | `upper_bound_kind` | `str`           | Bound regime: `"statistical"` or `"exact"`.         |
 /// | `gap_percent`      | `float \| None` | Relative gap as a percentage (None if ill-defined). |
 /// | `cuts_added`       | `int`           | Cuts added to the pool this iteration.              |
-/// | `cuts_removed`     | `int`           | Cuts removed from the pool this iteration.          |
-/// | `cuts_active`      | `int`           | Active cuts after this iteration.                   |
+/// | `cuts_removed`     | `int`           | Cuts deactivated this iteration by the selection method or by `max_active_per_stage`. |
+/// | `cuts_active`      | `int`           | Active cuts after this iteration's selection and cap, reactivations included. |
 /// | `time_forward_ms`  | `int`           | Forward-pass wall time (ms).                        |
 /// | `time_backward_ms` | `int`           | Backward-pass wall time (ms).                       |
 /// | `time_total_ms`    | `int`           | Total iteration wall time (ms).                     |
 /// | `forward_passes`   | `int`           | Number of forward-pass scenarios.                   |
 /// | `lp_solves`        | `int`           | Total LP solves in this iteration.                  |
 /// | `mean_rows_in_lp`  | `float`         | Mean resident rows per lazy-selection LP solve (0 if none ran). |
+/// | `lazy_round_cap_hits` | `int`        | Lazy-selection LP solves this iteration that reached the round cap with a candidate row still violated (0 if none ran). |
 ///
 /// The reader iterates the file's own schema, so the keys are exactly the
 /// columns the convergence Parquet schema declares; the rows above name the
@@ -864,9 +867,43 @@ fn metadata_to_py<'py>(
         lower_bound_history.append(into_py(py, lb)?)?;
     }
     producer_dict.set_item("lower_bound_history", lower_bound_history)?;
+    match producer.state_history {
+        StateHistory::None => producer_dict.set_item("state_history", py.None())?,
+        StateHistory::Whole => producer_dict.set_item("state_history", "whole")?,
+        StateHistory::Window(window) => {
+            producer_dict.set_item("state_history", into_py(py, window.get())?)?;
+        }
+    }
+    producer_dict.set_item(
+        "activity_counters",
+        PyBool::new(py, producer.activity_counters).to_owned(),
+    )?;
+    producer_dict.set_item(
+        "basis_store_complete",
+        PyBool::new(py, producer.basis_store_complete).to_owned(),
+    )?;
     dict.set_item("producer", producer_dict)?;
 
     Ok(dict)
+}
+
+fn entity_manifest_to_py<'py>(
+    py: Python<'py>,
+    manifest: &[EntitySlot],
+) -> PyResult<Bound<'py, PyList>> {
+    let manifest_list = PyList::empty(py);
+    for slot in manifest {
+        let slot_dict = PyDict::new(py);
+        slot_dict.set_item("entity_type", into_py(py, slot.entity_type)?)?;
+        slot_dict.set_item("entity_id", into_py(py, slot.entity_id)?)?;
+        slot_dict.set_item("subindex", into_py(py, slot.subindex)?)?;
+        slot_dict.set_item("was_active", PyBool::new(py, slot.was_active).to_owned())?;
+        slot_dict.set_item("reference_date", into_py(py, slot.reference_date)?)?;
+        slot_dict.set_item("interval_start", into_py(py, slot.interval_start)?)?;
+        slot_dict.set_item("interval_end", into_py(py, slot.interval_end)?)?;
+        manifest_list.append(slot_dict)?;
+    }
+    Ok(manifest_list)
 }
 
 /// Read one `scenario_id=NNNN/data.parquet` partition and append rows to `result_list`.
@@ -1311,9 +1348,10 @@ pub fn load_simulation_arrow(
 
 /// Load a `FlatBuffers` policy checkpoint from `<output_dir>/<policy_subdir>`.
 ///
-/// Reads the policy metadata, per-stage cut pools, and per-stage solver bases
-/// written by `novomodelo-io`'s policy checkpoint writer and returns them as a
-/// nested Python dict.
+/// Reads the policy metadata, per-stage cut pools, per-node solver bases and
+/// per-pool stored trial states written by `novomodelo-io`'s policy checkpoint writer
+/// and returns them as a nested Python dict. Passing the four values back to
+/// `write_policy_checkpoint` writes the same checkpoint.
 ///
 /// `policy_subdir` selects the checkpoint sub-directory under `output_dir` and
 /// defaults to `"policy"` — the location the standard solve lifecycle writes
@@ -1325,7 +1363,7 @@ pub fn load_simulation_arrow(
 /// ```python
 /// {
 ///     "metadata": {
-///         "format_version": 3,
+///         "format_version": 4,
 ///         "software": "novomodelo",
 ///         "software_version": "1.0.0",
 ///         "created_at": "2026-01-15T12:00:00Z",
@@ -1361,13 +1399,16 @@ pub fn load_simulation_arrow(
 ///             ],
 ///             "cuts": [
 ///                 {
-///                     "cut_id": 0,
 ///                     "slot_index": 0,
 ///                     "iteration": 1,
 ///                     "forward_pass_index": 0,
 ///                     "intercept": 42.0,
 ///                     "coefficients": [1.0, 2.0, ...],
 ///                     "is_active": True,
+///                     "scored": False,
+///                     // present only when the checkpoint carries the counters:
+///                     "active_count": 3,
+///                     "last_active_iteration": 7,
 ///                 },
 ///                 ...
 ///             ]
@@ -1378,14 +1419,33 @@ pub fn load_simulation_arrow(
 ///         {
 ///             "stage_id": 0,
 ///             "iteration": 1,
-///             "column_status": [0, 1, ...],
-///             "row_status": [1, 0, ...],
-///             "num_cut_rows": 50,
+///             "entries": [
+///                 {
+///                     "scenario": 0,
+///                     "column_status": [0, 1, ...],
+///                     "row_status": [1, 0, ...],
+///                     "piece_row_slots": [0, 1, ...],
+///                 },
+///             ],
+///         },
+///         ...
+///     ],
+///     "stage_states": [
+///         {
+///             "stage_id": 0,
+///             "node_id": 0,
+///             "state_dimension": 4,
+///             "count": 2,
+///             "slots": [0, 3],
+///             "data": [0.5, ...],   // count * state_dimension values, row-major
+///             "entity_manifest": [ ... ],
 ///         },
 ///         ...
 ///     ]
 /// }
 /// ```
+///
+/// `stage_states` is empty when no pool stores trial states.
 ///
 /// ## Errors
 ///
@@ -1454,24 +1514,14 @@ pub fn load_policy(
         // through `write_policy_checkpoint` (whose binding already accepts this
         // exact shape). Without it the manifest — present on disk and required by
         // external boundary-cut authoring — is silently dropped on the read side.
-        let manifest_list = PyList::empty(py);
-        for slot in &sc.entity_manifest {
-            let slot_dict = PyDict::new(py);
-            slot_dict.set_item("entity_type", into_py(py, slot.entity_type)?)?;
-            slot_dict.set_item("entity_id", into_py(py, slot.entity_id)?)?;
-            slot_dict.set_item("subindex", into_py(py, slot.subindex)?)?;
-            slot_dict.set_item("was_active", PyBool::new(py, slot.was_active).to_owned())?;
-            slot_dict.set_item("reference_date", into_py(py, slot.reference_date)?)?;
-            slot_dict.set_item("interval_start", into_py(py, slot.interval_start)?)?;
-            slot_dict.set_item("interval_end", into_py(py, slot.interval_end)?)?;
-            manifest_list.append(slot_dict)?;
-        }
-        sc_dict.set_item("entity_manifest", manifest_list)?;
+        sc_dict.set_item(
+            "entity_manifest",
+            entity_manifest_to_py(py, &sc.entity_manifest)?,
+        )?;
 
         let cuts_list = PyList::empty(py);
         for cut in &sc.cuts {
             let cut_dict = PyDict::new(py);
-            cut_dict.set_item("cut_id", into_py(py, cut.cut_id)?)?;
             cut_dict.set_item("slot_index", into_py(py, cut.slot_index)?)?;
             cut_dict.set_item("iteration", into_py(py, cut.iteration)?)?;
             cut_dict.set_item("forward_pass_index", into_py(py, cut.forward_pass_index)?)?;
@@ -1484,6 +1534,13 @@ pub fn load_policy(
             cut_dict.set_item("coefficients", coeffs_list)?;
 
             cut_dict.set_item("is_active", PyBool::new(py, cut.is_active).to_owned())?;
+            cut_dict.set_item("scored", PyBool::new(py, cut.scored).to_owned())?;
+            if let Some(count) = cut.active_count {
+                cut_dict.set_item("active_count", into_py(py, count)?)?;
+            }
+            if let Some(iteration) = cut.last_active_iteration {
+                cut_dict.set_item("last_active_iteration", into_py(py, iteration)?)?;
+            }
 
             cuts_list.append(cut_dict)?;
         }
@@ -1498,27 +1555,57 @@ pub fn load_policy(
         basis_dict.set_item("stage_id", into_py(py, basis.stage_id)?)?;
         basis_dict.set_item("iteration", into_py(py, basis.iteration)?)?;
 
-        let col_status_list = PyList::empty(py);
-        for &b in &basis.column_status {
-            col_status_list.append(into_py(py, i32::from(b))?)?;
-        }
-        basis_dict.set_item("column_status", col_status_list)?;
+        let entries_list = PyList::empty(py);
+        for entry in &basis.entries {
+            let entry_dict = PyDict::new(py);
+            entry_dict.set_item("scenario", into_py(py, entry.scenario)?)?;
 
-        let row_status_list = PyList::empty(py);
-        for &b in &basis.row_status {
-            row_status_list.append(into_py(py, i32::from(b))?)?;
-        }
-        basis_dict.set_item("row_status", row_status_list)?;
+            let col_status_list = PyList::empty(py);
+            for &b in &entry.column_status {
+                col_status_list.append(into_py(py, i32::from(b))?)?;
+            }
+            entry_dict.set_item("column_status", col_status_list)?;
 
-        basis_dict.set_item("num_cut_rows", into_py(py, basis.num_cut_rows)?)?;
+            let row_status_list = PyList::empty(py);
+            for &b in &entry.row_status {
+                row_status_list.append(into_py(py, i32::from(b))?)?;
+            }
+            entry_dict.set_item("row_status", row_status_list)?;
+
+            let slots_list = PyList::empty(py);
+            for &slot in &entry.piece_row_slots {
+                slots_list.append(into_py(py, slot)?)?;
+            }
+            entry_dict.set_item("piece_row_slots", slots_list)?;
+
+            entries_list.append(entry_dict)?;
+        }
+        basis_dict.set_item("entries", entries_list)?;
 
         stage_bases_list.append(basis_dict)?;
+    }
+
+    let stage_states_list = PyList::empty(py);
+    for states in &checkpoint.stage_states {
+        let states_dict = PyDict::new(py);
+        states_dict.set_item("stage_id", into_py(py, states.stage_id)?)?;
+        states_dict.set_item("node_id", into_py(py, states.node_id)?)?;
+        states_dict.set_item("state_dimension", into_py(py, states.state_dimension)?)?;
+        states_dict.set_item("count", into_py(py, states.count)?)?;
+        states_dict.set_item("slots", PyList::new(py, &states.slots)?)?;
+        states_dict.set_item("data", PyList::new(py, &states.data)?)?;
+        states_dict.set_item(
+            "entity_manifest",
+            entity_manifest_to_py(py, &states.entity_manifest)?,
+        )?;
+        stage_states_list.append(states_dict)?;
     }
 
     let result = PyDict::new(py);
     result.set_item("metadata", metadata_py)?;
     result.set_item("stage_cuts", stage_cuts_list)?;
     result.set_item("stage_bases", stage_bases_list)?;
+    result.set_item("stage_states", stage_states_list)?;
 
     Ok(result.unbind().into())
 }

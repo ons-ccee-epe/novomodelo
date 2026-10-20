@@ -131,3 +131,92 @@ def test_periodic_checkpoint_runs_write_the_same_file_set_on_cli_and_python(
     for output_dir in (cli_output, python_output):
         for sibling in ("policy.staging", "policy.previous"):
             assert not (output_dir / sibling).exists(), output_dir / sibling
+
+
+_INFEASIBLE_CASE = _REPO_ROOT / "examples" / "deterministic" / "d13-generic-constraint"
+
+
+def _rewrite_json(path: pathlib.Path, edit) -> None:  # noqa: ANN001
+    value = json.loads(path.read_text())
+    edit(value)
+    path.write_text(json.dumps(value, indent=2))
+
+
+def _file_bytes(root: pathlib.Path) -> dict[str, bytes]:
+    return {
+        p.relative_to(root).as_posix(): p.read_bytes()
+        for p in root.rglob("*")
+        if p.is_file()
+    }
+
+
+def _set_iteration_limit(case: pathlib.Path, limit: int, mode: str | None) -> None:
+    def edit(config: dict) -> None:
+        config["training"]["stopping_rules"] = [
+            {"type": "iteration_limit", "limit": limit}
+        ]
+        config["policy"] = {
+            "checkpointing": {"enabled": True, "interval_iterations": 1}
+        }
+        if mode is not None:
+            config["policy"]["mode"] = mode
+
+    _rewrite_json(case / "config.json", edit)
+
+
+def _make_training_lp_infeasible(case: pathlib.Path) -> None:
+    def disable_slack(constraints: dict) -> None:
+        constraints["constraints"][0]["slack"] = {"enabled": False}
+
+    def raise_thermal_minimum(thermals: dict) -> None:
+        thermals["thermals"][0]["generation"]["min_mw"] = 20.0
+
+    _rewrite_json(case / "constraints" / "generic_constraints.json", disable_slack)
+    _rewrite_json(case / "system" / "thermals.json", raise_thermal_minimum)
+
+
+def test_a_failed_run_keeps_the_last_whole_checkpoint(tmp_path: pathlib.Path) -> None:
+    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
+
+    case = tmp_path / "case"
+    healthy = tmp_path / "healthy"
+    shutil.copytree(_INFEASIBLE_CASE, case, ignore=shutil.ignore_patterns("output"))
+    shutil.copytree(case, healthy)
+    output_dir = tmp_path / "out"
+    policy_dir = output_dir / "policy"
+
+    _set_iteration_limit(case, 3, None)
+    novomodelo.run.run(str(case), output_dir=str(output_dir))
+    whole = _file_bytes(policy_dir)
+    assert "manifest.bin" in whole
+
+    _set_iteration_limit(case, 6, "resume")
+    _make_training_lp_infeasible(case)
+    with pytest.raises(novomodelo.errors.SolverError) as failure:
+        novomodelo.run.run(str(case), output_dir=str(output_dir))
+
+    assert "the partial policy is in" in str(failure.value)
+    assert "policy.partial" in str(failure.value)
+    assert _file_bytes(policy_dir) == whole
+    assert (output_dir / "policy.partial" / "manifest.bin").is_file()
+    assert (
+        novomodelo.results.load_policy(output_dir)["metadata"]["producer"][
+            "completed_iterations"
+        ]
+        == 3
+    )
+
+    shutil.copy(healthy / "system" / "thermals.json", case / "system" / "thermals.json")
+    shutil.copy(
+        healthy / "constraints" / "generic_constraints.json",
+        case / "constraints" / "generic_constraints.json",
+    )
+    novomodelo.run.run(str(case), output_dir=str(output_dir))
+    assert (
+        novomodelo.results.load_policy(output_dir)["metadata"]["producer"][
+            "completed_iterations"
+        ]
+        == 6
+    )

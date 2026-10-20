@@ -59,58 +59,10 @@ impl RankDistribution {
     clippy::float_cmp
 )]
 mod tests {
-    use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp, per_rank_counts};
+    use crate::test_support::RankStub;
+    use novomodelo_comm::per_rank_counts;
 
     use super::RankDistribution;
-
-    /// Minimal communicator stub with configurable rank and size for unit tests.
-    struct StubCommN {
-        rank: usize,
-        size: usize,
-    }
-
-    impl Communicator for StubCommN {
-        fn allgatherv<T: CommData>(
-            &self,
-            send: &[T],
-            recv: &mut [T],
-            _counts: &[usize],
-            _displs: &[usize],
-        ) -> Result<(), CommError> {
-            recv[..send.len()].clone_from_slice(send);
-            Ok(())
-        }
-
-        fn allreduce<T: CommData>(
-            &self,
-            send: &[T],
-            recv: &mut [T],
-            _op: ReduceOp,
-        ) -> Result<(), CommError> {
-            recv.clone_from_slice(send);
-            Ok(())
-        }
-
-        fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
-            Ok(())
-        }
-
-        fn barrier(&self) -> Result<(), CommError> {
-            Ok(())
-        }
-
-        fn rank(&self) -> usize {
-            self.rank
-        }
-
-        fn size(&self) -> usize {
-            self.size
-        }
-
-        fn abort(&self, error_code: i32) -> ! {
-            std::process::exit(error_code)
-        }
-    }
 
     #[test]
     fn rank_distribution_new_3_ranks_8_forward_passes() {
@@ -123,7 +75,7 @@ mod tests {
         let expected_offset = [0, 3, 6];
 
         for rank in 0..3 {
-            let comm = StubCommN { rank, size: 3 };
+            let comm = RankStub { rank, size: 3 };
             let rd = RankDistribution::new(&comm, 8);
 
             assert_eq!(rd.num_ranks, 3, "rank {rank}: num_ranks");
@@ -154,7 +106,7 @@ mod tests {
 
         let backward_record_lens: Vec<usize> = (0..num_ranks)
             .map(|rank| {
-                let comm = StubCommN {
+                let comm = RankStub {
                     rank,
                     size: num_ranks,
                 };
@@ -171,7 +123,7 @@ mod tests {
 
         let zero_work_ranks = (0..num_ranks)
             .filter(|&rank| {
-                let comm = StubCommN {
+                let comm = RankStub {
                     rank,
                     size: num_ranks,
                 };
@@ -187,7 +139,7 @@ mod tests {
     #[test]
     fn rank_distribution_actual_per_rank_is_consistent_with_my_actual_fwd() {
         for rank in 0..3 {
-            let comm = StubCommN { rank, size: 3 };
+            let comm = RankStub { rank, size: 3 };
             let rd = RankDistribution::new(&comm, 8);
 
             let per_rank = per_rank_counts(8, rd.num_ranks);

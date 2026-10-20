@@ -41,7 +41,8 @@ fn fill_state_duals(
 /// module-level `col_scale`-division contract), iterated over `cut_state`; a
 /// disabled dimension's reduced cost is computed in the LP but not extracted.
 /// `cut_duals` holds the cut-row slice
-/// `[template_num_rows, template_num_rows + num_cuts)`.
+/// `[template_num_rows, template_num_rows + num_cuts)` when binding is tracked
+/// (`succ.cut_activity_tolerance` is `Some`), and is left empty otherwise.
 pub(crate) fn extract_duals_from_view(
     view: &SolutionView<'_>,
     cut_state: &CutStateProjection,
@@ -55,7 +56,7 @@ pub(crate) fn extract_duals_from_view(
     fill_state_duals(view, cut_state, col_scale, state_duals);
 
     cut_duals.clear();
-    if succ.num_cuts_at_successor > 0 {
+    if succ.cut_activity_tolerance.is_some() && succ.num_cuts_at_successor > 0 {
         cut_duals.extend_from_slice(
             &view.dual[succ.template_num_rows..succ.template_num_rows + succ.num_cuts_at_successor],
         );

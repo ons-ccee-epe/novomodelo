@@ -134,6 +134,7 @@ jobs:
           set -euo pipefail
           docker compose -f tests/slurm/docker-compose.yml cp tests/slurm/staging/novomodelo-mpi controller:/shared/novomodelo-mpi
           docker compose -f tests/slurm/docker-compose.yml cp tests/slurm/staging/4ree controller:/shared/4ree
+          docker compose -f tests/slurm/docker-compose.yml cp tests/slurm/1dtoy-fan controller:/shared/1dtoy-fan
           docker compose -f tests/slurm/docker-compose.yml cp tests/slurm/run-tests.sh controller:/shared/run-tests.sh
           docker compose -f tests/slurm/docker-compose.yml exec controller chmod +x /shared/novomodelo-mpi
 

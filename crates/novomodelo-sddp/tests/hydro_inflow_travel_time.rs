@@ -30,8 +30,8 @@ use novomodelo_core::{
     HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, HydroUnitGroup,
     InitialConditions, LineBlockBounds, LineStagePenalties, LinearTerm, NcsStagePenalties,
     PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-    ResolvedGenericConstraintBounds, ResolvedPenalties, SlackConfig, System, SystemBuilder,
-    ThermalBlockBounds, ThermalStageBounds, VariableRef,
+    ResolvedGenericConstraintBounds, ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds,
+    ThermalStageBounds, VariableRef,
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig, InflowNonNegativityMethod,
@@ -221,12 +221,9 @@ fn downstream_inflow_constraint() -> (GenericConstraint, ResolvedGenericConstrai
                 },
             )],
         },
-        slack: SlackConfig {
-            enabled: false,
-            penalty: None,
-        },
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        slack: None,
+        bound_lower: None,
+        bound_upper: None,
     };
     let id_map: HashMap<i32, usize> = [(GENERIC_CONSTRAINT_ID, 0)].into_iter().collect();
     let rows = vec![(
@@ -509,7 +506,7 @@ fn build_prefilling_system(
         HydroSpec {
             diversion: Some(DiversionChannel {
                 downstream_id: EntityId(PREFILLING_UPSTREAM_A_ID),
-                max_flow_m3s: DIVERSION_SOURCE_MAX_FLOW_M3S,
+                max_flow_m3s: Some(DIVERSION_SOURCE_MAX_FLOW_M3S),
             }),
             ..prefilling_hydro_defaults()
         },
