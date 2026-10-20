@@ -121,6 +121,11 @@ const ENVELOPE_TOLERANCE: f64 = 1e-9;
 
 /// `ENVELOPE_TOLERANCE` scaled to `value`'s own magnitude, floored at `1.0` so a
 /// near-zero declared/required value doesn't collapse the tolerance to zero.
-fn envelope_tolerance(value: f64) -> f64 {
+///
+/// Consumers deciding whether a plant-level bound is already covered by its
+/// unit groups use this same tolerance, so every plant value these checks
+/// admit stays inert downstream.
+#[must_use]
+pub fn envelope_tolerance(value: f64) -> f64 {
     ENVELOPE_TOLERANCE * value.abs().max(1.0)
 }

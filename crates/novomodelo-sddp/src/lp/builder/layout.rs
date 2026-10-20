@@ -17,13 +17,13 @@ use crate::hydro_models::{
 use crate::indexer::{
     AnticipatedLocal, BlockGrid, BlockIdx, BlockRowFamily, Boundary, BusSys, EntityPositions,
     EvapLocal, EvaporationIndices, FillingTargetLocal, FloorLocal, FphaCellLocal, FphaLocal,
-    HydroCell, HydroCellIndex, HydroSys, LineSys, NcsSys, PumpingSys, RangeCursor, StateSpace,
-    StorageBoundaryGrid, StudyDimensions, ThermalSys, anticipated_resolution_for,
+    HydroCell, HydroCellIndex, HydroSys, LineSys, NcsSys, PlantFloorLocal, PumpingSys, RangeCursor,
+    StateSpace, StorageBoundaryGrid, StudyDimensions, ThermalSys, anticipated_resolution_for,
     for_each_live_commitment_slot, is_anticipated_decision_active_for_delivery,
 };
 use crate::time_value::TimeValue;
 
-use super::hydro_state::hydro_phase;
+use super::hydro_state::{GroupBoundLookup, MinFloor, PlantFloor, hydro_phase};
 use super::{
     EVAP_COLS_PER_HYDRO, EVAP_F_MINUS_OFFSET, EVAP_F_PLUS_OFFSET, EVAP_FLOW_OFFSET,
     GenericConstraintRowEntry,
@@ -126,6 +126,29 @@ pub(crate) struct TemplateBuildCtx<'a> {
     pub(crate) topology: &'a TransitBucketTopology,
 }
 
+impl<'a> TemplateBuildCtx<'a> {
+    /// Plant `h`'s `kind` floor at block `blk` of stage `stage_idx` — the one
+    /// resolution the floor rows, their slack columns, and the plant-floor
+    /// membership all read.
+    pub(super) fn plant_floor(
+        &self,
+        stage_idx: usize,
+        kind: MinFloor,
+        h: HydroSys,
+        blk: usize,
+    ) -> PlantFloor<'a> {
+        let bounds = self.resolved.bounds;
+        PlantFloor::resolve(
+            kind,
+            &self.hydros[h.get()],
+            self.hydro_cell_index,
+            h,
+            GroupBoundLookup::new(bounds.group_overlay(), h.get(), stage_idx, blk),
+            bounds.hydro_bounds_at_block(h.get(), stage_idx, blk),
+        )
+    }
+}
+
 /// Column/row offsets for one stage's in-study anticipated-ring layout
 /// (latch/carry/fish, modular-slot-addressed), carved from
 /// [`StateSpace::commit_out`]/[`StateSpace::commit_in`]. There is no separate
@@ -226,16 +249,17 @@ pub(crate) struct EquipmentColumns {
     pub(crate) evap_col_start: usize,
 }
 
-/// Row ranges for the four operational-violation slack families
+/// Row ranges for the six operational-violation slack families
 /// (below-min-outflow, above-max-outflow, below-min-turbine,
-/// below-min-generation). The two flow families are sized `n_h * n_blks`
-/// (non-empty only when `n_h > 0`); the two power families are sized
-/// `n_cells * n_blks` (non-empty only when `n_cells > 0`) — a cell's own
-/// min-turbine/min-generation floor is the sum of ITS OWN member groups, never
-/// the plant's aggregate, so each cell gets its own row and its own slack
-/// column. See the min-floor contract. Their paired slack columns live on
-/// [`StageGeometry`]; see [`allocate_oper_violation_slack_columns`] for why
-/// the two halves are allocated separately.
+/// below-min-generation, and the two plant residual floors). The two flow
+/// families are sized `n_h * n_blks`; the two cell power families
+/// `n_cells * n_blks` — a cell's own min-turbine/min-generation floor is the
+/// sum of ITS OWN member groups, so each cell gets its own row and its own
+/// slack column; the two plant residual families `n_plant_floor * n_blks`,
+/// one per multi-cell plant whose resolved minimum its cells do not cover
+/// ([`PlantFloor`]). See the min-floor contract. Their paired slack columns
+/// live on [`StageGeometry`]; see [`allocate_oper_violation_slack_columns`]
+/// for why the two halves are allocated separately.
 pub(crate) struct OperViolationRanges {
     /// Row range for min-outflow constraints (one per hydro per block).
     pub(crate) min_outflow: Range<usize>,
@@ -245,40 +269,56 @@ pub(crate) struct OperViolationRanges {
     pub(crate) min_turbine: Range<usize>,
     /// Row range for min-generation constraints (one per hydro CELL per block).
     pub(crate) min_generation: Range<usize>,
+    /// Row range for plant residual min-turbine constraints (one per
+    /// plant-floor hydro per block).
+    pub(crate) plant_min_turbine: Range<usize>,
+    /// Row range for plant residual min-generation constraints (one per
+    /// plant-floor hydro per block).
+    pub(crate) plant_min_generation: Range<usize>,
+}
+
+/// Family lengths shared by [`allocate_oper_violation_slack_columns`] and
+/// [`OperViolationRanges::new`], so each slack column family and its rows are
+/// sized from one value.
+#[derive(Clone, Copy)]
+struct OperViolationSizes {
+    hydros: usize,
+    cells: usize,
+    plant_floors: usize,
 }
 
 impl OperViolationRanges {
-    /// Allocate the four row families, contiguously in this order: reordering
-    /// these `alloc` calls would shift every downstream row. `n_op_hydro`
-    /// sizes the two flow families; `n_op_cell` sizes the two power
-    /// families — they diverge the moment any plant declares groups on more
-    /// than one bus. The caller allocates the paired slack columns
+    /// Allocate the six row families, contiguously in this order: reordering
+    /// these `alloc` calls would shift every downstream row. The caller
+    /// allocates the paired slack columns
     /// (`allocate_oper_violation_slack_columns`) immediately before this, in
     /// the same order.
-    fn new(row: &mut RangeCursor, n_op_hydro: usize, n_op_cell: usize) -> Self {
+    fn new(row: &mut RangeCursor, sizes: OperViolationSizes) -> Self {
         Self {
-            min_outflow: row.alloc(n_op_hydro),
-            max_outflow: row.alloc(n_op_hydro),
-            min_turbine: row.alloc(n_op_cell),
-            min_generation: row.alloc(n_op_cell),
+            min_outflow: row.alloc(sizes.hydros),
+            max_outflow: row.alloc(sizes.hydros),
+            min_turbine: row.alloc(sizes.cells),
+            min_generation: row.alloc(sizes.cells),
+            plant_min_turbine: row.alloc(sizes.plant_floors),
+            plant_min_generation: row.alloc(sizes.plant_floors),
         }
     }
 }
 
-/// Allocate the four operational-violation slack columns (below-min-outflow,
-/// above-max-outflow, below-min-turbine, below-min-generation), in the order
-/// their paired rows follow in [`OperViolationRanges::new`].
+/// Allocate the six operational-violation slack column families onto
+/// `geometry`, in the order their paired rows follow in
+/// [`OperViolationRanges::new`].
 fn allocate_oper_violation_slack_columns(
     col: &mut RangeCursor,
-    n_op_hydro: usize,
-    n_op_cell: usize,
-) -> (Range<usize>, Range<usize>, Range<usize>, Range<usize>) {
-    (
-        col.alloc(n_op_hydro),
-        col.alloc(n_op_hydro),
-        col.alloc(n_op_cell),
-        col.alloc(n_op_cell),
-    )
+    geometry: &mut StageGeometry,
+    sizes: OperViolationSizes,
+) {
+    geometry.outflow_below_slack = col.alloc(sizes.hydros);
+    geometry.outflow_above_slack = col.alloc(sizes.hydros);
+    geometry.turbine_below_slack = col.alloc(sizes.cells);
+    geometry.generation_below_slack = col.alloc(sizes.cells);
+    geometry.plant_turbine_below_slack = col.alloc(sizes.plant_floors);
+    geometry.plant_generation_below_slack = col.alloc(sizes.plant_floors);
 }
 
 /// Constraint row ranges shared by every stage's LP that [`StageGeometry`]
@@ -720,6 +760,30 @@ fn identify_filled_min_storage_floor_hydros(
             matches!(hydro_phase(hydro, stage_id), Phase::Operating) && hydro.filling.is_some()
         })
         .map(HydroSys::new)
+        .collect()
+}
+
+/// Collect the multi-cell hydros whose resolved turbined or generation minimum
+/// exceeds their cells' summed floor at some block of this stage — the plants
+/// that need a residual floor row ([`PlantFloor::residual_rhs`]). Empty for
+/// every study whose plant minima come from declarations alone.
+fn identify_plant_floor_hydros(
+    ctx: &TemplateBuildCtx<'_>,
+    stage_idx: usize,
+    n_blks: usize,
+) -> Vec<HydroSys> {
+    (0..ctx.hydros.len())
+        .map(HydroSys::new)
+        .filter(|&h| {
+            ctx.hydro_cell_index.cells_of(h).len() > 1
+                && (0..n_blks).any(|blk| {
+                    MinFloor::ALL.into_iter().any(|kind| {
+                        ctx.plant_floor(stage_idx, kind, h, blk)
+                            .residual_rhs()
+                            .is_some()
+                    })
+                })
+        })
         .collect()
 }
 
@@ -1188,6 +1252,8 @@ impl StageGeometry {
             outflow_above_slack: 0..0,
             turbine_below_slack: 0..0,
             generation_below_slack: 0..0,
+            plant_turbine_below_slack: 0..0,
+            plant_generation_below_slack: 0..0,
             contract_import: 0..0,
             contract_export: 0..0,
             water_balance: BlockRowFamily::one_per_entity(0..0),
@@ -1204,6 +1270,7 @@ impl StageGeometry {
             evap_hydro_indices: Vec::new(),
             filling_target_hydro_indices: Vec::new(),
             filled_min_storage_floor_hydro_indices: Vec::new(),
+            plant_floor_hydro_indices: Vec::new(),
         }
     }
 }
@@ -1303,13 +1370,14 @@ impl<'a> StageLayout<'a> {
         // `n_h * n_blks`/`n_cells * n_blks` are `0` when `n_h`/`n_cells == 0`, so
         // `alloc(0)` collapses every family onto the post-equipment cursor with
         // no branch.
-        (
-            geometry.outflow_below_slack,
-            geometry.outflow_above_slack,
-            geometry.turbine_below_slack,
-            geometry.generation_below_slack,
-        ) = allocate_oper_violation_slack_columns(&mut col, n_h * n_blks, n_cells * n_blks);
-        let oper_violation = OperViolationRanges::new(&mut row, n_h * n_blks, n_cells * n_blks);
+        geometry.plant_floor_hydro_indices = identify_plant_floor_hydros(ctx, stage_idx, n_blks);
+        let oper_violation_sizes = OperViolationSizes {
+            hydros: n_h * n_blks,
+            cells: n_cells * n_blks,
+            plant_floors: geometry.plant_floor_hydro_indices.len() * n_blks,
+        };
+        allocate_oper_violation_slack_columns(&mut col, &mut geometry, oper_violation_sizes);
+        let oper_violation = OperViolationRanges::new(&mut row, oper_violation_sizes);
 
         geometry.ncs_generation = col.alloc(ctx.non_controllable_sources.len() * n_blks);
 
@@ -1473,6 +1541,49 @@ impl StageLayout<'_> {
     #[inline]
     pub(crate) fn min_generation_row(&self, c: HydroCell, blk: BlockIdx) -> usize {
         self.block_flat(self.oper_violation.min_generation.start, c.get(), blk)
+    }
+
+    #[inline]
+    pub(super) fn min_floor_row(&self, kind: MinFloor, c: HydroCell, blk: BlockIdx) -> usize {
+        match kind {
+            MinFloor::Turbined => self.min_turbine_row(c, blk),
+            MinFloor::Generation => self.min_generation_row(c, blk),
+        }
+    }
+
+    #[inline]
+    pub(super) fn plant_min_floor_row(
+        &self,
+        kind: MinFloor,
+        local: PlantFloorLocal,
+        blk: BlockIdx,
+    ) -> usize {
+        let family = match kind {
+            MinFloor::Turbined => &self.oper_violation.plant_min_turbine,
+            MinFloor::Generation => &self.oper_violation.plant_min_generation,
+        };
+        self.block_flat(family.start, local.get(), blk)
+    }
+
+    #[inline]
+    pub(super) fn cell_below_col(&self, kind: MinFloor, c: HydroCell, blk: BlockIdx) -> usize {
+        match kind {
+            MinFloor::Turbined => self.geometry.turbine_below_col(c, blk),
+            MinFloor::Generation => self.geometry.generation_below_col(c, blk),
+        }
+    }
+
+    #[inline]
+    pub(super) fn plant_below_col(
+        &self,
+        kind: MinFloor,
+        local: PlantFloorLocal,
+        blk: BlockIdx,
+    ) -> usize {
+        match kind {
+            MinFloor::Turbined => self.geometry.plant_turbine_below_col(local, blk),
+            MinFloor::Generation => self.geometry.plant_generation_below_col(local, blk),
+        }
     }
 
     /// Anticipated-local `local`'s commitment-maturity row, or `None` when no
@@ -1714,6 +1825,14 @@ pub struct StageGeometry {
     pub turbine_below_slack: Range<usize>,
     /// Generation-below-minimum slack column range (one per hydro CELL per block).
     pub generation_below_slack: Range<usize>,
+    /// Plant residual turbine-below-minimum slack column range (one per
+    /// plant-floor hydro per block); reached through
+    /// [`StageGeometry::plant_turbine_below_col`].
+    pub plant_turbine_below_slack: Range<usize>,
+    /// Plant residual generation-below-minimum slack column range (one per
+    /// plant-floor hydro per block); reached through
+    /// [`StageGeometry::plant_generation_below_col`].
+    pub plant_generation_below_slack: Range<usize>,
     /// Import-contract column range (one per import contract per block); empty
     /// `start..start` (not `0..0`) at the pumping-end column when there are none.
     pub contract_import: Range<usize>,
@@ -1779,6 +1898,10 @@ pub struct StageGeometry {
     /// `filled_min_storage_floor_col`; SPARSE like `filling_target_hydro_indices`,
     /// resolved the same way.
     pub filled_min_storage_floor_hydro_indices: Vec<HydroSys>,
+    /// System hydro indices owning a plant residual floor row and slack column
+    /// pair at this stage, in slot order; SPARSE like
+    /// `filling_target_hydro_indices`, resolved the same way.
+    pub plant_floor_hydro_indices: Vec<HydroSys>,
 }
 
 impl StageGeometry {
@@ -1901,6 +2024,22 @@ impl StageGeometry {
     #[must_use]
     pub fn generation_below_col(&self, c: HydroCell, blk: BlockIdx) -> usize {
         self.block_flat(&self.generation_below_slack, c.get(), blk)
+    }
+
+    /// Plant residual turbine-below-minimum slack column for plant-floor slot
+    /// `local`, block `blk`.
+    #[inline]
+    #[must_use]
+    pub fn plant_turbine_below_col(&self, local: PlantFloorLocal, blk: BlockIdx) -> usize {
+        self.block_flat(&self.plant_turbine_below_slack, local.get(), blk)
+    }
+
+    /// Plant residual generation-below-minimum slack column for plant-floor
+    /// slot `local`, block `blk`.
+    #[inline]
+    #[must_use]
+    pub fn plant_generation_below_col(&self, local: PlantFloorLocal, blk: BlockIdx) -> usize {
+        self.block_flat(&self.plant_generation_below_slack, local.get(), blk)
     }
 
     /// `contract_type`'s contract column at per-direction slot `family_slot`

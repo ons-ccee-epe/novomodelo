@@ -68,6 +68,7 @@ pub use template::StageTemplates;
 
 // --- Crate-internal re-exports ---
 pub(crate) use build_inputs::LpBuildInputs;
+pub(crate) use hydro_state::warn_on_inert_plant_floor_overrides;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use layout::ResolvedTables;
 #[cfg(any(test, feature = "test-support"))]

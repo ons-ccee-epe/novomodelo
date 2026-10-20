@@ -1042,6 +1042,8 @@ fn build_geometry(
         outflow_below_slack: ob,
         outflow_above_slack: oa,
         turbine_below_slack: tb,
+        plant_turbine_below_slack: gb.end..gb.end,
+        plant_generation_below_slack: gb.end..gb.end,
         generation_below_slack: gb,
         // This conformance geometry models no contract columns; the production
         // `start..start`-at-pumping-end anchoring is owned by
@@ -1067,6 +1069,7 @@ fn build_geometry(
         evap_hydro_indices: Vec::new(),
         filling_target_hydro_indices: Vec::new(),
         filled_min_storage_floor_hydro_indices: Vec::new(),
+        plant_floor_hydro_indices: Vec::new(),
     }
 }
 

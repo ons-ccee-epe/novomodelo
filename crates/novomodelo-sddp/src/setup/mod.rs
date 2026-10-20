@@ -112,6 +112,7 @@ use crate::{
     lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime, PointResolution},
     lp::builder::{
         LpBuildInputs, StageGeometry, StateBox, build_stage_templates, contract_family_slot,
+        warn_on_inert_plant_floor_overrides,
     },
     lp::indexer::{
         AnticipatedLocal, AnticipatedPlants, CutStateProjection, HydroCellIndex, HydroSys,
@@ -1942,6 +1943,12 @@ fn resolve_stage_data(
 
     let time_value = TimeValue::from_system(system, &study_dims.anticipated_plants, calendar);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
+    warn_on_inert_plant_floor_overrides(
+        system.hydros(),
+        system.stages(),
+        system.bounds(),
+        &hydro_cell_index,
+    );
     let load_bus_ids = &stochastic.entity_order()[stochastic.class_dimensions().load_bus_range()];
     let inputs = resolve_lp_build_inputs(
         system,

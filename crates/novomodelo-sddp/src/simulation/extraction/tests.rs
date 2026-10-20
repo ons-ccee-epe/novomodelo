@@ -6603,6 +6603,127 @@ fn extract_hydro_turbined_and_generation_sum_over_a_split_plants_cells() {
     assert_eq!(plant1[1].generation_mw, 55.0);
 }
 
+/// A plant owning a residual floor row reports its whole shortfall: the
+/// residual slack adds onto its cells' slacks in `turbined_slack_m3s` /
+/// `generation_slack_mw` and in both violation costs, while a plant without
+/// one reads its cells only. Each slack carries a distinct value so a dropped
+/// or misattributed term is visible.
+#[test]
+fn extract_hydro_power_slacks_add_the_plant_residual_onto_its_cells() {
+    let (state, base_geometry, hydro_cell_index) = split_plant_multi_bus_extraction_fixture();
+    let geometry = StageGeometry {
+        plant_turbine_below_slack: 45..47,
+        plant_generation_below_slack: 47..49,
+        plant_floor_hydro_indices: vec![HydroSys::new(1)],
+        ..base_geometry
+    };
+    let study_dims = test_support::study_dims();
+    let ec = zero_energy_conversion(2, 1);
+
+    let mut primal = vec![0.0_f64; geometry.turbine_below_slack.start];
+    primal.extend_from_slice(&[
+        1.0, 2.0, // turbine_below[cell 0] (plant 0), blk 0/1
+        3.0, 4.0, // turbine_below[cell 1] (plant 1)
+        5.0, 6.0, // turbine_below[cell 2] (plant 1)
+        10.0, 20.0, // generation_below[cell 0]
+        30.0, 40.0, // generation_below[cell 1]
+        50.0, 60.0, // generation_below[cell 2]
+        7.0, 8.0, // plant_turbine_below[plant-floor slot 0 = plant 1]
+        70.0, 80.0, // plant_generation_below[plant-floor slot 0]
+    ]);
+    let mut objective_coeffs = vec![0.0; primal.len()];
+    for col in geometry
+        .turbine_below_slack
+        .clone()
+        .chain(geometry.plant_turbine_below_slack.clone())
+    {
+        objective_coeffs[col] = 1.0;
+    }
+    for col in geometry
+        .generation_below_slack
+        .clone()
+        .chain(geometry.plant_generation_below_slack.clone())
+    {
+        objective_coeffs[col] = 2.0;
+    }
+    let dual = vec![0.0; 2];
+
+    let result = extract_stage_result(
+        &SolutionView {
+            primal: &primal,
+            dual: &dual,
+            objective: 0.0,
+            objective_coeffs: &objective_coeffs,
+            row_lower: &[],
+        },
+        &StageExtractionSpec {
+            study_dims: &study_dims,
+            geometry: &geometry,
+            hydro_cell_index: &hydro_cell_index,
+            state: &state,
+            entity_counts: &EntityCounts {
+                hydro_ids: vec![100, 200],
+                hydro_productivities: vec![0.0; 2],
+                thermal_ids: vec![],
+                line_ids: vec![],
+                bus_ids: vec![],
+                pumping_station_ids: vec![],
+                contract_ids: vec![],
+                non_controllable_ids: vec![],
+            },
+            inflow_m3s_per_hydro: &[0.0, 0.0],
+            block_hours: &[100.0, 100.0],
+            generic_constraint_entries: &[],
+            ncs_col_upper: &[],
+            pumping_consumption_mw_per_m3s: &[],
+            contract_prices: &[],
+            contract_slots: &[],
+            diversion_upstream: &HashMap::new(),
+            hydro_productivities: &[2.0, 0.0],
+            col_scale: &[],
+            row_scale: &[],
+            cumulative_discount_factor: 1.0,
+            cost_scale_factor: 10.0,
+            energy_conversion: &ec,
+            hydro_min_storage_hm3: &[0.0; 2],
+            stage_index: 0,
+            horizon: &HorizonMode::Finite { num_stages: 1 },
+            anticipated_windows: &[],
+            study_stage_ids: &[],
+        },
+        0,
+    );
+
+    let slacks = |id: i32| -> Vec<(f64, f64)> {
+        result
+            .hydros
+            .iter()
+            .filter(|h| h.hydro_id == id)
+            .map(|h| (h.turbined_slack_m3s, h.generation_slack_mw))
+            .collect()
+    };
+    assert_eq!(
+        slacks(100),
+        vec![(1.0, 10.0), (2.0, 20.0)],
+        "plant 0: its one cell"
+    );
+    assert_eq!(
+        slacks(200),
+        vec![
+            (3.0 + 5.0 + 7.0, 30.0 + 50.0 + 70.0),
+            (4.0 + 6.0 + 8.0, 40.0 + 60.0 + 80.0)
+        ],
+        "plant 1: both cells plus its residual"
+    );
+
+    let costs = &result.costs[0];
+    assert_eq!(costs.turbined_violation_cost, (21.0 + 15.0) * 10.0);
+    assert_eq!(
+        costs.generation_violation_cost,
+        2.0 * (210.0 + 150.0) * 10.0
+    );
+}
+
 // -------------------------------------------------------------------------
 // hydro_bus_generation: one row per (hydro, block, cell)
 // -------------------------------------------------------------------------

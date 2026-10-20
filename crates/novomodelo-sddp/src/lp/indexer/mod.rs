@@ -84,7 +84,7 @@
 //! - `entity_index` — entity system/local index vocabulary
 //!   ([`HydroSys`]/[`ThermalSys`]/[`LineSys`]/[`BusSys`]/[`NcsSys`]/
 //!   [`PumpingSys`], [`FphaLocal`]/[`EvapLocal`]/[`FillingTargetLocal`]/
-//!   [`FloorLocal`]/[`AnticipatedLocal`], [`HydroCell`]/[`FphaCellLocal`]).
+//!   [`PlantFloorLocal`]/[`FloorLocal`]/[`AnticipatedLocal`], [`HydroCell`]/[`FphaCellLocal`]).
 //! - `hydro_cell` — the [`HydroCellIndex`] partition and [`HydroCell`] type.
 //!
 //! Every public symbol is re-exported here so the `novomodelo_sddp::indexer::Symbol`
@@ -116,7 +116,7 @@ pub use block_row_family::BlockRowFamily;
 pub use cut_state_projection::CutStateProjection;
 pub use entity_index::{
     AnticipatedLocal, BusSys, EvapLocal, FillingTargetLocal, FloorLocal, FphaCellLocal, FphaLocal,
-    HydroCell, HydroSys, LineSys, NcsSys, PumpingSys, ThermalSys,
+    HydroCell, HydroSys, LineSys, NcsSys, PlantFloorLocal, PumpingSys, ThermalSys,
 };
 pub(crate) use entity_positions::EntityPositions;
 pub use hydro_cell::HydroCellIndex;
