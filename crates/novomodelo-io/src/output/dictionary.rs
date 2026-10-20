@@ -561,7 +561,7 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "hydros",
         "inflow_nonnegativity_slack_m3s",
-        "Water added to the incremental inflow in the water balance: the non-negativity correction under the truncation methods, the penalty slack under the penalty method, 0 without one; for a plant before filling it lands, like the inflow, on the plant that receives its inflow",
+        "Water added to the incremental inflow in the water balance: the non-negativity correction under truncation, at most that correction under truncation_with_penalty, the penalty slack under the penalty method, 0 without one; for a plant before filling it lands, like the inflow, on the plant that receives its inflow, if there is one",
     ),
     (
         "hydros",
@@ -740,7 +740,7 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "inflow_lags",
         "inflow_m3s",
-        "Inflow at this lag: the seed derived from history (0 without one) at the first stage, the raw simulated PAR value afterwards",
+        "Inflow at this lag: the seed derived from history (0 without one) at the first stage, built afterwards from the raw simulated PAR values of earlier stages (aggregated over the lag's period when the period spans several stages)",
     ),
     ("in_transit", "stage_id", "Stage index"),
     (
