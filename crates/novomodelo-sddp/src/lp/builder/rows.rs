@@ -4,11 +4,11 @@ use novomodelo_core::{BlockMode, Stage};
 use crate::hydro_models::EvaporationModel;
 use crate::indexer::{
     BlockIdx, BusSys, EvapLocal, FillingTargetLocal, FloorLocal, HydroCell, HydroSys,
-    PlantFloorLocal,
+    PlantCapLocal, PlantFloorLocal,
 };
 
 use super::fpha_cursor::for_each_fpha_plane;
-use super::hydro_state::{MinFloor, hydro_phase, resolve_shortcircuit_target};
+use super::hydro_state::{MaxCap, MinFloor, hydro_phase, resolve_shortcircuit_target};
 use super::layout::{StageLayout, TemplateBuildCtx, position_table_row};
 
 /// Fill row lower/upper bounds for one stage.
@@ -45,6 +45,14 @@ pub(super) fn fill_stage_rows(
     fill_fpha_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
     fill_evaporation_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
     fill_operational_violation_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
+    fill_plant_cap_rows(
+        ctx,
+        stage,
+        stage_idx,
+        layout,
+        &mut row_lower,
+        &mut row_upper,
+    );
     fill_anticipated_fishing_rows(layout, &mut row_lower, &mut row_upper);
     fill_anticipated_state_out_def_rows(layout, &mut row_lower, &mut row_upper);
     fill_anticipated_slot_definition_rows(layout, &mut row_lower, &mut row_upper);
@@ -504,6 +512,30 @@ pub(super) fn fill_operational_violation_rows(
                 );
                 row_lower[row] = floor.residual_rhs().unwrap_or(f64::NEG_INFINITY);
                 row_upper[row] = f64::INFINITY;
+            }
+        }
+    }
+}
+
+/// Fill the hard plant cap rows: `≤` the plant maximum where it binds on its
+/// cells' total ([`plant_cap_rhs`](super::hydro_state::plant_cap_rhs)), free
+/// elsewhere.
+fn fill_plant_cap_rows(
+    ctx: &TemplateBuildCtx<'_>,
+    stage: &Stage,
+    stage_idx: usize,
+    layout: &StageLayout,
+    row_lower: &mut [f64],
+    row_upper: &mut [f64],
+) {
+    for (local, &hydro_sys) in layout.geometry.plant_cap_hydro_indices.iter().enumerate() {
+        for kind in MaxCap::ALL {
+            for blk in 0..layout.clock.n_blks() {
+                let row = layout.plant_max_row(kind, PlantCapLocal::new(local), BlockIdx::new(blk));
+                row_lower[row] = f64::NEG_INFINITY;
+                row_upper[row] = ctx
+                    .plant_cap(stage.id, stage_idx, kind, hydro_sys, blk)
+                    .unwrap_or(f64::INFINITY);
             }
         }
     }

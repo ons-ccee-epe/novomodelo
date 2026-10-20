@@ -11,7 +11,7 @@ use crate::indexer::{
 use super::EVAPORATION_FLOW_SAFETY_MARGIN;
 use super::delivery_ring::{ColumnBufs, DeliveryRing};
 use super::hydro_state::{
-    GroupBoundLookup, MinFloor, cell_max_generation, cell_max_turbined, hydro_phase,
+    GroupBoundLookup, MinFloor, cell_max_generation, cell_max_turbined, hydro_phase, is_suspended,
 };
 use super::layout::{
     StageLayout, TemplateBuildCtx, contract_direction_counts, contract_family_slot,
@@ -186,10 +186,7 @@ fn fill_turbine_columns(
 ) {
     for h_idx in 0..layout.state.hydro_count {
         let hydro = &ctx.hydros[h_idx];
-        let suspended = matches!(
-            hydro_phase(hydro, stage.id),
-            Phase::PreFilling | Phase::Filling
-        );
+        let suspended = is_suspended(hydro, stage.id);
         let hp = ctx.resolved.penalties.hydro_penalties(h_idx, stage_idx);
         let model = ctx.production_models.model(h_idx, stage_idx);
         for blk in 0..layout.clock.n_blks() {
@@ -285,10 +282,7 @@ fn fill_diversion_columns(
 ) {
     for (h_idx, hydro) in ctx.hydros.iter().enumerate() {
         let hp = ctx.resolved.penalties.hydro_penalties(h_idx, stage_idx);
-        let suspended = matches!(
-            hydro_phase(hydro, stage.id),
-            Phase::PreFilling | Phase::Filling
-        );
+        let suspended = is_suspended(hydro, stage.id);
         let dormant = hydro.filling.is_some() || suspended;
         for blk in 0..layout.clock.n_blks() {
             // CONTRACT: read the per-stage RESOLVED bounds, NOT the declaration-time

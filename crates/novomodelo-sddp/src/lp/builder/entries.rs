@@ -5,13 +5,13 @@ use super::generic_constraints::resolve_variable_ref;
 use crate::hydro_models::EvaporationModel;
 use crate::indexer::{
     AnticipatedLocal, BlockIdx, Boundary, BusSys, EvapLocal, FillingTargetLocal, FloorLocal,
-    FphaCellLocal, HydroCell, HydroSys, LineSys, NcsSys, PlantFloorLocal, PumpingSys, ThermalSys,
-    for_each_ring_residue,
+    FphaCellLocal, HydroCell, HydroSys, LineSys, NcsSys, PlantCapLocal, PlantFloorLocal,
+    PumpingSys, ThermalSys, for_each_ring_residue,
 };
 
 use super::delivery_ring::{DeliveryRing, maturing_bucket_in_col, resolve_bucket_arrival_density};
 use super::fpha_cursor::for_each_fpha_plane;
-use super::hydro_state::{MinFloor, hydro_phase, resolve_shortcircuit_target};
+use super::hydro_state::{MaxCap, MinFloor, hydro_phase, resolve_shortcircuit_target};
 use super::layout::{StageLayout, StageProductionRole, TemplateBuildCtx, contract_family_slot};
 
 /// Fishing (consumption) coupling: for every anticipated plant whose
@@ -1362,7 +1362,7 @@ pub(super) fn fill_operational_violation_entries(
         for (offset, c) in ctx.hydro_cell_index.cells_of(hydro).enumerate() {
             let cell = HydroCell::new(c);
             for blk in (0..n_blks).map(BlockIdx::new) {
-                let rows = CellFloorRows {
+                let rows = PowerRows {
                     turbined: layout.min_turbine_row(cell, blk),
                     generation: layout.min_generation_row(cell, blk),
                 };
@@ -1375,7 +1375,7 @@ pub(super) fn fill_operational_violation_entries(
         let local = PlantFloorLocal::new(local);
         let role = layout.stage_production_role(ctx.production_models, hydro.get(), stage_idx);
         for blk in (0..n_blks).map(BlockIdx::new) {
-            let rows = CellFloorRows {
+            let rows = PowerRows {
                 turbined: layout.plant_min_floor_row(MinFloor::Turbined, local, blk),
                 generation: layout.plant_min_floor_row(MinFloor::Generation, local, blk),
             };
@@ -1396,34 +1396,31 @@ pub(super) fn fill_operational_violation_entries(
     }
 }
 
-/// The min-turbine and min-generation rows a cell's floor LHS is pushed onto:
-/// the cell's own rows, or its plant's residual rows.
+/// A turbined-flow row and a generation row that a cell's terms are pushed onto:
+/// the cell's own floor rows, or its plant's residual floor or cap rows.
 #[derive(Clone, Copy)]
-struct CellFloorRows {
+struct PowerRows {
     turbined: usize,
     generation: usize,
 }
 
-/// Push cell `cell`'s floor LHS at block `blk` onto `rows`: its turbine column
-/// and turbine slack on the min-turbine row; its generation term and generation
-/// slack on the min-generation row. The generation term is the cell's own FPHA
-/// generation column, its turbine column at `rho` for `ConstantProductivity`,
-/// or absent for a commissioning-dormant FPHA plant — which has no generation
-/// column and no productivity to price its frozen turbine column at, so the
-/// slack alone absorbs a nonzero floor. `offset` is the cell's position within
-/// its plant.
-fn push_cell_floor_lhs(
+/// Push cell `cell`'s production terms at block `blk` onto `rows`: its turbine
+/// column on the turbined row; its generation term on the generation row — its
+/// own FPHA generation column, its turbine column at `rho` for
+/// `ConstantProductivity`, or absent for a commissioning-dormant FPHA plant,
+/// which has no generation column and no productivity to price its frozen
+/// turbine column at. `offset` is the cell's position within its plant.
+fn push_cell_power_terms(
     layout: &StageLayout,
     role: StageProductionRole,
     offset: usize,
     cell: HydroCell,
     blk: BlockIdx,
-    rows: CellFloorRows,
+    rows: PowerRows,
     col_entries: &mut [Vec<(usize, f64)>],
 ) {
     let geom = &layout.geometry;
     col_entries[geom.turbine_col(cell, blk)].push((rows.turbined, 1.0));
-    col_entries[geom.turbine_below_col(cell, blk)].push((rows.turbined, 1.0));
     match role {
         StageProductionRole::Fpha(local_fpha_idx) => {
             let fpha_cell =
@@ -1435,7 +1432,56 @@ fn push_cell_floor_lhs(
         }
         StageProductionRole::Dormant => {}
     }
+}
+
+/// Push cell `cell`'s floor LHS at block `blk` onto `rows`: its production terms
+/// plus its own turbine and generation slacks, so a dormant plant's slack alone
+/// absorbs a nonzero generation floor.
+fn push_cell_floor_lhs(
+    layout: &StageLayout,
+    role: StageProductionRole,
+    offset: usize,
+    cell: HydroCell,
+    blk: BlockIdx,
+    rows: PowerRows,
+    col_entries: &mut [Vec<(usize, f64)>],
+) {
+    push_cell_power_terms(layout, role, offset, cell, blk, rows, col_entries);
+    let geom = &layout.geometry;
+    col_entries[geom.turbine_below_col(cell, blk)].push((rows.turbined, 1.0));
     col_entries[geom.generation_below_col(cell, blk)].push((rows.generation, 1.0));
+}
+
+/// Plant cap rows (`<=`, per plant-cap hydro): the plant's cells' production
+/// terms summed, with no slack — the cap is hard, like the per-cell column
+/// bounds it tightens.
+fn fill_plant_cap_entries(
+    ctx: &TemplateBuildCtx<'_>,
+    stage_idx: usize,
+    layout: &StageLayout,
+    col_entries: &mut [Vec<(usize, f64)>],
+) {
+    for (local, &hydro) in layout.geometry.plant_cap_hydro_indices.iter().enumerate() {
+        let local = PlantCapLocal::new(local);
+        let role = layout.stage_production_role(ctx.production_models, hydro.get(), stage_idx);
+        for blk in (0..layout.clock.n_blks()).map(BlockIdx::new) {
+            let rows = PowerRows {
+                turbined: layout.plant_max_row(MaxCap::Turbined, local, blk),
+                generation: layout.plant_max_row(MaxCap::Generation, local, blk),
+            };
+            for (offset, c) in ctx.hydro_cell_index.cells_of(hydro).enumerate() {
+                push_cell_power_terms(
+                    layout,
+                    role,
+                    offset,
+                    HydroCell::new(c),
+                    blk,
+                    rows,
+                    col_entries,
+                );
+            }
+        }
+    }
 }
 
 /// Build the unsorted CSC matrix entries for one stage: one `Vec<(row, value)>` per column
@@ -1461,6 +1507,7 @@ pub(super) fn build_stage_matrix_entries(
     fill_evaporation_entries(ctx, stage, stage_idx, layout, &mut col_entries);
     fill_z_inflow_entries(ctx, stage_idx, layout, &mut col_entries);
     fill_operational_violation_entries(ctx, stage_idx, layout, &mut col_entries);
+    fill_plant_cap_entries(ctx, stage_idx, layout, &mut col_entries);
     fill_anticipated_fishing_entries(ctx, stage, stage_idx, layout, &mut col_entries);
 
     col_entries
@@ -3307,7 +3354,7 @@ mod pumping_water_tests {
     };
     use crate::indexer::{
         AnticipatedPlants, BlockIdx, Boundary, BusSys, EvapLocal, FphaCellLocal, HydroCell,
-        HydroCellIndex, HydroSys, LineSys, PlantFloorLocal, StateDim,
+        HydroCellIndex, HydroSys, LineSys, PlantCapLocal, PlantFloorLocal, StateDim,
     };
     use crate::lead_time::{SpreadResolution, resolve_spread};
 
@@ -3317,7 +3364,7 @@ mod pumping_water_tests {
 
     use super::super::columns::{fill_pumping_columns, fill_stage_columns};
     use super::super::delivery_ring::ColumnBufs;
-    use super::super::hydro_state::{MinFloor, warn_on_inert_plant_floor_overrides};
+    use super::super::hydro_state::{MaxCap, MinFloor, warn_on_inert_plant_floor_overrides};
     use super::super::layout::{StageLayout, TemplateBuildCtx};
     use super::super::rows::fill_stage_rows;
     use super::super::test_support::{
@@ -6224,6 +6271,295 @@ mod pumping_water_tests {
     /// one row the way [`coeff_at`] scopes the value sum.
     fn entry_count_at(entries: &[Vec<(usize, f64)>], col: usize, row: usize) -> usize {
         entries[col].iter().filter(|&&(r, _)| r == row).count()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Plant-level max caps (`hydro_bounds`) on the cells' total
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// A two-cell constant-productivity plant (ρ = 1) whose cells' turbine
+    /// columns cap at 6 and 3 m³/s, with turbined floors of 4 and 2.5 and
+    /// generation caps far above both.
+    fn plant_cap_fixture() -> Hydro {
+        let mut hydro = fixture_hydro_ds(20, None);
+        hydro.max_turbined_m3s = 1000.0;
+        hydro.max_generation_mw = 1000.0;
+        hydro.unit_groups = vec![
+            make_unit_group(EntityId(200), EntityId(30), 0.0, 500.0, 4.0, 6.0),
+            make_unit_group(EntityId(201), EntityId(31), 0.0, 500.0, 2.5, 3.0),
+        ];
+        hydro
+    }
+
+    /// One constant-productivity plant at `productivity` for every stage.
+    fn constant_productivity_models(productivity: f64) -> ProductionModelSet {
+        ProductionModelSet::new(
+            vec![vec![
+                ResolvedProductionModel::ConstantProductivity {
+                    productivity
+                };
+                N_STAGES
+            ]],
+            &crate::test_support::minimal_hydros(1),
+            N_STAGES,
+        )
+    }
+
+    /// Set plant `h`'s resolved stage-0 maxima — the `hydro_bounds` values the
+    /// plant cap reads.
+    fn set_plant_max(fixtures: &mut PumpFixtures, h: usize, turbined: f64, generation: f64) {
+        let hb = fixtures.base.bounds.hydro_block_base_mut(h, 0);
+        hb.max_turbined_m3s = turbined;
+        hb.max_generation_mw = generation;
+    }
+
+    /// At ρ = 2, `plant_cap_fixture`'s cells cap at 6 + 3 = 9 m³/s and 18 MW. A
+    /// turbined maximum of 5 binds at blocks 0 and 2; the block-1 override back
+    /// to 9 fits and leaves that row free. A block-2 generation override of 7
+    /// binds against ρ · (3.5 + 3) = 13 MW, the plant fold 7 / ρ already clamping
+    /// cell A. Both families add one row per block and no column.
+    #[test]
+    fn test_plant_cap_below_the_cells_gets_a_cap_row_free_where_they_fit() {
+        let stage = three_block_stage(0);
+        let mut fixtures = PumpFixtures::new(vec![plant_cap_fixture()], Vec::new())
+            .with_production_models(constant_productivity_models(2.0));
+        set_plant_max(&mut fixtures, 0, 1000.0, 1000.0);
+        let (baseline_rows, baseline_cols) = {
+            let ctx = fixtures.make_ctx();
+            let layout = StageLayout::new(&ctx, &stage, 0);
+            assert!(layout.geometry.plant_cap_hydro_indices.is_empty());
+            (layout.rows.num_rows, layout.num_cols)
+        };
+        set_plant_max(&mut fixtures, 0, 5.0, 1000.0);
+        plant_override(&mut fixtures, 0, 1).max_turbined_m3s = Some(9.0);
+        plant_override(&mut fixtures, 0, 2).max_generation_mw = Some(7.0);
+
+        let ctx = fixtures.make_ctx();
+        let layout = StageLayout::new(&ctx, &stage, 0);
+        let n_blks = layout.clock.n_blks();
+        assert_eq!(
+            layout.geometry.plant_cap_hydro_indices,
+            vec![HydroSys::new(0)]
+        );
+        assert_eq!(layout.rows.num_rows, baseline_rows + 2 * n_blks);
+        assert_eq!(layout.num_cols, baseline_cols);
+
+        let (row_lower, row_upper) = fill_stage_rows(&ctx, &stage, 0, &layout);
+        let local = PlantCapLocal::new(0);
+        let blocks = || (0..n_blks).map(BlockIdx::new);
+        let rhs = |kind: MaxCap| -> Vec<f64> {
+            blocks()
+                .map(|blk| row_upper[layout.plant_max_row(kind, local, blk)])
+                .collect()
+        };
+        assert_eq!(rhs(MaxCap::Turbined), vec![5.0, f64::INFINITY, 5.0]);
+        assert_eq!(
+            rhs(MaxCap::Generation),
+            vec![f64::INFINITY, f64::INFINITY, 7.0]
+        );
+        for kind in MaxCap::ALL {
+            for blk in blocks() {
+                assert_eq!(
+                    row_lower[layout.plant_max_row(kind, local, blk)],
+                    f64::NEG_INFINITY
+                );
+            }
+        }
+    }
+
+    /// A plant maximum the cells fit under — above their summed caps, equal to
+    /// them, or below them by less than `envelope_tolerance` (the slack rule 41
+    /// admits declared values with) — builds the same stage LP as an unbounded
+    /// plant.
+    #[test]
+    fn test_plant_cap_the_cells_fit_under_leaves_the_stage_lp_unchanged() {
+        let build = |turbined: f64, generation: f64| -> String {
+            let mut fixtures = PumpFixtures::new(vec![plant_cap_fixture()], Vec::new());
+            fixtures.base.penalties = min_floor_penalties(1, fixtures.base.buses.len());
+            set_plant_max(&mut fixtures, 0, turbined, generation);
+            let ctx = fixtures.make_ctx();
+            let stage = three_block_stage(0);
+            format!(
+                "{:?}",
+                super::super::template::build_single_stage_template(&ctx, &stage, 0).template
+            )
+        };
+        let baseline = build(1000.0, 1000.0);
+        let below = 9.0 - 0.5 * envelope_tolerance(9.0);
+        for (turbined, generation) in [(100.0, 100.0), (9.0, 9.0), (below, below)] {
+            assert_eq!(
+                build(turbined, generation),
+                baseline,
+                "plant maxima ({turbined}, {generation}) fit over the cells' (9, 9)"
+            );
+        }
+    }
+
+    /// A single-cell plant's column bound already clamps to the plant maximum,
+    /// so it never gets a cap row.
+    #[test]
+    fn test_single_cell_plant_clamps_its_column_instead_of_a_cap_row() {
+        let mut hydro = plant_cap_fixture();
+        hydro.unit_groups.truncate(1);
+        let stage = three_block_stage(0);
+        let mut fixtures = PumpFixtures::new(vec![hydro], Vec::new());
+        fixtures.base.penalties = min_floor_penalties(1, fixtures.base.buses.len());
+        set_plant_max(&mut fixtures, 0, 2.0, 1.5);
+        let ctx = fixtures.make_ctx();
+        let layout = StageLayout::new(&ctx, &stage, 0);
+        assert!(layout.geometry.plant_cap_hydro_indices.is_empty());
+        let (_, col_upper, _) = fill_stage_columns(&ctx, &stage, 0, &layout);
+        assert_eq!(
+            col_upper[layout
+                .geometry
+                .turbine_col(HydroCell::new(0), BlockIdx::new(0))],
+            1.5,
+            "min(6, min(2, 1.5 / ρ))"
+        );
+    }
+
+    /// A suspended plant's turbines are pinned at zero, so a lowered maximum
+    /// cannot cut anything and adds no row.
+    #[test]
+    fn test_suspended_plant_gets_no_cap_row() {
+        let mut hydro = plant_cap_fixture();
+        hydro.entry_stage_id = Some(2);
+        let stage = three_block_stage(0);
+        let mut fixtures = PumpFixtures::new(vec![hydro], Vec::new());
+        set_plant_max(&mut fixtures, 0, 5.0, 5.0);
+        let ctx = fixtures.make_ctx();
+        let layout = StageLayout::new(&ctx, &stage, 0);
+        assert!(layout.geometry.plant_cap_hydro_indices.is_empty());
+    }
+
+    /// The cells' floors ask for 4 + 2.5 = 6.5 m³/s. Under a plant maximum of 5
+    /// the solved total is 5 and the floor slacks absorb the 1.5 left, though
+    /// each cell column alone is clamped to 5 and could reach its floor; the
+    /// uncapped twin meets both floors with no shortfall.
+    #[test]
+    fn test_plant_cap_holds_the_cells_total_at_the_plant_maximum() {
+        use novomodelo_solver::{ActiveSolver, SolverInterface};
+
+        for (plant_max, expected_shortfall) in [(5.0, 1.5), (1000.0, 0.0)] {
+            let mut fixtures = PumpFixtures::new(vec![plant_cap_fixture()], Vec::new());
+            fixtures.base.penalties = min_floor_penalties(1, fixtures.base.buses.len());
+            set_plant_max(&mut fixtures, 0, plant_max, 1000.0);
+            let ctx = fixtures.make_ctx();
+            let stage = three_block_stage(0);
+            let layout = StageLayout::new(&ctx, &stage, 0);
+            let template =
+                super::super::template::build_single_stage_template(&ctx, &stage, 0).template;
+            let mut solver = ActiveSolver::new().expect("ActiveSolver::new()");
+            solver.load_model(&template);
+            let view = solver.solve(None).expect("the capped LP must be feasible");
+
+            let cells = [HydroCell::new(0), HydroCell::new(1)];
+            for blk in (0..layout.clock.n_blks()).map(BlockIdx::new) {
+                let total: f64 = cells
+                    .iter()
+                    .map(|&c| view.primal[layout.geometry.turbine_col(c, blk)])
+                    .sum();
+                let shortfall: f64 = cells
+                    .iter()
+                    .map(|&c| view.primal[layout.geometry.turbine_below_col(c, blk)])
+                    .sum();
+                assert!(
+                    total <= plant_max + 1e-9
+                        && total + shortfall >= 6.5 - 1e-9
+                        && (shortfall - expected_shortfall).abs() < 1e-9,
+                    "P = {plant_max}, blk {}: total {total}, shortfall {shortfall}",
+                    blk.get()
+                );
+            }
+        }
+    }
+
+    /// On every column, plant `h`'s cap rows carry exactly the coefficients the
+    /// column writes on `h`'s cell floor rows, minus the cells' own floor slacks
+    /// — whatever the production role writes on a cell row.
+    fn assert_cap_rows_sum_their_cells_production_terms(
+        ctx: &TemplateBuildCtx<'_>,
+        stage: &Stage,
+        layout: &StageLayout,
+        h: HydroSys,
+    ) {
+        let entries = build_stage_matrix_entries(ctx, stage, 0, layout);
+        let local = PlantCapLocal::new(
+            layout
+                .geometry
+                .plant_cap_hydro_indices
+                .iter()
+                .position(|&p| p == h)
+                .expect("the plant must own cap rows"),
+        );
+        let cells = || ctx.hydro_cell_index.cells_of(h).map(HydroCell::new);
+        for (cap, floor) in [
+            (MaxCap::Turbined, MinFloor::Turbined),
+            (MaxCap::Generation, MinFloor::Generation),
+        ] {
+            for blk in (0..layout.clock.n_blks()).map(BlockIdx::new) {
+                let cap_row = layout.plant_max_row(cap, local, blk);
+                let slacks: Vec<usize> = cells()
+                    .map(|c| layout.cell_below_col(floor, c, blk))
+                    .collect();
+                let mut n_term_entries = 0;
+                for col in 0..layout.num_cols {
+                    let on_cells: f64 = cells()
+                        .map(|c| raw_coeff_at(&entries, col, layout.min_floor_row(floor, c, blk)))
+                        .sum();
+                    let expected = if slacks.contains(&col) { 0.0 } else { on_cells };
+                    if !slacks.contains(&col) {
+                        n_term_entries += cells()
+                            .map(|c| {
+                                entry_count_at(&entries, col, layout.min_floor_row(floor, c, blk))
+                            })
+                            .sum::<usize>();
+                    }
+                    assert_eq!(
+                        raw_coeff_at(&entries, col, cap_row),
+                        expected,
+                        "{cap:?} blk {} col {col}",
+                        blk.get()
+                    );
+                }
+                let n_cap_entries: usize = (0..layout.num_cols)
+                    .map(|col| entry_count_at(&entries, col, cap_row))
+                    .sum();
+                assert_eq!(n_cap_entries, n_term_entries, "{cap:?} blk {}", blk.get());
+            }
+        }
+    }
+
+    #[test]
+    fn test_constant_productivity_cap_rows_sum_their_cells_production_terms() {
+        let mut fixtures = PumpFixtures::new(vec![plant_cap_fixture()], Vec::new());
+        set_plant_max(&mut fixtures, 0, 5.0, 5.0);
+        let ctx = fixtures.make_ctx();
+        let stage = three_block_stage(0);
+        let layout = StageLayout::new(&ctx, &stage, 0);
+        assert_cap_rows_sum_their_cells_production_terms(&ctx, &stage, &layout, HydroSys::new(0));
+    }
+
+    #[test]
+    fn test_fpha_cap_rows_sum_their_cells_production_terms() {
+        let plane = FphaPlane {
+            intercept: 1000.0,
+            gamma_v: 4.0,
+            gamma_q: 0.6,
+            gamma_s: 0.3,
+        };
+        let mut fixture = split_bus_fixture(split_bus_production_models(vec![plane]));
+        set_plant_max(&mut fixture.fixtures, 0, 1.0, 1.0);
+        set_plant_max(&mut fixture.fixtures, 1, 100.0, 50.0);
+        let ctx = fixture.fixtures.make_ctx();
+        let stage = three_block_stage(0);
+        let layout = StageLayout::new(&ctx, &stage, 0);
+        assert_eq!(
+            layout.geometry.plant_cap_hydro_indices,
+            vec![HydroSys::new(1)],
+            "the single-cell decoy clamps its column instead"
+        );
+        assert_cap_rows_sum_their_cells_production_terms(&ctx, &stage, &layout, HydroSys::new(1));
     }
 
     // ─────────────────────────────────────────────────────────────────────────

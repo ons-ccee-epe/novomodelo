@@ -5383,28 +5383,24 @@ fn d33_converges_to_known_optimum() {
 /// strictly below the plant's own declared 60.0 MW / 80.0 m3/s, satisfying
 /// rule 41 with slack). A single plant-axis `hydro_bounds.parquet` row LOWERS
 /// the plant's resolved envelope at stage 0 to 28.0 MW / 32.0 m3/s — strictly
-/// between the two groups' declared values — so the per-cell `min(group box,
-/// plant envelope)` resolution (spec section 1.3) binds on the PLANT term for
-/// H0-B0's cell and on the GROUP term for H0-B1's cell at that stage; rule 43
-/// permits this because it only ever lowers, never raises, the plant's own
-/// declared value. A connecting line (absolute `capacity.direct_mw`/
-/// `reverse_mw`, no `exchange_factors.json`) carries B1's hydro surplus to
-/// B0, which cannot meet its own 45 MW load from its local cell alone; a
-/// thermal at B0 has a per-block override in `thermal_bounds.parquet` (stage
-/// 0's PEAK block caps at 8.0 MW, OFFPEAK at 25.0 MW) covering the residual
-/// at stage 1.
+/// between the two groups' declared values — so each cell's closing `min`
+/// binds on the PLANT term for H0-B0's cell and on the GROUP term for H0-B1's
+/// cell, and the plant cap row holds the two cells' total at 28.0 MW /
+/// 32.0 m3/s. A connecting line carries B1's hydro surplus to B0, which cannot
+/// meet its own 45 MW load from its local cell alone; a thermal at B0 has a
+/// per-block override in `thermal_bounds.parquet` (stage 0's PEAK block caps
+/// at 8.0 MW, OFFPEAK at 25.0 MW).
 ///
-/// This case is not hand-derived symbolically (the FPHA plane's storage term
-/// couples the two stages); instead it is pinned at its observed converged
-/// value, matching the established pattern for other structurally complex
-/// fixtures in this suite (e.g. D31, D40, D42). `final_lb == final_ub`
-/// bit-for-bit on HiGHS; CLP reproduces it to ~5e-10 (both well inside the
-/// tolerance below). Deliberately NOT gated behind `slow-tests` — the
-/// 2-stage horizon converges in a fraction of a second.
+/// characterization: the FPHA plane's storage term couples the two stages, so
+/// the optimum is recorded from a run. Twin: a stage-0 plant envelope at the
+/// cells' own declared sum, where no cap row binds, costs less. Invariant: the
+/// simulated stage-0 plant totals stay within the lowered envelope and reach
+/// it at some block. Deliberately NOT gated behind `slow-tests` — the 2-stage
+/// horizon converges in a fraction of a second.
 #[test]
 fn d51_split_plant_two_bus_converges_to_known_optimum() {
     let case_dir = Path::new("../../examples/deterministic/d51-split-plant-two-bus");
-    let result = run_deterministic(case_dir);
+    let (result, scenario_results, _summary) = run_with_simulation(case_dir);
     assert!(
         result.final_gap.abs() < 1e-6,
         "D51: gap={:.2e}",
@@ -5415,7 +5411,74 @@ fn d51_split_plant_two_bus_converges_to_known_optimum() {
         "D51: iterations={}",
         result.iterations
     );
-    assert_cost(result.final_lb, 2_277_012.200_056_066_3, 1.0, "D51");
+    assert_cost(result.final_lb, D51_CAPPED_OPTIMUM, 1.0, "D51");
+
+    let stage_0 = scenario_results[0]
+        .stages
+        .iter()
+        .find(|stage| stage.stage_id == 0)
+        .expect("D51: stage 0 is simulated");
+    let mut reaches_the_envelope = false;
+    for plant_row in &stage_0.hydros {
+        assert!(
+            plant_row.turbined_m3s <= 32.0 + 1e-6 && plant_row.generation_mw <= 28.0 + 1e-6,
+            "D51 block {:?}: plant total {} m3/s / {} MW exceeds the lowered envelope",
+            plant_row.block_id,
+            plant_row.turbined_m3s,
+            plant_row.generation_mw
+        );
+        reaches_the_envelope |=
+            plant_row.turbined_m3s >= 32.0 - 1e-6 || plant_row.generation_mw >= 28.0 - 1e-6;
+    }
+    assert!(
+        reaches_the_envelope,
+        "D51: the plant cap never binds at stage 0"
+    );
+
+    let twin = copy_case_dir(case_dir);
+    write_plant_max_bounds(
+        &twin.path().join("constraints/hydro_bounds.parquet"),
+        50.0,
+        70.0,
+    );
+    let twin_lb = run_deterministic(twin.path()).final_lb;
+    assert!(
+        twin_lb < D51_CAPPED_OPTIMUM - 1.0,
+        "D51 twin: an envelope the cells fit under must cost less than {D51_CAPPED_OPTIMUM}, got {twin_lb}"
+    );
+}
+
+/// characterization: D51's converged cost (see its test).
+const D51_CAPPED_OPTIMUM: f64 = 10_064_658.525_299_307;
+
+/// Writes a stage-0 plant-axis `hydro_bounds.parquet` row for hydro 0.
+fn write_plant_max_bounds(dest: &Path, max_generation_mw: f64, max_turbined_m3s: f64) {
+    use arrow::array::{Float64Array, Int32Array};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use parquet::arrow::ArrowWriter;
+    use std::sync::Arc;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("hydro_id", DataType::Int32, false),
+        Field::new("stage_id", DataType::Int32, false),
+        Field::new("max_generation_mw", DataType::Float64, true),
+        Field::new("max_turbined_m3s", DataType::Float64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![0])),
+            Arc::new(Int32Array::from(vec![0])),
+            Arc::new(Float64Array::from(vec![max_generation_mw])),
+            Arc::new(Float64Array::from(vec![max_turbined_m3s])),
+        ],
+    )
+    .expect("hydro_bounds RecordBatch");
+    let file = std::fs::File::create(dest).expect("create hydro_bounds.parquet");
+    let mut writer = ArrowWriter::try_new(file, schema, None).expect("ArrowWriter");
+    writer.write(&batch).expect("write hydro_bounds batch");
+    writer.close().expect("close hydro_bounds writer");
 }
 
 /// D51: per-`(stage, block)` bit-exact sum of the split plant's

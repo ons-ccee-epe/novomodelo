@@ -269,6 +269,8 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
         filling_target_col,
         filled_min_storage_floor,
         filled_min_storage_floor_col,
+        plant_max_turbine,
+        plant_max_generation,
         n_blks,
         storage_internal_start,
         block_mode,
@@ -277,6 +279,7 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
         filling_target_hydro_indices,
         filled_min_storage_floor_hydro_indices,
         plant_floor_hydro_indices,
+        plant_cap_hydro_indices,
     } = geometry;
 
     put_usize(buf, state.theta);
@@ -314,6 +317,8 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
     put_range(buf, filling_target_col);
     put_range(buf, filled_min_storage_floor);
     put_range(buf, filled_min_storage_floor_col);
+    put_range(buf, plant_max_turbine);
+    put_range(buf, plant_max_generation);
 
     put_usize(buf, state.z_inflow_rows().start);
     put_usize(buf, *n_blks);
@@ -334,6 +339,7 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
     put_hydro_sys_slice(buf, filling_target_hydro_indices);
     put_hydro_sys_slice(buf, filled_min_storage_floor_hydro_indices);
     put_hydro_sys_slice(buf, plant_floor_hydro_indices);
+    put_hydro_sys_slice(buf, plant_cap_hydro_indices);
 }
 
 /// Encode every fact of [`StageTemplates`] — the LP templates plus every
