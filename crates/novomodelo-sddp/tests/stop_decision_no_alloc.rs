@@ -3,8 +3,8 @@
 //! configurable rule kind, and the monitor of a resumed run to the same bound.
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::hint::black_box;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use novomodelo_sddp::{
     ConvergenceMonitor, MonitorState, StoppingMode, StoppingRule, StoppingRuleSet, SyncResult,
@@ -12,14 +12,17 @@ use novomodelo_sddp::{
 
 struct CountingAllocator;
 
-static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    // Per thread: the test harness allocates on its own thread while a test runs.
+    static ALLOC_COUNT: Cell<usize> = const { Cell::new(0) };
+}
 
 // SAFETY: every method is a verbatim forward to `System`, which upholds
 // `GlobalAlloc`'s contract on its own; this wrapper only adds a counter
 // increment around the call.
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        count_alloc();
         // SAFETY: `layout` is forwarded unchanged to `System::alloc`.
         unsafe { System.alloc(layout) }
     }
@@ -30,7 +33,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        count_alloc();
         // SAFETY: `ptr`/`layout`/`new_size` are forwarded unchanged to
         // `System::realloc`.
         unsafe { System.realloc(ptr, layout, new_size) }
@@ -40,12 +43,16 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
+fn count_alloc() {
+    ALLOC_COUNT.with(|count| count.set(count.get() + 1));
+}
+
 fn alloc_count() -> usize {
-    ALLOC_COUNT.load(Ordering::Relaxed)
+    ALLOC_COUNT.with(Cell::get)
 }
 
 fn reset_alloc_count() {
-    ALLOC_COUNT.store(0, Ordering::Relaxed);
+    ALLOC_COUNT.with(|count| count.set(0));
 }
 
 fn rule_set(mode: StoppingMode) -> StoppingRuleSet {
