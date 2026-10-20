@@ -21,6 +21,15 @@ pub(super) fn hydro_phase(hydro: &Hydro, stage_id: i32) -> Phase {
     )
 }
 
+/// Whether `hydro` is commissioning (`PreFilling`/`Filling`) at `stage_id`, its
+/// turbine columns pinned at zero.
+pub(super) fn is_suspended(hydro: &Hydro, stage_id: i32) -> bool {
+    matches!(
+        hydro_phase(hydro, stage_id),
+        Phase::PreFilling | Phase::Filling
+    )
+}
+
 /// Resolve the cascade target an absent `PreFilling` hydro `h_idx` routes its water
 /// onto: the FIRST downstream hydro NOT `PreFilling` at this stage. `None` (SINK) when
 /// the chain reaches a terminal, an unresolved id, or stays `PreFilling` all the way
@@ -134,11 +143,10 @@ impl GroupBoundLookup<'_> {
 /// Both terms of the closing `sum.min(fold(hb...))` are load-bearing, not a
 /// group term guarded by an inert plant-side cap. Drop the plant term and a
 /// lowering `hydro_bounds` override — the no-raising rule's own prescribed
-/// remedy for a mid-horizon capacity cut — is silently discarded. Drop the
-/// group term and a multi-cell plant can turbine past its declared capacity:
-/// this helper and `cell_max_generation` are the ONLY readers of
-/// `hb.max_turbined_m3s`/`hb.max_generation_mw` in the hydro LP path, so
-/// nothing else would catch it. The plant term is a no-op only for a plant
+/// remedy for a mid-horizon capacity cut — is silently discarded on a
+/// single-cell plant, which has no cap row ([`plant_cap_rhs`]). Drop the group
+/// term and a cell can turbine past its own groups' capacity: the cap row bounds
+/// only the cells' total. The plant term is a no-op only for a plant
 /// with no declared groups (never a same-bus plant with several) — inert on
 /// today's fixtures, not provably inert, since both admission rules allow an
 /// envelope tolerance no shipped fixture exercises.
@@ -191,11 +199,7 @@ pub(super) fn cell_min_turbined(
 /// `max_generation_mw` over the cell's member groups directly is exact.
 ///
 /// Both terms of `sum.min(hb.max_generation_mw)` are load-bearing — the same
-/// two-term contract `cell_max_turbined` states in full. Drop the plant term
-/// and a lowering `hydro_bounds` override is silently discarded; drop the
-/// group term and a multi-cell plant can generate past its declared capacity,
-/// since this helper is the ONLY reader of `hb.max_generation_mw` in the
-/// hydro LP path.
+/// two-term contract `cell_max_turbined` states in full.
 ///
 /// Each member group's own cap fed into the sum is its RESOLVED per-block
 /// value — the override when the study supplies one, the declaration
@@ -353,6 +357,80 @@ impl<'a> PlantFloor<'a> {
     fn is_below_cells(&self) -> bool {
         self.plant_min + envelope_tolerance(self.plant_min) < self.cell_sum
     }
+}
+
+/// The two hard maxima declared both on a plant and on its unit groups.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MaxCap {
+    /// `max_turbined_m3s`, on the turbine columns.
+    Turbined,
+    /// `max_generation_mw`, on the generation terms.
+    Generation,
+}
+
+impl MaxCap {
+    pub(super) const ALL: [Self; 2] = [Self::Turbined, Self::Generation];
+
+    fn of_plant(self, hb: HydroBlockBounds) -> f64 {
+        match self {
+            Self::Turbined => hb.max_turbined_m3s,
+            Self::Generation => hb.max_generation_mw,
+        }
+    }
+
+    /// The largest value the cell's term on this kind's row can take under the
+    /// column bounds `cell_max_turbined`/`cell_max_generation` set.
+    fn of_cell(
+        self,
+        groups: &[HydroUnitGroup],
+        positions: &[usize],
+        model: &ResolvedProductionModel,
+        hb: HydroBlockBounds,
+        lookup: GroupBoundLookup<'_>,
+    ) -> f64 {
+        match (self, model) {
+            (Self::Turbined, _) => cell_max_turbined(groups, positions, model, hb, lookup),
+            (Self::Generation, ResolvedProductionModel::ConstantProductivity { productivity }) => {
+                productivity * cell_max_turbined(groups, positions, model, hb, lookup)
+            }
+            (Self::Generation, ResolvedProductionModel::Fpha { .. }) => {
+                cell_max_generation(groups, positions, hb, lookup)
+            }
+        }
+    }
+}
+
+/// RHS of plant `h`'s `kind` cap row: the plant's resolved maximum where it is
+/// below its cells' summed caps by more than [`envelope_tolerance`] — the
+/// tolerance rule 41 admits declared maxima with, so a declared maximum never
+/// changes the LP. `None` for a single-cell plant, whose column bound already
+/// clamps to the plant maximum.
+pub(super) fn plant_cap_rhs(
+    kind: MaxCap,
+    hydro: &Hydro,
+    cells: &HydroCellIndex,
+    h: HydroSys,
+    model: &ResolvedProductionModel,
+    lookup: GroupBoundLookup<'_>,
+    hb: HydroBlockBounds,
+) -> Option<f64> {
+    let plant_cells = cells.cells_of(h);
+    if plant_cells.len() < 2 {
+        return None;
+    }
+    let plant_max = kind.of_plant(hb);
+    let cell_sum: f64 = plant_cells
+        .map(|c| {
+            kind.of_cell(
+                &hydro.unit_groups,
+                cells.groups_of(HydroCell::new(c)),
+                model,
+                hb,
+                lookup,
+            )
+        })
+        .sum();
+    (plant_max + envelope_tolerance(plant_max) < cell_sum).then_some(plant_max)
 }
 
 /// Emit one setup-time advisory per plant and `MinFloor` whose `hydro_bounds`

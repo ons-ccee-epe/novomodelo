@@ -17,13 +17,16 @@ use crate::hydro_models::{
 use crate::indexer::{
     AnticipatedLocal, BlockGrid, BlockIdx, BlockRowFamily, Boundary, BusSys, EntityPositions,
     EvapLocal, EvaporationIndices, FillingTargetLocal, FloorLocal, FphaCellLocal, FphaLocal,
-    HydroCell, HydroCellIndex, HydroSys, LineSys, NcsSys, PlantFloorLocal, PumpingSys, RangeCursor,
-    StateSpace, StorageBoundaryGrid, StudyDimensions, ThermalSys, anticipated_resolution_for,
-    for_each_live_commitment_slot, is_anticipated_decision_active_for_delivery,
+    HydroCell, HydroCellIndex, HydroSys, LineSys, NcsSys, PlantCapLocal, PlantFloorLocal,
+    PumpingSys, RangeCursor, StateSpace, StorageBoundaryGrid, StudyDimensions, ThermalSys,
+    anticipated_resolution_for, for_each_live_commitment_slot,
+    is_anticipated_decision_active_for_delivery,
 };
 use crate::time_value::TimeValue;
 
-use super::hydro_state::{GroupBoundLookup, MinFloor, PlantFloor, hydro_phase};
+use super::hydro_state::{
+    GroupBoundLookup, MaxCap, MinFloor, PlantFloor, hydro_phase, is_suspended, plant_cap_rhs,
+};
 use super::{
     EVAP_COLS_PER_HYDRO, EVAP_F_MINUS_OFFSET, EVAP_F_PLUS_OFFSET, EVAP_FLOW_OFFSET,
     GenericConstraintRowEntry,
@@ -143,6 +146,33 @@ impl<'a> TemplateBuildCtx<'a> {
             &self.hydros[h.get()],
             self.hydro_cell_index,
             h,
+            GroupBoundLookup::new(bounds.group_overlay(), h.get(), stage_idx, blk),
+            bounds.hydro_bounds_at_block(h.get(), stage_idx, blk),
+        )
+    }
+
+    /// RHS of plant `h`'s `kind` cap row at block `blk` of stage `stage_idx`
+    /// ([`plant_cap_rhs`]) — the one resolution the cap rows and the plant-cap
+    /// membership read; `None` while the plant is suspended.
+    pub(super) fn plant_cap(
+        &self,
+        stage_id: i32,
+        stage_idx: usize,
+        kind: MaxCap,
+        h: HydroSys,
+        blk: usize,
+    ) -> Option<f64> {
+        let hydro = &self.hydros[h.get()];
+        if is_suspended(hydro, stage_id) {
+            return None;
+        }
+        let bounds = self.resolved.bounds;
+        plant_cap_rhs(
+            kind,
+            hydro,
+            self.hydro_cell_index,
+            h,
+            self.production_models.model(h.get(), stage_idx),
             GroupBoundLookup::new(bounds.group_overlay(), h.get(), stage_idx, blk),
             bounds.hydro_bounds_at_block(h.get(), stage_idx, blk),
         )
@@ -676,10 +706,7 @@ fn identify_fpha_hydros(
     let mut fpha_hydro_indices: Vec<HydroSys> = Vec::new();
     for h_idx in 0..ctx.hydros.len() {
         let hydro = &ctx.hydros[h_idx];
-        if matches!(
-            hydro_phase(hydro, stage_id),
-            Phase::PreFilling | Phase::Filling
-        ) {
+        if is_suspended(hydro, stage_id) {
             continue;
         }
         if matches!(
@@ -782,6 +809,29 @@ fn identify_plant_floor_hydros(
                             .residual_rhs()
                             .is_some()
                     })
+                })
+        })
+        .collect()
+}
+
+/// Collect the hydros whose resolved turbined or generation maximum is below
+/// their cells' summed caps at some block of this stage — the plants that need a
+/// cap row ([`plant_cap_rhs`]). Empty for every study whose plant maxima come
+/// from declarations alone.
+fn identify_plant_cap_hydros(
+    ctx: &TemplateBuildCtx<'_>,
+    stage_id: i32,
+    stage_idx: usize,
+    n_blks: usize,
+) -> Vec<HydroSys> {
+    (0..ctx.hydros.len())
+        .map(HydroSys::new)
+        .filter(|&h| {
+            ctx.hydro_cell_index.cells_of(h).len() > 1
+                && (0..n_blks).any(|blk| {
+                    MaxCap::ALL
+                        .into_iter()
+                        .any(|kind| ctx.plant_cap(stage_id, stage_idx, kind, h, blk).is_some())
                 })
         })
         .collect()
@@ -1263,6 +1313,8 @@ impl StageGeometry {
             filling_target_col: 0..0,
             filled_min_storage_floor: 0..0,
             filled_min_storage_floor_col: 0..0,
+            plant_max_turbine: 0..0,
+            plant_max_generation: 0..0,
             n_blks,
             storage_internal_start: 0,
             block_mode,
@@ -1271,6 +1323,7 @@ impl StageGeometry {
             filling_target_hydro_indices: Vec::new(),
             filled_min_storage_floor_hydro_indices: Vec::new(),
             plant_floor_hydro_indices: Vec::new(),
+            plant_cap_hydro_indices: Vec::new(),
         }
     }
 }
@@ -1378,6 +1431,11 @@ impl<'a> StageLayout<'a> {
         };
         allocate_oper_violation_slack_columns(&mut col, &mut geometry, oper_violation_sizes);
         let oper_violation = OperViolationRanges::new(&mut row, oper_violation_sizes);
+        geometry.plant_cap_hydro_indices =
+            identify_plant_cap_hydros(ctx, stage.id, stage_idx, n_blks);
+        let n_plant_cap_rows = geometry.plant_cap_hydro_indices.len() * n_blks;
+        geometry.plant_max_turbine = row.alloc(n_plant_cap_rows);
+        geometry.plant_max_generation = row.alloc(n_plant_cap_rows);
 
         geometry.ncs_generation = col.alloc(ctx.non_controllable_sources.len() * n_blks);
 
@@ -1584,6 +1642,15 @@ impl StageLayout<'_> {
             MinFloor::Turbined => self.geometry.plant_turbine_below_col(local, blk),
             MinFloor::Generation => self.geometry.plant_generation_below_col(local, blk),
         }
+    }
+
+    #[inline]
+    pub(super) fn plant_max_row(&self, kind: MaxCap, local: PlantCapLocal, blk: BlockIdx) -> usize {
+        let family = match kind {
+            MaxCap::Turbined => &self.geometry.plant_max_turbine,
+            MaxCap::Generation => &self.geometry.plant_max_generation,
+        };
+        self.block_flat(family.start, local.get(), blk)
     }
 
     /// Anticipated-local `local`'s commitment-maturity row, or `None` when no
@@ -1870,6 +1937,10 @@ pub struct StageGeometry {
     /// stage. Simulation extraction reads the `σ^{v-}` primal at `start + local_idx`,
     /// resolving `local_idx` via `filled_min_storage_floor_hydro_indices`.
     pub filled_min_storage_floor_col: Range<usize>,
+    /// Hard plant max-turbined row range (one row per plant-cap hydro per block).
+    pub plant_max_turbine: Range<usize>,
+    /// Hard plant max-generation row range (one row per plant-cap hydro per block).
+    pub plant_max_generation: Range<usize>,
     /// Number of operating blocks (K) at this stage — the block-major stride for
     /// every equipment family.
     pub n_blks: usize,
@@ -1902,6 +1973,9 @@ pub struct StageGeometry {
     /// pair at this stage, in slot order; SPARSE like
     /// `filling_target_hydro_indices`, resolved the same way.
     pub plant_floor_hydro_indices: Vec<HydroSys>,
+    /// System hydro indices owning a pair of plant cap rows at this stage, in slot
+    /// order; SPARSE like `filling_target_hydro_indices`.
+    pub plant_cap_hydro_indices: Vec<HydroSys>,
 }
 
 impl StageGeometry {

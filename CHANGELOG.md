@@ -278,6 +278,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   binds on the plant's total, and a shortfall is charged once, at the plant's
   penalty, in `turbined_slack_m3s` and `generation_slack_mw`. A value below
   that sum cannot loosen the groups' minima, and setup now warns about it.
+- A `max_turbined_m3s` or `max_generation_mw` value in
+  `constraints/hydro_bounds.parquet` capped each bus's share of a plant whose
+  unit groups sit on several buses, but not their total, so the plant could
+  turbine or generate up to that value on every bus at once. A plant maximum
+  below the sum of its buses' capacities now caps the plant's total.
 - `truncation` corrects a negative inflow when the hydro's PAR residual
   standard deviation is zero. Such a study could stop on an infeasible LP
   before.

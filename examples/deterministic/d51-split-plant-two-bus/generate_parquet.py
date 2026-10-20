@@ -27,7 +27,9 @@ values -- so the per-cell `min(group box, plant envelope)` resolution
 (spec section 1.3) binds on the PLANT term for H0-B0's cell (28.0 < 30.0) and
 on the GROUP term for H0-B1's cell (20.0 < 28.0) at that stage, exercising both
 terms of the closing `min` while keeping every group-axis and plant-axis
-override within the no-raising rule (lowering only).
+override within the no-raising rule (lowering only). The two cells' caps sum
+past the lowered envelope (28.0 + 20.0 MW, 32.0 + 28.0 m3/s), so the plant cap
+row holds their stage-0 total at 28.0 MW / 32.0 m3/s.
 """
 
 import os

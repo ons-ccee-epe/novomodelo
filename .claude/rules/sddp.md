@@ -379,20 +379,18 @@ bound. Neither term is a redundant guard over the other — each dominates a
 disjoint regime, and dropping either one compiles and passes today's
 single-group fixtures.
 
-Drop the plant term (`min` degenerates to `sum`) and every lowering
-`hydro_bounds` override in a study is silently discarded: a mid-horizon
-capacity cut, declared exactly the way the no-raising rule's own rejection
-message prescribes (declare the plant at final capacity, tighten the earlier
-stages with override rows), stops reaching the LP the moment the plant
-declares more than one group.
+Drop the plant term (`min` degenerates to `sum`) and a lowering
+`hydro_bounds` override on a single-cell plant is silently discarded: a
+mid-horizon capacity cut, declared exactly the way the no-raising rule's own
+rejection message prescribes (declare the plant at final capacity, tighten the
+earlier stages with override rows), stops reaching the LP the moment the plant
+declares more than one group. A single-cell plant has no cap row (the section
+below), so its column bound is the only carrier of the plant maximum.
 
-Drop the group term (`min` degenerates to `hb...`) and a multi-cell plant can
-turbine or generate past its own declared capacity, because
-`cell_max_turbined`/`cell_max_generation` are the ONLY consumers of
-`hb.max_turbined_m3s`/`hb.max_generation_mw` in the hydro LP path — no
-plant-level aggregate-max row exists to catch the overshoot. Three
-independent, fully-valid-input mechanisms reach the group term, the third
-strictly inside a single cell:
+Drop the group term (`min` degenerates to `hb...`) and a cell can turbine or
+generate past its own groups' capacity: the plant cap row below bounds only the
+cells' total, never one cell. Three independent, fully-valid-input mechanisms
+reach the group term, the third strictly inside a single cell:
 
 - **Cell subsetting.** A two-bus plant's cell sums only its own bus's groups,
   necessarily less than the plant total whenever the other bus's groups are
@@ -431,6 +429,61 @@ Read: `crates/novomodelo-sddp/src/lp/builder/hydro_state.rs` (`cell_max_turbined
 rule-41 equality, no override), which pins the group term binding, and by
 `test_cell_columns_take_their_own_group_box`'s block-2 override, which pins
 the plant term binding.
+
+### A plant maximum below its cells' caps binds their total in one row
+
+The per-cell `sum.min(hb...)` clamp above cannot hold a multi-cell plant's
+total: each cell is clamped to the plant maximum `P` alone, so `|C|` cells can
+reach `|C|·P` together. `plant_cap_rhs` (`lp/builder/hydro_state.rs`) owns the
+decision: a plant with two or more cells gets one hard `≤ P` row per `MaxCap`
+kind and block, without a slack, where
+`P + envelope_tolerance(P) < Σ_c cap_c` — the tolerance rule 41 admits a declared
+maximum with, so a declared maximum never changes the LP and every study without
+a lowering override builds byte-identical rows. `cap_c` is the largest value the
+cell's term on that row can take: `cell_max_turbined` for `Turbined`;
+`ρ · cell_max_turbined` (`ConstantProductivity`) or `cell_max_generation`
+(FPHA) for `Generation`. The kinds are decided independently. The row's LHS is
+`Σ_c` of the cell's production terms, the same terms its floor row carries
+(`push_cell_power_terms`, the one owner of both): the turbine column, or the FPHA
+generation column, or `ρ·q_c`, or nothing for a dormant plant. A single-cell
+plant gets no row; its column bound already clamps to `P`. A plant suspended at
+the stage (`PreFilling`/`Filling`, `is_suspended`) gets no row, since its
+turbines are pinned at 0.
+
+A plant joins `plant_cap_hydro_indices` for a stage when either kind binds at
+any block. Both families are sized `n_caps * n_blks`
+(`plant_max_turbine`/`plant_max_generation` in `StageGeometry`), and a row that
+does not bind at its block is free (`+∞`).
+
+The wrong-but-compiling alternatives:
+
+- relying on the per-cell clamp alone: a two-bus plant whose `P` is lowered
+  below each cell's own cap turbines `2P`. Every column bound holds, so nothing
+  fails, and the cost is understated (D51);
+- a cap row with a slack column: a priced slack lets the plant buy its way past
+  a capacity that is physical, unlike the floors, which are soft;
+- binding wherever `P < Σ_c cap_c` with no tolerance: a declared maximum at
+  rule 41's tolerance then adds a row and moves every such study's LP;
+- summing the raw group maxima for `cap_c` instead of the cell's own column
+  bound (the fold and the clamp): the decision then disagrees with what the
+  columns can carry, adding a row where the cells already fit under `P` or
+  skipping one where they do not.
+
+Read: `crates/novomodelo-sddp/src/lp/builder/hydro_state.rs` (`MaxCap`,
+`plant_cap_rhs`, `is_suspended`), `lp/builder/layout.rs`
+(`identify_plant_cap_hydros`, `StageLayout::plant_max_row`), `lp/builder/rows.rs`
+(`fill_plant_cap_rows`), `lp/builder/entries.rs` (`fill_plant_cap_entries`,
+`push_cell_power_terms`). Pinned by
+`test_plant_cap_holds_the_cells_total_at_the_plant_maximum` (a solve: the total
+stays at `P` and the shortfall moves to the floor slack; mutation-verified against
+a free cap row), `test_plant_cap_below_the_cells_gets_a_cap_row_free_where_they_fit`
+(the per-kind, per-block decision),
+`test_plant_cap_the_cells_fit_under_leaves_the_stage_lp_unchanged` (the shared
+tolerance), `test_single_cell_plant_clamps_its_column_instead_of_a_cap_row`,
+`test_suspended_plant_gets_no_cap_row`, the
+`*_cap_rows_sum_their_cells_production_terms` pair (constant, FPHA) and D51
+(`d51_split_plant_two_bus_converges_to_known_optimum`: the simulated stage-0
+plant totals stay within the lowered envelope and reach it).
 
 ### The per-cell floor is a plain sum; the plant floor adds only where it is tighter
 
@@ -472,9 +525,8 @@ its slack pinned `[0, 0]`. Both slacks are priced at the plant's FULL penalty
 per hour (`MinFloor::below_cost`). An override that LOWERS `P` below `Σ F_c`
 cannot loosen the floor — the groups' minima still bind — so setup emits one
 warning per plant and `MinFloor` (`warn_on_inert_plant_floor_overrides`)
-pointing at `hydro_unit_group_bounds` instead. The MAX side has no aggregate
-row (see the section above); a plant cap below its cells' summed caps binds
-only through each cell's own `sum.min(hb...)`.
+pointing at `hydro_unit_group_bounds` instead. The MAX side mirrors this
+decision with a hard row and no slack (the section above).
 
 Four wrong-but-compiling alternatives for the cell floor, each with a close
 MAX-side cousin that makes it easy to copy over by habit:
