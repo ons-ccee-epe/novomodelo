@@ -152,6 +152,10 @@ fn frozen_correction_resolves_cuts_at_their_own_trial_lags() {
              (frozen_infeasible={})",
             report.frozen_infeasible
         );
+        assert!(
+            report.frozen_resolves > report.frozen_infeasible,
+            "{label}: every frozen-correction re-solve was infeasible, so no cut was compared"
+        );
         report.assert_sound(&label);
     }
 }

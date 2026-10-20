@@ -1494,10 +1494,14 @@ impl Default for ChronologicalNoiseSpec {
 /// PAR(1) coefficients of [`negative_draw_par1_spec`], indexed like
 /// `CHRONOLOGICAL_NOISE_HYDRO_IDS`.
 pub const CHRONOLOGICAL_NOISE_PAR1_PSI: [f64; 2] = [0.5, 0.3];
+/// Mean inflow \[m³/s\] of [`negative_draw_par1_spec`], low enough that most raw PAR
+/// values are negative.
+pub const NEGATIVE_DRAW_INFLOW_MEAN_M3S: f64 = -30.0;
 
-/// The chronological-noise study with negative PAR(1) draws: mean −30 m³/s and
-/// ψ = [`CHRONOLOGICAL_NOISE_PAR1_PSI`] on both hydros, a parallel January stage, a
-/// chronological February stage and three openings per stage.
+/// The chronological-noise study with negative PAR(1) draws: mean
+/// [`NEGATIVE_DRAW_INFLOW_MEAN_M3S`] and ψ = [`CHRONOLOGICAL_NOISE_PAR1_PSI`] on both
+/// hydros, a parallel January stage, a chronological February stage and three
+/// openings per stage.
 ///
 /// The lag seed is zero and December has no inflow model, so stage 0 draws
 /// `r₁ = μ + σ·η₁`. February's lag season is January with the same σ, so stage 1
@@ -1509,7 +1513,7 @@ pub fn negative_draw_par1_spec(method: CfgInflowMethod) -> ChronologicalNoiseSpe
         block_modes: [BlockMode::Parallel, BlockMode::Chronological],
         branching_factor: 3,
         inflow_method: method,
-        inflow_mean_m3s: -30.0,
+        inflow_mean_m3s: NEGATIVE_DRAW_INFLOW_MEAN_M3S,
         par1_psi: Some(CHRONOLOGICAL_NOISE_PAR1_PSI),
         ..ChronologicalNoiseSpec::default()
     }

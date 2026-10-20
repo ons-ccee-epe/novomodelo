@@ -33,8 +33,8 @@ use novomodelo_sddp::{InflowNonNegativityMethod, StudySetup};
 use novomodelo_solver::{ActiveSolver, StageTemplate};
 
 use common::in_code_studies::{
-    ChronologicalNoiseSpec, chronological_noise_study, mixed_lead_anticipated_study,
-    negative_draw_par1_spec, stochastic_parallel_study,
+    ChronologicalNoiseSpec, NEGATIVE_DRAW_INFLOW_MEAN_M3S, chronological_noise_study,
+    mixed_lead_anticipated_study, negative_draw_par1_spec, stochastic_parallel_study,
 };
 use common::{StubComm, build_setup_in_code, fresh_setup_with, stored_trial_states};
 
@@ -412,7 +412,7 @@ fn every_noise_dimension_patches_only_its_own_entity() {
         let (system, config) = chronological_noise_study(&ChronologicalNoiseSpec {
             block_modes: [block_mode; 2],
             inflow_method,
-            inflow_mean_m3s: -30.0,
+            inflow_mean_m3s: NEGATIVE_DRAW_INFLOW_MEAN_M3S,
             ..ChronologicalNoiseSpec::default()
         });
         let setup = build_setup_in_code(system, &config);
