@@ -1198,11 +1198,11 @@ checksum = "61807f77802ff30975e01f4f071c8ba10c022052f98b3294119f3e615d13e5be"
 
 [[package]]
 name = "novomodelo"
-version = "0.18.1"
+version = "0.19.0"
 
 [[package]]
 name = "novomodelo-cli"
-version = "0.18.1"
+version = "0.19.0"
 dependencies = [
  "arrow",
  "assert_cmd",
@@ -1232,7 +1232,7 @@ dependencies = [
 
 [[package]]
 name = "novomodelo-comm"
-version = "0.18.1"
+version = "0.19.0"
 dependencies = [
  "ferrompi",
  "gethostname",
@@ -1241,7 +1241,7 @@ dependencies = [
 
 [[package]]
 name = "novomodelo-core"
-version = "0.18.1"
+version = "0.19.0"
 dependencies = [
  "chrono",
  "novomodelo-core",
@@ -1254,15 +1254,15 @@ dependencies = [
 
 [[package]]
 name = "novomodelo-emt"
-version = "0.18.1"
+version = "0.19.0"
 
 [[package]]
 name = "novomodelo-flow"
-version = "0.18.1"
+version = "0.19.0"
 
 [[package]]
 name = "novomodelo-io"
-version = "0.18.1"
+version = "0.19.0"
 dependencies = [
  "arrow",
  "chrono",
@@ -1285,11 +1285,11 @@ dependencies = [
 
 [[package]]
 name = "novomodelo-mcp"
-version = "0.18.1"
+version = "0.19.0"
 
 [[package]]
 name = "novomodelo-sddp"
-version = "0.18.1"
+version = "0.19.0"
 dependencies = [
  "arrow",
  "cc",
@@ -1318,7 +1318,7 @@ dependencies = [
 
 [[package]]
 name = "novomodelo-solver"
-version = "0.18.1"
+version = "0.19.0"
 dependencies = [
  "cc",
  "cmake",
@@ -1326,7 +1326,7 @@ dependencies = [
 
 [[package]]
 name = "novomodelo-stochastic"
-version = "0.18.1"
+version = "0.19.0"
 dependencies = [
  "chrono",
  "novomodelo-core",
@@ -1343,11 +1343,11 @@ dependencies = [
 
 [[package]]
 name = "novomodelo-tui"
-version = "0.18.1"
+version = "0.19.0"
 
 [[package]]
 name = "novomodelo-uc"
-version = "0.18.1"
+version = "0.19.0"
 
 [[package]]
 name = "nu-ansi-term"

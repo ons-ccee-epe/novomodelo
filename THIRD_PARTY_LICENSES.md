@@ -3469,19 +3469,19 @@ limitations under the License.
 ## Apache License 2.0
 
 Used by:
-- novomodelo 0.18.1
-- novomodelo-cli 0.18.1
-- novomodelo-comm 0.18.1
-- novomodelo-core 0.18.1
-- novomodelo-emt 0.18.1
-- novomodelo-flow 0.18.1
-- novomodelo-io 0.18.1
-- novomodelo-mcp 0.18.1
-- novomodelo-sddp 0.18.1
-- novomodelo-solver 0.18.1
-- novomodelo-stochastic 0.18.1
-- novomodelo-tui 0.18.1
-- novomodelo-uc 0.18.1
+- novomodelo 0.19.0
+- novomodelo-cli 0.19.0
+- novomodelo-comm 0.19.0
+- novomodelo-core 0.19.0
+- novomodelo-emt 0.19.0
+- novomodelo-flow 0.19.0
+- novomodelo-io 0.19.0
+- novomodelo-mcp 0.19.0
+- novomodelo-sddp 0.19.0
+- novomodelo-solver 0.19.0
+- novomodelo-stochastic 0.19.0
+- novomodelo-tui 0.19.0
+- novomodelo-uc 0.19.0
 - android_system_properties 0.1.6
 - dhat 0.3.3
 - dyn-clone 1.0.20
