@@ -441,7 +441,7 @@ fn fill_z_inflow_rows(
 /// The two flow families are per-hydro per-block; RHS is in rate units
 /// (m3/s). The power families (min-turbine, min-generation) are per-hydro
 /// CELL per-block, plus one residual row per plant-floor hydro per block; the
-/// RHS of both comes from [`PlantFloor`] — see the min-floor contract.
+/// RHS of both comes from [`PlantFloor`](super::hydro_state::PlantFloor) — see the min-floor contract.
 ///
 /// - **Min outflow** (`>=`): `row_lower = min_outflow_m3s`, `row_upper = +INF`.
 /// - **Max outflow** (`<=`): `row_lower = -INF`, `row_upper = max_outflow_m3s`
