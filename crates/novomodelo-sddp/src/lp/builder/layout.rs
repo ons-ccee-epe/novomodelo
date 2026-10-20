@@ -3,11 +3,10 @@ use std::ops::Range;
 
 use novomodelo_core::commissioning::Phase;
 use novomodelo_core::{
-    AffineBound, BlockMode, Bus, CascadeTopology, CoefficientRef, ConstraintExpression,
-    ContractType, EnergyContract, EntityId, GenericConstraint, Hydro, Line, LoadModel,
-    NonControllableSource, PumpingStation, ResolvedBounds, ResolvedGenericConstraintBounds,
-    ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors, ResolvedPenalties, SlackConfig,
-    Stage, Thermal, VariableRef,
+    BlockMode, Bus, CascadeTopology, ConstraintExpression, ContractType, EnergyContract, EntityId,
+    GenericConstraint, Hydro, Line, LoadModel, NonControllableSource, PumpingStation,
+    ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedLoadFactors, ResolvedNcsBounds,
+    ResolvedNcsFactors, ResolvedPenalties, SlackConfig, Stage, Thermal, VariableRef,
 };
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
@@ -18,18 +17,22 @@ use crate::hydro_models::{
 use crate::indexer::{
     AnticipatedLocal, BlockGrid, BlockIdx, BlockRowFamily, Boundary, BusSys, EntityPositions,
     EvapLocal, EvaporationIndices, FillingTargetLocal, FloorLocal, FphaCellLocal, FphaLocal,
-    HydroCell, HydroCellIndex, HydroSys, LineSys, NcsSys, PumpingSys, RangeCursor, StateSpace,
-    StorageBoundaryGrid, StudyDimensions, ThermalSys, anticipated_resolution_for,
-    for_each_live_commitment_slot, is_anticipated_decision_active_for_delivery,
+    HydroCell, HydroCellIndex, HydroSys, LineSys, NcsSys, PlantCapLocal, PlantFloorLocal,
+    PumpingSys, RangeCursor, StateSpace, StorageBoundaryGrid, StudyDimensions, ThermalSys,
+    anticipated_resolution_for, for_each_live_commitment_slot,
+    is_anticipated_decision_active_for_delivery,
 };
 use crate::time_value::TimeValue;
 
-use super::hydro_state::hydro_phase;
+use super::hydro_state::{
+    GroupBoundLookup, MaxCap, MinFloor, PlantFloor, hydro_phase, is_suspended, plant_cap_rhs,
+};
 use super::{
     EVAP_COLS_PER_HYDRO, EVAP_F_MINUS_OFFSET, EVAP_F_PLUS_OFFSET, EVAP_FLOW_OFFSET,
     GenericConstraintRowEntry,
 };
 use crate::block_clock::BlockClock;
+use crate::policy::resolved_generic_coefficients::{BoundSide, ResolvedGenericCoefficients};
 use crate::resolved_parameters::ResolvedParameters;
 
 /// Pre-resolved bound, penalty, and factor tables shared across all stages.
@@ -46,9 +49,12 @@ pub(crate) struct ResolvedTables<'a> {
     pub(crate) resolved_ncs_bounds: &'a ResolvedNcsBounds,
     /// Per-block NCS generation scaling factors.
     pub(crate) resolved_ncs_factors: &'a ResolvedNcsFactors,
-    /// `(parameter_id, stage_idx, block_idx)` → resolved `f64`, queried for a
-    /// [`novomodelo_core::CoefficientRef::Parameter`] term.
+    /// Read for the cost scale factor; generic-constraint values come from
+    /// `resolved_generic_coefficients`.
     pub(crate) resolved_parameters: &'a ResolvedParameters,
+    /// Per-`(stage, block)` generic-constraint term values and bound
+    /// remainders.
+    pub(crate) resolved_generic_coefficients: &'a ResolvedGenericCoefficients,
 }
 
 /// System-level context shared across all stages during template construction.
@@ -121,6 +127,56 @@ pub(crate) struct TemplateBuildCtx<'a> {
     /// This ctx used to carry four of its tables as its own clones; see
     /// [`crate::bucket_topology::TransitBucketTopology`].
     pub(crate) topology: &'a TransitBucketTopology,
+}
+
+impl<'a> TemplateBuildCtx<'a> {
+    /// Plant `h`'s `kind` floor at block `blk` of stage `stage_idx` — the one
+    /// resolution the floor rows, their slack columns, and the plant-floor
+    /// membership all read.
+    pub(super) fn plant_floor(
+        &self,
+        stage_idx: usize,
+        kind: MinFloor,
+        h: HydroSys,
+        blk: usize,
+    ) -> PlantFloor<'a> {
+        let bounds = self.resolved.bounds;
+        PlantFloor::resolve(
+            kind,
+            &self.hydros[h.get()],
+            self.hydro_cell_index,
+            h,
+            GroupBoundLookup::new(bounds.group_overlay(), h.get(), stage_idx, blk),
+            bounds.hydro_bounds_at_block(h.get(), stage_idx, blk),
+        )
+    }
+
+    /// RHS of plant `h`'s `kind` cap row at block `blk` of stage `stage_idx`
+    /// ([`plant_cap_rhs`]) — the one resolution the cap rows and the plant-cap
+    /// membership read; `None` while the plant is suspended.
+    pub(super) fn plant_cap(
+        &self,
+        stage_id: i32,
+        stage_idx: usize,
+        kind: MaxCap,
+        h: HydroSys,
+        blk: usize,
+    ) -> Option<f64> {
+        let hydro = &self.hydros[h.get()];
+        if is_suspended(hydro, stage_id) {
+            return None;
+        }
+        let bounds = self.resolved.bounds;
+        plant_cap_rhs(
+            kind,
+            hydro,
+            self.hydro_cell_index,
+            h,
+            self.production_models.model(h.get(), stage_idx),
+            GroupBoundLookup::new(bounds.group_overlay(), h.get(), stage_idx, blk),
+            bounds.hydro_bounds_at_block(h.get(), stage_idx, blk),
+        )
+    }
 }
 
 /// Column/row offsets for one stage's in-study anticipated-ring layout
@@ -223,16 +279,17 @@ pub(crate) struct EquipmentColumns {
     pub(crate) evap_col_start: usize,
 }
 
-/// Row ranges for the four operational-violation slack families
+/// Row ranges for the six operational-violation slack families
 /// (below-min-outflow, above-max-outflow, below-min-turbine,
-/// below-min-generation). The two flow families are sized `n_h * n_blks`
-/// (non-empty only when `n_h > 0`); the two power families are sized
-/// `n_cells * n_blks` (non-empty only when `n_cells > 0`) — a cell's own
-/// min-turbine/min-generation floor is the sum of ITS OWN member groups, never
-/// the plant's aggregate, so each cell gets its own row and its own slack
-/// column. See the min-floor contract. Their paired slack columns live on
-/// [`StageGeometry`]; see [`allocate_oper_violation_slack_columns`] for why
-/// the two halves are allocated separately.
+/// below-min-generation, and the two plant residual floors). The two flow
+/// families are sized `n_h * n_blks`; the two cell power families
+/// `n_cells * n_blks` — a cell's own min-turbine/min-generation floor is the
+/// sum of ITS OWN member groups, so each cell gets its own row and its own
+/// slack column; the two plant residual families `n_plant_floor * n_blks`,
+/// one per multi-cell plant whose resolved minimum its cells do not cover
+/// ([`PlantFloor`]). See the min-floor contract. Their paired slack columns
+/// live on [`StageGeometry`]; see [`allocate_oper_violation_slack_columns`]
+/// for why the two halves are allocated separately.
 pub(crate) struct OperViolationRanges {
     /// Row range for min-outflow constraints (one per hydro per block).
     pub(crate) min_outflow: Range<usize>,
@@ -242,40 +299,56 @@ pub(crate) struct OperViolationRanges {
     pub(crate) min_turbine: Range<usize>,
     /// Row range for min-generation constraints (one per hydro CELL per block).
     pub(crate) min_generation: Range<usize>,
+    /// Row range for plant residual min-turbine constraints (one per
+    /// plant-floor hydro per block).
+    pub(crate) plant_min_turbine: Range<usize>,
+    /// Row range for plant residual min-generation constraints (one per
+    /// plant-floor hydro per block).
+    pub(crate) plant_min_generation: Range<usize>,
+}
+
+/// Family lengths shared by [`allocate_oper_violation_slack_columns`] and
+/// [`OperViolationRanges::new`], so each slack column family and its rows are
+/// sized from one value.
+#[derive(Clone, Copy)]
+struct OperViolationSizes {
+    hydros: usize,
+    cells: usize,
+    plant_floors: usize,
 }
 
 impl OperViolationRanges {
-    /// Allocate the four row families, contiguously in this order: reordering
-    /// these `alloc` calls would shift every downstream row. `n_op_hydro`
-    /// sizes the two flow families; `n_op_cell` sizes the two power
-    /// families — they diverge the moment any plant declares groups on more
-    /// than one bus. The caller allocates the paired slack columns
+    /// Allocate the six row families, contiguously in this order: reordering
+    /// these `alloc` calls would shift every downstream row. The caller
+    /// allocates the paired slack columns
     /// (`allocate_oper_violation_slack_columns`) immediately before this, in
     /// the same order.
-    fn new(row: &mut RangeCursor, n_op_hydro: usize, n_op_cell: usize) -> Self {
+    fn new(row: &mut RangeCursor, sizes: OperViolationSizes) -> Self {
         Self {
-            min_outflow: row.alloc(n_op_hydro),
-            max_outflow: row.alloc(n_op_hydro),
-            min_turbine: row.alloc(n_op_cell),
-            min_generation: row.alloc(n_op_cell),
+            min_outflow: row.alloc(sizes.hydros),
+            max_outflow: row.alloc(sizes.hydros),
+            min_turbine: row.alloc(sizes.cells),
+            min_generation: row.alloc(sizes.cells),
+            plant_min_turbine: row.alloc(sizes.plant_floors),
+            plant_min_generation: row.alloc(sizes.plant_floors),
         }
     }
 }
 
-/// Allocate the four operational-violation slack columns (below-min-outflow,
-/// above-max-outflow, below-min-turbine, below-min-generation), in the order
-/// their paired rows follow in [`OperViolationRanges::new`].
+/// Allocate the six operational-violation slack column families onto
+/// `geometry`, in the order their paired rows follow in
+/// [`OperViolationRanges::new`].
 fn allocate_oper_violation_slack_columns(
     col: &mut RangeCursor,
-    n_op_hydro: usize,
-    n_op_cell: usize,
-) -> (Range<usize>, Range<usize>, Range<usize>, Range<usize>) {
-    (
-        col.alloc(n_op_hydro),
-        col.alloc(n_op_hydro),
-        col.alloc(n_op_cell),
-        col.alloc(n_op_cell),
-    )
+    geometry: &mut StageGeometry,
+    sizes: OperViolationSizes,
+) {
+    geometry.outflow_below_slack = col.alloc(sizes.hydros);
+    geometry.outflow_above_slack = col.alloc(sizes.hydros);
+    geometry.turbine_below_slack = col.alloc(sizes.cells);
+    geometry.generation_below_slack = col.alloc(sizes.cells);
+    geometry.plant_turbine_below_slack = col.alloc(sizes.plant_floors);
+    geometry.plant_generation_below_slack = col.alloc(sizes.plant_floors);
 }
 
 /// Constraint row ranges shared by every stage's LP that [`StageGeometry`]
@@ -633,10 +706,7 @@ fn identify_fpha_hydros(
     let mut fpha_hydro_indices: Vec<HydroSys> = Vec::new();
     for h_idx in 0..ctx.hydros.len() {
         let hydro = &ctx.hydros[h_idx];
-        if matches!(
-            hydro_phase(hydro, stage_id),
-            Phase::PreFilling | Phase::Filling
-        ) {
+        if is_suspended(hydro, stage_id) {
             continue;
         }
         if matches!(
@@ -720,6 +790,53 @@ fn identify_filled_min_storage_floor_hydros(
         .collect()
 }
 
+/// Collect the multi-cell hydros whose resolved turbined or generation minimum
+/// exceeds their cells' summed floor at some block of this stage — the plants
+/// that need a residual floor row ([`PlantFloor::residual_rhs`]). Empty for
+/// every study whose plant minima come from declarations alone.
+fn identify_plant_floor_hydros(
+    ctx: &TemplateBuildCtx<'_>,
+    stage_idx: usize,
+    n_blks: usize,
+) -> Vec<HydroSys> {
+    (0..ctx.hydros.len())
+        .map(HydroSys::new)
+        .filter(|&h| {
+            ctx.hydro_cell_index.cells_of(h).len() > 1
+                && (0..n_blks).any(|blk| {
+                    MinFloor::ALL.into_iter().any(|kind| {
+                        ctx.plant_floor(stage_idx, kind, h, blk)
+                            .residual_rhs()
+                            .is_some()
+                    })
+                })
+        })
+        .collect()
+}
+
+/// Collect the hydros whose resolved turbined or generation maximum is below
+/// their cells' summed caps at some block of this stage — the plants that need a
+/// cap row ([`plant_cap_rhs`]). Empty for every study whose plant maxima come
+/// from declarations alone.
+fn identify_plant_cap_hydros(
+    ctx: &TemplateBuildCtx<'_>,
+    stage_id: i32,
+    stage_idx: usize,
+    n_blks: usize,
+) -> Vec<HydroSys> {
+    (0..ctx.hydros.len())
+        .map(HydroSys::new)
+        .filter(|&h| {
+            ctx.hydro_cell_index.cells_of(h).len() > 1
+                && (0..n_blks).any(|blk| {
+                    MaxCap::ALL
+                        .into_iter()
+                        .any(|kind| ctx.plant_cap(stage_id, stage_idx, kind, h, blk).is_some())
+                })
+        })
+        .collect()
+}
+
 /// Per-direction contract counts, in `contracts`' own (id-sorted) slice
 /// order — the dense per-stage import/export column strides.
 pub(super) fn contract_direction_counts(contracts: &[EnergyContract]) -> (usize, usize) {
@@ -745,13 +862,13 @@ pub(super) fn contract_direction_counts(contracts: &[EnergyContract]) -> (usize,
 /// shape is a per-row property of the resolved bound entry, never a
 /// constraint-level label.
 fn allocate_generic_slack_cols(
-    slack: &SlackConfig,
+    slack: Option<SlackConfig>,
     bound_lower: Option<f64>,
     bound_upper: Option<f64>,
     col_generic_slack_start: usize,
     n_slack_cols: &mut usize,
 ) -> (Option<usize>, Option<usize>) {
-    if !slack.enabled {
+    if slack.is_none() {
         return (None, None);
     }
     let plus_col = col_generic_slack_start + *n_slack_cols;
@@ -831,58 +948,29 @@ fn expression_is_block_independent(expression: &ConstraintExpression) -> bool {
         .all(|term| variable_ref_is_block_independent(&term.variable))
 }
 
-/// Whether a `block_id = None` bound over `expression` collapses to a single
-/// stage-level row: only when every term is block-independent in BOTH its variable
-/// ([`expression_is_block_independent`]) AND its coefficient. A term whose
-/// coefficient references a block-varying (`PerStageBlock`) parameter makes the
-/// expression block-dependent, so the collapsed single row cannot stand in for one
-/// arbitrary block's coefficient — it stays a per-block row set.
-fn expression_collapses_to_stage_level(
-    expression: &ConstraintExpression,
-    resolved: &ResolvedParameters,
+/// A `block_id = None` bound collapses to one stage-level row only when every
+/// variable is block-independent and no resolved value of the constraint, term or
+/// bound, varies by block.
+fn constraint_collapses_to_stage_level(
+    constraint: &GenericConstraint,
+    constraint_idx: usize,
+    coefficients: &ResolvedGenericCoefficients,
 ) -> bool {
-    expression_is_block_independent(expression)
-        && !expression.terms.iter().any(|term| match term.coefficient {
-            CoefficientRef::Parameter(id) => resolved.is_block_varying(id),
-            CoefficientRef::Literal(_) => false,
-        })
+    expression_is_block_independent(&constraint.expression)
+        && !coefficients.is_block_varying(constraint_idx)
 }
 
-/// Resolve an affine bound remainder to `f64`: `bound.constant` plus the sum of
-/// each term's coefficient times its parameter's resolved value at
-/// `(stage_idx, block_idx)`. `AffineBound::single(id)` resolves to exactly
-/// `resolved.get(id, stage_idx, block_idx)` (`0.0 + 1.0 * x == x` in `f64`).
-fn resolve_affine(
-    bound: &AffineBound,
-    resolved: &ResolvedParameters,
-    stage_idx: usize,
-    block_idx: usize,
-) -> f64 {
-    bound.terms.iter().fold(bound.constant, |acc, &(coef, id)| {
-        acc + coef * resolved.get(id, stage_idx, block_idx)
-    })
-}
-
-/// Fold a generic-constraint endpoint's parquet base with its affine remainder:
-/// a present remainder SHIFTS the base by `resolve_affine`'s value rather than
-/// replacing it, so `(Some(base), Some(bound))` folds to `base +
-/// resolve_affine(bound, ...)`, never `resolve_affine(bound, ...)` alone. A
-/// `(None, None)` endpoint is untargeted and stays `None` (the open LP
+/// Fold a generic-constraint endpoint's parquet base with its resolved bound
+/// remainder: a present remainder SHIFTS the base rather than replacing it, so
+/// `(Some(base), Some(remainder))` folds to `base + remainder`, never `remainder`
+/// alone. A `(None, None)` endpoint is untargeted and stays `None` (the open LP
 /// direction), never shifted.
-fn fold_endpoint(
-    parquet: Option<f64>,
-    affine: Option<&AffineBound>,
-    resolved: &ResolvedParameters,
-    stage_idx: usize,
-    block_idx: usize,
-) -> Option<f64> {
-    match (parquet, affine) {
+fn fold_endpoint(base: Option<f64>, remainder: Option<f64>) -> Option<f64> {
+    match (base, remainder) {
         (None, None) => None,
         (Some(base), None) => Some(base),
-        (None, Some(bound)) => Some(resolve_affine(bound, resolved, stage_idx, block_idx)),
-        (Some(base), Some(bound)) => {
-            Some(base + resolve_affine(bound, resolved, stage_idx, block_idx))
-        }
+        (None, Some(remainder)) => Some(remainder),
+        (Some(base), Some(remainder)) => Some(base + remainder),
     }
 }
 
@@ -894,14 +982,14 @@ fn fold_endpoint(
 /// the per-stage resolved `HydroStageBounds.min_storage_hm3`.
 fn useful_volume_bound_shift(
     constraint: &GenericConstraint,
+    constraint_idx: usize,
     ctx: &TemplateBuildCtx<'_>,
     stage_idx: usize,
     block_idx: usize,
 ) -> Option<f64> {
-    let resolved_parameters = ctx.resolved.resolved_parameters;
     let mut shift = 0.0;
     let mut found = false;
-    for term in &constraint.expression.terms {
+    for (term_idx, term) in constraint.expression.terms.iter().enumerate() {
         let (VariableRef::HydroUsefulVolumeInitial { hydro_id, .. }
         | VariableRef::HydroUsefulVolumeFinal { hydro_id, .. }) = term.variable
         else {
@@ -919,40 +1007,22 @@ fn useful_volume_bound_shift(
             );
             continue;
         };
-        let coef = match term.coefficient {
-            CoefficientRef::Literal(v) => v,
-            CoefficientRef::Parameter(param_id) => {
-                resolved_parameters.get(param_id, stage_idx, block_idx)
-            }
-        };
+        let value = ctx.resolved.resolved_generic_coefficients.term_value(
+            constraint_idx,
+            term_idx,
+            stage_idx,
+            block_idx,
+        );
         let v_lo = ctx.hydros[h_idx].min_storage_hm3;
-        shift += coef * term.scale * v_lo;
+        shift += value * v_lo;
     }
     found.then_some(shift)
-}
-
-/// Whether either affine bound on `constraint` references a block-varying
-/// (`PerStageBlock`) parameter. When true, the stage-level collapse is suppressed:
-/// a single collapsed row would resolve one arbitrary block's bound value, losing
-/// the per-block variation.
-fn bound_affine_is_block_varying(
-    constraint: &GenericConstraint,
-    resolved: &ResolvedParameters,
-) -> bool {
-    [
-        &constraint.bound_lower_affine,
-        &constraint.bound_upper_affine,
-    ]
-    .into_iter()
-    .flatten()
-    .flat_map(AffineBound::params)
-    .any(|id| resolved.is_block_varying(id))
 }
 
 /// Enumerate active generic constraint rows and assign their slack column indices.
 ///
 /// One [`GenericConstraintRowEntry`] per active `(constraint, block)` pair, except
-/// a `block_id = None` bound over a block-independent expression, which collapses
+/// a `block_id = None` bound that [`constraint_collapses_to_stage_level`] collapses
 /// to a single stage-level row.
 fn enumerate_generic_constraint_rows(
     ctx: &TemplateBuildCtx<'_>,
@@ -964,7 +1034,7 @@ fn enumerate_generic_constraint_rows(
     let mut n_generic_rows: usize = 0;
     let mut n_generic_slack_cols: usize = 0;
     let mut generic_constraint_rows: Vec<GenericConstraintRowEntry> = Vec::new();
-    let resolved_parameters = ctx.resolved.resolved_parameters;
+    let coefficients = ctx.resolved.resolved_generic_coefficients;
 
     for (constraint_idx, constraint) in ctx.generic_constraints.iter().enumerate() {
         if !ctx
@@ -981,8 +1051,7 @@ fn enumerate_generic_constraint_rows(
             .bounds_for_stage(constraint_idx, stage.id);
 
         let collapse_stage_level =
-            expression_collapses_to_stage_level(&constraint.expression, resolved_parameters)
-                && !bound_affine_is_block_varying(constraint, resolved_parameters);
+            constraint_collapses_to_stage_level(constraint, constraint_idx, coefficients);
 
         for entry in bound_entries {
             #[expect(
@@ -999,26 +1068,30 @@ fn enumerate_generic_constraint_rows(
                 // two-sided slack shape.
                 let mut effective_lower = fold_endpoint(
                     entry.bound_lower,
-                    constraint.bound_lower_affine.as_ref(),
-                    resolved_parameters,
-                    stage_idx,
-                    block_idx,
+                    coefficients.bound_value(
+                        constraint_idx,
+                        BoundSide::Lower,
+                        stage_idx,
+                        block_idx,
+                    ),
                 );
                 let mut effective_upper = fold_endpoint(
                     entry.bound_upper,
-                    constraint.bound_upper_affine.as_ref(),
-                    resolved_parameters,
-                    stage_idx,
-                    block_idx,
+                    coefficients.bound_value(
+                        constraint_idx,
+                        BoundSide::Upper,
+                        stage_idx,
+                        block_idx,
+                    ),
                 );
                 if let Some(shift) =
-                    useful_volume_bound_shift(constraint, ctx, stage_idx, block_idx)
+                    useful_volume_bound_shift(constraint, constraint_idx, ctx, stage_idx, block_idx)
                 {
                     effective_lower = effective_lower.map(|v| v + shift);
                     effective_upper = effective_upper.map(|v| v + shift);
                 }
                 let (slack_plus_col, slack_minus_col) = allocate_generic_slack_cols(
-                    &constraint.slack,
+                    constraint.slack,
                     effective_lower,
                     effective_upper,
                     col_generic_slack_start,
@@ -1032,8 +1105,7 @@ fn enumerate_generic_constraint_rows(
                     is_stage_level,
                     bound_lower: effective_lower,
                     bound_upper: effective_upper,
-                    slack_enabled: constraint.slack.enabled,
-                    slack_penalty: constraint.slack.penalty.unwrap_or(0.0),
+                    slack: constraint.slack,
                     slack_plus_col,
                     slack_minus_col,
                 });
@@ -1230,6 +1302,8 @@ impl StageGeometry {
             outflow_above_slack: 0..0,
             turbine_below_slack: 0..0,
             generation_below_slack: 0..0,
+            plant_turbine_below_slack: 0..0,
+            plant_generation_below_slack: 0..0,
             contract_import: 0..0,
             contract_export: 0..0,
             water_balance: BlockRowFamily::one_per_entity(0..0),
@@ -1239,6 +1313,8 @@ impl StageGeometry {
             filling_target_col: 0..0,
             filled_min_storage_floor: 0..0,
             filled_min_storage_floor_col: 0..0,
+            plant_max_turbine: 0..0,
+            plant_max_generation: 0..0,
             n_blks,
             storage_internal_start: 0,
             block_mode,
@@ -1246,6 +1322,8 @@ impl StageGeometry {
             evap_hydro_indices: Vec::new(),
             filling_target_hydro_indices: Vec::new(),
             filled_min_storage_floor_hydro_indices: Vec::new(),
+            plant_floor_hydro_indices: Vec::new(),
+            plant_cap_hydro_indices: Vec::new(),
         }
     }
 }
@@ -1345,13 +1423,19 @@ impl<'a> StageLayout<'a> {
         // `n_h * n_blks`/`n_cells * n_blks` are `0` when `n_h`/`n_cells == 0`, so
         // `alloc(0)` collapses every family onto the post-equipment cursor with
         // no branch.
-        (
-            geometry.outflow_below_slack,
-            geometry.outflow_above_slack,
-            geometry.turbine_below_slack,
-            geometry.generation_below_slack,
-        ) = allocate_oper_violation_slack_columns(&mut col, n_h * n_blks, n_cells * n_blks);
-        let oper_violation = OperViolationRanges::new(&mut row, n_h * n_blks, n_cells * n_blks);
+        geometry.plant_floor_hydro_indices = identify_plant_floor_hydros(ctx, stage_idx, n_blks);
+        let oper_violation_sizes = OperViolationSizes {
+            hydros: n_h * n_blks,
+            cells: n_cells * n_blks,
+            plant_floors: geometry.plant_floor_hydro_indices.len() * n_blks,
+        };
+        allocate_oper_violation_slack_columns(&mut col, &mut geometry, oper_violation_sizes);
+        let oper_violation = OperViolationRanges::new(&mut row, oper_violation_sizes);
+        geometry.plant_cap_hydro_indices =
+            identify_plant_cap_hydros(ctx, stage.id, stage_idx, n_blks);
+        let n_plant_cap_rows = geometry.plant_cap_hydro_indices.len() * n_blks;
+        geometry.plant_max_turbine = row.alloc(n_plant_cap_rows);
+        geometry.plant_max_generation = row.alloc(n_plant_cap_rows);
 
         geometry.ncs_generation = col.alloc(ctx.non_controllable_sources.len() * n_blks);
 
@@ -1515,6 +1599,58 @@ impl StageLayout<'_> {
     #[inline]
     pub(crate) fn min_generation_row(&self, c: HydroCell, blk: BlockIdx) -> usize {
         self.block_flat(self.oper_violation.min_generation.start, c.get(), blk)
+    }
+
+    #[inline]
+    pub(super) fn min_floor_row(&self, kind: MinFloor, c: HydroCell, blk: BlockIdx) -> usize {
+        match kind {
+            MinFloor::Turbined => self.min_turbine_row(c, blk),
+            MinFloor::Generation => self.min_generation_row(c, blk),
+        }
+    }
+
+    #[inline]
+    pub(super) fn plant_min_floor_row(
+        &self,
+        kind: MinFloor,
+        local: PlantFloorLocal,
+        blk: BlockIdx,
+    ) -> usize {
+        let family = match kind {
+            MinFloor::Turbined => &self.oper_violation.plant_min_turbine,
+            MinFloor::Generation => &self.oper_violation.plant_min_generation,
+        };
+        self.block_flat(family.start, local.get(), blk)
+    }
+
+    #[inline]
+    pub(super) fn cell_below_col(&self, kind: MinFloor, c: HydroCell, blk: BlockIdx) -> usize {
+        match kind {
+            MinFloor::Turbined => self.geometry.turbine_below_col(c, blk),
+            MinFloor::Generation => self.geometry.generation_below_col(c, blk),
+        }
+    }
+
+    #[inline]
+    pub(super) fn plant_below_col(
+        &self,
+        kind: MinFloor,
+        local: PlantFloorLocal,
+        blk: BlockIdx,
+    ) -> usize {
+        match kind {
+            MinFloor::Turbined => self.geometry.plant_turbine_below_col(local, blk),
+            MinFloor::Generation => self.geometry.plant_generation_below_col(local, blk),
+        }
+    }
+
+    #[inline]
+    pub(super) fn plant_max_row(&self, kind: MaxCap, local: PlantCapLocal, blk: BlockIdx) -> usize {
+        let family = match kind {
+            MaxCap::Turbined => &self.geometry.plant_max_turbine,
+            MaxCap::Generation => &self.geometry.plant_max_generation,
+        };
+        self.block_flat(family.start, local.get(), blk)
     }
 
     /// Anticipated-local `local`'s commitment-maturity row, or `None` when no
@@ -1756,6 +1892,14 @@ pub struct StageGeometry {
     pub turbine_below_slack: Range<usize>,
     /// Generation-below-minimum slack column range (one per hydro CELL per block).
     pub generation_below_slack: Range<usize>,
+    /// Plant residual turbine-below-minimum slack column range (one per
+    /// plant-floor hydro per block); reached through
+    /// [`StageGeometry::plant_turbine_below_col`].
+    pub plant_turbine_below_slack: Range<usize>,
+    /// Plant residual generation-below-minimum slack column range (one per
+    /// plant-floor hydro per block); reached through
+    /// [`StageGeometry::plant_generation_below_col`].
+    pub plant_generation_below_slack: Range<usize>,
     /// Import-contract column range (one per import contract per block); empty
     /// `start..start` (not `0..0`) at the pumping-end column when there are none.
     pub contract_import: Range<usize>,
@@ -1793,6 +1937,10 @@ pub struct StageGeometry {
     /// stage. Simulation extraction reads the `σ^{v-}` primal at `start + local_idx`,
     /// resolving `local_idx` via `filled_min_storage_floor_hydro_indices`.
     pub filled_min_storage_floor_col: Range<usize>,
+    /// Hard plant max-turbined row range (one row per plant-cap hydro per block).
+    pub plant_max_turbine: Range<usize>,
+    /// Hard plant max-generation row range (one row per plant-cap hydro per block).
+    pub plant_max_generation: Range<usize>,
     /// Number of operating blocks (K) at this stage — the block-major stride for
     /// every equipment family.
     pub n_blks: usize,
@@ -1821,6 +1969,13 @@ pub struct StageGeometry {
     /// `filled_min_storage_floor_col`; SPARSE like `filling_target_hydro_indices`,
     /// resolved the same way.
     pub filled_min_storage_floor_hydro_indices: Vec<HydroSys>,
+    /// System hydro indices owning a plant residual floor row and slack column
+    /// pair at this stage, in slot order; SPARSE like
+    /// `filling_target_hydro_indices`, resolved the same way.
+    pub plant_floor_hydro_indices: Vec<HydroSys>,
+    /// System hydro indices owning a pair of plant cap rows at this stage, in slot
+    /// order; SPARSE like `filling_target_hydro_indices`.
+    pub plant_cap_hydro_indices: Vec<HydroSys>,
 }
 
 impl StageGeometry {
@@ -1945,6 +2100,22 @@ impl StageGeometry {
         self.block_flat(&self.generation_below_slack, c.get(), blk)
     }
 
+    /// Plant residual turbine-below-minimum slack column for plant-floor slot
+    /// `local`, block `blk`.
+    #[inline]
+    #[must_use]
+    pub fn plant_turbine_below_col(&self, local: PlantFloorLocal, blk: BlockIdx) -> usize {
+        self.block_flat(&self.plant_turbine_below_slack, local.get(), blk)
+    }
+
+    /// Plant residual generation-below-minimum slack column for plant-floor
+    /// slot `local`, block `blk`.
+    #[inline]
+    #[must_use]
+    pub fn plant_generation_below_col(&self, local: PlantFloorLocal, blk: BlockIdx) -> usize {
+        self.block_flat(&self.plant_generation_below_slack, local.get(), blk)
+    }
+
     /// `contract_type`'s contract column at per-direction slot `family_slot`
     /// (from [`contract_family_slot`]) for block `blk`.
     #[inline]
@@ -2067,7 +2238,7 @@ mod tests;
 #[cfg(test)]
 mod collapse_stage_level_tests {
     use super::*;
-    use novomodelo_core::{LinearTerm, VariableRef};
+    use novomodelo_core::{LinearTerm, ScalarExpr, StageId, VariableRef};
 
     fn expr(term: LinearTerm) -> ConstraintExpression {
         ConstraintExpression { terms: vec![term] }
@@ -2089,34 +2260,62 @@ mod collapse_stage_level_tests {
         }
     }
 
+    fn unbounded(expression: ConstraintExpression) -> GenericConstraint {
+        GenericConstraint {
+            id: EntityId(0),
+            name: "c".to_string(),
+            description: None,
+            expression,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
+        }
+    }
+
+    fn collapses(constraint: &GenericConstraint) -> bool {
+        let coefficients = ResolvedGenericCoefficients::build(
+            std::slice::from_ref(constraint),
+            &resolved(),
+            &[StageId(0)],
+            &[2],
+        )
+        .expect("every parameter the constraint reads is resolved and finite");
+        constraint_collapses_to_stage_level(constraint, 0, &coefficients)
+    }
+
     #[test]
     fn block_varying_coefficient_suppresses_collapse() {
-        let e = expr(LinearTerm::parameter(EntityId(42), 1.0, hydro_storage()));
+        let c = unbounded(expr(LinearTerm {
+            coefficient: ScalarExpr::param(EntityId(42)),
+            variable: hydro_storage(),
+        }));
         assert!(
-            !expression_collapses_to_stage_level(&e, &resolved()),
+            !collapses(&c),
             "a block-varying coefficient over a block-independent variable must not collapse"
         );
     }
 
     #[test]
     fn block_invariant_coefficient_still_collapses() {
-        let param = expr(LinearTerm::parameter(EntityId(43), 1.0, hydro_storage()));
-        let literal = expr(LinearTerm::literal(1.0, hydro_storage()));
-        let r = resolved();
-        assert!(expression_collapses_to_stage_level(&param, &r));
-        assert!(expression_collapses_to_stage_level(&literal, &r));
+        let param = unbounded(expr(LinearTerm {
+            coefficient: ScalarExpr::param(EntityId(43)),
+            variable: hydro_storage(),
+        }));
+        let literal = unbounded(expr(LinearTerm::literal(1.0, hydro_storage())));
+        assert!(collapses(&param));
+        assert!(collapses(&literal));
     }
 
     #[test]
     fn block_dependent_variable_never_collapses() {
-        let e = expr(LinearTerm::literal(
+        let c = unbounded(expr(LinearTerm::literal(
             1.0,
             VariableRef::ThermalGeneration {
                 thermal_id: EntityId(0),
                 block_id: None,
             },
-        ));
-        assert!(!expression_collapses_to_stage_level(&e, &resolved()));
+        )));
+        assert!(!collapses(&c));
     }
 
     fn constraint_with_refs(
@@ -2124,69 +2323,30 @@ mod collapse_stage_level_tests {
         upper_ref: Option<EntityId>,
     ) -> GenericConstraint {
         GenericConstraint {
-            id: EntityId(0),
-            name: "c".to_string(),
-            description: None,
-            expression: expr(LinearTerm::literal(1.0, hydro_storage())),
-            slack: novomodelo_core::SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: lower_ref.map(AffineBound::single),
-            bound_upper_affine: upper_ref.map(AffineBound::single),
+            bound_lower: lower_ref.map(ScalarExpr::param),
+            bound_upper: upper_ref.map(ScalarExpr::param),
+            ..unbounded(expr(LinearTerm::literal(1.0, hydro_storage())))
         }
     }
 
     #[test]
-    fn bound_affine_block_varying_truth_table() {
-        let r = resolved();
-        // Slot 42 is block-varying, slot 43 broadcasts.
-        assert!(bound_affine_is_block_varying(
-            &constraint_with_refs(None, Some(EntityId(42))),
-            &r
-        ));
-        assert!(bound_affine_is_block_varying(
-            &constraint_with_refs(Some(EntityId(42)), None),
-            &r
-        ));
-        assert!(!bound_affine_is_block_varying(
-            &constraint_with_refs(None, Some(EntityId(43))),
-            &r
-        ));
-        assert!(!bound_affine_is_block_varying(
-            &constraint_with_refs(None, None),
-            &r
-        ));
+    fn a_block_varying_bound_parameter_suppresses_collapse() {
+        assert!(!collapses(&constraint_with_refs(None, Some(EntityId(42)))));
+        assert!(!collapses(&constraint_with_refs(Some(EntityId(42)), None)));
+        assert!(collapses(&constraint_with_refs(None, Some(EntityId(43)))));
+        assert!(collapses(&constraint_with_refs(None, None)));
     }
 
-    /// A block-varying parameter reached through a multi-term affine bound (not
-    /// just the `single` special case) still suppresses the collapse.
+    /// A block-varying parameter reached through a multi-term bound (not just a
+    /// bare parameter) still suppresses the collapse.
     #[test]
-    fn bound_affine_block_varying_detects_multi_term_reference() {
-        let r = resolved();
+    fn a_block_varying_multi_term_bound_suppresses_collapse() {
         let mut constraint = constraint_with_refs(None, None);
-        constraint.bound_upper_affine = Some(AffineBound {
-            constant: 10.0,
-            terms: vec![(2.0, EntityId(43)), (0.5, EntityId(42))],
-        });
-        assert!(bound_affine_is_block_varying(&constraint, &r));
-    }
-
-    #[test]
-    fn resolve_affine_of_single_equals_get() {
-        let r = resolved();
-        let bound = AffineBound::single(EntityId(42));
-        assert_eq!(resolve_affine(&bound, &r, 0, 1), r.get(EntityId(42), 0, 1));
-    }
-
-    #[test]
-    fn resolve_affine_of_two_term_remainder_sums_constant_and_terms() {
-        let r = resolved();
-        let bound = AffineBound {
-            constant: 100.0,
-            terms: vec![(2.0, EntityId(42)), (-1.0, EntityId(43))],
-        };
-        let expected = 100.0 + 2.0 * r.get(EntityId(42), 0, 1) - 1.0 * r.get(EntityId(43), 0, 1);
-        assert_eq!(resolve_affine(&bound, &r, 0, 1), expected);
+        constraint.bound_upper = Some(
+            ScalarExpr::literal(10.0)
+                + ScalarExpr::literal(2.0) * ScalarExpr::param(EntityId(43))
+                + ScalarExpr::literal(0.5) * ScalarExpr::param(EntityId(42)),
+        );
+        assert!(!collapses(&constraint));
     }
 }

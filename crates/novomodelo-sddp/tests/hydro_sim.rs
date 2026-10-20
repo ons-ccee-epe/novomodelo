@@ -27,12 +27,14 @@ mod simulation_only {
 
     use novomodelo_core::scenario::ScenarioSource;
     use novomodelo_io::output::policy::{read_policy_checkpoint, write_policy_checkpoint};
+    use novomodelo_io::test_support::producer_block_defaults;
+    use novomodelo_sddp::policy::full_fcf_load::{FullFcfLoadKind, LoadedSlotMap};
     use novomodelo_sddp::{
         FutureCostFunction, StudySetup, build_basis_cache_from_checkpoint,
         hydro_models::prepare_hydro_models,
         policy_export::{
-            build_active_indices, build_stage_basis_records, build_stage_cut_records,
-            build_stage_cuts_payloads, convert_basis_cache,
+            BindingCounters, build_basis_store_entries, build_stage_basis_records,
+            build_stage_cut_records, build_stage_cuts_payloads, convert_basis_store,
         },
         setup::{NodePos, prepare_stochastic},
     };
@@ -107,8 +109,7 @@ mod simulation_only {
         let policy_dir = tmpdir.path().join("policy");
 
         let fcf = &setup.fcf;
-        let stage_records = build_stage_cut_records(fcf);
-        let stage_active_indices = build_active_indices(&stage_records);
+        let stage_records = build_stage_cut_records(fcf, BindingCounters::Omitted).expect("export");
         let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); fcf.pools.len()];
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
@@ -120,19 +121,16 @@ mod simulation_only {
             &study_stage_end_dates,
             1_000_000.0,
             &stage_records,
-            &stage_active_indices,
             &stage_manifests,
         );
 
-        let (basis_col_u8, basis_row_u8) = convert_basis_cache(&training_result.basis_cache);
-        let stage_bases = build_stage_basis_records(
-            &training_result.basis_cache,
-            training_result.iterations,
-            &basis_col_u8,
-            &basis_row_u8,
-        );
+        let basis_statuses = convert_basis_store(&training_result.checkpoint_bases);
+        let basis_entries =
+            build_basis_store_entries(&training_result.checkpoint_bases, &basis_statuses);
+        let stage_bases =
+            build_stage_basis_records(&basis_entries, training_result.iterations).expect("bases");
 
-        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
+        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
         let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             n_stages as u32,
             setup.build_graph_manifest(),
@@ -145,11 +143,8 @@ mod simulation_only {
                 warm_start_cuts: warm_start_counts.iter().copied().max().unwrap_or(0),
                 warm_start_counts,
                 rng_seed: 42,
-                total_visited_states: 0,
-                training_block_mode: "parallel".to_string(),
-                training_block_mode_per_stage: vec![],
                 cost_scale_factor: None,
-                lower_bound_history: Vec::new(),
+                ..producer_block_defaults()
             },
         );
 
@@ -201,7 +196,7 @@ mod simulation_only {
 
         let load = build_basis_cache_from_checkpoint(
             &checkpoint.stage_bases,
-            &checkpoint.stage_cuts,
+            &LoadedSlotMap::for_pools(FullFcfLoadKind::SimulationOnly, &checkpoint.stage_cuts),
             &setup,
         );
         assert!(
@@ -671,7 +666,7 @@ mod multi_resolution_integration {
     };
     use novomodelo_solver::ActiveSolver;
 
-    use super::common::StubComm;
+    use super::common::{StubComm, stored_trial_states};
 
     // ---------------------------------------------------------------------------
     // Helpers
@@ -933,7 +928,6 @@ mod multi_resolution_integration {
             "training error: {:?}",
             outcome.error
         );
-        let archive = outcome.result.visited_archive.expect("visited archive");
         let frozen = outcome.result.frozen_templates.expect("frozen templates");
         let mut pool = setup
             .create_workspace_pool(&comm, 1, ActiveSolver::new)
@@ -948,7 +942,6 @@ mod multi_resolution_integration {
         let par = setup.inputs.stochastic.par();
         let tree = training_ctx.stochastic.tree_view();
         let n_h = state.hydro_count;
-        let n_state = state.n_state;
         let n_stages = setup.inputs.node_graph.nodes.len();
         assert_eq!(quarterly.len(), n_stages, "one study stage per chain node");
 
@@ -966,8 +959,7 @@ mod multi_resolution_integration {
         let mut r = vec![0.0; n_h];
         for (t, &is_quarterly) in quarterly.iter().enumerate().skip(1) {
             let node_id = setup.inputs.node_graph.node_ids[NodePos(t)];
-            let states = archive.states_for_node(NodePos(t - 1));
-            for x in states.chunks_exact(n_state) {
+            for x in &stored_trial_states(&setup, NodePos(t - 1)) {
                 let lags = &x[state.inflow_lags.clone()];
                 for o in 0..tree.n_openings(t) {
                     let noise = node_opening_noise(&setup, NodePos(t), o);
@@ -1112,6 +1104,7 @@ mod decomp_integration {
 
     use novomodelo_core::temporal::SeasonCycleType;
     use novomodelo_io::output::policy::write_policy_checkpoint;
+    use novomodelo_io::test_support::producer_block_defaults;
     use novomodelo_sddp::{
         StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
     };
@@ -1162,12 +1155,11 @@ mod decomp_integration {
         stage_manifests: &[Vec<novomodelo_io::EntitySlot>],
     ) {
         use novomodelo_sddp::policy_export::{
-            build_active_indices, build_stage_basis_records, build_stage_cut_records,
-            build_stage_cuts_payloads, convert_basis_cache,
+            BindingCounters, build_basis_store_entries, build_stage_basis_records,
+            build_stage_cut_records, build_stage_cuts_payloads, convert_basis_store,
         };
         let fcf = &setup.fcf;
-        let stage_records = build_stage_cut_records(fcf);
-        let stage_active_indices = build_active_indices(&stage_records);
+        let stage_records = build_stage_cut_records(fcf, BindingCounters::Omitted).expect("export");
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
         let study_stage_end_dates = ascending_stage_end_dates(fcf.pools.len());
         let stage_cuts = build_stage_cuts_payloads(
@@ -1177,17 +1169,13 @@ mod decomp_integration {
             &study_stage_end_dates,
             1_000_000.0,
             &stage_records,
-            &stage_active_indices,
             stage_manifests,
         );
-        let (basis_col, basis_row) = convert_basis_cache(&result.basis_cache);
-        let stage_bases = build_stage_basis_records(
-            &result.basis_cache,
-            result.iterations,
-            &basis_col,
-            &basis_row,
-        );
-        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
+        let basis_statuses = convert_basis_store(&result.checkpoint_bases);
+        let basis_entries = build_basis_store_entries(&result.checkpoint_bases, &basis_statuses);
+        let stage_bases =
+            build_stage_basis_records(&basis_entries, result.iterations).expect("bases");
+        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
         let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             fcf.pools.len() as u32,
             setup.build_graph_manifest(),
@@ -1200,11 +1188,8 @@ mod decomp_integration {
                 warm_start_cuts: warm_start_counts.iter().copied().max().unwrap_or(0),
                 warm_start_counts,
                 rng_seed: seed,
-                total_visited_states: 0,
-                training_block_mode: "parallel".to_string(),
-                training_block_mode_per_stage: vec![],
                 cost_scale_factor: None,
-                lower_bound_history: Vec::new(),
+                ..producer_block_defaults()
             },
         );
         write_policy_checkpoint(policy_dir, &stage_cuts, &stage_bases, &metadata, &[])
@@ -1430,14 +1415,14 @@ mod decomp_integration {
         let terminal_pool_id = setup_c.inputs.node_graph.terminal_pool(num_stages).unwrap();
         let terminal_pool = &setup_c.fcf.pools[terminal_pool_id];
         assert!(
-            terminal_pool.has_warm_start_cuts(),
-            "terminal pool must have boundary cuts after injection; warm_start_count == 0"
+            terminal_pool.has_prefix_cuts(),
+            "terminal pool must have boundary cuts after injection; prefix_len == 0"
         );
         assert!(
-            terminal_pool.populated() >= terminal_pool.warm_start_count as usize,
-            "populated_count ({}) must include boundary cuts (warm_start_count = {})",
+            terminal_pool.populated() >= terminal_pool.prefix_len(),
+            "populated_count ({}) must include boundary cuts (prefix_len = {})",
             terminal_pool.populated(),
-            terminal_pool.warm_start_count
+            terminal_pool.prefix_len()
         );
 
         let mut solver_c = ActiveSolver::new().expect("solver C");
@@ -2627,7 +2612,7 @@ mod diversion_outflow_bounds {
     /// headroom to absorb the whole diverted flow. Neither generates (default
     /// zero productivity): the operative economics are spill-vs-divert cost, which
     /// is all the floor semantics need to be exercised.
-    fn build_system(bound: Bound) -> System {
+    fn build_system(bound: Bound, diversion_cap_m3s: Option<f64>) -> System {
         let (entity_min, entity_max) = match bound {
             Bound::Min => (MIN_OUTFLOW_M3S, None),
             Bound::Max => (0.0, Some(MAX_OUTFLOW_M3S)),
@@ -2655,7 +2640,7 @@ mod diversion_outflow_bounds {
                 max_generation_mw: 500.0,
                 diversion: Some(DiversionChannel {
                     downstream_id: EntityId(TARGET_ID),
-                    max_flow_m3s: DIVERSION_CAP_M3S,
+                    max_flow_m3s: diversion_cap_m3s,
                 }),
                 generation_model: HydroGenerationModel::ConstantProductivity,
                 ..Default::default()
@@ -2736,7 +2721,7 @@ mod diversion_outflow_bounds {
         for stage_idx in 0..n_stages {
             let src = bounds.hydro_block_base_mut(0, stage_idx);
             src.max_turbined_m3s = MAX_TURBINED_M3S;
-            src.max_diversion_m3s = Some(DIVERSION_CAP_M3S);
+            src.max_diversion_m3s = diversion_cap_m3s;
             match bound {
                 Bound::Min => src.min_outflow_m3s = MIN_OUTFLOW_M3S,
                 Bound::Max => src.max_outflow_m3s = Some(MAX_OUTFLOW_M3S),
@@ -2832,7 +2817,8 @@ mod diversion_outflow_bounds {
     /// zero below-slack — the silent Volta Grande under-release.
     #[test]
     fn min_outflow_binds_the_non_diverted_flow_on_a_diverter() {
-        let mut setup = build_setup_in_code(build_system(Bound::Min), &config());
+        let mut setup =
+            build_setup_in_code(build_system(Bound::Min, Some(DIVERSION_CAP_M3S)), &config());
         let results = run_simulation(&mut setup, 1);
         assert_eq!(results.len(), 1, "exactly one scenario must be produced");
         let scenario: &SimulationScenarioResult = &results[0];
@@ -2883,7 +2869,8 @@ mod diversion_outflow_bounds {
     /// diversion — the total-release cap this change removes.
     #[test]
     fn max_outflow_binds_the_non_diverted_flow_on_a_diverter() {
-        let mut setup = build_setup_in_code(build_system(Bound::Max), &config());
+        let mut setup =
+            build_setup_in_code(build_system(Bound::Max, Some(DIVERSION_CAP_M3S)), &config());
         let results = run_simulation(&mut setup, 1);
         assert_eq!(results.len(), 1, "exactly one scenario must be produced");
         let scenario: &SimulationScenarioResult = &results[0];
@@ -2928,6 +2915,70 @@ mod diversion_outflow_bounds {
                 "total release (q + s + d = {}) must exceed the {MAX_OUTFLOW_M3S} cap via the \
                  diversion canal, proving the maximum bounds only the non-diverted flow",
                 non_diverted + diverted
+            );
+        }
+    }
+
+    /// Diverted flow per block of the source, and the target's received release
+    /// (`q + s`; the target has no inflow of its own).
+    fn diverted_and_received(diversion_cap_m3s: Option<f64>) -> Vec<(f64, f64, f64)> {
+        let mut setup = build_setup_in_code(build_system(Bound::Max, diversion_cap_m3s), &config());
+        let results = run_simulation(&mut setup, 1);
+        let scenario: &SimulationScenarioResult = &results[0];
+        scenario
+            .stages
+            .iter()
+            .flat_map(|stage| {
+                let source = stage
+                    .hydros
+                    .iter()
+                    .find(|h| h.hydro_id == SOURCE_ID)
+                    .expect("source in output");
+                let target = stage
+                    .hydros
+                    .iter()
+                    .find(|h| h.hydro_id == TARGET_ID)
+                    .expect("target in output");
+                [(
+                    source
+                        .diverted_outflow_m3s
+                        .expect("a diverting plant reports its diverted outflow"),
+                    target.turbined_m3s + target.spillage_m3s,
+                    source.outflow_slack_above_m3s,
+                )]
+            })
+            .collect()
+    }
+
+    /// A channel without a capacity limit carries the whole forced surplus
+    /// `INFLOW − MAX_OUTFLOW`, and the target releases exactly what it receives.
+    /// The twin capped below that surplus pays the rest as an above-violation,
+    /// so the unlimited result is not an accident of the fixture.
+    #[test]
+    fn unlimited_diversion_channel_carries_the_whole_surplus() {
+        /// derived: run-of-river balance with `q + s` held at the natural-channel cap.
+        const SURPLUS_M3S: f64 = INFLOW_M3S - MAX_OUTFLOW_M3S;
+        const TWIN_CAP_M3S: f64 = 50.0;
+
+        for (diverted, received, slack_above) in diverted_and_received(None) {
+            assert!(
+                (diverted - SURPLUS_M3S).abs() < 1e-3,
+                "unlimited channel must divert {SURPLUS_M3S}, got {diverted}"
+            );
+            assert!(
+                (received - diverted).abs() < 1e-3,
+                "target must release the diverted {diverted}, got {received}"
+            );
+            assert!(slack_above < 1e-3, "no above-violation, got {slack_above}");
+        }
+        for (diverted, _, slack_above) in diverted_and_received(Some(TWIN_CAP_M3S)) {
+            assert!(
+                diverted <= TWIN_CAP_M3S + 1e-3,
+                "capped twin must divert at most {TWIN_CAP_M3S}, got {diverted}"
+            );
+            assert!(
+                (slack_above - (SURPLUS_M3S - TWIN_CAP_M3S)).abs() < 1e-3,
+                "capped twin pays the uncarried surplus, got {slack_above}"
             );
         }
     }
@@ -3733,5 +3784,453 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
              (reconstruct_basis must match cut rows by CutPool slot identity, not absolute \
              column index, so the commit_out/commit_in width shift stays transparent)"
         );
+    }
+}
+
+mod generic_slack_penalty_basis {
+    //! A soft generic-constraint row's reported violation cost follows its
+    //! declared `penalty_basis` on stages of different lengths: a `per_unit`
+    //! storage shortfall costs the same per hm³ on a 168 h week and a 744 h
+    //! month, while its `per_hour` twin scales with each stage's hours. The
+    //! same holds for the stored-energy form of the row, written in `MWh` with
+    //! the `integrated_accumulated_productivity_mwh_per_hm3` coefficient and a
+    //! `@share * @max_stored_energy_mwh` floor.
+
+    use chrono::NaiveDate;
+    use novomodelo_core::scenario::InflowModel;
+    use novomodelo_core::temporal::{
+        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
+        StageStateConfig,
+    };
+    use novomodelo_core::{
+        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ComputedParameter,
+        ConstraintExpression, ContractBlockBounds, DeficitSegment, EntityId, GenericConstraint,
+        HydroBlockBounds, HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds,
+        LineStagePenalties, LinearTerm, NcsStagePenalties, ParameterKind, PenaltiesCountsSpec,
+        PenaltiesDefaults, PenaltyBasis, PumpingBlockBounds, ResolvedBounds,
+        ResolvedGenericConstraintBounds, ResolvedPenalties, ScalarExpr, ScalarParameter,
+        SlackConfig, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds, VariableRef,
+    };
+    use novomodelo_io::config::{
+        Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
+        InflowNonNegativityMethod, ModelingConfig, PolicyConfig, RowSelectionConfig,
+        SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode,
+        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        UpperBoundEvaluationConfig,
+    };
+    use novomodelo_sddp::StudySetup;
+    use novomodelo_sddp::hydro_models::{
+        PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel,
+    };
+    use std::collections::HashMap;
+
+    use super::common::builders::{
+        BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage,
+    };
+    use super::common::{build_setup_in_code, run_simulation, stochastic_in_code};
+
+    const HYDRO_ID: i32 = 1;
+    const BUS_ID: i32 = 1;
+    const CONSTRAINT_ID: i32 = 10;
+    /// A week, then a 31-day month.
+    const STAGE_HOURS: [f64; 2] = [168.0, 744.0];
+    const MAX_STORAGE_HM3: f64 = 1000.0;
+    /// With zero inflow and no reason to release, storage stays here all horizon.
+    const INITIAL_STORAGE_HM3: f64 = 100.0;
+    const FLOOR_SHARE: f64 = 0.3;
+    const STORAGE_FLOOR_HM3: f64 = FLOOR_SHARE * MAX_STORAGE_HM3;
+    const PENALTY: f64 = 7.0;
+    /// derived: the floor the reservoir cannot reach, `300 − 100` hm³, every stage.
+    const SHORTFALL_HM3: f64 = STORAGE_FLOOR_HM3 - INITIAL_STORAGE_HM3;
+
+    const PRODUCTIVITY_MW_PER_M3S: f64 = 0.9;
+    /// derived: a lone constant-productivity plant stores `ρ · 10⁶ m³/hm³ ÷ 3600 s/h`
+    /// `MWh` per hm³.
+    const MWH_PER_HM3: f64 = PRODUCTIVITY_MW_PER_M3S * 1.0e6 / 3600.0;
+    /// derived: the same hm³ shortfall in `MWh`, since the row's floor is
+    /// `FLOOR_SHARE · MWH_PER_HM3 · MAX_STORAGE_HM3` and the plant holds
+    /// `MWH_PER_HM3 · INITIAL_STORAGE_HM3`.
+    const SHORTFALL_MWH: f64 = MWH_PER_HM3 * SHORTFALL_HM3;
+    const RHO_MWH_ID: i32 = 1;
+    const MAX_STORED_ENERGY_MWH_ID: i32 = 2;
+    const FLOOR_SHARE_ID: i32 = 3;
+
+    fn stages() -> Vec<Stage> {
+        let mut start = NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date");
+        STAGE_HOURS
+            .iter()
+            .enumerate()
+            .map(|(i, &hours)| {
+                let end = start + chrono::Duration::hours(hours as i64);
+                let stage = make_stage(
+                    i,
+                    StageSpec {
+                        start_date: start,
+                        end_date: end,
+                        blocks: vec![Block {
+                            index: 0,
+                            name: "S".to_string(),
+                            duration_hours: hours,
+                        }],
+                        block_mode: BlockMode::Parallel,
+                        state_config: StageStateConfig {
+                            storage: true,
+                            inflow_lags: false,
+                        },
+                        risk_config: StageRiskConfig::Expectation,
+                        scenario_config: ScenarioSourceConfig {
+                            branching_factor: 1,
+                            noise_method: NoiseMethod::Saa,
+                        },
+                        ..Default::default()
+                    },
+                );
+                start = end;
+                stage
+            })
+            .collect()
+    }
+
+    fn storage_floor(penalty_basis: PenaltyBasis) -> GenericConstraint {
+        GenericConstraint {
+            id: EntityId(CONSTRAINT_ID),
+            name: "storage_floor".to_string(),
+            description: None,
+            expression: ConstraintExpression {
+                terms: vec![LinearTerm::literal(
+                    1.0,
+                    VariableRef::HydroStorage {
+                        hydro_id: EntityId(HYDRO_ID),
+                    },
+                )],
+            },
+            slack: Some(SlackConfig {
+                penalty: PENALTY,
+                penalty_basis,
+            }),
+            bound_lower: None,
+            bound_upper: None,
+        }
+    }
+
+    /// `@rho_mwh * hydro_storage(1) >= @share * @max_stored_energy_mwh`.
+    fn stored_energy_floor(penalty_basis: PenaltyBasis) -> GenericConstraint {
+        GenericConstraint {
+            id: EntityId(CONSTRAINT_ID),
+            name: "stored_energy_floor".to_string(),
+            description: None,
+            expression: ConstraintExpression {
+                terms: vec![LinearTerm {
+                    coefficient: ScalarExpr::param(EntityId(RHO_MWH_ID)),
+                    variable: VariableRef::HydroStorage {
+                        hydro_id: EntityId(HYDRO_ID),
+                    },
+                }],
+            },
+            slack: Some(SlackConfig {
+                penalty: PENALTY,
+                penalty_basis,
+            }),
+            bound_lower: Some(
+                ScalarExpr::param(EntityId(FLOOR_SHARE_ID))
+                    * ScalarExpr::param(EntityId(MAX_STORED_ENERGY_MWH_ID)),
+            ),
+            bound_upper: None,
+        }
+    }
+
+    fn stored_energy_parameters() -> Vec<ScalarParameter> {
+        let hydro_id = EntityId(HYDRO_ID);
+        vec![
+            ScalarParameter {
+                id: EntityId(RHO_MWH_ID),
+                name: "rho_mwh".to_string(),
+                kind: ParameterKind::Computed {
+                    computed_spec: ComputedParameter::IntegratedAccumulatedProductivityMwhPerHm3 {
+                        hydro_id,
+                    },
+                },
+            },
+            ScalarParameter {
+                id: EntityId(MAX_STORED_ENERGY_MWH_ID),
+                name: "earm_max".to_string(),
+                kind: ParameterKind::Computed {
+                    computed_spec: ComputedParameter::MaxStoredEnergyMwh { hydro_id },
+                },
+            },
+            ScalarParameter {
+                id: EntityId(FLOOR_SHARE_ID),
+                name: "share".to_string(),
+                kind: ParameterKind::Constant { value: FLOOR_SHARE },
+            },
+        ]
+    }
+
+    fn constant_productivity_models(system: &System) -> PrepareHydroModelsResult {
+        let n_stages = STAGE_HOURS.len();
+        let mut hydro_models = PrepareHydroModelsResult::default_from_system(system);
+        hydro_models.production = ProductionModelSet::new(
+            vec![vec![
+                ResolvedProductionModel::ConstantProductivity {
+                    productivity: PRODUCTIVITY_MW_PER_M3S,
+                };
+                n_stages
+            ]],
+            system.hydros(),
+            n_stages,
+        );
+        hydro_models
+    }
+
+    fn build_system(floor: GenericConstraint, row_lower: f64) -> System {
+        let bus = make_bus(
+            EntityId(BUS_ID),
+            BusSpec {
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 500.0,
+                }],
+                excess_cost: 0.0,
+                ..Default::default()
+            },
+        );
+        let hydro = make_hydro(
+            EntityId(HYDRO_ID),
+            HydroSpec {
+                bus_id: EntityId(BUS_ID),
+                max_storage_hm3: MAX_STORAGE_HM3,
+                max_turbined_m3s: 100.0,
+                max_generation_mw: 100.0,
+                ..Default::default()
+            },
+        );
+
+        let stages = stages();
+        let n_stages = stages.len();
+        let inflow_models: Vec<InflowModel> = (0..n_stages)
+            .map(|i| InflowModel {
+                hydro_id: EntityId(HYDRO_ID),
+                stage_id: i as i32,
+                mean_m3s: 0.0,
+                std_m3s: 0.0,
+                ar_coefficients: vec![],
+                residual_std_ratio: 1.0,
+                annual: None,
+            })
+            .collect();
+
+        let bounds = ResolvedBounds::new(
+            &BoundsCountsSpec {
+                n_hydros: 1,
+                n_thermals: 0,
+                n_lines: 0,
+                n_pumping: 0,
+                n_contracts: 0,
+                n_stages,
+                k_max: 0,
+            },
+            &BoundsDefaults {
+                hydro: HydroStageBounds {
+                    min_storage_hm3: 0.0,
+                    max_storage_hm3: MAX_STORAGE_HM3,
+                    filling_min_rate_m3s: 0.0,
+                    water_withdrawal_m3s: 0.0,
+                },
+                hydro_block: HydroBlockBounds {
+                    max_turbined_m3s: 100.0,
+                    max_generation_mw: 100.0,
+                    ..Default::default()
+                },
+                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
+                thermal_block: ThermalBlockBounds {
+                    min_generation_mw: 0.0,
+                    max_generation_mw: 0.0,
+                },
+                line_block: LineBlockBounds {
+                    direct_mw: 0.0,
+                    reverse_mw: 0.0,
+                },
+                pumping_block: PumpingBlockBounds {
+                    min_flow_m3s: 0.0,
+                    max_flow_m3s: 0.0,
+                },
+                contract_block: ContractBlockBounds {
+                    min_mw: 0.0,
+                    max_mw: 0.0,
+                    price_per_mwh: 0.0,
+                },
+            },
+        );
+        let penalties = ResolvedPenalties::new(
+            &PenaltiesCountsSpec {
+                n_hydros: 1,
+                n_buses: 1,
+                n_lines: 0,
+                n_ncs: 0,
+                n_stages,
+            },
+            &PenaltiesDefaults {
+                hydro: HydroSpec::default().penalties,
+                bus: BusStagePenalties { excess_cost: 0.0 },
+                line: LineStagePenalties { exchange_cost: 0.0 },
+                ncs: NcsStagePenalties {
+                    curtailment_cost: 0.0,
+                },
+            },
+        );
+
+        let id_map: HashMap<i32, usize> = [(CONSTRAINT_ID, 0)].into_iter().collect();
+        let rows = (0..n_stages as i32)
+            .map(|stage| (CONSTRAINT_ID, stage, None::<i32>, Some(row_lower), None));
+        let generic_bounds = ResolvedGenericConstraintBounds::new(&id_map, rows);
+
+        SystemBuilder::new()
+            .buses(vec![bus])
+            .hydros(vec![hydro])
+            .stages(stages)
+            .inflow_models(inflow_models)
+            .bounds(bounds)
+            .penalties(penalties)
+            .generic_constraints(vec![floor])
+            .resolved_generic_bounds(generic_bounds)
+            .initial_conditions(InitialConditions {
+                storage: vec![HydroStorage {
+                    hydro_id: EntityId(HYDRO_ID),
+                    value_hm3: INITIAL_STORAGE_HM3,
+                }],
+                ..InitialConditions::default()
+            })
+            .build()
+            .expect("generic_slack_penalty_basis: valid one-hydro system")
+    }
+
+    fn config() -> Config {
+        Config {
+            schema: None,
+            modeling: ModelingConfig {
+                inflow_non_negativity: InflowNonNegativityConfig {
+                    method: InflowNonNegativityMethod::None,
+                },
+                cost_scale_factor: None,
+            },
+            training: TrainingConfig {
+                enabled: true,
+                tree_seed: Some(42),
+                stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit { limit: 3 }]),
+                stopping_mode: StoppingMode::Any,
+                cut_selection: RowSelectionConfig::default(),
+                solver: TrainingSolverConfig::default(),
+                parallelism: novomodelo_io::config::ParallelismConfig::default(),
+                scenario_source: None,
+                selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+            },
+            upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
+            policy: PolicyConfig::default(),
+            simulation: IoSimulationConfig {
+                enabled: true,
+                io_channel_capacity: 16,
+                selection: Some(SimulationSelection::Sampled { num_scenarios: 1 }),
+                ..IoSimulationConfig::default()
+            },
+            exports: ExportsConfig::default(),
+            estimation: EstimationConfig::default(),
+        }
+    }
+
+    fn storage_floor_setup(penalty_basis: PenaltyBasis) -> StudySetup {
+        let system = build_system(storage_floor(penalty_basis), STORAGE_FLOOR_HM3);
+        build_setup_in_code(system, &config())
+    }
+
+    fn stored_energy_floor_setup(penalty_basis: PenaltyBasis) -> StudySetup {
+        let system = build_system(stored_energy_floor(penalty_basis), 0.0);
+        let hydro_models = constant_productivity_models(&system);
+        StudySetup::new(
+            &system,
+            &config(),
+            stochastic_in_code(&system),
+            hydro_models,
+            stored_energy_parameters(),
+        )
+        .expect("generic_slack_penalty_basis: stored-energy study builds")
+    }
+
+    /// The `(slack_value, slack_cost)` the simulation reports for the floor row
+    /// on each stage.
+    fn reported_violations(mut setup: StudySetup) -> Vec<(f64, f64)> {
+        let results = run_simulation(&mut setup, 3);
+        assert_eq!(results.len(), 1, "exactly one scenario must be produced");
+        results[0]
+            .stages
+            .iter()
+            .map(|stage| {
+                assert_eq!(
+                    stage.generic_violations.len(),
+                    1,
+                    "stage {}: one violation record for the stage-level storage row",
+                    stage.stage_id
+                );
+                let violation = &stage.generic_violations[0];
+                assert_eq!(violation.constraint_id, CONSTRAINT_ID);
+                assert_eq!(violation.block_id, None);
+                (violation.slack_value, violation.slack_cost)
+            })
+            .collect()
+    }
+
+    /// Each stage reports `shortfall` and costs `expected_cost(stage hours)`.
+    fn assert_violations(
+        violations: &[(f64, f64)],
+        shortfall: f64,
+        expected_cost: impl Fn(f64) -> f64,
+    ) {
+        assert_eq!(violations.len(), STAGE_HOURS.len());
+        for (stage, (&(slack_value, slack_cost), hours)) in
+            violations.iter().zip(STAGE_HOURS).enumerate()
+        {
+            assert!(
+                (slack_value - shortfall).abs() < 1e-9 * shortfall,
+                "stage {stage}: expected a shortfall of {shortfall}, got {slack_value}"
+            );
+            let expected = expected_cost(hours);
+            assert!(
+                (slack_cost - expected).abs() < 1e-9 * expected,
+                "stage {stage}: shortfall must cost {expected}, got {slack_cost}"
+            );
+        }
+    }
+
+    /// derived: `per_unit` costs `PENALTY × SHORTFALL_HM3` on every stage.
+    #[test]
+    fn per_unit_storage_shortfall_costs_the_same_on_a_week_and_a_month() {
+        let violations = reported_violations(storage_floor_setup(PenaltyBasis::PerUnit));
+        assert_violations(&violations, SHORTFALL_HM3, |_| PENALTY * SHORTFALL_HM3);
+    }
+
+    /// derived: the `per_hour` twin costs `PENALTY × SHORTFALL_HM3 × stage hours`,
+    /// so the week and the month differ.
+    #[test]
+    fn per_hour_storage_shortfall_cost_scales_with_stage_hours() {
+        let violations = reported_violations(storage_floor_setup(PenaltyBasis::PerHour));
+        assert_violations(&violations, SHORTFALL_HM3, |hours| {
+            PENALTY * SHORTFALL_HM3 * hours
+        });
+    }
+
+    /// derived: `per_unit` costs `PENALTY × SHORTFALL_MWH` on every stage — a
+    /// price per `MWh` of stored energy, whatever the stage length.
+    #[test]
+    fn per_unit_stored_energy_shortfall_costs_the_same_mwh_price_on_a_week_and_a_month() {
+        let violations = reported_violations(stored_energy_floor_setup(PenaltyBasis::PerUnit));
+        assert_violations(&violations, SHORTFALL_MWH, |_| PENALTY * SHORTFALL_MWH);
+    }
+
+    /// derived: the `per_hour` twin costs `PENALTY × SHORTFALL_MWH × stage hours`.
+    #[test]
+    fn per_hour_stored_energy_shortfall_cost_scales_with_stage_hours() {
+        let violations = reported_violations(stored_energy_floor_setup(PenaltyBasis::PerHour));
+        assert_violations(&violations, SHORTFALL_MWH, |hours| {
+            PENALTY * SHORTFALL_MWH * hours
+        });
     }
 }

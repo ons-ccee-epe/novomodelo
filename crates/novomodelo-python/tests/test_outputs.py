@@ -534,6 +534,167 @@ def test_run_clears_cut_selection_output_after_cut_selection_is_disabled(
     assert not (output_dir / "training" / "cut_selection").exists()
 
 
+# derived: the iteration limit of the case below.
+_SELECTION_ITERATIONS = 6
+
+# derived: 1dtoy is a chain of four stages with one node each, so pool 0 is the
+# root, pools 1 and 2 are interior and pool 3 is the terminal.
+_SELECTION_POOLS = 4
+
+# derived: `check_frequency` of the selection config the tests set.
+_SELECTION_CHECK_FREQUENCY = 2
+
+
+def _run_selection_case(
+    tmp_path: pathlib.Path, cut_selection: dict[str, Any]
+) -> pathlib.Path:
+    import novomodelo.run
+
+    case_dir = tmp_path / "case"
+    output_dir = tmp_path / "output"
+    shutil.copytree(VALID_CASE, case_dir)
+
+    def enable_cut_selection(config: dict[str, Any]) -> None:
+        config["training"]["stopping_rules"] = [
+            {"type": "iteration_limit", "limit": _SELECTION_ITERATIONS}
+        ]
+        config["training"]["cut_selection"] = cut_selection
+        config["simulation"]["enabled"] = False
+
+    _rewrite_config(case_dir, enable_cut_selection)
+    novomodelo.run.run(str(case_dir), output_dir=str(output_dir))
+    return output_dir
+
+
+def _read_selection_rows(output_dir: pathlib.Path) -> list[dict[str, Any]]:
+    return pq.read_table(
+        output_dir / "training" / "cut_selection" / "iterations.parquet"
+    ).to_pylist()
+
+
+def _is_interior(row: dict[str, Any]) -> bool:
+    return 0 < row["pool_id"] < _SELECTION_POOLS - 1
+
+
+def _is_check_iteration(row: dict[str, Any]) -> bool:
+    return row["iteration"] % _SELECTION_CHECK_FREQUENCY == 0
+
+
+def _final_active(row: dict[str, Any]) -> int:
+    if row["active_after_budget"] is None:
+        return row["cuts_active_after"]
+    return row["active_after_budget"]
+
+
+def _assert_one_row_per_pool_and_iteration(rows: list[dict[str, Any]]) -> None:
+    expected = [
+        (iteration, pool)
+        for iteration in range(1, _SELECTION_ITERATIONS + 1)
+        for pool in range(_SELECTION_POOLS)
+    ]
+    assert [(row["iteration"], row["pool_id"]) for row in rows] == expected
+    for row in rows:
+        assert row["stage_id"] == row["pool_id"], row
+        assert row["node_id"] == row["pool_id"], row
+
+
+def _sum_by_pool(
+    rows: list[dict[str, Any]], column: str, *, off_schedule_only: bool = False
+) -> list[int]:
+    return [
+        sum(
+            row[column] or 0
+            for row in rows
+            if row["pool_id"] == pool
+            and not (off_schedule_only and _is_check_iteration(row))
+        )
+        for pool in range(_SELECTION_POOLS)
+    ]
+
+
+def test_run_writes_one_selection_row_per_pool_and_iteration(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The selection file holds one row per pool and iteration and agrees with the other outputs."""
+    import novomodelo.results
+
+    output_dir = _run_selection_case(
+        tmp_path,
+        {
+            "selection": {
+                "method": "level1",
+                "check_frequency": _SELECTION_CHECK_FREQUENCY,
+            },
+            "max_active_per_stage": 2,
+        },
+    )
+    rows = _read_selection_rows(output_dir)
+
+    _assert_one_row_per_pool_and_iteration(rows)
+    for row in rows:
+        selected = _is_interior(row) and _is_check_iteration(row)
+        assert (row["cuts_deactivated"] is not None) == selected, row
+        assert (row["cuts_reactivated"] is not None) == selected, row
+        assert (row["selection_time_ms"] is not None) == selected, row
+        assert (row["budget_evicted"] is not None) == _is_interior(row), row
+        assert (row["active_after_budget"] is not None) == _is_interior(row), row
+        assert row["cuts_active_after"] == (
+            row["cuts_active_before"]
+            - (row["cuts_deactivated"] or 0)
+            + (row["cuts_reactivated"] or 0)
+        ), row
+        if row["budget_evicted"] is not None:
+            assert row["active_after_budget"] == (
+                row["cuts_active_after"] - row["budget_evicted"]
+            ), row
+        assert row["cuts_in_lp"] == _final_active(row), row
+
+    deactivated = _sum_by_pool(rows, "cuts_deactivated")
+    off_schedule_evicted = _sum_by_pool(rows, "budget_evicted", off_schedule_only=True)
+    assert any(deactivated), (
+        f"no selection pass deactivated a cut: deactivations per pool {deactivated}"
+    )
+    assert any(off_schedule_evicted), (
+        "the cap evicted nothing outside a selection iteration: "
+        f"evictions per pool {off_schedule_evicted}"
+    )
+
+    stage_cuts = novomodelo.results.load_policy(str(output_dir))["stage_cuts"]
+    for last in (row for row in rows if row["iteration"] == _SELECTION_ITERATIONS):
+        active_records = sum(
+            cut["is_active"] for cut in stage_cuts[last["pool_id"]]["cuts"]
+        )
+        assert active_records == _final_active(last), last
+
+    convergence = pq.read_table(output_dir / "training" / "convergence.parquet")
+    assert convergence.num_rows == _SELECTION_ITERATIONS
+    for record in convergence.to_pylist():
+        pools = [row for row in rows if row["iteration"] == record["iteration"]]
+        assert record["cuts_active"] == sum(_final_active(row) for row in pools), record
+        assert record["cuts_removed"] == sum(
+            (row["cuts_deactivated"] or 0) + (row["budget_evicted"] or 0)
+            for row in pools
+        ), record
+
+
+def test_run_with_only_a_budget_writes_the_selection_output(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A run with a cap and no selection method still writes its per-pool evictions."""
+    output_dir = _run_selection_case(tmp_path, {"max_active_per_stage": 2})
+    rows = _read_selection_rows(output_dir)
+
+    _assert_one_row_per_pool_and_iteration(rows)
+    for row in rows:
+        assert row["cuts_deactivated"] is None, row
+        assert row["cuts_reactivated"] is None, row
+        assert row["selection_time_ms"] is None, row
+        assert (row["budget_evicted"] is not None) == _is_interior(row), row
+        assert (row["active_after_budget"] is not None) == _is_interior(row), row
+    evicted = _sum_by_pool(rows, "budget_evicted")
+    assert any(evicted), f"the cap evicted nothing: evictions per pool {evicted}"
+
+
 def test_warm_start_rerun_reads_the_policy_the_training_clear_keeps(
     tmp_path: pathlib.Path,
 ) -> None:

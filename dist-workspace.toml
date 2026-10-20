@@ -23,10 +23,16 @@ targets = [
 ]
 # Include changelog in release notes
 changelog = true
+# Linux artifacts build on the same pinned image as CI and the MPI release, which
+# sets the CLI's glibc floor; `dist generate --mode ci` rewrites v-release.yml.
+github-custom-runners = { global = "ubuntu-24.04", x86_64-unknown-linux-gnu = "ubuntu-24.04", aarch64-unknown-linux-gnu = "ubuntu-24.04-arm" }
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
+# Probes the built x86_64 Linux gnu archive for packed FMA instructions before
+# `host` publishes; release.yml is regenerated with `dist generate --mode ci`.
+global-artifacts-jobs = ["./kernel-probe"]
 # Third-party attribution bundled into every CLI archive, alongside the
 # auto-included LICENSE and README — the statically-linked binary carries its
 # dependencies' notices with it. Paths are relative to the workspace root. This

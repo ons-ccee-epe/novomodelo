@@ -20,7 +20,7 @@ use crate::{
     indexer::StateSpace,
     policy::orchestration::{CheckpointLayout, CheckpointParams, PeriodicCheckpoint},
     simulation::SimulationConfig,
-    workspace::CapturedBasis,
+    training::LoadedPolicy,
 };
 
 use super::StudySetup;
@@ -48,17 +48,21 @@ impl StudySetup {
         self.loop_params.resume_lower_bound_history = lower_bound_history;
     }
 
-    /// Seed the per-stage warm-start basis cache for warm-start / resume
-    /// training.
-    ///
-    /// `cache` carries one entry per stage (as built by
-    /// [`build_basis_cache_from_checkpoint`](crate::build_basis_cache_from_checkpoint)).
-    /// Leave unset (the default `None`) for a fresh start.
-    pub fn set_warm_start_basis_cache(&mut self, cache: Vec<Option<CapturedBasis>>) {
-        self.warm_start_basis_cache = Some(cache);
+    /// Hand the next [`Self::train`] the stored bases and trial states of a
+    /// loaded checkpoint; leave unset (the default) for a fresh start.
+    pub fn set_loaded_policy(&mut self, loaded: LoadedPolicy) {
+        self.loaded = loaded;
     }
 
-    /// Enable state archiving for export.
+    /// Test-support hook: the loaded checkpoint the next [`Self::train`] seeds
+    /// from.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn loaded_policy(&self) -> &LoadedPolicy {
+        &self.loaded
+    }
+
+    /// Store each pool's trial states for the checkpoint's states export.
     pub fn set_export_states(&mut self, export: bool) {
         self.events.export_states = export;
     }
@@ -81,7 +85,6 @@ impl StudySetup {
                 max_iterations: self.loop_params.max_iterations,
                 forward_passes: self.loop_params.forward_passes,
                 seed: self.loop_params.seed,
-                export_states: self.events.export_states,
             },
         );
         self.periodic_checkpoint = Some(PeriodicCheckpoint::new(

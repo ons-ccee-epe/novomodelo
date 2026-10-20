@@ -187,10 +187,16 @@ def _time_limit_only_stopping_rules(case: pathlib.Path) -> None:
 
 
 def _train_one_iteration(case: pathlib.Path) -> None:
+    _train_iterations(case, 1)
+
+
+def _train_iterations(case: pathlib.Path, limit: int) -> None:
     import novomodelo.run  # noqa: PLC0415
 
     def edit(config: Any) -> None:
-        config["training"]["stopping_rules"] = [{"type": "iteration_limit", "limit": 1}]
+        config["training"]["stopping_rules"] = [
+            {"type": "iteration_limit", "limit": limit}
+        ]
         config["simulation"]["enabled"] = False
 
     _edit_json(case / "config.json", edit)
@@ -243,6 +249,72 @@ def _resume_policy_from_another_version(case: pathlib.Path) -> None:
     _set_policy_mode(case, "resume")
 
 
+def _resume_without_the_trial_state_history(case: pathlib.Path) -> None:
+    _train_one_iteration(case)
+    _set_policy_mode(case, "resume")
+    _set_cut_selection(case, {"selection": {"method": "level1", "check_frequency": 1}})
+
+
+def _resume_from_a_partial_policy(case: pathlib.Path) -> None:
+    """A resume that fails in-band leaves the partial policy in `policy.partial`;
+    the healthy deck then resumes from it."""
+    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo.run  # noqa: PLC0415
+
+    healthy = {
+        file: (case / file).read_bytes()
+        for file in ("system/thermals.json", "constraints/generic_constraints.json")
+    }
+    _train_one_iteration(case)
+
+    def resume_two_iterations(config: Any) -> None:
+        config["training"]["stopping_rules"] = [{"type": "iteration_limit", "limit": 2}]
+
+    def disable_slack(constraints: Any) -> None:
+        constraints["constraints"][0]["slack"] = {"enabled": False}
+
+    def raise_thermal_minimum(thermals: Any) -> None:
+        thermals["thermals"][0]["generation"]["min_mw"] = 20.0
+
+    _edit_json(case / "config.json", resume_two_iterations)
+    _set_policy_mode(case, "resume")
+    _edit_json(case / "constraints" / "generic_constraints.json", disable_slack)
+    _edit_json(case / "system" / "thermals.json", raise_thermal_minimum)
+    with pytest.raises(novomodelo.errors.SolverError):
+        novomodelo.run.run(str(case), output_dir=str(case / "output"))
+    for file, data in healthy.items():
+        (case / file).write_bytes(data)
+    _set_policy_path(case, "policy.partial")
+
+
+def _resume_over_a_changed_boundary(case: pathlib.Path) -> None:
+    """A two-stage study interrupted over the `policy.boundary` of a longer run
+    resumes over the policy of a shorter one, whose terminal rows differ."""
+
+    def set_boundary(path: str) -> None:
+        def edit(config: Any) -> None:
+            config.setdefault("policy", {})["boundary"] = {"path": path}
+
+        _edit_json(case / "config.json", edit)
+
+    def truncate(stages: Any) -> None:
+        del stages["stages"][2:]
+
+    def resume_two_iterations(config: Any) -> None:
+        config["training"]["stopping_rules"] = [{"type": "iteration_limit", "limit": 2}]
+
+    _train_iterations(case, 4)
+    (case / "output" / "policy").rename(case / "boundary_source")
+    _train_iterations(case, 2)
+    (case / "output" / "policy").rename(case / "boundary_changed")
+    _edit_json(case / "stages.json", truncate)
+    set_boundary("boundary_source")
+    _train_iterations(case, 1)
+    set_boundary("boundary_changed")
+    _set_policy_mode(case, "resume")
+    _edit_json(case / "config.json", resume_two_iterations)
+
+
 def _simulation_only_policy_from_another_version(case: pathlib.Path) -> None:
     _train_one_iteration(case)
     _restamp_policy_version(case / "output" / "policy")
@@ -273,6 +345,124 @@ def _simulation_only_policy_with_unused_stored_bases(case: pathlib.Path) -> None
     original = _REPO_ROOT / "examples" / "1dtoy" / "system" / "thermals.json"
     shutil.copy(original, thermals)
     _select_simulation_only(case)
+
+
+def _set_cut_selection(case: pathlib.Path, cut_selection: dict[str, Any]) -> None:
+    def edit(config: Any) -> None:
+        config["training"]["cut_selection"] = cut_selection
+
+    _edit_json(case / "config.json", edit)
+
+
+def _removed_selection_method_lml1(case: pathlib.Path) -> None:
+    _set_cut_selection(case, {"selection": {"method": "lml1"}})
+
+
+def _removed_selection_method_domination(case: pathlib.Path) -> None:
+    _set_cut_selection(case, {"selection": {"method": "domination"}})
+
+
+def _tie_tolerance_under_level1(case: pathlib.Path) -> None:
+    _set_cut_selection(case, {"selection": {"method": "level1", "tie_tolerance": 1e-9}})
+
+
+def _zero_selection_check_frequency(case: pathlib.Path) -> None:
+    _set_cut_selection(case, {"selection": {"method": "level1", "check_frequency": 0}})
+
+
+def _lookback_window_below_the_check_frequency(case: pathlib.Path) -> None:
+    _set_cut_selection(
+        case,
+        {
+            "selection": {
+                "method": "level1",
+                "check_frequency": 2,
+                "lookback_iterations": 1,
+            }
+        },
+    )
+
+
+def _negative_row_activity_tolerance(case: pathlib.Path) -> None:
+    _set_cut_selection(case, {"row_activity_tolerance": -1})
+
+
+def _null_row_activity_tolerance(case: pathlib.Path) -> None:
+    _set_cut_selection(case, {"row_activity_tolerance": None})
+
+
+def _violation_tolerance_below_the_solver_tolerance(case: pathlib.Path) -> None:
+    _set_cut_selection(
+        case, {"selection": {"method": "dynamic", "violation_tolerance": 1e-10}}
+    )
+
+
+def _violation_tolerance_below_the_simulation_solver_tolerance(
+    case: pathlib.Path,
+) -> None:
+    def edit(config: Any) -> None:
+        config["simulation"]["solver"] = {"primal_feasibility_tolerance": 1e-7}
+
+    _edit_json(case / "config.json", edit)
+    _set_cut_selection(
+        case, {"selection": {"method": "dynamic", "violation_tolerance": 1e-8}}
+    )
+
+
+def _active_row_cap_with_dynamic_selection(case: pathlib.Path) -> None:
+    _set_cut_selection(
+        case, {"selection": {"method": "dynamic"}, "max_active_per_stage": 8}
+    )
+
+
+def _active_row_cap_with_enumerated_training(case: pathlib.Path) -> None:
+    def one_opening_per_stage(stages: Any) -> None:
+        for stage in stages["stages"]:
+            stage["num_openings"] = 1
+
+    def enumerated(config: Any) -> None:
+        config["training"]["selection"] = {"method": "enumerated"}
+
+    _edit_json(case / "stages.json", one_opening_per_stage)
+    _edit_json(case / "config.json", enumerated)
+    _set_cut_selection(case, {"max_active_per_stage": 8})
+
+
+def _dynamic_simulation_over_deactivated_cuts(case: pathlib.Path) -> None:
+    """A `level1` run deactivates cuts; a `dynamic` simulation of the default
+    `simulation.cut_set = all` cannot read them."""
+    _set_cut_selection(case, {"selection": {"method": "level1", "check_frequency": 1}})
+    _train_iterations(case, 4)
+    _select_simulation_only(case)
+    _set_cut_selection(case, {"selection": {"method": "dynamic"}})
+
+
+def _dynamic_simulation_over_deactivated_boundary_cuts(case: pathlib.Path) -> None:
+    """A `level1` run deactivates cuts; a `dynamic` simulation of the default
+    `simulation.cut_set = all` cannot read the rows of a two-stage study's
+    `policy.boundary`, which that run's pool 1 supplies."""
+    _set_cut_selection(case, {"selection": {"method": "level1", "check_frequency": 1}})
+    _train_iterations(case, 4)
+    (case / "output" / "policy").rename(case / "boundary_source")
+
+    def truncate(stages: Any) -> None:
+        del stages["stages"][2:]
+
+    def edit(config: Any) -> None:
+        config["simulation"]["enabled"] = True
+        config["simulation"]["selection"] = {"method": "sampled", "num_scenarios": 1}
+        config.setdefault("policy", {})["boundary"] = {"path": "boundary_source"}
+
+    _edit_json(case / "stages.json", truncate)
+    _set_cut_selection(case, {"selection": {"method": "dynamic"}})
+    _edit_json(case / "config.json", edit)
+
+
+def _unknown_simulation_cut_set(case: pathlib.Path) -> None:
+    def edit(config: Any) -> None:
+        config["simulation"]["cut_set"] = "every"
+
+    _edit_json(case / "config.json", edit)
 
 
 ROWS = [
@@ -455,6 +645,36 @@ ROWS = [
         error_class_name="PolicyIncompatibleError",
     ),
     _row(
+        name="resume_without_the_trial_state_history",
+        base_case="1dtoy",
+        mutate=_resume_without_the_trial_state_history,
+        outcome="PlainRefusal",
+        fragment=(
+            "resume needs the trial-state history of "
+            "training.cut_selection.selection.method = level1"
+        ),
+        error_class_name="PolicyIncompatibleError",
+    ),
+    _row(
+        name="resume_from_a_partial_policy",
+        base_case="deterministic/d13-generic-constraint",
+        mutate=_resume_from_a_partial_policy,
+        outcome="PlainRefusal",
+        fragment="resume needs a whole checkpoint",
+        error_class_name="PolicyIncompatibleError",
+    ),
+    _row(
+        name="resume_over_a_changed_boundary",
+        base_case="1dtoy",
+        mutate=_resume_over_a_changed_boundary,
+        outcome="PlainRefusal",
+        fragment=(
+            "resume needs the policy.boundary and modeling.cost_scale_factor "
+            "the interrupted run used"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
         name="simulation_only_policy_from_another_version",
         base_case="1dtoy",
         mutate=_simulation_only_policy_from_another_version,
@@ -476,6 +696,164 @@ ROWS = [
         mutate=_simulation_only_policy_with_unused_stored_bases,
         outcome="Warning",
         fragment="stored bases not used",
+    ),
+    _row(
+        name="removed_selection_method_lml1",
+        base_case="1dtoy",
+        mutate=_removed_selection_method_lml1,
+        outcome="BracketedRefusal",
+        kind="ParseError",
+        fragment=(
+            "the row-selection method `lml1` was removed: use `level1` "
+            "(key `training.cut_selection.selection.method`)"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="removed_selection_method_domination",
+        base_case="1dtoy",
+        mutate=_removed_selection_method_domination,
+        outcome="BracketedRefusal",
+        kind="ParseError",
+        fragment=(
+            "the row-selection method `domination` was removed: use `level1` "
+            "(key `training.cut_selection.selection.method`)"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="removed_tie_tolerance_key",
+        base_case="1dtoy",
+        mutate=_tie_tolerance_under_level1,
+        outcome="BracketedRefusal",
+        kind="ParseError",
+        fragment=(
+            "the key `tie_tolerance` was removed: `level1` compares row values "
+            "exactly; delete the key (`training.cut_selection.selection`)"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="zero_selection_check_frequency",
+        base_case="1dtoy",
+        mutate=_zero_selection_check_frequency,
+        outcome="BracketedRefusal",
+        kind="ParseError",
+        fragment="training.cut_selection.selection.check_frequency must be >= 1 (got 0)",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="lookback_window_below_the_check_frequency",
+        base_case="1dtoy",
+        mutate=_lookback_window_below_the_check_frequency,
+        outcome="PlainRefusal",
+        fragment=(
+            "cut_selection config error: cut_selection.lookback_iterations (1) "
+            "must be >= cut_selection.check_frequency (2)"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="negative_row_activity_tolerance",
+        base_case="1dtoy",
+        mutate=_negative_row_activity_tolerance,
+        outcome="PlainRefusal",
+        fragment=(
+            "cut_selection config error: cut_selection.row_activity_tolerance "
+            "must be finite and >= 0 (got -1)"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="violation_tolerance_below_the_solver_tolerance",
+        base_case="1dtoy",
+        mutate=_violation_tolerance_below_the_solver_tolerance,
+        outcome="PlainRefusal",
+        fragment=(
+            "training.cut_selection.selection.violation_tolerance (0.0000000001) "
+            "is a relative factor and must be at least the primal feasibility "
+            "tolerance of the backward solver profile"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="active_row_cap_with_dynamic_selection",
+        base_case="1dtoy",
+        mutate=_active_row_cap_with_dynamic_selection,
+        outcome="PlainRefusal",
+        fragment=(
+            "training.cut_selection.max_active_per_stage is inadmissible with the "
+            "dynamic cut selection method; a lazy solve takes its candidates from "
+            "the active rows and dynamic runs no selection pass, so an evicted row "
+            "never returns — remove the cap, or use the `level1` method"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="active_row_cap_with_enumerated_training",
+        base_case="1dtoy",
+        mutate=_active_row_cap_with_enumerated_training,
+        outcome="PlainRefusal",
+        fragment=(
+            "training.cut_selection.max_active_per_stage is inadmissible under "
+            "enumerated forward traversal; enumerated traversal records no binding "
+            "activity, so the cap would evict by generation order alone — remove "
+            "the cap, or use sampled forward selection"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="dynamic_simulation_over_deactivated_cuts",
+        base_case="1dtoy",
+        mutate=_dynamic_simulation_over_deactivated_cuts,
+        outcome="PlainRefusal",
+        fragment=(
+            "training.cut_selection.selection.method = dynamic cannot simulate "
+            "simulation.cut_set = all over this policy: pool"
+        ),
+        error_class_name="PolicyIncompatibleError",
+    ),
+    _row(
+        name="dynamic_simulation_over_deactivated_boundary_cuts",
+        base_case="1dtoy",
+        mutate=_dynamic_simulation_over_deactivated_boundary_cuts,
+        outcome="PlainRefusal",
+        fragment=(
+            "training.cut_selection.selection.method = dynamic cannot simulate "
+            "simulation.cut_set = all over this policy: the policy.boundary pool holds"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="unknown_simulation_cut_set",
+        base_case="1dtoy",
+        mutate=_unknown_simulation_cut_set,
+        outcome="BracketedRefusal",
+        kind="SchemaViolation",
+        fragment="`simulation.cut_set`: unknown variant `every`, expected `all` or `active`",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="violation_tolerance_below_the_simulation_solver_tolerance",
+        base_case="1dtoy",
+        mutate=_violation_tolerance_below_the_simulation_solver_tolerance,
+        outcome="PlainRefusal",
+        fragment=(
+            "training.cut_selection.selection.violation_tolerance (0.00000001) "
+            "is a relative factor and must be at least the primal feasibility "
+            "tolerance of the simulation solver profile (0.0000001); raise it, "
+            "or omit it to use each phase's solver tolerance"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="null_row_activity_tolerance",
+        base_case="1dtoy",
+        mutate=_null_row_activity_tolerance,
+        outcome="BracketedRefusal",
+        kind="ParseError",
+        fragment="invalid type: null, expected f64",
+        error_class_name="ValidationError",
     ),
 ]
 

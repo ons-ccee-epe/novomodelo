@@ -16,14 +16,6 @@ use crate::{
     workspace::ScratchBuffers,
 };
 
-/// Returns `true` when `stochastic` carries a PAR model — the shared guard
-/// for the water-balance patch. Its shape is validated once at setup
-/// (`validate_par_shape`); every reader here checks presence only.
-#[inline]
-pub(crate) fn has_par_model(stochastic: &StochasticContext) -> bool {
-    stochastic.par().n_stages() > 0
-}
-
 /// Transform raw inflow noise `η` into the z-inflow RHS `b + σ·η` (never clamped)
 /// and, under the truncation methods, the per-hydro physical inflow-slack bounds
 /// from the raw PAR value at this solve's pinned lags.
@@ -46,7 +38,8 @@ pub(crate) fn transform_inflow_noise(
     let state = training_ctx.state;
 
     let par_lp = stochastic.par();
-    let has_par = has_par_model(stochastic);
+    // Presence only: the PAR shape is validated once at setup (`validate_par_shape`).
+    let has_par = par_lp.n_stages() > 0;
 
     scratch.z_inflow_rhs_buf.clear();
     for (h, &eta) in hydro_noise.iter().enumerate() {
@@ -69,16 +62,12 @@ pub(crate) fn transform_inflow_noise(
     scratch.par_inflow_buf.clear();
     scratch.par_inflow_buf.resize(n_hydros, 0.0);
     if has_par {
-        let max_order = state.max_par_order;
-        scratch.lag_matrix_buf.clear();
-        scratch
-            .lag_matrix_buf
-            .extend_from_slice(&current_state[state.inflow_lags.clone()]);
-        debug_assert_eq!(scratch.lag_matrix_buf.len(), max_order * n_hydros);
+        let pinned_lags = &current_state[state.inflow_lags.clone()];
+        debug_assert_eq!(pinned_lags.len(), state.max_par_order * n_hydros);
         evaluate_par_batch(
             par_lp,
             stage.0,
-            &scratch.lag_matrix_buf,
+            pinned_lags,
             hydro_noise,
             &mut scratch.par_inflow_buf,
         );

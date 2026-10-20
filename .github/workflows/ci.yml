@@ -34,7 +34,7 @@ env:
 jobs:
   check:
     name: Check (HiGHS)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -72,7 +72,7 @@ jobs:
 
   test:
     name: Test (HiGHS)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
@@ -112,10 +112,12 @@ jobs:
       # `parity_hash` correctness sweep (the sweep is gated behind `slow-tests`,
       # included in NON_SOLVER_FEATURES).
       - run: cargo test --workspace --features "${{ env.NON_SOLVER_FEATURES }}"
+      - name: MPI world-size gates under mpiexec
+        run: TEST_FEATURES="$NON_SOLVER_FEATURES" bash scripts/ci/run-mpi-launcher-gates.sh
 
   clippy:
     name: Clippy (HiGHS)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -165,7 +167,7 @@ jobs:
   # the CLP wiring that is already decoupled.
   clp:
     name: CLP Backend
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
@@ -236,7 +238,7 @@ jobs:
   # NOT duplicated onto the CLP job.
   fmt:
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
@@ -248,7 +250,7 @@ jobs:
 
   quality-scripts:
     name: Quality Scripts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -263,8 +265,12 @@ jobs:
         run: bash scripts/ci/check-infra-genericity.sh
       - name: Lint table drift gate
         run: bash scripts/ci/check-lints-drift.sh
+      - name: Cut-selection determinism gate self-test
+        run: bash scripts/ci/check-cut-selection-determinism.sh --verify
       - name: Cut-selection determinism gate
         run: bash scripts/ci/check-cut-selection-determinism.sh
+      - name: Release kernel probe self-test
+        run: bash scripts/ci/check-release-kernel.sh --verify
       - name: cfg(test) boundary drift guard (shared scan lib)
         # Fails if the holdout gates' cfg(test) boundary desyncs from the shared
         # scripts/ci/lib/comment_scan.sh definition.
@@ -310,7 +316,7 @@ jobs:
 
   schemas:
     name: Schema Freshness
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -353,11 +359,11 @@ jobs:
   # output shape cannot silently drift. Minimal setup: only the default-feature
   # (HiGHS) `novomodelo` binary is needed — no MPICH or flatc, since the default CLI
   # build enables neither `mpi` nor `flatc-conformance`. `jq` is preinstalled on
-  # `ubuntu-latest`. Scoped to structural invariants the assert_cmd suite does
+  # `ubuntu-24.04`. Scoped to structural invariants the assert_cmd suite does
   # not already pin exactly; it does not re-run command-execution coverage.
   docs-examples:
     name: Docs Examples
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -367,11 +373,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Verify init/run structural invariants
         run: ./scripts/ci/check-docs-examples.sh --build
+      - name: Smoke-test the selection measurement tool
+        run: ./scripts/ci/check-cut-selection-measurement.sh
 
   # Docs build once on the primary (HiGHS) backend; NOT duplicated onto CLP.
   docs:
     name: Documentation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -416,7 +424,7 @@ jobs:
   # crate, so it never trips novomodelo-solver's both-backends `compile_error!`.
   security:
     name: Security Audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -428,16 +436,24 @@ jobs:
   # cargo-deny resolves the dependency/feature graph for advisory, license, and
   # bans checks; it does NOT compile novomodelo-solver, so `--all-features` here only
   # widens the advisory graph and never trips the both-backends `compile_error!`.
+  # scripts/ci/check-deny.sh owns the invocations and pins the cargo-deny
+  # version, so CI and a local run execute the same commands.
   deny:
     name: Dependency Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Read the pinned cargo-deny version
+        id: deny-version
+        run: echo "version=$(bash scripts/ci/check-deny.sh --print-version)" >> "$GITHUB_OUTPUT"
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
         with:
-          command: check
-          arguments: --all-features
+          tool: cargo-deny@${{ steps.deny-version.outputs.version }}
+      - name: cargo-deny (workspace and Python bindings)
+        run: bash scripts/ci/check-deny.sh
 
   # THIRD_PARTY_LICENSES.md is generated by cargo-about (it reproduces the Rust
   # dependency licenses for binary distribution). Regenerate it here and fail if
@@ -446,7 +462,7 @@ jobs:
   # format is version-dependent (an unpinned bump would read as spurious drift).
   license-notices:
     name: License Notices
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -464,7 +480,7 @@ jobs:
 
   python:
     name: Python Bindings (${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false

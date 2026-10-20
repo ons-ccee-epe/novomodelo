@@ -133,8 +133,8 @@ pub fn load_case(py: Python<'_>, path: PathBuf) -> PyResult<PySystem> {
 /// Executes the full validation pipeline (case structure, schema, configuration,
 /// stochastic preparation, hydro models, generic constraints, study construction,
 /// the configured warm-start, resume or simulation-only policy read from
-/// `<output_dir>/<policy.path>`, and boundary reconciliation when configured),
-/// short-circuiting on the first failure. Nothing is written, and an absent
+/// `<output_dir>/<policy.path>`, and boundary reconciliation when configured for a
+/// run that trains), short-circuiting on the first failure. Nothing is written, and an absent
 /// `output_dir` is not created.
 ///
 /// # Arguments

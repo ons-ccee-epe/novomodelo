@@ -38,7 +38,6 @@ use crate::{
 /// | `recv_buf`  | `max_cuts_per_rank * num_ranks * cut_wire_size(n_state)` | All ranks' serialized cut records in rank-major order     |
 /// | `counts`    | `num_ranks`                                          | Per-rank byte count (`actual_cuts * record_size`)             |
 /// | `displs`    | `num_ranks`                                          | Per-rank byte displacement (`sum of preceding counts`)        |
-///
 #[derive(Debug, Clone)]
 pub struct CutSyncBuffers {
     /// Only the leading `actual_cuts * record_size` bytes are sent each call.
@@ -200,7 +199,7 @@ impl CutSyncBuffers {
 
         let mut n_cuts = 0usize;
         for slot in 0..cut_pool.populated() {
-            if !cut_pool.is_active(slot) {
+            if !cut_pool.is_active(slot) || cut_pool.is_prefix_slot(slot) {
                 continue;
             }
             let meta = cut_pool.metadata(slot);
@@ -576,7 +575,9 @@ mod tests {
         clippy::float_cmp
     )]
 
-    use novomodelo_comm::{CommData, CommError, Communicator, LocalBackend, ReduceOp};
+    use crate::test_support::RankStub;
+    use novomodelo_comm::LocalBackend;
+    use novomodelo_io::test_support::owned_piece_defaults;
 
     use super::CutSyncBuffers;
     use crate::{
@@ -735,45 +736,6 @@ mod tests {
         use super::OutcomeExchangeScratch;
         use crate::risk_measure::{BackwardOutcome, RiskMeasure, RiskMeasureScratch};
 
-        /// Rank 0 of a 2-rank world; `allgatherv` writes only rank 0's own slice
-        /// (`displs[0] = 0`), leaving rank 1's pre-populated segment intact.
-        struct Rank0Of2Outcome;
-        impl Communicator for Rank0Of2Outcome {
-            fn allgatherv<T: CommData>(
-                &self,
-                send: &[T],
-                recv: &mut [T],
-                counts: &[usize],
-                _displs: &[usize],
-            ) -> Result<(), CommError> {
-                recv[..counts[0]].clone_from_slice(&send[..counts[0]]);
-                Ok(())
-            }
-            fn allreduce<T: CommData>(
-                &self,
-                _s: &[T],
-                _r: &mut [T],
-                _o: ReduceOp,
-            ) -> Result<(), CommError> {
-                unreachable!()
-            }
-            fn broadcast<T: CommData>(&self, _b: &mut [T], _root: usize) -> Result<(), CommError> {
-                unreachable!()
-            }
-            fn barrier(&self) -> Result<(), CommError> {
-                unreachable!()
-            }
-            fn rank(&self) -> usize {
-                0
-            }
-            fn size(&self) -> usize {
-                2
-            }
-            fn abort(&self, code: i32) -> ! {
-                std::process::exit(code)
-            }
-        }
-
         let n_state = 2usize;
         let stride = 1 + n_state;
         let x_hat = [1.0_f64, 2.0_f64];
@@ -838,7 +800,7 @@ mod tests {
         ex.recv[2 * stride..total].copy_from_slice(&rank1_local);
 
         let full = ex
-            .allgather_outcomes(&rank0_local, n_state, &[2, 2], &Rank0Of2Outcome)
+            .allgather_outcomes(&rank0_local, n_state, &[2, 2], &RankStub::of_two(0))
             .unwrap();
 
         // Canonical order preserved: reassembled == rank0 ‖ rank1 == whole.
@@ -925,53 +887,33 @@ mod tests {
         );
     }
 
-    /// Rank 0 of 2; `allgatherv` writes only rank 0's own segment
-    /// (`recv[displs[0]..displs[0] + counts[0]]`), leaving each peer's
-    /// pre-populated segment intact — the faithful single-invocation view of the
-    /// per-`(rank, pool)` count exchange and the byte exchange from rank 0.
-    struct Rank0Of2Preserve;
+    #[test]
+    fn a_loaded_cut_is_never_packed_as_a_new_cut() {
+        use crate::cut::pool::CutPool;
+        use novomodelo_io::OwnedPolicyCutRecord;
 
-    impl Communicator for Rank0Of2Preserve {
-        fn allgatherv<T: CommData>(
-            &self,
-            send: &[T],
-            recv: &mut [T],
-            counts: &[usize],
-            displs: &[usize],
-        ) -> Result<(), CommError> {
-            let start = displs[0];
-            recv[start..start + counts[0]].clone_from_slice(&send[..counts[0]]);
-            Ok(())
-        }
+        let n_state = 1usize;
+        let loaded = OwnedPolicyCutRecord {
+            slot_index: 0,
+            iteration: 1,
+            intercept: 5.0,
+            coefficients: vec![1.0],
+            is_active: true,
+            ..owned_piece_defaults()
+        };
+        let mut fcf = FutureCostFunction::new(1, n_state, 1, 4, &[0]);
+        fcf.pools[0] = CutPool::new_with_warm_start(n_state, 1, 4, &[loaded]);
+        fcf.set_iteration_base(1);
+        fcf.add_cut(NodeId(0), 0, 1, 0, 10.0, &[2.0]);
+        let mut bufs = CutSyncBuffers::new(n_state, 2, 1);
 
-        fn allreduce<T: CommData>(
-            &self,
-            _send: &[T],
-            _recv: &mut [T],
-            _op: ReduceOp,
-        ) -> Result<(), CommError> {
-            unreachable!()
-        }
+        let (local, remote) = bufs
+            .sync_level_records(&[0], &[], &mut fcf, 1, &LocalBackend)
+            .unwrap();
 
-        fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
-            unreachable!()
-        }
-
-        fn barrier(&self) -> Result<(), CommError> {
-            unreachable!()
-        }
-
-        fn rank(&self) -> usize {
-            0
-        }
-
-        fn size(&self) -> usize {
-            2
-        }
-
-        fn abort(&self, error_code: i32) -> ! {
-            std::process::exit(error_code)
-        }
+        assert_eq!(local, 1, "only the cut generated this iteration is packed");
+        assert_eq!(remote, 0);
+        assert_eq!(fcf.pools[0].active_count(), 2);
     }
 
     /// A genuinely multi-node level whose two pools carry differing
@@ -1019,7 +961,7 @@ mod tests {
         );
 
         let (local, remote) = bufs
-            .sync_level_records(&[0, 1], &[], &mut fcf, 1, &Rank0Of2Preserve)
+            .sync_level_records(&[0, 1], &[], &mut fcf, 1, &RankStub::of_two(0))
             .unwrap();
 
         assert_eq!(local, 2, "rank 0 packs its two pool-0 cuts");
@@ -1054,7 +996,7 @@ mod tests {
         // count whose byte total overruns the grown receive buffer.
         bufs.per_pool_rank_counts = vec![0, u64::from(u32::MAX)];
 
-        let result = bufs.sync_level_records(&[0], &[], &mut fcf, 1, &Rank0Of2Preserve);
+        let result = bufs.sync_level_records(&[0], &[], &mut fcf, 1, &RankStub::of_two(0));
         match result {
             Err(SddpError::Validation(ref msg)) => {
                 assert!(
@@ -1132,7 +1074,7 @@ mod tests {
         );
 
         let (local, remote) = bufs
-            .sync_level_records(&[0, 1], &[1], &mut fcf, 1, &Rank0Of2Preserve)
+            .sync_level_records(&[0, 1], &[1], &mut fcf, 1, &RankStub::of_two(0))
             .unwrap();
 
         assert_eq!(local, 1, "only the non-replicated pool 0 is packed");

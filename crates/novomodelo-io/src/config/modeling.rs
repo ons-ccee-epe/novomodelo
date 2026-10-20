@@ -7,9 +7,10 @@ use serde::{Deserialize, Serialize};
 /// Accepted values in `config.json → modeling.inflow_non_negativity.method`:
 ///
 /// - `"none"` — no enforcement; the PAR(p) inflow may be negative.
-/// - `"truncation"` — the PAR(p) value stays raw: it is the incremental inflow and the
-///   next stage's lag. A per-hydro correction fixed at `max(−r, 0)`, at no cost, lifts the
-///   local inflow to zero.
+/// - `"truncation"` — the PAR(p) value stays raw: it is the incremental inflow, and the
+///   inflow lags of later stages are built from it (aggregated over the lag's period when
+///   the period spans several stages). A per-hydro correction fixed at `max(−r, 0)`, at no
+///   cost, lifts the local inflow to zero.
 /// - `"penalty"` — an unbounded correction priced by
 ///   `penalties.json → hydro.inflow_nonnegativity_cost`.
 /// - `"truncation_with_penalty"` — the PAR(p) value stays raw; a correction between 0 and

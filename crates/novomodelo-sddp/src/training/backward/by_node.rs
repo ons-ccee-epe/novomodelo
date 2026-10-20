@@ -148,6 +148,7 @@ pub(crate) fn process_stage_backward_by_node<S: SolverInterface + Send>(
     // in ITS OWN region (`metadata_offset + slot`), so a fan's sibling pools never
     // collide — the same total the by-scenario path sizes.
     let pop = outcomes.total_metadata_len();
+    let tracks_binding = outcomes.cut_activity_tolerance.is_some();
     let n_blocks = by_node_block_count(n_openings, block_size);
     debug_assert_eq!(
         block_order.len(),
@@ -187,16 +188,18 @@ pub(crate) fn process_stage_backward_by_node<S: SolverInterface + Send>(
             for outcome in &mut ws.backward_accum.outcomes[..n_openings] {
                 outcome.coefficients.resize(cut_n_state, 0.0_f64);
             }
-            if ws.backward_accum.slot_increments.len() < pop {
-                ws.backward_accum.slot_increments.resize(pop, 0u64);
+            if tracks_binding {
+                if ws.backward_accum.slot_increments.len() < pop {
+                    ws.backward_accum.slot_increments.resize(pop, 0u64);
+                }
+                if ws.backward_accum.metadata_sync_contribution.len() < pop {
+                    ws.backward_accum
+                        .metadata_sync_contribution
+                        .resize(pop, 0u64);
+                }
+                ws.backward_accum.metadata_sync_contribution[..pop].fill(0);
+                ws.backward_accum.slot_increments[..pop].fill(0);
             }
-            if ws.backward_accum.metadata_sync_contribution.len() < pop {
-                ws.backward_accum
-                    .metadata_sync_contribution
-                    .resize(pop, 0u64);
-            }
-            ws.backward_accum.metadata_sync_contribution[..pop].fill(0);
-            ws.backward_accum.slot_increments[..pop].fill(0);
             ws.backward_accum
                 .per_opening_stats
                 .resize_with(n_openings, SolverStatsDelta::default);
@@ -371,11 +374,13 @@ pub(crate) fn process_stage_backward_by_node<S: SolverInterface + Send>(
                 }
             }
 
-            fold_slot_increments_into_sync(
-                &ws.backward_accum.slot_increments,
-                &mut ws.backward_accum.metadata_sync_contribution,
-                pop,
-            );
+            if tracks_binding {
+                fold_slot_increments_into_sync(
+                    &ws.backward_accum.slot_increments,
+                    &mut ws.backward_accum.metadata_sync_contribution,
+                    pop,
+                );
+            }
 
             ws.worker_timing_buf.backward_wall_ms +=
                 worker_stage_wall_start.elapsed().as_secs_f64() * 1_000.0;

@@ -10,6 +10,7 @@ use crate::lp::builder::StageGeometry;
 use crate::lp::indexer::{AnticipatedPlants, StateSpace, ThermalSys};
 use crate::test_support;
 use crate::time_value::DeliveryCalendar;
+use novomodelo_io::test_support::owned_piece_defaults;
 use novomodelo_stochastic::ExternalScenarioLibrary;
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 use novomodelo_stochastic::season_cast::StageCalendar;
@@ -899,20 +900,20 @@ fn training_ctx_fields_match_study_setup() {
 
 #[test]
 fn simulation_ctx_propagates_dynamic_dcs_from_setup() {
-    use crate::dcs::DcsParams;
+    use crate::dcs::DcsConfig;
     use novomodelo_io::config::SelectionMethod;
+    use std::num::NonZeroU32;
 
     let n_stages = 3;
     let system = minimal_system(n_stages);
     let mut config = minimal_config(2, 10);
-    // A Dynamic strategy here is what makes `simulation_ctx()` populate `dcs`.
     config.training.cut_selection = RowSelectionConfig {
         selection: Some(SelectionMethod::Dynamic {
-            start_iteration: 2,
+            start_iteration: NonZeroU32::new(2).unwrap(),
             seed_window: 5,
             candidate_recency: None,
-            max_added_per_round: 10,
-            violation_tolerance: 1e-10,
+            max_added_per_round: NonZeroU32::new(10).unwrap(),
+            violation_tolerance: None,
         }),
         ..RowSelectionConfig::default()
     };
@@ -941,19 +942,17 @@ fn simulation_ctx_propagates_dynamic_dcs_from_setup() {
     .expect("setup");
     let ctx = setup.simulation_ctx();
 
-    // The dynamic method with default fields maps to the spec defaults
-    let expected = DcsParams {
-        k1: None,
-        k2: 5,
-        nadic: 10,
-        epsilon_viol: 1e-10,
+    let expected = DcsConfig {
+        candidate_recency: None,
+        seed_window: 5,
+        max_added_per_round: 10,
+        violation_tolerance: None,
         start_iteration: 2,
-        max_inner_iterations: DcsParams::default().max_inner_iterations,
     };
     assert_eq!(
         ctx.dcs,
         Some(expected),
-        "simulation_ctx().dcs must carry the configured dynamic DcsParams, got {:?}",
+        "simulation_ctx().dcs must carry the configured dynamic DcsConfig, got {:?}",
         ctx.dcs
     );
 }
@@ -10062,7 +10061,7 @@ fn admission_gate_rejects_gap_under_nonuniform_risk_enumerated() {
             lambda: 0.5,
         },
     ];
-    match super::admission_gate(&measures, &rules_with_gap(), true, None) {
+    match super::admission_gate(&measures, &rules_with_gap(), true, None, None) {
         Err(SddpError::Validation(msg)) => {
             assert!(msg.contains("gap"), "names the rule: {msg}");
             assert!(msg.contains("CVaR"), "names the measure: {msg}");
@@ -10088,7 +10087,7 @@ fn admission_gate_accepts_gap_under_enumerated_uniform_cvar() {
     };
     let measures = vec![cvar, cvar, cvar];
     assert!(
-        super::admission_gate(&measures, &rules_with_gap(), true, None).is_ok(),
+        super::admission_gate(&measures, &rules_with_gap(), true, None, None).is_ok(),
         "a uniform CVaR under enumerated forwards must admit a gap rule"
     );
 }
@@ -10104,7 +10103,7 @@ fn admission_gate_rejects_gap_under_uniform_cvar_sampled() {
         lambda: 0.4,
     };
     let measures = vec![cvar, cvar];
-    match super::admission_gate(&measures, &rules_with_gap(), false, None) {
+    match super::admission_gate(&measures, &rules_with_gap(), false, None, None) {
         Err(SddpError::Validation(msg)) => {
             assert!(msg.contains("gap"), "names the rule: {msg}");
             assert!(
@@ -10126,7 +10125,7 @@ fn admission_gate_accepts_gap_under_cvar_lambda_zero() {
         lambda: 0.0,
     }];
     assert!(
-        super::admission_gate(&measures, &rules_with_gap(), true, None).is_ok(),
+        super::admission_gate(&measures, &rules_with_gap(), true, None, None).is_ok(),
         "CVaR with lambda == 0 is effectively expectation and must admit a gap rule"
     );
 }
@@ -10136,7 +10135,7 @@ fn admission_gate_accepts_gap_under_cvar_lambda_zero() {
 fn admission_gate_accepts_gap_under_all_expectation() {
     use crate::risk_measure::RiskMeasure;
     let measures = vec![RiskMeasure::Expectation, RiskMeasure::Expectation];
-    assert!(super::admission_gate(&measures, &rules_with_gap(), true, None).is_ok());
+    assert!(super::admission_gate(&measures, &rules_with_gap(), true, None, None).is_ok());
 }
 
 /// An effective `CVaR` measure with no `gap` rule present is admitted — the arm
@@ -10148,7 +10147,7 @@ fn admission_gate_accepts_cvar_without_gap() {
         alpha: 0.1,
         lambda: 0.9,
     }];
-    assert!(super::admission_gate(&measures, &rules_without_gap(), true, None).is_ok());
+    assert!(super::admission_gate(&measures, &rules_without_gap(), true, None, None).is_ok());
 }
 
 /// The default study shape (expectation everywhere, an iteration-limit rule)
@@ -10157,7 +10156,7 @@ fn admission_gate_accepts_cvar_without_gap() {
 fn admission_gate_accepts_default_shape() {
     use crate::risk_measure::RiskMeasure;
     let measures = vec![RiskMeasure::Expectation; 4];
-    assert!(super::admission_gate(&measures, &rules_without_gap(), true, None).is_ok());
+    assert!(super::admission_gate(&measures, &rules_without_gap(), true, None, None).is_ok());
 }
 
 /// A `gap` rule under sampled forward selection (`training_enumerated == false`)
@@ -10167,7 +10166,7 @@ fn admission_gate_accepts_default_shape() {
 fn admission_gate_rejects_gap_under_sampled_selection() {
     use crate::risk_measure::RiskMeasure;
     let measures = vec![RiskMeasure::Expectation, RiskMeasure::Expectation];
-    match super::admission_gate(&measures, &rules_with_gap(), false, None) {
+    match super::admission_gate(&measures, &rules_with_gap(), false, None, None) {
         Err(SddpError::Validation(msg)) => {
             assert!(msg.contains("gap"), "names the rule: {msg}");
             assert!(
@@ -10190,7 +10189,7 @@ fn admission_gate_rejects_gap_under_sampled_selection() {
 fn admission_gate_accepts_gap_under_enumerated_expectation() {
     use crate::risk_measure::RiskMeasure;
     let measures = vec![RiskMeasure::Expectation, RiskMeasure::Expectation];
-    assert!(super::admission_gate(&measures, &rules_with_gap(), true, None).is_ok());
+    assert!(super::admission_gate(&measures, &rules_with_gap(), true, None, None).is_ok());
 }
 
 /// `enumerated_scenario_count` returns Σ over root→leaf paths of Π |Ω|: for the
@@ -11092,20 +11091,19 @@ fn study_horizon_end_ignores_pre_study_stages() {
 // ── Terminal boundary flag: S1 vs S2/S3 formula agreement ───────────────────
 
 /// The bake's active-cut-count classification (S1, `training/session/mod.rs`)
-/// and the per-solve warm-start-count read (S2/S3, the forward pass and the
+/// and the per-solve `has_prefix_cuts` read (S2/S3, the forward pass and the
 /// simulation pipeline) must classify the terminal pool identically, on a
 /// plain and on an injected terminal pool, on a chain and on a terminal fan.
 #[test]
 fn terminal_boundary_flag_formulas_agree_on_chain_and_terminal_fan() {
     fn boundary_record(state_dimension: usize) -> novomodelo_io::OwnedPolicyCutRecord {
         novomodelo_io::OwnedPolicyCutRecord {
-            cut_id: 0,
             slot_index: 0,
             coefficients: vec![0.0; state_dimension],
             intercept: 100.0,
             is_active: true,
             iteration: 0,
-            forward_pass_index: 0,
+            ..owned_piece_defaults()
         }
     }
 
@@ -11141,7 +11139,7 @@ fn terminal_boundary_flag_formulas_agree_on_chain_and_terminal_fan() {
             .any_stage_node(last)
             .expect("terminal stage carries an alive node");
         let s2s3_pool = node_graph.nodes[s2s3_node].pool_id;
-        let s2s3 = setup.fcf.pools[s2s3_pool].has_warm_start_cuts();
+        let s2s3 = setup.fcf.pools[s2s3_pool].has_prefix_cuts();
 
         assert_eq!(s1, s2s3, "the S1 and S2/S3 formulas must agree");
         assert_eq!(

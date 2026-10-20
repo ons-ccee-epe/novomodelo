@@ -1058,6 +1058,11 @@ mod tests {
                 DataType::Float64,
                 true,
             ),
+            Field::new(
+                "integrated_equivalent_productivity_mw_per_m3s",
+                DataType::Float64,
+                true,
+            ),
         ]));
 
         let hydro_ids: Vec<i32> = rows.iter().map(|(h, _, _)| *h).collect();
@@ -1071,6 +1076,7 @@ mod tests {
                 Arc::new(Int32Array::from(hydro_ids)),
                 Arc::new(Int32Array::from(stage_ids)),
                 Arc::new(Float64Array::from(rho_eqs)),
+                Arc::new(Float64Array::from(nulls.clone())),
                 Arc::new(Float64Array::from(nulls.clone())),
                 Arc::new(Float64Array::from(nulls.clone())),
                 Arc::new(Float64Array::from(nulls)),
@@ -1107,6 +1113,11 @@ mod tests {
                 DataType::Float64,
                 true,
             ),
+            Field::new(
+                "integrated_equivalent_productivity_mw_per_m3s",
+                DataType::Float64,
+                true,
+            ),
         ]));
 
         let batch = RecordBatch::try_new(
@@ -1114,6 +1125,7 @@ mod tests {
             vec![
                 Arc::new(Int32Array::from(vec![None::<i32>])),
                 Arc::new(Int32Array::from(vec![None::<i32>])),
+                Arc::new(Float64Array::from(vec![None::<f64>])),
                 Arc::new(Float64Array::from(vec![None::<f64>])),
                 Arc::new(Float64Array::from(vec![None::<f64>])),
                 Arc::new(Float64Array::from(vec![None::<f64>])),

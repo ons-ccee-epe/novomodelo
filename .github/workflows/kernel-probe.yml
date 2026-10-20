@@ -1,0 +1,34 @@
+# Probe the dgemm kernel of the cargo-dist x86_64 Linux gnu archive before
+# anything is published. release.yml calls this as a custom job declared by
+# `global-artifacts-jobs` in dist-workspace.toml; its `host` job needs it.
+#
+# The `plan` input is the cargo-dist calling convention for custom jobs; the
+# probe does not read it.
+
+name: Kernel Probe
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  probe:
+    name: kernel probe (x86_64-unknown-linux-gnu)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Fetch the x86_64 Linux gnu artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: artifacts-build-local-x86_64-unknown-linux-gnu
+          path: target/distrib/
+
+      - name: Probe the CLI archive
+        run: bash scripts/ci/check-release-kernel.sh target/distrib/novomodelo-cli-x86_64-unknown-linux-gnu.tar.xz

@@ -22,23 +22,38 @@
 
 mod common;
 
+use novomodelo_sddp::{SolverStatsDelta, SolverStatsLogEntry};
+
+fn sum_forward_deltas(log: &[SolverStatsLogEntry]) -> SolverStatsDelta {
+    SolverStatsDelta::aggregate(
+        log.iter()
+            .filter(|e| e.phase == "forward")
+            .map(|e| &e.delta),
+    )
+}
+
 mod boundary_cuts {
     //! Terminal-stage boundary cuts: a consumer study loads boundary cuts from a
     //! source checkpoint; they must inject into the terminal pool and the lower
     //! bound must not degrade versus the same study without them.
 
     use std::path::Path;
+    use std::sync::mpsc;
 
+    use novomodelo_core::TrainingEvent;
     use novomodelo_core::scenario::ScenarioSource;
     use novomodelo_io::STAGE_CUTS_PRICED_STATE_DATE_SENTINEL;
     use novomodelo_io::config::StoppingRuleConfig;
     use novomodelo_io::output::policy::{read_policy_checkpoint, write_policy_checkpoint};
+    use novomodelo_io::test_support::producer_block_defaults;
+    use novomodelo_sddp::setup::StageIdx;
     use novomodelo_sddp::{
         StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
     };
     use novomodelo_solver::ActiveSolver;
 
     use super::common::StubComm;
+    use super::common::selection_fingerprint::SelectionFingerprint;
 
     fn d01_case_dir() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -67,12 +82,36 @@ mod boundary_cuts {
         seed: u64,
     ) {
         use novomodelo_sddp::policy_export::{
-            build_active_indices, build_stage_basis_records, build_stage_cut_records,
-            build_stage_cuts_payloads, convert_basis_cache,
+            BindingCounters, build_basis_store_entries, build_stage_basis_records,
+            build_stage_cut_records, build_stage_cuts_payloads, convert_basis_store,
         };
         let fcf = &setup.fcf;
-        let stage_records = build_stage_cut_records(fcf);
-        let stage_active_indices = build_active_indices(&stage_records);
+        // Each value times the study's factor under marker 1.0, so a load at that
+        // factor gives `(value * s) / s`, the values this fixture always loaded.
+        let s = setup.inputs.stage_data.stage_templates.cost_scale_factor;
+        let held = build_stage_cut_records(fcf, BindingCounters::Omitted).expect("export");
+        let scaled_coefficients: Vec<Vec<Vec<f64>>> = held
+            .iter()
+            .map(|pool| {
+                pool.iter()
+                    .map(|r| r.coefficients.iter().map(|c| c * s).collect())
+                    .collect()
+            })
+            .collect();
+        let stage_records: Vec<Vec<novomodelo_io::PolicyCutRecord<'_>>> = held
+            .iter()
+            .zip(&scaled_coefficients)
+            .map(|(pool, coefficients)| {
+                pool.iter()
+                    .zip(coefficients)
+                    .map(|(r, c)| novomodelo_io::PolicyCutRecord {
+                        intercept: r.intercept * s,
+                        coefficients: c,
+                        ..r.clone()
+                    })
+                    .collect()
+            })
+            .collect();
         let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); fcf.pools.len()];
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
@@ -82,19 +121,15 @@ mod boundary_cuts {
             &setup.inputs.node_graph,
             &study_stage_ids,
             &study_stage_end_dates,
-            1_000_000.0,
+            1.0,
             &stage_records,
-            &stage_active_indices,
             &stage_manifests,
         );
-        let (basis_col, basis_row) = convert_basis_cache(&result.basis_cache);
-        let stage_bases = build_stage_basis_records(
-            &result.basis_cache,
-            result.iterations,
-            &basis_col,
-            &basis_row,
-        );
-        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
+        let basis_statuses = convert_basis_store(&result.checkpoint_bases);
+        let basis_entries = build_basis_store_entries(&result.checkpoint_bases, &basis_statuses);
+        let stage_bases =
+            build_stage_basis_records(&basis_entries, result.iterations).expect("bases");
+        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
         let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             fcf.pools.len() as u32,
             setup.build_graph_manifest(),
@@ -107,11 +142,8 @@ mod boundary_cuts {
                 warm_start_cuts: warm_start_counts.iter().copied().max().unwrap_or(0),
                 warm_start_counts,
                 rng_seed: seed,
-                total_visited_states: 0,
-                training_block_mode: "parallel".to_string(),
-                training_block_mode_per_stage: vec![],
                 cost_scale_factor: None,
-                lower_bound_history: Vec::new(),
+                ..producer_block_defaults()
             },
         );
         write_policy_checkpoint(policy_dir, &stage_cuts, &stage_bases, &metadata, &[])
@@ -200,11 +232,11 @@ mod boundary_cuts {
         let terminal_pool_id = setup_c.inputs.node_graph.terminal_pool(num_stages).unwrap();
         let terminal_pool = &setup_c.fcf.pools[terminal_pool_id];
         assert!(
-            terminal_pool.has_warm_start_cuts(),
+            terminal_pool.has_prefix_cuts(),
             "terminal pool must have boundary cuts"
         );
         assert!(
-            terminal_pool.populated() >= terminal_pool.warm_start_count as usize,
+            terminal_pool.populated() >= terminal_pool.prefix_len(),
             "populated_count must include boundary cuts"
         );
 
@@ -260,6 +292,125 @@ mod boundary_cuts {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), dates.len());
+    }
+
+    /// Trains a d01 consumer holding the boundary cuts of a source run, once
+    /// under a budget below the boundary cut count and once without a budget.
+    ///
+    /// derived: the budget evicts no row, because d01 has two stages and so no
+    /// interior pool exists: the cap has no pool to act on.
+    ///
+    /// derived: the cuts, provenance and bounds of the budget run equal those of
+    /// the run without a budget, for the same reason.
+    #[test]
+    fn budget_below_the_boundary_cut_count_leaves_the_boundary_run_unchanged() {
+        const ITERATIONS: u32 = 5;
+        const BUDGET: u32 = 2;
+
+        let case_dir = d01_case_dir();
+        let mut config =
+            novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config");
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: ITERATIONS,
+        }]);
+        let comm = StubComm;
+
+        let (mut source, _) = build_setup(&case_dir, &config);
+        let mut source_solver = ActiveSolver::new().expect("solver");
+        let source_outcome = source
+            .train(&mut source_solver, &comm, 1, ActiveSolver::new, None, None)
+            .expect("train source");
+        assert!(source_outcome.error.is_none());
+        let tmpdir = tempfile::tempdir().expect("tempdir");
+        let source_policy_dir = tmpdir.path().join("source_policy");
+        write_test_checkpoint(&source_policy_dir, &source, &source_outcome.result, 42);
+        let num_stages = source.fcf.pools.len();
+        let boundary_date = ascending_stage_end_dates(num_stages)[num_stages - 2];
+
+        let train_consumer = |budget: Option<u32>| {
+            let mut config = config.clone();
+            config.training.cut_selection.max_active_per_stage = budget;
+            let (mut setup, system) = build_setup(&case_dir, &config);
+            let records =
+                novomodelo_sddp::load_boundary_cuts(&novomodelo_sddp::BoundaryLoadRequest::new(
+                    &source_policy_dir,
+                    boundary_date,
+                    setup.fcf.state_dimension as u32,
+                    &setup.build_terminal_entity_manifest(&system),
+                    1_000_000.0,
+                ))
+                .expect("load_boundary_cuts");
+            assert!(records.len() > BUDGET as usize);
+            assert!(records.iter().all(|record| record.is_active));
+            novomodelo_sddp::inject_boundary_cuts(&mut setup, &records).unwrap();
+
+            let (tx, rx) = mpsc::channel();
+            let mut solver = ActiveSolver::new().expect("solver");
+            let outcome = setup
+                .train(&mut solver, &comm, 1, ActiveSolver::new, Some(tx), None)
+                .expect("train consumer");
+            assert!(
+                outcome.error.is_none(),
+                "budget {budget:?}: training error: {:?}",
+                outcome.error
+            );
+            assert_eq!(outcome.result.iterations, u64::from(ITERATIONS));
+            let events: Vec<TrainingEvent> = rx.try_iter().collect();
+            (setup, outcome.result, events)
+        };
+        let (capped, capped_result, capped_events) = train_consumer(Some(BUDGET));
+        let (uncapped, uncapped_result, _) = train_consumer(None);
+
+        let budget_evictions: Vec<u32> = capped_events
+            .iter()
+            .filter_map(|event| match event {
+                TrainingEvent::PolicyBudgetEnforcementComplete { rows_evicted, .. } => {
+                    Some(*rows_evicted)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            budget_evictions.len(),
+            ITERATIONS as usize,
+            "the budget must have been enforced every iteration"
+        );
+        let basis_failures: u64 = capped_result
+            .solver_stats_log
+            .iter()
+            .map(|entry| entry.delta.basis_consistency_failures)
+            .sum();
+        let terminal_pool = &capped.fcf.pools[capped
+            .inputs
+            .node_graph
+            .terminal_pool(num_stages)
+            .expect("terminal pool")];
+        let root_pool = &capped.fcf.pools[capped
+            .inputs
+            .node_graph
+            .pool_stage
+            .iter()
+            .position(|&stage| stage == StageIdx(0))
+            .expect("root pool")];
+        let boundary_cuts = terminal_pool.prefix_len();
+        assert_eq!(
+            terminal_pool.active_count(),
+            boundary_cuts,
+            "the budget deactivated boundary cuts (basis consistency failures: {basis_failures})"
+        );
+        assert!(root_pool.populated() > BUDGET as usize);
+        assert_eq!(root_pool.active_count(), root_pool.populated());
+        assert_eq!(basis_failures, 0);
+        assert_eq!(budget_evictions.iter().sum::<u32>(), 0);
+
+        let capped_fingerprint = SelectionFingerprint::capture(&capped, &capped_result);
+        let uncapped_fingerprint = SelectionFingerprint::capture(&uncapped, &uncapped_result);
+        assert_eq!(capped_fingerprint.cuts, uncapped_fingerprint.cuts);
+        assert_eq!(
+            capped_fingerprint.provenance,
+            uncapped_fingerprint.provenance
+        );
+        assert_eq!(capped_fingerprint.bounds, uncapped_fingerprint.bounds);
     }
 }
 
@@ -711,206 +862,28 @@ mod cut_subgradient_parity {
     }
 }
 
-mod cut_selection_determinism_realistic {
-    //! `CutSelectionStrategy::select` produces bit-identical `CutActivityUpdates`
-    //! across thread counts. On hosts with fewer logical CPUs than a requested pool
-    //! size, rayon caps the worker count; this is acceptable — the assertions
-    //! compare bitmaps across whatever thread counts rayon actually instantiates.
-
-    use novomodelo_sddp::cut::CutPool;
-    use novomodelo_sddp::cut_selection::{CutActivityUpdates, CutMetadata, CutSelectionStrategy};
-    use novomodelo_sddp::setup::NodeId;
-
-    fn splitmix64(state: &mut u64) -> u64 {
-        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = *state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    fn fill_f64(buf: &mut [f64], seed: u64) {
-        let mut state = seed;
-        for slot in buf.iter_mut() {
-            let r = splitmix64(&mut state);
-            let bits = (r >> 12) & ((1u64 << 52) - 1);
-            *slot = f64::from_bits((1023u64 << 52) | bits) - 1.5;
-        }
-    }
-
-    fn make_pool(k: usize, d: usize, seed: u64) -> CutPool {
-        let mut pool = CutPool::new(k, d, 1, 0);
-        let mut state = seed;
-        for slot in 0..k {
-            let r = splitmix64(&mut state);
-            let bits = (r >> 12) & ((1u64 << 52) - 1);
-            let intercept = f64::from_bits((1023u64 << 52) | bits) - 1.5;
-            let mut coeffs = vec![0.0_f64; d];
-            fill_f64(&mut coeffs, state.wrapping_add(slot as u64));
-            pool.add_cut(NodeId(0), 0, slot as u32, intercept, &coeffs);
-        }
-        // Force all cuts eligible: iteration_generated < the current_iteration (5)
-        // the tests below pass to select.
-        let metadata: Vec<CutMetadata> = (0..k)
-            .map(|slot| {
-                let mut meta = pool.metadata(slot).clone();
-                meta.iteration_generated = 1;
-                meta
-            })
-            .collect();
-        let active: Vec<bool> = (0..k).map(|slot| pool.is_active(slot)).collect();
-        pool.replace_selection(&metadata, &active);
-        pool
-    }
-
-    fn make_states(m: usize, d: usize, seed: u64) -> Vec<f64> {
-        let mut buf = vec![0.0_f64; m * d];
-        fill_f64(&mut buf, seed);
-        buf
-    }
-
-    fn run_in_pool<F>(threads: usize, f: F) -> CutActivityUpdates
-    where
-        F: FnOnce() -> CutActivityUpdates + Send,
-    {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()
-            .expect("rayon thread pool must build");
-        pool.install(f)
-    }
-
-    #[test]
-    fn select_for_stage_deterministic_aggregated_scale() {
-        const K: usize = 945;
-        const D: usize = 155;
-        const M: usize = 384;
-
-        let pool = make_pool(K, D, 0xAAAA_BBBB_CCCC_DDDD);
-        let states = make_states(M, D, 0x1111_2222_3333_4444);
-
-        let strategy = CutSelectionStrategy::Lml1 {
-            check_frequency: 1,
-            tie_tolerance: 1e-10,
-        };
-
-        let r1 = run_in_pool(1, || strategy.select(&pool, &states, 5));
-        let r16 = run_in_pool(16, || strategy.select(&pool, &states, 5));
-        let r96 = run_in_pool(96, || strategy.select(&pool, &states, 5));
-
-        assert_eq!(
-            r1.updates, r16.updates,
-            "deactivations differ between 1- and 16-thread runs at aggregated scale"
-        );
-        assert_eq!(
-            r1.updates, r96.updates,
-            "deactivations differ between 1- and 96-thread runs at aggregated scale"
-        );
-        assert_eq!(
-            r1.reactivations, r16.reactivations,
-            "reactivations differ between 1- and 16-thread runs at aggregated scale"
-        );
-        assert_eq!(
-            r1.reactivations, r96.reactivations,
-            "reactivations differ between 1- and 96-thread runs at aggregated scale"
-        );
-    }
-
-    /// Exercises Level1 and Dominated to confirm determinism is not Lml1-specific;
-    /// sized to run in <100 ms so it stays in the default (non-slow) suite.
-    #[test]
-    fn select_for_stage_deterministic_level1_and_dominated_medium() {
-        const K: usize = 200;
-        const D: usize = 155;
-        const M: usize = 64;
-
-        let pool = make_pool(K, D, 0x0001_0002_0003_0004);
-        let states = make_states(M, D, 0x0005_0006_0007_0008);
-
-        for strategy in [
-            CutSelectionStrategy::Level1 {
-                check_frequency: 1,
-                tie_tolerance: 1e-10,
-            },
-            CutSelectionStrategy::Dominated {
-                threshold: 0.01,
-                check_frequency: 1,
-            },
-        ] {
-            let r1 = run_in_pool(1, || strategy.select(&pool, &states, 5));
-            let r8 = run_in_pool(8, || strategy.select(&pool, &states, 5));
-            assert_eq!(
-                r1.updates, r8.updates,
-                "deactivations differ for strategy {strategy:?}"
-            );
-            assert_eq!(
-                r1.reactivations, r8.reactivations,
-                "reactivations differ for strategy {strategy:?}"
-            );
-        }
-    }
-
-    #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: run with --features slow-tests"
-    )]
-    fn select_for_stage_deterministic_disaggregated_scale() {
-        // TODO(measured-K-probe): replace K=1000 with the measured disaggregated K.
-        const K: usize = 1000;
-        const D: usize = 2080;
-        const M: usize = 384;
-
-        let pool = make_pool(K, D, 0xFEED_FACE_CAFE_BABE);
-        let states = make_states(M, D, 0xDEAD_BEEF_BAAD_F00D);
-
-        let strategy = CutSelectionStrategy::Lml1 {
-            check_frequency: 1,
-            tie_tolerance: 1e-10,
-        };
-
-        let r1 = run_in_pool(1, || strategy.select(&pool, &states, 5));
-        let r16 = run_in_pool(16, || strategy.select(&pool, &states, 5));
-        let r96 = run_in_pool(96, || strategy.select(&pool, &states, 5));
-
-        assert_eq!(
-            r1.updates, r16.updates,
-            "deactivations differ between 1- and 16-thread runs at disaggregated scale"
-        );
-        assert_eq!(
-            r1.updates, r96.updates,
-            "deactivations differ between 1- and 96-thread runs at disaggregated scale"
-        );
-        assert_eq!(
-            r1.reactivations, r16.reactivations,
-            "reactivations differ between 1- and 16-thread runs at disaggregated scale"
-        );
-        assert_eq!(
-            r1.reactivations, r96.reactivations,
-            "reactivations differ between 1- and 96-thread runs at disaggregated scale"
-        );
-    }
-}
-
 mod basis_reconstruct_churn {
-    //! Cross-churn regression tests for [`novomodelo_sddp::basis_reconstruct`]: guards
-    //! slot reconciliation, `state_at_capture` routing, and the iteration-wide
-    //! hot-path allocation invariants against LML1 deactivation, budget eviction,
-    //! and new-cut churn.
+    //! Churn regressions for [`novomodelo_sddp::basis_reconstruct`]: the solver
+    //! rejects no reconstructed basis under `level1` deactivation, budget
+    //! eviction and new cuts, with no churn, or with every earlier cut
+    //! deactivated; under the churn the lower bound reaches the d03 optimum.
+    //! Slot pairing is pinned by `hybrid_reconstruction`, not here.
 
     use novomodelo_io::config::{SimulationSelection, TrainingSelection};
     use std::path::Path;
     use std::sync::mpsc;
 
-    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_core::{TrainingEvent, scenario::ScenarioSource};
     use novomodelo_io::config::{SelectionMethod, StoppingRuleConfig};
     use novomodelo_sddp::{
-        CutPool, FutureCostFunction, SolverStatsDelta, SolverStatsLogEntry, StudySetup,
+        CutPool, FutureCostFunction, SolverStatsDelta, StudySetup,
         hydro_models::prepare_hydro_models, setup::prepare_stochastic,
     };
     use novomodelo_solver::ActiveSolver;
 
-    use super::common::{StubComm, enable_forward_warm_start};
+    use super::common::selection_fingerprint::SelectionPower;
+    use super::common::{D03_EXPECTED_COST, StubComm, enable_forward_warm_start, positive};
+    use super::sum_forward_deltas;
 
     // ---------------------------------------------------------------------------
     // Path helpers
@@ -935,39 +908,15 @@ mod basis_reconstruct_churn {
     }
 
     // ---------------------------------------------------------------------------
-    // Helpers
+    // Test 1: Cross-churn — level1 + budget + new cuts
     // ---------------------------------------------------------------------------
 
-    fn sum_forward_deltas(log: &[SolverStatsLogEntry]) -> SolverStatsDelta {
-        SolverStatsDelta::aggregate(
-            log.iter()
-                .filter(|e| e.phase == "forward")
-                .map(|e| &e.delta),
-        )
-    }
-
-    // ---------------------------------------------------------------------------
-    // Test 1: Cross-churn — LML1 + budget + new cuts
-    // ---------------------------------------------------------------------------
-
-    /// All three churn types active at once; the simplex-iteration pin catches a
-    /// `padding_state = x_hat` regression (it raises the count beyond the ±5 % band).
+    /// Every churn type active at once: selection deactivation and
+    /// reactivation, budget eviction and new cuts. Pins that the solver rejects
+    /// no reconstructed basis under that churn, and the d03 optimum, both
+    /// asserted only once the run is shown to have churned.
     #[test]
     fn basis_reconstruct_churn() {
-        // Simplex pin and lower-bound pin are calibrated against HiGHS's simplex path
-        // and last-ULP accumulation, so they gate to the `highs` backend; the
-        // structural checks below run on both. Regenerate the pin only if the HiGHS
-        // major version or the fixture parameters change.
-        #[cfg(feature = "highs")]
-        const PINNED_SIMPLEX_ITERS: u64 = 30;
-        #[cfg(feature = "highs")]
-        const LO_SIMPLEX: u64 = PINNED_SIMPLEX_ITERS * 95 / 100;
-        #[cfg(feature = "highs")]
-        const HI_SIMPLEX: u64 = PINNED_SIMPLEX_ITERS * 105 / 100;
-
-        #[cfg(feature = "highs")]
-        const PINNED_FINAL_LB: f64 = 1_391_697.766_666_666_8;
-
         let case_dir = d03_case_dir();
         let config_path = case_dir.join("config.json");
         let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
@@ -976,13 +925,14 @@ mod basis_reconstruct_churn {
         config.training.stopping_rules =
             Some(vec![StoppingRuleConfig::IterationLimit { limit: 8 }]);
 
-        config.training.cut_selection.selection = Some(SelectionMethod::Lml1 {
-            tie_tolerance: 1e-10,
-            check_frequency: 1,
+        config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+            check_frequency: positive(2),
+            lookback_iterations: None,
         });
 
-        // Budget = 6 = 2 iters × 3 fwd-passes, so eviction first fires after iteration 2.
-        config.training.cut_selection.max_active_per_stage = Some(6);
+        // check_frequency 1 and a cap of 4 both evict nothing on d03; 3 is the
+        // forward passes of one iteration, the floor.
+        config.training.cut_selection.max_active_per_stage = Some(3);
         // The simplex pin measures forward basis reconstruction, so warm-start it.
         enable_forward_warm_start(&mut config);
 
@@ -1008,8 +958,9 @@ mod basis_reconstruct_churn {
         let comm = StubComm;
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
 
+        let (tx, rx) = mpsc::channel();
         let outcome = setup
-            .train(&mut solver, &comm, 1, ActiveSolver::new, None, None)
+            .train(&mut solver, &comm, 1, ActiveSolver::new, Some(tx), None)
             .expect("train must return Ok");
         assert!(
             outcome.error.is_none(),
@@ -1023,6 +974,54 @@ mod basis_reconstruct_churn {
             result.iterations
         );
 
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+        let interior_rows_deactivated: u32 = events
+            .iter()
+            .filter_map(|event| match event {
+                TrainingEvent::PolicyPoolSummary { pools, .. } => Some(pools),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|record| record.rows_deactivated)
+            .sum();
+        let rows_evicted: u32 = events
+            .iter()
+            .filter_map(|event| match event {
+                TrainingEvent::PolicyBudgetEnforcementComplete { rows_evicted, .. } => {
+                    Some(*rows_evicted)
+                }
+                _ => None,
+            })
+            .sum();
+        let rows_reactivated = SelectionPower::from_events(&events).reactivations;
+        let pools = &setup.fcf.pools;
+        let mixed_interior_pools = pools[1..pools.len() - 1]
+            .iter()
+            .filter(|pool| 0 < pool.active_count() && pool.active_count() < pool.populated())
+            .count();
+        let churn = format!(
+            "deactivated={interior_rows_deactivated}, evicted={rows_evicted}, \
+             mixed pools={mixed_interior_pools}"
+        );
+        assert!(
+            interior_rows_deactivated > 0,
+            "basis_reconstruct_churn: selection deactivated no interior row ({churn})"
+        );
+        assert!(
+            rows_evicted > 0,
+            "basis_reconstruct_churn: the budget evicted no row ({churn})"
+        );
+        assert!(
+            mixed_interior_pools > 0,
+            "basis_reconstruct_churn: no interior pool holds both active and inactive rows \
+             ({churn})"
+        );
+        assert!(
+            rows_reactivated > 0,
+            "basis_reconstruct_churn: selection reactivated no interior row \
+             (reactivated={rows_reactivated}, {churn})"
+        );
+
         let fwd = sum_forward_deltas(&result.solver_stats_log);
 
         // basis_reconstructions is excluded from forward-log MPI packing, so it is
@@ -1031,34 +1030,17 @@ mod basis_reconstruct_churn {
         assert_eq!(
             fwd.basis_consistency_failures, 0,
             "basis_reconstruct_churn: expected 0 basis rejections, got {} \
-             (reconstructed bases must always be accepted by HiGHS)",
+             (reconstructed bases must always be accepted by the solver)",
             fwd.basis_consistency_failures
         );
 
-        #[cfg(feature = "highs")]
-        {
-            let observed_simplex = fwd.simplex_iterations;
-            assert!(
-                (LO_SIMPLEX..=HI_SIMPLEX).contains(&observed_simplex),
-                "basis_reconstruct_churn: simplex_iterations={observed_simplex} is outside \
-                 the ±5 % band [{LO_SIMPLEX}, {HI_SIMPLEX}] around pin={PINNED_SIMPLEX_ITERS}"
-            );
-        }
-
-        // final_lb is deterministic for a fixed seed and scenario count; its last ULP
-        // shifts with the HiGHS build, so pin to a relative tolerance that catches
-        // real drift (~9 significant figures) while absorbing float noise.
-        #[cfg(feature = "highs")]
-        {
-            let lb_rel_err = (result.final_lb - PINNED_FINAL_LB).abs() / PINNED_FINAL_LB.abs();
-            assert!(
-                lb_rel_err <= 1e-9,
-                "basis_reconstruct_churn: final_lb={} deviates from pin={PINNED_FINAL_LB:.15e} \
-                 by relative error {lb_rel_err:.3e} (> 1e-9); the lower bound must be \
-                 deterministic for a fixed seed and scenario count",
-                result.final_lb
-            );
-        }
+        let lb_rel_err = (result.final_lb - D03_EXPECTED_COST).abs() / D03_EXPECTED_COST;
+        assert!(
+            lb_rel_err <= 1e-9,
+            "basis_reconstruct_churn: final_lb={} deviates from the d03 optimum \
+             {D03_EXPECTED_COST} by relative error {lb_rel_err:.3e} (> 1e-9)",
+            result.final_lb
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -1426,6 +1408,1634 @@ mod basis_reconstruct_churn {
     }
 }
 
+mod selection_in_a_training_run {
+    use std::collections::BTreeMap;
+    use std::num::NonZeroU32;
+    use std::path::Path;
+    use std::sync::mpsc;
+
+    use novomodelo_core::{PoolRowCounts, System, TrainingEvent, scenario::ScenarioSource};
+    use novomodelo_io::Config;
+    use novomodelo_io::config::{
+        SelectionMethod, SimulationSelection, StoppingRuleConfig, TrainingSelection,
+    };
+    use novomodelo_sddp::{
+        FutureCostFunction, StudySetup, TrainingResult, build_training_output,
+        cut::{CutPool, CutSet, SlotOrigin, SlotRole},
+        hydro_models::prepare_hydro_models,
+        policy::full_fcf_load::{
+            CheckedFullFcfLoad, FullFcfLoadKind, check_full_fcf_load, locate_policy_dir,
+        },
+        policy::orchestration::{CheckpointParams, write_checkpoint},
+        setup::{StageIdx, prepare_stochastic},
+    };
+    use novomodelo_solver::ActiveSolver;
+    use tempfile::TempDir;
+
+    use super::common::selection_fingerprint::{
+        PoolOwnership, SelectionFingerprint, SelectionPower, interior_pool_ids,
+    };
+    use super::common::{StubComm, enable_forward_warm_start, positive};
+    use super::simulation_cut_set::{bitwise, simulate_with};
+    use super::sum_forward_deltas;
+
+    const FORWARD_PASSES: u32 = 2;
+    const ITERATIONS: u32 = 10;
+    const CHECK_FREQUENCY: u32 = 2;
+    /// derived: a pool receives `FORWARD_PASSES` cuts per iteration, so no pool
+    /// ever holds more than this and a budget at this value evicts nothing.
+    const BUDGET_NO_POOL_REACHES: u32 = ITERATIONS * FORWARD_PASSES;
+
+    fn train_with(
+        selection: SelectionMethod,
+        export_states: bool,
+        iterations: u32,
+        events: Option<mpsc::Sender<TrainingEvent>>,
+    ) -> (StudySetup, TrainingResult) {
+        train_configured(iterations, events, |config| {
+            config.training.cut_selection.selection = Some(selection);
+            config.exports.states = export_states;
+        })
+    }
+
+    fn train_configured(
+        iterations: u32,
+        events: Option<mpsc::Sender<TrainingEvent>>,
+        configure: impl FnOnce(&mut Config),
+    ) -> (StudySetup, TrainingResult) {
+        let (mut setup, _) = build_setup(iterations, configure);
+        let result = train_setup(&mut setup, iterations, events);
+        (setup, result)
+    }
+
+    fn build_setup(iterations: u32, configure: impl FnOnce(&mut Config)) -> (StudySetup, System) {
+        let case_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/<crate> must have a parent")
+            .parent()
+            .expect("crates/ must have a parent (repo root)")
+            .join("examples/1dtoy");
+        let mut config =
+            novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
+        config.training.selection = Some(TrainingSelection::Sampled {
+            forward_passes: FORWARD_PASSES,
+        });
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: iterations,
+        }]);
+        configure(&mut config);
+
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
+        let prepared = prepare_stochastic(
+            system,
+            &case_dir,
+            &config,
+            42,
+            &ScenarioSource::default(),
+            None,
+        )
+        .expect("prepare_stochastic must succeed");
+        let system = prepared.system;
+        let hydro_models = prepare_hydro_models(&system, &case_dir, false)
+            .expect("prepare_hydro_models must succeed");
+        let setup = StudySetup::new(
+            &system,
+            &config,
+            prepared.stochastic,
+            hydro_models,
+            Vec::new(),
+        )
+        .expect("StudySetup must build");
+        (setup, system)
+    }
+
+    fn train_setup(
+        setup: &mut StudySetup,
+        iterations: u32,
+        events: Option<mpsc::Sender<TrainingEvent>>,
+    ) -> TrainingResult {
+        let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+        let outcome = setup
+            .train(&mut solver, &StubComm, 1, ActiveSolver::new, events, None)
+            .expect("train must return Ok");
+        assert!(
+            outcome.error.is_none(),
+            "expected no training error, got: {:?}",
+            outcome.error
+        );
+        assert_eq!(outcome.result.iterations, u64::from(iterations));
+        outcome.result
+    }
+
+    /// The pool counts of each iteration, in iteration order.
+    fn pool_summaries(events: &[TrainingEvent]) -> Vec<(u64, &[PoolRowCounts])> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                TrainingEvent::PolicyPoolSummary { iteration, pools } => {
+                    Some((*iteration, pools.as_slice()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The pool counts of the iterations whose selection pass ran.
+    fn train_collecting_selection_runs() -> (StudySetup, Vec<(u64, Vec<PoolRowCounts>)>) {
+        let (tx, rx) = mpsc::channel();
+        let (setup, _) = train_with(level1(), false, ITERATIONS, Some(tx));
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+        let selection_iterations: Vec<u64> = events
+            .iter()
+            .filter_map(|event| match event {
+                TrainingEvent::PolicySelectionComplete { iteration, .. } => Some(*iteration),
+                _ => None,
+            })
+            .collect();
+        let runs = events
+            .into_iter()
+            .filter_map(|event| match event {
+                TrainingEvent::PolicyPoolSummary { iteration, pools }
+                    if selection_iterations.contains(&iteration) =>
+                {
+                    Some((iteration, pools))
+                }
+                _ => None,
+            })
+            .collect();
+        (setup, runs)
+    }
+
+    #[test]
+    fn level1_deactivates_cuts_in_a_training_run() {
+        let (setup, runs) = train_collecting_selection_runs();
+        let pools = &setup.fcf.pools;
+        let interior_pools = 1..pools.len() - 1;
+        let final_iteration = u64::from(ITERATIONS);
+
+        let run_iterations: Vec<u64> = runs.iter().map(|(iteration, _)| *iteration).collect();
+        let scheduled_iterations: Vec<u64> = (1..=final_iteration)
+            .filter(|iteration| iteration % u64::from(CHECK_FREQUENCY) == 0)
+            .collect();
+        assert_eq!(
+            run_iterations, scheduled_iterations,
+            "selection must run at every multiple of check_frequency, the last at the final iteration"
+        );
+
+        for (iteration, records) in &runs {
+            assert_eq!(
+                records.len(),
+                pools.len(),
+                "iteration {iteration}: one record per pool"
+            );
+            for record in [&records[0], &records[pools.len() - 1]] {
+                assert!(
+                    record.rows_deactivated.is_none()
+                        && record.rows_reactivated.is_none()
+                        && record.selection_time_ms.is_none(),
+                    "iteration {iteration}: the root and terminal records carry no selection fields"
+                );
+            }
+        }
+        let (_, last_run) = runs.last().expect("selection must have run");
+        assert!(
+            last_run[0].rows_in_pool >= 2,
+            "the root must hold cuts to judge, got {}",
+            last_run[0].rows_in_pool
+        );
+        assert_eq!(
+            pools[0].active_count(),
+            pools[0].populated(),
+            "every root cut must stay active"
+        );
+
+        assert!(
+            runs.iter()
+                .flat_map(|(_, records)| records)
+                .any(|record| record.rows_deactivated.is_some_and(|rows| rows > 0)),
+            "no interior node deactivated a cut"
+        );
+
+        for pool_id in interior_pools {
+            let pool = &pools[pool_id];
+            assert_eq!(
+                pool.populated(),
+                (ITERATIONS * FORWARD_PASSES) as usize,
+                "pool {pool_id}: selection must deactivate cuts, never delete them"
+            );
+
+            // derived: the final iteration ran selection last, so each scored
+            // cut's flag is the one the ownership record implies.
+            for slot in 0..pool.populated() {
+                assert!(pool.role(slot).scored, "pool {pool_id} slot {slot}");
+                assert_eq!(
+                    pool.is_active(slot),
+                    pool.owned_states(slot) > 0,
+                    "pool {pool_id} slot {slot}: a scored cut is active exactly when it owns a \
+                     stored state"
+                );
+            }
+            assert!(
+                (0..pool.populated()).any(|slot| {
+                    pool.metadata(slot).iteration_generated < final_iteration
+                        && !pool.is_active(slot)
+                }),
+                "pool {pool_id}: no cut of an earlier iteration is inactive"
+            );
+        }
+    }
+
+    /// The envelope invariant read from a run: selection ran last at the final
+    /// iteration and no budget is set, so each stored state's owner is active,
+    /// each active scored cut owns a state, and the incremental record is the
+    /// one a rebuild computes.
+    #[test]
+    fn level1_keeps_the_owner_of_every_stored_state_after_a_training_run() {
+        let (setup, _) = train_with(level1(), false, ITERATIONS, None);
+        let pools = &setup.fcf.pools;
+        assert_eq!(ITERATIONS % CHECK_FREQUENCY, 0);
+
+        let interior_pools = pools.iter().enumerate().take(pools.len() - 1).skip(1);
+        for (pool_id, pool) in interior_pools {
+            let slots = 0..pool.populated();
+            let record = |pool: &novomodelo_sddp::cut::CutPool| -> Vec<_> {
+                slots
+                    .clone()
+                    .map(|slot| {
+                        (
+                            pool.state_owner(slot),
+                            pool.state_best_value(slot).map(f64::to_bits),
+                            pool.owned_states(slot),
+                        )
+                    })
+                    .collect()
+            };
+
+            assert_eq!(
+                pool.stored_trial_states(),
+                (ITERATIONS * FORWARD_PASSES) as usize,
+                "pool {pool_id}: one stored state per generated cut"
+            );
+            assert!(
+                slots.clone().any(|slot| !pool.is_active(slot)),
+                "pool {pool_id}: no cut is inactive, so the invariant is not exercised"
+            );
+            for slot in slots.clone() {
+                let owner = pool.state_owner(slot).unwrap_or_else(|| {
+                    panic!("pool {pool_id}: the state at slot {slot} is unowned")
+                });
+                assert!(
+                    pool.is_active(owner),
+                    "pool {pool_id}: slot {owner} owns the state at slot {slot} and is inactive"
+                );
+                assert!(
+                    !pool.is_active(slot) || pool.owned_states(slot) > 0,
+                    "pool {pool_id}: slot {slot} is active and owns no state"
+                );
+            }
+
+            let mut rebuilt = pool.clone();
+            rebuilt.rebuild_ownership();
+            assert_eq!(
+                record(pool),
+                record(&rebuilt),
+                "pool {pool_id}: the run's record differs from a rebuild"
+            );
+        }
+    }
+
+    const WINDOW_RUN_ITERATIONS: u32 = 12;
+
+    fn train_level1_with_lookback(lookback: Option<u32>) -> (StudySetup, TrainingResult) {
+        train_configured(WINDOW_RUN_ITERATIONS, None, |config| {
+            config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+                check_frequency: positive(CHECK_FREQUENCY),
+                lookback_iterations: lookback.and_then(NonZeroU32::new),
+            });
+        })
+    }
+
+    /// derived: the last selection run is at iteration 12, so with a lookback of
+    /// 4 the states kept are those of the cuts generated in iterations 9 to 12,
+    /// `FORWARD_PASSES` per iteration. Selection is the only reader of the
+    /// states and no budget is set, so the envelope invariant holds at them.
+    #[test]
+    fn a_level1_window_keeps_only_the_states_of_the_last_iterations() {
+        const LOOKBACK: u32 = 4;
+        let (setup, _) = train_level1_with_lookback(Some(LOOKBACK));
+        let pools = &setup.fcf.pools;
+        let oldest_kept = u64::from(WINDOW_RUN_ITERATIONS - LOOKBACK + 1);
+
+        let mut a_cut_competes_without_its_state = false;
+        for (pool_id, pool) in pools.iter().enumerate().take(pools.len() - 1).skip(1) {
+            assert_eq!(
+                pool.populated(),
+                (WINDOW_RUN_ITERATIONS * FORWARD_PASSES) as usize,
+                "pool {pool_id}: a window drops states, never cuts"
+            );
+            assert_eq!(
+                pool.stored_trial_states(),
+                (LOOKBACK * FORWARD_PASSES) as usize,
+                "pool {pool_id}"
+            );
+            for slot in 0..pool.populated() {
+                let stored = pool.trial_state(slot).is_some();
+                assert!(pool.role(slot).scored, "pool {pool_id} slot {slot}");
+                assert_eq!(
+                    stored,
+                    pool.metadata(slot).iteration_generated >= oldest_kept,
+                    "pool {pool_id} slot {slot}: a state is stored exactly when its cut was \
+                     generated in the last {LOOKBACK} iterations"
+                );
+                if stored {
+                    let owner = pool.state_owner(slot).unwrap_or_else(|| {
+                        panic!("pool {pool_id}: the state at slot {slot} is unowned")
+                    });
+                    assert!(
+                        pool.is_active(owner),
+                        "pool {pool_id}: slot {owner} owns the state at slot {slot} and is inactive"
+                    );
+                } else {
+                    assert_eq!(pool.state_owner(slot), None, "pool {pool_id} slot {slot}");
+                    a_cut_competes_without_its_state |= pool.is_active(slot);
+                }
+                assert_eq!(
+                    pool.is_active(slot),
+                    pool.owned_states(slot) > 0,
+                    "pool {pool_id} slot {slot}: a scored cut is active exactly when it owns a \
+                     stored state"
+                );
+            }
+
+            let mut rebuilt = pool.clone();
+            rebuilt.rebuild_ownership();
+            for slot in 0..pool.populated() {
+                assert_eq!(
+                    (
+                        pool.state_owner(slot),
+                        pool.state_best_value(slot).map(f64::to_bits),
+                        pool.owned_states(slot)
+                    ),
+                    (
+                        rebuilt.state_owner(slot),
+                        rebuilt.state_best_value(slot).map(f64::to_bits),
+                        rebuilt.owned_states(slot)
+                    ),
+                    "pool {pool_id} slot {slot}: the run's record differs from a rebuild"
+                );
+            }
+        }
+        assert!(
+            a_cut_competes_without_its_state,
+            "power: no cut whose state left is still active"
+        );
+    }
+
+    /// derived: at the last run `r = 12`, so a window of 12 starts at the first
+    /// slot and drops nothing.
+    #[test]
+    fn a_window_longer_than_the_run_changes_nothing() {
+        let (unwindowed, result) = train_level1_with_lookback(None);
+        let expected = SelectionFingerprint::capture(&unwindowed, &result);
+        assert!(
+            expected
+                .cuts
+                .iter()
+                .any(|pool| pool.active.contains(&false)),
+            "the run deactivated no cut, so a dropped state had nothing to change"
+        );
+
+        let (windowed, result) = train_level1_with_lookback(Some(WINDOW_RUN_ITERATIONS));
+
+        for pool in &windowed.fcf.pools[1..windowed.fcf.pools.len() - 1] {
+            assert_eq!(
+                pool.stored_trial_states(),
+                (WINDOW_RUN_ITERATIONS * FORWARD_PASSES) as usize
+            );
+        }
+        assert_eq!(SelectionFingerprint::capture(&windowed, &result), expected);
+    }
+
+    /// derived: an interior pool receives `FORWARD_PASSES` cuts per iteration,
+    /// so from iteration 4 on it has received more than this many; whether more
+    /// than this many are then active is what the eviction assertion checks.
+    const BUDGET_BELOW_THE_POOL_SIZE: u32 = 3 * FORWARD_PASSES;
+
+    /// The budget clears the flag of a cut that owns states, the next selection
+    /// run reactivates the owner, and the budget is applied again in that
+    /// iteration. The events carry counts and no slot, so the three steps are
+    /// asserted as existence over the run.
+    #[test]
+    fn level1_reactivates_an_owner_the_budget_evicted() {
+        let (tx, rx) = mpsc::channel();
+        train_configured(ITERATIONS, Some(tx), |config| {
+            config.training.cut_selection.selection = Some(level1());
+            config.training.cut_selection.max_active_per_stage = Some(BUDGET_BELOW_THE_POOL_SIZE);
+        });
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+
+        let power = SelectionPower::from_events(&events);
+        assert!(
+            power.budget_evictions > 0,
+            "the budget evicted no interior cut: {power:?}"
+        );
+        assert!(
+            power.reactivations > 0,
+            "no selection run reactivated an interior cut: {power:?}"
+        );
+        let evicted_again_after_a_reactivation = events.iter().any(|event| match event {
+            TrainingEvent::PolicyPoolSummary { pools, .. } => pools.iter().any(|record| {
+                record.rows_reactivated.is_some_and(|n| n > 0)
+                    && record.budget_evicted.is_some_and(|n| n > 0)
+            }),
+            _ => false,
+        });
+        assert!(
+            evicted_again_after_a_reactivation,
+            "no interior pool was capped again in an iteration whose selection run \
+             reactivated one of its cuts"
+        );
+    }
+
+    /// derived: a chain pool is owned by one node, so `node_id` is the pool's
+    /// own id. Within an iteration the active rows move by the selection pass
+    /// (`rows_active_after = before - deactivated + reactivated`), then by the
+    /// cap (`active_after_budget = after - evicted`), and the template the next
+    /// iteration loads holds the rows left active. Between iterations the active
+    /// rows grow by the rows the next backward pass generates, and the last
+    /// iteration's counts are the pools' own.
+    #[test]
+    fn pool_counts_add_up_on_every_iteration() {
+        let (tx, rx) = mpsc::channel();
+        let (setup, _) = train_configured(ITERATIONS, Some(tx), |config| {
+            config.training.cut_selection.selection = Some(level1());
+            config.training.cut_selection.max_active_per_stage = Some(BUDGET_BELOW_THE_POOL_SIZE);
+        });
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+        let summaries = pool_summaries(&events);
+        let pools = &setup.fcf.pools;
+        let interior = interior_pool_ids(&setup);
+        let generated: BTreeMap<u64, u32> = events
+            .iter()
+            .filter_map(|event| match event {
+                TrainingEvent::BackwardPassComplete {
+                    iteration,
+                    rows_generated,
+                    ..
+                } => Some((*iteration, *rows_generated)),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            summaries.len(),
+            ITERATIONS as usize,
+            "one summary per iteration"
+        );
+        let (mut deactivated, mut reactivated, mut evicted_off_schedule) = (0, 0, 0);
+        let mut final_active_before = 0_u32;
+        for (iteration, records) in &summaries {
+            assert_eq!(
+                records.len(),
+                pools.len(),
+                "iteration {iteration}: one record per pool"
+            );
+            let on_schedule = iteration % u64::from(CHECK_FREQUENCY) == 0;
+            let (mut active_before, mut final_active) = (0_u32, 0_u32);
+            for (pool_id, record) in records.iter().enumerate() {
+                let at = format!("iteration {iteration} pool {pool_id}");
+                let is_interior = interior.contains(&pool_id);
+                assert_eq!(record.pool_id as usize, pool_id, "{at}");
+                assert_eq!(record.node_id, Some(pool_id as i32), "{at}");
+
+                let selected = is_interior && on_schedule;
+                assert_eq!(record.rows_deactivated.is_some(), selected, "{at}");
+                assert_eq!(record.rows_reactivated.is_some(), selected, "{at}");
+                assert_eq!(record.selection_time_ms.is_some(), selected, "{at}");
+                assert_eq!(record.budget_evicted.is_some(), is_interior, "{at}");
+                assert_eq!(record.active_after_budget.is_some(), is_interior, "{at}");
+
+                assert_eq!(
+                    record.rows_active_after + record.rows_deactivated.unwrap_or(0),
+                    record.rows_active_before + record.rows_reactivated.unwrap_or(0),
+                    "{at}: selection moves the active rows by its two counts"
+                );
+                if let (Some(evicted), Some(after_budget)) =
+                    (record.budget_evicted, record.active_after_budget)
+                {
+                    assert_eq!(after_budget + evicted, record.rows_active_after, "{at}");
+                }
+                let active = record
+                    .active_after_budget
+                    .unwrap_or(record.rows_active_after);
+                assert_eq!(record.rows_in_lp, Some(active), "{at}");
+
+                active_before += record.rows_active_before;
+                final_active += active;
+                deactivated += u64::from(record.rows_deactivated.unwrap_or(0));
+                reactivated += u64::from(record.rows_reactivated.unwrap_or(0));
+                if !on_schedule {
+                    evicted_off_schedule += u64::from(record.budget_evicted.unwrap_or(0));
+                }
+            }
+            assert_eq!(
+                active_before,
+                final_active_before + generated[iteration],
+                "iteration {iteration}: the active rows grow by the rows its backward pass generated"
+            );
+            final_active_before = final_active;
+        }
+
+        let mut selection_passes = 0;
+        for event in &events {
+            if let TrainingEvent::PolicySelectionComplete {
+                iteration,
+                rows_deactivated,
+                stages_processed,
+                ..
+            } = event
+            {
+                selection_passes += 1;
+                let (_, records) = summaries
+                    .iter()
+                    .find(|(summary_iteration, _)| summary_iteration == iteration)
+                    .expect("a selection pass has a summary");
+                assert_eq!(
+                    *stages_processed as usize,
+                    interior.len(),
+                    "iteration {iteration}: the pass visits every interior pool"
+                );
+                assert_eq!(
+                    *rows_deactivated,
+                    records
+                        .iter()
+                        .filter_map(|record| record.rows_deactivated)
+                        .sum::<u32>(),
+                    "iteration {iteration}: the pass total is the sum over the pools"
+                );
+            }
+        }
+        assert_eq!(
+            selection_passes,
+            ITERATIONS / CHECK_FREQUENCY,
+            "one selection event per scheduled iteration"
+        );
+
+        let (_, last) = summaries.last().expect("the run has iterations");
+        for (pool_id, (record, pool)) in last.iter().zip(pools).enumerate() {
+            assert_eq!(
+                record
+                    .active_after_budget
+                    .unwrap_or(record.rows_active_after) as usize,
+                pool.active_count(),
+                "pool {pool_id}"
+            );
+            assert_eq!(
+                record.rows_in_pool as usize,
+                pool.generated(),
+                "pool {pool_id}"
+            );
+        }
+
+        assert!(
+            deactivated > 0 && reactivated > 0 && evicted_off_schedule > 0,
+            "power: deactivated {deactivated}, reactivated {reactivated}, evicted off the \
+             selection schedule {evicted_off_schedule}"
+        );
+    }
+
+    /// derived: an iteration clears the flag of `rows_deactivated` + `budget_evicted`
+    /// rows and sets the flag of `rows_reactivated` rows, and the rows its backward
+    /// pass generates join the active rows, so
+    /// `cuts_active[i] + cuts_removed[i] == cuts_active[i - 1] + cuts_added[i] + reactivated[i]`
+    /// with `cuts_active[0]` read as 0 (1dtoy loads no cut). The cap runs on every
+    /// iteration and the selection pass on every `CHECK_FREQUENCY`-th, so an
+    /// iteration off the schedule removes rows by eviction alone.
+    #[test]
+    fn convergence_counts_follow_the_pools() {
+        let (tx, rx) = mpsc::channel();
+        let (setup, result) = train_configured(ITERATIONS, Some(tx), |config| {
+            config.training.cut_selection.selection = Some(level1());
+            config.training.cut_selection.max_active_per_stage = Some(BUDGET_BELOW_THE_POOL_SIZE);
+        });
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+        let output = build_training_output(&result, &events, &setup.fcf, false);
+        let summaries = pool_summaries(&events);
+        let records = &output.convergence_records;
+
+        assert_eq!(records.len(), ITERATIONS as usize);
+        assert_eq!(records.len(), summaries.len());
+        let mut previous_active = 0_u32;
+        let mut reactivated_in_run = 0_u32;
+        for (record, (iteration, pools)) in records.iter().zip(&summaries) {
+            let at = format!("iteration {iteration}");
+            assert_eq!(u64::from(record.iteration), *iteration, "{at}");
+            let removed: u32 = pools
+                .iter()
+                .map(|pool| pool.rows_deactivated.unwrap_or(0) + pool.budget_evicted.unwrap_or(0))
+                .sum();
+            let active: u32 = pools
+                .iter()
+                .map(|pool| pool.active_after_budget.unwrap_or(pool.rows_active_after))
+                .sum();
+            let reactivated: u32 = pools
+                .iter()
+                .map(|pool| pool.rows_reactivated.unwrap_or(0))
+                .sum();
+            assert_eq!(record.cuts_removed, removed, "{at}");
+            assert_eq!(record.cuts_active, active, "{at}");
+            assert_eq!(
+                record.cuts_active + record.cuts_removed,
+                previous_active + record.cuts_added + reactivated,
+                "{at}: active {} + removed {} against previous active {previous_active} \
+                 + added {} + reactivated {reactivated}",
+                record.cuts_active,
+                record.cuts_removed,
+                record.cuts_added
+            );
+            previous_active = record.cuts_active;
+            reactivated_in_run += reactivated;
+        }
+
+        assert_eq!(
+            u64::from(previous_active),
+            setup.fcf.total_active_cuts() as u64,
+            "the last iteration's active rows are the pools' own"
+        );
+        let removed_per_iteration: Vec<(u32, u32)> = records
+            .iter()
+            .map(|record| (record.iteration, record.cuts_removed))
+            .collect();
+        assert!(
+            records.iter().any(|record| {
+                record.iteration % CHECK_FREQUENCY != 0 && record.cuts_removed > 0
+            }),
+            "power: no iteration off the selection schedule removed a row by eviction; removed \
+             per iteration {removed_per_iteration:?}"
+        );
+        assert!(
+            reactivated_in_run > 0,
+            "power: no row was reactivated; removed per iteration {removed_per_iteration:?}"
+        );
+    }
+
+    /// derived: the cap alone runs no selection pass, so no selection field is
+    /// set, and it is applied to every interior pool at every iteration.
+    #[test]
+    fn a_budget_alone_reports_every_pool_on_every_iteration() {
+        let (tx, rx) = mpsc::channel();
+        let (setup, _) = train_configured(ITERATIONS, Some(tx), |config| {
+            config.training.cut_selection.max_active_per_stage = Some(BUDGET_BELOW_THE_POOL_SIZE);
+        });
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+        let summaries = pool_summaries(&events);
+        let interior = interior_pool_ids(&setup);
+
+        assert_eq!(
+            summaries.len(),
+            ITERATIONS as usize,
+            "one summary per iteration"
+        );
+        let mut evicted = 0;
+        for (iteration, records) in &summaries {
+            assert_eq!(
+                records.len(),
+                setup.fcf.pools.len(),
+                "iteration {iteration}"
+            );
+            for (pool_id, record) in records.iter().enumerate() {
+                let at = format!("iteration {iteration} pool {pool_id}");
+                assert!(
+                    record.rows_deactivated.is_none()
+                        && record.rows_reactivated.is_none()
+                        && record.selection_time_ms.is_none(),
+                    "{at}: no selection pass ran"
+                );
+                assert_eq!(record.rows_active_after, record.rows_active_before, "{at}");
+                let is_interior = interior.contains(&pool_id);
+                assert_eq!(record.budget_evicted.is_some(), is_interior, "{at}");
+                assert_eq!(record.active_after_budget.is_some(), is_interior, "{at}");
+                assert_eq!(
+                    record.rows_in_lp,
+                    Some(
+                        record
+                            .active_after_budget
+                            .unwrap_or(record.rows_active_after)
+                    ),
+                    "{at}"
+                );
+                evicted += u64::from(record.budget_evicted.unwrap_or(0));
+            }
+        }
+        assert!(evicted > 0, "power: the cap evicted no row");
+    }
+
+    /// derived: a lazy method loads a resident subset per solve, so no template
+    /// row count is reported, and it runs no pool pass and no cap.
+    #[test]
+    fn a_dynamic_run_reports_every_pool_without_template_rows() {
+        let (tx, rx) = mpsc::channel();
+        let (setup, _) = train_with(dynamic(), false, ITERATIONS, Some(tx));
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+        let summaries = pool_summaries(&events);
+
+        assert_eq!(
+            summaries.len(),
+            ITERATIONS as usize,
+            "one summary per iteration"
+        );
+        for (iteration, records) in &summaries {
+            assert_eq!(
+                records.len(),
+                setup.fcf.pools.len(),
+                "iteration {iteration}"
+            );
+            for (pool_id, record) in records.iter().enumerate() {
+                assert!(
+                    record.rows_in_lp.is_none()
+                        && record.rows_deactivated.is_none()
+                        && record.rows_reactivated.is_none()
+                        && record.selection_time_ms.is_none()
+                        && record.budget_evicted.is_none()
+                        && record.active_after_budget.is_none(),
+                    "iteration {iteration} pool {pool_id}: {record:?}"
+                );
+            }
+        }
+    }
+
+    /// Pins that the solver rejects no reconstructed basis while a `level1` run
+    /// with a budget deactivates, reactivates and evicts cuts. The pool shape is
+    /// read once training has ended: after the selection run of the final
+    /// iteration and the budget applied after it.
+    #[test]
+    fn a_level1_run_with_a_budget_rejects_no_reconstructed_basis() {
+        let (tx, rx) = mpsc::channel();
+        let (setup, result) = train_configured(ITERATIONS, Some(tx), |config| {
+            enable_forward_warm_start(config);
+            config.training.cut_selection.selection = Some(level1());
+            config.training.cut_selection.max_active_per_stage = Some(BUDGET_BELOW_THE_POOL_SIZE);
+        });
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+
+        let power = SelectionPower::from_events(&events);
+        assert!(
+            power.deactivations > 0,
+            "selection deactivated no interior cut: {power:?}"
+        );
+        assert!(
+            power.reactivations > 0,
+            "selection reactivated no interior cut: {power:?}"
+        );
+        assert!(
+            power.budget_evictions > 0,
+            "the budget evicted no interior cut: {power:?}"
+        );
+        let pools = &setup.fcf.pools;
+        assert!(
+            interior_pool_ids(&setup).into_iter().any(|pool_id| {
+                let pool = &pools[pool_id];
+                pool.active_count() >= 2 && (0..pool.populated()).any(|slot| !pool.is_active(slot))
+            }),
+            "no interior pool ends the run with two or more active cuts and an inactive \
+             populated slot: {power:?}"
+        );
+
+        let forward = sum_forward_deltas(&result.solver_stats_log);
+        assert!(
+            forward.basis_offered > 0,
+            "the forward pass offered no basis"
+        );
+        assert_eq!(
+            forward.basis_consistency_failures, 0,
+            "expected 0 forward basis rejections, got {} (reconstructed bases must always be \
+             accepted by the solver)",
+            forward.basis_consistency_failures
+        );
+    }
+
+    #[test]
+    fn simulation_follows_the_cut_set_of_the_setup() {
+        let (mut setup, result) = train_configured(ITERATIONS, None, |config| {
+            config.training.cut_selection.selection = Some(level1());
+            config.training.cut_selection.max_active_per_stage = Some(BUDGET_BELOW_THE_POOL_SIZE);
+            config.simulation.enabled = true;
+            config.simulation.selection = Some(SimulationSelection::Sampled { num_scenarios: 4 });
+        });
+        let pools = &setup.fcf.pools;
+        assert!(
+            interior_pool_ids(&setup)
+                .into_iter()
+                .any(|pool_id| pools[pool_id].count_in(CutSet::All) > pools[pool_id].active_count()),
+            "no interior pool holds a cut outside its active cuts"
+        );
+        let frozen_templates = result.frozen_templates.as_deref();
+
+        setup.simulation_cut_set = CutSet::All;
+        let (all, _) = simulate_with(&setup, &result, frozen_templates);
+        setup.simulation_cut_set = CutSet::Active;
+        let (active, _) = simulate_with(&setup, &result, frozen_templates);
+
+        assert_ne!(
+            bitwise(&all),
+            bitwise(&active),
+            "simulating every cut and simulating the active cuts gave the same results"
+        );
+    }
+
+    const EXPORT_RUN_ITERATIONS: u32 = 3;
+
+    fn level1() -> SelectionMethod {
+        SelectionMethod::Level1 {
+            check_frequency: positive(CHECK_FREQUENCY),
+            lookback_iterations: None,
+        }
+    }
+
+    fn dynamic() -> SelectionMethod {
+        SelectionMethod::Dynamic {
+            start_iteration: positive(2),
+            seed_window: 5,
+            candidate_recency: None,
+            max_added_per_round: positive(10),
+            violation_tolerance: None,
+        }
+    }
+
+    /// An absent `violation_tolerance` resolves, in each phase, to the primal
+    /// feasibility tolerance of that phase's own profile. A tolerance of 1 leaves
+    /// no candidate violated, so a lazy solve ends on its seed after one LP solve,
+    /// while a tight one appends rows and re-solves: the phase with the tight
+    /// profile makes more LP solves, and swapping the two profiles swaps the
+    /// phases. Per-phase solver overrides are `highs`-only.
+    #[cfg(feature = "highs")]
+    #[test]
+    fn each_phase_resolves_a_dynamic_violation_tolerance_from_its_own_profile() {
+        const TIGHT: f64 = 1e-9;
+        const NEVER_VIOLATED: f64 = 1.0;
+
+        let case_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/deterministic/d43-storage-only-cut");
+        let profile = |tolerance: f64| -> novomodelo_io::config::PhaseSolverProfileConfig {
+            serde_json::from_value(serde_json::json!({ "primal_feasibility_tolerance": tolerance }))
+                .expect("a profile with one tolerance parses")
+        };
+        let lp_solves = |forward: f64, backward: f64| {
+            let mut setup = super::common::fresh_setup_with_openings(&case_dir, 5, |config| {
+                config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 4 });
+                config.training.stopping_rules =
+                    Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
+                config.training.cut_selection.selection = Some(SelectionMethod::Dynamic {
+                    start_iteration: positive(2),
+                    seed_window: 0,
+                    candidate_recency: None,
+                    max_added_per_round: positive(10),
+                    violation_tolerance: None,
+                });
+                config.training.solver.forward = Some(profile(forward));
+                config.training.solver.backward = Some(profile(backward));
+            });
+            let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+            let outcome = setup
+                .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
+                .expect("train must return Ok");
+            assert!(outcome.error.is_none(), "{:?}", outcome.error);
+            let phase = |name: &str| {
+                outcome
+                    .result
+                    .solver_stats_log
+                    .iter()
+                    .filter(|entry| entry.phase == name)
+                    .map(|entry| entry.delta.lp_solves)
+                    .sum::<u64>()
+            };
+            (phase("forward"), phase("backward"))
+        };
+
+        let (forward_seed_only, backward_re_solving) = lp_solves(NEVER_VIOLATED, TIGHT);
+        let (forward_re_solving, backward_seed_only) = lp_solves(TIGHT, NEVER_VIOLATED);
+        assert!(
+            forward_seed_only < forward_re_solving,
+            "the forward phase resolves its own profile: {forward_seed_only} against {forward_re_solving}"
+        );
+        assert!(
+            backward_seed_only < backward_re_solving,
+            "the backward phase resolves its own profile: {backward_seed_only} against {backward_re_solving}"
+        );
+    }
+
+    /// The pool of the study's root, which selection never scores.
+    fn root_pool_id(setup: &StudySetup) -> usize {
+        let graph = &setup.inputs.node_graph;
+        graph
+            .nodes
+            .iter()
+            .zip(graph.successors.iter())
+            .find(|(node, successors)| node.stage == StageIdx(0) && !successors.is_empty())
+            .map(|(node, _)| node.pool_id)
+            .expect("the study must have a root that generates cuts")
+    }
+
+    /// derived: a chain pool receives `FORWARD_PASSES` cuts per iteration, so a
+    /// pool that trims nothing stores one state per generated cut. Every pool that
+    /// receives cuts stores, the root's included; the terminal pool receives none.
+    fn assert_every_cut_generating_pool_stores_every_trial_state(
+        setup: &StudySetup,
+        iterations: u32,
+    ) {
+        let interior = interior_pool_ids(setup);
+        assert!(!interior.is_empty(), "the run must have an interior pool");
+        let root = root_pool_id(setup);
+        for pool_id in interior.into_iter().chain([root]) {
+            let pool = &setup.fcf.pools[pool_id];
+            assert!(pool.stores_trial_states(), "pool {pool_id} stores no state");
+            assert_eq!(
+                pool.stored_trial_states(),
+                (iterations * FORWARD_PASSES) as usize,
+                "pool {pool_id}: one stored state per generated cut"
+            );
+        }
+        let terminal = setup
+            .inputs
+            .node_graph
+            .terminal_pool(setup.num_stages())
+            .expect("the study has a terminal pool");
+        assert!(
+            !setup.fcf.pools[terminal].stores_trial_states(),
+            "the terminal pool receives no cut and stores no state"
+        );
+    }
+
+    #[test]
+    fn a_dynamic_run_with_exported_states_stores_every_trial_state() {
+        let (setup, _) = train_with(dynamic(), true, EXPORT_RUN_ITERATIONS, None);
+        assert_every_cut_generating_pool_stores_every_trial_state(&setup, EXPORT_RUN_ITERATIONS);
+    }
+
+    #[test]
+    fn a_level1_run_with_exported_states_keeps_every_trial_state() {
+        let (setup, _) = train_with(level1(), true, ITERATIONS, None);
+        assert_every_cut_generating_pool_stores_every_trial_state(&setup, ITERATIONS);
+    }
+
+    /// derived: `level1` stores in the pools it selects over, which exclude the
+    /// root's, and `exports.states` alone adds the root.
+    #[test]
+    fn level1_without_exported_states_stores_in_the_interior_pools_only() {
+        let (setup, _) = train_with(level1(), false, EXPORT_RUN_ITERATIONS, None);
+        assert!(!setup.fcf.pools[root_pool_id(&setup)].stores_trial_states());
+        let interior = interior_pool_ids(&setup);
+        assert!(!interior.is_empty(), "the run must have an interior pool");
+        for pool_id in interior {
+            assert!(
+                setup.fcf.pools[pool_id].stores_trial_states(),
+                "pool {pool_id}"
+            );
+        }
+    }
+
+    fn slots_with_recorded_binding(setup: &StudySetup) -> usize {
+        setup
+            .fcf
+            .pools
+            .iter()
+            .map(|pool| {
+                (0..pool.populated())
+                    .filter(|&slot| pool.metadata(slot).active_count > 0)
+                    .count()
+            })
+            .sum()
+    }
+
+    /// Binding activity has two readers, the budget's eviction key and the
+    /// `dynamic` seed window; a run that configures neither records none.
+    #[test]
+    fn binding_activity_is_recorded_only_for_a_reader() {
+        let (no_reader, _) = train_with(level1(), false, ITERATIONS, None);
+        let pools = &no_reader.fcf.pools;
+        assert!(
+            pools.iter().any(|pool| pool.populated() > 0),
+            "the level1 run must generate cuts"
+        );
+        assert_eq!(
+            slots_with_recorded_binding(&no_reader),
+            0,
+            "level1 without a budget has no reader, so no slot may record binding"
+        );
+        for (pool_id, pool) in pools.iter().enumerate() {
+            for slot in 0..pool.populated() {
+                let metadata = pool.metadata(slot);
+                assert_eq!(
+                    metadata.last_active_iter, metadata.iteration_generated,
+                    "pool {pool_id} slot {slot}: the activity clock must stay at the generating iteration"
+                );
+            }
+        }
+
+        let (budget_only, budget_only_result) = train_configured(ITERATIONS, None, |config| {
+            config.training.cut_selection.max_active_per_stage = Some(BUDGET_NO_POOL_REACHES);
+        });
+        for (pool_id, pool) in budget_only.fcf.pools.iter().enumerate() {
+            assert_eq!(
+                pool.active_count(),
+                pool.populated(),
+                "pool {pool_id}: the budget must evict nothing"
+            );
+        }
+        assert!(
+            slots_with_recorded_binding(&budget_only) > 0,
+            "a budget reads binding activity, so the run must record it"
+        );
+
+        // A budget that evicts nothing differs from no budget only in recording
+        // binding activity, so the two runs must produce the same cuts and bounds.
+        let (plain, plain_result) = train_configured(ITERATIONS, None, |_| {});
+        assert_eq!(slots_with_recorded_binding(&plain), 0);
+        let recording = SelectionFingerprint::capture(&budget_only, &budget_only_result);
+        let not_recording = SelectionFingerprint::capture(&plain, &plain_result);
+        assert_eq!(recording.cuts, not_recording.cuts);
+        assert_eq!(recording.provenance, not_recording.provenance);
+        assert_eq!(recording.bounds, not_recording.bounds);
+
+        let (dynamic_run, _) = train_with(dynamic(), false, ITERATIONS, None);
+        assert!(
+            slots_with_recorded_binding(&dynamic_run) > 0,
+            "the dynamic seed window reads binding activity, so the run must record it"
+        );
+    }
+
+    const SOURCE_ITERATIONS: u32 = 6;
+    const WARM_START_ITERATIONS: u32 = 4;
+
+    fn select_level1(config: &mut Config) {
+        config.training.cut_selection.selection = Some(level1());
+    }
+
+    /// Trains a source run, writes its checkpoint with the production writer and
+    /// reads it back with the production reader into the load of a fresh setup.
+    fn load_checkpoint(
+        source_configure: impl FnOnce(&mut Config),
+        kind: FullFcfLoadKind,
+    ) -> (StudySetup, CheckedFullFcfLoad, StudySetup) {
+        load_checkpoint_between(
+            SOURCE_ITERATIONS,
+            source_configure,
+            WARM_START_ITERATIONS,
+            select_level1,
+            kind,
+        )
+    }
+
+    fn load_checkpoint_between(
+        source_iterations: u32,
+        source_configure: impl FnOnce(&mut Config),
+        loading_iterations: u32,
+        loading_configure: impl FnOnce(&mut Config),
+        kind: FullFcfLoadKind,
+    ) -> (StudySetup, CheckedFullFcfLoad, StudySetup) {
+        let (mut source, system) = build_setup(source_iterations, source_configure);
+        let result = train_setup(&mut source, source_iterations, None);
+
+        let output = TempDir::new().expect("tempdir");
+        let policy_dir = output.path().join(&source.policy_path);
+        std::fs::create_dir_all(&policy_dir).expect("policy dir");
+        let params = CheckpointParams {
+            max_iterations: source.loop_params.max_iterations,
+            forward_passes: source.loop_params.forward_passes,
+            seed: source.loop_params.seed,
+        };
+        write_checkpoint(&policy_dir, &source, &system, &result, &params)
+            .expect("write_checkpoint must succeed");
+
+        let (setup, _) = build_setup(loading_iterations, loading_configure);
+        let policy_dir =
+            locate_policy_dir(kind, output.path(), &setup).expect("the policy must be found");
+        let checked = check_full_fcf_load(kind, &policy_dir, &system, &setup, &mut |_| {})
+            .expect("the checkpoint must load");
+        (source, checked, setup)
+    }
+
+    /// The role and activity flag of every loaded slot of every pool, and the
+    /// setup after a `level1` run warm-started from a `source_configure` source.
+    fn warm_start_level1_run(
+        source_configure: impl FnOnce(&mut Config),
+    ) -> (Vec<Vec<(SlotRole, bool)>>, StudySetup) {
+        let (_, checked, mut setup) = load_checkpoint(source_configure, FullFcfLoadKind::WarmStart);
+        checked.apply_to_training(&mut setup);
+        let loaded: Vec<Vec<(SlotRole, bool)>> = setup
+            .fcf
+            .pools
+            .iter()
+            .map(|pool| {
+                (0..pool.populated())
+                    .map(|slot| (pool.role(slot), pool.is_active(slot)))
+                    .collect()
+            })
+            .collect();
+        train_setup(&mut setup, WARM_START_ITERATIONS, None);
+        (loaded, setup)
+    }
+
+    #[test]
+    fn a_warm_started_scored_cut_is_selected_like_a_generated_one() {
+        let (loaded, setup) = warm_start_level1_run(select_level1);
+
+        let mut loaded_scored = 0;
+        let mut flipped = 0;
+        for (pool_id, slots) in loaded.iter().enumerate() {
+            let pool = &setup.fcf.pools[pool_id];
+            for (slot, &(role, was_active)) in slots.iter().enumerate() {
+                assert!(
+                    pool.is_prefix_slot(slot),
+                    "pool {pool_id} slot {slot}: a loaded cut stays a prefix cut"
+                );
+                loaded_scored += usize::from(role.scored);
+                flipped += usize::from(pool.is_active(slot) != was_active);
+            }
+        }
+        let loaded_in_interior_pools: usize = interior_pool_ids(&setup)
+            .into_iter()
+            .map(|pool_id| loaded[pool_id].len())
+            .sum();
+
+        assert!(loaded_in_interior_pools > 0, "the source must hold cuts");
+        assert_eq!(
+            loaded_scored, loaded_in_interior_pools,
+            "the cuts of the pools that stored states are the scored ones, as written and read back"
+        );
+        assert!(
+            flipped > 0,
+            "no loaded cut was deactivated or reactivated by the warm-started run"
+        );
+    }
+
+    #[test]
+    fn a_warm_started_unscored_cut_keeps_its_flag() {
+        let (loaded, setup) = warm_start_level1_run(|_| {});
+
+        let mut loaded_cuts = 0;
+        for (pool_id, slots) in loaded.iter().enumerate() {
+            let pool = &setup.fcf.pools[pool_id];
+            for (slot, &(role, was_active)) in slots.iter().enumerate() {
+                loaded_cuts += 1;
+                assert!(!role.scored, "pool {pool_id} slot {slot}");
+                assert!(pool.is_prefix_slot(slot), "pool {pool_id} slot {slot}");
+                assert_eq!(
+                    pool.is_active(slot),
+                    was_active,
+                    "pool {pool_id} slot {slot}: a loaded cut that was never scored keeps its flag"
+                );
+            }
+        }
+        let deactivated_generated_cuts: usize = interior_pool_ids(&setup)
+            .into_iter()
+            .map(|pool_id| {
+                let pool = &setup.fcf.pools[pool_id];
+                (0..pool.populated())
+                    .filter(|&slot| {
+                        pool.role(slot).origin == SlotOrigin::Generated && !pool.is_active(slot)
+                    })
+                    .count()
+            })
+            .sum();
+
+        assert!(loaded_cuts > 0, "the source must hold cuts");
+        assert!(
+            deactivated_generated_cuts > 0,
+            "selection deactivated no generated cut, so it had no power over the loaded ones"
+        );
+    }
+
+    #[test]
+    fn a_simulation_only_load_holds_the_cuts_training_all_held() {
+        let (source, checked, _) = load_checkpoint(select_level1, FullFcfLoadKind::SimulationOnly);
+        let (loaded, _) = checked.into_simulation_policy();
+
+        let counts = |fcf: &FutureCostFunction| -> Vec<(usize, usize)> {
+            fcf.pools
+                .iter()
+                .map(|pool| (pool.count_in(CutSet::All), pool.active_count()))
+                .collect()
+        };
+        let source_counts = counts(&source.fcf);
+        assert!(
+            source_counts.iter().any(|&(all, active)| all > active),
+            "the source must hold a deactivated cut"
+        );
+        assert_eq!(counts(&loaded), source_counts);
+    }
+
+    fn level1_within(lookback: Option<u32>) -> impl Fn(&mut Config) + Copy {
+        move |config: &mut Config| {
+            config.training.cut_selection.selection = Some(SelectionMethod::Level1 {
+                check_frequency: positive(CHECK_FREQUENCY),
+                lookback_iterations: lookback.and_then(NonZeroU32::new),
+            });
+        }
+    }
+
+    fn bits(values: &[f64]) -> Vec<u64> {
+        values.iter().map(|value| value.to_bits()).collect()
+    }
+
+    /// The pool's roles and stored states, with the ownership record a rebuild
+    /// computes from them.
+    fn ownership_after_a_rebuild(pool: &CutPool) -> PoolOwnership {
+        let mut rebuilt = pool.clone();
+        rebuilt.rebuild_ownership();
+        let slots = || 0..pool.populated();
+        PoolOwnership {
+            roles: slots().map(|slot| pool.role(slot)).collect(),
+            trial_state_bits: slots()
+                .map(|slot| pool.trial_state(slot).map(bits))
+                .collect(),
+            best_value_bits: slots()
+                .map(|slot| rebuilt.state_best_value(slot).map(f64::to_bits))
+                .collect(),
+            owner: slots().map(|slot| rebuilt.state_owner(slot)).collect(),
+            owned_states: slots().map(|slot| rebuilt.owned_states(slot)).collect(),
+        }
+    }
+
+    /// derived: a run of 5 iterations at 2 passes writes 10 slots per interior
+    /// pool, and checks every 2 iterations, so its last selection run is at
+    /// iteration 4, before the checkpoint, which the rebuild brings up to date.
+    /// A window of 2 has dropped the states of slots 0 to 3 by then.
+    #[test]
+    fn a_resumed_level1_pool_holds_the_states_and_record_of_the_interrupted_run() {
+        const STOP: u32 = 5;
+        for (lookback, stored) in [(None, 10), (Some(2), 6)] {
+            let configure = level1_within(lookback);
+            let (interrupted, checked, mut resumed) =
+                load_checkpoint_between(STOP, configure, STOP, configure, FullFcfLoadKind::Resume);
+            checked.apply_to_training(&mut resumed);
+            train_setup(&mut resumed, STOP, None);
+
+            let pool_ids = interior_pool_ids(&interrupted);
+            assert!(!pool_ids.is_empty(), "the run must have an interior pool");
+            for pool_id in pool_ids {
+                let (before, after) =
+                    (&interrupted.fcf.pools[pool_id], &resumed.fcf.pools[pool_id]);
+                assert_eq!(
+                    before.stored_trial_states(),
+                    stored,
+                    "lookback {lookback:?} pool {pool_id}: power: the states the run held"
+                );
+                assert_eq!(
+                    ownership_after_a_rebuild(after),
+                    ownership_after_a_rebuild(before),
+                    "lookback {lookback:?} pool {pool_id}"
+                );
+            }
+        }
+    }
+
+    const AGED_OUT_SOURCE_ITERATIONS: u32 = 8;
+    const SOURCE_WINDOW: u32 = 2;
+
+    /// derived: a source of 8 iterations at 2 passes writes 16 slots per interior
+    /// pool, and its last selection run, at iteration 8, keeps the states of the
+    /// last 2 iterations, slots 12 to 15: the other 12 scored cuts are written
+    /// with no row.
+    #[test]
+    fn a_warm_started_cut_whose_state_aged_out_competes_at_the_new_states() {
+        let (source, checked, mut setup) = load_checkpoint_between(
+            AGED_OUT_SOURCE_ITERATIONS,
+            level1_within(Some(SOURCE_WINDOW)),
+            WARM_START_ITERATIONS,
+            level1_within(None),
+            FullFcfLoadKind::WarmStart,
+        );
+        checked.apply_to_training(&mut setup);
+        train_setup(&mut setup, WARM_START_ITERATIONS, None);
+
+        let (mut owning, mut inactive_and_owning_none) = (0, 0);
+        for pool_id in interior_pool_ids(&setup) {
+            let (before, after) = (&source.fcf.pools[pool_id], &setup.fcf.pools[pool_id]);
+            let loaded = 0..before.populated();
+            let aged_out: Vec<usize> = loaded
+                .clone()
+                .filter(|&slot| before.role(slot).scored && before.trial_state(slot).is_none())
+                .collect();
+            assert!(
+                !aged_out.is_empty(),
+                "pool {pool_id}: power: the source wrote no scored cut without a row"
+            );
+            for slot in loaded {
+                assert_eq!(
+                    after.trial_state(slot).map(bits),
+                    before.trial_state(slot).map(bits),
+                    "pool {pool_id} slot {slot}: a loaded state is restored where it was"
+                );
+            }
+            for slot in aged_out {
+                owning += usize::from(after.owned_states(slot) > 0);
+                inactive_and_owning_none +=
+                    usize::from(!after.is_active(slot) && after.owned_states(slot) == 0);
+            }
+        }
+        assert!(
+            owning > 0,
+            "no cut whose state aged out owns a stored state"
+        );
+        assert!(
+            inactive_and_owning_none > 0,
+            "every cut whose state aged out owns a state"
+        );
+    }
+}
+
+mod trial_state_store {
+    //! The state each scored cut was computed at, stored by slot. Every run gives
+    //! `level1` a `check_frequency` above the iteration limit.
+
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    use novomodelo_io::Config;
+    use novomodelo_io::config::{SelectionMethod, StoppingRuleConfig, TrainingSelection};
+    use novomodelo_sddp::StudySetup;
+    use novomodelo_sddp::cut::SlotOrigin;
+    use novomodelo_sddp::test_support::{k_fan_setup, oracle_chain_setup_with_selection};
+    use novomodelo_solver::ActiveSolver;
+
+    use super::common::selection_fingerprint::interior_pool_ids;
+    use super::common::{StubComm, fresh_setup_with, fresh_setup_with_openings, positive};
+
+    const ITERATIONS: u32 = 6;
+    const UNIFORM_CASE: &str = "../../examples/1dtoy";
+    const NON_UNIFORM_CASE: &str = "../../examples/deterministic/d43-storage-only-cut";
+    const NON_UNIFORM_OPENINGS: u32 = 5;
+
+    fn level1_without_a_selection_run() -> SelectionMethod {
+        SelectionMethod::Level1 {
+            check_frequency: positive(ITERATIONS + 1),
+            lookback_iterations: None,
+        }
+    }
+
+    fn sampled(
+        forward_passes: u32,
+        selection: Option<SelectionMethod>,
+    ) -> impl FnOnce(&mut Config) {
+        move |config| {
+            config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
+            config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+                limit: ITERATIONS,
+            }]);
+            config.training.cut_selection.selection = selection;
+        }
+    }
+
+    fn train(setup: &mut StudySetup) {
+        let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+        let outcome = setup
+            .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
+            .expect("train must return Ok");
+        assert!(
+            outcome.error.is_none(),
+            "expected no training error, got: {:?}",
+            outcome.error
+        );
+    }
+
+    /// Checks a chain run whose position of a cut in its pool is its slot: every
+    /// interior pool holds, at each generated slot and nowhere else, a state at
+    /// the pool's projected dimension, none of the iterations' states are
+    /// trimmed, and every other pool stores nothing. Returns the number of
+    /// stored states.
+    fn assert_stored_states_sit_at_the_generated_slots(setup: &StudySetup) -> usize {
+        let training_ctx = setup.training_ctx();
+        let interior = interior_pool_ids(setup);
+        let mut stored = 0;
+        for (pool_id, pool) in setup.fcf.pools.iter().enumerate() {
+            if !interior.contains(&pool_id) {
+                assert!(
+                    !pool.stores_trial_states(),
+                    "pool {pool_id}: only an interior pool stores states"
+                );
+                continue;
+            }
+            assert!(pool.stores_trial_states(), "pool {pool_id}");
+            assert_eq!(pool.slot_base, 0, "pool {pool_id}");
+            assert_eq!(
+                pool.generated(),
+                ITERATIONS as usize * pool.visit_stride as usize,
+                "pool {pool_id}: every iteration's cuts"
+            );
+            let layout = &training_ctx.cut_state_layouts[pool_id];
+            assert_eq!(pool.state_dimension, layout.n_slots(), "pool {pool_id}");
+            for slot in 0..pool.capacity {
+                let role = pool.role(slot);
+                match (pool.trial_state(slot), role.origin == SlotOrigin::Generated) {
+                    (Some(row), true) => {
+                        assert!(role.scored, "pool {pool_id} slot {slot}");
+                        assert_eq!(row.len(), layout.n_slots(), "pool {pool_id} slot {slot}");
+                    }
+                    (None, false) => {}
+                    (Some(_), false) => {
+                        panic!(
+                            "pool {pool_id} slot {slot}: a state is stored with no generated cut"
+                        )
+                    }
+                    (None, true) => {
+                        panic!("pool {pool_id} slot {slot}: a generated cut has no state")
+                    }
+                }
+            }
+            assert_eq!(
+                pool.stored_trial_states(),
+                pool.generated(),
+                "pool {pool_id}"
+            );
+            stored += pool.stored_trial_states();
+        }
+        stored
+    }
+
+    #[test]
+    fn a_level1_run_stores_the_trial_state_of_every_generated_cut() {
+        let mut setup = fresh_setup_with(
+            Path::new(UNIFORM_CASE),
+            sampled(2, Some(level1_without_a_selection_run())),
+        );
+        train(&mut setup);
+
+        let stored = assert_stored_states_sit_at_the_generated_slots(&setup);
+
+        assert!(stored > 0, "the run must generate cuts in an interior pool");
+    }
+
+    #[test]
+    fn a_level1_run_stores_states_at_each_pools_projected_dimension() {
+        let mut setup = fresh_setup_with_openings(
+            Path::new(NON_UNIFORM_CASE),
+            NON_UNIFORM_OPENINGS,
+            sampled(4, Some(level1_without_a_selection_run())),
+        );
+        let dimensions: BTreeSet<usize> = interior_pool_ids(&setup)
+            .iter()
+            .map(|&pool_id| setup.fcf.pools[pool_id].state_dimension)
+            .collect();
+        assert!(
+            dimensions.len() > 1,
+            "the interior pools must project different cut-state dimensions, got {dimensions:?}"
+        );
+        train(&mut setup);
+
+        let stored = assert_stored_states_sit_at_the_generated_slots(&setup);
+
+        assert!(stored > 0, "the run must generate cuts in an interior pool");
+    }
+
+    #[test]
+    fn an_enumerated_level1_run_stores_one_trial_state_per_cut() {
+        let mut setup =
+            oracle_chain_setup_with_selection(ITERATIONS, level1_without_a_selection_run());
+        train(&mut setup);
+
+        let stored = assert_stored_states_sit_at_the_generated_slots(&setup);
+
+        assert_eq!(
+            stored, ITERATIONS as usize,
+            "one interior pool, one cut per iteration"
+        );
+    }
+
+    #[test]
+    fn a_sampled_fan_stores_only_each_nodes_own_trial_states() {
+        const ITERATIONS: usize = 3;
+        let mut fixture = k_fan_setup(8, 6, ITERATIONS as u32);
+        let forward_passes = fixture.forward_passes as usize;
+        let fan = interior_pool_ids(&fixture.setup);
+        assert_eq!(fan.len(), fixture.k);
+        for &pool_id in &fan {
+            fixture.setup.fcf.pools[pool_id].enable_trial_states();
+        }
+        train(&mut fixture.setup);
+
+        let setup = &fixture.setup;
+        let layout = &setup.training_ctx().cut_state_layouts[fan[0]];
+        let mut stored = 0;
+        let mut some_pool_holds_fewer_than_the_level = false;
+        let mut vacant_below_the_bound = false;
+        for &pool_id in &fan {
+            let pool = &setup.fcf.pools[pool_id];
+            assert_eq!(pool.state_dimension, layout.n_slots(), "pool {pool_id}");
+            for slot in 0..pool.capacity {
+                let origin = pool.role(slot).origin;
+                assert_eq!(
+                    pool.trial_state(slot).is_some(),
+                    origin == SlotOrigin::Generated,
+                    "pool {pool_id} slot {slot} ({origin:?})"
+                );
+                vacant_below_the_bound |= origin == SlotOrigin::Vacant && slot < pool.populated();
+            }
+            stored += pool.stored_trial_states();
+            some_pool_holds_fewer_than_the_level |=
+                pool.stored_trial_states() < forward_passes * ITERATIONS;
+        }
+        assert!(
+            vacant_below_the_bound,
+            "power: some fan pool must hold a vacant slot below its slot bound"
+        );
+        assert_eq!(stored, forward_passes * ITERATIONS);
+        assert!(
+            some_pool_holds_fewer_than_the_level,
+            "every fan pool stores the states of every trial"
+        );
+
+        for iteration in 1..=ITERATIONS as u64 {
+            let held: usize = fan
+                .iter()
+                .map(|&pool_id| {
+                    let pool = &setup.fcf.pools[pool_id];
+                    (0..pool.populated())
+                        .filter(|&slot| {
+                            pool.role(slot).origin == SlotOrigin::Generated
+                                && pool.metadata(slot).iteration_generated == iteration
+                                && pool.trial_state(slot).is_some()
+                        })
+                        .count()
+                })
+                .sum();
+            assert_eq!(
+                held, forward_passes,
+                "iteration {iteration}: each trial's state is stored in exactly one fan pool"
+            );
+        }
+    }
+
+    fn without_level1() -> [Option<SelectionMethod>; 2] {
+        [
+            None,
+            Some(SelectionMethod::Dynamic {
+                start_iteration: positive(2),
+                seed_window: 5,
+                candidate_recency: None,
+                max_added_per_round: positive(10),
+                violation_tolerance: None,
+            }),
+        ]
+    }
+
+    #[test]
+    fn a_run_without_level1_stores_no_trial_state() {
+        for selection in without_level1() {
+            let label = format!("{selection:?}");
+            let mut setup = fresh_setup_with(Path::new(UNIFORM_CASE), sampled(2, selection));
+            train(&mut setup);
+
+            let mut generated = 0;
+            for (pool_id, pool) in setup.fcf.pools.iter().enumerate() {
+                assert!(!pool.stores_trial_states(), "{label}: pool {pool_id}");
+                assert_eq!(pool.stored_trial_states(), 0, "{label}: pool {pool_id}");
+                for slot in 0..pool.populated() {
+                    let role = pool.role(slot);
+                    assert!(!role.scored, "{label}: pool {pool_id} slot {slot}");
+                    generated += usize::from(role.origin == SlotOrigin::Generated);
+                }
+            }
+            assert!(generated > 0, "{label}: the run must generate cuts");
+        }
+    }
+
+    /// derived: a pool that receives cuts holds generated cuts, and with
+    /// `exports.states` it stores the state of each whatever the selection method.
+    #[test]
+    fn exported_states_make_every_pool_that_receives_cuts_store_without_level1() {
+        for selection in without_level1() {
+            let label = format!("{selection:?}");
+            let mut setup = fresh_setup_with(Path::new(UNIFORM_CASE), sampled(2, selection));
+            setup.set_export_states(true);
+            train(&mut setup);
+
+            let mut storing = 0;
+            for (pool_id, pool) in setup.fcf.pools.iter().enumerate() {
+                let receives_cuts = pool.generated() > 0;
+                assert_eq!(
+                    pool.stores_trial_states(),
+                    receives_cuts,
+                    "{label}: pool {pool_id}"
+                );
+                assert_eq!(
+                    pool.stored_trial_states(),
+                    pool.generated(),
+                    "{label}: pool {pool_id}"
+                );
+                for slot in 0..pool.populated() {
+                    assert!(
+                        pool.role(slot).scored,
+                        "{label}: pool {pool_id} slot {slot}"
+                    );
+                }
+                storing += usize::from(receives_cuts);
+            }
+            assert!(storing > 1, "{label}: the root and an interior pool store");
+        }
+    }
+}
+
 mod hybrid_reconstruction {
     //! Integration smoke for the slot-identity basis-reconstruction path.
 
@@ -1576,15 +3186,17 @@ mod hybrid_reconstruction {
 
 mod warm_start {
     //! Warm-start training: a run resumed from saved cuts reuses them
-    //! (`warm_start_count > 0`) and yields a lower bound no worse than fresh training.
+    //! (`prefix_len() > 0`) and yields a lower bound no worse than fresh training.
 
     use std::path::Path;
 
     use novomodelo_core::scenario::ScenarioSource;
     use novomodelo_io::config::StoppingRuleConfig;
     use novomodelo_io::output::policy::{read_policy_checkpoint, write_policy_checkpoint};
+    use novomodelo_io::test_support::producer_block_defaults;
+    use novomodelo_sddp::policy::full_fcf_load::{FullFcfLoadKind, LoadedSlotMap};
     use novomodelo_sddp::{
-        FutureCostFunction, SolverStatsDelta, StoredBasisMisfit, StudySetup,
+        FutureCostFunction, LoadedPolicy, SolverStatsDelta, StoredBasisMisfit, StudySetup,
         build_basis_cache_from_checkpoint, hydro_models::prepare_hydro_models,
         setup::prepare_stochastic,
     };
@@ -1619,12 +3231,11 @@ mod warm_start {
         seed: u64,
     ) {
         use novomodelo_sddp::policy_export::{
-            build_active_indices, build_stage_basis_records, build_stage_cut_records,
-            build_stage_cuts_payloads, convert_basis_cache,
+            BindingCounters, build_basis_store_entries, build_stage_basis_records,
+            build_stage_cut_records, build_stage_cuts_payloads, convert_basis_store,
         };
         let fcf = &setup.fcf;
-        let stage_records = build_stage_cut_records(fcf);
-        let stage_active_indices = build_active_indices(&stage_records);
+        let stage_records = build_stage_cut_records(fcf, BindingCounters::Omitted).expect("export");
         let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); fcf.pools.len()];
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
@@ -1636,17 +3247,13 @@ mod warm_start {
             &study_stage_end_dates,
             1_000_000.0,
             &stage_records,
-            &stage_active_indices,
             &stage_manifests,
         );
-        let (basis_col, basis_row) = convert_basis_cache(&result.basis_cache);
-        let stage_bases = build_stage_basis_records(
-            &result.basis_cache,
-            result.iterations,
-            &basis_col,
-            &basis_row,
-        );
-        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
+        let basis_statuses = convert_basis_store(&result.checkpoint_bases);
+        let basis_entries = build_basis_store_entries(&result.checkpoint_bases, &basis_statuses);
+        let stage_bases =
+            build_stage_basis_records(&basis_entries, result.iterations).expect("bases");
+        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
         let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             fcf.pools.len() as u32,
             setup.build_graph_manifest(),
@@ -1659,11 +3266,8 @@ mod warm_start {
                 warm_start_cuts: warm_start_counts.iter().copied().max().unwrap_or(0),
                 warm_start_counts,
                 rng_seed: seed,
-                total_visited_states: 0,
-                training_block_mode: "parallel".to_string(),
-                training_block_mode_per_stage: vec![],
                 cost_scale_factor: None,
-                lower_bound_history: Vec::new(),
+                ..producer_block_defaults()
             },
         );
         write_policy_checkpoint(policy_dir, &stage_cuts, &stage_bases, &metadata, &[])
@@ -1777,7 +3381,9 @@ mod warm_start {
 
     #[test]
     fn exported_basis_records_count_the_cut_rows_each_basis_was_captured_with() {
-        use novomodelo_sddp::policy_export::{build_stage_basis_records, convert_basis_cache};
+        use novomodelo_sddp::policy_export::{
+            build_basis_store_entries, build_stage_basis_records, convert_basis_store,
+        };
 
         let case_dir = d01_case_dir();
         let mut config =
@@ -1794,13 +3400,9 @@ mod warm_start {
         assert!(outcome.error.is_none());
         let result = outcome.result;
 
-        let (basis_col, basis_row) = convert_basis_cache(&result.basis_cache);
-        let records = build_stage_basis_records(
-            &result.basis_cache,
-            result.iterations,
-            &basis_col,
-            &basis_row,
-        );
+        let basis_statuses = convert_basis_store(&result.checkpoint_bases);
+        let basis_entries = build_basis_store_entries(&result.checkpoint_bases, &basis_statuses);
+        let records = build_stage_basis_records(&basis_entries, result.iterations).expect("bases");
         assert!(
             !records.is_empty(),
             "training must capture at least one basis"
@@ -1811,7 +3413,7 @@ mod warm_start {
                 .as_ref()
                 .expect("every record comes from a captured basis");
             assert_eq!(
-                rec.num_cut_rows as usize,
+                rec.entries[0].piece_row_slots.len(),
                 cb.basis.row_status.len() - cb.base_row_count,
                 "node {} must record the cut rows its basis was captured with",
                 rec.stage_id
@@ -1824,10 +3426,10 @@ mod warm_start {
             .expect("the root node's basis is exported");
         let root_pool_populated = setup.fcf.pools[0].populated();
         assert!(
-            (root.num_cut_rows as usize) < root_pool_populated,
+            root.entries[0].piece_row_slots.len() < root_pool_populated,
             "the root basis is captured before the last backward pass, so it must carry fewer \
              cut rows ({}) than its pool holds at export ({root_pool_populated})",
-            root.num_cut_rows
+            root.entries[0].piece_row_slots.len()
         );
     }
 
@@ -1884,8 +3486,8 @@ mod warm_start {
         .expect("warm-start FCF");
         setup_warm.replace_fcf(warm_fcf);
 
-        let warm_start_count = setup_warm.fcf.pools[0].warm_start_count;
-        assert!(warm_start_count > 0, "warm_start_count should be > 0");
+        let prefix_len = setup_warm.fcf.pools[0].prefix_len();
+        assert!(prefix_len > 0, "prefix_len should be > 0");
         assert_eq!(
             setup_warm.fcf.total_active_cuts(),
             fresh_active,
@@ -1946,8 +3548,8 @@ mod warm_start {
             .iter_mut()
             .find(|record| record.stage_id == MISFIT_NODE)
             .expect("the misfit node's basis is stored");
-        misfit.column_status.fill(0);
-        misfit.row_status.fill(0);
+        misfit.entries[0].column_status.fill(0);
+        misfit.entries[0].row_status.fill(0);
 
         let mut setup_warm = build_setup(&case_dir, &config);
         let proof = novomodelo_sddp::test_support::trivial_full_fcf_proof(
@@ -1979,7 +3581,7 @@ mod warm_start {
 
         let load = build_basis_cache_from_checkpoint(
             &checkpoint.stage_bases,
-            &checkpoint.stage_cuts,
+            &LoadedSlotMap::for_pools(FullFcfLoadKind::WarmStart, &checkpoint.stage_cuts),
             &setup_warm,
         );
         let unused = load.unused.expect("the misfit record must be reported");
@@ -1989,7 +3591,10 @@ mod warm_start {
             "{:?}",
             unused.first_reason
         );
-        setup_warm.set_warm_start_basis_cache(load.cache);
+        setup_warm.set_loaded_policy(LoadedPolicy {
+            scenario_bases: load.store,
+            ..LoadedPolicy::default()
+        });
 
         let mut solver_warm = ActiveSolver::new().expect("ActiveSolver");
         let warm_outcome = setup_warm
@@ -2207,7 +3812,7 @@ mod group_state_invariance {
     use novomodelo_core::scenario::ScenarioSource;
     use novomodelo_core::{EntityId, HydroUnitGroup, System, SystemBuilder};
     use novomodelo_sddp::indexer::{HydroCellIndex, HydroSys};
-    use novomodelo_sddp::policy_export::build_stage_cut_records;
+    use novomodelo_sddp::policy_export::{BindingCounters, build_stage_cut_records};
     use novomodelo_sddp::{
         StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
     };
@@ -2355,7 +3960,8 @@ mod group_state_invariance {
             .map(|pool| pool.state_dimension)
             .collect();
 
-        let stage_records = build_stage_cut_records(&setup.fcf);
+        let stage_records =
+            build_stage_cut_records(&setup.fcf, BindingCounters::Omitted).expect("export");
         let populated_cut_coefficient_lengths: Vec<Option<usize>> = stage_records
             .iter()
             .map(|records| records.first().map(|record| record.coefficients.len()))
@@ -2520,8 +4126,8 @@ mod range_warm_start_determinism {
         ContractBlockBounds, DeficitSegment, EntityId, GenericConstraint, HydroBlockBounds,
         HydroPenalties, HydroStageBounds, LineBlockBounds, LineStagePenalties, LinearTerm,
         NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds,
-        ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SlackConfig,
-        SystemBuilder, ThermalBlockBounds, ThermalStageBounds, VariableRef,
+        ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SystemBuilder,
+        ThermalBlockBounds, ThermalStageBounds, VariableRef,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -2531,14 +4137,15 @@ mod range_warm_start_determinism {
         TrainingSolverConfig,
     };
     use novomodelo_io::output::policy::{read_policy_checkpoint, write_policy_checkpoint};
+    use novomodelo_io::test_support::producer_block_defaults;
     use novomodelo_sddp::basis_reconstruct::{
         ReconstructionTarget, enforce_basic_count_invariant, reconstruct_basis,
     };
     use novomodelo_sddp::hydro_models::{PrepareHydroModelsResult, prepare_hydro_models};
     use novomodelo_sddp::inflow_method::InflowNonNegativityMethod;
     use novomodelo_sddp::policy_export::{
-        build_active_indices, build_stage_basis_records, build_stage_cut_records,
-        build_stage_cuts_payloads, convert_basis_cache,
+        BindingCounters, build_basis_store_entries, build_stage_basis_records,
+        build_stage_cut_records, build_stage_cuts_payloads, convert_basis_store,
     };
     use novomodelo_sddp::resolved_parameters::ResolvedParameters;
     use novomodelo_sddp::setup::prepare_stochastic;
@@ -2580,13 +4187,6 @@ mod range_warm_start_determinism {
         }
     }
 
-    fn no_slack() -> SlackConfig {
-        SlackConfig {
-            enabled: false,
-            penalty: None,
-        }
-    }
-
     // ---------------------------------------------------------------------------
     // 3-constraint fixture: a range row (binds at upper) plus two loose siblings
     // ---------------------------------------------------------------------------
@@ -2603,27 +4203,27 @@ mod range_warm_start_determinism {
                 name: "cap_loose".to_string(),
                 description: None,
                 expression: thermal_generation_expr(),
-                slack: no_slack(),
-                bound_lower_affine: None,
-                bound_upper_affine: None,
+                slack: None,
+                bound_lower: None,
+                bound_upper: None,
             },
             GenericConstraint {
                 id: EntityId(2),
                 name: "band".to_string(),
                 description: None,
                 expression: thermal_generation_expr(),
-                slack: no_slack(),
-                bound_lower_affine: None,
-                bound_upper_affine: None,
+                slack: None,
+                bound_lower: None,
+                bound_upper: None,
             },
             GenericConstraint {
                 id: EntityId(3),
                 name: "floor_trivial".to_string(),
                 description: None,
                 expression: thermal_generation_expr(),
-                slack: no_slack(),
-                bound_lower_affine: None,
-                bound_upper_affine: None,
+                slack: None,
+                bound_lower: None,
+                bound_upper: None,
             },
         ]
     }
@@ -2656,9 +4256,9 @@ mod range_warm_start_determinism {
                 name: "band".to_string(),
                 description: None,
                 expression: thermal_generation_expr(),
-                slack: no_slack(),
-                bound_lower_affine: None,
-                bound_upper_affine: None,
+                slack: None,
+                bound_lower: None,
+                bound_upper: None,
             }];
             let id_map: HashMap<i32, usize> = [(1, 0)].into_iter().collect();
             let rows: Vec<RawBoundRow> = vec![
@@ -2676,18 +4276,18 @@ mod range_warm_start_determinism {
                     name: "band_lower".to_string(),
                     description: None,
                     expression: thermal_generation_expr(),
-                    slack: no_slack(),
-                    bound_lower_affine: None,
-                    bound_upper_affine: None,
+                    slack: None,
+                    bound_lower: None,
+                    bound_upper: None,
                 },
                 GenericConstraint {
                     id: EntityId(2),
                     name: "band_upper".to_string(),
                     description: None,
                     expression: thermal_generation_expr(),
-                    slack: no_slack(),
-                    bound_lower_affine: None,
-                    bound_upper_affine: None,
+                    slack: None,
+                    bound_lower: None,
+                    bound_upper: None,
                 },
             ];
             let id_map: HashMap<i32, usize> = [(1, 0), (2, 1)].into_iter().collect();
@@ -2959,8 +4559,7 @@ mod range_warm_start_determinism {
         seed: u64,
     ) {
         let fcf = &setup.fcf;
-        let stage_records = build_stage_cut_records(fcf);
-        let stage_active_indices = build_active_indices(&stage_records);
+        let stage_records = build_stage_cut_records(fcf, BindingCounters::Omitted).expect("export");
         let stage_manifests: Vec<Vec<novomodelo_io::EntitySlot>> =
             vec![Vec::new(); fcf.pools.len()];
         let study_stage_ids: Vec<i32> = (0..fcf.pools.len() as i32).collect();
@@ -2972,17 +4571,13 @@ mod range_warm_start_determinism {
             &study_stage_end_dates,
             1_000_000.0,
             &stage_records,
-            &stage_active_indices,
             &stage_manifests,
         );
-        let (basis_col, basis_row) = convert_basis_cache(&result.basis_cache);
-        let stage_bases = build_stage_basis_records(
-            &result.basis_cache,
-            result.iterations,
-            &basis_col,
-            &basis_row,
-        );
-        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.warm_start_count).collect();
+        let basis_statuses = convert_basis_store(&result.checkpoint_bases);
+        let basis_entries = build_basis_store_entries(&result.checkpoint_bases, &basis_statuses);
+        let stage_bases =
+            build_stage_basis_records(&basis_entries, result.iterations).expect("bases");
+        let warm_start_counts: Vec<u32> = fcf.pools.iter().map(|p| p.prefix_len() as u32).collect();
         let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
             fcf.pools.len() as u32,
             setup.build_graph_manifest(),
@@ -2995,11 +4590,8 @@ mod range_warm_start_determinism {
                 warm_start_cuts: warm_start_counts.iter().copied().max().unwrap_or(0),
                 warm_start_counts,
                 rng_seed: seed,
-                total_visited_states: 0,
-                training_block_mode: "parallel".to_string(),
-                training_block_mode_per_stage: vec![],
                 cost_scale_factor: None,
-                lower_bound_history: Vec::new(),
+                ..producer_block_defaults()
             },
         );
         write_policy_checkpoint(policy_dir, &stage_cuts, &stage_bases, &metadata, &[])
@@ -3666,6 +5258,236 @@ mod range_warm_start_determinism {
                 "stage {}: both formulations must dispatch T0 at the band's upper \
                  bound (8 MW); got {r_gen}",
                 rs.stage_id
+            );
+        }
+    }
+}
+
+mod simulation_cut_set {
+    //! Simulation builds each stage LP from the chosen cut set and applies the
+    //! training basis by slot over its rows: under `All` the LP holds the cuts
+    //! selection and the cap deactivated, and a run with nothing deactivated
+    //! has one set.
+
+    use std::path::Path;
+    use std::sync::mpsc;
+
+    use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_io::Config;
+    use novomodelo_io::config::{
+        SelectionMethod, SimulationSelection, StoppingRuleConfig, TrainingSelection,
+    };
+    use novomodelo_sddp::cut::CutSet;
+    use novomodelo_sddp::{
+        SimulationScenarioResult, StudySetup, TrainingResult, hydro_models::prepare_hydro_models,
+        setup::prepare_stochastic,
+    };
+    use novomodelo_solver::{ActiveSolver, StageTemplate};
+
+    use super::common::{StubComm, positive};
+
+    const FORWARD_PASSES: u32 = 3;
+    const ITERATIONS: u32 = 8;
+    const SCENARIOS: u32 = 4;
+
+    fn level1() -> SelectionMethod {
+        SelectionMethod::Level1 {
+            check_frequency: positive(2),
+            lookback_iterations: None,
+        }
+    }
+
+    fn train_d03(configure: impl FnOnce(&mut Config)) -> (StudySetup, TrainingResult) {
+        let case_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/<crate> must have a parent")
+            .parent()
+            .expect("crates/ must have a parent (repo root)")
+            .join("examples/deterministic/d03-two-hydro-cascade");
+        let mut config =
+            novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
+        config.training.selection = Some(TrainingSelection::Sampled {
+            forward_passes: FORWARD_PASSES,
+        });
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: ITERATIONS,
+        }]);
+        config.simulation.enabled = true;
+        config.simulation.selection = Some(SimulationSelection::Sampled {
+            num_scenarios: SCENARIOS,
+        });
+        configure(&mut config);
+
+        let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
+        let prepared = prepare_stochastic(
+            system,
+            &case_dir,
+            &config,
+            42,
+            &ScenarioSource::default(),
+            None,
+        )
+        .expect("prepare_stochastic must succeed");
+        let system = prepared.system;
+        let hydro_models = prepare_hydro_models(&system, &case_dir, false)
+            .expect("prepare_hydro_models must succeed");
+        let mut setup = StudySetup::new(
+            &system,
+            &config,
+            prepared.stochastic,
+            hydro_models,
+            Vec::new(),
+        )
+        .expect("StudySetup must build");
+
+        let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+        let outcome = setup
+            .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
+            .expect("train must return Ok");
+        assert!(
+            outcome.error.is_none(),
+            "expected no training error, got: {:?}",
+            outcome.error
+        );
+        assert_eq!(outcome.result.iterations, u64::from(ITERATIONS));
+        (setup, outcome.result)
+    }
+
+    /// Simulates on a fresh workspace pool with the setup's cut set and the
+    /// run's bases; returns the scenario results by id and the summed basis
+    /// rejections.
+    pub(super) fn simulate_with(
+        setup: &StudySetup,
+        result: &TrainingResult,
+        frozen_templates: Option<&[StageTemplate]>,
+    ) -> (Vec<SimulationScenarioResult>, u64) {
+        let comm = StubComm;
+        let mut pool = setup
+            .create_workspace_pool(&comm, 1, ActiveSolver::new)
+            .expect("simulation workspace pool must build");
+        let (result_tx, result_rx) =
+            mpsc::sync_channel(setup.simulation_config.io_channel_capacity.max(1));
+        let drain = std::thread::spawn(move || result_rx.into_iter().collect::<Vec<_>>());
+
+        let run = setup
+            .simulate(
+                &mut pool.workspaces,
+                &comm,
+                &result_tx,
+                None,
+                frozen_templates,
+                &result.basis_cache,
+            )
+            .expect("simulate must return Ok");
+
+        drop(result_tx);
+        let mut scenarios = drain.join().expect("drain thread must not panic");
+        scenarios.sort_by_key(|scenario| scenario.scenario_id);
+        let rejections = run
+            .solver_stats
+            .iter()
+            .map(|(_, _, delta)| delta.basis_consistency_failures)
+            .sum();
+        (scenarios, rejections)
+    }
+
+    /// `Debug` prints the shortest text that parses back to the same bits, so
+    /// equal text is bitwise-equal results.
+    pub(super) fn bitwise(scenarios: &[SimulationScenarioResult]) -> String {
+        format!("{scenarios:?}")
+    }
+
+    fn counts_per_pool(setup: &StudySetup) -> Vec<(usize, usize)> {
+        setup
+            .fcf
+            .pools
+            .iter()
+            .map(|pool| (pool.count_in(CutSet::All), pool.active_count()))
+            .collect()
+    }
+
+    #[test]
+    fn simulating_all_cuts_matches_the_flagged_twin() {
+        let (mut setup, result) = train_d03(|config| {
+            config.training.cut_selection.selection = Some(level1());
+            config.training.cut_selection.max_active_per_stage = Some(FORWARD_PASSES);
+        });
+        let counts = counts_per_pool(&setup);
+        let interior = &counts[1..counts.len() - 1];
+        assert!(
+            interior.iter().any(|&(all, active)| all > active),
+            "no interior pool holds a cut outside its active cuts, (all, active) per pool: \
+             {counts:?}"
+        );
+        let frozen_templates = result
+            .frozen_templates
+            .as_deref()
+            .expect("training must produce frozen templates");
+
+        setup.simulation_cut_set = CutSet::All;
+        let (all, rejections) = simulate_with(&setup, &result, Some(frozen_templates));
+        assert_eq!(all.len(), SCENARIOS as usize);
+        assert_eq!(rejections, 0, "the basis must apply over the rows of All");
+
+        let mut twin = setup.fcf.clone();
+        for (pool_id, pool) in setup.fcf.pools.iter().enumerate() {
+            for (slot, _, _) in pool.cuts_in(CutSet::All) {
+                twin.set_active(pool_id, u32::try_from(slot).expect("slot fits"), true);
+            }
+        }
+        setup.replace_fcf(twin);
+        setup.simulation_cut_set = CutSet::Active;
+        let (flagged, twin_rejections) = simulate_with(&setup, &result, None);
+
+        assert_eq!(twin_rejections, 0);
+        assert_eq!(bitwise(&all), bitwise(&flagged));
+    }
+
+    #[test]
+    fn selection_off_simulates_identically_under_either_cut_set() {
+        let (mut setup, result) = train_d03(|config| {
+            config.training.cut_selection.selection = None;
+            config.training.cut_selection.max_active_per_stage = None;
+        });
+        assert!(
+            counts_per_pool(&setup)
+                .iter()
+                .zip(&setup.fcf.pools)
+                .all(|(&(all, active), pool)| all == active && active == pool.populated()),
+            "a run without selection or a cap deactivates nothing"
+        );
+        let frozen_templates = result
+            .frozen_templates
+            .as_deref()
+            .expect("training must produce frozen templates");
+
+        setup.simulation_cut_set = CutSet::Active;
+        let (active, active_rejections) = simulate_with(&setup, &result, Some(frozen_templates));
+        setup.simulation_cut_set = CutSet::All;
+        let (all, all_rejections) = simulate_with(&setup, &result, Some(frozen_templates));
+
+        assert_eq!((active_rejections, all_rejections), (0, 0));
+        assert_eq!(all.len(), SCENARIOS as usize);
+        assert_eq!(bitwise(&all), bitwise(&active));
+    }
+
+    #[test]
+    fn a_dynamic_run_has_one_cut_set() {
+        let (setup, _) = train_d03(|config| {
+            config.training.cut_selection.selection = Some(SelectionMethod::Dynamic {
+                start_iteration: positive(2),
+                seed_window: 5,
+                candidate_recency: None,
+                max_added_per_round: positive(10),
+                violation_tolerance: None,
+            });
+        });
+
+        for (pool_id, pool) in setup.fcf.pools.iter().enumerate() {
+            assert_eq!(
+                pool.count_in(CutSet::All),
+                pool.active_count(),
+                "pool {pool_id}: no cut is deactivated under dynamic selection"
             );
         }
     }

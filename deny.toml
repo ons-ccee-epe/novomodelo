@@ -51,11 +51,24 @@ multiple-versions = "warn"
 # Deny crates with wildcard dependencies.
 wildcards = "deny"
 # Deny known problematic crates.
-deny = []
+deny = [
+    { crate = "openblas-src", reason = "an external BLAS would select a dgemm kernel outside the one the determinism tests gate" },
+    { crate = "intel-mkl-src", reason = "an external BLAS would select a dgemm kernel outside the one the determinism tests gate" },
+    { crate = "blas-src", reason = "an external BLAS would select a dgemm kernel outside the one the determinism tests gate" },
+    { crate = "cblas-sys", reason = "an external BLAS would select a dgemm kernel outside the one the determinism tests gate" },
+    { crate = "multiversion", reason = "runtime CPU dispatch would select a kernel outside the one the determinism tests gate" },
+]
 # Skip duplicate version checks for these (common transitive deps with
 # multiple versions in the wild).
 skip = []
 skip-tree = []
+
+# Any feature (`std` adds runtime CPU detection, `threading` interleaves the
+# kernel) changes the kernel the determinism tests gate.
+[[bans.features]]
+crate = "matrixmultiply"
+exact = true
+allow = []
 
 # ------------------------------------------------------------------ sources
 [sources]

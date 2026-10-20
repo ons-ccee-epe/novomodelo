@@ -2397,7 +2397,7 @@ fn simulate_with_captured_basis_preserves_row_statuses() {
     let state = state_layout_for(1, 0);
 
     // Build an FCF with 3 active cuts at slots 10, 11, 12 for stage 0.
-    // warm_start_count=10, forward_passes=1 →
+    // slot_base=10, forward_passes=1 →
     //   add_cut(iter=0, fwd=0) → slot 10
     //   add_cut(iter=1, fwd=0) → slot 11
     //   add_cut(iter=2, fwd=0) → slot 12

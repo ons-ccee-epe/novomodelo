@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use novomodelo_core::AffineBound;
+use novomodelo_core::ScalarExpr;
 
 use super::{ValidationContext, rules, schema::ParsedData};
 
@@ -875,17 +875,15 @@ fn check_generic_constraint_expression_references(
     }
 }
 
-/// A generic-constraint endpoint's fold, resolved to one scalar only when it is
-/// static: `literal` alone with no affine remainder, or
-/// `literal.unwrap_or(0.0) + affine.constant` when the remainder carries no
-/// `@param` terms. A `@param`-bearing remainder makes the endpoint
-/// stage-varying — `None` here, deferring its value (and any inversion
-/// against the other endpoint) to the LP builder's `fold_endpoint`.
-fn static_fold(literal: Option<f64>, affine: Option<&AffineBound>) -> Option<f64> {
-    match affine {
+/// A generic-constraint endpoint's fold, resolved to one scalar only when it is static:
+/// `literal` alone with no bound program, or `literal.unwrap_or(0.0) + v` when the program
+/// is the literal `v` (exact: a program that reads no parameter folds to one literal). A
+/// parameter-reading program makes the endpoint stage-varying — `None` here, deferring its
+/// value (and any inversion against the other endpoint) to the LP builder's `fold_endpoint`.
+fn static_fold(literal: Option<f64>, bound: Option<&ScalarExpr>) -> Option<f64> {
+    match bound {
         None => literal,
-        Some(bound) if bound.terms.is_empty() => Some(literal.unwrap_or(0.0) + bound.constant),
-        Some(_) => None,
+        Some(bound) => bound.as_literal().map(|v| literal.unwrap_or(0.0) + v),
     }
 }
 
@@ -899,18 +897,10 @@ fn check_generic_constraint_bounds_validity(data: &ParsedData, ctx: &mut Validat
     // on the same endpoint compose (`base + R`, `fold_endpoint` in the LP
     // builder) rather than conflict — any remainder shape, constant-only or
     // `@param`-bearing, is a legal fold.
-    let constraint_affines: HashMap<i32, (Option<&AffineBound>, Option<&AffineBound>)> = data
+    let constraint_affines: HashMap<i32, (Option<&ScalarExpr>, Option<&ScalarExpr>)> = data
         .generic_constraints
         .iter()
-        .map(|gc| {
-            (
-                gc.id.0,
-                (
-                    gc.bound_lower_affine.as_ref(),
-                    gc.bound_upper_affine.as_ref(),
-                ),
-            )
-        })
+        .map(|gc| (gc.id.0, (gc.bound_lower.as_ref(), gc.bound_upper.as_ref())))
         .collect();
 
     // The interval IS the constraint: shape derives from which endpoints a row
@@ -970,7 +960,7 @@ fn check_generic_constraint_bounds_validity(data: &ParsedData, ctx: &mut Validat
         .map(|row| row.constraint_id)
         .collect();
     for gc in &data.generic_constraints {
-        if (gc.bound_lower_affine.is_some() || gc.bound_upper_affine.is_some())
+        if (gc.bound_lower.is_some() || gc.bound_upper.is_some())
             && !constraints_with_rows.contains(&gc.id.0)
         {
             ctx.emit(
@@ -1543,7 +1533,7 @@ mod tests {
         let mut hydro = make_hydro(10, None);
         hydro.diversion = Some(DiversionChannel {
             downstream_id: EntityId::from(999), // does not exist
-            max_flow_m3s: 100.0,
+            max_flow_m3s: Some(100.0),
         });
         data.hydros = vec![hydro];
         let mut ctx = ValidationContext::new();
@@ -2148,19 +2138,16 @@ mod tests {
         lower_ref: Option<i32>,
         upper_ref: Option<i32>,
     ) -> novomodelo_core::GenericConstraint {
-        use novomodelo_core::{AffineBound, ConstraintExpression, GenericConstraint, SlackConfig};
+        use novomodelo_core::{ConstraintExpression, GenericConstraint};
 
         GenericConstraint {
             id: EntityId(id),
             name: format!("sym{id}"),
             description: None,
             expression: ConstraintExpression { terms: vec![] },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: lower_ref.map(|id| AffineBound::single(EntityId(id))),
-            bound_upper_affine: upper_ref.map(|id| AffineBound::single(EntityId(id))),
+            slack: None,
+            bound_lower: lower_ref.map(|id| ScalarExpr::param(EntityId(id))),
+            bound_upper: upper_ref.map(|id| ScalarExpr::param(EntityId(id))),
         }
     }
 
@@ -2173,10 +2160,7 @@ mod tests {
         let mut data = parse_case(&dir);
 
         let mut constraint = symbolic_constraint(5, None, None);
-        constraint.bound_upper_affine = Some(AffineBound {
-            constant: -5.0,
-            terms: vec![],
-        });
+        constraint.bound_upper = Some(ScalarExpr::literal(-5.0));
         data.generic_constraints = vec![constraint];
         data.generic_constraint_bounds = vec![GenericConstraintBoundsRow {
             constraint_id: 5,
@@ -2236,10 +2220,7 @@ mod tests {
         let mut data = parse_case(&dir);
 
         let mut constraint = symbolic_constraint(5, None, None);
-        constraint.bound_upper_affine = Some(AffineBound {
-            constant: -30.0,
-            terms: vec![],
-        });
+        constraint.bound_upper = Some(ScalarExpr::literal(-30.0));
         data.generic_constraints = vec![constraint];
         data.generic_constraint_bounds = vec![GenericConstraintBoundsRow {
             constraint_id: 5,
@@ -2291,6 +2272,37 @@ mod tests {
         assert!(
             !ctx.has_errors(),
             "a @param-bearing remainder is stage-varying; its inversion is left to LP infeasibility, got: {:?}",
+            ctx.errors()
+        );
+    }
+
+    /// A remainder made only of parameter products (`x <= @pct * @emax`) is
+    /// stage-varying like a `@param` term: a parquet upper of 0 below a lower of 50
+    /// must not fold the product away into a static inversion.
+    #[test]
+    fn test_generic_constraint_bounds_product_only_remainder_defers_inversion_check() {
+        let dir = TempDir::new().unwrap();
+        make_minimal_case(&dir);
+        let mut data = parse_case(&dir);
+
+        let mut constraint = symbolic_constraint(5, None, None);
+        constraint.bound_upper =
+            Some(ScalarExpr::param(EntityId(98)) * ScalarExpr::param(EntityId(99)));
+        data.generic_constraints = vec![constraint];
+        data.generic_constraint_bounds = vec![GenericConstraintBoundsRow {
+            constraint_id: 5,
+            stage_id: 0,
+            block_id: None,
+            bound_lower: Some(50.0),
+            bound_upper: Some(0.0),
+        }];
+
+        let mut ctx = ValidationContext::new();
+        validate_referential_integrity(&data, &mut ctx);
+
+        assert!(
+            !ctx.has_errors(),
+            "a product-bearing remainder is stage-varying; its inversion is left to the LP, got: {:?}",
             ctx.errors()
         );
     }
@@ -2802,9 +2814,7 @@ mod tests {
     /// including the constraint id in the context.
     #[test]
     fn test_anticipated_decision_unknown_thermal_ref() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -2823,12 +2833,9 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc];
 
@@ -2860,9 +2867,7 @@ mod tests {
 
     #[test]
     fn test_hydro_inflow_unknown_hydro_ref() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -2882,12 +2887,9 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc];
 
@@ -2917,9 +2919,7 @@ mod tests {
     /// `Some(_)` form validates identically to the `None` form.
     #[test]
     fn test_hydro_inflow_with_block_unknown_hydro_ref() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -2938,12 +2938,9 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc];
 
@@ -2973,9 +2970,7 @@ mod tests {
     /// hydro arm's `..` pattern absorbs `block_id`, matching `HydroStorage`.
     #[test]
     fn test_hydro_storage_initial_unknown_hydro_ref() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -2994,12 +2989,9 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc];
 
@@ -3029,9 +3021,7 @@ mod tests {
     /// the same check `hydro_storage_final` gets, via the shared hydro arm.
     #[test]
     fn test_hydro_useful_volume_final_unknown_hydro_ref() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -3050,12 +3040,9 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc];
 
@@ -3122,9 +3109,7 @@ mod tests {
     /// group. The per-plant check rejects it even though bus 9 is a declared bus.
     #[test]
     fn test_generic_constraint_unknown_bus_selector_rejected() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -3144,12 +3129,9 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc];
 
@@ -3192,9 +3174,7 @@ mod tests {
     /// bus rather than group id accepts the valid selector.
     #[test]
     fn test_generic_constraint_valid_bus_selector_and_none_accepted() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -3214,12 +3194,9 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         let gc_generation = GenericConstraint {
             id: EntityId::from(2),
@@ -3235,12 +3212,9 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc_turbined, gc_generation];
 
@@ -3265,9 +3239,7 @@ mod tests {
     /// plant and must not also fire.
     #[test]
     fn test_generic_constraint_unknown_hydro_with_selector_emits_one_finding() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -3287,12 +3259,9 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc];
 
@@ -3328,9 +3297,7 @@ mod tests {
     /// the "bus does not exist" case, so no second finding is added.
     #[test]
     fn test_generic_constraint_nonexistent_bus_selector_emits_one_finding() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -3350,12 +3317,9 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc];
 
@@ -3390,9 +3354,7 @@ mod tests {
     /// file generic constraints are read from.
     #[test]
     fn generic_constraint_reference_findings_name_the_constraints_file() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, SlackConfig, VariableRef,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
@@ -3419,12 +3381,9 @@ mod tests {
                     ),
                 ],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
         };
         data.generic_constraints = vec![gc];
 

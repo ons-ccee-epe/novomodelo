@@ -11,25 +11,24 @@ use chrono::NaiveDate;
 use novomodelo_comm::Communicator;
 use novomodelo_core::commissioning::commissioning_active;
 use novomodelo_core::{ContractType, EntityId, HydroPastDefluence, TrainingEvent};
-use novomodelo_solver::ActiveProfile;
-use novomodelo_solver::{SolverInterface, StageTemplate};
+use novomodelo_solver::{ActiveProfile, SolverInterface, StageTemplate};
 use novomodelo_stochastic::{
     ClassSampleRequest, ForwardNoiseTables, ForwardSampler, SampleRequest,
 };
 
+use crate::cut::CutSet;
 use crate::energy_conversion::EnergyConversionSet;
 use crate::error::SddpError::Infeasible;
 use crate::error::SddpError::Solver;
-use crate::lp::builder::GenericConstraintRowEntry;
-use crate::lp::builder::StageGeometry;
+use crate::lp::builder::{GenericConstraintRowEntry, StageGeometry};
 use crate::lp::indexer::{AnticipatedPlants, BlockIdx, BlockRowFamily, StudyDimensions};
-use crate::noise::DownstreamAccumState;
-use crate::noise::LagAccumState;
+use crate::noise::{DownstreamAccumState, LagAccumState};
+use crate::simulation::state::{SimulationInputs, SimulationState};
 use crate::stage_solve::StageInputs;
 use crate::stage_solve::assemble_outgoing_state;
 use crate::stage_solve::fill_unscaled;
 use crate::stage_solve::fill_unscaled_dual;
-use crate::stage_solve::run_stage_solve;
+use crate::stage_solve::run_stage_solve_over;
 use crate::{
     FutureCostFunction, SddpError,
     context::{StageContext, TrainingContext},
@@ -253,13 +252,20 @@ pub(crate) struct SimStageIds {
 /// Load-path inputs bundled for `solve_simulation_stage`.
 ///
 /// The LP is loaded via `load_model(frozen_template)` — the frozen template
-/// already embeds all active cut rows as structural rows. No `add_rows` call
-/// is needed.
+/// already embeds the cut rows of `cut_set` as structural rows. No `add_rows`
+/// call is needed.
 pub(crate) struct SimStageLoadSpec<'a> {
     /// Frozen template for this stage; always populated after the startup re-freeze.
     pub(crate) frozen_template: &'a StageTemplate,
     /// Warm-start basis captured during training at the visited node, if any.
     pub(crate) warm_basis: Option<&'a CapturedBasis>,
+    /// `primal_feasibility_tolerance` of the simulation solver profile, which
+    /// resolves an absent `violation_tolerance`. The tolerance is not exercised
+    /// in simulation: the lazy solve seeds every active cut, so no candidate is
+    /// left to score.
+    pub(crate) solver_tolerance: f64,
+    /// The cuts `frozen_template` holds.
+    pub(crate) cut_set: CutSet,
 }
 
 /// Per-stage batched form of [`SimStageLoadSpec`] consumed by
@@ -271,9 +277,12 @@ pub(crate) struct SimScenarioLoadSpec<'a> {
     /// `BasisStore`'s shape) — never per stage: on a branching graph several
     /// nodes share a stage, and a stage-keyed lookup would silently warm-start
     /// from whichever node's basis happened to land at that stage index,
-    /// going cold for every other node sharing it. On a chain, node position
-    /// and stage coincide, so this is byte-identical to the pre-rekey lookup.
+    /// going cold for every other node sharing it.
     pub(crate) node_bases: &'a [Option<CapturedBasis>],
+    /// See [`SimStageLoadSpec::solver_tolerance`].
+    pub(crate) solver_tolerance: f64,
+    /// See [`SimStageLoadSpec::cut_set`].
+    pub(crate) cut_set: CutSet,
 }
 
 impl<'a> SimScenarioLoadSpec<'a> {
@@ -284,6 +293,8 @@ impl<'a> SimScenarioLoadSpec<'a> {
         SimStageLoadSpec {
             frozen_template: &self.frozen_templates[pool_id],
             warm_basis: self.node_bases.get(node.0).and_then(Option::as_ref),
+            solver_tolerance: self.solver_tolerance,
+            cut_set: self.cut_set,
         }
     }
 }
@@ -364,7 +375,8 @@ fn map_sim_solver_error(e: SddpError, ids: &SimStageIds) -> SimulationError {
 /// read-only, per-stage training artifact, so determinism is preserved. Under
 /// dynamic cut-selection the stage is solved lazily against the cut pool from the
 /// cut-free base template (the frozen cut rows are unused); the realized primal is
-/// identical at the optimum by exactness.
+/// identical at the optimum by exactness. The lazy solve seeds every active cut, so
+/// scoring finds no candidate and `dcs.violation_tolerance` is never exercised.
 // RATIONALE: the sequential per-stage steps cannot split without fragmenting the
 // per-stage invariant tracking.
 #[allow(clippy::too_many_lines)]
@@ -386,7 +398,7 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
         dcs,
         ..
     } = training_ctx;
-    let dcs = *dcs;
+    let dcs = dcs.map(|config| config.resolve(load_spec.solver_tolerance));
     let t = ids.t;
     // DCS loads the cut-free base so its fresh CutRowMap owns the resident cut
     // subset; loading the frozen template would double-append the embedded cut rows.
@@ -428,18 +440,25 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
 
     let pool_id = training_ctx.node_graph.nodes[ids.node].pool_id;
 
-    let view_objective: f64 = if let Some(params) = dcs {
+    let view_objective = if let Some(params) = dcs {
+        debug_assert_eq!(
+            fcf.pools[pool_id].count_in(load_spec.cut_set),
+            fcf.pools[pool_id].active_count(),
+            "the lazy solve reads the active cuts, so the chosen set must equal them; \
+             check_full_fcf_load refuses every load kind, and reconcile_boundary_policy \
+             refuses policy.boundary, where it does not"
+        );
         // Simulation has no iteration counter; seed with `current_iteration = 0`.
         build_initial_resident_set(
             &fcf.pools[pool_id],
             0,
-            params.k2,
+            params.seed_window,
             &mut ws.backward_accum.dcs_initial_resident,
         );
         let dcs_ctx = DcsSolveContext {
             stage_index: t,
             scenario_index: ids.scenario_id as usize,
-            iteration: None, // disables the k1 window → every cut a candidate
+            iteration: None, // disables the candidate_recency window → every cut a candidate
             // Simulation solves one LP per (stage, scenario): always fresh.
             continue_carry: false,
             node_id: ids.node_id,
@@ -478,11 +497,12 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
             stored_basis: load_spec.warm_basis,
             stage_index: t,
             scenario_index: ids.scenario_id as usize,
-            iteration: None, // simulation has no iteration counter
+            iteration: None,
             node_id: ids.node_id,
         };
 
-        let view = run_stage_solve(ws, &inputs).map_err(|e| map_sim_solver_error(e, ids))?;
+        let view = run_stage_solve_over(ws, &inputs, fcf.pools[pool_id].cuts_in(load_spec.cut_set))
+            .map_err(|e| map_sim_solver_error(e, ids))?;
 
         let objective = view.objective;
         fill_unscaled(&mut unscaled_primal, view.primal, col_scale);
@@ -494,7 +514,7 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
     ws.scratch.unscaled_dual = unscaled_dual;
 
     let include_terminal_theta =
-        training_ctx.horizon.is_terminal(t.next().0) && fcf.pools[pool_id].has_warm_start_cuts();
+        training_ctx.horizon.is_terminal(t.next().0) && fcf.pools[pool_id].has_prefix_cuts();
 
     let (immediate_cost, result) = extract_sim_stage_result(
         &mut ws.scratch.inflow_m3s_buf,
@@ -607,7 +627,6 @@ pub(crate) fn extract_sim_stage_result(
     inflow_m3s_buf.clear();
     inflow_m3s_buf.extend_from_slice(&unscaled_primal[training_ctx.state.z_inflow.clone()]);
     debug_assert_eq!(inflow_m3s_buf.len(), training_ctx.state.hydro_count);
-    let blk_hrs = output.block_hours_per_stage[t.0].as_slice();
     let (load_rows, load_n_blks) = resolve_load_rows(ctx, t);
     let row_lower_ref = build_row_lower_unscaled(
         &ctx.template(t).row_lower,
@@ -671,7 +690,7 @@ pub(crate) fn extract_sim_stage_result(
         hydro_cell_index: output.hydro_cell_index,
         entity_counts: output.entity_counts,
         inflow_m3s_per_hydro: inflow_m3s_buf,
-        block_hours: blk_hrs,
+        block_hours: output.block_hours_per_stage[t.0].as_slice(),
         generic_constraint_entries: &output.generic_constraint_row_entries[t.0],
         ncs_col_upper,
         pumping_consumption_mw_per_m3s: output.pumping_consumption_mw_per_m3s,
@@ -811,7 +830,6 @@ pub(crate) fn process_scenario_stages<S: SolverInterface>(
     let mut stage_results = Vec::with_capacity(num_stages);
     let mut node = ids.root_node;
 
-    #[allow(clippy::needless_range_loop)] // t indexes load_spec, ctx arrays, and SimStageIds
     for t in (0..num_stages).map(StageIdx) {
         // Seeds key off the positional stage index `t` (unchanged — a re-key here
         // would perturb the noise/transition draws); the output stage_id is the
@@ -934,11 +952,8 @@ pub(crate) fn dispatch_scenario_result(
     Ok((scenario_id, total_cost, compact_category))
 }
 
-/// Evaluate the trained SDDP policy on a set of scenarios.
-///
-/// Thin shim that delegates to `SimulationState::run`.
-/// All scheduling, freeze logic, and rayon parallelism live in
-/// `crate::simulation::state`.
+/// Evaluate the trained SDDP policy on a set of scenarios, with the active cuts
+/// in every stage LP.
 ///
 /// # Errors
 ///
@@ -964,10 +979,7 @@ pub fn simulate<S, C: Communicator>(
 where
     S: SolverInterface<Profile = ActiveProfile> + Send,
 {
-    use crate::simulation::state::{SimulationInputs, SimulationState};
-    let mut state = SimulationState::new(training_ctx.horizon.num_stages());
-    state.set_profile(config.profile);
-    state.run(&mut SimulationInputs {
+    run_simulation(&mut SimulationInputs {
         workspaces,
         ctx,
         fcf,
@@ -975,10 +987,31 @@ where
         config,
         output,
         frozen_templates,
+        cut_set: CutSet::Active,
         node_bases,
         comm,
         traversal,
     })
+}
+
+/// Evaluate the trained SDDP policy with the cuts of `inputs.cut_set` in every
+/// stage LP.
+///
+/// All scheduling, freeze logic, and rayon parallelism live in
+/// `crate::simulation::state`.
+///
+/// # Errors
+///
+/// Same as [`simulate`].
+pub(crate) fn run_simulation<S, C: Communicator>(
+    inputs: &mut SimulationInputs<'_, S, C>,
+) -> Result<SimulationRunResult, SimulationError>
+where
+    S: SolverInterface<Profile = ActiveProfile> + Send,
+{
+    let mut state = SimulationState::new(inputs.training_ctx.horizon.num_stages());
+    state.set_profile(inputs.config.profile);
+    state.run(inputs)
 }
 
 #[cfg(test)]

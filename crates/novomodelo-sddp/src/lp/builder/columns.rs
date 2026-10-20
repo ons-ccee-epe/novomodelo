@@ -4,15 +4,14 @@ use novomodelo_core::{BlockMode, ContractType, Stage};
 use crate::hydro_models::EvaporationModel;
 use crate::indexer::{
     AnticipatedLocal, BlockIdx, Boundary, BusSys, EvapLocal, FillingTargetLocal, FloorLocal,
-    FphaCellLocal, FphaLocal, HydroCell, HydroSys, LineSys, NcsSys, PumpingSys, ThermalSys,
-    for_each_ring_residue, is_anticipated_decision_active_for_delivery,
+    FphaCellLocal, FphaLocal, HydroCell, HydroSys, LineSys, NcsSys, PlantFloorLocal, PumpingSys,
+    ThermalSys, for_each_ring_residue, is_anticipated_decision_active_for_delivery,
 };
 
 use super::EVAPORATION_FLOW_SAFETY_MARGIN;
 use super::delivery_ring::{ColumnBufs, DeliveryRing};
 use super::hydro_state::{
-    GroupBoundLookup, cell_max_generation, cell_max_turbined, cell_min_generation,
-    cell_min_turbined, hydro_phase,
+    GroupBoundLookup, MinFloor, cell_max_generation, cell_max_turbined, hydro_phase, is_suspended,
 };
 use super::layout::{
     StageLayout, TemplateBuildCtx, contract_direction_counts, contract_family_slot,
@@ -187,10 +186,7 @@ fn fill_turbine_columns(
 ) {
     for h_idx in 0..layout.state.hydro_count {
         let hydro = &ctx.hydros[h_idx];
-        let suspended = matches!(
-            hydro_phase(hydro, stage.id),
-            Phase::PreFilling | Phase::Filling
-        );
+        let suspended = is_suspended(hydro, stage.id);
         let hp = ctx.resolved.penalties.hydro_penalties(h_idx, stage_idx);
         let model = ctx.production_models.model(h_idx, stage_idx);
         for blk in 0..layout.clock.n_blks() {
@@ -269,8 +265,8 @@ fn fill_spillage_columns(
     }
 }
 
-/// Diversion columns per hydro per block (dense; non-diverting hydros get `[0, 0]`
-/// and are presolve-eliminated).
+/// Diversion columns per hydro per block (dense; a hydro without a channel resolves
+/// `[0, 0]` and is presolve-eliminated; an unlimited channel is open above).
 ///
 /// A dormant hydro (`hydro.filling.is_some()` OR suspended) forces BOTH bounds to
 /// `[0, 0]`: both must drop, or a positive `min_diversion_m3s` floor leaves the
@@ -286,10 +282,7 @@ fn fill_diversion_columns(
 ) {
     for (h_idx, hydro) in ctx.hydros.iter().enumerate() {
         let hp = ctx.resolved.penalties.hydro_penalties(h_idx, stage_idx);
-        let suspended = matches!(
-            hydro_phase(hydro, stage.id),
-            Phase::PreFilling | Phase::Filling
-        );
+        let suspended = is_suspended(hydro, stage.id);
         let dormant = hydro.filling.is_some() || suspended;
         for blk in 0..layout.clock.n_blks() {
             // CONTRACT: read the per-stage RESOLVED bounds, NOT the declaration-time
@@ -304,7 +297,7 @@ fn fill_diversion_columns(
                     .hydro_bounds_at_block(h_idx, stage_idx, blk);
                 (
                     hb.min_diversion_m3s.unwrap_or(0.0),
-                    hb.max_diversion_m3s.unwrap_or(0.0),
+                    hb.max_diversion_m3s.unwrap_or(f64::INFINITY),
                 )
             };
             let col = layout
@@ -602,17 +595,18 @@ fn fill_inflow_slack_columns(
     total_stage_hours: f64,
     bufs: &mut ColumnBufs<'_>,
 ) {
-    if !layout.geometry.inflow_slack.is_empty() {
-        let method = ctx.study_dims.inflow_method;
-        for h_idx in 0..layout.state.hydro_count {
-            let col = layout.geometry.inflow_slack_col(HydroSys::new(h_idx));
-            if method.slack_is_priced() {
-                let hp = ctx.resolved.penalties.hydro_penalties(h_idx, stage_idx);
-                bufs.objective[col] = hp.inflow_nonnegativity_cost * total_stage_hours;
-            }
-            if method.truncates() {
-                bufs.col_upper[col] = 0.0;
-            }
+    if layout.geometry.inflow_slack.is_empty() {
+        return;
+    }
+    let method = ctx.study_dims.inflow_method;
+    for h_idx in 0..layout.state.hydro_count {
+        let col = layout.geometry.inflow_slack_col(HydroSys::new(h_idx));
+        if method.slack_is_priced() {
+            let hp = ctx.resolved.penalties.hydro_penalties(h_idx, stage_idx);
+            bufs.objective[col] = hp.inflow_nonnegativity_cost * total_stage_hours;
+        }
+        if method.truncates() {
+            bufs.col_upper[col] = 0.0;
         }
     }
 }
@@ -783,9 +777,9 @@ fn fill_withdrawal_slack_columns(
 /// never a stage-level read hoisted above the loop (drops a block-only floor,
 /// e.g. `min_outflow_m3s > 0.0` on one block only, leaving no slack column to
 /// relax it); either alternative compiles and silently mis-activates the column.
-/// The power-side families (min-turbine, min-generation) are CELL-keyed —
-/// see [`CellSlackFamily`] — because a plant's floor is a per-cell sum, not a
-/// plant-level aggregate; only the two flow families stay hydro-keyed here.
+/// The power-side families (min-turbine, min-generation) are CELL-keyed, plus
+/// a residual per plant-floor hydro — see [`fill_cell_floor_slacks`] and
+/// [`fill_plant_floor_slacks`]; only the two flow families stay hydro-keyed here.
 #[derive(Clone, Copy)]
 enum BlockSlackFamily {
     /// Active iff resolved `min_outflow_m3s > 0.0`.
@@ -795,21 +789,10 @@ enum BlockSlackFamily {
     OutflowAbove,
 }
 
-/// The two cell-keyed operational-violation slack families, addressing a
-/// disjoint `n_cells * n_blks` column range — the min-floor mirror of
-/// [`BlockSlackFamily`]'s hydro-keyed families. See the min-floor contract.
-#[derive(Clone, Copy)]
-enum CellSlackFamily {
-    /// Active iff the cell's resolved `cell_min_turbined` sum is `> 0.0`.
-    TurbineBelow,
-    /// Active iff the cell's resolved `cell_min_generation` sum is `> 0.0`.
-    GenerationBelow,
-}
-
 /// Operational violation slack columns: the two hydro-keyed flow families
-/// (`n_h * n_blks` each) and the two cell-keyed power families (`n_cells *
-/// n_blks` each), all four disjoint ranges so call order does not affect the
-/// result.
+/// (`n_h * n_blks` each), the two cell-keyed power families (`n_cells *
+/// n_blks` each), and the two plant residual families, all disjoint ranges so
+/// call order does not affect the result.
 fn fill_operational_slack_columns(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
@@ -823,11 +806,9 @@ fn fill_operational_slack_columns(
     ] {
         fill_block_family(ctx, stage, stage_idx, layout, bufs, family);
     }
-    for family in [
-        CellSlackFamily::TurbineBelow,
-        CellSlackFamily::GenerationBelow,
-    ] {
-        fill_cell_block_family(ctx, stage, stage_idx, layout, bufs, family);
+    for kind in MinFloor::ALL {
+        fill_cell_floor_slacks(ctx, stage, stage_idx, layout, bufs, kind);
+        fill_plant_floor_slacks(ctx, stage, stage_idx, layout, bufs, kind);
     }
 }
 
@@ -870,52 +851,60 @@ fn fill_block_family(
     }
 }
 
-/// Fill one cell-keyed operational-violation slack family's `n_cells * n_blks`
-/// columns; `col_lower` stays at the `0.0` vec default. The cost is the
-/// PLANT's own penalty (`HydroPenalties` is plant-level) at FULL magnitude —
-/// never divided by the plant's cell count — replicated onto every one of the
-/// plant's cells; see the min-floor contract.
-fn fill_cell_block_family(
+/// Fill one cell-keyed `kind` slack family's `n_cells * n_blks` columns,
+/// active iff the cell row's RHS is `> 0.0`; `col_lower` stays at the `0.0`
+/// vec default. The cost is the PLANT's own penalty (`HydroPenalties` is
+/// plant-level) at FULL magnitude — never divided by the plant's cell count —
+/// replicated onto every one of the plant's cells; see the min-floor contract.
+fn fill_cell_floor_slacks(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
     stage_idx: usize,
     layout: &StageLayout,
     bufs: &mut ColumnBufs<'_>,
-    family: CellSlackFamily,
+    kind: MinFloor,
 ) {
     for h_idx in 0..layout.state.hydro_count {
-        let hydro = &ctx.hydros[h_idx];
-        let hp = ctx.resolved.penalties.hydro_penalties(h_idx, stage_idx);
-        let cost = match family {
-            CellSlackFamily::TurbineBelow => hp.turbined_violation_below_cost,
-            CellSlackFamily::GenerationBelow => hp.generation_violation_below_cost,
-        };
+        let h = HydroSys::new(h_idx);
+        let cost = kind.below_cost(ctx.resolved.penalties.hydro_penalties(h_idx, stage_idx));
         for blk in 0..layout.clock.n_blks() {
-            let lookup =
-                GroupBoundLookup::new(ctx.resolved.bounds.group_overlay(), h_idx, stage_idx, blk);
+            let floor = ctx.plant_floor(stage_idx, kind, h, blk);
             let block_hours = stage.blocks[blk].duration_hours;
-            for cell_idx in ctx.hydro_cell_index.cells_of(HydroSys::new(h_idx)) {
+            for cell_idx in ctx.hydro_cell_index.cells_of(h) {
                 let cell = HydroCell::new(cell_idx);
-                let positions = ctx.hydro_cell_index.groups_of(cell);
-                let cell_min = match family {
-                    CellSlackFamily::TurbineBelow => {
-                        cell_min_turbined(&hydro.unit_groups, positions, lookup)
-                    }
-                    CellSlackFamily::GenerationBelow => {
-                        cell_min_generation(&hydro.unit_groups, positions, lookup)
-                    }
+                let col = layout.cell_below_col(kind, cell, BlockIdx::new(blk));
+                bufs.col_upper[col] = if floor.cell_rhs(cell) > 0.0 {
+                    f64::INFINITY
+                } else {
+                    0.0
                 };
-                let col = match family {
-                    CellSlackFamily::TurbineBelow => {
-                        layout.geometry.turbine_below_col(cell, BlockIdx::new(blk))
-                    }
-                    CellSlackFamily::GenerationBelow => layout
-                        .geometry
-                        .generation_below_col(cell, BlockIdx::new(blk)),
-                };
-                bufs.col_upper[col] = if cell_min > 0.0 { f64::INFINITY } else { 0.0 };
                 bufs.objective[col] = cost * block_hours;
             }
+        }
+    }
+}
+
+/// Fill the plant residual `kind` slack columns, one per plant-floor hydro per
+/// block, at the same plant penalty as its cell slacks: active only at a block
+/// whose residual row binds, `[0, 0]` where that row is free.
+fn fill_plant_floor_slacks(
+    ctx: &TemplateBuildCtx<'_>,
+    stage: &Stage,
+    stage_idx: usize,
+    layout: &StageLayout,
+    bufs: &mut ColumnBufs<'_>,
+    kind: MinFloor,
+) {
+    for (local, &h) in layout.geometry.plant_floor_hydro_indices.iter().enumerate() {
+        let cost = kind.below_cost(ctx.resolved.penalties.hydro_penalties(h.get(), stage_idx));
+        for blk in 0..layout.clock.n_blks() {
+            let col = layout.plant_below_col(kind, PlantFloorLocal::new(local), BlockIdx::new(blk));
+            let binds = ctx
+                .plant_floor(stage_idx, kind, h, blk)
+                .residual_rhs()
+                .is_some();
+            bufs.col_upper[col] = if binds { f64::INFINITY } else { 0.0 };
+            bufs.objective[col] = cost * stage.blocks[blk].duration_hours;
         }
     }
 }
@@ -1609,7 +1598,7 @@ mod diversion_bound_tests {
             evaporation_reference_volumes_hm3: None,
             diversion: Some(DiversionChannel {
                 downstream_id: EntityId(2),
-                max_flow_m3s: DECLARATION_MAX_FLOW_M3S,
+                max_flow_m3s: Some(DECLARATION_MAX_FLOW_M3S),
             }),
             filling: None,
             penalties: zero_hydro_penalties(),
@@ -1770,7 +1759,7 @@ mod diversion_bound_tests {
         let ctx = fixtures.make_ctx();
         let layout = StageLayout::new(&ctx, &stage, STAGE_IDX);
         let mut col_lower = vec![0.0_f64; layout.num_cols];
-        let mut col_upper = vec![f64::INFINITY; layout.num_cols];
+        let mut col_upper = vec![-1.0_f64; layout.num_cols];
         let mut objective = vec![0.0_f64; layout.num_cols];
         let mut bufs = ColumnBufs {
             col_lower: &mut col_lower,
@@ -1829,6 +1818,26 @@ mod diversion_bound_tests {
                 "blk {blk}: col_upper[{col}] must equal the declaration default \
                  {DECLARATION_MAX_FLOW_M3S} when no override tightens it"
             );
+        }
+    }
+
+    /// An unlimited channel (`None`) opens the column above; a closed one
+    /// (`Some(0.0)`, the resolver's seed for a hydro without a channel) is `[0, 0]`.
+    #[test]
+    fn unset_diversion_cap_is_unbounded_and_zero_cap_is_closed() {
+        for (resolved, expected_upper) in [(None, f64::INFINITY), (Some(0.0), 0.0)] {
+            let mut fixtures = DivFixtures::new();
+            fixtures.set_resolved_diversion(resolved);
+
+            let (col_lower, col_upper, n_blks, col_diversion_start) = run_fill(&mut fixtures);
+            for blk in 0..n_blks {
+                let col = col_diversion_start + blk;
+                assert_eq!(col_lower[col], 0.0, "resolved {resolved:?} blk {blk}");
+                assert_eq!(
+                    col_upper[col], expected_upper,
+                    "resolved {resolved:?} blk {blk}"
+                );
+            }
         }
     }
 
@@ -2470,6 +2479,24 @@ mod filling_phase_gating_tests {
                 upper[col], 0.0,
                 "diversion col_upper blk {blk} at Operating with a floor set"
             );
+        }
+    }
+
+    /// A filling hydro with an unlimited channel is still `[0, 0]` at every phase.
+    #[test]
+    fn filling_hydro_with_unlimited_channel_diversion_zeroed() {
+        let mut fixtures = Fixtures::new(Some(filling_config()), Some(ENTRY_STAGE_ID), true);
+        fixtures
+            .base
+            .bounds
+            .hydro_block_base_mut(0, STAGE_IDX)
+            .max_diversion_m3s = None;
+        for stage_id in [PREFILLING_ID, FILLING_ID, OPERATING_ID] {
+            let (lower, upper, [_turb, div, _gen_col]) = run_fills(&mut fixtures, stage_id);
+            for blk in 0..2 {
+                assert_eq!(lower[div + blk], 0.0, "col_lower blk {blk} at {stage_id}");
+                assert_eq!(upper[div + blk], 0.0, "col_upper blk {blk} at {stage_id}");
+            }
         }
     }
 
@@ -6155,7 +6182,7 @@ mod hydro_block_bound_tests {
         fixtures.set_hydro_bounds(
             0,
             STAGE_IDX,
-            hydro_block_bounds(10.0, 200.0, 12.0, None, 0.0, 190.0, None),
+            hydro_block_bounds(10.0, 200.0, 12.0, None, 0.0, 190.0, Some(0.0)),
         );
         fixtures.set_hydro_penalties(
             0,
@@ -6175,7 +6202,7 @@ mod hydro_block_bound_tests {
         fixtures.set_hydro_bounds(
             2,
             STAGE_IDX,
-            hydro_block_bounds(0.0, 0.0, 0.0, Some(0.0), 0.0, 0.0, None),
+            hydro_block_bounds(0.0, 0.0, 0.0, Some(0.0), 0.0, 0.0, Some(0.0)),
         );
         fixtures.set_hydro_penalties(
             2,
@@ -6626,10 +6653,11 @@ mod cell_column_bound_tests {
     use crate::test_support::make_unit_group;
     use crate::time_value::TimeValue;
 
+    use super::super::hydro_state::{cell_min_generation, cell_min_turbined};
     use super::super::test_support::{BLOCK_HOURS, three_block_stage, zero_hydro_penalties};
     use super::{
-        ColumnBufs, GroupBoundLookup, StageLayout, TemplateBuildCtx, cell_min_generation,
-        cell_min_turbined, fill_fpha_generation_columns, fill_turbine_columns,
+        ColumnBufs, GroupBoundLookup, StageLayout, TemplateBuildCtx, fill_fpha_generation_columns,
+        fill_turbine_columns,
     };
 
     const N_STAGES: usize = 1;

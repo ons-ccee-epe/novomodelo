@@ -39,8 +39,8 @@ use novomodelo_core::{
     },
 };
 use novomodelo_sddp::{
-    Phase, ResolvedParameters, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet,
-    TrainingConfig, build_stage_templates_resolving_layout,
+    LoadedPolicy, Phase, ResolvedParameters, SolverProfiles, StoppingMode, StoppingRule,
+    StoppingRuleSet, TrainingConfig, build_stage_templates_resolving_layout,
     config::{CutManagementConfig, EventConfig, LoopConfig},
     context::TrainingContext,
     cut::FutureCostFunction,
@@ -581,7 +581,7 @@ fn train_fixture_into(
         },
         &comm,
         ActiveSolver::new,
-        None,
+        LoadedPolicy::default(),
         SolverProfiles::default(),
     )
 }
@@ -1014,7 +1014,7 @@ mod default_method_equivalence {
     /// deserialization default.
     fn study_config(method: Option<CfgInflowMethod>) -> (novomodelo_core::System, Config) {
         let spec = ChronologicalNoiseSpec {
-            load_mean_mw: SCARCE_WATER_LOAD_MW,
+            load_mw: [SCARCE_WATER_LOAD_MW; 2],
             initial_storage_hm3: SCARCE_WATER_INITIAL_STORAGE_HM3,
             inflow_nonnegativity_cost: 1.0,
             ..negative_draw_par1_spec(method.unwrap_or(CfgInflowMethod::None))
@@ -1595,14 +1595,11 @@ mod water_balance_closure {
         InflowNonNegativityMethod as CfgInflowMethod, PhaseSolverProfileConfig, SimulationSelection,
     };
     use novomodelo_io::output::simulation_writer::{ScenarioWritePayload, SimulationParquetWriter};
-    use novomodelo_sddp::hydro_models::{
-        PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel,
-    };
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
     use super::common::in_code_studies::{
-        CHRONOLOGICAL_NOISE_BLOCK_HOURS, ChronologicalNoiseSpec, chronological_noise_study,
-        negative_draw_par1_spec,
+        CHRONOLOGICAL_NOISE_BLOCK_HOURS, ChronologicalNoiseSpec, chronological_noise_hydro_models,
+        chronological_noise_study, negative_draw_par1_spec, negative_draw_water_value_spec,
     };
     use super::common::{build_setup_in_code_with_models, run_simulation};
 
@@ -1623,6 +1620,10 @@ mod water_balance_closure {
     /// simulation takes it at stage 1, which the chronological vacuity guard needs.
     /// With 200 hm³ stage 0 is short of water itself.
     const PENALTY_SHORT_INITIAL_STORAGE_HM3: f64 = 200.0;
+    /// Withdrawal \[m³/s\] of the water-value cases, on hydro id 1's stage-0 row.
+    const WITHDRAWAL_M3S: f64 = 2.0;
+    /// Share of the initial storage each hydro must release on the water-value study's loaded stage.
+    const MIN_RELEASED_SHARE: f64 = 0.5;
     /// Warm start on and off, spelled out because the `HiGHS` simulation default is
     /// cold. The CLP backend refuses `simulation.solver.use_warm_start` at setup and
     /// always reuses an offered basis, so it runs its default only.
@@ -1711,17 +1712,10 @@ mod water_balance_closure {
     }
 
     fn simulate_and_read_back(
-        method: CfgInflowMethod,
-        initial_storage_hm3: f64,
+        spec: &ChronologicalNoiseSpec,
         use_warm_start: Option<bool>,
-    ) -> (ChronologicalNoiseSpec, Vec<HydroRow>) {
-        let spec = ChronologicalNoiseSpec {
-            inflow_nonnegativity_cost: 1.0,
-            load_mean_mw: LOAD_MW,
-            initial_storage_hm3,
-            ..negative_draw_par1_spec(method)
-        };
-        let (system, mut config) = chronological_noise_study(&spec);
+    ) -> Vec<HydroRow> {
+        let (system, mut config) = chronological_noise_study(spec);
         assert!(
             system.hydros().iter().all(|h| h.filling.is_none()),
             "precondition: no hydro short-circuits a filling reservoir into a checked plant"
@@ -1736,22 +1730,8 @@ mod water_balance_closure {
                     .expect("solver profile deserializes");
             config.simulation.solver = Some(profile);
         }
-        let (writer_system, _) = chronological_noise_study(&spec);
-        let n_stages = system.stages().iter().filter(|s| s.id >= 0).count();
-        let mut hydro_models = PrepareHydroModelsResult::default_from_system(&system);
-        hydro_models.production = ProductionModelSet::new(
-            vec![
-                vec![
-                    ResolvedProductionModel::ConstantProductivity {
-                        productivity: PRODUCTIVITY_MW_PER_M3S,
-                    };
-                    n_stages
-                ];
-                system.hydros().len()
-            ],
-            system.hydros(),
-            n_stages,
-        );
+        let (writer_system, _) = chronological_noise_study(spec);
+        let hydro_models = chronological_noise_hydro_models(spec, &system);
         let mut setup = build_setup_in_code_with_models(system, &config, hydro_models);
         let results = run_simulation(&mut setup, TRAINING_ITERATIONS);
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -1763,7 +1743,7 @@ mod water_balance_closure {
         }
         let mut rows = Vec::new();
         read_hydro_rows(&tmp.path().join("simulation/hydros"), &mut rows);
-        (spec, rows)
+        rows
     }
 
     /// Per (block mode, residual) of one run, from the written outputs only: a
@@ -1839,7 +1819,14 @@ mod water_balance_closure {
         ] {
             for &warm in WARM_START_SETTINGS {
                 let warm_label = warm.map_or("default".to_string(), |w| w.to_string());
-                let (spec, rows) = simulate_and_read_back(method, initial_storage_hm3, warm);
+                let spec = ChronologicalNoiseSpec {
+                    inflow_nonnegativity_cost: 1.0,
+                    load_mw: [LOAD_MW; 2],
+                    hydro_productivity_mw_per_m3s: PRODUCTIVITY_MW_PER_M3S,
+                    initial_storage_hm3,
+                    ..negative_draw_par1_spec(method)
+                };
+                let rows = simulate_and_read_back(&spec, warm);
                 for mode in [BlockMode::Parallel, BlockMode::Chronological] {
                     let stages: Vec<i32> = (0..2)
                         .filter(|&t| spec.block_modes[t] == mode)
@@ -1890,6 +1877,76 @@ mod water_balance_closure {
             failures.join("\n")
         );
     }
+
+    /// On the water-value study each hydro turbines its stored water for the stage-1 load and
+    /// hydro id 1 withholds its stage-0 withdrawal, so the balance closes with a non-zero
+    /// release and a withdrawal violation, for both block-mode assignments and both
+    /// truncation methods.
+    #[test]
+    fn simulated_water_balance_closes_with_a_nonzero_release() {
+        let scenarios = usize::try_from(SIMULATION_SCENARIOS).expect("scenario count fits usize");
+        for block_modes in [
+            [BlockMode::Parallel, BlockMode::Chronological],
+            [BlockMode::Chronological, BlockMode::Parallel],
+        ] {
+            for method in [
+                CfgInflowMethod::Truncation,
+                CfgInflowMethod::TruncationWithPenalty,
+            ] {
+                let case = format!("water value {method:?} {block_modes:?}");
+                let spec = ChronologicalNoiseSpec {
+                    block_modes,
+                    water_withdrawal_m3s: WITHDRAWAL_M3S,
+                    ..negative_draw_water_value_spec(method)
+                };
+                let rows = simulate_and_read_back(&spec, None);
+                for (mode, res, scale) in residuals(&spec, &rows) {
+                    assert!(
+                        res.abs() <= 1e-6 * scale,
+                        "{case} {mode:?}: residual {res:e} hm3 > 1e-6*{scale}"
+                    );
+                }
+                assert!(
+                    rows.iter().any(|r| r.z < 0.0) && rows.iter().any(|r| r.slack > 0.0),
+                    "{case}: vacuity guard: no negative draw or no correction used"
+                );
+
+                let mut released_hm3: BTreeMap<(i32, i32), f64> = BTreeMap::new();
+                let mut withheld_withdrawals = 0;
+                for row in &rows {
+                    let stage = usize::try_from(row.stage).expect("stage id");
+                    if spec.load_mw[stage] > 0.0 {
+                        let block = usize::try_from(row.block).expect("block id");
+                        *released_hm3.entry((row.scenario, row.hydro)).or_default() +=
+                            CHRONOLOGICAL_NOISE_BLOCK_HOURS[block] * M3S_TO_HM3 * row.release;
+                    }
+                    if row.stage == 0
+                        && row.hydro == 1
+                        && row.withdrawal_neg > 0.5 * spec.water_withdrawal_m3s
+                    {
+                        withheld_withdrawals += 1;
+                    }
+                }
+                assert_eq!(
+                    released_hm3.len(),
+                    scenarios * 2,
+                    "{case}: (scenario, hydro) releases checked"
+                );
+                for ((scenario, hydro), volume_hm3) in released_hm3 {
+                    assert!(
+                        volume_hm3 > MIN_RELEASED_SHARE * spec.initial_storage_hm3,
+                        "{case} scenario {scenario} hydro {hydro}: released {volume_hm3} hm3 \
+                         on the loaded stage"
+                    );
+                }
+                assert_eq!(
+                    withheld_withdrawals,
+                    scenarios * CHRONOLOGICAL_NOISE_BLOCK_HOURS.len(),
+                    "{case}: stage-0 rows of hydro id 1 that withhold the withdrawal"
+                );
+            }
+        }
+    }
 }
 
 mod truncation_order_invariance {
@@ -1905,10 +1962,10 @@ mod truncation_order_invariance {
     use super::common::in_code_studies::{
         ChronologicalNoiseSpec, chronological_noise_study, negative_draw_par1_spec,
     };
-    use super::common::{StubComm, build_setup_in_code, run_simulation};
+    use super::common::{StubComm, build_setup_in_code, run_simulation, stored_trial_states};
 
     /// Per (scenario, stage, block, hydro id): slack, z and incoming lag-0 bits;
-    /// per (stage, archived state, opening, hydro id): the probe's slack bound bits.
+    /// per (stage, stored trial state, opening, hydro id): the probe's slack bound bits.
     struct Fingerprint {
         records: BTreeMap<(u32, u32, Option<u32>, i32), [u64; 3]>,
         bounds: BTreeMap<(usize, usize, usize, i32), [u64; 2]>,
@@ -1939,22 +1996,19 @@ mod truncation_order_invariance {
             "training error: {:?}",
             outcome.error
         );
-        let archive = outcome.result.visited_archive.expect("visited archive");
 
         let mut pool = setup
             .create_workspace_pool(&StubComm, 1, ActiveSolver::new)
             .expect("workspace pool");
         let ws = &mut pool.workspaces[0];
         let training_ctx = setup.training_ctx();
-        let n_state = training_ctx.state.n_state;
         let mut bounds = BTreeMap::new();
         let (mut max_bound, mut max_lstar_gap) = (0.0_f64, 0.0_f64);
         let n_stages = setup.inputs.node_graph.nodes.len();
         for stage in 1..n_stages {
             let n_openings = setup.inputs.node_graph.nodes[NodePos(stage)].openings.len;
-            for (k, x) in archive
-                .states_for_node(NodePos(stage - 1))
-                .chunks_exact(n_state)
+            for (k, x) in stored_trial_states(&setup, NodePos(stage - 1))
+                .iter()
                 .enumerate()
             {
                 for o in 0..n_openings {

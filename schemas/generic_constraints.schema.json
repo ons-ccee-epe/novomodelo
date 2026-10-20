@@ -1,5 +1,20 @@
 {
   "$defs": {
+    "PenaltyBasis": {
+      "description": "What one unit of a generic-constraint violation is charged.\n\nThe row's quantity decides the basis: a rate (MW, m³/s) is integrated over the\nhours its row spans, an amount (`MWh`, hm³) is not.",
+      "oneOf": [
+        {
+          "const": "per_hour",
+          "description": "`penalty × hours` per unit of violation, for rate rows.",
+          "type": "string"
+        },
+        {
+          "const": "per_unit",
+          "description": "`penalty` per unit of violation, for amount rows.",
+          "type": "string"
+        }
+      ]
+    },
     "RawConstraint": {
       "additionalProperties": false,
       "description": "A single constraint entry.",
@@ -12,7 +27,7 @@
           ]
         },
         "expression": {
-          "description": "Expression string to be parsed. E.g. `\"2.5 * thermal_generation(5) - hydro_generation(3)\"`.\nTo constrain an anticipated thermal's commitment, use `\"anticipated_decision(5)\"` (stage-level scalar, no block index).\nTo constrain one bus of a plant split across several buses, use `\"hydro_turbined(5, bus=2)\"`\nor `\"hydro_generation(5, bus=2)\"` — the only two variables accepting a `bus=` selector.\nAn optional inline relational operator (`<=`, `>=`, `==`) followed by a\nright-hand side normalizes onto the F3 interval — see the module doc.",
+          "description": "Linear expression over LP variables, with numbers and `@parameters` combined by `+`, `-`,\n`*`, `/` and parentheses, e.g. `\"2.5 * thermal_generation(5) - @k * hydro_generation(3) <= @cap\"`.\nTo constrain an anticipated thermal's commitment, use `\"anticipated_decision(5)\"` (stage-level scalar, no block index).\nTo constrain one bus of a plant split across several buses, use `\"hydro_turbined(5, bus=2)\"`\nor `\"hydro_generation(5, bus=2)\"` — the only two variables accepting a `bus=` selector.\nAn optional inline relational operator (`<=`, `>=`, `==`) moves every variable term to\nthe left and assigns the remainder to the bound it targets.",
           "type": "string"
         },
         "id": {
@@ -49,7 +64,7 @@
           ]
         },
         "expression": {
-          "description": "Expression string, parsed under the variable + `@param`-coefficient grammar.",
+          "description": "Linear expression over LP variables, under the same arithmetic as a constraint's\n`expression`, without a relational operator.",
           "type": "string"
         },
         "name": {
@@ -72,12 +87,23 @@
           "type": "boolean"
         },
         "penalty": {
-          "description": "Penalty per unit of violation. Must be > 0.0 when `enabled` is `true`.",
+          "description": "Penalty per unit of violation. Required and > 0.0 when `enabled` is `true`;\nabsent otherwise.",
           "format": "double",
           "type": [
             "number",
             "null"
           ]
+        },
+        "penalty_basis": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PenaltyBasis"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How `penalty` is charged: `\"per_hour\"` multiplies it by the hours the row\nspans (rows in MW or m³/s); `\"per_unit\"` does not (rows in `MWh` or hm³).\nRequired when `enabled` is `true`; absent otherwise."
         }
       },
       "required": [

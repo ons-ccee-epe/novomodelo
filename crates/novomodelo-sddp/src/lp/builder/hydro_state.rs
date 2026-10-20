@@ -1,12 +1,16 @@
 //! The per-hydro stage state that the builder's fills share.
 
+use std::ops::Range;
+
 use novomodelo_core::commissioning::{Phase, filling_phase};
 use novomodelo_core::{
-    CascadeTopology, Hydro, HydroBlockBounds, HydroUnitGroup, ResolvedHydroUnitGroupBounds,
+    CascadeTopology, Hydro, HydroBlockBounds, HydroPenalties, HydroUnitGroup, ResolvedBounds,
+    ResolvedHydroUnitGroupBounds, Stage,
 };
+use novomodelo_io::validation::semantic::envelope_tolerance;
 
 use crate::hydro_models::ResolvedProductionModel;
-use crate::indexer::EntityPositions;
+use crate::indexer::{EntityPositions, HydroCell, HydroCellIndex, HydroSys};
 
 pub(super) fn hydro_phase(hydro: &Hydro, stage_id: i32) -> Phase {
     filling_phase(
@@ -14,6 +18,15 @@ pub(super) fn hydro_phase(hydro: &Hydro, stage_id: i32) -> Phase {
         hydro.entry_stage_id,
         hydro.exit_stage_id,
         stage_id,
+    )
+}
+
+/// Whether `hydro` is commissioning (`PreFilling`/`Filling`) at `stage_id`, its
+/// turbine columns pinned at zero.
+pub(super) fn is_suspended(hydro: &Hydro, stage_id: i32) -> bool {
+    matches!(
+        hydro_phase(hydro, stage_id),
+        Phase::PreFilling | Phase::Filling
     )
 }
 
@@ -130,11 +143,10 @@ impl GroupBoundLookup<'_> {
 /// Both terms of the closing `sum.min(fold(hb...))` are load-bearing, not a
 /// group term guarded by an inert plant-side cap. Drop the plant term and a
 /// lowering `hydro_bounds` override — the no-raising rule's own prescribed
-/// remedy for a mid-horizon capacity cut — is silently discarded. Drop the
-/// group term and a multi-cell plant can turbine past its declared capacity:
-/// this helper and `cell_max_generation` are the ONLY readers of
-/// `hb.max_turbined_m3s`/`hb.max_generation_mw` in the hydro LP path, so
-/// nothing else would catch it. The plant term is a no-op only for a plant
+/// remedy for a mid-horizon capacity cut — is silently discarded on a
+/// single-cell plant, which has no cap row ([`plant_cap_rhs`]). Drop the group
+/// term and a cell can turbine past its own groups' capacity: the cap row bounds
+/// only the cells' total. The plant term is a no-op only for a plant
 /// with no declared groups (never a same-bus plant with several) — inert on
 /// today's fixtures, not provably inert, since both admission rules allow an
 /// envelope tolerance no shipped fixture exercises.
@@ -167,12 +179,10 @@ pub(super) fn cell_max_turbined(
     sum.min(fold(hb.max_turbined_m3s, hb.max_generation_mw))
 }
 
-/// Cell `c`'s min-turbine soft-floor RHS: the PLAIN SUM of the cell's own
-/// member groups' resolved `min_turbined_m3s`, never a fold and never clamped
-/// against the plant's declared minimum — see the min-floor contract. A floor
-/// on a sum of variables (the cell's member groups all feed the same
-/// aggregate turbine column) adds; it does not fold or clamp the way the
-/// closing `MAX` bound does.
+/// Cell `c`'s own min-turbine floor: the PLAIN SUM of its member groups'
+/// resolved `min_turbined_m3s`, never a fold and never a `.min(plant)` clamp —
+/// a floor on a sum of variables adds, unlike the closing `MAX` bound.
+/// [`PlantFloor`] decides where the plant minimum binds on top of it.
 pub(super) fn cell_min_turbined(
     groups: &[HydroUnitGroup],
     positions: &[usize],
@@ -189,11 +199,7 @@ pub(super) fn cell_min_turbined(
 /// `max_generation_mw` over the cell's member groups directly is exact.
 ///
 /// Both terms of `sum.min(hb.max_generation_mw)` are load-bearing — the same
-/// two-term contract `cell_max_turbined` states in full. Drop the plant term
-/// and a lowering `hydro_bounds` override is silently discarded; drop the
-/// group term and a multi-cell plant can generate past its declared capacity,
-/// since this helper is the ONLY reader of `hb.max_generation_mw` in the
-/// hydro LP path.
+/// two-term contract `cell_max_turbined` states in full.
 ///
 /// Each member group's own cap fed into the sum is its RESOLVED per-block
 /// value — the override when the study supplies one, the declaration
@@ -211,10 +217,9 @@ pub(super) fn cell_max_generation(
     sum.min(hb.max_generation_mw)
 }
 
-/// Cell `c`'s min-generation soft-floor RHS: the PLAIN SUM of the cell's own
-/// member groups' resolved `min_generation_mw` — never folded through a
-/// productivity, never clamped against the plant's declared minimum. See
-/// [`cell_min_turbined`] and the min-floor contract.
+/// Cell `c`'s own min-generation floor: the PLAIN SUM of its member groups'
+/// resolved `min_generation_mw`, never folded through a productivity. See
+/// [`cell_min_turbined`].
 pub(super) fn cell_min_generation(
     groups: &[HydroUnitGroup],
     positions: &[usize],
@@ -224,6 +229,255 @@ pub(super) fn cell_min_generation(
         .iter()
         .map(|&pos| lookup.min_generation(pos, &groups[pos]))
         .sum()
+}
+
+/// The two soft minima declared both on a plant and on its unit groups.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MinFloor {
+    /// `min_turbined_m3s`.
+    Turbined,
+    /// `min_generation_mw`.
+    Generation,
+}
+
+impl MinFloor {
+    pub(super) const ALL: [Self; 2] = [Self::Turbined, Self::Generation];
+
+    fn of_cell(
+        self,
+        groups: &[HydroUnitGroup],
+        positions: &[usize],
+        lookup: GroupBoundLookup<'_>,
+    ) -> f64 {
+        match self {
+            Self::Turbined => cell_min_turbined(groups, positions, lookup),
+            Self::Generation => cell_min_generation(groups, positions, lookup),
+        }
+    }
+
+    fn of_plant(self, hb: HydroBlockBounds) -> f64 {
+        match self {
+            Self::Turbined => hb.min_turbined_m3s,
+            Self::Generation => hb.min_generation_mw,
+        }
+    }
+
+    /// Penalty per unit of shortfall, shared by the cell and plant slacks.
+    pub(super) fn below_cost(self, hp: HydroPenalties) -> f64 {
+        match self {
+            Self::Turbined => hp.turbined_violation_below_cost,
+            Self::Generation => hp.generation_violation_below_cost,
+        }
+    }
+
+    fn declared(self, hydro: &Hydro) -> f64 {
+        match self {
+            Self::Turbined => hydro.min_turbined_m3s,
+            Self::Generation => hydro.min_generation_mw,
+        }
+    }
+
+    fn field(self) -> &'static str {
+        match self {
+            Self::Turbined => "min_turbined_m3s",
+            Self::Generation => "min_generation_mw",
+        }
+    }
+}
+
+/// One plant's `MinFloor` at one block, split into what its cell rows and its
+/// residual row enforce. The tighter floor wins: the plant's resolved minimum
+/// binds only where it exceeds the cells' summed floor by more than
+/// [`envelope_tolerance`] — the tolerance rule 44 admits a declared minimum
+/// with, so a declared minimum never changes the LP. A single-cell plant folds
+/// the binding minimum into its one cell row; a multi-cell plant gets a
+/// residual row on top of its cell rows. Either way the shortfall is charged
+/// once, as `max(plant shortfall, Σ cell shortfalls)`.
+pub(super) struct PlantFloor<'a> {
+    kind: MinFloor,
+    groups: &'a [HydroUnitGroup],
+    cells: &'a HydroCellIndex,
+    plant_cells: Range<usize>,
+    lookup: GroupBoundLookup<'a>,
+    plant_min: f64,
+    cell_sum: f64,
+}
+
+impl<'a> PlantFloor<'a> {
+    pub(super) fn resolve(
+        kind: MinFloor,
+        hydro: &'a Hydro,
+        cells: &'a HydroCellIndex,
+        h: HydroSys,
+        lookup: GroupBoundLookup<'a>,
+        hb: HydroBlockBounds,
+    ) -> Self {
+        let plant_cells = cells.cells_of(h);
+        let cell_sum = plant_cells
+            .clone()
+            .map(|c| {
+                kind.of_cell(
+                    &hydro.unit_groups,
+                    cells.groups_of(HydroCell::new(c)),
+                    lookup,
+                )
+            })
+            .sum();
+        Self {
+            kind,
+            groups: &hydro.unit_groups,
+            cells,
+            plant_cells,
+            lookup,
+            plant_min: kind.of_plant(hb),
+            cell_sum,
+        }
+    }
+
+    fn uncovered(&self) -> Option<f64> {
+        (self.plant_min > self.cell_sum + envelope_tolerance(self.plant_min))
+            .then_some(self.plant_min)
+    }
+
+    /// RHS of cell `c`'s floor row.
+    pub(super) fn cell_rhs(&self, c: HydroCell) -> f64 {
+        match self.uncovered() {
+            Some(plant_min) if self.plant_cells.len() == 1 => plant_min,
+            _ => self
+                .kind
+                .of_cell(self.groups, self.cells.groups_of(c), self.lookup),
+        }
+    }
+
+    /// RHS of the plant's residual row; `None` when no residual binds.
+    pub(super) fn residual_rhs(&self) -> Option<f64> {
+        self.uncovered().filter(|_| self.plant_cells.len() > 1)
+    }
+
+    fn is_below_cells(&self) -> bool {
+        self.plant_min + envelope_tolerance(self.plant_min) < self.cell_sum
+    }
+}
+
+/// The two hard maxima declared both on a plant and on its unit groups.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MaxCap {
+    /// `max_turbined_m3s`, on the turbine columns.
+    Turbined,
+    /// `max_generation_mw`, on the generation terms.
+    Generation,
+}
+
+impl MaxCap {
+    pub(super) const ALL: [Self; 2] = [Self::Turbined, Self::Generation];
+
+    fn of_plant(self, hb: HydroBlockBounds) -> f64 {
+        match self {
+            Self::Turbined => hb.max_turbined_m3s,
+            Self::Generation => hb.max_generation_mw,
+        }
+    }
+
+    /// The largest value the cell's term on this kind's row can take under the
+    /// column bounds `cell_max_turbined`/`cell_max_generation` set.
+    fn of_cell(
+        self,
+        groups: &[HydroUnitGroup],
+        positions: &[usize],
+        model: &ResolvedProductionModel,
+        hb: HydroBlockBounds,
+        lookup: GroupBoundLookup<'_>,
+    ) -> f64 {
+        match (self, model) {
+            (Self::Turbined, _) => cell_max_turbined(groups, positions, model, hb, lookup),
+            (Self::Generation, ResolvedProductionModel::ConstantProductivity { productivity }) => {
+                productivity * cell_max_turbined(groups, positions, model, hb, lookup)
+            }
+            (Self::Generation, ResolvedProductionModel::Fpha { .. }) => {
+                cell_max_generation(groups, positions, hb, lookup)
+            }
+        }
+    }
+}
+
+/// RHS of plant `h`'s `kind` cap row: the plant's resolved maximum where it is
+/// below its cells' summed caps by more than [`envelope_tolerance`] — the
+/// tolerance rule 41 admits declared maxima with, so a declared maximum never
+/// changes the LP. `None` for a single-cell plant, whose column bound already
+/// clamps to the plant maximum.
+pub(super) fn plant_cap_rhs(
+    kind: MaxCap,
+    hydro: &Hydro,
+    cells: &HydroCellIndex,
+    h: HydroSys,
+    model: &ResolvedProductionModel,
+    lookup: GroupBoundLookup<'_>,
+    hb: HydroBlockBounds,
+) -> Option<f64> {
+    let plant_cells = cells.cells_of(h);
+    if plant_cells.len() < 2 {
+        return None;
+    }
+    let plant_max = kind.of_plant(hb);
+    let cell_sum: f64 = plant_cells
+        .map(|c| {
+            kind.of_cell(
+                &hydro.unit_groups,
+                cells.groups_of(HydroCell::new(c)),
+                model,
+                hb,
+                lookup,
+            )
+        })
+        .sum();
+    (plant_max + envelope_tolerance(plant_max) < cell_sum).then_some(plant_max)
+}
+
+/// Emit one setup-time advisory per plant and `MinFloor` whose `hydro_bounds`
+/// override lowers the plant minimum below its unit groups' summed minimum:
+/// the groups' floors still bind (see [`PlantFloor`]), so the override has no
+/// effect and the group minima are what must be lowered.
+pub(crate) fn warn_on_inert_plant_floor_overrides(
+    hydros: &[Hydro],
+    stages: &[Stage],
+    bounds: &ResolvedBounds,
+    cells: &HydroCellIndex,
+) {
+    let study_stages: Vec<_> = stages.iter().filter(|s| s.id >= 0).collect();
+    for (h_idx, hydro) in hydros.iter().enumerate() {
+        for kind in MinFloor::ALL {
+            let declared = kind.declared(hydro).to_bits();
+            let mut inert_stage_ids = study_stages
+                .iter()
+                .enumerate()
+                .filter(|(stage_idx, stage)| {
+                    (0..stage.blocks.len()).any(|blk| {
+                        let floor = PlantFloor::resolve(
+                            kind,
+                            hydro,
+                            cells,
+                            HydroSys::new(h_idx),
+                            GroupBoundLookup::new(bounds.group_overlay(), h_idx, *stage_idx, blk),
+                            bounds.hydro_bounds_at_block(h_idx, *stage_idx, blk),
+                        );
+                        floor.plant_min.to_bits() != declared && floor.is_below_cells()
+                    })
+                })
+                .map(|(_, stage)| stage.id);
+            if let Some(first_stage_id) = inert_stage_ids.next() {
+                let n_stages = 1 + inert_stage_ids.count();
+                tracing::warn!(
+                    "hydro {} ({}): hydro_bounds lowers {field} below the sum of its unit \
+                     groups' {field} at {n_stages} stage(s), first at stage {first_stage_id}; \
+                     the unit groups' minima still bind, so the override has no effect — lower \
+                     them in hydro_unit_group_bounds instead",
+                    hydro.id,
+                    hydro.name,
+                    field = kind.field(),
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

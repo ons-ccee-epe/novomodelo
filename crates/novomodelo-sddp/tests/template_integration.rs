@@ -2222,18 +2222,18 @@ fn make_constraint_with_expr(
     slack_enabled: bool,
     expression: novomodelo_core::ConstraintExpression,
 ) -> novomodelo_core::GenericConstraint {
-    use novomodelo_core::{GenericConstraint, SlackConfig};
+    use novomodelo_core::{GenericConstraint, PenaltyBasis, SlackConfig};
     GenericConstraint {
         id: EntityId(id),
         name: format!("gc_{id}"),
         description: None,
         expression,
-        slack: SlackConfig {
-            enabled: slack_enabled,
-            penalty: if slack_enabled { Some(5000.0) } else { None },
-        },
-        bound_lower_affine: None,
-        bound_upper_affine: None,
+        slack: slack_enabled.then_some(SlackConfig {
+            penalty: 5000.0,
+            penalty_basis: PenaltyBasis::PerHour,
+        }),
+        bound_lower: None,
+        bound_upper: None,
     }
 }
 

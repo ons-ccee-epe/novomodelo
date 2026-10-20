@@ -4,17 +4,12 @@
 //! No hot-path allocations; forward and backward passes encapsulated in their own state structs.
 
 use novomodelo_comm::CommError::CollectiveFailed;
+use novomodelo_io::StageStatesReadResult;
 use novomodelo_solver::SolverError;
 use novomodelo_solver::freeze_rows_into_template;
 
-use crate::lp::indexer::CutSlot;
-
-use crate::cut_selection::CutSelectionStrategy::Dominated;
 use crate::cut_selection::CutSelectionStrategy::Dynamic;
 use crate::cut_selection::CutSelectionStrategy::Level1;
-use crate::cut_selection::CutSelectionStrategy::Lml1;
-use crate::visited_states::VisitedStatesArchive;
-use crate::workspace::CapturedBasis;
 
 use std::ops::RangeInclusive;
 pub(crate) mod iteration_scratch;
@@ -30,7 +25,7 @@ use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use novomodelo_comm::{Communicator, ReduceOp, per_rank_counts};
-use novomodelo_core::{StageRowSelectionRecord, TrainingEvent};
+use novomodelo_core::{PoolRowCounts, TrainingEvent};
 use novomodelo_solver::SolverInterface;
 
 use crate::{
@@ -57,7 +52,7 @@ use crate::{
         aggregate_solver_statistics, pack_delta_scalars, unpack_delta_scalars,
     },
     state_exchange::ExchangeBuffers,
-    training::training::rank_local_basis_cache,
+    training::training::{CheckpointBasisStore, LoadedPolicy, gather_basis_store, global_scenario},
     training::{TrainingOutcome, TrainingResult, broadcast_basis_cache},
     workspace::{BasisStore, NoisePreallocation, WorkspacePool, WorkspaceSizing},
 };
@@ -71,6 +66,42 @@ fn emit(sender: Option<&Sender<TrainingEvent>>, event: TrainingEvent) {
     if let Some(s) = sender {
         let _ = s.send(event);
     }
+}
+
+/// A rank's cumulative lazy-solve counters, or the delta between two snapshots.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct LazySolveTotals {
+    rows_in_lp_sum: u64,
+    rows_in_lp_count: u64,
+    round_cap_hits: u64,
+}
+
+/// Sums the delta from `before` to `after` over ranks in one `Sum` reduction
+/// that every rank enters.
+///
+/// # Errors
+///
+/// [`SddpError::Communication`] when the reduction fails.
+fn reduce_lazy_totals_delta<C: Communicator>(
+    before: LazySolveTotals,
+    after: LazySolveTotals,
+    comm: &C,
+) -> Result<LazySolveTotals, SddpError> {
+    #[allow(clippy::cast_precision_loss)]
+    let local = [
+        (after.rows_in_lp_sum - before.rows_in_lp_sum) as f64,
+        (after.rows_in_lp_count - before.rows_in_lp_count) as f64,
+        (after.round_cap_hits - before.round_cap_hits) as f64,
+    ];
+    let mut global = [0.0_f64; 3];
+    comm.allreduce(&local, &mut global, ReduceOp::Sum)
+        .map_err(SddpError::Communication)?;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Ok(LazySolveTotals {
+        rows_in_lp_sum: global[0].round() as u64,
+        rows_in_lp_count: global[1].round() as u64,
+        round_cap_hits: global[2].round() as u64,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -122,10 +153,6 @@ pub(crate) struct TrainingSession<'a, S: SolverInterface + Send, C: Communicator
     basis_store: BasisStore,
     exchange_bufs: ExchangeBuffers,
     cut_sync_bufs: CutSyncBuffers,
-    visited_archive: Option<VisitedStatesArchive>,
-    /// Reusable projected trial-state buffer for cut selection; grown on first
-    /// use, reused across iterations (no per-cut/per-trial-point allocation).
-    cut_selection_state_scratch: Vec<f64>,
     /// Interior cut-generating nodes (canonical order), the loop-invariant filter
     /// cut management sweeps each cycle; the graph topology is fixed for the run,
     /// so it is resolved once here rather than re-derived per cut-selection cycle.
@@ -163,6 +190,7 @@ where
         training_ctx: &'a TrainingContext<'a>,
         comm: &'a C,
         solver_factory: impl Fn() -> Result<S, SolverError>,
+        loaded_trial_states: Vec<StageStatesReadResult>,
         solver_profiles: SolverProfiles,
     ) -> Result<Self, SddpError> {
         let horizon = training_ctx.horizon;
@@ -171,9 +199,9 @@ where
         let total_forward_passes = config.loop_config.forward_passes as usize;
         let ranks = RankDistribution::new(comm, total_forward_passes);
 
-        // Map the first training iteration to slot `warm_start_count` so
-        // training cuts pack densely with no reserved leading block.
-        fcf.set_iteration_base(config.loop_config.start_iteration + 1);
+        // Iteration 1 maps to slot `slot_base`, resumed run included: the loop's
+        // cuts continue at the slots the uninterrupted run gives them.
+        fcf.set_iteration_base(1);
 
         // Per-slot backward buffers (`slot_increments`, `metadata_sync_contribution`,
         // the recon lookup) are indexed by cut-pool slot, so they must cover the
@@ -251,27 +279,35 @@ where
             total_forward_passes,
         );
 
-        // Needed by every cut-selection strategy (the value-evaluation kernel
-        // scores cuts at these trial points) and by `export_states`.
-        let needs_archive =
-            config.cut_management.cut_selection.is_some() || config.events.export_states;
-        let visited_archive = if needs_archive {
-            Some(VisitedStatesArchive::new(
-                training_ctx.node_graph.nodes.len(),
-                state.n_state,
-                config.loop_config.max_iterations,
-                total_forward_passes,
-            ))
-        } else {
-            None
-        };
+        let interior_cut_nodes = interior_cut_nodes(training_ctx.node_graph);
+        let export_states = config.events.export_states;
+        let strategy = config.cut_management.cut_selection.as_ref();
+        for &node_pos in &interior_cut_nodes {
+            let pool = &mut fcf.pools[training_ctx.node_graph.nodes[node_pos].pool_id];
+            match strategy {
+                Some(Level1 {
+                    check_frequency,
+                    lookback_iterations: Some(lookback),
+                    ..
+                }) => pool.enable_trial_states_within(*lookback, *check_frequency),
+                Some(Level1 { .. }) => pool.enable_trial_states(),
+                Some(Dynamic { .. }) | None => {
+                    if export_states {
+                        pool.enable_trial_states();
+                    }
+                }
+            }
+        }
+        if export_states && let Some(root) = root_cut_node(training_ctx.node_graph) {
+            fcf.pools[training_ctx.node_graph.nodes[root].pool_id].enable_trial_states();
+        }
+        store_loaded_trial_states(fcf, loaded_trial_states);
 
         // `.take()` the non-Copy handles so `config` stays valid and can be
-        // stored by value; `export_states` is Copy and read directly.
+        // stored by value.
         let event_sender = config.events.event_sender.take();
         let shutdown_flag = config.events.shutdown_flag.take();
         let periodic_checkpoint = config.events.periodic_checkpoint.take();
-        let export_states = config.events.export_states;
 
         let mut convergence_monitor = ConvergenceMonitor::with_iteration_budget(
             config.loop_config.stopping_rules.clone(),
@@ -298,12 +334,7 @@ where
             },
         );
 
-        let runtime = RuntimeHandles::new(
-            event_sender,
-            shutdown_flag,
-            export_states,
-            periodic_checkpoint,
-        );
+        let runtime = RuntimeHandles::new(event_sender, shutdown_flag, periodic_checkpoint);
 
         let results = TrainingResults::new(config.loop_config.start_iteration);
 
@@ -363,12 +394,10 @@ where
             )));
         }
 
-        let real_states_capacity = exchange_bufs.real_total_scenarios() * state.n_state;
         let mut bwd_state = BackwardPassState::new(
             n_workers_local,
             ranks.num_ranks,
             max_openings,
-            real_states_capacity,
             ranks.max_local_fwd,
             state,
             horizon,
@@ -376,6 +405,7 @@ where
         bwd_state.set_profile(solver_profiles.backward);
         bwd_state.set_scheduler(solver_profiles.backward_scheduler);
         bwd_state.set_hardest_first_claim_order(solver_profiles.hardest_first_claim_order);
+        bwd_state.set_binding_tracking(config.cut_management.tracks_binding_activity());
 
         Ok(Self {
             solver,
@@ -390,16 +420,7 @@ where
             basis_store,
             exchange_bufs,
             cut_sync_bufs,
-            visited_archive,
-            cut_selection_state_scratch: Vec::new(),
-            interior_cut_nodes: {
-                let ng = training_ctx.node_graph;
-                ng.nodes
-                    .iter_indexed()
-                    .filter(|&(pos, n)| n.stage >= StageIdx(1) && !ng.successors[pos].is_empty())
-                    .map(|(pos, _)| pos)
-                    .collect()
-            },
+            interior_cut_nodes,
             scratch,
             convergence_monitor,
             fwd_state,
@@ -413,14 +434,21 @@ where
         (self.config.loop_config.start_iteration + 1)..=self.config.loop_config.max_iterations
     }
 
-    /// Sum the cumulative rows-in-LP accumulators (`(sum, count)`) across this
-    /// rank's forward-pass workspaces. Zero for non-lazy methods — only the lazy
-    /// solve path touches these accumulators.
-    fn rows_in_lp_local_totals(&self) -> (u64, u64) {
-        self.fwd_pool.workspaces.iter().fold((0, 0), |(s, c), w| {
-            let d = &w.backward_accum.dcs_solve;
-            (s + d.rows_in_lp_sum, c + d.rows_in_lp_count)
-        })
+    /// Sum the cumulative lazy-solve accumulators across this rank's
+    /// forward-pass workspaces. Zero for non-lazy methods — only the lazy solve
+    /// path touches these accumulators.
+    fn lazy_solve_local_totals(&self) -> LazySolveTotals {
+        self.fwd_pool
+            .workspaces
+            .iter()
+            .fold(LazySolveTotals::default(), |t, w| {
+                let d = &w.backward_accum.dcs_solve;
+                LazySolveTotals {
+                    rows_in_lp_sum: t.rows_in_lp_sum + d.rows_in_lp_sum,
+                    rows_in_lp_count: t.rows_in_lp_count + d.rows_in_lp_count,
+                    round_cap_hits: t.round_cap_hits + d.round_cap_hits,
+                }
+            })
     }
 
     /// Largest resident-set size observed across this rank's forward-pass
@@ -447,7 +475,7 @@ where
 
         // Snapshot before this iteration's solves so the post-backward delta
         // isolates this iteration's contribution.
-        let (rows_in_lp_sum_before, rows_in_lp_count_before) = self.rows_in_lp_local_totals();
+        let lazy_totals_before = self.lazy_solve_local_totals();
 
         let (forward_result, sync_result, fwd_solve_time_ms) = self.run_forward_phase(iteration)?;
         let (backward_result, bwd_solve_time_ms) = self.run_backward_phase(iteration)?;
@@ -455,16 +483,12 @@ where
         // Reduced across ranks so the reported figures are work-distribution
         // invariant (Sum for the per-iteration delta, Max for the running peak).
         // Forward + backward are the only lazy solves; LB is all-cuts.
-        let (rows_in_lp_sum, rows_in_lp_count, rows_in_lp_max) = {
-            let (sum_after, count_after) = self.rows_in_lp_local_totals();
-            let sum_delta = sum_after - rows_in_lp_sum_before;
-            let count_delta = count_after - rows_in_lp_count_before;
-            #[allow(clippy::cast_precision_loss)]
-            let local_sum = [sum_delta as f64, count_delta as f64];
-            let mut global_sum = [0.0_f64; 2];
-            self.comm
-                .allreduce(&local_sum, &mut global_sum, ReduceOp::Sum)
-                .map_err(SddpError::Communication)?;
+        let lazy_totals = reduce_lazy_totals_delta(
+            lazy_totals_before,
+            self.lazy_solve_local_totals(),
+            self.comm,
+        )?;
+        let rows_in_lp_max = {
             #[allow(clippy::cast_precision_loss)]
             let local_max = [self.rows_in_lp_local_max() as f64];
             let mut global_max = [0.0_f64; 1];
@@ -472,14 +496,12 @@ where
                 .allreduce(&local_max, &mut global_max, ReduceOp::Max)
                 .map_err(SddpError::Communication)?;
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            (
-                global_sum[0].round() as u64,
-                global_sum[1].round() as u64,
-                global_max[0].round() as u64,
-            )
+            {
+                global_max[0].round() as u64
+            }
         };
 
-        self.run_cut_management(iteration)?;
+        self.run_cut_management(iteration);
 
         grow_pools_for_next_iteration(
             self.fcf,
@@ -563,9 +585,10 @@ where
                 fwd_setup_time_ms: forward_result.setup_time_ms,
                 fwd_load_imbalance_ms: forward_result.load_imbalance_ms,
                 fwd_scheduling_overhead_ms: forward_result.scheduling_overhead_ms,
-                rows_in_lp_sum,
-                rows_in_lp_count,
+                rows_in_lp_sum: lazy_totals.rows_in_lp_sum,
+                rows_in_lp_count: lazy_totals.rows_in_lp_count,
                 rows_in_lp_max,
+                lazy_round_cap_hits: lazy_totals.round_cap_hits,
             },
         );
 
@@ -586,14 +609,16 @@ where
         Ok(IterationOutcome::Continue)
     }
 
-    /// Rank 0 writes the periodic checkpoint when the schedule fires at
-    /// `iteration`; every rank then agrees on the write's outcome, so a failed
-    /// write ends training on every rank at this iteration.
+    /// When the schedule fires at `iteration`, every rank gathers the basis store
+    /// and rank 0 writes the periodic checkpoint; every rank then agrees on the
+    /// outcome, so a failed gather or write ends training on every rank at this
+    /// iteration.
     ///
     /// # Errors
     ///
-    /// [`SddpError::CheckpointWrite`] on rank 0 when the write fails, the peer
-    /// failure from [`reconcile_error_flag`] on every other rank.
+    /// [`SddpError::CheckpointWrite`] on rank 0 when the write fails, the
+    /// [`gather_basis_store`] error on the rank that met it, and the peer failure
+    /// from [`reconcile_error_flag`] on every other rank.
     fn write_periodic_checkpoint(&mut self, iteration: u64) -> Result<(), SddpError> {
         let Some(periodic) = self.runtime.periodic_checkpoint() else {
             return Ok(());
@@ -603,9 +628,8 @@ where
         }
 
         let start = Instant::now();
-        let local = if self.comm.rank() == 0 {
-            let basis_cache = rank_local_basis_cache(&self.basis_store);
-            periodic
+        let local = match gather_basis_store(&self.basis_store, &self.ranks, self.comm) {
+            Ok(Some(bases)) => periodic
                 .write(
                     self.fcf,
                     self.training_ctx.node_graph,
@@ -613,14 +637,13 @@ where
                         iterations: iteration,
                         final_lb: self.results.final_lb,
                         final_ub: self.results.final_ub,
-                        basis_cache: &basis_cache,
-                        visited_archive: self.visited_archive.as_ref(),
+                        bases: &bases,
                         lower_bound_history: self.convergence_monitor.lower_bound_history(),
                     },
                 )
-                .map_err(|source| SddpError::CheckpointWrite { iteration, source })
-        } else {
-            Ok(())
+                .map_err(|source| SddpError::CheckpointWrite { iteration, source }),
+            Ok(None) => Ok(()),
+            Err(e) => Err(e),
         };
         let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         reconcile_error_flag(local, self.comm, &mut self.fwd_state.reconcile_scratch)?;
@@ -642,23 +665,24 @@ where
     ///
     /// # Errors
     ///
-    /// Returns `SddpError::Communication` if `broadcast_basis_cache` fails.
+    /// Returns what [`gather_basis_store`] or `broadcast_basis_cache` returns
+    /// when either fails. A gather failure on one rank is agreed across ranks
+    /// before the broadcast, so every rank returns and none blocks in it.
     pub(crate) fn finalize(mut self) -> Result<TrainingOutcome, SddpError> {
-        // Reconcile finalize arrival before the basis-cache broadcast so
-        // broadcast_basis_cache is entered by all ranks or none: a peer that failed
-        // makes this clean rank take the same no-broadcast exit in lockstep, rather
-        // than block alone in the broadcast.
+        // Reconcile finalize arrival before the basis-store gather and the
+        // basis-cache broadcast so both are entered by all ranks or none: a peer
+        // that failed makes this clean rank take the same no-collective exit in
+        // lockstep, rather than block alone in a collective.
         if let Err(peer_err) =
             reconcile_error_flag(Ok(()), self.comm, &mut self.fwd_state.reconcile_scratch)
         {
-            return Ok(self.finalize_without_broadcast(peer_err, "error"));
+            return Ok(self.finalize_without_broadcast(peer_err));
         }
 
         #[allow(clippy::cast_possible_truncation)]
         let total_time_ms = (self.results.start_time.elapsed().as_millis() as u64).max(1);
 
         let frozen_templates = self.scratch.frozen_templates;
-        let visited_archive = self.visited_archive;
         let TrainingResults {
             final_lb,
             final_ub,
@@ -684,6 +708,12 @@ where
             },
         );
 
+        let checkpoint_bases = reconcile_result(
+            gather_basis_store(&self.basis_store, &self.ranks, self.comm),
+            self.comm,
+            &mut self.fwd_state.reconcile_scratch,
+        )?
+        .unwrap_or_default();
         let basis_cache = broadcast_basis_cache(&self.basis_store, self.comm)?;
 
         let mut result = TrainingResult::new(
@@ -696,8 +726,8 @@ where
             total_time_ms,
             basis_cache,
             solver_stats_log,
-            visited_archive,
             Some(frozen_templates),
+            checkpoint_bases,
         );
         result.stop_decision = stop_decision;
         result.lower_bound_history =
@@ -711,7 +741,8 @@ where
 
     /// Emit `TrainingFinished` with `reason = "error"` and return a partial
     /// `TrainingOutcome` carrying the original error, taking the coordinated
-    /// no-broadcast exit so no rank blocks in `broadcast_basis_cache`.
+    /// no-collective exit so no rank blocks in the basis-store gather or
+    /// `broadcast_basis_cache`.
     pub(crate) fn finalize_with_error(mut self, err: SddpError) -> TrainingOutcome {
         // Announce this rank's failure to peers still in the clean `finalize` so they
         // skip their basis-cache broadcast in lockstep; reconcile over a local Err
@@ -726,17 +757,22 @@ where
                         .to_string(),
                 })
             });
-        self.finalize_without_broadcast(err, "error")
+        self.finalize_without_broadcast(err)
     }
 
-    /// Build the error-exit `TrainingOutcome` WITHOUT entering
-    /// `broadcast_basis_cache`. Used once the ranks did not all agree to broadcast
-    /// (a rank-local or peer failure), so the basis cache is empty — no collective
-    /// is safe on this path. The caller must have already reconciled the failure
-    /// across ranks so every rank takes this exit in lockstep.
-    fn finalize_without_broadcast(self, err: SddpError, reason: &str) -> TrainingOutcome {
+    /// Build the error-exit `TrainingOutcome` WITHOUT entering a collective. Used
+    /// once the ranks did not all agree to broadcast (a rank-local or peer
+    /// failure), so the basis cache is empty and the checkpoint bases are rank
+    /// 0's own, marked incomplete — no collective is safe on this path. The
+    /// caller must have already reconciled the failure across ranks so every
+    /// rank takes this exit in lockstep.
+    fn finalize_without_broadcast(self, err: SddpError) -> TrainingOutcome {
+        let checkpoint_bases = if self.comm.rank() == 0 {
+            CheckpointBasisStore::rank_local(&self.basis_store, &self.ranks)
+        } else {
+            CheckpointBasisStore::default()
+        };
         let frozen_templates = self.scratch.frozen_templates;
-        let visited_archive = self.visited_archive;
         let TrainingResults {
             final_lb,
             final_ub,
@@ -755,7 +791,7 @@ where
         emit(
             self.runtime.event_sender(),
             TrainingEvent::TrainingFinished {
-                reason: reason.to_string(),
+                reason: "error".to_string(),
                 iterations: completed_iterations,
                 final_lb,
                 final_ub,
@@ -770,12 +806,12 @@ where
             final_ub_std,
             final_gap,
             completed_iterations,
-            reason.to_string(),
+            "error".to_string(),
             total_time_ms,
             Vec::new(),
             solver_stats_log,
-            visited_archive,
             Some(frozen_templates),
+            checkpoint_bases,
         );
         result.lower_bound_history =
             committed_lower_bound_history(&self.convergence_monitor, completed_iterations).to_vec();
@@ -966,11 +1002,11 @@ where
                 let num_stages = self.training_ctx.horizon.num_stages();
                 let local_n = forward_result.scenario_costs.len();
                 self.scratch.ub_stage_costs.clear();
-                for i in 0..local_n * num_stages {
-                    self.scratch
-                        .ub_stage_costs
-                        .push(self.scratch.records[i].stage_cost);
-                }
+                self.scratch.ub_stage_costs.extend(
+                    self.scratch.records[..local_n * num_stages]
+                        .iter()
+                        .map(|record| record.stage_cost),
+                );
                 sync_forward(
                     forward_result,
                     self.comm,
@@ -1013,7 +1049,6 @@ where
             self.fcf,
             &mut self.exchange_bufs,
             &mut self.cut_sync_bufs,
-            &mut self.visited_archive,
             self.training_ctx,
             self.comm,
             &self.config.cut_management,
@@ -1077,7 +1112,6 @@ where
                 iteration,
                 rows_distributed: backward_result.cuts_generated as u32,
                 rows_active: self.fcf.total_active_cuts() as u32,
-                rows_removed: 0,
                 sync_time_ms: backward_result.cut_sync_time_ms,
             },
         );
@@ -1085,223 +1119,91 @@ where
         Ok((backward_result, bwd_solve_time_ms))
     }
 
-    /// Apply cut selection, budget enforcement, bitmap shift, and template freeze.
-    ///
-    /// All operations are O(active cuts) and perform no heap allocation when the
-    /// cut pools have not grown since the previous iteration.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SddpError::Validation`] if stage 0 carries no alive node.
-    // Rationale: the phases mutate `&mut self` and each reads state the prior
-    // phase wrote, so splitting into helpers would pass every field individually.
-    #[allow(clippy::too_many_lines)]
-    fn run_cut_management(&mut self, iteration: u64) -> Result<(), SddpError> {
-        // `sel_state` is `Some` only when strategy-based selection ran;
-        // `record_by_pool` (built in the same block) maps a pool id to its
-        // `per_stage` record index for the budget back-annotation below.
-        let mut sel_state: Option<(Vec<StageRowSelectionRecord>, u32, u64, u32)> = None;
-        let mut record_by_pool: Option<Vec<Option<usize>>> = None;
+    /// Run the periodic cut selection, the budget, and the template refreeze,
+    /// then report every pool's row counts.
+    fn run_cut_management(&mut self, iteration: u64) {
+        let reports_pools = self.config.cut_management.cut_selection.is_some()
+            || self.config.cut_management.budget.is_some();
+        let mut pools = if reports_pools {
+            self.pool_counts_before_row_management()
+        } else {
+            Vec::new()
+        };
+        let mut selection_complete = None;
 
         if let Some(strategy) = self.config.cut_management.cut_selection.as_ref()
             && strategy.should_run(iteration)
         {
             let sel_start = Instant::now();
-            let num_sel_stages = self.training_ctx.horizon.num_stages().saturating_sub(1);
-            let mut rows_deactivated = 0u32;
-            let mut per_stage = Vec::with_capacity(num_sel_stages);
-
             let node_graph = self.training_ctx.node_graph;
-            // Root pool resolved by STAGE (the sole stage-0 node), never by array
-            // position: nodes[0] is the smallest-id node, not necessarily the
-            // root on a branching graph (the same resolution the LB path uses).
-            let root_node = node_graph.frontier_node(StageIdx(0)).ok_or_else(|| {
-                SddpError::Validation("training session: stage 0 carries no alive node".to_string())
-            })?;
-            let root_pool = node_graph.nodes[root_node].pool_id;
 
-            // Selection covers interior cut-generating nodes only. The root's
-            // cuts are never a backward-pass successor (activity never updated);
-            // terminal leaves receive no cuts. The root (the sole stage-0 alive
-            // node) is recorded here; the loop below scores each interior
-            // cut-generating node against ITS OWN visited region.
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            {
-                let root_cut_pool = &self.fcf.pools[root_pool];
-                let root_active = root_cut_pool.active_count() as u32;
-                per_stage.push(StageRowSelectionRecord {
-                    // Domain stage_id of the root (study-stage position 0).
-                    stage: self.stage_ctx.study_stage_ids.first().copied().unwrap_or(0) as u32,
-                    rows_populated: root_cut_pool.populated() as u32,
-                    rows_active_before: root_active,
-                    rows_deactivated: 0,
-                    rows_reactivated: 0,
-                    rows_active_after: root_active,
-                    selection_time_ms: 0.0,
-                    budget_evicted: None,
-                    active_after_budget: None,
-                    rows_in_lp: root_cut_pool.cuts_in_lp() as u32,
-                });
-            }
-
-            let archive_ref = self.visited_archive.as_ref();
-            // Interior cut-generating nodes in canonical order. A cut-generating
-            // (non-leaf) node always owns its own pool, so scoring by node is
-            // per-pool; the visited states are read by NODE position (siblings at
-            // one stage own distinct visited regions). On a chain node position
-            // equals stage, reproducing the former 1..T-2 stage loop.
-            let interior_nodes = &self.interior_cut_nodes;
-            let pools = &self.fcf.pools;
-            let cut_state_layouts = self.training_ctx.cut_state_layouts;
-            let n_global = archive_ref.map_or(0, VisitedStatesArchive::packing_stride);
-            // Sequential (not `into_par_iter`): the m-block kernel already
+            // Sequential (not `into_par_iter`): the ownership scan already
             // saturates the cores via its inner parallelism.
-            let mut scratch = std::mem::take(&mut self.cut_selection_state_scratch);
-            let mut deactivations: Vec<(usize, usize, CutActivityUpdates, f64)> =
-                Vec::with_capacity(interior_nodes.len());
-            #[allow(clippy::cast_possible_truncation)]
-            for &node_pos in interior_nodes {
-                let node = &node_graph.nodes[node_pos];
-                let pool_id = node.pool_id;
-                let pool = &pools[pool_id];
-                let proj = &cut_state_layouts[pool_id];
-                let n_slots = proj.n_slots();
-                let n_trials = archive_ref.map_or(0, |a| a.count(node_pos));
-                let global_states =
-                    archive_ref.map_or(&[] as &[f64], |a| a.states_for_node(node_pos));
-                // Project the StateDim-packed archive into the pool's projected
-                // slot space through its own CutStateProjection (identity when
-                // n_slots == n_global). A positional prefix is wrong — a reduced
-                // pool's slots are not the first n_slots StateDims.
-                scratch.clear();
-                scratch.reserve(n_trials * n_slots);
-                for m in 0..n_trials {
-                    let base = m * n_global;
-                    for s in 0..n_slots {
-                        scratch.push(
-                            global_states[base + proj.global_state_index(CutSlot::new(s)).get()],
-                        );
+            let mut deactivations: Vec<(usize, CutActivityUpdates, f64)> =
+                Vec::with_capacity(self.interior_cut_nodes.len());
+            for &node_pos in &self.interior_cut_nodes {
+                let pool_id = node_graph.nodes[node_pos].pool_id;
+                let (deact, elapsed_ms) = match strategy {
+                    Level1 { .. } => {
+                        let pool = &mut self.fcf.pools[pool_id];
+                        let start = Instant::now();
+                        pool.expire_trial_states(iteration);
+                        pool.update_ownership();
+                        let deact = pool.ownership_activity_updates();
+                        (deact, start.elapsed().as_secs_f64() * 1000.0)
                     }
-                }
-                let start = Instant::now();
-                let deact = strategy.select_for_stage(
-                    pool,
-                    &scratch,
-                    n_trials,
-                    iteration,
-                    node.stage.0 as u32,
-                );
-                let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
-                deactivations.push((node.stage.0, pool_id, deact, elapsed_ms));
-            }
-            self.cut_selection_state_scratch = scratch;
-
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            for (stage, pool_id, deact, stage_sel_time_ms) in deactivations {
-                let pool = &self.fcf.pools[pool_id];
-                let populated = pool.populated() as u32;
-                let active_before = pool.active_count() as u32;
-                let n_deact = deact.updates.len() as u32;
-                let n_reactivated = deact.reactivations.len() as u32;
-                rows_deactivated += n_deact;
-
-                self.fcf.pools[pool_id].apply_updates(&deact);
-
-                let active_after = self.fcf.pools[pool_id].active_count() as u32;
-                let rows_in_lp = self.fcf.pools[pool_id].cuts_in_lp() as u32;
-                per_stage.push(StageRowSelectionRecord {
-                    // Domain stage_id by position from the ordered study ids;
-                    // falls back to the positional index for a short stub context.
-                    stage: self
-                        .stage_ctx
-                        .study_stage_ids
-                        .get(stage)
-                        .copied()
-                        .unwrap_or_else(|| i32::try_from(stage).unwrap_or(i32::MAX))
-                        as u32,
-                    rows_populated: populated,
-                    rows_active_before: active_before,
-                    rows_deactivated: n_deact,
-                    rows_reactivated: n_reactivated,
-                    rows_active_after: active_after,
-                    selection_time_ms: stage_sel_time_ms,
-                    budget_evicted: None,
-                    active_after_budget: None,
-                    rows_in_lp,
-                });
-            }
-
-            // Trim AFTER the application loop so the immutable borrow held by
-            // `deactivations` is released, and AFTER selection so the kernel sees
-            // the full ~2x-peak archive before shrinking to the steady-state
-            // bound documented on [`VisitedStatesArchive::trim_to_window`].
-            if let Some(ref mut archive) = self.visited_archive {
-                let check_freq = match strategy {
-                    Level1 {
-                        check_frequency, ..
-                    }
-                    | Lml1 {
-                        check_frequency, ..
-                    }
-                    | Dominated {
-                        check_frequency, ..
-                    } => *check_frequency,
                     Dynamic { .. } => {
                         unreachable!(
                             "DCS never runs as a periodic pool pass; should_run is always false"
                         )
                     }
                 };
-                archive.trim_to_window(check_freq);
+                deactivations.push((pool_id, deact, elapsed_ms));
+            }
+
+            let mut rows_deactivated = 0u32;
+            #[allow(clippy::cast_possible_truncation)]
+            let stages_processed = deactivations.len() as u32;
+            #[allow(clippy::cast_possible_truncation)]
+            for (pool_id, deact, stage_sel_time_ms) in deactivations {
+                let pool = &mut self.fcf.pools[pool_id];
+                let n_deact = deact.updates.len() as u32;
+                let n_reactivated = deact.reactivations.len() as u32;
+                rows_deactivated += n_deact;
+
+                pool.apply_updates(&deact);
+
+                let counts = &mut pools[pool_id];
+                counts.rows_deactivated = Some(n_deact);
+                counts.rows_reactivated = Some(n_reactivated);
+                counts.selection_time_ms = Some(stage_sel_time_ms);
+                counts.rows_active_after = pool.active_count() as u32;
             }
 
             #[allow(clippy::cast_possible_truncation)]
             let selection_time_ms = sel_start.elapsed().as_millis() as u64;
-            #[allow(clippy::cast_possible_truncation)]
-            let stages_processed_sel = num_sel_stages as u32;
-
-            record_by_pool = Some(selection_record_index_by_pool(
-                node_graph,
-                root_pool,
-                interior_nodes,
-            ));
-
-            sel_state = Some((
-                per_stage,
+            selection_complete = Some(TrainingEvent::PolicySelectionComplete {
+                iteration,
                 rows_deactivated,
+                stages_processed,
                 selection_time_ms,
-                stages_processed_sel,
-            ));
+            });
         }
 
-        // Budget is a hard cap: enforced every iteration when set, never gated
-        // by `check_frequency` like selection.
+        // Enforced every iteration when set; selection's `check_frequency` does
+        // not gate it.
         if let Some(b) = self.config.cut_management.budget {
             let budget_start = Instant::now();
             let mut total_evicted = 0u32;
-            // Budget is a per-POOL cap: enforce over every pool, never
-            // `nodes[stage].pool_id` (a stage-as-node-position read that misses
-            // sibling pools on a branching graph). On a chain `pool_id == stage`.
-            for pool_id in 0..self.fcf.pools.len() {
-                #[allow(clippy::cast_possible_truncation)]
-                let result = self.fcf.pools[pool_id].enforce_budget(
-                    b,
-                    iteration,
-                    self.config.loop_config.forward_passes,
-                );
+            // Interior pools only; the root and terminal pools are exempt
+            // (`budget_caps_only_interior_pools_and_templates_match_their_pools`).
+            for &node_pos in &self.interior_cut_nodes {
+                let pool_id = self.training_ctx.node_graph.nodes[node_pos].pool_id;
+                let result = self.fcf.pools[pool_id].enforce_budget(b, iteration);
                 total_evicted += result.evicted_count;
-                // Annotate the pool's OWN selection record via `record_by_pool`,
-                // never `per_stage[pool_id]`: the record index equals the pool id
-                // only on a chain (see `selection_record_index_by_pool`).
-                if let Some((ref mut per_stage, _, _, _)) = sel_state
-                    && let Some(rec_idx) = record_by_pool
-                        .as_ref()
-                        .and_then(|m| m.get(pool_id).copied().flatten())
-                    && let Some(rec) = per_stage.get_mut(rec_idx)
-                {
-                    rec.budget_evicted = Some(result.evicted_count);
-                    rec.active_after_budget = Some(result.active_after);
-                }
+                let counts = &mut pools[pool_id];
+                counts.budget_evicted = Some(result.evicted_count);
+                counts.active_after_budget = Some(result.active_after);
             }
             #[allow(clippy::cast_possible_truncation)]
             let enforcement_time_ms = budget_start.elapsed().as_millis() as u64;
@@ -1311,26 +1213,14 @@ where
                 TrainingEvent::PolicyBudgetEnforcementComplete {
                     iteration,
                     rows_evicted: total_evicted,
-                    stages_processed: self.training_ctx.horizon.num_stages() as u32,
+                    stages_processed: self.interior_cut_nodes.len() as u32,
                     enforcement_time_ms,
                 },
             );
         }
 
-        // Emit after the budget loop has annotated every per-stage record.
-        if let Some((per_stage, rows_deactivated, selection_time_ms, stages_processed)) = sel_state
-        {
-            emit(
-                self.runtime.event_sender(),
-                TrainingEvent::PolicySelectionComplete {
-                    iteration,
-                    rows_deactivated,
-                    stages_processed,
-                    selection_time_ms,
-                    allgatherv_time_ms: 0,
-                    per_stage,
-                },
-            );
+        if let Some(event) = selection_complete {
+            emit(self.runtime.event_sender(), event);
         }
 
         let freeze_start = Instant::now();
@@ -1347,7 +1237,55 @@ where
                 freeze_time_ms,
             },
         );
-        Ok(())
+
+        if reports_pools {
+            let lazy = matches!(
+                self.config.cut_management.cut_selection,
+                Some(Dynamic { .. })
+            );
+            #[allow(clippy::cast_possible_truncation)]
+            for (counts, batch) in pools.iter_mut().zip(&self.scratch.freeze_row_batches) {
+                counts.rows_in_lp = (!lazy).then_some(batch.num_rows as u32);
+            }
+            emit(
+                self.runtime.event_sender(),
+                TrainingEvent::PolicyPoolSummary { iteration, pools },
+            );
+        }
+    }
+
+    /// One [`PoolRowCounts`] per pool id, holding the counts a pool has before
+    /// any row management of the iteration; the later phases fill the rest.
+    #[allow(clippy::cast_possible_truncation)]
+    fn pool_counts_before_row_management(&self) -> Vec<PoolRowCounts> {
+        let node_graph = self.training_ctx.node_graph;
+        (0..node_graph.n_pools)
+            .map(|pool_id| {
+                let pool = &self.fcf.pools[pool_id];
+                let stage = node_graph.pool_stage[pool_id].0;
+                let rows_active = pool.active_count() as u32;
+                PoolRowCounts {
+                    pool_id: pool_id as u32,
+                    // Falls back to the positional index for a short stub context.
+                    stage_id: self
+                        .stage_ctx
+                        .study_stage_ids
+                        .get(stage)
+                        .copied()
+                        .unwrap_or_else(|| i32::try_from(stage).unwrap_or(i32::MAX)),
+                    node_id: node_graph.sole_pool_owner(pool_id).map(|node| node.0),
+                    rows_in_pool: pool.generated() as u32,
+                    rows_active_before: rows_active,
+                    rows_deactivated: None,
+                    rows_reactivated: None,
+                    selection_time_ms: None,
+                    rows_active_after: rows_active,
+                    budget_evicted: None,
+                    active_after_budget: None,
+                    rows_in_lp: None,
+                }
+            })
+            .collect()
     }
 
     /// Rebuild every pool's frozen template from the current active cut set,
@@ -1382,8 +1320,7 @@ where
         let terminal_stage = (num_stages > 0).then(|| StageIdx(num_stages - 1));
         for p in 0..node_graph.n_pools {
             let t = node_graph.pool_stage[p];
-            let is_terminal = terminal_stage == Some(t);
-            if skip_static_terminal && is_terminal {
+            if skip_static_terminal && terminal_stage == Some(t) {
                 continue;
             }
             build_cut_row_batch_into(
@@ -1408,26 +1345,17 @@ where
         total_rows_frozen
     }
 
-    /// Seed the per-scenario basis store from a checkpoint's stored bases
-    /// before the first training iteration runs.
-    ///
-    /// `cache` carries one [`CapturedBasis`]
-    /// per canonical node (built by
-    /// [`build_basis_cache_from_checkpoint`](crate::build_basis_cache_from_checkpoint)).
-    /// The checkpoint holds a single basis per node; the forward pass keeps one
-    /// per `(worker, node)`, so each node's basis is replicated across every
-    /// worker for iteration 1's warm-start. `reconstruct_basis` reconciles the
-    /// stored cut rows against the current active set by slot identity, so a
-    /// seeded basis stays correct even if cut selection diverges. Seeds every
-    /// node (`num_nodes`), never truncated at `num_stages`, so a branching
-    /// graph's leaves warm-start too. No-op for a fresh start (no cache).
-    pub(crate) fn seed_basis_store(&mut self, cache: &[Option<CapturedBasis>]) {
-        let max_local_fwd = self.ranks.max_local_fwd;
-        let num_nodes = self.basis_store.num_nodes();
-        for (t, slot) in cache.iter().enumerate().take(num_nodes) {
-            let Some(captured) = slot else { continue };
-            for scenario in 0..max_local_fwd {
-                *self.basis_store.get_mut(scenario, NodePos(t)) = Some(captured.clone());
+    /// Seed this rank's rows of the basis store from a loaded checkpoint before
+    /// the first training iteration runs: local row `m` of every canonical node
+    /// takes [`LoadedPolicy::seed_basis`] of global scenario `fwd_offset + m`.
+    /// The padding rows `my_actual_fwd..max_local_fwd` stay empty, and so does
+    /// every row for a fresh start.
+    pub(crate) fn seed_basis_store(&mut self, loaded: &LoadedPolicy) {
+        for node in 0..self.basis_store.num_nodes() {
+            for m in 0..self.ranks.my_actual_fwd {
+                let scenario = global_scenario(self.ranks.my_fwd_offset, m);
+                *self.basis_store.get_mut(m, NodePos(node)) =
+                    loaded.seed_basis(NodePos(node), scenario).cloned();
             }
         }
     }
@@ -1502,39 +1430,53 @@ fn committed_lower_bound_history(
     &history[..history.len().saturating_sub(uncommitted)]
 }
 
-/// Pool → per-iteration selection-record index, in the order
-/// [`TrainingSession::run_cut_management`] emits `per_stage`: the root pool's
-/// record first (index 0), then each interior cut-generating node's pool in
-/// canonical order (`interior_nodes`). The shared leaf pool (no selection
-/// record) stays `None`. Budget enforcement iterates every pool but must
-/// annotate each pool's record through THIS map, never by pool id used as a
-/// `per_stage` index — on a branching graph whose root is not the smallest-id
-/// node the two differ, so eviction stats would land on a sibling's record. On
-/// a chain `pool_id` equals the record index, so the map is the identity.
-fn selection_record_index_by_pool(
-    node_graph: &NodeGraph,
-    root_pool: usize,
-    interior_nodes: &[NodePos],
-) -> Vec<Option<usize>> {
-    let mut by_pool = vec![None; node_graph.n_pools];
-    by_pool[root_pool] = Some(0);
-    for (record_idx, &pos) in interior_nodes.iter().enumerate() {
-        by_pool[node_graph.nodes[pos].pool_id] = Some(1 + record_idx);
-    }
-    by_pool
+/// The nodes whose pools selection and the budget visit: stage 1 or later,
+/// with a successor. Every non-leaf node owns its pool and the leaves share
+/// one, so their pools are those that are neither the root's nor the
+/// terminal's.
+pub(crate) fn interior_cut_nodes(node_graph: &NodeGraph) -> Vec<NodePos> {
+    node_graph
+        .nodes
+        .iter_indexed()
+        .filter(|&(pos, n)| n.stage >= StageIdx(1) && !node_graph.successors[pos].is_empty())
+        .map(|(pos, _)| pos)
+        .collect()
 }
 
-/// Between-iteration capacity growth (reserved seam): doubles a pool's
-/// capacity via [`crate::cut::CutPool::grow`] (`Vec::resize`, position-stable
-/// — the append-only/slot-identity contract survives) when
-/// `realized_visits` exceeds its remaining free slots. Runs once per
-/// iteration from [`TrainingSession::run_iteration`], never inside the
-/// forward/backward sweep. A chain pool's construction-time floor already
-/// equals exactly `forward_passes` per iteration
-/// ([`crate::setup::node_graph::NodeGraph::pool_cut_stride`]), so feeding it the
-/// same value here never triggers growth; a declared graph's realized
-/// per-pool visit source is supplied once a general-graph traversal is
-/// wired.
+/// The study's root when it generates cuts: stage 0 with a successor.
+fn root_cut_node(node_graph: &NodeGraph) -> Option<NodePos> {
+    node_graph
+        .frontier_node(StageIdx(0))
+        .filter(|&pos| !node_graph.successors[pos].is_empty())
+}
+
+/// Rows of a pool that does not store trial states are dropped: the enabling
+/// in [`TrainingSession::new`] alone decides which pools store.
+fn store_loaded_trial_states(fcf: &mut FutureCostFunction, loaded: Vec<StageStatesReadResult>) {
+    for states in loaded {
+        let pool = &mut fcf.pools[states.stage_id as usize];
+        if !pool.stores_trial_states() {
+            continue;
+        }
+        let dimension = pool.state_dimension;
+        for (position, &slot) in states.slots.iter().enumerate() {
+            let row = &states.data[position * dimension..(position + 1) * dimension];
+            pool.load_trial_state(slot as usize, row);
+        }
+    }
+}
+
+/// Between-iteration capacity growth: doubles a pool's capacity via
+/// [`crate::cut::CutPool::grow`] (`Vec::resize`, position-stable — the
+/// append-only/slot-identity contract survives) when `realized_visits`
+/// exceeds its remaining free slots. Runs once per iteration from
+/// [`TrainingSession::run_iteration`], never inside the forward/backward
+/// sweep, and is fed the configured forward-pass count. A chain pool's
+/// construction-time floor equals exactly `forward_passes` per iteration
+/// ([`crate::setup::node_graph::NodeGraph::pool_cut_stride`]), so a chain never
+/// grows. An enumerated run with two or more paths grows by its final
+/// iteration, and a sampled branching pool whose stride is below
+/// `forward_passes` can grow.
 ///
 /// Skips the terminal-stage pool (`node_graph.pool_stage[p] ==
 /// StageIdx(num_stages - 1)`): a leaf's populated count never advances, so an
@@ -1593,10 +1535,11 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::mpsc;
 
+    use crate::test_support::RankStub;
     use chrono::NaiveDate;
     use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
     use novomodelo_core::{
-        Bus, EntityId, SystemBuilder, TrainingEvent, WorkerTimingPhase,
+        Bus, EntityId, PoolRowCounts, SystemBuilder, TrainingEvent, WorkerTimingPhase,
         scenario::{
             CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
             SamplingScheme,
@@ -1607,6 +1550,7 @@ mod tests {
         },
     };
     use novomodelo_io::OwnedPolicyCutRecord;
+    use novomodelo_io::test_support::owned_piece_defaults;
     use novomodelo_solver::{
         Basis, RowBatch, SolverError, SolverInterface, SolverStatistics, StageTemplate,
     };
@@ -1615,11 +1559,14 @@ mod tests {
     };
 
     use super::{
-        IterationOutcome, TrainingSession, grow_pools_for_next_iteration,
-        selection_record_index_by_pool,
+        IterationOutcome, LazySolveTotals, TrainingSession, grow_pools_for_next_iteration,
+        reduce_lazy_totals_delta,
     };
+    use crate::training::training::MissingScenarioBasis;
+    use crate::workspace::CapturedBasis;
     use crate::{
-        CutPool, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet, TrainingConfig,
+        CutPool, LoadedPolicy, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet,
+        TrainingConfig,
         config::{CutManagementConfig, EventConfig, LoopConfig},
         context::TrainingContext,
         cut::fcf::FutureCostFunction,
@@ -1764,6 +1711,103 @@ mod tests {
         fn abort(&self, error_code: i32) -> ! {
             std::process::exit(error_code)
         }
+    }
+
+    /// Two ranks that send the same values: an `f64` `Sum` reduction writes twice
+    /// the sent values.
+    struct TwoIdenticalRanks;
+
+    impl Communicator for TwoIdenticalRanks {
+        fn allgatherv<T: CommData>(
+            &self,
+            _send: &[T],
+            _recv: &mut [T],
+            _counts: &[usize],
+            _displs: &[usize],
+        ) -> Result<(), CommError> {
+            unreachable!("the lazy-totals reduction does not call allgatherv")
+        }
+
+        fn allreduce<T: CommData>(
+            &self,
+            send: &[T],
+            recv: &mut [T],
+            op: ReduceOp,
+        ) -> Result<(), CommError> {
+            use std::any::Any;
+            assert_eq!(op, ReduceOp::Sum, "the lazy-totals reduction is a Sum");
+            for (s, r) in send.iter().zip(recv.iter_mut()) {
+                let value = *(s as &dyn Any)
+                    .downcast_ref::<f64>()
+                    .expect("the lazy-totals reduction sends f64");
+                let doubled = 2.0 * value;
+                *r = *(&doubled as &dyn Any)
+                    .downcast_ref::<T>()
+                    .expect("the lazy-totals reduction sends f64");
+            }
+            Ok(())
+        }
+
+        fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
+            unreachable!("the lazy-totals reduction does not call broadcast")
+        }
+
+        fn barrier(&self) -> Result<(), CommError> {
+            unreachable!("the lazy-totals reduction does not call barrier")
+        }
+
+        fn rank(&self) -> usize {
+            0
+        }
+
+        fn size(&self) -> usize {
+            2
+        }
+
+        fn abort(&self, error_code: i32) -> ! {
+            std::process::exit(error_code)
+        }
+    }
+
+    #[test]
+    fn lazy_totals_reduce_the_iteration_delta_over_ranks() {
+        let before = LazySolveTotals {
+            rows_in_lp_sum: 10,
+            rows_in_lp_count: 2,
+            round_cap_hits: 1,
+        };
+        let after = LazySolveTotals {
+            rows_in_lp_sum: 25,
+            rows_in_lp_count: 5,
+            round_cap_hits: 4,
+        };
+        let totals = |sum, count, hits| LazySolveTotals {
+            rows_in_lp_sum: sum,
+            rows_in_lp_count: count,
+            round_cap_hits: hits,
+        };
+
+        assert_eq!(
+            reduce_lazy_totals_delta(before, after, &StubComm).unwrap(),
+            totals(15, 3, 3)
+        );
+        assert_eq!(
+            reduce_lazy_totals_delta(before, after, &TwoIdenticalRanks).unwrap(),
+            totals(30, 6, 6)
+        );
+
+        let distinct_deltas = LazySolveTotals {
+            round_cap_hits: 6,
+            ..after
+        };
+        assert_eq!(
+            reduce_lazy_totals_delta(before, distinct_deltas, &StubComm).unwrap(),
+            totals(15, 3, 5)
+        );
+        assert_eq!(
+            reduce_lazy_totals_delta(before, distinct_deltas, &TwoIdenticalRanks).unwrap(),
+            totals(30, 6, 10)
+        );
     }
 
     #[allow(clippy::cast_possible_wrap)]
@@ -2076,6 +2120,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .unwrap();
@@ -2158,6 +2203,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .unwrap();
@@ -2201,6 +2247,206 @@ mod tests {
             non_terminal_after_iteration.num_rows, non_terminal_after_priming.num_rows,
             "non-terminal pool must be re-baked to include the newly added cut"
         );
+    }
+
+    #[test]
+    fn budget_caps_only_interior_pools_and_templates_match_their_pools() {
+        let n_stages = 3;
+        let state = test_support::state_layout(1, 0);
+        let templates = vec![minimal_template(state.n_state); n_stages];
+        let initial_state = vec![0.0_f64; state.n_state];
+        let stochastic = make_stochastic_context(n_stages, 1);
+        let stages = make_stages(n_stages);
+        let horizon = HorizonMode::Finite {
+            num_stages: n_stages,
+        };
+        let mut fcf = make_fcf(n_stages, state.n_state, 1, 10);
+        for pool in &mut fcf.pools[..2] {
+            for iteration in 1..=3 {
+                pool.add_cut(NodeId(0), iteration, 0, 1.0, &[1.0]);
+            }
+        }
+        let boundary: Vec<OwnedPolicyCutRecord> = (0..3)
+            .map(|slot_index| OwnedPolicyCutRecord {
+                slot_index,
+                iteration: 0,
+                intercept: 1.0,
+                coefficients: vec![1.0],
+                is_active: true,
+                ..owned_piece_defaults()
+            })
+            .collect();
+        fcf.pools[2] = CutPool::new_with_warm_start(1, 1, 0, &boundary);
+
+        let mut config = make_config(1, 10, 1, n_stages);
+        config.cut_management.budget = Some(1);
+        let mut solver = MockSolver::with_fixed(100.0);
+        let comm = StubComm;
+        let block_counts = vec![1usize; n_stages];
+        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let geometry = equipment_free_geometry(&block_counts);
+        let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
+        let stage_ctx = fixture.ctx();
+        let study_dims = test_support::study_dims();
+        let cut_state_layouts = test_support::all_enabled_cut_state_layouts(&state, n_stages);
+        let node_graph_fixture = test_support::chain_node_graph(&stochastic);
+        let training_ctx = make_training_ctx(
+            &horizon,
+            &study_dims,
+            &state,
+            &cut_state_layouts,
+            &stochastic,
+            &initial_state,
+            &stages,
+            &node_graph_fixture,
+        );
+        let mut session = TrainingSession::new(
+            &mut solver,
+            config,
+            &mut fcf,
+            &stage_ctx,
+            &training_ctx,
+            &comm,
+            || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
+            SolverProfiles::default(),
+        )
+        .unwrap();
+
+        session.prime_frozen_templates();
+        session.run_cut_management(4);
+
+        let pools = &session.fcf.pools;
+        let active: Vec<usize> = pools.iter().map(CutPool::active_count).collect();
+        assert_eq!(active, vec![3, 1, 3], "root and terminal pools are exempt");
+        let survivors: Vec<u64> = pools[1]
+            .active_cuts()
+            .map(|(slot, _, _)| pools[1].metadata(slot).iteration_generated)
+            .collect();
+        assert_eq!(survivors, vec![3], "the freshest interior cut survives");
+        for (pool_id, pool) in pools.iter().enumerate() {
+            assert_eq!(
+                session.scratch.frozen_templates[pool_id].num_rows - templates[0].num_rows,
+                pool.active_count(),
+                "pool {pool_id}: the template must hold exactly the pool's active cuts"
+            );
+        }
+    }
+
+    /// derived: pools 0 and 1 hold `CUTS_PER_POOL` cuts of iterations
+    /// 1..=`CUTS_PER_POOL`, the terminal pool holds `CUTS_PER_POOL` boundary
+    /// cuts, and a cap of `CAP` at iteration `CUTS_PER_POOL + 1` evicts the
+    /// excess of the interior pool 1 only.
+    #[test]
+    fn a_budget_iteration_reports_every_pool() {
+        const CUTS_PER_POOL: u32 = 3;
+        const CAP: u32 = 1;
+        let n_stages = 3;
+        let state = test_support::state_layout(1, 0);
+        let templates = vec![minimal_template(state.n_state); n_stages];
+        let initial_state = vec![0.0_f64; state.n_state];
+        let stochastic = make_stochastic_context(n_stages, 1);
+        let stages = make_stages(n_stages);
+        let horizon = HorizonMode::Finite {
+            num_stages: n_stages,
+        };
+        let mut fcf = make_fcf(n_stages, state.n_state, 1, 10);
+        for pool in &mut fcf.pools[..2] {
+            for iteration in 1..=u64::from(CUTS_PER_POOL) {
+                pool.add_cut(NodeId(0), iteration, 0, 1.0, &[1.0]);
+            }
+        }
+        let boundary: Vec<OwnedPolicyCutRecord> = (0..CUTS_PER_POOL)
+            .map(|slot_index| OwnedPolicyCutRecord {
+                slot_index,
+                iteration: 0,
+                intercept: 1.0,
+                coefficients: vec![1.0],
+                is_active: true,
+                ..owned_piece_defaults()
+            })
+            .collect();
+        fcf.pools[2] = CutPool::new_with_warm_start(1, 1, 0, &boundary);
+
+        let (tx, rx) = mpsc::channel::<TrainingEvent>();
+        let mut config = make_config(1, 10, 1, n_stages);
+        config.cut_management.budget = Some(CAP);
+        config.events.event_sender = Some(tx);
+        let mut solver = MockSolver::with_fixed(100.0);
+        let comm = StubComm;
+        let block_counts = vec![1usize; n_stages];
+        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let geometry = equipment_free_geometry(&block_counts);
+        let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
+        let stage_ctx = fixture.ctx();
+        let study_dims = test_support::study_dims();
+        let cut_state_layouts = test_support::all_enabled_cut_state_layouts(&state, n_stages);
+        let node_graph_fixture = test_support::chain_node_graph(&stochastic);
+        let training_ctx = make_training_ctx(
+            &horizon,
+            &study_dims,
+            &state,
+            &cut_state_layouts,
+            &stochastic,
+            &initial_state,
+            &stages,
+            &node_graph_fixture,
+        );
+        let mut session = TrainingSession::new(
+            &mut solver,
+            config,
+            &mut fcf,
+            &stage_ctx,
+            &training_ctx,
+            &comm,
+            || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
+            SolverProfiles::default(),
+        )
+        .unwrap();
+
+        session.prime_frozen_templates();
+        session.run_cut_management(u64::from(CUTS_PER_POOL) + 1);
+
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, TrainingEvent::PolicySelectionComplete { .. })),
+            "no selection method is set"
+        );
+        let summaries: Vec<&Vec<PoolRowCounts>> = events
+            .iter()
+            .filter_map(|event| match event {
+                TrainingEvent::PolicyPoolSummary { pools, .. } => Some(pools),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(summaries.len(), 1, "one summary for the one iteration");
+        let pools = summaries[0];
+        assert_eq!(pools.len(), n_stages);
+
+        let cuts = CUTS_PER_POOL;
+        let evicted = cuts - CAP;
+        for (pool_id, counts) in pools.iter().enumerate() {
+            assert_eq!(counts.pool_id as usize, pool_id);
+            assert_eq!(counts.stage_id, pool_id as i32, "pool {pool_id}");
+            assert_eq!(counts.node_id, Some(pool_id as i32), "pool {pool_id}");
+            assert_eq!(counts.rows_in_pool, cuts, "pool {pool_id}");
+            assert_eq!(counts.rows_active_before, cuts, "pool {pool_id}");
+            assert_eq!(counts.rows_active_after, cuts, "pool {pool_id}");
+            assert_eq!(counts.rows_deactivated, None, "pool {pool_id}");
+            assert_eq!(counts.rows_reactivated, None, "pool {pool_id}");
+            assert_eq!(counts.selection_time_ms, None, "pool {pool_id}");
+        }
+        for pool_id in [0, 2] {
+            assert_eq!(pools[pool_id].budget_evicted, None, "pool {pool_id}");
+            assert_eq!(pools[pool_id].active_after_budget, None, "pool {pool_id}");
+            assert_eq!(pools[pool_id].rows_in_lp, Some(cuts), "pool {pool_id}");
+        }
+        assert_eq!(pools[1].budget_evicted, Some(evicted));
+        assert_eq!(pools[1].active_after_budget, Some(CAP));
+        assert_eq!(pools[1].rows_in_lp, Some(CAP));
     }
 
     // ── Test: training_session_finalize_emits_training_finished ───────────
@@ -2252,6 +2498,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .unwrap();
@@ -2319,6 +2566,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .unwrap();
@@ -2387,6 +2635,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .unwrap();
@@ -2446,6 +2695,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .unwrap();
@@ -2522,6 +2772,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .unwrap();
@@ -2669,9 +2920,8 @@ mod tests {
     #[test]
     fn grow_pools_for_next_iteration_chain_never_triggers() {
         // A chain-shaped FCF (visit_bound == forward_passes for every pool,
-        // pool_cut_stride): remaining capacity after any
-        // iteration is always >= forward_passes, so this reserved seam is
-        // inert on the only live path.
+        // pool_cut_stride): remaining capacity after any iteration is always
+        // >= forward_passes, so a chain never grows.
         let forward_passes = 4u32;
         let max_iterations = 3u64;
         let mut fcf = FutureCostFunction::new(2, 1, forward_passes, max_iterations, &[0, 0]);
@@ -2692,7 +2942,7 @@ mod tests {
 
     /// The fixed terminal pool [`inject_boundary_cuts`](crate::inject_boundary_cuts)
     /// builds (`CutPool::new_with_warm_start` at `max_iterations = 0`, so
-    /// `capacity == warm_start_count == populated`, `remaining == 0`) must never
+    /// `capacity == prefix_len() == populated`, `remaining == 0`) must never
     /// grow: the unguarded loop would double it the moment any realized visit
     /// count is positive, silently re-introducing the growable slack removed at
     /// injection.
@@ -2703,13 +2953,12 @@ mod tests {
         let mut fcf = make_fcf(n_stages, 1, forward_passes, 10);
         let terminal_idx = n_stages - 1;
         let records = vec![OwnedPolicyCutRecord {
-            cut_id: 0,
             slot_index: 0,
             coefficients: vec![1.0],
             intercept: 5.0,
             is_active: true,
             iteration: 0,
-            forward_pass_index: 0,
+            ..owned_piece_defaults()
         }];
         fcf.pools[terminal_idx] = CutPool::new_with_warm_start(1, forward_passes, 0, &records);
         let capacity_before = fcf.pools[terminal_idx].capacity;
@@ -2729,27 +2978,18 @@ mod tests {
         );
     }
 
-    fn gen_openings() -> NodeOpenings {
-        NodeOpenings {
-            source: OpeningSource::Generated,
-            offset: 0,
-            len: 1,
-            q: 1.0,
-        }
-    }
-
-    /// On a branching graph whose canonical (ascending-id) order does NOT
-    /// place the root first, the cut-budget back-annotation must reach each
-    /// pool's OWN selection record through `selection_record_index_by_pool`, not
-    /// by using the pool id as a `per_stage` index.
+    /// On a branching graph whose root is not its smallest-id node, pool ids,
+    /// node positions and declared node ids all differ: each count lands at its
+    /// own pool id and carries that pool's own owner.
     ///
-    /// Ids 1,2 (leaves, positions 0,1), 3,7 (fan nodes, positions 2,3), 10
-    /// (root, position 4). Pools: fan A→0, fan B→1, root→2, shared leaf→3. The
-    /// `per_stage` record order is [root, fan A, fan B], so the correct map sends
-    /// pool 2→record 0, pool 0→record 1, pool 1→record 2, leaf pool 3→None —
-    /// deliberately NOT the identity `pool_id→pool_id` the pre-fix read assumed.
+    /// Declared ids 1, 2 (leaves, positions 0, 1), 3, 7 (fan nodes, positions
+    /// 2, 3), 10 (root, position 4); pools: fan 3 -> 0, fan 7 -> 1, root -> 2,
+    /// shared leaf pool -> 3.
     #[test]
-    fn selection_record_index_by_pool_maps_branching_root_not_by_pool_id() {
+    fn pool_counts_are_indexed_by_pool_id_on_a_branching_graph() {
+        const CUTS_PER_POOL: u32 = 3;
+        const CAP: u32 = 1;
+        let n_stages = 3;
         let leaf = |pool_id| NodeRuntime {
             stage: StageIdx(2),
             pool_id,
@@ -2783,49 +3023,253 @@ mod tests {
             n_pools: 4,
             pool_stage: vec![StageIdx(1), StageIdx(1), StageIdx(0), StageIdx(2)],
         };
-
-        // root_pool + interior_nodes computed exactly as run_cut_management does.
-        let root_pool = node_graph.nodes[node_graph.frontier_node(StageIdx(0)).unwrap()].pool_id;
-        let interior_nodes: Vec<NodePos> = node_graph
-            .nodes
-            .iter_indexed()
-            .filter(|&(pos, n)| n.stage >= StageIdx(1) && !node_graph.successors[pos].is_empty())
-            .map(|(pos, _)| pos)
-            .collect();
-        assert_eq!(root_pool, 2, "the root owns pool 2, not pool 0");
-        assert_eq!(
-            interior_nodes,
-            vec![NodePos(2), NodePos(3)],
-            "fan nodes at canonical positions 2, 3"
+        let state = test_support::state_layout(1, 0);
+        let templates = vec![minimal_template(state.n_state); n_stages];
+        let initial_state = vec![0.0_f64; state.n_state];
+        let stochastic = make_stochastic_context(n_stages, 1);
+        let stages = make_stages(n_stages);
+        let horizon = HorizonMode::Finite {
+            num_stages: n_stages,
+        };
+        let mut fcf = FutureCostFunction::new(
+            node_graph.n_pools,
+            state.n_state,
+            1,
+            10,
+            &vec![0; node_graph.n_pools],
         );
+        for pool in &mut fcf.pools[..3] {
+            for iteration in 1..=u64::from(CUTS_PER_POOL) {
+                pool.add_cut(NodeId(0), iteration, 0, 1.0, &[1.0]);
+            }
+        }
 
-        let map = selection_record_index_by_pool(&node_graph, root_pool, &interior_nodes);
-        assert_eq!(
-            map,
-            vec![Some(1), Some(2), Some(0), None],
-            "pool 0→record 1, pool 1→record 2, pool 2 (root)→record 0, leaf pool 3→None"
+        let (tx, rx) = mpsc::channel::<TrainingEvent>();
+        let mut config = make_config(1, 10, 1, n_stages);
+        config.cut_management.budget = Some(CAP);
+        config.events.event_sender = Some(tx);
+        let mut solver = MockSolver::with_fixed(100.0);
+        let comm = StubComm;
+        let block_counts = vec![1usize; n_stages];
+        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let geometry = equipment_free_geometry(&block_counts);
+        let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
+        let stage_ctx = fixture.ctx();
+        let study_dims = test_support::study_dims();
+        let cut_state_layouts =
+            test_support::all_enabled_cut_state_layouts(&state, node_graph.n_pools);
+        let training_ctx = make_training_ctx(
+            &horizon,
+            &study_dims,
+            &state,
+            &cut_state_layouts,
+            &stochastic,
+            &initial_state,
+            &stages,
+            &node_graph,
         );
+        let mut session = TrainingSession::new(
+            &mut solver,
+            config,
+            &mut fcf,
+            &stage_ctx,
+            &training_ctx,
+            &comm,
+            || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
+            SolverProfiles::default(),
+        )
+        .unwrap();
 
-        // Power: the fix genuinely differs from the pre-fix identity map.
-        let identity: Vec<Option<usize>> = (0..node_graph.n_pools).map(Some).collect();
-        assert_ne!(
-            map, identity,
-            "on a root-not-smallest-id graph the record map must NOT be the identity — \
-             using pool id as a per_stage index misattributes eviction stats"
+        session.prime_frozen_templates();
+        session.run_cut_management(u64::from(CUTS_PER_POOL) + 1);
+
+        let events: Vec<TrainingEvent> = rx.try_iter().collect();
+        let pools = events
+            .iter()
+            .find_map(|event| match event {
+                TrainingEvent::PolicyPoolSummary { pools, .. } => Some(pools),
+                _ => None,
+            })
+            .expect("a cap is set, so the pools are reported");
+        let owners: Vec<Option<i32>> = pools.iter().map(|counts| counts.node_id).collect();
+        assert_eq!(owners, [Some(3), Some(7), Some(10), None]);
+        let stage_ids: Vec<i32> = pools.iter().map(|counts| counts.stage_id).collect();
+        assert_eq!(stage_ids, [1, 1, 0, 2]);
+        let capped: Vec<Option<u32>> = pools.iter().map(|counts| counts.budget_evicted).collect();
+        assert_eq!(
+            capped,
+            [
+                Some(CUTS_PER_POOL - CAP),
+                Some(CUTS_PER_POOL - CAP),
+                None,
+                None
+            ],
+            "the cap reaches the two fan pools, not the pools at their node positions"
+        );
+        let in_lp: Vec<Option<u32>> = pools.iter().map(|counts| counts.rows_in_lp).collect();
+        assert_eq!(in_lp, [Some(CAP), Some(CAP), Some(CUTS_PER_POOL), Some(0)]);
+    }
+
+    fn gen_openings() -> NodeOpenings {
+        NodeOpenings {
+            source: OpeningSource::Generated,
+            offset: 0,
+            len: 1,
+            q: 1.0,
+        }
+    }
+
+    // ── seed_basis_store: each rank restores its own scenarios ─────────────
+
+    /// The local rows of the store after seeding `loaded` on `comm`, with
+    /// three forward passes on a two-stage chain: per node, each row's
+    /// `cut_row_slots`, which the fixture sets to the basis's scenario.
+    fn seeded_rows<C: Communicator>(comm: &C, loaded: &LoadedPolicy) -> Vec<Vec<Option<Vec<u32>>>> {
+        let n_stages = 2;
+        let state = test_support::state_layout(1, 0);
+        let templates = vec![minimal_template(state.n_state); n_stages];
+        let initial_state = vec![0.0_f64; state.n_state];
+        let stochastic = make_stochastic_context(n_stages, 1);
+        let stages = make_stages(n_stages);
+        let horizon = HorizonMode::Finite {
+            num_stages: n_stages,
+        };
+        let mut fcf = make_fcf(n_stages, state.n_state, 3, 10);
+        let config = make_config(3, 10, 1, n_stages);
+        let mut solver = MockSolver::with_fixed(100.0);
+        let block_counts = vec![1usize; n_stages];
+        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let geometry = equipment_free_geometry(&block_counts);
+        let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
+        let stage_ctx = fixture.ctx();
+        let study_dims = test_support::study_dims();
+        let cut_state_layouts = test_support::all_enabled_cut_state_layouts(&state, n_stages);
+        let node_graph_fixture = test_support::chain_node_graph(&stochastic);
+        let training_ctx = make_training_ctx(
+            &horizon,
+            &study_dims,
+            &state,
+            &cut_state_layouts,
+            &stochastic,
+            &initial_state,
+            &stages,
+            &node_graph_fixture,
+        );
+        let mut session = TrainingSession::new(
+            &mut solver,
+            config,
+            &mut fcf,
+            &stage_ctx,
+            &training_ctx,
+            comm,
+            || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
+            SolverProfiles::default(),
+        )
+        .unwrap();
+
+        session.seed_basis_store(loaded);
+
+        (0..n_stages)
+            .map(|node| {
+                (0..session.basis_store.num_scenarios())
+                    .map(|row| {
+                        session
+                            .basis_store
+                            .get(row, NodePos(node))
+                            .map(|basis| basis.cut_row_slots.clone())
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Node 0 holds the bases of scenarios 0, 1 and 2, node 1 that of scenario
+    /// 0 only (a source that ran one forward pass at it). Rank 0 owns scenarios
+    /// 0 and 1, rank 1 scenario 2 and one padding row.
+    #[test]
+    fn seeding_gives_each_local_row_its_global_scenario_and_leaves_padding_empty() {
+        let tagged = |node: i32, scenario: u32| {
+            (
+                scenario,
+                CapturedBasis {
+                    basis: Basis {
+                        col_status: Vec::new(),
+                        row_status: Vec::new(),
+                    },
+                    base_row_count: 0,
+                    cut_row_slots: vec![scenario],
+                    state_at_capture: Vec::new(),
+                    node_id: NodeId(node),
+                },
+            )
+        };
+        let loaded = LoadedPolicy {
+            scenario_bases: vec![
+                vec![tagged(0, 0), tagged(0, 1), tagged(0, 2)],
+                vec![tagged(1, 0)],
+            ],
+            missing_scenario_basis: MissingScenarioBasis::NodeLowestScenario,
+            ..LoadedPolicy::default()
+        };
+
+        assert_eq!(
+            seeded_rows(&RankStub::of_two(0), &loaded),
+            [
+                vec![Some(vec![0]), Some(vec![1])],
+                vec![Some(vec![0]), Some(vec![0])],
+            ]
+        );
+        assert_eq!(
+            seeded_rows(&RankStub::of_two(1), &loaded),
+            [vec![Some(vec![2]), None], vec![Some(vec![0]), None]]
+        );
+        assert_eq!(
+            seeded_rows(&RankStub::of_two(1), &LoadedPolicy::default()),
+            [vec![None, None], vec![None, None]],
+            "a fresh start seeds nothing"
         );
     }
 
-    // ── TrainingSession::new: enumerated world >= 2 interior-branching guard ─
+    // ── finalize: every rank leaves a failed gather together ───────────────
 
-    /// `size() == 2` sibling of [`StubComm`] — the same faithful rank-0
-    /// partial-write stub `backward_pass_state.rs`'s test module uses for its
-    /// 2-rank enumerated backward regression. `TrainingSession::new` never
-    /// issues a collective itself (only `RankDistribution::new` reads
-    /// `size()`/`rank()`), so the collective bodies below are never exercised
-    /// by the tests that use this stub — only `size()` is load-bearing.
-    struct Rank0Of2;
+    /// One rank of a two-rank world that records the collectives it issues.
+    /// `allgatherv` writes this rank's segment only; with `corrupt_payload` it
+    /// then corrupts the format tag of node 0's `i32` payload, which rank 0
+    /// cannot decode. The gather-status `allreduce` reads 1 from the peer when
+    /// `peer_fails_the_gather`. `broadcast` leaves the buffer as it is.
+    struct RecordingRank {
+        rank: usize,
+        corrupt_payload: bool,
+        peer_fails_the_gather: bool,
+        log: std::sync::Mutex<Vec<&'static str>>,
+    }
 
-    impl Communicator for Rank0Of2 {
+    impl RecordingRank {
+        fn new(rank: usize, corrupt_payload: bool, peer_fails_the_gather: bool) -> Self {
+            Self {
+                rank,
+                corrupt_payload,
+                peer_fails_the_gather,
+                log: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        /// Records `op` and returns how many calls of it came before.
+        fn record(&self, op: &'static str) -> usize {
+            let mut log = self.log.lock().unwrap();
+            let before = log.iter().filter(|&&logged| logged == op).count();
+            log.push(op);
+            before
+        }
+
+        fn issued(&self) -> Vec<&'static str> {
+            self.log.lock().unwrap().clone()
+        }
+    }
+
+    impl Communicator for RecordingRank {
         fn allgatherv<T: CommData>(
             &self,
             send: &[T],
@@ -2833,8 +3277,14 @@ mod tests {
             _counts: &[usize],
             displs: &[usize],
         ) -> Result<(), CommError> {
-            let start = displs[0];
+            use std::any::Any;
+            let nth = self.record("allgatherv");
+            let start = displs[self.rank];
             recv[start..start + send.len()].clone_from_slice(send);
+            if self.corrupt_payload && nth == 1 {
+                let tag: &mut dyn Any = &mut recv[start + 1];
+                *tag.downcast_mut::<i32>().unwrap() += 1;
+            }
             Ok(())
         }
 
@@ -2844,11 +3294,18 @@ mod tests {
             recv: &mut [T],
             _op: ReduceOp,
         ) -> Result<(), CommError> {
+            use std::any::Any;
+            let nth = self.record("allreduce");
             recv.clone_from_slice(send);
+            if self.peer_fails_the_gather && nth == 1 {
+                let flag: &mut dyn Any = &mut recv[0];
+                *flag.downcast_mut::<i32>().unwrap() = 1;
+            }
             Ok(())
         }
 
         fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
+            self.record("broadcast");
             Ok(())
         }
 
@@ -2857,7 +3314,7 @@ mod tests {
         }
 
         fn rank(&self) -> usize {
-            0
+            self.rank
         }
 
         fn size(&self) -> usize {
@@ -2868,6 +3325,107 @@ mod tests {
             std::process::exit(error_code)
         }
     }
+
+    /// `finalize` on one rank of a two-rank world over a two-stage chain with
+    /// three forward passes, the rank's first row holding a basis at node 0.
+    fn finalize_on(comm: &RecordingRank) -> Result<crate::TrainingOutcome, SddpError> {
+        let n_stages = 2;
+        let state = test_support::state_layout(1, 0);
+        let templates = vec![minimal_template(state.n_state); n_stages];
+        let initial_state = vec![0.0_f64; state.n_state];
+        let stochastic = make_stochastic_context(n_stages, 1);
+        let stages = make_stages(n_stages);
+        let horizon = HorizonMode::Finite {
+            num_stages: n_stages,
+        };
+        let mut fcf = make_fcf(n_stages, state.n_state, 3, 10);
+        let config = make_config(3, 10, 1, n_stages);
+        let mut solver = MockSolver::with_fixed(100.0);
+        let block_counts = vec![1usize; n_stages];
+        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let geometry = equipment_free_geometry(&block_counts);
+        let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
+        let stage_ctx = fixture.ctx();
+        let study_dims = test_support::study_dims();
+        let cut_state_layouts = test_support::all_enabled_cut_state_layouts(&state, n_stages);
+        let node_graph_fixture = test_support::chain_node_graph(&stochastic);
+        let training_ctx = make_training_ctx(
+            &horizon,
+            &study_dims,
+            &state,
+            &cut_state_layouts,
+            &stochastic,
+            &initial_state,
+            &stages,
+            &node_graph_fixture,
+        );
+        let mut session = TrainingSession::new(
+            &mut solver,
+            config,
+            &mut fcf,
+            &stage_ctx,
+            &training_ctx,
+            comm,
+            || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
+            SolverProfiles::default(),
+        )
+        .unwrap();
+        *session.basis_store.get_mut(0, NodePos(0)) = Some(CapturedBasis {
+            basis: Basis {
+                col_status: Vec::new(),
+                row_status: Vec::new(),
+            },
+            base_row_count: 0,
+            cut_row_slots: Vec::new(),
+            state_at_capture: Vec::new(),
+            node_id: NodeId(0),
+        });
+
+        session.finalize()
+    }
+
+    /// Per node, one `allgatherv` of the payload lengths and one each of the two
+    /// payloads.
+    const GATHERS_OF_TWO_NODES: usize = 6;
+
+    #[test]
+    fn a_gather_failure_on_rank_zero_does_not_leave_a_peer_in_the_broadcast() {
+        let root = RecordingRank::new(0, true, false);
+        let peer = RecordingRank::new(1, false, true);
+
+        let root_error = finalize_on(&root).expect_err("rank 0 cannot decode its own segment");
+        let peer_error = finalize_on(&peer).expect_err("the peer learns that rank 0 failed");
+
+        assert!(
+            matches!(&root_error, SddpError::Validation(msg) if msg.contains("unsupported wire version")),
+            "{root_error:?}"
+        );
+        assert!(
+            matches!(&peer_error, SddpError::Communication(_)),
+            "{peer_error:?}"
+        );
+        let mut expected = vec!["allreduce"];
+        expected.extend(["allgatherv"; GATHERS_OF_TWO_NODES]);
+        expected.push("allreduce");
+        assert_eq!(root.issued(), expected, "neither rank enters the broadcast");
+        assert_eq!(peer.issued(), expected);
+    }
+
+    #[test]
+    fn a_clean_finalize_broadcasts_the_basis_cache_after_agreeing_on_the_gather() {
+        let root = RecordingRank::new(0, false, false);
+
+        assert!(finalize_on(&root).is_ok());
+
+        let mut expected = vec!["allreduce"];
+        expected.extend(["allgatherv"; GATHERS_OF_TWO_NODES]);
+        expected.push("allreduce");
+        expected.extend(["broadcast"; 4]);
+        assert_eq!(root.issued(), expected);
+    }
+
+    // ── TrainingSession::new: enumerated world >= 2 interior-branching guard ─
 
     /// Root branches into two non-leaf nodes at stage 1, each fanning into
     /// its own leaf at stage 2 — node 1 (and node 2) sit on only one of the
@@ -2985,7 +3543,7 @@ mod tests {
         let mut config = make_config(1, 10, 1, n_stages);
         config.loop_config.training_enumerated = true;
         let mut solver = MockSolver::with_fixed(100.0);
-        let comm = Rank0Of2;
+        let comm = RankStub::of_two(0);
         let block_counts = vec![1usize; n_stages];
         let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
         let geometry = equipment_free_geometry(&block_counts);
@@ -3015,6 +3573,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .err()
@@ -3091,6 +3650,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .expect("world = 1 is always sound, even with interior branching");
@@ -3120,7 +3680,7 @@ mod tests {
         let mut config = make_config(1, 10, 1, n_stages);
         config.loop_config.training_enumerated = true;
         let mut solver = MockSolver::with_fixed(100.0);
-        let comm = Rank0Of2;
+        let comm = RankStub::of_two(0);
         let block_counts = vec![1usize; n_stages];
         let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
         let geometry = equipment_free_geometry(&block_counts);
@@ -3148,6 +3708,7 @@ mod tests {
             &training_ctx,
             &comm,
             || Ok(MockSolver::with_fixed(100.0)),
+            Vec::new(),
             SolverProfiles::default(),
         )
         .expect("a deterministic trunk + terminal fan stays sound at world >= 2");

@@ -13,25 +13,50 @@ use std::path::Path;
 
 use novomodelo_core::System;
 use novomodelo_io::Config;
-use novomodelo_io::config::InflowNonNegativityMethod as CfgInflowMethod;
-use novomodelo_sddp::StudySetup;
+use novomodelo_io::config::{
+    InflowNonNegativityMethod as CfgInflowMethod, SelectionMethod, StoppingRuleConfig,
+    TrainingSelection,
+};
 use novomodelo_sddp::setup::{NodePos, StageIdx};
 use novomodelo_sddp::test_support::decks::committed_decks;
 use novomodelo_sddp::test_support::{
     inflow_slack_bounds_for_probe, stage_state_box_bounds,
     write_backward_opening_outcome_with_inflow_slack_bounds_for_probe,
 };
+use novomodelo_sddp::{DEFAULT_COST_SCALE_FACTOR, StudySetup};
 use novomodelo_solver::ActiveSolver;
 
-use common::cut_oracles::{apply_oracle_config, run_cut_oracles};
+use common::cut_oracles::{
+    apply_oracle_config, apply_oracle_config_with_selection, run_cut_oracles,
+};
 use common::in_code_studies::{
-    ChronologicalNoiseSpec, chronological_noise_study, discounted_anticipated_study,
-    mixed_lead_anticipated_study, negative_draw_par1_spec, parallel_multiblock_evaporation_study,
+    ChronologicalNoiseSpec, chronological_noise_hydro_models, chronological_noise_study,
+    discounted_anticipated_study, mixed_lead_anticipated_study, negative_draw_par1_spec,
+    negative_draw_water_value_spec, parallel_multiblock_evaporation_study,
     stochastic_parallel_study,
 };
-use common::{StubComm, build_setup_in_code, build_setup_in_code_with_models, fresh_setup_with};
+use common::{
+    StubComm, build_setup_in_code, build_setup_in_code_with_models, fresh_setup_with, positive,
+};
 
 const D19_DIR: &str = "../../examples/deterministic/d19-multi-hydro-par";
+const ONE_D_TOY: &str = "examples/1dtoy";
+const LEVEL1_FORWARD_PASSES: u32 = 2;
+const LEVEL1_ITERATIONS: u32 = 10;
+/// Magnitude, in $ per hm³ or per m³/s, that a stored coefficient times
+/// `DEFAULT_COST_SCALE_FACTOR` must exceed to count as sloped.
+const SLOPED_CUT_MARGIN: f64 = 1_000.0;
+/// Two storages and two inflow lags.
+const WATER_VALUE_STATE_DIMENSION: usize = 4;
+
+fn deck_setup(key: &str, mutate: impl FnOnce(&mut Config)) -> StudySetup {
+    let decks = committed_decks();
+    let deck = decks
+        .iter()
+        .find(|deck| deck.key == key)
+        .unwrap_or_else(|| panic!("committed deck {key} is absent"));
+    fresh_setup_with(&deck.dir, mutate)
+}
 
 fn oracle_setup(system: System, mut config: Config) -> StudySetup {
     apply_oracle_config(&mut config);
@@ -60,6 +85,36 @@ fn cut_oracles_hold_on_the_stochastic_parallel_study() {
     let (system, config) = stochastic_parallel_study();
     let setup = oracle_setup(system, config);
     run_cut_oracles("stochastic_parallel_study", setup).assert_sound("stochastic_parallel_study");
+}
+
+#[test]
+fn cut_oracles_hold_on_deactivated_cuts_under_level1() {
+    let setup = deck_setup(ONE_D_TOY, |config| {
+        apply_oracle_config_with_selection(
+            config,
+            SelectionMethod::Level1 {
+                check_frequency: positive(1),
+                lookback_iterations: None,
+            },
+        );
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: LEVEL1_ITERATIONS,
+        }]);
+        config.training.selection = Some(TrainingSelection::Sampled {
+            forward_passes: LEVEL1_FORWARD_PASSES,
+        });
+    });
+    let report = run_cut_oracles(ONE_D_TOY, setup);
+    assert!(
+        report.inactive_cuts_checked > 0,
+        "{ONE_D_TOY}: level1 left no inactive cut, so the oracle checked none"
+    );
+    assert!(
+        report.pools_with_inactive_successor_cuts > 0,
+        "{ONE_D_TOY}: no checked pool's successor holds an inactive cut, so validity ran \
+         against the active templates only"
+    );
+    report.assert_sound(ONE_D_TOY);
 }
 
 #[test]
@@ -103,7 +158,81 @@ fn frozen_correction_resolves_cuts_at_their_own_trial_lags() {
              (frozen_infeasible={})",
             report.frozen_infeasible
         );
+        assert!(
+            report.frozen_resolves > report.frozen_infeasible,
+            "{label}: every frozen-correction re-solve was infeasible, so no cut was compared"
+        );
         report.assert_sound(&label);
+    }
+}
+
+fn water_value_oracle_setup(spec: &ChronologicalNoiseSpec) -> StudySetup {
+    let (system, mut config) = chronological_noise_study(spec);
+    apply_oracle_config(&mut config);
+    let hydro_models = chronological_noise_hydro_models(spec, &system);
+    build_setup_in_code_with_models(system, &config, hydro_models)
+}
+
+/// `run_cut_oracles` consumes its setup, so the stored cuts are read from a twin trained the
+/// same way; returns their count after asserting every coefficient is below `-SLOPED_CUT_MARGIN`.
+fn count_sloped_stored_cuts(label: &str, spec: &ChronologicalNoiseSpec) -> usize {
+    let mut twin = water_value_oracle_setup(spec);
+    let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+    let outcome = twin
+        .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
+        .expect("training must return Ok");
+    assert!(
+        outcome.error.is_none(),
+        "{label}: training must not error: {:?}",
+        outcome.error
+    );
+    let mut cuts = 0;
+    for (slot, _, coefficients) in twin.fcf.pools[0].active_cuts() {
+        assert_eq!(
+            coefficients.len(),
+            WATER_VALUE_STATE_DIMENSION,
+            "{label}: slot {slot} coefficient count"
+        );
+        for (dimension, coefficient) in coefficients.iter().enumerate() {
+            let slope = coefficient * DEFAULT_COST_SCALE_FACTOR;
+            assert!(
+                slope < -SLOPED_CUT_MARGIN,
+                "{label}: slot {slot} dimension {dimension} has slope {slope}, a flat cut"
+            );
+        }
+        cuts += 1;
+    }
+    cuts
+}
+
+/// The negative-draw study's cuts are flat because its water has no value; with a stage-1 load
+/// they are sloped, so the frozen-correction comparator can tell a right reference from a wrong one.
+#[test]
+fn cut_oracles_hold_with_sloped_cuts_on_the_negative_draw_water_value_study() {
+    for method in [
+        CfgInflowMethod::Truncation,
+        CfgInflowMethod::TruncationWithPenalty,
+    ] {
+        let label = format!("negative_draw_water_value/{method:?}");
+        let spec = ChronologicalNoiseSpec {
+            branching_factor: 4,
+            ..negative_draw_water_value_spec(method)
+        };
+        let report = run_cut_oracles(&label, water_value_oracle_setup(&spec));
+        assert!(
+            report.frozen_resolves > 0,
+            "{label}: the frozen-correction re-solve branch never ran"
+        );
+        assert!(
+            report.frozen_resolves > report.frozen_infeasible,
+            "{label}: every frozen-correction re-solve was infeasible, so no cut was compared"
+        );
+        report.assert_sound(&label);
+        assert_eq!(
+            count_sloped_stored_cuts(&label, &spec),
+            report.cuts_checked,
+            "{label}: the second training run stored a different number of cuts than the oracle checked"
+        );
     }
 }
 
@@ -129,17 +258,12 @@ fn cut_oracles_hold_on_the_chronological_pumping_study() {
 
 #[test]
 fn cut_oracles_hold_on_the_chronological_and_parallel_storage_decks() {
-    let decks = committed_decks();
     for key in [
         "crates/novomodelo-sddp/tests/fixtures/chronological_storage",
         "crates/novomodelo-sddp/tests/fixtures/parallel_storage",
     ] {
-        let deck = decks
-            .iter()
-            .find(|deck| deck.key == key)
-            .unwrap_or_else(|| panic!("committed deck {key} is absent"));
-        let setup = fresh_setup_with(&deck.dir, apply_oracle_config);
-        run_cut_oracles(&deck.key, setup).assert_sound(&deck.key);
+        let setup = deck_setup(key, apply_oracle_config);
+        run_cut_oracles(key, setup).assert_sound(key);
     }
 }
 

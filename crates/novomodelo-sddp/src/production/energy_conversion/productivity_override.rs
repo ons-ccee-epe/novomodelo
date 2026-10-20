@@ -10,8 +10,8 @@ use novomodelo_io::{HydroEnergyProductivityRow, LoadError};
 /// Per-`(hydro, stage)` override table loaded from
 /// `system/hydro_energy_productivity.parquet`.
 ///
-/// Each of the three override columns (`ρ_eq`, `Q_ref`, `ρ_esp`) is stored in
-/// two parallel lookup tables: one for stage-specific rows and one for
+/// Each of the four override columns (`ρ_eq`, `Q_ref`, `ρ_esp` and the
+/// integrated `ρ_eq`) is stored in two parallel lookup tables: one for stage-specific rows and one for
 /// per-hydro defaults (rows whose `stage_id` is NULL in the source file).
 ///
 /// Accessors apply a per-stage → per-hydro-default → `None` fallback chain.
@@ -24,6 +24,8 @@ pub struct HydroEnergyProductivityOverride {
     q_ref_per_hydro_default: HashMap<EntityId, f64>,
     rho_esp_per_hydro_stage: HashMap<(EntityId, i32), f64>,
     rho_esp_per_hydro_default: HashMap<EntityId, f64>,
+    integrated_rho_eq_per_hydro_stage: HashMap<(EntityId, i32), f64>,
+    integrated_rho_eq_per_hydro_default: HashMap<EntityId, f64>,
 }
 
 impl HydroEnergyProductivityOverride {
@@ -34,6 +36,25 @@ impl HydroEnergyProductivityOverride {
             return Some(v);
         }
         self.rho_eq_per_hydro_default.get(&hydro).copied()
+    }
+
+    /// Returns the user-supplied useful-range mean own term \[MW/(m³/s)\] for
+    /// `(hydro, stage)` if any.
+    #[must_use]
+    pub fn integrated_equivalent_productivity(
+        &self,
+        hydro: EntityId,
+        stage: StageId,
+    ) -> Option<f64> {
+        if let Some(&v) = self
+            .integrated_rho_eq_per_hydro_stage
+            .get(&(hydro, stage.0))
+        {
+            return Some(v);
+        }
+        self.integrated_rho_eq_per_hydro_default
+            .get(&hydro)
+            .copied()
     }
 
     /// Returns the user-supplied `Q_ref` \[m³/s\] for `(hydro, stage)` if any.
@@ -110,6 +131,10 @@ pub fn build_hydro_energy_productivity_override(
             if let Some(v) = row.specific_productivity_mw_per_m3s_per_m {
                 out.rho_esp_per_hydro_stage.insert((row.hydro_id, s), v);
             }
+            if let Some(v) = row.integrated_equivalent_productivity_mw_per_m3s {
+                out.integrated_rho_eq_per_hydro_stage
+                    .insert((row.hydro_id, s), v);
+            }
         } else {
             if let Some(v) = row.equivalent_productivity_mw_per_m3s {
                 out.rho_eq_per_hydro_default.insert(row.hydro_id, v);
@@ -119,6 +144,10 @@ pub fn build_hydro_energy_productivity_override(
             }
             if let Some(v) = row.specific_productivity_mw_per_m3s_per_m {
                 out.rho_esp_per_hydro_default.insert(row.hydro_id, v);
+            }
+            if let Some(v) = row.integrated_equivalent_productivity_mw_per_m3s {
+                out.integrated_rho_eq_per_hydro_default
+                    .insert(row.hydro_id, v);
             }
         }
     }
@@ -141,7 +170,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_override_three_column_lookup_precedence() {
+    fn test_override_column_lookup_precedence() {
         let rows = vec![
             HydroEnergyProductivityRow {
                 hydro_id: EntityId(1),
@@ -149,6 +178,7 @@ mod tests {
                 equivalent_productivity_mw_per_m3s: Some(3.6),
                 reference_outflow_m3s: None,
                 specific_productivity_mw_per_m3s_per_m: None,
+                integrated_equivalent_productivity_mw_per_m3s: Some(3.1),
             },
             HydroEnergyProductivityRow {
                 hydro_id: EntityId(1),
@@ -156,6 +186,7 @@ mod tests {
                 equivalent_productivity_mw_per_m3s: Some(4.0),
                 reference_outflow_m3s: None,
                 specific_productivity_mw_per_m3s_per_m: Some(0.009),
+                integrated_equivalent_productivity_mw_per_m3s: Some(3.9),
             },
             HydroEnergyProductivityRow {
                 hydro_id: EntityId(2),
@@ -163,6 +194,7 @@ mod tests {
                 equivalent_productivity_mw_per_m3s: Some(5.0),
                 reference_outflow_m3s: Some(200.0),
                 specific_productivity_mw_per_m3s_per_m: None,
+                integrated_equivalent_productivity_mw_per_m3s: None,
             },
         ];
         let o = build_hydro_energy_productivity_override(&rows).expect("override builds");
@@ -190,6 +222,19 @@ mod tests {
             Some(0.009)
         );
         assert_eq!(o.specific_productivity(EntityId(2), StageId(0)), None);
+        assert_eq!(
+            o.integrated_equivalent_productivity(EntityId(1), StageId(0)),
+            Some(3.1)
+        );
+        assert_eq!(
+            o.integrated_equivalent_productivity(EntityId(1), StageId(1)),
+            Some(3.9)
+        );
+        assert_eq!(
+            o.integrated_equivalent_productivity(EntityId(2), StageId(0)),
+            None,
+            "a ρ_eq override never implies an integrated override"
+        );
     }
 
     #[test]
@@ -201,6 +246,7 @@ mod tests {
                 equivalent_productivity_mw_per_m3s: Some(3.6),
                 reference_outflow_m3s: None,
                 specific_productivity_mw_per_m3s_per_m: None,
+                integrated_equivalent_productivity_mw_per_m3s: None,
             },
             HydroEnergyProductivityRow {
                 hydro_id: EntityId(1),
@@ -208,6 +254,7 @@ mod tests {
                 equivalent_productivity_mw_per_m3s: None,
                 reference_outflow_m3s: Some(200.0),
                 specific_productivity_mw_per_m3s_per_m: None,
+                integrated_equivalent_productivity_mw_per_m3s: None,
             },
         ];
         let err = build_hydro_energy_productivity_override(&rows).unwrap_err();
@@ -228,6 +275,7 @@ mod tests {
                 equivalent_productivity_mw_per_m3s: Some(2.0),
                 reference_outflow_m3s: None,
                 specific_productivity_mw_per_m3s_per_m: None,
+                integrated_equivalent_productivity_mw_per_m3s: None,
             },
             HydroEnergyProductivityRow {
                 hydro_id: EntityId(1),
@@ -235,6 +283,7 @@ mod tests {
                 equivalent_productivity_mw_per_m3s: Some(3.0),
                 reference_outflow_m3s: None,
                 specific_productivity_mw_per_m3s_per_m: None,
+                integrated_equivalent_productivity_mw_per_m3s: None,
             },
         ];
         let o = build_hydro_energy_productivity_override(&rows).expect("override builds");
@@ -256,6 +305,7 @@ mod tests {
             equivalent_productivity_mw_per_m3s: None,
             reference_outflow_m3s: None,
             specific_productivity_mw_per_m3s_per_m: Some(0.009),
+            integrated_equivalent_productivity_mw_per_m3s: None,
         }];
         let o = build_hydro_energy_productivity_override(&rows).expect("override builds");
 
@@ -296,6 +346,7 @@ mod tests {
             equivalent_productivity_mw_per_m3s: Some(7.2),
             reference_outflow_m3s: None,
             specific_productivity_mw_per_m3s_per_m: None,
+            integrated_equivalent_productivity_mw_per_m3s: None,
         }];
         let o = build_hydro_energy_productivity_override(&rows).expect("override builds");
         assert_eq!(

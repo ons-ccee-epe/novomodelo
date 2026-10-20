@@ -1665,8 +1665,8 @@ mod anticipated_generic_constraint_e2e {
         ContractBlockBounds, EntityId, GenericConstraint, HydroBlockBounds, HydroPenalties,
         HydroStageBounds, InitialConditions, LineBlockBounds, LineStagePenalties, LinearTerm,
         NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds,
-        ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SlackConfig,
-        SystemBuilder, ThermalBlockBounds, ThermalStageBounds, VariableRef,
+        ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SystemBuilder,
+        ThermalBlockBounds, ThermalStageBounds, VariableRef,
         entities::{bus::DeficitSegment, thermal::AnticipatedConfig},
         scenario::LoadModel,
         temporal::{
@@ -1997,12 +1997,9 @@ mod anticipated_generic_constraint_e2e {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
         };
 
         let config = build_config();

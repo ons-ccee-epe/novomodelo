@@ -4,13 +4,11 @@ use novomodelo_core::{BlockMode, Stage};
 use crate::hydro_models::EvaporationModel;
 use crate::indexer::{
     BlockIdx, BusSys, EvapLocal, FillingTargetLocal, FloorLocal, HydroCell, HydroSys,
+    PlantCapLocal, PlantFloorLocal,
 };
 
 use super::fpha_cursor::for_each_fpha_plane;
-use super::hydro_state::{
-    GroupBoundLookup, cell_min_generation, cell_min_turbined, hydro_phase,
-    resolve_shortcircuit_target,
-};
+use super::hydro_state::{MaxCap, MinFloor, hydro_phase, resolve_shortcircuit_target};
 use super::layout::{StageLayout, TemplateBuildCtx, position_table_row};
 
 /// Fill row lower/upper bounds for one stage.
@@ -47,6 +45,14 @@ pub(super) fn fill_stage_rows(
     fill_fpha_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
     fill_evaporation_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
     fill_operational_violation_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
+    fill_plant_cap_rows(
+        ctx,
+        stage,
+        stage_idx,
+        layout,
+        &mut row_lower,
+        &mut row_upper,
+    );
     fill_anticipated_fishing_rows(layout, &mut row_lower, &mut row_upper);
     fill_anticipated_state_out_def_rows(layout, &mut row_lower, &mut row_upper);
     fill_anticipated_slot_definition_rows(layout, &mut row_lower, &mut row_upper);
@@ -430,20 +436,21 @@ fn fill_z_inflow_rows(
     }
 }
 
-/// Fill row bounds for the 4 operational violation constraint families.
+/// Fill row bounds for the 6 operational violation constraint families.
 ///
 /// The two flow families are per-hydro per-block; RHS is in rate units
-/// (m3/s). The two power families (min-turbine, min-generation) are per-hydro
-/// CELL per-block: each cell's RHS is the PLAIN SUM of its own member groups'
-/// resolved minimum (`cell_min_turbined`/`cell_min_generation`), never the
-/// plant's declared `min_turbined_m3s`/`min_generation_mw` — see the
-/// min-floor contract.
+/// (m3/s). The power families (min-turbine, min-generation) are per-hydro
+/// CELL per-block, plus one residual row per plant-floor hydro per block; the
+/// RHS of both comes from [`PlantFloor`](super::hydro_state::PlantFloor) — see the min-floor contract.
 ///
 /// - **Min outflow** (`>=`): `row_lower = min_outflow_m3s`, `row_upper = +INF`.
 /// - **Max outflow** (`<=`): `row_lower = -INF`, `row_upper = max_outflow_m3s`
 ///   (or `+INF` when the bound is absent, making the row non-binding).
-/// - **Min turbine** (`>=`, per cell): `row_lower = cell_min_turbined`, `row_upper = +INF`.
-/// - **Min generation** (`>=`, per cell): `row_lower = cell_min_generation`, `row_upper = +INF`.
+/// - **Min turbine / generation** (`>=`, per cell): `row_lower =
+///   PlantFloor::cell_rhs`, `row_upper = +INF`.
+/// - **Plant min turbine / generation** (`>=`, per plant-floor hydro):
+///   `row_lower = PlantFloor::residual_rhs`, or `-INF` (a free row) at a
+///   block where the cells already cover the plant minimum.
 pub(super) fn fill_operational_violation_rows(
     ctx: &TemplateBuildCtx<'_>,
     stage_idx: usize,
@@ -480,22 +487,55 @@ pub(super) fn fill_operational_violation_rows(
             }
         }
 
-        let hydro = &ctx.hydros[h_idx];
-        for blk in 0..layout.clock.n_blks() {
-            let b = BlockIdx::new(blk);
-            let lookup =
-                GroupBoundLookup::new(ctx.resolved.bounds.group_overlay(), h_idx, stage_idx, blk);
-            for cell_idx in ctx.hydro_cell_index.cells_of(hydro_sys) {
-                let cell = HydroCell::new(cell_idx);
-                let positions = ctx.hydro_cell_index.groups_of(cell);
+        for kind in MinFloor::ALL {
+            for blk in 0..layout.clock.n_blks() {
+                let b = BlockIdx::new(blk);
+                let floor = ctx.plant_floor(stage_idx, kind, hydro_sys, blk);
+                for cell_idx in ctx.hydro_cell_index.cells_of(hydro_sys) {
+                    let cell = HydroCell::new(cell_idx);
+                    let row = layout.min_floor_row(kind, cell, b);
+                    row_lower[row] = floor.cell_rhs(cell);
+                    row_upper[row] = f64::INFINITY;
+                }
+            }
+        }
+    }
 
-                let row_t = layout.min_turbine_row(cell, b);
-                row_lower[row_t] = cell_min_turbined(&hydro.unit_groups, positions, lookup);
-                row_upper[row_t] = f64::INFINITY;
+    for (local, &hydro_sys) in layout.geometry.plant_floor_hydro_indices.iter().enumerate() {
+        for kind in MinFloor::ALL {
+            for blk in 0..layout.clock.n_blks() {
+                let floor = ctx.plant_floor(stage_idx, kind, hydro_sys, blk);
+                let row = layout.plant_min_floor_row(
+                    kind,
+                    PlantFloorLocal::new(local),
+                    BlockIdx::new(blk),
+                );
+                row_lower[row] = floor.residual_rhs().unwrap_or(f64::NEG_INFINITY);
+                row_upper[row] = f64::INFINITY;
+            }
+        }
+    }
+}
 
-                let row_g = layout.min_generation_row(cell, b);
-                row_lower[row_g] = cell_min_generation(&hydro.unit_groups, positions, lookup);
-                row_upper[row_g] = f64::INFINITY;
+/// Fill the hard plant cap rows: `≤` the plant maximum where it binds on its
+/// cells' total ([`plant_cap_rhs`](super::hydro_state::plant_cap_rhs)), free
+/// elsewhere.
+fn fill_plant_cap_rows(
+    ctx: &TemplateBuildCtx<'_>,
+    stage: &Stage,
+    stage_idx: usize,
+    layout: &StageLayout,
+    row_lower: &mut [f64],
+    row_upper: &mut [f64],
+) {
+    for (local, &hydro_sys) in layout.geometry.plant_cap_hydro_indices.iter().enumerate() {
+        for kind in MaxCap::ALL {
+            for blk in 0..layout.clock.n_blks() {
+                let row = layout.plant_max_row(kind, PlantCapLocal::new(local), BlockIdx::new(blk));
+                row_lower[row] = f64::NEG_INFINITY;
+                row_upper[row] = ctx
+                    .plant_cap(stage.id, stage_idx, kind, hydro_sys, blk)
+                    .unwrap_or(f64::INFINITY);
             }
         }
     }

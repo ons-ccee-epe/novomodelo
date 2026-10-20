@@ -18,7 +18,6 @@ use novomodelo_core::EnergyContract;
 use novomodelo_core::Hydro;
 use novomodelo_core::HydroGenerationModel::ConstantProductivity;
 use novomodelo_core::HydroGenerationModel::Fpha;
-use novomodelo_core::HydroGenerationModel::LinearizedHead;
 use novomodelo_core::Line;
 use novomodelo_core::NonControllableSource;
 use novomodelo_core::PumpingStation;
@@ -293,7 +292,7 @@ impl PyHydro {
     #[getter]
     fn productivity_mw_per_m3s(&self) -> Option<f64> {
         match self.hydro().generation_model {
-            ConstantProductivity | LinearizedHead | Fpha => None,
+            ConstantProductivity | Fpha => None,
         }
     }
 

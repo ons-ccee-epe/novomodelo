@@ -4,11 +4,11 @@
 //! stage: interior storage boundaries (`HydroStorageInitial` / `HydroStorageFinal`)
 //! on parallel stages, and out-of-range block selectors on any per-block reference.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use novomodelo_core::{
-    AffineBound, CoefficientRef, ComputedParameter, EntityId, GenericConstraint, ParameterKind,
-    VariableRef, temporal::BlockMode,
+    ComputedParameter, EntityId, GenericConstraint, ParameterKind, VariableRef,
+    expand_expression_parameters, temporal::BlockMode,
 };
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
@@ -70,82 +70,173 @@ fn constraint_active_on_stage(data: &ParsedData, constraint_id: i32, stage_id: i
         .any(|r| r.constraint_id == constraint_id && r.stage_id == stage_id)
 }
 
-/// Rule 51. Layer 5a — warns when a constraint pairs the `max_stored_energy(h)`
-/// computed parameter with the mismatched `accumulated_productivity(h)` coefficient
-/// for the same hydro `h`: the two ride different evaluators and would not cancel.
-/// The matching (cancelling) coefficient for `max_stored_energy` is
-/// `integrated_accumulated_productivity`. Warning only — never rejected.
+/// Unit family of a stored-energy computed tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnergyUnit {
+    /// `MW/(m3/s)`, and `MW/(m3/s) * hm3` for `max_stored_energy`.
+    Raw,
+    /// `MWh/hm3`, and `MWh` for `max_stored_energy_mwh`.
+    Mwh,
+}
+
+/// Role of a computed tag in a stored-energy constraint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnergyRole {
+    /// The right-hand-side reference (`max_stored_energy*`).
+    Ceiling,
+    /// A productivity coefficient on a volume or flow term.
+    Productivity,
+}
+
+/// A computed tag Rule 51 inspects: its role, unit, hydro and JSON tag.
+#[derive(Debug, Clone, Copy)]
+struct EnergyTag {
+    role: EnergyRole,
+    unit: EnergyUnit,
+    hydro_id: EntityId,
+    name: &'static str,
+}
+
+fn energy_tag(cp: ComputedParameter) -> Option<EnergyTag> {
+    use ComputedParameter as C;
+    use EnergyRole::{Ceiling, Productivity};
+    use EnergyUnit::{Mwh, Raw};
+    let (role, unit, hydro_id, name) = match cp {
+        C::MaxStoredEnergy { hydro_id } => (Ceiling, Raw, hydro_id, "max_stored_energy"),
+        C::MaxStoredEnergyMwh { hydro_id } => (Ceiling, Mwh, hydro_id, "max_stored_energy_mwh"),
+        C::EquivalentProductivity { hydro_id } => {
+            (Productivity, Raw, hydro_id, "equivalent_productivity")
+        }
+        C::AccumulatedProductivity { hydro_id } => {
+            (Productivity, Raw, hydro_id, "accumulated_productivity")
+        }
+        C::IntegratedEquivalentProductivity { hydro_id } => (
+            Productivity,
+            Raw,
+            hydro_id,
+            "integrated_equivalent_productivity",
+        ),
+        C::IntegratedAccumulatedProductivity { hydro_id } => (
+            Productivity,
+            Raw,
+            hydro_id,
+            "integrated_accumulated_productivity",
+        ),
+        C::IntegratedEquivalentProductivityMwhPerHm3 { hydro_id } => (
+            Productivity,
+            Mwh,
+            hydro_id,
+            "integrated_equivalent_productivity_mwh_per_hm3",
+        ),
+        C::IntegratedAccumulatedProductivityMwhPerHm3 { hydro_id } => (
+            Productivity,
+            Mwh,
+            hydro_id,
+            "integrated_accumulated_productivity_mwh_per_hm3",
+        ),
+        C::ReferenceVolume { .. }
+        | C::ReferenceTurbine { .. }
+        | C::MinStorage { .. }
+        | C::MaxStorage { .. }
+        | C::SpecificProductivity { .. } => return None,
+    };
+    Some(EnergyTag {
+        role,
+        unit,
+        hydro_id,
+        name,
+    })
+}
+
+/// The only productivity tag that cancels a ceiling of `unit`: same unit,
+/// cascade scope, useful-range mean evaluator.
+fn matching_productivity(unit: EnergyUnit) -> &'static str {
+    match unit {
+        EnergyUnit::Raw => "integrated_accumulated_productivity",
+        EnergyUnit::Mwh => "integrated_accumulated_productivity_mwh_per_hm3",
+    }
+}
+
+/// Rule 51. Layer 5a — warns when a constraint's stored-energy tags would not
+/// cancel: a `max_stored_energy*(h)` ceiling beside a same-unit productivity tag
+/// for the same hydro `h` other than the matching one (another scope or
+/// evaluator), or raw and `MWh` tags mixed in one constraint (a factor of
+/// `10^6/3600` apart). It reads tags reached through expression parameters too.
+/// Warning only — never rejected.
 pub(super) fn check_productivity_tag_pairing(data: &ParsedData, ctx: &mut ValidationContext) {
-    let computed: HashMap<EntityId, ComputedParameter> = data
+    let computed: HashMap<EntityId, EnergyTag> = data
         .scalar_parameters
         .iter()
         .filter_map(|p| match p.kind {
-            ParameterKind::Computed { computed_spec } => Some((p.id, computed_spec)),
+            ParameterKind::Computed { computed_spec } => {
+                energy_tag(computed_spec).map(|tag| (p.id, tag))
+            }
             _ => None,
         })
         .collect();
 
     for constraint in &data.generic_constraints {
-        let mut max_stored_energy: HashSet<EntityId> = HashSet::new();
-        let mut accumulated_productivity: HashSet<EntityId> = HashSet::new();
+        let mut tags: Vec<EnergyTag> =
+            expand_expression_parameters(constraint.parameter_ids(), &data.scalar_parameters)
+                .iter()
+                .filter_map(|id| computed.get(id).copied())
+                .collect();
+        tags.sort_by_key(|t| (t.hydro_id, t.name));
+        tags.dedup_by_key(|t| (t.hydro_id, t.name));
 
-        for id in constraint_parameter_ids(constraint) {
-            match computed.get(&id) {
-                Some(ComputedParameter::MaxStoredEnergy { hydro_id }) => {
-                    max_stored_energy.insert(*hydro_id);
-                }
-                Some(ComputedParameter::AccumulatedProductivity { hydro_id }) => {
-                    accumulated_productivity.insert(*hydro_id);
-                }
-                _ => {}
+        for ceiling in tags.iter().filter(|t| t.role == EnergyRole::Ceiling) {
+            let matching = matching_productivity(ceiling.unit);
+            for other in tags.iter().filter(|t| {
+                t.role == EnergyRole::Productivity
+                    && t.hydro_id == ceiling.hydro_id
+                    && t.unit == ceiling.unit
+                    && t.name != matching
+            }) {
+                ctx.emit(
+                    &rules::SEMANTIC_GENERIC_PRODUCTIVITY_TAG_MISMATCH,
+                    "constraints/generic_constraints.json",
+                    Some(&constraint.name),
+                    format!(
+                        "Constraint \"{}\": pairs {}({hid}) with {}({hid}) for hydro \
+                         {hid}; the two differ in scope or evaluator and would not \
+                         cancel. The coefficient matching {} is {matching}.",
+                        constraint.name,
+                        ceiling.name,
+                        other.name,
+                        ceiling.name,
+                        hid = ceiling.hydro_id.0,
+                    ),
+                );
             }
         }
 
-        let mut mismatched: Vec<EntityId> = max_stored_energy
-            .intersection(&accumulated_productivity)
-            .copied()
-            .collect();
-        mismatched.sort_unstable();
-
-        for hydro_id in mismatched {
+        let names_in = |unit: EnergyUnit| -> Vec<&'static str> {
+            let mut names: Vec<&'static str> = tags
+                .iter()
+                .filter(|t| t.unit == unit)
+                .map(|t| t.name)
+                .collect();
+            names.sort_unstable();
+            names.dedup();
+            names
+        };
+        let (raw, mwh) = (names_in(EnergyUnit::Raw), names_in(EnergyUnit::Mwh));
+        if !raw.is_empty() && !mwh.is_empty() {
             ctx.emit(
                 &rules::SEMANTIC_GENERIC_PRODUCTIVITY_TAG_MISMATCH,
                 "constraints/generic_constraints.json",
                 Some(&constraint.name),
                 format!(
-                    "Constraint \"{}\": pairs max_stored_energy({hid}) with \
-                     accumulated_productivity({hid}) for hydro {hid}; the two ride \
-                     different evaluators and would not cancel. The coefficient \
-                     matching max_stored_energy is integrated_accumulated_productivity, \
-                     not accumulated_productivity.",
+                    "Constraint \"{}\": mixes MWh tags ({}) with raw productivity tags \
+                     ({}); the two units differ by a factor of 10^6/3600. Use one family \
+                     throughout.",
                     constraint.name,
-                    hid = hydro_id.0,
+                    mwh.join(", "),
+                    raw.join(", "),
                 ),
             );
         }
     }
-}
-
-/// Every scalar-parameter id a constraint's expression coefficients or affine
-/// bounds reference.
-fn constraint_parameter_ids(constraint: &GenericConstraint) -> impl Iterator<Item = EntityId> + '_ {
-    let term_ids = constraint
-        .expression
-        .terms
-        .iter()
-        .filter_map(|term| match term.coefficient {
-            CoefficientRef::Parameter(id) => Some(id),
-            CoefficientRef::Literal(_) => None,
-        });
-    let lower_ids = constraint
-        .bound_lower_affine
-        .iter()
-        .flat_map(AffineBound::params);
-    let upper_ids = constraint
-        .bound_upper_affine
-        .iter()
-        .flat_map(AffineBound::params);
-    term_ids.chain(lower_ids).chain(upper_ids)
 }
 
 /// Which per-block storage boundary a term references, and the block selector.
@@ -355,8 +446,8 @@ fn boundary_is_interior(k: usize, num_blocks: usize) -> bool {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use novomodelo_core::{
-        AffineBound, CoefficientRef, ComputedParameter, ConstraintExpression, EntityId,
-        GenericConstraint, LinearTerm, ParameterKind, ScalarParameter, SlackConfig, VariableRef,
+        ComputedParameter, ConstraintExpression, EntityId, GenericConstraint, LinearTerm,
+        ParameterKind, ScalarExpr, ScalarParameter, VariableRef,
         temporal::{Block, BlockMode},
     };
 
@@ -399,12 +490,9 @@ mod tests {
             expression: ConstraintExpression {
                 terms: vec![LinearTerm::literal(1.0, variable)],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
         }];
         data.generic_constraint_bounds = vec![GenericConstraintBoundsRow {
             constraint_id: 1,
@@ -893,10 +981,17 @@ mod tests {
         }
     }
 
+    fn expression_scalar_param(id: i32, name: &str, expression: ScalarExpr) -> ScalarParameter {
+        ScalarParameter {
+            id: EntityId::from(id),
+            name: name.to_string(),
+            kind: ParameterKind::Expression { expression },
+        }
+    }
+
     fn param_term(coefficient_id: EntityId) -> LinearTerm {
         LinearTerm {
-            coefficient: CoefficientRef::Parameter(coefficient_id),
-            scale: 1.0,
+            coefficient: ScalarExpr::param(coefficient_id),
             variable: VariableRef::HydroTurbined {
                 hydro_id: EntityId::from(1),
                 block_id: None,
@@ -916,12 +1011,9 @@ mod tests {
             expression: ConstraintExpression {
                 terms: vec![param_term(lhs_param)],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: Some(AffineBound::single(upper_bound_param)),
+            slack: None,
+            bound_lower: None,
+            bound_upper: Some(ScalarExpr::param(upper_bound_param)),
         }
     }
 
@@ -933,12 +1025,9 @@ mod tests {
             expression: ConstraintExpression {
                 terms: vec![param_term(param_a), param_term(param_b)],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
         }
     }
 
@@ -957,12 +1046,9 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
         }
     }
 
@@ -1095,6 +1181,96 @@ mod tests {
     }
 
     #[test]
+    fn mismatched_pairing_behind_an_expression_parameter_warns_once() {
+        let data = make_data_with_constraint(
+            vec![
+                computed_scalar_param(
+                    1,
+                    "rho_acum",
+                    ComputedParameter::AccumulatedProductivity {
+                        hydro_id: EntityId::from(7),
+                    },
+                ),
+                computed_scalar_param(
+                    2,
+                    "e_max",
+                    ComputedParameter::MaxStoredEnergy {
+                        hydro_id: EntityId::from(7),
+                    },
+                ),
+                expression_scalar_param(
+                    3,
+                    "e",
+                    ScalarExpr::param(EntityId(1)) * ScalarExpr::literal(2.0),
+                ),
+            ],
+            constraint_with_lhs_and_upper_bound(EntityId(3), EntityId(2)),
+        );
+        let mut ctx = ValidationContext::new();
+        check_productivity_tag_pairing(&data, &mut ctx);
+
+        let messages: Vec<String> = ctx
+            .warnings()
+            .iter()
+            .map(|e| {
+                assert_eq!(e.kind, ErrorKind::SemanticAmbiguity);
+                e.message.clone()
+            })
+            .collect();
+        assert_eq!(messages.len(), 1, "expected one warning, got: {messages:?}");
+        assert!(
+            messages[0].contains('7'),
+            "message should name hydro 7, got: {}",
+            messages[0]
+        );
+        assert!(
+            messages[0].contains("integrated_accumulated_productivity"),
+            "message should name the matching coefficient, got: {}",
+            messages[0]
+        );
+
+        assert!(
+            ctx.into_result().is_ok(),
+            "a warning must not fail into_result"
+        );
+    }
+
+    #[test]
+    fn matching_integrated_coefficient_behind_an_expression_parameter_no_warning() {
+        let data = make_data_with_constraint(
+            vec![
+                computed_scalar_param(
+                    1,
+                    "rho_acum_int",
+                    ComputedParameter::IntegratedAccumulatedProductivity {
+                        hydro_id: EntityId::from(7),
+                    },
+                ),
+                computed_scalar_param(
+                    2,
+                    "e_max",
+                    ComputedParameter::MaxStoredEnergy {
+                        hydro_id: EntityId::from(7),
+                    },
+                ),
+                expression_scalar_param(
+                    3,
+                    "e",
+                    ScalarExpr::param(EntityId(1)) * ScalarExpr::literal(2.0),
+                ),
+            ],
+            constraint_with_lhs_and_upper_bound(EntityId(3), EntityId(2)),
+        );
+        let mut ctx = ValidationContext::new();
+        check_productivity_tag_pairing(&data, &mut ctx);
+
+        assert!(
+            ctx.warnings().is_empty(),
+            "the matching coefficient reached through an expression must not warn"
+        );
+    }
+
+    #[test]
     fn different_hydro_pairing_no_warning() {
         let data = make_data_with_constraint(
             vec![
@@ -1121,6 +1297,69 @@ mod tests {
         assert!(
             ctx.warnings().is_empty(),
             "a different-hydro pairing must not warn"
+        );
+    }
+
+    fn warnings_for_pair(a: ComputedParameter, b: ComputedParameter) -> Vec<String> {
+        let data = make_data_with_constraint(
+            vec![
+                computed_scalar_param(1, "coefficient", a),
+                computed_scalar_param(2, "ceiling", b),
+            ],
+            constraint_with_lhs_and_upper_bound(EntityId::from(1), EntityId::from(2)),
+        );
+        let mut ctx = ValidationContext::new();
+        check_productivity_tag_pairing(&data, &mut ctx);
+        ctx.warnings().iter().map(|e| e.message.clone()).collect()
+    }
+
+    #[test]
+    fn mwh_ceiling_with_matching_mwh_coefficient_no_warning() {
+        let hydro_id = EntityId::from(7);
+        let warnings = warnings_for_pair(
+            ComputedParameter::IntegratedAccumulatedProductivityMwhPerHm3 { hydro_id },
+            ComputedParameter::MaxStoredEnergyMwh { hydro_id },
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn mwh_ceiling_with_raw_coefficient_warns_unit_mix_once() {
+        let hydro_id = EntityId::from(7);
+        let warnings = warnings_for_pair(
+            ComputedParameter::IntegratedAccumulatedProductivity { hydro_id },
+            ComputedParameter::MaxStoredEnergyMwh { hydro_id },
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("10^6/3600"), "{}", warnings[0]);
+    }
+
+    #[test]
+    fn raw_and_mwh_tags_on_different_hydros_warn_unit_mix() {
+        let warnings = warnings_for_pair(
+            ComputedParameter::IntegratedAccumulatedProductivityMwhPerHm3 {
+                hydro_id: EntityId::from(7),
+            },
+            ComputedParameter::MaxStoredEnergy {
+                hydro_id: EntityId::from(9),
+            },
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("max_stored_energy"), "{}", warnings[0]);
+    }
+
+    #[test]
+    fn mwh_ceiling_with_own_scope_mwh_coefficient_warns_and_names_the_match() {
+        let hydro_id = EntityId::from(7);
+        let warnings = warnings_for_pair(
+            ComputedParameter::IntegratedEquivalentProductivityMwhPerHm3 { hydro_id },
+            ComputedParameter::MaxStoredEnergyMwh { hydro_id },
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("is integrated_accumulated_productivity_mwh_per_hm3"),
+            "{}",
+            warnings[0]
         );
     }
 

@@ -146,8 +146,10 @@ pub struct BackwardResult {
     pub setup_time_ms: u64,
 
     /// Load-imbalance component of parallel overhead, accumulated across all
-    /// stages (milliseconds). Computed per-stage as `max_worker_total_ms - avg_worker_total_ms`,
-    /// where `worker_total_ms = solve + load_model + set_bounds + basis_set` for each worker.
+    /// stages (milliseconds). Computed per-stage as `max_worker_total_ms - avg_worker_total_ms`
+    /// over every worker on every rank, where `worker_total_ms = solve + load_model +
+    /// set_bounds + basis_set`; under MPI it includes the time a rank waits for its peers.
+    /// Identical on every rank.
     pub load_imbalance_ms: u64,
 
     /// Rayon scheduling overhead, accumulated across all stages (milliseconds).
@@ -261,8 +263,9 @@ pub(crate) struct SuccessorChild<'a> {
     pub(crate) num_cuts_at_successor: usize,
     /// Base row count of the successor stage template (node-level; excludes cuts).
     pub(crate) template_num_rows: usize,
-    /// Minimum dual multiplier for a cut to count as binding (node-level).
-    pub(crate) cut_activity_tolerance: f64,
+    /// A cut row binds when its dual is greater than this; `None` when binding
+    /// is not tracked.
+    pub(crate) cut_activity_tolerance: Option<f64>,
     /// Ordered slot indices of the child's active cuts.
     pub(crate) successor_active_slots: &'a [usize],
     /// Populated count of the child's cut pool.
@@ -290,7 +293,8 @@ pub(crate) struct SuccessorOutcomes<'a> {
     cut_batches: &'a [RowBatch],
     pools: &'a [CutPool],
     template_num_rows: usize,
-    cut_activity_tolerance: f64,
+    /// See [`SuccessorChild::cut_activity_tolerance`].
+    pub(crate) cut_activity_tolerance: Option<f64>,
 }
 
 impl<'a> SuccessorOutcomes<'a> {
@@ -303,7 +307,7 @@ impl<'a> SuccessorOutcomes<'a> {
         cut_batches: &'a [RowBatch],
         pools: &'a [CutPool],
         template_num_rows: usize,
-        cut_activity_tolerance: f64,
+        cut_activity_tolerance: Option<f64>,
     ) -> Self {
         Self {
             entries,

@@ -172,7 +172,11 @@ def test_boundary_load_rejects_an_undated_checkpoint_with_validation_error(
         stage["priced_state_date"] = _UNDATED_PRICED_STATE_DATE
     undated_output = tmp_path / "undated"
     novomodelo.write_policy_checkpoint(
-        str(undated_output / "policy"), loaded["stage_cuts"], loaded["metadata"]
+        str(undated_output / "policy"),
+        loaded["stage_cuts"],
+        loaded["metadata"],
+        loaded["stage_bases"],
+        loaded["stage_states"],
     )
 
     target_case = tmp_path / "target"

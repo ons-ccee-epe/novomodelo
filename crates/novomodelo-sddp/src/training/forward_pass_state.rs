@@ -6,10 +6,8 @@
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
-use novomodelo_core::WorkerPhaseTimings;
-use novomodelo_core::{TrainingEvent, WorkerTimingPhase};
-use novomodelo_solver::ActiveProfile;
-use novomodelo_solver::{SolverInterface, SolverStatistics, StageTemplate};
+use novomodelo_core::{TrainingEvent, WorkerPhaseTimings, WorkerTimingPhase};
+use novomodelo_solver::{ActiveProfile, SolverInterface, SolverStatistics, StageTemplate};
 use novomodelo_stochastic::context::ClassSchemes;
 #[cfg(test)]
 use novomodelo_stochastic::select_transition_child;
@@ -30,6 +28,7 @@ use crate::workspace::WorkspacePool;
 use crate::{
     context::{StageContext, TrainingContext},
     cut::FutureCostFunction,
+    dcs::DcsParams,
     error::SddpError,
     forward::{
         EnumeratedForwardResult, EnumeratedForwardScratch, EnumeratedParams, ForwardResult,
@@ -142,6 +141,9 @@ pub(crate) struct ForwardWorkerParams<'a> {
     /// Per-iteration scenario-invariant tables backing `sampler`'s
     /// `OutOfSample` draws.
     pub noise_tables: &'a ForwardNoiseTables,
+    /// Lazy-solve parameters for this pass: `Some` only when configured and
+    /// active at this iteration; constant across all stages and scenarios.
+    pub dcs: Option<DcsParams>,
 }
 
 /// Return bundle from [`run_forward_worker`].
@@ -483,6 +485,10 @@ impl ForwardPassState {
             training_ctx,
             sampler,
             noise_tables: &self.noise_tables,
+            dcs: training_ctx
+                .dcs
+                .map(|p| p.resolve(forward_profile.primal_feasibility_tolerance))
+                .filter(|p| p.is_active(inputs.iteration)),
         };
         let worker_results: Vec<Result<ForwardWorkerResult, SddpError>> = inputs
             .workspaces
@@ -544,7 +550,10 @@ impl ForwardPassState {
 
         Self::require_terminal_node(training_ctx)?;
 
-        let dcs_params = training_ctx.dcs.filter(|p| p.is_active(inputs.iteration));
+        let dcs_params = training_ctx
+            .dcs
+            .map(|p| p.resolve(forward_profile.primal_feasibility_tolerance))
+            .filter(|p| p.is_active(inputs.iteration));
 
         let params = EnumeratedParams {
             iteration: inputs.iteration,
@@ -657,7 +666,6 @@ impl ForwardPassState {
                 .map(|(b, a)| SolverStatsDelta::from_snapshots(b, a)),
         );
 
-        // setup_time_ms: total non-solve work (load_model + set_bounds + basis_set).
         let fwd_setup_ms: f64 = self
             .worker_deltas
             .iter()
@@ -809,13 +817,6 @@ pub(crate) fn run_forward_worker<S: SolverInterface + Send>(
     #[allow(clippy::cast_possible_truncation)]
     let total_scenarios_u32 = params.total_forward_passes as u32;
 
-    // DCS decision for this pass: `Some` only when configured AND active at this
-    // iteration; constant across all stages and scenarios.
-    let dcs_params = params
-        .training_ctx
-        .dcs
-        .filter(|p| p.is_active(params.iteration));
-
     // Rationale: `t` indexes several parallel per-stage collections
     // (params.frozen, params.ctx.cumulative_discount_factors) beyond
     // `per_stage_stats`, so an iterator over `per_stage_stats` alone would not
@@ -851,7 +852,7 @@ pub(crate) fn run_forward_worker<S: SolverInterface + Send>(
             // the frozen path; on the DCS path `run_forward_stage` instead loads
             // the cut-free base template (loading frozen would double-append the
             // embedded cut rows), so the frozen load is skipped.
-            if dcs_params.is_none() {
+            if params.dcs.is_none() {
                 ws.solver.load_model(&params.frozen[pool_id]);
             }
             ws.current_state.clear();
@@ -930,7 +931,7 @@ pub(crate) fn run_forward_worker<S: SolverInterface + Send>(
                 raw_noise,
                 basis_row_capacity: params.frozen[pool_id].num_rows,
                 pool: &params.fcf.pools[pool_id],
-                dcs: dcs_params,
+                dcs: params.dcs,
                 node,
             };
             let stats_before_stage = ws.solver.statistics();
@@ -978,6 +979,7 @@ pub(crate) fn run_forward_worker<S: SolverInterface + Send>(
 mod tests {
     use std::collections::BTreeMap;
 
+    use crate::test_support::RankStub;
     use chrono::NaiveDate;
     use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
     use novomodelo_core::scenario::{
@@ -1010,6 +1012,7 @@ mod tests {
             StageContextFixture, equipment_free_geometry, permissive_state_boxes, state_layout,
             study_dims,
         },
+        training::session::rank_distribution::RankDistribution,
         trajectory::TrajectoryRecord,
         workspace::{BackwardAccumulators, BasisStore, ScratchBuffers, SolverWorkspace},
     };
@@ -1642,6 +1645,7 @@ mod tests {
             training_ctx: &training_ctx,
             sampler: &sampler,
             noise_tables: &noise_tables,
+            dcs: None,
         };
 
         // Mutable per-call state: independent allocations, not borrows of fx.
@@ -2133,6 +2137,7 @@ mod tests {
             training_ctx: &training_ctx,
             sampler: &sampler,
             noise_tables: &noise_tables,
+            dcs: None,
         };
 
         let solution = LpSolution {
@@ -2412,6 +2417,7 @@ mod tests {
             training_ctx: &training_ctx,
             sampler: &sampler,
             noise_tables: &noise_tables,
+            dcs: None,
         };
 
         let mut ws = single_workspace(MockSolver::always_ok(fixed_solution_1_0()), &state);
@@ -2582,5 +2588,81 @@ mod tests {
             ForwardPassState::require_terminal_node(&training_ctx).is_ok(),
             "a zero-stage horizon never reaches the alive-node check"
         );
+    }
+
+    #[test]
+    fn a_rank_with_fewer_passes_than_store_rows_keeps_each_scenario_basis_in_its_own_row() {
+        let ranks = RankDistribution::new(&RankStub::of_two(1), 5);
+        assert!(
+            ranks.my_actual_fwd < ranks.max_local_fwd,
+            "the fixture must leave this rank a row with no forward pass"
+        );
+        let n_workers = 2;
+        let fx = ForwardFixture::new();
+        let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
+        let geometry = equipment_free_geometry(&vec![0; fx.templates.len()]);
+        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let ctx = fixture.ctx();
+        let study_dims = study_dims();
+        let node_graph = crate::test_support::chain_node_graph(&fx.stochastic);
+        let training_ctx = terminal_boundary_test_ctx(
+            &fx.stochastic,
+            &node_graph,
+            &fx.state,
+            &fx.stages,
+            &study_dims,
+            &fx.initial_state,
+        );
+
+        let mut workspaces: Vec<SolverWorkspace<MockSolver>> = (0..n_workers)
+            .map(|w| {
+                let mut ws =
+                    single_workspace(MockSolver::always_ok(fixed_solution_1_0()), &fx.state);
+                ws.worker_id = i32::try_from(w).expect("worker id fits i32");
+                ws
+            })
+            .collect();
+        let mut basis_store = BasisStore::new(ranks.max_local_fwd, fx.n_stages);
+        let mut records: Vec<TrajectoryRecord> = (0..ranks.my_actual_fwd * fx.n_stages)
+            .map(|_| TrajectoryRecord {
+                primal: Vec::new(),
+                dual: Vec::new(),
+                stage_cost: 0.0,
+                node_id: NodeId(0),
+                state: Vec::new(),
+            })
+            .collect();
+
+        let mut state = ForwardPassState::new(n_workers, fx.n_stages, ranks.max_local_fwd);
+        let mut inputs = ForwardPassInputs {
+            workspaces: &mut workspaces,
+            basis_store: &mut basis_store,
+            ctx: &ctx,
+            frozen: &fx.templates,
+            fcf: &fx.fcf,
+            training_ctx: &training_ctx,
+            records: &mut records,
+            local_forward_passes: ranks.my_actual_fwd,
+            total_forward_passes: ranks.num_total_forward_passes,
+            iteration: 1,
+            fwd_offset: ranks.my_fwd_offset,
+            event_sender: None,
+        };
+        let _ = state.run(&mut inputs).expect("forward pass must not error");
+
+        for t in 0..fx.n_stages {
+            for m in 0..ranks.my_actual_fwd {
+                assert!(
+                    basis_store.get(m, NodePos(t)).is_some(),
+                    "scenario {m} must store its stage-{t} basis in row {m}"
+                );
+            }
+            for m in ranks.my_actual_fwd..ranks.max_local_fwd {
+                assert!(
+                    basis_store.get(m, NodePos(t)).is_none(),
+                    "row {m} has no forward pass on this rank and must stay empty"
+                );
+            }
+        }
     }
 }

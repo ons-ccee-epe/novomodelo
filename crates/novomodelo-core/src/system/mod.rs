@@ -2245,8 +2245,9 @@ mod tests {
             CorrelationProfile, CorrelationScheduleEntry, DeficitSegment, HydroBlockBounds,
             HydroPastDefluence, HydroPenalties, HydroStageBounds, HydroStorage, LineBlockBounds,
             LineStagePenalties, LinearTerm, NcsStagePenalties, PenaltiesCountsSpec,
-            PenaltiesDefaults, PolicyGraphType, PumpingBlockBounds, RecentObservation, SlackConfig,
-            ThermalBlockBounds, ThermalStageBounds, Transition, VariableRef,
+            PenaltiesDefaults, PenaltyBasis, PolicyGraphType, PumpingBlockBounds,
+            RecentObservation, SlackConfig, ThermalBlockBounds, ThermalStageBounds, Transition,
+            VariableRef,
         };
 
         let bus1 = {
@@ -2619,12 +2620,12 @@ mod tests {
                     },
                 )],
             },
-            slack: SlackConfig {
-                enabled: true,
-                penalty: Some(2500.0),
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            slack: Some(SlackConfig {
+                penalty: 2500.0,
+                penalty_basis: PenaltyBasis::PerHour,
+            }),
+            bound_lower: None,
+            bound_upper: None,
         }];
 
         let inflow_history = vec![

@@ -43,6 +43,7 @@ use novomodelo_io::config::{
 use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::hydro_models::{
     EvaporationModel, EvaporationModelSet, LinearizedEvaporation, PrepareHydroModelsResult,
+    ProductionModelSet, ResolvedProductionModel,
 };
 
 use super::builders::{
@@ -1466,8 +1467,11 @@ pub struct ChronologicalNoiseSpec {
     pub par1_psi: Option<[f64; 2]>,
     /// Inflow non-negativity cost, shared by both hydros.
     pub inflow_nonnegativity_cost: f64,
-    /// Deterministic bus load \[MW\] on both stages.
-    pub load_mean_mw: f64,
+    /// Deterministic bus load \[MW\], by stage.
+    pub load_mw: [f64; 2],
+    /// Constant productivity \[MW per m³/s\], shared by both hydros and stages; read only by
+    /// [`chronological_noise_hydro_models`].
+    pub hydro_productivity_mw_per_m3s: f64,
     /// Initial storage \[hm³\], shared by both hydros.
     pub initial_storage_hm3: f64,
 }
@@ -1485,7 +1489,8 @@ impl Default for ChronologicalNoiseSpec {
             inflow_mean_m3s: CHRONOLOGICAL_NOISE_INFLOW_MEAN_M3S,
             par1_psi: None,
             inflow_nonnegativity_cost: 0.0,
-            load_mean_mw: 0.0,
+            load_mw: [0.0; 2],
+            hydro_productivity_mw_per_m3s: 0.0,
             initial_storage_hm3: CHRONOLOGICAL_NOISE_INITIAL_STORAGE_HM3,
         }
     }
@@ -1494,10 +1499,14 @@ impl Default for ChronologicalNoiseSpec {
 /// PAR(1) coefficients of [`negative_draw_par1_spec`], indexed like
 /// `CHRONOLOGICAL_NOISE_HYDRO_IDS`.
 pub const CHRONOLOGICAL_NOISE_PAR1_PSI: [f64; 2] = [0.5, 0.3];
+/// Mean inflow \[m³/s\] of [`negative_draw_par1_spec`], low enough that most raw PAR
+/// values are negative.
+pub const NEGATIVE_DRAW_INFLOW_MEAN_M3S: f64 = -30.0;
 
-/// The chronological-noise study with negative PAR(1) draws: mean −30 m³/s and
-/// ψ = [`CHRONOLOGICAL_NOISE_PAR1_PSI`] on both hydros, a parallel January stage, a
-/// chronological February stage and three openings per stage.
+/// The chronological-noise study with negative PAR(1) draws: mean
+/// [`NEGATIVE_DRAW_INFLOW_MEAN_M3S`] and ψ = [`CHRONOLOGICAL_NOISE_PAR1_PSI`] on both
+/// hydros, a parallel January stage, a chronological February stage and three
+/// openings per stage.
 ///
 /// The lag seed is zero and December has no inflow model, so stage 0 draws
 /// `r₁ = μ + σ·η₁`. February's lag season is January with the same σ, so stage 1
@@ -1509,9 +1518,24 @@ pub fn negative_draw_par1_spec(method: CfgInflowMethod) -> ChronologicalNoiseSpe
         block_modes: [BlockMode::Parallel, BlockMode::Chronological],
         branching_factor: 3,
         inflow_method: method,
-        inflow_mean_m3s: -30.0,
+        inflow_mean_m3s: NEGATIVE_DRAW_INFLOW_MEAN_M3S,
         par1_psi: Some(CHRONOLOGICAL_NOISE_PAR1_PSI),
         ..ChronologicalNoiseSpec::default()
+    }
+}
+
+/// [`negative_draw_par1_spec`] with water worth thermal generation: no load at stage 0, which
+/// stores its water in the 150 hm³ box; a 150 MW load at stage 1, above the 100 MW the two
+/// hydros can generate; and 100 hm³ initially, less than one stage of turbining at 100 m³/s,
+/// so stage 1 turbines all it holds.
+#[must_use]
+pub fn negative_draw_water_value_spec(method: CfgInflowMethod) -> ChronologicalNoiseSpec {
+    ChronologicalNoiseSpec {
+        max_storage_hm3: 150.0,
+        load_mw: [0.0, 150.0],
+        hydro_productivity_mw_per_m3s: 0.5,
+        initial_storage_hm3: 100.0,
+        ..negative_draw_par1_spec(method)
     }
 }
 
@@ -1620,7 +1644,7 @@ fn build_chronological_noise_system(spec: &ChronologicalNoiseSpec) -> novomodelo
         .map(|i| LoadModel {
             bus_id: EntityId(CHRONOLOGICAL_NOISE_BUS_ID),
             stage_id: i32::try_from(i).expect("stage index fits i32"),
-            mean_mw: spec.load_mean_mw,
+            mean_mw: spec.load_mw[i],
             std_mw: 0.0,
         })
         .collect();
@@ -1798,6 +1822,28 @@ pub fn chronological_noise_study(
     let mut config = build_config();
     config.modeling.inflow_non_negativity.method = spec.inflow_method;
     (build_chronological_noise_system(spec), config)
+}
+
+/// [`chronological_noise_study`]'s hydro models: the spec's constant productivity on every
+/// hydro and stage, which `build_setup_in_code` would leave at zero.
+#[must_use]
+pub fn chronological_noise_hydro_models(
+    spec: &ChronologicalNoiseSpec,
+    system: &novomodelo_core::System,
+) -> PrepareHydroModelsResult {
+    let mut hydro_models = PrepareHydroModelsResult::default_from_system(system);
+    let stage_models = vec![
+        ResolvedProductionModel::ConstantProductivity {
+            productivity: spec.hydro_productivity_mw_per_m3s,
+        };
+        CHRONOLOGICAL_NOISE_N_STAGES
+    ];
+    hydro_models.production = ProductionModelSet::new(
+        vec![stage_models; CHRONOLOGICAL_NOISE_HYDRO_IDS.len()],
+        system.hydros(),
+        CHRONOLOGICAL_NOISE_N_STAGES,
+    );
+    hydro_models
 }
 
 /// [`chronological_noise_study`] with its pumping station enabled, built

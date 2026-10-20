@@ -561,7 +561,7 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "hydros",
         "inflow_nonnegativity_slack_m3s",
-        "Water added to the incremental inflow in the water balance: the non-negativity correction under the truncation methods, the penalty slack under the penalty method, 0 without one; for a plant before filling it lands, like the inflow, on the plant that receives its inflow",
+        "Water added to the incremental inflow in the water balance: the non-negativity correction under truncation, at most that correction under truncation_with_penalty, the penalty slack under the penalty method, 0 without one; for a plant before filling it lands, like the inflow, on the plant that receives its inflow, if there is one",
     ),
     (
         "hydros",
@@ -740,7 +740,7 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "inflow_lags",
         "inflow_m3s",
-        "Inflow at this lag: the seed derived from history (0 without one) at the first stage, the raw simulated PAR value afterwards",
+        "Inflow at this lag: the seed derived from history (0 without one) at the first stage, built afterwards from the raw simulated PAR values of earlier stages (aggregated over the lag's period when the period spans several stages)",
     ),
     ("in_transit", "stage_id", "Stage index"),
     (
@@ -842,12 +842,12 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "convergence",
         "cuts_removed",
-        "Cuts removed in this iteration",
+        "Rows deactivated in this iteration by the selection method or by max_active_per_stage",
     ),
     (
         "convergence",
         "cuts_active",
-        "Total active cuts after iteration",
+        "Active rows after selection and the cap, reactivations included",
     ),
     (
         "convergence",
@@ -875,6 +875,13 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "mean_rows_in_lp",
         "Mean resident rows loaded per lazy-selection LP solve this iteration \
          (0 when no lazy selection ran)",
+    ),
+    (
+        "convergence",
+        "lazy_round_cap_hits",
+        "Lazy-selection LP solves of the iteration, on all ranks, that reached \
+         the round cap with a candidate row still violated (0 when no lazy \
+         selection ran)",
     ),
     (
         "iteration_timing",
@@ -937,7 +944,7 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "iteration_timing",
         "bwd_load_imbalance_ms",
-        "Estimated load imbalance across backward pass worker threads",
+        "Estimated load imbalance across backward pass worker threads on all MPI ranks",
     ),
     (
         "iteration_timing",
@@ -972,46 +979,66 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
          sub-component of the forward/backward phases.",
     ),
     ("row_selection", "iteration", "Iteration number (1-based)"),
-    ("row_selection", "stage_id", "Declared study stage id"),
+    ("row_selection", "pool_id", "Row-pool id (0-based)"),
     (
         "row_selection",
-        "cuts_populated",
-        "Total cuts ever generated at this stage",
+        "stage_id",
+        "Declared study stage id of the pool's nodes",
+    ),
+    (
+        "row_selection",
+        "node_id",
+        "Declared id of the pool's sole owning node; null when several nodes \
+         share the pool",
+    ),
+    (
+        "row_selection",
+        "cuts_in_pool",
+        "Rows the pool holds, loaded and generated",
     ),
     (
         "row_selection",
         "cuts_active_before",
-        "Active cuts before selection ran",
+        "Active rows when row management starts",
     ),
     (
         "row_selection",
         "cuts_deactivated",
-        "Cuts deactivated by selection",
+        "Rows the selection pass deactivated; null when no pass ran on the pool",
     ),
     (
         "row_selection",
         "cuts_reactivated",
-        "Cuts reactivated (previously deactivated, re-entered LP)",
+        "Rows the selection pass reactivated; null when no pass ran on the pool",
     ),
     (
         "row_selection",
         "cuts_active_after",
-        "Active cuts after selection",
+        "Active rows after the selection pass (equal to cuts_active_before \
+         when none ran)",
     ),
     (
         "row_selection",
         "selection_time_ms",
-        "Wall-clock time for selection at this stage",
+        "Wall-clock time of the selection pass on the pool; null when no pass \
+         ran on the pool",
     ),
     (
         "row_selection",
         "budget_evicted",
-        "Cuts evicted by budget enforcement (null when budget disabled)",
+        "Rows max_active_per_stage evicted; null when the cap was not applied \
+         to the pool",
     ),
     (
         "row_selection",
         "active_after_budget",
-        "Active cuts after budget enforcement (null when budget disabled)",
+        "Active rows after the cap; null when the cap was not applied to the pool",
+    ),
+    (
+        "row_selection",
+        "cuts_in_lp",
+        "Rows of the pool in the LP the next iteration's solves load; null \
+         under the dynamic method",
     ),
     (
         "solver_iterations",
@@ -1196,7 +1223,10 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "generic_constraint_echo",
         "term_index",
-        "Term position in the resolved left-hand side; NULL on a term-less \
+        "Position of the term in the constraint's merged left-hand side, ordered by \
+         variable independently of authoring order. Repeated references to one variable \
+         merge into one term; two variable names that address the same LP column, such as \
+         hydro_storage and hydro_storage_final, stay separate terms. NULL on a term-less \
          constraint's placeholder row",
     ),
     (
@@ -1212,9 +1242,11 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "generic_constraint_echo",
         "coefficient",
-        "Resolved term coefficient, NULL on a placeholder row; its unit converts the \
-         unit of the variable named by variable_kind into the unit of the constraint \
-         identified by constraint_id",
+        "Resolved term coefficient, NULL on a placeholder row. A coefficient that reads a \
+         parameter keeps its row when it resolves to 0.0; a constant coefficient that folds \
+         to exactly zero drops its term at load. It is the coefficient before any factor the \
+         LP applies to the variable's columns; its unit converts the unit of the variable \
+         named by variable_kind into the unit of the constraint identified by constraint_id",
     ),
     (
         "generic_constraint_echo",
@@ -1242,7 +1274,14 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "generic_constraint_echo",
         "slack_penalty",
         "Penalty per unit of slack, NULL when slack is disabled; its unit is $ per unit \
-         of the constraint identified by constraint_id",
+         of the constraint identified by constraint_id, per hour when slack_penalty_basis \
+         is per_hour",
+    ),
+    (
+        "generic_constraint_echo",
+        "slack_penalty_basis",
+        "How slack_penalty is charged: per_hour (times the hours the row spans) or \
+         per_unit; NULL when slack is disabled",
     ),
     (
         "bounds",
@@ -2975,8 +3014,8 @@ mod tests {
 
         let row_count = rdr.records().count();
         assert_eq!(
-            row_count, 248,
-            "variables.csv must have exactly 248 data rows (one per column across all schemas)"
+            row_count, 252,
+            "variables.csv must have exactly 252 data rows (one per column across all schemas)"
         );
     }
 
@@ -4071,6 +4110,7 @@ mod tests {
                 "forward_passes",
                 "lp_solves",
                 "mean_rows_in_lp",
+                "lazy_round_cap_hits",
             ],
         ),
         ("iteration_timing", &["iteration", "rank", "worker_id"]),
@@ -4078,14 +4118,17 @@ mod tests {
             "row_selection",
             &[
                 "iteration",
+                "pool_id",
                 "stage_id",
-                "cuts_populated",
+                "node_id",
+                "cuts_in_pool",
                 "cuts_active_before",
                 "cuts_deactivated",
                 "cuts_reactivated",
                 "cuts_active_after",
                 "budget_evicted",
                 "active_after_budget",
+                "cuts_in_lp",
             ],
         ),
         (
@@ -4135,6 +4178,7 @@ mod tests {
                 "variable",
                 "derived_shape",
                 "slack_enabled",
+                "slack_penalty_basis",
             ],
         ),
         (
@@ -4516,6 +4560,25 @@ mod tests {
                 && desc.contains("0 = most recent")
                 && !desc.contains("1-based"),
             "inflow_lags.lag_index is 0-based with 0 = the most recent past period, got: {desc:?}"
+        );
+    }
+
+    #[test]
+    fn generic_constraint_echo_term_index_description_states_the_row_contract() {
+        let term_index = description_for("generic_constraint_echo", "term_index");
+        assert!(
+            term_index.contains("merged")
+                && term_index.contains("independently of authoring order")
+                && term_index.contains("stay separate terms"),
+            "generic_constraint_echo.term_index must state the merged, variable-ordered \
+             left-hand side, got: {term_index:?}"
+        );
+        let coefficient = description_for("generic_constraint_echo", "coefficient");
+        assert!(
+            coefficient.contains("keeps its row when it resolves to 0.0")
+                && coefficient.contains("before any factor the LP applies"),
+            "generic_constraint_echo.coefficient must state the zero-row and pre-factor \
+             contract, got: {coefficient:?}"
         );
     }
 

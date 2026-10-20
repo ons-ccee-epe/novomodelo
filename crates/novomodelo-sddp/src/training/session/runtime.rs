@@ -14,25 +14,19 @@ use crate::policy::orchestration::PeriodicCheckpoint;
 pub(crate) struct RuntimeHandles {
     pub event_sender: Option<Sender<TrainingEvent>>,
     shutdown_flag: Option<Arc<AtomicUsize>>,
-    // Rationale: production reads `config.events.export_states` directly; this
-    // field exists for symmetry and is asserted by the constructor unit test.
-    #[allow(dead_code)]
-    pub export_states: bool,
     periodic_checkpoint: Option<PeriodicCheckpoint>,
 }
 
 impl RuntimeHandles {
-    /// Construct the handles from the four per-invocation values.
+    /// Construct the handles from the three per-invocation values.
     pub(crate) fn new(
         event_sender: Option<Sender<TrainingEvent>>,
         shutdown_flag: Option<Arc<AtomicUsize>>,
-        export_states: bool,
         periodic_checkpoint: Option<PeriodicCheckpoint>,
     ) -> Self {
         Self {
             event_sender,
             shutdown_flag,
-            export_states,
             periodic_checkpoint,
         }
     }
@@ -78,22 +72,21 @@ mod tests {
 
     #[test]
     fn runtime_handles_new_stores_inputs() {
-        let runtime = RuntimeHandles::new(None, None, true, None);
+        let runtime = RuntimeHandles::new(None, None, None);
         assert!(runtime.event_sender.is_none());
         assert!(runtime.shutdown_flag.is_none());
-        assert!(runtime.export_states);
         assert!(runtime.periodic_checkpoint().is_none());
     }
 
     #[test]
     fn shutdown_requested_maps_the_shared_level() {
         assert_eq!(
-            RuntimeHandles::new(None, None, false, None).shutdown_requested(),
+            RuntimeHandles::new(None, None, None).shutdown_requested(),
             None
         );
 
         let flag = Arc::new(AtomicUsize::new(0));
-        let runtime = RuntimeHandles::new(None, Some(Arc::clone(&flag)), false, None);
+        let runtime = RuntimeHandles::new(None, Some(Arc::clone(&flag)), None);
         for (level, expected) in [
             (0, None),
             (1, Some(ShutdownSource::Cooperative)),
@@ -114,7 +107,7 @@ mod tests {
     #[test]
     fn runtime_handles_event_sender_returns_borrowed_ref() {
         let (tx, rx) = mpsc::channel::<TrainingEvent>();
-        let runtime = RuntimeHandles::new(Some(tx), None, false, None);
+        let runtime = RuntimeHandles::new(Some(tx), None, None);
 
         assert!(runtime.event_sender().is_some());
 

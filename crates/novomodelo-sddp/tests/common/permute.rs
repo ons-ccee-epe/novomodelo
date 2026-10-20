@@ -69,6 +69,10 @@ const SHUFFLE_WHITELIST: &[(&str, &[&str])] = &[
     ("system/energy_contracts.json", &["contracts"]),
     ("scenarios/load_factors.json", &["load_factors"]),
     ("constraints/generic_constraints.json", &["constraints"]),
+    (
+        "constraints/generic_parameters.json",
+        &["scalar_parameters"],
+    ),
     ("system/pumping_stations.json", &["pumping_stations"]),
     ("post_study_stages.json", &["stages", "thermal_bounds"]),
 ];

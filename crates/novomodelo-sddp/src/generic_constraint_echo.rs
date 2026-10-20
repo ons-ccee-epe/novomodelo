@@ -2,19 +2,17 @@
 //!
 //! Projects `Vec<GenericConstraintEchoRow>` from the data the LP builder actually
 //! consumed: the per-stage row entries (bounds, block, slack), the resolved
-//! parameter table (coefficients), and the system's generic constraints (LHS
-//! terms). One row per resolved LHS term per active `(stage, block)`; a term-less
+//! generic coefficients (term values), and the system's generic constraints
+//! (LHS terms). One row per resolved LHS term per active `(stage, block)`; a term-less
 //! constraint contributes a single placeholder row. Output is in canonical
 //! `(constraint, stage, block, term)` order and declaration-order invariant.
 
-use novomodelo_core::{
-    CoefficientRef, EntityId, GenericConstraint, LinearTerm, System, VariableRef,
-};
+use novomodelo_core::{EntityId, GenericConstraint, PenaltyBasis, System, VariableRef};
 use novomodelo_io::GenericConstraintEchoRow;
 
-use crate::ResolvedParameters;
 use crate::StudySetup;
 use crate::lp::builder::GenericConstraintRowEntry;
+use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 
 /// Build the resolved generic-constraint echo rows for `setup`/`system` in
 /// canonical `(constraint, stage, block, term)` order.
@@ -30,7 +28,7 @@ pub fn build_generic_constraint_echo_rows(
             .stage_templates
             .generic_constraint_row_entries,
         &setup.inputs.study_stage_ids,
-        &setup.resolved_parameters,
+        &setup.resolved_generic_coefficients,
         system.generic_constraints(),
     )
 }
@@ -45,10 +43,10 @@ pub fn build_generic_constraint_echo_rows(
 fn build_echo_rows_from_parts(
     entries_per_stage: &[Vec<GenericConstraintRowEntry>],
     stage_ids: &[i32],
-    resolved: &ResolvedParameters,
+    coefficients: &ResolvedGenericCoefficients,
     constraints: &[GenericConstraint],
 ) -> Vec<GenericConstraintEchoRow> {
-    let mut rows: Vec<GenericConstraintEchoRow> = Vec::new();
+    let mut rows = Vec::new();
 
     for (stage_idx, entries) in entries_per_stage.iter().enumerate() {
         let stage_id = stage_ids[stage_idx];
@@ -60,11 +58,8 @@ fn build_echo_rows_from_parts(
                 Some(entry.block_idx as i32)
             };
             let shape = derived_shape(entry.bound_lower, entry.bound_upper);
-            let slack_penalty = if entry.slack_enabled {
-                Some(entry.slack_penalty)
-            } else {
-                None
-            };
+            let slack_penalty = entry.slack.map(|s| s.penalty);
+            let slack_penalty_basis = entry.slack.map(|s| penalty_basis_label(s.penalty_basis));
 
             if constraint.expression.terms.is_empty() {
                 rows.push(GenericConstraintEchoRow {
@@ -79,8 +74,9 @@ fn build_echo_rows_from_parts(
                     bound_lower: entry.bound_lower,
                     bound_upper: entry.bound_upper,
                     derived_shape: shape.to_string(),
-                    slack_enabled: entry.slack_enabled,
+                    slack_enabled: entry.slack.is_some(),
                     slack_penalty,
+                    slack_penalty_basis: slack_penalty_basis.map(str::to_string),
                 });
                 continue;
             }
@@ -95,12 +91,18 @@ fn build_echo_rows_from_parts(
                     term_index: Some(term_idx as i32),
                     variable_kind: Some(kind.to_string()),
                     variable: Some(rendered),
-                    coefficient: Some(resolve_coef(term, resolved, stage_idx, entry.block_idx)),
+                    coefficient: Some(coefficients.term_value(
+                        entry.constraint_idx,
+                        term_idx,
+                        stage_idx,
+                        entry.block_idx,
+                    )),
                     bound_lower: entry.bound_lower,
                     bound_upper: entry.bound_upper,
                     derived_shape: shape.to_string(),
-                    slack_enabled: entry.slack_enabled,
+                    slack_enabled: entry.slack.is_some(),
                     slack_penalty,
+                    slack_penalty_basis: slack_penalty_basis.map(str::to_string),
                 });
             }
         }
@@ -117,25 +119,6 @@ fn build_echo_rows_from_parts(
         )
     });
     rows
-}
-
-/// Resolve a term's coefficient exactly as `fill_generic_constraint_entries`:
-/// `resolve(coefficient, stage, block) * scale`, reading the parameter at the
-/// row's own block so a block-varying coefficient echoes its per-block value, not
-/// a stage-level one. The per-column `multiplier` from `resolve_variable_ref` is a
-/// column-expansion detail deliberately absent here — the echo is the term-level
-/// flat form, not the per-cell LP-column expansion.
-fn resolve_coef(
-    term: &LinearTerm,
-    resolved: &ResolvedParameters,
-    stage_idx: usize,
-    block_idx: usize,
-) -> f64 {
-    let base = match term.coefficient {
-        CoefficientRef::Literal(v) => v,
-        CoefficientRef::Parameter(id) => resolved.get(id, stage_idx, block_idx),
-    };
-    base * term.scale
 }
 
 /// Shape label from the bound null-pattern (never an authored sense).
@@ -162,10 +145,18 @@ fn derived_shape(bound_lower: Option<f64>, bound_upper: Option<f64>) -> &'static
     }
 }
 
+/// The `penalty_basis` spelling of `generic_constraints.json`.
+fn penalty_basis_label(basis: PenaltyBasis) -> &'static str {
+    match basis {
+        PenaltyBasis::PerHour => "per_hour",
+        PenaltyBasis::PerUnit => "per_unit",
+    }
+}
+
 /// Return `(kind_tag, rendered_label)` for a variable reference — the `"kind"`
 /// discriminant and the `"kind(args)"` display string. The exhaustive `match`
 /// makes a new [`VariableRef`] variant a compile error.
-fn render_variable(v: &VariableRef) -> (&'static str, String) {
+pub(crate) fn render_variable(v: &VariableRef) -> (&'static str, String) {
     let (kind, args) = match *v {
         VariableRef::HydroStorage { hydro_id } => ("hydro_storage", format!("id={}", hydro_id.0)),
         VariableRef::HydroTurbined {
@@ -322,7 +313,14 @@ fn bus_label(bus_id: Option<EntityId>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use novomodelo_core::{ConstraintExpression, SlackConfig};
+    use novomodelo_core::{ConstraintExpression, LinearTerm, ScalarExpr, SlackConfig, StageId};
+
+    use crate::ResolvedParameters;
+
+    const PER_UNIT_5000: Option<SlackConfig> = Some(SlackConfig {
+        penalty: 5000.0,
+        penalty_basis: PenaltyBasis::PerUnit,
+    });
 
     fn entry(
         constraint_idx: usize,
@@ -331,8 +329,7 @@ mod tests {
         is_stage_level: bool,
         bound_lower: Option<f64>,
         bound_upper: Option<f64>,
-        slack_enabled: bool,
-        slack_penalty: f64,
+        slack: Option<SlackConfig>,
     ) -> GenericConstraintRowEntry {
         GenericConstraintRowEntry {
             constraint_idx,
@@ -341,8 +338,7 @@ mod tests {
             is_stage_level,
             bound_lower,
             bound_upper,
-            slack_enabled,
-            slack_penalty,
+            slack,
             slack_plus_col: None,
             slack_minus_col: None,
         }
@@ -354,13 +350,25 @@ mod tests {
             name: name.to_string(),
             description: None,
             expression: ConstraintExpression { terms },
-            slack: SlackConfig {
-                enabled: false,
-                penalty: None,
-            },
-            bound_lower_affine: None,
-            bound_upper_affine: None,
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
         }
+    }
+
+    fn coefficients(
+        constraints: &[GenericConstraint],
+        resolved: &ResolvedParameters,
+        stage_ids: &[i32],
+        entries: &[Vec<GenericConstraintRowEntry>],
+    ) -> ResolvedGenericCoefficients {
+        let study_stage_ids: Vec<StageId> = stage_ids.iter().copied().map(StageId).collect();
+        let block_counts: Vec<usize> = entries
+            .iter()
+            .map(|stage| stage.iter().map(|e| e.block_idx + 1).fold(1, usize::max))
+            .collect();
+        ResolvedGenericCoefficients::build(constraints, resolved, &study_stage_ids, &block_counts)
+            .unwrap()
     }
 
     fn thermal(id: i32) -> VariableRef {
@@ -379,10 +387,15 @@ mod tests {
             "d13",
             vec![LinearTerm::literal(1.0, thermal(0))],
         )];
-        let entries = vec![vec![entry(0, 13, 0, true, None, Some(10.0), true, 5000.0)]];
+        let entries = vec![vec![entry(0, 13, 0, true, None, Some(10.0), PER_UNIT_5000)]];
         let resolved = ResolvedParameters::default();
 
-        let rows = build_echo_rows_from_parts(&entries, &[7], &resolved, &constraints);
+        let rows = build_echo_rows_from_parts(
+            &entries,
+            &[7],
+            &coefficients(&constraints, &resolved, &[7], &entries),
+            &constraints,
+        );
 
         assert_eq!(rows.len(), 1);
         let r = &rows[0];
@@ -402,6 +415,7 @@ mod tests {
         assert_eq!(r.coefficient, Some(1.0));
         assert!(r.slack_enabled);
         assert_eq!(r.slack_penalty, Some(5000.0));
+        assert_eq!(r.slack_penalty_basis.as_deref(), Some("per_unit"));
     }
 
     /// The echo shows the POST-NORMALIZATION flat form, not the authored
@@ -415,10 +429,15 @@ mod tests {
             "cap73",
             vec![LinearTerm::literal(1.0, thermal(0))],
         )];
-        let entries = vec![vec![entry(0, 1, 0, true, None, Some(73.0), false, 0.0)]];
+        let entries = vec![vec![entry(0, 1, 0, true, None, Some(73.0), None)]];
         let resolved = ResolvedParameters::default();
 
-        let rows = build_echo_rows_from_parts(&entries, &[0], &resolved, &constraints);
+        let rows = build_echo_rows_from_parts(
+            &entries,
+            &[0],
+            &coefficients(&constraints, &resolved, &[0], &entries),
+            &constraints,
+        );
 
         assert_eq!(rows.len(), 1);
         let r = &rows[0];
@@ -439,10 +458,15 @@ mod tests {
             "folded",
             vec![LinearTerm::literal(1.0, thermal(0))],
         )];
-        let entries = vec![vec![entry(0, 2, 0, true, None, Some(95.0), false, 0.0)]];
+        let entries = vec![vec![entry(0, 2, 0, true, None, Some(95.0), None)]];
         let resolved = ResolvedParameters::default();
 
-        let rows = build_echo_rows_from_parts(&entries, &[0], &resolved, &constraints);
+        let rows = build_echo_rows_from_parts(
+            &entries,
+            &[0],
+            &coefficients(&constraints, &resolved, &[0], &entries),
+            &constraints,
+        );
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].bound_upper, Some(95.0));
@@ -466,10 +490,15 @@ mod tests {
         )];
         // 20.0 (raw) + 1.0 * V_lo(9) = 32.5, already folded by the time it reaches
         // this row entry.
-        let entries = vec![vec![entry(0, 9, 0, true, Some(32.5), None, false, 0.0)]];
+        let entries = vec![vec![entry(0, 9, 0, true, Some(32.5), None, None)]];
         let resolved = ResolvedParameters::default();
 
-        let rows = build_echo_rows_from_parts(&entries, &[0], &resolved, &constraints);
+        let rows = build_echo_rows_from_parts(
+            &entries,
+            &[0],
+            &coefficients(&constraints, &resolved, &[0], &entries),
+            &constraints,
+        );
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].bound_lower, Some(32.5));
@@ -489,19 +518,15 @@ mod tests {
             "d54",
             vec![LinearTerm::literal(1.0, thermal(3))],
         )];
-        let entries = vec![vec![entry(
-            0,
-            54,
-            1,
-            false,
-            Some(35.0),
-            Some(100.0),
-            false,
-            0.0,
-        )]];
+        let entries = vec![vec![entry(0, 54, 1, false, Some(35.0), Some(100.0), None)]];
         let resolved = ResolvedParameters::default();
 
-        let rows = build_echo_rows_from_parts(&entries, &[2], &resolved, &constraints);
+        let rows = build_echo_rows_from_parts(
+            &entries,
+            &[2],
+            &coefficients(&constraints, &resolved, &[2], &entries),
+            &constraints,
+        );
 
         assert_eq!(rows.len(), 1);
         let r = &rows[0];
@@ -511,21 +536,25 @@ mod tests {
         assert_eq!(r.bound_upper, Some(100.0));
         assert!(!r.slack_enabled);
         assert_eq!(r.slack_penalty, None);
+        assert_eq!(r.slack_penalty_basis, None);
     }
 
-    /// A `Parameter(id)` term resolves to `resolved.get(id, stage, block) * scale`,
-    /// matching `fill_generic_constraint_entries`, at each stage.
+    /// A `param * scale` coefficient resolves to `resolved.get(id, stage, block) *
+    /// scale`, matching `fill_generic_constraint_entries`, at each stage.
     #[test]
     fn parameter_coefficient_resolves_like_lp() {
         let scale = 2.5;
         let constraints = vec![constraint(
             1,
             "p",
-            vec![LinearTerm::parameter(EntityId(42), scale, thermal(0))],
+            vec![LinearTerm {
+                coefficient: ScalarExpr::param(EntityId(42)) * ScalarExpr::literal(scale),
+                variable: thermal(0),
+            }],
         )];
         let entries = vec![
-            vec![entry(0, 1, 0, true, Some(0.0), None, false, 0.0)],
-            vec![entry(0, 1, 0, true, Some(0.0), None, false, 0.0)],
+            vec![entry(0, 1, 0, true, Some(0.0), None, None)],
+            vec![entry(0, 1, 0, true, Some(0.0), None, None)],
         ];
         // Two stages, one block each (length-1 inner), so any block broadcasts.
         let resolved = ResolvedParameters {
@@ -534,7 +563,12 @@ mod tests {
             ..Default::default()
         };
 
-        let rows = build_echo_rows_from_parts(&entries, &[0, 1], &resolved, &constraints);
+        let rows = build_echo_rows_from_parts(
+            &entries,
+            &[0, 1],
+            &coefficients(&constraints, &resolved, &[0, 1], &entries),
+            &constraints,
+        );
 
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].stage_id, 0);
@@ -554,16 +588,18 @@ mod tests {
     /// a single stage-level one.
     #[test]
     fn parameter_coefficient_reads_the_rows_own_block() {
-        let scale = 1.0;
         let constraints = vec![constraint(
             1,
             "per_block",
-            vec![LinearTerm::parameter(EntityId(42), scale, thermal(0))],
+            vec![LinearTerm {
+                coefficient: ScalarExpr::param(EntityId(42)),
+                variable: thermal(0),
+            }],
         )];
         // One stage, two per-block rows (is_stage_level = false) at blocks 0 and 1.
         let entries = vec![vec![
-            entry(0, 1, 0, false, Some(0.0), None, false, 0.0),
-            entry(0, 1, 1, false, Some(0.0), None, false, 0.0),
+            entry(0, 1, 0, false, Some(0.0), None, None),
+            entry(0, 1, 1, false, Some(0.0), None, None),
         ]];
         // Slot 0, stage 0 carries two blocks: [10.0, 20.0].
         let resolved = ResolvedParameters {
@@ -572,7 +608,12 @@ mod tests {
             ..Default::default()
         };
 
-        let rows = build_echo_rows_from_parts(&entries, &[0], &resolved, &constraints);
+        let rows = build_echo_rows_from_parts(
+            &entries,
+            &[0],
+            &coefficients(&constraints, &resolved, &[0], &entries),
+            &constraints,
+        );
 
         assert_eq!(rows.len(), 2);
         let block0 = rows.iter().find(|r| r.block_id == Some(0)).unwrap();
@@ -583,6 +624,94 @@ mod tests {
             block0.coefficient, block1.coefficient,
             "a block-varying coefficient must differ between the block-0 and block-1 rows"
         );
+    }
+
+    /// A parameter coefficient that resolves to `0.0` at one stage still echoes its row.
+    #[test]
+    fn term_resolving_to_zero_still_emits_its_row() {
+        let constraints = vec![constraint(
+            1,
+            "zero_at_stage_1",
+            vec![
+                LinearTerm {
+                    coefficient: ScalarExpr::param(EntityId(42)),
+                    variable: thermal(0),
+                },
+                LinearTerm {
+                    coefficient: ScalarExpr::literal(1.0),
+                    variable: thermal(1),
+                },
+            ],
+        )];
+        let entries = vec![
+            vec![entry(0, 1, 0, true, Some(0.0), None, None)],
+            vec![entry(0, 1, 0, true, Some(0.0), None, None)],
+        ];
+        let resolved = ResolvedParameters {
+            per_param: vec![vec![vec![1.0], vec![0.0]]],
+            id_to_slot: vec![(42, 0)],
+            ..Default::default()
+        };
+
+        let rows = build_echo_rows_from_parts(
+            &entries,
+            &[0, 1],
+            &coefficients(&constraints, &resolved, &[0, 1], &entries),
+            &constraints,
+        );
+
+        assert_eq!(rows.len(), 4);
+        let param_row = |stage_id: i32| {
+            rows.iter()
+                .find(|r| r.stage_id == stage_id && r.term_index == Some(0))
+                .unwrap()
+        };
+        assert_eq!(param_row(1).coefficient, Some(0.0));
+        assert_eq!(param_row(0).coefficient, Some(1.0));
+    }
+
+    /// Two variable names that address one LP column echo as two separate rows.
+    #[test]
+    fn aliased_references_stay_separate_rows() {
+        let constraints = vec![constraint(
+            3,
+            "storage_alias",
+            vec![
+                LinearTerm::literal(
+                    1.0,
+                    VariableRef::HydroStorage {
+                        hydro_id: EntityId(3),
+                    },
+                ),
+                LinearTerm::literal(
+                    -1.0,
+                    VariableRef::HydroStorageFinal {
+                        hydro_id: EntityId(3),
+                        block_id: None,
+                    },
+                ),
+            ],
+        )];
+        let entries = vec![vec![entry(0, 3, 0, true, Some(0.0), None, None)]];
+        let resolved = ResolvedParameters::default();
+
+        let rows = build_echo_rows_from_parts(
+            &entries,
+            &[0],
+            &coefficients(&constraints, &resolved, &[0], &entries),
+            &constraints,
+        );
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].term_index, Some(0));
+        assert_eq!(rows[0].variable_kind.as_deref(), Some("hydro_storage"));
+        assert_eq!(rows[0].coefficient, Some(1.0));
+        assert_eq!(rows[1].term_index, Some(1));
+        assert_eq!(
+            rows[1].variable_kind.as_deref(),
+            Some("hydro_storage_final")
+        );
+        assert_eq!(rows[1].coefficient, Some(-1.0));
     }
 
     /// Two `constraints` slices differing only in element order yield
@@ -604,20 +733,30 @@ mod tests {
 
         let constraints_a = vec![c1.clone(), c2.clone()];
         let entries_a = vec![vec![
-            entry(0, 1, 0, true, None, Some(10.0), false, 0.0),
-            entry(1, 2, 0, true, Some(5.0), None, false, 0.0),
+            entry(0, 1, 0, true, None, Some(10.0), None),
+            entry(1, 2, 0, true, Some(5.0), None, None),
         ]];
 
         // Reverse the constraint order AND the entry order, with each entry's
         // `constraint_idx` re-pointed so it still names its own logical constraint.
         let constraints_b = vec![c2, c1];
         let entries_b = vec![vec![
-            entry(0, 2, 0, true, Some(5.0), None, false, 0.0),
-            entry(1, 1, 0, true, None, Some(10.0), false, 0.0),
+            entry(0, 2, 0, true, Some(5.0), None, None),
+            entry(1, 1, 0, true, None, Some(10.0), None),
         ]];
 
-        let rows_a = build_echo_rows_from_parts(&entries_a, &[0], &resolved, &constraints_a);
-        let rows_b = build_echo_rows_from_parts(&entries_b, &[0], &resolved, &constraints_b);
+        let rows_a = build_echo_rows_from_parts(
+            &entries_a,
+            &[0],
+            &coefficients(&constraints_a, &resolved, &[0], &entries_a),
+            &constraints_a,
+        );
+        let rows_b = build_echo_rows_from_parts(
+            &entries_b,
+            &[0],
+            &coefficients(&constraints_b, &resolved, &[0], &entries_b),
+            &constraints_b,
+        );
 
         assert_eq!(
             format!("{rows_a:?}"),
@@ -632,12 +771,17 @@ mod tests {
     fn empty_terms_constraint_emits_one_placeholder_per_block() {
         let constraints = vec![constraint(7, "const_only", vec![])];
         let entries = vec![vec![
-            entry(0, 7, 0, false, Some(5.0), None, false, 0.0),
-            entry(0, 7, 1, false, Some(5.0), None, false, 0.0),
+            entry(0, 7, 0, false, Some(5.0), None, None),
+            entry(0, 7, 1, false, Some(5.0), None, None),
         ]];
         let resolved = ResolvedParameters::default();
 
-        let rows = build_echo_rows_from_parts(&entries, &[0], &resolved, &constraints);
+        let rows = build_echo_rows_from_parts(
+            &entries,
+            &[0],
+            &coefficients(&constraints, &resolved, &[0], &entries),
+            &constraints,
+        );
 
         assert_eq!(rows.len(), 2, "one placeholder row per (stage, block)");
         for (i, r) in rows.iter().enumerate() {

@@ -13,4 +13,9 @@ bash scripts/ci/check-no-plan-leaks.sh
 echo "==> Running Python parity check..."
 python3 scripts/ci/check_python_parity.py --max 0
 
+if git diff --cached --name-only | grep -qE '(^|/)Cargo\.(toml|lock)$|^deny\.toml$'; then
+    echo "==> Running cargo-deny (dependency files staged)..."
+    bash scripts/ci/check-deny.sh
+fi
+
 echo "==> Pre-commit checks passed."

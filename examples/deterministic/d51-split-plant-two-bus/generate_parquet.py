@@ -27,7 +27,9 @@ values -- so the per-cell `min(group box, plant envelope)` resolution
 (spec section 1.3) binds on the PLANT term for H0-B0's cell (28.0 < 30.0) and
 on the GROUP term for H0-B1's cell (20.0 < 28.0) at that stage, exercising both
 terms of the closing `min` while keeping every group-axis and plant-axis
-override within the no-raising rule (lowering only).
+override within the no-raising rule (lowering only). The two cells' caps sum
+past the lowered envelope (28.0 + 20.0 MW, 32.0 + 28.0 m3/s), so the plant cap
+row holds their stage-0 total at 28.0 MW / 32.0 m3/s.
 """
 
 import os
@@ -86,7 +88,8 @@ write_table(hyperplanes_table, "system/fpha_hyperplanes.parquet")
 # Schema: hydro_id (INT32), stage_id (INT32, nullable),
 #         equivalent_productivity_mw_per_m3s (FLOAT64, nullable),
 #         reference_outflow_m3s (FLOAT64, nullable),
-#         specific_productivity_mw_per_m3s_per_m (FLOAT64, nullable)
+#         specific_productivity_mw_per_m3s_per_m (FLOAT64, nullable),
+#         integrated_equivalent_productivity_mw_per_m3s (FLOAT64, nullable)
 #
 # Inert for FPHA hydros (Layer 6 productivity resolution skips them), carried
 # only for parity with every other FPHA example deck's file set.
@@ -98,6 +101,7 @@ productivity_schema = pa.schema(
         pa.field("equivalent_productivity_mw_per_m3s", pa.float64(), nullable=True),
         pa.field("reference_outflow_m3s", pa.float64(), nullable=True),
         pa.field("specific_productivity_mw_per_m3s_per_m", pa.float64(), nullable=True),
+        pa.field("integrated_equivalent_productivity_mw_per_m3s", pa.float64(), nullable=True),
     ]
 )
 
@@ -108,6 +112,7 @@ productivity_table = pa.table(
         "equivalent_productivity_mw_per_m3s": pa.array([1.0], type=pa.float64()),
         "reference_outflow_m3s": pa.array([None], type=pa.float64()),
         "specific_productivity_mw_per_m3s_per_m": pa.array([None], type=pa.float64()),
+        "integrated_equivalent_productivity_mw_per_m3s": pa.array([None], type=pa.float64()),
     },
     schema=productivity_schema,
 )
