@@ -19,6 +19,9 @@ targets = [
 ]
 # Include changelog in release notes
 changelog = true
+# Linux artifacts build on the same pinned image as CI and the MPI release, which
+# sets the CLI's glibc floor; `dist generate --mode ci` rewrites release.yml.
+github-custom-runners = { global = "ubuntu-24.04", x86_64-unknown-linux-gnu = "ubuntu-24.04", aarch64-unknown-linux-gnu = "ubuntu-24.04-arm" }
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
 # Whether to install an updater program
