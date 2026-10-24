@@ -275,6 +275,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The initial storage was moved onto the first stage's `min_storage_hm3` and
+  `max_storage_hm3` from `constraints/hydro_bounds.parquet`, which bound the
+  storage at the end of that stage. A first-stage minimum above the initial
+  storage added water before the first solve, and a maximum below it removed
+  water. The initial storage is now kept within the hydro's own storage range.
+- At a stage before a hydro's `entry_stage_id` or after its `exit_stage_id`,
+  its storage stays at the value it entered the stage with. A
+  `max_storage_hm3` in `constraints/hydro_bounds.parquet` below that value made
+  the stage infeasible. At those stages the storage ceiling is now never below
+  the hydro's own `max_storage_hm3`.
 - A `min_turbined_m3s` or `min_generation_mw` value in
   `constraints/hydro_bounds.parquet` had no effect: the LP read only the unit
   groups' minima. A plant minimum above the sum of its groups' minima now
