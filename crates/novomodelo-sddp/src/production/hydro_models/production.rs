@@ -328,8 +328,9 @@ fn fit_one_hydro(
     // the entry covering it.
     let computed_planes_per_stage: Option<Vec<Vec<FphaPlane>>> =
         if source == ProductionModelSource::ComputedFromGeometry {
-            // Drives the lateral-secant `S_max = 2·long-term mean inflow`; a
-            // history-less hydro yields `0.0`, falling back to `2 × max_turbined`.
+            // Without `spillage_fit_max_m3s`, drives the lateral-secant
+            // `S_max = 2·long-term mean inflow`; a history-less hydro yields `0.0`,
+            // falling back to `2 × max_turbined`.
             let long_term_mean_inflow_m3s = long_term_mean_inflow_table
                 .get(&hydro.id)
                 .copied()
@@ -425,9 +426,10 @@ fn resolve_downstream_level(
     Some(forebay.height(v_ref))
 }
 
-/// Long-term mean natural inflow (m³/s) for every hydro, keyed by canonical
+/// Long-term mean inflow (m³/s) for every hydro, keyed by canonical
 /// [`EntityId`], from ONE sequential pass over `System::inflow_history()`.
-/// Feeds the lateral-secant `S_max = 2·mean`; a hydro absent from the table
+/// Feeds the lateral-secant `S_max = 2·mean` when the config sets no
+/// `spillage_fit_max_m3s`; a hydro absent from the table
 /// (no history) falls back to `0.0` at the lookup site, mapping to the
 /// `2 × max_turbined` fallback in `resolve_s_max`.
 ///

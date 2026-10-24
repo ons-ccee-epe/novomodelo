@@ -89,6 +89,14 @@
             "null"
           ]
         },
+        "spillage_fit_max_m3s": {
+          "description": "Upper end of the spillage range (m³/s) the spillage coefficient is fit\nover. Absent = twice the hydro's long-term mean inflow, or twice its\nmaximum turbined flow when it has no inflow history.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
         "turbine_discretization_points": {
           "description": "Number of turbine flow discretization points used when computing\nhyperplanes. Absent = algorithm default (5).",
           "format": "int32",
