@@ -141,6 +141,7 @@ fn precomputed_fpha_config(hydro_id: i32) -> ProductionModelConfig {
                     spillage_discretization_points: None,
                     max_planes_per_hydro: None,
                     fitting_window: None,
+                    spillage_fit_max_m3s: None,
                 }),
                 reference_volume: None,
                 productivity_mw_per_m3s: None,
@@ -164,6 +165,7 @@ fn computed_fpha_config(hydro_id: i32) -> ProductionModelConfig {
                     spillage_discretization_points: None,
                     max_planes_per_hydro: None,
                     fitting_window: None,
+                    spillage_fit_max_m3s: None,
                 }),
                 reference_volume: None,
                 productivity_mw_per_m3s: None,
@@ -310,6 +312,7 @@ fn find_fpha_config_for_stage_returns_none_outside_range() {
                     spillage_discretization_points: None,
                     max_planes_per_hydro: None,
                     fitting_window: None,
+                    spillage_fit_max_m3s: None,
                 }),
                 reference_volume: None,
                 productivity_mw_per_m3s: None,
@@ -1017,6 +1020,7 @@ fn resolve_stage_seasonal_season_miss_uses_default_model() {
                     spillage_discretization_points: None,
                     max_planes_per_hydro: None,
                     fitting_window: None,
+                    spillage_fit_max_m3s: None,
                 }),
                 reference_volume: None,
                 productivity_mw_per_m3s: None,
@@ -1148,6 +1152,7 @@ fn resolve_stage_stage_ranges_covering_and_uncovered() {
                     spillage_discretization_points: None,
                     max_planes_per_hydro: None,
                     fitting_window: None,
+                    spillage_fit_max_m3s: None,
                 }),
                 reference_volume: Some(ReferenceVolume::Percentile(0.5)),
                 productivity_mw_per_m3s: Some(0.42),
@@ -1651,6 +1656,7 @@ fn computed_layout_with_window(min: Option<f64>, max: Option<f64>) -> FphaColumn
             volume_min_percentile: None,
             volume_max_percentile: None,
         }),
+        spillage_fit_max_m3s: None,
     }
 }
 
@@ -1928,6 +1934,132 @@ fn coverage_gap_returns_validation_error() {
     assert!(
         matches!(err, SddpError::Validation(ref msg) if msg.contains("stage 2")),
         "expected Validation naming the uncovered stage, got {err:?}"
+    );
+}
+
+/// A computed-FPHA hydro with a constant-productivity outage range (`0.0`) on
+/// stage 0 and FPHA on stages 1–2 fits only the FPHA stages: stage 0 carries no
+/// planes or export rows and resolves to the constant model.
+#[test]
+fn constant_productivity_stage_range_is_not_fit() {
+    let hydro = make_sobradinho_computed_hydro(0);
+    let rows = make_sobradinho_geometry_rows(0);
+    let geometry_map = sobradinho_geometry_map(&rows);
+
+    let config = ProductionModelConfig {
+        hydro_id: EntityId::from(0),
+        selection_mode: SelectionMode::StageRanges {
+            ranges: vec![
+                StageRange {
+                    start_stage_id: 0,
+                    end_stage_id: Some(0),
+                    model: HydroGenerationModel::ConstantProductivity,
+                    fpha_config: None,
+                    reference_volume: None,
+                    productivity_mw_per_m3s: Some(0.0),
+                },
+                StageRange {
+                    start_stage_id: 1,
+                    end_stage_id: None,
+                    model: HydroGenerationModel::Fpha,
+                    fpha_config: Some(computed_layout_with_window(None, None)),
+                    reference_volume: None,
+                    productivity_mw_per_m3s: None,
+                },
+            ],
+        },
+    };
+
+    let stages = [make_stage(0), make_stage(1), make_stage(2)];
+    let stage_refs: Vec<&Stage> = stages.iter().collect();
+
+    let mut export_rows = Vec::new();
+    let families_map = empty_families_map();
+    let (system, fractions) = entity_fit_context(&hydro);
+    let per_stage = super::fit_computed_planes_per_stage(
+        &hydro,
+        Some(&config),
+        &geometry_map,
+        &families_map,
+        &fractions,
+        &system,
+        &stage_refs,
+        0.0,
+        None,
+        false,
+        &mut export_rows,
+        &mut Vec::new(),
+        &mut Vec::new(),
+    )
+    .expect("a constant-productivity stage range must not be fit");
+
+    assert!(per_stage[0].is_empty());
+    assert!(!per_stage[1].is_empty());
+    assert_eq!(per_stage[1].len(), per_stage[2].len());
+    assert!(export_rows.iter().all(|row| row.stage_id != Some(0)));
+
+    let empty_hyperplane_map: HashMap<(EntityId, Option<i32>), Vec<&FphaHyperplaneRow>> =
+        HashMap::new();
+    let model = super::resolve_stage_model(
+        &hydro,
+        &stages[0],
+        Some(&config),
+        ProductionModelSource::ComputedFromGeometry,
+        &empty_hyperplane_map,
+        Some(&per_stage[0]),
+        None,
+    )
+    .expect("the outage stage resolves");
+    assert!(
+        matches!(model, ResolvedProductionModel::ConstantProductivity { productivity } if productivity == 0.0),
+        "expected the constant 0.0 model, got {model:?}"
+    );
+}
+
+/// `spillage_fit_max_m3s` sets the lateral-secant range: a config with
+/// `Some(x)` fits the same planes as one without it whose long-term mean
+/// inflow is `x / 2`, and different `γ_S` from the `2 × max_turbined` fallback.
+#[test]
+fn spillage_fit_max_sets_the_secant_range() {
+    let hydro = make_sobradinho_computed_hydro(0);
+    let rows = make_sobradinho_geometry_rows(0);
+    let geometry_map = sobradinho_geometry_map(&rows);
+    let s_max = 6.0 * hydro.max_turbined_m3s;
+
+    let fit = |layout: &FphaColumnLayout, long_term_mean_inflow_m3s: f64| {
+        super::fit_planes_for_hydro(
+            &hydro,
+            layout,
+            &geometry_map,
+            long_term_mean_inflow_m3s,
+            super::TailraceSource::Entity(hydro.tailrace.clone()),
+            None,
+            0,
+            false,
+        )
+        .expect("fit must succeed")
+        .planes
+    };
+    let without = computed_layout_with_window(None, None);
+    let with = FphaColumnLayout {
+        spillage_fit_max_m3s: Some(s_max),
+        ..without.clone()
+    };
+
+    let from_input = fit(&with, 0.0);
+    let from_mean = fit(&without, s_max / 2.0);
+    let fallback = fit(&without, 0.0);
+
+    assert_eq!(from_input.len(), from_mean.len());
+    for (a, b) in from_input.iter().zip(&from_mean) {
+        assert_eq!(a.gamma_s.to_bits(), b.gamma_s.to_bits());
+    }
+    assert!(
+        from_input
+            .iter()
+            .zip(&fallback)
+            .any(|(a, b)| a.gamma_s != b.gamma_s),
+        "the input range must change gamma_s against the 2 x max_turbined fallback"
     );
 }
 

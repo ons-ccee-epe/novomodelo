@@ -74,6 +74,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max_flow_m3s` or set it to `null` to mean the channel has no capacity limit.
   A per-stage or per-block `max_diversion_m3s` in
   `constraints/hydro_bounds.parquet` still caps it.
+- `fpha_config.spillage_fit_max_m3s` in `system/hydro_production_models.json`
+  sets the upper end of the spillage range a computed FPHA plane's spillage
+  coefficient is fit over. Absent, the range stays twice the hydro's long-term
+  mean inflow, or twice its maximum turbined flow when the hydro has no inflow
+  history.
 
 ### Changed
 
@@ -276,6 +281,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING:** the Linux CLI archives are built on Ubuntu 24.04 and need
   glibc 2.38 or newer. They no longer run on Ubuntu 22.04, Debian 12 or
   RHEL 9. The Python wheels keep their manylinux tags.
+- A computed FPHA plane's spillage coefficient is the mean, over the grid
+  points where the plane binds, of a least-squares slope through the
+  zero-spillage generation, sampled over the fit range in 100 steps. It was a
+  free-intercept least-squares slope at the plane's highest-generation grid
+  point, sampled in 8 steps, so the spillage coefficients of computed planes
+  change.
 
 ### Removed
 
@@ -350,6 +361,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   precomputed rejected. The vendored C and C++ now compile without FMA. On
   aarch64, where compilers fused by default, results can differ in the last
   bits from earlier releases.
+- A hydro with computed FPHA and a stage range that selects another model,
+  such as constant productivity 0.0 on an outage stage, was refused with "no
+  FphaColumnLayout covers stage N". Only its FPHA stages are fit now.
 
 ## [0.18.0] - 2026-10-07
 
