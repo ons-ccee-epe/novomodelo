@@ -7,7 +7,8 @@
 //!
 //! The file contains two required top-level arrays and three optional arrays:
 //!
-//! - `storage` — initial reservoir volumes for operating hydros (hm³).
+//! - `storage` — initial reservoir volumes for operating hydros (hm³), each
+//!   within its hydro's storage range (Layer 5a).
 //! - `filling_storage` — initial reservoir volumes for filling hydros (hm³).
 //! - `recent_observations` — the conditioning layer over the windowed
 //!   `inflow_history` record ([`crate::scenarios::parse_inflow_history`]):
@@ -88,9 +89,9 @@
 //!     (adjacent ranges where `start == prev_end` are accepted).
 //!
 //! Cross-reference validation (checking that hydro IDs exist in the hydro
-//! registry) is deferred to Layer 3 (deferred). Storage bounds validation
-//! (value within `[min_storage_hm3, max_storage_hm3]`) also requires the
-//! hydro registry and is likewise deferred.
+//! registry) is deferred to Layer 3 (deferred). The storage range
+//! (`[min_storage_hm3, max_storage_hm3]`) and the array each hydro's seed
+//! belongs in also need the hydro registry and are checked in Layer 5a.
 
 use chrono::NaiveDate;
 use novomodelo_core::{
