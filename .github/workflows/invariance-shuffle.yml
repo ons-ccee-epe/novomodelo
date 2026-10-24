@@ -17,7 +17,7 @@ env:
 jobs:
   shuffle-matrix-highs:
     name: Shuffle Matrix (HiGHS)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
@@ -36,7 +36,7 @@ jobs:
 
   shuffle-matrix-clp:
     name: Shuffle Matrix (CLP)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6

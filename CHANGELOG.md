@@ -261,6 +261,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does not belong to the entry's kind (for example `values` on a `constant`)
   stops the load. Only `block_values` was rejected before; the other fields
   were ignored.
+- **BREAKING:** the Linux CLI archives are built on Ubuntu 24.04 and need
+  glibc 2.38 or newer. They no longer run on Ubuntu 22.04, Debian 12 or
+  RHEL 9. The Python wheels keep their manylinux tags.
 
 ### Removed
 
@@ -317,6 +320,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no longer aborts the run when HiGHS loads the LP. The terms are summed into one
   coefficient per column, and a column whose coefficients sum to exactly zero
   gets no entry.
+- Results no longer depend on the C compiler's default target. A compiler that
+  targets FMA by default, such as the amd64v3 GCC of Ubuntu 26.04, fused
+  multiply-adds in qhull, HiGHS and CLP. The fitted FPHA planes and the LP
+  solutions then moved in the last bits, and a computed FPHA plane could get a
+  storage coefficient slightly below zero, which loading the planes back as
+  precomputed rejected. The vendored C and C++ now compile without FMA. On
+  aarch64, where compilers fused by default, results can differ in the last
+  bits from earlier releases.
 
 ## [0.18.0] - 2026-10-07
 

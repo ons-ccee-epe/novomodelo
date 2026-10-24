@@ -576,6 +576,13 @@ which cuts a run selects.
 For what a resume reproduces, see "Cut selection" in
 [`crates/novomodelo-sddp/README.md`](crates/novomodelo-sddp/README.md).
 
+The vendored C and C++ (qhull, HiGHS, CLP and their wrappers) compile with `-ffp-contract=off`,
+plus `-mno-fma` on x86_64, in `crates/novomodelo-sddp/build.rs` and
+`crates/novomodelo-solver/build.rs`. Without them, a compiler whose default target has FMA (the
+amd64v3 GCC of Ubuntu 26.04, or any aarch64 compiler) fuses `a*b + c`. That moves the FPHA planes
+and the LP solutions in the last bits, and the determinism and parity tests fail. MSVC neither
+targets FMA nor contracts by default, so it gets no flag.
+
 ## Domain Knowledge
 
 Novomodelo sits at the intersection of power systems engineering, stochastic optimization, and systems programming. Not all contributors will have expertise in all three areas. That's fine.

@@ -82,6 +82,7 @@ fn main() {
     // mislead even during development — same release-always rationale the LP
     // solver build follows.
     build.opt_level(2);
+    disable_fma(&mut build);
 
     for source in QHULL_SOURCES {
         let path = qhull_dir.join(source);
@@ -120,6 +121,19 @@ fn main() {
     shim.include(&shim_dir);
     shim.warnings(true);
     shim.opt_level(2);
+    disable_fma(&mut shim);
     shim.file(&shim_source);
     shim.compile("novomodelo_qhull_shim");
+}
+
+/// Keeps FMA out of qhull whatever the compiler's default target: a fused
+/// `a*b - c*d` leaves a ~1e-19 residue where a facet normal is exactly zero.
+fn disable_fma(build: &mut cc::Build) {
+    if env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|v| v == "msvc") {
+        return;
+    }
+    build.flag("-ffp-contract=off");
+    if env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|v| v == "x86_64") {
+        build.flag("-mno-fma");
+    }
 }
