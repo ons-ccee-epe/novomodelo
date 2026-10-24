@@ -1855,15 +1855,14 @@ fn resolve_initial_conditions(
     state: &StateSpace,
     study_dims: &StudyDimensions,
     topology: &bucket_topology::TransitBucketTopology,
-    stage0: Option<(&Stage, &StateBox)>,
+    stage0: Option<&Stage>,
+    stage0_box: Option<&StateBox>,
 ) -> InitialConditions {
     let inflow_seeds = resolve_inflow_seeds(system, state.max_par_order);
     let mut initial_state =
         build_initial_state(system, study_dims, state, &inflow_seeds.lag_values);
     splice_transit_bucket_seed(&mut initial_state, state, system, topology);
-    if let Some((stage0, stage0_box)) = stage0 {
-        canonicalize_initial_state(&mut initial_state, state, system, stage0, stage0_box);
-    }
+    canonicalize_initial_state(&mut initial_state, state, system, stage0, stage0_box);
     InitialConditions {
         state: initial_state,
         inflow_seeds,
@@ -1977,7 +1976,8 @@ fn resolve_stage_data(
         &layout.state,
         &study_dims,
         &transit_bucket_topology,
-        stages.first().zip(stage_templates.state_boxes().first()),
+        stages.first(),
+        stage_templates.state_boxes().first(),
     );
 
     let stage_data = stage_data::StageData {
@@ -2803,20 +2803,24 @@ fn canonicalize_initial_state(
     state: &mut [f64],
     layout: &StateSpace,
     system: &System,
-    stage0: &Stage,
-    stage0_box: &StateBox,
+    stage0: Option<&Stage>,
+    stage0_box: Option<&StateBox>,
 ) {
-    for (idx, hydro) in system.hydros().iter().enumerate() {
-        let j = layout.storage_state_dim(HydroSys::new(idx)).get();
-        let floor = if storage_floor_relaxed(hydro, stage0.id) {
-            0.0
-        } else {
-            hydro.min_storage_hm3
-        };
-        state[j] = state[j].clamp(floor, hydro.max_storage_hm3);
+    if let Some(stage0) = stage0 {
+        for (idx, hydro) in system.hydros().iter().enumerate() {
+            let j = layout.storage_state_dim(HydroSys::new(idx)).get();
+            let floor = if storage_floor_relaxed(hydro, stage0.id) {
+                0.0
+            } else {
+                hydro.min_storage_hm3
+            };
+            state[j] = state[j].clamp(floor, hydro.max_storage_hm3);
+        }
     }
-    for j in layout.transit_buckets_out.clone() {
-        state[j] = state[j].clamp(stage0_box.lower[j], stage0_box.upper[j]);
+    if let Some(stage0_box) = stage0_box {
+        for j in layout.transit_buckets_out.clone() {
+            state[j] = state[j].clamp(stage0_box.lower[j], stage0_box.upper[j]);
+        }
     }
 }
 
@@ -2907,7 +2911,7 @@ fn build_initial_state(
                         // clamp — so a sub-tolerance input overshoot cannot drive
                         // the no-slack fishing equality at stage `slot` infeasible.
                         // The delivery-stage bound, NOT the stage-0 state box the
-                        // storage/bucket families clamp against: that box is
+                        // bucket family clamps against: that box is
                         // anchored on the ring's OUTGOING delivery window, so its
                         // residue-0 slot bounds a later delivery than the seed held
                         // here.

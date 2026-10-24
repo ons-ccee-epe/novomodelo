@@ -37,6 +37,21 @@ pub(crate) fn storage_floor_relaxed(hydro: &Hydro, stage_id: i32) -> bool {
     hydro.filling.is_some() || matches!(hydro_phase(hydro, stage_id), Phase::PreFilling)
 }
 
+/// `hydro`'s storage ceiling at `stage_id`, given that stage's resolved
+/// `max_storage_hm3`.
+///
+/// CONTRACT: a `PreFilling` hydro's ceiling is never below its own
+/// `max_storage_hm3`: its frozen-identity row pins `v_h` to the inert IC
+/// storage, which setup keeps within that range, so a lower per-stage ceiling
+/// would reject the pin.
+pub(super) fn storage_ceiling(hydro: &Hydro, stage_id: i32, resolved_max_hm3: f64) -> f64 {
+    if matches!(hydro_phase(hydro, stage_id), Phase::PreFilling) {
+        resolved_max_hm3.max(hydro.max_storage_hm3)
+    } else {
+        resolved_max_hm3
+    }
+}
+
 /// Whether `hydro` is commissioning (`PreFilling`/`Filling`) at `stage_id`, its
 /// turbine columns pinned at zero.
 pub(super) fn is_suspended(hydro: &Hydro, stage_id: i32) -> bool {

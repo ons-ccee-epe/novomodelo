@@ -12,7 +12,7 @@ use super::EVAPORATION_FLOW_SAFETY_MARGIN;
 use super::delivery_ring::{ColumnBufs, DeliveryRing};
 use super::hydro_state::{
     GroupBoundLookup, MinFloor, cell_max_generation, cell_max_turbined, hydro_phase, is_suspended,
-    storage_floor_relaxed,
+    storage_ceiling, storage_floor_relaxed,
 };
 use super::layout::{
     StageLayout, TemplateBuildCtx, contract_direction_counts, contract_family_slot,
@@ -79,6 +79,7 @@ fn fill_storage_columns(
         let floor_off = storage_floor_relaxed(hydro, stage.id);
         let hb = ctx.resolved.bounds.hydro_bounds(h_idx, stage_idx);
         let storage_lower = if floor_off { 0.0 } else { hb.min_storage_hm3 };
+        let storage_upper = storage_ceiling(hydro, stage.id, hb.max_storage_hm3);
         let storage_out_col = layout
             .state
             .storage_outgoing_col(HydroSys::new(h_idx))
@@ -88,16 +89,16 @@ fn fill_storage_columns(
             .storage_incoming_col(HydroSys::new(h_idx))
             .get();
         bufs.col_lower[storage_out_col] = storage_lower;
-        bufs.col_upper[storage_out_col] = hb.max_storage_hm3;
+        bufs.col_upper[storage_out_col] = storage_upper;
         bufs.col_lower[storage_in_col] = f64::NEG_INFINITY;
         bufs.col_upper[storage_in_col] = f64::INFINITY;
-        // Interior Sᵏ reuse the outgoing column's EXACT bounds, floor_off included: the
-        // frozen-identity chain pins each interior to the inert IC, so a hard floor above
-        // IC would reject the pin.
+        // Interior Sᵏ reuse the outgoing column's EXACT bounds, floor_off and the
+        // dormant ceiling included: the frozen-identity chain pins each interior to the
+        // inert IC, so a hard bound excluding IC would reject the pin.
         for k in 1..layout.clock.n_blks() {
             let col = layout.block_storage_col(HydroSys::new(h_idx), Boundary::Interior(k));
             bufs.col_lower[col] = storage_lower;
-            bufs.col_upper[col] = hb.max_storage_hm3;
+            bufs.col_upper[col] = storage_upper;
         }
     }
 }
