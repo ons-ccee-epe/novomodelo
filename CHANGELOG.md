@@ -79,10 +79,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **BREAKING:** an `initial_conditions.json` `storage` value outside its
   hydro's `[min_storage_hm3, max_storage_hm3]` is refused at load, naming the
-  hydro, the value and the range (rule `semantic.5a.53`). The floor is `0` for
-  a hydro that is commissioning-dormant at the first study stage. Setup used to
-  clamp such a value without a diagnostic, which changed the water the study
-  starts with. A difference at rounding level is still accepted.
+  hydro, the value and the range; a difference at rounding level is still
+  accepted. This includes a hydro that enters operation after the first
+  stage. A hydro with a `filling` configuration listed under `storage`, or one
+  without it listed under `filling_storage`, is refused too. Setup used to
+  clamp such values without a diagnostic, which changed the water the study
+  starts with.
+- `cobre validate` warns when an initial storage lies outside the storage
+  bounds that `constraints/hydro_bounds.parquet` sets for the end of the
+  hydro's first operating stage. That stage must reach the bound from its own
+  inflow, or release the excess.
 - **BREAKING:** `truncation` and `truncation_with_penalty` follow
   Larroyd et al. (2022): a negative inflow is no longer raised to zero.
   `incremental_inflow_m3s` reports the inflow model's value, which can be

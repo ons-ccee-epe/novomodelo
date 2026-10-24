@@ -89,9 +89,9 @@
 //!     (adjacent ranges where `start == prev_end` are accepted).
 //!
 //! Cross-reference validation (checking that hydro IDs exist in the hydro
-//! registry) is deferred to Layer 3 (deferred). Storage bounds validation
-//! (value within `[min_storage_hm3, max_storage_hm3]`) also requires the
-//! hydro registry and is likewise deferred.
+//! registry) is deferred to Layer 3 (deferred). The storage range
+//! (`[min_storage_hm3, max_storage_hm3]`) and the array each hydro's seed
+//! belongs in also need the hydro registry and are checked in Layer 5a.
 
 use chrono::NaiveDate;
 use novomodelo_core::{

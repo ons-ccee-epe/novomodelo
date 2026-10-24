@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use novomodelo_core::commissioning::{Phase, filling_phase};
+use novomodelo_core::commissioning::commissioning_active;
 use novomodelo_core::{EntityId, Hydro};
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
@@ -444,47 +444,22 @@ pub(super) fn check_filling_guards(data: &ParsedData, ctx: &mut ValidationContex
     }
 }
 
-/// Rule 53: an initial `storage` value lies in its hydro's
-/// `[min_storage_hm3, max_storage_hm3]`, within [`envelope_tolerance`]. The
-/// floor is `0` for a filling hydro and for one commissioning-dormant at the
-/// first study stage, where the storage floor is relaxed. Rejected, never
-/// clamped: clamping would change the declared water without a diagnostic.
+/// Rule 53: the `storage` seed of a hydro without a `filling` configuration
+/// lies in its `[min_storage_hm3, max_storage_hm3]`, within
+/// [`envelope_tolerance`], a late-entry hydro included. Rejected, never
+/// clamped: clamping would change the declared water without a diagnostic. A
+/// hydro with inverted bounds is left to rule 2.
 pub(super) fn check_initial_storage_range(data: &ParsedData, ctx: &mut ValidationContext) {
-    let Some(first_stage_id) = data
-        .stages
-        .stages
-        .iter()
-        .map(|s| s.id)
-        .filter(|&id| id >= 0)
-        .min()
-    else {
-        return;
-    };
-
+    let seed_by_hydro = storage_seed_by_hydro(data);
     for hydro in &data.hydros {
-        let Some(seed) = data
-            .initial_conditions
-            .storage
-            .iter()
-            .find(|s| s.hydro_id == hydro.id)
-        else {
+        let Some(&seed) = seed_by_hydro.get(&hydro.id) else {
             continue;
         };
-        let floor_relaxed = hydro.filling.is_some()
-            || filling_phase(
-                hydro.filling.as_ref(),
-                hydro.entry_stage_id,
-                hydro.exit_stage_id,
-                first_stage_id,
-            ) == Phase::PreFilling;
-        let (floor_name, floor) = if floor_relaxed {
-            ("0", 0.0)
-        } else {
-            ("min_storage_hm3", hydro.min_storage_hm3)
-        };
-        let ceiling = hydro.max_storage_hm3;
-        if seed.value_hm3 < floor - envelope_tolerance(floor)
-            || seed.value_hm3 > ceiling + envelope_tolerance(ceiling)
+        let (floor, ceiling) = (hydro.min_storage_hm3, hydro.max_storage_hm3);
+        if hydro.filling.is_some() || floor > ceiling {
+            continue;
+        }
+        if seed < floor - envelope_tolerance(floor) || seed > ceiling + envelope_tolerance(ceiling)
         {
             let entity_str = format!("Hydro {}", hydro.id.0);
             ctx.emit(
@@ -492,13 +467,134 @@ pub(super) fn check_initial_storage_range(data: &ParsedData, ctx: &mut Validatio
                 "initial_conditions.json",
                 Some(&entity_str),
                 format!(
-                    "{entity_str}: initial storage ({}) must lie in \
-                     [{floor_name}, max_storage_hm3] = [{floor}, {ceiling}]",
-                    seed.value_hm3
+                    "{entity_str}: initial storage ({seed}) must lie in \
+                     [min_storage_hm3, max_storage_hm3] = [{floor}, {ceiling}]"
                 ),
             );
         }
     }
+}
+
+/// Rule 54: a seed sits in the array that holds its hydro's range check —
+/// `filling_storage` for a hydro with a `filling` configuration, `storage` for
+/// one without. Setup reads both arrays into the same storage state, so a seed
+/// in the other array would escape both checks.
+pub(super) fn check_initial_storage_array(data: &ParsedData, ctx: &mut ValidationContext) {
+    let has_filling: HashMap<EntityId, bool> = data
+        .hydros
+        .iter()
+        .map(|h| (h.id, h.filling.is_some()))
+        .collect();
+    let ic = &data.initial_conditions;
+    for (array, seeds, for_filling) in [
+        ("storage", &ic.storage, false),
+        ("filling_storage", &ic.filling_storage, true),
+    ] {
+        for seed in seeds {
+            let Some(&filling) = has_filling.get(&seed.hydro_id) else {
+                continue;
+            };
+            if filling == for_filling {
+                continue;
+            }
+            let (reason, expected) = if filling {
+                ("has a filling configuration", "filling_storage")
+            } else {
+                ("has no filling configuration", "storage")
+            };
+            let entity_str = format!("Hydro {}", seed.hydro_id.0);
+            ctx.emit(
+                &rules::SEMANTIC_INITIAL_STORAGE_WRONG_ARRAY,
+                "initial_conditions.json",
+                Some(&entity_str),
+                format!(
+                    "{entity_str}: {reason}, so its initial storage belongs in {expected}, \
+                     not {array}"
+                ),
+            );
+        }
+    }
+}
+
+/// Rule 55 (warning): a `storage` seed lies outside the storage bounds in force
+/// at the end of the hydro's first operating study stage (the `hydro_bounds`
+/// override, else the hydro's own). The seed is kept, so that stage must reach
+/// the bound from its own inflow or release the excess; a minimum it cannot
+/// reach makes its LP infeasible or buys the water at the inflow penalty.
+pub(super) fn check_initial_storage_first_stage_bounds(
+    data: &ParsedData,
+    ctx: &mut ValidationContext,
+) {
+    let seed_by_hydro = storage_seed_by_hydro(data);
+    let mut study_stage_ids: Vec<i32> = data
+        .stages
+        .stages
+        .iter()
+        .map(|s| s.id)
+        .filter(|&id| id >= 0)
+        .collect();
+    study_stage_ids.sort_unstable();
+    let mut storage_override: HashMap<(EntityId, i32), (Option<f64>, Option<f64>)> = HashMap::new();
+    for row in data
+        .hydro_bounds
+        .iter()
+        .filter(|row| row.block_id.is_none())
+    {
+        let (min, max) = storage_override
+            .entry((row.hydro_id, row.stage_id))
+            .or_default();
+        *min = row.min_storage_hm3.or(*min);
+        *max = row.max_storage_hm3.or(*max);
+    }
+
+    for hydro in &data.hydros {
+        let Some(&seed) = seed_by_hydro.get(&hydro.id) else {
+            continue;
+        };
+        if hydro.filling.is_some() {
+            continue;
+        }
+        let Some(&stage_id) = study_stage_ids
+            .iter()
+            .find(|&&id| commissioning_active(hydro.entry_stage_id, hydro.exit_stage_id, id))
+        else {
+            continue;
+        };
+        let (min_override, max_override) = storage_override
+            .get(&(hydro.id, stage_id))
+            .copied()
+            .unwrap_or_default();
+        let floor = min_override.unwrap_or(hydro.min_storage_hm3);
+        let ceiling = max_override.unwrap_or(hydro.max_storage_hm3);
+        let gap = if seed < floor - envelope_tolerance(floor) {
+            format!(
+                "below the minimum storage ({floor}) at the end of stage {stage_id}, its first \
+                 operating stage; that stage must reach it from its own inflow"
+            )
+        } else if seed > ceiling + envelope_tolerance(ceiling) {
+            format!(
+                "above the maximum storage ({ceiling}) at the end of stage {stage_id}, its first \
+                 operating stage; that stage must release the excess"
+            )
+        } else {
+            continue;
+        };
+        let entity_str = format!("Hydro {}", hydro.id.0);
+        ctx.emit(
+            &rules::SEMANTIC_INITIAL_STORAGE_OUTSIDE_FIRST_STAGE_BOUNDS,
+            "initial_conditions.json",
+            Some(&entity_str),
+            format!("{entity_str}: initial storage ({seed}) lies {gap}"),
+        );
+    }
+}
+
+fn storage_seed_by_hydro(data: &ParsedData) -> HashMap<EntityId, f64> {
+    data.initial_conditions
+        .storage
+        .iter()
+        .map(|s| (s.hydro_id, s.value_hm3))
+        .collect()
 }
 
 /// Rules 8-10: `hydro_geometry.parquet`'s `volume_hm3` is strictly increasing,
@@ -831,7 +927,7 @@ mod tests {
     use crate::FphaHyperplaneRow;
     use crate::constraints::HydroBoundsRow;
     use crate::test_support::*;
-    use crate::validation::{ErrorKind, ValidationContext};
+    use crate::validation::{ErrorKind, ValidationContext, ValidationEntry};
     use chrono::NaiveDate;
     use novomodelo_core::DiversionChannel;
 
@@ -2937,14 +3033,34 @@ mod tests {
         );
     }
 
-    // ── Initial storage range tests ───────────────────────────────────────────
+    // ── Initial storage tests ─────────────────────────────────────────────────
 
-    /// The rule-53 messages from validating one hydro, its storage range set to
-    /// `[100, 1000]`, seeded at `value_hm3` over study stages 0-3.
-    fn initial_storage_range_messages(mut hydro: Hydro, value_hm3: f64) -> Vec<String> {
+    /// A hydro with storage range `[100, 1000]`.
+    fn make_ranged_hydro(id: i32) -> Hydro {
+        let mut hydro = make_hydro(id, None);
         hydro.min_storage_hm3 = 100.0;
         hydro.max_storage_hm3 = 1000.0;
+        hydro
+    }
+
+    /// Validate `hydro` over study stages 0-3 with `storage` and
+    /// `filling_storage` seeds and `hydro_bounds` rows; return the context.
+    fn validate_initial_storage(
+        hydro: Hydro,
+        storage: &[f64],
+        filling_storage: &[f64],
+        hydro_bounds: Vec<HydroBoundsRow>,
+    ) -> ValidationContext {
         let hydro_id = hydro.id;
+        let seeds = |values: &[f64]| {
+            values
+                .iter()
+                .map(|&value_hm3| HydroStorage {
+                    hydro_id,
+                    value_hm3,
+                })
+                .collect()
+        };
         let mut data = make_data(
             vec![hydro],
             vec![],
@@ -2953,57 +3069,225 @@ mod tests {
             vec![],
             vec![],
         );
-        data.initial_conditions.storage = vec![HydroStorage {
-            hydro_id,
-            value_hm3,
-        }];
+        data.initial_conditions.storage = seeds(storage);
+        data.initial_conditions.filling_storage = seeds(filling_storage);
+        data.hydro_bounds = hydro_bounds;
         let mut ctx = ValidationContext::new();
         validate_semantic_hydro_thermal(&data, &mut ctx);
-        ctx.errors()
-            .into_iter()
+        ctx
+    }
+
+    /// The `initial_conditions.json` messages among `entries` that contain `needle`.
+    fn initial_storage_messages(entries: &[&ValidationEntry], needle: &str) -> Vec<String> {
+        entries
+            .iter()
             .filter(|e| {
-                e.kind == ErrorKind::InvalidValue
-                    && e.file.to_string_lossy() == "initial_conditions.json"
+                e.file.to_string_lossy() == "initial_conditions.json" && e.message.contains(needle)
             })
             .map(|e| e.message.clone())
             .collect()
     }
 
+    fn range_errors(ctx: &ValidationContext) -> Vec<String> {
+        initial_storage_messages(&ctx.errors(), "must lie in")
+    }
+
+    fn first_stage_warnings(ctx: &ValidationContext) -> Vec<String> {
+        initial_storage_messages(&ctx.warnings(), "first operating stage")
+    }
+
     #[test]
     fn test_initial_storage_below_min_storage_is_rejected() {
-        let msgs = initial_storage_range_messages(make_hydro(1, None), 50.0);
-        assert_eq!(msgs.len(), 1, "got: {msgs:?}");
-        assert!(
-            msgs[0].contains("Hydro 1")
-                && msgs[0].contains("initial storage (50)")
-                && msgs[0].contains("[min_storage_hm3, max_storage_hm3] = [100, 1000]"),
-            "got: {msgs:?}"
+        let ctx = validate_initial_storage(make_ranged_hydro(1), &[50.0], &[], vec![]);
+        let msgs = range_errors(&ctx);
+        assert_eq!(
+            msgs,
+            vec![
+                "Hydro 1: initial storage (50) must lie in [min_storage_hm3, max_storage_hm3] = \
+                 [100, 1000]"
+                    .to_string()
+            ]
         );
     }
 
     #[test]
     fn test_initial_storage_above_max_storage_is_rejected() {
-        let msgs = initial_storage_range_messages(make_hydro(1, None), 1000.5);
-        assert_eq!(msgs.len(), 1, "got: {msgs:?}");
+        let ctx = validate_initial_storage(make_ranged_hydro(1), &[1000.5], &[], vec![]);
+        let msgs = range_errors(&ctx);
+        assert!(
+            msgs.len() == 1 && msgs[0].contains("initial storage (1000.5)"),
+            "got: {msgs:?}"
+        );
     }
 
     #[test]
-    fn test_initial_storage_at_a_bound_or_within_tolerance_is_accepted() {
+    fn test_initial_storage_within_tolerance_is_accepted_and_beyond_it_rejected() {
         for value in [100.0, 1000.0, 100.0 - 1e-8, 1000.0 + 1e-7] {
-            let msgs = initial_storage_range_messages(make_hydro(1, None), value);
-            assert!(msgs.is_empty(), "{value}: {msgs:?}");
+            let ctx = validate_initial_storage(make_ranged_hydro(1), &[value], &[], vec![]);
+            assert!(
+                range_errors(&ctx).is_empty(),
+                "{value}: {:?}",
+                range_errors(&ctx)
+            );
+        }
+        for value in [100.0 - 1e-6, 1000.0 + 1e-5] {
+            let ctx = validate_initial_storage(make_ranged_hydro(1), &[value], &[], vec![]);
+            assert_eq!(range_errors(&ctx).len(), 1, "{value}");
         }
     }
 
     #[test]
-    fn test_initial_storage_of_a_dormant_hydro_may_lie_below_min_storage() {
-        let mut hydro = make_hydro(1, None);
+    fn test_initial_storage_of_a_late_entry_hydro_below_min_storage_is_rejected() {
+        let mut hydro = make_ranged_hydro(1);
         hydro.entry_stage_id = Some(2);
-        let msgs = initial_storage_range_messages(hydro.clone(), 0.0);
-        assert!(msgs.is_empty(), "got: {msgs:?}");
-        let msgs = initial_storage_range_messages(hydro, 1000.5);
+        let ctx = validate_initial_storage(hydro, &[0.0], &[], vec![]);
+        assert_eq!(range_errors(&ctx).len(), 1, "got: {:?}", range_errors(&ctx));
+    }
+
+    #[test]
+    fn test_initial_storage_range_is_not_checked_against_inverted_bounds() {
+        let mut hydro = make_hydro(1, None);
+        hydro.min_storage_hm3 = 1000.0;
+        hydro.max_storage_hm3 = 100.0;
+        let ctx = validate_initial_storage(hydro, &[500.0], &[], vec![]);
         assert!(
-            msgs.len() == 1 && msgs[0].contains("[0, max_storage_hm3] = [0, 1000]"),
+            range_errors(&ctx).is_empty(),
+            "got: {:?}",
+            range_errors(&ctx)
+        );
+    }
+
+    #[test]
+    fn test_filling_hydro_seeded_in_storage_is_rejected() {
+        let ctx = validate_initial_storage(make_filling_hydro(1, 0, 2, 50.0), &[50.0], &[], vec![]);
+        let msgs = initial_storage_messages(&ctx.errors(), "belongs in");
+        assert_eq!(
+            msgs,
+            vec![
+                "Hydro 1: has a filling configuration, so its initial storage belongs in \
+                 filling_storage, not storage"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_non_filling_hydro_seeded_in_filling_storage_is_rejected() {
+        let ctx = validate_initial_storage(make_ranged_hydro(1), &[], &[5000.0], vec![]);
+        let msgs = initial_storage_messages(&ctx.errors(), "belongs in");
+        assert_eq!(
+            msgs,
+            vec![
+                "Hydro 1: has no filling configuration, so its initial storage belongs in \
+                 storage, not filling_storage"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_initial_storage_outside_first_stage_storage_bounds_warns() {
+        let below = HydroBoundsRow {
+            hydro_id: EntityId::from(1),
+            stage_id: 0,
+            min_storage_hm3: Some(800.0),
+            ..Default::default()
+        };
+        let ctx = validate_initial_storage(make_ranged_hydro(1), &[500.0], &[], vec![below]);
+        assert_eq!(
+            first_stage_warnings(&ctx),
+            vec![
+                "Hydro 1: initial storage (500) lies below the minimum storage (800) at the end \
+                 of stage 0, its first operating stage; that stage must reach it from its own \
+                 inflow"
+                    .to_string()
+            ]
+        );
+        assert!(
+            range_errors(&ctx).is_empty(),
+            "got: {:?}",
+            range_errors(&ctx)
+        );
+
+        let above = HydroBoundsRow {
+            hydro_id: EntityId::from(1),
+            stage_id: 0,
+            max_storage_hm3: Some(400.0),
+            ..Default::default()
+        };
+        let ctx = validate_initial_storage(make_ranged_hydro(1), &[500.0], &[], vec![above]);
+        let msgs = first_stage_warnings(&ctx);
+        assert!(
+            msgs.len() == 1 && msgs[0].contains("above the maximum storage (400)"),
+            "got: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn test_initial_storage_within_first_stage_storage_bounds_does_not_warn() {
+        let row = HydroBoundsRow {
+            hydro_id: EntityId::from(1),
+            stage_id: 0,
+            min_storage_hm3: Some(200.0),
+            max_storage_hm3: Some(900.0),
+            ..Default::default()
+        };
+        let ctx = validate_initial_storage(make_ranged_hydro(1), &[500.0], &[], vec![row]);
+        assert!(
+            first_stage_warnings(&ctx).is_empty(),
+            "got: {:?}",
+            first_stage_warnings(&ctx)
+        );
+    }
+
+    #[test]
+    fn test_block_row_does_not_hide_the_first_stage_storage_bound() {
+        let stage_row = HydroBoundsRow {
+            hydro_id: EntityId::from(1),
+            stage_id: 0,
+            min_storage_hm3: Some(800.0),
+            ..Default::default()
+        };
+        let block_row = HydroBoundsRow {
+            hydro_id: EntityId::from(1),
+            stage_id: 0,
+            block_id: Some(0),
+            max_turbined_m3s: Some(10.0),
+            ..Default::default()
+        };
+        let ctx = validate_initial_storage(
+            make_ranged_hydro(1),
+            &[500.0],
+            &[],
+            vec![stage_row, block_row],
+        );
+        let msgs = first_stage_warnings(&ctx);
+        assert!(
+            msgs.len() == 1 && msgs[0].contains("below the minimum storage (800)"),
+            "got: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn test_late_entry_hydro_is_checked_against_its_entry_stage_bounds() {
+        let mut hydro = make_ranged_hydro(1);
+        hydro.entry_stage_id = Some(2);
+        let at_stage = |stage_id| HydroBoundsRow {
+            hydro_id: EntityId::from(1),
+            stage_id,
+            min_storage_hm3: Some(800.0),
+            ..Default::default()
+        };
+        let ctx = validate_initial_storage(hydro.clone(), &[500.0], &[], vec![at_stage(0)]);
+        assert!(
+            first_stage_warnings(&ctx).is_empty(),
+            "got: {:?}",
+            first_stage_warnings(&ctx)
+        );
+        let ctx = validate_initial_storage(hydro, &[500.0], &[], vec![at_stage(2)]);
+        let msgs = first_stage_warnings(&ctx);
+        assert!(
+            msgs.len() == 1 && msgs[0].contains("end of stage 2"),
             "got: {msgs:?}"
         );
     }
