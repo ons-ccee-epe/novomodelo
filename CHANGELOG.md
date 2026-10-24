@@ -361,6 +361,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   precomputed rejected. The vendored C and C++ now compile without FMA. On
   aarch64, where compilers fused by default, results can differ in the last
   bits from earlier releases.
+- A hydro with computed FPHA and a stage range that selects another model,
+  such as constant productivity 0.0 on an outage stage, was refused with "no
+  FphaColumnLayout covers stage N". Only its FPHA stages are fit now.
 
 ## [0.18.0] - 2026-10-07
 

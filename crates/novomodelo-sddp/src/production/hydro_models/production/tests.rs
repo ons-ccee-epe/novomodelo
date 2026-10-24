@@ -1937,6 +1937,85 @@ fn coverage_gap_returns_validation_error() {
     );
 }
 
+/// A computed-FPHA hydro with a constant-productivity outage range (`0.0`) on
+/// stage 0 and FPHA on stages 1–2 fits only the FPHA stages: stage 0 carries no
+/// planes or export rows and resolves to the constant model.
+#[test]
+fn constant_productivity_stage_range_is_not_fit() {
+    let hydro = make_sobradinho_computed_hydro(0);
+    let rows = make_sobradinho_geometry_rows(0);
+    let geometry_map = sobradinho_geometry_map(&rows);
+
+    let config = ProductionModelConfig {
+        hydro_id: EntityId::from(0),
+        selection_mode: SelectionMode::StageRanges {
+            ranges: vec![
+                StageRange {
+                    start_stage_id: 0,
+                    end_stage_id: Some(0),
+                    model: HydroGenerationModel::ConstantProductivity,
+                    fpha_config: None,
+                    reference_volume: None,
+                    productivity_mw_per_m3s: Some(0.0),
+                },
+                StageRange {
+                    start_stage_id: 1,
+                    end_stage_id: None,
+                    model: HydroGenerationModel::Fpha,
+                    fpha_config: Some(computed_layout_with_window(None, None)),
+                    reference_volume: None,
+                    productivity_mw_per_m3s: None,
+                },
+            ],
+        },
+    };
+
+    let stages = [make_stage(0), make_stage(1), make_stage(2)];
+    let stage_refs: Vec<&Stage> = stages.iter().collect();
+
+    let mut export_rows = Vec::new();
+    let families_map = empty_families_map();
+    let (system, fractions) = entity_fit_context(&hydro);
+    let per_stage = super::fit_computed_planes_per_stage(
+        &hydro,
+        Some(&config),
+        &geometry_map,
+        &families_map,
+        &fractions,
+        &system,
+        &stage_refs,
+        0.0,
+        None,
+        false,
+        &mut export_rows,
+        &mut Vec::new(),
+        &mut Vec::new(),
+    )
+    .expect("a constant-productivity stage range must not be fit");
+
+    assert!(per_stage[0].is_empty());
+    assert!(!per_stage[1].is_empty());
+    assert_eq!(per_stage[1].len(), per_stage[2].len());
+    assert!(export_rows.iter().all(|row| row.stage_id != Some(0)));
+
+    let empty_hyperplane_map: HashMap<(EntityId, Option<i32>), Vec<&FphaHyperplaneRow>> =
+        HashMap::new();
+    let model = super::resolve_stage_model(
+        &hydro,
+        &stages[0],
+        Some(&config),
+        ProductionModelSource::ComputedFromGeometry,
+        &empty_hyperplane_map,
+        Some(&per_stage[0]),
+        None,
+    )
+    .expect("the outage stage resolves");
+    assert!(
+        matches!(model, ResolvedProductionModel::ConstantProductivity { productivity } if productivity == 0.0),
+        "expected the constant 0.0 model, got {model:?}"
+    );
+}
+
 /// `spillage_fit_max_m3s` sets the lateral-secant range: a config with
 /// `Some(x)` fits the same planes as one without it whose long-term mean
 /// inflow is `x / 2`, and different `γ_S` from the `2 × max_turbined` fallback.

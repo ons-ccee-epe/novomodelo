@@ -559,8 +559,9 @@ type FittedCacheEntry<'a> = (
 
 /// Fit computed-FPHA planes per study stage for one hydro, deduplicating
 /// identical `SelectionMode` entries. Returns one plane set per study stage (in
-/// `study_stages` order) and appends export rows, per-distinct-fit diagnostics,
-/// and (opt-in) per-point rows in canonical `(stage_id, …)` order.
+/// `study_stages` order; empty for a stage whose entry selects a non-FPHA model)
+/// and appends export rows, per-distinct-fit diagnostics, and (opt-in) per-point
+/// rows in canonical `(stage_id, …)` order.
 ///
 /// ## Contract — the dedup key MUST include the downstream level
 ///
@@ -573,7 +574,8 @@ type FittedCacheEntry<'a> = (
 ///
 /// # Errors
 ///
-/// - A stage mapping to no `fpha_config` (coverage gap) → [`SddpError::Validation`].
+/// - An FPHA stage, or a stage no entry covers, mapping to no `fpha_config`
+///   → [`SddpError::Validation`].
 /// - Fitting errors propagate via [`fit_planes_for_hydro`], naming the hydro.
 // Rationale: each argument is a distinct already-resolved input; a context struct
 // would only relocate the same fields.
@@ -599,6 +601,13 @@ fn fit_computed_planes_per_stage(
     let mut per_stage: Vec<Vec<FphaPlane>> = Vec::with_capacity(study_stages.len());
 
     for (stage_pos, stage) in study_stages.iter().enumerate() {
+        if config_entry
+            .and_then(|c| find_model_for_stage(c, stage))
+            .is_some_and(|(model, _)| model != HydroGenerationModel::Fpha)
+        {
+            per_stage.push(Vec::new());
+            continue;
+        }
         let config = config_entry
             .and_then(|c| find_fpha_config_for_stage(c, stage))
             .ok_or_else(|| {
