@@ -261,13 +261,18 @@ fn sweep_setup(
         let geom = &setup.inputs.stage_data.stage_templates.geometry_per_stage[stage];
         let mode_tag = block_mode_tag(geom.block_mode);
 
-        let (lo, hi) = stage_state_box_bounds(setup, stage.saturating_sub(1));
-        let incoming_state: Vec<f64> = initial_state
-            .iter()
-            .zip(&lo)
-            .zip(&hi)
-            .map(|((&x, &l), &h)| x.max(l).min(h))
-            .collect();
+        let incoming_state: Vec<f64> = match stage.checked_sub(1) {
+            None => initial_state.clone(),
+            Some(previous) => {
+                let (lo, hi) = stage_state_box_bounds(setup, previous);
+                initial_state
+                    .iter()
+                    .zip(&lo)
+                    .zip(&hi)
+                    .map(|((&x, &l), &h)| x.max(l).min(h))
+                    .collect()
+            }
+        };
 
         let base = capture_patched_node_template_at(setup, pos, &zero_noise, &incoming_state);
 

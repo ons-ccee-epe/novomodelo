@@ -273,6 +273,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does not belong to the entry's kind (for example `values` on a `constant`)
   stops the load. Only `block_values` was rejected before; the other fields
   were ignored.
+- **BREAKING:** the Linux CLI archives are built on Ubuntu 24.04 and need
+  glibc 2.38 or newer. They no longer run on Ubuntu 22.04, Debian 12 or
+  RHEL 9. The Python wheels keep their manylinux tags.
 
 ### Removed
 
@@ -284,6 +287,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The initial storage was moved onto the first stage's `min_storage_hm3` and
+  `max_storage_hm3` from `constraints/hydro_bounds.parquet`, which bound the
+  storage at the end of that stage. A first-stage minimum above the initial
+  storage added water before the first solve, and a maximum below it removed
+  water. The initial storage is now kept within the hydro's own storage range.
+- At a stage before a hydro's `entry_stage_id` or after its `exit_stage_id`,
+  its storage stays at the value it entered the stage with. A
+  `max_storage_hm3` in `constraints/hydro_bounds.parquet` below that value made
+  the stage infeasible. At those stages the storage ceiling is now never below
+  the hydro's own `max_storage_hm3`.
 - A `min_turbined_m3s` or `min_generation_mw` value in
   `constraints/hydro_bounds.parquet` had no effect: the LP read only the unit
   groups' minima. A plant minimum above the sum of its groups' minima now
@@ -329,6 +342,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no longer aborts the run when HiGHS loads the LP. The terms are summed into one
   coefficient per column, and a column whose coefficients sum to exactly zero
   gets no entry.
+- Results no longer depend on the C compiler's default target. A compiler that
+  targets FMA by default, such as the amd64v3 GCC of Ubuntu 26.04, fused
+  multiply-adds in qhull, HiGHS and CLP. The fitted FPHA planes and the LP
+  solutions then moved in the last bits, and a computed FPHA plane could get a
+  storage coefficient slightly below zero, which loading the planes back as
+  precomputed rejected. The vendored C and C++ now compile without FMA. On
+  aarch64, where compilers fused by default, results can differ in the last
+  bits from earlier releases.
 
 ## [0.18.0] - 2026-10-07
 

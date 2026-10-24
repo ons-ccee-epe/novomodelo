@@ -34,7 +34,7 @@ env:
 jobs:
   check:
     name: Check (HiGHS)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -72,7 +72,7 @@ jobs:
 
   test:
     name: Test (HiGHS)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
@@ -117,7 +117,7 @@ jobs:
 
   clippy:
     name: Clippy (HiGHS)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -167,7 +167,7 @@ jobs:
   # the CLP wiring that is already decoupled.
   clp:
     name: CLP Backend
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
@@ -238,7 +238,7 @@ jobs:
   # NOT duplicated onto the CLP job.
   fmt:
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
@@ -250,7 +250,7 @@ jobs:
 
   quality-scripts:
     name: Quality Scripts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -310,7 +310,7 @@ jobs:
 
   schemas:
     name: Schema Freshness
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -353,11 +353,11 @@ jobs:
   # output shape cannot silently drift. Minimal setup: only the default-feature
   # (HiGHS) `novomodelo` binary is needed — no MPICH or flatc, since the default CLI
   # build enables neither `mpi` nor `flatc-conformance`. `jq` is preinstalled on
-  # `ubuntu-latest`. Scoped to structural invariants the assert_cmd suite does
+  # `ubuntu-24.04`. Scoped to structural invariants the assert_cmd suite does
   # not already pin exactly; it does not re-run command-execution coverage.
   docs-examples:
     name: Docs Examples
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -373,7 +373,7 @@ jobs:
   # Docs build once on the primary (HiGHS) backend; NOT duplicated onto CLP.
   docs:
     name: Documentation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -418,7 +418,7 @@ jobs:
   # crate, so it never trips novomodelo-solver's both-backends `compile_error!`.
   security:
     name: Security Audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -434,7 +434,7 @@ jobs:
   # version, so CI and a local run execute the same commands.
   deny:
     name: Dependency Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -456,7 +456,7 @@ jobs:
   # format is version-dependent (an unpinned bump would read as spurious drift).
   license-notices:
     name: License Notices
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -475,7 +475,7 @@ jobs:
   # Coverage runs once on the primary (HiGHS) backend; NOT duplicated onto CLP.
   coverage:
     name: Code Coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
@@ -525,7 +525,7 @@ jobs:
 
   python:
     name: Python Bindings (${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
