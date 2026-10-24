@@ -261,6 +261,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does not belong to the entry's kind (for example `values` on a `constant`)
   stops the load. Only `block_values` was rejected before; the other fields
   were ignored.
+- **BREAKING:** the Linux CLI archives are built on Ubuntu 24.04 and need
+  glibc 2.38 or newer. They no longer run on Ubuntu 22.04, Debian 12 or
+  RHEL 9. The Python wheels keep their manylinux tags.
 
 ### Removed
 
