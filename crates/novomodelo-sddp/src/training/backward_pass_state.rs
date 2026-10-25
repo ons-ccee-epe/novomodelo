@@ -38,7 +38,7 @@ use crate::{
     forward::EnumeratedForwardScratch,
     horizon_mode::HorizonMode,
     lp::indexer::{CutStateProjection, StateSpace},
-    rank_reconcile::reconcile_result,
+    rank_reconcile::reconcile_result_with_max,
     risk_measure::RiskMeasure,
     solver_phase::Phase,
     solver_stats::{
@@ -250,10 +250,6 @@ pub struct BackwardPassState {
     /// load-imbalance decomposition.
     pub(crate) worker_totals: Vec<f64>,
 
-    /// Cross-rank error-reconciliation scratch, reused each stage by the
-    /// pre-`sync_level_records` reconcile so that reconciliation never allocates.
-    pub(crate) reconcile_scratch: [i32; 1],
-
     /// Resolved backward-phase solver profile applied at [`Self::run`] entry.
     /// Defaults to `Phase::Backward.profile()`; override with
     /// [`Self::set_profile`] before the first `run()` call.
@@ -424,7 +420,6 @@ impl BackwardPassState {
             worker_stats_after: Vec::with_capacity(n_workers_local),
             worker_deltas: Vec::with_capacity(n_workers_local),
             worker_totals: Vec::with_capacity(n_workers_local),
-            reconcile_scratch: [0_i32; 1],
             profile: Phase::Backward.profile(),
             scheduler: BackwardScheduler::default(),
             hardest_first_claim_order: true,
@@ -601,7 +596,6 @@ impl BackwardPassState {
         );
         self.by_node_scratch.block_pivots.fill((0, 0));
 
-        #[allow(clippy::cast_precision_loss)]
         let params = StageDerivedParams {
             my_rank: inputs.comm.rank(),
             n_workers_local: inputs.workspaces.len(),
@@ -609,7 +603,6 @@ impl BackwardPassState {
             bwd_max_openings: self.bwd_stats_send_buf.len()
                 / inputs.workspaces.len().max(1)
                 / WORKER_STATS_ENTRY_STRIDE,
-            n_workers: inputs.workspaces.len() as f64,
         };
 
         // Verify all ranks agree on n_workers_local. A mismatch silently
@@ -643,7 +636,8 @@ impl BackwardPassState {
         let mut state_exchange_ms: u64 = 0;
         let mut cut_batch_build_ms: u64 = 0;
         let mut setup_ms: u64 = 0;
-        let mut imbalance_ms: u64 = 0;
+        let mut max_worker_ms = 0.0_f64;
+        let mut worker_total_ms = 0.0_f64;
         let mut scheduling_ms: u64 = 0;
         let mut cut_sync_ms: u64 = 0;
 
@@ -658,7 +652,8 @@ impl BackwardPassState {
             state_exchange_ms += out.state_exchange_ms;
             cut_batch_build_ms += out.cut_batch_build_ms;
             setup_ms += out.setup_ms;
-            imbalance_ms += out.imbalance_ms;
+            max_worker_ms += out.max_worker_ms;
+            worker_total_ms += out.worker_total_ms;
             scheduling_ms += out.scheduling_ms;
             cut_sync_ms += out.cut_sync_ms;
             stage_stats.extend(out.stage_entries);
@@ -687,7 +682,12 @@ impl BackwardPassState {
             state_exchange_time_ms: state_exchange_ms,
             cut_batch_build_time_ms: cut_batch_build_ms,
             setup_time_ms: setup_ms,
-            load_imbalance_ms: imbalance_ms,
+            load_imbalance_ms: global_load_imbalance_ms(
+                max_worker_ms,
+                worker_total_ms,
+                params.n_workers_local * params.n_ranks,
+                inputs.comm,
+            )?,
             scheduling_overhead_ms: scheduling_ms,
             cut_sync_time_ms: cut_sync_ms,
         })
@@ -1056,16 +1056,13 @@ impl BackwardPassState {
         Ok(())
     }
 
-    /// Decompose one stage's parallel overhead into setup, load-imbalance, and
-    /// scheduling components, returning `(setup_ms, imbalance_ms, scheduling_ms)`.
-    ///
-    /// Deltas are taken against the before-snapshot in `self.worker_stats_before`.
+    /// Decompose one stage's parallel overhead on this rank against the
+    /// before-snapshot in `self.worker_stats_before`.
     fn collect_stage_timing_stats<S: SolverInterface + Send>(
         &mut self,
         parallel_wall_ms: u64,
-        n_workers: f64,
         workspaces: &mut [SolverWorkspace<S>],
-    ) -> (u64, u64, u64) {
+    ) -> StageTiming {
         self.worker_stats_after.clear();
         self.worker_stats_after
             .extend(workspaces.iter().map(|w| w.solver.statistics()));
@@ -1087,25 +1084,14 @@ impl BackwardPassState {
                 .map(|d| d.solve_time_ms + non_solve_setup_ms(d)),
         );
         let max_worker_ms = self.worker_totals.iter().copied().fold(0.0_f64, f64::max);
-        let avg_worker_ms = if self.worker_totals.is_empty() {
-            0.0_f64
-        } else {
-            self.worker_totals.iter().sum::<f64>() / n_workers
-        };
-        let stage_imbalance_ms = (max_worker_ms - avg_worker_ms).max(0.0);
-        #[allow(
-            clippy::cast_precision_loss,
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss
-        )]
+        #[allow(clippy::cast_precision_loss)]
         let stage_scheduling_ms = (parallel_wall_ms as f64 - max_worker_ms).max(0.0);
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        {
-            (
-                stage_setup_ms as u64,
-                stage_imbalance_ms as u64,
-                stage_scheduling_ms as u64,
-            )
+        StageTiming {
+            setup: stage_setup_ms as u64,
+            scheduling: stage_scheduling_ms as u64,
+            max_worker: max_worker_ms,
+            worker_total: self.worker_totals.iter().sum(),
         }
     }
 
@@ -1248,6 +1234,49 @@ fn non_solve_setup_ms(d: &SolverStatsDelta) -> f64 {
     d.load_model_time_ms + d.set_bounds_time_ms + d.basis_set_time_ms
 }
 
+/// [`load_imbalance_ms`] over every rank's workers: sums this rank's
+/// `local_worker_total_ms` across ranks before taking the mean.
+///
+/// # Errors
+///
+/// Returns [`SddpError::Communication`] when the `allreduce` transport fails.
+fn global_load_imbalance_ms<C: Communicator>(
+    max_worker_sum_ms: f64,
+    local_worker_total_ms: f64,
+    n_workers_global: usize,
+    comm: &C,
+) -> Result<u64, SddpError> {
+    let mut worker_total_ms = [local_worker_total_ms];
+    if comm.size() > 1 {
+        comm.allreduce(
+            &[local_worker_total_ms],
+            &mut worker_total_ms,
+            ReduceOp::Sum,
+        )
+        .map_err(SddpError::Communication)?;
+    }
+    Ok(load_imbalance_ms(
+        max_worker_sum_ms,
+        worker_total_ms[0],
+        n_workers_global,
+    ))
+}
+
+/// `Σ_stage (slowest worker − mean worker)`, in whole ms, from the per-stage
+/// slowest-worker times summed (`max_worker_sum_ms`) and every worker's total
+/// work time summed over all stages (`worker_total_ms`).
+fn load_imbalance_ms(max_worker_sum_ms: f64, worker_total_ms: f64, n_workers: usize) -> u64 {
+    if n_workers == 0 {
+        return 0;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let mean_worker_sum_ms = worker_total_ms / n_workers as f64;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        (max_worker_sum_ms - mean_worker_sum_ms).max(0.0) as u64
+    }
+}
+
 /// Iteration-constant values derived once from `BackwardPassInputs` at the start of `run`.
 ///
 /// Passed to `compute_one_backward_node` to avoid recomputing them on every node
@@ -1261,8 +1290,17 @@ struct StageDerivedParams {
     n_ranks: usize,
     /// Maximum opening count across all stages (stride for stats buffers).
     bwd_max_openings: usize,
-    /// `n_workers_local as f64`, pre-cast for load-imbalance arithmetic.
-    n_workers: f64,
+}
+
+/// One node's parallel-region timing on this rank, in ms, from
+/// [`BackwardPassState::collect_stage_timing_stats`].
+struct StageTiming {
+    setup: u64,
+    scheduling: u64,
+    /// Slowest local worker's total work time.
+    max_worker: f64,
+    /// Local workers' total work time summed.
+    worker_total: f64,
 }
 
 /// Aggregate output of one cut-sharing level, accumulated in [`BackwardPassState::run`].
@@ -1277,8 +1315,10 @@ struct LevelOutput {
     cut_batch_build_ms: u64,
     /// Aggregate non-solve setup time summed over the level's nodes, in ms.
     setup_ms: u64,
-    /// Load-imbalance component summed over the level's nodes, in ms.
-    imbalance_ms: u64,
+    /// Slowest worker across ranks, summed over the level's nodes, in ms.
+    max_worker_ms: f64,
+    /// This rank's worker total work time summed over the level's nodes, in ms.
+    worker_total_ms: f64,
     /// Scheduling overhead summed over the level's nodes, in ms.
     scheduling_ms: u64,
     /// Time in the level's one batched cut-sync `allgatherv`, in ms.
@@ -1302,8 +1342,10 @@ struct NodeCompute {
     cut_batch_build_ms: u64,
     /// Aggregate non-solve setup time for this node, in ms.
     setup_ms: u64,
-    /// Load-imbalance component for this node, in ms.
-    imbalance_ms: u64,
+    /// Slowest worker's total work time across every rank, in ms.
+    max_worker_ms: f64,
+    /// This rank's workers' total work time summed, in ms.
+    worker_total_ms: f64,
     /// Scheduling overhead for this node, in ms.
     scheduling_ms: u64,
 }
@@ -1701,7 +1743,8 @@ fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
 
     let mut stage_entries = Vec::with_capacity(nodes_out.len());
     let mut setup_ms = 0u64;
-    let mut imbalance_ms = 0u64;
+    let mut max_worker_ms = 0.0_f64;
+    let mut worker_total_ms = 0.0_f64;
     let mut scheduling_ms = 0u64;
     // Mem-swapped local so the per-region borrow does not conflict with
     // `state.sync_stage_metadata`'s `&mut self`.
@@ -1727,7 +1770,8 @@ fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
             }
         }
         setup_ms += nc.setup_ms;
-        imbalance_ms += nc.imbalance_ms;
+        max_worker_ms += nc.max_worker_ms;
+        worker_total_ms += nc.worker_total_ms;
         scheduling_ms += nc.scheduling_ms;
         let entries = state.gather_stage_solver_stats(
             nc.n_openings,
@@ -1753,7 +1797,8 @@ fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
         state_exchange_ms,
         cut_batch_build_ms,
         setup_ms,
-        imbalance_ms,
+        max_worker_ms,
+        worker_total_ms,
         scheduling_ms,
         cut_sync_ms,
     })
@@ -1972,11 +2017,12 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
     // collectives (mirrors the forward-phase precedent): ranks solve disjoint
     // trial points, so a failure on a strict subset makes every rank return Err
     // here rather than let a healthy rank block in the batched cut sync /
-    // metadata sync / stats gather while a peer skipped them.
-    reconcile_result(local_solve, inputs.comm, &mut state.reconcile_scratch)?;
-
-    let (setup_ms, imbalance_ms, scheduling_ms) =
-        state.collect_stage_timing_stats(parallel_wall_ms, params.n_workers, inputs.workspaces);
+    // metadata sync / stats gather while a peer skipped them. Ranks that finish
+    // early wait here, so the slowest worker is agreed across ranks in the same
+    // reduction for the cross-rank load imbalance.
+    let timing = state.collect_stage_timing_stats(parallel_wall_ms, inputs.workspaces);
+    let (_, max_worker_ms) =
+        reconcile_result_with_max(local_solve, timing.max_worker, inputs.comm)?;
 
     Ok(NodeCompute {
         successor_stage: successor_stage.0,
@@ -1984,9 +2030,10 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
         pool_regions,
         n_openings,
         cut_batch_build_ms,
-        setup_ms,
-        imbalance_ms,
-        scheduling_ms,
+        setup_ms: timing.setup,
+        max_worker_ms,
+        worker_total_ms: timing.worker_total,
+        scheduling_ms: timing.scheduling,
     })
 }
 
@@ -5238,5 +5285,83 @@ mod tests {
              Instant::elapsed() call that produced elapsed_ms ({}, floored to whole ms)",
             result.elapsed_ms
         );
+    }
+
+    /// `size() == 2` peer whose `allreduce(Sum)` adds the other rank's `peer`
+    /// value to this rank's.
+    struct PeerSum {
+        peer: f64,
+    }
+
+    impl Communicator for PeerSum {
+        fn allgatherv<T: CommData>(
+            &self,
+            _send: &[T],
+            _recv: &mut [T],
+            _counts: &[usize],
+            _displs: &[usize],
+        ) -> Result<(), CommError> {
+            unreachable!("the load-imbalance reduction does not call allgatherv")
+        }
+        fn allreduce<T: CommData>(
+            &self,
+            send: &[T],
+            recv: &mut [T],
+            op: ReduceOp,
+        ) -> Result<(), CommError> {
+            use std::any::Any;
+            assert_eq!(op, ReduceOp::Sum, "worker time must be summed across ranks");
+            for (s, r) in send.iter().zip(recv.iter_mut()) {
+                let local = *(s as &dyn Any).downcast_ref::<f64>().expect("f64 payload");
+                *(r as &mut dyn Any)
+                    .downcast_mut::<f64>()
+                    .expect("f64 payload") = local + self.peer;
+            }
+            Ok(())
+        }
+        fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
+            unreachable!("the load-imbalance reduction does not call broadcast")
+        }
+        fn barrier(&self) -> Result<(), CommError> {
+            unreachable!("the load-imbalance reduction does not call barrier")
+        }
+        fn rank(&self) -> usize {
+            0
+        }
+        fn size(&self) -> usize {
+            2
+        }
+        fn abort(&self, code: i32) -> ! {
+            std::process::exit(code)
+        }
+    }
+
+    #[test]
+    fn load_imbalance_is_the_slowest_minus_the_mean_worker_summed_over_stages() {
+        // Stage 1 workers [10, 20], stage 2 workers [40, 10]: (20 − 15) + (40 − 25).
+        assert_eq!(load_imbalance_ms(20.0 + 40.0, 80.0, 2), 20);
+    }
+
+    #[test]
+    fn load_imbalance_with_no_workers_is_zero() {
+        assert_eq!(load_imbalance_ms(0.0, 0.0, 0), 0);
+    }
+
+    #[test]
+    fn global_load_imbalance_counts_the_slowest_worker_on_any_rank() {
+        // Rank 0 workers [10, 12], rank 1 workers [20, 30]: the slowest worker is
+        // on rank 1, so rank 0's own imbalance (12 − 11 = 1) understates it.
+        let rank0_total = 10.0 + 12.0;
+        let comm = PeerSum { peer: 20.0 + 30.0 };
+        let imbalance =
+            global_load_imbalance_ms(30.0, rank0_total, 4, &comm).expect("stub reduction succeeds");
+        assert_eq!(imbalance, 30 - 18);
+    }
+
+    #[test]
+    fn global_load_imbalance_on_one_rank_uses_the_local_workers() {
+        let imbalance =
+            global_load_imbalance_ms(30.0, 72.0, 4, &StubComm).expect("no collective on one rank");
+        assert_eq!(imbalance, 30 - 18);
     }
 }

@@ -364,6 +364,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A hydro with computed FPHA and a stage range that selects another model,
   such as constant productivity 0.0 on an outage stage, was refused with "no
   FphaColumnLayout covers stage N". Only its FPHA stages are fit now.
+- Under MPI, the backward `wait` in the training time split and the
+  `bwd_load_imbalance_ms` timing column now include the time a rank spends
+  waiting for the other ranks. Previously they counted only the imbalance
+  between rank 0's own threads, so they understated the wait and did not match
+  a single-rank run with the same total thread count.
 
 ## [0.18.0] - 2026-10-07
 

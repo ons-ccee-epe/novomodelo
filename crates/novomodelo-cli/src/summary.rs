@@ -417,7 +417,7 @@ pub struct TrainingSummary {
     /// Forward-phase worker wait (load imbalance), from `fwd_load_imbalance_ms`.
     pub forward_wait_seconds: Option<f64>,
 
-    /// Backward-phase worker wait (load imbalance), from `bwd_load_imbalance_ms`.
+    /// Backward-phase worker wait (load imbalance across all ranks), from `bwd_load_imbalance_ms`.
     pub backward_wait_seconds: Option<f64>,
 
     /// `Serial`-bucket lower-bound evaluation time, from `lower_bound_ms`.

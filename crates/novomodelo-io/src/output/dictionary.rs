@@ -952,7 +952,7 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "iteration_timing",
         "bwd_load_imbalance_ms",
-        "Estimated load imbalance across backward pass worker threads",
+        "Estimated load imbalance across backward pass worker threads on all MPI ranks",
     ),
     (
         "iteration_timing",
