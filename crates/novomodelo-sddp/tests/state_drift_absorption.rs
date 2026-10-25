@@ -15,6 +15,10 @@
 //! Each test asserts a positive completion signal — `Ok` with a finite
 //! `final_lb`, or a finite simulated cost — never merely the absence of a
 //! panic.
+//!
+//! The initial storage is the one seed whose box is not the stage-0 box: it is
+//! projected onto the hydro's physical range, so a stage-0 end-of-stage storage
+//! bound that excludes the seed must leave the seed where it was.
 
 #![allow(
     clippy::unwrap_used,
@@ -34,7 +38,7 @@
 mod common;
 
 use chrono::{NaiveDate, TimeDelta};
-use novomodelo_core::entities::hydro::HydroGenerationModel;
+use novomodelo_core::entities::hydro::{FillingConfig, HydroGenerationModel};
 use novomodelo_core::entities::thermal::AnticipatedConfig;
 use novomodelo_core::scenario::InflowModel;
 use novomodelo_core::temporal::{
@@ -53,7 +57,8 @@ use novomodelo_io::config::{
     SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode, StoppingRuleConfig,
     TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
-use novomodelo_sddp::test_support::oracle_initial_state;
+use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::test_support::{oracle_initial_state, stage_state_box_bounds};
 use novomodelo_solver::ActiveSolver;
 
 use common::builders::{
@@ -567,6 +572,40 @@ fn transit_bucket_drifting_negative_trains() {
 /// forcing it off its seeded value, so the only feasibility question under
 /// test is the seeded initial storage against `[0, cap_hm3]`.
 fn build_storage_system(n_stages: usize, cap_hm3: f64, seed_hm3: f64) -> System {
+    build_storage_system_with(n_stages, cap_hm3, seed_hm3, &StorageFixture::new(cap_hm3))
+}
+
+/// What [`build_storage_system_with`] varies over [`build_storage_system`].
+struct StorageFixture {
+    inflow_m3s: f64,
+    /// Stage 0's end-of-stage storage bound `(min, max)`, hm³; every later
+    /// stage keeps `[min_storage_hm3, cap_hm3]`.
+    stage0_storage_hm3: (f64, f64),
+    min_storage_hm3: f64,
+    entry_stage_id: Option<i32>,
+    filling: Option<FillingConfig>,
+}
+
+impl StorageFixture {
+    fn new(cap_hm3: f64) -> Self {
+        Self {
+            inflow_m3s: 0.0,
+            stage0_storage_hm3: (0.0, cap_hm3),
+            min_storage_hm3: 0.0,
+            entry_stage_id: None,
+            filling: None,
+        }
+    }
+}
+
+/// [`build_storage_system`] shaped by `fixture`; a filling hydro's seed goes
+/// in `filling_storage`.
+fn build_storage_system_with(
+    n_stages: usize,
+    cap_hm3: f64,
+    seed_hm3: f64,
+    fixture: &StorageFixture,
+) -> System {
     let bus_id = EntityId(1);
     let hydro_id = EntityId(2);
     const DAYS_PER_STAGE: i64 = 30;
@@ -576,10 +615,13 @@ fn build_storage_system(n_stages: usize, cap_hm3: f64, seed_hm3: f64) -> System 
         hydro_id,
         HydroSpec {
             bus_id,
+            entry_stage_id: fixture.entry_stage_id,
+            min_storage_hm3: fixture.min_storage_hm3,
             max_storage_hm3: cap_hm3,
             max_turbined_m3s: 100.0,
             max_generation_mw: 100.0,
             generation_model: HydroGenerationModel::ConstantProductivity,
+            filling: fixture.filling,
             ..Default::default()
         },
     );
@@ -618,7 +660,7 @@ fn build_storage_system(n_stages: usize, cap_hm3: f64, seed_hm3: f64) -> System 
         .map(|i| InflowModel {
             hydro_id,
             stage_id: i as i32,
-            mean_m3s: 0.0,
+            mean_m3s: fixture.inflow_m3s,
             std_m3s: 0.0,
             ar_coefficients: vec![],
             residual_std_ratio: 1.0,
@@ -626,7 +668,7 @@ fn build_storage_system(n_stages: usize, cap_hm3: f64, seed_hm3: f64) -> System 
         })
         .collect();
 
-    let bounds = ResolvedBounds::new(
+    let mut bounds = ResolvedBounds::new(
         &BoundsCountsSpec {
             n_hydros: 1,
             n_thermals: 0,
@@ -638,7 +680,7 @@ fn build_storage_system(n_stages: usize, cap_hm3: f64, seed_hm3: f64) -> System 
         },
         &BoundsDefaults {
             hydro: HydroStageBounds {
-                min_storage_hm3: 0.0,
+                min_storage_hm3: fixture.min_storage_hm3,
                 max_storage_hm3: cap_hm3,
                 filling_min_rate_m3s: 0.0,
                 water_withdrawal_m3s: 0.0,
@@ -669,7 +711,22 @@ fn build_storage_system(n_stages: usize, cap_hm3: f64, seed_hm3: f64) -> System 
         },
     );
 
+    let first_stage_bounds = bounds.hydro_bounds_mut(0, 0);
+    (
+        first_stage_bounds.min_storage_hm3,
+        first_stage_bounds.max_storage_hm3,
+    ) = fixture.stage0_storage_hm3;
+
     let penalties = zero_penalties(1, n_stages);
+    let seed = vec![HydroStorage {
+        hydro_id,
+        value_hm3: seed_hm3,
+    }];
+    let (storage, filling_storage) = if fixture.filling.is_some() {
+        (vec![], seed)
+    } else {
+        (seed, vec![])
+    };
 
     SystemBuilder::new()
         .buses(vec![bus])
@@ -679,10 +736,8 @@ fn build_storage_system(n_stages: usize, cap_hm3: f64, seed_hm3: f64) -> System 
         .bounds(bounds)
         .penalties(penalties)
         .initial_conditions(InitialConditions {
-            storage: vec![HydroStorage {
-                hydro_id,
-                value_hm3: seed_hm3,
-            }],
+            storage,
+            filling_storage,
             ..Default::default()
         })
         .build()
@@ -711,4 +766,112 @@ fn storage_drifting_above_cap_simulates() {
             result.total_cost
         );
     }
+}
+
+const STORAGE_CAP_HM3: f64 = 100.0;
+
+/// Seeds 50 hm³ in a `[0, 100]` reservoir fed 20 m³/s, with stage 0's
+/// end-of-stage storage bound set to `stage0_storage_hm3`, which excludes the
+/// seed: the setup must keep the seed and training must complete from it.
+fn assert_initial_storage_kept(stage0_storage_hm3: (f64, f64)) {
+    const SEED_HM3: f64 = 50.0;
+    let fixture = StorageFixture {
+        inflow_m3s: 20.0,
+        stage0_storage_hm3,
+        ..StorageFixture::new(STORAGE_CAP_HM3)
+    };
+    let setup = build_storage_setup(SEED_HM3, &fixture);
+
+    let storage_dim = setup.stage_state().storage.start;
+    let (lower, upper) = stage_state_box_bounds(&setup, 0);
+    assert!(
+        SEED_HM3 < lower[storage_dim] || SEED_HM3 > upper[storage_dim],
+        "fixture: the seed must lie outside stage 0's end-of-stage storage box [{}, {}]",
+        lower[storage_dim],
+        upper[storage_dim]
+    );
+    assert_initial_storage_trains(
+        setup,
+        SEED_HM3,
+        "an initial storage inside the physical range must not be projected onto stage 0's \
+         end-of-stage storage bound: that creates or removes water before the first solve",
+    );
+}
+
+fn build_storage_setup(seed_hm3: f64, fixture: &StorageFixture) -> StudySetup {
+    let system = build_storage_system_with(3, STORAGE_CAP_HM3, seed_hm3, fixture);
+    common::build_setup_in_code(system, &build_config(TRAIN_ITERATIONS))
+}
+
+/// Asserts `setup` starts from `seed_hm3` (`kept_reason` explains why it must)
+/// and trains to completion from it.
+fn assert_initial_storage_trains(mut setup: StudySetup, seed_hm3: f64, kept_reason: &str) {
+    assert_eq!(
+        oracle_initial_state(&setup)[setup.stage_state().storage.start],
+        seed_hm3,
+        "{kept_reason}"
+    );
+
+    let comm = common::StubComm;
+    let mut solver = ActiveSolver::new().expect("ActiveSolver::new");
+    let outcome = setup
+        .train(&mut solver, &comm, N_THREADS, ActiveSolver::new, None, None)
+        .expect("train must not return Err");
+    assert!(
+        outcome.error.is_none(),
+        "training from the declared initial storage must complete, got {:?}",
+        outcome.error
+    );
+    assert!(
+        outcome.result.final_lb.is_finite(),
+        "a completed training run must report a finite final_lb, got {}",
+        outcome.result.final_lb
+    );
+}
+
+#[test]
+fn initial_storage_below_stage0_storage_floor_is_not_raised() {
+    assert_initial_storage_kept((80.0, 100.0));
+}
+
+#[test]
+fn initial_storage_above_stage0_storage_ceiling_is_not_lowered() {
+    assert_initial_storage_kept((0.0, 40.0));
+}
+
+/// Stage 0's storage ceiling of 60 hm³ sits below the 90 hm³ seed of a hydro
+/// still dormant there, whose stage-0 storage is pinned to that seed.
+#[test]
+fn dormant_hydro_seed_above_stage0_storage_ceiling_trains() {
+    let fixture = StorageFixture {
+        inflow_m3s: 20.0,
+        stage0_storage_hm3: (0.0, 60.0),
+        entry_stage_id: Some(1),
+        ..StorageFixture::new(STORAGE_CAP_HM3)
+    };
+    assert_initial_storage_trains(
+        build_storage_setup(90.0, &fixture),
+        90.0,
+        "a dormant hydro's initial storage inside the physical range must be kept",
+    );
+}
+
+#[test]
+fn filling_hydro_seed_below_min_storage_is_not_raised() {
+    let fixture = StorageFixture {
+        inflow_m3s: 20.0,
+        min_storage_hm3: 50.0,
+        entry_stage_id: Some(2),
+        filling: Some(FillingConfig {
+            start_stage_id: 0,
+            filling_min_rate_m3s: 0.0,
+        }),
+        ..StorageFixture::new(STORAGE_CAP_HM3)
+    };
+    assert_initial_storage_trains(
+        build_storage_setup(10.0, &fixture),
+        10.0,
+        "a filling hydro's floor is relaxed in every phase, so its partial initial level below \
+         min_storage must be kept",
+    );
 }
