@@ -105,6 +105,14 @@
             "null"
           ]
         },
+        "turbined_fit_max_m3s": {
+          "description": "Upper end of the turbined-flow range (m³/s) the planes are fit over.\nAbsent = the hydro's maximum turbined flow.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
         "volume_discretization_points": {
           "description": "Number of volume discretization points used when computing hyperplanes.\nAbsent = algorithm default (5).",
           "format": "int32",

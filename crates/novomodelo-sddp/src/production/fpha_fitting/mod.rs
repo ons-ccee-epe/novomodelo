@@ -153,7 +153,9 @@ pub(crate) fn fit_fpha_planes(
         tailrace_source,
         hydro.hydraulic_losses.as_ref(),
         hydro.efficiency.as_ref(),
-        hydro.max_turbined_m3s,
+        config
+            .turbined_fit_max_m3s
+            .unwrap_or(hydro.max_turbined_m3s),
         hydro.name.clone(),
     )
     .with_max_generation_mw(hydro.max_generation_mw);
@@ -182,7 +184,7 @@ pub(crate) fn fit_fpha_planes(
     let s_max = resolve_s_max(
         config.spillage_fit_max_m3s,
         long_term_mean_inflow_m3s,
-        pf.max_turbined_m3s,
+        hydro.max_turbined_m3s,
     );
     fit_gamma_s_for_planes(&mut scaled, &pf, &bounds, s_max);
 

@@ -9,7 +9,6 @@ use novomodelo_io::extensions::{
 
 use super::alpha::compute_alpha_fpha;
 use super::error::FphaFittingError;
-use super::fit_fpha_planes;
 use super::geometry::{
     FittingBounds, ForebayTable, evaluate_losses, evaluate_tailrace, resolve_fitting_bounds,
 };
@@ -17,6 +16,7 @@ use super::hull_fit::{RawPlane, fit_hull_planes};
 use super::production::{ProductionFunction, TailraceSource};
 use super::selection::validate_fitted_planes;
 use super::tailrace::TailraceFamilies;
+use super::{FphaFitResult, fit_fpha_planes};
 use crate::hydro_models::FphaPlane;
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -643,6 +643,7 @@ fn default_config() -> FphaColumnLayout {
         max_planes_per_hydro: None,
         fitting_window: None,
         spillage_fit_max_m3s: None,
+        turbined_fit_max_m3s: None,
     }
 }
 
@@ -1364,6 +1365,7 @@ fn fit_fpha_planes_sobradinho_style_end_to_end() {
         max_planes_per_hydro: None,
         fitting_window: None,
         spillage_fit_max_m3s: None,
+        turbined_fit_max_m3s: None,
     };
 
     let result = fit_fpha_planes(
@@ -1427,6 +1429,7 @@ fn fit_fpha_planes_spill_sensitive_yields_negative_gamma_s() {
         max_planes_per_hydro: None,
         fitting_window: None,
         spillage_fit_max_m3s: None,
+        turbined_fit_max_m3s: None,
     };
 
     let result = fit_fpha_planes(
@@ -1486,6 +1489,7 @@ fn fit_fpha_planes_intercepts_are_finite() {
         max_planes_per_hydro: None,
         fitting_window: None,
         spillage_fit_max_m3s: None,
+        turbined_fit_max_m3s: None,
     };
 
     let result = fit_fpha_planes(
@@ -1510,6 +1514,47 @@ fn fit_fpha_planes_intercepts_are_finite() {
             plane.intercept
         );
     }
+}
+
+/// `turbined_fit_max_m3s` bounds the turbined-flow axis the planes are fit and
+/// measured over; absent, the axis ends at the hydro's maximum turbined flow.
+#[test]
+fn fit_fpha_planes_turbined_fit_max_bounds_flow_axis() {
+    let rows = sobradinho_rows();
+    let hydro = make_sobradinho_hydro();
+    let fit_max = 0.8 * hydro.max_turbined_m3s;
+    let fit = |turbined_fit_max_m3s| {
+        let config = FphaColumnLayout {
+            turbined_fit_max_m3s,
+            ..default_config()
+        };
+        fit_fpha_planes(
+            &rows,
+            &hydro,
+            &config,
+            0.0,
+            TailraceSource::Entity(hydro.tailrace.clone()),
+            None,
+            1,
+            0,
+            true,
+        )
+        .expect("fit should succeed")
+    };
+    let top_flow = |result: &FphaFitResult| {
+        result
+            .deviation_points
+            .iter()
+            .map(|point| point.q)
+            .fold(f64::NEG_INFINITY, f64::max)
+    };
+
+    let bounded = fit(Some(fit_max));
+    let default = fit(None);
+
+    assert!((top_flow(&bounded) - fit_max).abs() <= 1e-9 * fit_max);
+    assert!((top_flow(&default) - hydro.max_turbined_m3s).abs() <= 1e-9 * fit_max);
+    assert_ne!(bounded.planes, default.planes);
 }
 
 /// AC (integration): a run-of-river hydro (NPTV = 1) fits end-to-end through
@@ -1547,6 +1592,7 @@ fn fit_fpha_planes_run_of_river_yields_zero_gamma_v_end_to_end() {
         max_planes_per_hydro: None,
         fitting_window: None,
         spillage_fit_max_m3s: None,
+        turbined_fit_max_m3s: None,
     };
 
     let result = fit_fpha_planes(
@@ -1655,6 +1701,7 @@ fn fit_fpha_planes_linear_function_produces_one_plane() {
         max_planes_per_hydro: None,
         fitting_window: None,
         spillage_fit_max_m3s: None,
+        turbined_fit_max_m3s: None,
     };
 
     let result = fit_fpha_planes(
@@ -1708,6 +1755,7 @@ fn fit_fpha_planes_propagates_forebay_error_on_empty_rows() {
         max_planes_per_hydro: None,
         fitting_window: None,
         spillage_fit_max_m3s: None,
+        turbined_fit_max_m3s: None,
     };
 
     let err = fit_fpha_planes(
@@ -1753,6 +1801,7 @@ fn single_volume_run_of_river_fits_with_zero_gamma_v() {
         max_planes_per_hydro: None,
         fitting_window: None,
         spillage_fit_max_m3s: None,
+        turbined_fit_max_m3s: None,
     };
 
     let result = fit_fpha_planes(
@@ -1853,6 +1902,7 @@ fn fit_fpha_planes_result_alpha_positive_and_intercept_consistent() {
         max_planes_per_hydro: None,
         fitting_window: None,
         spillage_fit_max_m3s: None,
+        turbined_fit_max_m3s: None,
     };
 
     let result = fit_fpha_planes(
@@ -1906,6 +1956,7 @@ fn alpha_scaled_planes_are_outer_approximation_and_not_double_scaled() {
         max_planes_per_hydro: None,
         fitting_window: None,
         spillage_fit_max_m3s: None,
+        turbined_fit_max_m3s: None,
     };
 
     // Reconstruct the production function and bounds exactly as fit_fpha_planes does,
@@ -2015,6 +2066,7 @@ fn fitted_min_envelope_tracks_production_on_concave_reservoir() {
         max_planes_per_hydro: None,
         fitting_window: None,
         spillage_fit_max_m3s: None,
+        turbined_fit_max_m3s: None,
     };
     let forebay = ForebayTable::new(&rows, &hydro.name).expect("valid VHA curve");
     let pf = ProductionFunction::new(
@@ -2157,6 +2209,7 @@ fn families_single_family_matches_entity_polynomial_planes() {
         max_planes_per_hydro: None,
         fitting_window: None,
         spillage_fit_max_m3s: None,
+        turbined_fit_max_m3s: None,
     };
 
     // Entity-path fit (Sobradinho tailrace = Polynomial [0.0, 0.001]).
@@ -2232,6 +2285,7 @@ fn fit_fpha_planes_none_reduction_is_bit_identical_skip() {
         max_planes_per_hydro: None,
         fitting_window: None,
         spillage_fit_max_m3s: None,
+        turbined_fit_max_m3s: None,
     };
 
     let reference = fit_fpha_planes(
@@ -2312,6 +2366,7 @@ fn fit_fpha_planes_distance_reduction_is_deterministic() {
         max_planes_per_hydro: None,
         fitting_window: None,
         spillage_fit_max_m3s: None,
+        turbined_fit_max_m3s: None,
     };
     let reduction = PlaneReductionConfig::Distance {
         tolerance_pct: 0.5,
@@ -2422,6 +2477,7 @@ fn reduced_sobradinho_planes(reduction: &PlaneReductionConfig) -> Vec<FphaPlane>
         max_planes_per_hydro: None,
         fitting_window: None,
         spillage_fit_max_m3s: None,
+        turbined_fit_max_m3s: None,
     };
     fit_fpha_planes(
         &rows,
