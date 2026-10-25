@@ -180,6 +180,9 @@ pub struct FphaColumnLayout {
     /// Upper end (m³/s) of the spillage range the spillage coefficient is fit over.
     /// Finite and `> 0.0` when present.
     pub spillage_fit_max_m3s: Option<f64>,
+    /// Upper end (m³/s) of the turbined-flow range the planes are fit over.
+    /// Finite and `> 0.0` when present.
+    pub turbined_fit_max_m3s: Option<f64>,
 }
 
 /// Similar-hyperplane reduction configuration for FPHA planes.
@@ -388,6 +391,9 @@ struct RawFphaColumnLayout {
     /// over. Absent = twice the hydro's long-term mean inflow, or twice its
     /// maximum turbined flow when it has no inflow history.
     spillage_fit_max_m3s: Option<f64>,
+    /// Upper end of the turbined-flow range (m³/s) the planes are fit over.
+    /// Absent = the hydro's maximum turbined flow.
+    turbined_fit_max_m3s: Option<f64>,
 }
 
 /// File-level FPHA plane-reduction block, selected by the `method` key.
@@ -660,7 +666,7 @@ fn validate_model_fields(
             &format!("{field_prefix}.fpha_config.fitting_window"),
             path,
         )?;
-        validate_spillage_fit_max(cfg, hydro_id, field_prefix, path)?;
+        validate_fit_maxima(cfg, hydro_id, field_prefix, path)?;
     }
 
     if let Some(rv) = reference_volume {
@@ -712,22 +718,27 @@ fn validate_fpha_discretization_counts(
     Ok(())
 }
 
-fn validate_spillage_fit_max(
+fn validate_fit_maxima(
     cfg: &RawFphaColumnLayout,
     hydro_id: i32,
     field_prefix: &str,
     path: &Path,
 ) -> Result<(), LoadError> {
-    if let Some(value) = cfg.spillage_fit_max_m3s
-        && (!value.is_finite() || value <= 0.0)
-    {
-        return Err(LoadError::SchemaError {
-            path: path.to_path_buf(),
-            field: format!("{field_prefix}.fpha_config.spillage_fit_max_m3s"),
-            message: format!(
-                "spillage_fit_max_m3s must be finite and > 0.0, got {value} for hydro_id {hydro_id}"
-            ),
-        });
+    for (value, name) in [
+        (cfg.spillage_fit_max_m3s, "spillage_fit_max_m3s"),
+        (cfg.turbined_fit_max_m3s, "turbined_fit_max_m3s"),
+    ] {
+        if let Some(value) = value
+            && (!value.is_finite() || value <= 0.0)
+        {
+            return Err(LoadError::SchemaError {
+                path: path.to_path_buf(),
+                field: format!("{field_prefix}.fpha_config.{name}"),
+                message: format!(
+                    "{name} must be finite and > 0.0, got {value} for hydro_id {hydro_id}"
+                ),
+            });
+        }
     }
 
     Ok(())
@@ -933,6 +944,7 @@ fn convert_fpha_column_layout(raw: RawFphaColumnLayout) -> FphaColumnLayout {
             volume_max_percentile: fw.volume_max_percentile,
         }),
         spillage_fit_max_m3s: raw.spillage_fit_max_m3s,
+        turbined_fit_max_m3s: raw.turbined_fit_max_m3s,
     }
 }
 
@@ -2254,9 +2266,11 @@ mod tests {
         );
     }
 
-    // ── FPHA spillage fit range ───────────────────────────────────────────────
+    // ── FPHA fit ranges ───────────────────────────────────────────────────────
 
-    fn spillage_fit_max_json(value: &str) -> String {
+    const FIT_MAX_FIELDS: [&str; 2] = ["spillage_fit_max_m3s", "turbined_fit_max_m3s"];
+
+    fn fit_max_json(field: &str, value: &str) -> String {
         format!(
             r#"{{
               "production_models": [{{
@@ -2265,49 +2279,65 @@ mod tests {
                 "stage_ranges": [{{
                   "start_stage_id": 0, "end_stage_id": null,
                   "model": "fpha",
-                  "fpha_config": {{ "source": "computed", "spillage_fit_max_m3s": {value} }}
+                  "fpha_config": {{ "source": "computed", "{field}": {value} }}
                 }}]
               }}]
             }}"#
         )
     }
 
-    /// A positive `spillage_fit_max_m3s` round-trips into the public layout.
+    /// A positive fit-range maximum round-trips into the public layout.
     #[test]
-    fn spillage_fit_max_round_trips() {
-        let f = write_json(&spillage_fit_max_json("42282.0"));
-        let file = parse_production_models(f.path()).unwrap();
-        let SelectionMode::StageRanges { ranges } = &file.configs[0].selection_mode else {
-            panic!("expected stage ranges");
-        };
-        let layout = ranges[0].fpha_config.as_ref().unwrap();
-        assert_eq!(layout.spillage_fit_max_m3s, Some(42_282.0));
+    fn fit_max_round_trips() {
+        for field in FIT_MAX_FIELDS {
+            let f = write_json(&fit_max_json(field, "42282.0"));
+            let file = parse_production_models(f.path()).unwrap();
+            let SelectionMode::StageRanges { ranges } = &file.configs[0].selection_mode else {
+                panic!("expected stage ranges");
+            };
+            let layout = ranges[0].fpha_config.as_ref().unwrap();
+            let (spillage, turbined) = if field == "spillage_fit_max_m3s" {
+                (Some(42_282.0), None)
+            } else {
+                (None, Some(42_282.0))
+            };
+            assert_eq!(layout.spillage_fit_max_m3s, spillage, "{field}");
+            assert_eq!(layout.turbined_fit_max_m3s, turbined, "{field}");
+        }
     }
 
-    /// A zero or negative `spillage_fit_max_m3s` is rejected naming the field and
-    /// the hydro.
+    /// A zero or negative fit-range maximum is rejected naming the field and the
+    /// hydro.
     #[test]
-    fn spillage_fit_max_non_positive_rejected() {
-        for value in ["0.0", "-5.0"] {
-            let f = write_json(&spillage_fit_max_json(value));
-            match parse_production_models(f.path()).unwrap_err() {
-                LoadError::SchemaError { field, message, .. } => {
-                    assert!(
-                        field.ends_with("fpha_config.spillage_fit_max_m3s"),
-                        "{field}"
-                    );
-                    assert!(message.contains("hydro_id 7"), "{message}");
+    fn fit_max_non_positive_rejected() {
+        for field in FIT_MAX_FIELDS {
+            for value in ["0.0", "-5.0"] {
+                let f = write_json(&fit_max_json(field, value));
+                match parse_production_models(f.path()).unwrap_err() {
+                    LoadError::SchemaError {
+                        field: reported,
+                        message,
+                        ..
+                    } => {
+                        assert!(
+                            reported.ends_with(&format!("fpha_config.{field}")),
+                            "{reported}"
+                        );
+                        assert!(message.contains("hydro_id 7"), "{message}");
+                    }
+                    other => panic!("expected SchemaError for {field} = {value}, got: {other:?}"),
                 }
-                other => panic!("expected SchemaError for {value}, got: {other:?}"),
             }
         }
     }
 
     #[cfg(feature = "schema")]
     #[test]
-    fn spillage_fit_max_appears_in_generated_schema() {
+    fn fit_max_fields_appear_in_generated_schema() {
         let schema = schemars::schema_for!(RawProductionModelFile);
         let text = serde_json::to_string(&serde_json::to_value(&schema).unwrap()).unwrap();
-        assert!(text.contains("spillage_fit_max_m3s"));
+        for field in FIT_MAX_FIELDS {
+            assert!(text.contains(field), "{field}");
+        }
     }
 }

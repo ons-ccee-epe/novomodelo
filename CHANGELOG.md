@@ -79,6 +79,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   coefficient is fit over. Absent, the range stays twice the hydro's long-term
   mean inflow, or twice its maximum turbined flow when the hydro has no inflow
   history.
+- `fpha_config.turbined_fit_max_m3s` in `system/hydro_production_models.json`
+  sets the upper end of the turbined-flow range a computed FPHA plane set is
+  fit over. Absent, the range ends at the hydro's maximum turbined flow. The
+  spillage fallback above still uses the hydro's maximum turbined flow.
 
 ### Changed
 
