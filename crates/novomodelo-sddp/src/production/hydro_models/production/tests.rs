@@ -142,6 +142,7 @@ fn precomputed_fpha_config(hydro_id: i32) -> ProductionModelConfig {
                     max_planes_per_hydro: None,
                     fitting_window: None,
                     spillage_fit_max_m3s: None,
+                    turbined_fit_max_m3s: None,
                 }),
                 reference_volume: None,
                 productivity_mw_per_m3s: None,
@@ -166,6 +167,7 @@ fn computed_fpha_config(hydro_id: i32) -> ProductionModelConfig {
                     max_planes_per_hydro: None,
                     fitting_window: None,
                     spillage_fit_max_m3s: None,
+                    turbined_fit_max_m3s: None,
                 }),
                 reference_volume: None,
                 productivity_mw_per_m3s: None,
@@ -313,6 +315,7 @@ fn find_fpha_config_for_stage_returns_none_outside_range() {
                     max_planes_per_hydro: None,
                     fitting_window: None,
                     spillage_fit_max_m3s: None,
+                    turbined_fit_max_m3s: None,
                 }),
                 reference_volume: None,
                 productivity_mw_per_m3s: None,
@@ -1021,6 +1024,7 @@ fn resolve_stage_seasonal_season_miss_uses_default_model() {
                     max_planes_per_hydro: None,
                     fitting_window: None,
                     spillage_fit_max_m3s: None,
+                    turbined_fit_max_m3s: None,
                 }),
                 reference_volume: None,
                 productivity_mw_per_m3s: None,
@@ -1153,6 +1157,7 @@ fn resolve_stage_stage_ranges_covering_and_uncovered() {
                     max_planes_per_hydro: None,
                     fitting_window: None,
                     spillage_fit_max_m3s: None,
+                    turbined_fit_max_m3s: None,
                 }),
                 reference_volume: Some(ReferenceVolume::Percentile(0.5)),
                 productivity_mw_per_m3s: Some(0.42),
@@ -1657,6 +1662,7 @@ fn computed_layout_with_window(min: Option<f64>, max: Option<f64>) -> FphaColumn
             volume_max_percentile: None,
         }),
         spillage_fit_max_m3s: None,
+        turbined_fit_max_m3s: None,
     }
 }
 
@@ -2043,6 +2049,7 @@ fn spillage_fit_max_sets_the_secant_range() {
     let without = computed_layout_with_window(None, None);
     let with = FphaColumnLayout {
         spillage_fit_max_m3s: Some(s_max),
+        turbined_fit_max_m3s: None,
         ..without.clone()
     };
 
