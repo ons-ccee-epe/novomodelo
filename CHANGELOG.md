@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-10-26
+
 ### Added
 
 - `fpha_config.spillage_fit_max_m3s` and `fpha_config.turbined_fit_max_m3s` in
@@ -1788,7 +1790,8 @@ target_bus)`.
 
 <!-- next-url -->
 
-[Unreleased]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.19.1...HEAD
+[0.19.1]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/ons-ccee-epe/novomodelo/compare/fork-point...v0.18.0

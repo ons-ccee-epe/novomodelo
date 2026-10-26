@@ -33,8 +33,8 @@ flatc-conformance = []
 test-support = ["novomodelo-core/test-support", "dep:tempfile"]
 
 [dependencies]
-novomodelo-core = { version = "0.19.0", path = "../novomodelo-core", features = ["serde"] }
-novomodelo-stochastic = { version = "0.19.0", path = "../novomodelo-stochastic" }
+novomodelo-core = { version = "0.19.1", path = "../novomodelo-core", features = ["serde"] }
+novomodelo-stochastic = { version = "0.19.1", path = "../novomodelo-stochastic" }
 arrow = { version = "60", default-features = false, features = ["prettyprint"] }
 chrono = { version = "0.4", features = ["serde"] }
 csv = "1"
@@ -50,8 +50,8 @@ flatbuffers = "25"
 gethostname = "1.1.0"
 
 [dev-dependencies]
-novomodelo-core = { version = "0.19.0", path = "../novomodelo-core", features = ["test-support"] }
-novomodelo-stochastic = { version = "0.19.0", path = "../novomodelo-stochastic", features = ["test-support"] }
+novomodelo-core = { version = "0.19.1", path = "../novomodelo-core", features = ["test-support"] }
+novomodelo-stochastic = { version = "0.19.1", path = "../novomodelo-stochastic", features = ["test-support"] }
 novomodelo-io = { path = ".", features = ["test-support"] }
 parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
 proptest = "1"
