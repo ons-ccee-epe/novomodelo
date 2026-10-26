@@ -11,52 +11,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `fpha_config.spillage_fit_max_m3s` in `system/hydro_production_models.json`
-  sets the upper end of the spillage range a computed FPHA plane's spillage
-  coefficient is fit over. Absent, the range stays twice the hydro's long-term
-  mean inflow, or twice its maximum turbined flow when the hydro has no inflow
-  history.
-- `fpha_config.turbined_fit_max_m3s` in `system/hydro_production_models.json`
-  sets the upper end of the turbined-flow range a computed FPHA plane set is
-  fit over. Absent, the range ends at the hydro's maximum turbined flow. The
-  spillage fallback above still uses the hydro's maximum turbined flow.
+- `fpha_config.spillage_fit_max_m3s` and `fpha_config.turbined_fit_max_m3s` in
+  `system/hydro_production_models.json` set the upper end of the spillage and
+  turbined-flow ranges a computed FPHA is fit over. Absent, the ranges are
+  unchanged.
 
 ### Changed
 
-- **BREAKING:** an `initial_conditions.json` `storage` value outside its
-  hydro's `[min_storage_hm3, max_storage_hm3]` is refused at load, naming the
-  hydro, the value and the range; a difference at rounding level is still
-  accepted. This includes a hydro that enters operation after the first
-  stage. A hydro with a `filling` configuration listed under `storage`, or one
-  without it listed under `filling_storage`, is refused too. Setup used to
-  clamp such values without a diagnostic, which changed the water the study
-  starts with.
-- `novomodelo validate` warns when an initial storage lies outside the storage
-  bounds that `constraints/hydro_bounds.parquet` sets for the end of the
-  hydro's first operating stage. That stage must reach the bound from its own
-  inflow, or release the excess.
-- A computed FPHA plane's spillage coefficient is the mean, over the grid
-  points where the plane binds, of a least-squares slope through the
-  zero-spillage generation, sampled over the fit range in 100 steps. It was a
-  free-intercept least-squares slope at the plane's highest-generation grid
-  point, sampled in 8 steps, so the spillage coefficients of computed planes
-  change.
+- **BREAKING:** an `initial_conditions.json` storage outside the hydro's
+  storage range is refused at load. It used to be clamped silently. A `filling`
+  hydro listed under `storage`, or a non-filling one under `filling_storage`,
+  is refused too.
+- The spillage coefficients of computed FPHA planes change: they are now fit
+  over the points where each plane binds.
 
 ### Fixed
 
-- The initial storage was moved onto the first stage's `min_storage_hm3` and
-  `max_storage_hm3` from `constraints/hydro_bounds.parquet`, which bound the
-  storage at the end of that stage. A first-stage minimum above the initial
-  storage added water before the first solve, and a maximum below it removed
-  water. The initial storage is now kept within the hydro's own storage range.
-- At a stage before a hydro's `entry_stage_id` or after its `exit_stage_id`,
-  its storage stays at the value it entered the stage with. A
-  `max_storage_hm3` in `constraints/hydro_bounds.parquet` below that value made
-  the stage infeasible. At those stages the storage ceiling is now never below
-  the hydro's own `max_storage_hm3`.
-- A hydro with computed FPHA and a stage range that selects another model,
-  such as constant productivity 0.0 on an outage stage, was refused with "no
-  FphaColumnLayout covers stage N". Only its FPHA stages are fit now.
+- The initial storage is no longer moved into the first stage's
+  `min_storage_hm3` and `max_storage_hm3` from
+  `constraints/hydro_bounds.parquet`, which bound the end of that stage; the
+  move added or removed water before the first solve. `novomodelo validate`
+  warns when the initial storage lies outside those bounds.
+- A `max_storage_hm3` in `constraints/hydro_bounds.parquet` below a hydro's
+  storage no longer makes a stage before its `entry_stage_id` or after its
+  `exit_stage_id` infeasible.
+- A hydro with computed FPHA on some stages and another model on others, such
+  as constant productivity 0.0 on an outage stage, is no longer refused.
 
 ## [0.19.0] - 2026-10-20
 
