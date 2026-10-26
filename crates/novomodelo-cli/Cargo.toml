@@ -18,12 +18,12 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-novomodelo-core = { version = "0.19.0", path = "../novomodelo-core", features = ["serde"] }
-novomodelo-io = { version = "0.19.0", path = "../novomodelo-io", features = ["schema"] }
-novomodelo-sddp = { version = "0.19.0", path = "../novomodelo-sddp", default-features = false }
-novomodelo-solver = { version = "0.19.0", path = "../novomodelo-solver", default-features = false }
-novomodelo-comm = { version = "0.19.0", path = "../novomodelo-comm" }
-novomodelo-stochastic = { version = "0.19.0", path = "../novomodelo-stochastic" }
+novomodelo-core = { version = "0.19.1", path = "../novomodelo-core", features = ["serde"] }
+novomodelo-io = { version = "0.19.1", path = "../novomodelo-io", features = ["schema"] }
+novomodelo-sddp = { version = "0.19.1", path = "../novomodelo-sddp", default-features = false }
+novomodelo-solver = { version = "0.19.1", path = "../novomodelo-solver", default-features = false }
+novomodelo-comm = { version = "0.19.1", path = "../novomodelo-comm" }
+novomodelo-stochastic = { version = "0.19.1", path = "../novomodelo-stochastic" }
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 clap = { version = "4", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
@@ -60,12 +60,12 @@ slow-tests = []
 [dev-dependencies]
 arrow = { version = "60", default-features = false }
 assert_cmd = "2"
-novomodelo-core = { version = "0.19.0", path = "../novomodelo-core", features = ["test-support"] }
-novomodelo-io = { version = "0.19.0", path = "../novomodelo-io" }
-novomodelo-sddp = { version = "0.19.0", path = "../novomodelo-sddp", default-features = false, features = [
+novomodelo-core = { version = "0.19.1", path = "../novomodelo-core", features = ["test-support"] }
+novomodelo-io = { version = "0.19.1", path = "../novomodelo-io" }
+novomodelo-sddp = { version = "0.19.1", path = "../novomodelo-sddp", default-features = false, features = [
     "test-support",
 ] }
-novomodelo-solver = { version = "0.19.0", path = "../novomodelo-solver", default-features = false }
+novomodelo-solver = { version = "0.19.1", path = "../novomodelo-solver", default-features = false }
 parquet = { version = "60", default-features = false, features = ["arrow"] }
 predicates = "3"
 tempfile = "3"

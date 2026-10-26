@@ -771,7 +771,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "novomodelo-comm"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "gethostname",
  "thiserror",
@@ -779,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "novomodelo-core"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "chrono",
  "schemars",
@@ -788,7 +788,7 @@ dependencies = [
 
 [[package]]
 name = "novomodelo-io"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "arrow",
  "chrono",
@@ -808,7 +808,7 @@ dependencies = [
 
 [[package]]
 name = "novomodelo-python"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "arrow",
  "chrono",
@@ -827,7 +827,7 @@ dependencies = [
 
 [[package]]
 name = "novomodelo-sddp"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "cc",
  "chrono",
@@ -845,7 +845,7 @@ dependencies = [
 
 [[package]]
 name = "novomodelo-solver"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "cc",
  "cmake",
@@ -853,7 +853,7 @@ dependencies = [
 
 [[package]]
 name = "novomodelo-stochastic"
-version = "0.19.0"
+version = "0.19.1"
 dependencies = [
  "chrono",
  "novomodelo-core",

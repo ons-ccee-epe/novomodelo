@@ -55,11 +55,11 @@ slow-tests = []
 test-support = ["novomodelo-core/test-support", "novomodelo-io/test-support"]
 
 [dependencies]
-novomodelo-core = { version = "0.19.0", path = "../novomodelo-core" }
-novomodelo-solver = { version = "0.19.0", path = "../novomodelo-solver", default-features = false }
-novomodelo-comm = { version = "0.19.0", path = "../novomodelo-comm" }
-novomodelo-stochastic = { version = "0.19.0", path = "../novomodelo-stochastic" }
-novomodelo-io = { version = "0.19.0", path = "../novomodelo-io" }
+novomodelo-core = { version = "0.19.1", path = "../novomodelo-core" }
+novomodelo-solver = { version = "0.19.1", path = "../novomodelo-solver", default-features = false }
+novomodelo-comm = { version = "0.19.1", path = "../novomodelo-comm" }
+novomodelo-stochastic = { version = "0.19.1", path = "../novomodelo-stochastic" }
+novomodelo-io = { version = "0.19.1", path = "../novomodelo-io" }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 dhat = { version = "0.3", optional = true }
 matrixmultiply = { workspace = true }
@@ -74,8 +74,8 @@ cc = "1.2"
 [dev-dependencies]
 arrow = { version = "60", default-features = false, features = ["prettyprint"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
-novomodelo-core = { version = "0.19.0", path = "../novomodelo-core", features = ["test-support"] }
-novomodelo-io = { version = "0.19.0", path = "../novomodelo-io", features = ["test-support"] }
+novomodelo-core = { version = "0.19.1", path = "../novomodelo-core", features = ["test-support"] }
+novomodelo-io = { version = "0.19.1", path = "../novomodelo-io", features = ["test-support"] }
 criterion = { version = "0.8", default-features = false }
 # Used only by the `dcs_batched_scoring` bench to reproduce the pre-batching
 # per-candidate `dgemm` baseline (the crate's own `gemm_block` wrapper is
