@@ -138,10 +138,36 @@ jobs:
           name: wheels-${{ matrix.target }}
           path: crates/novomodelo-python/dist/
 
+  # The CLI the parity tests compare the wheel against. Built once on the host
+  # runner and shared by the linux x86_64 test cells, rather than once per cell.
+  cli:
+    name: CLI (x86_64-unknown-linux-gnu)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: release-python-cli
+
+      - run: cargo build --release -p novomodelo-cli
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: cli-x86_64-unknown-linux-gnu
+          path: target/release/novomodelo
+          if-no-files-found: error
+
   # Smoke-test the built wheels on native platforms across Python versions.
+  # The linux x86_64 cells also run the CLI-vs-Python parity modules, which skip
+  # without a CLI binary; --require-cli-binary makes a missing one a failure.
   test:
     name: test (${{ matrix.target }}, py${{ matrix.python-version }})
-    needs: [build]
+    needs: [build, cli]
     strategy:
       fail-fast: false
       matrix:
@@ -176,8 +202,21 @@ jobs:
           pip install --no-index --find-links dist/ novomodelo-python
           pip install pytest pyarrow numpy
 
+      - uses: actions/download-artifact@v7
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        with:
+          name: cli-x86_64-unknown-linux-gnu
+          path: target/release/
+
       - name: Run tests
+        if: matrix.target != 'x86_64-unknown-linux-gnu'
         run: pytest crates/novomodelo-python/tests/ -v
+
+      - name: Run tests with the CLI parity modules
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          chmod +x target/release/novomodelo
+          pytest crates/novomodelo-python/tests/ -v --require-cli-binary
 
   # Publish all wheels to PyPI.
   #
