@@ -242,6 +242,15 @@ ruff format --check crates/novomodelo-python
 (cd crates/novomodelo-python && ty check)
 ```
 
+The crate's Rust side is linted against its own manifest, once per solver backend as the
+workspace is (CI's `Python Bindings` job):
+
+```bash
+cargo clippy --manifest-path crates/novomodelo-python/Cargo.toml --all-targets -- -D warnings
+cargo clippy --manifest-path crates/novomodelo-python/Cargo.toml --all-targets \
+  --no-default-features --features clp -- -D warnings
+```
+
 ### Manual boundary-reduction regression
 
 `policy.boundary` reconciliation has one acceptance criterion that cannot run in CI:

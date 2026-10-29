@@ -541,6 +541,8 @@ jobs:
           echo "PKG_CONFIG_PATH=/opt/mpich/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=/opt/mpich/lib" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: python
@@ -567,6 +569,15 @@ jobs:
           export LD_LIBRARY_PATH="$(python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))'):${LD_LIBRARY_PATH:-}"
           cargo test --manifest-path crates/novomodelo-python/Cargo.toml \
             --no-default-features --features highs
+      # The workspace clippy jobs skip this crate (it is excluded from the workspace),
+      # so it is linted here against its own manifest and lockfile, once per solver
+      # backend as the workspace is.
+      - name: Clippy for the bindings crate
+        if: matrix.python-version == '3.12'
+        run: |
+          cargo clippy --manifest-path crates/novomodelo-python/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --manifest-path crates/novomodelo-python/Cargo.toml --all-targets \
+            --no-default-features --features clp -- -D warnings
       - name: Run Python tests
         run: |
           source .venv/bin/activate
