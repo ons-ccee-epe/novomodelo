@@ -2,11 +2,12 @@
 """Project the `.claude/` rule set (single source of truth) onto Kiro's
 `.kiro/steering/*.md`, translating the front-matter dialect.
 
-  CLAUDE.md                -> 00-hard-rules.md      (always)
-  .claude/rules/<name>.md  -> <name>.md             (fileMatch via paths, else always)
-  .claude/architecture-rules.md -> architecture-rules.md (manual)
+  CLAUDE.md                     -> 00-hard-rules.md       (always)
+  .claude/rules/<name>.md       -> <name>.md              (fileMatch via paths, else always)
+  .claude/architecture-rules.md -> architecture-rules.md  (manual)
 
-Run after editing any `.claude/` rule.
+Run after editing any `.claude/` rule. This file is identical in novomodelo,
+novomodelo-bridge and novomodelo-mcp; change it in all three.
 """
 
 from __future__ import annotations
@@ -20,17 +21,12 @@ BANNER = (
     "     Regenerate: python scripts/gen/sync-kiro-steering.py -->\n"
 )
 
-# Overridable via --hard-rules-name (novomodelo-bridge uses agent-guidelines.md).
-DEFAULT_HARD_RULES_NAME = "00-hard-rules.md"
-
-
-def build_overrides(hard_rules_name: str) -> dict[str, tuple[str, str]]:
-    """Source -> (steering filename, forced inclusion). Unlisted rules map by
-    their `paths:` front-matter, else default to `always`."""
-    return {
-        "CLAUDE.md": (hard_rules_name, "always"),
-        ".claude/architecture-rules.md": ("architecture-rules.md", "manual"),
-    }
+# Source -> (steering filename, forced inclusion). Unlisted rules map by their
+# `paths:` front-matter, else default to `always`.
+OVERRIDES = {
+    "CLAUDE.md": ("00-hard-rules.md", "always"),
+    ".claude/architecture-rules.md": ("architecture-rules.md", "manual"),
+}
 
 
 def repo_root() -> Path:
@@ -54,9 +50,8 @@ def parse_front_matter(text: str) -> tuple[dict, str]:
             continue
         if stripped.startswith("- "):
             if current_list_key is not None:
-                fm.setdefault(current_list_key, []).append(
-                    stripped[2:].strip().strip("\"'")
-                )
+                item = stripped[2:].strip().strip("\"'")
+                fm.setdefault(current_list_key, []).append(item)
             continue
         if ":" in line and not line.startswith(" "):
             key, _, val = line.partition(":")
@@ -71,8 +66,8 @@ def parse_front_matter(text: str) -> tuple[dict, str]:
     return fm, body
 
 
-def kiro_front_matter(source_rel: str, claude_fm: dict, overrides: dict) -> str:
-    override = overrides.get(source_rel)
+def kiro_front_matter(source_rel: str, claude_fm: dict) -> str:
+    override = OVERRIDES.get(source_rel)
     forced = override[1] if override else None
 
     paths = claude_fm.get("paths")
@@ -91,14 +86,14 @@ def kiro_front_matter(source_rel: str, claude_fm: dict, overrides: dict) -> str:
     return "---\ninclusion: always\n---\n"
 
 
-def steering_name(source_rel: str, source_path: Path, overrides: dict) -> str:
-    override = overrides.get(source_rel)
+def steering_name(source_rel: str, source_path: Path) -> str:
+    override = OVERRIDES.get(source_rel)
     if override:
         return override[0]
     return source_path.name
 
 
-def build_outputs(root: Path, overrides: dict) -> dict[Path, str]:
+def build_outputs(root: Path) -> dict[Path, str]:
     """Map each target steering path to its generated content."""
     outputs: dict[Path, str] = {}
     steering_dir = root / ".kiro" / "steering"
@@ -117,33 +112,21 @@ def build_outputs(root: Path, overrides: dict) -> dict[Path, str]:
             continue
         text = source_path.read_text(encoding="utf-8")
         claude_fm, body = parse_front_matter(text)
-        fm = kiro_front_matter(source_rel, claude_fm, overrides)
+        fm = kiro_front_matter(source_rel, claude_fm)
         banner = BANNER.format(source=source_rel)
         content = f"{fm}\n{banner}\n{body}"
         if not content.endswith("\n"):
             content += "\n"
-        outputs[steering_dir / steering_name(source_rel, source_path, overrides)] = (
-            content
-        )
+        outputs[steering_dir / steering_name(source_rel, source_path)] = content
     return outputs
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--root", type=Path, default=repo_root())
-    ap.add_argument(
-        "--hard-rules-name",
-        default=DEFAULT_HARD_RULES_NAME,
-        help=(
-            "steering filename for the CLAUDE.md projection "
-            f"(default: {DEFAULT_HARD_RULES_NAME}; novomodelo-bridge uses "
-            "agent-guidelines.md)"
-        ),
-    )
     args = ap.parse_args()
 
-    overrides = build_overrides(args.hard_rules_name)
-    outputs = build_outputs(args.root, overrides)
+    outputs = build_outputs(args.root)
 
     steering_dir = args.root / ".kiro" / "steering"
     steering_dir.mkdir(parents=True, exist_ok=True)
