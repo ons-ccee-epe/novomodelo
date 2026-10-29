@@ -317,6 +317,8 @@ jobs:
         run: bash scripts/ci/check-allow-rationale.sh
       - name: Check Python parity
         run: python3 scripts/ci/check_python_parity.py --max 0
+      - name: Check Python binding version lockstep
+        run: python3 scripts/ci/check_binding_version.py
       - name: Check doc voice (no hype / unpinned numbers)
         run: python3 scripts/ci/check_doc_voice.py
       - name: Check for leftovers of the rename

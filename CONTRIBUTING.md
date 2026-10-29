@@ -631,7 +631,12 @@ Novomodelo is currently maintained by [@rjmalves](https://github.com/rjmalves). 
 Before tagging a new release:
 
 1. Update `CHANGELOG.md` with the new version's changes
-2. If the release changed deterministic numerical output (solver tolerances,
+2. Bump the version: `[workspace.package]` in `Cargo.toml`, every first-party `version`
+   pin, and `version` in `crates/novomodelo-python/Cargo.toml` (outside the workspace,
+   so it does not inherit it). Refresh both `Cargo.lock` files and both
+   `THIRD_PARTY_LICENSES.md` copies (commands in `about.toml`), then run
+   `python3 scripts/ci/check_binding_version.py`
+3. If the release changed deterministic numerical output (solver tolerances,
    scaling, cut selection, basis handling, …), regenerate the parity baselines
    and update the guard table **in the same change** — otherwise the `Test`
    job goes red on the stale baselines:
@@ -647,22 +652,22 @@ Before tagging a new release:
    # only one lets the other backend's slow-gated suite rot silently. Review
    # the .sha256 diffs and commit them in the same change.
    ```
-3. Run quality checks:
+4. Run quality checks:
    ```bash
    python3 scripts/ci/check_python_parity.py --max 0
    ```
-4. If `schemas/` changed since the last release, refresh the vendored copy in
+5. If `schemas/` changed since the last release, refresh the vendored copy in
    the `novomodelo-docs` repository (`npm run refresh:schemas` there) so the
    published reference stays in sync — see
    [JSON schemas and the novomodelo-docs vendored copy](#json-schemas-and-the-novomodelo-docs-vendored-copy)
-5. Run `cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings`,
+6. Run `cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings`,
    then repeat clippy for the CLP backend:
    `cargo clippy --workspace --all-targets --no-default-features --features clp -- -D warnings`
    (the two backends are mutually exclusive — see [Solver Backend Selection](#solver-backend-selection))
-6. If `policy.boundary` reconciliation changed since the last release, run the
+7. If `policy.boundary` reconciliation changed since the last release, run the
    [Manual boundary-reduction regression](#manual-boundary-reduction-regression) procedure
    against your own deck before tagging
-7. Tag: `git tag v<version>`
+8. Tag: `git tag v<version>`
 
 ## License
 

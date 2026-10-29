@@ -46,6 +46,7 @@ still carry the canonical boundary regex).
 | `check-cut-selection-determinism.sh` | No fast-math, runtime CPU detection or target feature/cpu flag in own or build-read code; see `deny.toml`. |
 | `check-deny.sh`                      | cargo-deny on the workspace and on `crates/novomodelo-python` (all checks on both), at the version it pins (`--print-version`). |
 | `check-release-kernel.sh`            | A built x86_64 Linux binary, archive or wheel has no packed FMA instruction (run on the release builds).   |
+| `check_binding_version.py`           | `crates/novomodelo-python` (manifest and lockfile) has the workspace version; the binding is outside the workspace, so it cannot inherit it. |
 | `check_python_parity.py`             | Both write paths call the same set of `novomodelo_io` / `novomodelo_sddp::policy::orchestration` writers, and each phase writer calls `write_success_marker` as its last write. |
 | `check_schemas.sh`                   | Exported JSON schemas match the source types (needs the release binary; `--build`).                        |
 | `run-mpi-launcher-gates.sh`          | Runs the MPI world-size gates at 2 and 4 ranks, each rank passing; an oversized world must be refused.     |
