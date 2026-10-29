@@ -68,7 +68,7 @@ def python_output(
     case_dir: pathlib.Path, tmp_path_factory: pytest.TempPathFactory
 ) -> pathlib.Path:
     """Run the case through the module-level Python bindings entry point."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     output_dir = tmp_path_factory.mktemp(f"{case_dir.name}_python_out")
     novomodelo.run.run(str(case_dir), output_dir=str(output_dir))

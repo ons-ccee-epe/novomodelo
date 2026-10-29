@@ -45,7 +45,7 @@ def test_callback_matches_convergence_parquet(tmp_path: pathlib.Path) -> None:
     ``iteration``/``lower_bound``/``gap`` values must match the corresponding
     parquet row (the parquet stores ``gap_percent`` = ``gap`` * 100).
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     observed: list[dict[str, Any]] = []
 
@@ -108,7 +108,7 @@ def test_callback_truthy_return_stops_early(tmp_path: pathlib.Path) -> None:
     4. the callback was invoked only a small bounded number of extra times after
        the trigger.
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     trigger_iteration = 3
     calls: list[int] = []
@@ -162,7 +162,7 @@ def test_callback_truthy_return_writes_partial_training_status(
     tmp_path: pathlib.Path,
 ) -> None:
     """A training a callback stop alone ended reports ``status`` ``partial``."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     def on_iteration(event: dict[str, Any]) -> bool:
         return int(event["iteration"]) >= 3
@@ -185,7 +185,7 @@ def test_callback_truthy_return_keeps_configured_simulation(
     tmp_path: pathlib.Path,
 ) -> None:
     """A callback stop leaves training ``partial`` and still runs the simulation."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     def on_iteration(event: dict[str, Any]) -> bool:
         return int(event["iteration"]) >= 2
@@ -215,7 +215,7 @@ def test_callback_raises_propagates_with_partial_metadata(
     written before the captured exception is re-raised), and the propagated
     exception's message must contain the callback's message.
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     def on_iteration(_event: dict[str, Any]) -> None:
         raise RuntimeError("boom")

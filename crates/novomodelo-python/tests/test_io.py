@@ -13,15 +13,14 @@ import shutil
 
 import pytest
 
-
 VALID_CASE = "examples/1dtoy"
 MISSING_CASE = "/tmp/nonexistent_novomodelo_case_xzy123"
 
 
 def test_load_case_returns_system() -> None:
     """load_case returns a System with correct entity counts for the 1dtoy case."""
-    import novomodelo.io  # noqa: PLC0415
-    import novomodelo.model  # noqa: PLC0415
+    import novomodelo.io
+    import novomodelo.model
 
     system = novomodelo.io.load_case(VALID_CASE)
     assert isinstance(system, novomodelo.model.System)
@@ -31,7 +30,7 @@ def test_load_case_returns_system() -> None:
 
 def test_load_case_nonexistent_raises_oserror() -> None:
     """load_case raises OSError when the case directory does not exist."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     with pytest.raises(OSError):
         novomodelo.io.load_case(MISSING_CASE)
@@ -39,7 +38,7 @@ def test_load_case_nonexistent_raises_oserror() -> None:
 
 def test_load_case_accepts_pathlib() -> None:
     """load_case accepts a pathlib.Path argument, not just a str."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     system = novomodelo.io.load_case(pathlib.Path(VALID_CASE))
     assert system.n_buses > 0
@@ -47,7 +46,7 @@ def test_load_case_accepts_pathlib() -> None:
 
 def test_validate_valid_case() -> None:
     """validate returns valid=True with no errors for the 1dtoy case."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     result = novomodelo.io.validate(VALID_CASE)
     assert isinstance(result, dict)
@@ -58,7 +57,7 @@ def test_validate_valid_case() -> None:
 
 def test_validate_invalid_simulation_scenario_source(tmp_path: pathlib.Path) -> None:
     """validate returns valid=False when simulation.scenario_source violates an admission rule."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     case_dir = tmp_path / "case"
     shutil.copytree(VALID_CASE, case_dir)
@@ -82,7 +81,7 @@ def test_validate_invalid_simulation_scenario_source(tmp_path: pathlib.Path) -> 
 
 def test_validate_nonexistent_case() -> None:
     """validate returns valid=False with at least one error for a missing path."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     result = novomodelo.io.validate(MISSING_CASE)
     assert isinstance(result, dict)
@@ -95,7 +94,7 @@ def test_validate_nonexistent_case() -> None:
 
 def test_validate_docstring_names_the_raising_path() -> None:
     """validate.__doc__ names ValueError for malformed config_overrides, does not claim never raises."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     docstring = novomodelo.io.validate.__doc__
     assert docstring is not None

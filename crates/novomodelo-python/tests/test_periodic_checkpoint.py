@@ -50,7 +50,7 @@ def _kill_after_first_checkpoint(
 ) -> None:
     """Start `command`, wait for `<output_dir>/policy/manifest.bin`, then SIGKILL it."""
     manifest = output_dir / "policy" / "manifest.bin"
-    with stderr_path.open("w") as stderr:
+    with stderr_path.open("w", encoding="utf-8") as stderr:
         process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=stderr)
         try:
             deadline = time.monotonic() + _CHECKPOINT_WAIT_SECONDS
@@ -58,12 +58,12 @@ def _kill_after_first_checkpoint(
                 if process.poll() is not None:
                     pytest.fail(
                         f"the run exited with {process.returncode} before writing "
-                        f"{manifest}:\n{stderr_path.read_text()}"
+                        f"{manifest}:\n{stderr_path.read_text(encoding='utf-8')}"
                     )
                 if time.monotonic() > deadline:
                     pytest.fail(
                         f"no checkpoint at {manifest} within "
-                        f"{_CHECKPOINT_WAIT_SECONDS:.0f} s:\n{stderr_path.read_text()}"
+                        f"{_CHECKPOINT_WAIT_SECONDS:.0f} s:\n{stderr_path.read_text(encoding='utf-8')}"
                     )
                 time.sleep(0.05)
         finally:
@@ -72,7 +72,7 @@ def _kill_after_first_checkpoint(
 
 
 def _assert_loadable_periodic_checkpoint(output_dir: pathlib.Path) -> None:
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     producer = novomodelo.results.load_policy(output_dir)["metadata"]["producer"]
     assert 1 <= producer["completed_iterations"] < _UNREACHABLE_ITERATION_LIMIT, (
@@ -114,7 +114,7 @@ def test_killed_cli_run_leaves_a_loadable_periodic_checkpoint(
 def test_periodic_checkpoint_runs_write_the_same_file_set_on_cli_and_python(
     tmp_path: pathlib.Path, cli_binary: pathlib.Path
 ) -> None:
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     case = _periodic_case(tmp_path, iteration_limit=4)
     cli_output = tmp_path / "cli_out"
@@ -136,10 +136,10 @@ def test_periodic_checkpoint_runs_write_the_same_file_set_on_cli_and_python(
 _INFEASIBLE_CASE = _REPO_ROOT / "examples" / "deterministic" / "d13-generic-constraint"
 
 
-def _rewrite_json(path: pathlib.Path, edit) -> None:  # noqa: ANN001
-    value = json.loads(path.read_text())
+def _rewrite_json(path: pathlib.Path, edit) -> None:
+    value = json.loads(path.read_text(encoding="utf-8"))
     edit(value)
-    path.write_text(json.dumps(value, indent=2))
+    path.write_text(json.dumps(value, indent=2), encoding="utf-8")
 
 
 def _file_bytes(root: pathlib.Path) -> dict[str, bytes]:
@@ -176,9 +176,9 @@ def _make_training_lp_infeasible(case: pathlib.Path) -> None:
 
 
 def test_a_failed_run_keeps_the_last_whole_checkpoint(tmp_path: pathlib.Path) -> None:
-    import novomodelo.errors  # noqa: PLC0415
-    import novomodelo.results  # noqa: PLC0415
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.errors
+    import novomodelo.results
+    import novomodelo.run
 
     case = tmp_path / "case"
     healthy = tmp_path / "healthy"

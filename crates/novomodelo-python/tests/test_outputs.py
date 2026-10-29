@@ -383,7 +383,7 @@ def test_load_policy_then_simulate_elsewhere_keeps_the_trained_markers(
 
 def _seed_file(path: pathlib.Path, content: str = "") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
+    path.write_text(content, encoding="utf-8")
 
 
 def test_run_clears_stale_simulation_outputs_before_training(

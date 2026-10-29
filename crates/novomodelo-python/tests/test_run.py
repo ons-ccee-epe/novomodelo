@@ -15,7 +15,6 @@ import pathlib
 
 import pytest
 
-
 VALID_CASE = "examples/1dtoy"
 D56_EXTERNAL_AUTHORITATIVE_CASE = "examples/deterministic/d56-external-authoritative"
 MISSING_CASE = "/tmp/nonexistent_novomodelo_case_xzy123"
@@ -23,7 +22,7 @@ MISSING_CASE = "/tmp/nonexistent_novomodelo_case_xzy123"
 
 def test_run_1dtoy_succeeds(tmp_path: pathlib.Path) -> None:
     """run() returns a dict with converged, iterations, and lower_bound keys."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     result = novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path))
 
@@ -37,7 +36,7 @@ def test_run_1dtoy_succeeds(tmp_path: pathlib.Path) -> None:
 
 def test_run_1dtoy_creates_output(tmp_path: pathlib.Path) -> None:
     """After run(), the output directory contains training/_SUCCESS."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path))
 
@@ -59,7 +58,7 @@ def test_run_d56_external_authoritative_converges(tmp_path: pathlib.Path) -> Non
     `bound_stalling` rule can trigger) — this asserts the numeric
     convergence the deck actually demonstrates instead.
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     result = novomodelo.run.run(
         D56_EXTERNAL_AUTHORITATIVE_CASE, output_dir=str(tmp_path)
@@ -83,7 +82,7 @@ def test_run_d56_external_authoritative_converges(tmp_path: pathlib.Path) -> Non
 
 def test_run_simulation_disabled_by_config(tmp_path: pathlib.Path) -> None:
     """run() with config_overrides disabling simulation returns result['simulation'] as None."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     result = novomodelo.run.run(
         VALID_CASE,
@@ -98,7 +97,7 @@ def test_run_simulation_disabled_by_config(tmp_path: pathlib.Path) -> None:
 
 def test_run_rejects_skip_simulation_parameter(tmp_path: pathlib.Path) -> None:
     """run() raises TypeError when the removed skip_simulation parameter is passed."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     with pytest.raises(TypeError, match="unexpected keyword argument") as exc_info:
         novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path), skip_simulation=True)
@@ -110,7 +109,7 @@ def test_run_rejects_skip_simulation_parameter(tmp_path: pathlib.Path) -> None:
 
 def test_run_nonexistent_raises(tmp_path: pathlib.Path) -> None:
     """run() raises OSError when the case directory does not exist."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     with pytest.raises(OSError):
         novomodelo.run.run(MISSING_CASE, output_dir=str(tmp_path))
@@ -118,7 +117,7 @@ def test_run_nonexistent_raises(tmp_path: pathlib.Path) -> None:
 
 def test_run_threads_parameter(tmp_path: pathlib.Path) -> None:
     """run() with threads=2 succeeds — verifies rayon thread pool integration."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     result = novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path), threads=2)
 
@@ -128,7 +127,7 @@ def test_run_threads_parameter(tmp_path: pathlib.Path) -> None:
 
 def test_run_rejects_threads_zero(tmp_path: pathlib.Path) -> None:
     """run() raises ValueError when threads=0."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     with pytest.raises(ValueError, match="threads"):
         novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path), threads=0)
@@ -136,7 +135,7 @@ def test_run_rejects_threads_zero(tmp_path: pathlib.Path) -> None:
 
 def _read_metadata_seed(output_dir: pathlib.Path) -> object:
     """Read configuration.seed from training/metadata.json."""
-    import json  # noqa: PLC0415
+    import json
 
     meta_path = output_dir / "training" / "metadata.json"
     with meta_path.open() as f:
@@ -146,7 +145,7 @@ def _read_metadata_seed(output_dir: pathlib.Path) -> object:
 
 def test_run_config_overrides_none_matches_default(tmp_path: pathlib.Path) -> None:
     """config_overrides=None reproduces today's behavior exactly (no-op)."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     result = novomodelo.run.run(
         VALID_CASE, output_dir=str(tmp_path), config_overrides=None
@@ -157,7 +156,7 @@ def test_run_config_overrides_none_matches_default(tmp_path: pathlib.Path) -> No
 
 def test_run_config_overrides_seed_changes_metadata(tmp_path: pathlib.Path) -> None:
     """An override of training.tree_seed is persisted to metadata as the seed."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     novomodelo.run.run(
         VALID_CASE,
@@ -171,7 +170,7 @@ def test_run_config_overrides_seed_changes_metadata(tmp_path: pathlib.Path) -> N
 
 def test_run_config_overrides_typo_raises_value_error(tmp_path: pathlib.Path) -> None:
     """A typo override key is rejected via deny_unknown_fields → ValueError."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     with pytest.raises(ValueError):
         novomodelo.run.run(
@@ -185,7 +184,7 @@ def test_run_config_overrides_unsupported_value_raises_value_error(
     tmp_path: pathlib.Path,
 ) -> None:
     """A value with no JSON representation is rejected before the merge."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     with pytest.raises(ValueError):
         novomodelo.run.run(
@@ -202,7 +201,7 @@ def test_run_dict_keys_stable(tmp_path: pathlib.Path) -> None:
     novomodelo.run.run (its return-dict key set and the simulation sub-dict) must be
     byte-for-byte the same as before the collapse onto the Study lifecycle.
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     result = novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path))
 

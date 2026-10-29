@@ -8,7 +8,7 @@ pick it up via `[tool.pyright] stubPath = "stubs"`. The field set of each
 keys.
 """
 
-from typing import Any, NotRequired, Optional, TypedDict
+from typing import Any, TypedDict
 
 class SimulationSummary(TypedDict):
     """Nested `simulation` sub-dict built by `novomodelo.run.run`."""
@@ -29,8 +29,8 @@ class TrainingSummary(TypedDict):
     converged: bool
     iterations: int
     lower_bound: float
-    upper_bound: Optional[float]
-    gap_percent: Optional[float]
+    upper_bound: float | None
+    gap_percent: float | None
     total_time_ms: int
 
 class StochasticSummary(TypedDict, total=False):
@@ -42,13 +42,13 @@ class StochasticSummary(TypedDict, total=False):
     `None`.
     """
 
-    inflow_source: Optional[str]
+    inflow_source: str | None
     n_hydros: int
     n_seasons: int
-    ar_order: Optional[Any]
-    correlation_source: Optional[str]
-    correlation_dim: Optional[str]
-    opening_tree_source: Optional[str]
+    ar_order: Any | None
+    correlation_source: str | None
+    correlation_dim: str | None
+    opening_tree_source: str | None
     openings_per_stage: Any
     n_stages: int
     n_load_buses: int
@@ -77,8 +77,8 @@ class ProvenanceReport(TypedDict, total=False):
     correlation_source: str
     opening_tree_source: str
     n_hydros: int
-    ar_method: Optional[str]
-    ar_max_order: Optional[int]
+    ar_method: str | None
+    ar_max_order: int | None
     white_noise_fallbacks: list[int]
     hydro_production: Any
 
@@ -95,11 +95,11 @@ class RunResult(TypedDict):
     converged: bool
     iterations: int
     lower_bound: float
-    upper_bound: Optional[float]
-    gap_percent: Optional[float]
+    upper_bound: float | None
+    gap_percent: float | None
     total_time_ms: int
     output_dir: str
-    simulation: Optional[SimulationSummary]
-    stochastic: Optional[StochasticSummary]
-    hydro_models: Optional[HydroModelsSummary]
-    provenance: Optional[ProvenanceReport]
+    simulation: SimulationSummary | None
+    stochastic: StochasticSummary | None
+    hydro_models: HydroModelsSummary | None
+    provenance: ProvenanceReport | None

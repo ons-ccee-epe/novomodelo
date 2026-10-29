@@ -15,13 +15,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-
 MISSING_CASE = "/tmp/nonexistent_novomodelo_case_xzy123"
 
 
 def test_errors_importable_and_subclass_builtins() -> None:
     """The eight classes import from novomodelo.errors and subclass the right builtins."""
-    import novomodelo.errors as e  # noqa: PLC0415
+    import novomodelo.errors as e
 
     assert e.NovomodeloError is not None
     assert e.ValidationError is not None
@@ -61,7 +60,7 @@ def test_errors_importable_and_subclass_builtins() -> None:
 
 def test_run_nonexistent_dir_raises_oserror(tmp_path: pathlib.Path) -> None:
     """run() raises OSError with a descriptive message for a non-existent directory."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     with pytest.raises(OSError, match="does not exist"):
         novomodelo.run.run(MISSING_CASE, output_dir=str(tmp_path))
@@ -69,8 +68,8 @@ def test_run_nonexistent_dir_raises_oserror(tmp_path: pathlib.Path) -> None:
 
 def test_run_empty_dir_raises_validation_error(tmp_path: pathlib.Path) -> None:
     """run() raises ValidationError for a directory missing required case files."""
-    import novomodelo.errors  # noqa: PLC0415
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.errors
+    import novomodelo.run
 
     empty_case = tmp_path / "empty_case"
     empty_case.mkdir()
@@ -86,8 +85,8 @@ def test_run_empty_dir_raises_validation_error(tmp_path: pathlib.Path) -> None:
 
 def test_run_empty_dir_error_mentions_missing_files(tmp_path: pathlib.Path) -> None:
     """The ValidationError for an empty case lists specific missing files."""
-    import novomodelo.errors  # noqa: PLC0415
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.errors
+    import novomodelo.run
 
     empty_case = tmp_path / "empty_case"
     empty_case.mkdir()
@@ -106,7 +105,7 @@ def test_study_empty_dir_raises_validation_error(tmp_path: pathlib.Path) -> None
 
     Proves that the constructor and run() now agree on the exception class.
     """
-    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo.errors
 
     empty_case = tmp_path / "empty_case"
     empty_case.mkdir()
@@ -118,7 +117,7 @@ def test_study_empty_dir_raises_validation_error(tmp_path: pathlib.Path) -> None
 
 def test_load_case_nonexistent_raises_oserror() -> None:
     """load_case raises OSError for a non-existent path."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     with pytest.raises(OSError, match="does not exist"):
         novomodelo.io.load_case(MISSING_CASE)
@@ -126,7 +125,7 @@ def test_load_case_nonexistent_raises_oserror() -> None:
 
 def test_load_results_empty_dir_raises_file_not_found(tmp_path: pathlib.Path) -> None:
     """load_results raises FileNotFoundError for a directory without _SUCCESS."""
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     with pytest.raises(FileNotFoundError):
         novomodelo.results.load_results(str(tmp_path))
@@ -138,8 +137,8 @@ def test_validation_failure_raises_validation_error(tmp_path: pathlib.Path) -> N
     An empty case directory fails the structural-validation layer with a
     constraint violation, which maps to ``novomodelo.errors.ValidationError``.
     """
-    import novomodelo.errors  # noqa: PLC0415
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.errors
+    import novomodelo.io
 
     empty_case = tmp_path / "empty_case"
     empty_case.mkdir()
@@ -168,8 +167,8 @@ def test_io_failure_raises_caseio_error(tmp_path: pathlib.Path) -> None:
     write fail with an "output write error", which maps to
     ``novomodelo.errors.CaseIoError``.
     """
-    import novomodelo.errors  # noqa: PLC0415
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.errors
+    import novomodelo.run
 
     case_dir = pathlib.Path(__file__).resolve().parents[3] / "examples" / "1dtoy"
     if not case_dir.exists():
@@ -177,7 +176,7 @@ def test_io_failure_raises_caseio_error(tmp_path: pathlib.Path) -> None:
 
     out = tmp_path / "ro_output"
     out.mkdir()
-    import os  # noqa: PLC0415
+    import os
 
     os.chmod(out, 0o500)  # read + execute, no write
     try:
@@ -197,8 +196,8 @@ def test_setup_validation_failure_raises_validation_error(
     """A gap stopping rule rejected under sampled forward selection is a setup-time
     validation failure and raises ValidationError, also a ValueError.
     """
-    import novomodelo.errors  # noqa: PLC0415
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.errors
+    import novomodelo.run
 
     case_dir = pathlib.Path(__file__).resolve().parents[3] / "examples" / "1dtoy"
     if not case_dir.exists():
@@ -231,8 +230,8 @@ def test_preprocessing_validation_failure_raises_validation_error(
     """Every FPHA hyperplane of a stage with gamma_q = 0 is a preprocessing-phase
     validation failure and raises ValidationError, not SolverError.
     """
-    import novomodelo.errors  # noqa: PLC0415
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.errors
+    import novomodelo.run
 
     src = (
         pathlib.Path(__file__).resolve().parents[3]

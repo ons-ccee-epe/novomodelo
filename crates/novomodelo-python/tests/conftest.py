@@ -14,8 +14,8 @@ import pytest
 from _novomodelo_cli import resolve_cli_binary
 
 if TYPE_CHECKING:
-    from _pytest.config.argparsing import Parser
     from _pytest.config import Config
+    from _pytest.config.argparsing import Parser
 
 _REPO_ROOT = pathlib.Path(__file__).parents[3]
 

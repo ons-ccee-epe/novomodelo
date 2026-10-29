@@ -123,7 +123,7 @@ def d28_cli_output(
 @pytest.fixture(scope="module")
 def d28_python_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     """Run D28 through the module-level Python bindings entry point."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     assert D28_CASE.is_dir(), f"the D28 fixture must exist at {D28_CASE}"
     output_dir = tmp_path_factory.mktemp("d28_python_out")
@@ -145,7 +145,7 @@ def d57_cli_output(
 @pytest.fixture(scope="module")
 def d57_python_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     """Run D57 through the module-level Python bindings entry point."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     assert D57_CASE.is_dir(), f"the D57 fixture must exist at {D57_CASE}"
     output_dir = tmp_path_factory.mktemp("d57_python_out")
@@ -167,7 +167,7 @@ def d59_cli_output(
 @pytest.fixture(scope="module")
 def d59_python_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     """Run D59 through the module-level Python bindings entry point."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     assert D59_CASE.is_dir(), f"the D59 fixture must exist at {D59_CASE}"
     output_dir = tmp_path_factory.mktemp("d59_python_out")

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 def test_version_info_returns_dict() -> None:
     """version_info returns a dict with the expected keys."""
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     info = novomodelo.version_info()
 
@@ -24,7 +24,7 @@ def test_version_info_returns_dict() -> None:
 
 def test_version_matches_module_version() -> None:
     """version_info()["version"] equals novomodelo.__version__."""
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     info = novomodelo.version_info()
 
@@ -33,7 +33,7 @@ def test_version_matches_module_version() -> None:
 
 def test_comm_is_always_local() -> None:
     """The single-process binding always reports comm == "local"."""
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     info = novomodelo.version_info()
 
@@ -42,19 +42,19 @@ def test_comm_is_always_local() -> None:
 
 def test_solver_string_format() -> None:
     """The solver field names the active backend and carries a version token."""
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     solver = novomodelo.version_info()["solver"]
     parts = solver.split()
 
     assert parts[0] in ("HiGHS", "CLP")
-    assert len(parts) >= 2  # noqa: PLR2004
+    assert len(parts) >= 2
     assert parts[1]  # a non-empty version token follows the backend name
 
 
 def test_zstd_enabled_and_build_known() -> None:
     """zstd is enabled and build is one of debug/release."""
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     info = novomodelo.version_info()
 

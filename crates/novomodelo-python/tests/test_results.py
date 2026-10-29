@@ -17,7 +17,6 @@ import shutil
 
 import pytest
 
-
 VALID_CASE = "examples/1dtoy"
 
 _REPO_ROOT = pathlib.Path(__file__).parents[3]
@@ -45,7 +44,7 @@ def run_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
 
     Module-scoped so the solver only runs once per test session.
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     output_dir = tmp_path_factory.mktemp("results_output")
     novomodelo.run.run(VALID_CASE, output_dir=str(output_dir))
@@ -59,7 +58,7 @@ def run_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
 
 def test_load_results_after_run(run_output: pathlib.Path) -> None:
     """load_results() returns a dict with training.complete == True."""
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     result = novomodelo.results.load_results(str(run_output))
 
@@ -70,7 +69,7 @@ def test_load_results_after_run(run_output: pathlib.Path) -> None:
 
 def test_load_results_manifest_keys(run_output: pathlib.Path) -> None:
     """result['training']['manifest'] contains required top-level keys."""
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     result = novomodelo.results.load_results(str(run_output))
     manifest = result["training"]["manifest"]
@@ -84,7 +83,7 @@ def test_load_results_manifest_keys(run_output: pathlib.Path) -> None:
 
 def test_load_results_metadata_present(run_output: pathlib.Path) -> None:
     """result['training']['metadata'] is a non-empty dict."""
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     result = novomodelo.results.load_results(str(run_output))
     metadata = result["training"]["metadata"]
@@ -95,7 +94,7 @@ def test_load_results_metadata_present(run_output: pathlib.Path) -> None:
 
 def test_load_results_convergence_path_is_file(run_output: pathlib.Path) -> None:
     """result['training']['convergence_path'] points to an existing file."""
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     result = novomodelo.results.load_results(str(run_output))
     convergence_path = result["training"]["convergence_path"]
@@ -108,7 +107,7 @@ def test_load_results_convergence_path_is_file(run_output: pathlib.Path) -> None
 
 def test_load_results_timing_path_is_file(run_output: pathlib.Path) -> None:
     """result['training']['timing_path'] points to an existing file."""
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     result = novomodelo.results.load_results(str(run_output))
     timing_path = result["training"]["timing_path"]
@@ -121,7 +120,7 @@ def test_load_results_timing_path_is_file(run_output: pathlib.Path) -> None:
 
 def test_load_results_simulation_section_present(run_output: pathlib.Path) -> None:
     """result['simulation'] is a dict with 'manifest' and 'complete' keys."""
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     result = novomodelo.results.load_results(str(run_output))
 
@@ -136,7 +135,7 @@ def test_load_results_simulation_ran(
     run_output: pathlib.Path,
 ) -> None:
     """1dtoy has simulation.enabled=true, so simulation results should exist."""
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     result = novomodelo.results.load_results(str(run_output))
     sim = result["simulation"]
@@ -146,7 +145,7 @@ def test_load_results_simulation_ran(
 
 def test_load_results_no_success_raises(tmp_path: pathlib.Path) -> None:
     """load_results() raises FileNotFoundError when training/_SUCCESS is absent."""
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     with pytest.raises(FileNotFoundError):
         novomodelo.results.load_results(str(tmp_path))
@@ -154,7 +153,7 @@ def test_load_results_no_success_raises(tmp_path: pathlib.Path) -> None:
 
 def test_load_results_nonexistent_dir_raises() -> None:
     """load_results() raises FileNotFoundError for a non-existent directory."""
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     with pytest.raises(FileNotFoundError):
         novomodelo.results.load_results("/tmp/nonexistent_novomodelo_output_xzy123")
@@ -167,7 +166,7 @@ def test_load_results_nonexistent_dir_raises() -> None:
 
 def test_load_convergence_returns_list(run_output: pathlib.Path) -> None:
     """load_convergence() returns a non-empty list of dicts."""
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     rows = novomodelo.results.load_convergence(str(run_output))
 
@@ -177,7 +176,7 @@ def test_load_convergence_returns_list(run_output: pathlib.Path) -> None:
 
 def test_load_convergence_dict_keys(run_output: pathlib.Path) -> None:
     """Each dict in the convergence list has the required keys."""
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     rows = novomodelo.results.load_convergence(str(run_output))
     required_keys = {
@@ -212,9 +211,9 @@ def test_load_convergence_keys_equal_written_schema_fields(
     frozen list) and asserts the returned dict's keys equal them, in order —
     so no written column, `mean_rows_in_lp` included, is silently dropped.
     """
-    import pyarrow.parquet as pq  # noqa: PLC0415
+    import pyarrow.parquet as pq
 
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     convergence_path = run_output / "training" / "convergence.parquet"
     written_fields = pq.read_schema(convergence_path).names
@@ -235,7 +234,7 @@ def test_load_convergence_keys_equal_written_schema_fields(
 
 def test_load_convergence_value_types(run_output: pathlib.Path) -> None:
     """Convergence rows have correct Python types for key columns."""
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     rows = novomodelo.results.load_convergence(str(run_output))
     assert rows, "must have at least one row"
@@ -260,7 +259,7 @@ def test_load_convergence_value_types(run_output: pathlib.Path) -> None:
 
 def test_load_convergence_iteration_is_one_based(run_output: pathlib.Path) -> None:
     """The first iteration row has iteration == 1."""
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     rows = novomodelo.results.load_convergence(str(run_output))
     assert rows, "must have at least one row"
@@ -269,7 +268,7 @@ def test_load_convergence_iteration_is_one_based(run_output: pathlib.Path) -> No
 
 def test_load_convergence_empty_dir_raises(tmp_path: pathlib.Path) -> None:
     """load_convergence() raises FileNotFoundError for a directory without Parquet."""
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     with pytest.raises(FileNotFoundError):
         novomodelo.results.load_convergence(str(tmp_path))
@@ -277,7 +276,7 @@ def test_load_convergence_empty_dir_raises(tmp_path: pathlib.Path) -> None:
 
 def test_convergence_path_is_readable(run_output: pathlib.Path) -> None:
     """The convergence_path from load_results() is a valid, non-empty Parquet path."""
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     result = novomodelo.results.load_results(str(run_output))
     path = pathlib.Path(result["training"]["convergence_path"])
@@ -298,7 +297,7 @@ def test_load_policy_reads_real_run_output(run_output: pathlib.Path) -> None:
     "./policy"), so the default policy_subdir="policy" must resolve it. The
     returned dict must carry per-stage cut pools with non-empty stage-0 cuts.
     """
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     policy = novomodelo.results.load_policy(str(run_output))
 
@@ -312,7 +311,7 @@ def test_load_policy_reads_real_run_output(run_output: pathlib.Path) -> None:
 
 def test_load_policy_missing_dir_raises(tmp_path: pathlib.Path) -> None:
     """load_policy() raises FileNotFoundError when the policy dir is absent."""
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     with pytest.raises(FileNotFoundError):
         novomodelo.results.load_policy(str(tmp_path))
@@ -332,7 +331,7 @@ def test_load_policy_reads_a_staged_copy_when_the_policy_dir_is_absent(
     run_output: pathlib.Path, tmp_path: pathlib.Path
 ) -> None:
     """load_policy() reads <policy>.staging when <policy> is absent, changing nothing."""
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     shutil.copytree(run_output / "policy", tmp_path / "policy.staging")
     before = _tree_snapshot(tmp_path)
@@ -363,7 +362,7 @@ def stochastic_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     and ``stochastic/noise_openings.parquet``. Module-scoped so the solver runs
     only once per session.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     output_dir = tmp_path_factory.mktemp("stochastic_output")
     novomodelo.Study(
@@ -379,7 +378,7 @@ def test_load_stochastic_par_coefficients_shape(
 ) -> None:
     """par_coefficients() returns a 2-D (n_rows, 4) float64 array."""
     numpy = pytest.importorskip("numpy")
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     arr = novomodelo.results.load_stochastic(str(stochastic_output)).par_coefficients()
 
@@ -393,7 +392,7 @@ def test_load_stochastic_opening_tree_shape(
 ) -> None:
     """opening_tree(0) returns a 2-D float64 array; shape[1] == stage-0 noise dim."""
     numpy = pytest.importorskip("numpy")
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     stoch = novomodelo.results.load_stochastic(str(stochastic_output))
     arr = stoch.opening_tree(0)
@@ -413,8 +412,8 @@ def test_load_stochastic_missing_artifacts_raises(tmp_path: pathlib.Path) -> Non
     ``stochastic/`` artifacts are absent and the error message must point the
     caller at the required export flag.
     """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.results
 
     novomodelo.Study(VALID_CASE, output_dir=str(tmp_path)).train()
 
@@ -427,7 +426,7 @@ def test_load_stochastic_opening_tree_bad_stage_raises(
 ) -> None:
     """opening_tree(999) raises IndexError for an absent stage."""
     pytest.importorskip("numpy")
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     stoch = novomodelo.results.load_stochastic(str(stochastic_output))
 
@@ -437,8 +436,8 @@ def test_load_stochastic_opening_tree_bad_stage_raises(
 
 def test_load_stochastic_reexport_identity() -> None:
     """load_stochastic is present and is the compiled function (identity)."""
-    import novomodelo._native.results  # noqa: PLC0415
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo._native.results
+    import novomodelo.results
 
     assert hasattr(novomodelo.results, "load_stochastic")
     assert (
@@ -458,7 +457,7 @@ def _run_with_simulation(src: pathlib.Path, work: pathlib.Path) -> pathlib.Path:
     flipped on so the simulation write path is exercised (mirrors the parity
     suite's ``_make_case_with_simulation``).
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     case_dir = work / "case"
     case_dir.mkdir()
@@ -522,7 +521,7 @@ def test_load_simulation_keys_cover_every_present_family(
     deck ``anticipated_lanes``, and on each deck no present family directory may
     be missing from the returned mapping.
     """
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo.results
 
     for output_dir, must_include in (
         (travel_time_output, "in_transit"),

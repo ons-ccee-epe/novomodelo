@@ -12,7 +12,7 @@ import pytest
 
 def test_system_entity_counts() -> None:
     """Load the 1dtoy case and verify entity count properties on System."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     system = novomodelo.io.load_case("examples/1dtoy")
     assert isinstance(system.n_buses, int)
@@ -25,7 +25,7 @@ def test_system_entity_counts() -> None:
 
 def test_bus_properties() -> None:
     """Load the 1dtoy case and verify Bus properties."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     system = novomodelo.io.load_case("examples/1dtoy")
     buses = system.buses
@@ -38,7 +38,7 @@ def test_bus_properties() -> None:
 
 def test_hydro_properties() -> None:
     """Load the 1dtoy case and verify Hydro properties."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     system = novomodelo.io.load_case("examples/1dtoy")
     hydros = system.hydros
@@ -50,7 +50,7 @@ def test_hydro_properties() -> None:
 
 def test_thermal_properties() -> None:
     """Load the 1dtoy case and verify Thermal properties."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     system = novomodelo.io.load_case("examples/1dtoy")
     thermals = system.thermals
@@ -63,7 +63,7 @@ def test_thermal_properties() -> None:
 
 def test_line_properties() -> None:
     """1dtoy has no lines — verify the accessor returns an empty list."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     system = novomodelo.io.load_case("examples/1dtoy")
     lines = system.lines
@@ -73,7 +73,7 @@ def test_line_properties() -> None:
 
 def test_bus_repr() -> None:
     """Verify repr(bus) contains 'Bus(id=' and the bus name."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     system = novomodelo.io.load_case("examples/1dtoy")
     bus = system.buses[0]
@@ -84,7 +84,7 @@ def test_bus_repr() -> None:
 
 def test_system_not_constructable() -> None:
     """novomodelo.model.System() must raise TypeError (no Python constructor)."""
-    import novomodelo.model  # noqa: PLC0415
+    import novomodelo.model
 
     with pytest.raises(TypeError):
         novomodelo.model.System()  # type: ignore[call-arg]
@@ -92,7 +92,7 @@ def test_system_not_constructable() -> None:
 
 def test_energy_contract_properties() -> None:
     """Load the D41 case and verify EnergyContract exposes its full field set."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     system = novomodelo.io.load_case("examples/deterministic/d41-energy-contracts")
     contracts = system.contracts
@@ -112,7 +112,7 @@ def test_energy_contract_properties() -> None:
 
 def test_pumping_station_properties() -> None:
     """Load the pumping-transfer fixture and verify PumpingStation's full field set."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     system = novomodelo.io.load_case(
         "crates/novomodelo-sddp/tests/fixtures/pumping_transfer"
@@ -135,7 +135,7 @@ def test_pumping_station_properties() -> None:
 
 def test_non_controllable_source_properties() -> None:
     """Load the D15 case and verify NonControllableSource's full field set."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     system = novomodelo.io.load_case(
         "examples/deterministic/d15-non-controllable-source"
@@ -156,7 +156,7 @@ def test_non_controllable_source_properties() -> None:
 
 def test_model_classes_importable() -> None:
     """All expected classes must be present in novomodelo.model."""
-    import novomodelo.model  # noqa: PLC0415
+    import novomodelo.model
 
     for name in (
         "System",

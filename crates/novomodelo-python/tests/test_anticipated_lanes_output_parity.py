@@ -157,7 +157,7 @@ def test_cli_python_anticipated_lanes_row_parity(
     If the CLI and Python paths diverge between the LP solve and the Parquet
     write, this fails.
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     _require_post_study_case()
 
@@ -204,7 +204,7 @@ def test_cli_python_anticipated_lanes_row_parity(
 
     mismatches = [
         f"  row {idx} col {column}: CLI={cli[column]!r} PY={py[column]!r}"
-        for idx, (cli, py) in enumerate(zip(cli_rows, py_rows))
+        for idx, (cli, py) in enumerate(zip(cli_rows, py_rows, strict=True))
         for column in _LANE_VALUE_COLUMNS
         if not _lane_values_equal(cli[column], py[column])
     ]
@@ -225,7 +225,7 @@ def test_no_post_study_continuation_produces_no_anticipated_lanes_partition(
     exists. Unlike the row-parity test, this needs no post-study fixture, so
     it runs unconditionally.
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     assert NO_POST_STUDY_CASE.is_dir(), (
         f"the no-post-study fixture must exist at {NO_POST_STUDY_CASE}"

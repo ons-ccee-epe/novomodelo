@@ -83,7 +83,7 @@ def test_study_simulate_emits_pumping_output_with_schema() -> None:
     a Parquet schema equal to exactly the 9 pumping fields, and a non-empty read
     through `novomodelo.results(entity_type="pumping_stations")`.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     assert PUMPING_CASE.is_dir(), f"the pumping fixture must exist at {PUMPING_CASE}"
 
@@ -146,7 +146,7 @@ def test_run_via_study_emits_pumping_output() -> None:
     must produce simulation/pumping_stations/.../data.parquet identically to
     Study.simulate (both converge on run_simulation_phase_py).
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     assert PUMPING_CASE.is_dir(), f"the pumping fixture must exist at {PUMPING_CASE}"
 
@@ -174,7 +174,7 @@ def test_zero_pumping_study_emits_no_pumping_output() -> None:
     gate is symmetric, so a regression that always created the directory (an empty
     partition) would fail here.
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     assert ZERO_PUMPING_CASE.is_dir(), (
         f"the zero-pumping case must exist at {ZERO_PUMPING_CASE}"

@@ -125,7 +125,7 @@ def _restamp_policy_version(policy_dir: pathlib.Path) -> str:
     """Rewrite the novomodelo version in ``policy_dir/manifest.bin`` to another
     string of the same byte length (the FlatBuffers string keeps its layout;
     the manifest carries no checksum) and return it."""
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     manifest = policy_dir / "manifest.bin"
     data = manifest.read_bytes()
@@ -146,7 +146,7 @@ def test_load_policy_removed_optout_kwarg_raises_typeerror(
     Validation is now unconditional, so the parameter no longer exists on
     `load_policy`; passing it must fail loudly, not be silently ignored.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
 
@@ -168,7 +168,7 @@ def test_load_policy_mismatched_entity_manifest_raises_valueerror(
     the checkpoint's terminal entity manifest names a different hydro id, so
     `validate_policy_load`'s slot-identity check must reject the load.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     mismatched_case = tmp_path / "mismatched_case"
     mismatched_case.mkdir()
@@ -191,8 +191,8 @@ def test_load_policy_written_by_another_version_raises_policy_incompatible(
     """A policy checkpoint recording a novomodelo version other than the running
     one raises `PolicyIncompatibleError`, naming both versions.
     """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.errors
 
     run_dir = tmp_path / "run"
     novomodelo.run.run(VALID_CASE, output_dir=str(run_dir))
@@ -223,7 +223,7 @@ def test_load_policy_with_a_wider_stored_basis_loads_and_warns_once(
     state) loads into the original 1dtoy: each stored basis whose column count
     no longer matches its node's LP is left out, with one warning per load.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     variant_case = tmp_path / "variant_case"
     variant_case.mkdir()
@@ -255,8 +255,8 @@ def test_load_policy_refuses_a_dynamic_simulation_of_all_over_deactivated_cuts(
     `dynamic` simulation reads the default `simulation.cut_set = all`:
     `Study.load_policy` raises `PolicyIncompatibleError` naming both settings,
     and the same policy loads under `simulation.cut_set = active`."""
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.errors
 
     run_dir = tmp_path / "level1_run"
     novomodelo.run.run(
@@ -305,8 +305,8 @@ def test_training_load_without_a_policy_directory_raises_validation_error(
 ) -> None:
     """Warm-start and resume against an output dir with no policy raise
     `ValidationError` naming the missing directory and what the load needed."""
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.errors
 
     study = novomodelo.Study(
         VALID_CASE,
@@ -327,8 +327,8 @@ def test_warm_start_from_an_unparseable_checkpoint_raises_policy_incompatible_er
 ) -> None:
     """A warm-start whose checkpoint manifest cannot be parsed raises
     `PolicyIncompatibleError` with the read-failure message."""
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.errors
 
     novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path))
     (tmp_path / "policy" / "manifest.bin").write_bytes(b"garbage")
@@ -351,8 +351,8 @@ def test_warm_start_from_a_policy_directory_without_manifest_raises_policy_incom
 ) -> None:
     """A warm-start against a `policy/` directory holding no `manifest.bin`
     raises `PolicyIncompatibleError` with the read-failure message."""
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.errors
 
     (tmp_path / "policy").mkdir()
 
@@ -375,8 +375,8 @@ def test_warm_start_from_a_manifest_the_process_cannot_open_raises_case_io_error
 ) -> None:
     """A warm-start whose `manifest.bin` the process cannot open raises
     `CaseIoError`, also catchable as `OSError`."""
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.errors
 
     novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path))
     manifest = tmp_path / "policy" / "manifest.bin"
@@ -410,8 +410,8 @@ def test_warm_start_from_another_version_raises_policy_incompatible(
 ) -> None:
     """A warm-start from a checkpoint written by another novomodelo version raises
     `PolicyIncompatibleError` with the `policy validation error: ` prefix."""
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.errors
 
     novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path))
     other_version = _restamp_policy_version(tmp_path / "policy")

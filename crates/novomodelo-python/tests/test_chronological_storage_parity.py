@@ -148,7 +148,7 @@ def _all_close(values: list[float]) -> bool:
 
 def _run_chronological(output_dir: pathlib.Path) -> list[dict[str, object]]:
     """Train + simulate the chronological fixture via novomodelo.run.run; read hydros."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     novomodelo.run.run(str(CHRONOLOGICAL_CASE), output_dir=str(output_dir))
     return _read_hydro_rows(output_dir)
@@ -254,7 +254,7 @@ def test_chronological_study_surface_matches_run_module() -> None:
     run_simulation_phase_py, so a multi-block group's storage must vary across
     block rows through the Study surface too.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     assert CHRONOLOGICAL_CASE.is_dir(), (
         f"the chronological fixture must exist at {CHRONOLOGICAL_CASE}"
@@ -300,7 +300,7 @@ def test_chronological_hydros_values_match_cli(
     py_out = tmp_path / "python"
     run_cli(CHRONOLOGICAL_CASE, cli_out, cli_binary)
 
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     novomodelo.run.run(str(CHRONOLOGICAL_CASE), output_dir=str(py_out))
 
@@ -340,7 +340,7 @@ def test_parallel_per_block_storage_and_evaporation_are_constant() -> None:
     """
     assert PARALLEL_CASE.is_dir(), f"the parallel fixture must exist at {PARALLEL_CASE}"
 
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     with tempfile.TemporaryDirectory() as out_dir:
         out = pathlib.Path(out_dir)

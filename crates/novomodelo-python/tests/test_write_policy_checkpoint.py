@@ -13,7 +13,7 @@ import json
 import math
 import pathlib
 import shutil
-from typing import Any, Optional
+from typing import Any
 
 import pyarrow.parquet as pq
 import pytest
@@ -25,8 +25,8 @@ _POOL_COST_SCALE_FACTOR = 2_500_000.0
 
 
 def _make_metadata(
-    cost_scale_factor: Optional[float] = 2_500_000.0,
-    season_manifest: Optional[dict[str, Any]] = None,
+    cost_scale_factor: float | None = 2_500_000.0,
+    season_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     producer: dict[str, Any] = {
         "completed_iterations": 5,
@@ -88,8 +88,8 @@ def test_write_policy_checkpoint_round_trip(tmp_path: pathlib.Path) -> None:
     """A synthetic checkpoint written from dicts reads back with matching cuts
     and metadata, including the cost_scale_factor provenance marker.
     """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.results
 
     novomodelo.write_policy_checkpoint(
         str(tmp_path / "policy"), _make_stage_cuts(), _make_metadata()
@@ -128,8 +128,8 @@ def test_write_policy_checkpoint_stamps_the_running_software(
     """A caller-supplied software identity is ignored; the checkpoint always
     records the running software and version.
     """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.results
 
     metadata = _make_metadata()
     metadata["software"] = "another-program"
@@ -151,8 +151,8 @@ def test_write_policy_checkpoint_cost_scale_factor_omitted_reads_as_none(
     """Omitting cost_scale_factor from the producer block reads back as None: it
     is provenance only, and the pool's own factor is what the values are in.
     """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.results
 
     novomodelo.write_policy_checkpoint(
         str(tmp_path / "policy"),
@@ -171,8 +171,8 @@ def test_write_policy_checkpoint_lower_bound_history_round_trips(
     tmp_path: pathlib.Path,
 ) -> None:
     """The producer's lower_bound_history reads back bit for bit, -0.0 included."""
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.results
 
     history = [130.0, -0.0, 2.2250738585072014e-308, 123.45]
     metadata = _make_metadata()
@@ -191,8 +191,8 @@ def test_write_policy_checkpoint_lower_bound_history_omitted_reads_as_empty(
     tmp_path: pathlib.Path,
 ) -> None:
     """Omitting lower_bound_history from the producer dict writes an empty series."""
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.results
 
     metadata = _make_metadata()
     assert "lower_bound_history" not in metadata["producer"]
@@ -211,7 +211,7 @@ def test_write_policy_checkpoint_coefficient_length_mismatch_raises(
     """A cut whose coefficients length disagrees with its stage's
     state_dimension raises ValueError naming the stage and cut.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     stage_cuts = _make_stage_cuts()
     stage_cuts[0]["cuts"][0]["coefficients"] = [1.0, 2.0]  # state_dimension is 3
@@ -228,8 +228,8 @@ def test_write_policy_checkpoint_defaults_apply_when_keys_omitted(
     """warm_start_count and entity_manifest default when their keys are absent
     from the stage_cuts dict.
     """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.results
 
     stage_cuts = _make_stage_cuts()
     assert "warm_start_count" not in stage_cuts[0]
@@ -294,8 +294,8 @@ def test_write_policy_checkpoint_reserves_inflow_lag_slots(
     HydroInflowLag slots per storage hydro, self-describing depth N, and places
     each keyed pi_qafl coefficient at its (hydro, depth) position.
     """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.results
 
     hydro_ids = [1, 2]
     # hydro 1: depth1=1.1, depth2=1.2; hydro 2: depth1=2.1, depth2 defaults 0.0.
@@ -335,7 +335,7 @@ def test_write_policy_checkpoint_inflow_lag_depth_absent_is_byte_identical(
     """Omitting inflow_lag_depth (or passing 0) writes the exact same bytes as
     not passing it — the reservation path is inert by default.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     def _digest(policy_dir: pathlib.Path) -> dict[str, bytes]:
         return {
@@ -361,7 +361,7 @@ def test_write_policy_checkpoint_unplaceable_lag_coefficient_raises(
     """A keyed inflow-lag coefficient for a hydro with no storage slot is
     unplaceable and raises ValueError naming the hydro — never silently dropped.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     # hydro 99 is not among the storage hydros [1, 2].
     stage_cuts = _storage_only_stage_cuts([1, 2], {99: [0.5]})
@@ -382,8 +382,8 @@ def test_write_policy_checkpoint_accepts_self_describing_stage_fields(
     node_id, graph_stage_id) that the CLI writer emits — Python write-parity — and
     produces a checkpoint whose read surfaces those facts again.
     """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.results
 
     stage_cuts = _make_stage_cuts()
     stage_cuts[0]["cost_scale_factor"] = 2_500_000.0
@@ -418,8 +418,8 @@ def test_load_policy_self_describing_fields_survive_rewrite(
     cost_scale_factor to None), collapsing a genuine single-node pool and
     breaking boundary-cut load. This test fails unless load_policy surfaces them.
     """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.results
 
     stage_cuts = _make_stage_cuts()
     stage_cuts[0]["node_id"] = 3
@@ -454,7 +454,7 @@ def test_write_policy_checkpoint_lag_coefficients_without_depth_raises(
     """inflow_lag_coefficients supplied without inflow_lag_depth raises
     ValueError naming the stage and cut — never silently dropped.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     stage_cuts = _storage_only_stage_cuts([1, 2], {1: [0.5]})
 
@@ -471,8 +471,8 @@ def test_write_policy_checkpoint_season_manifest_round_trips(
     descriptor, and writing the loaded metadata produces a byte-identical
     checkpoint file.
     """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.results
 
     season_manifest = {
         "cycle_code": 0,
@@ -511,8 +511,8 @@ def test_write_policy_checkpoint_season_manifest_omitted_is_absent(
     """A checkpoint authored with today's _make_metadata() (no season_manifest
     key) reads back with the absent descriptor.
     """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.results
 
     novomodelo.write_policy_checkpoint(
         str(tmp_path / "policy"), _make_stage_cuts(), _make_metadata()
@@ -532,9 +532,9 @@ def test_write_policy_checkpoint_season_manifest_unsorted_hydros_rejected_on_loa
     """hydro_orders with non-ascending hydro_id values: the write succeeds, and
     load_policy raises OutputError with 'not ascending by hydro_id'.
     """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.errors  # noqa: PLC0415
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.errors
+    import novomodelo.results
 
     season_manifest = {
         "cycle_code": 0,
@@ -563,9 +563,9 @@ def test_write_policy_checkpoint_season_manifest_order_length_rejected_on_load(
     """n_seasons=3 but one hydro with two orders: the write succeeds, and
     load_policy raises OutputError with 'expected n_seasons=3'.
     """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.errors  # noqa: PLC0415
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.errors
+    import novomodelo.results
 
     season_manifest = {
         "cycle_code": 0,
@@ -591,8 +591,8 @@ def test_write_policy_checkpoint_refuses_a_directory_holding_other_files(
     """A policy directory holding a file no checkpoint writer leaves there is
     refused with ValidationError, and the file survives.
     """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.errors
 
     policy = tmp_path / "policy"
     policy.mkdir()
@@ -682,7 +682,7 @@ _RETIRED_KEYS = [
 def test_write_policy_checkpoint_retired_key_raises_naming_key_and_position(
     tmp_path: pathlib.Path, key: str, position: str
 ) -> None:
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     stage_cuts = _make_stage_cuts()
     stage_bases: list[dict[str, Any]] = [{"stage_id": 0, "iteration": 1, "entries": []}]
@@ -708,7 +708,7 @@ def test_write_policy_checkpoint_retired_key_raises_naming_key_and_position(
 def test_write_policy_checkpoint_ignores_unknown_keys_a_loaded_result_carries(
     tmp_path: pathlib.Path,
 ) -> None:
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     stage_cuts = _make_stage_cuts()
     stage_cuts[0]["unrelated"] = 1
@@ -727,10 +727,10 @@ def test_write_policy_checkpoint_ignores_unknown_keys_a_loaded_result_carries(
     ids=["missing", "zero", "negative", "nan", "inf"],
 )
 def test_write_policy_checkpoint_pool_cost_scale_factor_must_be_finite_and_positive(
-    tmp_path: pathlib.Path, factor: Optional[float]
+    tmp_path: pathlib.Path, factor: float | None
 ) -> None:
     """The producer block's factor (set by _make_metadata) is never a fallback."""
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     stage_cuts = _make_stage_cuts()
     if factor is None:
@@ -755,7 +755,7 @@ def test_write_policy_checkpoint_pool_cost_scale_factor_must_be_finite_and_posit
 def test_write_policy_checkpoint_state_history_rejects_a_bool(
     tmp_path: pathlib.Path, history: bool
 ) -> None:
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     metadata = _make_metadata()
     metadata["producer"]["state_history"] = history
@@ -770,8 +770,8 @@ def test_write_policy_checkpoint_whole_basis_store_needs_the_bases(
     tmp_path: pathlib.Path,
 ) -> None:
     """A checkpoint never claims a whole basis store it did not receive."""
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.results  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.results
 
     metadata = _make_metadata()
     metadata["producer"]["basis_store_complete"] = True
@@ -809,7 +809,7 @@ def test_write_policy_checkpoint_counter_flag_must_match_the_cuts(
     """activity_counters is a claim about every cut, and a cut without its
     counters breaks it.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     metadata = _make_metadata()
     metadata["producer"]["activity_counters"] = True
@@ -849,7 +849,7 @@ _DATE_INCONSISTENT_MANIFEST = [
 def test_write_policy_checkpoint_refuses_what_the_reader_refuses(
     tmp_path: pathlib.Path, edit: Any, message: str
 ) -> None:
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     stage_cuts = _make_stage_cuts()
     edit(stage_cuts)
@@ -868,8 +868,8 @@ def test_write_policy_checkpoint_structural_error_raises_value_error_and_keeps_t
     """A payload rule broken by the caller is a ValueError, not an OutputError
     (an OSError), and a refused write leaves the target directory as it was.
     """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.errors
 
     stage_cuts, metadata, stage_states = _states_checkpoint()
     policy = tmp_path / "policy"
@@ -893,7 +893,7 @@ def test_write_policy_checkpoint_structural_error_raises_value_error_and_keeps_t
 
 
 def _level1_case(
-    root: pathlib.Path, *, iteration_limit: int, lookback: Optional[int]
+    root: pathlib.Path, *, iteration_limit: int, lookback: int | None
 ) -> pathlib.Path:
     """1dtoy under `level1` with an active-cut budget, so a checkpoint holds
     trial states, scored flags and binding counters; simulation is off.
@@ -918,7 +918,7 @@ def _level1_case(
 
 
 def _write_back(loaded: dict[str, Any], policy: pathlib.Path) -> None:
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     novomodelo.write_policy_checkpoint(
         str(policy),
@@ -934,8 +934,8 @@ def test_load_policy_round_trips_every_version_4_field(tmp_path: pathlib.Path) -
     CLI-shaped checkpoint byte for byte: the trial states, the scored flags, the
     binding counters, the basis entries and the manifest flags included.
     """
-    import novomodelo.results  # noqa: PLC0415
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.results
+    import novomodelo.run
 
     case = _level1_case(tmp_path, iteration_limit=6, lookback=4)
     original = tmp_path / "original"
@@ -977,8 +977,8 @@ def test_a_checkpoint_written_back_from_python_resumes(tmp_path: pathlib.Path) -
     original does: the same iterations and convergence output, and the same
     final policy files.
     """
-    import novomodelo.results  # noqa: PLC0415
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.results
+    import novomodelo.run
 
     case = _level1_case(tmp_path, iteration_limit=3, lookback=None)
     original = tmp_path / "original"

@@ -51,3 +51,23 @@ reportMissingModuleSource = "none"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+# PGH forbids a blanket `# noqa` / `# type: ignore`; RUF100 drops a suppression that
+# suppresses nothing. PLW1514 (open/read_text/write_text without `encoding`) only
+# exists in preview, so `explicit-preview-rules` enables it and no other preview rule.
+select = ["E", "F", "I", "B", "UP", "PGH", "RUF100", "PLW1514"]
+preview = true
+explicit-preview-rules = true
+
+[tool.ruff.lint.isort]
+# `novomodelo._native` is a compiled module, so ruff cannot find it on disk and would
+# otherwise file it as third-party.
+known-first-party = ["novomodelo", "_novomodelo_cli"]
+
+[tool.ruff.lint.pycodestyle]
+# The formatter wraps at 88; E501 catches only what it cannot wrap.
+max-line-length = 110

@@ -186,7 +186,7 @@ def _json_mismatches(
                 f"(CLI={len(cli_obj)}, Python={len(py_obj)})"
             )
         else:
-            for i, (cli_item, py_item) in enumerate(zip(cli_obj, py_obj)):
+            for i, (cli_item, py_item) in enumerate(zip(cli_obj, py_obj, strict=True)):
                 diffs.extend(_json_mismatches(cli_item, py_item, label, f"{path}[{i}]"))
     elif cli_obj != py_obj:
         diffs.append(
@@ -303,7 +303,7 @@ def toy_python_run(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> tuple[pathlib.Path, dict[str, Any]]:
     """Run 1dtoy once through `novomodelo.run.run()`; return the output dir and result."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     assert TOY_CASE.is_dir(), f"the 1dtoy fixture must exist at {TOY_CASE}"
     output_dir = tmp_path_factory.mktemp("toy_python_out")
@@ -400,7 +400,7 @@ def selection_python_output(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> pathlib.Path:
     """Run 1dtoy with `level1` row selection through `novomodelo.run.run()`."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     case = _selection_case(tmp_path_factory.mktemp("selection_python_case"))
     output_dir = tmp_path_factory.mktemp("selection_python_out")
@@ -438,7 +438,7 @@ def states_python_output(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> pathlib.Path:
     """Run 1dtoy with `dynamic` selection and `exports.states` through `novomodelo.run.run()`."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     case = _exported_states_case(tmp_path_factory.mktemp("states_python_case"))
     output_dir = tmp_path_factory.mktemp("states_python_out")
