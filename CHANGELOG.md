@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A policy checkpoint in `policy.path` or `policy.boundary` without its empty
+  `basis/` directory, which zip tools drop, failed to load. It now loads.
+
 ## [0.19.1] - 2026-10-26
 
 ### Added
