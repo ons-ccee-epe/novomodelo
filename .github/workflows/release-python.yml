@@ -1,19 +1,17 @@
-# Build platform-specific wheels for the `novomodelo` Python package and publish
-# to PyPI.  Wheels contain the compiled Rust extension (PyO3/maturin) with
-# the HiGHS LP solver statically linked.
+# Build platform-specific wheels and an sdist for the `novomodelo` Python package
+# and publish them to PyPI.  Wheels contain the compiled Rust extension
+# (PyO3/maturin) with the HiGHS LP solver statically linked; the sdist carries the
+# workspace crates it depends on and the vendored solver sources.
 #
 # Platforms:  linux x86_64 (manylinux_2_34), linux aarch64 (manylinux_2_28),
 #             linux musl x86_64, macOS x86_64/aarch64, Windows x86_64
 # Python:    3.12+ (single abi3 wheel per platform via PyO3 stable ABI)
 #
 # glibc floor: the manylinux_2_34 wheel needs glibc >= 2.34 (RHEL and Rocky
-# Linux 9+, Ubuntu 22.04+, Debian 12+); RHEL 8 and Ubuntu 20.04 are below it, and
-# with no sdist pip finds nothing to install there. The aarch64 wheel needs
-# glibc >= 2.28. Keep crates/novomodelo-python/README.md in step when the tag changes.
-#
-# Note: sdist is not built because maturin cannot package crates with path
-# dependencies outside the crate directory (known maturin limitation).
-# Users who need to build from source should clone the full workspace.
+# Linux 9+, Ubuntu 22.04+, Debian 12+); on RHEL 8 and Ubuntu 20.04, below it, pip
+# builds the sdist instead, which needs a Rust toolchain, cmake and a C++
+# compiler. The aarch64 wheel needs glibc >= 2.28. Keep
+# crates/novomodelo-python/README.md in step when the tag changes.
 #
 # Uses PyPI trusted publishing (OIDC) — no API tokens needed.
 # Configure at: https://pypi.org/manage/project/novomodelo-python/settings/publishing/
@@ -126,7 +124,7 @@ jobs:
             sudo chown -R "$(id -u):$(id -g)" crates/novomodelo-python/dist
           fi
           python -m pip install --quiet wheel
-          python scripts/gen/inject_wheel_licenses.py crates/novomodelo-python/dist \
+          python scripts/gen/inject_dist_licenses.py crates/novomodelo-python/dist \
             LICENSE NOTICE THIRD_PARTY_NOTICES.md crates/novomodelo-python/THIRD_PARTY_LICENSES.md
 
       - name: Probe the dgemm kernel of the wheels
@@ -137,6 +135,44 @@ jobs:
         with:
           name: wheels-${{ matrix.target }}
           path: crates/novomodelo-python/dist/
+
+  # The sdist, then the package built from it the way pip does where no wheel fits.
+  sdist:
+    name: sdist
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+          working-directory: crates/novomodelo-python
+
+      - name: Bundle license notices into the sdist
+        run: |
+          python scripts/gen/inject_dist_licenses.py crates/novomodelo-python/dist \
+            LICENSE NOTICE THIRD_PARTY_NOTICES.md
+
+      - name: Install from the sdist and test
+        run: |
+          pip install crates/novomodelo-python/dist/*.tar.gz
+          pip install pytest pyarrow numpy
+          pytest crates/novomodelo-python/tests/ -v
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: sdist
+          path: crates/novomodelo-python/dist/*.tar.gz
+          if-no-files-found: error
 
   # The CLI the parity tests compare the wheel against. Built once on the host
   # runner and shared by the linux x86_64 test cells, rather than once per cell.
@@ -218,7 +254,7 @@ jobs:
           chmod +x target/release/novomodelo
           pytest crates/novomodelo-python/tests/ -v --require-cli-binary
 
-  # Publish all wheels to PyPI.
+  # Publish all wheels and the sdist to PyPI.
   #
   # Runs on either a version tag push or an explicit workflow_dispatch
   # invocation (so we can recover from a transient build failure on the
@@ -226,7 +262,7 @@ jobs:
   # short-circuits to skip in either case.
   publish:
     name: Publish to PyPI
-    needs: [build, test]
+    needs: [build, test, sdist]
     if: >-
       (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
       && !(github.event.inputs.dry-run == 'true')
@@ -239,6 +275,11 @@ jobs:
         with:
           pattern: "wheels-*"
           merge-multiple: true
+          path: dist/
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: sdist
           path: dist/
 
       - name: List artifacts

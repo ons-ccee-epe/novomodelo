@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `novomodelo-python` is published with an sdist next to the wheels. Where no
+  wheel fits, such as Linux with glibc older than 2.34 (RHEL 8, Ubuntu 20.04),
+  pip builds it from the sdist, given a Rust toolchain, cmake and a C++ compiler.
+
 ## [0.19.1] - 2026-10-26
 
 ### Added
