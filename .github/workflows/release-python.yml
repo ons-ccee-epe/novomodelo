@@ -6,6 +6,11 @@
 #             linux musl x86_64, macOS x86_64/aarch64, Windows x86_64
 # Python:    3.12+ (single abi3 wheel per platform via PyO3 stable ABI)
 #
+# glibc floor: the manylinux_2_34 wheel needs glibc >= 2.34 (RHEL and Rocky
+# Linux 9+, Ubuntu 22.04+, Debian 12+); RHEL 8 and Ubuntu 20.04 are below it, and
+# with no sdist pip finds nothing to install there. The aarch64 wheel needs
+# glibc >= 2.28. Keep crates/novomodelo-python/README.md in step when the tag changes.
+#
 # Note: sdist is not built because maturin cannot package crates with path
 # dependencies outside the crate directory (known maturin limitation).
 # Users who need to build from source should clone the full workspace.
