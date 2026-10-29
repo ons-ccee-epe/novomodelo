@@ -62,15 +62,21 @@ Cargo. The Rust dependency graph is handled by two cooperating mechanisms:
 - **License _checking_** — `deny.toml` (`[licenses] allow`) gates every crate's
   license against an allow-list, failing CI on anything outside it.
 - **License _reproduction_** — `THIRD_PARTY_LICENSES.md` reproduces the full
-  license text of every crate that ships in a binary (CLI release artifacts and
-  Python wheels statically link them), satisfying the notice-retention clauses of
-  whatever permissive licenses are present in the graph (MIT, Apache-2.0, BSD,
-  ISC, Unicode, …). It is **generated** across all features and targets — a
-  superset of any single distributed build — not hand-maintained; regenerate
-  after any dependency change with:
+  license text of every crate that ships in a binary, satisfying the
+  notice-retention clauses of whatever permissive licenses are present in the
+  graph (MIT, Apache-2.0, BSD, ISC, Unicode, …). The copy at the repository root
+  covers the workspace (the CLI release artifacts); the copy in
+  `crates/novomodelo-python/` covers the Python wheels, whose dependency graph is
+  separate because that crate is outside the workspace, and is the one the wheels
+  bundle. Both are **generated** across all features and targets — a superset of
+  any single distributed build — not hand-maintained; regenerate them after any
+  dependency change with:
 
   ```
   cargo about generate --all-features about.hbs -o THIRD_PARTY_LICENSES.md
+  cargo about generate --manifest-path crates/novomodelo-python/Cargo.toml \
+      --all-features -c about.toml about.hbs \
+      -o crates/novomodelo-python/THIRD_PARTY_LICENSES.md
   ```
 
   The accepted-license list in `about.toml` is kept in sync with `deny.toml`.

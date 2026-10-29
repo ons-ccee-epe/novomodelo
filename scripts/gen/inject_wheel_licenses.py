@@ -2,9 +2,9 @@
 """Inject repo-root license/notice files into each built wheel.
 
 maturin builds the `novomodelo-python` wheels from `crates/novomodelo-python`, but the
-canonical license texts (LICENSE, NOTICE, THIRD_PARTY_NOTICES.md,
-THIRD_PARTY_LICENSES.md) live at the repository root. PEP 639 `license-files`
-globs cannot reference paths above the project directory, so this post-build
+canonical license texts (LICENSE, NOTICE, THIRD_PARTY_NOTICES.md) live at the
+repository root. PEP 639 `license-files` globs cannot reference paths above the
+project directory, so this post-build
 step drops the files into each wheel's `<dist-info>/licenses/` directory — the
 PEP 639 location pip installs to — instead of duplicating them into the crate.
 
