@@ -556,7 +556,7 @@ jobs:
         run: |
           python -m venv .venv
           source .venv/bin/activate
-          pip install maturin pytest pyarrow
+          pip install maturin pytest pyarrow numpy
       - name: Build and install novomodelo-python
         working-directory: crates/novomodelo-python
         run: |

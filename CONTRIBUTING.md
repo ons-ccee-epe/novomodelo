@@ -221,7 +221,7 @@ the one CI runs — builds the extension into a virtualenv and runs pytest:
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install maturin pytest pyarrow
+pip install maturin pytest pyarrow numpy
 (cd crates/novomodelo-python && maturin develop --release)
 pytest crates/novomodelo-python/tests/
 ```

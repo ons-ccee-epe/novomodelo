@@ -169,7 +169,7 @@ jobs:
       - name: Install wheel and test dependencies
         run: |
           pip install --no-index --find-links dist/ novomodelo-python
-          pip install pytest pyarrow
+          pip install pytest pyarrow numpy
 
       - name: Run tests
         run: pytest crates/novomodelo-python/tests/ -v
