@@ -4,7 +4,8 @@
 # workspace crates it depends on and the vendored solver sources.
 #
 # Platforms:  linux x86_64 (manylinux_2_34), linux aarch64 (manylinux_2_28),
-#             linux musl x86_64, macOS x86_64/aarch64, Windows x86_64
+#             linux musl x86_64, macOS x86_64/aarch64, Windows x86_64; each wheel
+#             is tested on its own platform before publish
 # Python:    3.12+ (single abi3 wheel per platform via PyO3 stable ABI)
 #
 # glibc floor: the manylinux_2_34 wheel needs glibc >= 2.34 (RHEL and Rocky
@@ -198,9 +199,11 @@ jobs:
           path: target/release/novomodelo
           if-no-files-found: error
 
-  # Smoke-test the built wheels on native platforms across Python versions.
-  # The linux x86_64 cells also run the CLI-vs-Python parity modules, which skip
-  # without a CLI binary; --require-cli-binary makes a missing one a failure.
+  # Smoke-test the built wheels on every target they are built for, across
+  # Python versions. The linux x86_64 cells also run the CLI-vs-Python parity
+  # modules, which skip without a CLI binary; --require-cli-binary makes a missing
+  # one a failure. The musl wheel runs in an Alpine container, where pip selects
+  # musllinux wheels for the test dependencies too.
   test:
     name: test (${{ matrix.target }}, py${{ matrix.python-version }})
     needs: [build, cli]
@@ -209,31 +212,50 @@ jobs:
       matrix:
         target:
           - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
           - aarch64-apple-darwin
+          - x86_64-apple-darwin
           - x86_64-pc-windows-msvc
         python-version: ["3.12", "3.13", "3.14"]
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
           - target: aarch64-apple-darwin
             os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-          allow-prereleases: true
-
       - uses: actions/download-artifact@v7
         with:
           name: wheels-${{ matrix.target }}
           path: dist/
 
+      - name: Run tests in Alpine
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w python:${{ matrix.python-version }}-alpine sh -euc '
+            pip install --no-index --find-links dist/ novomodelo-python
+            pip install pytest pyarrow numpy
+            pytest crates/novomodelo-python/tests/ -v'
+
+      - uses: actions/setup-python@v6
+        if: matrix.target != 'x86_64-unknown-linux-musl'
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+
       - name: Install wheel and test dependencies
+        if: matrix.target != 'x86_64-unknown-linux-musl'
         run: |
           pip install --no-index --find-links dist/ novomodelo-python
           pip install pytest pyarrow numpy
@@ -245,7 +267,9 @@ jobs:
           path: target/release/
 
       - name: Run tests
-        if: matrix.target != 'x86_64-unknown-linux-gnu'
+        if: >-
+          matrix.target != 'x86_64-unknown-linux-gnu'
+          && matrix.target != 'x86_64-unknown-linux-musl'
         run: pytest crates/novomodelo-python/tests/ -v
 
       - name: Run tests with the CLI parity modules
