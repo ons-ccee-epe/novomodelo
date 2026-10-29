@@ -59,7 +59,6 @@ readonly SCAN_DIRS=(
     "${REPO_ROOT}/crates/novomodelo-sddp/src"
     "${REPO_ROOT}/crates/novomodelo-cli/src"
     "${REPO_ROOT}/crates/novomodelo-python/src"
-    "${REPO_ROOT}/crates/novomodelo-mcp/src"
     "${REPO_ROOT}/crates/novomodelo-tui/src"
 )
 

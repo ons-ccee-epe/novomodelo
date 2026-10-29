@@ -7,7 +7,7 @@ vertical is SDDP-based hydrothermal dispatch.
 
 - **Language**: Rust 2024 edition, MSRV 1.88
 - **License**: Apache-2.0
-- **Workspace**: Cargo workspace members (`novomodelo-mcp`, `novomodelo-tui`, `novomodelo-flow`, `novomodelo-uc`, `novomodelo-emt` are reserved stubs) plus the maturin-built `novomodelo-python` (excluded from the workspace so `cargo test --workspace` does not require a Python interpreter); `ARCHITECTURE.md` owns the full crate map
+- **Workspace**: Cargo workspace members (`novomodelo-tui`, `novomodelo-flow`, `novomodelo-uc`, `novomodelo-emt` are reserved stubs) plus the maturin-built `novomodelo-python` (excluded from the workspace so `cargo test --workspace` does not require a Python interpreter); `ARCHITECTURE.md` owns the full crate map
 - **Build**: `cargo build --workspace`
 - **Test**: `cargo test --workspace --features "mpi numa shared-memory serde schema slow-tests flatc-conformance test-support"`
 - **Format**: `cargo fmt --all` (CI enforces `--check`)

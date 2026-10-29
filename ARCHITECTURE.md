@@ -106,6 +106,11 @@ SolverInterface`).
   of the ecosystem; for all current work, depend on the specific `novomodelo-*`
   crates you need.
 
+The MCP (Model Context Protocol) server for AI agents is not a crate of this
+workspace: it is the separate Python package
+[`novomodelo-mcp`](https://github.com/ons-ccee-epe/novomodelo-mcp) (PyPI), which
+calls the `novomodelo` CLI and the `novomodelo-python` bindings.
+
 ### Reserved crates (not yet implemented)
 
 Reserved crate names hold skeleton stub files — each with a `Cargo.toml`
@@ -113,9 +118,6 @@ Reserved crate names hold skeleton stub files — each with a `Cargo.toml`
 stating their intended future scope — until their functionality is implemented.
 None currently build any functionality or participate in the dependency graph below:
 
-- **[`novomodelo-mcp`](crates/novomodelo-mcp/README.md)** — reserved for an MCP
-  (Model Context Protocol) server binary for AI-agent integration; depend on
-  `novomodelo-cli` for command-line interaction until this lands.
 - **[`novomodelo-tui`](crates/novomodelo-tui/README.md)** — reserved for a `ratatui`
   terminal UI; depend on `novomodelo-cli` until this lands.
 - **[`novomodelo-flow`](crates/novomodelo-flow/README.md)** — reserved for AC/DC power
@@ -130,8 +132,8 @@ None currently build any functionality or participate in the dependency graph be
 Arrows point from dependency to dependent (an arrow from `novomodelo-core` to
 `novomodelo-io` means `novomodelo-io` depends on `novomodelo-core`). Every edge below is a
 direct `path = "../..."` dependency declared in a crate's `Cargo.toml`
-`[dependencies]` — none are inferred or transitive-only. The five reserved
-crates (`novomodelo-mcp`, `novomodelo-tui`, `novomodelo-flow`, `novomodelo-uc`, `novomodelo-emt`) and
+`[dependencies]` — none are inferred or transitive-only. The reserved
+crates (`novomodelo-tui`, `novomodelo-flow`, `novomodelo-uc`, `novomodelo-emt`) and
 the empty `novomodelo` umbrella crate have no dependency edges yet and are shown
 detached.
 
@@ -171,13 +173,12 @@ graph TD
     sddp --> python
 
     umbrella[novomodelo]
-    mcp[novomodelo-mcp]
     tui[novomodelo-tui]
     flow[novomodelo-flow]
     uc[novomodelo-uc]
     emt[novomodelo-emt]
 
-    class umbrella,mcp,tui,flow,uc,emt reserved;
+    class umbrella,tui,flow,uc,emt reserved;
     classDef reserved stroke-dasharray: 4 3;
 ```
 

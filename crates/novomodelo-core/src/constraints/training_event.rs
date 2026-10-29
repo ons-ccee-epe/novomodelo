@@ -19,8 +19,8 @@
 //!   exception is [`TrainingEvent::TrainingStarted::timestamp`], which records the
 //!   run-level start time once at entry.
 //! - **Consumer-agnostic.** This module is defined in `novomodelo-core` (not in the
-//!   algorithm crate) so that interface crates (`novomodelo-cli`, `novomodelo-tui`,
-//!   `novomodelo-mcp`) can consume events without depending on the algorithm crate.
+//!   algorithm crate) so that interface crates (`novomodelo-cli`, `novomodelo-tui`)
+//!   can consume events without depending on the algorithm crate.
 //!
 //! ## Event channel pattern
 //!

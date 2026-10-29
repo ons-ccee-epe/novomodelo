@@ -9,7 +9,7 @@ propagated Apache-2.0 `NOTICE` text lives in `NOTICE`.
 
 ## Overview
 
-- Apache License 2.0: 171 crate(s)
+- Apache License 2.0: 170 crate(s)
 - MIT License: 30 crate(s)
 - BSD 3-Clause &quot;New&quot; or &quot;Revised&quot; License: 3 crate(s)
 - Creative Commons Zero v1.0 Universal: 1 crate(s)
@@ -3476,7 +3476,6 @@ Used by:
 - novomodelo-emt 0.19.1
 - novomodelo-flow 0.19.1
 - novomodelo-io 0.19.1
-- novomodelo-mcp 0.19.1
 - novomodelo-sddp 0.19.1
 - novomodelo-solver 0.19.1
 - novomodelo-stochastic 0.19.1

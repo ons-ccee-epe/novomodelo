@@ -1284,10 +1284,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "novomodelo-mcp"
-version = "0.19.1"
-
-[[package]]
 name = "novomodelo-sddp"
 version = "0.19.1"
 dependencies = [

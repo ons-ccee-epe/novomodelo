@@ -338,7 +338,6 @@ novomodelo/
 │   ├── novomodelo-comm/         # Communication abstraction (MPI, local)
 │   ├── novomodelo-sddp/         # SDDP training loop, simulation, cut management
 │   ├── novomodelo-cli/          # Binary: run/validate/init/schema/version
-│   ├── novomodelo-mcp/          # Binary: MCP server for AI agent integration (reserved)
 │   ├── novomodelo-python/       # cdylib: PyO3 Python bindings
 │   ├── novomodelo-tui/          # Library: ratatui terminal UI (reserved)
 │   ├── novomodelo-flow/         # Library: power flow algorithms (reserved)
@@ -528,10 +527,10 @@ See `.claude/architecture-rules.md` for the full Python parity checklist.
 - The local backend's calls compile to no-ops on the hot path — do not add indirection that penalizes single-process users.
 - MPI code requires an MPI installation to test; gate MPI tests appropriately.
 
-#### novomodelo-mcp and novomodelo-python
+#### novomodelo-python
 
-- These crates are **single-process only** — they must never initialize MPI or depend on `ferrompi`.
-- `novomodelo-python` must release the GIL (`py.allow_threads()`) during all Rust computation.
+- This crate is **single-process only** — it must never initialize MPI or depend on `ferrompi`.
+- It must release the GIL (`py.allow_threads()`) during all Rust computation.
 
 ### Testing
 
