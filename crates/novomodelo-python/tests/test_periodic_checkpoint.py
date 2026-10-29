@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import time
+from typing import Any
 
 import pytest
 
@@ -155,11 +156,12 @@ def _set_iteration_limit(case: pathlib.Path, limit: int, mode: str | None) -> No
         config["training"]["stopping_rules"] = [
             {"type": "iteration_limit", "limit": limit}
         ]
-        config["policy"] = {
+        policy: dict[str, Any] = {
             "checkpointing": {"enabled": True, "interval_iterations": 1}
         }
         if mode is not None:
-            config["policy"]["mode"] = mode
+            policy["mode"] = mode
+        config["policy"] = policy
 
     _rewrite_json(case / "config.json", edit)
 

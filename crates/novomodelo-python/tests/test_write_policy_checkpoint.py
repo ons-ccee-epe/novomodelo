@@ -184,7 +184,7 @@ def test_write_policy_checkpoint_lower_bound_history_round_trips(
 
     loaded = novomodelo.results.load_policy(str(tmp_path))
     recorded = loaded["metadata"]["producer"]["lower_bound_history"]
-    assert [v.hex() for v in recorded] == [v.hex() for v in history]
+    assert [v.hex() for v in recorded] == [float(v).hex() for v in history]
 
 
 def test_write_policy_checkpoint_lower_bound_history_omitted_reads_as_empty(

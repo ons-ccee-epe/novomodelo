@@ -41,6 +41,8 @@ features = ["pyo3/extension-module"]
 module-name = "novomodelo._native"
 python-source = "python"
 
+# Editor aid only: ty ([tool.ty]) is the type gate, and pyrightconfig.json takes
+# precedence over this section.
 [tool.pyright]
 venvPath = "../.."
 venv = ".venv"
@@ -51,6 +53,22 @@ reportMissingModuleSource = "none"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ty.environment]
+python-version = "3.12"
+
+[tool.ty.src]
+include = ["python", "tests"]
+
+[tool.ty.terminal]
+error-on-warning = true
+
+[[tool.ty.overrides]]
+# The compiled `novomodelo._native` has no stub: `__init__.pyi` types the public surface.
+include = ["python/novomodelo/__init__.py", "tests/test_import.py"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
 
 [tool.ruff]
 target-version = "py312"

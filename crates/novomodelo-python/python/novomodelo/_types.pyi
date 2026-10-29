@@ -3,9 +3,9 @@
 This module carries **no** compiled counterpart: the leading underscore marks it
 as a pure typing helper (`PEP 589` `TypedDict`s). It is never registered as a
 runtime submodule -- importing it from compiled code would fail. Type checkers
-pick it up via `[tool.pyright] stubPath = "stubs"`. The field set of each
-`TypedDict` mirrors the `set_item` call sites in `src/run.rs`; do not invent
-keys.
+reach it through the `from ._types import ...` lines of `__init__.pyi` and `run.pyi`.
+The field set of each `TypedDict` mirrors the `set_item` call sites in `src/run.rs`;
+do not invent keys.
 """
 
 from typing import Any, TypedDict

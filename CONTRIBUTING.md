@@ -230,13 +230,16 @@ GIL-bound conversion helpers (Python↔JSON value mapping, result dict shapes) a
 covered by the pytest suite rather than Rust unit tests — extend the pytest
 suite when touching them.
 
-The Python half (stubs and tests) is linted and formatted with ruff, configured in
-`crates/novomodelo-python/pyproject.toml`; CI's `Python Lint` job pins the version:
+The Python half (stubs and tests) is linted and formatted with ruff and type-checked
+with ty, both configured in `crates/novomodelo-python/pyproject.toml`; CI pins their
+versions (the `Python Lint` job and the `Python Bindings` job). ty reads the installed
+extension, so run it in the virtualenv above after `maturin develop`:
 
 ```bash
-pip install ruff
+pip install ruff ty
 ruff check crates/novomodelo-python
 ruff format --check crates/novomodelo-python
+(cd crates/novomodelo-python && ty check)
 ```
 
 ### Manual boundary-reduction regression

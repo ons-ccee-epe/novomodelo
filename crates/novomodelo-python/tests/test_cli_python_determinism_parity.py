@@ -58,6 +58,7 @@ import json
 import pathlib
 import re
 import shutil
+from collections.abc import Mapping
 from typing import Any
 
 import pyarrow.parquet as pq
@@ -301,7 +302,7 @@ def toy_cli_output(
 @pytest.fixture(scope="module")
 def toy_python_run(
     tmp_path_factory: pytest.TempPathFactory,
-) -> tuple[pathlib.Path, dict[str, Any]]:
+) -> tuple[pathlib.Path, Mapping[str, Any]]:
     """Run 1dtoy once through `novomodelo.run.run()`; return the output dir and result."""
     import novomodelo.run
 
@@ -313,7 +314,7 @@ def toy_python_run(
 
 @pytest.fixture(scope="module")
 def toy_python_output(
-    toy_python_run: tuple[pathlib.Path, dict[str, Any]],
+    toy_python_run: tuple[pathlib.Path, Mapping[str, Any]],
 ) -> pathlib.Path:
     """The output directory of the single Python run."""
     return toy_python_run[0]
@@ -321,8 +322,8 @@ def toy_python_output(
 
 @pytest.fixture(scope="module")
 def toy_python_result(
-    toy_python_run: tuple[pathlib.Path, dict[str, Any]],
-) -> dict[str, Any]:
+    toy_python_run: tuple[pathlib.Path, Mapping[str, Any]],
+) -> Mapping[str, Any]:
     """The result dict of the single Python run (the run that wrote `toy_python_output`)."""
     return toy_python_run[1]
 
@@ -611,7 +612,7 @@ def test_negative_self_test_json_comparison_fails_on_perturbation(
 
 
 def test_python_result_dict_matches_written_metadata(
-    toy_python_result: dict[str, Any], toy_python_output: pathlib.Path
+    toy_python_result: Mapping[str, Any], toy_python_output: pathlib.Path
 ) -> None:
     """The Python result dict agrees with the training metadata the same call wrote.
 

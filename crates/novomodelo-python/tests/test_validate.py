@@ -658,4 +658,4 @@ def test_validate_output_dir_is_keyword_only() -> None:
     import novomodelo.io
 
     with pytest.raises(TypeError):
-        novomodelo.io.validate(VALID_CASE_1DTOY, None, "out")  # type: ignore[call-arg]
+        novomodelo.io.validate(VALID_CASE_1DTOY, None, "out")  # ty: ignore[too-many-positional-arguments]  # keyword-only

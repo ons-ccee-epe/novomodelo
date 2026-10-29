@@ -100,7 +100,11 @@ def test_run_rejects_skip_simulation_parameter(tmp_path: pathlib.Path) -> None:
     import novomodelo.run
 
     with pytest.raises(TypeError, match="unexpected keyword argument") as exc_info:
-        novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path), skip_simulation=True)
+        novomodelo.run.run(
+            VALID_CASE,
+            output_dir=str(tmp_path),
+            skip_simulation=True,  # ty: ignore[unknown-argument]  # removed parameter
+        )
 
     assert "skip_simulation" in str(exc_info.value), (
         "TypeError message must mention 'skip_simulation'"

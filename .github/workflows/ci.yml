@@ -571,6 +571,15 @@ jobs:
         run: |
           source .venv/bin/activate
           pytest crates/novomodelo-python/tests/ -v --require-cli-binary
+      # ty resolves `novomodelo` from the editable install, so it runs after `maturin develop`.
+      # Pinned because ty is pre-1.0 and a release can change what it reports.
+      - name: Type-check the stubs and tests (ty)
+        if: matrix.python-version == '3.12'
+        working-directory: crates/novomodelo-python
+        run: |
+          source ../../.venv/bin/activate
+          pip install ty==0.0.28
+          ty check
       # Execute the quickstart notebook end-to-end against the locally built
       # wheel (the `maturin develop` artifact above — never a PyPI install) so
       # it cannot silently break. Run once on the lowest matrix Python; nbmake

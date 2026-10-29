@@ -436,12 +436,12 @@ def test_load_stochastic_opening_tree_bad_stage_raises(
 
 def test_load_stochastic_reexport_identity() -> None:
     """load_stochastic is present and is the compiled function (identity)."""
-    import novomodelo._native.results
+    import novomodelo._native.results  # ty: ignore[unresolved-import]  # compiled, no stub
     import novomodelo.results
 
     assert hasattr(novomodelo.results, "load_stochastic")
     assert (
-        novomodelo.results.load_stochastic is novomodelo._native.results.load_stochastic
+        novomodelo.results.load_stochastic is novomodelo._native.results.load_stochastic  # ty: ignore[unresolved-attribute]
     )
 
 

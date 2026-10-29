@@ -87,7 +87,7 @@ def test_system_not_constructable() -> None:
     import novomodelo.model
 
     with pytest.raises(TypeError):
-        novomodelo.model.System()  # type: ignore[call-arg]
+        novomodelo.model.System()
 
 
 def test_energy_contract_properties() -> None:
