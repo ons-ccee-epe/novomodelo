@@ -286,6 +286,7 @@ fn build_system() -> novomodelo_core::System {
         past_anticipated_commitments,
         recent_observations: vec![],
         past_defluences: vec![],
+        thermal_unit_states: Vec::new(),
     };
 
     let policy_graph = HorizonGraph {
@@ -597,6 +598,7 @@ fn build_mixed_lead_system(reversed: bool) -> novomodelo_core::System {
         past_anticipated_commitments,
         recent_observations: vec![],
         past_defluences: vec![],
+        thermal_unit_states: Vec::new(),
     };
 
     let policy_graph = HorizonGraph {
@@ -902,6 +904,7 @@ fn build_delivery_oracle_system(annual_discount_rate: f64) -> novomodelo_core::S
         }],
         recent_observations: vec![],
         past_defluences: vec![],
+        thermal_unit_states: Vec::new(),
     };
     let policy_graph = HorizonGraph {
         stage_discount_rate_overrides: std::collections::BTreeMap::new(),
@@ -1137,6 +1140,7 @@ fn build_parallel_evap_system() -> novomodelo_core::System {
         past_anticipated_commitments: vec![],
         recent_observations: vec![],
         past_defluences: vec![],
+        thermal_unit_states: Vec::new(),
     };
 
     let policy_graph = HorizonGraph {
@@ -1386,6 +1390,7 @@ fn build_stochastic_parallel_system() -> novomodelo_core::System {
         past_anticipated_commitments: vec![],
         recent_observations: vec![],
         past_defluences: vec![],
+        thermal_unit_states: Vec::new(),
     };
 
     let policy_graph = HorizonGraph {
@@ -1725,6 +1730,7 @@ fn build_chronological_noise_system(spec: &ChronologicalNoiseSpec) -> novomodelo
         past_anticipated_commitments: vec![],
         recent_observations: vec![],
         past_defluences: vec![],
+        thermal_unit_states: Vec::new(),
     };
 
     let mut buses = vec![bus];
@@ -2097,6 +2103,7 @@ fn build_two_hydro_evap_system() -> novomodelo_core::System {
         past_anticipated_commitments: vec![],
         recent_observations: vec![],
         past_defluences: vec![],
+        thermal_unit_states: Vec::new(),
     };
 
     let policy_graph = HorizonGraph {

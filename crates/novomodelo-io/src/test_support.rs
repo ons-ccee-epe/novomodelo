@@ -707,6 +707,7 @@ pub(crate) fn base_parsed_data(stages: StagesData, buses: Vec<Bus>) -> ParsedDat
             past_anticipated_commitments: vec![],
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         },
         post_study_stages: None,
         buses,

@@ -6256,6 +6256,7 @@ mod chronological_telescoping {
             past_anticipated_commitments: vec![],
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         SystemBuilder::new()
@@ -7023,6 +7024,7 @@ mod season_descriptor_checkpoint_round_trip {
             past_anticipated_commitments: vec![],
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         SystemBuilder::new()
@@ -7398,6 +7400,7 @@ mod boundary_season_gate_round_trip {
             past_anticipated_commitments: vec![],
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         SystemBuilder::new()
@@ -7746,6 +7749,7 @@ mod transit_arrival_interval_checkpoint_round_trip {
             past_anticipated_commitments: vec![],
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         let post_study_stages = PostStudyStages {
@@ -8171,6 +8175,7 @@ mod chronological_attribution {
             // these tests inspect LP structure and state dimension, never a
             // seeded value.
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         SystemBuilder::new()

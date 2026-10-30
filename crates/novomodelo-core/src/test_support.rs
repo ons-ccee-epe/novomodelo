@@ -16,7 +16,7 @@ use crate::{
     Block, BlockMode, Bus, ContractType, DeficitSegment, EnergyContract, EntityId, Hydro,
     HydroGenerationModel, HydroPenalties, HydroUnitGroup, Line, NoiseMethod, NonControllableSource,
     PumpingStation, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, Thermal,
-    ThermalUnit,
+    ThermalUnit, ThermalUnitInitialState, ThermalUnitStatus,
 };
 
 /// The `NaiveDate` for a calendar-valid `(year, month, day)` triple.
@@ -404,6 +404,53 @@ pub fn make_thermal_unit(
         min_down_time_hours,
         startup_ramp_mw,
         shutdown_ramp_mw,
+    }
+}
+
+/// Fixture fields for [`make_thermal_unit_state`].
+#[derive(Debug, Clone)]
+pub struct ThermalUnitStateSpec {
+    /// Owning plant identifier.
+    pub thermal_id: i32,
+    /// Unit identifier, unique within the plant.
+    pub unit_id: i32,
+    /// Operating status before the study start.
+    pub status: ThermalUnitStatus,
+    /// Hours in the current state.
+    pub time_in_state_hours: f64,
+    /// Average output before the study start.
+    pub previous_generation_mw: f64,
+}
+
+impl Default for ThermalUnitStateSpec {
+    fn default() -> Self {
+        Self {
+            thermal_id: 0,
+            unit_id: 0,
+            status: ThermalUnitStatus::Off,
+            time_in_state_hours: 0.0,
+            previous_generation_mw: 0.0,
+        }
+    }
+}
+
+/// Build a [`ThermalUnitInitialState`] from `spec`.
+#[must_use]
+pub fn make_thermal_unit_state(
+    ThermalUnitStateSpec {
+        thermal_id,
+        unit_id,
+        status,
+        time_in_state_hours,
+        previous_generation_mw,
+    }: ThermalUnitStateSpec,
+) -> ThermalUnitInitialState {
+    ThermalUnitInitialState {
+        thermal_id: EntityId(thermal_id),
+        unit_id: EntityId(unit_id),
+        status,
+        time_in_state_hours,
+        previous_generation_mw,
     }
 }
 

@@ -1665,6 +1665,7 @@ mod filling_cut_validity {
             past_anticipated_commitments: vec![],
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         SystemBuilder::new()

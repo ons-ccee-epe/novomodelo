@@ -582,6 +582,7 @@ fn convert(raw: RawInitialConditions) -> InitialConditions {
         past_anticipated_commitments,
         recent_observations,
         past_defluences,
+        thermal_unit_states: Vec::new(),
     }
 }
 

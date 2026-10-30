@@ -60,7 +60,7 @@ pub use constraints::generic_constraint::{
 };
 pub use constraints::initial_conditions::{
     AnticipatedCommitmentHistory, HydroPastDefluence, HydroStorage, InitialConditions,
-    RecentObservation,
+    RecentObservation, ThermalUnitInitialState, ThermalUnitStatus, ThermalUnitTransition,
 };
 pub use constraints::training_event::{
     PoolRowCounts, TrainingEvent, WORKER_TIMING_SLOT_BWD_SETUP, WORKER_TIMING_SLOT_BWD_WALL,

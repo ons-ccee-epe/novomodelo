@@ -11,14 +11,15 @@
 
 use chrono::NaiveDate;
 use novomodelo_core::test_support::{
-    BusSpec, ContractSpec, HydroSpec, LineSpec, NcsSpec, PumpingSpec, ThermalSpec, UnitGroupSpec,
-    make_bus, make_contract, make_hydro, make_line, make_ncs, make_pumping_station, make_thermal,
+    BusSpec, ContractSpec, HydroSpec, LineSpec, NcsSpec, PumpingSpec, ThermalSpec, ThermalUnitSpec,
+    ThermalUnitStateSpec, UnitGroupSpec, make_bus, make_contract, make_hydro, make_line, make_ncs,
+    make_pumping_station, make_thermal, make_thermal_unit, make_thermal_unit_state,
     make_unit_group,
 };
 use novomodelo_core::{
     Bus, DeficitSegment, DiversionChannel, EnergyContract, EntityId, FillingConfig, Hydro,
-    HydroUnitGroup, Line, NonControllableSource, PumpingStation, SystemBuilder, Thermal,
-    ValidationError,
+    HydroUnitGroup, InitialConditions, Line, NonControllableSource, PumpingStation, SystemBuilder,
+    Thermal, ThermalUnitStatus, ValidationError,
 };
 
 fn deficit_bus(id: i32) -> Bus {
@@ -158,6 +159,63 @@ fn test_declaration_order_invariance() {
         system_fwd, system_rev,
         "System must be identical regardless of input entity ordering"
     );
+}
+
+#[test]
+fn thermal_unit_data_built_through_public_api_is_canonical() {
+    let mut thermal = sized_thermal(1, 1);
+    thermal.units = [2, 1]
+        .into_iter()
+        .map(|id| {
+            make_thermal_unit(ThermalUnitSpec {
+                id,
+                min_generation_mw: 30.0,
+                max_generation_mw: 60.0,
+                ..Default::default()
+            })
+        })
+        .collect();
+
+    let system = SystemBuilder::new()
+        .buses(vec![deficit_bus(1)])
+        .thermals(vec![thermal])
+        .initial_conditions(InitialConditions {
+            thermal_unit_states: vec![
+                make_thermal_unit_state(ThermalUnitStateSpec {
+                    thermal_id: 1,
+                    unit_id: 2,
+                    status: ThermalUnitStatus::On,
+                    previous_generation_mw: 45.0,
+                    ..Default::default()
+                }),
+                make_thermal_unit_state(ThermalUnitStateSpec {
+                    thermal_id: 1,
+                    unit_id: 1,
+                    status: ThermalUnitStatus::Off,
+                    previous_generation_mw: 0.0,
+                    ..Default::default()
+                }),
+            ],
+            ..InitialConditions::default()
+        })
+        .build()
+        .expect("thermal with units and records must be valid");
+
+    let unit_ids: Vec<i32> = system
+        .thermal(EntityId(1))
+        .expect("thermal 1 is built")
+        .units
+        .iter()
+        .map(|u| u.id.0)
+        .collect();
+    let record_keys: Vec<(i32, i32)> = system
+        .initial_conditions()
+        .thermal_unit_states
+        .iter()
+        .map(|s| (s.thermal_id.0, s.unit_id.0))
+        .collect();
+    assert_eq!(unit_ids, vec![1, 2]);
+    assert_eq!(record_keys, vec![(1, 1), (1, 2)]);
 }
 
 #[test]

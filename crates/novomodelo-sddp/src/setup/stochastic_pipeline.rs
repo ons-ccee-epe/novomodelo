@@ -735,6 +735,7 @@ mod tests {
                 past_anticipated_commitments: vec![],
                 recent_observations: vec![],
                 past_defluences: vec![],
+                thermal_unit_states: Vec::new(),
             })
             .build()
             .expect("ring fixture: valid system")
@@ -1747,6 +1748,7 @@ mod tests {
                 past_anticipated_commitments: vec![],
                 recent_observations: vec![],
                 past_defluences: vec![],
+                thermal_unit_states: Vec::new(),
             })
             .build()
             .expect("AR(0) declared-lag-history fixture: valid system");
@@ -2162,6 +2164,7 @@ mod tests {
                 past_anticipated_commitments: vec![],
                 recent_observations: vec![],
                 past_defluences: vec![],
+                thermal_unit_states: Vec::new(),
             })
             .external_scenarios(external_scenarios)
             .external_load_scenarios(external_load_scenarios)
