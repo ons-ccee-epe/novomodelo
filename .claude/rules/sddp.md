@@ -4740,3 +4740,36 @@ Read: `setup/mod.rs` (`warn_on_boundary_absent_post_study_delivery`,
 `warn_on_boundary_absent_post_study_delivery_fires_once_when_boundary_absent` and
 `warn_on_boundary_absent_post_study_delivery_silent_when_boundary_present`
 (`setup/tests.rs`).
+
+## Thermal units and their initial states never enter the stage LP
+
+A thermal plant's declared units (`Thermal.units`) and their initial operating
+states (`InitialConditions.thermal_unit_states`) are validated and put in
+canonical order when the `System` is built. No stage-LP, policy or simulation
+code reads them: the plant's own resolved bounds (`thermal_bounds_at_block`)
+bound its generation column, so a study that declares units builds the same
+stage LPs, cuts and simulation results as the same study without them. Both
+fields are a reserved seam for a unit-level formulation, not dead data. A change
+that makes the LP read them replaces this contract and rewrites this entry and
+its pinning test in the same change.
+
+Wiring them in by analogy with hydro unit groups is the wrong-but-compiling
+alternative. A hydro plant's groups set the bounds of its cells (the hydro-cell
+sections above). A thermal plant's own maximum caps the summed output of its
+units instead, whose maxima sum to at least that maximum, and an initial state
+places a unit on a ramp held in `THERMAL_RAMP_INTERVAL_HOURS` steps that no
+stage LP represents. Raising the generation column bound to the units' summed
+maximum, or fixing a floor from an `On` unit's minimum, still builds, solves and
+converges, and it changes the dispatch of every study that declares units.
+
+Read: `crates/novomodelo-core/src/entities/thermal.rs` (`Thermal.units`,
+`ThermalUnit`), `crates/novomodelo-core/src/constraints/initial_conditions.rs`
+(`InitialConditions.thermal_unit_states`, `ThermalUnitInitialState`), and
+`lp/builder/columns.rs` (`fill_thermal_columns`, which reads the plant bounds
+only). Pinned by
+`declared_thermal_units_leave_the_stage_lp_and_parity_hash_unchanged`
+(`tests/parity.rs`): a study whose units' maxima sum above the plant maximum,
+with one unit starting up and another shutting down, builds byte-identical stage
+templates and setup facts and gives the parity hash of the same study without
+units, while a twin whose plant maximum is raised to the units' summed maximum
+moves both the column bounds and the hash.
