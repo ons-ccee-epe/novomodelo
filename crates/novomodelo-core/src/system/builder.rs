@@ -349,6 +349,9 @@ impl SystemBuilder {
             hydro.sort_unit_groups();
         }
         sort_canonical(&mut self.thermals, |t| t.operational_start_date, |t| t.id.0);
+        for thermal in &mut self.thermals {
+            thermal.sort_units();
+        }
         sort_canonical(
             &mut self.pumping_stations,
             |p| p.operational_start_date,
@@ -524,7 +527,10 @@ pub(crate) fn check_canonical_order<T, K: Ord>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{BusSpec, HydroSpec, MirrorUnitGroup, make_bus, make_hydro};
+    use crate::test_support::{
+        BusSpec, HydroSpec, MirrorUnitGroup, ThermalSpec, ThermalUnitSpec, make_bus, make_hydro,
+        make_thermal, make_thermal_unit,
+    };
     use crate::{
         Block, BlockMode, DeficitSegment, HydroPenalties, NoiseMethod, ScenarioSourceConfig,
         StageRiskConfig, StageStateConfig,
@@ -662,6 +668,67 @@ mod tests {
                 hydro_id: EntityId(2)
             }
         ));
+    }
+
+    #[test]
+    fn build_sorts_each_thermal_plants_units_by_id() {
+        let thermal = make_thermal(ThermalSpec {
+            id: 1,
+            bus_id: 1,
+            units: [7, 3, 5]
+                .into_iter()
+                .map(|id| {
+                    make_thermal_unit(ThermalUnitSpec {
+                        id,
+                        max_generation_mw: 40.0,
+                        ..Default::default()
+                    })
+                })
+                .collect(),
+            ..Default::default()
+        });
+
+        let system = SystemBuilder::new()
+            .buses(vec![make_bus(BusSpec {
+                id: 1,
+                name: format!("bus-{}", 1),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 5000.0,
+                }],
+                ..Default::default()
+            })])
+            .thermals(vec![thermal])
+            .build()
+            .expect("thermal with units is valid");
+
+        let unit_ids: Vec<i32> = system.thermals()[0].units.iter().map(|u| u.id.0).collect();
+        assert_eq!(unit_ids, vec![3, 5, 7]);
+    }
+
+    #[test]
+    fn build_accepts_thermal_without_units_unlike_hydro_unit_groups() {
+        let thermal = make_thermal(ThermalSpec {
+            id: 1,
+            bus_id: 1,
+            ..Default::default()
+        });
+
+        let system = SystemBuilder::new()
+            .buses(vec![make_bus(BusSpec {
+                id: 1,
+                name: format!("bus-{}", 1),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 5000.0,
+                }],
+                ..Default::default()
+            })])
+            .thermals(vec![thermal])
+            .build()
+            .expect("a thermal without units must build");
+
+        assert!(system.thermals()[0].units.is_empty());
     }
 
     fn stage_with_index(id: i32, index: usize) -> Stage {
@@ -828,10 +895,10 @@ mod proptests {
     use super::*;
     use crate::test_support::{
         BusSpec, ContractSpec, HydroSpec, LineSpec, NcsSpec, PumpingSpec, StageSpec, ThermalSpec,
-        make_bus, make_contract, make_hydro, make_line, make_ncs, make_pumping_station, make_stage,
-        make_thermal,
+        ThermalUnitSpec, make_bus, make_contract, make_hydro, make_line, make_ncs,
+        make_pumping_station, make_stage, make_thermal, make_thermal_unit,
     };
-    use crate::{ConstraintExpression, ContractType, DeficitSegment};
+    use crate::{ConstraintExpression, ContractType, DeficitSegment, ThermalUnit};
     use proptest::prelude::*;
 
     fn date_early() -> NaiveDate {
@@ -961,6 +1028,19 @@ mod proptests {
                 ..Default::default()
             }),
         ]
+    }
+
+    fn reference_units() -> Vec<ThermalUnit> {
+        [30, 10, 20]
+            .into_iter()
+            .map(|id| {
+                make_thermal_unit(ThermalUnitSpec {
+                    id,
+                    max_generation_mw: 50.0,
+                    ..Default::default()
+                })
+            })
+            .collect()
     }
 
     fn reference_pumping() -> Vec<PumpingStation> {
@@ -1106,6 +1186,12 @@ mod proptests {
         s.iter().map(|s| s.id).collect()
     }
 
+    fn expected_unit_ids() -> Vec<i32> {
+        let mut u = reference_units();
+        u.sort_by_key(|u| u.id.0);
+        u.iter().map(|u| u.id.0).collect()
+    }
+
     fn expected_gc_ids() -> Vec<i32> {
         let mut g = reference_generic_constraints();
         g.sort_by_key(|c| c.id.0);
@@ -1122,13 +1208,19 @@ mod proptests {
             buses in Just(reference_buses()).prop_shuffle(),
             lines in Just(reference_lines()).prop_shuffle(),
             hydros in Just(reference_hydros()).prop_shuffle(),
-            thermals in Just(reference_thermals()).prop_shuffle(),
+            mut thermals in Just(reference_thermals()).prop_shuffle(),
+            units in Just(reference_units()).prop_shuffle(),
             pumping in Just(reference_pumping()).prop_shuffle(),
             contracts in Just(reference_contracts()).prop_shuffle(),
             ncs in Just(reference_ncs()).prop_shuffle(),
             stages in Just(reference_stages()).prop_shuffle(),
             gcs in Just(reference_generic_constraints()).prop_shuffle(),
         ) {
+            thermals
+                .iter_mut()
+                .find(|t| t.id == EntityId(1))
+                .expect("reference thermals include id 1")
+                .units = units;
             let system = SystemBuilder::new()
                 .buses(buses)
                 .lines(lines)
@@ -1149,6 +1241,7 @@ mod proptests {
             let expected_pumping = expected_op(reference_pumping());
             let expected_contracts = expected_op(reference_contracts());
             let expected_ncs = expected_op(reference_ncs());
+            let expected_units = expected_unit_ids();
             let expected_stages = expected_stage_ids();
             let expected_gcs = expected_gc_ids();
 
@@ -1161,6 +1254,7 @@ mod proptests {
             prop_assert!(expected_pumping.is_sorted());
             prop_assert!(expected_contracts.is_sorted());
             prop_assert!(expected_ncs.is_sorted());
+            prop_assert!(expected_units.is_sorted());
             prop_assert!(expected_stages.is_sorted());
             prop_assert!(expected_gcs.is_sorted());
 
@@ -1171,6 +1265,16 @@ mod proptests {
             prop_assert_eq!(project_op(system.pumping_stations()), expected_pumping);
             prop_assert_eq!(project_op(system.contracts()), expected_contracts);
             prop_assert_eq!(project_op(system.non_controllable_sources()), expected_ncs);
+            prop_assert_eq!(
+                system
+                    .thermal(EntityId(1))
+                    .expect("thermal 1 is built")
+                    .units
+                    .iter()
+                    .map(|u| u.id.0)
+                    .collect::<Vec<_>>(),
+                expected_units
+            );
             prop_assert_eq!(
                 system.stages().iter().map(|s| s.id).collect::<Vec<_>>(),
                 expected_stages

@@ -1490,6 +1490,7 @@ fn build_template_build_ctx_populates_anticipated_metadata() {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
             anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
+            units: Vec::new(),
         },
         Thermal {
             id: EntityId(2),
@@ -1502,6 +1503,7 @@ fn build_template_build_ctx_populates_anticipated_metadata() {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
             anticipated_config: None,
+            units: Vec::new(),
         },
         Thermal {
             id: EntityId(3),
@@ -1514,6 +1516,7 @@ fn build_template_build_ctx_populates_anticipated_metadata() {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
             anticipated_config: Some(AnticipatedConfig::LeadStages(3)),
+            units: Vec::new(),
         },
     ];
     let system = system_with_thermals(thermals);
@@ -1590,6 +1593,7 @@ fn build_template_build_ctx_zero_anticipated_when_none() {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
             anticipated_config: None,
+            units: Vec::new(),
         },
         Thermal {
             id: EntityId(2),
@@ -1602,6 +1606,7 @@ fn build_template_build_ctx_zero_anticipated_when_none() {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
             anticipated_config: None,
+            units: Vec::new(),
         },
     ];
     let system = system_with_thermals(thermals);
@@ -1687,6 +1692,7 @@ fn anticipated_invariance_system() -> novomodelo_core::System {
             min_generation_mw: 0.0,
             max_generation_mw: 120.0,
             anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
+            units: Vec::new(),
         },
         Thermal {
             id: EntityId(2),
@@ -1699,6 +1705,7 @@ fn anticipated_invariance_system() -> novomodelo_core::System {
             min_generation_mw: 0.0,
             max_generation_mw: 80.0,
             anticipated_config: Some(AnticipatedConfig::LeadStages(3)),
+            units: Vec::new(),
         },
         Thermal {
             id: EntityId(3),
@@ -1711,6 +1718,7 @@ fn anticipated_invariance_system() -> novomodelo_core::System {
             min_generation_mw: 0.0,
             max_generation_mw: 200.0,
             anticipated_config: None,
+            units: Vec::new(),
         },
     ];
 
@@ -2300,6 +2308,7 @@ fn discounted_multi_stage_system_with_post_study(
         min_generation_mw: 0.0,
         max_generation_mw: 100.0,
         anticipated_config: None,
+        units: Vec::new(),
     }];
     let n_thermals = thermals.len();
 
@@ -2840,6 +2849,7 @@ fn two_anticipated_thermals(ids: [i32; 2]) -> Vec<Thermal> {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
             anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
+            units: Vec::new(),
         })
         .collect()
 }
@@ -4478,6 +4488,7 @@ fn system_with_contracts_filling_and_anticipated() -> novomodelo_core::System {
         min_generation_mw: 0.0,
         max_generation_mw: 100.0,
         anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
+        units: Vec::new(),
     };
 
     let contracts = vec![
@@ -5262,6 +5273,7 @@ fn anticipated_lead_config_system(
         min_generation_mw: 0.0,
         max_generation_mw: 100.0,
         anticipated_config: Some(anticipated_config),
+        units: Vec::new(),
     };
 
     let stages: Vec<Stage> = (0..n_stages)

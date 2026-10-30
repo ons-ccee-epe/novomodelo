@@ -970,6 +970,7 @@ mod tests {
             min_generation_mw,
             max_generation_mw,
             anticipated_config: None,
+            units: Vec::new(),
         }
     }
 
@@ -1841,6 +1842,7 @@ mod tests {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
             anticipated_config: None,
+            units: Vec::new(),
         }];
 
         let result = resolve_bounds(

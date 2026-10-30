@@ -379,5 +379,6 @@ pub fn make_thermal(
         min_generation_mw,
         max_generation_mw,
         anticipated_config,
+        units: Vec::new(),
     }
 }

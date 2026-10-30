@@ -1714,6 +1714,7 @@ mod parameter_resolution_tests {
             anticipated_config: None,
             entry_stage_id: None,
             exit_stage_id: None,
+            units: Vec::new(),
         };
 
         let stages: Vec<Stage> = (0..n_stages)
@@ -2144,6 +2145,7 @@ mod zero_cost_tests {
             min_generation_mw: 0.0,
             max_generation_mw: 0.0,
             anticipated_config: None,
+            units: Vec::new(),
         }
     }
 
@@ -2272,6 +2274,7 @@ mod zero_cost_tests {
                 anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
                 entry_stage_id: None,
                 exit_stage_id: None,
+                units: Vec::new(),
             },
             Thermal {
                 id: EntityId(2),
@@ -2284,6 +2287,7 @@ mod zero_cost_tests {
                 anticipated_config: None,
                 entry_stage_id: None,
                 exit_stage_id: None,
+                units: Vec::new(),
             },
         ];
 
@@ -3544,6 +3548,7 @@ mod pumping_water_tests {
             min_generation_mw: min_gen,
             max_generation_mw: max_gen,
             anticipated_config: None,
+            units: Vec::new(),
         }
     }
 

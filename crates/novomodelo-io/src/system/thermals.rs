@@ -306,6 +306,7 @@ fn convert_thermals(raw: RawThermalFile, path: &Path) -> Result<Vec<Thermal>, Lo
                 min_generation_mw: raw_thermal.generation.min_mw,
                 max_generation_mw: raw_thermal.generation.max_mw,
                 anticipated_config,
+                units: Vec::new(),
             })
         })
         .collect::<Result<_, LoadError>>()?;

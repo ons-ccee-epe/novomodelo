@@ -187,6 +187,7 @@ fn make_thermal(id: i32, anticipated_config: Option<AnticipatedConfig>) -> Therm
         min_generation_mw: 0.0,
         max_generation_mw: 0.0,
         anticipated_config,
+        units: Vec::new(),
     }
 }
 
