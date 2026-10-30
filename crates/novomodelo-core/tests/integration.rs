@@ -170,7 +170,7 @@ fn thermal_unit_data_built_through_public_api_is_canonical() {
             make_thermal_unit(ThermalUnitSpec {
                 id,
                 min_generation_mw: 30.0,
-                max_generation_mw: 60.0,
+                max_generation_mw: 150.0,
                 ..Default::default()
             })
         })

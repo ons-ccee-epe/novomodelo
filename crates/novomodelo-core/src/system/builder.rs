@@ -6,8 +6,10 @@ use chrono::NaiveDate;
 
 use super::System;
 use super::validate::{
-    CrossRefEntities, build_index, build_stage_index, check_duplicate_stages, check_duplicates,
-    validate_cross_references, validate_filling_configs,
+    CrossRefEntities, build_index, build_stage_index, check_duplicate_stages,
+    check_duplicate_thermal_unit_ids, check_duplicate_thermal_unit_states, check_duplicates,
+    validate_cross_references, validate_filling_configs, validate_thermal_unit_states,
+    validate_thermal_units,
 };
 use crate::{
     Bus, CascadeTopology, CorrelationModel, EnergyContract, EntityId, ExternalLoadRow,
@@ -326,6 +328,9 @@ impl SystemBuilder {
     ///   `entry_stage_id`).
     /// - Any of `inflow_models`, `load_models`, `ncs_models` is not in its documented
     ///   canonical order.
+    /// - A thermal unit breaks a [`ThermalUnitViolation`](crate::ThermalUnitViolation) rule.
+    /// - A thermal plant's units sum to less than its maximum generation ([`ValidationError::InsufficientThermalUnitCapacity`]).
+    /// - A thermal unit initial state breaks a [`ThermalUnitStateViolation`](crate::ThermalUnitStateViolation) rule.
     // Rationale: sort, duplicate/cross-ref/cycle checks, and `System` assembly share
     // one `errors` accumulator and the intermediate index maps; splitting them would
     // thread those through every call and lose the fail-fast-on-duplicates short-circuit.
@@ -389,6 +394,11 @@ impl SystemBuilder {
             &mut errors,
         );
         check_duplicate_stages(&self.stages, &mut errors);
+        check_duplicate_thermal_unit_ids(&self.thermals, &mut errors);
+        check_duplicate_thermal_unit_states(
+            &self.initial_conditions.thermal_unit_states,
+            &mut errors,
+        );
         check_canonical_order(
             &self.inflow_models,
             |m| (m.hydro_id.0, m.stage_id),
@@ -453,6 +463,13 @@ impl SystemBuilder {
         }
 
         validate_filling_configs(&self.hydros, &mut errors);
+        validate_thermal_units(&self.thermals, &mut errors);
+        validate_thermal_unit_states(
+            &self.initial_conditions.thermal_unit_states,
+            &self.thermals,
+            &thermal_index,
+            &mut errors,
+        );
 
         if !errors.is_empty() {
             return Err(errors);
@@ -536,7 +553,8 @@ mod tests {
     };
     use crate::{
         Block, BlockMode, DeficitSegment, HydroPenalties, NoiseMethod, ScenarioSourceConfig,
-        StageRiskConfig, StageStateConfig,
+        StageRiskConfig, StageStateConfig, ThermalUnitStateViolation, ThermalUnitStatus,
+        ThermalUnitViolation,
     };
 
     pub(super) fn zero_penalties() -> HydroPenalties {
@@ -707,6 +725,243 @@ mod tests {
 
         let unit_ids: Vec<i32> = system.thermals()[0].units.iter().map(|u| u.id.0).collect();
         assert_eq!(unit_ids, vec![3, 5, 7]);
+    }
+
+    #[test]
+    fn build_error_list_is_independent_of_declaration_order_for_duplicate_keys() {
+        let plant = |id, units| {
+            make_thermal(ThermalSpec {
+                id,
+                bus_id: 1,
+                units,
+                ..Default::default()
+            })
+        };
+        let default_units = |ids: [i32; 2]| {
+            ids.map(|id| {
+                make_thermal_unit(ThermalUnitSpec {
+                    id,
+                    ..Default::default()
+                })
+            })
+            .to_vec()
+        };
+        let negative_up_time = || {
+            make_thermal_unit(ThermalUnitSpec {
+                id: 5,
+                min_up_time_hours: -1.0,
+                ..Default::default()
+            })
+        };
+        let inverted_bounds = || {
+            make_thermal_unit(ThermalUnitSpec {
+                id: 5,
+                min_generation_mw: 120.0,
+                max_generation_mw: 100.0,
+                ..Default::default()
+            })
+        };
+        let stale_time = || {
+            make_thermal_unit_state(ThermalUnitStateSpec {
+                thermal_id: 1,
+                unit_id: 5,
+                time_in_state_hours: -1.0,
+                ..Default::default()
+            })
+        };
+        let negative_generation = || {
+            make_thermal_unit_state(ThermalUnitStateSpec {
+                thermal_id: 1,
+                unit_id: 5,
+                status: ThermalUnitStatus::On,
+                previous_generation_mw: -5.0,
+                ..Default::default()
+            })
+        };
+        let build_errors = |thermals, thermal_unit_states| {
+            SystemBuilder::new()
+                .buses(vec![make_bus(BusSpec {
+                    id: 1,
+                    ..Default::default()
+                })])
+                .thermals(thermals)
+                .initial_conditions(InitialConditions {
+                    thermal_unit_states,
+                    ..InitialConditions::default()
+                })
+                .build()
+                .expect_err("duplicate ids must be rejected")
+        };
+        let duplicate_unit = |thermal_id, unit_id| ValidationError::InvalidThermalUnit {
+            thermal_id: EntityId(thermal_id),
+            unit_id: EntityId(unit_id),
+            violation: ThermalUnitViolation::DuplicateId,
+        };
+
+        let order_a = build_errors(
+            vec![
+                plant(1, vec![negative_up_time(), inverted_bounds()]),
+                plant(2, default_units([4, 4])),
+                plant(2, default_units([3, 3])),
+            ],
+            vec![stale_time(), negative_generation()],
+        );
+        let order_b = build_errors(
+            vec![
+                plant(2, default_units([3, 3])),
+                plant(2, default_units([4, 4])),
+                plant(1, vec![inverted_bounds(), negative_up_time()]),
+            ],
+            vec![negative_generation(), stale_time()],
+        );
+
+        let expected = vec![
+            ValidationError::DuplicateId {
+                entity_type: "Thermal",
+                id: EntityId(2),
+            },
+            duplicate_unit(1, 5),
+            duplicate_unit(2, 3),
+            duplicate_unit(2, 4),
+            ValidationError::InvalidThermalUnitInitialState {
+                thermal_id: EntityId(1),
+                unit_id: EntityId(5),
+                violation: ThermalUnitStateViolation::DuplicateRecord,
+            },
+        ];
+        assert_eq!(order_a, expected);
+        assert_eq!(order_b, expected);
+    }
+
+    #[test]
+    fn build_reports_thermal_unit_field_violations_in_final_pass() {
+        let thermal = make_thermal(ThermalSpec {
+            id: 1,
+            bus_id: 1,
+            max_generation_mw: 40.0,
+            units: vec![
+                make_thermal_unit(ThermalUnitSpec {
+                    id: 1,
+                    min_generation_mw: 50.0,
+                    max_generation_mw: 40.0,
+                    ..Default::default()
+                }),
+                make_thermal_unit(ThermalUnitSpec {
+                    id: 2,
+                    min_generation_mw: 0.0,
+                    max_generation_mw: 0.0,
+                    min_down_time_hours: -2.0,
+                    ..Default::default()
+                }),
+            ],
+            ..Default::default()
+        });
+
+        let errors = SystemBuilder::new()
+            .buses(vec![make_bus(BusSpec {
+                id: 1,
+                ..Default::default()
+            })])
+            .thermals(vec![thermal])
+            .build()
+            .expect_err("invalid unit scalars must be rejected");
+
+        assert_eq!(
+            errors,
+            vec![
+                ValidationError::InvalidThermalUnit {
+                    thermal_id: EntityId(1),
+                    unit_id: EntityId(1),
+                    violation: ThermalUnitViolation::InvalidGenerationBounds {
+                        min_generation_mw: 50.0,
+                        max_generation_mw: 40.0,
+                    },
+                },
+                ValidationError::InvalidThermalUnit {
+                    thermal_id: EntityId(1),
+                    unit_id: EntityId(2),
+                    violation: ThermalUnitViolation::InvalidMinDownTime {
+                        min_down_time_hours: -2.0,
+                    },
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn build_reports_thermal_unit_state_violations_in_final_pass() {
+        let thermal = make_thermal(ThermalSpec {
+            id: 1,
+            bus_id: 1,
+            max_generation_mw: 100.0,
+            units: [1, 2]
+                .into_iter()
+                .map(|id| {
+                    make_thermal_unit(ThermalUnitSpec {
+                        id,
+                        min_generation_mw: 30.0,
+                        max_generation_mw: 60.0,
+                        ..Default::default()
+                    })
+                })
+                .collect(),
+            ..Default::default()
+        });
+        let state = |thermal_id, unit_id, time_in_state_hours, previous_generation_mw| {
+            make_thermal_unit_state(ThermalUnitStateSpec {
+                thermal_id,
+                unit_id,
+                time_in_state_hours,
+                previous_generation_mw,
+                ..Default::default()
+            })
+        };
+        let invalid =
+            |thermal_id, unit_id, violation| ValidationError::InvalidThermalUnitInitialState {
+                thermal_id: EntityId(thermal_id),
+                unit_id: EntityId(unit_id),
+                violation,
+            };
+
+        let errors = SystemBuilder::new()
+            .buses(vec![make_bus(BusSpec {
+                id: 1,
+                ..Default::default()
+            })])
+            .thermals(vec![thermal])
+            .initial_conditions(InitialConditions {
+                thermal_unit_states: vec![
+                    state(9, 1, 0.0, 0.0),
+                    state(1, 3, 0.0, 0.0),
+                    state(1, 2, 0.0, -2.0),
+                    state(1, 1, -1.0, 0.0),
+                ],
+                ..InitialConditions::default()
+            })
+            .build()
+            .expect_err("invalid initial states must be rejected");
+
+        assert_eq!(
+            errors,
+            vec![
+                invalid(
+                    1,
+                    1,
+                    ThermalUnitStateViolation::InvalidTimeInState {
+                        time_in_state_hours: -1.0
+                    }
+                ),
+                invalid(
+                    1,
+                    2,
+                    ThermalUnitStateViolation::InvalidPreviousGeneration {
+                        previous_generation_mw: -2.0
+                    }
+                ),
+                invalid(1, 3, ThermalUnitStateViolation::UnknownUnit),
+                invalid(9, 1, ThermalUnitStateViolation::UnknownThermal),
+            ]
+        );
     }
 
     #[test]
