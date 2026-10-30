@@ -74,7 +74,7 @@ pub use entities::{
     THERMAL_RAMP_INTERVAL_HOURS, TailraceModel, TailracePoint, Thermal, ThermalUnit,
 };
 pub use entity_id::EntityId;
-pub use error::ValidationError;
+pub use error::{ThermalUnitStateViolation, ThermalUnitViolation, ValidationError};
 pub use model::horizon::HorizonGraph;
 pub use model::parameters::{
     ComputedParameter, ParameterKind, ScalarParameter, expand_expression_parameters,
@@ -108,6 +108,7 @@ pub use model::temporal::{
     StageStateConfig, StudyPos, Transition, month_of, window_period_overlaps,
     window_period_reach_depth, window_reaches_any_period,
 };
+pub use stats::neumaier::NeumaierAccumulator;
 pub use stats::welford::WelfordAccumulator;
 pub use system::{System, SystemBuilder};
 pub use topology::CascadeTopology;

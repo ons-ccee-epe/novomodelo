@@ -44,7 +44,7 @@
 
 use chrono::NaiveDate;
 
-use crate::EntityId;
+use crate::{EntityId, ThermalUnit};
 
 /// Initial storage volume for a single hydro plant.
 ///
@@ -214,7 +214,7 @@ pub enum ThermalUnitTransition {
 ///   before the study start; `previous_generation_mw` is the average output over
 ///   that half-hour.
 /// - **Clock.** `time_in_state_hours` runs on the unit's on/off clock
-///   ([`ThermalUnit`](crate::ThermalUnit)): from switch-on for an on-status, and from
+///   ([`ThermalUnit`]): from switch-on for an on-status, and from
 ///   the end of the shutdown trajectory for `Off`. The obligation left at the study
 ///   start is `max(0, min_up_time_hours - time_in_state_hours)` for an on-status and
 ///   `max(0, min_down_time_hours - time_in_state_hours)` for `Off`.
@@ -238,6 +238,20 @@ pub struct ThermalUnitInitialState {
     pub time_in_state_hours: f64,
     /// Average output in the half-hour before the study start \[MW\].
     pub previous_generation_mw: f64,
+}
+
+impl ThermalUnitInitialState {
+    /// Trajectory position per the Position clause of [`ThermalUnitInitialState`]; `None` when none matches.
+    #[allow(clippy::float_cmp)] // the position contract matches a held level exactly, not within a tolerance
+    pub(crate) fn ramp_position(&self, unit: &ThermalUnit) -> Option<usize> {
+        let ramp = match self.status.transition()? {
+            ThermalUnitTransition::StartingUp => &unit.startup_ramp_mw,
+            ThermalUnitTransition::ShuttingDown => &unit.shutdown_ramp_mw,
+        };
+        ramp.iter().position(|&level| {
+            level < unit.min_generation_mw && level == self.previous_generation_mw
+        })
+    }
 }
 
 /// Initial system state at the start of the optimization study.
@@ -295,7 +309,10 @@ pub struct InitialConditions {
 mod tests {
     use super::*;
     #[cfg(feature = "serde")]
-    use crate::test_support::{ThermalUnitStateSpec, f64_bits_eq, make_thermal_unit_state};
+    use crate::test_support::f64_bits_eq;
+    use crate::test_support::{
+        ThermalUnitSpec, ThermalUnitStateSpec, make_thermal_unit, make_thermal_unit_state,
+    };
 
     #[test]
     fn test_initial_conditions_construction() {
@@ -757,6 +774,71 @@ mod tests {
             assert_eq!(status.is_on(), is_on, "{status:?}.is_on()");
             assert_eq!(status.transition(), transition, "{status:?}.transition()");
         }
+    }
+
+    fn ramped_unit() -> ThermalUnit {
+        make_thermal_unit(ThermalUnitSpec {
+            id: 1,
+            min_generation_mw: 20.0,
+            startup_ramp_mw: vec![10.0, 10.0, 20.0],
+            shutdown_ramp_mw: vec![20.0, 10.0, 10.0],
+            ..Default::default()
+        })
+    }
+
+    fn state_with(
+        status: ThermalUnitStatus,
+        previous_generation_mw: f64,
+    ) -> ThermalUnitInitialState {
+        make_thermal_unit_state(ThermalUnitStateSpec {
+            status,
+            previous_generation_mw,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn ramp_position_is_the_earliest_sub_minimum_level_equal_to_previous_generation() {
+        let unit = ramped_unit();
+
+        assert_eq!(
+            state_with(ThermalUnitStatus::StartingUp, 10.0).ramp_position(&unit),
+            Some(0)
+        );
+        assert_eq!(
+            state_with(ThermalUnitStatus::ShuttingDown, 10.0).ramp_position(&unit),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn ramp_position_is_none_for_steady_statuses_unmatched_levels_or_the_minimum() {
+        let unit = ramped_unit();
+        let without_startup_ramp = ThermalUnit {
+            startup_ramp_mw: Vec::new(),
+            ..ramped_unit()
+        };
+
+        assert_eq!(
+            state_with(ThermalUnitStatus::Off, 10.0).ramp_position(&unit),
+            None
+        );
+        assert_eq!(
+            state_with(ThermalUnitStatus::On, 10.0).ramp_position(&unit),
+            None
+        );
+        assert_eq!(
+            state_with(ThermalUnitStatus::StartingUp, 15.0).ramp_position(&unit),
+            None
+        );
+        assert_eq!(
+            state_with(ThermalUnitStatus::StartingUp, 20.0).ramp_position(&unit),
+            None
+        );
+        assert_eq!(
+            state_with(ThermalUnitStatus::StartingUp, 10.0).ramp_position(&without_startup_ramp),
+            None
+        );
     }
 
     #[cfg(feature = "serde")]
