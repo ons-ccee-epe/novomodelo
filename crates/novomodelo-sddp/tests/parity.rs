@@ -3044,3 +3044,339 @@ mod sacred_chain_parity_roster {
     //! Neither gate is among the ten (all ten are chain obligations, absent
     //! `nodes[]`); neither is an eleventh or twelfth item.
 }
+
+mod thermal_unit_neutrality {
+    use chrono::NaiveDate;
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{BlockMode, Stage};
+    use novomodelo_core::test_support::{
+        ThermalSpec, ThermalUnitSpec, ThermalUnitStateSpec, make_thermal, make_thermal_unit,
+        make_thermal_unit_state,
+    };
+    use novomodelo_core::{
+        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, DeficitSegment,
+        EntityId, HydroBlockBounds, HydroGenerationModel, HydroStageBounds, HydroStorage,
+        InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
+        PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
+        ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds, ThermalUnit,
+        ThermalUnitInitialState, ThermalUnitStatus,
+    };
+    use novomodelo_io::config::{
+        Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, ParallelismConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        SimulationSelection, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
+        TrainingSolverConfig, UpperBoundEvaluationConfig,
+    };
+    use novomodelo_sddp::StudySetup;
+    use novomodelo_sddp::test_support::{
+        assert_all_templates_byte_identical, template_fact_groups,
+    };
+
+    use super::common::builders::{
+        BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage,
+    };
+    use super::common::parity_hash::compute_parity_hash;
+    use super::common::{build_setup_in_code, run_simulation};
+
+    const N_STAGES: usize = 3;
+    const BUS_ID: i32 = 2;
+    const HYDRO_ID: i32 = 1;
+    const THERMAL_ID: i32 = 3;
+    const PLANT_MAX_MW: f64 = 300.0;
+    const LOAD_MW: f64 = 400.0;
+
+    fn declared_units() -> Vec<ThermalUnit> {
+        vec![
+            make_thermal_unit(ThermalUnitSpec {
+                id: 1,
+                min_generation_mw: 50.0,
+                max_generation_mw: 200.0,
+                min_up_time_hours: 8.0,
+                min_down_time_hours: 4.0,
+                startup_ramp_mw: vec![20.0, 35.0, 50.0],
+                shutdown_ramp_mw: vec![50.0, 30.0, 10.0],
+                ..Default::default()
+            }),
+            make_thermal_unit(ThermalUnitSpec {
+                id: 2,
+                min_generation_mw: 40.0,
+                max_generation_mw: 150.0,
+                min_up_time_hours: 6.0,
+                min_down_time_hours: 3.0,
+                startup_ramp_mw: vec![10.0, 25.0, 40.0],
+                shutdown_ramp_mw: vec![40.0, 20.0],
+                ..Default::default()
+            }),
+        ]
+    }
+
+    fn declared_unit_states() -> Vec<ThermalUnitInitialState> {
+        vec![
+            make_thermal_unit_state(ThermalUnitStateSpec {
+                thermal_id: THERMAL_ID,
+                unit_id: 1,
+                status: ThermalUnitStatus::StartingUp,
+                time_in_state_hours: 1.0,
+                previous_generation_mw: 35.0,
+            }),
+            make_thermal_unit_state(ThermalUnitStateSpec {
+                thermal_id: THERMAL_ID,
+                unit_id: 2,
+                status: ThermalUnitStatus::ShuttingDown,
+                time_in_state_hours: 10.0,
+                previous_generation_mw: 20.0,
+            }),
+        ]
+    }
+
+    fn build_system(
+        plant_max_mw: f64,
+        units: Vec<ThermalUnit>,
+        thermal_unit_states: Vec<ThermalUnitInitialState>,
+    ) -> novomodelo_core::System {
+        let start = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        let bus = make_bus(
+            EntityId(BUS_ID),
+            BusSpec {
+                name: "B1".to_string(),
+                operational_start_date: start,
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 500.0,
+                }],
+                excess_cost: 0.0,
+            },
+        );
+        let hydro = make_hydro(
+            EntityId(HYDRO_ID),
+            HydroSpec {
+                name: "H1".to_string(),
+                operational_start_date: start,
+                bus_id: EntityId(BUS_ID),
+                min_storage_hm3: 0.0,
+                max_storage_hm3: 500.0,
+                max_turbined_m3s: 100.0,
+                generation_model: HydroGenerationModel::ConstantProductivity,
+                specific_productivity_mw_per_m3s_per_m: Some(0.5),
+                max_generation_mw: 250.0,
+                ..Default::default()
+            },
+        );
+        let thermal = make_thermal(ThermalSpec {
+            id: THERMAL_ID,
+            bus_id: BUS_ID,
+            cost_per_mwh: 100.0,
+            min_generation_mw: 0.0,
+            max_generation_mw: plant_max_mw,
+            units,
+            ..Default::default()
+        });
+        let stages: Vec<Stage> = (0..N_STAGES)
+            .map(|i| {
+                let month = i as u32 + 1;
+                make_stage(
+                    i,
+                    StageSpec {
+                        start_date: NaiveDate::from_ymd_opt(2024, month, 1).unwrap(),
+                        end_date: NaiveDate::from_ymd_opt(2024, month + 1, 1).unwrap(),
+                        season_id: Some(0),
+                        block_mode: BlockMode::Parallel,
+                        ..StageSpec::default()
+                    },
+                )
+            })
+            .collect();
+        let inflow_models: Vec<InflowModel> = (0..N_STAGES)
+            .map(|i| InflowModel {
+                hydro_id: EntityId(HYDRO_ID),
+                stage_id: i as i32,
+                mean_m3s: 60.0,
+                std_m3s: 0.0,
+                ar_coefficients: vec![],
+                residual_std_ratio: 1.0,
+                annual: None,
+            })
+            .collect();
+        let load_models: Vec<LoadModel> = (0..N_STAGES)
+            .map(|i| LoadModel {
+                bus_id: EntityId(BUS_ID),
+                stage_id: i as i32,
+                mean_mw: LOAD_MW,
+                std_mw: 0.0,
+            })
+            .collect();
+        let bounds = ResolvedBounds::new(
+            &BoundsCountsSpec {
+                n_hydros: 1,
+                n_thermals: 1,
+                n_lines: 0,
+                n_pumping: 0,
+                n_contracts: 0,
+                n_stages: N_STAGES,
+                k_max: 0,
+            },
+            &BoundsDefaults {
+                hydro: HydroStageBounds {
+                    min_storage_hm3: 0.0,
+                    max_storage_hm3: 500.0,
+                    filling_min_rate_m3s: 0.0,
+                    water_withdrawal_m3s: 0.0,
+                },
+                hydro_block: HydroBlockBounds {
+                    max_turbined_m3s: 100.0,
+                    max_generation_mw: 250.0,
+                    ..Default::default()
+                },
+                thermal: ThermalStageBounds {
+                    cost_per_mwh: 100.0,
+                },
+                thermal_block: ThermalBlockBounds {
+                    min_generation_mw: 0.0,
+                    max_generation_mw: plant_max_mw,
+                },
+                line_block: LineBlockBounds {
+                    direct_mw: 0.0,
+                    reverse_mw: 0.0,
+                },
+                pumping_block: PumpingBlockBounds {
+                    min_flow_m3s: 0.0,
+                    max_flow_m3s: 0.0,
+                },
+                contract_block: ContractBlockBounds {
+                    min_mw: 0.0,
+                    max_mw: 0.0,
+                    price_per_mwh: 0.0,
+                },
+            },
+        );
+        let penalties = ResolvedPenalties::new(
+            &PenaltiesCountsSpec {
+                n_hydros: 1,
+                n_buses: 1,
+                n_lines: 0,
+                n_ncs: 0,
+                n_stages: N_STAGES,
+            },
+            &PenaltiesDefaults {
+                hydro: HydroSpec::default().penalties,
+                bus: BusStagePenalties { excess_cost: 0.0 },
+                line: LineStagePenalties { exchange_cost: 0.0 },
+                ncs: NcsStagePenalties {
+                    curtailment_cost: 0.0,
+                },
+            },
+        );
+        let initial_conditions = InitialConditions {
+            storage: vec![HydroStorage {
+                hydro_id: EntityId(HYDRO_ID),
+                value_hm3: 200.0,
+            }],
+            thermal_unit_states,
+            ..InitialConditions::default()
+        };
+        SystemBuilder::new()
+            .buses(vec![bus])
+            .thermals(vec![thermal])
+            .hydros(vec![hydro])
+            .stages(stages)
+            .inflow_models(inflow_models)
+            .load_models(load_models)
+            .bounds(bounds)
+            .penalties(penalties)
+            .initial_conditions(initial_conditions)
+            .build()
+            .expect("units and unit states pass every build rule")
+    }
+
+    fn build_config() -> Config {
+        Config {
+            schema: None,
+            modeling: ModelingConfig {
+                inflow_non_negativity: InflowNonNegativityConfig {
+                    method: CfgInflowMethod::None,
+                },
+                cost_scale_factor: None,
+            },
+            training: TrainingConfig {
+                enabled: true,
+                tree_seed: Some(42),
+                stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit { limit: 3 }]),
+                stopping_mode: StoppingMode::Any,
+                cut_selection: RowSelectionConfig::default(),
+                solver: TrainingSolverConfig::default(),
+                parallelism: ParallelismConfig::default(),
+                scenario_source: None,
+                selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+            },
+            upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
+            policy: PolicyConfig::default(),
+            simulation: IoSimulationConfig {
+                enabled: true,
+                selection: Some(SimulationSelection::Sampled { num_scenarios: 1 }),
+                ..IoSimulationConfig::default()
+            },
+            exports: ExportsConfig::default(),
+            estimation: EstimationConfig::default(),
+        }
+    }
+
+    fn differing_fact_groups(a: &StudySetup, b: &StudySetup) -> Vec<&'static str> {
+        let facts_a = template_fact_groups(a);
+        let facts_b = template_fact_groups(b);
+        assert!(facts_a.keys().eq(facts_b.keys()));
+        facts_a
+            .iter()
+            .filter(|(group, bytes)| facts_b.get(*group) != Some(*bytes))
+            .map(|(group, _)| *group)
+            .collect()
+    }
+
+    fn parity_hash(mut setup: StudySetup) -> String {
+        let results = run_simulation(&mut setup, 1);
+        compute_parity_hash(&setup, results)
+    }
+
+    #[test]
+    fn declared_thermal_units_leave_the_stage_lp_and_parity_hash_unchanged() {
+        let units = declared_units();
+        let units_max_mw: f64 = units.iter().map(|unit| unit.max_generation_mw).sum();
+        assert!(units_max_mw > PLANT_MAX_MW);
+
+        let system_with_units = build_system(PLANT_MAX_MW, units, declared_unit_states());
+        assert_eq!(system_with_units.thermals()[0].units.len(), 2);
+        assert_eq!(
+            system_with_units
+                .initial_conditions()
+                .thermal_unit_states
+                .len(),
+            2
+        );
+
+        let config = build_config();
+        let without =
+            build_setup_in_code(build_system(PLANT_MAX_MW, Vec::new(), Vec::new()), &config);
+        let with = build_setup_in_code(system_with_units, &config);
+        let units_sized_cap =
+            build_setup_in_code(build_system(units_max_mw, Vec::new(), Vec::new()), &config);
+
+        assert_all_templates_byte_identical(
+            &without.inputs.stage_data.stage_templates.templates,
+            &with.inputs.stage_data.stage_templates.templates,
+            "without vs with thermal units",
+        );
+        assert_eq!(differing_fact_groups(&without, &with), Vec::<&str>::new());
+        assert!(
+            differing_fact_groups(&without, &units_sized_cap).contains(&"lp.col_bounds"),
+            "a plant cap at the units' summed maximum must move the column bounds"
+        );
+
+        let hash_without = parity_hash(without);
+        assert_eq!(hash_without, parity_hash(with));
+        assert_ne!(
+            hash_without,
+            parity_hash(units_sized_cap),
+            "a plant cap at the units' summed maximum must move the parity hash"
+        );
+    }
+}
