@@ -1408,6 +1408,7 @@ mod tests {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
             anticipated_config: None,
+            units: Vec::new(),
         }];
         // HydroGeometryRow referencing non-existent hydro (888)
         data.hydro_geometry = vec![HydroGeometryRow {

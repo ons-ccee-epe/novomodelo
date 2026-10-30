@@ -16,6 +16,7 @@ use crate::{
     Block, BlockMode, Bus, ContractType, DeficitSegment, EnergyContract, EntityId, Hydro,
     HydroGenerationModel, HydroPenalties, HydroUnitGroup, Line, NoiseMethod, NonControllableSource,
     PumpingStation, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, Thermal,
+    ThermalUnit,
 };
 
 /// The `NaiveDate` for a calendar-valid `(year, month, day)` triple.
@@ -296,6 +297,8 @@ pub struct ThermalSpec {
     pub min_generation_mw: f64,
     /// Maximum electrical generation (installed capacity).
     pub max_generation_mw: f64,
+    /// Generating units owned by the plant.
+    pub units: Vec<ThermalUnit>,
 }
 
 impl Default for ThermalSpec {
@@ -308,6 +311,7 @@ impl Default for ThermalSpec {
             cost_per_mwh: 50.0,
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
+            units: Vec::new(),
         }
     }
 }
@@ -323,6 +327,7 @@ pub fn make_thermal(
         cost_per_mwh,
         min_generation_mw,
         max_generation_mw,
+        units,
     }: ThermalSpec,
 ) -> Thermal {
     Thermal {
@@ -336,6 +341,69 @@ pub fn make_thermal(
         min_generation_mw,
         max_generation_mw,
         anticipated_config: None,
+        units,
+    }
+}
+
+/// Fixture fields for [`make_thermal_unit`].
+#[derive(Debug, Clone)]
+pub struct ThermalUnitSpec {
+    /// Unit identifier, unique within the owning plant.
+    pub id: i32,
+    /// Unit name.
+    pub name: String,
+    /// Minimum generation once dispatchable.
+    pub min_generation_mw: f64,
+    /// Maximum generation.
+    pub max_generation_mw: f64,
+    /// Minimum time on before a switch-off.
+    pub min_up_time_hours: f64,
+    /// Minimum time off before a switch-on.
+    pub min_down_time_hours: f64,
+    /// Startup trajectory of held levels.
+    pub startup_ramp_mw: Vec<f64>,
+    /// Shutdown trajectory of held levels.
+    pub shutdown_ramp_mw: Vec<f64>,
+}
+
+impl Default for ThermalUnitSpec {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            name: String::new(),
+            min_generation_mw: 30.0,
+            max_generation_mw: 100.0,
+            min_up_time_hours: 0.0,
+            min_down_time_hours: 0.0,
+            startup_ramp_mw: Vec::new(),
+            shutdown_ramp_mw: Vec::new(),
+        }
+    }
+}
+
+/// Build a [`ThermalUnit`] from `spec`.
+#[must_use]
+pub fn make_thermal_unit(
+    ThermalUnitSpec {
+        id,
+        name,
+        min_generation_mw,
+        max_generation_mw,
+        min_up_time_hours,
+        min_down_time_hours,
+        startup_ramp_mw,
+        shutdown_ramp_mw,
+    }: ThermalUnitSpec,
+) -> ThermalUnit {
+    ThermalUnit {
+        id: EntityId(id),
+        name,
+        min_generation_mw,
+        max_generation_mw,
+        min_up_time_hours,
+        min_down_time_hours,
+        startup_ramp_mw,
+        shutdown_ramp_mw,
     }
 }
 

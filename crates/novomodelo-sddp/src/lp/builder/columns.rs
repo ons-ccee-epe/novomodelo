@@ -3013,6 +3013,7 @@ mod anticipated_objective_tests {
                     anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
                     entry_stage_id: None,
                     exit_stage_id: None,
+                    units: Vec::new(),
                 },
                 Thermal {
                     id: EntityId(2),
@@ -3025,6 +3026,7 @@ mod anticipated_objective_tests {
                     anticipated_config: None,
                     entry_stage_id: None,
                     exit_stage_id: None,
+                    units: Vec::new(),
                 },
             ];
             let anticipated_plants = AnticipatedPlants::build(&thermals);
@@ -3187,6 +3189,7 @@ mod anticipated_objective_tests {
                 anticipated_config: Some(config),
                 entry_stage_id: None,
                 exit_stage_id: None,
+                units: Vec::new(),
             }];
             let anticipated_plants = AnticipatedPlants::build(&thermals);
             let mut bounds = ResolvedBounds::new(
@@ -3471,6 +3474,7 @@ mod anticipated_objective_tests {
                 anticipated_config: Some(AnticipatedConfig::LeadStages(PSA_LEAD)),
                 entry_stage_id: None,
                 exit_stage_id: None,
+                units: Vec::new(),
             }];
             let anticipated_plants = AnticipatedPlants::build(&thermals);
 
@@ -4704,6 +4708,7 @@ mod thermal_block_bound_tests {
             min_generation_mw: 0.0,
             max_generation_mw: 0.0,
             anticipated_config: None,
+            units: Vec::new(),
         }
     }
 

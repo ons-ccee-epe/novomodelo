@@ -2444,6 +2444,7 @@ mod tests {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
             anticipated_config: None,
+            units: Vec::new(),
         };
 
         // Stage 0: duration 720h; Stage 1: duration 744h.

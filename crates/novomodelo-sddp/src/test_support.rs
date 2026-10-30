@@ -269,6 +269,7 @@ pub fn anticipated_plants_at(positions: &[usize]) -> AnticipatedPlants {
             anticipated_config: positions
                 .contains(&idx)
                 .then_some(AnticipatedConfig::LeadStages(1)),
+            units: Vec::new(),
         })
         .collect();
     AnticipatedPlants::build(&thermals)
@@ -542,6 +543,7 @@ fn geometry_thermal(idx: usize) -> Thermal {
         min_generation_mw: 0.0,
         max_generation_mw: 0.0,
         anticipated_config: None,
+        units: Vec::new(),
     }
 }
 

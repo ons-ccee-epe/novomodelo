@@ -619,6 +619,7 @@ pub fn make_thermal(id: i32, min_mw: f64, max_mw: f64) -> Thermal {
         min_generation_mw: min_mw,
         max_generation_mw: max_mw,
         anticipated_config: None,
+        units: Vec::new(),
     }
 }
 

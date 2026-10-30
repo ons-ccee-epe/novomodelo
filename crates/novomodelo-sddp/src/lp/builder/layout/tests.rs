@@ -268,6 +268,7 @@ fn dormant_thermal(idx: usize) -> Thermal {
         min_generation_mw: 0.0,
         max_generation_mw: 0.0,
         anticipated_config: None,
+        units: Vec::new(),
     }
 }
 

@@ -19,4 +19,4 @@ pub use hydro::{
 pub use line::Line;
 pub use non_controllable::NonControllableSource;
 pub use pumping_station::PumpingStation;
-pub use thermal::{AnticipatedConfig, Thermal};
+pub use thermal::{AnticipatedConfig, THERMAL_RAMP_INTERVAL_HOURS, Thermal, ThermalUnit};

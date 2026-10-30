@@ -28,6 +28,46 @@ impl AnticipatedConfig {
     }
 }
 
+/// Duration of the interval over which each ramp level is held \[h\].
+pub const THERMAL_RAMP_INTERVAL_HOURS: f64 = 0.5;
+
+/// One generating machine of a thermal plant.
+///
+/// The unit injects at the plant's bus and shares the plant's entry and exit stages.
+///
+/// Ramps are trajectories of held levels \[MW\], not rates: each element is the
+/// output held over one [`THERMAL_RAMP_INTERVAL_HOURS`] interval. Every level lies
+/// in `[0, min_generation_mw]`, and an empty trajectory is an instantaneous transition.
+///
+/// The startup trajectory begins at switch-on, is non-decreasing and ends at
+/// `min_generation_mw`; the unit is dispatchable in `[min_generation_mw, max_generation_mw]`
+/// from the next interval. The shutdown trajectory begins at `min_generation_mw` and is
+/// non-increasing; the unit is off at 0 MW from the interval after its last level.
+///
+/// Durations are physical hours on one on/off clock. Minimum up time runs from
+/// switch-on, with both trajectories counted as on-time. Minimum down time runs from
+/// the end of the shutdown trajectory to the next switch-on.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ThermalUnit {
+    /// Identifier, unique within the owning plant (not globally).
+    pub id: EntityId,
+    /// Human-readable unit name.
+    pub name: String,
+    /// Minimum generation once dispatchable \[MW\].
+    pub min_generation_mw: f64,
+    /// Maximum generation \[MW\].
+    pub max_generation_mw: f64,
+    /// Minimum time on before a switch-off \[h\]; `0` means no minimum.
+    pub min_up_time_hours: f64,
+    /// Minimum time off before a switch-on \[h\]; `0` means no minimum.
+    pub min_down_time_hours: f64,
+    /// Startup trajectory of held levels \[MW\]; empty means instantaneous.
+    pub startup_ramp_mw: Vec<f64>,
+    /// Shutdown trajectory of held levels \[MW\]; empty means instantaneous.
+    pub shutdown_ramp_mw: Vec<f64>,
+}
+
 /// Thermal power plant with a scalar marginal cost.
 ///
 /// See Input System Entities SS1.9.5.
@@ -54,11 +94,70 @@ pub struct Thermal {
     pub max_generation_mw: f64,
     /// Anticipated dispatch configuration. None = no anticipation lag.
     pub anticipated_config: Option<AnticipatedConfig>,
+    /// Generating units owned by the plant; empty means the plant is modeled only in aggregate.
+    /// The plant's `min_generation_mw`/`max_generation_mw` floor and cap the units' summed output,
+    /// trajectory output included; a study that does not model units is bounded by them alone.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub units: Vec<ThermalUnit>,
+}
+
+impl Thermal {
+    /// Puts `units` in canonical id order so results do not depend on declaration order.
+    pub fn sort_units(&mut self) {
+        self.units.sort_by_key(|u| u.id.0);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "serde")]
+    use crate::test_support::{ThermalUnitSpec, f64_bits_eq, make_thermal_unit};
+
+    #[cfg(feature = "serde")]
+    const THERMAL_UNIT_KEYS: [&str; 8] = [
+        "id",
+        "name",
+        "min_generation_mw",
+        "max_generation_mw",
+        "min_up_time_hours",
+        "min_down_time_hours",
+        "startup_ramp_mw",
+        "shutdown_ramp_mw",
+    ];
+
+    #[cfg(feature = "serde")]
+    fn thermal_unit_fixture() -> crate::ThermalUnit {
+        make_thermal_unit(ThermalUnitSpec {
+            id: 3,
+            name: "U3".to_string(),
+            min_generation_mw: 20.0,
+            max_generation_mw: 60.0,
+            min_up_time_hours: 4.0,
+            min_down_time_hours: 2.5,
+            startup_ramp_mw: vec![10.0, 20.0],
+            shutdown_ramp_mw: vec![20.0, 15.0, 5.0],
+        })
+    }
+
+    #[cfg(feature = "serde")]
+    fn assert_f64_fields_bit_exact(a: &crate::ThermalUnit, b: &crate::ThermalUnit) {
+        let f64_fields = |unit: &crate::ThermalUnit| -> Vec<f64> {
+            [
+                unit.min_generation_mw,
+                unit.max_generation_mw,
+                unit.min_up_time_hours,
+                unit.min_down_time_hours,
+            ]
+            .into_iter()
+            .chain(unit.startup_ramp_mw.iter().copied())
+            .chain(unit.shutdown_ramp_mw.iter().copied())
+            .collect()
+        };
+        let (a, b) = (f64_fields(a), f64_fields(b));
+        assert_eq!(a.len(), b.len());
+        assert!(a.iter().zip(&b).all(|(x, y)| f64_bits_eq(*x, *y)));
+    }
 
     #[test]
     fn test_thermal_construction() {
@@ -73,6 +172,7 @@ mod tests {
             min_generation_mw: 0.0,
             max_generation_mw: 657.0,
             anticipated_config: None,
+            units: Vec::new(),
         };
 
         assert_eq!(thermal.id, EntityId::from(1));
@@ -99,6 +199,7 @@ mod tests {
             min_generation_mw: 100.0,
             max_generation_mw: 360.0,
             anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
+            units: Vec::new(),
         };
 
         assert_eq!(
@@ -162,6 +263,7 @@ mod tests {
             min_generation_mw: 100.0,
             max_generation_mw: 360.0,
             anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
+            units: Vec::new(),
         };
         let json = serde_json::to_string(&thermal).unwrap();
         let deserialized: Thermal = serde_json::from_str(&json).unwrap();
@@ -186,9 +288,70 @@ mod tests {
             min_generation_mw: 100.0,
             max_generation_mw: 360.0,
             anticipated_config: Some(AnticipatedConfig::LeadTime(720.0)),
+            units: Vec::new(),
         };
         let json = serde_json::to_string(&thermal).unwrap();
         let deserialized: Thermal = serde_json::from_str(&json).unwrap();
         assert_eq!(thermal, deserialized);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn thermal_json_without_units_key_loads_with_no_units_unlike_hydro_unit_groups() {
+        let thermal = crate::test_support::make_thermal(crate::test_support::ThermalSpec {
+            id: 7,
+            bus_id: 1,
+            ..Default::default()
+        });
+        let mut document = serde_json::to_value(&thermal).unwrap();
+        document.as_object_mut().unwrap().remove("units");
+        let deserialized: Thermal = serde_json::from_value(document).unwrap();
+        assert!(deserialized.units.is_empty());
+        assert_eq!(deserialized, thermal);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn thermal_unit_json_roundtrip_preserves_every_field_bit_exact() {
+        let unit = thermal_unit_fixture();
+        let json = serde_json::to_string(&unit).unwrap();
+        let deserialized: crate::ThermalUnit = serde_json::from_str(&json).unwrap();
+        assert_eq!(unit, deserialized);
+        assert_f64_fields_bit_exact(&unit, &deserialized);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn thermal_unit_postcard_roundtrip_preserves_every_field_bit_exact() {
+        let unit = thermal_unit_fixture();
+        let bytes = postcard::to_allocvec(&unit).unwrap();
+        let deserialized: crate::ThermalUnit = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(unit, deserialized);
+        assert_f64_fields_bit_exact(&unit, &deserialized);
+        assert_eq!(bytes, postcard::to_allocvec(&deserialized).unwrap());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn thermal_unit_document_missing_any_key_fails_to_deserialize() {
+        let value = serde_json::to_value(thermal_unit_fixture()).unwrap();
+        assert_eq!(
+            value.as_object().unwrap().len(),
+            THERMAL_UNIT_KEYS.len(),
+            "a field was added or removed without updating THERMAL_UNIT_KEYS"
+        );
+        for key in THERMAL_UNIT_KEYS {
+            let mut document = value.clone();
+            document.as_object_mut().unwrap().remove(key);
+            assert!(
+                serde_json::from_value::<crate::ThermalUnit>(document).is_err(),
+                "document without `{key}` must fail to deserialize"
+            );
+        }
+    }
+
+    #[test]
+    fn thermal_ramp_interval_is_half_an_hour() {
+        assert_eq!(crate::THERMAL_RAMP_INTERVAL_HOURS, 0.5);
     }
 }

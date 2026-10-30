@@ -625,6 +625,8 @@ mod tests {
         make_bus, make_contract, make_hydro, make_line, make_ncs, make_pumping_station, make_stage,
         make_thermal,
     };
+    #[cfg(feature = "serde")]
+    use crate::test_support::{ThermalUnitSpec, make_thermal_unit};
     use chrono::NaiveDate;
 
     #[test]
@@ -2238,6 +2240,106 @@ mod tests {
 
     #[cfg(feature = "serde")]
     #[test]
+    fn test_system_postcard_roundtrip_preserves_thermal_units() {
+        let no_units_thermal = make_thermal(ThermalSpec {
+            id: 1,
+            bus_id: 1,
+            ..Default::default()
+        });
+        let three_units_thermal = make_thermal(ThermalSpec {
+            id: 2,
+            bus_id: 1,
+            units: vec![
+                make_thermal_unit(ThermalUnitSpec {
+                    id: 2,
+                    max_generation_mw: 40.0,
+                    ..Default::default()
+                }),
+                make_thermal_unit(ThermalUnitSpec {
+                    id: 4,
+                    min_generation_mw: 20.0,
+                    max_generation_mw: 40.0,
+                    startup_ramp_mw: vec![10.0, 20.0],
+                    shutdown_ramp_mw: vec![20.0],
+                    ..Default::default()
+                }),
+                make_thermal_unit(ThermalUnitSpec {
+                    id: 6,
+                    min_generation_mw: 30.0,
+                    max_generation_mw: 40.0,
+                    startup_ramp_mw: vec![5.0, 10.0, 15.0, 30.0],
+                    ..Default::default()
+                }),
+            ],
+            ..Default::default()
+        });
+
+        let system = SystemBuilder::new()
+            .buses(vec![make_bus(BusSpec {
+                id: 1,
+                name: format!("bus-{}", 1),
+                ..Default::default()
+            })])
+            .thermals(vec![no_units_thermal, three_units_thermal])
+            .build()
+            .expect("valid system");
+
+        let bytes = postcard::to_allocvec(&system).unwrap();
+        let deserialized: System = postcard::from_bytes(&bytes).unwrap();
+
+        let decoded_no_units = deserialized
+            .thermal(EntityId(1))
+            .expect("thermal 1 must round-trip");
+        assert!(decoded_no_units.units.is_empty());
+
+        let decoded_three_units = deserialized
+            .thermal(EntityId(2))
+            .expect("thermal 2 must round-trip");
+        let built_three_units = system.thermal(EntityId(2)).expect("thermal 2 is built");
+        assert_eq!(decoded_three_units.units, built_three_units.units);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn postcard_wire_bytes_are_identical_regardless_of_thermal_unit_declaration_order() {
+        let make_system = |unit_ids: [i32; 3]| {
+            let thermal = make_thermal(ThermalSpec {
+                id: 1,
+                bus_id: 1,
+                units: unit_ids
+                    .into_iter()
+                    .map(|id| {
+                        make_thermal_unit(ThermalUnitSpec {
+                            id,
+                            max_generation_mw: 40.0,
+                            ..Default::default()
+                        })
+                    })
+                    .collect(),
+                ..Default::default()
+            });
+            SystemBuilder::new()
+                .buses(vec![make_bus(BusSpec {
+                    id: 1,
+                    name: format!("bus-{}", 1),
+                    ..Default::default()
+                })])
+                .thermals(vec![thermal])
+                .build()
+                .expect("valid system")
+        };
+
+        let bytes_a = postcard::to_allocvec(&make_system([2, 4, 6])).unwrap();
+        let bytes_b = postcard::to_allocvec(&make_system([6, 2, 4])).unwrap();
+
+        assert_eq!(
+            bytes_a, bytes_b,
+            "wire bytes must not depend on thermal unit declaration order"
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
     fn fully_populated_system_survives_postcard_roundtrip_intact() {
         use crate::{
             AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
@@ -2313,12 +2415,34 @@ mod tests {
             ..Default::default()
         });
 
-        let thermal1 = make_thermal(ThermalSpec {
+        let mut thermal1 = make_thermal(ThermalSpec {
             id: 1,
             name: format!("thermal-{}", 1),
             bus_id: 1,
             ..Default::default()
         });
+        thermal1.units = vec![
+            make_thermal_unit(ThermalUnitSpec {
+                id: 1,
+                name: "T1-U1".to_string(),
+                min_generation_mw: 20.0,
+                max_generation_mw: 60.0,
+                min_up_time_hours: 4.0,
+                min_down_time_hours: 2.0,
+                startup_ramp_mw: vec![10.0, 20.0],
+                shutdown_ramp_mw: vec![20.0, 5.0],
+            }),
+            make_thermal_unit(ThermalUnitSpec {
+                id: 2,
+                name: "T1-U2".to_string(),
+                min_generation_mw: 30.0,
+                max_generation_mw: 60.0,
+                min_up_time_hours: 0.0,
+                min_down_time_hours: 0.0,
+                startup_ramp_mw: Vec::new(),
+                shutdown_ramp_mw: Vec::new(),
+            }),
+        ];
         let line1 = make_line(LineSpec {
             id: 1,
             name: format!("line-{}", 1),

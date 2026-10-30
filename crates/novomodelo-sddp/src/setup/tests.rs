@@ -89,6 +89,7 @@ fn minimal_system_with_policy_graph(
         anticipated_config: None,
         entry_stage_id: None,
         exit_stage_id: None,
+        units: Vec::new(),
     };
 
     let mut hydro = Hydro {
@@ -321,6 +322,7 @@ fn minimal_fpha_misconfigured_system(n_stages: usize) -> novomodelo_core::System
         anticipated_config: None,
         entry_stage_id: None,
         exit_stage_id: None,
+        units: Vec::new(),
     };
 
     let mut hydro = Hydro {
@@ -1889,6 +1891,7 @@ fn test_prepare_stochastic_historical_residuals_noise_method() {
         anticipated_config: None,
         entry_stage_id: None,
         exit_stage_id: None,
+        units: Vec::new(),
     };
     let mut hydro = Hydro {
         unit_groups: Vec::new(),
@@ -3721,6 +3724,7 @@ fn system_with_anticipated_thermals(
             anticipated_config: Some(AnticipatedConfig::LeadStages(k)),
             entry_stage_id: None,
             exit_stage_id: None,
+            units: Vec::new(),
         })
         .collect();
 
@@ -3977,6 +3981,7 @@ fn system_with_two_anticipated_thermals_staggered_dates(
             anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
             entry_stage_id: None,
             exit_stage_id: None,
+            units: Vec::new(),
         },
         Thermal {
             id: EntityId(11),
@@ -3989,6 +3994,7 @@ fn system_with_two_anticipated_thermals_staggered_dates(
             anticipated_config: Some(AnticipatedConfig::LeadStages(3)),
             entry_stage_id: None,
             exit_stage_id: None,
+            units: Vec::new(),
         },
     ];
 
@@ -4985,6 +4991,7 @@ fn system_with_historical_inflow(n_stages: usize) -> novomodelo_core::System {
         anticipated_config: None,
         entry_stage_id: None,
         exit_stage_id: None,
+        units: Vec::new(),
     };
 
     let mut hydro = Hydro {
@@ -5256,6 +5263,7 @@ fn external_inflow_library_built_when_scheme_is_external() {
         anticipated_config: None,
         entry_stage_id: None,
         exit_stage_id: None,
+        units: Vec::new(),
     };
     let mut hydro = Hydro {
         unit_groups: Vec::new(),
@@ -5512,6 +5520,7 @@ fn external_load_library_built_when_scheme_is_external() {
         anticipated_config: None,
         entry_stage_id: None,
         exit_stage_id: None,
+        units: Vec::new(),
     };
     let mut hydro = Hydro {
         unit_groups: Vec::new(),
@@ -5795,6 +5804,7 @@ fn zero_sigma_external_load_system() -> System {
         anticipated_config: None,
         entry_stage_id: None,
         exit_stage_id: None,
+        units: Vec::new(),
     };
     let mut hydro = Hydro {
         unit_groups: Vec::new(),
@@ -6162,6 +6172,7 @@ fn external_ncs_library_built_when_scheme_is_external() {
         anticipated_config: None,
         entry_stage_id: None,
         exit_stage_id: None,
+        units: Vec::new(),
     };
     let mut hydro = Hydro {
         unit_groups: Vec::new(),
@@ -6454,6 +6465,7 @@ fn historical_library_fails_when_no_valid_windows() {
         anticipated_config: None,
         entry_stage_id: None,
         exit_stage_id: None,
+        units: Vec::new(),
     };
     let mut hydro = Hydro {
         unit_groups: Vec::new(),
@@ -6880,6 +6892,7 @@ fn minimal_system_with_anticipated_and_commitments(
         anticipated_config: Some(anticipated_config),
         entry_stage_id: None,
         exit_stage_id: None,
+        units: Vec::new(),
     };
 
     let mut hydro = Hydro {
@@ -7466,6 +7479,7 @@ fn state_space_build_matches_the_loose_constructor() {
         anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
         entry_stage_id: None,
         exit_stage_id: None,
+        units: Vec::new(),
     };
     let system = SystemBuilder::new()
         .buses(vec![bus])
@@ -7777,6 +7791,7 @@ fn system_with_travel_time_arc(n_stages: usize) -> novomodelo_core::System {
         anticipated_config: None,
         entry_stage_id: None,
         exit_stage_id: None,
+        units: Vec::new(),
     };
 
     let make_hydro =
@@ -8308,6 +8323,7 @@ fn par2_system_with_state_configs(state_configs: &[StageStateConfig]) -> novomod
         anticipated_config: None,
         entry_stage_id: None,
         exit_stage_id: None,
+        units: Vec::new(),
     };
 
     let mut hydro = Hydro {
@@ -9291,6 +9307,7 @@ fn system_with_two_thermals_one_fanning() -> novomodelo_core::System {
         anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
         entry_stage_id: None,
         exit_stage_id: None,
+        units: Vec::new(),
     };
     let fanning = Thermal {
         id: EntityId(21),
@@ -9303,6 +9320,7 @@ fn system_with_two_thermals_one_fanning() -> novomodelo_core::System {
         anticipated_config: Some(AnticipatedConfig::LeadTime(900.0)),
         entry_stage_id: None,
         exit_stage_id: None,
+        units: Vec::new(),
     };
 
     let stages: Vec<Stage> = durations
@@ -9523,6 +9541,7 @@ fn system_with_interleaved_anticipated_thermals() -> novomodelo_core::System {
         anticipated_config,
         entry_stage_id: None,
         exit_stage_id: None,
+        units: Vec::new(),
     };
     let t1 = make_thermal(20, Some(AnticipatedConfig::LeadStages(1)));
     let t2 = make_thermal(21, None);

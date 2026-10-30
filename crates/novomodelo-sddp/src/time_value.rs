@@ -808,6 +808,7 @@ mod from_system_tests {
             anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
             entry_stage_id: None,
             exit_stage_id: None,
+            units: Vec::new(),
         };
         let system = SystemBuilder::new()
             .buses(vec![bus])
