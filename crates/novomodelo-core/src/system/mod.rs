@@ -626,7 +626,9 @@ mod tests {
         make_thermal,
     };
     #[cfg(feature = "serde")]
-    use crate::test_support::{ThermalUnitSpec, make_thermal_unit};
+    use crate::test_support::{
+        ThermalUnitSpec, ThermalUnitStateSpec, make_thermal_unit, make_thermal_unit_state,
+    };
     use chrono::NaiveDate;
 
     #[test]
@@ -1931,6 +1933,7 @@ mod tests {
             past_anticipated_commitments: vec![],
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: vec![],
         };
 
         let system = SystemBuilder::new()
@@ -2049,6 +2052,60 @@ mod tests {
         assert_eq!(
             bytes_a, bytes_b,
             "wire bytes must not depend on override insertion order"
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn postcard_wire_bytes_are_identical_regardless_of_thermal_unit_state_declaration_order() {
+        let plant = |id| {
+            make_thermal(ThermalSpec {
+                id,
+                bus_id: 1,
+                units: [1, 2]
+                    .into_iter()
+                    .map(|unit_id| {
+                        make_thermal_unit(ThermalUnitSpec {
+                            id: unit_id,
+                            max_generation_mw: 60.0,
+                            ..Default::default()
+                        })
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+        };
+        let make_system = |order: [(i32, i32); 3]| {
+            SystemBuilder::new()
+                .buses(vec![make_bus(BusSpec {
+                    id: 1,
+                    name: format!("bus-{}", 1),
+                    ..Default::default()
+                })])
+                .thermals(vec![plant(1), plant(2)])
+                .initial_conditions(InitialConditions {
+                    thermal_unit_states: order
+                        .into_iter()
+                        .map(|(thermal_id, unit_id)| {
+                            make_thermal_unit_state(ThermalUnitStateSpec {
+                                thermal_id,
+                                unit_id,
+                                ..Default::default()
+                            })
+                        })
+                        .collect(),
+                    ..InitialConditions::default()
+                })
+                .build()
+                .expect("valid system")
+        };
+
+        let bytes_a = postcard::to_allocvec(&make_system([(2, 1), (1, 2), (1, 1)])).unwrap();
+        let bytes_b = postcard::to_allocvec(&make_system([(1, 1), (2, 1), (1, 2)])).unwrap();
+
+        assert_eq!(
+            bytes_a, bytes_b,
+            "wire bytes must not depend on thermal unit state declaration order"
         );
     }
 
@@ -2348,8 +2405,8 @@ mod tests {
             HydroPastDefluence, HydroPenalties, HydroStageBounds, HydroStorage, LineBlockBounds,
             LineStagePenalties, LinearTerm, NcsStagePenalties, PenaltiesCountsSpec,
             PenaltiesDefaults, PenaltyBasis, PolicyGraphType, PumpingBlockBounds,
-            RecentObservation, SlackConfig, ThermalBlockBounds, ThermalStageBounds, Transition,
-            VariableRef,
+            RecentObservation, SlackConfig, ThermalBlockBounds, ThermalStageBounds,
+            ThermalUnitStatus, Transition, VariableRef,
         };
 
         let bus1 = {
@@ -2728,6 +2785,22 @@ mod tests {
                 end_date: NaiveDate::from_ymd_opt(2023, 12, 1).unwrap(),
                 value_m3s: 320.0,
             }],
+            thermal_unit_states: vec![
+                make_thermal_unit_state(ThermalUnitStateSpec {
+                    thermal_id: 1,
+                    unit_id: 1,
+                    status: ThermalUnitStatus::StartingUp,
+                    time_in_state_hours: 0.5,
+                    previous_generation_mw: 10.0,
+                }),
+                make_thermal_unit_state(ThermalUnitStateSpec {
+                    thermal_id: 1,
+                    unit_id: 2,
+                    status: ThermalUnitStatus::Off,
+                    time_in_state_hours: 12.0,
+                    previous_generation_mw: 0.0,
+                }),
+            ],
         };
 
         let generic_constraints = vec![GenericConstraint {

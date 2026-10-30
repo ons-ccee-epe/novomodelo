@@ -346,6 +346,7 @@ fn build_system_and_bounds() -> (novomodelo_core::System, ResolvedBounds) {
         ),
         recent_observations: vec![],
         past_defluences: vec![],
+        thermal_unit_states: Vec::new(),
     };
 
     let system = SystemBuilder::new()

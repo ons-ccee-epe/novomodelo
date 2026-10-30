@@ -435,6 +435,7 @@ mod anticipated_backward_cut {
                 .collect(),
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         SystemBuilder::new()
@@ -1143,6 +1144,7 @@ mod hm_distribute_conservation {
             }],
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         SystemBuilder::new()
@@ -1643,6 +1645,7 @@ mod anticipated_pre_horizon_seed_delivery {
                 .collect(),
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         let policy_graph = HorizonGraph {
@@ -2569,6 +2572,7 @@ mod anticipated_d_t_saturation {
                 .collect(),
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         SystemBuilder::new()
@@ -3095,6 +3099,7 @@ mod anticipated_forward_pass {
             ],
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         SystemBuilder::new()
@@ -3720,6 +3725,7 @@ mod anticipated_closed_form_lb_k1_single_thermal {
             }],
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         SystemBuilder::new()
@@ -4191,6 +4197,7 @@ mod lead_time_single_decider_end_to_end {
             }],
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         SystemBuilder::new()
@@ -4642,6 +4649,7 @@ mod anticipated_numerical_reconciliation_k2 {
             ],
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         // Set explicitly (not relying on `HorizonGraph::default()`) so a future
@@ -5109,6 +5117,7 @@ mod anticipated_bridge_st_cruz_nova_k1 {
             }],
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         let policy_graph = HorizonGraph {
@@ -5556,6 +5565,7 @@ mod anticipated_convergence_slow {
             ],
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         SystemBuilder::new()
@@ -5989,6 +5999,7 @@ mod a1b_value_cut_identity_anchor {
             }],
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         let policy_graph = HorizonGraph {
@@ -6636,6 +6647,7 @@ mod a1c_stage_count_mode_anchor {
             }],
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         SystemBuilder::new()
@@ -7117,6 +7129,7 @@ mod anticipated_ring_axis_regressions {
                 past_anticipated_commitments: seed_windows(COLLISION_SEEDS),
                 recent_observations: vec![],
                 past_defluences: vec![],
+                thermal_unit_states: Vec::new(),
             })
             .post_study_stages(Some(collision_post_study()))
             .build()
@@ -7256,6 +7269,7 @@ mod anticipated_ring_axis_regressions {
                 past_anticipated_commitments: seed_windows(CLOSURE_SEEDS),
                 recent_observations: vec![],
                 past_defluences: vec![],
+                thermal_unit_states: Vec::new(),
             })
             .post_study_stages(Some(post_study))
             .build()
@@ -7508,6 +7522,7 @@ mod anticipated_ring_axis_regressions {
                 past_anticipated_commitments: vec![],
                 recent_observations: vec![],
                 past_defluences: vec![],
+                thermal_unit_states: Vec::new(),
             })
             .post_study_stages(Some(post_study))
             .build()
@@ -7528,6 +7543,7 @@ mod anticipated_ring_axis_regressions {
                 past_anticipated_commitments: vec![],
                 recent_observations: vec![],
                 past_defluences: vec![],
+                thermal_unit_states: Vec::new(),
             })
             .build()
             .expect("bn_study_only_system: valid system")
@@ -8002,6 +8018,7 @@ mod anticipated_no_boundary_fixed_value_inertness {
             }],
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         SystemBuilder::new()
@@ -8357,6 +8374,7 @@ mod fixed_delivery_output {
             past_anticipated_commitments,
             recent_observations: vec![],
             past_defluences: vec![],
+            thermal_unit_states: Vec::new(),
         };
 
         SystemBuilder::new()

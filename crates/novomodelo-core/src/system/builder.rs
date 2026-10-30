@@ -372,6 +372,9 @@ impl SystemBuilder {
             stage.index = idx;
         }
         self.generic_constraints.sort_by_key(|c| c.id.0);
+        self.initial_conditions
+            .thermal_unit_states
+            .sort_by_key(|s| (s.thermal_id.0, s.unit_id.0));
 
         let mut errors: Vec<ValidationError> = Vec::new();
         check_duplicates(&self.buses, "Bus", &mut errors);
@@ -528,8 +531,8 @@ pub(crate) fn check_canonical_order<T, K: Ord>(
 mod tests {
     use super::*;
     use crate::test_support::{
-        BusSpec, HydroSpec, MirrorUnitGroup, ThermalSpec, ThermalUnitSpec, make_bus, make_hydro,
-        make_thermal, make_thermal_unit,
+        BusSpec, HydroSpec, MirrorUnitGroup, ThermalSpec, ThermalUnitSpec, ThermalUnitStateSpec,
+        make_bus, make_hydro, make_thermal, make_thermal_unit, make_thermal_unit_state,
     };
     use crate::{
         Block, BlockMode, DeficitSegment, HydroPenalties, NoiseMethod, ScenarioSourceConfig,
@@ -704,6 +707,60 @@ mod tests {
 
         let unit_ids: Vec<i32> = system.thermals()[0].units.iter().map(|u| u.id.0).collect();
         assert_eq!(unit_ids, vec![3, 5, 7]);
+    }
+
+    #[test]
+    fn build_sorts_thermal_unit_states_by_thermal_then_unit_id() {
+        let plant = |id| {
+            make_thermal(ThermalSpec {
+                id,
+                bus_id: 1,
+                units: [1, 2]
+                    .into_iter()
+                    .map(|unit_id| {
+                        make_thermal_unit(ThermalUnitSpec {
+                            id: unit_id,
+                            max_generation_mw: 60.0,
+                            ..Default::default()
+                        })
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+        };
+        let state = |thermal_id, unit_id| {
+            make_thermal_unit_state(ThermalUnitStateSpec {
+                thermal_id,
+                unit_id,
+                ..Default::default()
+            })
+        };
+
+        let system = SystemBuilder::new()
+            .buses(vec![make_bus(BusSpec {
+                id: 1,
+                name: format!("bus-{}", 1),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 5000.0,
+                }],
+                ..Default::default()
+            })])
+            .thermals(vec![plant(1), plant(2)])
+            .initial_conditions(InitialConditions {
+                thermal_unit_states: vec![state(2, 1), state(1, 2), state(1, 1)],
+                ..InitialConditions::default()
+            })
+            .build()
+            .expect("units and records are valid");
+
+        let keys: Vec<(i32, i32)> = system
+            .initial_conditions()
+            .thermal_unit_states
+            .iter()
+            .map(|s| (s.thermal_id.0, s.unit_id.0))
+            .collect();
+        assert_eq!(keys, vec![(1, 1), (1, 2), (2, 1)]);
     }
 
     #[test]
@@ -895,10 +952,13 @@ mod proptests {
     use super::*;
     use crate::test_support::{
         BusSpec, ContractSpec, HydroSpec, LineSpec, NcsSpec, PumpingSpec, StageSpec, ThermalSpec,
-        ThermalUnitSpec, make_bus, make_contract, make_hydro, make_line, make_ncs,
-        make_pumping_station, make_stage, make_thermal, make_thermal_unit,
+        ThermalUnitSpec, ThermalUnitStateSpec, make_bus, make_contract, make_hydro, make_line,
+        make_ncs, make_pumping_station, make_stage, make_thermal, make_thermal_unit,
+        make_thermal_unit_state,
     };
-    use crate::{ConstraintExpression, ContractType, DeficitSegment, ThermalUnit};
+    use crate::{
+        ConstraintExpression, ContractType, DeficitSegment, ThermalUnit, ThermalUnitInitialState,
+    };
     use proptest::prelude::*;
 
     fn date_early() -> NaiveDate {
@@ -1037,6 +1097,19 @@ mod proptests {
                 make_thermal_unit(ThermalUnitSpec {
                     id,
                     max_generation_mw: 50.0,
+                    ..Default::default()
+                })
+            })
+            .collect()
+    }
+
+    fn reference_unit_states() -> Vec<ThermalUnitInitialState> {
+        [30, 10, 20]
+            .into_iter()
+            .map(|unit_id| {
+                make_thermal_unit_state(ThermalUnitStateSpec {
+                    thermal_id: 1,
+                    unit_id,
                     ..Default::default()
                 })
             })
@@ -1192,6 +1265,12 @@ mod proptests {
         u.iter().map(|u| u.id.0).collect()
     }
 
+    fn expected_unit_state_keys() -> Vec<(i32, i32)> {
+        let mut s = reference_unit_states();
+        s.sort_by_key(|s| (s.thermal_id.0, s.unit_id.0));
+        s.iter().map(|s| (s.thermal_id.0, s.unit_id.0)).collect()
+    }
+
     fn expected_gc_ids() -> Vec<i32> {
         let mut g = reference_generic_constraints();
         g.sort_by_key(|c| c.id.0);
@@ -1215,6 +1294,7 @@ mod proptests {
             ncs in Just(reference_ncs()).prop_shuffle(),
             stages in Just(reference_stages()).prop_shuffle(),
             gcs in Just(reference_generic_constraints()).prop_shuffle(),
+            states in Just(reference_unit_states()).prop_shuffle(),
         ) {
             thermals
                 .iter_mut()
@@ -1231,6 +1311,10 @@ mod proptests {
                 .non_controllable_sources(ncs)
                 .stages(stages)
                 .generic_constraints(gcs)
+                .initial_conditions(InitialConditions {
+                    thermal_unit_states: states,
+                    ..InitialConditions::default()
+                })
                 .build()
                 .expect("reference system is valid");
 
@@ -1244,6 +1328,7 @@ mod proptests {
             let expected_units = expected_unit_ids();
             let expected_stages = expected_stage_ids();
             let expected_gcs = expected_gc_ids();
+            let expected_states = expected_unit_state_keys();
 
             // Sortedness: the precomputed expectation is itself non-decreasing under
             // the canonical key, so a mistake in the expectation cannot mask a sort bug.
@@ -1257,6 +1342,7 @@ mod proptests {
             prop_assert!(expected_units.is_sorted());
             prop_assert!(expected_stages.is_sorted());
             prop_assert!(expected_gcs.is_sorted());
+            prop_assert!(expected_states.is_sorted());
 
             prop_assert_eq!(project_op(system.buses()), expected_buses);
             prop_assert_eq!(project_op(system.lines()), expected_lines);
@@ -1282,6 +1368,15 @@ mod proptests {
             prop_assert_eq!(
                 system.generic_constraints().iter().map(|c| c.id.0).collect::<Vec<_>>(),
                 expected_gcs
+            );
+            prop_assert_eq!(
+                system
+                    .initial_conditions()
+                    .thermal_unit_states
+                    .iter()
+                    .map(|s| (s.thermal_id.0, s.unit_id.0))
+                    .collect::<Vec<_>>(),
+                expected_states
             );
         }
     }

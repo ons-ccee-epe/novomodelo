@@ -2763,6 +2763,7 @@ fn fan_or_chain_system_builder(
         past_anticipated_commitments: vec![],
         recent_observations: vec![],
         past_defluences: vec![],
+        thermal_unit_states: Vec::new(),
     };
 
     SystemBuilder::new()
