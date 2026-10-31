@@ -1896,7 +1896,7 @@ mod tests {
         );
     }
 
-    // ── compute_external_scenario_counts: min + silent-drop deletion ──────────
+    // ── compute_external_scenario_counts ──────────────────────────────────────
 
     /// A `System` with one hydro and one std-bearing load bus over `stage_ids`,
     /// carrying `inflow_per_stage`/`load_per_stage` external realizations per stage
@@ -2163,11 +2163,10 @@ mod tests {
         }
     }
 
-    /// The element-wise minimum is gone: with inflow (3) and load (2) external
-    /// classes disagreeing on the per-stage raw count, the returned vector is the
-    /// first present class's (inflow, 3) — never `min(3, 2) = 2`. This deck is
-    /// P-B1-rejected at load; the direct call is the only way to observe the
-    /// reconciliation was deleted rather than relocated.
+    /// With inflow (3) and load (2) external classes disagreeing on the per-stage
+    /// raw count, the returned vector is the first present class's (inflow, 3),
+    /// never the element-wise minimum `min(3, 2) = 2`. P-B1 rejects this deck at
+    /// load, so only a direct call can observe it.
     #[test]
     fn compute_external_scenario_counts_takes_first_never_min() {
         let system = external_count_system(&[0], 3, 2);
@@ -2180,10 +2179,9 @@ mod tests {
         );
     }
 
-    /// The `if stage_id as usize < n_stages` silent-drop is gone: a study numbered
-    /// `[10, 11]` (never 0-based) counts every external row through the resolver.
-    /// The pre-deletion code keyed on `stage_id as usize` and dropped all
-    /// rows (`10 < 2` is false), returning `[0, 0]`; the resolver returns `[1, 1]`.
+    /// A study numbered `[10, 11]` (never 0-based) counts every external row
+    /// through the resolver. Keying on `stage_id as usize` would drop all rows
+    /// (`10 < 2` is false) and return `[0, 0]`; the resolver returns `[1, 1]`.
     #[test]
     fn compute_external_scenario_counts_resolves_non_zero_based_stage_ids() {
         let system = external_count_system(&[10, 11], 1, 0);
