@@ -2147,19 +2147,12 @@ mod tests {
     }
 
     fn make_thermal(id: i32, name: &str, bus_id: i32) -> Thermal {
-        Thermal {
-            id: EntityId(id),
+        novomodelo_core::test_support::make_thermal(novomodelo_core::test_support::ThermalSpec {
+            id,
             name: name.to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(bus_id),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 50.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: None,
-            units: Vec::new(),
-        }
+            bus_id,
+            ..Default::default()
+        })
     }
 
     fn make_bus(id: i32) -> Bus {

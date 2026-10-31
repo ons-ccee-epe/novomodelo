@@ -729,14 +729,7 @@ mod tests {
             .bounds(bounds)
             .penalties(penalties)
             .policy_graph(policy_graph)
-            .initial_conditions(InitialConditions {
-                storage: vec![],
-                filling_storage: vec![],
-                past_anticipated_commitments: vec![],
-                recent_observations: vec![],
-                past_defluences: vec![],
-                thermal_unit_states: Vec::new(),
-            })
+            .initial_conditions(InitialConditions::default())
             .build()
             .expect("ring fixture: valid system")
     }
@@ -1742,14 +1735,7 @@ mod tests {
             .bounds(bounds)
             .penalties(penalties)
             .policy_graph(policy_graph)
-            .initial_conditions(InitialConditions {
-                storage: vec![],
-                filling_storage: vec![],
-                past_anticipated_commitments: vec![],
-                recent_observations: vec![],
-                past_defluences: vec![],
-                thermal_unit_states: Vec::new(),
-            })
+            .initial_conditions(InitialConditions::default())
             .build()
             .expect("AR(0) declared-lag-history fixture: valid system");
 
@@ -2158,14 +2144,7 @@ mod tests {
             .bounds(bounds)
             .penalties(penalties)
             .policy_graph(policy_graph)
-            .initial_conditions(InitialConditions {
-                storage: vec![],
-                filling_storage: vec![],
-                past_anticipated_commitments: vec![],
-                recent_observations: vec![],
-                past_defluences: vec![],
-                thermal_unit_states: Vec::new(),
-            })
+            .initial_conditions(InitialConditions::default())
             .external_scenarios(external_scenarios)
             .external_load_scenarios(external_load_scenarios)
             .build()

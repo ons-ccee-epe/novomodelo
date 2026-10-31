@@ -11,6 +11,7 @@
 
 #![deny(clippy::allow_attributes, clippy::allow_attributes_without_reason)]
 
+use novomodelo_core::test_support::{ThermalSpec, make_thermal};
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
@@ -257,19 +258,15 @@ pub fn anticipated_plants_at(positions: &[usize]) -> AnticipatedPlants {
     let n = positions.last().map_or(0, |&p| p + 1);
     let thermals: Vec<Thermal> = (0..n)
         .map(|idx| Thermal {
-            id: EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
-            name: String::new(),
-            operational_start_date: ymd(2024, 1, 1),
-            bus_id: EntityId(0),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 0.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 0.0,
             anticipated_config: positions
                 .contains(&idx)
                 .then_some(AnticipatedConfig::LeadStages(1)),
-            units: Vec::new(),
+            ..make_thermal(ThermalSpec {
+                id: i32::try_from(idx).unwrap_or(i32::MAX),
+                cost_per_mwh: 0.0,
+                max_generation_mw: 0.0,
+                ..Default::default()
+            })
         })
         .collect();
     AnticipatedPlants::build(&thermals)
@@ -532,19 +529,13 @@ fn geometry_bus(idx: usize, max_deficit_segments: usize) -> Bus {
 /// Fixture thermal at system position `idx`, inert past its `id`: `geometry`
 /// needs only the count `ctx.thermals.len()` reserves, never a bound or cost.
 fn geometry_thermal(idx: usize) -> Thermal {
-    Thermal {
-        id: EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
-        name: String::new(),
+    make_thermal(ThermalSpec {
+        id: i32::try_from(idx).unwrap_or(i32::MAX),
         operational_start_date: NaiveDate::default(),
-        bus_id: EntityId(0),
-        entry_stage_id: None,
-        exit_stage_id: None,
         cost_per_mwh: 0.0,
-        min_generation_mw: 0.0,
         max_generation_mw: 0.0,
-        anticipated_config: None,
-        units: Vec::new(),
-    }
+        ..Default::default()
+    })
 }
 
 /// Fixture line at system position `idx`, inert past its `id`: `geometry`
@@ -2759,11 +2750,7 @@ fn fan_or_chain_system_builder(
             hydro_id,
             value_hm3: storage.initial_storage_hm3,
         }],
-        filling_storage: vec![],
-        past_anticipated_commitments: vec![],
-        recent_observations: vec![],
-        past_defluences: vec![],
-        thermal_unit_states: Vec::new(),
+        ..InitialConditions::default()
     };
 
     SystemBuilder::new()

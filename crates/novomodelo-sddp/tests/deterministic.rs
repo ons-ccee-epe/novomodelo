@@ -6252,11 +6252,7 @@ mod chronological_telescoping {
                 hydro_id: EntityId(HYDRO_ID),
                 value_hm3: 200.0,
             }],
-            filling_storage: vec![],
-            past_anticipated_commitments: vec![],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()
@@ -7020,11 +7016,7 @@ mod season_descriptor_checkpoint_round_trip {
                     value_hm3: 100.0,
                 },
             ],
-            filling_storage: vec![],
-            past_anticipated_commitments: vec![],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()
@@ -7396,11 +7388,7 @@ mod boundary_season_gate_round_trip {
                 hydro_id: EntityId(HYDRO_ID),
                 value_hm3: 100.0,
             }],
-            filling_storage: vec![],
-            past_anticipated_commitments: vec![],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()
@@ -7745,11 +7733,7 @@ mod transit_arrival_interval_checkpoint_round_trip {
                     value_hm3: 100.0,
                 },
             ],
-            filling_storage: vec![],
-            past_anticipated_commitments: vec![],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         let post_study_stages = PostStudyStages {
@@ -8167,15 +8151,11 @@ mod chronological_attribution {
                     value_hm3: 0.0,
                 },
             ],
-            filling_storage: vec![],
-            past_anticipated_commitments: vec![],
-            recent_observations: vec![],
             // Empty is safe: `build_initial_transit_bucket_state`'s history selection
             // falls back to an empty slice (seed 0.0) rather than panicking —
             // these tests inspect LP structure and state dimension, never a
             // seeded value.
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()

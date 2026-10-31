@@ -337,16 +337,13 @@ fn build_system_and_bounds() -> (novomodelo_core::System, ResolvedBounds) {
             hydro_id: EntityId(3),
             value_hm3: 100.0,
         }],
-        filling_storage: vec![],
         past_anticipated_commitments: windowed_commitments_daily(
             anticipated_id,
             calendar_anchor,
             31,
             &[100.0, 50.0],
         ),
-        recent_observations: vec![],
-        past_defluences: vec![],
-        thermal_unit_states: Vec::new(),
+        ..InitialConditions::default()
     };
 
     let system = SystemBuilder::new()

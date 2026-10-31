@@ -30,9 +30,7 @@
 //!             value_mw: 100.0,
 //!         },
 //!     ],
-//!     recent_observations: vec![],
-//!     past_defluences: vec![],
-//!     thermal_unit_states: vec![],
+//!     ..InitialConditions::default()
 //! };
 //!
 //! assert_eq!(ic.storage.len(), 2);
@@ -331,10 +329,7 @@ mod tests {
                 hydro_id: EntityId(10),
                 value_hm3: 200.0,
             }],
-            past_anticipated_commitments: vec![],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: vec![],
+            ..InitialConditions::default()
         };
 
         assert_eq!(ic.storage.len(), 2);
@@ -383,10 +378,7 @@ mod tests {
                 hydro_id: EntityId(10),
                 value_hm3: 200.0,
             }],
-            past_anticipated_commitments: vec![],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: vec![],
+            ..InitialConditions::default()
         };
 
         let json = serde_json::to_string(&ic).unwrap();
@@ -415,8 +407,6 @@ mod tests {
                 hydro_id: EntityId(0),
                 value_hm3: 1_000.0,
             }],
-            filling_storage: vec![],
-            past_anticipated_commitments: vec![],
             recent_observations: vec![RecentObservation {
                 hydro_id: EntityId(0),
                 start_date: NaiveDate::from_ymd_opt(2026, 4, 1)
@@ -425,8 +415,7 @@ mod tests {
                     .unwrap_or_else(|| unreachable!("hardcoded date is valid")),
                 value_m3s: 500.0,
             }],
-            past_defluences: vec![],
-            thermal_unit_states: vec![],
+            ..InitialConditions::default()
         };
         assert_eq!(ic.recent_observations.len(), 1);
         assert_eq!(ic.recent_observations[0].hydro_id, EntityId(0));
@@ -441,8 +430,6 @@ mod tests {
                 hydro_id: EntityId(0),
                 value_hm3: 1_000.0,
             }],
-            filling_storage: vec![],
-            past_anticipated_commitments: vec![],
             recent_observations: vec![
                 RecentObservation {
                     hydro_id: EntityId(0),
@@ -461,8 +448,7 @@ mod tests {
                     value_m3s: 480.0,
                 },
             ],
-            past_defluences: vec![],
-            thermal_unit_states: vec![],
+            ..InitialConditions::default()
         };
         let json = serde_json::to_string(&ic).unwrap();
         let deserialized: InitialConditions = serde_json::from_str(&json).unwrap();
@@ -509,8 +495,6 @@ mod tests {
     #[test]
     fn test_initial_conditions_with_anticipated_commitments() {
         let ic = InitialConditions {
-            storage: vec![],
-            filling_storage: vec![],
             past_anticipated_commitments: vec![
                 AnticipatedCommitmentHistory {
                     thermal_id: EntityId(3),
@@ -529,9 +513,7 @@ mod tests {
                     value_mw: 200.0,
                 },
             ],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: vec![],
+            ..InitialConditions::default()
         };
         assert_eq!(ic.past_anticipated_commitments.len(), 2);
         assert_eq!(ic.past_anticipated_commitments[0].thermal_id, EntityId(3));
@@ -599,9 +581,6 @@ mod tests {
                 hydro_id: EntityId(0),
                 value_hm3: 1_000.0,
             }],
-            filling_storage: vec![],
-            past_anticipated_commitments: vec![],
-            recent_observations: vec![],
             past_defluences: vec![
                 HydroPastDefluence {
                     hydro_id: EntityId(0),
@@ -620,7 +599,7 @@ mod tests {
                     value_m3s: 650.0,
                 },
             ],
-            thermal_unit_states: vec![],
+            ..InitialConditions::default()
         };
 
         let bytes = postcard::to_allocvec(&ic).unwrap();
@@ -650,8 +629,6 @@ mod tests {
                 hydro_id: EntityId(0),
                 value_hm3: 1_000.0,
             }],
-            filling_storage: vec![],
-            past_anticipated_commitments: vec![],
             recent_observations: vec![RecentObservation {
                 hydro_id: EntityId(0),
                 start_date: NaiveDate::from_ymd_opt(2026, 4, 1)
@@ -661,7 +638,7 @@ mod tests {
                 value_m3s: 500.0,
             }],
             past_defluences: vec![past_defluence_window()],
-            thermal_unit_states: vec![],
+            ..InitialConditions::default()
         };
         let mut with_state = base.clone();
         with_state.thermal_unit_states = vec![make_thermal_unit_state(ThermalUnitStateSpec {

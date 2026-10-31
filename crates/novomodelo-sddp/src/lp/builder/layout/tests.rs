@@ -3,6 +3,7 @@
     reason = "the fixture spells out one complete study inline so each assertion traces to a literal"
 )]
 
+use novomodelo_core::test_support::{ThermalSpec, make_thermal};
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -257,19 +258,13 @@ fn membership_hydro(
 /// need only the count `ctx.thermals.len()` reserves in `StageLayout`, never
 /// a bound or cost.
 fn dormant_thermal(idx: usize) -> Thermal {
-    Thermal {
-        id: EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
-        name: String::new(),
+    make_thermal(ThermalSpec {
+        id: i32::try_from(idx).unwrap_or(i32::MAX),
         operational_start_date: NaiveDate::default(),
-        bus_id: EntityId(0),
-        entry_stage_id: None,
-        exit_stage_id: None,
         cost_per_mwh: 0.0,
-        min_generation_mw: 0.0,
         max_generation_mw: 0.0,
-        anticipated_config: None,
-        units: Vec::new(),
-    }
+        ..Default::default()
+    })
 }
 
 /// Placeholder bus at position `idx`, inert past its `id`: these tests need

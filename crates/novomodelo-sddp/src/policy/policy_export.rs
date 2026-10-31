@@ -774,6 +774,7 @@ mod tests {
     use crate::time_value::post_study_delivery_calendar;
     use novomodelo_core::commissioning::hydro_operating_active;
     use novomodelo_core::temporal::StageStateConfig;
+    use novomodelo_core::test_support::{ThermalSpec, make_thermal};
     use novomodelo_core::{
         AnticipatedConfig, Block, BlockMode, Bus, DeficitSegment, EntityId, Hydro,
         HydroGenerationModel, HydroPenalties, NoiseMethod, PostStudyStage, PostStudyStages,
@@ -889,17 +890,13 @@ mod tests {
 
     fn anticipated_thermal_cfg(id: i32, cfg: AnticipatedConfig) -> Thermal {
         Thermal {
-            id: EntityId(id),
-            name: format!("Thermal{id}"),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 50.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
             anticipated_config: Some(cfg),
-            units: Vec::new(),
+            ..make_thermal(ThermalSpec {
+                id,
+                name: format!("Thermal{id}"),
+                bus_id: 1,
+                ..Default::default()
+            })
         }
     }
 

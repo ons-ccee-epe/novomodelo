@@ -370,16 +370,13 @@ mod anticipated_5stage_k2_smoke {
                 hydro_id: EntityId(3),
                 value_hm3: 100.0,
             }],
-            filling_storage: vec![],
             past_anticipated_commitments: super::windowed_commitments_daily(
                 anticipated_id,
                 calendar_anchor,
                 31,
                 &[100.0, 50.0],
             ),
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()
@@ -866,7 +863,6 @@ mod anticipated_two_plants_smoke {
                 hydro_id: EntityId(3),
                 value_hm3: 100.0,
             }],
-            filling_storage: vec![],
             past_anticipated_commitments: [
                 super::windowed_commitments_daily(ant_id_k2, calendar_anchor, 31, &[60.0, 30.0]),
                 super::windowed_commitments_daily(
@@ -877,9 +873,7 @@ mod anticipated_two_plants_smoke {
                 ),
             ]
             .concat(),
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()
@@ -1372,16 +1366,13 @@ mod anticipated_simulation_ring_buffer {
                 hydro_id: EntityId(3),
                 value_hm3: 0.0,
             }],
-            filling_storage: vec![],
             past_anticipated_commitments: super::windowed_commitments_daily(
                 anticipated_id,
                 calendar_anchor,
                 31,
                 &past_commitments_mw,
             ),
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()
@@ -1910,17 +1901,13 @@ mod anticipated_generic_constraint_e2e {
         );
 
         let initial_conditions = InitialConditions {
-            storage: vec![],
-            filling_storage: vec![],
             past_anticipated_commitments: super::windowed_commitments_daily(
                 ANT_THERMAL_ID,
                 calendar_anchor,
                 1,
                 &[0.0, 0.0],
             ),
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         let mut builder = SystemBuilder::new()
@@ -2949,7 +2936,6 @@ mod anticipated_commitment_at_cap {
                 hydro_id: EntityId(3),
                 value_hm3: 100.0,
             }],
-            filling_storage: vec![],
             // Two pre-study commitment windows at `seed_mw`: the stage-0 delivery
             // matures immediately, the stage-1 delivery is held at its own K=2 modular
             // slot until it matures at stage 1.
@@ -2959,9 +2945,7 @@ mod anticipated_commitment_at_cap {
                 31,
                 &[seed_mw, seed_mw],
             ),
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()
@@ -3355,12 +3339,8 @@ mod faithful_resolution {
             .bounds(bounds())
             .penalties(penalties())
             .initial_conditions(InitialConditions {
-                storage: vec![],
-                filling_storage: vec![],
                 past_anticipated_commitments,
-                recent_observations: vec![],
-                past_defluences: vec![],
-                thermal_unit_states: Vec::new(),
+                ..InitialConditions::default()
             })
             .post_study_stages(Some(post_study_stages()))
             .build()

@@ -2313,10 +2313,11 @@ mod tests {
     use super::*;
     use crate::test_support::output::read_first_batch;
     use chrono::NaiveDate;
+    use novomodelo_core::test_support::{ThermalSpec, make_thermal};
     use novomodelo_core::{
         Block, BlockMode, Bus, DeficitSegment, EntityId, Hydro, HydroGenerationModel,
         HydroPenalties, Line, NoiseMethod, PumpingStation, ScenarioSourceConfig, Stage,
-        StageRiskConfig, StageStateConfig, SystemBuilder, Thermal,
+        StageRiskConfig, StageStateConfig, SystemBuilder,
     };
 
     // -----------------------------------------------------------------------
@@ -2433,19 +2434,12 @@ mod tests {
         let hydro1 = make_hydro(1);
         let hydro2 = make_hydro(2);
 
-        let thermal = Thermal {
-            id: EntityId(1),
+        let thermal = make_thermal(ThermalSpec {
+            id: 1,
             name: "T1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 50.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: None,
-            units: Vec::new(),
-        };
+            bus_id: 1,
+            ..Default::default()
+        });
 
         // Stage 0: duration 720h; Stage 1: duration 744h.
         let stage0 = make_stage(0, 720.0);

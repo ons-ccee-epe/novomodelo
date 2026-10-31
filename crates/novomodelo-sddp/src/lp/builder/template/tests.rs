@@ -8,6 +8,7 @@
 
 use chrono::NaiveDate;
 use novomodelo_core::scenario::SamplingScheme;
+use novomodelo_core::test_support::{ThermalSpec, make_thermal};
 use novomodelo_core::{
     AnticipatedConfig, Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties,
     ContractBlockBounds, ContractType, DeficitSegment, EnergyContract, EntityId, FillingConfig,
@@ -1480,43 +1481,31 @@ fn build_template_build_ctx_contract_count_divergence_panics() {
 fn build_template_build_ctx_populates_anticipated_metadata() {
     let thermals = vec![
         Thermal {
-            id: EntityId(1),
-            name: "T_a".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 10.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
             anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
-            units: Vec::new(),
+            ..make_thermal(ThermalSpec {
+                id: 1,
+                name: "T_a".to_string(),
+                bus_id: 1,
+                cost_per_mwh: 10.0,
+                ..Default::default()
+            })
         },
-        Thermal {
-            id: EntityId(2),
+        make_thermal(ThermalSpec {
+            id: 2,
             name: "T_b".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
+            bus_id: 1,
             cost_per_mwh: 20.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: None,
-            units: Vec::new(),
-        },
+            ..Default::default()
+        }),
         Thermal {
-            id: EntityId(3),
-            name: "T_c".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 30.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
             anticipated_config: Some(AnticipatedConfig::LeadStages(3)),
-            units: Vec::new(),
+            ..make_thermal(ThermalSpec {
+                id: 3,
+                name: "T_c".to_string(),
+                bus_id: 1,
+                cost_per_mwh: 30.0,
+                ..Default::default()
+            })
         },
     ];
     let system = system_with_thermals(thermals);
@@ -1582,32 +1571,20 @@ fn build_template_build_ctx_populates_anticipated_metadata() {
 #[test]
 fn build_template_build_ctx_zero_anticipated_when_none() {
     let thermals = vec![
-        Thermal {
-            id: EntityId(1),
+        make_thermal(ThermalSpec {
+            id: 1,
             name: "T1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
+            bus_id: 1,
             cost_per_mwh: 10.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: None,
-            units: Vec::new(),
-        },
-        Thermal {
-            id: EntityId(2),
+            ..Default::default()
+        }),
+        make_thermal(ThermalSpec {
+            id: 2,
             name: "T2".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
+            bus_id: 1,
             cost_per_mwh: 20.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: None,
-            units: Vec::new(),
-        },
+            ..Default::default()
+        }),
     ];
     let system = system_with_thermals(thermals);
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
@@ -1682,44 +1659,34 @@ fn build_template_build_ctx_zero_anticipated_when_none() {
 fn anticipated_invariance_system() -> novomodelo_core::System {
     let thermals = vec![
         Thermal {
-            id: EntityId(1),
-            name: "T_ant_k2".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 50.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 120.0,
             anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
-            units: Vec::new(),
+            ..make_thermal(ThermalSpec {
+                id: 1,
+                name: "T_ant_k2".to_string(),
+                bus_id: 1,
+                max_generation_mw: 120.0,
+                ..Default::default()
+            })
         },
         Thermal {
-            id: EntityId(2),
-            name: "T_ant_k3".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 40.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 80.0,
             anticipated_config: Some(AnticipatedConfig::LeadStages(3)),
-            units: Vec::new(),
+            ..make_thermal(ThermalSpec {
+                id: 2,
+                name: "T_ant_k3".to_string(),
+                bus_id: 1,
+                cost_per_mwh: 40.0,
+                max_generation_mw: 80.0,
+                ..Default::default()
+            })
         },
-        Thermal {
-            id: EntityId(3),
+        make_thermal(ThermalSpec {
+            id: 3,
             name: "T_backup".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
+            bus_id: 1,
             cost_per_mwh: 500.0,
-            min_generation_mw: 0.0,
             max_generation_mw: 200.0,
-            anticipated_config: None,
-            units: Vec::new(),
-        },
+            ..Default::default()
+        }),
     ];
 
     let n_thermals = thermals.len();
@@ -2297,19 +2264,13 @@ fn discounted_multi_stage_system_with_post_study(
     use novomodelo_core::{HorizonGraph, PolicyGraphType};
 
     let n_stages = 3_usize;
-    let thermals = vec![Thermal {
-        id: EntityId(1),
+    let thermals = vec![make_thermal(ThermalSpec {
+        id: 1,
         name: "T1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(1),
-        entry_stage_id: None,
-        exit_stage_id: None,
+        bus_id: 1,
         cost_per_mwh: 10.0,
-        min_generation_mw: 0.0,
-        max_generation_mw: 100.0,
-        anticipated_config: None,
-        units: Vec::new(),
-    }];
+        ..Default::default()
+    })];
     let n_thermals = thermals.len();
 
     let bus = fixture_bus();
@@ -2839,17 +2800,15 @@ fn two_anticipated_thermals(ids: [i32; 2]) -> Vec<Thermal> {
     ids.into_iter()
         .enumerate()
         .map(|(i, id)| Thermal {
-            id: EntityId(id),
-            name: format!("T{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1 + i as u32, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 10.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
             anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            units: Vec::new(),
+            ..make_thermal(ThermalSpec {
+                id,
+                name: format!("T{id}"),
+                operational_start_date: NaiveDate::from_ymd_opt(2024, 1 + i as u32, 1).unwrap(),
+                bus_id: 1,
+                cost_per_mwh: 10.0,
+                ..Default::default()
+            })
         })
         .collect()
 }
@@ -4478,17 +4437,13 @@ fn system_with_contracts_filling_and_anticipated() -> novomodelo_core::System {
     hydro.declare_mirror_unit_group(EntityId(1));
 
     let thermal = Thermal {
-        id: EntityId(2),
-        name: "T1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(1),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        cost_per_mwh: 50.0,
-        min_generation_mw: 0.0,
-        max_generation_mw: 100.0,
         anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-        units: Vec::new(),
+        ..make_thermal(ThermalSpec {
+            id: 2,
+            name: "T1".to_string(),
+            bus_id: 1,
+            ..Default::default()
+        })
     };
 
     let contracts = vec![
@@ -5263,17 +5218,13 @@ fn anticipated_lead_config_system(
     let bus = fixture_bus();
 
     let thermal = Thermal {
-        id: EntityId(1),
-        name: "T1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(1),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        cost_per_mwh: 50.0,
-        min_generation_mw: 0.0,
-        max_generation_mw: 100.0,
         anticipated_config: Some(anticipated_config),
-        units: Vec::new(),
+        ..make_thermal(ThermalSpec {
+            id: 1,
+            name: "T1".to_string(),
+            bus_id: 1,
+            ..Default::default()
+        })
     };
 
     let stages: Vec<Stage> = (0..n_stages)

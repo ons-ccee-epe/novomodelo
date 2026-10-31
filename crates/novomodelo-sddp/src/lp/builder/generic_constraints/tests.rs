@@ -177,17 +177,13 @@ impl ResolverFixture {
 /// `StageLayout::new` read; every other field is an inert value.
 fn make_thermal(id: i32, anticipated_config: Option<AnticipatedConfig>) -> Thermal {
     Thermal {
-        id: EntityId(id),
-        name: String::new(),
-        operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(0),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        cost_per_mwh: 0.0,
-        min_generation_mw: 0.0,
-        max_generation_mw: 0.0,
         anticipated_config,
-        units: Vec::new(),
+        ..novomodelo_core::test_support::make_thermal(novomodelo_core::test_support::ThermalSpec {
+            id,
+            cost_per_mwh: 0.0,
+            max_generation_mw: 0.0,
+            ..Default::default()
+        })
     }
 }
 

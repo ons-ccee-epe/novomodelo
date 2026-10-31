@@ -608,19 +608,15 @@ pub fn make_unit_group(
 /// Build a minimal valid `Thermal`.
 #[must_use]
 pub fn make_thermal(id: i32, min_mw: f64, max_mw: f64) -> Thermal {
-    Thermal {
-        id: EntityId::from(id),
+    novomodelo_core::test_support::make_thermal(novomodelo_core::test_support::ThermalSpec {
+        id,
         name: format!("Thermal {id}"),
-        operational_start_date: date(2024, 1, 1),
-        bus_id: EntityId::from(1),
-        entry_stage_id: None,
-        exit_stage_id: None,
+        bus_id: 1,
         cost_per_mwh: 100.0,
         min_generation_mw: min_mw,
         max_generation_mw: max_mw,
-        anticipated_config: None,
-        units: Vec::new(),
-    }
+        ..Default::default()
+    })
 }
 
 /// `n` equal-duration blocks spanning a 720-hour stage, shared by
@@ -701,14 +697,7 @@ pub(crate) fn base_parsed_data(stages: StagesData, buses: Vec<Bus>) -> ParsedDat
     ParsedData {
         config: minimal_config(),
         stages,
-        initial_conditions: InitialConditions {
-            storage: vec![],
-            filling_storage: vec![],
-            past_anticipated_commitments: vec![],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
-        },
+        initial_conditions: InitialConditions::default(),
         post_study_stages: None,
         buses,
         thermals: vec![],
