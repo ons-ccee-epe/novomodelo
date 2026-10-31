@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Training under `mpiexec` with external scenario files
+  (`scenarios/external_inflow_scenarios.parquet` and the other external
+  libraries) holding fewer scenarios than `num_openings` aborted the run with
+  an MPI error. Multi-rank runs now complete and match the single-rank run.
+
 ## [0.19.1] - 2026-10-26
 
 ### Added

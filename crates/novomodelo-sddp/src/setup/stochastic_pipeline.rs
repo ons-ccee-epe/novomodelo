@@ -327,7 +327,6 @@ pub fn prepare_stochastic(
 
     let user_opening_tree =
         load_user_opening_tree_inner(case_dir, &system, config, training_source)?;
-    let external_scenario_counts = compute_external_scenario_counts(&system, training_source);
 
     let stochastic = build_stochastic_context_for_study(
         &system,
@@ -336,7 +335,6 @@ pub fn prepare_stochastic(
         training_source,
         inflow_lag_depth,
         user_opening_tree,
-        external_scenario_counts,
     )?;
 
     Ok(PrepareStochasticResult {
@@ -352,10 +350,8 @@ pub fn prepare_stochastic(
 /// factors re-read from `case_dir`), the opening-tree historical library (only
 /// when `user_tree` is `None`), and the forward seed. Both rank 0 (via
 /// [`prepare_stochastic`], after PAR estimation and user-tree loading) and the CLI
-/// non-root reconstruction call this one builder, so
-/// the two paths cannot drift. `user_tree` and `external_scenario_counts` are the two inputs that
-/// differ by rank — rank 0 loads / computes them; a non-root rank receives the tree
-/// over the wire and passes `None` counts.
+/// non-root reconstruction call this one builder, so the two paths cannot drift.
+/// `user_tree` is the only input that differs by rank: rank 0 loads it, and a non-root rank receives it over the wire.
 ///
 /// # Errors
 ///
@@ -368,7 +364,6 @@ pub fn build_stochastic_context_for_study(
     training_source: &ScenarioSource,
     inflow_lag_depth: Option<u32>,
     user_tree: Option<OpeningTree>,
-    external_scenario_counts: Option<Vec<usize>>,
 ) -> Result<StochasticContext, SddpError> {
     let load_factor_entries = load_load_factors_for_stochastic(case_dir)?;
     let block_pairs: Vec<Vec<BlockFactorPair>> = load_factor_entries
@@ -407,7 +402,7 @@ pub fn build_stochastic_context_for_study(
         OpeningTreeInputs {
             user_tree,
             historical_library: opening_tree_library.as_ref(),
-            external_scenario_counts,
+            external_scenario_counts: compute_external_scenario_counts(system, training_source),
             noise_group_ids: Some(study_stage_noise_group_ids(system)),
         },
         class_schemes_for(training_source),
@@ -1061,7 +1056,6 @@ mod tests {
             &training_source,
             Some(3),
             None,
-            None,
         )
         .expect("stochastic context must build");
 
@@ -1219,7 +1213,6 @@ mod tests {
             seed: Some(7),
             historical_years: None,
         };
-        let counts = compute_external_scenario_counts(&system, &training_source);
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let stochastic = build_stochastic_context_for_study(
             &system,
@@ -1228,7 +1221,6 @@ mod tests {
             &training_source,
             None,
             None,
-            counts,
         )
         .expect("stochastic context must build");
         let applied = stochastic.par();
@@ -2405,7 +2397,6 @@ mod tests {
             &ScenarioSource::default(),
             None,
             Some(ring_user_tree()),
-            None,
         )
         .expect("a supplied opening tree must not need the historical library");
         assert_eq!(
@@ -2433,7 +2424,6 @@ mod tests {
             tmp.path(),
             42,
             &ScenarioSource::default(),
-            None,
             None,
             None,
         );
