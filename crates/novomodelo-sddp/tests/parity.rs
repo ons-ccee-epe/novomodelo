@@ -2104,11 +2104,7 @@ mod water_travel_time_no_arc_byte_identity {
                 hydro_id: EntityId(HYDRO_ID),
                 value_hm3: 200.0,
             }],
-            filling_storage: vec![],
-            past_anticipated_commitments: vec![],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()

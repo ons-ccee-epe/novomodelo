@@ -213,6 +213,7 @@ impl From<BroadcastComputedParameter> for ComputedParameter {
 mod tests {
     use super::*;
     use chrono::NaiveDate;
+    use novomodelo_core::test_support::{ThermalSpec, make_thermal};
     use novomodelo_core::{
         AnticipatedCommitmentHistory, Bus, ComputedParameter, DeficitSegment, EntityId, Hydro,
         HydroGenerationModel, HydroPenalties, InitialConditions, ParameterKind, ScalarParameter,
@@ -233,19 +234,12 @@ mod tests {
     }
 
     fn minimal_thermal(id: i32, bus_id: i32) -> Thermal {
-        Thermal {
-            id: EntityId(id),
+        make_thermal(ThermalSpec {
+            id,
             name: format!("Thermal {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(bus_id),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 50.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: None,
-            units: Vec::new(),
-        }
+            bus_id,
+            ..Default::default()
+        })
     }
 
     fn zero_hydro_penalties() -> HydroPenalties {
@@ -692,8 +686,6 @@ mod tests {
     #[test]
     fn test_broadcast_initial_conditions_round_trips_past_anticipated_commitments() {
         let original = InitialConditions {
-            storage: vec![],
-            filling_storage: vec![],
             past_anticipated_commitments: vec![
                 AnticipatedCommitmentHistory {
                     thermal_id: EntityId(1),
@@ -708,9 +700,7 @@ mod tests {
                     value_mw: 50.0,
                 },
             ],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         let bytes = postcard::to_allocvec(&original).unwrap();
@@ -733,14 +723,7 @@ mod tests {
 
     #[test]
     fn test_broadcast_initial_conditions_empty_past_anticipated_commitments() {
-        let original = InitialConditions {
-            storage: vec![],
-            filling_storage: vec![],
-            past_anticipated_commitments: vec![],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
-        };
+        let original = InitialConditions::default();
 
         let bytes = postcard::to_allocvec(&original).unwrap();
         assert!(!bytes.is_empty());

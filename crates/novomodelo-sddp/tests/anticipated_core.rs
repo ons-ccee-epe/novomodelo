@@ -420,8 +420,6 @@ mod anticipated_backward_cut {
         // Anticipated ring-buffer seeds; any feasible choice yields the same cut.
         // One windowed record per seed, tiling delivery stages 0..k_max.
         let initial_conditions = InitialConditions {
-            storage: vec![],
-            filling_storage: vec![],
             past_anticipated_commitments: fixture
                 .seeds_mw
                 .iter()
@@ -433,9 +431,7 @@ mod anticipated_backward_cut {
                     value_mw,
                 })
                 .collect(),
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()
@@ -1134,17 +1130,13 @@ mod hm_distribute_conservation {
         // One windowed pre-study seed tiling delivery stage 0 exactly (k_max = 1),
         // matching anticipated_backward_cut::FIXTURE_K1.
         let initial_conditions = InitialConditions {
-            storage: vec![],
-            filling_storage: vec![],
             past_anticipated_commitments: vec![AnticipatedCommitmentHistory {
                 thermal_id: ANT_ID,
                 start_date: stage_date(0),
                 end_date: stage_date(1),
                 value_mw: SEED_MW,
             }],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()
@@ -1631,7 +1623,6 @@ mod anticipated_pre_horizon_seed_delivery {
                 hydro_id: fixture.hydro_id,
                 value_hm3: 0.0,
             }],
-            filling_storage: vec![],
             past_anticipated_commitments: fixture
                 .seeds_mw
                 .iter()
@@ -1643,9 +1634,7 @@ mod anticipated_pre_horizon_seed_delivery {
                     value_mw,
                 })
                 .collect(),
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         let policy_graph = HorizonGraph {
@@ -2558,7 +2547,6 @@ mod anticipated_d_t_saturation {
                 hydro_id: fixture.hydro_id,
                 value_hm3: 0.0,
             }],
-            filling_storage: vec![],
             past_anticipated_commitments: fixture
                 .seeds_mw
                 .iter()
@@ -2570,9 +2558,7 @@ mod anticipated_d_t_saturation {
                     value_mw,
                 })
                 .collect(),
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()
@@ -3082,7 +3068,6 @@ mod anticipated_forward_pass {
                 hydro_id: EntityId(3),
                 value_hm3: 100.0,
             }],
-            filling_storage: vec![],
             past_anticipated_commitments: vec![
                 AnticipatedCommitmentHistory {
                     thermal_id: anticipated_id,
@@ -3097,9 +3082,7 @@ mod anticipated_forward_pass {
                     value_mw: 50.0,
                 },
             ],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()
@@ -3715,17 +3698,13 @@ mod anticipated_closed_form_lb_k1_single_thermal {
         // the K=1 ring buffer). Any non-zero delivery observed at stage 1 must
         // come from the stage-0 decision.
         let initial_conditions = InitialConditions {
-            storage: vec![],
-            filling_storage: vec![],
             past_anticipated_commitments: vec![AnticipatedCommitmentHistory {
                 thermal_id: ANTICIPATED_ID,
                 start_date: stage_date(0),
                 end_date: stage_date(1),
                 value_mw: 0.0,
             }],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()
@@ -4187,17 +4166,13 @@ mod lead_time_single_decider_end_to_end {
         // K=1 ring-buffer fixture). Any non-zero delivery observed at stage 1
         // must come from the stage-0 decision.
         let initial_conditions = InitialConditions {
-            storage: vec![],
-            filling_storage: vec![],
             past_anticipated_commitments: vec![AnticipatedCommitmentHistory {
                 thermal_id: ANTICIPATED_ID,
                 start_date: stage_date(0),
                 end_date: stage_date(1),
                 value_mw: 0.0,
             }],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()
@@ -4632,7 +4607,6 @@ mod anticipated_numerical_reconciliation_k2 {
                 hydro_id: EntityId(7),
                 value_hm3: 0.0,
             }],
-            filling_storage: vec![],
             past_anticipated_commitments: vec![
                 AnticipatedCommitmentHistory {
                     thermal_id: anticipated_id,
@@ -4647,9 +4621,7 @@ mod anticipated_numerical_reconciliation_k2 {
                     value_mw: 0.0,
                 },
             ],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         // Set explicitly (not relying on `HorizonGraph::default()`) so a future
@@ -5108,16 +5080,13 @@ mod anticipated_bridge_st_cruz_nova_k1 {
                 hydro_id: EntityId(60),
                 value_hm3: 0.0,
             }],
-            filling_storage: vec![],
             past_anticipated_commitments: vec![AnticipatedCommitmentHistory {
                 thermal_id: anticipated_id,
                 start_date: stage_date(0),
                 end_date: stage_date(1),
                 value_mw: 204.5647,
             }],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         let policy_graph = HorizonGraph {
@@ -5548,7 +5517,6 @@ mod anticipated_convergence_slow {
                 hydro_id: EntityId(3),
                 value_hm3: 100.0,
             }],
-            filling_storage: vec![],
             past_anticipated_commitments: vec![
                 AnticipatedCommitmentHistory {
                     thermal_id: anticipated_id,
@@ -5563,9 +5531,7 @@ mod anticipated_convergence_slow {
                     value_mw: 20.0,
                 },
             ],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()
@@ -5989,17 +5955,13 @@ mod a1b_value_cut_identity_anchor {
         // modes. Seed it to 0 MW so stage 0 delivers nothing from T1 and the
         // hand-derived dispatch lives entirely at delivery stages 1 and 2.
         let initial_conditions = InitialConditions {
-            storage: vec![],
-            filling_storage: vec![],
             past_anticipated_commitments: vec![AnticipatedCommitmentHistory {
                 thermal_id: ANT_ID,
                 start_date: stage_date(0),
                 end_date: stage_date(1),
                 value_mw: 0.0,
             }],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         let policy_graph = HorizonGraph {
@@ -6637,17 +6599,13 @@ mod a1c_stage_count_mode_anchor {
 
         // One pre-study delivery stage (decider[0] == None) ⇒ history length 1.
         let initial_conditions = InitialConditions {
-            storage: vec![],
-            filling_storage: vec![],
             past_anticipated_commitments: vec![AnticipatedCommitmentHistory {
                 thermal_id: ANTICIPATED_ID,
                 start_date: stage_date(0),
                 end_date: stage_date(1),
                 value_mw: 0.0,
             }],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()
@@ -7124,12 +7082,8 @@ mod anticipated_ring_axis_regressions {
             .bounds(bounds(4))
             .penalties(penalties())
             .initial_conditions(InitialConditions {
-                storage: vec![],
-                filling_storage: vec![],
                 past_anticipated_commitments: seed_windows(COLLISION_SEEDS),
-                recent_observations: vec![],
-                past_defluences: vec![],
-                thermal_unit_states: Vec::new(),
+                ..InitialConditions::default()
             })
             .post_study_stages(Some(collision_post_study()))
             .build()
@@ -7264,12 +7218,8 @@ mod anticipated_ring_axis_regressions {
             .bounds(bounds(4))
             .penalties(penalties())
             .initial_conditions(InitialConditions {
-                storage: vec![],
-                filling_storage: vec![],
                 past_anticipated_commitments: seed_windows(CLOSURE_SEEDS),
-                recent_observations: vec![],
-                past_defluences: vec![],
-                thermal_unit_states: Vec::new(),
+                ..InitialConditions::default()
             })
             .post_study_stages(Some(post_study))
             .build()
@@ -7516,14 +7466,7 @@ mod anticipated_ring_axis_regressions {
             .load_models(load_models())
             .bounds(bounds(4))
             .penalties(penalties())
-            .initial_conditions(InitialConditions {
-                storage: vec![],
-                filling_storage: vec![],
-                past_anticipated_commitments: vec![],
-                recent_observations: vec![],
-                past_defluences: vec![],
-                thermal_unit_states: Vec::new(),
-            })
+            .initial_conditions(InitialConditions::default())
             .post_study_stages(Some(post_study))
             .build()
             .expect("bn_with_post_study_system: valid system")
@@ -7537,14 +7480,7 @@ mod anticipated_ring_axis_regressions {
             .load_models(load_models())
             .bounds(bounds(4))
             .penalties(penalties())
-            .initial_conditions(InitialConditions {
-                storage: vec![],
-                filling_storage: vec![],
-                past_anticipated_commitments: vec![],
-                recent_observations: vec![],
-                past_defluences: vec![],
-                thermal_unit_states: Vec::new(),
-            })
+            .initial_conditions(InitialConditions::default())
             .build()
             .expect("bn_study_only_system: valid system")
     }
@@ -8008,17 +7944,13 @@ mod anticipated_no_boundary_fixed_value_inertness {
         // in-study stage: it is structurally invisible to the ring regardless of
         // `boundary_present`.
         let initial_conditions = InitialConditions {
-            storage: vec![],
-            filling_storage: vec![],
             past_anticipated_commitments: vec![AnticipatedCommitmentHistory {
                 thermal_id: ANTICIPATED_ID,
                 start_date: horizon_end,
                 end_date: horizon_end + TimeDelta::days(30),
                 value_mw: class4_value_mw,
             }],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()
@@ -8369,12 +8301,8 @@ mod fixed_delivery_output {
             .collect();
 
         let initial_conditions = InitialConditions {
-            storage: vec![],
-            filling_storage: vec![],
             past_anticipated_commitments,
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()

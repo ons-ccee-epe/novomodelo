@@ -282,11 +282,8 @@ fn build_system() -> novomodelo_core::System {
             hydro_id: HYDRO_ID,
             value_hm3: 100.0,
         }],
-        filling_storage: vec![],
         past_anticipated_commitments,
-        recent_observations: vec![],
-        past_defluences: vec![],
-        thermal_unit_states: Vec::new(),
+        ..InitialConditions::default()
     };
 
     let policy_graph = HorizonGraph {
@@ -594,11 +591,8 @@ fn build_mixed_lead_system(reversed: bool) -> novomodelo_core::System {
             hydro_id: MIXED_LEAD_HYDRO_ID,
             value_hm3: 100.0,
         }],
-        filling_storage: vec![],
         past_anticipated_commitments,
-        recent_observations: vec![],
-        past_defluences: vec![],
-        thermal_unit_states: Vec::new(),
+        ..InitialConditions::default()
     };
 
     let policy_graph = HorizonGraph {
@@ -894,17 +888,13 @@ fn build_delivery_oracle_system(annual_discount_rate: f64) -> novomodelo_core::S
         },
     );
     let initial_conditions = InitialConditions {
-        storage: vec![],
-        filling_storage: vec![],
         past_anticipated_commitments: vec![AnticipatedCommitmentHistory {
             thermal_id: DELIVERY_ORACLE_ANTICIPATED_ID,
             start_date: boundaries[0],
             end_date: boundaries[1],
             value_mw: 0.0,
         }],
-        recent_observations: vec![],
-        past_defluences: vec![],
-        thermal_unit_states: Vec::new(),
+        ..InitialConditions::default()
     };
     let policy_graph = HorizonGraph {
         stage_discount_rate_overrides: std::collections::BTreeMap::new(),
@@ -1136,11 +1126,7 @@ fn build_parallel_evap_system() -> novomodelo_core::System {
             hydro_id: EVAP_HYDRO_ID,
             value_hm3: 100.0,
         }],
-        filling_storage: vec![],
-        past_anticipated_commitments: vec![],
-        recent_observations: vec![],
-        past_defluences: vec![],
-        thermal_unit_states: Vec::new(),
+        ..InitialConditions::default()
     };
 
     let policy_graph = HorizonGraph {
@@ -1386,11 +1372,7 @@ fn build_stochastic_parallel_system() -> novomodelo_core::System {
             hydro_id: STOCHASTIC_HYDRO_ID,
             value_hm3: 100.0,
         }],
-        filling_storage: vec![],
-        past_anticipated_commitments: vec![],
-        recent_observations: vec![],
-        past_defluences: vec![],
-        thermal_unit_states: Vec::new(),
+        ..InitialConditions::default()
     };
 
     let policy_graph = HorizonGraph {
@@ -1726,11 +1708,7 @@ fn build_chronological_noise_system(spec: &ChronologicalNoiseSpec) -> novomodelo
                 value_hm3: spec.initial_storage_hm3,
             })
             .collect(),
-        filling_storage: vec![],
-        past_anticipated_commitments: vec![],
-        recent_observations: vec![],
-        past_defluences: vec![],
-        thermal_unit_states: Vec::new(),
+        ..InitialConditions::default()
     };
 
     let mut buses = vec![bus];
@@ -2099,11 +2077,7 @@ fn build_two_hydro_evap_system() -> novomodelo_core::System {
                 value_hm3: 100.0,
             },
         ],
-        filling_storage: vec![],
-        past_anticipated_commitments: vec![],
-        recent_observations: vec![],
-        past_defluences: vec![],
-        thermal_unit_states: Vec::new(),
+        ..InitialConditions::default()
     };
 
     let policy_graph = HorizonGraph {

@@ -775,6 +775,7 @@ fn stage(id: i32, start: chrono::NaiveDate, end: chrono::NaiveDate) -> Stage {
 mod from_system_tests {
     use super::{AnticipatedPlants, DeliveryCalendar, TimeValue, stage};
     use crate::test_support::ymd;
+    use novomodelo_core::test_support::{ThermalSpec, make_thermal};
     use novomodelo_core::{
         AnticipatedConfig, Bus, DeficitSegment, EntityId, SystemBuilder, Thermal,
     };
@@ -798,17 +799,14 @@ mod from_system_tests {
             excess_cost: 0.0,
         };
         let thermal = Thermal {
-            id: EntityId(7),
-            name: "T1".to_string(),
-            operational_start_date: ymd(2024, 1, 1),
-            bus_id: EntityId(1),
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            cost_per_mwh: 10.0,
             anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            units: Vec::new(),
+            ..make_thermal(ThermalSpec {
+                id: 7,
+                name: "T1".to_string(),
+                bus_id: 1,
+                cost_per_mwh: 10.0,
+                ..Default::default()
+            })
         };
         let system = SystemBuilder::new()
             .buses(vec![bus])

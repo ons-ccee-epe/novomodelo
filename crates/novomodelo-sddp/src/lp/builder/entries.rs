@@ -1600,6 +1600,7 @@ mod assemble_csc_tests {
     reason = "the test reads non-negative CSC offsets"
 )]
 mod parameter_resolution_tests {
+    use novomodelo_core::test_support::{ThermalSpec, make_thermal};
     use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties, ConstraintExpression,
         ContractBlockBounds, DeficitSegment, EntityId, GenericConstraint, HydroBlockBounds,
@@ -1705,16 +1706,11 @@ mod parameter_resolution_tests {
 
         let thermal = Thermal {
             id: thermal_entity_id,
-            name: "T1".to_string(),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            cost_per_mwh: 50.0,
-            anticipated_config: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            units: Vec::new(),
+            ..make_thermal(ThermalSpec {
+                name: "T1".to_string(),
+                bus_id: 1,
+                ..Default::default()
+            })
         };
 
         let stages: Vec<Stage> = (0..n_stages)
@@ -2103,12 +2099,13 @@ mod parameter_resolution_tests {
 
 #[cfg(test)]
 mod zero_cost_tests {
+    use novomodelo_core::test_support::{ThermalSpec, make_thermal};
 
     use chrono::NaiveDate;
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
-        HydroStageBounds, LineBlockBounds, PumpingBlockBounds, ResolvedBounds, Stage, Thermal,
-        ThermalBlockBounds, ThermalStageBounds,
+        BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds, HydroStageBounds,
+        LineBlockBounds, PumpingBlockBounds, ResolvedBounds, Stage, Thermal, ThermalBlockBounds,
+        ThermalStageBounds,
     };
 
     use crate::indexer::BlockIdx;
@@ -2134,19 +2131,13 @@ mod zero_cost_tests {
     /// `make_ctx`'s `n_thermals` needs only the count `ctx.thermals.len()`
     /// reserves in `StageLayout`, never a bound or cost.
     fn dormant_thermal(idx: usize) -> Thermal {
-        Thermal {
-            id: EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
-            name: String::new(),
+        make_thermal(ThermalSpec {
+            id: i32::try_from(idx).unwrap_or(i32::MAX),
             operational_start_date: NaiveDate::default(),
-            bus_id: EntityId(0),
-            entry_stage_id: None,
-            exit_stage_id: None,
             cost_per_mwh: 0.0,
-            min_generation_mw: 0.0,
             max_generation_mw: 0.0,
-            anticipated_config: None,
-            units: Vec::new(),
-        }
+            ..Default::default()
+        })
     }
 
     /// Owns data for a context with anticipated thermals and zero other entities.
@@ -2256,39 +2247,30 @@ mod zero_cost_tests {
     /// objective on thermal 0).
     #[test]
     fn fill_thermal_columns_skips_objective_for_anticipated_plants() {
+        use novomodelo_core::Thermal;
         use novomodelo_core::entities::thermal::AnticipatedConfig;
-        use novomodelo_core::{EntityId, Thermal};
 
         const ANT_COST: f64 = 30.0;
         const STD_COST: f64 = 40.0;
 
         let thermals = vec![
             Thermal {
-                id: EntityId(1),
-                name: "T_ant".to_string(),
-                operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                bus_id: EntityId(1),
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
-                cost_per_mwh: ANT_COST,
                 anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-                entry_stage_id: None,
-                exit_stage_id: None,
-                units: Vec::new(),
+                ..make_thermal(ThermalSpec {
+                    id: 1,
+                    name: "T_ant".to_string(),
+                    bus_id: 1,
+                    cost_per_mwh: ANT_COST,
+                    ..Default::default()
+                })
             },
-            Thermal {
-                id: EntityId(2),
+            make_thermal(ThermalSpec {
+                id: 2,
                 name: "T_std".to_string(),
-                operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                bus_id: EntityId(1),
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
+                bus_id: 1,
                 cost_per_mwh: STD_COST,
-                anticipated_config: None,
-                entry_stage_id: None,
-                exit_stage_id: None,
-                units: Vec::new(),
-            },
+                ..Default::default()
+            }),
         ];
 
         let mut fixtures = AntFixtures::new();
@@ -3335,6 +3317,7 @@ mod zero_cost_tests {
     reason = "test locals mirror the paired column and row names the assertions compare, and the fixture spells out one complete study inline so each assertion traces to a literal"
 )]
 mod pumping_water_tests {
+    use novomodelo_core::test_support::{ThermalSpec, make_thermal};
     use std::collections::{BTreeMap, HashMap};
 
     use novomodelo_core::{
@@ -3537,19 +3520,15 @@ mod pumping_water_tests {
     /// A thermal plant on `bus_id` with distinct generation bounds and cost so a
     /// permutation that mislabelled which thermal owns which column is observable.
     fn fixture_thermal(id: i32, bus_id: i32, min_gen: f64, max_gen: f64, cost: f64) -> Thermal {
-        Thermal {
-            id: EntityId(id),
+        make_thermal(ThermalSpec {
+            id,
             name: format!("T{id}"),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(bus_id),
-            entry_stage_id: None,
-            exit_stage_id: None,
+            bus_id,
             cost_per_mwh: cost,
             min_generation_mw: min_gen,
             max_generation_mw: max_gen,
-            anticipated_config: None,
-            units: Vec::new(),
-        }
+            ..Default::default()
+        })
     }
 
     /// A transmission line between `source_bus`/`target_bus` with distinct

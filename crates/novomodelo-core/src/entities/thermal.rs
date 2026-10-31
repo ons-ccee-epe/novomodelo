@@ -111,6 +111,7 @@ impl Thermal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{ThermalSpec, make_thermal};
     #[cfg(feature = "serde")]
     use crate::test_support::{ThermalUnitSpec, f64_bits_eq, make_thermal_unit};
 
@@ -189,17 +190,18 @@ mod tests {
     #[test]
     fn test_thermal_with_anticipated() {
         let thermal = Thermal {
-            id: EntityId::from(2),
-            name: "Pecém I".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(20),
             entry_stage_id: Some(1),
             exit_stage_id: Some(120),
-            cost_per_mwh: 120.0,
-            min_generation_mw: 100.0,
-            max_generation_mw: 360.0,
             anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
-            units: Vec::new(),
+            ..make_thermal(ThermalSpec {
+                id: 2,
+                name: "Pecém I".to_string(),
+                bus_id: 20,
+                cost_per_mwh: 120.0,
+                min_generation_mw: 100.0,
+                max_generation_mw: 360.0,
+                ..Default::default()
+            })
         };
 
         assert_eq!(
@@ -253,17 +255,18 @@ mod tests {
     #[test]
     fn test_thermal_serde_roundtrip() {
         let thermal = Thermal {
-            id: EntityId::from(2),
-            name: "Pecém I".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(20),
             entry_stage_id: Some(1),
             exit_stage_id: Some(120),
-            cost_per_mwh: 80.0,
-            min_generation_mw: 100.0,
-            max_generation_mw: 360.0,
             anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
-            units: Vec::new(),
+            ..make_thermal(ThermalSpec {
+                id: 2,
+                name: "Pecém I".to_string(),
+                bus_id: 20,
+                cost_per_mwh: 80.0,
+                min_generation_mw: 100.0,
+                max_generation_mw: 360.0,
+                ..Default::default()
+            })
         };
         let json = serde_json::to_string(&thermal).unwrap();
         let deserialized: Thermal = serde_json::from_str(&json).unwrap();
@@ -278,17 +281,16 @@ mod tests {
     #[test]
     fn test_thermal_serde_roundtrip_lead_time() {
         let thermal = Thermal {
-            id: EntityId::from(3),
-            name: "T_lead_time".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(20),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 80.0,
-            min_generation_mw: 100.0,
-            max_generation_mw: 360.0,
             anticipated_config: Some(AnticipatedConfig::LeadTime(720.0)),
-            units: Vec::new(),
+            ..make_thermal(ThermalSpec {
+                id: 3,
+                name: "T_lead_time".to_string(),
+                bus_id: 20,
+                cost_per_mwh: 80.0,
+                min_generation_mw: 100.0,
+                max_generation_mw: 360.0,
+                ..Default::default()
+            })
         };
         let json = serde_json::to_string(&thermal).unwrap();
         let deserialized: Thermal = serde_json::from_str(&json).unwrap();
@@ -298,7 +300,7 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn thermal_json_without_units_key_loads_with_no_units_unlike_hydro_unit_groups() {
-        let thermal = crate::test_support::make_thermal(crate::test_support::ThermalSpec {
+        let thermal = make_thermal(ThermalSpec {
             id: 7,
             bus_id: 1,
             ..Default::default()

@@ -4,9 +4,10 @@
 //! entity is absorbed by editing only this module — add the field to the
 //! matching `<Entity>Spec` (with a neutral `Default`) and map it in
 //! `make_<entity>`. Call sites that spread `..Default::default()` recompile
-//! unchanged, overriding every field they depend on. Each `make_<entity>` entity
-//! literal omits `..`, so the compiler rejects a `Spec` that fails to mirror
-//! every non-identity field.
+//! unchanged, overriding every field they depend on. `make_thermal` instead
+//! delegates to `novomodelo_core::test_support::make_thermal`, which absorbs a
+//! new `Thermal` field. Every other `make_<entity>` entity literal omits `..`,
+//! so the compiler rejects a `Spec` that fails to mirror every non-identity field.
 
 #![allow(
     clippy::cast_possible_truncation,
@@ -369,16 +370,18 @@ pub fn make_thermal(
     }: ThermalSpec,
 ) -> Thermal {
     Thermal {
-        id,
-        name,
-        operational_start_date,
-        bus_id,
         entry_stage_id,
         exit_stage_id,
-        cost_per_mwh,
-        min_generation_mw,
-        max_generation_mw,
         anticipated_config,
-        units: Vec::new(),
+        ..novomodelo_core::test_support::make_thermal(novomodelo_core::test_support::ThermalSpec {
+            id: id.0,
+            name,
+            operational_start_date,
+            bus_id: bus_id.0,
+            cost_per_mwh,
+            min_generation_mw,
+            max_generation_mw,
+            ..Default::default()
+        })
     }
 }

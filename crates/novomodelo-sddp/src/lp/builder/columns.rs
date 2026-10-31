@@ -2961,6 +2961,7 @@ mod filling_phase_gating_tests {
 #[cfg(test)]
 mod anticipated_objective_tests {
     use crate::test_support::ctx_fixture::CtxFixture;
+    use novomodelo_core::test_support::{ThermalSpec, make_thermal};
 
     use novomodelo_core::entities::thermal::AnticipatedConfig;
     use novomodelo_core::{
@@ -3001,33 +3002,26 @@ mod anticipated_objective_tests {
         fn new() -> Self {
             let thermals = vec![
                 Thermal {
-                    id: EntityId(1),
-                    name: "T_ant".to_string(),
-                    operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                    bus_id: EntityId(1),
-                    min_generation_mw: 0.0,
-                    max_generation_mw: MAX_GEN_MW,
-                    cost_per_mwh: DELIVERY_COST_PER_MWH,
                     // lead_stages == K_MAX; the entity field is u32 while K_MAX
                     // is the usize layout dimension, so write the value directly.
                     anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-                    entry_stage_id: None,
-                    exit_stage_id: None,
-                    units: Vec::new(),
+                    ..make_thermal(ThermalSpec {
+                        id: 1,
+                        name: "T_ant".to_string(),
+                        bus_id: 1,
+                        cost_per_mwh: DELIVERY_COST_PER_MWH,
+                        max_generation_mw: MAX_GEN_MW,
+                        ..Default::default()
+                    })
                 },
-                Thermal {
-                    id: EntityId(2),
+                make_thermal(ThermalSpec {
+                    id: 2,
                     name: "T_std".to_string(),
-                    operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                    bus_id: EntityId(1),
-                    min_generation_mw: 0.0,
-                    max_generation_mw: MAX_GEN_MW,
+                    bus_id: 1,
                     cost_per_mwh: STD_COST_PER_MWH,
-                    anticipated_config: None,
-                    entry_stage_id: None,
-                    exit_stage_id: None,
-                    units: Vec::new(),
-                },
+                    max_generation_mw: MAX_GEN_MW,
+                    ..Default::default()
+                }),
             ];
             let anticipated_plants = AnticipatedPlants::build(&thermals);
             let mut bounds = bounds_two_thermals();
@@ -3179,17 +3173,14 @@ mod anticipated_objective_tests {
             per_stage: &[(f64, f64, f64)],
         ) -> Self {
             let thermals = vec![Thermal {
-                id: EntityId(1),
-                name: "T_ant".to_string(),
-                operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                bus_id: EntityId(1),
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
-                cost_per_mwh: 0.0,
                 anticipated_config: Some(config),
-                entry_stage_id: None,
-                exit_stage_id: None,
-                units: Vec::new(),
+                ..make_thermal(ThermalSpec {
+                    id: 1,
+                    name: "T_ant".to_string(),
+                    bus_id: 1,
+                    cost_per_mwh: 0.0,
+                    ..Default::default()
+                })
             }];
             let anticipated_plants = AnticipatedPlants::build(&thermals);
             let mut bounds = ResolvedBounds::new(
@@ -3465,16 +3456,13 @@ mod anticipated_objective_tests {
         fn new(n_post: usize, post_study_cells: &[(usize, f64, f64, f64)]) -> Self {
             let thermals = vec![Thermal {
                 id: PSA_THERMAL_ID,
-                name: "T_post_study_anchor".to_string(),
-                operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                bus_id: EntityId(1),
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
-                cost_per_mwh: 0.0,
                 anticipated_config: Some(AnticipatedConfig::LeadStages(PSA_LEAD)),
-                entry_stage_id: None,
-                exit_stage_id: None,
-                units: Vec::new(),
+                ..make_thermal(ThermalSpec {
+                    name: "T_post_study_anchor".to_string(),
+                    bus_id: 1,
+                    cost_per_mwh: 0.0,
+                    ..Default::default()
+                })
             }];
             let anticipated_plants = AnticipatedPlants::build(&thermals);
 
@@ -4679,9 +4667,10 @@ mod contract_column_tests {
 #[cfg(test)]
 mod thermal_block_bound_tests {
     use crate::test_support::ctx_fixture::CtxFixture;
+    use novomodelo_core::test_support::{ThermalSpec, make_thermal};
 
     use novomodelo_core::{
-        BlockBoundsCountsSpec, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId,
+        BlockBoundsCountsSpec, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds,
         HydroBlockBounds, HydroStageBounds, LineBlockBounds, PumpingBlockBounds,
         ResolvedBlockBounds, ResolvedBounds, Thermal, ThermalBlockBounds, ThermalStageBounds,
     };
@@ -4698,17 +4687,15 @@ mod thermal_block_bound_tests {
 
     fn thermal(id: i32, entry_stage_id: Option<i32>, cost_per_mwh: f64) -> Thermal {
         Thermal {
-            id: EntityId(id),
-            name: format!("T{id}"),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
             entry_stage_id,
-            exit_stage_id: None,
-            cost_per_mwh,
-            min_generation_mw: 0.0,
-            max_generation_mw: 0.0,
-            anticipated_config: None,
-            units: Vec::new(),
+            ..make_thermal(ThermalSpec {
+                id,
+                name: format!("T{id}"),
+                bus_id: 1,
+                cost_per_mwh,
+                max_generation_mw: 0.0,
+                ..Default::default()
+            })
         }
     }
 

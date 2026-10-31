@@ -959,19 +959,14 @@ mod tests {
     }
 
     fn make_thermal(id: i32, min_generation_mw: f64, max_generation_mw: f64) -> Thermal {
-        Thermal {
-            id: EntityId::from(id),
+        novomodelo_core::test_support::make_thermal(novomodelo_core::test_support::ThermalSpec {
+            id,
             name: format!("Thermal {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 50.0,
+            bus_id: 1,
             min_generation_mw,
             max_generation_mw,
-            anticipated_config: None,
-            units: Vec::new(),
-        }
+            ..Default::default()
+        })
     }
 
     fn make_line(id: i32, direct_mw: f64, reverse_mw: f64) -> Line {
@@ -1831,19 +1826,14 @@ mod tests {
     /// Thermal with cost_per_mwh == 0.0, no override — resolves to 0.0.
     #[test]
     fn test_thermal_zero_base_cost_no_override() {
-        let thermals = vec![Thermal {
-            id: EntityId::from(0),
-            name: "ZeroCost".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 0.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: None,
-            units: Vec::new(),
-        }];
+        let thermals = vec![novomodelo_core::test_support::make_thermal(
+            novomodelo_core::test_support::ThermalSpec {
+                name: "ZeroCost".to_string(),
+                bus_id: 1,
+                cost_per_mwh: 0.0,
+                ..Default::default()
+            },
+        )];
 
         let result = resolve_bounds(
             &[],

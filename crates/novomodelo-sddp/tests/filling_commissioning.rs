@@ -1551,27 +1551,6 @@ mod filling_cut_validity {
             }
         }
 
-        fn default_hydro_penalties() -> HydroPenalties {
-            HydroPenalties {
-                spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 500.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 1000.0,
-            }
-        }
-
         let mut bounds = ResolvedBounds::new(
             &BoundsCountsSpec {
                 n_hydros: 4,
@@ -1629,7 +1608,7 @@ mod filling_cut_validity {
                 n_stages: N_STAGES,
             },
             &PenaltiesDefaults {
-                hydro: default_hydro_penalties(),
+                hydro: hydro_penalties(),
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },
                 ncs: NcsStagePenalties {
@@ -1662,10 +1641,7 @@ mod filling_cut_validity {
                     value_hm3: 0.0,
                 },
             ],
-            past_anticipated_commitments: vec![],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: Vec::new(),
+            ..InitialConditions::default()
         };
 
         SystemBuilder::new()

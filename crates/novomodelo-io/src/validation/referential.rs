@@ -1186,11 +1186,11 @@ fn validate_variable_ref_entity(
 mod tests {
     use super::*;
     use chrono::NaiveDate;
+    use novomodelo_core::test_support::{ThermalSpec, make_thermal};
     use novomodelo_core::{
         EntityId,
         entities::{
             Bus, DiversionChannel, HydroUnitGroup, Line, NonControllableSource, PumpingStation,
-            Thermal,
         },
         scenario::{CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile},
     };
@@ -1397,19 +1397,12 @@ mod tests {
         // Line with bad target_bus_id (bus 999 does not exist)
         data.lines = vec![make_line(5, 1, 999)];
         // Thermal with bad bus_id (bus 777 does not exist)
-        data.thermals = vec![Thermal {
-            id: EntityId::from(20),
+        data.thermals = vec![make_thermal(ThermalSpec {
+            id: 20,
             name: "T20".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(777), // bad
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 50.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: None,
-            units: Vec::new(),
-        }];
+            bus_id: 777, // bad
+            ..Default::default()
+        })];
         // HydroGeometryRow referencing non-existent hydro (888)
         data.hydro_geometry = vec![HydroGeometryRow {
             hydro_id: EntityId::from(888),

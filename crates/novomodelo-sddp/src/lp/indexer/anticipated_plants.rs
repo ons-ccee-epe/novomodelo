@@ -96,7 +96,8 @@ impl AnticipatedPlants {
 
 #[cfg(test)]
 mod tests {
-    use novomodelo_core::{AnticipatedConfig, EntityId, Thermal};
+    use novomodelo_core::test_support::{ThermalSpec, make_thermal};
+    use novomodelo_core::{AnticipatedConfig, Thermal};
 
     use super::AnticipatedPlants;
     use crate::indexer::{AnticipatedLocal, ThermalSys};
@@ -109,17 +110,15 @@ mod tests {
         exit_stage_id: Option<i32>,
     ) -> Thermal {
         Thermal {
-            id: EntityId(id),
-            name: String::new(),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(0),
             entry_stage_id,
             exit_stage_id,
-            cost_per_mwh: 0.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 0.0,
             anticipated_config,
-            units: Vec::new(),
+            ..make_thermal(ThermalSpec {
+                id,
+                cost_per_mwh: 0.0,
+                max_generation_mw: 0.0,
+                ..Default::default()
+            })
         }
     }
 

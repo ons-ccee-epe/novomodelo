@@ -1929,11 +1929,7 @@ mod tests {
                 hydro_id: EntityId(0),
                 value_hm3: 15_000.0,
             }],
-            filling_storage: vec![],
-            past_anticipated_commitments: vec![],
-            recent_observations: vec![],
-            past_defluences: vec![],
-            thermal_unit_states: vec![],
+            ..InitialConditions::default()
         };
 
         let system = SystemBuilder::new()
