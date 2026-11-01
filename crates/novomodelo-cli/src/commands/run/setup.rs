@@ -424,6 +424,7 @@ fn reconstruct_stochastic_context_non_root(
         &bcast_config.training_source,
         bcast_config.boundary.inflow_lag_depth(),
         user_tree,
+        bcast_config.training_moment_matching.into(),
     )
     .map_err(CliError::from)
 }
@@ -688,18 +689,76 @@ mod tests {
     }
 
     #[test]
-    fn non_root_opening_tree_matches_rank_0_when_external_scenarios_clamp_openings() {
-        let case = d56_with_num_openings(3);
-        let (_system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
-        assert_eq!(
-            rank0.opening_tree().openings_per_stage_slice(),
-            &[1, 1],
-            "fixture must clamp every stage to the external library's scenario count"
+    fn non_root_opening_tree_matches_rank_0_under_shared_noise_groups_with_moment_matching() {
+        let case = TempDir::new().expect("tempdir");
+        copy_dir_recursive(&d29_case_dir(), case.path());
+        set_moment_matching(case.path(), "per_coordinate");
+        let (system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
+        let ids = study_stage_noise_group_ids(&system);
+        assert!(
+            ids.windows(2).any(|w| w[0] == w[1]),
+            "D29 fixture must exercise shared noise groups; got {ids:?}",
         );
         assert_same_tree(
             rank0.opening_tree(),
             non_root.opening_tree(),
-            "external clamp",
+            "shared noise groups, per_coordinate",
+        );
+        let (_system, drawn, _non_root) = load_rank0_and_rebuild_non_root(&d29_case_dir());
+        assert_ne!(
+            tree_bits(rank0.opening_tree()),
+            tree_bits(drawn.opening_tree()),
+            "per_coordinate must change the D29 tree, or the rank comparison above has no power"
+        );
+    }
+
+    #[test]
+    fn non_root_opening_tree_matches_rank_0_when_external_scenarios_clamp_openings() {
+        let mut leg_bits = Vec::new();
+        for moment_matching in ["none", "per_coordinate"] {
+            let case = d56_with_num_openings(3, moment_matching);
+            let (_system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
+            assert_eq!(
+                rank0.opening_tree().openings_per_stage_slice(),
+                &[1, 1],
+                "fixture must clamp every stage to the external library's scenario count"
+            );
+            assert_same_tree(
+                rank0.opening_tree(),
+                non_root.opening_tree(),
+                &format!("external clamp, {moment_matching}"),
+            );
+            leg_bits.push(tree_bits(rank0.opening_tree()));
+        }
+        assert_eq!(
+            leg_bits[0], leg_bits[1],
+            "per_coordinate must leave a one-opening stage as drawn"
+        );
+    }
+
+    #[test]
+    fn non_root_opening_tree_matches_rank_0_when_external_scenarios_clamp_a_matched_tree() {
+        let mut leg_bits = Vec::new();
+        for moment_matching in ["none", "per_coordinate"] {
+            let case = TempDir::new().expect("tempdir");
+            copy_dir_recursive(&d56_case_dir(), case.path());
+            crate::varying_external_deck::write_varying_external_deck(case.path(), moment_matching);
+            let (_system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
+            assert_eq!(
+                rank0.opening_tree().openings_per_stage_slice(),
+                &[3, 3],
+                "fixture must clamp the 5 openings of every stage to the 3 external scenarios"
+            );
+            assert_same_tree(
+                rank0.opening_tree(),
+                non_root.opening_tree(),
+                &format!("external clamp, {moment_matching}"),
+            );
+            leg_bits.push(tree_bits(rank0.opening_tree()));
+        }
+        assert_ne!(
+            leg_bits[0], leg_bits[1],
+            "per_coordinate must change a clamped stage with several openings, or the rank comparison above has no power"
         );
     }
 
@@ -762,21 +821,41 @@ mod tests {
             rank0.dim(),
             "non-root dim must match rank 0's ({what})"
         );
-        let bits = |t: &OpeningTree| t.data().iter().map(|v| v.to_bits()).collect::<Vec<u64>>();
         assert_eq!(
-            bits(non_root),
-            bits(rank0),
+            tree_bits(non_root),
+            tree_bits(rank0),
             "non-root tree data must match rank 0's bit for bit ({what})"
         );
     }
 
-    fn d56_with_num_openings(num_openings: u32) -> TempDir {
+    fn tree_bits(tree: &OpeningTree) -> Vec<u64> {
+        tree.data().iter().map(|v| v.to_bits()).collect()
+    }
+
+    fn set_moment_matching(case: &Path, moment_matching: &str) {
+        let config_path = case.join("config.json");
+        let mut config: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&config_path).expect("config.json must be readable"),
+        )
+        .expect("config.json must parse");
+        config["training"]["scenario_source"]["openings"] =
+            serde_json::json!({"source": "generated", "moment_matching": moment_matching});
+        fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&config).expect("config.json must serialize"),
+        )
+        .expect("config.json must be writable");
+    }
+
+    fn d56_case_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/deterministic/d56-external-authoritative")
+    }
+
+    fn d56_with_num_openings(num_openings: u32, moment_matching: &str) -> TempDir {
         let case = TempDir::new().expect("tempdir");
-        copy_dir_recursive(
-            &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../examples/deterministic/d56-external-authoritative"),
-            case.path(),
-        );
+        copy_dir_recursive(&d56_case_dir(), case.path());
+        set_moment_matching(case.path(), moment_matching);
         let stages_path = case.path().join("stages.json");
         let mut stages: serde_json::Value = serde_json::from_str(
             &fs::read_to_string(&stages_path).expect("stages.json must be readable"),
@@ -883,6 +962,11 @@ mod tests {
                 non_root_bcast.seed,
                 &deck.dir,
             )?;
+            assert_same_tree(
+                stochastic.opening_tree(),
+                non_root_stochastic.opening_tree(),
+                &deck.key,
+            );
             let non_root_hydro_models = prepare_hydro_models(&non_root_system, &deck.dir, false)
                 .map_err(|e| CliError::Internal {
                     message: format!("hydro model preprocessing error on non-root rank: {e}"),

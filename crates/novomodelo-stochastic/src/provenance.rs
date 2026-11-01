@@ -47,6 +47,7 @@ mod tests {
     use crate::{
         ComponentProvenance,
         context::{ClassSchemes, OpeningTree, OpeningTreeInputs, build_stochastic_context},
+        tree::MomentMatching,
     };
 
     fn make_stage(index: usize, id: i32, branching_factor: usize) -> Stage {
@@ -154,6 +155,7 @@ mod tests {
                 historical_library: None,
                 external_scenario_counts: None,
                 noise_group_ids: None,
+                moment_matching: MomentMatching::None,
             },
             ClassSchemes {
                 inflow: Some(SamplingScheme::InSample),

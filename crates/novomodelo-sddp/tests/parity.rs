@@ -2,10 +2,11 @@
 //! `novomodelo-sddp`.
 //!
 //! Groups the golden parity-hash regression, the self-reproducibility regression,
-//! the b6a hydro-inflow parity, the determinism conformance suite, and
+//! the b6a hydro-inflow parity, the determinism conformance suite,
 //! `simulation_scenario_seed` (the simulation seed's effect on out-of-sample
 //! draws, its fallback to the training seed, and their declaration-order and
-//! thread-count invariance) into one
+//! thread-count invariance), and `moment_matched_opening_tree` (properties of a
+//! moment-matched opening tree built from a committed deck) into one
 //! binary so the statically-linked solver links once rather than once per file.
 //! The two parity-hash sources carry mutually exclusive solver-backend gates, so
 //! each is a per-`mod` `#[cfg(feature = …)]`: `parity_hash_highs` compiles under
@@ -2631,6 +2632,208 @@ mod simulation_scenario_seed {
         assert_eq!(
             one_thread, one_thread_per_scenario,
             "simulation-seeded draws must not depend on the thread count"
+        );
+    }
+}
+
+mod moment_matched_opening_tree {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use novomodelo_io::output::write_noise_openings;
+    use novomodelo_sddp::{PrepareStochasticResult, prepare_stochastic};
+    use novomodelo_stochastic::context::OpeningTree;
+    use novomodelo_stochastic::provenance::ComponentProvenance;
+    use novomodelo_stochastic::{DecomposedCorrelation, EntityClass};
+    use serde_json::{Value, json};
+    use tempfile::TempDir;
+
+    use super::common::permute::permute_case;
+    use super::common::{boundary_requirements, copy_toy_case};
+
+    const ASYMMETRIC_INFLOW_CORRELATION: &str = r#"{
+        "method": "spectral",
+        "profiles": {
+            "default": {
+                "correlation_groups": [{
+                    "name": "asymmetric",
+                    "entities": [
+                        {"type": "inflow", "id": 0},
+                        {"type": "inflow", "id": 1},
+                        {"type": "inflow", "id": 2}
+                    ],
+                    "matrix": [[1, 0.9, -0.6], [0.9, 1, 0.8], [-0.6, 0.8, 1]]
+                }]
+            }
+        }
+    }"#;
+
+    fn prepare_case(case_dir: &Path) -> PrepareStochasticResult {
+        let config_path = case_dir.join("config.json");
+        let config = novomodelo_io::parse_config(&config_path).expect("config must parse");
+        let system = novomodelo_io::load_case(case_dir).expect("load_case must succeed");
+        let training_source = config
+            .training_scenario_source(&config_path)
+            .expect("training_scenario_source must parse");
+        let inflow_lag_depth = boundary_requirements(case_dir, &config).inflow_lag_depth();
+        prepare_stochastic(
+            system,
+            case_dir,
+            &config,
+            42,
+            &training_source,
+            inflow_lag_depth,
+        )
+        .expect("prepare_stochastic must succeed")
+    }
+
+    fn example_copy(name: &str) -> TempDir {
+        let case = TempDir::new().expect("tempdir");
+        copy_toy_case(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../examples")
+                .join(name),
+            case.path(),
+        );
+        case
+    }
+
+    fn set_openings(case: &Path, openings: &Value) {
+        let config_path = case.join("config.json");
+        let mut config: Value = serde_json::from_str(
+            &fs::read_to_string(&config_path).expect("config.json must be readable"),
+        )
+        .expect("config.json must parse");
+        config["training"]["scenario_source"]["openings"] = openings.clone();
+        fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&config).expect("config.json must serialize"),
+        )
+        .expect("config.json must be writable");
+    }
+
+    fn generated(moment_matching: &str) -> Value {
+        json!({"source": "generated", "moment_matching": moment_matching})
+    }
+
+    fn tree_bits(tree: &OpeningTree) -> Vec<u64> {
+        tree.data().iter().map(|v| v.to_bits()).collect()
+    }
+
+    fn hydro_ids(case: &Path) -> Vec<i64> {
+        let hydros: Value = serde_json::from_str(
+            &fs::read_to_string(case.join("system").join("hydros.json"))
+                .expect("hydros.json must be readable"),
+        )
+        .expect("hydros.json must parse");
+        hydros["hydros"]
+            .as_array()
+            .expect("hydros.json must hold a hydros array")
+            .iter()
+            .map(|h| {
+                h["id"]
+                    .as_i64()
+                    .expect("every hydro must have an integer id")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_matched_tree_read_back_from_file_reproduces_the_generated_tree() {
+        let case = example_copy("1dtoy");
+        set_openings(case.path(), &generated("per_coordinate"));
+        let matched = prepare_case(case.path());
+        let study_stage_ids: Vec<i32> = matched
+            .system
+            .stages()
+            .iter()
+            .filter(|s| s.id >= 0)
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(study_stage_ids, [0, 1, 2, 3]);
+        let matched_tree = matched.stochastic.opening_tree();
+        assert_eq!(
+            matched_tree.openings_per_stage_slice(),
+            &[10, 10, 10, 10],
+            "every stage must keep its branching factor of openings"
+        );
+
+        write_noise_openings(
+            &case.path().join("scenarios").join("noise_openings.parquet"),
+            matched_tree,
+        )
+        .expect("noise_openings.parquet must be writable");
+        set_openings(case.path(), &json!({"source": "file"}));
+        let read_back = prepare_case(case.path());
+        assert_eq!(
+            read_back.stochastic.provenance().opening_tree,
+            ComponentProvenance::UserSupplied
+        );
+        assert_eq!(
+            tree_bits(read_back.stochastic.opening_tree()),
+            tree_bits(matched_tree),
+            "a matched tree read from file must be used as written, never matched again"
+        );
+
+        set_openings(case.path(), &generated("none"));
+        let drawn = prepare_case(case.path());
+        assert_ne!(
+            tree_bits(matched_tree),
+            tree_bits(drawn.stochastic.opening_tree()),
+            "per_coordinate must change the 1dtoy tree, or the read-back comparison has no power"
+        );
+    }
+
+    #[test]
+    fn moment_matched_tree_is_declaration_order_invariant() {
+        let base = example_copy("4ree");
+        fs::write(
+            base.path().join("scenarios").join("correlation.json"),
+            ASYMMETRIC_INFLOW_CORRELATION,
+        )
+        .expect("correlation.json must be writable");
+        set_openings(base.path(), &generated("per_coordinate"));
+
+        let base_order = hydro_ids(base.path());
+        let permuted = (0..=16_u64)
+            .map(|i| permute_case(base.path(), super::SHUFFLE_BASE_SEED.wrapping_add(i)))
+            .find(|copy| hydro_ids(copy.path()) != base_order)
+            .expect("one of the 17 permutation seeds must reorder system/hydros.json");
+
+        let matched = prepare_case(base.path());
+        let mut variances = vec![0.0; 4];
+        DecomposedCorrelation::implied_class_variances(
+            matched.stochastic.correlation().groups_for_stage(0),
+            EntityClass::Inflow,
+            &mut variances,
+        );
+        for (i, &variance) in variances[..3].iter().enumerate() {
+            assert!(
+                variance > 1.0 + 1e-3,
+                "hydro {i}'s implied variance must exceed 1, got {variances:?}"
+            );
+        }
+        for (i, j) in [(0, 1), (0, 2), (1, 2)] {
+            assert!(
+                (variances[i] - variances[j]).abs() > 1e-3,
+                "hydros {i} and {j} must have distinct implied variances, got {variances:?}"
+            );
+        }
+        assert_eq!(variances[3], 1.0, "hydro 3 is in no correlation group");
+
+        let permuted_matched = prepare_case(permuted.path());
+        assert_eq!(
+            tree_bits(permuted_matched.stochastic.opening_tree()),
+            tree_bits(matched.stochastic.opening_tree()),
+            "the matched tree must not depend on entity declaration order"
+        );
+
+        set_openings(base.path(), &generated("none"));
+        let drawn = prepare_case(base.path());
+        assert_ne!(
+            tree_bits(matched.stochastic.opening_tree()),
+            tree_bits(drawn.stochastic.opening_tree()),
+            "per_coordinate must change the 4ree tree, or the order comparison has no power"
         );
     }
 }

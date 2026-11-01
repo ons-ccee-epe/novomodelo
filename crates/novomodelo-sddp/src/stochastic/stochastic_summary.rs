@@ -405,6 +405,7 @@ mod tests {
     };
     use novomodelo_stochastic::{
         ArCoefficientEstimate, ClassSchemes, OpeningTreeInputs, build_stochastic_context,
+        tree::MomentMatching,
     };
 
     use novomodelo_io::config::CorrelationTarget;
@@ -878,6 +879,7 @@ mod tests {
                 historical_library: None,
                 external_scenario_counts: None,
                 noise_group_ids: None,
+                moment_matching: MomentMatching::None,
             },
             ClassSchemes {
                 inflow: Some(SamplingScheme::InSample),

@@ -25,6 +25,7 @@ use novomodelo_stochastic::build_stochastic_context;
 use novomodelo_stochastic::noise_entity_order;
 use novomodelo_stochastic::normal::precompute::EntityFactorEntry;
 use novomodelo_stochastic::par::lag_transition::precompute_noise_groups;
+use novomodelo_stochastic::tree::MomentMatching;
 use novomodelo_stochastic::{OpeningTreeInputs, StochasticContext, context::OpeningTree};
 
 use super::resolve_inflow_seeds;
@@ -341,6 +342,7 @@ pub fn prepare_stochastic(
         training_source,
         inflow_lag_depth,
         user_opening_tree,
+        config.training_moment_matching().into(),
     )?;
 
     Ok(PrepareStochasticResult {
@@ -358,7 +360,10 @@ pub fn prepare_stochastic(
 /// when `user_tree` is `None`), and the forward seed. Both rank 0 (via
 /// [`prepare_stochastic`], after PAR estimation and user-tree loading) and the CLI
 /// non-root reconstruction call this one builder, so the two paths cannot drift.
-/// `user_tree` is the only input that differs by rank: rank 0 loads it, and a non-root rank receives it over the wire.
+/// `moment_matching` is `Config::training_moment_matching`'s value, which rank 0
+/// reads from the config and a non-root rank receives in its broadcast config, so
+/// it is identical on every rank. `user_tree` is the only input that differs by
+/// rank: rank 0 loads it, and a non-root rank receives it over the wire.
 ///
 /// # Errors
 ///
@@ -371,6 +376,7 @@ pub fn build_stochastic_context_for_study(
     training_source: &ScenarioSource,
     inflow_lag_depth: Option<u32>,
     user_tree: Option<OpeningTree>,
+    moment_matching: MomentMatching,
 ) -> Result<StochasticContext, SddpError> {
     let load_factor_entries = load_load_factors_for_stochastic(case_dir)?;
     let block_pairs: Vec<Vec<BlockFactorPair>> = load_factor_entries
@@ -411,6 +417,7 @@ pub fn build_stochastic_context_for_study(
             historical_library: opening_tree_library.as_ref(),
             external_scenario_counts: compute_external_scenario_counts(system, training_source),
             noise_group_ids: Some(study_stage_noise_group_ids(system)),
+            moment_matching,
         },
         class_schemes_for(training_source),
     )?)
@@ -1063,6 +1070,7 @@ mod tests {
             &training_source,
             Some(3),
             None,
+            MomentMatching::None,
         )
         .expect("stochastic context must build");
 
@@ -1228,6 +1236,7 @@ mod tests {
             &training_source,
             None,
             None,
+            MomentMatching::None,
         )
         .expect("stochastic context must build");
         let applied = stochastic.par();
@@ -2402,6 +2411,7 @@ mod tests {
             &ScenarioSource::default(),
             None,
             Some(ring_user_tree()),
+            MomentMatching::None,
         )
         .expect("a supplied opening tree must not need the historical library");
         assert_eq!(
@@ -2431,6 +2441,7 @@ mod tests {
             &ScenarioSource::default(),
             None,
             None,
+            MomentMatching::None,
         );
         match result {
             Err(SddpError::Stochastic(StochasticError::InsufficientData { context })) => {

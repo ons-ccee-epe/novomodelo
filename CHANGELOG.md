@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   correlation from standardized historical inflows, the correlation NEWAVE
   takes as input, instead of the PAR residuals. `"residuals"` is the default.
   It has no effect when `scenarios/correlation.json` is supplied.
+- `training.scenario_source.openings.moment_matching` in `config.json`, an
+  evaluation option expected to be removed once evaluated. `"per_coordinate"`
+  shifts and scales each generated stage's inflow openings so that every
+  hydro's opening mean is 0 and its variance is the model variance. `"none"`,
+  the default, keeps the tree as drawn. Stages using `historical_residuals`
+  and trees read from file are not changed.
 - `training/model_provenance.json` records `inflow.correlation_target`.
 
 ### Fixed
