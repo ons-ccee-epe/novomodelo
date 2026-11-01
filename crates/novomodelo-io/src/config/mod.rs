@@ -33,7 +33,7 @@ pub mod scenario_source;
 pub mod simulation;
 pub mod training;
 
-pub use estimation::{EstimationConfig, OrderSelectionMethod};
+pub use estimation::{CorrelationTarget, EstimationConfig, OrderSelectionMethod};
 pub use exports::ExportsConfig;
 pub use modeling::{InflowNonNegativityConfig, InflowNonNegativityMethod, ModelingConfig};
 pub use policy::{
@@ -1165,6 +1165,87 @@ mod tests {
             }
             other => panic!("expected SchemaError, got: {other:?}"),
         }
+    }
+
+    fn parse_minimal_with_estimation(estimation: Option<&str>) -> Result<Config, LoadError> {
+        let estimation = estimation.map_or_else(String::new, |e| format!(r#", "estimation": {e}"#));
+        let f = write_config(&format!(
+            r#"{{"training": {{"selection": {{"method": "sampled", "forward_passes": 10}}, "stopping_rules": [{{"type": "iteration_limit", "limit": 5}}]}}{estimation}}}"#
+        ));
+        parse_config(f.path())
+    }
+
+    #[test]
+    fn correlation_target_defaults_to_residuals() {
+        for estimation in [None, Some(r#"{"max_order": 3}"#)] {
+            let cfg = parse_minimal_with_estimation(estimation).unwrap();
+            assert_eq!(
+                cfg.estimation.correlation_target,
+                CorrelationTarget::Residuals,
+                "estimation: {estimation:?}"
+            );
+        }
+        assert_eq!(
+            EstimationConfig::default().correlation_target,
+            CorrelationTarget::Residuals
+        );
+    }
+
+    #[test]
+    fn correlation_target_accepts_each_value() {
+        for (spelling, expected) in [
+            ("residuals", CorrelationTarget::Residuals),
+            ("inflows", CorrelationTarget::Inflows),
+        ] {
+            let cfg = parse_minimal_with_estimation(Some(&format!(
+                r#"{{"correlation_target": "{spelling}"}}"#
+            )))
+            .unwrap();
+            assert_eq!(cfg.estimation.correlation_target, expected);
+        }
+    }
+
+    #[test]
+    fn correlation_target_rejects_an_unknown_value_naming_the_variants() {
+        let err =
+            parse_minimal_with_estimation(Some(r#"{"correlation_target": "flows"}"#)).unwrap_err();
+        match &err {
+            LoadError::SchemaError { message, .. } => {
+                assert!(
+                    message.contains("residuals") && message.contains("inflows"),
+                    "message should name both variants, got: {message}"
+                );
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn correlation_target_as_str_matches_its_serde_spelling() {
+        let variants = std::iter::successors(Some(CorrelationTarget::Residuals), |v| match v {
+            CorrelationTarget::Residuals => Some(CorrelationTarget::Inflows),
+            CorrelationTarget::Inflows => None,
+        });
+        for v in variants {
+            assert_eq!(
+                serde_json::to_value(v).unwrap(),
+                serde_json::Value::String(v.as_str().to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn correlation_target_converts_to_the_same_library_target() {
+        use novomodelo_stochastic::par::fitting;
+
+        assert_eq!(
+            fitting::CorrelationTarget::from(CorrelationTarget::Residuals),
+            fitting::CorrelationTarget::Residuals
+        );
+        assert_eq!(
+            fitting::CorrelationTarget::from(CorrelationTarget::Inflows),
+            fitting::CorrelationTarget::Inflows
+        );
     }
 
     /// `exports.stochastic: true` deserializes correctly.

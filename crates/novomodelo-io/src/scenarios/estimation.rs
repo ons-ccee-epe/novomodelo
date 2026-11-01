@@ -44,7 +44,7 @@
 //!
 //! `correlation.json` is handled independently: if present, the existing
 //! `system.correlation()` is kept; if absent, the correlation is estimated from
-//! residuals.
+//! the series `estimation.correlation_target` selects.
 //!
 //! ## PACF order selection
 //!
@@ -268,6 +268,7 @@ fn run_estimation(
             stages,
             &hydro_ids,
             season_map,
+            config.estimation.correlation_target.into(),
         )?
     };
 
@@ -355,6 +356,7 @@ fn run_partial_estimation(
             stages,
             &hydro_ids,
             season_map,
+            config.estimation.correlation_target.into(),
         )?
     };
 
@@ -689,6 +691,7 @@ fn run_user_ar_estimation(
             extended,
             &hydro_ids,
             season_map,
+            config.estimation.correlation_target.into(),
         )?
     };
 

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `estimation.correlation_target` in `config.json`, an evaluation option
+  expected to be removed once evaluated. `"inflows"` estimates the spatial
+  correlation from standardized historical inflows, the correlation NEWAVE
+  takes as input, instead of the PAR residuals. `"residuals"` is the default.
+  It has no effect when `scenarios/correlation.json` is supplied.
+
 ## [0.19.1] - 2026-10-26
 
 ### Added

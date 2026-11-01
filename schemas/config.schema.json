@@ -113,6 +113,21 @@
       },
       "type": "object"
     },
+    "CorrelationTarget": {
+      "description": "Series the estimated spatial inflow correlation is computed from.",
+      "oneOf": [
+        {
+          "const": "residuals",
+          "description": "Residuals of the fitted PAR lags.",
+          "type": "string"
+        },
+        {
+          "const": "inflows",
+          "description": "Standardized historical inflows, the correlation NEWAVE takes as input.",
+          "type": "string"
+        }
+      ]
+    },
     "DualEdgeWeight": {
       "description": "Dual simplex edge-weight (pricing) strategy.",
       "oneOf": [
@@ -137,6 +152,11 @@
       "additionalProperties": false,
       "description": "Time series estimation settings (`config.json → estimation`).\n\nControls automatic parameter estimation when historical inflow data is\nprovided without explicit model statistics or coefficients.",
       "properties": {
+        "correlation_target": {
+          "$ref": "#/$defs/CorrelationTarget",
+          "default": "residuals",
+          "description": "Series the spatial inflow correlation is estimated from when no\n`scenarios/correlation.json` is supplied: `\"residuals\"` (default) or `\"inflows\"`.\n\nEvaluation option, expected to be removed once evaluated."
+        },
         "max_coefficient_magnitude": {
           "default": null,
           "description": "Maximum allowed absolute magnitude for any AR coefficient.\n\nWhen set, any (entity, season) pair with `|coefficient| > threshold`\nis immediately reduced to order 0 before the contribution analysis\nruns. This acts as a fast-path safety net for the most extreme\nexplosive models. Absent by default (disabled; contribution analysis\nis the primary guard).",
@@ -347,7 +367,7 @@
         },
         {
           "const": "pacf_annual",
-          "description": "Periodic Yule-Walker order selection augmented with an annual component.\n\nWhen selected, the estimation pipeline performs four steps beyond the\nclassical `pacf` path:\n\n1. **Extended Yule-Walker fitting** — the system is augmented with a\n   cross-correlation term between the current-season inflow and the\n   rolling 12-month average, yielding the annual coefficient ψ\n   alongside the classical AR coefficients.\n2. **Annual-stats computation** — per-season sample mean μ^A and\n   Bessel-corrected standard deviation σ^A of the rolling 12-month\n   average are computed for each hydro plant.\n3. **Parquet emission** — the triple (ψ, μ^A, σ^A) is written to\n   `inflow_annual_component.parquet` in the output directory.\n4. **Widened LP lag stride** — the noise-column layout in the LP is\n   extended to accommodate the annual term alongside the classical lags.",
+          "description": "Periodic Yule-Walker order selection augmented with an annual component.\n\nWhen selected, the estimation pipeline performs four steps beyond the\nclassical `pacf` path:\n\n1. **Extended Yule-Walker fitting** — the system is augmented with a\n   cross-correlation term between the current-season inflow and the\n   rolling 12-month average, yielding the annual coefficient ψ\n   alongside the classical AR coefficients.\n2. **Annual-stats computation** — per-season sample mean μ^A and\n   population standard deviation σ^A of the rolling 12-month\n   average are computed for each hydro plant.\n3. **Parquet emission** — the triple (ψ, μ^A, σ^A) is written to\n   `inflow_annual_component.parquet` in the output directory.\n4. **Widened LP lag stride** — the noise-column layout in the LP is\n   extended to accommodate the annual term alongside the classical lags.",
           "type": "string"
         }
       ]
@@ -1325,6 +1345,7 @@
     "estimation": {
       "$ref": "#/$defs/EstimationConfig",
       "default": {
+        "correlation_target": "residuals",
         "max_coefficient_magnitude": null,
         "max_order": 6,
         "min_observations_per_season": 30,

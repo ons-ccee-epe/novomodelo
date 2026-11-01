@@ -511,6 +511,89 @@ fn test_partial_estimation_preserves_user_stats() {
     }
 }
 
+#[test]
+fn correlation_target_reaches_the_estimator() {
+    use crate::config::CorrelationTarget;
+    use tempfile::TempDir;
+
+    const N_YEARS: usize = 30;
+    let dir = TempDir::new().unwrap();
+    let case_dir = dir.path();
+    setup_partial_estimation_case(case_dir, N_YEARS);
+
+    let correlation_under = |target: CorrelationTarget| {
+        let mut config = default_config();
+        config.estimation.correlation_target = target;
+        let (updated, _report, path) =
+            estimate_from_history(build_system_with_user_stats(N_YEARS), case_dir, &config)
+                .expect("partial estimation must succeed");
+        assert_eq!(path, EstimationPath::PartialEstimation);
+        updated.correlation().clone()
+    };
+
+    assert!(
+        !correlation_under(CorrelationTarget::Residuals)
+            .profiles
+            .contains_key("season_0"),
+        "season 0 loses its first record to the lag, leaving 29 pairs"
+    );
+    assert!(
+        correlation_under(CorrelationTarget::Inflows)
+            .profiles
+            .contains_key("season_0"),
+        "inflows keep every record, 30 pairs"
+    );
+}
+
+#[test]
+fn correlation_target_has_no_effect_when_correlation_json_is_present() {
+    use crate::config::CorrelationTarget;
+    use tempfile::TempDir;
+
+    const N_YEARS: usize = 30;
+    const CORRELATION_JSON: &str = r#"{
+  "method": "spectral",
+  "profiles": {
+    "default": {
+      "correlation_groups": [
+        {
+          "name": "se_cascade",
+          "entities": [
+            { "type": "inflow", "id": 0 },
+            { "type": "inflow", "id": 1 }
+          ],
+          "matrix": [
+            [1.0, 0.75],
+            [0.75, 1.0]
+          ]
+        }
+      ]
+    }
+  }
+}"#;
+    let dir = TempDir::new().unwrap();
+    let case_dir = dir.path();
+    setup_partial_estimation_case(case_dir, N_YEARS);
+    std::fs::write(
+        case_dir.join("scenarios/correlation.json"),
+        CORRELATION_JSON,
+    )
+    .unwrap();
+
+    for target in [CorrelationTarget::Residuals, CorrelationTarget::Inflows] {
+        let system = build_system_with_user_stats(N_YEARS);
+        let input_correlation = system.correlation().clone();
+        let mut config = default_config();
+        config.estimation.correlation_target = target;
+
+        let (updated, _report, path) = estimate_from_history(system, case_dir, &config)
+            .expect("partial estimation must succeed");
+
+        assert_eq!(path, EstimationPath::PartialEstimation);
+        assert_eq!(updated.correlation(), &input_correlation, "{target:?}");
+    }
+}
+
 /// `residual_std_ratio` must come from the periodic-ACF closure, not raw YW.
 #[test]
 fn test_partial_estimation_populates_closure_derived_ratio() {
@@ -754,13 +837,14 @@ fn test_partial_estimation_partial_year_study_orders_canonically() {
 }
 
 fn default_config() -> Config {
-    use crate::config::{EstimationConfig, OrderSelectionMethod};
+    use crate::config::{CorrelationTarget, EstimationConfig, OrderSelectionMethod};
     let mut cfg: Config = serde_json::from_str(MINIMAL_CONFIG_JSON).unwrap();
     cfg.estimation = EstimationConfig {
         max_order: 2,
         order_selection: OrderSelectionMethod::Pacf,
         min_observations_per_season: 2,
         max_coefficient_magnitude: None,
+        correlation_target: CorrelationTarget::Residuals,
     };
     cfg
 }
@@ -2132,7 +2216,7 @@ fn write_monthly_inflow_history_two_hydros(path: &std::path::Path, n_years: usiz
 
 #[test]
 fn estimate_from_history_pacf_annual_populates_annual_field() {
-    use crate::config::{EstimationConfig, OrderSelectionMethod};
+    use crate::config::{CorrelationTarget, EstimationConfig, OrderSelectionMethod};
     use tempfile::TempDir;
 
     const N_YEARS: usize = 5;
@@ -2152,6 +2236,7 @@ fn estimate_from_history_pacf_annual_populates_annual_field() {
         order_selection: OrderSelectionMethod::PacfAnnual,
         min_observations_per_season: 2,
         max_coefficient_magnitude: None,
+        correlation_target: CorrelationTarget::Residuals,
     };
 
     let (updated, report, path) = estimate_from_history(system, case_dir, &config)
@@ -2177,7 +2262,7 @@ fn estimate_from_history_pacf_annual_populates_annual_field() {
 
 #[test]
 fn estimate_from_history_pacf_classical_keeps_annual_none() {
-    use crate::config::{EstimationConfig, OrderSelectionMethod};
+    use crate::config::{CorrelationTarget, EstimationConfig, OrderSelectionMethod};
     use tempfile::TempDir;
 
     const N_YEARS: usize = 5;
@@ -2197,6 +2282,7 @@ fn estimate_from_history_pacf_classical_keeps_annual_none() {
         order_selection: OrderSelectionMethod::Pacf,
         min_observations_per_season: 2,
         max_coefficient_magnitude: None,
+        correlation_target: CorrelationTarget::Residuals,
     };
 
     let (updated, report, path) = estimate_from_history(system, case_dir, &config)

@@ -29,7 +29,7 @@ pub enum OrderSelectionMethod {
     ///    rolling 12-month average, yielding the annual coefficient ψ
     ///    alongside the classical AR coefficients.
     /// 2. **Annual-stats computation** — per-season sample mean μ^A and
-    ///    Bessel-corrected standard deviation σ^A of the rolling 12-month
+    ///    population standard deviation σ^A of the rolling 12-month
     ///    average are computed for each hydro plant.
     /// 3. **Parquet emission** — the triple (ψ, μ^A, σ^A) is written to
     ///    `inflow_annual_component.parquet` in the output directory.
@@ -48,6 +48,38 @@ impl<'de> serde::Deserialize<'de> for OrderSelectionMethod {
                 other,
                 &["pacf", "pacf_annual"],
             )),
+        }
+    }
+}
+
+/// Series the estimated spatial inflow correlation is computed from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum CorrelationTarget {
+    /// Residuals of the fitted PAR lags.
+    #[default]
+    Residuals,
+    /// Standardized historical inflows, the correlation NEWAVE takes as input.
+    Inflows,
+}
+
+impl CorrelationTarget {
+    /// The `config.json` spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Residuals => "residuals",
+            Self::Inflows => "inflows",
+        }
+    }
+}
+
+impl From<CorrelationTarget> for novomodelo_stochastic::par::fitting::CorrelationTarget {
+    fn from(target: CorrelationTarget) -> Self {
+        match target {
+            CorrelationTarget::Residuals => Self::Residuals,
+            CorrelationTarget::Inflows => Self::Inflows,
         }
     }
 }
@@ -80,15 +112,22 @@ pub struct EstimationConfig {
     /// is the primary guard).
     #[serde(default)]
     pub max_coefficient_magnitude: Option<f64>,
+
+    /// Series the spatial inflow correlation is estimated from when no
+    /// `scenarios/correlation.json` is supplied: `"residuals"` (default) or `"inflows"`.
+    ///
+    /// Evaluation option, expected to be removed once evaluated.
+    pub correlation_target: CorrelationTarget,
 }
 
 impl Default for EstimationConfig {
     fn default() -> Self {
         Self {
             max_order: 6,
-            order_selection: OrderSelectionMethod::Pacf,
+            order_selection: OrderSelectionMethod::default(),
             min_observations_per_season: 30,
             max_coefficient_magnitude: None,
+            correlation_target: CorrelationTarget::default(),
         }
     }
 }
