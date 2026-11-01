@@ -202,7 +202,7 @@ impl SpectralFactor {
 /// Single-character names (a, v, t, c, s, tau, `a_pq`) track the mathematical
 /// derivation; renaming would obscure it (justifies the lint allow below).
 #[allow(clippy::many_single_char_names, clippy::similar_names)]
-fn jacobi_eigen(a: &mut [f64], n: usize) -> (Vec<f64>, Vec<f64>) {
+pub(crate) fn jacobi_eigen(a: &mut [f64], n: usize) -> (Vec<f64>, Vec<f64>) {
     let mut v = vec![0.0_f64; n * n];
     for i in 0..n {
         v[i * n + i] = 1.0;

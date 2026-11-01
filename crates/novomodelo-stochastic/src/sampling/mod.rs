@@ -742,10 +742,7 @@ pub(crate) fn build_observation_sequence(
     clippy::float_cmp
 )]
 mod tests {
-    use std::{
-        collections::BTreeMap,
-        sync::{Arc, Mutex},
-    };
+    use std::collections::BTreeMap;
 
     use novomodelo_core::{
         Bus, DeficitSegment, EntityId, Hydro, SystemBuilder,
@@ -756,7 +753,6 @@ mod tests {
         temporal::{NoiseMethod, ScenarioSourceConfig, Stage},
         test_support::{BusSpec, HydroSpec, StageSpec, single_block},
     };
-    use tracing::{Event, Level, Metadata, Subscriber, span};
 
     #[cfg(debug_assertions)]
     use super::ClassSampleRequest;
@@ -769,71 +765,10 @@ mod tests {
         NoisePointSpec, StochasticContext, StochasticError,
         context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context},
         sample_forward,
-        test_support::uniform_tree,
+        test_support::{WarnRecorder, uniform_tree},
         tree::generate::ClassDimensions,
         tree::lhs::{sample_lhs_point, sample_lhs_point_reference},
     };
-
-    /// Records all WARN-level event messages into a shared `Vec<String>`.
-    struct WarnRecorder {
-        messages: Arc<Mutex<Vec<String>>>,
-    }
-
-    impl WarnRecorder {
-        fn new() -> (Self, Arc<Mutex<Vec<String>>>) {
-            let messages = Arc::new(Mutex::new(Vec::new()));
-            (
-                Self {
-                    messages: Arc::clone(&messages),
-                },
-                messages,
-            )
-        }
-    }
-
-    impl Subscriber for WarnRecorder {
-        fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-            *metadata.level() <= Level::WARN
-        }
-
-        fn new_span(&self, _attrs: &span::Attributes<'_>) -> span::Id {
-            span::Id::from_u64(1)
-        }
-
-        fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
-
-        fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
-
-        fn event(&self, event: &Event<'_>) {
-            if *event.metadata().level() == Level::WARN {
-                struct MessageVisitor(String);
-                impl tracing::field::Visit for MessageVisitor {
-                    fn record_debug(
-                        &mut self,
-                        field: &tracing::field::Field,
-                        value: &dyn std::fmt::Debug,
-                    ) {
-                        if field.name() == "message" {
-                            self.0 = format!("{value:?}");
-                        }
-                    }
-
-                    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-                        if field.name() == "message" {
-                            self.0 = value.to_string();
-                        }
-                    }
-                }
-                let mut visitor = MessageVisitor(String::new());
-                event.record(&mut visitor);
-                self.messages.lock().unwrap().push(visitor.0);
-            }
-        }
-
-        fn enter(&self, _span: &span::Id) {}
-
-        fn exit(&self, _span: &span::Id) {}
-    }
 
     fn make_bus(id: i32) -> Bus {
         novomodelo_core::test_support::make_bus(BusSpec {
