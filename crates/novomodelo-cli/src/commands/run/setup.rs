@@ -33,9 +33,10 @@ use novomodelo_sddp::hydro_models::prepare_hydro_models_from_artifacts;
 use novomodelo_sddp::policy::orchestration::export_stochastic_artifacts;
 use novomodelo_sddp::reconcile_global_ok;
 use novomodelo_sddp::{
-    EstimationReport, PrepareHydroModelsResult, PrepareStochasticResult, StudySetup,
-    build_hydro_model_summary, build_stochastic_context_for_study, prepare_hydro_models,
-    prepare_stochastic, resolve_boundary_state_requirements, setup::StudyParams,
+    CorrelationOrigin, EstimationReport, PrepareHydroModelsResult, PrepareStochasticResult,
+    StudySetup, build_hydro_model_summary, build_stochastic_context_for_study,
+    prepare_hydro_models, prepare_stochastic, resolve_boundary_state_requirements,
+    setup::StudyParams,
 };
 use novomodelo_solver::active_solver_name;
 use novomodelo_solver::active_solver_version;
@@ -162,6 +163,7 @@ pub(super) struct LoadBroadcastResult {
     pub(super) root_config: Option<Config>,
     pub(super) root_estimation_report: Option<EstimationReport>,
     pub(super) root_estimation_path: Option<EstimationPath>,
+    pub(super) root_correlation_origin: Option<CorrelationOrigin>,
     pub(super) training_enabled: bool,
     pub(super) policy_mode: PolicyMode,
     /// `None` on non-root ranks, which reconstruct setup independently and never
@@ -265,6 +267,7 @@ pub(super) fn broadcast_and_build_setup(
         root_stochastic,
         root_estimation_report,
         root_estimation_path,
+        root_correlation_origin,
         raw_bcast_tree,
         root_hydro_models,
         raw_scalar_parameters,
@@ -290,6 +293,7 @@ pub(super) fn broadcast_and_build_setup(
                     stochastic,
                     estimation_report,
                     estimation_path,
+                    correlation_origin,
                 } = prepared;
                 let bcast_params: Vec<BroadcastScalarParameter> = scalar_parameters
                     .iter()
@@ -302,6 +306,7 @@ pub(super) fn broadcast_and_build_setup(
                     Some(stochastic),
                     estimation_report,
                     Some(estimation_path),
+                    Some(correlation_origin),
                     Some(bcast_tree),
                     Some(hydro_models),
                     Some(bcast_params),
@@ -318,11 +323,14 @@ pub(super) fn broadcast_and_build_setup(
                 None,
                 None,
                 None,
+                None,
                 Some(e),
             ),
         }
     } else {
-        (None, None, None, None, None, None, None, None, None, None)
+        (
+            None, None, None, None, None, None, None, None, None, None, None,
+        )
     };
     let broadcast_start = std::time::Instant::now();
     let system_result = broadcast_value(raw_system, &ctx.comm);
@@ -394,6 +402,7 @@ pub(super) fn broadcast_and_build_setup(
         root_config,
         root_estimation_report,
         root_estimation_path,
+        root_correlation_origin,
         training_enabled,
         policy_mode,
         setup_timings: root_setup_timings,
@@ -482,6 +491,7 @@ pub(super) fn run_pre_training(
     root_config: Option<&Config>,
     root_estimation_report: Option<&EstimationReport>,
     root_estimation_path: Option<EstimationPath>,
+    root_correlation_origin: Option<CorrelationOrigin>,
     setup_timings: Option<&SetupTimings>,
 ) -> Result<(), CliError> {
     if ctx.is_root
@@ -499,6 +509,7 @@ pub(super) fn run_pre_training(
             root_config,
             root_estimation_report,
             root_estimation_path,
+            root_correlation_origin,
         )
     } else {
         Ok(())
@@ -540,6 +551,7 @@ fn run_root_exports(
     root_config: Option<&Config>,
     root_estimation_report: Option<&EstimationReport>,
     root_estimation_path: Option<EstimationPath>,
+    root_correlation_origin: Option<CorrelationOrigin>,
 ) -> Result<(), CliError> {
     if root_config.is_some_and(|c| c.training.enabled) {
         remove_success_marker(&ctx.output_dir.join("training")).map_err(CliError::from)?;
@@ -566,9 +578,15 @@ fn run_root_exports(
     })?;
 
     if let Some(path) = root_estimation_path {
+        let Some(correlation_origin) = root_correlation_origin else {
+            return Err(CliError::Internal {
+                message: "rank 0 resolved an estimation path but no correlation origin".to_string(),
+            });
+        };
         let mut provenance = build_provenance_report(
             path,
             root_estimation_report,
+            correlation_origin,
             setup.inputs.stochastic.provenance(),
             system.hydros(),
             &setup.hydro_models.provenance,

@@ -30,7 +30,7 @@ use novomodelo_stochastic::{OpeningTreeInputs, StochasticContext, context::Openi
 use super::resolve_inflow_seeds;
 use super::scenario_libraries;
 use super::widen_lag_state_depth;
-use crate::{EstimationPath, EstimationReport, HistoryEstimate, SddpError};
+use crate::{CorrelationOrigin, EstimationPath, EstimationReport, HistoryEstimate, SddpError};
 
 /// Result of the stochastic preprocessing pipeline.
 #[derive(Debug)]
@@ -44,6 +44,8 @@ pub struct PrepareStochasticResult {
     pub estimation_report: Option<EstimationReport>,
     /// Which estimation path row was taken during preprocessing.
     pub estimation_path: EstimationPath,
+    /// Where the spatial correlation came from.
+    pub correlation_origin: CorrelationOrigin,
 }
 
 fn class_schemes_for(training_source: &ScenarioSource) -> ClassSchemes {
@@ -326,7 +328,7 @@ pub fn prepare_stochastic(
         system,
         report: estimation_report,
         path: estimation_path,
-        ..
+        correlation_origin,
     } = estimate_from_history(system, case_dir, config)?;
 
     let user_opening_tree =
@@ -348,6 +350,7 @@ pub fn prepare_stochastic(
         stochastic,
         estimation_report,
         estimation_path,
+        correlation_origin,
     })
 }
 

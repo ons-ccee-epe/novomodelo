@@ -24,7 +24,7 @@ use tempfile::TempDir;
 mod common;
 use common::{
     case_dir, copy_dir_recursive, make_valid_case, novomodelo, restamp_policy_version,
-    snapshot_files, write_file, write_supplied_opening_tree_case,
+    snapshot_files, write_file, write_supplied_correlation_case, write_supplied_opening_tree_case,
 };
 
 #[test]
@@ -2397,6 +2397,62 @@ fn run_accepts_a_supplied_opening_tree_with_historical_residuals_stages() {
         .stdout(predicate::str::contains("V2.").not())
         .stderr(predicate::str::contains("historical windows").not())
         .stderr(predicate::str::contains("V2.").not());
+}
+
+/// Runs `case` with the provenance block printed and returns the run's stdout and
+/// the `inflow` object of its `training/model_provenance.json`.
+fn run_and_read_inflow_provenance(case: &Path) -> (String, serde_json::Value) {
+    let out = TempDir::new().unwrap();
+    let (stdout, _) = run_ok(&[
+        "run",
+        case.to_str().unwrap(),
+        "--output",
+        out.path().to_str().unwrap(),
+    ]);
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(out.path().join("training/model_provenance.json")).unwrap(),
+    )
+    .unwrap();
+    (stdout, report["inflow"].clone())
+}
+
+#[test]
+fn a_supplied_correlation_on_an_estimated_path_is_reported_as_user_file() {
+    let case = TempDir::new().unwrap();
+    write_supplied_correlation_case(case.path());
+    let (stdout, inflow) = run_and_read_inflow_provenance(case.path());
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == "  Correlation:     user_file"),
+        "stdout must name the supplied correlation, got: {stdout}"
+    );
+    assert_eq!(inflow["estimation_path"], "full_estimation");
+    assert_eq!(inflow["correlation_source"], "user_file");
+    assert_eq!(
+        inflow.as_object().unwrap().get("correlation_target"),
+        Some(&serde_json::Value::Null),
+        "correlation_target must be written as null, got: {inflow}"
+    );
+
+    let control = TempDir::new().unwrap();
+    copy_dir_recursive(
+        &case_dir("deterministic/d26-estimated-par2"),
+        control.path(),
+    );
+    rewrite_json(&control.path().join("config.json"), |config| {
+        config["training"]["stopping_rules"] =
+            serde_json::json!([{ "type": "iteration_limit", "limit": 1 }]);
+    });
+    let (stdout, inflow) = run_and_read_inflow_provenance(control.path());
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == "  Correlation:     estimated (target: residuals)"),
+        "stdout must name the estimation target, got: {stdout}"
+    );
+    assert_eq!(inflow["correlation_source"], "estimated");
+    assert_eq!(inflow["correlation_target"], "residuals");
 }
 
 // ── A failed run keeps the last whole checkpoint ──────────────────────────────

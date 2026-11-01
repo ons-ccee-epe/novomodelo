@@ -18,6 +18,7 @@ import pytest
 
 VALID_CASE = "examples/1dtoy"
 D56_EXTERNAL_AUTHORITATIVE_CASE = "examples/deterministic/d56-external-authoritative"
+D12_PAR_ANNUAL_CASE = "examples/deterministic/d12-par-annual"
 MISSING_CASE = "/tmp/nonexistent_novomodelo_case_xzy123"
 
 
@@ -226,3 +227,39 @@ def test_run_dict_keys_stable(tmp_path: pathlib.Path) -> None:
     assert result["simulation"] == {"n_scenarios": 100, "completed": 100}, (
         "simulation block must report all 100 scenarios completed"
     )
+
+
+def test_correlation_target_is_reported_for_an_estimated_correlation(
+    tmp_path: pathlib.Path,
+) -> None:
+    """An estimated correlation reports its target in both dicts and the file; a
+    correlation that was not estimated reports None and writes the key as null."""
+    import json  # noqa: PLC0415
+
+    import novomodelo.run  # noqa: PLC0415
+
+    estimated_out = tmp_path / "estimated"
+    result = novomodelo.run.run(
+        D12_PAR_ANNUAL_CASE,
+        output_dir=str(estimated_out),
+        config_overrides={"estimation.correlation_target": "inflows"},
+    )
+    written = json.loads(
+        (estimated_out / "training/model_provenance.json").read_text()
+    )["inflow"]["correlation_target"]
+    assert result["provenance"]["correlation_source"] == "estimated"
+    assert result["provenance"]["correlation_target"] == "inflows"
+    assert result["stochastic"]["correlation_source"] == "estimated"
+    assert result["stochastic"]["correlation_target"] == "inflows"
+    assert result["provenance"]["correlation_target"] == written
+    assert result["stochastic"]["correlation_target"] == written
+
+    not_estimated_out = tmp_path / "not_estimated"
+    result = novomodelo.run.run(VALID_CASE, output_dir=str(not_estimated_out))
+    inflow = json.loads(
+        (not_estimated_out / "training/model_provenance.json").read_text()
+    )["inflow"]
+    assert result["provenance"]["correlation_target"] is None
+    assert result["stochastic"]["correlation_target"] is None
+    assert "correlation_target" in inflow
+    assert inflow["correlation_target"] is None

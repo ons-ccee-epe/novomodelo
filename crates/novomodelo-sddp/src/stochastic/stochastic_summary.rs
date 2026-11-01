@@ -9,6 +9,7 @@
 use novomodelo_core::EntityId;
 use novomodelo_core::InflowModel;
 use novomodelo_core::{System, scenario::SamplingScheme};
+use novomodelo_io::config::CorrelationTarget;
 use novomodelo_io::output::{FittingReductionEntry, FittingReport, HydroFittingEntry};
 use novomodelo_io::scenarios::{
     InflowAnnualComponentRow, InflowArCoefficientRow, InflowSeasonalStatsRow,
@@ -16,7 +17,7 @@ use novomodelo_io::scenarios::{
 use novomodelo_stochastic::par::fitting::HydroEstimationEntry;
 use novomodelo_stochastic::{ComponentProvenance, StochasticContext};
 
-use crate::EstimationReport;
+use crate::{CorrelationOrigin, EstimationReport};
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -113,6 +114,8 @@ pub struct StochasticSummary {
     pub ar_summary: Option<ArOrderSummary>,
     /// Source of correlation data.
     pub correlation_source: StochasticSource,
+    /// Series the correlation was estimated from; `None` unless it was estimated.
+    pub correlation_target: Option<CorrelationTarget>,
     /// Dimension of the correlation matrix (e.g., `"5x5"`).
     pub correlation_dim: Option<String>,
     /// Source of the opening tree.
@@ -192,20 +195,31 @@ fn build_ar_order_summary(
     })
 }
 
+fn correlation_source_and_target(
+    origin: CorrelationOrigin,
+) -> (StochasticSource, Option<CorrelationTarget>) {
+    match origin {
+        CorrelationOrigin::UserFile => (StochasticSource::Loaded, None),
+        CorrelationOrigin::Estimated { target } => (StochasticSource::Estimated, Some(target)),
+        CorrelationOrigin::NotApplicable => (StochasticSource::None, None),
+    }
+}
+
 // ── Builder function ──────────────────────────────────────────────────────────
 
-/// Build a [`StochasticSummary`] from the system, stochastic context, and
-/// estimation report. All fields derive from already-validated inputs;
-/// construction is infallible.
+/// Build a [`StochasticSummary`] from the system, stochastic context,
+/// estimation report, and correlation origin. All fields derive from
+/// already-validated inputs; construction is infallible.
 ///
-/// Source detection follows component provenance, except that a `Generated`
-/// component cannot tell estimated from loaded on its own — `estimation_report`
-/// presence is the tiebreaker.
+/// The correlation source and target follow `correlation_origin`, the opening-tree
+/// source follows component provenance, and the inflow source follows
+/// `estimation_report`.
 #[must_use]
 pub fn build_stochastic_summary(
     system: &System,
     stochastic: &StochasticContext,
     estimation_report: Option<&EstimationReport>,
+    correlation_origin: CorrelationOrigin,
     seed: u64,
 ) -> StochasticSummary {
     let n_hydros = system.hydros().len();
@@ -229,17 +243,8 @@ pub fn build_stochastic_summary(
 
     let ar_summary = build_ar_order_summary(system, estimation_report, n_hydros);
 
-    let correlation_source = match stochastic.provenance().correlation {
-        ComponentProvenance::Generated => {
-            if estimation_report.is_some() {
-                StochasticSource::Estimated
-            } else {
-                StochasticSource::Loaded
-            }
-        }
-        ComponentProvenance::UserSupplied => StochasticSource::Loaded,
-        ComponentProvenance::NotApplicable => StochasticSource::None,
-    };
+    let (correlation_source, correlation_target) =
+        correlation_source_and_target(correlation_origin);
 
     // Full noise dimension (hydros + load buses + NCS), not just n_hydros.
     let n_correlated = stochastic.dim();
@@ -270,6 +275,7 @@ pub fn build_stochastic_summary(
         n_seasons,
         ar_summary,
         correlation_source,
+        correlation_target,
         correlation_dim,
         opening_tree_source,
         openings_per_stage,
@@ -401,11 +407,13 @@ mod tests {
         ArCoefficientEstimate, ClassSchemes, OpeningTreeInputs, build_stochastic_context,
     };
 
+    use novomodelo_io::config::CorrelationTarget;
+
     use super::{
         StochasticSource, build_stochastic_summary, estimation_report_to_fitting_report,
         inflow_models_to_ar_rows, inflow_models_to_stats_rows,
     };
-    use crate::EstimationReport;
+    use crate::{CorrelationOrigin, EstimationReport};
     use novomodelo_stochastic::par::fitting::HydroEstimationEntry;
 
     // ── Test helpers ──────────────────────────────────────────────────────────
@@ -694,7 +702,13 @@ mod tests {
             },
         )
         .unwrap();
-        let summary = build_stochastic_summary(&system, &stochastic, None, 42);
+        let summary = build_stochastic_summary(
+            &system,
+            &stochastic,
+            None,
+            CorrelationOrigin::NotApplicable,
+            42,
+        );
 
         assert!(
             matches!(summary.inflow_source, StochasticSource::Loaded),
@@ -742,7 +756,13 @@ mod tests {
             std_ratio_warnings: Vec::new(),
         };
 
-        let summary = build_stochastic_summary(&system, &stochastic, Some(&report), 7);
+        let summary = build_stochastic_summary(
+            &system,
+            &stochastic,
+            Some(&report),
+            CorrelationOrigin::NotApplicable,
+            7,
+        );
 
         assert!(
             matches!(summary.inflow_source, StochasticSource::Estimated),
@@ -784,7 +804,13 @@ mod tests {
             },
         )
         .unwrap();
-        let summary = build_stochastic_summary(&system, &stochastic, None, 0);
+        let summary = build_stochastic_summary(
+            &system,
+            &stochastic,
+            None,
+            CorrelationOrigin::NotApplicable,
+            0,
+        );
 
         assert!(
             matches!(summary.inflow_source, StochasticSource::None),
@@ -814,7 +840,13 @@ mod tests {
             },
         )
         .unwrap();
-        let summary = build_stochastic_summary(&system, &stochastic, None, 1);
+        let summary = build_stochastic_summary(
+            &system,
+            &stochastic,
+            None,
+            CorrelationOrigin::NotApplicable,
+            1,
+        );
 
         assert_eq!(
             summary.n_stages, 2,
@@ -854,7 +886,13 @@ mod tests {
             },
         )
         .unwrap();
-        let summary = build_stochastic_summary(&system, &stochastic, None, 42);
+        let summary = build_stochastic_summary(
+            &system,
+            &stochastic,
+            None,
+            CorrelationOrigin::NotApplicable,
+            42,
+        );
 
         assert!(
             matches!(summary.opening_tree_source, StochasticSource::Loaded),
@@ -880,7 +918,13 @@ mod tests {
             },
         )
         .unwrap();
-        let summary = build_stochastic_summary(&system, &stochastic, None, 42);
+        let summary = build_stochastic_summary(
+            &system,
+            &stochastic,
+            None,
+            CorrelationOrigin::NotApplicable,
+            42,
+        );
 
         assert!(
             matches!(summary.opening_tree_source, StochasticSource::Estimated),
@@ -890,7 +934,7 @@ mod tests {
     }
 
     #[test]
-    fn correlation_source_estimated_when_estimation_ran() {
+    fn summary_correlation_source_follows_the_correlation_origin() {
         let stages = vec![make_stage(0, 0), make_stage(1, 1)];
         let inflow_models = vec![make_inflow_model(10, 0), make_inflow_model(10, 1)];
         let system = SystemBuilder::new()
@@ -933,82 +977,37 @@ mod tests {
             std_ratio_warnings: Vec::new(),
         };
 
-        let summary = build_stochastic_summary(&system, &stochastic, Some(&report), 1);
-
-        assert!(
-            matches!(summary.correlation_source, StochasticSource::Estimated),
-            "Generated correlation + estimation report must produce Estimated, got {:?}",
-            summary.correlation_source
-        );
-    }
-
-    #[test]
-    fn correlation_source_loaded_when_no_estimation() {
-        let stages = vec![make_stage(0, 0), make_stage(1, 1)];
-        let inflow_models = vec![make_inflow_model(10, 0), make_inflow_model(10, 1)];
-        let system = SystemBuilder::new()
-            .buses(vec![make_bus(1)])
-            .hydros(vec![make_hydro(10)])
-            .stages(stages)
-            .inflow_models(inflow_models)
-            .correlation(identity_correlation(&[10]))
-            .build()
-            .unwrap();
-
-        let stochastic = build_stochastic_context(
-            &system,
-            1,
-            None,
-            &[],
-            &[],
-            OpeningTreeInputs::default(),
-            ClassSchemes {
-                inflow: Some(SamplingScheme::InSample),
-                load: Some(SamplingScheme::InSample),
-                ncs: Some(SamplingScheme::InSample),
-            },
-        )
-        .unwrap();
-        let summary = build_stochastic_summary(&system, &stochastic, None, 1);
-
-        assert!(
-            matches!(summary.correlation_source, StochasticSource::Loaded),
-            "Generated correlation + no estimation report must produce Loaded, got {:?}",
-            summary.correlation_source
-        );
-    }
-
-    #[test]
-    fn correlation_source_none_when_empty() {
-        let stages = vec![make_stage(0, 0)];
-        let system = SystemBuilder::new()
-            .buses(vec![make_bus(1)])
-            .stages(stages)
-            .correlation(CorrelationModel::default())
-            .build()
-            .unwrap();
-
-        let stochastic = build_stochastic_context(
-            &system,
-            0,
-            None,
-            &[],
-            &[],
-            OpeningTreeInputs::default(),
-            ClassSchemes {
-                inflow: Some(SamplingScheme::InSample),
-                load: Some(SamplingScheme::InSample),
-                ncs: Some(SamplingScheme::InSample),
-            },
-        )
-        .unwrap();
-        let summary = build_stochastic_summary(&system, &stochastic, None, 0);
-
-        assert!(
-            matches!(summary.correlation_source, StochasticSource::None),
-            "NotApplicable correlation must produce None, got {:?}",
-            summary.correlation_source
-        );
+        let cases = [
+            (CorrelationOrigin::UserFile, ("Loaded", None)),
+            (
+                CorrelationOrigin::Estimated {
+                    target: CorrelationTarget::Residuals,
+                },
+                ("Estimated", Some(CorrelationTarget::Residuals)),
+            ),
+            (
+                CorrelationOrigin::Estimated {
+                    target: CorrelationTarget::Inflows,
+                },
+                ("Estimated", Some(CorrelationTarget::Inflows)),
+            ),
+            (CorrelationOrigin::NotApplicable, ("None", None)),
+        ];
+        for (origin, (source, target)) in cases {
+            for estimation_report in [Some(&report), None] {
+                let summary =
+                    build_stochastic_summary(&system, &stochastic, estimation_report, origin, 1);
+                assert_eq!(
+                    (
+                        format!("{:?}", summary.correlation_source),
+                        summary.correlation_target
+                    ),
+                    (source.to_string(), target),
+                    "origin {origin:?} with estimation report present: {}",
+                    estimation_report.is_some()
+                );
+            }
+        }
     }
 
     // ── build_stochastic_summary field and correlation_dim tests ─────────────
@@ -1033,7 +1032,13 @@ mod tests {
         )
         .unwrap();
 
-        let summary = build_stochastic_summary(&system, &stochastic, None, 99);
+        let summary = build_stochastic_summary(
+            &system,
+            &stochastic,
+            None,
+            CorrelationOrigin::NotApplicable,
+            99,
+        );
 
         // Per-class scheme fields must reflect what was passed to the context.
         assert_eq!(
@@ -1102,7 +1107,13 @@ mod tests {
         )
         .unwrap();
 
-        let summary = build_stochastic_summary(&system, &stochastic, None, 0);
+        let summary = build_stochastic_summary(
+            &system,
+            &stochastic,
+            None,
+            CorrelationOrigin::NotApplicable,
+            0,
+        );
 
         // One hydro, zero load buses, zero NCS: dim == 1.
         let dim = stochastic.dim();

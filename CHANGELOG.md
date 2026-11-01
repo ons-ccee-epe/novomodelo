@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   correlation from standardized historical inflows, the correlation NEWAVE
   takes as input, instead of the PAR residuals. `"residuals"` is the default.
   It has no effect when `scenarios/correlation.json` is supplied.
+- `training/model_provenance.json` records `inflow.correlation_target`.
+
+### Fixed
+
+- `training/model_provenance.json` and the run summary reported the correlation as `estimated` when it
+  was read from `scenarios/correlation.json`. They now report `user_file`.
 
 ## [0.19.1] - 2026-10-26
 

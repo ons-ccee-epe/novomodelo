@@ -65,6 +65,7 @@ use novomodelo_io::ReportEntry;
 use novomodelo_io::SetupTimings;
 use novomodelo_io::SolverStatsRow;
 use novomodelo_io::TrainingOutput;
+use novomodelo_io::config::CorrelationTarget;
 use novomodelo_io::get_hostname;
 use novomodelo_io::now_iso8601;
 use novomodelo_io::output::simulation_writer::{
@@ -980,6 +981,7 @@ pub(crate) fn build_study_setup(
     let system = result.system;
     let estimation_report = result.estimation_report;
     let estimation_path = result.estimation_path;
+    let correlation_origin = result.correlation_origin;
 
     let mut hydro_timings = HydroFitTimings::default();
     let hydro_models_result = prepare_hydro_models_from_artifacts(
@@ -1012,6 +1014,7 @@ pub(crate) fn build_study_setup(
     let mut provenance_report = build_provenance_report(
         estimation_path,
         estimation_report.as_ref(),
+        correlation_origin,
         setup.inputs.stochastic.provenance(),
         system.hydros(),
         &setup.hydro_models.provenance,
@@ -1052,6 +1055,7 @@ pub(crate) fn build_study_setup(
         &system,
         &setup.inputs.stochastic,
         estimation_report.as_ref(),
+        correlation_origin,
         seed,
     );
     let hydro_models_summary = build_hydro_model_summary(&setup.hydro_models, &system);
@@ -1302,6 +1306,10 @@ pub(crate) fn stochastic_summary_to_dict<'py>(
         "correlation_source",
         stochastic_source_str(&summary.correlation_source),
     )?;
+    dict.set_item(
+        "correlation_target",
+        summary.correlation_target.map(CorrelationTarget::as_str),
+    )?;
     dict.set_item("correlation_dim", summary.correlation_dim.as_deref())?;
     dict.set_item(
         "opening_tree_source",
@@ -1332,6 +1340,13 @@ pub(crate) fn provenance_to_dict<'py>(
     dict.set_item(
         "correlation_source",
         report.inflow.correlation_source.to_string(),
+    )?;
+    dict.set_item(
+        "correlation_target",
+        report
+            .inflow
+            .correlation_target
+            .map(CorrelationTarget::as_str),
     )?;
     dict.set_item(
         "opening_tree_source",
