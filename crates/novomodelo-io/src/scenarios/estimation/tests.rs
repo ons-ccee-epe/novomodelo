@@ -148,7 +148,6 @@ fn test_estimate_explicit_stats_returns_unchanged() {
     let HistoryEstimate {
         system: result,
         report,
-        path: _path,
         ..
     } = estimate_from_history(system, case_dir, &config).unwrap();
 
@@ -188,7 +187,6 @@ fn test_estimate_no_history_returns_unchanged() {
     let HistoryEstimate {
         system: result,
         report,
-        path: _path,
         ..
     } = estimate_from_history(system, case_dir, &config).unwrap();
 
@@ -540,7 +538,6 @@ fn correlation_target_reaches_the_estimator() {
         config.estimation.correlation_target = target;
         let HistoryEstimate {
             system: updated,
-            report: _report,
             path,
             ..
         } = estimate_from_history(build_system_with_user_stats(N_YEARS), case_dir, &config)
@@ -607,7 +604,6 @@ fn correlation_target_has_no_effect_when_correlation_json_is_present() {
 
         let HistoryEstimate {
             system: updated,
-            report: _report,
             path,
             ..
         } = estimate_from_history(system, case_dir, &config)
@@ -800,7 +796,6 @@ fn test_partial_estimation_populates_closure_derived_ratio() {
 
     let HistoryEstimate {
         system: updated,
-        report: _report,
         path,
         ..
     } = estimate_from_history(system, case_dir, &config).expect("partial estimation must succeed");
@@ -3173,14 +3168,12 @@ fn test_conditioning_window_does_not_change_fitted_statistics() {
 
     let HistoryEstimate {
         system: updated_without,
-        report: _report_a,
         path: path_a,
         ..
     } = estimate_from_history(system_without_conditioning, case_dir_a, &config)
         .expect("estimation without conditioning must succeed");
     let HistoryEstimate {
         system: updated_with,
-        report: _report_b,
         path: path_b,
         ..
     } = estimate_from_history(system_with_conditioning, case_dir_b, &config)

@@ -325,10 +325,7 @@ fn test_estimate_from_history_fixed_order() {
     let config = parse_config(case_dir);
 
     let HistoryEstimate {
-        system: updated,
-        report: _report,
-        path: _path,
-        ..
+        system: updated, ..
     } = estimate_from_history(system, case_dir, &config)
         .expect("estimation should succeed with 15 years of monthly data");
 
@@ -389,10 +386,7 @@ fn test_estimate_from_history_aic_order() {
     let config = parse_config(case_dir);
 
     let HistoryEstimate {
-        system: updated,
-        report: _report,
-        path: _path,
-        ..
+        system: updated, ..
     } = estimate_from_history(system, case_dir, &config)
         .expect("AIC estimation should succeed with 15 years of monthly data");
 
@@ -704,10 +698,7 @@ fn test_estimation_round_trip_par1() {
     let config = parse_config(case_dir);
 
     let HistoryEstimate {
-        system: updated,
-        report: _report,
-        path: _path,
-        ..
+        system: updated, ..
     } = estimate_from_history(system, case_dir, &config)
         .expect("PAR(1) estimation with N=200 per season should succeed");
 
@@ -942,10 +933,7 @@ fn test_estimation_round_trip_two_hydros() {
     let config = parse_config(case_dir);
 
     let HistoryEstimate {
-        system: updated,
-        report: _report,
-        path: _path,
-        ..
+        system: updated, ..
     } = estimate_from_history(system, case_dir, &config)
         .expect("PAR(1) estimation with 2 hydros should succeed");
 
@@ -1247,7 +1235,6 @@ fn user_ar_prestudy_full_year_study_synthesizes_nothing() {
 
     let HistoryEstimate {
         system: updated,
-        report: _report,
         path,
         ..
     } = estimate_from_history(system, case_dir, &config)
@@ -1314,7 +1301,6 @@ fn user_ar_prestudy_correlation_uses_extended_stages() {
 
     let HistoryEstimate {
         system: updated,
-        report: _report,
         path,
         ..
     } = estimate_from_history(system, case_dir, &config)
