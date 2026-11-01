@@ -112,22 +112,27 @@ differs from tier 2 — and expands the result into dense
 
 ## Estimation pipeline
 
-When `scenarios/inflow_history.parquet` is present and
-`scenarios/inflow_seasonal_stats.parquet` is **absent**, `load_case` derives
-seasonal statistics and AR coefficients from the historical series instead of
-reading pre-computed Parquet files. `config.estimation` controls the fit:
+When `scenarios/inflow_history.parquet` is present, `load_case` fits from the
+history whichever of the seasonal statistics
+(`scenarios/inflow_seasonal_stats.parquet`) and the AR coefficients
+(`scenarios/inflow_ar_coefficients.parquet`) the case does not supply, and
+estimates the spatial correlation unless `scenarios/correlation.json` is
+supplied. The module docs of `scenarios/estimation.rs` give the full path
+matrix. `config.estimation` controls the fit:
 
-| Field                         | Type                        | Default  | Description                                                               |
-| ----------------------------- | --------------------------- | -------- | ------------------------------------------------------------------------- |
-| `max_order`                   | `u32`                       | `6`      | Maximum AR lag order considered during model selection                    |
-| `order_selection`             | `"pacf"` \| `"pacf_annual"` | `"pacf"` | PACF significance testing, optionally with an annual component (PAR(p)-A) |
-| `min_observations_per_season` | `u32`                       | `30`     | Minimum observations required per `(entity, season)` group                |
+| Field                         | Type                         | Default       | Description                                                                                                                                                                                                          |
+| ----------------------------- | ---------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `max_order`                   | `u32`                        | `6`           | Maximum AR lag order considered during model selection                                                                                                                                                               |
+| `order_selection`             | `"pacf"` \| `"pacf_annual"`  | `"pacf"`      | PACF significance testing, optionally with an annual component (PAR(p)-A)                                                                                                                                            |
+| `min_observations_per_season` | `u32`                        | `30`          | Minimum observations required per `(entity, season)` group                                                                                                                                                           |
+| `max_coefficient_magnitude`   | `f64` \| `null`              | `null`        | Reduces an (entity, season) fit to order 0 when any AR coefficient's magnitude exceeds this bound; `null` disables the check                                                                                         |
+| `correlation_target`          | `"residuals"` \| `"inflows"` | `"residuals"` | Series the spatial correlation is estimated from when no `scenarios/correlation.json` is supplied: the AR residuals or the standardized historical inflows. Evaluation option, expected to be removed once evaluated |
 
 The estimation path additionally requires `season_definitions` in
 `stages.json` (to group observations by season) and at least one history
 observation per hydro plant; groups below `min_observations_per_season`
-produce a `ModelQuality` warning rather than a hard failure. When explicit
-stats files are provided instead, `inflow_history.parquet` (if present) is
+produce a `ModelQuality` warning rather than a hard failure. When the case
+supplies both files, `inflow_history.parquet` (if present) is
 still loaded and carried on the loaded system but does not influence model
 assembly.
 
