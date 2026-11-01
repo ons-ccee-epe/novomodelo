@@ -353,7 +353,6 @@ mod tests {
         let identity = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
         let factor = decompose(&identity);
         assert_eq!(factor.dim(), 2);
-        // D should equal I (within numerical tolerance).
         assert_gram_equals(&factor, &identity, 1e-10);
     }
 

@@ -2650,11 +2650,7 @@ mod mpi {
         let case_path = case.path().to_str().unwrap();
 
         let single = TempDir::new().unwrap();
-        novomodelo()
-            .args(["run", case_path])
-            .args(["--output", single.path().to_str().unwrap(), "--quiet"])
-            .assert()
-            .success();
+        run_case(case.path(), single.path());
 
         let two_ranks = TempDir::new().unwrap();
         Command::new("timeout")

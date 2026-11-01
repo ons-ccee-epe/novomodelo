@@ -1113,7 +1113,6 @@ mod tests {
 
     #[test]
     fn implied_class_variances_equal_the_variance_pushed_through_the_factor() {
-        // (a) identity group
         let dc = build_inflow_class(
             &single_profile_model("default", vec![identity_group("g", &[1, 2])]),
             &[1, 2],
@@ -1125,7 +1124,6 @@ mod tests {
             bits(&pushed_through_variances(dc.groups_for_stage(0), 2))
         );
 
-        // (b) positive semi-definite group
         let dc = build_inflow_class(
             &single_profile_model("default", vec![correlated_group("g", &[1, 2], 0.5)]),
             &[1, 2],
@@ -1139,7 +1137,6 @@ mod tests {
             bits(&pushed_through_variances(dc.groups_for_stage(0), 2))
         );
 
-        // (c) a class coordinate in no group keeps variance 1
         let dc = build_inflow_class(
             &single_profile_model("default", vec![correlated_group("g", &[1, 2], 0.5)]),
             &[1, 2, 3],
@@ -1151,7 +1148,6 @@ mod tests {
             bits(&pushed_through_variances(dc.groups_for_stage(0), 3))
         );
 
-        // (d) a group with an entity outside the class is skipped
         let dc = build_inflow_class(
             &single_profile_model("default", vec![correlated_group("g", &[1, 99], 0.5)]),
             &[1, 2],
@@ -1164,7 +1160,6 @@ mod tests {
             bits(&[1.0, 1.0])
         );
 
-        // (e) asymmetric indefinite group: clipped variances exceed 1 and differ
         let matrix = [[1.0, 0.9, -0.6], [0.9, 1.0, 0.8], [-0.6, 0.8, 1.0]];
         let group = CorrelationGroup {
             name: "indefinite".to_string(),

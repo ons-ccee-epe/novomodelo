@@ -276,18 +276,7 @@ pub(super) fn broadcast_and_build_setup(
         match load_case_and_config(args, &ctx.output_dir, ctx.quiet, &ctx.stdout) {
             Ok((prepared, hydro_models, bcast, config, scalar_parameters, timings)) => {
                 root_setup_timings = Some(timings);
-                let bcast_tree = if prepared.stochastic.provenance().opening_tree
-                    == ComponentProvenance::UserSupplied
-                {
-                    let t = prepared.stochastic.opening_tree();
-                    Some(BroadcastOpeningTree {
-                        data: t.data().to_vec(),
-                        openings_per_stage: t.openings_per_stage_slice().to_vec(),
-                        dim: t.dim(),
-                    })
-                } else {
-                    None
-                };
+                let bcast_tree = user_supplied_opening_tree(&prepared.stochastic);
                 let PrepareStochasticResult {
                     system,
                     stochastic,
@@ -406,6 +395,19 @@ pub(super) fn broadcast_and_build_setup(
         training_enabled,
         policy_mode,
         setup_timings: root_setup_timings,
+    })
+}
+
+fn user_supplied_opening_tree(
+    stochastic: &novomodelo_stochastic::StochasticContext,
+) -> Option<BroadcastOpeningTree> {
+    (stochastic.provenance().opening_tree == ComponentProvenance::UserSupplied).then(|| {
+        let t = stochastic.opening_tree();
+        BroadcastOpeningTree {
+            data: t.data().to_vec(),
+            openings_per_stage: t.openings_per_stage_slice().to_vec(),
+            dim: t.dim(),
+        }
     })
 }
 
@@ -656,9 +658,11 @@ mod tests {
     use novomodelo_sddp::test_support::template_fact_groups;
     use novomodelo_stochastic::StochasticContext;
     use novomodelo_stochastic::context::OpeningTree;
-    use novomodelo_stochastic::provenance::ComponentProvenance;
 
-    use super::{build_study_setup, load_case_and_config, reconstruct_stochastic_context_non_root};
+    use super::{
+        build_study_setup, load_case_and_config, reconstruct_stochastic_context_non_root,
+        user_supplied_opening_tree,
+    };
     use crate::commands::broadcast::BroadcastOpeningTree;
     use crate::commands::resolve_output_dir;
     use crate::commands::run::{CommBackendArg, RunArgs};
@@ -779,16 +783,7 @@ mod tests {
             &Term::stderr(),
         )
         .expect("case must load and prepare the stochastic context on rank 0");
-        let bcast_tree = (prepared.stochastic.provenance().opening_tree
-            == ComponentProvenance::UserSupplied)
-            .then(|| {
-                let t = prepared.stochastic.opening_tree();
-                BroadcastOpeningTree {
-                    data: t.data().to_vec(),
-                    openings_per_stage: t.openings_per_stage_slice().to_vec(),
-                    dim: t.dim(),
-                }
-            });
+        let bcast_tree = user_supplied_opening_tree(&prepared.stochastic);
         let PrepareStochasticResult {
             system, stochastic, ..
         } = prepared;
@@ -833,18 +828,10 @@ mod tests {
     }
 
     fn set_moment_matching(case: &Path, moment_matching: &str) {
-        let config_path = case.join("config.json");
-        let mut config: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(&config_path).expect("config.json must be readable"),
-        )
-        .expect("config.json must parse");
-        config["training"]["scenario_source"]["openings"] =
-            serde_json::json!({"source": "generated", "moment_matching": moment_matching});
-        fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&config).expect("config.json must serialize"),
-        )
-        .expect("config.json must be writable");
+        crate::varying_external_deck::edit_json(&case.join("config.json"), |config| {
+            config["training"]["scenario_source"]["openings"] =
+                serde_json::json!({"source": "generated", "moment_matching": moment_matching});
+        });
     }
 
     fn d56_case_dir() -> PathBuf {
@@ -856,22 +843,14 @@ mod tests {
         let case = TempDir::new().expect("tempdir");
         copy_dir_recursive(&d56_case_dir(), case.path());
         set_moment_matching(case.path(), moment_matching);
-        let stages_path = case.path().join("stages.json");
-        let mut stages: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(&stages_path).expect("stages.json must be readable"),
-        )
-        .expect("stages.json must parse");
-        for stage in stages["stages"]
-            .as_array_mut()
-            .expect("stages.json must hold a stages array")
-        {
-            stage["num_openings"] = serde_json::json!(num_openings);
-        }
-        fs::write(
-            &stages_path,
-            serde_json::to_string_pretty(&stages).expect("stages.json must serialize"),
-        )
-        .expect("stages.json must be writable");
+        crate::varying_external_deck::edit_json(&case.path().join("stages.json"), |stages| {
+            for stage in stages["stages"]
+                .as_array_mut()
+                .expect("stages.json must hold a stages array")
+            {
+                stage["num_openings"] = serde_json::json!(num_openings);
+            }
+        });
         case
     }
 
@@ -926,18 +905,7 @@ mod tests {
                     &Term::stderr(),
                 )?;
 
-            let bcast_tree = if prepared.stochastic.provenance().opening_tree
-                == ComponentProvenance::UserSupplied
-            {
-                let t = prepared.stochastic.opening_tree();
-                Some(BroadcastOpeningTree {
-                    data: t.data().to_vec(),
-                    openings_per_stage: t.openings_per_stage_slice().to_vec(),
-                    dim: t.dim(),
-                })
-            } else {
-                None
-            };
+            let bcast_tree = user_supplied_opening_tree(&prepared.stochastic);
             let bcast_params: Vec<BroadcastScalarParameter> =
                 scalars.iter().map(BroadcastScalarParameter::from).collect();
 

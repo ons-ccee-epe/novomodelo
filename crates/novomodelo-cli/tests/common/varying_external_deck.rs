@@ -48,7 +48,7 @@ pub fn write_varying_external_deck(case: &Path, moment_matching: &str) {
     );
 }
 
-fn edit_json(path: &Path, edit: impl FnOnce(&mut Value)) {
+pub fn edit_json(path: &Path, edit: impl FnOnce(&mut Value)) {
     let mut value: Value =
         serde_json::from_str(&fs::read_to_string(path).expect("deck JSON file must be readable"))
             .expect("deck JSON file must parse");
