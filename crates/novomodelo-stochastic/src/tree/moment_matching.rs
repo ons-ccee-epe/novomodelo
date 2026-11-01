@@ -58,10 +58,6 @@ impl StageMomentStats {
 /// two openings, and a coordinate whose drawn values are constant, are left
 /// as drawn. The summation order is fixed (serial, ascending opening) for
 /// bitwise reproducibility.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed once tree generation calls the kernel")
-)]
 #[allow(clippy::cast_precision_loss)]
 pub(crate) fn match_stage_moments(
     stage_slice: &mut [f64],
@@ -112,11 +108,92 @@ pub(crate) fn match_stage_moments(
     stats
 }
 
+/// Folds the per-stage statistics and copy mismatches of one tree generation
+/// and reports them once through [`MomentMatchingTally::emit`].
+pub(crate) struct MomentMatchingTally {
+    untouched_stages: usize,
+    untouched_coordinates: usize,
+    mismatched_copies: usize,
+    rated_stages: usize,
+    max_abs_mean_ratio: f64,
+    min_sd_ratio: f64,
+    max_sd_ratio: f64,
+}
+
+impl MomentMatchingTally {
+    pub(crate) fn new() -> Self {
+        Self {
+            untouched_stages: 0,
+            untouched_coordinates: 0,
+            mismatched_copies: 0,
+            rated_stages: 0,
+            max_abs_mean_ratio: StageMomentStats::UNRATED.max_abs_mean_ratio,
+            min_sd_ratio: StageMomentStats::UNRATED.min_sd_ratio,
+            max_sd_ratio: StageMomentStats::UNRATED.max_sd_ratio,
+        }
+    }
+
+    pub(crate) fn record_stage(&mut self, stats: StageMomentStats) {
+        if stats.untouched > 0 {
+            self.untouched_stages += 1;
+            self.untouched_coordinates += stats.untouched;
+        }
+        if stats.rated > 0 {
+            self.rated_stages += 1;
+            self.max_abs_mean_ratio = self.max_abs_mean_ratio.max(stats.max_abs_mean_ratio);
+            self.min_sd_ratio = self.min_sd_ratio.min(stats.min_sd_ratio);
+            self.max_sd_ratio = self.max_sd_ratio.max(stats.max_sd_ratio);
+        }
+    }
+
+    pub(crate) fn record_group_k_mismatch(&mut self) {
+        self.mismatched_copies += 1;
+    }
+
+    fn debug_summary(&self) -> Option<(usize, f64, f64, f64)> {
+        (self.rated_stages > 0).then_some((
+            self.rated_stages,
+            self.max_abs_mean_ratio,
+            self.min_sd_ratio,
+            self.max_sd_ratio,
+        ))
+    }
+
+    pub(crate) fn emit(&self) {
+        if self.untouched_coordinates > 0 {
+            let stages = self.untouched_stages;
+            let coordinates = self.untouched_coordinates;
+            tracing::warn!(
+                stages,
+                coordinates,
+                "moment matching left {coordinates} inflow coordinate(s) in {stages} stage(s) as drawn: every opening is equal there"
+            );
+        }
+        if self.mismatched_copies > 0 {
+            let stages = self.mismatched_copies;
+            tracing::warn!(
+                stages,
+                "{stages} stage(s) copy a noise-group stage with a different opening count; their copied openings are not moment-matched"
+            );
+        }
+        if let Some((stages, max_abs_mean_ratio, min_sd_ratio, max_sd_ratio)) = self.debug_summary()
+        {
+            tracing::debug!(
+                stages,
+                max_abs_mean_ratio,
+                min_sd_ratio,
+                max_sd_ratio,
+                "moment matching corrected the inflow openings of {stages} stage(s)"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rand::RngExt;
 
-    use super::{StageMomentStats, match_stage_moments};
+    use super::{MomentMatchingTally, StageMomentStats, match_stage_moments};
     use crate::rng_from_seed;
 
     const SCALES: [f64; 4] = [0.5, 2.0, 3.5, 1.0];
@@ -249,5 +326,30 @@ mod tests {
         assert_eq!(stats.rated, 0);
         assert_eq!(stats.untouched, 0);
         assert_eq!(stats.min_sd_ratio.to_bits(), f64::INFINITY.to_bits());
+    }
+
+    #[test]
+    fn the_tally_folds_ratios_from_rated_stages_only() {
+        let mut tally = MomentMatchingTally::new();
+
+        tally.record_stage(StageMomentStats::UNRATED);
+        assert!(tally.debug_summary().is_none());
+
+        tally.record_stage(StageMomentStats {
+            max_abs_mean_ratio: 0.5,
+            min_sd_ratio: 0.8,
+            max_sd_ratio: 1.2,
+            rated: 2,
+            untouched: 1,
+        });
+
+        let (rated_stages, max_abs_mean_ratio, min_sd_ratio, max_sd_ratio) =
+            tally.debug_summary().unwrap();
+        assert_eq!(rated_stages, 1);
+        assert_eq!(max_abs_mean_ratio.to_bits(), 0.5_f64.to_bits());
+        assert_eq!(min_sd_ratio.to_bits(), 0.8_f64.to_bits());
+        assert_eq!(max_sd_ratio.to_bits(), 1.2_f64.to_bits());
+        assert_eq!(tally.untouched_stages, 1);
+        assert_eq!(tally.untouched_coordinates, 1);
     }
 }
