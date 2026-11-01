@@ -30,7 +30,7 @@ use novomodelo_stochastic::{OpeningTreeInputs, StochasticContext, context::Openi
 use super::resolve_inflow_seeds;
 use super::scenario_libraries;
 use super::widen_lag_state_depth;
-use crate::{EstimationPath, EstimationReport, SddpError};
+use crate::{EstimationPath, EstimationReport, HistoryEstimate, SddpError};
 
 /// Result of the stochastic preprocessing pipeline.
 #[derive(Debug)]
@@ -322,8 +322,12 @@ pub fn prepare_stochastic(
     training_source: &ScenarioSource,
     inflow_lag_depth: Option<u32>,
 ) -> Result<PrepareStochasticResult, SddpError> {
-    let (system, estimation_report, estimation_path) =
-        estimate_from_history(system, case_dir, config)?;
+    let HistoryEstimate {
+        system,
+        report: estimation_report,
+        path: estimation_path,
+        ..
+    } = estimate_from_history(system, case_dir, config)?;
 
     let user_opening_tree =
         load_user_opening_tree_inner(case_dir, &system, config, training_source)?;
