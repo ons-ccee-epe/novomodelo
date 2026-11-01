@@ -20,8 +20,6 @@ pub enum ComponentProvenance {
 pub struct StochasticProvenance {
     /// Origin of the opening scenario tree.
     pub opening_tree: ComponentProvenance,
-    /// Origin of the spatial correlation decomposition.
-    pub correlation: ComponentProvenance,
     /// Origin of inflow PAR models (`Generated` when hydros present; `NotApplicable` otherwise).
     pub inflow_model: ComponentProvenance,
     /// Inflow entity class.
@@ -237,73 +235,6 @@ mod tests {
             ctx.provenance().opening_tree,
             ComponentProvenance::NotApplicable,
             "dim == 0 means opening tree is NotApplicable"
-        );
-    }
-
-    #[test]
-    fn provenance_correlation_from_system() {
-        let hydros = vec![make_hydro(1)];
-        let stages = vec![make_stage(0, 0, 3), make_stage(1, 1, 3)];
-        let inflow_models = vec![make_inflow_model(1, 0), make_inflow_model(1, 1)];
-
-        let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
-            .hydros(hydros)
-            .stages(stages)
-            .inflow_models(inflow_models)
-            .correlation(identity_correlation(&[1]))
-            .build()
-            .unwrap();
-
-        let ctx = build_stochastic_context(
-            &system,
-            42,
-            None,
-            &[],
-            &[],
-            OpeningTreeInputs::default(),
-            ClassSchemes {
-                inflow: Some(SamplingScheme::InSample),
-                load: Some(SamplingScheme::InSample),
-                ncs: Some(SamplingScheme::InSample),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(
-            ctx.provenance().correlation,
-            ComponentProvenance::Generated,
-            "non-empty correlation profiles must produce Generated"
-        );
-    }
-
-    #[test]
-    fn provenance_correlation_empty() {
-        let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
-            .stages(vec![make_stage(0, 0, 3)])
-            .build()
-            .unwrap();
-
-        let ctx = build_stochastic_context(
-            &system,
-            42,
-            None,
-            &[],
-            &[],
-            OpeningTreeInputs::default(),
-            ClassSchemes {
-                inflow: Some(SamplingScheme::InSample),
-                load: Some(SamplingScheme::InSample),
-                ncs: Some(SamplingScheme::InSample),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(
-            ctx.provenance().correlation,
-            ComponentProvenance::NotApplicable,
-            "empty/absent correlation must produce NotApplicable"
         );
     }
 

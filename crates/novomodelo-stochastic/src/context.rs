@@ -694,12 +694,6 @@ pub fn build_stochastic_context(
             ComponentProvenance::NotApplicable
         };
 
-        let correlation_prov = if !system.correlation().profiles.is_empty() && dim > 0 {
-            ComponentProvenance::Generated
-        } else {
-            ComponentProvenance::NotApplicable
-        };
-
         let inflow_prov = if hydro_ids.is_empty() {
             ComponentProvenance::NotApplicable
         } else {
@@ -708,7 +702,6 @@ pub fn build_stochastic_context(
 
         StochasticProvenance {
             opening_tree: opening_tree_prov,
-            correlation: correlation_prov,
             inflow_model: inflow_prov,
             inflow_scheme: schemes.inflow,
             load_scheme: schemes.load,

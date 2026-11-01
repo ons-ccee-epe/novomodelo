@@ -350,7 +350,6 @@ mod tests {
     fn prov_all_generated() -> StochasticProvenance {
         StochasticProvenance {
             opening_tree: ComponentProvenance::Generated,
-            correlation: ComponentProvenance::Generated,
             inflow_model: ComponentProvenance::Generated,
             inflow_scheme: None,
             load_scheme: None,
@@ -362,7 +361,6 @@ mod tests {
     fn prov_not_applicable() -> StochasticProvenance {
         StochasticProvenance {
             opening_tree: ComponentProvenance::NotApplicable,
-            correlation: ComponentProvenance::NotApplicable,
             inflow_model: ComponentProvenance::NotApplicable,
             inflow_scheme: None,
             load_scheme: None,
@@ -374,7 +372,6 @@ mod tests {
     fn prov_user_tree() -> StochasticProvenance {
         StochasticProvenance {
             opening_tree: ComponentProvenance::UserSupplied,
-            correlation: ComponentProvenance::Generated,
             inflow_model: ComponentProvenance::Generated,
             inflow_scheme: None,
             load_scheme: None,
