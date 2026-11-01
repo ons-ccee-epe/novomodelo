@@ -189,6 +189,21 @@ impl SpectralFactor {
     pub fn dim(&self) -> usize {
         self.dim
     }
+
+    /// Variance the factor gives coordinate `row` when its input is i.i.d.
+    /// standard normal: the sum of squares of row `row` of `D`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `row >= self.dim()`.
+    #[must_use]
+    pub(crate) fn row_sum_of_squares(&self, row: usize) -> f64 {
+        let mut acc = 0.0_f64;
+        for d_rj in &self.data[row * self.dim..(row + 1) * self.dim] {
+            acc += d_rj * d_rj;
+        }
+        acc
+    }
 }
 
 /// Cyclic Jacobi eigendecomposition of the symmetric row-major `n × n` matrix `a`,
