@@ -5,6 +5,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 // Items may be unused in one binary but used in another.
 
+pub mod varying_external_deck;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -2540,6 +2540,7 @@ mod mpi {
     use std::process::Command;
 
     use super::common::mpiexec;
+    use super::common::varying_external_deck::write_varying_external_deck;
     use super::*;
 
     /// Trains `examples/1dtoy` for three iterations with `forward_passes`
@@ -2635,6 +2636,52 @@ mod mpi {
         assert_eq!(
             two_ranks, single,
             "[lower_bound, upper_bound] bits per iteration"
+        );
+    }
+
+    #[test]
+    fn training_matches_a_single_rank_on_a_moment_matched_tree_clamped_by_external_scenarios() {
+        let case = TempDir::new().unwrap();
+        copy_dir_recursive(
+            &case_dir("deterministic/d56-external-authoritative"),
+            case.path(),
+        );
+        write_varying_external_deck(case.path(), "per_coordinate");
+        let case_path = case.path().to_str().unwrap();
+
+        let single = TempDir::new().unwrap();
+        novomodelo()
+            .args(["run", case_path])
+            .args(["--output", single.path().to_str().unwrap(), "--quiet"])
+            .assert()
+            .success();
+
+        let two_ranks = TempDir::new().unwrap();
+        Command::new("timeout")
+            .args(["-s", "KILL", "300"])
+            .arg(mpiexec())
+            .args(["-n", "2"])
+            .arg(novomodelo().get_program())
+            .args(["run", case_path])
+            .args(["--output", two_ranks.path().to_str().unwrap(), "--quiet"])
+            .assert()
+            .success();
+
+        let single_bounds = bound_bits(single.path());
+        assert_eq!(
+            single_bounds.len(),
+            5,
+            "one [lower_bound, upper_bound] row per iteration of the deck's iteration_limit"
+        );
+        assert_eq!(
+            bound_bits(two_ranks.path()),
+            single_bounds,
+            "[lower_bound, upper_bound] bits per iteration"
+        );
+        assert_eq!(
+            training_solve_counts(two_ranks.path()),
+            training_solve_counts(single.path()),
+            "[total, first_try, retried, failed]"
         );
     }
 }

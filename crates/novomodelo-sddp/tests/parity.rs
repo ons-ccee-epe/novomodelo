@@ -2640,10 +2640,13 @@ mod moment_matched_opening_tree {
     use std::fs;
     use std::path::{Path, PathBuf};
 
+    use novomodelo_io::config::CorrelationTarget;
     use novomodelo_io::output::write_noise_openings;
+    use novomodelo_io::scenarios::CorrelationOrigin;
     use novomodelo_sddp::{PrepareStochasticResult, prepare_stochastic};
     use novomodelo_stochastic::context::OpeningTree;
     use novomodelo_stochastic::provenance::ComponentProvenance;
+    use novomodelo_stochastic::tree::MomentMatching;
     use novomodelo_stochastic::{DecomposedCorrelation, EntityClass};
     use serde_json::{Value, json};
     use tempfile::TempDir;
@@ -2698,18 +2701,44 @@ mod moment_matched_opening_tree {
         case
     }
 
-    fn set_openings(case: &Path, openings: &Value) {
-        let config_path = case.join("config.json");
-        let mut config: Value = serde_json::from_str(
-            &fs::read_to_string(&config_path).expect("config.json must be readable"),
+    fn edit_json(path: &Path, edit: impl FnOnce(&mut Value)) {
+        let mut value: Value = serde_json::from_str(
+            &fs::read_to_string(path).expect("deck JSON file must be readable"),
         )
-        .expect("config.json must parse");
-        config["training"]["scenario_source"]["openings"] = openings.clone();
+        .expect("deck JSON file must parse");
+        edit(&mut value);
         fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&config).expect("config.json must serialize"),
+            path,
+            serde_json::to_string_pretty(&value).expect("deck JSON file must serialize"),
         )
-        .expect("config.json must be writable");
+        .expect("deck JSON file must be writable");
+    }
+
+    fn set_openings(case: &Path, openings: &Value) {
+        edit_json(&case.join("config.json"), |config| {
+            config["training"]["scenario_source"]["openings"] = openings.clone();
+        });
+    }
+
+    fn three_opening_d12(
+        correlation_target: &str,
+        moment_matching: &str,
+    ) -> (TempDir, PrepareStochasticResult) {
+        let case = example_copy("deterministic/d12-par-annual");
+        edit_json(&case.path().join("stages.json"), |stages| {
+            for stage in stages["stages"]
+                .as_array_mut()
+                .expect("stages.json must hold a stages array")
+            {
+                stage["num_openings"] = json!(3);
+            }
+        });
+        edit_json(&case.path().join("config.json"), |config| {
+            config["estimation"]["correlation_target"] = json!(correlation_target);
+            config["training"]["scenario_source"]["openings"] = generated(moment_matching);
+        });
+        let prepared = prepare_case(case.path());
+        (case, prepared)
     }
 
     fn generated(moment_matching: &str) -> Value {
@@ -2834,6 +2863,94 @@ mod moment_matched_opening_tree {
             tree_bits(matched.stochastic.opening_tree()),
             tree_bits(drawn.stochastic.opening_tree()),
             "per_coordinate must change the 4ree tree, or the order comparison has no power"
+        );
+    }
+
+    #[test]
+    fn inflows_target_and_per_coordinate_matching_compose_through_prepare_stochastic() {
+        let (_inflows_matched_case, inflows_matched) =
+            three_opening_d12("inflows", "per_coordinate");
+        let (_residuals_matched_case, residuals_matched) =
+            three_opening_d12("residuals", "per_coordinate");
+        let (_inflows_drawn_case, inflows_drawn) = three_opening_d12("inflows", "none");
+
+        let context = &inflows_matched.stochastic;
+        let tree = context.opening_tree();
+        let openings_per_stage = tree.openings_per_stage_slice();
+        assert!(
+            openings_per_stage.iter().any(|&k| k >= 2),
+            "some study stage must hold several openings, got {openings_per_stage:?}"
+        );
+        assert_eq!(context.n_hydros(), 2, "d12 must carry two hydros");
+
+        assert_eq!(
+            inflows_matched.correlation_origin,
+            CorrelationOrigin::Estimated {
+                target: CorrelationTarget::Inflows
+            }
+        );
+        assert_eq!(
+            context.provenance().opening_tree_moment_matching,
+            Some(MomentMatching::PerCoordinate)
+        );
+
+        let mut variances = vec![0.0; context.n_hydros()];
+        let study_stage_ids = inflows_matched
+            .system
+            .stages()
+            .iter()
+            .filter(|s| s.id >= 0)
+            .map(|s| s.id);
+        for (t, stage_id) in study_stage_ids.enumerate() {
+            let n_openings = openings_per_stage[t];
+            if n_openings < 2 {
+                continue;
+            }
+            DecomposedCorrelation::implied_class_variances(
+                context.correlation().groups_for_stage(stage_id),
+                EntityClass::Inflow,
+                &mut variances,
+            );
+            let count = n_openings as f64;
+            for (c, &variance) in variances.iter().enumerate() {
+                let mut sum = 0.0;
+                for k in 0..n_openings {
+                    sum += tree.opening(t, k)[c];
+                }
+                let mean = sum / count;
+                let mut sum_sq = 0.0;
+                for k in 0..n_openings {
+                    let d = tree.opening(t, k)[c] - mean;
+                    sum_sq += d * d;
+                }
+                let var = sum_sq / count;
+                assert!(
+                    mean.abs() <= 1e-13 * variance.sqrt(),
+                    "stage {t} coordinate {c}: mean {mean}, variance {var}, target variance {variance}"
+                );
+                assert!(
+                    (var - variance).abs() <= 1e-13 * variance,
+                    "stage {t} coordinate {c}: mean {mean}, variance {var}, target variance {variance}"
+                );
+            }
+        }
+
+        let profiles = |leg: &PrepareStochasticResult| -> Vec<String> {
+            leg.system.correlation().profiles.keys().cloned().collect()
+        };
+        assert_ne!(
+            tree_bits(tree),
+            tree_bits(residuals_matched.stochastic.opening_tree()),
+            "the correlation target must change the matched tree; inflows profiles {:?}, residuals profiles {:?}",
+            profiles(&inflows_matched),
+            profiles(&residuals_matched)
+        );
+        assert_ne!(
+            tree_bits(tree),
+            tree_bits(inflows_drawn.stochastic.opening_tree()),
+            "per_coordinate must change the inflows tree; matched profiles {:?}, drawn profiles {:?}",
+            profiles(&inflows_matched),
+            profiles(&inflows_drawn)
         );
     }
 }
