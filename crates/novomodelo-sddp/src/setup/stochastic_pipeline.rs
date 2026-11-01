@@ -333,7 +333,6 @@ pub fn prepare_stochastic(
 
     let user_opening_tree =
         load_user_opening_tree_inner(case_dir, &system, config, training_source)?;
-    let external_scenario_counts = compute_external_scenario_counts(&system, training_source);
 
     let stochastic = build_stochastic_context_for_study(
         &system,
@@ -342,7 +341,6 @@ pub fn prepare_stochastic(
         training_source,
         inflow_lag_depth,
         user_opening_tree,
-        external_scenario_counts,
     )?;
 
     Ok(PrepareStochasticResult {
@@ -359,10 +357,8 @@ pub fn prepare_stochastic(
 /// factors re-read from `case_dir`), the opening-tree historical library (only
 /// when `user_tree` is `None`), and the forward seed. Both rank 0 (via
 /// [`prepare_stochastic`], after PAR estimation and user-tree loading) and the CLI
-/// non-root reconstruction call this one builder, so
-/// the two paths cannot drift. `user_tree` and `external_scenario_counts` are the two inputs that
-/// differ by rank — rank 0 loads / computes them; a non-root rank receives the tree
-/// over the wire and passes `None` counts.
+/// non-root reconstruction call this one builder, so the two paths cannot drift.
+/// `user_tree` is the only input that differs by rank: rank 0 loads it, and a non-root rank receives it over the wire.
 ///
 /// # Errors
 ///
@@ -375,7 +371,6 @@ pub fn build_stochastic_context_for_study(
     training_source: &ScenarioSource,
     inflow_lag_depth: Option<u32>,
     user_tree: Option<OpeningTree>,
-    external_scenario_counts: Option<Vec<usize>>,
 ) -> Result<StochasticContext, SddpError> {
     let load_factor_entries = load_load_factors_for_stochastic(case_dir)?;
     let block_pairs: Vec<Vec<BlockFactorPair>> = load_factor_entries
@@ -414,7 +409,7 @@ pub fn build_stochastic_context_for_study(
         OpeningTreeInputs {
             user_tree,
             historical_library: opening_tree_library.as_ref(),
-            external_scenario_counts,
+            external_scenario_counts: compute_external_scenario_counts(system, training_source),
             noise_group_ids: Some(study_stage_noise_group_ids(system)),
         },
         class_schemes_for(training_source),
@@ -1068,7 +1063,6 @@ mod tests {
             &training_source,
             Some(3),
             None,
-            None,
         )
         .expect("stochastic context must build");
 
@@ -1226,7 +1220,6 @@ mod tests {
             seed: Some(7),
             historical_years: None,
         };
-        let counts = compute_external_scenario_counts(&system, &training_source);
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let stochastic = build_stochastic_context_for_study(
             &system,
@@ -1235,7 +1228,6 @@ mod tests {
             &training_source,
             None,
             None,
-            counts,
         )
         .expect("stochastic context must build");
         let applied = stochastic.par();
@@ -1911,7 +1903,7 @@ mod tests {
         );
     }
 
-    // ── compute_external_scenario_counts: min + silent-drop deletion ──────────
+    // ── compute_external_scenario_counts ──────────────────────────────────────
 
     /// A `System` with one hydro and one std-bearing load bus over `stage_ids`,
     /// carrying `inflow_per_stage`/`load_per_stage` external realizations per stage
@@ -2178,11 +2170,10 @@ mod tests {
         }
     }
 
-    /// The element-wise minimum is gone: with inflow (3) and load (2) external
-    /// classes disagreeing on the per-stage raw count, the returned vector is the
-    /// first present class's (inflow, 3) — never `min(3, 2) = 2`. This deck is
-    /// P-B1-rejected at load; the direct call is the only way to observe the
-    /// reconciliation was deleted rather than relocated.
+    /// With inflow (3) and load (2) external classes disagreeing on the per-stage
+    /// raw count, the returned vector is the first present class's (inflow, 3),
+    /// never the element-wise minimum `min(3, 2) = 2`. P-B1 rejects this deck at
+    /// load, so only a direct call can observe it.
     #[test]
     fn compute_external_scenario_counts_takes_first_never_min() {
         let system = external_count_system(&[0], 3, 2);
@@ -2195,10 +2186,9 @@ mod tests {
         );
     }
 
-    /// The `if stage_id as usize < n_stages` silent-drop is gone: a study numbered
-    /// `[10, 11]` (never 0-based) counts every external row through the resolver.
-    /// The pre-deletion code keyed on `stage_id as usize` and dropped all
-    /// rows (`10 < 2` is false), returning `[0, 0]`; the resolver returns `[1, 1]`.
+    /// A study numbered `[10, 11]` (never 0-based) counts every external row
+    /// through the resolver. Keying on `stage_id as usize` would drop all rows
+    /// (`10 < 2` is false) and return `[0, 0]`; the resolver returns `[1, 1]`.
     #[test]
     fn compute_external_scenario_counts_resolves_non_zero_based_stage_ids() {
         let system = external_count_system(&[10, 11], 1, 0);
@@ -2412,7 +2402,6 @@ mod tests {
             &ScenarioSource::default(),
             None,
             Some(ring_user_tree()),
-            None,
         )
         .expect("a supplied opening tree must not need the historical library");
         assert_eq!(
@@ -2440,7 +2429,6 @@ mod tests {
             tmp.path(),
             42,
             &ScenarioSource::default(),
-            None,
             None,
             None,
         );

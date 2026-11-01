@@ -417,10 +417,6 @@ fn reconstruct_stochastic_context_non_root(
     seed: u64,
     case_dir: &Path,
 ) -> Result<novomodelo_stochastic::StochasticContext, CliError> {
-    // Non-root ranks receive the estimated system + user tree over the wire and
-    // pass None external-scenario counts; the stochastic-context derivation is
-    // owned by novomodelo_sddp (shared with the rank-0 prepare_stochastic path), so the
-    // non-root rebuild cannot drift from it across the crate boundary.
     build_stochastic_context_for_study(
         system,
         case_dir,
@@ -428,7 +424,6 @@ fn reconstruct_stochastic_context_non_root(
         &bcast_config.training_source,
         bcast_config.boundary.inflow_lag_depth(),
         user_tree,
-        None,
     )
     .map_err(CliError::from)
 }
@@ -641,13 +636,16 @@ fn run_root_exports(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::path::PathBuf;
+    use std::fs;
+    use std::path::{Path, PathBuf};
 
     use console::Term;
     use serde::Serialize;
     use serde::de::DeserializeOwned;
+    use tempfile::TempDir;
 
     use novomodelo_core::ScalarParameter;
+    use novomodelo_core::System;
     use novomodelo_io::BroadcastScalarParameter;
     use novomodelo_sddp::PrepareStochasticResult;
     use novomodelo_sddp::cut::CutSet;
@@ -655,6 +653,7 @@ mod tests {
     use novomodelo_sddp::setup::study_stage_noise_group_ids;
     use novomodelo_sddp::test_support::decks::{Deck, SLOW_DECKS, committed_decks};
     use novomodelo_sddp::test_support::template_fact_groups;
+    use novomodelo_stochastic::StochasticContext;
     use novomodelo_stochastic::context::OpeningTree;
     use novomodelo_stochastic::provenance::ComponentProvenance;
 
@@ -675,9 +674,40 @@ mod tests {
     /// exercise.
     #[test]
     fn non_root_opening_tree_matches_rank_0_under_shared_noise_groups() {
-        let case_dir = d29_case_dir();
+        let (system, rank0, non_root) = load_rank0_and_rebuild_non_root(&d29_case_dir());
+        let ids = study_stage_noise_group_ids(&system);
+        assert!(
+            ids.windows(2).any(|w| w[0] == w[1]),
+            "D29 fixture must exercise shared noise groups; got {ids:?}",
+        );
+        assert_same_tree(
+            rank0.opening_tree(),
+            non_root.opening_tree(),
+            "shared noise groups",
+        );
+    }
+
+    #[test]
+    fn non_root_opening_tree_matches_rank_0_when_external_scenarios_clamp_openings() {
+        let case = d56_with_num_openings(3);
+        let (_system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
+        assert_eq!(
+            rank0.opening_tree().openings_per_stage_slice(),
+            &[1, 1],
+            "fixture must clamp every stage to the external library's scenario count"
+        );
+        assert_same_tree(
+            rank0.opening_tree(),
+            non_root.opening_tree(),
+            "external clamp",
+        );
+    }
+
+    fn load_rank0_and_rebuild_non_root(
+        case_dir: &Path,
+    ) -> (System, StochasticContext, StochasticContext) {
         let args = RunArgs {
-            case_dir: case_dir.clone(),
+            case_dir: case_dir.to_path_buf(),
             output: None,
             quiet: true,
             threads: None,
@@ -689,41 +719,98 @@ mod tests {
             true,
             &Term::stderr(),
         )
-        .expect("D29 must load and prepare stochastic context on rank 0");
-
-        let ids = study_stage_noise_group_ids(&prepared.system);
-        assert!(
-            ids.windows(2).any(|w| w[0] == w[1]),
-            "D29 fixture must exercise shared noise groups; got {ids:?}",
-        );
-
-        let rank0_tree = prepared.stochastic.opening_tree();
-
+        .expect("case must load and prepare the stochastic context on rank 0");
+        let bcast_tree = (prepared.stochastic.provenance().opening_tree
+            == ComponentProvenance::UserSupplied)
+            .then(|| {
+                let t = prepared.stochastic.opening_tree();
+                BroadcastOpeningTree {
+                    data: t.data().to_vec(),
+                    openings_per_stage: t.openings_per_stage_slice().to_vec(),
+                    dim: t.dim(),
+                }
+            });
+        let PrepareStochasticResult {
+            system, stochastic, ..
+        } = prepared;
+        let non_root_system = broadcast_round_trip(&system).expect("System must survive the wire");
+        let non_root_bcast =
+            broadcast_round_trip(&bcast).expect("BroadcastConfig must survive the wire");
+        let non_root_tree: Option<BroadcastOpeningTree> =
+            broadcast_round_trip(&bcast_tree).expect("opening tree must survive the wire");
+        let user_tree =
+            non_root_tree.map(|bt| OpeningTree::from_parts(bt.data, bt.openings_per_stage, bt.dim));
         let non_root = reconstruct_stochastic_context_non_root(
-            &prepared.system,
-            &bcast,
-            None,
-            bcast.seed,
-            &case_dir,
+            &non_root_system,
+            &non_root_bcast,
+            user_tree,
+            non_root_bcast.seed,
+            case_dir,
         )
-        .expect("non-root reconstruction must succeed for D29");
-        let non_root_tree = non_root.opening_tree();
+        .expect("non-root reconstruction must succeed");
+        (system, stochastic, non_root)
+    }
 
+    fn assert_same_tree(rank0: &OpeningTree, non_root: &OpeningTree, what: &str) {
         assert_eq!(
-            non_root_tree.data(),
-            rank0_tree.data(),
-            "non-root opening tree data must match rank 0's under shared noise groups"
+            non_root.openings_per_stage_slice(),
+            rank0.openings_per_stage_slice(),
+            "non-root openings per stage must match rank 0's ({what})"
         );
         assert_eq!(
-            non_root_tree.openings_per_stage_slice(),
-            rank0_tree.openings_per_stage_slice(),
-            "non-root opening tree shape must match rank 0's under shared noise groups"
+            non_root.dim(),
+            rank0.dim(),
+            "non-root dim must match rank 0's ({what})"
         );
+        let bits = |t: &OpeningTree| t.data().iter().map(|v| v.to_bits()).collect::<Vec<u64>>();
         assert_eq!(
-            non_root_tree.dim(),
-            rank0_tree.dim(),
-            "non-root opening tree dim must match rank 0's under shared noise groups"
+            bits(non_root),
+            bits(rank0),
+            "non-root tree data must match rank 0's bit for bit ({what})"
         );
+    }
+
+    fn d56_with_num_openings(num_openings: u32) -> TempDir {
+        let case = TempDir::new().expect("tempdir");
+        copy_dir_recursive(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../examples/deterministic/d56-external-authoritative"),
+            case.path(),
+        );
+        let stages_path = case.path().join("stages.json");
+        let mut stages: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&stages_path).expect("stages.json must be readable"),
+        )
+        .expect("stages.json must parse");
+        for stage in stages["stages"]
+            .as_array_mut()
+            .expect("stages.json must hold a stages array")
+        {
+            stage["num_openings"] = serde_json::json!(num_openings);
+        }
+        fs::write(
+            &stages_path,
+            serde_json::to_string_pretty(&stages).expect("stages.json must serialize"),
+        )
+        .expect("stages.json must be writable");
+        case
+    }
+
+    fn copy_dir_recursive(src: &Path, dst: &Path) {
+        fs::create_dir_all(dst).expect("destination directory must be creatable");
+        for entry in fs::read_dir(src).expect("source directory must be readable") {
+            let entry = entry.expect("directory entry must be readable");
+            let to = dst.join(entry.file_name());
+            if entry
+                .file_type()
+                .expect("file type must be readable")
+                .is_dir()
+            {
+                copy_dir_recursive(&entry.path(), &to);
+            } else {
+                fs::copy(entry.path(), &to).expect("file must be copyable");
+            }
+        }
     }
 
     /// Rank 0's own `broadcast_value` returns its input undecoded, so this is
