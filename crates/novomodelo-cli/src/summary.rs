@@ -257,9 +257,18 @@ fn provenance_correlation_detail(report: &ModelProvenanceReport) -> String {
     }
 }
 
+/// Returns `" (moment matching: M)"` for a generated opening tree, or an empty string.
+fn provenance_opening_tree_detail(report: &ModelProvenanceReport) -> String {
+    match report.inflow.opening_tree_moment_matching {
+        Some(matching) => format!(" (moment matching: {})", matching.as_str()),
+        None => String::new(),
+    }
+}
+
 fn provenance_summary_lines(report: &ModelProvenanceReport) -> Vec<String> {
     let ar_detail = provenance_ar_detail(report);
     let correlation_detail = provenance_correlation_detail(report);
+    let opening_tree_detail = provenance_opening_tree_detail(report);
     vec![
         console::style("Model provenance").bold().to_string(),
         format!("  Estimation path: {}", report.inflow.estimation_path),
@@ -272,7 +281,10 @@ fn provenance_summary_lines(report: &ModelProvenanceReport) -> Vec<String> {
             "  Correlation:     {}{}",
             report.inflow.correlation_source, correlation_detail
         ),
-        format!("  Opening tree:    {}", report.inflow.opening_tree_source),
+        format!(
+            "  Opening tree:    {}{}",
+            report.inflow.opening_tree_source, opening_tree_detail
+        ),
     ]
 }
 
@@ -1883,7 +1895,7 @@ mod tests {
 
     // ── ModelProvenanceReport tests ───────────────────────────────────────────
 
-    use novomodelo_io::config::CorrelationTarget;
+    use novomodelo_io::config::{CorrelationTarget, MomentMatching};
     use novomodelo_sddp::{HydroProductionProvenance, InflowProvenance, ProvenanceSource};
 
     use super::{ModelProvenanceReport, print_provenance_summary, provenance_summary_lines};
@@ -1897,6 +1909,7 @@ mod tests {
                 correlation_source: ProvenanceSource::Estimated,
                 correlation_target: None,
                 opening_tree_source: ProvenanceSource::Estimated,
+                opening_tree_moment_matching: None,
                 n_hydros: 3,
                 ar_method: Some("PACF".to_string()),
                 ar_max_order: Some(6),
@@ -1916,6 +1929,7 @@ mod tests {
                 correlation_source: ProvenanceSource::NotApplicable,
                 correlation_target: None,
                 opening_tree_source: ProvenanceSource::NotApplicable,
+                opening_tree_moment_matching: None,
                 n_hydros: 0,
                 ar_method: None,
                 ar_max_order: None,
@@ -2010,6 +2024,7 @@ mod tests {
                 correlation_source: ProvenanceSource::Estimated,
                 correlation_target: None,
                 opening_tree_source: ProvenanceSource::Estimated,
+                opening_tree_moment_matching: None,
                 n_hydros: 2,
                 ar_method: None,
                 ar_max_order: None,
@@ -2068,6 +2083,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn provenance_summary_names_the_moment_matching_of_a_generated_tree() {
+        let cases = [
+            (
+                ProvenanceSource::Estimated,
+                Some(MomentMatching::PerCoordinate),
+                "  Opening tree:    estimated (moment matching: per_coordinate)",
+            ),
+            (
+                ProvenanceSource::Estimated,
+                Some(MomentMatching::None),
+                "  Opening tree:    estimated (moment matching: none)",
+            ),
+            (
+                ProvenanceSource::UserFile,
+                None,
+                "  Opening tree:    user_file",
+            ),
+        ];
+        for (source, matching, expected) in cases {
+            let mut report = make_provenance_report_full_estimation();
+            report.inflow.opening_tree_source = source;
+            report.inflow.opening_tree_moment_matching = matching;
+            let lines = provenance_summary_lines(&report);
+            assert!(
+                lines.iter().any(|line| line == expected),
+                "expected the line {expected:?}, got: {lines:?}"
+            );
+        }
+    }
+
     fn make_provenance_report_with_hydro_production(
         hydro_production: HydroProductionProvenance,
     ) -> ModelProvenanceReport {
@@ -2079,6 +2125,7 @@ mod tests {
                 correlation_source: ProvenanceSource::Estimated,
                 correlation_target: None,
                 opening_tree_source: ProvenanceSource::Estimated,
+                opening_tree_moment_matching: None,
                 n_hydros: 3,
                 ar_method: Some("PACF".to_string()),
                 ar_max_order: Some(6),

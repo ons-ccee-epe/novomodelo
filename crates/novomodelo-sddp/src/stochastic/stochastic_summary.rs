@@ -9,7 +9,7 @@
 use novomodelo_core::EntityId;
 use novomodelo_core::InflowModel;
 use novomodelo_core::{System, scenario::SamplingScheme};
-use novomodelo_io::config::CorrelationTarget;
+use novomodelo_io::config::{CorrelationTarget, MomentMatching};
 use novomodelo_io::output::{FittingReductionEntry, FittingReport, HydroFittingEntry};
 use novomodelo_io::scenarios::{
     InflowAnnualComponentRow, InflowArCoefficientRow, InflowSeasonalStatsRow,
@@ -120,6 +120,8 @@ pub struct StochasticSummary {
     pub correlation_dim: Option<String>,
     /// Source of the opening tree.
     pub opening_tree_source: StochasticSource,
+    /// Moment matching applied to a generated opening tree; `None` when the tree was not generated.
+    pub opening_tree_moment_matching: Option<MomentMatching>,
     /// Number of openings at each stage.
     pub openings_per_stage: Vec<usize>,
     /// Number of stages in the stochastic context.
@@ -278,6 +280,7 @@ pub fn build_stochastic_summary(
         correlation_target,
         correlation_dim,
         opening_tree_source,
+        opening_tree_moment_matching: provenance.opening_tree_moment_matching.map(Into::into),
         openings_per_stage,
         n_stages,
         n_load_buses,
@@ -933,6 +936,45 @@ mod tests {
             "generated opening tree must produce opening_tree_source == Estimated, got {:?}",
             summary.opening_tree_source
         );
+    }
+
+    #[test]
+    fn summary_records_the_moment_matching_of_a_generated_tree() {
+        use novomodelo_stochastic::context::OpeningTree;
+
+        let system = make_system_with_hydro();
+        let schemes = || ClassSchemes {
+            inflow: Some(SamplingScheme::InSample),
+            load: Some(SamplingScheme::InSample),
+            ncs: Some(SamplingScheme::InSample),
+        };
+        let summary_of = |inputs: OpeningTreeInputs<'_>| {
+            let stochastic =
+                build_stochastic_context(&system, 42, None, &[], &[], inputs, schemes()).unwrap();
+            build_stochastic_summary(
+                &system,
+                &stochastic,
+                None,
+                CorrelationOrigin::NotApplicable,
+                42,
+            )
+        };
+
+        let generated = summary_of(OpeningTreeInputs {
+            moment_matching: MomentMatching::PerCoordinate,
+            ..Default::default()
+        });
+        let supplied = summary_of(OpeningTreeInputs {
+            user_tree: Some(OpeningTree::from_parts(vec![1.0_f64; 2 * 2], vec![2, 2], 1)),
+            moment_matching: MomentMatching::PerCoordinate,
+            ..Default::default()
+        });
+
+        assert_eq!(
+            generated.opening_tree_moment_matching,
+            Some(novomodelo_io::config::MomentMatching::PerCoordinate)
+        );
+        assert_eq!(supplied.opening_tree_moment_matching, None);
     }
 
     #[test]

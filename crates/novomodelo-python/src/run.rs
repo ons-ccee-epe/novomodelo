@@ -66,6 +66,7 @@ use novomodelo_io::SetupTimings;
 use novomodelo_io::SolverStatsRow;
 use novomodelo_io::TrainingOutput;
 use novomodelo_io::config::CorrelationTarget;
+use novomodelo_io::config::MomentMatching;
 use novomodelo_io::get_hostname;
 use novomodelo_io::now_iso8601;
 use novomodelo_io::output::simulation_writer::{
@@ -1315,6 +1316,12 @@ pub(crate) fn stochastic_summary_to_dict<'py>(
         "opening_tree_source",
         stochastic_source_str(&summary.opening_tree_source),
     )?;
+    dict.set_item(
+        "opening_tree_moment_matching",
+        summary
+            .opening_tree_moment_matching
+            .map(MomentMatching::as_str),
+    )?;
     dict.set_item("openings_per_stage", summary.openings_per_stage.clone())?;
     dict.set_item("n_stages", summary.n_stages)?;
     dict.set_item("n_load_buses", summary.n_load_buses)?;
@@ -1351,6 +1358,13 @@ pub(crate) fn provenance_to_dict<'py>(
     dict.set_item(
         "opening_tree_source",
         report.inflow.opening_tree_source.to_string(),
+    )?;
+    dict.set_item(
+        "opening_tree_moment_matching",
+        report
+            .inflow
+            .opening_tree_moment_matching
+            .map(MomentMatching::as_str),
     )?;
     dict.set_item("n_hydros", report.inflow.n_hydros)?;
     dict.set_item("ar_method", report.inflow.ar_method.as_deref())?;

@@ -2432,6 +2432,36 @@ mod tests {
     }
 
     #[test]
+    fn a_user_tree_is_not_moment_matched() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let data = vec![0.1, 0.3, 0.2, 0.6, 0.3, 0.9, 0.4, 1.2, 0.5, 1.5];
+        let ctx = build_stochastic_context_for_study(
+            &ring_without_inflow_history(),
+            tmp.path(),
+            42,
+            &ScenarioSource::default(),
+            None,
+            Some(OpeningTree::from_parts(data.clone(), vec![2; 5], 1)),
+            MomentMatching::PerCoordinate,
+        )
+        .expect("a supplied two-opening tree must build");
+
+        assert_eq!(
+            ctx.provenance().opening_tree,
+            ComponentProvenance::UserSupplied
+        );
+        assert_eq!(ctx.provenance().opening_tree_moment_matching, None);
+        assert_eq!(
+            ctx.opening_tree()
+                .data()
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>(),
+            data.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn generated_opening_tree_still_refuses_a_historical_library_that_fails_validation() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let result = build_stochastic_context_for_study(

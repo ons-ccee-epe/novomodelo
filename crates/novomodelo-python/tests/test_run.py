@@ -263,3 +263,58 @@ def test_correlation_target_is_reported_for_an_estimated_correlation(
     assert result["stochastic"]["correlation_target"] is None
     assert "correlation_target" in inflow
     assert inflow["correlation_target"] is None
+
+
+def test_moment_matching_is_reported_for_a_generated_tree(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A generated tree reports its moment matching in both dicts and the file,
+    the default included."""
+    import json  # noqa: PLC0415
+
+    import novomodelo.run  # noqa: PLC0415
+
+    matched_out = tmp_path / "matched"
+    result = novomodelo.run.run(
+        VALID_CASE,
+        output_dir=str(matched_out),
+        config_overrides={
+            "training.scenario_source.openings": {
+                "source": "generated",
+                "moment_matching": "per_coordinate",
+            }
+        },
+    )
+    written = json.loads((matched_out / "training/model_provenance.json").read_text())[
+        "inflow"
+    ]["opening_tree_moment_matching"]
+    assert result["provenance"]["opening_tree_moment_matching"] == "per_coordinate"
+    assert result["stochastic"]["opening_tree_moment_matching"] == "per_coordinate"
+    assert result["provenance"]["opening_tree_moment_matching"] == written
+    assert result["stochastic"]["opening_tree_moment_matching"] == written
+
+    default_out = tmp_path / "default"
+    result = novomodelo.run.run(VALID_CASE, output_dir=str(default_out))
+    inflow = json.loads((default_out / "training/model_provenance.json").read_text())[
+        "inflow"
+    ]
+    assert result["provenance"]["opening_tree_moment_matching"] == "none"
+    assert result["stochastic"]["opening_tree_moment_matching"] == "none"
+    assert "opening_tree_moment_matching" in inflow
+    assert inflow["opening_tree_moment_matching"] == "none"
+
+
+def test_moment_matching_override_without_source_names_the_missing_tag(
+    tmp_path: pathlib.Path,
+) -> None:
+    """An openings block without its source tag is refused, naming the tag."""
+    import novomodelo.run  # noqa: PLC0415
+
+    with pytest.raises(ValueError, match=r"`source`"):
+        novomodelo.run.run(
+            VALID_CASE,
+            output_dir=str(tmp_path),
+            config_overrides={
+                "training.scenario_source.openings.moment_matching": "per_coordinate"
+            },
+        )

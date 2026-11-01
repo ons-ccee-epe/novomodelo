@@ -22,7 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hydro's opening mean is 0 and its variance is the model variance. `"none"`,
   the default, keeps the tree as drawn. Stages using `historical_residuals`
   and trees read from file are not changed.
-- `training/model_provenance.json` records `inflow.correlation_target`.
+- `training/model_provenance.json` records `inflow.correlation_target` and
+  `inflow.opening_tree_moment_matching`.
 
 ### Fixed
 

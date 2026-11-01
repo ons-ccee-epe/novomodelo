@@ -706,6 +706,8 @@ pub fn build_stochastic_context(
 
         StochasticProvenance {
             opening_tree: opening_tree_prov,
+            opening_tree_moment_matching: (opening_tree_prov == ComponentProvenance::Generated)
+                .then_some(moment_matching),
             inflow_model: inflow_prov,
             inflow_scheme: schemes.inflow,
             load_scheme: schemes.load,

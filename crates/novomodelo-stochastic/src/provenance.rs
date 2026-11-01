@@ -2,6 +2,8 @@
 
 use novomodelo_core::scenario::SamplingScheme;
 
+use crate::tree::MomentMatching;
+
 /// Origin of a single stochastic pipeline component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComponentProvenance {
@@ -20,6 +22,8 @@ pub enum ComponentProvenance {
 pub struct StochasticProvenance {
     /// Origin of the opening scenario tree.
     pub opening_tree: ComponentProvenance,
+    /// Moment matching applied to the opening tree; `None` unless the tree was generated.
+    pub opening_tree_moment_matching: Option<MomentMatching>,
     /// Origin of inflow PAR models (`Generated` when hydros present; `NotApplicable` otherwise).
     pub inflow_model: ComponentProvenance,
     /// Inflow entity class.
@@ -206,6 +210,74 @@ mod tests {
             ctx.provenance().opening_tree,
             ComponentProvenance::Generated,
             "generated opening tree must be recorded as Generated"
+        );
+    }
+
+    #[test]
+    fn generated_tree_records_its_moment_matching() {
+        let system = SystemBuilder::new()
+            .buses(vec![make_bus(0)])
+            .hydros(vec![make_hydro(1)])
+            .stages(vec![make_stage(0, 0, 3), make_stage(1, 1, 3)])
+            .inflow_models(vec![make_inflow_model(1, 0), make_inflow_model(1, 1)])
+            .correlation(identity_correlation(&[1]))
+            .build()
+            .unwrap();
+        let schemes = || ClassSchemes {
+            inflow: Some(SamplingScheme::InSample),
+            load: Some(SamplingScheme::InSample),
+            ncs: Some(SamplingScheme::InSample),
+        };
+
+        let matched = build_stochastic_context(
+            &system,
+            42,
+            None,
+            &[],
+            &[],
+            OpeningTreeInputs {
+                moment_matching: MomentMatching::PerCoordinate,
+                ..Default::default()
+            },
+            schemes(),
+        )
+        .unwrap();
+        let default = build_stochastic_context(
+            &system,
+            42,
+            None,
+            &[],
+            &[],
+            OpeningTreeInputs::default(),
+            schemes(),
+        )
+        .unwrap();
+        let supplied = build_stochastic_context(
+            &system,
+            42,
+            None,
+            &[],
+            &[],
+            OpeningTreeInputs {
+                user_tree: Some(OpeningTree::from_parts(vec![1.0_f64; 2 * 2], vec![2, 2], 1)),
+                moment_matching: MomentMatching::PerCoordinate,
+                ..Default::default()
+            },
+            schemes(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            [
+                matched.provenance().opening_tree_moment_matching,
+                default.provenance().opening_tree_moment_matching,
+                supplied.provenance().opening_tree_moment_matching,
+            ],
+            [
+                Some(MomentMatching::PerCoordinate),
+                Some(MomentMatching::None),
+                None
+            ]
         );
     }
 

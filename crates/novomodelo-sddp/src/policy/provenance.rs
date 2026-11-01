@@ -9,7 +9,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use novomodelo_core::Hydro;
-use novomodelo_io::config::CorrelationTarget;
+use novomodelo_io::config::{CorrelationTarget, MomentMatching};
 use novomodelo_io::scenarios::estimation::{CorrelationOrigin, EstimationPath, EstimationReport};
 use novomodelo_stochastic::{ComponentProvenance, StochasticProvenance};
 
@@ -62,6 +62,8 @@ pub struct InflowProvenance {
     pub correlation_target: Option<CorrelationTarget>,
     /// Origin of the noise opening scenario tree.
     pub opening_tree_source: ProvenanceSource,
+    /// Moment matching applied to a generated opening tree; `None` when the tree was not generated.
+    pub opening_tree_moment_matching: Option<MomentMatching>,
     /// Number of hydro plants in the system.
     pub n_hydros: usize,
     /// Order selection method used when AR coefficients were estimated
@@ -116,6 +118,7 @@ pub struct HydroProductionProvenance {
 ///         correlation_source: ProvenanceSource::Estimated,
 ///         correlation_target: None,
 ///         opening_tree_source: ProvenanceSource::Estimated,
+///         opening_tree_moment_matching: None,
 ///         n_hydros: 3,
 ///         ar_method: Some("AIC".to_string()),
 ///         ar_max_order: Some(2),
@@ -262,6 +265,7 @@ pub fn build_provenance_report(
             correlation_source,
             correlation_target,
             opening_tree_source,
+            opening_tree_moment_matching: provenance.opening_tree_moment_matching.map(Into::into),
             n_hydros: hydros.len(),
             ar_method,
             ar_max_order,
@@ -290,6 +294,7 @@ mod tests {
     use novomodelo_io::scenarios::estimation::{
         CorrelationOrigin, EstimationPath, EstimationReport,
     };
+    use novomodelo_stochastic::tree::MomentMatching;
     use novomodelo_stochastic::{ComponentProvenance, StochasticProvenance};
 
     use crate::hydro_models::{
@@ -350,6 +355,7 @@ mod tests {
     fn prov_all_generated() -> StochasticProvenance {
         StochasticProvenance {
             opening_tree: ComponentProvenance::Generated,
+            opening_tree_moment_matching: Some(MomentMatching::None),
             inflow_model: ComponentProvenance::Generated,
             inflow_scheme: None,
             load_scheme: None,
@@ -361,6 +367,7 @@ mod tests {
     fn prov_not_applicable() -> StochasticProvenance {
         StochasticProvenance {
             opening_tree: ComponentProvenance::NotApplicable,
+            opening_tree_moment_matching: None,
             inflow_model: ComponentProvenance::NotApplicable,
             inflow_scheme: None,
             load_scheme: None,
@@ -372,6 +379,7 @@ mod tests {
     fn prov_user_tree() -> StochasticProvenance {
         StochasticProvenance {
             opening_tree: ComponentProvenance::UserSupplied,
+            opening_tree_moment_matching: None,
             inflow_model: ComponentProvenance::Generated,
             inflow_scheme: None,
             load_scheme: None,
@@ -783,6 +791,37 @@ mod tests {
                 inflow.get("correlation_target"),
                 Some(&expected),
                 "origin {origin:?} must write correlation_target, got: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn opening_tree_moment_matching_is_recorded_for_a_generated_tree() {
+        for (provenance, expected) in [
+            (
+                StochasticProvenance {
+                    opening_tree_moment_matching: Some(MomentMatching::PerCoordinate),
+                    ..prov_all_generated()
+                },
+                serde_json::json!("per_coordinate"),
+            ),
+            (prov_user_tree(), serde_json::Value::Null),
+        ] {
+            let report = build_provenance_report(
+                EstimationPath::FullEstimation,
+                None,
+                CorrelationOrigin::NotApplicable,
+                &provenance,
+                &minimal_hydros(1),
+                &empty_hydro_provenance(1),
+            );
+            let value = serde_json::to_value(&report).unwrap();
+            let inflow = value["inflow"].as_object().unwrap();
+            assert_eq!(
+                inflow.get("opening_tree_moment_matching"),
+                Some(&expected),
+                "tree origin {:?} must write opening_tree_moment_matching, got: {value}",
+                provenance.opening_tree
             );
         }
     }
