@@ -4,6 +4,7 @@
 //! [`novomodelo_core::scenario::ScenarioSource`] is performed by the helpers in
 //! `config/mod.rs`.
 
+use novomodelo_stochastic::tree;
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Per-class scenario source configuration in `config.json`.
@@ -51,9 +52,59 @@ pub struct RawScenarioSourceConfig {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Openings {
     /// Openings come from noise generation (the default when `openings` is absent).
-    Generated {},
+    Generated {
+        /// `per_coordinate` shifts and scales each generated stage's inflow
+        /// openings so that every hydro's opening mean is 0 and its variance is
+        /// the model variance; `none` keeps the openings as drawn. Stages using
+        /// `historical_residuals` are not changed.
+        ///
+        /// Evaluation option, expected to be removed once evaluated.
+        #[serde(default)]
+        moment_matching: MomentMatching,
+    },
     /// Openings come from the conventional `scenarios/noise_openings.parquet` file.
     File {},
+}
+
+/// How generated openings are corrected after the correlation is applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum MomentMatching {
+    /// Keep the openings as drawn.
+    #[default]
+    None,
+    /// Shift and scale each hydro's openings to mean 0 and the inflow model's variance.
+    PerCoordinate,
+}
+
+impl MomentMatching {
+    /// The `config.json` spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::PerCoordinate => "per_coordinate",
+        }
+    }
+}
+
+impl From<MomentMatching> for tree::MomentMatching {
+    fn from(mode: MomentMatching) -> Self {
+        match mode {
+            MomentMatching::None => Self::None,
+            MomentMatching::PerCoordinate => Self::PerCoordinate,
+        }
+    }
+}
+
+impl From<tree::MomentMatching> for MomentMatching {
+    fn from(mode: tree::MomentMatching) -> Self {
+        match mode {
+            tree::MomentMatching::None => Self::None,
+            tree::MomentMatching::PerCoordinate => Self::PerCoordinate,
+        }
+    }
 }
 
 /// A single per-class scenario scheme in `config.json`.

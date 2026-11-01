@@ -80,7 +80,7 @@ fn load_user_opening_tree_inner(
     training_source: &ScenarioSource,
 ) -> Result<Option<OpeningTree>, SddpError> {
     match config.training_openings() {
-        None | Some(Openings::Generated {}) => Ok(None),
+        None | Some(Openings::Generated { .. }) => Ok(None),
         Some(Openings::File {}) => {
             let path = case_dir.join("scenarios").join("noise_openings.parquet");
             if !path.exists() {

@@ -324,6 +324,21 @@
       },
       "type": "object"
     },
+    "MomentMatching": {
+      "description": "How generated openings are corrected after the correlation is applied.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "Keep the openings as drawn.",
+          "type": "string"
+        },
+        {
+          "const": "per_coordinate",
+          "description": "Shift and scale each hydro's openings to mean 0 and the inflow model's variance.",
+          "type": "string"
+        }
+      ]
+    },
     "Openings": {
       "description": "Where a stage's openings originate (`config.json` scenario-source `source`).\n\nThe tag key is `source` and the field is `openings`, deliberately distinct\nfrom the per-class `scheme` key: `openings.source` selects where a stage's\nopenings come from, while `scheme` selects how a class's noise is modelled.\nA single word would otherwise carry both axes. An absent `openings`\ndeclaration is equivalent to `generated`.",
       "oneOf": [
@@ -331,6 +346,11 @@
           "additionalProperties": false,
           "description": "Openings come from noise generation (the default when `openings` is absent).",
           "properties": {
+            "moment_matching": {
+              "$ref": "#/$defs/MomentMatching",
+              "default": "none",
+              "description": "`per_coordinate` shifts and scales each generated stage's inflow\nopenings so that every hydro's opening mean is 0 and its variance is\nthe model variance; `none` keeps the openings as drawn. Stages using\n`historical_residuals` are not changed.\n\nEvaluation option, expected to be removed once evaluated."
+            },
             "source": {
               "const": "generated",
               "type": "string"

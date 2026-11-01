@@ -41,7 +41,7 @@ pub use policy::{
     PolicyMode,
 };
 pub use scenario_source::{
-    HistoricalYearRange, Openings, RawClassConfigEntry, RawHistoricalYearsConfig,
+    HistoricalYearRange, MomentMatching, Openings, RawClassConfigEntry, RawHistoricalYearsConfig,
     RawSamplingScheme, RawScenarioSourceConfig,
 };
 pub use simulation::{
@@ -465,6 +465,17 @@ impl Config {
             .scenario_source
             .as_ref()
             .and_then(|s| s.openings.as_ref())
+    }
+
+    /// The effective training moment-matching mode. Single owner of the
+    /// training moment-matching lookup: an absent `openings` block or a `file`
+    /// tree yields `none`.
+    #[must_use]
+    pub fn training_moment_matching(&self) -> MomentMatching {
+        match self.training_openings() {
+            Some(Openings::Generated { moment_matching }) => *moment_matching,
+            None | Some(Openings::File {}) => MomentMatching::default(),
+        }
     }
 
     /// Resolve the effective training forward-pass method from
@@ -1703,6 +1714,123 @@ mod tests {
     fn openings_file_variant_round_trips() {
         let parsed: Openings = serde_json::from_str(r#"{"source": "file"}"#).unwrap();
         assert_eq!(parsed, Openings::File {});
+    }
+
+    #[test]
+    fn moment_matching_defaults_to_none_when_openings_is_absent() {
+        let f = write_with_training_scenario_source("{}");
+        let cfg = parse_config(f.path()).unwrap();
+        assert_eq!(cfg.training_openings(), None);
+        assert_eq!(cfg.training_moment_matching(), MomentMatching::None);
+    }
+
+    #[test]
+    fn moment_matching_defaults_to_none_for_a_bare_generated_block() {
+        let f = write_with_training_scenario_source(r#"{"openings": {"source": "generated"}}"#);
+        let cfg = parse_config(f.path()).unwrap();
+        assert_eq!(
+            cfg.training_openings(),
+            Some(&Openings::Generated {
+                moment_matching: MomentMatching::None
+            })
+        );
+        assert_eq!(cfg.training_moment_matching(), MomentMatching::None);
+    }
+
+    #[test]
+    fn moment_matching_accepts_each_value() {
+        for (spelling, expected) in [
+            ("none", MomentMatching::None),
+            ("per_coordinate", MomentMatching::PerCoordinate),
+        ] {
+            let f = write_with_training_scenario_source(&format!(
+                r#"{{"openings": {{"source": "generated", "moment_matching": "{spelling}"}}}}"#
+            ));
+            let cfg = parse_config(f.path()).unwrap();
+            cfg.training_scenario_source(f.path()).unwrap();
+            assert_eq!(cfg.training_moment_matching(), expected);
+        }
+    }
+
+    #[test]
+    fn moment_matching_rejects_an_unknown_value() {
+        let f = write_with_training_scenario_source(
+            r#"{"openings": {"source": "generated", "moment_matching": "per_stage"}}"#,
+        );
+        let err = parse_config(f.path()).unwrap_err();
+        match &err {
+            LoadError::SchemaError { message, .. } => {
+                assert!(
+                    message.contains("unknown variant") && message.contains("per_stage"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn moment_matching_under_a_file_tree_is_rejected() {
+        let f = write_with_training_scenario_source(
+            r#"{"openings": {"source": "file", "moment_matching": "per_coordinate"}}"#,
+        );
+        let err = parse_config(f.path()).unwrap_err();
+        match &err {
+            LoadError::ParseError { message, .. } => {
+                assert!(
+                    message.contains("unknown field") && message.contains("moment_matching"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected ParseError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn openings_without_source_is_rejected_naming_the_tag() {
+        let f = write_with_training_scenario_source(
+            r#"{"openings": {"moment_matching": "per_coordinate"}}"#,
+        );
+        let err = parse_config(f.path()).unwrap_err();
+        match &err {
+            LoadError::SchemaError { message, .. } => {
+                assert!(
+                    message.contains("`source`"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn moment_matching_as_str_matches_its_serde_spelling() {
+        let variants = std::iter::successors(Some(MomentMatching::None), |v| match v {
+            MomentMatching::None => Some(MomentMatching::PerCoordinate),
+            MomentMatching::PerCoordinate => None,
+        });
+        for v in variants {
+            assert_eq!(
+                serde_json::to_value(v).unwrap(),
+                serde_json::Value::String(v.as_str().to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn moment_matching_converts_both_ways_to_the_library_value() {
+        use novomodelo_stochastic::tree;
+
+        for (io, library) in [
+            (MomentMatching::None, tree::MomentMatching::None),
+            (
+                MomentMatching::PerCoordinate,
+                tree::MomentMatching::PerCoordinate,
+            ),
+        ] {
+            assert_eq!(tree::MomentMatching::from(io), library);
+            assert_eq!(MomentMatching::from(library), io);
+        }
     }
 
     /// `simulation.sampling_scheme` (dead field) is now rejected because
