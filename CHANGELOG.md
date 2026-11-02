@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `training/model_provenance.json` records `inflow.correlation_target` and
   `inflow.opening_tree_moment_matching`.
 
+### Changed
+
+- **BREAKING:** a stage in `stages.json` that shares a noise group (consecutive
+  stages with the same `season_id` in one year) with an earlier stage is refused
+  when it has more openings than the group's first stage. Its extra openings used
+  to carry zero inflow noise. Lower its `num_openings` to the first stage's count.
+  A group whose opening count drops and rises again, without passing the first
+  stage's, now copies the first stage's openings where it used zeros; results
+  change for such decks.
+
 ### Fixed
 
 - Training under `mpiexec` with external scenario files
