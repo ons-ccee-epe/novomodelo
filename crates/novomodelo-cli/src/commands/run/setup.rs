@@ -176,6 +176,9 @@ pub(super) fn setup_communicator(
     args: &RunArgs,
 ) -> Result<RunContext<impl Communicator>, CliError> {
     let comm = create_communicator(args.comm_backend.into())?;
+    if comm.size() > 1 && comm.rank() != 0 {
+        crate::mark_non_root_rank();
+    }
     let is_root = comm.rank() == 0;
     let quiet = args.quiet || !is_root;
 

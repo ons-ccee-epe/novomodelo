@@ -2680,4 +2680,56 @@ mod mpi {
             "[total, first_try, retried, failed]"
         );
     }
+
+    #[test]
+    fn setup_warnings_print_once_under_two_ranks() {
+        let case = TempDir::new().unwrap();
+        copy_dir_recursive(
+            &case_dir("deterministic/d56-external-authoritative"),
+            case.path(),
+        );
+        write_varying_external_deck(case.path(), "per_coordinate");
+        let case_path = case.path().to_str().unwrap();
+        let clamp_warnings = |stderr: &[u8]| {
+            String::from_utf8_lossy(stderr)
+                .lines()
+                .filter(|line| line.contains("External scenarios: 3 raw scenarios"))
+                .count()
+        };
+
+        let single_out = TempDir::new().unwrap();
+        let single = novomodelo()
+            .env_remove("RUST_LOG")
+            .args(["run", case_path])
+            .args(["--output", single_out.path().to_str().unwrap(), "--quiet"])
+            .assert()
+            .success();
+
+        let two_ranks_out = TempDir::new().unwrap();
+        let two_ranks = Command::new("timeout")
+            .env_remove("RUST_LOG")
+            .args(["-s", "KILL", "300"])
+            .arg(mpiexec())
+            .args(["-n", "2"])
+            .arg(novomodelo().get_program())
+            .args(["run", case_path])
+            .args([
+                "--output",
+                two_ranks_out.path().to_str().unwrap(),
+                "--quiet",
+            ])
+            .assert()
+            .success();
+
+        let single_count = clamp_warnings(&single.get_output().stderr);
+        assert!(
+            single_count >= 1,
+            "the deck must raise the external-scenario clamp warning"
+        );
+        assert_eq!(
+            clamp_warnings(&two_ranks.get_output().stderr),
+            single_count,
+            "external-scenario clamp warnings on stderr, two ranks vs one process"
+        );
+    }
 }
