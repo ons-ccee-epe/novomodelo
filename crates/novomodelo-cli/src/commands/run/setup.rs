@@ -11,7 +11,7 @@ use std::path::Path;
 
 use console::Term;
 
-use novomodelo_comm::{Communicator, TopologyProvider, create_communicator};
+use novomodelo_comm::{Communicator, TopologyProvider, create_communicator, min_max_across_ranks};
 use novomodelo_core::ScalarParameter;
 use novomodelo_core::System;
 use novomodelo_io::BroadcastScalarParameter;
@@ -383,6 +383,22 @@ pub(super) fn broadcast_and_build_setup(
         hydro_models,
         scalar_parameters,
     )?;
+
+    if ctx.comm.size() > 1 {
+        let fingerprint = setup.inputs.stochastic.opening_tree().fingerprint();
+        let (min, max) =
+            min_max_across_ranks(&ctx.comm, fingerprint).map_err(|e| CliError::Internal {
+                message: format!("opening tree fingerprint exchange failed: {e}"),
+            })?;
+        if min != max {
+            return Err(CliError::Internal {
+                message: format!(
+                    "opening tree differs across MPI ranks (fingerprints {min:#018x} to \
+                     {max:#018x}); every rank must build the same tree from the broadcast inputs"
+                ),
+            });
+        }
+    }
 
     if let Some(timings) = root_setup_timings.as_mut() {
         timings.broadcast_seconds = broadcast_start.elapsed().as_secs_f64();
