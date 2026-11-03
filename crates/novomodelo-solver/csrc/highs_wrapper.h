@@ -151,6 +151,29 @@ int32_t novomodelo_highs_set_basis_non_alien(
     const int32_t*  row_status
 );
 
+/** Row excess of col_value against the incumbent LP's rows.
+ *  For each row i, writes act_i = sum_j a_ij x_j into activity[i] and
+ *  mag_i = sum_j |a_ij x_j| into magnitude[i]. With v_i the bound violation
+ *  of act_i and t = primal_tolerance, returns
+ *  max(0, max_i (v_i - t) / max(1, mag_i)).
+ *  col_value must hold num_col entries; activity and magnitude must hold
+ *  num_row entries. Returns 0 without touching the buffers when num_row is
+ *  zero or differs from the incumbent LP's row count.
+ *  Reads Highs::getLp() by reference, without copying. */
+double novomodelo_highs_max_row_violation(
+    void*         highs,
+    const double* col_value,
+    double*       activity,
+    double*       magnitude,
+    int32_t       num_row,
+    double        primal_tolerance
+);
+
+/** Primal feasibility tolerance in the units of a returned solution under the
+ *  current options: primal_feasibility_tolerance * 2^(-user_bound_scale).
+ *  Reads Highs::getOptions() by reference, without a name lookup. */
+double novomodelo_highs_primal_tolerance_in_effect(const void* highs);
+
 /** Get the current basis into caller-allocated column and row status arrays.
  *  Wraps Highs_getBasis().
  *  Returns a kHighsStatus constant. */

@@ -1730,3 +1730,39 @@ fn test_solver_clp_solve_accepts_inconsistent_basis_status_combination_silently(
         primals[2]
     );
 }
+
+#[cfg(all(feature = "test-support", feature = "highs"))]
+#[test]
+fn max_row_violation_detects_a_perturbed_solution() {
+    use novomodelo_solver::BasisStatus;
+
+    let mut solver = HighsSolver::new().expect("solver");
+    let template = make_fixture_stage_template();
+    solver.load_model(&template);
+    let x = solver.solve(None).expect("solve").primal.to_vec();
+
+    assert_eq!(solver.max_row_violation(&x), 0.0);
+
+    let mut basis = Basis::new(template.num_cols, template.num_rows);
+    solver.get_basis(&mut basis);
+    let col = 2;
+    assert_eq!(basis.col_status[col], BasisStatus::Basic);
+
+    // Column 2 appears only in equality row 1 (2·x0 + x2 = 14) with coefficient 1.
+    let coefficient = 1.0_f64;
+    let delta = 1e-3;
+    let mut perturbed = x.clone();
+    perturbed[col] += delta;
+    let applied_delta = perturbed[col] - x[col];
+    let magnitude = (2.0 * perturbed[0]).abs() + (coefficient * perturbed[col]).abs();
+    let t = solver
+        .get_double_option(c"primal_feasibility_tolerance")
+        .expect("primal_feasibility_tolerance");
+
+    let expected = (coefficient.abs() * applied_delta - t) / magnitude.max(1.0);
+    let rho = solver.max_row_violation(&perturbed);
+    assert!(
+        ((rho - expected) / expected).abs() <= 1e-12,
+        "rho {rho:e} != expected {expected:e}"
+    );
+}

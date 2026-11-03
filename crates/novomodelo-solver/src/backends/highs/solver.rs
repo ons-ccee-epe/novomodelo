@@ -13,6 +13,7 @@ use std::time::Instant;
 use super::config::{HighsProfile, default_options};
 use crate::{
     DEFAULT_PROFILE_HEURISTIC_SENTINEL, DEFAULT_PROFILE_IPM_UNBOUNDED_SENTINEL, ffi,
+    profile::counts_as_row_violation,
     types::{SolutionView, SolverError, SolverStatistics},
 };
 
@@ -41,6 +42,13 @@ pub struct HighsSolver {
     pub(super) row_value: Vec<f64>,
     /// Row dual multipliers (shadow prices).
     pub(super) row_dual: Vec<f64>,
+    /// Row activity recomputed from the returned primal solution.
+    pub(super) row_activity: Vec<f64>,
+    /// Row magnitude `Σ|a_ij x_j|` of the returned primal solution.
+    pub(super) row_magnitude: Vec<f64>,
+    /// Primal tolerance, in returned units, under which `HiGHS` accepted the
+    /// current solution; captured before the retry ladder restores the options.
+    pub(super) accepted_primal_tolerance: f64,
     /// `usize` → `i32` index conversion for the `HiGHS` C API.
     pub(super) scratch_i32: Vec<i32>,
     /// Column basis status codes.
@@ -115,6 +123,9 @@ impl HighsSolver {
             col_dual: Vec::new(),
             row_value: Vec::new(),
             row_dual: Vec::new(),
+            row_activity: Vec::new(),
+            row_magnitude: Vec::new(),
+            accepted_primal_tolerance: 0.0,
             scratch_i32: Vec::new(),
             basis_col_i32: Vec::new(),
             basis_row_i32: Vec::new(),
@@ -176,6 +187,17 @@ impl HighsSolver {
             "novomodelo_highs_get_solution failed after optimal solve; HiGHS invariant violation"
         );
 
+        let rho = row_excess(
+            self.handle,
+            &self.col_value[..self.num_cols],
+            &mut self.row_activity[..self.num_rows],
+            &mut self.row_magnitude[..self.num_rows],
+            self.accepted_primal_tolerance,
+        );
+        if counts_as_row_violation(rho) {
+            self.stats.row_violations += 1;
+        }
+
         // SAFETY: `self.handle` is a valid, non-null HiGHS pointer.
         let objective = unsafe { ffi::novomodelo_highs_get_objective_value(self.handle) };
 
@@ -192,6 +214,38 @@ impl HighsSolver {
             iterations,
             solve_time_seconds,
         }
+    }
+
+    /// Returns the row excess of `col_value` against the loaded LP: the largest,
+    /// over rows, of `(v_i − t) / max(1, Σ_j |a_ij x_j|)`, floored at 0, where `v_i`
+    /// is the row's bound violation and `t` the primal feasibility tolerance under
+    /// the current options (scaled by `2^(−user_bound_scale)`). Returns 0 for an
+    /// LP without rows.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `col_value.len()` differs from the loaded LP's column count.
+    pub fn max_row_violation(&mut self, col_value: &[f64]) -> f64 {
+        assert_eq!(
+            col_value.len(),
+            self.num_cols,
+            "max_row_violation: col_value len {} != num_cols {}",
+            col_value.len(),
+            self.num_cols
+        );
+        let primal_tolerance = self.primal_tolerance_in_effect();
+        row_excess(
+            self.handle,
+            col_value,
+            &mut self.row_activity[..self.num_rows],
+            &mut self.row_magnitude[..self.num_rows],
+            primal_tolerance,
+        )
+    }
+
+    pub(super) fn primal_tolerance_in_effect(&self) -> f64 {
+        // SAFETY: `self.handle` is a valid, non-null HiGHS pointer.
+        unsafe { ffi::novomodelo_highs_primal_tolerance_in_effect(self.handle) }
     }
 
     /// Re-applies every `current_profile` field `HiGHS` exposes as an option;
@@ -513,6 +567,7 @@ impl HighsSolver {
             self.stats.first_try_successes += 1;
             self.stats.total_iterations += iterations;
             self.stats.total_solve_time_seconds += solve_time;
+            self.accepted_primal_tolerance = self.primal_tolerance_in_effect();
             self.restore_iteration_limits();
             return Ok(self.extract_solution_view(solve_time));
         }
@@ -555,6 +610,34 @@ impl HighsSolver {
                 Err(err)
             }
         }
+    }
+}
+
+fn row_excess(
+    handle: *mut c_void,
+    col_value: &[f64],
+    activity: &mut [f64],
+    magnitude: &mut [f64],
+    primal_tolerance: f64,
+) -> f64 {
+    debug_assert_eq!(activity.len(), magnitude.len());
+    // `load_model` and `add_rows` assert each dimension fits in `i32`, and HiGHS
+    // stores the row count as a 32-bit `HighsInt`.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    let num_row = activity.len() as i32;
+    // SAFETY: `handle` is a valid, non-null HiGHS pointer; `col_value` holds the
+    // incumbent LP's column count and `activity`/`magnitude` hold `num_row`
+    // entries, and the shim returns before touching them when `num_row` differs
+    // from the incumbent LP's row count.
+    unsafe {
+        ffi::novomodelo_highs_max_row_violation(
+            handle,
+            col_value.as_ptr(),
+            activity.as_mut_ptr(),
+            magnitude.as_mut_ptr(),
+            num_row,
+            primal_tolerance,
+        )
     }
 }
 

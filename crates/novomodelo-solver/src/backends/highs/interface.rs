@@ -243,6 +243,8 @@ impl SolverInterface for HighsSolver {
         self.col_dual.resize(self.num_cols, 0.0);
         self.row_value.resize(self.num_rows, 0.0);
         self.row_dual.resize(self.num_rows, 0.0);
+        self.row_activity.resize(self.num_rows, 0.0);
+        self.row_magnitude.resize(self.num_rows, 0.0);
 
         self.basis_col_i32.resize(self.num_cols, 0);
         self.basis_row_i32.resize(self.num_rows, 0);
@@ -297,6 +299,8 @@ impl SolverInterface for HighsSolver {
 
         self.row_value.resize(self.num_rows, 0.0);
         self.row_dual.resize(self.num_rows, 0.0);
+        self.row_activity.resize(self.num_rows, 0.0);
+        self.row_magnitude.resize(self.num_rows, 0.0);
         self.basis_row_i32.resize(self.num_rows, 0);
     }
 

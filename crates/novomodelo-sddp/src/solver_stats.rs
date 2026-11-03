@@ -702,6 +702,7 @@ mod tests {
             total_set_bounds_time_seconds: 0.25,
             total_basis_set_time_seconds: 0.1,
             basis_reconstructions: 0,
+            row_violations: 0,
             retry_level_histogram: vec![0; 12],
         };
         let after = SolverStatistics {
@@ -719,6 +720,7 @@ mod tests {
             total_set_bounds_time_seconds: 0.75,
             total_basis_set_time_seconds: 0.3,
             basis_reconstructions: 0,
+            row_violations: 0,
             retry_level_histogram: vec![0; 12],
         };
 
@@ -755,6 +757,7 @@ mod tests {
             total_set_bounds_time_seconds: 0.02,
             total_basis_set_time_seconds: 0.01,
             basis_reconstructions: 0,
+            row_violations: 0,
             retry_level_histogram: vec![0; 12],
         };
         let delta = SolverStatsDelta::from_snapshots(&snap, &snap);
@@ -847,6 +850,7 @@ mod tests {
             total_set_bounds_time_seconds: 0.25,
             total_basis_set_time_seconds: 0.05,
             basis_reconstructions: 4,
+            row_violations: 0,
             retry_level_histogram: vec![1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         };
         let s2 = SolverStatistics {
@@ -864,6 +868,7 @@ mod tests {
             total_set_bounds_time_seconds: 0.75,
             total_basis_set_time_seconds: 0.15,
             basis_reconstructions: 10,
+            row_violations: 0,
             retry_level_histogram: vec![0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         };
 
