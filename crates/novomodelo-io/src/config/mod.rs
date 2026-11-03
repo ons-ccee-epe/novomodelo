@@ -468,13 +468,14 @@ impl Config {
     }
 
     /// The effective training moment-matching mode. Single owner of the
-    /// training moment-matching lookup: an absent `openings` block or a `file`
-    /// tree yields `none`.
+    /// training moment-matching lookup: an absent `openings` block yields the
+    /// default and a `file` tree yields `none`.
     #[must_use]
     pub fn training_moment_matching(&self) -> MomentMatching {
         match self.training_openings() {
             Some(Openings::Generated { moment_matching }) => *moment_matching,
-            None | Some(Openings::File {}) => MomentMatching::default(),
+            None => MomentMatching::default(),
+            Some(Openings::File {}) => MomentMatching::None,
         }
     }
 
@@ -1187,18 +1188,18 @@ mod tests {
     }
 
     #[test]
-    fn correlation_target_defaults_to_residuals() {
+    fn correlation_target_defaults_to_inflows() {
         for estimation in [None, Some(r#"{"max_order": 3}"#)] {
             let cfg = parse_minimal_with_estimation(estimation).unwrap();
             assert_eq!(
                 cfg.estimation.correlation_target,
-                CorrelationTarget::Residuals,
+                CorrelationTarget::Inflows,
                 "estimation: {estimation:?}"
             );
         }
         assert_eq!(
             EstimationConfig::default().correlation_target,
-            CorrelationTarget::Residuals
+            CorrelationTarget::Inflows
         );
     }
 
@@ -1668,6 +1669,7 @@ mod tests {
         cfg.training_scenario_source(f.path())
             .expect("file openings source must load under training");
         assert_eq!(cfg.training_openings(), Some(&Openings::File {}));
+        assert_eq!(cfg.training_moment_matching(), MomentMatching::None);
     }
 
     /// The dropped `path` field on the `file` openings source is now an
@@ -1717,24 +1719,30 @@ mod tests {
     }
 
     #[test]
-    fn moment_matching_defaults_to_none_when_openings_is_absent() {
+    fn moment_matching_defaults_to_per_coordinate_when_openings_is_absent() {
         let f = write_with_training_scenario_source("{}");
         let cfg = parse_config(f.path()).unwrap();
         assert_eq!(cfg.training_openings(), None);
-        assert_eq!(cfg.training_moment_matching(), MomentMatching::None);
+        assert_eq!(
+            cfg.training_moment_matching(),
+            MomentMatching::PerCoordinate
+        );
     }
 
     #[test]
-    fn moment_matching_defaults_to_none_for_a_bare_generated_block() {
+    fn moment_matching_defaults_to_per_coordinate_for_a_bare_generated_block() {
         let f = write_with_training_scenario_source(r#"{"openings": {"source": "generated"}}"#);
         let cfg = parse_config(f.path()).unwrap();
         assert_eq!(
             cfg.training_openings(),
             Some(&Openings::Generated {
-                moment_matching: MomentMatching::None
+                moment_matching: MomentMatching::PerCoordinate
             })
         );
-        assert_eq!(cfg.training_moment_matching(), MomentMatching::None);
+        assert_eq!(
+            cfg.training_moment_matching(),
+            MomentMatching::PerCoordinate
+        );
     }
 
     #[test]

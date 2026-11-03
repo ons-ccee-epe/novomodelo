@@ -154,8 +154,8 @@
       "properties": {
         "correlation_target": {
           "$ref": "#/$defs/CorrelationTarget",
-          "default": "residuals",
-          "description": "Series the spatial inflow correlation is estimated from when no\n`scenarios/correlation.json` is supplied: `\"residuals\"` (default) or `\"inflows\"`.\n\nEvaluation option, expected to be removed once evaluated."
+          "default": "inflows",
+          "description": "Series the spatial inflow correlation is estimated from when no\n`scenarios/correlation.json` is supplied: `\"inflows\"` (default) or `\"residuals\"`.\n\nEvaluation option, expected to be removed once evaluated."
         },
         "max_coefficient_magnitude": {
           "default": null,
@@ -348,8 +348,8 @@
           "properties": {
             "moment_matching": {
               "$ref": "#/$defs/MomentMatching",
-              "default": "none",
-              "description": "`per_coordinate` shifts and scales each generated stage's inflow\nopenings so that every hydro's opening mean is 0 and its variance is\nthe model variance; `none` keeps the openings as drawn. Stages using\n`historical_residuals` are not changed.\n\nEvaluation option, expected to be removed once evaluated."
+              "default": "per_coordinate",
+              "description": "`per_coordinate` (default) shifts and scales each generated stage's\ninflow openings so that every hydro's opening mean is 0 and its\nvariance is the model variance; `none` keeps the openings as drawn.\nStages using `historical_residuals` are not changed.\n\nEvaluation option, expected to be removed once evaluated."
             },
             "source": {
               "const": "generated",
@@ -1365,7 +1365,7 @@
     "estimation": {
       "$ref": "#/$defs/EstimationConfig",
       "default": {
-        "correlation_target": "residuals",
+        "correlation_target": "inflows",
         "max_coefficient_magnitude": null,
         "max_order": 6,
         "min_observations_per_season": 30,

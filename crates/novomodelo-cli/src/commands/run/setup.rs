@@ -698,39 +698,26 @@ mod tests {
     /// exercise.
     #[test]
     fn non_root_opening_tree_matches_rank_0_under_shared_noise_groups() {
-        let (system, rank0, non_root) = load_rank0_and_rebuild_non_root(&d29_case_dir());
-        let ids = study_stage_noise_group_ids(&system);
-        assert!(
-            ids.windows(2).any(|w| w[0] == w[1]),
-            "D29 fixture must exercise shared noise groups; got {ids:?}",
-        );
-        assert_same_tree(
-            rank0.opening_tree(),
-            non_root.opening_tree(),
-            "shared noise groups",
-        );
-    }
-
-    #[test]
-    fn non_root_opening_tree_matches_rank_0_under_shared_noise_groups_with_moment_matching() {
-        let case = TempDir::new().expect("tempdir");
-        copy_dir_recursive(&d29_case_dir(), case.path());
-        set_moment_matching(case.path(), "per_coordinate");
-        let (system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
-        let ids = study_stage_noise_group_ids(&system);
-        assert!(
-            ids.windows(2).any(|w| w[0] == w[1]),
-            "D29 fixture must exercise shared noise groups; got {ids:?}",
-        );
-        assert_same_tree(
-            rank0.opening_tree(),
-            non_root.opening_tree(),
-            "shared noise groups, per_coordinate",
-        );
-        let (_system, drawn, _non_root) = load_rank0_and_rebuild_non_root(&d29_case_dir());
+        let mut leg_bits = Vec::new();
+        for moment_matching in ["none", "per_coordinate"] {
+            let case = TempDir::new().expect("tempdir");
+            copy_dir_recursive(&d29_case_dir(), case.path());
+            set_moment_matching(case.path(), moment_matching);
+            let (system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
+            let ids = study_stage_noise_group_ids(&system);
+            assert!(
+                ids.windows(2).any(|w| w[0] == w[1]),
+                "D29 fixture must exercise shared noise groups; got {ids:?}",
+            );
+            assert_same_tree(
+                rank0.opening_tree(),
+                non_root.opening_tree(),
+                &format!("shared noise groups, {moment_matching}"),
+            );
+            leg_bits.push(tree_bits(rank0.opening_tree()));
+        }
         assert_ne!(
-            tree_bits(rank0.opening_tree()),
-            tree_bits(drawn.opening_tree()),
+            leg_bits[0], leg_bits[1],
             "per_coordinate must change the D29 tree, or the rank comparison above has no power"
         );
     }

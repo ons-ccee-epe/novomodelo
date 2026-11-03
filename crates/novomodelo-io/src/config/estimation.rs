@@ -58,9 +58,9 @@ impl<'de> serde::Deserialize<'de> for OrderSelectionMethod {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum CorrelationTarget {
     /// Residuals of the fitted PAR lags.
-    #[default]
     Residuals,
     /// Standardized historical inflows, the correlation NEWAVE takes as input.
+    #[default]
     Inflows,
 }
 
@@ -114,7 +114,7 @@ pub struct EstimationConfig {
     pub max_coefficient_magnitude: Option<f64>,
 
     /// Series the spatial inflow correlation is estimated from when no
-    /// `scenarios/correlation.json` is supplied: `"residuals"` (default) or `"inflows"`.
+    /// `scenarios/correlation.json` is supplied: `"inflows"` (default) or `"residuals"`.
     ///
     /// Evaluation option, expected to be removed once evaluated.
     pub correlation_target: CorrelationTarget,

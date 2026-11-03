@@ -1201,7 +1201,7 @@ fn find_line<'a>(haystack: &'a str, label: &str) -> &'a str {
         .unwrap_or_else(|| panic!("expected a {label} Time-split line in run stderr"))
 }
 
-const EXPECTED_MEAN_COST: f64 = 9_679_385.922_404_844;
+const EXPECTED_MEAN_COST: f64 = 12_865_159.706_109_203;
 
 /// Golden LP counts and cost on input-committed `examples/1dtoy` (seed 42, all
 /// `in_sample`). Goldens change only when the case, solver or algorithm changes.
@@ -1239,11 +1239,11 @@ fn run_produces_deterministic_end_block_and_metadata() {
     }
 
     for needle in [
-        "Lower bound:  1.55955e7",
+        "Lower bound:  2.06161e7",
         "Upper bound:  5.79592e5",
         "LP solves:    5632 (",
         "LP solves:    400 (",
-        "Expected cost: 9.67939e6",
+        "Expected cost: 1.28652e7",
         "1 constant",
         "0 linearized, 1 without",
         "user_stats_white_noise",
@@ -2448,11 +2448,11 @@ fn a_supplied_correlation_on_an_estimated_path_is_reported_as_user_file() {
     assert!(
         stdout
             .lines()
-            .any(|line| line == "  Correlation:     estimated (target: residuals)"),
+            .any(|line| line == "  Correlation:     estimated (target: inflows)"),
         "stdout must name the estimation target, got: {stdout}"
     );
     assert_eq!(inflow["correlation_source"], "estimated");
-    assert_eq!(inflow["correlation_target"], "residuals");
+    assert_eq!(inflow["correlation_target"], "inflows");
 }
 
 // ── A failed run keeps the last whole checkpoint ──────────────────────────────

@@ -1987,7 +1987,7 @@ mod tests {
             "1dtoy must be a 4-stage case so total_lp_solves is a multi-stage guard"
         );
 
-        let golden_lower_bound = 15_595_518.381_798_638;
+        let golden_lower_bound = 20_616_141.776_970_58;
         assert!(
             close(training.bounds.final_lower_bound, golden_lower_bound),
             "final_lower_bound {} not within 1e-6 of golden {golden_lower_bound}",
@@ -2015,7 +2015,7 @@ mod tests {
             .cost
             .as_ref()
             .expect("simulation cost must be populated by the run path");
-        let golden_mean_cost = 9_679_385.922_404_84;
+        let golden_mean_cost = 12_865_159.706_109_203;
         assert!(
             close(cost.mean_cost, golden_mean_cost),
             "mean_cost {} not within 1e-6 of golden {golden_mean_cost}",
