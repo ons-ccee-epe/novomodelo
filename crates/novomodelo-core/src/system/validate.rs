@@ -443,15 +443,9 @@ fn validate_unit_capacity(thermal: &Thermal, errors: &mut Vec<ValidationError>) 
     }
 }
 
-/// Validate every thermal unit, appending all violations to `errors` (no
-/// short-circuiting on the first).
-///
-/// Per unit, in order: generation bounds, minimum up time, minimum down time,
-/// startup ramp, shutdown ramp. The ramp rules read `min_generation_mw` and run
-/// only when the generation bounds are valid.
-///
-/// Per plant, after its units: the units' summed maximum must cover the plant
-/// maximum. Plants without units, or with a unit whose generation bounds fail, are skipped.
+/// Appends every unit violation and plant capacity shortfall to `errors`. A unit with invalid
+/// generation bounds skips the ramp rules and exempts its plant from the capacity rule, so one bad
+/// bound reports once; a plant without units has no capacity rule.
 pub(crate) fn validate_thermal_units(thermals: &[Thermal], errors: &mut Vec<ValidationError>) {
     for thermal in thermals {
         for unit in &thermal.units {
@@ -530,13 +524,9 @@ fn status_generation_violation(
     }
 }
 
-/// Validate every thermal unit initial state, appending all violations to `errors` (no
-/// short-circuiting on the first).
-///
-/// Per record, in slice order: the plant and unit it names, `time_in_state_hours`,
-/// `previous_generation_mw`, then the status against `previous_generation_mw`. The scalar rules
-/// do not depend on the reference resolving; the status rule runs only when the unit resolves,
-/// `previous_generation_mw` passed its rule, and the unit's generation bounds are valid.
+/// Appends every initial-state violation to `errors`. The status rule runs only when the unit
+/// resolves, `previous_generation_mw` is valid and the unit's generation bounds are valid, so
+/// each bad input reports once.
 ///
 /// Contract: each plant's units must be id-sorted ([`Thermal::sort_units`]) and free of duplicate
 /// ids, and `thermal_index` must be [`build_index`] of `thermals`.

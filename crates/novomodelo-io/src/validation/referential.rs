@@ -1400,7 +1400,7 @@ mod tests {
         data.thermals = vec![make_thermal(ThermalSpec {
             id: 20,
             name: "T20".to_string(),
-            bus_id: 777, // bad
+            bus_id: 777,
             ..Default::default()
         })];
         // HydroGeometryRow referencing non-existent hydro (888)

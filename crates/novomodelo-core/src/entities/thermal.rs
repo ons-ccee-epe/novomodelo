@@ -62,9 +62,9 @@ pub struct ThermalUnit {
     pub min_up_time_hours: f64,
     /// Minimum time off before a switch-on \[h\]; `0` means no minimum.
     pub min_down_time_hours: f64,
-    /// Startup trajectory of held levels \[MW\]; empty means instantaneous.
+    /// Startup trajectory of held levels \[MW\].
     pub startup_ramp_mw: Vec<f64>,
-    /// Shutdown trajectory of held levels \[MW\]; empty means instantaneous.
+    /// Shutdown trajectory of held levels \[MW\].
     pub shutdown_ramp_mw: Vec<f64>,
 }
 
