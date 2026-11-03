@@ -8,7 +8,9 @@ use novomodelo_comm::{Communicator, ReduceOp};
 use novomodelo_core::TrainingEvent;
 use novomodelo_io::MetadataTrainingSolveStats;
 use novomodelo_io::TrainingOutput;
+use novomodelo_sddp::PhaseCounts;
 use novomodelo_sddp::SddpError;
+use novomodelo_sddp::SolveTotals;
 use novomodelo_sddp::SolverStatsDelta;
 use novomodelo_sddp::StatsFoldMode;
 use novomodelo_sddp::StudySetup;
@@ -30,6 +32,8 @@ pub(super) struct TrainingPhaseResult {
     pub(super) output: TrainingOutput,
     /// Mid-iteration training error, if any. Partial results are still valid.
     pub(super) error: Option<SddpError>,
+    /// Cross-rank totals of the solver-stats log.
+    pub(super) solve_totals: SolveTotals,
 }
 
 /// Single owner of the training-run stats the printed [`TrainingSummary`] and
@@ -130,48 +134,67 @@ pub(super) fn run_training_phase(
     // Per-rank fold; the allreduce(Sum) below reassembles each phase once
     // (see StatsFoldMode::MpiRank).
     let my_rank = u32::try_from(ctx.comm.rank()).unwrap_or(u32::MAX);
-    let (
-        local_first_try,
-        local_retried,
-        local_failed,
-        local_forward_solve_s,
-        local_backward_solve_s,
-    ) = aggregate_solver_stats_log(
+    let local = aggregate_solver_stats_log(
         &training_result.solver_stats_log,
         StatsFoldMode::MpiRank { rank: my_rank },
     );
 
     let training_guard_delta = SolverStatsDelta {
-        lp_successes: local_first_try.saturating_add(local_retried),
-        first_try_successes: local_first_try,
-        lp_failures: local_failed,
+        lp_solves: local.lp_solves.total(),
+        lp_successes: local.first_try.saturating_add(local.retried),
+        first_try_successes: local.first_try,
+        lp_failures: local.failed,
+        row_violations: local.row_violations.total(),
         ..SolverStatsDelta::default()
     };
     check_stats_overflow(&training_guard_delta)?;
 
     #[allow(clippy::cast_precision_loss)]
     let send_stats = [
-        local_first_try as f64,
-        local_retried as f64,
-        local_failed as f64,
-        local_forward_solve_s,
-        local_backward_solve_s,
+        local.first_try as f64,
+        local.retried as f64,
+        local.failed as f64,
+        local.forward_solve_seconds,
+        local.backward_solve_seconds,
+        local.row_violations.forward as f64,
+        local.row_violations.backward as f64,
+        local.row_violations.lower_bound as f64,
+        local.lp_solves.forward as f64,
+        local.lp_solves.backward as f64,
+        local.lp_solves.lower_bound as f64,
     ];
-    let mut recv_stats = [0.0_f64; 5];
+    let mut recv_stats = [0.0_f64; 11];
     ctx.comm
         .allreduce(&send_stats, &mut recv_stats, ReduceOp::Sum)
         .map_err(|e| CliError::Internal {
             message: format!("training solver stats allreduce error: {e}"),
         })?;
-    let phase_timing = sum_phase_timing_ms(&training_output.convergence_records);
-
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let global_stats = GlobalTrainingStats {
+    let solve_totals = SolveTotals {
         first_try: recv_stats[0] as u64,
         retried: recv_stats[1] as u64,
         failed: recv_stats[2] as u64,
         forward_solve_seconds: recv_stats[3],
         backward_solve_seconds: recv_stats[4],
+        row_violations: PhaseCounts {
+            forward: recv_stats[5] as u64,
+            backward: recv_stats[6] as u64,
+            lower_bound: recv_stats[7] as u64,
+        },
+        lp_solves: PhaseCounts {
+            forward: recv_stats[8] as u64,
+            backward: recv_stats[9] as u64,
+            lower_bound: recv_stats[10] as u64,
+        },
+    };
+    let phase_timing = sum_phase_timing_ms(&training_output.convergence_records);
+
+    let global_stats = GlobalTrainingStats {
+        first_try: solve_totals.first_try,
+        retried: solve_totals.retried,
+        failed: solve_totals.failed,
+        forward_solve_seconds: solve_totals.forward_solve_seconds,
+        backward_solve_seconds: solve_totals.backward_solve_seconds,
         forward_phase_wall_ms: phase_timing.forward_wall_ms,
         backward_phase_wall_ms: phase_timing.backward_wall_ms,
         forward_wait_ms: phase_timing.forward_wait_ms,
@@ -248,5 +271,6 @@ pub(super) fn run_training_phase(
         result: training_result,
         output: training_output,
         error: training_outcome.error,
+        solve_totals,
     })
 }
