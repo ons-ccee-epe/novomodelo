@@ -242,15 +242,15 @@ def test_correlation_target_is_reported_for_an_estimated_correlation(
     result = novomodelo.run.run(
         D12_PAR_ANNUAL_CASE,
         output_dir=str(estimated_out),
-        config_overrides={"estimation.correlation_target": "inflows"},
+        config_overrides={"estimation.correlation_target": "residuals"},
     )
     written = json.loads(
         (estimated_out / "training/model_provenance.json").read_text()
     )["inflow"]["correlation_target"]
     assert result["provenance"]["correlation_source"] == "estimated"
-    assert result["provenance"]["correlation_target"] == "inflows"
+    assert result["provenance"]["correlation_target"] == "residuals"
     assert result["stochastic"]["correlation_source"] == "estimated"
-    assert result["stochastic"]["correlation_target"] == "inflows"
+    assert result["stochastic"]["correlation_target"] == "residuals"
     assert result["provenance"]["correlation_target"] == written
     assert result["stochastic"]["correlation_target"] == written
 
@@ -274,22 +274,22 @@ def test_moment_matching_is_reported_for_a_generated_tree(
 
     import novomodelo.run  # noqa: PLC0415
 
-    matched_out = tmp_path / "matched"
+    drawn_out = tmp_path / "drawn"
     result = novomodelo.run.run(
         VALID_CASE,
-        output_dir=str(matched_out),
+        output_dir=str(drawn_out),
         config_overrides={
             "training.scenario_source.openings": {
                 "source": "generated",
-                "moment_matching": "per_coordinate",
+                "moment_matching": "none",
             }
         },
     )
-    written = json.loads((matched_out / "training/model_provenance.json").read_text())[
+    written = json.loads((drawn_out / "training/model_provenance.json").read_text())[
         "inflow"
     ]["opening_tree_moment_matching"]
-    assert result["provenance"]["opening_tree_moment_matching"] == "per_coordinate"
-    assert result["stochastic"]["opening_tree_moment_matching"] == "per_coordinate"
+    assert result["provenance"]["opening_tree_moment_matching"] == "none"
+    assert result["stochastic"]["opening_tree_moment_matching"] == "none"
     assert result["provenance"]["opening_tree_moment_matching"] == written
     assert result["stochastic"]["opening_tree_moment_matching"] == written
 
@@ -298,10 +298,10 @@ def test_moment_matching_is_reported_for_a_generated_tree(
     inflow = json.loads((default_out / "training/model_provenance.json").read_text())[
         "inflow"
     ]
-    assert result["provenance"]["opening_tree_moment_matching"] == "none"
-    assert result["stochastic"]["opening_tree_moment_matching"] == "none"
+    assert result["provenance"]["opening_tree_moment_matching"] == "per_coordinate"
+    assert result["stochastic"]["opening_tree_moment_matching"] == "per_coordinate"
     assert "opening_tree_moment_matching" in inflow
-    assert inflow["opening_tree_moment_matching"] == "none"
+    assert inflow["opening_tree_moment_matching"] == "per_coordinate"
 
 
 def test_moment_matching_override_without_source_names_the_missing_tag(

@@ -53,10 +53,10 @@ pub struct RawScenarioSourceConfig {
 pub enum Openings {
     /// Openings come from noise generation (the default when `openings` is absent).
     Generated {
-        /// `per_coordinate` shifts and scales each generated stage's inflow
-        /// openings so that every hydro's opening mean is 0 and its variance is
-        /// the model variance; `none` keeps the openings as drawn. Stages using
-        /// `historical_residuals` are not changed.
+        /// `per_coordinate` (default) shifts and scales each generated stage's
+        /// inflow openings so that every hydro's opening mean is 0 and its
+        /// variance is the model variance; `none` keeps the openings as drawn.
+        /// Stages using `historical_residuals` are not changed.
         ///
         /// Evaluation option, expected to be removed once evaluated.
         #[serde(default)]
@@ -72,9 +72,9 @@ pub enum Openings {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum MomentMatching {
     /// Keep the openings as drawn.
-    #[default]
     None,
     /// Shift and scale each hydro's openings to mean 0 and the inflow model's variance.
+    #[default]
     PerCoordinate,
 }
 
