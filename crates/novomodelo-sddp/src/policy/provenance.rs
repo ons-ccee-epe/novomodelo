@@ -9,7 +9,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use novomodelo_core::Hydro;
-use novomodelo_io::scenarios::estimation::{EstimationPath, EstimationReport};
+use novomodelo_io::config::{CorrelationTarget, MomentMatching};
+use novomodelo_io::scenarios::estimation::{CorrelationOrigin, EstimationPath, EstimationReport};
 use novomodelo_stochastic::{ComponentProvenance, StochasticProvenance};
 
 use crate::hydro_models::{
@@ -57,8 +58,12 @@ pub struct InflowProvenance {
     pub ar_coefficients_source: ProvenanceSource,
     /// Origin of the spatial correlation decomposition.
     pub correlation_source: ProvenanceSource,
+    /// Series the correlation was estimated from; `None` unless it was estimated.
+    pub correlation_target: Option<CorrelationTarget>,
     /// Origin of the noise opening scenario tree.
     pub opening_tree_source: ProvenanceSource,
+    /// Moment matching applied to a generated opening tree; `None` when the tree was not generated.
+    pub opening_tree_moment_matching: Option<MomentMatching>,
     /// Number of hydro plants in the system.
     pub n_hydros: usize,
     /// Order selection method used when AR coefficients were estimated
@@ -111,7 +116,9 @@ pub struct HydroProductionProvenance {
 ///         seasonal_stats_source: ProvenanceSource::Estimated,
 ///         ar_coefficients_source: ProvenanceSource::Estimated,
 ///         correlation_source: ProvenanceSource::Estimated,
+///         correlation_target: None,
 ///         opening_tree_source: ProvenanceSource::Estimated,
+///         opening_tree_moment_matching: None,
 ///         n_hydros: 3,
 ///         ar_method: Some("AIC".to_string()),
 ///         ar_max_order: Some(2),
@@ -140,6 +147,16 @@ fn component_to_source(cp: ComponentProvenance) -> ProvenanceSource {
         ComponentProvenance::Generated => ProvenanceSource::Estimated,
         ComponentProvenance::UserSupplied => ProvenanceSource::UserFile,
         ComponentProvenance::NotApplicable => ProvenanceSource::NotApplicable,
+    }
+}
+
+fn correlation_source_and_target(
+    origin: CorrelationOrigin,
+) -> (ProvenanceSource, Option<CorrelationTarget>) {
+    match origin {
+        CorrelationOrigin::UserFile => (ProvenanceSource::UserFile, None),
+        CorrelationOrigin::Estimated { target } => (ProvenanceSource::Estimated, Some(target)),
+        CorrelationOrigin::NotApplicable => (ProvenanceSource::NotApplicable, None),
     }
 }
 
@@ -189,12 +206,14 @@ fn aggregate_hydro_production(hp: &HydroModelProvenance) -> HydroProductionProve
 /// Build a [`ModelProvenanceReport`] from preprocessing outputs.
 ///
 /// Infallible: all required inputs are available once
-/// [`crate::setup::prepare_stochastic`] returns. The `EstimationPath` → per-role
-/// [`ProvenanceSource`] mapping is the match below.
+/// [`crate::setup::prepare_stochastic`] returns. The `EstimationPath` → seasonal-stats
+/// and AR [`ProvenanceSource`] mapping is the match below; the correlation source and
+/// target follow `correlation_origin`.
 #[must_use]
 pub fn build_provenance_report(
     estimation_path: EstimationPath,
     estimation_report: Option<&EstimationReport>,
+    correlation_origin: CorrelationOrigin,
     provenance: &StochasticProvenance,
     hydros: &[Hydro],
     hydro_provenance: &HydroModelProvenance,
@@ -222,7 +241,8 @@ pub fn build_provenance_report(
         EstimationPath::UserProvidedAll => (ProvenanceSource::UserFile, ProvenanceSource::UserFile),
     };
 
-    let correlation_source = component_to_source(provenance.correlation);
+    let (correlation_source, correlation_target) =
+        correlation_source_and_target(correlation_origin);
     let opening_tree_source = component_to_source(provenance.opening_tree);
 
     let (ar_method, ar_max_order, white_noise_fallbacks) = if let Some(report) = estimation_report {
@@ -243,7 +263,9 @@ pub fn build_provenance_report(
             seasonal_stats_source,
             ar_coefficients_source,
             correlation_source,
+            correlation_target,
             opening_tree_source,
+            opening_tree_moment_matching: provenance.opening_tree_moment_matching.map(Into::into),
             n_hydros: hydros.len(),
             ar_method,
             ar_max_order,
@@ -268,7 +290,11 @@ mod tests {
     use std::collections::BTreeMap;
 
     use novomodelo_core::EntityId;
-    use novomodelo_io::scenarios::estimation::{EstimationPath, EstimationReport};
+    use novomodelo_io::config::CorrelationTarget;
+    use novomodelo_io::scenarios::estimation::{
+        CorrelationOrigin, EstimationPath, EstimationReport,
+    };
+    use novomodelo_stochastic::tree::MomentMatching;
     use novomodelo_stochastic::{ComponentProvenance, StochasticProvenance};
 
     use crate::hydro_models::{
@@ -329,7 +355,7 @@ mod tests {
     fn prov_all_generated() -> StochasticProvenance {
         StochasticProvenance {
             opening_tree: ComponentProvenance::Generated,
-            correlation: ComponentProvenance::Generated,
+            opening_tree_moment_matching: Some(MomentMatching::None),
             inflow_model: ComponentProvenance::Generated,
             inflow_scheme: None,
             load_scheme: None,
@@ -341,7 +367,7 @@ mod tests {
     fn prov_not_applicable() -> StochasticProvenance {
         StochasticProvenance {
             opening_tree: ComponentProvenance::NotApplicable,
-            correlation: ComponentProvenance::NotApplicable,
+            opening_tree_moment_matching: None,
             inflow_model: ComponentProvenance::NotApplicable,
             inflow_scheme: None,
             load_scheme: None,
@@ -353,7 +379,7 @@ mod tests {
     fn prov_user_tree() -> StochasticProvenance {
         StochasticProvenance {
             opening_tree: ComponentProvenance::UserSupplied,
-            correlation: ComponentProvenance::Generated,
+            opening_tree_moment_matching: None,
             inflow_model: ComponentProvenance::Generated,
             inflow_scheme: None,
             load_scheme: None,
@@ -392,6 +418,9 @@ mod tests {
         let report = build_provenance_report(
             EstimationPath::FullEstimation,
             None,
+            CorrelationOrigin::Estimated {
+                target: CorrelationTarget::Residuals,
+            },
             &prov_all_generated(),
             &minimal_hydros(2),
             &empty_hydro_provenance(2),
@@ -409,6 +438,9 @@ mod tests {
         let mut report = build_provenance_report(
             EstimationPath::FullEstimation,
             None,
+            CorrelationOrigin::Estimated {
+                target: CorrelationTarget::Residuals,
+            },
             &prov_all_generated(),
             &minimal_hydros(1),
             &empty_hydro_provenance(1),
@@ -431,6 +463,7 @@ mod tests {
         let report = build_provenance_report(
             EstimationPath::Deterministic,
             None,
+            CorrelationOrigin::NotApplicable,
             &prov_not_applicable(),
             &minimal_hydros(0),
             &empty_hydro_provenance(0),
@@ -447,6 +480,7 @@ mod tests {
         let report = build_provenance_report(
             EstimationPath::Deterministic,
             None,
+            CorrelationOrigin::NotApplicable,
             &prov_not_applicable(),
             &minimal_hydros(0),
             &empty_hydro_provenance(0),
@@ -478,6 +512,9 @@ mod tests {
         let report = build_provenance_report(
             EstimationPath::UserStatsWhiteNoise,
             None,
+            CorrelationOrigin::Estimated {
+                target: CorrelationTarget::Residuals,
+            },
             &prov_all_generated(),
             &minimal_hydros(2),
             &empty_hydro_provenance(2),
@@ -504,6 +541,9 @@ mod tests {
         let report = build_provenance_report(
             EstimationPath::UserProvidedNoHistory,
             None,
+            CorrelationOrigin::Estimated {
+                target: CorrelationTarget::Residuals,
+            },
             &prov_all_generated(),
             &minimal_hydros(2),
             &empty_hydro_provenance(2),
@@ -531,6 +571,9 @@ mod tests {
         let report = build_provenance_report(
             EstimationPath::FullEstimation,
             Some(&er),
+            CorrelationOrigin::Estimated {
+                target: CorrelationTarget::Residuals,
+            },
             &prov_all_generated(),
             &minimal_hydros(2),
             &empty_hydro_provenance(2),
@@ -560,6 +603,9 @@ mod tests {
         let report = build_provenance_report(
             EstimationPath::UserArHistoryStats,
             Some(&er),
+            CorrelationOrigin::Estimated {
+                target: CorrelationTarget::Residuals,
+            },
             &prov_all_generated(),
             &minimal_hydros(1),
             &empty_hydro_provenance(1),
@@ -587,6 +633,9 @@ mod tests {
         let report = build_provenance_report(
             EstimationPath::PartialEstimation,
             Some(&er),
+            CorrelationOrigin::Estimated {
+                target: CorrelationTarget::Residuals,
+            },
             &prov_all_generated(),
             &minimal_hydros(3),
             &empty_hydro_provenance(3),
@@ -614,6 +663,9 @@ mod tests {
         let report = build_provenance_report(
             EstimationPath::UserProvidedAll,
             None,
+            CorrelationOrigin::Estimated {
+                target: CorrelationTarget::Residuals,
+            },
             &prov_all_generated(),
             &minimal_hydros(4),
             &empty_hydro_provenance(4),
@@ -646,6 +698,9 @@ mod tests {
         let report = build_provenance_report(
             EstimationPath::FullEstimation,
             None,
+            CorrelationOrigin::Estimated {
+                target: CorrelationTarget::Residuals,
+            },
             &prov_user_tree(),
             &minimal_hydros(2),
             &empty_hydro_provenance(2),
@@ -657,13 +712,118 @@ mod tests {
             ),
             "UserSupplied opening tree must map to UserFile"
         );
-        assert!(
-            matches!(
-                report.inflow.correlation_source,
-                ProvenanceSource::Estimated
+    }
+
+    // ── CorrelationOrigin mapping tests ───────────────────────────────────────
+
+    #[test]
+    fn correlation_source_follows_the_correlation_origin() {
+        let cases = [
+            (CorrelationOrigin::UserFile, ("user_file", None)),
+            (
+                CorrelationOrigin::Estimated {
+                    target: CorrelationTarget::Residuals,
+                },
+                ("estimated", Some(CorrelationTarget::Residuals)),
             ),
-            "Generated correlation must map to Estimated"
-        );
+            (
+                CorrelationOrigin::Estimated {
+                    target: CorrelationTarget::Inflows,
+                },
+                ("estimated", Some(CorrelationTarget::Inflows)),
+            ),
+            (CorrelationOrigin::NotApplicable, ("n/a", None)),
+        ];
+        let er = make_estimation_report("AIC", &[2, 3], &[]);
+        for (origin, (source, target)) in cases {
+            for (path, estimation_report, provenance) in [
+                (
+                    EstimationPath::FullEstimation,
+                    Some(&er),
+                    prov_all_generated(),
+                ),
+                (EstimationPath::UserProvidedAll, None, prov_not_applicable()),
+            ] {
+                let report = build_provenance_report(
+                    path,
+                    estimation_report,
+                    origin,
+                    &provenance,
+                    &minimal_hydros(2),
+                    &empty_hydro_provenance(2),
+                );
+                assert_eq!(
+                    (
+                        report.inflow.correlation_source.to_string(),
+                        report.inflow.correlation_target
+                    ),
+                    (source.to_string(), target),
+                    "origin {origin:?} on path {}",
+                    path.as_str()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn correlation_target_is_written_as_null_when_absent() {
+        for (origin, expected) in [
+            (CorrelationOrigin::NotApplicable, serde_json::Value::Null),
+            (CorrelationOrigin::UserFile, serde_json::Value::Null),
+            (
+                CorrelationOrigin::Estimated {
+                    target: CorrelationTarget::Inflows,
+                },
+                serde_json::json!("inflows"),
+            ),
+        ] {
+            let report = build_provenance_report(
+                EstimationPath::FullEstimation,
+                None,
+                origin,
+                &prov_all_generated(),
+                &minimal_hydros(1),
+                &empty_hydro_provenance(1),
+            );
+            let value = serde_json::to_value(&report).unwrap();
+            let inflow = value["inflow"].as_object().unwrap();
+            assert_eq!(
+                inflow.get("correlation_target"),
+                Some(&expected),
+                "origin {origin:?} must write correlation_target, got: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn opening_tree_moment_matching_is_recorded_for_a_generated_tree() {
+        for (provenance, expected) in [
+            (
+                StochasticProvenance {
+                    opening_tree_moment_matching: Some(MomentMatching::PerCoordinate),
+                    ..prov_all_generated()
+                },
+                serde_json::json!("per_coordinate"),
+            ),
+            (prov_user_tree(), serde_json::Value::Null),
+        ] {
+            let report = build_provenance_report(
+                EstimationPath::FullEstimation,
+                None,
+                CorrelationOrigin::NotApplicable,
+                &provenance,
+                &minimal_hydros(1),
+                &empty_hydro_provenance(1),
+            );
+            let value = serde_json::to_value(&report).unwrap();
+            let inflow = value["inflow"].as_object().unwrap();
+            assert_eq!(
+                inflow.get("opening_tree_moment_matching"),
+                Some(&expected),
+                "tree origin {:?} must write opening_tree_moment_matching, got: {value}",
+                provenance.opening_tree
+            );
+        }
     }
 
     // ── JSON serialization tests ──────────────────────────────────────────────
@@ -674,6 +834,9 @@ mod tests {
         let report = build_provenance_report(
             EstimationPath::FullEstimation,
             Some(&er),
+            CorrelationOrigin::Estimated {
+                target: CorrelationTarget::Residuals,
+            },
             &prov_all_generated(),
             &minimal_hydros(1),
             &empty_hydro_provenance(1),
@@ -699,6 +862,7 @@ mod tests {
         let report = build_provenance_report(
             EstimationPath::Deterministic,
             None,
+            CorrelationOrigin::NotApplicable,
             &prov_not_applicable(),
             &minimal_hydros(0),
             &empty_hydro_provenance(0),
@@ -729,6 +893,9 @@ mod tests {
         let report = build_provenance_report(
             EstimationPath::PartialEstimation,
             Some(&er),
+            CorrelationOrigin::Estimated {
+                target: CorrelationTarget::Residuals,
+            },
             &prov_all_generated(),
             &minimal_hydros(2),
             &empty_hydro_provenance(2),
@@ -745,6 +912,7 @@ mod tests {
         let report = build_provenance_report(
             EstimationPath::Deterministic,
             None,
+            CorrelationOrigin::NotApplicable,
             &prov_not_applicable(),
             &minimal_hydros(0),
             &empty_hydro_provenance(0),
@@ -762,6 +930,9 @@ mod tests {
         let report = build_provenance_report(
             EstimationPath::FullEstimation,
             None,
+            CorrelationOrigin::Estimated {
+                target: CorrelationTarget::Residuals,
+            },
             &prov_all_generated(),
             &minimal_hydros(2),
             &empty_hydro_provenance(2),
@@ -788,6 +959,9 @@ mod tests {
         let original = build_provenance_report(
             EstimationPath::FullEstimation,
             Some(&make_estimation_report("AIC", &[2, 3], &[])),
+            CorrelationOrigin::Estimated {
+                target: CorrelationTarget::Residuals,
+            },
             &prov_all_generated(),
             &minimal_hydros(2),
             &empty_hydro_provenance(2),
@@ -876,6 +1050,9 @@ mod tests {
         let report = build_provenance_report(
             EstimationPath::FullEstimation,
             None,
+            CorrelationOrigin::Estimated {
+                target: CorrelationTarget::Residuals,
+            },
             &prov_all_generated(),
             &minimal_hydros(5),
             &hp,
@@ -911,6 +1088,9 @@ mod tests {
         let report = build_provenance_report(
             EstimationPath::FullEstimation,
             None,
+            CorrelationOrigin::Estimated {
+                target: CorrelationTarget::Residuals,
+            },
             &prov_all_generated(),
             &minimal_hydros(2),
             &hp,
@@ -965,6 +1145,9 @@ mod tests {
         let report_a = build_provenance_report(
             EstimationPath::FullEstimation,
             None,
+            CorrelationOrigin::Estimated {
+                target: CorrelationTarget::Residuals,
+            },
             &prov_all_generated(),
             &minimal_hydros(3),
             &hp_a,
@@ -972,6 +1155,9 @@ mod tests {
         let report_b = build_provenance_report(
             EstimationPath::FullEstimation,
             None,
+            CorrelationOrigin::Estimated {
+                target: CorrelationTarget::Residuals,
+            },
             &prov_all_generated(),
             &minimal_hydros(3),
             &hp_b,

@@ -1,4 +1,4 @@
-//! Cross-entity residual correlation estimation for fitted PAR models.
+//! Cross-entity correlation estimation for fitted PAR models.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -27,42 +27,59 @@ use crate::StochasticError;
 /// this fall back to the pooled "default" profile.
 const MIN_CORRELATION_PAIRS: usize = 30;
 
-/// Estimate the cross-entity residual correlation matrix from historical observations.
+/// Series [`estimate_correlation_with_season_map`] correlates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CorrelationTarget {
+    /// Standardized residuals of the fitted AR lags.
+    Residuals,
+    /// Standardized observations, with no lag term.
+    Inflows,
+}
+
+fn series_name(target: CorrelationTarget) -> &'static str {
+    match target {
+        CorrelationTarget::Residuals => "residual",
+        CorrelationTarget::Inflows => "standardized inflow",
+    }
+}
+
+/// Estimate the cross-entity correlation matrix from historical observations.
 ///
 /// After a PAR(p) model is fitted (via
 /// [`estimate_seasonal_stats_with_season_map`](super::estimate_seasonal_stats_with_season_map) and
-/// [`estimate_ar_coefficients_with_season_map`](super::estimate_ar_coefficients_with_season_map)), this function computes the standardized
-/// innovation residuals for each entity at each time step and derives
+/// [`estimate_ar_coefficients_with_season_map`](super::estimate_ar_coefficients_with_season_map)), this function builds the standardized
+/// series `target` selects for each entity at each time step and derives
 /// the Pearson correlation between each pair of entities. The result is
 /// a [`CorrelationModel`] with a single `"default"` profile containing
 /// all entities, which the assembly pipeline can use as an automatic
 /// fallback when no explicit correlation file is provided.
 ///
-/// ## Residual formula
+/// ## Series
 ///
-/// The standardized residual (innovation) at time step `t` for entity `i`
-/// in season `m` is:
+/// With `z_t = (a_t − μ_m) / s_m` the standardized observation of entity `i`
+/// at time step `t` in season `m` (`z_t = 0` when `s_m = 0`) and `ψ*_{m,l}` the
+/// standardized AR coefficient for lag `l` in season `m`,
+/// [`CorrelationTarget::Residuals`] correlates the innovation
 ///
 /// ```text
 /// ε_t = z_t − Σ_{l=1}^{p} ψ*_{m,l} · z_{t−l}
 /// ```
 ///
-/// where `z_t = (a_t − μ_m) / s_m` is the standardized observation and
-/// `ψ*_{m,l}` is the standardized AR coefficient for lag `l` in season `m`.
-/// Only time steps where all `p` lagged standardized observations are
-/// available contribute residuals.
+/// over the time steps where all `p` lagged standardized observations are
+/// available, and [`CorrelationTarget::Inflows`] correlates `z_t` over every
+/// record, with no lag term.
 ///
 /// ## Pearson correlation
 ///
 /// For each pair `(i, j)` the function computes:
 ///
 /// ```text
-/// r_{ij} = cov(ε_i, ε_j) / (std(ε_i) · std(ε_j))
+/// r_{ij} = cov(x_i, x_j) / (std(x_i) · std(x_j))
 /// ```
 ///
-/// using Bessel-corrected (N−1) estimators over the subset of time steps
-/// where both entities have valid residuals. When fewer than 2 overlapping
-/// steps exist, `r_{ij}` is set to 0.0.
+/// where `x` is the series above, using Bessel-corrected (N−1) estimators over
+/// the subset of time steps where both entities have a value. When fewer than 2
+/// overlapping steps exist, `r_{ij}` is set to 0.0.
 ///
 /// The returned [`CorrelationModel`] carries a single `"default"` profile over
 /// all entities in canonical `hydro_ids` order. The function does **not** enforce
@@ -91,7 +108,7 @@ const MIN_CORRELATION_PAIRS: usize = 30;
 /// use novomodelo_core::{EntityId, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
 /// use novomodelo_stochastic::par::fitting::{
 ///     estimate_seasonal_stats_with_season_map, estimate_ar_coefficients_with_season_map,
-///     estimate_correlation_with_season_map,
+///     estimate_correlation_with_season_map, CorrelationTarget,
 /// };
 ///
 /// fn stage(id: i32, y0: i32, m0: u32, y1: i32, m1: u32, season: usize) -> Stage {
@@ -119,7 +136,9 @@ const MIN_CORRELATION_PAIRS: usize = 30;
 ///     .collect();
 /// let stats = estimate_seasonal_stats_with_season_map(&obs, &stages_vec, &hydro_ids, None).unwrap();
 /// let estimates = estimate_ar_coefficients_with_season_map(&obs, &stats, &stages_vec, &hydro_ids, 0, None).unwrap();
-/// let corr = estimate_correlation_with_season_map(&obs, &estimates, &stats, &stages_vec, &hydro_ids, None).unwrap();
+/// let corr = estimate_correlation_with_season_map(
+///     &obs, &estimates, &stats, &stages_vec, &hydro_ids, None, CorrelationTarget::Residuals,
+/// ).unwrap();
 /// assert!(corr.profiles.contains_key("default"));
 /// assert_eq!(corr.profiles["default"].groups[0].matrix.len(), 1);
 /// ```
@@ -130,6 +149,7 @@ pub fn estimate_correlation_with_season_map(
     stages: &[Stage],
     hydro_ids: &[EntityId],
     season_map: Option<&SeasonMap>,
+    target: CorrelationTarget,
 ) -> Result<CorrelationModel, StochasticError> {
     if hydro_ids.is_empty() {
         let mut profiles = BTreeMap::new();
@@ -152,8 +172,8 @@ pub fn estimate_correlation_with_season_map(
         });
     }
 
-    let residual_correlations = match CyclePositions::new(season_map) {
-        None => residual_correlations_in_cycle_order(
+    let series_correlations = match CyclePositions::new(season_map) {
+        None => series_correlations_in_cycle_order(
             observations,
             ar_estimates,
             seasonal_stats,
@@ -161,11 +181,12 @@ pub fn estimate_correlation_with_season_map(
             hydro_ids,
             season_map,
             None,
+            target,
         ),
         Some(cycle_positions) => {
             let season_map =
                 season_map.map(|season_map| cycle_positions.relabel_season_map(season_map));
-            let in_positions = residual_correlations_in_cycle_order(
+            let in_positions = series_correlations_in_cycle_order(
                 observations,
                 &cycle_positions.estimates_to_positions(ar_estimates),
                 seasonal_stats,
@@ -173,8 +194,9 @@ pub fn estimate_correlation_with_season_map(
                 hydro_ids,
                 season_map.as_ref(),
                 Some(cycle_positions.raw_ids()),
+                target,
             );
-            ResidualCorrelations {
+            SeriesCorrelations {
                 seasonal_matrices: cycle_positions.seasons_to_raw(in_positions.seasonal_matrices),
                 ..in_positions
             }
@@ -183,20 +205,20 @@ pub fn estimate_correlation_with_season_map(
 
     Ok(assemble_seasonal_correlation_model(
         hydro_ids,
-        &residual_correlations.pooled_matrix,
-        &residual_correlations.seasonal_matrices,
+        &series_correlations.pooled_matrix,
+        &series_correlations.seasonal_matrices,
         stages,
-        residual_correlations.n_seasons,
+        series_correlations.n_seasons,
     ))
 }
 
-struct ResidualCorrelations {
+struct SeriesCorrelations {
     pooled_matrix: Vec<f64>,
     seasonal_matrices: HashMap<usize, Vec<f64>>,
     n_seasons: usize,
 }
 
-fn residual_correlations_in_cycle_order(
+fn series_correlations_in_cycle_order(
     observations: &[(EntityId, NaiveDate, f64)],
     ar_estimates: &[ArCoefficientEstimate],
     seasonal_stats: &[SeasonalStats],
@@ -204,7 +226,8 @@ fn residual_correlations_in_cycle_order(
     hydro_ids: &[EntityId],
     season_map: Option<&SeasonMap>,
     season_labels: Option<&[usize]>,
-) -> ResidualCorrelations {
+    target: CorrelationTarget,
+) -> SeriesCorrelations {
     let lookups = build_season_lookups(observations, seasonal_stats, stages, season_map);
 
     let ar_lookup: HashMap<(EntityId, usize), &ArCoefficientEstimate> = ar_estimates
@@ -212,35 +235,38 @@ fn residual_correlations_in_cycle_order(
         .map(|e| ((e.hydro_id, e.season_id), e))
         .collect();
 
-    let per_season_residuals = compute_hydro_residuals(&lookups, &ar_lookup, hydro_ids, season_map);
+    let per_season_series =
+        compute_correlation_series(&lookups, &ar_lookup, hydro_ids, season_map, target);
 
     let identity_labels: Vec<usize> = (0..lookups.n_seasons).collect();
     warn_degenerate_hydros(
         &lookups,
         hydro_ids,
-        &per_season_residuals,
+        &per_season_series,
         season_labels.unwrap_or(&identity_labels),
+        target,
     );
 
-    let pooled_residuals = flatten_residuals(&per_season_residuals);
-    let pooled_matrix = compute_pearson_correlation_matrix(&pooled_residuals);
-    let seasonal_matrices = compute_seasonal_matrices(&per_season_residuals, lookups.n_seasons);
+    let pooled_series = flatten_series(&per_season_series);
+    let pooled_matrix = compute_pearson_correlation_matrix(&pooled_series);
+    let seasonal_matrices = compute_seasonal_matrices(&per_season_series, lookups.n_seasons);
 
-    ResidualCorrelations {
+    SeriesCorrelations {
         pooled_matrix,
         seasonal_matrices,
         n_seasons: lookups.n_seasons,
     }
 }
 
-/// Compute standardized AR innovation residuals (see
-/// `estimate_correlation_with_season_map`'s residual formula) for each hydro, keyed by
+/// Compute the standardized series `target` selects (see
+/// `estimate_correlation_with_season_map`'s series formula) for each hydro, keyed by
 /// `season_id`; one entry per position in `hydro_ids`. Each season's vec is date-sorted.
-fn compute_hydro_residuals(
+fn compute_correlation_series(
     lookups: &SeasonLookups<'_>,
     ar_lookup: &HashMap<(EntityId, usize), &ArCoefficientEstimate>,
     hydro_ids: &[EntityId],
     season_map: Option<&SeasonMap>,
+    target: CorrelationTarget,
 ) -> Vec<HashMap<usize, Vec<(NaiveDate, f64)>>> {
     // Determinism: `collect()` reassembles per-hydro maps in canonical
     // `hydro_ids` order, and the sequential `ar_sum` lag accumulation is
@@ -249,13 +275,13 @@ fn compute_hydro_residuals(
     hydro_ids
         .par_iter()
         .map(|&hydro_id| {
-            let mut residuals: HashMap<usize, Vec<(NaiveDate, f64)>> = HashMap::new();
+            let mut series: HashMap<usize, Vec<(NaiveDate, f64)>> = HashMap::new();
 
             let Some(all_obs) = lookups.entity_obs.get(&hydro_id) else {
-                return residuals;
+                return series;
             };
             let Some(date_index) = lookups.entity_date_index.get(&hydro_id) else {
-                return residuals;
+                return series;
             };
 
             for &(date, value) in all_obs {
@@ -275,9 +301,13 @@ fn compute_hydro_residuals(
                     (value - stats_m.mean) / stats_m.std
                 };
 
-                let ar_est = ar_lookup.get(&(hydro_id, season_id));
-                let ar_order = ar_est.map_or(0, |e| e.coefficients.len());
-                let ar_coeffs = ar_est.map_or(&[] as &[f64], |e| &e.coefficients);
+                let ar_coeffs: &[f64] = match target {
+                    CorrelationTarget::Residuals => ar_lookup
+                        .get(&(hydro_id, season_id))
+                        .map_or(&[], |e| e.coefficients.as_slice()),
+                    CorrelationTarget::Inflows => &[],
+                };
+                let ar_order = ar_coeffs.len();
 
                 let Some(&pos) = date_index.get(&date) else {
                     continue;
@@ -312,22 +342,19 @@ fn compute_hydro_residuals(
                 }
 
                 let epsilon = z_t - ar_sum;
-                residuals
-                    .entry(season_id)
-                    .or_default()
-                    .push((date, epsilon));
+                series.entry(season_id).or_default().push((date, epsilon));
             }
 
-            residuals
+            series
         })
         .collect()
 }
 
-/// Flatten per-season residuals into a single date-keyed map per hydro.
+/// Flatten per-season series into a single date-keyed map per hydro.
 ///
 /// Dates are unique per hydro per season (each observation maps to exactly one
 /// season), so no collisions occur when merging season maps.
-fn flatten_residuals(
+fn flatten_series(
     per_season: &[HashMap<usize, Vec<(NaiveDate, f64)>>],
 ) -> Vec<HashMap<NaiveDate, f64>> {
     per_season
@@ -349,8 +376,9 @@ fn flatten_residuals(
 fn warn_degenerate_hydros(
     lookups: &SeasonLookups<'_>,
     hydro_ids: &[EntityId],
-    per_season_residuals: &[HashMap<usize, Vec<(NaiveDate, f64)>>],
+    per_season_series: &[HashMap<usize, Vec<(NaiveDate, f64)>>],
     season_labels: &[usize],
+    target: CorrelationTarget,
 ) {
     for (hidx, &hydro_id) in hydro_ids.iter().enumerate() {
         let Some(all_obs) = lookups.entity_obs.get(&hydro_id) else {
@@ -393,30 +421,31 @@ fn warn_degenerate_hydros(
                     "hydro has constant series in season \
                      (included in correlation; near-zero eigenvalue expected)"
                 );
-                // Constant series implies near-zero residual variance; skip the
-                // redundant residual-variance warning below.
+                // Constant series implies near-zero series variance; skip the
+                // redundant variance warning below.
                 continue;
             }
 
-            if let Some(residuals) = per_season_residuals
+            if let Some(series) = per_season_series
                 .get(hidx)
                 .and_then(|m| m.get(&season_id))
-                .filter(|r| r.len() >= 2)
+                .filter(|s| s.len() >= 2)
             {
-                let r_vals: Vec<f64> = residuals.iter().map(|&(_, v)| v).collect();
+                let s_vals: Vec<f64> = series.iter().map(|&(_, v)| v).collect();
                 #[allow(clippy::cast_precision_loss)]
-                let r_mean = r_vals.iter().sum::<f64>() / r_vals.len() as f64;
+                let s_mean = s_vals.iter().sum::<f64>() / s_vals.len() as f64;
                 #[allow(clippy::cast_precision_loss)]
-                let r_std = (r_vals.iter().map(|v| (v - r_mean).powi(2)).sum::<f64>()
-                    / (r_vals.len() - 1) as f64)
+                let s_std = (s_vals.iter().map(|v| (v - s_mean).powi(2)).sum::<f64>()
+                    / (s_vals.len() - 1) as f64)
                     .sqrt();
-                if r_std < 1e-8 {
+                if s_std < 1e-8 {
                     tracing::warn!(
                         hydro_id = hydro_id.0,
                         season = season_label,
-                        residual_std = r_std,
-                        "hydro has near-zero residual variance in season \
-                         (included in correlation; near-zero eigenvalue expected)"
+                        series_std = s_std,
+                        "hydro has near-zero {} variance in season \
+                         (included in correlation; near-zero eigenvalue expected)",
+                        series_name(target)
                     );
                 }
             }
@@ -431,18 +460,18 @@ fn warn_degenerate_hydros(
 /// regardless of degeneracy; rank-deficient matrices are acceptable (spectral
 /// decomposition handles them).
 fn compute_seasonal_matrices(
-    per_season_residuals: &[HashMap<usize, Vec<(NaiveDate, f64)>>],
+    per_season_series: &[HashMap<usize, Vec<(NaiveDate, f64)>>],
     n_seasons: usize,
 ) -> HashMap<usize, Vec<f64>> {
     let mut result = HashMap::new();
 
     for season_id in 0..n_seasons {
-        let season_residuals: Vec<&[(NaiveDate, f64)]> = per_season_residuals
+        let season_series: Vec<&[(NaiveDate, f64)]> = per_season_series
             .iter()
             .map(|hydro_seasons| hydro_seasons.get(&season_id).map_or(&[][..], Vec::as_slice))
             .collect();
 
-        let (matrix, min_pairs) = compute_seasonal_pearson_matrix(&season_residuals);
+        let (matrix, min_pairs) = compute_seasonal_pearson_matrix(&season_series);
 
         if min_pairs < MIN_CORRELATION_PAIRS {
             continue;
@@ -455,7 +484,7 @@ fn compute_seasonal_matrices(
 }
 
 /// Pearson correlation coefficient from a pair's overlapping standardized
-/// residuals, Bessel-corrected (N-1). Callers guarantee `pairs.len() >= 2` and
+/// series values, Bessel-corrected (N-1). Callers guarantee `pairs.len() >= 2` and
 /// that `pairs` is already in the deterministic accumulation order.
 fn pearson_rho(pairs: &[(f64, f64)]) -> f64 {
     #[allow(clippy::cast_precision_loss)]
@@ -485,7 +514,7 @@ fn pearson_rho(pairs: &[(f64, f64)]) -> f64 {
     }
 }
 
-/// Compute the `n_hydros` x `n_hydros` Pearson correlation matrix from residuals,
+/// Compute the `n_hydros` x `n_hydros` Pearson correlation matrix from the series,
 /// using the standard formula with Bessel correction (N-1).
 ///
 /// Determinism: pairs are summed in `NaiveDate` order, making every partial sum
@@ -533,7 +562,7 @@ pub(super) fn compute_pearson_correlation_matrix(
 }
 
 /// Compute the `n_hydros` x `n_hydros` Pearson correlation matrix from
-/// date-sorted residual slices, plus the minimum per-pair overlap count
+/// date-sorted series slices, plus the minimum per-pair overlap count
 /// [`compute_seasonal_matrices`] gates on.
 ///
 /// Determinism: merge-walk visits shared dates in ascending `NaiveDate` order,
@@ -683,17 +712,19 @@ mod tests {
 
     use chrono::{Datelike, NaiveDate};
     use novomodelo_core::scenario::CorrelationModel;
-    use novomodelo_core::{EntityId, SeasonMap};
+    use novomodelo_core::{EntityId, SeasonMap, Stage};
     use tracing::field::{Field, Visit};
     use tracing::{Event, Level, Metadata, Subscriber, span};
 
-    use super::{compute_seasonal_pearson_matrix, estimate_correlation_with_season_map};
+    use super::{
+        CorrelationTarget, compute_seasonal_pearson_matrix, estimate_correlation_with_season_map,
+    };
     use crate::par::fitting::cycle_positions::twin_fixtures::{
         TwinMaps, calendar_history, calendar_stages, permuted_quarterly_twins, sparse_ring_twins,
     };
     use crate::par::fitting::{
-        ArEstimationConfig, estimate_ar_coefficients_with_selection,
-        estimate_seasonal_stats_with_season_map,
+        ArCoefficientEstimate, ArEstimationConfig, SeasonalStats,
+        estimate_ar_coefficients_with_selection, estimate_seasonal_stats_with_season_map,
     };
     use crate::test_support::sparse_ring_season_map;
 
@@ -843,10 +874,17 @@ mod tests {
 
     const HYDROS: [EntityId; 2] = [EntityId(1), EntityId(2)];
 
-    fn correlation_of_calendar_history(
+    struct FittedCalendarHistory {
+        stages: Vec<Stage>,
+        history: Vec<(EntityId, NaiveDate, f64)>,
+        stats: Vec<SeasonalStats>,
+        estimates: Vec<ArCoefficientEstimate>,
+    }
+
+    fn fit_calendar_history(
         season_map: &SeasonMap,
         calendar_ids: &[usize],
-    ) -> CorrelationModel {
+    ) -> FittedCalendarHistory {
         let stages = calendar_stages(season_map, calendar_ids);
         let history = calendar_history(season_map, calendar_ids, &HYDROS, 30);
         let stats =
@@ -865,15 +903,43 @@ mod tests {
             },
         )
         .unwrap();
+        FittedCalendarHistory {
+            stages,
+            history,
+            stats,
+            estimates,
+        }
+    }
+
+    fn correlation_of_fitted_history(
+        fitted: &FittedCalendarHistory,
+        estimates: &[ArCoefficientEstimate],
+        season_map: &SeasonMap,
+        target: CorrelationTarget,
+    ) -> CorrelationModel {
         estimate_correlation_with_season_map(
-            &history,
-            &estimates,
-            &stats,
-            &stages,
+            &fitted.history,
+            estimates,
+            &fitted.stats,
+            &fitted.stages,
             &HYDROS,
             Some(season_map),
+            target,
         )
         .unwrap()
+    }
+
+    fn correlation_of_calendar_history(
+        season_map: &SeasonMap,
+        calendar_ids: &[usize],
+    ) -> CorrelationModel {
+        let fitted = fit_calendar_history(season_map, calendar_ids);
+        correlation_of_fitted_history(
+            &fitted,
+            &fitted.estimates,
+            season_map,
+            CorrelationTarget::Residuals,
+        )
     }
 
     fn scheduled_matrix_bits(model: &CorrelationModel, stage_id: i32) -> Vec<Vec<u64>> {
@@ -886,6 +952,21 @@ mod tests {
             .matrix
             .iter()
             .map(|row| row.iter().map(|v| v.to_bits()).collect())
+            .collect()
+    }
+
+    fn profile_bits(model: &CorrelationModel) -> Vec<(&str, Vec<Vec<u64>>)> {
+        model
+            .profiles
+            .iter()
+            .map(|(name, profile)| {
+                let bits = profile.groups[0]
+                    .matrix
+                    .iter()
+                    .map(|row| row.iter().map(|v| v.to_bits()).collect())
+                    .collect();
+                (name.as_str(), bits)
+            })
             .collect()
     }
 
@@ -922,6 +1003,34 @@ mod tests {
     fn seasonal_correlation_on_an_out_of_calendar_order_map_equals_the_one_on_its_calendar_ordered_twin()
      {
         assert_correlation_equals_twin_correlation(&permuted_quarterly_twins());
+    }
+
+    #[test]
+    fn inflows_target_is_honoured_under_a_cycle_position_season_map() {
+        let twins = sparse_ring_twins();
+        let fitted = fit_calendar_history(&twins.map, &twins.map_ids());
+        assert!(super::CyclePositions::new(Some(&twins.map)).is_some());
+        assert!(
+            fitted
+                .estimates
+                .iter()
+                .any(|estimate| !estimate.coefficients.is_empty())
+        );
+
+        let inflows = correlation_of_fitted_history(
+            &fitted,
+            &fitted.estimates,
+            &twins.map,
+            CorrelationTarget::Inflows,
+        );
+        let residuals_without_lags =
+            correlation_of_fitted_history(&fitted, &[], &twins.map, CorrelationTarget::Residuals);
+
+        assert_eq!(
+            profile_bits(&inflows),
+            profile_bits(&residuals_without_lags)
+        );
+        assert_eq!(inflows.schedule, residuals_without_lags.schedule);
     }
 
     /// The `season` field of every warning event.
@@ -1003,6 +1112,7 @@ mod tests {
                 &stages,
                 &hydro_ids,
                 Some(&season_map),
+                CorrelationTarget::Residuals,
             )
             .unwrap();
         });

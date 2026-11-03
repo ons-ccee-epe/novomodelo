@@ -15,15 +15,15 @@ import pathlib
 
 import pytest
 
-
 VALID_CASE = "examples/1dtoy"
 D56_EXTERNAL_AUTHORITATIVE_CASE = "examples/deterministic/d56-external-authoritative"
+D12_PAR_ANNUAL_CASE = "examples/deterministic/d12-par-annual"
 MISSING_CASE = "/tmp/nonexistent_novomodelo_case_xzy123"
 
 
 def test_run_1dtoy_succeeds(tmp_path: pathlib.Path) -> None:
     """run() returns a dict with converged, iterations, and lower_bound keys."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     result = novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path))
 
@@ -37,7 +37,7 @@ def test_run_1dtoy_succeeds(tmp_path: pathlib.Path) -> None:
 
 def test_run_1dtoy_creates_output(tmp_path: pathlib.Path) -> None:
     """After run(), the output directory contains training/_SUCCESS."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path))
 
@@ -59,7 +59,7 @@ def test_run_d56_external_authoritative_converges(tmp_path: pathlib.Path) -> Non
     `bound_stalling` rule can trigger) — this asserts the numeric
     convergence the deck actually demonstrates instead.
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     result = novomodelo.run.run(
         D56_EXTERNAL_AUTHORITATIVE_CASE, output_dir=str(tmp_path)
@@ -83,7 +83,7 @@ def test_run_d56_external_authoritative_converges(tmp_path: pathlib.Path) -> Non
 
 def test_run_simulation_disabled_by_config(tmp_path: pathlib.Path) -> None:
     """run() with config_overrides disabling simulation returns result['simulation'] as None."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     result = novomodelo.run.run(
         VALID_CASE,
@@ -98,10 +98,14 @@ def test_run_simulation_disabled_by_config(tmp_path: pathlib.Path) -> None:
 
 def test_run_rejects_skip_simulation_parameter(tmp_path: pathlib.Path) -> None:
     """run() raises TypeError when the removed skip_simulation parameter is passed."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     with pytest.raises(TypeError, match="unexpected keyword argument") as exc_info:
-        novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path), skip_simulation=True)
+        novomodelo.run.run(
+            VALID_CASE,
+            output_dir=str(tmp_path),
+            skip_simulation=True,  # ty: ignore[unknown-argument]  # removed parameter
+        )
 
     assert "skip_simulation" in str(exc_info.value), (
         "TypeError message must mention 'skip_simulation'"
@@ -110,7 +114,7 @@ def test_run_rejects_skip_simulation_parameter(tmp_path: pathlib.Path) -> None:
 
 def test_run_nonexistent_raises(tmp_path: pathlib.Path) -> None:
     """run() raises OSError when the case directory does not exist."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     with pytest.raises(OSError):
         novomodelo.run.run(MISSING_CASE, output_dir=str(tmp_path))
@@ -118,7 +122,7 @@ def test_run_nonexistent_raises(tmp_path: pathlib.Path) -> None:
 
 def test_run_threads_parameter(tmp_path: pathlib.Path) -> None:
     """run() with threads=2 succeeds — verifies rayon thread pool integration."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     result = novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path), threads=2)
 
@@ -128,7 +132,7 @@ def test_run_threads_parameter(tmp_path: pathlib.Path) -> None:
 
 def test_run_rejects_threads_zero(tmp_path: pathlib.Path) -> None:
     """run() raises ValueError when threads=0."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     with pytest.raises(ValueError, match="threads"):
         novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path), threads=0)
@@ -136,7 +140,7 @@ def test_run_rejects_threads_zero(tmp_path: pathlib.Path) -> None:
 
 def _read_metadata_seed(output_dir: pathlib.Path) -> object:
     """Read configuration.seed from training/metadata.json."""
-    import json  # noqa: PLC0415
+    import json
 
     meta_path = output_dir / "training" / "metadata.json"
     with meta_path.open() as f:
@@ -146,7 +150,7 @@ def _read_metadata_seed(output_dir: pathlib.Path) -> object:
 
 def test_run_config_overrides_none_matches_default(tmp_path: pathlib.Path) -> None:
     """config_overrides=None reproduces today's behavior exactly (no-op)."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     result = novomodelo.run.run(
         VALID_CASE, output_dir=str(tmp_path), config_overrides=None
@@ -157,7 +161,7 @@ def test_run_config_overrides_none_matches_default(tmp_path: pathlib.Path) -> No
 
 def test_run_config_overrides_seed_changes_metadata(tmp_path: pathlib.Path) -> None:
     """An override of training.tree_seed is persisted to metadata as the seed."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     novomodelo.run.run(
         VALID_CASE,
@@ -171,7 +175,7 @@ def test_run_config_overrides_seed_changes_metadata(tmp_path: pathlib.Path) -> N
 
 def test_run_config_overrides_typo_raises_value_error(tmp_path: pathlib.Path) -> None:
     """A typo override key is rejected via deny_unknown_fields → ValueError."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     with pytest.raises(ValueError):
         novomodelo.run.run(
@@ -185,7 +189,7 @@ def test_run_config_overrides_unsupported_value_raises_value_error(
     tmp_path: pathlib.Path,
 ) -> None:
     """A value with no JSON representation is rejected before the merge."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     with pytest.raises(ValueError):
         novomodelo.run.run(
@@ -202,7 +206,7 @@ def test_run_dict_keys_stable(tmp_path: pathlib.Path) -> None:
     novomodelo.run.run (its return-dict key set and the simulation sub-dict) must be
     byte-for-byte the same as before the collapse onto the Study lifecycle.
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     result = novomodelo.run.run(VALID_CASE, output_dir=str(tmp_path))
 
@@ -226,3 +230,106 @@ def test_run_dict_keys_stable(tmp_path: pathlib.Path) -> None:
     assert result["simulation"] == {"n_scenarios": 100, "completed": 100}, (
         "simulation block must report all 100 scenarios completed"
     )
+
+
+def test_correlation_target_is_reported_for_an_estimated_correlation(
+    tmp_path: pathlib.Path,
+) -> None:
+    """An estimated correlation reports its target in both dicts and the file; a
+    correlation that was not estimated reports None and writes the key as null."""
+    import json
+
+    import novomodelo.run
+
+    estimated_out = tmp_path / "estimated"
+    result = novomodelo.run.run(
+        D12_PAR_ANNUAL_CASE,
+        output_dir=str(estimated_out),
+        config_overrides={"estimation.correlation_target": "residuals"},
+    )
+    written = json.loads(
+        (estimated_out / "training/model_provenance.json").read_text()
+    )["inflow"]["correlation_target"]
+    provenance, stochastic = result["provenance"], result["stochastic"]
+    assert provenance is not None
+    assert stochastic is not None
+    assert provenance["correlation_source"] == "estimated"
+    assert provenance["correlation_target"] == "residuals"
+    assert stochastic["correlation_source"] == "estimated"
+    assert stochastic["correlation_target"] == "residuals"
+    assert provenance["correlation_target"] == written
+    assert stochastic["correlation_target"] == written
+
+    not_estimated_out = tmp_path / "not_estimated"
+    result = novomodelo.run.run(VALID_CASE, output_dir=str(not_estimated_out))
+    inflow = json.loads(
+        (not_estimated_out / "training/model_provenance.json").read_text()
+    )["inflow"]
+    provenance, stochastic = result["provenance"], result["stochastic"]
+    assert provenance is not None
+    assert stochastic is not None
+    assert provenance["correlation_target"] is None
+    assert stochastic["correlation_target"] is None
+    assert "correlation_target" in inflow
+    assert inflow["correlation_target"] is None
+
+
+def test_moment_matching_is_reported_for_a_generated_tree(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A generated tree reports its moment matching in both dicts and the file,
+    the default included."""
+    import json
+
+    import novomodelo.run
+
+    drawn_out = tmp_path / "drawn"
+    result = novomodelo.run.run(
+        VALID_CASE,
+        output_dir=str(drawn_out),
+        config_overrides={
+            "training.scenario_source.openings": {
+                "source": "generated",
+                "moment_matching": "none",
+            }
+        },
+    )
+    written = json.loads((drawn_out / "training/model_provenance.json").read_text())[
+        "inflow"
+    ]["opening_tree_moment_matching"]
+    provenance, stochastic = result["provenance"], result["stochastic"]
+    assert provenance is not None
+    assert stochastic is not None
+    assert provenance["opening_tree_moment_matching"] == "none"
+    assert stochastic["opening_tree_moment_matching"] == "none"
+    assert provenance["opening_tree_moment_matching"] == written
+    assert stochastic["opening_tree_moment_matching"] == written
+
+    default_out = tmp_path / "default"
+    result = novomodelo.run.run(VALID_CASE, output_dir=str(default_out))
+    inflow = json.loads((default_out / "training/model_provenance.json").read_text())[
+        "inflow"
+    ]
+    provenance, stochastic = result["provenance"], result["stochastic"]
+    assert provenance is not None
+    assert stochastic is not None
+    assert provenance["opening_tree_moment_matching"] == "per_coordinate"
+    assert stochastic["opening_tree_moment_matching"] == "per_coordinate"
+    assert "opening_tree_moment_matching" in inflow
+    assert inflow["opening_tree_moment_matching"] == "per_coordinate"
+
+
+def test_moment_matching_override_without_source_names_the_missing_tag(
+    tmp_path: pathlib.Path,
+) -> None:
+    """An openings block without its source tag is refused, naming the tag."""
+    import novomodelo.run
+
+    with pytest.raises(ValueError, match=r"`source`"):
+        novomodelo.run.run(
+            VALID_CASE,
+            output_dir=str(tmp_path),
+            config_overrides={
+                "training.scenario_source.openings.moment_matching": "per_coordinate"
+            },
+        )

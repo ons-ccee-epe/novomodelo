@@ -40,9 +40,9 @@ def _row(
 
 
 def _edit_json(path: pathlib.Path, edit: Callable[[Any], None]) -> None:
-    value = json.loads(path.read_text())
+    value = json.loads(path.read_text(encoding="utf-8"))
     edit(value)
-    path.write_text(json.dumps(value, indent=2))
+    path.write_text(json.dumps(value, indent=2), encoding="utf-8")
 
 
 def _negative_travel_time(case: pathlib.Path) -> None:
@@ -191,7 +191,7 @@ def _train_one_iteration(case: pathlib.Path) -> None:
 
 
 def _train_iterations(case: pathlib.Path, limit: int) -> None:
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     def edit(config: Any) -> None:
         config["training"]["stopping_rules"] = [
@@ -204,7 +204,7 @@ def _train_iterations(case: pathlib.Path, limit: int) -> None:
 
 
 def _restamp_policy_version(policy_dir: pathlib.Path) -> None:
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     manifest = policy_dir / "manifest.bin"
     data = manifest.read_bytes()
@@ -258,8 +258,8 @@ def _resume_without_the_trial_state_history(case: pathlib.Path) -> None:
 def _resume_from_a_partial_policy(case: pathlib.Path) -> None:
     """A resume that fails in-band leaves the partial policy in `policy.partial`;
     the healthy deck then resumes from it."""
-    import novomodelo.errors  # noqa: PLC0415
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.errors
+    import novomodelo.run
 
     healthy = {
         file: (case / file).read_bytes()
@@ -928,9 +928,9 @@ def test_validate_and_run_report_identically(
     error_class_name: str | None,
 ) -> None:
     """`validate` and `run` report the row's refusal or warning with the same line."""
-    import novomodelo.errors  # noqa: PLC0415
-    import novomodelo.io  # noqa: PLC0415
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.errors
+    import novomodelo.io
+    import novomodelo.run
 
     case = tmp_path / "case"
     shutil.copytree(_REPO_ROOT / "examples" / base_case, case)

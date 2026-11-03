@@ -33,7 +33,7 @@ pub mod scenario_source;
 pub mod simulation;
 pub mod training;
 
-pub use estimation::{EstimationConfig, OrderSelectionMethod};
+pub use estimation::{CorrelationTarget, EstimationConfig, OrderSelectionMethod};
 pub use exports::ExportsConfig;
 pub use modeling::{InflowNonNegativityConfig, InflowNonNegativityMethod, ModelingConfig};
 pub use policy::{
@@ -41,7 +41,7 @@ pub use policy::{
     PolicyMode,
 };
 pub use scenario_source::{
-    HistoricalYearRange, Openings, RawClassConfigEntry, RawHistoricalYearsConfig,
+    HistoricalYearRange, MomentMatching, Openings, RawClassConfigEntry, RawHistoricalYearsConfig,
     RawSamplingScheme, RawScenarioSourceConfig,
 };
 pub use simulation::{
@@ -465,6 +465,18 @@ impl Config {
             .scenario_source
             .as_ref()
             .and_then(|s| s.openings.as_ref())
+    }
+
+    /// The effective training moment-matching mode. Single owner of the
+    /// training moment-matching lookup: an absent `openings` block yields the
+    /// default and a `file` tree yields `none`.
+    #[must_use]
+    pub fn training_moment_matching(&self) -> MomentMatching {
+        match self.training_openings() {
+            Some(Openings::Generated { moment_matching }) => *moment_matching,
+            None => MomentMatching::default(),
+            Some(Openings::File {}) => MomentMatching::None,
+        }
     }
 
     /// Resolve the effective training forward-pass method from
@@ -1167,6 +1179,87 @@ mod tests {
         }
     }
 
+    fn parse_minimal_with_estimation(estimation: Option<&str>) -> Result<Config, LoadError> {
+        let estimation = estimation.map_or_else(String::new, |e| format!(r#", "estimation": {e}"#));
+        let f = write_config(&format!(
+            r#"{{"training": {{"selection": {{"method": "sampled", "forward_passes": 10}}, "stopping_rules": [{{"type": "iteration_limit", "limit": 5}}]}}{estimation}}}"#
+        ));
+        parse_config(f.path())
+    }
+
+    #[test]
+    fn correlation_target_defaults_to_inflows() {
+        for estimation in [None, Some(r#"{"max_order": 3}"#)] {
+            let cfg = parse_minimal_with_estimation(estimation).unwrap();
+            assert_eq!(
+                cfg.estimation.correlation_target,
+                CorrelationTarget::Inflows,
+                "estimation: {estimation:?}"
+            );
+        }
+        assert_eq!(
+            EstimationConfig::default().correlation_target,
+            CorrelationTarget::Inflows
+        );
+    }
+
+    #[test]
+    fn correlation_target_accepts_each_value() {
+        for (spelling, expected) in [
+            ("residuals", CorrelationTarget::Residuals),
+            ("inflows", CorrelationTarget::Inflows),
+        ] {
+            let cfg = parse_minimal_with_estimation(Some(&format!(
+                r#"{{"correlation_target": "{spelling}"}}"#
+            )))
+            .unwrap();
+            assert_eq!(cfg.estimation.correlation_target, expected);
+        }
+    }
+
+    #[test]
+    fn correlation_target_rejects_an_unknown_value_naming_the_variants() {
+        let err =
+            parse_minimal_with_estimation(Some(r#"{"correlation_target": "flows"}"#)).unwrap_err();
+        match &err {
+            LoadError::SchemaError { message, .. } => {
+                assert!(
+                    message.contains("residuals") && message.contains("inflows"),
+                    "message should name both variants, got: {message}"
+                );
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn correlation_target_as_str_matches_its_serde_spelling() {
+        let variants = std::iter::successors(Some(CorrelationTarget::Residuals), |v| match v {
+            CorrelationTarget::Residuals => Some(CorrelationTarget::Inflows),
+            CorrelationTarget::Inflows => None,
+        });
+        for v in variants {
+            assert_eq!(
+                serde_json::to_value(v).unwrap(),
+                serde_json::Value::String(v.as_str().to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn correlation_target_converts_to_the_same_library_target() {
+        use novomodelo_stochastic::par::fitting;
+
+        assert_eq!(
+            fitting::CorrelationTarget::from(CorrelationTarget::Residuals),
+            fitting::CorrelationTarget::Residuals
+        );
+        assert_eq!(
+            fitting::CorrelationTarget::from(CorrelationTarget::Inflows),
+            fitting::CorrelationTarget::Inflows
+        );
+    }
+
     /// `exports.stochastic: true` deserializes correctly.
     #[test]
     fn test_exports_stochastic_explicit_true() {
@@ -1576,6 +1669,7 @@ mod tests {
         cfg.training_scenario_source(f.path())
             .expect("file openings source must load under training");
         assert_eq!(cfg.training_openings(), Some(&Openings::File {}));
+        assert_eq!(cfg.training_moment_matching(), MomentMatching::None);
     }
 
     /// The dropped `path` field on the `file` openings source is now an
@@ -1622,6 +1716,129 @@ mod tests {
     fn openings_file_variant_round_trips() {
         let parsed: Openings = serde_json::from_str(r#"{"source": "file"}"#).unwrap();
         assert_eq!(parsed, Openings::File {});
+    }
+
+    #[test]
+    fn moment_matching_defaults_to_per_coordinate_when_openings_is_absent() {
+        let f = write_with_training_scenario_source("{}");
+        let cfg = parse_config(f.path()).unwrap();
+        assert_eq!(cfg.training_openings(), None);
+        assert_eq!(
+            cfg.training_moment_matching(),
+            MomentMatching::PerCoordinate
+        );
+    }
+
+    #[test]
+    fn moment_matching_defaults_to_per_coordinate_for_a_bare_generated_block() {
+        let f = write_with_training_scenario_source(r#"{"openings": {"source": "generated"}}"#);
+        let cfg = parse_config(f.path()).unwrap();
+        assert_eq!(
+            cfg.training_openings(),
+            Some(&Openings::Generated {
+                moment_matching: MomentMatching::PerCoordinate
+            })
+        );
+        assert_eq!(
+            cfg.training_moment_matching(),
+            MomentMatching::PerCoordinate
+        );
+    }
+
+    #[test]
+    fn moment_matching_accepts_each_value() {
+        for (spelling, expected) in [
+            ("none", MomentMatching::None),
+            ("per_coordinate", MomentMatching::PerCoordinate),
+        ] {
+            let f = write_with_training_scenario_source(&format!(
+                r#"{{"openings": {{"source": "generated", "moment_matching": "{spelling}"}}}}"#
+            ));
+            let cfg = parse_config(f.path()).unwrap();
+            cfg.training_scenario_source(f.path()).unwrap();
+            assert_eq!(cfg.training_moment_matching(), expected);
+        }
+    }
+
+    #[test]
+    fn moment_matching_rejects_an_unknown_value() {
+        let f = write_with_training_scenario_source(
+            r#"{"openings": {"source": "generated", "moment_matching": "per_stage"}}"#,
+        );
+        let err = parse_config(f.path()).unwrap_err();
+        match &err {
+            LoadError::SchemaError { message, .. } => {
+                assert!(
+                    message.contains("unknown variant") && message.contains("per_stage"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn moment_matching_under_a_file_tree_is_rejected() {
+        let f = write_with_training_scenario_source(
+            r#"{"openings": {"source": "file", "moment_matching": "per_coordinate"}}"#,
+        );
+        let err = parse_config(f.path()).unwrap_err();
+        match &err {
+            LoadError::ParseError { message, .. } => {
+                assert!(
+                    message.contains("unknown field") && message.contains("moment_matching"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected ParseError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn openings_without_source_is_rejected_naming_the_tag() {
+        let f = write_with_training_scenario_source(
+            r#"{"openings": {"moment_matching": "per_coordinate"}}"#,
+        );
+        let err = parse_config(f.path()).unwrap_err();
+        match &err {
+            LoadError::SchemaError { message, .. } => {
+                assert!(
+                    message.contains("`source`"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn moment_matching_as_str_matches_its_serde_spelling() {
+        let variants = std::iter::successors(Some(MomentMatching::None), |v| match v {
+            MomentMatching::None => Some(MomentMatching::PerCoordinate),
+            MomentMatching::PerCoordinate => None,
+        });
+        for v in variants {
+            assert_eq!(
+                serde_json::to_value(v).unwrap(),
+                serde_json::Value::String(v.as_str().to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn moment_matching_converts_both_ways_to_the_library_value() {
+        use novomodelo_stochastic::tree;
+
+        for (io, library) in [
+            (MomentMatching::None, tree::MomentMatching::None),
+            (
+                MomentMatching::PerCoordinate,
+                tree::MomentMatching::PerCoordinate,
+            ),
+        ] {
+            assert_eq!(tree::MomentMatching::from(io), library);
+            assert_eq!(MomentMatching::from(library), io);
+        }
     }
 
     /// `simulation.sampling_scheme` (dead field) is now rejected because

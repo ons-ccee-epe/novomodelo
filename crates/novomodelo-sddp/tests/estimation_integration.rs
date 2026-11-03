@@ -35,7 +35,7 @@ use novomodelo_core::{
     },
 };
 use novomodelo_io::Config;
-use novomodelo_sddp::{EstimationPath, estimate_from_history};
+use novomodelo_sddp::{EstimationPath, HistoryEstimate, estimate_from_history};
 use parquet::arrow::ArrowWriter;
 use tempfile::TempDir;
 
@@ -324,7 +324,9 @@ fn test_estimate_from_history_fixed_order() {
     let system = build_system_with_one_hydro();
     let config = parse_config(case_dir);
 
-    let (updated, _report, _path) = estimate_from_history(system, case_dir, &config)
+    let HistoryEstimate {
+        system: updated, ..
+    } = estimate_from_history(system, case_dir, &config)
         .expect("estimation should succeed with 15 years of monthly data");
 
     // Per-season estimates are expanded to every stage sharing the same season_id,
@@ -383,7 +385,9 @@ fn test_estimate_from_history_aic_order() {
     let system = build_system_with_one_hydro();
     let config = parse_config(case_dir);
 
-    let (updated, _report, _path) = estimate_from_history(system, case_dir, &config)
+    let HistoryEstimate {
+        system: updated, ..
+    } = estimate_from_history(system, case_dir, &config)
         .expect("AIC estimation should succeed with 15 years of monthly data");
 
     let models = updated.inflow_models();
@@ -693,7 +697,9 @@ fn test_estimation_round_trip_par1() {
     let system = build_system_for_par1(1);
     let config = parse_config(case_dir);
 
-    let (updated, _report, _path) = estimate_from_history(system, case_dir, &config)
+    let HistoryEstimate {
+        system: updated, ..
+    } = estimate_from_history(system, case_dir, &config)
         .expect("PAR(1) estimation with N=200 per season should succeed");
 
     let n_stages_rt = N_OBS_PER_SEASON * N_SEASONS_RT;
@@ -858,8 +864,12 @@ fn test_partial_estimation_end_to_end() {
     let system = build_system_for_par1_with_user_stats();
     let config = parse_config(case_dir);
 
-    let (updated, report, path) =
-        estimate_from_history(system, case_dir, &config).expect("partial estimation must succeed");
+    let HistoryEstimate {
+        system: updated,
+        report,
+        path,
+        ..
+    } = estimate_from_history(system, case_dir, &config).expect("partial estimation must succeed");
 
     assert_eq!(
         path,
@@ -922,7 +932,9 @@ fn test_estimation_round_trip_two_hydros() {
     let system = build_system_for_par1(N_HYDROS);
     let config = parse_config(case_dir);
 
-    let (updated, _report, _path) = estimate_from_history(system, case_dir, &config)
+    let HistoryEstimate {
+        system: updated, ..
+    } = estimate_from_history(system, case_dir, &config)
         .expect("PAR(1) estimation with 2 hydros should succeed");
 
     let models = updated.inflow_models();
@@ -1168,7 +1180,12 @@ fn user_ar_prestudy_synthesizes_history_derived_lag_stats() {
     let system = build_season_mapped_system(8, 4);
     let config = parse_config(case_dir);
 
-    let (updated, report, path) = estimate_from_history(system, case_dir, &config)
+    let HistoryEstimate {
+        system: updated,
+        report,
+        path,
+        ..
+    } = estimate_from_history(system, case_dir, &config)
         .expect("UserArHistoryStats estimation must succeed");
 
     assert_eq!(
@@ -1216,7 +1233,11 @@ fn user_ar_prestudy_full_year_study_synthesizes_nothing() {
     let system = build_season_mapped_system(0, 12);
     let config = parse_config(case_dir);
 
-    let (updated, _report, path) = estimate_from_history(system, case_dir, &config)
+    let HistoryEstimate {
+        system: updated,
+        path,
+        ..
+    } = estimate_from_history(system, case_dir, &config)
         .expect("full-year UserArHistoryStats estimation must succeed");
 
     assert_eq!(
@@ -1278,7 +1299,11 @@ fn user_ar_prestudy_correlation_uses_extended_stages() {
     let system = build_season_mapped_system(8, 4);
     let config = parse_config(case_dir);
 
-    let (updated, _report, path) = estimate_from_history(system, case_dir, &config)
+    let HistoryEstimate {
+        system: updated,
+        path,
+        ..
+    } = estimate_from_history(system, case_dir, &config)
         .expect("UserArHistoryStats estimation must succeed");
 
     assert_eq!(

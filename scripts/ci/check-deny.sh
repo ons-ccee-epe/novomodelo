@@ -3,9 +3,9 @@
 # check-deny.sh — cargo-deny over both dependency graphs, at the version CI runs.
 #
 # Runs every check (advisories, bans, licenses, sources) on the workspace, then
-# bans on crates/novomodelo-python against the root deny.toml: that crate is outside
-# the workspace and has its own Cargo.lock, so the workspace check never sees
-# its graph.
+# every check on crates/novomodelo-python against the root deny.toml: that crate is
+# outside the workspace and has its own Cargo.lock, so the workspace check never
+# sees its graph.
 #
 # cargo-deny's command line changes between releases (0.20 moved --config from
 # `check` to the top level), so the script refuses any version other than
@@ -16,8 +16,8 @@
 #        check-deny.sh --print-version
 #
 # Exit codes:
-#   0 — Pass: both checks passed.
-#   1 — Fail: a check failed. Both checks run either way.
+#   0 — Pass: both graphs passed.
+#   1 — Fail: a check failed. Both graphs are checked either way.
 #   2 — Refused: bad invocation, or cargo-deny is missing or at another version.
 
 set -euo pipefail
@@ -54,8 +54,8 @@ status=0
 echo "==> cargo-deny: workspace (all checks)"
 cargo-deny --all-features check || status=1
 
-echo "==> cargo-deny: crates/novomodelo-python (bans)"
+echo "==> cargo-deny: crates/novomodelo-python (all checks)"
 cargo-deny --manifest-path crates/novomodelo-python/Cargo.toml --all-features \
-    --config deny.toml check bans || status=1
+    --config deny.toml check || status=1
 
 exit "${status}"
