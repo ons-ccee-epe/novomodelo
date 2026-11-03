@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `training.solver.forward.use_warm_start` defaults to `true` again, so forward
+  solves start warm; results change. Simulation solves stay cold; set
+  `simulation.solver.use_warm_start: true` to opt in.
+
 ### Removed
 
 - **BREAKING:** `training.solver.forward.refactor_error_tolerance`,
@@ -17,11 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Load and water balances recomputed from outputs could fail to close, and cuts
-  could carry wrong duals; results change. A new `lp_row_violations` column in
-  `training/solver/iterations.parquet` and `simulation/solver/iterations.parquet`
-  counts LP solves that miss a row bound, and `novomodelo run` warns once at the
-  end when any solve is counted.
+- HiGHS: load and water balances recomputed from outputs could fail to close,
+  and cuts could carry wrong duals. A new `lp_row_violations` column in the
+  solver `iterations.parquet` files counts LP solves that miss a row bound, and
+  `novomodelo run` warns when any does. Retrain policies trained with HiGHS.
 
 ## [0.19.1] - 2026-10-26
 

@@ -2548,17 +2548,33 @@ mod d37_anticipated_commissioning_simulation {
             }
         }
 
-        // Generation at the first operating stage `entry` proves the pre-entry
-        // decision at `entry − K` delivered: the decision column at `entry` itself
-        // delivers at `entry + K`, outside the window, so this generation can only
-        // come from the commitment placed K stages earlier.
-        let g_entry = t1_at(scenario, ENTRY).generation_mw;
-        assert!(
-            g_entry > TOL,
-            "T1 must generate at the first operating stage {ENTRY} (the pre-entry \
-         decision at stage {} delivered here); got {g_entry}",
-            ENTRY - K,
-        );
+        // Each in-window delivery equals the decision made K stages earlier and is
+        // generated, whichever tied dispatch the solve picks.
+        for stage in ENTRY..EXIT {
+            let decision = t1_at(scenario, stage - K)
+                .anticipated_decision_mw
+                .expect("pre-entry decision must be active");
+            let committed = t1_at(scenario, stage)
+                .anticipated_committed_mw
+                .expect("anticipated thermal must report committed MW");
+            assert!(
+                (committed - decision).abs() <= TOL,
+                "stage {stage} delivers the stage-{} decision: committed {committed}, \
+             decided {decision}",
+                stage - K,
+            );
+            let peak = scenario.stages[stage]
+                .thermals
+                .iter()
+                .filter(|t| t.thermal_id == T1_ID)
+                .map(|t| t.generation_mw)
+                .fold(0.0_f64, f64::max);
+            assert!(
+                peak >= committed - TOL,
+                "stage {stage} must generate its committed {committed} MW in some block, \
+             peak generation {peak}",
+            );
+        }
 
         // The ring drains within K stages after exit: no in-window decision is made
         // after the last in-window delivery (stage EXIT-1), so by stage EXIT + K - 1

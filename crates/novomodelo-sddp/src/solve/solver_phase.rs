@@ -2,12 +2,12 @@
 //! the per-phase named solver-profile constants.
 //!
 //! All three phases solve the same cut-laden LPs, so they share one tuned
-//! deep-cut-pool profile. For `HiGHS`, [`BACKWARD_PROFILE`] overrides only
+//! deep-cut-pool profile. For `HiGHS`, that profile overrides only
 //! `simplex_price_strategy` (`RowHyperSparse`, value `2`) relative to
-//! [`HighsProfile::default()`] to exploit the sparse cut-subgradient rows, so
-//! backward solves warm-start from the stored basis. [`FORWARD_PROFILE`] and
-//! [`SIMULATION_PROFILE`] are identical to it except for
-//! `use_warm_start: false`, so their solves are cold. A phase's
+//! [`HighsProfile::default()`] to exploit the sparse cut-subgradient rows, and
+//! it warm-starts from the stored basis. [`FORWARD_PROFILE`] and
+//! [`BACKWARD_PROFILE`] are that profile; [`SIMULATION_PROFILE`] differs from it
+//! only in `use_warm_start: false`, so simulation solves are cold. A phase's
 //! `use_warm_start` override changes either choice. The
 //! CLP backend pins full dual steepest-edge pricing (`dual_pricing_mode = 1`)
 //! and `factorization_frequency = 200`. All values come from an empirical solver
@@ -101,57 +101,34 @@ pub trait PhaseProfiles: Sized {
     const SIMULATION: Self;
 }
 
-/// Per-phase `HighsProfile` selection, bit-for-bit equal to the
+/// The tuned deep-cut-pool profile with warm start, shared by the forward and
+/// backward passes. Simulation derives from it.
+#[cfg(feature = "highs")]
+const WARM: HighsProfile = HighsProfile {
+    primal_feasibility_tolerance: 1e-9,
+    dual_feasibility_tolerance: 1e-9,
+    simplex_iteration_limit: DEFAULT_PROFILE_HEURISTIC_SENTINEL,
+    ipm_iteration_limit: 10_000,
+    simplex_dual_edge_weight_strategy: 1, // Devex
+    simplex_scale_strategy: 0,            // Off — novomodelo prescaler conditions the matrix
+    simplex_price_strategy: 2,            // RowHyperSparse
+    presolve: PresolveKind::On,
+    simplex_update_limit: 5000,
+    cost_perturbation: 0.0,
+    factor_pivot_threshold: 0.1,
+    use_warm_start: true,
+    steepest_edge_devex_fallback_threshold: 10.0,
+};
+
+/// Per-phase `HighsProfile` selection, equal to the
 /// [`FORWARD_PROFILE`]/[`BACKWARD_PROFILE`]/[`SIMULATION_PROFILE`] constants.
-///
-/// The full field literals are written out because associated constants cannot
-/// use the `..HighsProfile::default()` struct-update spread in const context.
 #[cfg(feature = "highs")]
 impl PhaseProfiles for HighsProfile {
-    const FORWARD: Self = HighsProfile {
-        primal_feasibility_tolerance: 1e-9,
-        dual_feasibility_tolerance: 1e-9,
-        simplex_iteration_limit: DEFAULT_PROFILE_HEURISTIC_SENTINEL,
-        ipm_iteration_limit: 10_000,
-        simplex_dual_edge_weight_strategy: 1, // Devex
-        simplex_scale_strategy: 0,            // Off — novomodelo prescaler conditions the matrix
-        simplex_price_strategy: 2,            // RowHyperSparse
-        presolve: PresolveKind::On,
-        simplex_update_limit: 5000,
-        cost_perturbation: 0.0,
-        factor_pivot_threshold: 0.1,
-        use_warm_start: false,
-        steepest_edge_devex_fallback_threshold: 10.0,
-    };
-    const BACKWARD: Self = HighsProfile {
-        primal_feasibility_tolerance: 1e-9,
-        dual_feasibility_tolerance: 1e-9,
-        simplex_iteration_limit: DEFAULT_PROFILE_HEURISTIC_SENTINEL,
-        ipm_iteration_limit: 10_000,
-        simplex_dual_edge_weight_strategy: 1, // Devex
-        simplex_scale_strategy: 0,            // Off — novomodelo prescaler conditions the matrix
-        simplex_price_strategy: 2,            // RowHyperSparse
-        presolve: PresolveKind::On,
-        simplex_update_limit: 5000,
-        cost_perturbation: 0.0,
-        factor_pivot_threshold: 0.1,
-        use_warm_start: true,
-        steepest_edge_devex_fallback_threshold: 10.0,
-    };
+    const FORWARD: Self = WARM;
+    const BACKWARD: Self = WARM;
     const SIMULATION: Self = HighsProfile {
-        primal_feasibility_tolerance: 1e-9,
-        dual_feasibility_tolerance: 1e-9,
-        simplex_iteration_limit: DEFAULT_PROFILE_HEURISTIC_SENTINEL,
-        ipm_iteration_limit: 10_000,
-        simplex_dual_edge_weight_strategy: 1, // Devex
-        simplex_scale_strategy: 0,            // Off — novomodelo prescaler conditions the matrix
-        simplex_price_strategy: 2,            // RowHyperSparse
-        presolve: PresolveKind::On,
-        simplex_update_limit: 5000,
-        cost_perturbation: 0.0,
-        factor_pivot_threshold: 0.1,
         use_warm_start: false,
-        steepest_edge_devex_fallback_threshold: 10.0,
+        ..WARM
     };
 }
 
@@ -204,66 +181,24 @@ impl PhaseProfiles for ClpProfile {
     };
 }
 
-/// Solver profile applied during the SDDP forward pass — the tuned
-/// deep-cut-pool profile (see the module docs); equal to
-/// [`SIMULATION_PROFILE`], and to [`BACKWARD_PROFILE`] except for
-/// `use_warm_start`.
+/// Solver profile applied during the SDDP forward pass: the tuned
+/// deep-cut-pool profile (see the module docs) with warm start enabled. Equal to
+/// [`BACKWARD_PROFILE`].
 #[cfg(feature = "highs")]
-pub const FORWARD_PROFILE: HighsProfile = HighsProfile {
-    primal_feasibility_tolerance: 1e-9,
-    dual_feasibility_tolerance: 1e-9,
-    simplex_iteration_limit: DEFAULT_PROFILE_HEURISTIC_SENTINEL,
-    ipm_iteration_limit: 10_000,
-    simplex_dual_edge_weight_strategy: 1, // Devex
-    simplex_scale_strategy: 0,            // Off — novomodelo prescaler conditions the matrix
-    simplex_price_strategy: 2,            // RowHyperSparse
-    presolve: PresolveKind::On,
-    simplex_update_limit: 5000,
-    cost_perturbation: 0.0,
-    factor_pivot_threshold: 0.1,
-    use_warm_start: false,
-    steepest_edge_devex_fallback_threshold: 10.0,
-};
+pub const FORWARD_PROFILE: HighsProfile = WARM;
 
-/// Solver profile applied during the SDDP backward pass — the tuned
-/// deep-cut-pool profile (see the module docs) with warm start enabled; equal
-/// to [`FORWARD_PROFILE`] and [`SIMULATION_PROFILE`] except for
-/// `use_warm_start`.
+/// Solver profile applied during the SDDP backward pass: the tuned
+/// deep-cut-pool profile (see the module docs) with warm start enabled. Equal to
+/// [`FORWARD_PROFILE`].
 #[cfg(feature = "highs")]
-pub const BACKWARD_PROFILE: HighsProfile = HighsProfile {
-    primal_feasibility_tolerance: 1e-9,
-    dual_feasibility_tolerance: 1e-9,
-    simplex_iteration_limit: DEFAULT_PROFILE_HEURISTIC_SENTINEL,
-    ipm_iteration_limit: 10_000,
-    simplex_dual_edge_weight_strategy: 1, // Devex
-    simplex_scale_strategy: 0,            // Off — novomodelo prescaler conditions the matrix
-    simplex_price_strategy: 2,            // RowHyperSparse
-    presolve: PresolveKind::On,
-    simplex_update_limit: 5000,
-    cost_perturbation: 0.0,
-    factor_pivot_threshold: 0.1,
-    use_warm_start: true,
-    steepest_edge_devex_fallback_threshold: 10.0,
-};
+pub const BACKWARD_PROFILE: HighsProfile = WARM;
 
-/// Solver profile applied during policy simulation — the tuned deep-cut-pool
-/// profile (see the module docs); equal to [`FORWARD_PROFILE`], and to
-/// [`BACKWARD_PROFILE`] except for `use_warm_start`.
+/// Solver profile applied during policy simulation: [`FORWARD_PROFILE`] with
+/// warm start disabled.
 #[cfg(feature = "highs")]
 pub const SIMULATION_PROFILE: HighsProfile = HighsProfile {
-    primal_feasibility_tolerance: 1e-9,
-    dual_feasibility_tolerance: 1e-9,
-    simplex_iteration_limit: DEFAULT_PROFILE_HEURISTIC_SENTINEL,
-    ipm_iteration_limit: 10_000,
-    simplex_dual_edge_weight_strategy: 1, // Devex
-    simplex_scale_strategy: 0,            // Off — novomodelo prescaler conditions the matrix
-    simplex_price_strategy: 2,            // RowHyperSparse
-    presolve: PresolveKind::On,
-    simplex_update_limit: 5000,
-    cost_perturbation: 0.0,
-    factor_pivot_threshold: 0.1,
     use_warm_start: false,
-    steepest_edge_devex_fallback_threshold: 10.0,
+    ..WARM
 };
 
 impl Phase {
@@ -565,56 +500,16 @@ fn resolve_active_profile(
     base
 }
 
-// Compile-time drift guard: a field added to `HighsProfile` makes the compiler
-// reject these const literals until they are updated, keeping the named
-// constants and their documented field values in sync.
+// Compile-time guard on the relations between the phase profiles.
 #[cfg(feature = "highs")]
 const _: () = {
-    assert!(FORWARD_PROFILE.primal_feasibility_tolerance == 1e-9);
-    assert!(FORWARD_PROFILE.dual_feasibility_tolerance == 1e-9);
-    assert!(FORWARD_PROFILE.simplex_iteration_limit == DEFAULT_PROFILE_HEURISTIC_SENTINEL);
-    assert!(FORWARD_PROFILE.ipm_iteration_limit == 10_000);
-    assert!(FORWARD_PROFILE.simplex_dual_edge_weight_strategy == 1);
-    assert!(FORWARD_PROFILE.simplex_scale_strategy == 0);
-    assert!(FORWARD_PROFILE.simplex_price_strategy == 2);
-    assert!(matches!(FORWARD_PROFILE.presolve, PresolveKind::On));
-    assert!(FORWARD_PROFILE.simplex_update_limit == 5000);
-    assert!(FORWARD_PROFILE.cost_perturbation == 0.0);
-    assert!(FORWARD_PROFILE.factor_pivot_threshold == 0.1);
-    assert!(!FORWARD_PROFILE.use_warm_start);
-    assert!(FORWARD_PROFILE.steepest_edge_devex_fallback_threshold == 10.0);
-
-    assert!(BACKWARD_PROFILE.primal_feasibility_tolerance == 1e-9);
-    assert!(BACKWARD_PROFILE.dual_feasibility_tolerance == 1e-9);
-    assert!(BACKWARD_PROFILE.simplex_iteration_limit == DEFAULT_PROFILE_HEURISTIC_SENTINEL);
-    assert!(BACKWARD_PROFILE.ipm_iteration_limit == 10_000);
-    assert!(BACKWARD_PROFILE.simplex_dual_edge_weight_strategy == 1);
-    assert!(BACKWARD_PROFILE.simplex_scale_strategy == 0);
-    assert!(BACKWARD_PROFILE.simplex_price_strategy == 2);
-    assert!(matches!(BACKWARD_PROFILE.presolve, PresolveKind::On));
-    assert!(BACKWARD_PROFILE.simplex_update_limit == 5000);
-    assert!(BACKWARD_PROFILE.cost_perturbation == 0.0);
-    assert!(BACKWARD_PROFILE.factor_pivot_threshold == 0.1);
+    assert!(WARM.use_warm_start);
+    assert!(FORWARD_PROFILE.use_warm_start);
     assert!(BACKWARD_PROFILE.use_warm_start);
-    assert!(BACKWARD_PROFILE.steepest_edge_devex_fallback_threshold == 10.0);
-
-    assert!(SIMULATION_PROFILE.primal_feasibility_tolerance == 1e-9);
-    assert!(SIMULATION_PROFILE.dual_feasibility_tolerance == 1e-9);
-    assert!(SIMULATION_PROFILE.simplex_iteration_limit == DEFAULT_PROFILE_HEURISTIC_SENTINEL);
-    assert!(SIMULATION_PROFILE.ipm_iteration_limit == 10_000);
-    assert!(SIMULATION_PROFILE.simplex_dual_edge_weight_strategy == 1);
-    assert!(SIMULATION_PROFILE.simplex_scale_strategy == 0);
-    assert!(SIMULATION_PROFILE.simplex_price_strategy == 2);
-    assert!(matches!(SIMULATION_PROFILE.presolve, PresolveKind::On));
-    assert!(SIMULATION_PROFILE.simplex_update_limit == 5000);
-    assert!(SIMULATION_PROFILE.cost_perturbation == 0.0);
-    assert!(SIMULATION_PROFILE.factor_pivot_threshold == 0.1);
     assert!(!SIMULATION_PROFILE.use_warm_start);
-    assert!(SIMULATION_PROFILE.steepest_edge_devex_fallback_threshold == 10.0);
-
-    assert!(<HighsProfile as PhaseProfiles>::FORWARD.simplex_price_strategy == 2);
-    assert!(<HighsProfile as PhaseProfiles>::BACKWARD.simplex_price_strategy == 2);
-    assert!(<HighsProfile as PhaseProfiles>::SIMULATION.simplex_price_strategy == 2);
+    assert!(<HighsProfile as PhaseProfiles>::FORWARD.use_warm_start);
+    assert!(<HighsProfile as PhaseProfiles>::BACKWARD.use_warm_start);
+    assert!(!<HighsProfile as PhaseProfiles>::SIMULATION.use_warm_start);
 };
 
 #[cfg(test)]
@@ -669,27 +564,46 @@ mod highs_tests {
         assert_eq!(Phase::Simulation.profile(), SIMULATION_PROFILE);
     }
 
-    /// Forward and simulation named constants are equal, match
-    /// `BACKWARD_PROFILE` except for `use_warm_start`, and differ from
-    /// [`HighsProfile::default()`] only in `simplex_price_strategy` (`2`,
-    /// `RowHyperSparse`) and `use_warm_start` (`false`).
+    /// Training phases warm-start and share one profile; simulation differs only
+    /// in being cold, and a per-phase `use_warm_start` override flips either.
     #[test]
-    fn forward_simulation_equal_tuned_profile() {
-        let default = HighsProfile::default();
-        assert_eq!(SIMULATION_PROFILE, FORWARD_PROFILE);
-        let mut backward_cold = BACKWARD_PROFILE;
-        backward_cold.use_warm_start = false;
-        assert_eq!(backward_cold, FORWARD_PROFILE);
-        assert_ne!(FORWARD_PROFILE, default);
-        assert_ne!(SIMULATION_PROFILE, default);
-        assert_eq!(FORWARD_PROFILE.simplex_price_strategy, 2);
-        assert_eq!(SIMULATION_PROFILE.simplex_price_strategy, 2);
-        assert_eq!(default.simplex_price_strategy, 1);
-        // Pinning both overrides back to the default recovers the default.
-        let mut forward_relaxed = FORWARD_PROFILE;
-        forward_relaxed.simplex_price_strategy = default.simplex_price_strategy;
-        forward_relaxed.use_warm_start = default.use_warm_start;
-        assert_eq!(forward_relaxed, default);
+    fn phase_profiles_warm_start_training_and_cold_simulation() {
+        assert_eq!(FORWARD_PROFILE, BACKWARD_PROFILE);
+        assert_eq!(
+            SIMULATION_PROFILE,
+            HighsProfile {
+                use_warm_start: false,
+                ..FORWARD_PROFILE
+            }
+        );
+
+        let forward = <HighsProfile as PhaseProfiles>::FORWARD;
+        let backward = <HighsProfile as PhaseProfiles>::BACKWARD;
+        let simulation = <HighsProfile as PhaseProfiles>::SIMULATION;
+        assert_eq!(forward, backward);
+        assert!(forward.use_warm_start);
+        assert_eq!(
+            simulation,
+            HighsProfile {
+                use_warm_start: false,
+                ..forward
+            }
+        );
+
+        let warm = PhaseSolverProfileConfig {
+            use_warm_start: Some(true),
+            ..blank_config()
+        };
+        assert!(
+            Phase::Simulation
+                .resolve_profile(Some(&warm))
+                .use_warm_start
+        );
+        let cold = PhaseSolverProfileConfig {
+            use_warm_start: Some(false),
+            ..blank_config()
+        };
+        assert!(!Phase::Forward.resolve_profile(Some(&cold)).use_warm_start);
     }
 
     #[test]
@@ -723,27 +637,6 @@ mod highs_tests {
             BACKWARD_PROFILE.simplex_scale_strategy,
             default.simplex_scale_strategy
         );
-    }
-
-    /// The `PhaseProfiles` impl's `FORWARD`/`SIMULATION` are equal, match
-    /// `BACKWARD` except for `use_warm_start`, and differ from the default only
-    /// in `simplex_price_strategy` (`2`, `RowHyperSparse`) and `use_warm_start`
-    /// (`false`).
-    #[test]
-    fn phase_profiles_forward_simulation_equal_tuned_profile() {
-        let default = HighsProfile::default();
-        let forward = <HighsProfile as PhaseProfiles>::FORWARD;
-        let simulation = <HighsProfile as PhaseProfiles>::SIMULATION;
-        let mut backward_cold = <HighsProfile as PhaseProfiles>::BACKWARD;
-        backward_cold.use_warm_start = false;
-        assert_eq!(simulation, forward);
-        assert_eq!(backward_cold, forward);
-        // They differ from the default in the tuned price strategy and warm start.
-        assert_ne!(forward, default);
-        assert_ne!(simulation, default);
-        assert_eq!(forward.simplex_price_strategy, 2);
-        assert_eq!(simulation.simplex_price_strategy, 2);
-        assert_eq!(default.simplex_price_strategy, 1);
     }
 
     /// The `PhaseProfiles` impl's `BACKWARD` overrides only

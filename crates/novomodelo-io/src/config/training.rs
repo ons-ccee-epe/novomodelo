@@ -557,8 +557,8 @@ pub struct PhaseSolverProfileConfig {
     #[serde(default)]
     pub factor_pivot_threshold: Option<f64>,
 
-    /// Warm-start override. By default backward solves warm-start from the
-    /// stored basis and forward and simulation solves are cold.
+    /// Warm-start override. By default forward and backward solves warm-start
+    /// from the stored basis and simulation solves are cold.
     #[serde(default)]
     pub use_warm_start: Option<bool>,
 
