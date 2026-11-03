@@ -1,4 +1,4 @@
-//! Compensated summation that carries the rounding error of each addition (Neumaier 1974).
+//! Neumaier (1974) compensated summation.
 
 /// Running sum that keeps the rounding error of each addition in a separate compensation term.
 ///

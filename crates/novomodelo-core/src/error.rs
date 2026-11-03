@@ -160,17 +160,17 @@ pub enum ThermalUnitStateViolation {
     },
     /// Previous generation is negative or not finite.
     InvalidPreviousGeneration {
-        /// Declared average output before the study start \[MW\].
+        /// Declared previous generation \[MW\].
         previous_generation_mw: f64,
     },
     /// Status `Off` with a non-zero previous generation.
     OffWithGeneration {
-        /// Declared average output before the study start \[MW\].
+        /// Declared previous generation \[MW\].
         previous_generation_mw: f64,
     },
     /// Status `On` with a previous generation outside the unit's generation bounds.
     OnOutsideBounds {
-        /// Declared average output before the study start \[MW\].
+        /// Declared previous generation \[MW\].
         previous_generation_mw: f64,
         /// Unit minimum generation \[MW\].
         min_generation_mw: f64,
@@ -181,7 +181,7 @@ pub enum ThermalUnitStateViolation {
     GenerationNotOnTrajectory {
         /// Trajectory the status follows.
         transition: ThermalUnitTransition,
-        /// Declared average output before the study start \[MW\].
+        /// Declared previous generation \[MW\].
         previous_generation_mw: f64,
     },
 }

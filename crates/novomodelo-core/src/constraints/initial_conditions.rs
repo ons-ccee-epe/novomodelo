@@ -158,10 +158,8 @@ pub struct RecentObservation {
 
 /// Operating status of a thermal unit at the start of the study.
 ///
-/// `StartingUp` and `ShuttingDown` are on-statuses following the unit's startup
-/// or shutdown trajectory, so they count as on-time. Postcard encodes variants
-/// by position: append new variants, never reorder (pinned by
-/// `thermal_unit_status_postcard_discriminant_pin`).
+/// Postcard encodes variants by position: append new variants, never reorder
+/// (pinned by `thermal_unit_status_postcard_discriminant_pin`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ThermalUnitStatus {
@@ -230,11 +228,11 @@ pub struct ThermalUnitInitialState {
     pub thermal_id: EntityId,
     /// Unit, unique within the plant.
     pub unit_id: EntityId,
-    /// Operating status in the half-hour before the study start.
+    /// Operating status.
     pub status: ThermalUnitStatus,
-    /// Hours in the current state \[h\]; a large finite value for "indefinitely".
+    /// Time in the current state \[h\]; a large finite value for "indefinitely".
     pub time_in_state_hours: f64,
-    /// Average output in the half-hour before the study start \[MW\].
+    /// Average output \[MW\].
     pub previous_generation_mw: f64,
 }
 
@@ -266,8 +264,7 @@ impl ThermalUnitInitialState {
 ///
 /// The `#[serde(default)]` fields below (`past_anticipated_commitments` onward)
 /// are part of the postcard wire format MPI broadcast round-trips: a new field
-/// must be appended after `thermal_unit_states` (the current trailing field),
-/// never inserted earlier in the struct. Each is always emitted on output, even
+/// must be appended as the last field, never inserted earlier. Each is always emitted on output, even
 /// when empty: `skip_serializing_if` would break the postcard round-trip.
 ///
 /// [`filling_storage`]: InitialConditions::filling_storage
@@ -299,8 +296,8 @@ pub struct InitialConditions {
     /// [`HydroPastDefluence`] for the per-entry contract.
     #[cfg_attr(feature = "serde", serde(default))]
     pub past_defluences: Vec<HydroPastDefluence>,
-    /// Initial state per thermal unit, keyed by `(thermal_id, unit_id)`; units
-    /// without a record have none. See [`ThermalUnitInitialState`].
+    /// Initial state per thermal unit, keyed by `(thermal_id, unit_id)`; see
+    /// [`ThermalUnitInitialState`].
     #[cfg_attr(feature = "serde", serde(default))]
     pub thermal_unit_states: Vec<ThermalUnitInitialState>,
 }
