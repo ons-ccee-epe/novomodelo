@@ -2392,3 +2392,72 @@ fn census_single_path_sweep_bit_identical_across_rank_shapes() {
         "a single-path census is a degenerate zero-variance distribution"
     );
 }
+
+/// Chosen with margin above the first row violation seen without the
+/// `no_unnecessary_rebuild_refactor` default option.
+const WARM_4REE_ITERATIONS: u32 = 64;
+
+#[test]
+fn warm_4ree_solves_meet_every_row() {
+    let (_system, mut setup) =
+        fresh_system_and_setup_with(Path::new("../../examples/4ree"), |config| {
+            config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+                limit: WARM_4REE_ITERATIONS,
+            }]);
+        });
+    enable_simulation_warm_start(&mut setup);
+    assert!(
+        matches!(
+            setup.simulation_enumerated,
+            SimulationEnumeratedRequest::Sampled
+        ),
+        "examples/4ree must simulate sampled scenarios"
+    );
+
+    let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+    let outcome = setup
+        .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
+        .expect("train must return Ok");
+    assert!(
+        outcome.error.is_none(),
+        "training error: {:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.result.iterations, u64::from(WARM_4REE_ITERATIONS));
+
+    let mut pool = setup
+        .create_workspace_pool(&StubComm, 1, ActiveSolver::new)
+        .expect("workspace pool");
+    let n_scenarios = setup.simulation_config().n_scenarios.max(1) as usize;
+    let (result_tx, result_rx) = mpsc::sync_channel(n_scenarios);
+    let drain = std::thread::spawn(move || result_rx.into_iter().count());
+    let simulation = setup
+        .simulate(
+            &mut pool.workspaces,
+            &StubComm,
+            &result_tx,
+            None,
+            None,
+            &outcome.result.basis_cache,
+        )
+        .expect("simulate must succeed");
+    drop(result_tx);
+    assert_eq!(drain.join().expect("drain thread"), n_scenarios);
+
+    let mut violations = BTreeMap::<&str, u64>::new();
+    for entry in &outcome.result.solver_stats_log {
+        *violations.entry(entry.phase).or_default() += entry.delta.row_violations;
+    }
+    let simulation_delta =
+        SolverStatsDelta::aggregate(simulation.solver_stats.iter().map(|(_, _, delta)| delta));
+    assert!(
+        simulation_delta.basis_offered > 0,
+        "the simulation must run warm"
+    );
+    violations.insert("simulation", simulation_delta.row_violations);
+
+    assert!(
+        violations.values().all(|&count| count == 0),
+        "every solve must meet its rows; row violations by phase: {violations:?}"
+    );
+}
