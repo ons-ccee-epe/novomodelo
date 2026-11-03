@@ -11,7 +11,8 @@
 use novomodelo_core::{EntityId, NoiseMethod, SamplingScheme};
 use novomodelo_stochastic::{
     ClassDimensions, DecomposedCorrelation, SampleRequest, build_forward_sampler,
-    generate_opening_tree, tree::OpeningTreeGenerationInputs,
+    generate_opening_tree,
+    tree::{MomentMatching, OpeningTreeGenerationInputs},
 };
 
 mod common;
@@ -241,7 +242,10 @@ fn wide_correlation_group_opening_tree_golden() {
         &corr,
         &entity_order,
         dims,
-        &OpeningTreeGenerationInputs::default(),
+        &OpeningTreeGenerationInputs {
+            moment_matching: MomentMatching::None,
+            ..Default::default()
+        },
     )
     .unwrap();
 

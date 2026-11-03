@@ -185,6 +185,7 @@ fn execute_inner<C: Communicator>(
         root_config,
         root_estimation_report,
         root_estimation_path,
+        root_correlation_origin,
         training_enabled,
         policy_mode,
         setup_timings,
@@ -197,6 +198,7 @@ fn execute_inner<C: Communicator>(
         root_config.as_ref(),
         root_estimation_report.as_ref(),
         root_estimation_path,
+        root_correlation_origin,
         setup_timings.as_ref(),
     )?;
 

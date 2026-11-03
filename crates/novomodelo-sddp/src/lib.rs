@@ -92,7 +92,7 @@ pub use fixed_delivery_echo::build_fixed_delivery_rows;
 pub use generic_constraint_echo::build_generic_constraint_echo_rows;
 pub use lp::builder::StageTemplates;
 pub use novomodelo_io::scenarios::estimation::{
-    EstimationPath, EstimationReport, estimate_from_history,
+    CorrelationOrigin, EstimationPath, EstimationReport, HistoryEstimate, estimate_from_history,
 };
 pub use policy::policy_export::{ReservedInflowLagLayout, reserve_boundary_inflow_lag_slots};
 pub use policy::policy_load::{

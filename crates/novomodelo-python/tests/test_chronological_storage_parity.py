@@ -34,6 +34,7 @@ from __future__ import annotations
 import math
 import pathlib
 import tempfile
+from typing import Any
 
 import pyarrow.parquet as pq
 
@@ -107,9 +108,9 @@ def _hydros_parquets(output_dir: pathlib.Path) -> list[pathlib.Path]:
     return sorted(hydros_dir.rglob("*.parquet"))
 
 
-def _read_hydro_rows(output_dir: pathlib.Path) -> list[dict[str, object]]:
+def _read_hydro_rows(output_dir: pathlib.Path) -> list[dict[str, Any]]:
     """Read every hydros partition into a flat list of row dicts."""
-    rows: list[dict[str, object]] = []
+    rows: list[dict[str, Any]] = []
     for parquet in _hydros_parquets(output_dir):
         # ParquetFile().read() reads the file's own columns only; pq.read_table()
         # would add a dictionary<int32> `scenario_id` partition column from the
@@ -119,10 +120,10 @@ def _read_hydro_rows(output_dir: pathlib.Path) -> list[dict[str, object]]:
 
 
 def _group_by_hydro_stage(
-    rows: list[dict[str, object]],
-) -> dict[tuple[int, int], list[dict[str, object]]]:
+    rows: list[dict[str, Any]],
+) -> dict[tuple[int, int], list[dict[str, Any]]]:
     """Group hydro rows by ``(hydro_id, stage_id)``, preserving block order."""
-    groups: dict[tuple[int, int], list[dict[str, object]]] = {}
+    groups: dict[tuple[int, int], list[dict[str, Any]]] = {}
     for row in rows:
         key = (int(row["hydro_id"]), int(row["stage_id"]))
         groups.setdefault(key, []).append(row)
@@ -132,8 +133,8 @@ def _group_by_hydro_stage(
 
 
 def _multi_block_groups(
-    groups: dict[tuple[int, int], list[dict[str, object]]],
-) -> dict[tuple[int, int], list[dict[str, object]]]:
+    groups: dict[tuple[int, int], list[dict[str, Any]]],
+) -> dict[tuple[int, int], list[dict[str, Any]]]:
     """Keep only groups that span more than one block row."""
     return {key: rows for key, rows in groups.items() if len(rows) > 1}
 
@@ -146,9 +147,9 @@ def _all_close(values: list[float]) -> bool:
     return all(math.isclose(v, first, rel_tol=1e-9, abs_tol=1e-9) for v in values)
 
 
-def _run_chronological(output_dir: pathlib.Path) -> list[dict[str, object]]:
+def _run_chronological(output_dir: pathlib.Path) -> list[dict[str, Any]]:
     """Train + simulate the chronological fixture via novomodelo.run.run; read hydros."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     novomodelo.run.run(str(CHRONOLOGICAL_CASE), output_dir=str(output_dir))
     return _read_hydro_rows(output_dir)
@@ -254,7 +255,7 @@ def test_chronological_study_surface_matches_run_module() -> None:
     run_simulation_phase_py, so a multi-block group's storage must vary across
     block rows through the Study surface too.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     assert CHRONOLOGICAL_CASE.is_dir(), (
         f"the chronological fixture must exist at {CHRONOLOGICAL_CASE}"
@@ -300,7 +301,7 @@ def test_chronological_hydros_values_match_cli(
     py_out = tmp_path / "python"
     run_cli(CHRONOLOGICAL_CASE, cli_out, cli_binary)
 
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     novomodelo.run.run(str(CHRONOLOGICAL_CASE), output_dir=str(py_out))
 
@@ -340,7 +341,7 @@ def test_parallel_per_block_storage_and_evaporation_are_constant() -> None:
     """
     assert PARALLEL_CASE.is_dir(), f"the parallel fixture must exist at {PARALLEL_CASE}"
 
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     with tempfile.TemporaryDirectory() as out_dir:
         out = pathlib.Path(out_dir)

@@ -18,7 +18,7 @@ mod yw_matrices;
 
 pub use annual::{AnnualSeasonalStats, estimate_annual_seasonal_stats};
 pub use ar_coefficients::{ArCoefficientEstimate, estimate_ar_coefficients_with_season_map};
-pub use correlation::estimate_correlation_with_season_map;
+pub use correlation::{CorrelationTarget, estimate_correlation_with_season_map};
 pub use estimation::{
     ArEstimationConfig, ContributionReduction, ContributionValidationResult, EstimationReport,
     HydroEstimationEntry, ReductionReason, StdRatioDivergence, build_estimation_report,
