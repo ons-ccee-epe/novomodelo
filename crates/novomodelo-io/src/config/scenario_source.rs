@@ -55,8 +55,11 @@ pub enum Openings {
     Generated {
         /// `per_coordinate` (default) shifts and scales each generated stage's
         /// inflow openings so that every hydro's opening mean is 0 and its
-        /// variance is the model variance; `none` keeps the openings as drawn.
-        /// Stages using `historical_residuals` are not changed.
+        /// variance is that of its correlated noise: 1, or more where factoring
+        /// the correlation clips a negative eigenvalue; `none` keeps the
+        /// openings as drawn. Stages using `historical_residuals`, stages with
+        /// one opening and hydros whose openings are all equal are left as
+        /// drawn; load and non-controllable-source noise is never matched.
         ///
         /// Evaluation option, expected to be removed once evaluated.
         #[serde(default)]
@@ -73,7 +76,7 @@ pub enum Openings {
 pub enum MomentMatching {
     /// Keep the openings as drawn.
     None,
-    /// Shift and scale each hydro's openings to mean 0 and the inflow model's variance.
+    /// Shift and scale each hydro's openings to mean 0 and the variance of its correlated noise.
     #[default]
     PerCoordinate,
 }

@@ -123,7 +123,7 @@
         },
         {
           "const": "inflows",
-          "description": "Standardized historical inflows, the correlation NEWAVE takes as input.",
+          "description": "Standardized historical inflows.",
           "type": "string"
         }
       ]
@@ -334,7 +334,7 @@
         },
         {
           "const": "per_coordinate",
-          "description": "Shift and scale each hydro's openings to mean 0 and the inflow model's variance.",
+          "description": "Shift and scale each hydro's openings to mean 0 and the variance of its correlated noise.",
           "type": "string"
         }
       ]
@@ -349,7 +349,7 @@
             "moment_matching": {
               "$ref": "#/$defs/MomentMatching",
               "default": "per_coordinate",
-              "description": "`per_coordinate` (default) shifts and scales each generated stage's\ninflow openings so that every hydro's opening mean is 0 and its\nvariance is the model variance; `none` keeps the openings as drawn.\nStages using `historical_residuals` are not changed.\n\nEvaluation option, expected to be removed once evaluated."
+              "description": "`per_coordinate` (default) shifts and scales each generated stage's\ninflow openings so that every hydro's opening mean is 0 and its\nvariance is that of its correlated noise: 1, or more where factoring\nthe correlation clips a negative eigenvalue; `none` keeps the\nopenings as drawn. Stages using `historical_residuals`, stages with\none opening and hydros whose openings are all equal are left as\ndrawn; load and non-controllable-source noise is never matched.\n\nEvaluation option, expected to be removed once evaluated."
             },
             "source": {
               "const": "generated",

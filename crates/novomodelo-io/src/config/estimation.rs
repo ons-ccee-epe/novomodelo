@@ -59,7 +59,7 @@ impl<'de> serde::Deserialize<'de> for OrderSelectionMethod {
 pub enum CorrelationTarget {
     /// Residuals of the fitted PAR lags.
     Residuals,
-    /// Standardized historical inflows, the correlation NEWAVE takes as input.
+    /// Standardized historical inflows.
     #[default]
     Inflows,
 }
