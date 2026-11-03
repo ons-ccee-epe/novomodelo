@@ -156,11 +156,44 @@ fn compute_effective_opening_counts(
         .collect()
 }
 
-/// Copy already-correlated noise from the preceding stage when `stage_idx > 0`
-/// and both share a group ID. Returns `true` when the copy was performed (caller
-/// should `continue`), `false` when no copy is needed.
+/// Refuses a noise-group stage with more openings than the first stage of its group.
+fn reject_group_stage_larger_than_first(
+    stages: &[Stage],
+    noise_group_ids: Option<&[u32]>,
+    openings_per_stage: &[usize],
+) -> Result<(), StochasticError> {
+    let Some(ids) = noise_group_ids else {
+        return Ok(());
+    };
+    let mut first = 0;
+    for (stage_idx, &k_dst) in openings_per_stage.iter().enumerate() {
+        if stage_idx == 0 || ids[stage_idx] != ids[stage_idx - 1] {
+            first = stage_idx;
+            continue;
+        }
+        let k_src = openings_per_stage[first];
+        if k_dst > k_src {
+            let (dst_id, src_id) = (stages[stage_idx].id, stages[first].id);
+            return Err(StochasticError::InsufficientData {
+                context: format!(
+                    "stage {dst_id} has {k_dst} openings but shares a noise group with stage \
+                     {src_id}, which has {k_src}; a stage cannot have more openings than the \
+                     first stage of its noise group: lower num_openings of stage {dst_id} in \
+                     stages.json to {k_src}"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Copy already-correlated noise from the group's first stage, `group_source`,
+/// when `stage_idx > 0` and the stage shares its group ID with the previous
+/// stage. Returns `true` when the copy was performed (caller should `continue`),
+/// `false` when no copy is needed.
 fn try_copy_noise_group(
     stage_idx: usize,
+    group_source: usize,
     noise_group_ids: Option<&[u32]>,
     openings_per_stage: &[usize],
     stage_offsets: &[usize],
@@ -173,12 +206,9 @@ fn try_copy_noise_group(
     if stage_idx == 0 || ids[stage_idx] != ids[stage_idx - 1] {
         return false;
     }
-    let src_n_openings = openings_per_stage[stage_idx - 1];
-    let src_offset = stage_offsets[stage_idx - 1];
-    let n_openings = openings_per_stage[stage_idx];
+    let src_offset = stage_offsets[group_source];
     let offset = stage_offsets[stage_idx];
-    let copy_openings = src_n_openings.min(n_openings);
-    let copy_len = copy_openings * dim;
+    let copy_len = openings_per_stage[stage_idx] * dim;
     data.copy_within(src_offset..src_offset + copy_len, offset);
     true
 }
@@ -306,8 +336,9 @@ fn generate_saa(base_seed: u64, stage: &Stage, n_openings: usize, dim: usize, ou
 ///
 /// Returns [`StochasticError::UnsupportedNoiseMethod`] if any stage uses
 /// [`NoiseMethod::Selective`], or [`NoiseMethod::HistoricalResiduals`] with no
-/// `historical_library`; and [`StochasticError::DimensionExceedsCapacity`] when a
-/// `QmcSobol` stage exceeds `MAX_SOBOL_DIM`.
+/// `historical_library`; [`StochasticError::DimensionExceedsCapacity`] when a
+/// `QmcSobol` stage exceeds `MAX_SOBOL_DIM`; and [`StochasticError::InsufficientData`]
+/// when a stage of a noise group has more openings than the group's first stage.
 ///
 /// # Panics
 ///
@@ -349,6 +380,7 @@ pub fn generate_opening_tree<'a>(
 
     let openings_per_stage =
         compute_effective_opening_counts(stages, historical_library, external_scenario_counts);
+    reject_group_stage_larger_than_first(stages, noise_group_ids, &openings_per_stage)?;
 
     let mut stage_offsets = Vec::with_capacity(n_stages);
     let mut running_offset = 0usize;
@@ -365,6 +397,7 @@ pub fn generate_opening_tree<'a>(
     let mut tally = MomentMatchingTally::new();
     // Copies leave this unchanged, so a chain of copies inherits the last generated stage's state.
     let mut prev_matched = false;
+    let mut group_source = 0;
 
     for (stage_idx, stage) in stages.iter().enumerate() {
         let n_openings = openings_per_stage[stage_idx];
@@ -372,17 +405,19 @@ pub fn generate_opening_tree<'a>(
 
         if try_copy_noise_group(
             stage_idx,
+            group_source,
             noise_group_ids,
             &openings_per_stage,
             &stage_offsets,
             dim,
             &mut data,
         ) {
-            if matching && prev_matched && n_openings != openings_per_stage[stage_idx - 1] {
+            if matching && prev_matched && n_openings != openings_per_stage[group_source] {
                 tally.record_group_k_mismatch();
             }
             continue;
         }
+        group_source = stage_idx;
 
         let stage_slice = &mut data[offset..offset + n_openings * dim];
 
@@ -2473,6 +2508,71 @@ mod tests {
             "{}",
             chain_mismatches[0]
         );
+    }
+
+    #[test]
+    fn noise_group_stage_with_more_openings_than_the_group_first_stage_is_refused() {
+        let correlation = default_correlation();
+        let group = [0_u32, 0];
+        let external_counts = [5_usize, 10];
+        let cases = [
+            ([make_stage(0, 0, 5), make_stage(1, 1, 7)], None, 7),
+            (
+                [make_stage(0, 0, 10), make_stage(1, 1, 10)],
+                Some(&external_counts[..]),
+                10,
+            ),
+        ];
+        for (stages, external_scenario_counts, k_dst) in cases {
+            for moment_matching in [MomentMatching::None, MomentMatching::PerCoordinate] {
+                let result = generate_opening_tree(
+                    42,
+                    &stages,
+                    &correlation,
+                    &seven_entity_order(),
+                    SEVEN_DIMS,
+                    &OpeningTreeGenerationInputs {
+                        external_scenario_counts,
+                        noise_group_ids: Some(&group),
+                        moment_matching,
+                        ..Default::default()
+                    },
+                );
+                match result {
+                    Err(StochasticError::InsufficientData { context }) => assert!(
+                        context.contains(&format!(
+                            "stage 1 has {k_dst} openings but shares a noise group with stage 0, \
+                             which has 5"
+                        )),
+                        "{context}"
+                    ),
+                    Ok(_) => panic!("expected Err but got Ok"),
+                    Err(other) => panic!("expected InsufficientData, got {other:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn noise_group_copies_read_the_group_first_stage() {
+        let group = [0_u32, 0, 0];
+        let counts = [10_usize, 5, 10];
+        let stages = [
+            make_stage(0, 0, 10),
+            make_stage(1, 1, 10),
+            make_stage(2, 2, 10),
+        ];
+        let tree = generate_seven(
+            &stages,
+            &default_correlation(),
+            &OpeningTreeGenerationInputs {
+                external_scenario_counts: Some(&counts),
+                noise_group_ids: Some(&group),
+                ..Default::default()
+            },
+        );
+        assert_eq!(tree.n_openings(2), 10);
+        assert_eq!(bits(&stage_values(&tree, 2)), bits(&stage_values(&tree, 0)));
     }
 
     #[test]

@@ -14,7 +14,13 @@ mod progress;
 mod summary;
 mod templates;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use clap::{Parser, Subcommand, ValueEnum};
+use tracing::Level;
+use tracing_subscriber::{
+    Layer, filter::dynamic_filter_fn, layer::SubscriberExt, util::SubscriberInitExt,
+};
 
 use commands::{
     init::{self, InitArgs},
@@ -44,6 +50,17 @@ pub(crate) fn resolve_color(cli_color: ColorWhen) {
     };
     console::set_colors_enabled(enabled);
     console::set_colors_enabled_stderr(enabled);
+}
+
+static NON_ROOT_RANK: AtomicBool = AtomicBool::new(false);
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn keeps_event(level: &Level, non_root: bool) -> bool {
+    !non_root || *level == Level::ERROR
+}
+
+pub(crate) fn mark_non_root_rank() {
+    NON_ROOT_RANK.store(true, Ordering::Relaxed);
 }
 
 #[derive(Debug, Parser)]
@@ -80,14 +97,21 @@ fn main() {
 
     resolve_color(cli.color);
 
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
     // A subscriber can only install once, so a failed init must not stop the command.
-    let _ = tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_target(false)
-        .without_time()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+    let _ = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_target(false)
+                .without_time()
+                .with_filter(env_filter)
+                // The rank is set after this install, so the predicate must run per
+                // event; a statically cached callsite interest would outlive the flag.
+                .with_filter(dynamic_filter_fn(|metadata, _| {
+                    keeps_event(metadata.level(), NON_ROOT_RANK.load(Ordering::Relaxed))
+                })),
         )
         .try_init();
 
@@ -114,7 +138,26 @@ mod varying_external_deck;
 
 #[cfg(test)]
 mod tests {
-    use super::{ColorWhen, resolve_color};
+    use tracing::Level;
+
+    use super::{ColorWhen, keeps_event, resolve_color};
+
+    #[test]
+    fn non_root_ranks_keep_only_errors() {
+        for level in [Level::WARN, Level::INFO, Level::DEBUG, Level::TRACE] {
+            assert!(!keeps_event(&level, true), "{level} must be dropped");
+        }
+        assert!(keeps_event(&Level::ERROR, true));
+        for level in [
+            Level::ERROR,
+            Level::WARN,
+            Level::INFO,
+            Level::DEBUG,
+            Level::TRACE,
+        ] {
+            assert!(keeps_event(&level, false), "{level} must be kept");
+        }
+    }
 
     #[test]
     fn test_resolve_color_always_enables_color() {

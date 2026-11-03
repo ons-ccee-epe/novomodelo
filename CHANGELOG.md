@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every hydro's inflow openings have mean 0 and the model variance. The new
   `training.scenario_source.openings.moment_matching` in `config.json` selects
   it; `"none"` restores the earlier results.
+- **BREAKING:** a stage in `stages.json` with more openings than the first stage
+  of its noise group (consecutive stages with the same `season_id` in one year)
+  is refused; its extra openings carried zero inflow noise. Lower its
+  `num_openings` to the first stage's count. Results change when a group's
+  opening count drops and rises again: the later stages now copy the first
+  stage's openings where they used zeros.
 
 ### Fixed
 
