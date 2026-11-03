@@ -370,7 +370,6 @@ mod tests {
             presolve: PresolveKind::Off,
             simplex_update_limit: 1000,
             cost_perturbation: 1.0,
-            refactor_error_tolerance: 1e-5,
             factor_pivot_threshold: 0.2,
             use_warm_start: false,
             steepest_edge_devex_fallback_threshold: 20.0,

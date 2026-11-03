@@ -78,11 +78,6 @@ impl SolverInterface for HighsSolver {
             );
             ffi::novomodelo_highs_set_double_option(
                 self.handle,
-                c"rebuild_refactor_solution_error_tolerance".as_ptr(),
-                profile.refactor_error_tolerance,
-            );
-            ffi::novomodelo_highs_set_double_option(
-                self.handle,
                 c"factor_pivot_threshold".as_ptr(),
                 profile.factor_pivot_threshold,
             );

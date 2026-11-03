@@ -2234,6 +2234,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_config_rejects_refactor_error_tolerance_in_every_solver_profile() {
+        for phase in ["forward", "backward", "simulation"] {
+            let mut config = base_value(OVERRIDE_BASE_CONFIG);
+            let profile = serde_json::json!({ "refactor_error_tolerance": 1e-6 });
+            if phase == "simulation" {
+                config["simulation"] = serde_json::json!({ "solver": profile });
+            } else {
+                config["training"]["solver"] = serde_json::json!({ phase: profile });
+            }
+            let f = write_config(&config.to_string());
+            let message = parse_config(f.path()).unwrap_err().to_string();
+            assert!(
+                message.contains("unknown field `refactor_error_tolerance`"),
+                "{phase}: unexpected message: {message}"
+            );
+        }
+    }
+
     /// A key repeated inside the selection object fails to load, naming the
     /// key. The override path takes a [`serde_json::Value`], whose object map
     /// holds each key once, so a repeated key reaches only this entry point.
@@ -2816,7 +2835,6 @@ mod tests {
                         "presolve": "on",
                         "simplex_update_limit": 5000,
                         "cost_perturbation": 0.0,
-                        "refactor_error_tolerance": 1e-6,
                         "factor_pivot_threshold": 0.1,
                         "use_warm_start": true,
                         "steepest_edge_devex_fallback_threshold": 10.0

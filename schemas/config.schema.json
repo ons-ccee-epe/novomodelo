@@ -442,15 +442,6 @@
             "null"
           ]
         },
-        "refactor_error_tolerance": {
-          "default": null,
-          "description": "Refactorization solution-error tolerance override.",
-          "format": "double",
-          "type": [
-            "number",
-            "null"
-          ]
-        },
         "scale": {
           "anyOf": [
             {

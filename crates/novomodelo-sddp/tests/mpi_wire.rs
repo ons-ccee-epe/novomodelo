@@ -485,7 +485,6 @@ mod retry_armed_determinism {
             presolve: Some(PresolveMode::Off),
             simplex_update_limit: Some(1000),
             cost_perturbation: Some(1.0),
-            refactor_error_tolerance: Some(1e-5),
             factor_pivot_threshold: Some(0.2),
             use_warm_start: Some(false),
             steepest_edge_devex_fallback_threshold: Some(20.0),

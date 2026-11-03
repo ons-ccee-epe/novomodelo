@@ -847,6 +847,42 @@ fn a_retried_solve_is_judged_by_the_tolerance_it_was_accepted_under() {
     }
 }
 
+#[cfg(feature = "test-support")]
+#[test]
+fn default_options_always_refactorize_before_reporting_optimal() {
+    use super::config::{OptionValue, default_options};
+
+    let entry = default_options()
+        .into_iter()
+        .find(|opt| opt.name == c"no_unnecessary_rebuild_refactor")
+        .expect("default_options() must pin no_unnecessary_rebuild_refactor");
+    assert!(matches!(entry.value, OptionValue::Bool(0)));
+
+    let mut solver = HighsSolver::new().expect("HighsSolver::new() must succeed");
+    assert_eq!(
+        solver.get_bool_option(c"no_unnecessary_rebuild_refactor"),
+        Some(false)
+    );
+
+    solver.load_model(&make_fixture_stage_template());
+    solver
+        .retry_escalation_from(0, false)
+        .unwrap_or_else(|(_, e)| panic!("retry escalation must solve the fixture: {e:?}"));
+    // SAFETY: `solver.handle` is a valid HiGHS pointer; the name is a static C string.
+    unsafe {
+        crate::ffi::novomodelo_highs_set_bool_option(
+            solver.handle,
+            c"no_unnecessary_rebuild_refactor".as_ptr(),
+            1,
+        );
+    }
+    solver.restore_default_settings();
+    assert_eq!(
+        solver.get_bool_option(c"no_unnecessary_rebuild_refactor"),
+        Some(false)
+    );
+}
+
 /// Terminal-status scratch buffers must retain capacity across repeated resize calls.
 #[test]
 fn interpret_terminal_status_reuses_scratch() {
@@ -1515,13 +1551,6 @@ mod research_tests {
                 "cost_perturbation must match default_options()"
             ),
             _ => panic!("dual_simplex_cost_perturbation_multiplier is not a Double option"),
-        }
-        match value_of(&options, c"rebuild_refactor_solution_error_tolerance") {
-            OptionValue::Double(v) => assert_eq!(
-                profile.refactor_error_tolerance, *v,
-                "refactor_error_tolerance must match default_options()"
-            ),
-            _ => panic!("rebuild_refactor_solution_error_tolerance is not a Double option"),
         }
         match value_of(&options, c"dual_steepest_edge_weight_log_error_threshold") {
             OptionValue::Double(v) => assert_eq!(

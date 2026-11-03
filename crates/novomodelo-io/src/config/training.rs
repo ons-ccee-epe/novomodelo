@@ -553,10 +553,6 @@ pub struct PhaseSolverProfileConfig {
     #[serde(default)]
     pub cost_perturbation: Option<f64>,
 
-    /// Refactorization solution-error tolerance override.
-    #[serde(default)]
-    pub refactor_error_tolerance: Option<f64>,
-
     /// Matrix factorization pivot-threshold override.
     #[serde(default)]
     pub factor_pivot_threshold: Option<f64>,
@@ -1121,7 +1117,6 @@ mod tests {
         assert!(backward.dual_feasibility_tolerance.is_none());
         assert!(backward.simplex_update_limit.is_none());
         assert!(backward.cost_perturbation.is_none());
-        assert!(backward.refactor_error_tolerance.is_none());
         assert!(backward.steepest_edge_devex_fallback_threshold.is_none());
     }
 

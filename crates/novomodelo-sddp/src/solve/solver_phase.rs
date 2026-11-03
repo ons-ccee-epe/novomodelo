@@ -119,7 +119,6 @@ impl PhaseProfiles for HighsProfile {
         presolve: PresolveKind::On,
         simplex_update_limit: 5000,
         cost_perturbation: 0.0,
-        refactor_error_tolerance: 1e-6,
         factor_pivot_threshold: 0.1,
         use_warm_start: false,
         steepest_edge_devex_fallback_threshold: 10.0,
@@ -135,7 +134,6 @@ impl PhaseProfiles for HighsProfile {
         presolve: PresolveKind::On,
         simplex_update_limit: 5000,
         cost_perturbation: 0.0,
-        refactor_error_tolerance: 1e-6,
         factor_pivot_threshold: 0.1,
         use_warm_start: true,
         steepest_edge_devex_fallback_threshold: 10.0,
@@ -151,7 +149,6 @@ impl PhaseProfiles for HighsProfile {
         presolve: PresolveKind::On,
         simplex_update_limit: 5000,
         cost_perturbation: 0.0,
-        refactor_error_tolerance: 1e-6,
         factor_pivot_threshold: 0.1,
         use_warm_start: false,
         steepest_edge_devex_fallback_threshold: 10.0,
@@ -223,7 +220,6 @@ pub const FORWARD_PROFILE: HighsProfile = HighsProfile {
     presolve: PresolveKind::On,
     simplex_update_limit: 5000,
     cost_perturbation: 0.0,
-    refactor_error_tolerance: 1e-6,
     factor_pivot_threshold: 0.1,
     use_warm_start: false,
     steepest_edge_devex_fallback_threshold: 10.0,
@@ -245,7 +241,6 @@ pub const BACKWARD_PROFILE: HighsProfile = HighsProfile {
     presolve: PresolveKind::On,
     simplex_update_limit: 5000,
     cost_perturbation: 0.0,
-    refactor_error_tolerance: 1e-6,
     factor_pivot_threshold: 0.1,
     use_warm_start: true,
     steepest_edge_devex_fallback_threshold: 10.0,
@@ -266,7 +261,6 @@ pub const SIMULATION_PROFILE: HighsProfile = HighsProfile {
     presolve: PresolveKind::On,
     simplex_update_limit: 5000,
     cost_perturbation: 0.0,
-    refactor_error_tolerance: 1e-6,
     factor_pivot_threshold: 0.1,
     use_warm_start: false,
     steepest_edge_devex_fallback_threshold: 10.0,
@@ -378,13 +372,6 @@ fn validate_backend_support(
             "unsupported cost_perturbation {value} for backend \"highs\" in phase \"{phase_key}\": value must be finite and >= 0"
         )));
     }
-    if let Some(value) = config.refactor_error_tolerance
-        && (!value.is_finite() || value < 0.0)
-    {
-        return Err(SddpError::Validation(format!(
-            "unsupported refactor_error_tolerance {value} for backend \"highs\" in phase \"{phase_key}\": value must be finite and >= 0"
-        )));
-    }
     if let Some(value) = config.factor_pivot_threshold
         && !(MIN_FACTOR_PIVOT_THRESHOLD..=MAX_FACTOR_PIVOT_THRESHOLD).contains(&value)
     {
@@ -419,7 +406,6 @@ fn first_set_override(config: &PhaseSolverProfileConfig) -> Option<&'static str>
         presolve,
         simplex_update_limit,
         cost_perturbation,
-        refactor_error_tolerance,
         factor_pivot_threshold,
         use_warm_start,
         steepest_edge_devex_fallback_threshold,
@@ -440,8 +426,6 @@ fn first_set_override(config: &PhaseSolverProfileConfig) -> Option<&'static str>
         Some("simplex_update_limit")
     } else if cost_perturbation.is_some() {
         Some("cost_perturbation")
-    } else if refactor_error_tolerance.is_some() {
-        Some("refactor_error_tolerance")
     } else if factor_pivot_threshold.is_some() {
         Some("factor_pivot_threshold")
     } else if use_warm_start.is_some() {
@@ -557,9 +541,6 @@ fn resolve_active_profile(
     if let Some(value) = config.cost_perturbation {
         profile.cost_perturbation = value;
     }
-    if let Some(value) = config.refactor_error_tolerance {
-        profile.refactor_error_tolerance = value;
-    }
     if let Some(value) = config.factor_pivot_threshold {
         profile.factor_pivot_threshold = value;
     }
@@ -599,7 +580,6 @@ const _: () = {
     assert!(matches!(FORWARD_PROFILE.presolve, PresolveKind::On));
     assert!(FORWARD_PROFILE.simplex_update_limit == 5000);
     assert!(FORWARD_PROFILE.cost_perturbation == 0.0);
-    assert!(FORWARD_PROFILE.refactor_error_tolerance == 1e-6);
     assert!(FORWARD_PROFILE.factor_pivot_threshold == 0.1);
     assert!(!FORWARD_PROFILE.use_warm_start);
     assert!(FORWARD_PROFILE.steepest_edge_devex_fallback_threshold == 10.0);
@@ -614,7 +594,6 @@ const _: () = {
     assert!(matches!(BACKWARD_PROFILE.presolve, PresolveKind::On));
     assert!(BACKWARD_PROFILE.simplex_update_limit == 5000);
     assert!(BACKWARD_PROFILE.cost_perturbation == 0.0);
-    assert!(BACKWARD_PROFILE.refactor_error_tolerance == 1e-6);
     assert!(BACKWARD_PROFILE.factor_pivot_threshold == 0.1);
     assert!(BACKWARD_PROFILE.use_warm_start);
     assert!(BACKWARD_PROFILE.steepest_edge_devex_fallback_threshold == 10.0);
@@ -629,7 +608,6 @@ const _: () = {
     assert!(matches!(SIMULATION_PROFILE.presolve, PresolveKind::On));
     assert!(SIMULATION_PROFILE.simplex_update_limit == 5000);
     assert!(SIMULATION_PROFILE.cost_perturbation == 0.0);
-    assert!(SIMULATION_PROFILE.refactor_error_tolerance == 1e-6);
     assert!(SIMULATION_PROFILE.factor_pivot_threshold == 0.1);
     assert!(!SIMULATION_PROFILE.use_warm_start);
     assert!(SIMULATION_PROFILE.steepest_edge_devex_fallback_threshold == 10.0);
@@ -677,7 +655,6 @@ mod highs_tests {
             presolve: None,
             simplex_update_limit: None,
             cost_perturbation: None,
-            refactor_error_tolerance: None,
             factor_pivot_threshold: None,
             use_warm_start: None,
             steepest_edge_devex_fallback_threshold: None,
@@ -848,7 +825,7 @@ mod highs_tests {
         );
     }
 
-    /// Each of the 8 new fields overrides the base constant when set to a
+    /// Each of the 7 new fields overrides the base constant when set to a
     /// valid non-default value, and `presolve` maps through `PresolveKind`;
     /// fields not set here keep the base constant's values.
     #[test]
@@ -858,7 +835,6 @@ mod highs_tests {
             presolve: Some(PresolveMode::Off),
             simplex_update_limit: Some(2000),
             cost_perturbation: Some(0.5),
-            refactor_error_tolerance: Some(1e-5),
             factor_pivot_threshold: Some(0.2),
             use_warm_start: Some(false),
             steepest_edge_devex_fallback_threshold: Some(20.0),
@@ -869,7 +845,6 @@ mod highs_tests {
         assert!(matches!(resolved.presolve, PresolveKind::Off));
         assert_eq!(resolved.simplex_update_limit, 2000);
         assert_eq!(resolved.cost_perturbation, 0.5);
-        assert_eq!(resolved.refactor_error_tolerance, 1e-5);
         assert_eq!(resolved.factor_pivot_threshold, 0.2);
         assert!(!resolved.use_warm_start);
         assert_eq!(resolved.steepest_edge_devex_fallback_threshold, 20.0);
@@ -968,22 +943,6 @@ mod highs_tests {
         );
     }
 
-    /// A negative `refactor_error_tolerance` is rejected, naming the field.
-    #[test]
-    fn validate_phase_solver_config_rejects_negative_refactor_error_tolerance() {
-        let config = PhaseSolverProfileConfig {
-            refactor_error_tolerance: Some(-1e-6),
-            ..blank_config()
-        };
-        let err = validate_phase_solver_config(Some(&config), Phase::Forward)
-            .expect_err("negative refactor_error_tolerance must be rejected");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("refactor_error_tolerance"),
-            "message must name the field: {msg}"
-        );
-    }
-
     /// A `factor_pivot_threshold` (`0.9`) above `kMaxPivotThreshold` (`0.5`,
     /// `HFactorConst.h`) is rejected, naming the field.
     #[test]
@@ -1043,7 +1002,6 @@ mod highs_tests {
             presolve: Some(PresolveMode::Off),
             simplex_update_limit: Some(2000),
             cost_perturbation: Some(0.5),
-            refactor_error_tolerance: Some(1e-5),
             factor_pivot_threshold: Some(0.2),
             use_warm_start: Some(false),
             steepest_edge_devex_fallback_threshold: Some(20.0),
@@ -1074,7 +1032,6 @@ mod clp_tests {
             presolve: None,
             simplex_update_limit: None,
             cost_perturbation: None,
-            refactor_error_tolerance: None,
             factor_pivot_threshold: None,
             use_warm_start: None,
             steepest_edge_devex_fallback_threshold: None,
@@ -1213,7 +1170,7 @@ mod clp_tests {
         assert!(err.to_string().contains("clp"));
     }
 
-    /// Each of the 8 new fields is hard-rejected on CLP when it is the only
+    /// Each of the 7 new fields is hard-rejected on CLP when it is the only
     /// field set, naming both the backend and the field.
     #[test]
     fn validate_phase_solver_config_rejects_clp_new_fields() {
@@ -1247,13 +1204,6 @@ mod clp_tests {
         );
         assert_clp_rejects_field(
             &PhaseSolverProfileConfig {
-                refactor_error_tolerance: Some(1e-5),
-                ..blank_config()
-            },
-            "refactor_error_tolerance",
-        );
-        assert_clp_rejects_field(
-            &PhaseSolverProfileConfig {
                 factor_pivot_threshold: Some(0.2),
                 ..blank_config()
             },
@@ -1275,7 +1225,7 @@ mod clp_tests {
         );
     }
 
-    /// `first_set_override` names each of the 12 fields when it is the only
+    /// `first_set_override` names each of the 11 fields when it is the only
     /// one set, and returns `None` for a fully-absent config — the single
     /// source of truth `validate_backend_support` dispatches through.
     #[test]
@@ -1336,13 +1286,6 @@ mod clp_tests {
                 ..blank_config()
             }),
             Some("cost_perturbation")
-        );
-        assert_eq!(
-            first_set_override(&PhaseSolverProfileConfig {
-                refactor_error_tolerance: Some(1e-5),
-                ..blank_config()
-            }),
-            Some("refactor_error_tolerance")
         );
         assert_eq!(
             first_set_override(&PhaseSolverProfileConfig {

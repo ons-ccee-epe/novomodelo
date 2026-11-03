@@ -9,11 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Removed
 
-- `lp_row_violations` column in `training/solver/iterations.parquet` and
-  `simulation/solver/iterations.parquet`: LP solves whose solution misses a row
-  bound. `novomodelo run` warns once at the end when any solve is counted.
+- **BREAKING:** `training.solver.forward.refactor_error_tolerance`,
+  `training.solver.backward.refactor_error_tolerance` and
+  `simulation.solver.refactor_error_tolerance` are refused; delete the key.
+
+### Fixed
+
+- Load and water balances recomputed from outputs could fail to close, and cuts
+  could carry wrong duals; results change. A new `lp_row_violations` column in
+  `training/solver/iterations.parquet` and `simulation/solver/iterations.parquet`
+  counts LP solves that miss a row bound, and `novomodelo run` warns once at the
+  end when any solve is counted.
 
 ## [0.19.1] - 2026-10-26
 
