@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `novomodelo-python` is published with an sdist next to the wheels. Where no
   wheel fits, such as Linux with glibc older than 2.34 (RHEL 8, Ubuntu 20.04),
   pip builds the sdist, given a Rust toolchain, cmake and a C++ compiler.
+- `lp_row_violations` in `solver/iterations.parquet`; `novomodelo run` warns if
+  nonzero.
 
 ### Changed
 
@@ -31,12 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of its noise group (consecutive stages with the same `season_id` in one year)
   is refused. Lower its `num_openings` to the first stage's count. Results
   change where a group's opening count drops and rises again.
+- `training.solver.forward.use_warm_start` defaults to `true` again, so forward
+  solves start warm; results change. Simulation solves stay cold; set
+  `simulation.solver.use_warm_start: true` to opt in.
 
 ### Removed
 
 - Releases no longer include the `novomodelo-mcp` placeholder binary, and its
   installers and archives were removed from the earlier releases. The MCP server
   is the separate `novomodelo-mcp` Python package.
+- **BREAKING:** `training.solver.forward.refactor_error_tolerance`,
+  `training.solver.backward.refactor_error_tolerance` and
+  `simulation.solver.refactor_error_tolerance` are refused; delete the key.
 
 ### Fixed
 
@@ -49,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `user_file`.
 - A policy checkpoint in `policy.path` or `policy.boundary` without its empty
   `basis/` directory, which zip tools drop, failed to load.
+- **BREAKING:** HiGHS: balances recomputed from outputs could fail to close and
+  cuts could carry wrong duals; results change. Retrain policies trained with
+  HiGHS.
 
 ## [0.19.1] - 2026-10-26
 

@@ -62,6 +62,7 @@ EXPECTED_COLUMNS = [
     "lp_successes",
     "lp_retries",
     "lp_failures",
+    "lp_row_violations",
     "retry_attempts",
     "basis_offered",
     "basis_consistency_failures",

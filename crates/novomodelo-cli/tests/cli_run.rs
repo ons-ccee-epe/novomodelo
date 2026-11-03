@@ -2733,3 +2733,43 @@ mod mpi {
         );
     }
 }
+
+const CONFIG_4REE_SHORT_JSON: &str = r#"{
+    "training": {
+        "selection": { "method": "sampled", "forward_passes": 4 },
+        "stopping_rules": [ { "type": "iteration_limit", "limit": 4 } ],
+        "scenario_source": {
+            "seed": 42,
+            "inflow": { "scheme": "in_sample" },
+            "load": { "scheme": "in_sample" },
+            "ncs": { "scheme": "in_sample" }
+        }
+    },
+    "simulation": { "enabled": true, "selection": { "method": "sampled", "num_scenarios": 8 } },
+    "modeling": { "inflow_non_negativity": { "method": "none" } }
+}"#;
+
+#[test]
+fn run_reports_no_row_violation_warning_on_4ree() {
+    let case = TempDir::new().unwrap();
+    copy_dir_recursive(&case_dir("4ree"), case.path());
+    write_file(case.path(), "config.json", CONFIG_4REE_SHORT_JSON);
+    let output = TempDir::new().unwrap();
+
+    let run = novomodelo()
+        .args([
+            "run",
+            case.path().to_str().unwrap(),
+            "--output",
+            output.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let stderr = String::from_utf8_lossy(&run.get_output().stderr).into_owned();
+    assert!(
+        !stderr.contains("misses a row bound"),
+        "unexpected row-violation warning: {stderr}"
+    );
+    assert!(output.path().join("simulation/_SUCCESS").exists());
+}

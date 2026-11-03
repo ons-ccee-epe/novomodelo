@@ -185,6 +185,10 @@ pub struct SolverStatistics {
     /// basis reconstruction is active on this solver instance.
     pub basis_reconstructions: u64,
 
+    /// Number of solves that returned `Ok` with a primal solution whose row
+    /// excess exceeds [`ROW_VIOLATION_RELATIVE_ALLOWANCE`](crate::ROW_VIOLATION_RELATIVE_ALLOWANCE).
+    pub row_violations: u64,
+
     /// Per-level retry success histogram. Length depends on the solver backend
     /// (e.g. 12 for `HiGHS`). `retry_level_histogram[k]` counts how many solves
     /// were recovered at retry level `k`. The sum equals
@@ -211,6 +215,7 @@ impl SolverStatistics {
         self.total_set_bounds_time_seconds = src.total_set_bounds_time_seconds;
         self.total_basis_set_time_seconds = src.total_basis_set_time_seconds;
         self.basis_reconstructions = src.basis_reconstructions;
+        self.row_violations = src.row_violations;
         self.retry_level_histogram
             .resize(src.retry_level_histogram.len(), 0);
         self.retry_level_histogram
@@ -611,6 +616,7 @@ mod tests {
         assert_eq!(stats.total_load_model_time_seconds, 0.0);
         assert_eq!(stats.total_set_bounds_time_seconds, 0.0);
         assert_eq!(stats.basis_reconstructions, 0);
+        assert_eq!(stats.row_violations, 0);
         assert!(stats.retry_level_histogram.is_empty());
     }
 
@@ -630,6 +636,7 @@ mod tests {
             total_set_bounds_time_seconds: 0.25,
             total_basis_set_time_seconds: 0.125,
             basis_reconstructions: 6,
+            row_violations: 3,
             retry_level_histogram: vec![1, 0, 2, 0, 3, 0, 0, 0, 4, 0, 0, 5],
         }
     }
@@ -658,6 +665,7 @@ mod tests {
             b.total_basis_set_time_seconds
         );
         assert_eq!(a.basis_reconstructions, b.basis_reconstructions);
+        assert_eq!(a.row_violations, b.row_violations);
         assert_eq!(a.retry_level_histogram, b.retry_level_histogram);
     }
 

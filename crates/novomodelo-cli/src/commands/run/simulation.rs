@@ -40,13 +40,15 @@ use crate::progress::run_progress_thread;
 use crate::summary::print_simulation_summary;
 
 /// Run the simulation phase: workspace pool, Parquet writing, and output.
+///
+/// Returns the cross-rank solver-stats aggregate of the simulation.
 pub(super) fn run_simulation_phase(
     ctx: &RunContext<impl Communicator>,
     system: &System,
     setup: &mut StudySetup,
     training_result: &TrainingResult,
     hostname: &str,
-) -> Result<(), CliError> {
+) -> Result<SolverStatsDelta, CliError> {
     let solver_factory = ActiveSolver::new;
     let n_scenarios = setup.simulation_config.n_scenarios;
     let sim_config = setup.simulation_config();
@@ -213,7 +215,7 @@ pub(super) fn run_simulation_phase(
         )?;
     }
 
-    Ok(())
+    Ok(global_agg)
 }
 
 /// Write simulation output files on rank 0.

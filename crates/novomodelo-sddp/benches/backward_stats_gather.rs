@@ -128,6 +128,7 @@ fn bench_statistics_snapshot(c: &mut Criterion) {
             total_set_bounds_time_seconds: 0.2,
             total_basis_set_time_seconds: 0.1,
             basis_reconstructions: 12,
+            row_violations: 0,
             retry_level_histogram: vec![1, 0, 2, 0, 3, 0, 0, 0, 4, 0, 0, 5],
         },
     };

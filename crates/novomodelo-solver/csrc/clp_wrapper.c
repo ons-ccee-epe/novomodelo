@@ -299,6 +299,10 @@ void novomodelo_clp_set_primal_tolerance(void* model, double value) {
     Clp_setPrimalTolerance((Clp_Simplex*)model, value);
 }
 
+double novomodelo_clp_primal_tolerance(const void* model) {
+    return Clp_primalTolerance((Clp_Simplex*)model);
+}
+
 void novomodelo_clp_set_dual_tolerance(void* model, double value) {
     Clp_setDualTolerance((Clp_Simplex*)model, value);
 }

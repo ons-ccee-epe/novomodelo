@@ -78,11 +78,6 @@ impl SolverInterface for HighsSolver {
             );
             ffi::novomodelo_highs_set_double_option(
                 self.handle,
-                c"rebuild_refactor_solution_error_tolerance".as_ptr(),
-                profile.refactor_error_tolerance,
-            );
-            ffi::novomodelo_highs_set_double_option(
-                self.handle,
                 c"factor_pivot_threshold".as_ptr(),
                 profile.factor_pivot_threshold,
             );
@@ -243,6 +238,8 @@ impl SolverInterface for HighsSolver {
         self.col_dual.resize(self.num_cols, 0.0);
         self.row_value.resize(self.num_rows, 0.0);
         self.row_dual.resize(self.num_rows, 0.0);
+        self.row_activity.resize(self.num_rows, 0.0);
+        self.row_magnitude.resize(self.num_rows, 0.0);
 
         self.basis_col_i32.resize(self.num_cols, 0);
         self.basis_row_i32.resize(self.num_rows, 0);
@@ -297,6 +294,8 @@ impl SolverInterface for HighsSolver {
 
         self.row_value.resize(self.num_rows, 0.0);
         self.row_dual.resize(self.num_rows, 0.0);
+        self.row_activity.resize(self.num_rows, 0.0);
+        self.row_magnitude.resize(self.num_rows, 0.0);
         self.basis_row_i32.resize(self.num_rows, 0);
     }
 
@@ -549,5 +548,9 @@ impl SolverInterface for HighsSolver {
 
     fn record_reconstruction_stats(&mut self) {
         self.stats.basis_reconstructions += 1;
+    }
+
+    fn warm_starts(&self) -> bool {
+        self.current_profile.use_warm_start
     }
 }

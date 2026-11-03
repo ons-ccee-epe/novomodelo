@@ -5,8 +5,10 @@
 //! The deltas are stored per-iteration and per-phase for later Parquet output and
 //! CLI display.
 
+use std::fmt;
+
 use novomodelo_io::SolverStatsRow;
-use novomodelo_solver::SolverStatistics;
+use novomodelo_solver::{ROW_VIOLATION_RELATIVE_ALLOWANCE, SolverStatistics};
 
 /// Delta of solver counters between two snapshots.
 ///
@@ -33,6 +35,11 @@ pub struct SolverStatsDelta {
 
     /// Times the offered basis was rejected because `isBasisConsistent` returned false.
     pub basis_consistency_failures: u64,
+
+    /// Solves whose returned primal solution misses a row bound by more than
+    /// the primal feasibility tolerance plus 1e-11 times the row's magnitude
+    /// `Σ|a_ij·x_j|` (taken as at least 1).
+    pub row_violations: u64,
 
     /// Total simplex iterations across all solves.
     pub simplex_iterations: u64,
@@ -77,6 +84,7 @@ impl SolverStatsDelta {
             basis_offered: after.basis_offered - before.basis_offered,
             basis_consistency_failures: after.basis_consistency_failures
                 - before.basis_consistency_failures,
+            row_violations: after.row_violations - before.row_violations,
             simplex_iterations: after.total_iterations - before.total_iterations,
             solve_time_ms: (after.total_solve_time_seconds - before.total_solve_time_seconds)
                 * 1000.0,
@@ -108,6 +116,7 @@ impl SolverStatsDelta {
         dst.retry_attempts += rhs.retry_attempts;
         dst.basis_offered += rhs.basis_offered;
         dst.basis_consistency_failures += rhs.basis_consistency_failures;
+        dst.row_violations += rhs.row_violations;
         dst.simplex_iterations += rhs.simplex_iterations;
         dst.solve_time_ms += rhs.solve_time_ms;
         dst.load_model_count += rhs.load_model_count;
@@ -135,6 +144,7 @@ impl SolverStatsDelta {
         dst.retry_attempts = self.retry_attempts;
         dst.basis_offered = self.basis_offered;
         dst.basis_consistency_failures = self.basis_consistency_failures;
+        dst.row_violations = self.row_violations;
         dst.simplex_iterations = self.simplex_iterations;
         dst.solve_time_ms = self.solve_time_ms;
         dst.load_model_count = self.load_model_count;
@@ -157,6 +167,7 @@ impl SolverStatsDelta {
         self.retry_attempts = 0;
         self.basis_offered = 0;
         self.basis_consistency_failures = 0;
+        self.row_violations = 0;
         self.simplex_iterations = 0;
         self.solve_time_ms = 0.0;
         self.load_model_count = 0;
@@ -193,6 +204,7 @@ pub fn aggregate_solver_statistics(
         result.retry_count += s.retry_count;
         result.total_solve_time_seconds += s.total_solve_time_seconds;
         result.basis_consistency_failures += s.basis_consistency_failures;
+        result.row_violations += s.row_violations;
         result.first_try_successes += s.first_try_successes;
         result.basis_offered += s.basis_offered;
         result.load_model_count += s.load_model_count;
@@ -297,6 +309,7 @@ pub fn delta_to_stats_row(
         retry_attempts: delta.retry_attempts as u32,
         basis_offered: delta.basis_offered as u32,
         basis_consistency_failures: delta.basis_consistency_failures as u32,
+        lp_row_violations: delta.row_violations as u32,
         simplex_iterations: delta.simplex_iterations,
         solve_time_ms: delta.solve_time_ms,
         load_model_time_ms: delta.load_model_time_ms,
@@ -325,26 +338,74 @@ pub enum StatsFoldMode {
     },
 }
 
-/// Fold a solver-stats log into the five phase-derived training-summary
-/// counts: `(first_try, retried, failed, forward_solve_seconds,
-/// backward_solve_seconds)`.
+/// A training counter split by phase.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PhaseCounts {
+    /// Forward-pass count.
+    pub forward: u64,
+    /// Backward-pass count.
+    pub backward: u64,
+    /// Lower-bound evaluation count.
+    pub lower_bound: u64,
+}
+
+impl PhaseCounts {
+    /// Sum over the three phases.
+    #[must_use]
+    pub fn total(&self) -> u64 {
+        self.forward + self.backward + self.lower_bound
+    }
+
+    fn add(&mut self, phase: &str, value: u64) {
+        match phase {
+            "forward" => self.forward += value,
+            "backward" => self.backward += value,
+            "lower_bound" => self.lower_bound += value,
+            _ => {}
+        }
+    }
+}
+
+/// Training-run totals folded from a solver-stats log by
+/// [`aggregate_solver_stats_log`].
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SolveTotals {
+    /// Solves that succeeded without a retry.
+    pub first_try: u64,
+    /// Solves that succeeded after at least one retry.
+    pub retried: u64,
+    /// Solves that failed after every retry.
+    pub failed: u64,
+    /// Forward-pass solve time, in seconds.
+    pub forward_solve_seconds: f64,
+    /// Backward-pass solve time, in seconds.
+    pub backward_solve_seconds: f64,
+    /// Solves whose returned primal solution misses a row bound.
+    pub row_violations: PhaseCounts,
+    /// Solves counted over the same entries as `row_violations`; the
+    /// denominator of [`RowViolationReport`] only.
+    pub lp_solves: PhaseCounts,
+}
+
+/// Fold a solver-stats log into the training-run [`SolveTotals`].
 ///
 /// `total_lp_solves` is deliberately NOT derived here — it stays sourced from
 /// the per-iteration convergence records (`IterationRecord.lp_solves`), which
 /// can diverge from this log's own per-entry `lp_solves` on a multi-stage
 /// case. Pinned by `aggregate_solver_stats_log_ignores_lp_solves`.
+/// [`SolveTotals::lp_solves`] sums the log's `lp_solves` over the same entries
+/// as [`SolveTotals::row_violations`], so a report's count never exceeds its
+/// solves.
 #[must_use]
 pub fn aggregate_solver_stats_log(
     entries: &[SolverStatsLogEntry],
     mode: StatsFoldMode,
-) -> (u64, u64, u64, f64, f64) {
+) -> SolveTotals {
     let my_rank = match mode {
         StatsFoldMode::AllEntries => None,
         StatsFoldMode::MpiRank { rank } => Some(i32::try_from(rank).unwrap_or(i32::MAX)),
     };
-    let mut first_try = 0u64;
-    let mut retried = 0u64;
-    let mut failed = 0u64;
+    let mut totals = SolveTotals::default();
     let mut forward_solve_ms = 0.0_f64;
     let mut backward_solve_ms = 0.0_f64;
     for entry in entries {
@@ -359,22 +420,76 @@ pub fn aggregate_solver_stats_log(
         let delta = &entry.delta;
         // lower_bound solve counts are included, but its solve_time_ms is
         // deliberately dropped by the `_ => {}` arm: no output field receives it.
-        first_try += delta.first_try_successes;
-        retried += delta.lp_successes.saturating_sub(delta.first_try_successes);
-        failed += delta.lp_failures;
+        totals.first_try += delta.first_try_successes;
+        totals.retried += delta.lp_successes.saturating_sub(delta.first_try_successes);
+        totals.failed += delta.lp_failures;
+        totals.row_violations.add(entry.phase, delta.row_violations);
+        totals.lp_solves.add(entry.phase, delta.lp_solves);
         match entry.phase {
             "forward" => forward_solve_ms += delta.solve_time_ms,
             "backward" => backward_solve_ms += delta.solve_time_ms,
             _ => {}
         }
     }
-    (
-        first_try,
-        retried,
-        failed,
-        forward_solve_ms / 1000.0,
-        backward_solve_ms / 1000.0,
-    )
+    totals.forward_solve_seconds = forward_solve_ms / 1000.0;
+    totals.backward_solve_seconds = backward_solve_ms / 1000.0;
+    totals
+}
+
+/// End-of-run summary of LP solves whose returned primal solution misses a
+/// row bound, printed as one warning line.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RowViolationReport {
+    training_violations: PhaseCounts,
+    training_solves: PhaseCounts,
+    simulation_violations: u64,
+    simulation_solves: u64,
+}
+
+impl RowViolationReport {
+    /// Build the report from the reduced training totals and, when a
+    /// simulation ran, its reduced solver-stats aggregate.
+    #[must_use]
+    pub fn new(training: &SolveTotals, simulation: Option<&SolverStatsDelta>) -> Self {
+        Self {
+            training_violations: training.row_violations,
+            training_solves: training.lp_solves,
+            simulation_violations: simulation.map_or(0, |s| s.row_violations),
+            simulation_solves: simulation.map_or(0, |s| s.lp_solves),
+        }
+    }
+
+    /// Whether any solve was counted.
+    #[must_use]
+    pub fn should_emit(&self) -> bool {
+        self.violations() > 0
+    }
+
+    fn violations(&self) -> u64 {
+        self.training_violations.total() + self.simulation_violations
+    }
+
+    fn solves(&self) -> u64 {
+        self.training_solves.total() + self.simulation_solves
+    }
+}
+
+impl fmt::Display for RowViolationReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "LP solves returned a primal solution that misses a row bound by more than the \
+             primal feasibility tolerance plus {ROW_VIOLATION_RELATIVE_ALLOWANCE:e} of the row's \
+             magnitude: {} of {} (forward {}, backward {}, lower bound {}, simulation {}); \
+             per-stage counts are in the lp_row_violations column of solver/iterations.parquet",
+            self.violations(),
+            self.solves(),
+            self.training_violations.forward,
+            self.training_violations.backward,
+            self.training_violations.lower_bound,
+            self.simulation_violations,
+        )
+    }
 }
 
 /// Map a per-iteration solver-stats log into Parquet rows.
@@ -399,13 +514,14 @@ pub fn solver_stats_log_to_rows(log: &[SolverStatsLogEntry]) -> Vec<SolverStatsR
 }
 
 /// Number of scalar fields in [`SolverStatsDelta`] (excludes histogram `Vec`).
-/// Buffer size for MPI allreduce/allgatherv: 8 `u64` fields cast to `f64` + 5 native `f64` fields.
-pub const SOLVER_STATS_DELTA_SCALAR_FIELDS: usize = 13;
+/// Buffer size for MPI allreduce/allgatherv: the `u64` fields, cast to `f64`,
+/// come first; the native `f64` fields follow.
+pub const SOLVER_STATS_DELTA_SCALAR_FIELDS: usize = 14;
 
-/// Packed `f64` stride per scenario: `scenario_id` + 13 scalar fields.
+/// Packed `f64` stride per scenario: `scenario_id` + the scalar fields.
 pub const SCENARIO_STATS_STRIDE: usize = 1 + SOLVER_STATS_DELTA_SCALAR_FIELDS;
 
-/// Packed `f64` stride per entry: `worker_id`, `slot_idx`, + 13 scalar fields (total 15).
+/// Packed `f64` stride per entry: `worker_id`, `slot_idx`, + the scalar fields.
 pub const WORKER_STATS_ENTRY_STRIDE: usize = 2 + SOLVER_STATS_DELTA_SCALAR_FIELDS;
 
 /// Preallocate buffer size for per-worker per-slot MPI payloads.
@@ -415,8 +531,8 @@ pub fn worker_opening_stats_buffer_size(n_workers: usize, n_slots: usize) -> usi
     n_workers * n_slots * WORKER_STATS_ENTRY_STRIDE
 }
 
-/// Pack the 13 scalar fields of a [`SolverStatsDelta`] into a fixed-size `f64` array.
-/// Indices 0–7: eight `u64` fields cast to `f64`. Indices 8–12: five native `f64` fields.
+/// Pack the scalar fields of a [`SolverStatsDelta`] into a fixed-size `f64` array.
+/// The `u64` fields, cast to `f64`, come first; the native `f64` fields follow.
 /// The `retry_level_histogram` is excluded from MPI packing and Parquet output.
 ///
 /// # Precision contract
@@ -432,7 +548,7 @@ pub fn worker_opening_stats_buffer_size(n_workers: usize, n_slots: usize) -> usi
 ///
 /// # Timing precision
 ///
-/// `solve_time_ms` (index 9) and the other `f64` timing fields are summed natively
+/// `solve_time_ms` and the other `f64` timing fields are summed natively
 /// without a cast. `f64` addition is non-associative, so rank-order changes across
 /// MPI runs can cause ULP-level drift in `total_solve_time_seconds`. This is
 /// acceptable: timing metrics require semantic parity (same order of magnitude),
@@ -449,12 +565,13 @@ pub fn pack_delta_scalars(delta: &SolverStatsDelta) -> [f64; SOLVER_STATS_DELTA_
         delta.retry_attempts as f64,             // index 4
         delta.basis_offered as f64,              // index 5
         delta.basis_consistency_failures as f64, // index 6
-        delta.simplex_iterations as f64,         // index 7
-        delta.load_model_count as f64,           // index 8
-        delta.solve_time_ms,                     // index 9
-        delta.load_model_time_ms,                // index 10
-        delta.set_bounds_time_ms,                // index 11
-        delta.basis_set_time_ms,                 // index 12
+        delta.row_violations as f64,             // index 7
+        delta.simplex_iterations as f64,         // index 8
+        delta.load_model_count as f64,           // index 9
+        delta.solve_time_ms,                     // index 10
+        delta.load_model_time_ms,                // index 11
+        delta.set_bounds_time_ms,                // index 12
+        delta.basis_set_time_ms,                 // index 13
     ]
 }
 
@@ -471,12 +588,13 @@ pub fn unpack_delta_scalars(buf: &[f64; SOLVER_STATS_DELTA_SCALAR_FIELDS]) -> So
         retry_attempts: buf[4] as u64,
         basis_offered: buf[5] as u64,
         basis_consistency_failures: buf[6] as u64,
-        simplex_iterations: buf[7] as u64,
-        load_model_count: buf[8] as u64,
-        solve_time_ms: buf[9],
-        load_model_time_ms: buf[10],
-        set_bounds_time_ms: buf[11],
-        basis_set_time_ms: buf[12],
+        row_violations: buf[7] as u64,
+        simplex_iterations: buf[8] as u64,
+        load_model_count: buf[9] as u64,
+        solve_time_ms: buf[10],
+        load_model_time_ms: buf[11],
+        set_bounds_time_ms: buf[12],
+        basis_set_time_ms: buf[13],
         retry_level_histogram: Vec::new(),
     }
 }
@@ -507,10 +625,8 @@ pub fn unpack_scenario_stats(buf: &[f64]) -> Vec<(u32, SolverStatsDelta)> {
     buf.chunks_exact(SCENARIO_STATS_STRIDE)
         .map(|chunk| {
             let scenario_id = chunk[0] as u32;
-            let arr = [
-                chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7], chunk[8],
-                chunk[9], chunk[10], chunk[11], chunk[12], chunk[13],
-            ];
+            let mut arr = [0.0_f64; SOLVER_STATS_DELTA_SCALAR_FIELDS];
+            arr.copy_from_slice(&chunk[1..]);
             (scenario_id, unpack_delta_scalars(&arr))
         })
         .collect()
@@ -702,6 +818,7 @@ mod tests {
             total_set_bounds_time_seconds: 0.25,
             total_basis_set_time_seconds: 0.1,
             basis_reconstructions: 0,
+            row_violations: 1,
             retry_level_histogram: vec![0; 12],
         };
         let after = SolverStatistics {
@@ -719,6 +836,7 @@ mod tests {
             total_set_bounds_time_seconds: 0.75,
             total_basis_set_time_seconds: 0.3,
             basis_reconstructions: 0,
+            row_violations: 6,
             retry_level_histogram: vec![0; 12],
         };
 
@@ -730,6 +848,7 @@ mod tests {
         assert_eq!(delta.retry_attempts, 2);
         assert_eq!(delta.basis_offered, 9);
         assert_eq!(delta.basis_consistency_failures, 2);
+        assert_eq!(delta.row_violations, 5);
         assert_eq!(delta.simplex_iterations, 600);
         assert!((delta.solve_time_ms - 2500.0).abs() < 1e-6);
         assert_eq!(delta.load_model_count, 7);
@@ -755,6 +874,7 @@ mod tests {
             total_set_bounds_time_seconds: 0.02,
             total_basis_set_time_seconds: 0.01,
             basis_reconstructions: 0,
+            row_violations: 0,
             retry_level_histogram: vec![0; 12],
         };
         let delta = SolverStatsDelta::from_snapshots(&snap, &snap);
@@ -789,6 +909,7 @@ mod tests {
             retry_attempts: 2,
             basis_offered: 7,
             basis_consistency_failures: 1,
+            row_violations: 2,
             simplex_iterations: 500,
             solve_time_ms: 100.0,
             load_model_count: 5,
@@ -805,6 +926,7 @@ mod tests {
             retry_attempts: 3,
             basis_offered: 15,
             basis_consistency_failures: 2,
+            row_violations: 3,
             simplex_iterations: 800,
             solve_time_ms: 200.0,
             load_model_count: 10,
@@ -822,6 +944,7 @@ mod tests {
         assert_eq!(agg.retry_attempts, 5);
         assert_eq!(agg.basis_offered, 22);
         assert_eq!(agg.basis_consistency_failures, 3);
+        assert_eq!(agg.row_violations, 5);
         assert_eq!(agg.simplex_iterations, 1300);
         assert!((agg.solve_time_ms - 300.0).abs() < 1e-6);
         assert_eq!(agg.load_model_count, 15);
@@ -847,6 +970,7 @@ mod tests {
             total_set_bounds_time_seconds: 0.25,
             total_basis_set_time_seconds: 0.05,
             basis_reconstructions: 4,
+            row_violations: 2,
             retry_level_histogram: vec![1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         };
         let s2 = SolverStatistics {
@@ -864,6 +988,7 @@ mod tests {
             total_set_bounds_time_seconds: 0.75,
             total_basis_set_time_seconds: 0.15,
             basis_reconstructions: 10,
+            row_violations: 3,
             retry_level_histogram: vec![0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         };
 
@@ -875,6 +1000,7 @@ mod tests {
         assert_eq!(agg.retry_count, 8);
         assert!((agg.total_solve_time_seconds - 6.5).abs() < 1e-10);
         assert_eq!(agg.basis_consistency_failures, 4);
+        assert_eq!(agg.row_violations, 5);
         assert_eq!(agg.first_try_successes, 22);
         assert_eq!(agg.basis_offered, 25);
         assert_eq!(agg.load_model_count, 17);
@@ -896,6 +1022,7 @@ mod tests {
             retry_attempts: 1,
             basis_offered: lp_solves,
             basis_consistency_failures: 2,
+            row_violations: 7,
             simplex_iterations: lp_solves * 10,
             solve_time_ms: lp_solves as f64 * 0.5,
             load_model_count: 3,
@@ -923,6 +1050,7 @@ mod tests {
             unpacked.basis_consistency_failures,
             delta.basis_consistency_failures
         );
+        assert_eq!(unpacked.row_violations, 7);
         assert_eq!(unpacked.simplex_iterations, delta.simplex_iterations);
         assert_eq!(unpacked.load_model_count, delta.load_model_count);
         assert!((unpacked.solve_time_ms - delta.solve_time_ms).abs() < 1e-10);
@@ -963,6 +1091,8 @@ mod tests {
         assert_eq!(unpacked[2].0, 25);
 
         // Verify field values for each scenario
+        assert_eq!(unpacked[0].1.row_violations, 7);
+        assert_eq!(unpacked[2].1.row_violations, 7);
         assert_eq!(unpacked[0].1.lp_solves, 100);
         assert_eq!(unpacked[1].1.lp_solves, 200);
         assert_eq!(unpacked[2].1.lp_solves, 300);
@@ -982,16 +1112,16 @@ mod tests {
 
     #[test]
     fn test_pack_delta_scalars_field_count() {
-        // Regression: pack_delta_scalars must produce a 13-element array.
+        // Regression: pack_delta_scalars must produce a 14-element array.
         let delta = SolverStatsDelta::default();
         let packed = pack_delta_scalars(&delta);
         assert_eq!(
             packed.len(),
-            13,
-            "pack_delta_scalars must return 13 elements"
+            14,
+            "pack_delta_scalars must return 14 elements"
         );
         assert_eq!(packed.len(), SOLVER_STATS_DELTA_SCALAR_FIELDS);
-        assert_eq!(SOLVER_STATS_DELTA_SCALAR_FIELDS, 13);
+        assert_eq!(SOLVER_STATS_DELTA_SCALAR_FIELDS, 14);
     }
 
     #[test]
@@ -1012,6 +1142,7 @@ mod tests {
         assert_eq!(dst.retry_attempts, 2); // 1 + 1
         assert_eq!(dst.basis_offered, 15);
         assert_eq!(dst.basis_consistency_failures, 4); // 2 + 2
+        assert_eq!(dst.row_violations, 14); // 7 + 7
         assert_eq!(dst.simplex_iterations, 150); // 100 + 50
         assert!((dst.solve_time_ms - 7.5).abs() < 1e-10); // 5.0 + 2.5
         assert_eq!(dst.load_model_count, 6); // 3 + 3
@@ -1131,12 +1262,13 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_solver_stats_log_folds_five_phase_counts() {
+    fn aggregate_solver_stats_log_folds_phase_counts() {
         let forward_delta = SolverStatsDelta {
             lp_solves: 10,
             first_try_successes: 7,
             lp_successes: 9,
             lp_failures: 1,
+            row_violations: 2,
             solve_time_ms: 2500.0,
             ..SolverStatsDelta::default()
         };
@@ -1145,22 +1277,47 @@ mod tests {
             first_try_successes: 2,
             lp_successes: 4,
             lp_failures: 0,
+            row_violations: 1,
             solve_time_ms: 1500.0,
+            ..SolverStatsDelta::default()
+        };
+        let lower_bound_delta = SolverStatsDelta {
+            lp_solves: 3,
+            first_try_successes: 3,
+            lp_successes: 3,
+            row_violations: 3,
+            solve_time_ms: 900.0,
             ..SolverStatsDelta::default()
         };
         let log = vec![
             SolverStatsLogEntry::from_raw(0, "forward", Some(0), -1, 0, -1, forward_delta),
             SolverStatsLogEntry::from_raw(0, "backward", Some(0), 0, 0, 0, backward_delta),
+            SolverStatsLogEntry::from_raw(0, "lower_bound", None, -1, 0, -1, lower_bound_delta),
         ];
 
-        let (first_try, retried, failed, forward_seconds, backward_seconds) =
-            aggregate_solver_stats_log(&log, StatsFoldMode::AllEntries);
+        let totals = aggregate_solver_stats_log(&log, StatsFoldMode::AllEntries);
 
-        assert_eq!(first_try, 9); // 7 + 2
-        assert_eq!(retried, 4); // (9-7) + (4-2)
-        assert_eq!(failed, 1);
-        assert_eq!(forward_seconds, 2.5);
-        assert_eq!(backward_seconds, 1.5);
+        assert_eq!(totals.first_try, 12); // 7 + 2 + 3
+        assert_eq!(totals.retried, 4); // (9-7) + (4-2)
+        assert_eq!(totals.failed, 1);
+        assert_eq!(totals.forward_solve_seconds, 2.5);
+        assert_eq!(totals.backward_solve_seconds, 1.5);
+        assert_eq!(
+            totals.row_violations,
+            PhaseCounts {
+                forward: 2,
+                backward: 1,
+                lower_bound: 3,
+            }
+        );
+        assert_eq!(
+            totals.lp_solves,
+            PhaseCounts {
+                forward: 10,
+                backward: 4,
+                lower_bound: 3,
+            }
+        );
     }
 
     #[test]
@@ -1182,14 +1339,18 @@ mod tests {
         // The per-rank MpiRank folds, summed as the CLI allreduce does, must
         // reconstruct each phase once regardless of the backward rank split.
         let global_forward = SolverStatsDelta {
+            lp_solves: 111,
             first_try_successes: 100,
             lp_successes: 110,
             lp_failures: 1,
+            row_violations: 4,
             ..SolverStatsDelta::default()
         };
         let global_lb = SolverStatsDelta {
+            lp_solves: 20,
             first_try_successes: 20,
             lp_successes: 20,
+            row_violations: 1,
             ..SolverStatsDelta::default()
         };
 
@@ -1205,14 +1366,15 @@ mod tests {
                 0,
                 0,
                 SolverStatsDelta {
+                    lp_solves: 36,
                     first_try_successes: 30,
                     lp_successes: 36,
+                    row_violations: 3,
                     ..SolverStatsDelta::default()
                 },
             ),
         ];
-        let (first_try, retried, failed, ..) =
-            aggregate_solver_stats_log(&single, StatsFoldMode::MpiRank { rank: 0 });
+        let single_totals = aggregate_solver_stats_log(&single, StatsFoldMode::MpiRank { rank: 0 });
 
         let backward_entries = || {
             vec![
@@ -1224,8 +1386,10 @@ mod tests {
                     0,
                     0,
                     SolverStatsDelta {
+                        lp_solves: 24,
                         first_try_successes: 20,
                         lp_successes: 24,
+                        row_violations: 2,
                         ..SolverStatsDelta::default()
                     },
                 ),
@@ -1237,8 +1401,10 @@ mod tests {
                     1,
                     0,
                     SolverStatsDelta {
+                        lp_solves: 12,
                         first_try_successes: 10,
                         lp_successes: 12,
+                        row_violations: 1,
                         ..SolverStatsDelta::default()
                     },
                 ),
@@ -1278,14 +1444,54 @@ mod tests {
 
         // first-try: forward 100 + lb 20 + backward 30 = 150; retried: forward
         // 10 + backward 6 = 16; failed: forward 1 — on both shapes.
-        assert_eq!((first_try, retried, failed), (150, 16, 1));
-        assert_eq!((r0.0 + r1.0, r0.1 + r1.1, r0.2 + r1.2), (150, 16, 1));
+        let expected_violations = PhaseCounts {
+            forward: 4,
+            backward: 3,
+            lower_bound: 1,
+        };
+        let expected_solves = PhaseCounts {
+            forward: 111,
+            backward: 36,
+            lower_bound: 20,
+        };
+        assert_eq!(
+            (
+                single_totals.first_try,
+                single_totals.retried,
+                single_totals.failed
+            ),
+            (150, 16, 1)
+        );
+        assert_eq!(single_totals.row_violations, expected_violations);
+        assert_eq!(single_totals.lp_solves, expected_solves);
+
+        let sum = |f: fn(&PhaseCounts) -> u64, a: &PhaseCounts, b: &PhaseCounts| f(a) + f(b);
+        assert_eq!(
+            (
+                r0.first_try + r1.first_try,
+                r0.retried + r1.retried,
+                r0.failed + r1.failed
+            ),
+            (150, 16, 1)
+        );
+        for (r0_counts, r1_counts, expected) in [
+            (&r0.row_violations, &r1.row_violations, &expected_violations),
+            (&r0.lp_solves, &r1.lp_solves, &expected_solves),
+        ] {
+            assert_eq!(sum(|c| c.forward, r0_counts, r1_counts), expected.forward);
+            assert_eq!(sum(|c| c.backward, r0_counts, r1_counts), expected.backward);
+            assert_eq!(
+                sum(|c| c.lower_bound, r0_counts, r1_counts),
+                expected.lower_bound
+            );
+        }
     }
 
     #[test]
     fn aggregate_solver_stats_log_ignores_lp_solves() {
         // total_lp_solves is sourced from the convergence records, never from
-        // this fold: varying delta.lp_solves alone must not change the result.
+        // this fold: varying delta.lp_solves alone must not change the summary
+        // counts; it moves only the per-phase solve counts.
         let low = SolverStatsLogEntry::from_raw(
             0,
             "forward",
@@ -1317,9 +1523,114 @@ mod tests {
             },
         );
 
+        let low = aggregate_solver_stats_log(&[low], StatsFoldMode::AllEntries);
+        let high = aggregate_solver_stats_log(&[high], StatsFoldMode::AllEntries);
         assert_eq!(
-            aggregate_solver_stats_log(&[low], StatsFoldMode::AllEntries),
-            aggregate_solver_stats_log(&[high], StatsFoldMode::AllEntries)
+            SolveTotals {
+                lp_solves: PhaseCounts::default(),
+                ..low
+            },
+            SolveTotals {
+                lp_solves: PhaseCounts::default(),
+                ..high
+            }
+        );
+        assert_eq!((low.lp_solves.forward, high.lp_solves.forward), (1, 999));
+    }
+
+    #[test]
+    fn row_violation_report_text() {
+        let training = SolveTotals {
+            row_violations: PhaseCounts {
+                forward: 2,
+                backward: 1,
+                lower_bound: 0,
+            },
+            lp_solves: PhaseCounts {
+                forward: 40,
+                backward: 30,
+                lower_bound: 10,
+            },
+            ..SolveTotals::default()
+        };
+        let simulation = SolverStatsDelta {
+            lp_solves: 20,
+            row_violations: 3,
+            ..SolverStatsDelta::default()
+        };
+
+        let report = RowViolationReport::new(&training, Some(&simulation));
+
+        assert!(report.should_emit());
+        assert_eq!(
+            report.to_string(),
+            "LP solves returned a primal solution that misses a row bound by more than the \
+             primal feasibility tolerance plus 1e-11 of the row's magnitude: 6 of 100 \
+             (forward 2, backward 1, lower bound 0, simulation 3); per-stage counts are in \
+             the lp_row_violations column of solver/iterations.parquet"
+        );
+    }
+
+    #[test]
+    fn row_violation_report_is_silent_when_nothing_is_counted() {
+        let training = SolveTotals {
+            lp_solves: PhaseCounts {
+                forward: 40,
+                backward: 30,
+                lower_bound: 10,
+            },
+            ..SolveTotals::default()
+        };
+        let simulation = SolverStatsDelta {
+            lp_solves: 20,
+            ..SolverStatsDelta::default()
+        };
+
+        assert!(!RowViolationReport::new(&training, Some(&simulation)).should_emit());
+        assert!(!RowViolationReport::new(&training, None).should_emit());
+    }
+
+    #[test]
+    fn row_violation_report_simulation_only() {
+        let simulation = SolverStatsDelta {
+            lp_solves: 50,
+            row_violations: 4,
+            ..SolverStatsDelta::default()
+        };
+
+        let report = RowViolationReport::new(&SolveTotals::default(), Some(&simulation));
+
+        assert!(report.should_emit());
+        assert!(
+            report
+                .to_string()
+                .contains(": 4 of 50 (forward 0, backward 0, lower bound 0, simulation 4);")
+        );
+    }
+
+    #[test]
+    fn row_violation_report_training_only() {
+        let training = SolveTotals {
+            row_violations: PhaseCounts {
+                forward: 1,
+                backward: 0,
+                lower_bound: 2,
+            },
+            lp_solves: PhaseCounts {
+                forward: 5,
+                backward: 7,
+                lower_bound: 3,
+            },
+            ..SolveTotals::default()
+        };
+
+        let report = RowViolationReport::new(&training, None);
+
+        assert!(report.should_emit());
+        assert!(
+            report
+                .to_string()
+                .contains(": 3 of 15 (forward 1, backward 0, lower bound 2, simulation 0);")
         );
     }
 
@@ -1456,6 +1767,7 @@ mod tests {
             for k in 0..n_slots {
                 input.push(SolverStatsDelta {
                     lp_solves: (w * 10 + k) as u64,
+                    row_violations: 7,
                     ..SolverStatsDelta::default()
                 });
             }
@@ -1474,6 +1786,11 @@ mod tests {
                     (w * 10 + k) as u64,
                     "lp_solves mismatch at (w={w}, k={k})"
                 );
+                assert_eq!(
+                    recovered[w * n_slots + k].row_violations,
+                    7,
+                    "row_violations mismatch at (w={w}, k={k})"
+                );
             }
         }
     }
@@ -1481,8 +1798,8 @@ mod tests {
     /// Helper returns the precise `stride * n_workers * n_slots` size in `f64` units.
     #[test]
     fn test_pack_worker_opening_stats_buffer_size() {
-        assert_eq!(worker_opening_stats_buffer_size(10, 20), 10 * 20 * 15);
-        assert_eq!(worker_opening_stats_buffer_size(10, 20), 3000);
+        assert_eq!(worker_opening_stats_buffer_size(10, 20), 10 * 20 * 16);
+        assert_eq!(worker_opening_stats_buffer_size(10, 20), 3200);
     }
 
     /// Layout invariants — `[w as f64, k as f64, ...]` per entry, row-major.
@@ -1497,24 +1814,24 @@ mod tests {
         // entry(w=0, k=0) at offset 0
         assert_eq!(buf[0], 0.0);
         assert_eq!(buf[1], 0.0);
-        // entry(w=0, k=1) at offset WORKER_STATS_ENTRY_STRIDE (= 15)
+        // entry(w=0, k=1) at offset WORKER_STATS_ENTRY_STRIDE (= 16)
         assert_eq!(buf[WORKER_STATS_ENTRY_STRIDE], 0.0);
         assert_eq!(buf[WORKER_STATS_ENTRY_STRIDE + 1], 1.0);
-        // entry(w=1, k=0) at offset WORKER_STATS_ENTRY_STRIDE * n_slots (= 15 * 4)
+        // entry(w=1, k=0) at offset WORKER_STATS_ENTRY_STRIDE * n_slots (= 16 * 4)
         let w1_k0 = WORKER_STATS_ENTRY_STRIDE * n_slots;
         assert_eq!(buf[w1_k0], 1.0);
         assert_eq!(buf[w1_k0 + 1], 0.0);
     }
 
-    /// MPI wire-format pin: `SolverStatsDelta` pack/unpack uses a 13-element `f64` array.
+    /// MPI wire-format pin: `SolverStatsDelta` pack/unpack uses a 14-element `f64` array.
     /// Uses distinct nonzero values for every field so that field-order swaps are caught
     /// at both pack and unpack.
     #[test]
-    fn test_solver_stats_delta_mpi_wire_format_13_fields() {
+    fn test_solver_stats_delta_mpi_wire_format_14_fields() {
         // Wire-format constant assertions.
-        assert_eq!(SOLVER_STATS_DELTA_SCALAR_FIELDS, 13);
-        assert_eq!(SCENARIO_STATS_STRIDE, 14);
-        assert_eq!(WORKER_STATS_ENTRY_STRIDE, 15);
+        assert_eq!(SOLVER_STATS_DELTA_SCALAR_FIELDS, 14);
+        assert_eq!(SCENARIO_STATS_STRIDE, 15);
+        assert_eq!(WORKER_STATS_ENTRY_STRIDE, 16);
 
         // Construct a populated delta. Use distinct nonzero values
         // to catch field-order swaps at pack/unpack.
@@ -1526,24 +1843,26 @@ mod tests {
             retry_attempts: 5,
             basis_offered: 6,
             basis_consistency_failures: 7,
-            simplex_iterations: 8,
-            load_model_count: 9,
-            solve_time_ms: 10.5,
-            load_model_time_ms: 11.25,
-            set_bounds_time_ms: 12.125,
-            basis_set_time_ms: 13.0625,
+            row_violations: 8,
+            simplex_iterations: 9,
+            load_model_count: 10,
+            solve_time_ms: 11.5,
+            load_model_time_ms: 12.25,
+            set_bounds_time_ms: 13.125,
+            basis_set_time_ms: 14.0625,
             retry_level_histogram: vec![1, 2, 3], // application-level; not in wire
         };
 
         let packed = pack_delta_scalars(&delta);
-        assert_eq!(packed.len(), 13);
+        assert_eq!(packed.len(), 14);
 
         // Cross-check packed field ordering via explicit index reads.
-        // Indices 0..=8 are u64 fields cast to f64; indices 9..=12 are f64.
+        // Indices 0..=9 are u64 fields cast to f64; indices 10..=13 are f64.
         assert_eq!(packed[0], 1.0); // lp_solves
-        assert_eq!(packed[8], 9.0); // load_model_count
-        assert!((packed[9] - 10.5).abs() < 1e-10); // solve_time_ms
-        assert!((packed[12] - 13.0625).abs() < 1e-10); // basis_set_time_ms
+        assert_eq!(packed[7], 8.0); // row_violations
+        assert_eq!(packed[9], 10.0); // load_model_count
+        assert!((packed[10] - 11.5).abs() < 1e-10); // solve_time_ms
+        assert!((packed[13] - 14.0625).abs() < 1e-10); // basis_set_time_ms
 
         let unpacked = unpack_delta_scalars(&packed);
 
@@ -1555,12 +1874,13 @@ mod tests {
         assert_eq!(unpacked.retry_attempts, 5);
         assert_eq!(unpacked.basis_offered, 6);
         assert_eq!(unpacked.basis_consistency_failures, 7);
-        assert_eq!(unpacked.simplex_iterations, 8);
-        assert_eq!(unpacked.load_model_count, 9);
-        assert!((unpacked.solve_time_ms - 10.5).abs() < 1e-10);
-        assert!((unpacked.load_model_time_ms - 11.25).abs() < 1e-10);
-        assert!((unpacked.set_bounds_time_ms - 12.125).abs() < 1e-10);
-        assert!((unpacked.basis_set_time_ms - 13.0625).abs() < 1e-10);
+        assert_eq!(unpacked.row_violations, 8);
+        assert_eq!(unpacked.simplex_iterations, 9);
+        assert_eq!(unpacked.load_model_count, 10);
+        assert!((unpacked.solve_time_ms - 11.5).abs() < 1e-10);
+        assert!((unpacked.load_model_time_ms - 12.25).abs() < 1e-10);
+        assert!((unpacked.set_bounds_time_ms - 13.125).abs() < 1e-10);
+        assert!((unpacked.basis_set_time_ms - 14.0625).abs() < 1e-10);
 
         // The histogram is NOT in the wire — unpack leaves it empty.
         assert!(unpacked.retry_level_histogram.is_empty());
@@ -1568,16 +1888,16 @@ mod tests {
 
     /// Pins the wire-format array length at the type level. The function signature
     /// is `unpack_delta_scalars(&[f64; SOLVER_STATS_DELTA_SCALAR_FIELDS])`, so the
-    /// compiler enforces the length. This test confirms the constant equals 13 and
-    /// that the `size_of` the array is exactly `13 * 8` bytes.
+    /// compiler enforces the length. This test confirms the constant equals 14 and
+    /// that the `size_of` the array is exactly `14 * 8` bytes.
     #[test]
     fn test_unpack_delta_scalars_array_length_is_compile_time() {
         assert_eq!(
             std::mem::size_of::<[f64; SOLVER_STATS_DELTA_SCALAR_FIELDS]>(),
-            13 * std::mem::size_of::<f64>()
+            14 * std::mem::size_of::<f64>()
         );
-        // Also confirm that a valid 13-element buffer round-trips without panic.
-        let buf: [f64; 13] = [0.0; 13];
+        // Also confirm that a valid 14-element buffer round-trips without panic.
+        let buf: [f64; 14] = [0.0; 14];
         let _ = unpack_delta_scalars(&buf);
     }
 
@@ -1595,6 +1915,7 @@ mod tests {
             retry_attempts: 5,
             basis_offered: 35,
             basis_consistency_failures: 3,
+            row_violations: 5,
             simplex_iterations: 1200,
             solve_time_ms: 99.5,
             load_model_count: 10,
@@ -1620,6 +1941,7 @@ mod tests {
         assert_eq!(dst.retry_attempts, 5);
         assert_eq!(dst.basis_offered, 35);
         assert_eq!(dst.basis_consistency_failures, 3);
+        assert_eq!(dst.row_violations, 5);
         assert_eq!(dst.simplex_iterations, 1200);
         assert!((dst.solve_time_ms - 99.5).abs() < 1e-10);
         assert_eq!(dst.load_model_count, 10);
@@ -1655,6 +1977,7 @@ mod tests {
             retry_attempts: 6,
             basis_offered: 50,
             basis_consistency_failures: 4,
+            row_violations: 9,
             simplex_iterations: 500,
             solve_time_ms: 42.0,
             load_model_count: 8,
@@ -1673,6 +1996,7 @@ mod tests {
         assert_eq!(d.retry_attempts, 0);
         assert_eq!(d.basis_offered, 0);
         assert_eq!(d.basis_consistency_failures, 0);
+        assert_eq!(d.row_violations, 0);
         assert_eq!(d.simplex_iterations, 0);
         assert_eq!(d.solve_time_ms, 0.0);
         assert_eq!(d.load_model_count, 0);

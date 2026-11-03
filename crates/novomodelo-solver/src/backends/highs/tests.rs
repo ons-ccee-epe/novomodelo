@@ -1,6 +1,7 @@
 use super::HighsSolver;
 use crate::{
-    BasisStatus, SolverInterface,
+    BasisStatus, ROW_VIOLATION_RELATIVE_ALLOWANCE, SolverInterface,
+    profile::counts_as_row_violation,
     types::{Basis, RowBatch, SolverStatistics, StageTemplate},
 };
 
@@ -508,6 +509,24 @@ fn test_solve_warm_start_reproduces_cold_objective() {
     );
 }
 
+#[test]
+fn warm_starts_follows_the_profile_use_warm_start() {
+    use crate::HighsProfile;
+
+    let mut solver = HighsSolver::new().expect("HighsSolver::new() must succeed");
+    assert!(solver.warm_starts(), "the default profile warm-starts");
+    solver.apply_profile(&HighsProfile {
+        use_warm_start: false,
+        ..HighsProfile::default()
+    });
+    assert!(!solver.warm_starts(), "a cold profile reports cold");
+    solver.apply_profile(&HighsProfile::default());
+    assert!(
+        solver.warm_starts(),
+        "re-applying a warm profile reports warm"
+    );
+}
+
 /// A cold profile ignores an offered basis, even an undersized one: the solve
 /// still reaches the optimum and nothing is counted as offered or rejected.
 #[test]
@@ -693,6 +712,193 @@ fn test_solve_warm_start_rejects_inconsistent_basis() {
              col_basic: 3, row_basic: 2 }}), got {other:?}"
         ),
     }
+}
+
+fn make_single_equality_template() -> StageTemplate {
+    StageTemplate {
+        num_cols: 1,
+        num_rows: 1,
+        num_nz: 1,
+        col_starts: vec![0_i32, 1],
+        row_indices: vec![0_i32],
+        values: vec![1.0],
+        col_lower: vec![0.0],
+        col_upper: vec![10.0],
+        objective: vec![1.0],
+        row_lower: vec![0.5],
+        row_upper: vec![0.5],
+        n_state: 1,
+        col_scale: Vec::new(),
+        row_scale: Vec::new(),
+    }
+}
+
+fn primal_feasibility_tolerance(solver: &HighsSolver) -> f64 {
+    let mut out = 0.0_f64;
+    // SAFETY: handle is a valid HiGHS pointer; the option name is a static C string.
+    let status = unsafe {
+        crate::ffi::novomodelo_highs_get_double_option(
+            solver.handle,
+            c"primal_feasibility_tolerance".as_ptr(),
+            &raw mut out,
+        )
+    };
+    assert_ne!(status, crate::ffi::HIGHS_STATUS_ERROR);
+    out
+}
+
+#[test]
+fn a_solve_counts_a_row_violation_only_above_the_allowance() {
+    let mut solver = HighsSolver::new().expect("HighsSolver::new() must succeed");
+    solver.load_model(&make_single_equality_template());
+    let x = solver.solve(None).expect("solve").primal[0];
+    assert_eq!(solver.statistics().row_violations, 0);
+
+    let t = primal_feasibility_tolerance(&solver);
+    let below = solver.max_row_violation(&[x + t + 0.5 * ROW_VIOLATION_RELATIVE_ALLOWANCE]);
+    let above = solver.max_row_violation(&[x + t + 2.0 * ROW_VIOLATION_RELATIVE_ALLOWANCE]);
+
+    let rel = |rho: f64, target: f64| ((rho - target) / target).abs();
+    assert!(
+        rel(below, 0.5 * ROW_VIOLATION_RELATIVE_ALLOWANCE) < 1e-3,
+        "below = {below:e}"
+    );
+    assert!(
+        rel(above, 2.0 * ROW_VIOLATION_RELATIVE_ALLOWANCE) < 1e-3,
+        "above = {above:e}"
+    );
+    assert!(!counts_as_row_violation(below));
+    assert!(counts_as_row_violation(above));
+    assert!(!counts_as_row_violation(ROW_VIOLATION_RELATIVE_ALLOWANCE));
+}
+
+#[test]
+fn row_violation_tolerance_follows_the_user_bound_scale() {
+    let mut solver = HighsSolver::new().expect("HighsSolver::new() must succeed");
+    solver.load_model(&make_single_equality_template());
+    let x = solver.solve(None).expect("solve").primal[0];
+
+    solver.apply_extended_retry_options(9);
+    let mut bound_scale = 0_i32;
+    // SAFETY: handle is a valid HiGHS pointer; the option name is a static C string.
+    unsafe {
+        crate::ffi::novomodelo_highs_get_int_option(
+            solver.handle,
+            c"user_bound_scale".as_ptr(),
+            &raw mut bound_scale,
+        );
+    }
+    assert_eq!(bound_scale, -5);
+
+    let t = primal_feasibility_tolerance(&solver);
+    assert_eq!(solver.max_row_violation(&[x + 16.0 * t]), 0.0);
+    let beyond = solver.max_row_violation(&[x + 64.0 * t]);
+    assert!(counts_as_row_violation(beyond), "beyond = {beyond:e}");
+}
+
+#[test]
+fn max_row_violation_is_zero_without_rows() {
+    let template = StageTemplate {
+        num_cols: 1,
+        num_rows: 0,
+        num_nz: 0,
+        col_starts: vec![0_i32, 0],
+        row_indices: Vec::new(),
+        values: Vec::new(),
+        col_lower: vec![0.0],
+        col_upper: vec![10.0],
+        objective: vec![1.0],
+        row_lower: Vec::new(),
+        row_upper: Vec::new(),
+        n_state: 1,
+        col_scale: Vec::new(),
+        row_scale: Vec::new(),
+    };
+    let mut solver = HighsSolver::new().expect("HighsSolver::new() must succeed");
+    solver.load_model(&template);
+    let x = solver.solve(None).expect("solve").primal.to_vec();
+
+    assert_eq!(solver.max_row_violation(&x), 0.0);
+    assert_eq!(solver.max_row_violation(&[1e6]), 0.0);
+    assert_eq!(solver.statistics().row_violations, 0);
+}
+
+#[test]
+fn row_violation_buffers_follow_add_rows() {
+    let mut solver = HighsSolver::new().expect("HighsSolver::new() must succeed");
+    solver.load_model(&make_fixture_stage_template());
+    solver.add_rows(&make_fixture_row_batch());
+    let x = solver.solve(None).expect("solve").primal.to_vec();
+
+    assert_eq!(solver.row_activity.len(), 4);
+    assert_eq!(solver.row_magnitude.len(), 4);
+    assert_eq!(solver.max_row_violation(&x), 0.0);
+    assert_eq!(solver.statistics().row_violations, 0);
+}
+
+#[test]
+fn a_retried_solve_is_judged_by_the_tolerance_it_was_accepted_under() {
+    for level in [7_u32, 9, 10] {
+        let mut solver = HighsSolver::new().expect("HighsSolver::new() must succeed");
+        solver.load_model(&make_fixture_stage_template());
+        let profile_t = solver.current_profile.primal_feasibility_tolerance;
+        let expected = match level {
+            7 => profile_t.max(1e-8),
+            9 => profile_t * 32.0,
+            _ => profile_t.max(1e-7) * 256.0,
+        };
+
+        let outcome = solver
+            .retry_escalation_from(level, false)
+            .unwrap_or_else(|(_, e)| panic!("rung {level} must solve the fixture: {e:?}"));
+        assert_eq!(outcome.level, level);
+        assert_eq!(solver.accepted_primal_tolerance, expected, "rung {level}");
+        assert_eq!(
+            solver.primal_tolerance_in_effect(),
+            profile_t,
+            "rung {level}"
+        );
+
+        let before = solver.stats.row_violations;
+        let _ = solver.extract_solution_view(0.0);
+        assert_eq!(solver.stats.row_violations, before, "rung {level}");
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn default_options_always_refactorize_before_reporting_optimal() {
+    use super::config::{OptionValue, default_options};
+
+    let entry = default_options()
+        .into_iter()
+        .find(|opt| opt.name == c"no_unnecessary_rebuild_refactor")
+        .expect("default_options() must pin no_unnecessary_rebuild_refactor");
+    assert!(matches!(entry.value, OptionValue::Bool(0)));
+
+    let mut solver = HighsSolver::new().expect("HighsSolver::new() must succeed");
+    assert_eq!(
+        solver.get_bool_option(c"no_unnecessary_rebuild_refactor"),
+        Some(false)
+    );
+
+    solver.load_model(&make_fixture_stage_template());
+    solver
+        .retry_escalation_from(0, false)
+        .unwrap_or_else(|(_, e)| panic!("retry escalation must solve the fixture: {e:?}"));
+    // SAFETY: `solver.handle` is a valid HiGHS pointer; the name is a static C string.
+    unsafe {
+        crate::ffi::novomodelo_highs_set_bool_option(
+            solver.handle,
+            c"no_unnecessary_rebuild_refactor".as_ptr(),
+            1,
+        );
+    }
+    solver.restore_default_settings();
+    assert_eq!(
+        solver.get_bool_option(c"no_unnecessary_rebuild_refactor"),
+        Some(false)
+    );
 }
 
 /// Terminal-status scratch buffers must retain capacity across repeated resize calls.
@@ -1363,13 +1569,6 @@ mod research_tests {
                 "cost_perturbation must match default_options()"
             ),
             _ => panic!("dual_simplex_cost_perturbation_multiplier is not a Double option"),
-        }
-        match value_of(&options, c"rebuild_refactor_solution_error_tolerance") {
-            OptionValue::Double(v) => assert_eq!(
-                profile.refactor_error_tolerance, *v,
-                "refactor_error_tolerance must match default_options()"
-            ),
-            _ => panic!("rebuild_refactor_solution_error_tolerance is not a Double option"),
         }
         match value_of(&options, c"dual_steepest_edge_weight_log_error_threshold") {
             OptionValue::Double(v) => assert_eq!(

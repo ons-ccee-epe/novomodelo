@@ -482,15 +482,6 @@
             "null"
           ]
         },
-        "refactor_error_tolerance": {
-          "default": null,
-          "description": "Refactorization solution-error tolerance override.",
-          "format": "double",
-          "type": [
-            "number",
-            "null"
-          ]
-        },
         "scale": {
           "anyOf": [
             {
@@ -524,7 +515,7 @@
         },
         "use_warm_start": {
           "default": null,
-          "description": "Warm-start override. By default backward solves warm-start from the\nstored basis and forward and simulation solves are cold.",
+          "description": "Warm-start override. By default forward and backward solves warm-start\nfrom the stored basis and simulation solves are cold.",
           "type": [
             "boolean",
             "null"

@@ -9,6 +9,8 @@ use novomodelo_io::OutputContext;
 use novomodelo_io::PolicyMode;
 use novomodelo_io::SetupTimings;
 use novomodelo_io::now_iso8601;
+use novomodelo_sddp::RowViolationReport;
+use novomodelo_sddp::SolveTotals;
 use novomodelo_sddp::SolverStatsDelta;
 use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::build_deviation_summary;
@@ -204,31 +206,40 @@ fn execute_inner<C: Communicator>(
 
     let hostname = ctx.topology.leader_hostname().to_string();
 
-    match RunPhasePlan::resolve(training_enabled, setup.simulation_config.n_scenarios > 0) {
-        RunPhasePlan::TrainedThenSimulated => train_then_simulate(
-            ctx,
-            signals,
-            &system,
-            &mut setup,
-            root_config,
-            policy_mode,
-            setup_timings,
-            &hostname,
-        ),
-        RunPhasePlan::SimulateFromPolicy => {
-            let training_result = load_policy_for_simulation(ctx, &system, &mut setup)?;
-            run_simulation_phase(ctx, &system, &mut setup, &training_result, &hostname)?;
-            Ok(RunOutcome::Completed)
-        }
-        RunPhasePlan::Nothing => {
-            if ctx.is_root && !ctx.quiet {
-                let _ = ctx
-                    .stdout
-                    .write_line("Training disabled, simulation disabled — nothing to do.");
+    let (outcome, row_violations) =
+        match RunPhasePlan::resolve(training_enabled, setup.simulation_config.n_scenarios > 0) {
+            RunPhasePlan::TrainedThenSimulated => train_then_simulate(
+                ctx,
+                signals,
+                &system,
+                &mut setup,
+                root_config,
+                policy_mode,
+                setup_timings,
+                &hostname,
+            )?,
+            RunPhasePlan::SimulateFromPolicy => {
+                let training_result = load_policy_for_simulation(ctx, &system, &mut setup)?;
+                let simulation =
+                    run_simulation_phase(ctx, &system, &mut setup, &training_result, &hostname)?;
+                (
+                    RunOutcome::Completed,
+                    RowViolationReport::new(&SolveTotals::default(), Some(&simulation)),
+                )
             }
-            Ok(RunOutcome::Completed)
-        }
+            RunPhasePlan::Nothing => {
+                if ctx.is_root && !ctx.quiet {
+                    let _ = ctx
+                        .stdout
+                        .write_line("Training disabled, simulation disabled — nothing to do.");
+                }
+                (RunOutcome::Completed, RowViolationReport::default())
+            }
+        };
+    if ctx.is_root && row_violations.should_emit() {
+        let _ = ctx.stderr.write_line(&format!("warning: {row_violations}"));
     }
+    Ok(outcome)
 }
 
 fn train_then_simulate<C: Communicator>(
@@ -240,7 +251,7 @@ fn train_then_simulate<C: Communicator>(
     policy_mode: PolicyMode,
     setup_timings: Option<SetupTimings>,
     hostname: &str,
-) -> Result<RunOutcome, CliError> {
+) -> Result<(RunOutcome, RowViolationReport), CliError> {
     apply_training_policy(ctx, system, setup, root_config.as_ref(), policy_mode)?;
     setup.enable_periodic_checkpoints(system, &ctx.output_dir);
     let training_started_at = now_iso8601();
@@ -329,10 +340,15 @@ fn train_then_simulate<C: Communicator>(
         signals.close()?;
     }
 
-    match PostTrainingSimulation::resolve(n_scenarios > 0, decision, agreed.level) {
-        PostTrainingSimulation::Run => {
-            run_simulation_phase(ctx, system, setup, &training.result, hostname)?;
-        }
+    let simulation = match PostTrainingSimulation::resolve(n_scenarios > 0, decision, agreed.level)
+    {
+        PostTrainingSimulation::Run => Some(run_simulation_phase(
+            ctx,
+            system,
+            setup,
+            &training.result,
+            hostname,
+        )?),
         PostTrainingSimulation::SkipAfterSignalStop if !decided_skip => {
             let local = if ctx.is_root {
                 skip_simulation_phase(ctx, hostname, n_scenarios)
@@ -341,15 +357,20 @@ fn train_then_simulate<C: Communicator>(
             };
             let late = agree_post_write(&ctx.comm, failure_code(&local), agreed.level)?;
             into_agreed_result(local, &late)?;
+            None
         }
-        PostTrainingSimulation::SkipAfterSignalStop | PostTrainingSimulation::NotRequested => {}
-    }
+        PostTrainingSimulation::SkipAfterSignalStop | PostTrainingSimulation::NotRequested => None,
+    };
 
-    Ok(if signal_stop {
+    let outcome = if signal_stop {
         RunOutcome::StoppedOnRequest
     } else {
         RunOutcome::Completed
-    })
+    };
+    Ok((
+        outcome,
+        RowViolationReport::new(&training.solve_totals, simulation.as_ref()),
+    ))
 }
 
 /// Guard `u64 as f64` cast before MPI `allreduce(Sum)`: reject counters ≥ `2^53` that lose precision.
@@ -370,6 +391,7 @@ pub(super) fn check_stats_overflow(delta: &SolverStatsDelta) -> Result<(), CliEr
             "basis_consistency_failures",
             delta.basis_consistency_failures,
         ),
+        ("lp_row_violations", delta.row_violations),
         ("simplex_iterations", delta.simplex_iterations),
         ("load_model_count", delta.load_model_count),
     ] {
@@ -578,6 +600,7 @@ mod tests {
             "retry_attempts" => d.retry_attempts = value,
             "basis_offered" => d.basis_offered = value,
             "basis_consistency_failures" => d.basis_consistency_failures = value,
+            "lp_row_violations" => d.row_violations = value,
             "simplex_iterations" => d.simplex_iterations = value,
             "load_model_count" => d.load_model_count = value,
             other => panic!("unknown field: {other}"),
@@ -597,6 +620,7 @@ mod tests {
             "retry_attempts",
             "basis_offered",
             "basis_consistency_failures",
+            "lp_row_violations",
             "simplex_iterations",
             "load_model_count",
         ];
@@ -629,6 +653,7 @@ mod tests {
             retry_attempts: at_limit,
             basis_offered: at_limit,
             basis_consistency_failures: at_limit,
+            row_violations: at_limit,
             simplex_iterations: at_limit,
             load_model_count: at_limit,
             ..SolverStatsDelta::default()

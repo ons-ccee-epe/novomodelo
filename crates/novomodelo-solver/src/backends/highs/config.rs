@@ -40,10 +40,6 @@ pub struct HighsProfile {
     /// near-optimal from a warm start (Bland's rule guards against cycling;
     /// retry level 0 restores perturbation as a cold-solve fallback).
     pub cost_perturbation: f64,
-    /// `HiGHS` `rebuild_refactor_solution_error_tolerance`, loosened from the
-    /// `HiGHS` default (`1e-8`) to skip conservative refactorizations that
-    /// aren't earning their keep in this numerically benign regime.
-    pub refactor_error_tolerance: f64,
     /// `HiGHS` `factor_pivot_threshold`: matrix factorization pivot threshold.
     pub factor_pivot_threshold: f64,
     /// `HiGHS` `use_warm_start`. Defaults to `true`; `false` makes every
@@ -68,7 +64,6 @@ impl Default for HighsProfile {
             presolve: PresolveKind::On,
             simplex_update_limit: 5000,
             cost_perturbation: 0.0,
-            refactor_error_tolerance: 1e-6,
             factor_pivot_threshold: 0.1,
             use_warm_start: true,
             steepest_edge_devex_fallback_threshold: 10.0,
@@ -163,10 +158,9 @@ impl DefaultOption {
 /// the initial condition check eliminates O(m)–O(m²) work whose guarantees
 /// are already provided by the caller's slot-tracked basis reconstruction;
 /// row-wise PRICE wins on hyper-sparse basis-inverse rows. The
-/// cost-perturbation and refactor-tolerance pins carry their rationale on
-/// [`HighsProfile::cost_perturbation`] and
-/// [`HighsProfile::refactor_error_tolerance`] — this table restores only
-/// their base (restore-path) values.
+/// cost-perturbation pin carries its rationale on
+/// [`HighsProfile::cost_perturbation`] — this table restores only its base
+/// (restore-path) value.
 pub(super) fn default_options() -> [DefaultOption; 17] {
     [
         DefaultOption {
@@ -217,9 +211,12 @@ pub(super) fn default_options() -> [DefaultOption; 17] {
             name: c"simplex_price_strategy",
             value: OptionValue::Int(1), // Row (hyper-sparse master LPs)
         },
+        // `false` makes every optimal exit refactorize; `true` lets HiGHS report
+        // optimal from an updated factor whose A·x misses the rows
+        // (`default_options_always_refactorize_before_reporting_optimal`).
         DefaultOption {
-            name: c"rebuild_refactor_solution_error_tolerance",
-            value: OptionValue::Double(1e-6), // Loosened from HiGHS default 1e-8
+            name: c"no_unnecessary_rebuild_refactor",
+            value: OptionValue::Bool(0),
         },
         DefaultOption {
             name: c"simplex_update_limit",
