@@ -5,6 +5,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 // Items may be unused in one binary but used in another.
 
+pub mod expected_deltas;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -93,6 +95,15 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) {
 /// where the target's `config.policy.boundary.path` points. Panics with the
 /// failing run's stderr.
 pub fn prepare_dual_calendar_boundary_case(dst: &Path) {
+    prepare_dual_calendar_boundary_case_with(dst, |_| {});
+}
+
+/// [`prepare_dual_calendar_boundary_case`] with `mutate_source_config` applied
+/// to the copied source deck's `config.json` before that deck is trained.
+pub fn prepare_dual_calendar_boundary_case_with(
+    dst: &Path,
+    mutate_source_config: impl FnOnce(&mut serde_json::Value),
+) {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("crates dir must be one level above CARGO_MANIFEST_DIR")
@@ -104,6 +115,11 @@ pub fn prepare_dual_calendar_boundary_case(dst: &Path) {
     let source = work.path().join("source");
     let source_out = work.path().join("source_out");
     copy_dir_recursive(&fixture.join("source"), &source);
+    let config_path = source.join("config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    mutate_source_config(&mut config);
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
     let run = novomodelo()
         .args(["run", source.to_str().unwrap()])
         .args(["--output", source_out.to_str().unwrap(), "--quiet"])
