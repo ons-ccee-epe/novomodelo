@@ -549,4 +549,8 @@ impl SolverInterface for HighsSolver {
     fn record_reconstruction_stats(&mut self) {
         self.stats.basis_reconstructions += 1;
     }
+
+    fn warm_starts(&self) -> bool {
+        self.current_profile.use_warm_start
+    }
 }

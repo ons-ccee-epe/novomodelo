@@ -103,6 +103,10 @@ impl<S: SolverInterface> SolverInterface for ProfiledSolver<S> {
         self.inner.solve(basis)
     }
 
+    fn warm_starts(&self) -> bool {
+        self.inner.warm_starts()
+    }
+
     fn get_basis(&mut self, out: &mut Basis) {
         self.inner.get_basis(out);
     }
@@ -274,6 +278,17 @@ mod tests {
             calls.is_empty(),
             "expected zero calls after ProfiledSolver::new, got: {calls:?}"
         );
+    }
+
+    #[test]
+    fn warm_starts_delegates_to_the_inner_solver() {
+        let mut solver = ProfiledSolver::new(crate::HighsSolver::new().expect("HiGHS init"));
+        assert!(solver.warm_starts());
+        solver.set_profile(&HighsProfile {
+            use_warm_start: false,
+            ..HighsProfile::default()
+        });
+        assert!(!solver.warm_starts());
     }
 
     #[test]

@@ -509,6 +509,24 @@ fn test_solve_warm_start_reproduces_cold_objective() {
     );
 }
 
+#[test]
+fn warm_starts_follows_the_profile_use_warm_start() {
+    use crate::HighsProfile;
+
+    let mut solver = HighsSolver::new().expect("HighsSolver::new() must succeed");
+    assert!(solver.warm_starts(), "the default profile warm-starts");
+    solver.apply_profile(&HighsProfile {
+        use_warm_start: false,
+        ..HighsProfile::default()
+    });
+    assert!(!solver.warm_starts(), "a cold profile reports cold");
+    solver.apply_profile(&HighsProfile::default());
+    assert!(
+        solver.warm_starts(),
+        "re-applying a warm profile reports warm"
+    );
+}
+
 /// A cold profile ignores an offered basis, even an undersized one: the solve
 /// still reaches the optimum and nothing is counted as offered or rejected.
 #[test]

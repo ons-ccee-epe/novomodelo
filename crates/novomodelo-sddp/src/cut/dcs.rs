@@ -609,9 +609,9 @@ fn solve_mapped<'a, S: SolverInterface>(
 ///
 /// The initial solve is warm from a uniform-BASIC reconstruction of
 /// `stored_basis` ([`reconstruct_basis_uniform_basic`] +
-/// [`enforce_basic_count_invariant`]) if present, else cold. A cold mid-loop
-/// re-solve (warm basis discarded by the retry ladder) is tolerated — the loop
-/// never reads a stale basis between solves.
+/// [`enforce_basic_count_invariant`]) if present and the solver warm-starts,
+/// else cold. A cold mid-loop re-solve (warm basis discarded by the retry
+/// ladder) is tolerated — the loop never reads a stale basis between solves.
 ///
 /// # Errors
 ///
@@ -667,7 +667,10 @@ pub fn lazy_solve_preloaded<S: SolverInterface>(
         // treated as cold — the same cross-node-reuse rejection
         // run_stage_solve applies on the frozen path, mirrored here because
         // CLP accepts a shape-mismatched basis silently.
-        if let Some(stored) = stored_basis.filter(|s| s.node_id == ctx.node_id) {
+        let offered = stored_basis
+            .filter(|s| s.node_id == ctx.node_id)
+            .filter(|_| solver.warm_starts());
+        if let Some(stored) = offered {
             let target = ReconstructionTarget::from_template(core);
             reconstruct_basis_uniform_basic(stored, target, cut_rows, &mut scratch.recon_basis);
             enforce_basic_count_invariant(
@@ -2943,6 +2946,8 @@ mod tests {
         call_count: usize,
         buf: Vec<f64>,
         empty: Vec<f64>,
+        warm: bool,
+        offered: Vec<bool>,
     }
 
     impl TwoPhaseMock {
@@ -2953,6 +2958,8 @@ mod tests {
                 call_count: 0,
                 buf: Vec::new(),
                 empty: Vec::new(),
+                warm: true,
+                offered: Vec::new(),
             }
         }
     }
@@ -2969,8 +2976,9 @@ mod tests {
         fn set_col_bounds(&mut self, _i: &[usize], _l: &[f64], _u: &[f64]) {}
         fn solve(
             &mut self,
-            _basis: Option<&Basis>,
+            basis: Option<&Basis>,
         ) -> Result<novomodelo_solver::SolutionView<'_>, SolverError> {
+            self.offered.push(basis.is_some());
             // Always behave as a cold solve: ignore any passed basis.
             let src = if self.call_count == 0 {
                 &self.first
@@ -3003,6 +3011,56 @@ mod tests {
         fn name(&self) -> &'static str {
             "TwoPhaseMock"
         }
+        fn warm_starts(&self) -> bool {
+            self.warm
+        }
+    }
+
+    /// FRESH-branch initial solve with a valid same-node stored basis; returns
+    /// whether each `solve` call was offered a basis.
+    fn fresh_solve_offered(warm: bool) -> Vec<bool> {
+        let indexer = lazy_indexer();
+        let pool = CutPool::new(16, 1, 16, 0);
+        let core = core_template();
+        let theta_floor = vec![STATE_X0, 0.0, 0.0, 0.0];
+        let mut mock = TwoPhaseMock::new(theta_floor.clone(), theta_floor);
+        mock.warm = warm;
+        let mut solver = ProfiledSolver::new(mock);
+        let mut scratch = DcsSolveScratch::default();
+        let params = lazy_params(10, 50);
+        let stored =
+            CapturedBasis::new(core.num_cols, core.num_rows, core.num_rows, 0, 0, NodeId(0));
+
+        solver.load_model(&core);
+        lazy_solve_preloaded(
+            &mut solver,
+            &core,
+            &pool,
+            &indexer,
+            &cut_state(&indexer),
+            &[],
+            Some(&stored),
+            &[],
+            &params,
+            &mut scratch,
+            ctx(),
+        )
+        .expect("FRESH solve must succeed");
+        solver.inner().offered.clone()
+    }
+
+    #[test]
+    fn lazy_solve_fresh_cold_profile_skips_reconstruction() {
+        assert_eq!(
+            fresh_solve_offered(false),
+            vec![false],
+            "a cold solver must receive solve(None) on the FRESH initial solve"
+        );
+    }
+
+    #[test]
+    fn lazy_solve_fresh_warm_profile_offers_the_reconstructed_basis() {
+        assert_eq!(fresh_solve_offered(true), vec![true]);
     }
 
     /// A mid-loop `solve(None)` that discarded its warm basis (the mock ignores
