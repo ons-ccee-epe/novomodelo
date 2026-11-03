@@ -65,6 +65,8 @@ use novomodelo_io::ReportEntry;
 use novomodelo_io::SetupTimings;
 use novomodelo_io::SolverStatsRow;
 use novomodelo_io::TrainingOutput;
+use novomodelo_io::config::CorrelationTarget;
+use novomodelo_io::config::MomentMatching;
 use novomodelo_io::get_hostname;
 use novomodelo_io::now_iso8601;
 use novomodelo_io::output::simulation_writer::{
@@ -980,6 +982,7 @@ pub(crate) fn build_study_setup(
     let system = result.system;
     let estimation_report = result.estimation_report;
     let estimation_path = result.estimation_path;
+    let correlation_origin = result.correlation_origin;
 
     let mut hydro_timings = HydroFitTimings::default();
     let hydro_models_result = prepare_hydro_models_from_artifacts(
@@ -1012,6 +1015,7 @@ pub(crate) fn build_study_setup(
     let mut provenance_report = build_provenance_report(
         estimation_path,
         estimation_report.as_ref(),
+        correlation_origin,
         setup.inputs.stochastic.provenance(),
         system.hydros(),
         &setup.hydro_models.provenance,
@@ -1052,6 +1056,7 @@ pub(crate) fn build_study_setup(
         &system,
         &setup.inputs.stochastic,
         estimation_report.as_ref(),
+        correlation_origin,
         seed,
     );
     let hydro_models_summary = build_hydro_model_summary(&setup.hydro_models, &system);
@@ -1302,10 +1307,20 @@ pub(crate) fn stochastic_summary_to_dict<'py>(
         "correlation_source",
         stochastic_source_str(&summary.correlation_source),
     )?;
+    dict.set_item(
+        "correlation_target",
+        summary.correlation_target.map(CorrelationTarget::as_str),
+    )?;
     dict.set_item("correlation_dim", summary.correlation_dim.as_deref())?;
     dict.set_item(
         "opening_tree_source",
         stochastic_source_str(&summary.opening_tree_source),
+    )?;
+    dict.set_item(
+        "opening_tree_moment_matching",
+        summary
+            .opening_tree_moment_matching
+            .map(MomentMatching::as_str),
     )?;
     dict.set_item("openings_per_stage", summary.openings_per_stage.clone())?;
     dict.set_item("n_stages", summary.n_stages)?;
@@ -1334,8 +1349,22 @@ pub(crate) fn provenance_to_dict<'py>(
         report.inflow.correlation_source.to_string(),
     )?;
     dict.set_item(
+        "correlation_target",
+        report
+            .inflow
+            .correlation_target
+            .map(CorrelationTarget::as_str),
+    )?;
+    dict.set_item(
         "opening_tree_source",
         report.inflow.opening_tree_source.to_string(),
+    )?;
+    dict.set_item(
+        "opening_tree_moment_matching",
+        report
+            .inflow
+            .opening_tree_moment_matching
+            .map(MomentMatching::as_str),
     )?;
     dict.set_item("n_hydros", report.inflow.n_hydros)?;
     dict.set_item("ar_method", report.inflow.ar_method.as_deref())?;
@@ -1958,7 +1987,7 @@ mod tests {
             "1dtoy must be a 4-stage case so total_lp_solves is a multi-stage guard"
         );
 
-        let golden_lower_bound = 15_595_518.381_798_638;
+        let golden_lower_bound = 20_616_141.776_970_58;
         assert!(
             close(training.bounds.final_lower_bound, golden_lower_bound),
             "final_lower_bound {} not within 1e-6 of golden {golden_lower_bound}",
@@ -1986,7 +2015,7 @@ mod tests {
             .cost
             .as_ref()
             .expect("simulation cost must be populated by the run path");
-        let golden_mean_cost = 9_679_385.922_404_84;
+        let golden_mean_cost = 12_865_159.706_109_203;
         assert!(
             close(cost.mean_cost, golden_mean_cost),
             "mean_cost {} not within 1e-6 of golden {golden_mean_cost}",

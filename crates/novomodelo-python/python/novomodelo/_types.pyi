@@ -47,8 +47,10 @@ class StochasticSummary(TypedDict, total=False):
     n_seasons: int
     ar_order: Optional[Any]
     correlation_source: Optional[str]
+    correlation_target: Optional[str]
     correlation_dim: Optional[str]
     opening_tree_source: Optional[str]
+    opening_tree_moment_matching: Optional[str]
     openings_per_stage: Any
     n_stages: int
     n_load_buses: int
@@ -75,7 +77,9 @@ class ProvenanceReport(TypedDict, total=False):
     seasonal_stats_source: str
     ar_coefficients_source: str
     correlation_source: str
+    correlation_target: Optional[str]
     opening_tree_source: str
+    opening_tree_moment_matching: Optional[str]
     n_hydros: int
     ar_method: Optional[str]
     ar_max_order: Optional[int]

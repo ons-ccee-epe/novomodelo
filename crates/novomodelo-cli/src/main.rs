@@ -109,6 +109,10 @@ fn main() {
 }
 
 #[cfg(test)]
+#[path = "../tests/common/varying_external_deck.rs"]
+mod varying_external_deck;
+
+#[cfg(test)]
 mod tests {
     use super::{ColorWhen, resolve_color};
 

@@ -33,9 +33,10 @@ use novomodelo_sddp::hydro_models::prepare_hydro_models_from_artifacts;
 use novomodelo_sddp::policy::orchestration::export_stochastic_artifacts;
 use novomodelo_sddp::reconcile_global_ok;
 use novomodelo_sddp::{
-    EstimationReport, PrepareHydroModelsResult, PrepareStochasticResult, StudySetup,
-    build_hydro_model_summary, build_stochastic_context_for_study, prepare_hydro_models,
-    prepare_stochastic, resolve_boundary_state_requirements, setup::StudyParams,
+    CorrelationOrigin, EstimationReport, PrepareHydroModelsResult, PrepareStochasticResult,
+    StudySetup, build_hydro_model_summary, build_stochastic_context_for_study,
+    prepare_hydro_models, prepare_stochastic, resolve_boundary_state_requirements,
+    setup::StudyParams,
 };
 use novomodelo_solver::active_solver_name;
 use novomodelo_solver::active_solver_version;
@@ -162,6 +163,7 @@ pub(super) struct LoadBroadcastResult {
     pub(super) root_config: Option<Config>,
     pub(super) root_estimation_report: Option<EstimationReport>,
     pub(super) root_estimation_path: Option<EstimationPath>,
+    pub(super) root_correlation_origin: Option<CorrelationOrigin>,
     pub(super) training_enabled: bool,
     pub(super) policy_mode: PolicyMode,
     /// `None` on non-root ranks, which reconstruct setup independently and never
@@ -265,6 +267,7 @@ pub(super) fn broadcast_and_build_setup(
         root_stochastic,
         root_estimation_report,
         root_estimation_path,
+        root_correlation_origin,
         raw_bcast_tree,
         root_hydro_models,
         raw_scalar_parameters,
@@ -273,23 +276,13 @@ pub(super) fn broadcast_and_build_setup(
         match load_case_and_config(args, &ctx.output_dir, ctx.quiet, &ctx.stdout) {
             Ok((prepared, hydro_models, bcast, config, scalar_parameters, timings)) => {
                 root_setup_timings = Some(timings);
-                let bcast_tree = if prepared.stochastic.provenance().opening_tree
-                    == ComponentProvenance::UserSupplied
-                {
-                    let t = prepared.stochastic.opening_tree();
-                    Some(BroadcastOpeningTree {
-                        data: t.data().to_vec(),
-                        openings_per_stage: t.openings_per_stage_slice().to_vec(),
-                        dim: t.dim(),
-                    })
-                } else {
-                    None
-                };
+                let bcast_tree = user_supplied_opening_tree(&prepared.stochastic);
                 let PrepareStochasticResult {
                     system,
                     stochastic,
                     estimation_report,
                     estimation_path,
+                    correlation_origin,
                 } = prepared;
                 let bcast_params: Vec<BroadcastScalarParameter> = scalar_parameters
                     .iter()
@@ -302,6 +295,7 @@ pub(super) fn broadcast_and_build_setup(
                     Some(stochastic),
                     estimation_report,
                     Some(estimation_path),
+                    Some(correlation_origin),
                     Some(bcast_tree),
                     Some(hydro_models),
                     Some(bcast_params),
@@ -318,11 +312,14 @@ pub(super) fn broadcast_and_build_setup(
                 None,
                 None,
                 None,
+                None,
                 Some(e),
             ),
         }
     } else {
-        (None, None, None, None, None, None, None, None, None, None)
+        (
+            None, None, None, None, None, None, None, None, None, None, None,
+        )
     };
     let broadcast_start = std::time::Instant::now();
     let system_result = broadcast_value(raw_system, &ctx.comm);
@@ -394,9 +391,23 @@ pub(super) fn broadcast_and_build_setup(
         root_config,
         root_estimation_report,
         root_estimation_path,
+        root_correlation_origin,
         training_enabled,
         policy_mode,
         setup_timings: root_setup_timings,
+    })
+}
+
+fn user_supplied_opening_tree(
+    stochastic: &novomodelo_stochastic::StochasticContext,
+) -> Option<BroadcastOpeningTree> {
+    (stochastic.provenance().opening_tree == ComponentProvenance::UserSupplied).then(|| {
+        let t = stochastic.opening_tree();
+        BroadcastOpeningTree {
+            data: t.data().to_vec(),
+            openings_per_stage: t.openings_per_stage_slice().to_vec(),
+            dim: t.dim(),
+        }
     })
 }
 
@@ -408,10 +419,6 @@ fn reconstruct_stochastic_context_non_root(
     seed: u64,
     case_dir: &Path,
 ) -> Result<novomodelo_stochastic::StochasticContext, CliError> {
-    // Non-root ranks receive the estimated system + user tree over the wire and
-    // pass None external-scenario counts; the stochastic-context derivation is
-    // owned by novomodelo_sddp (shared with the rank-0 prepare_stochastic path), so the
-    // non-root rebuild cannot drift from it across the crate boundary.
     build_stochastic_context_for_study(
         system,
         case_dir,
@@ -419,7 +426,7 @@ fn reconstruct_stochastic_context_non_root(
         &bcast_config.training_source,
         bcast_config.boundary.inflow_lag_depth(),
         user_tree,
-        None,
+        bcast_config.training_moment_matching.into(),
     )
     .map_err(CliError::from)
 }
@@ -482,6 +489,7 @@ pub(super) fn run_pre_training(
     root_config: Option<&Config>,
     root_estimation_report: Option<&EstimationReport>,
     root_estimation_path: Option<EstimationPath>,
+    root_correlation_origin: Option<CorrelationOrigin>,
     setup_timings: Option<&SetupTimings>,
 ) -> Result<(), CliError> {
     if ctx.is_root
@@ -499,6 +507,7 @@ pub(super) fn run_pre_training(
             root_config,
             root_estimation_report,
             root_estimation_path,
+            root_correlation_origin,
         )
     } else {
         Ok(())
@@ -540,6 +549,7 @@ fn run_root_exports(
     root_config: Option<&Config>,
     root_estimation_report: Option<&EstimationReport>,
     root_estimation_path: Option<EstimationPath>,
+    root_correlation_origin: Option<CorrelationOrigin>,
 ) -> Result<(), CliError> {
     if root_config.is_some_and(|c| c.training.enabled) {
         remove_success_marker(&ctx.output_dir.join("training")).map_err(CliError::from)?;
@@ -566,9 +576,15 @@ fn run_root_exports(
     })?;
 
     if let Some(path) = root_estimation_path {
+        let Some(correlation_origin) = root_correlation_origin else {
+            return Err(CliError::Internal {
+                message: "rank 0 resolved an estimation path but no correlation origin".to_string(),
+            });
+        };
         let mut provenance = build_provenance_report(
             path,
             root_estimation_report,
+            correlation_origin,
             setup.inputs.stochastic.provenance(),
             system.hydros(),
             &setup.hydro_models.provenance,
@@ -623,13 +639,16 @@ fn run_root_exports(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::path::PathBuf;
+    use std::fs;
+    use std::path::{Path, PathBuf};
 
     use console::Term;
     use serde::Serialize;
     use serde::de::DeserializeOwned;
+    use tempfile::TempDir;
 
     use novomodelo_core::ScalarParameter;
+    use novomodelo_core::System;
     use novomodelo_io::BroadcastScalarParameter;
     use novomodelo_sddp::PrepareStochasticResult;
     use novomodelo_sddp::cut::CutSet;
@@ -637,10 +656,13 @@ mod tests {
     use novomodelo_sddp::setup::study_stage_noise_group_ids;
     use novomodelo_sddp::test_support::decks::{Deck, SLOW_DECKS, committed_decks};
     use novomodelo_sddp::test_support::template_fact_groups;
+    use novomodelo_stochastic::StochasticContext;
     use novomodelo_stochastic::context::OpeningTree;
-    use novomodelo_stochastic::provenance::ComponentProvenance;
 
-    use super::{build_study_setup, load_case_and_config, reconstruct_stochastic_context_non_root};
+    use super::{
+        build_study_setup, load_case_and_config, reconstruct_stochastic_context_non_root,
+        user_supplied_opening_tree,
+    };
     use crate::commands::broadcast::BroadcastOpeningTree;
     use crate::commands::resolve_output_dir;
     use crate::commands::run::{CommBackendArg, RunArgs};
@@ -657,9 +679,85 @@ mod tests {
     /// exercise.
     #[test]
     fn non_root_opening_tree_matches_rank_0_under_shared_noise_groups() {
-        let case_dir = d29_case_dir();
+        let mut leg_bits = Vec::new();
+        for moment_matching in ["none", "per_coordinate"] {
+            let case = TempDir::new().expect("tempdir");
+            copy_dir_recursive(&d29_case_dir(), case.path());
+            set_moment_matching(case.path(), moment_matching);
+            let (system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
+            let ids = study_stage_noise_group_ids(&system);
+            assert!(
+                ids.windows(2).any(|w| w[0] == w[1]),
+                "D29 fixture must exercise shared noise groups; got {ids:?}",
+            );
+            assert_same_tree(
+                rank0.opening_tree(),
+                non_root.opening_tree(),
+                &format!("shared noise groups, {moment_matching}"),
+            );
+            leg_bits.push(tree_bits(rank0.opening_tree()));
+        }
+        assert_ne!(
+            leg_bits[0], leg_bits[1],
+            "per_coordinate must change the D29 tree, or the rank comparison above has no power"
+        );
+    }
+
+    #[test]
+    fn non_root_opening_tree_matches_rank_0_when_external_scenarios_clamp_openings() {
+        let mut leg_bits = Vec::new();
+        for moment_matching in ["none", "per_coordinate"] {
+            let case = d56_with_num_openings(3, moment_matching);
+            let (_system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
+            assert_eq!(
+                rank0.opening_tree().openings_per_stage_slice(),
+                &[1, 1],
+                "fixture must clamp every stage to the external library's scenario count"
+            );
+            assert_same_tree(
+                rank0.opening_tree(),
+                non_root.opening_tree(),
+                &format!("external clamp, {moment_matching}"),
+            );
+            leg_bits.push(tree_bits(rank0.opening_tree()));
+        }
+        assert_eq!(
+            leg_bits[0], leg_bits[1],
+            "per_coordinate must leave a one-opening stage as drawn"
+        );
+    }
+
+    #[test]
+    fn non_root_opening_tree_matches_rank_0_when_external_scenarios_clamp_a_matched_tree() {
+        let mut leg_bits = Vec::new();
+        for moment_matching in ["none", "per_coordinate"] {
+            let case = TempDir::new().expect("tempdir");
+            copy_dir_recursive(&d56_case_dir(), case.path());
+            crate::varying_external_deck::write_varying_external_deck(case.path(), moment_matching);
+            let (_system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
+            assert_eq!(
+                rank0.opening_tree().openings_per_stage_slice(),
+                &[3, 3],
+                "fixture must clamp the 5 openings of every stage to the 3 external scenarios"
+            );
+            assert_same_tree(
+                rank0.opening_tree(),
+                non_root.opening_tree(),
+                &format!("external clamp, {moment_matching}"),
+            );
+            leg_bits.push(tree_bits(rank0.opening_tree()));
+        }
+        assert_ne!(
+            leg_bits[0], leg_bits[1],
+            "per_coordinate must change a clamped stage with several openings, or the rank comparison above has no power"
+        );
+    }
+
+    fn load_rank0_and_rebuild_non_root(
+        case_dir: &Path,
+    ) -> (System, StochasticContext, StochasticContext) {
         let args = RunArgs {
-            case_dir: case_dir.clone(),
+            case_dir: case_dir.to_path_buf(),
             output: None,
             quiet: true,
             threads: None,
@@ -671,41 +769,93 @@ mod tests {
             true,
             &Term::stderr(),
         )
-        .expect("D29 must load and prepare stochastic context on rank 0");
-
-        let ids = study_stage_noise_group_ids(&prepared.system);
-        assert!(
-            ids.windows(2).any(|w| w[0] == w[1]),
-            "D29 fixture must exercise shared noise groups; got {ids:?}",
-        );
-
-        let rank0_tree = prepared.stochastic.opening_tree();
-
+        .expect("case must load and prepare the stochastic context on rank 0");
+        let bcast_tree = user_supplied_opening_tree(&prepared.stochastic);
+        let PrepareStochasticResult {
+            system, stochastic, ..
+        } = prepared;
+        let non_root_system = broadcast_round_trip(&system).expect("System must survive the wire");
+        let non_root_bcast =
+            broadcast_round_trip(&bcast).expect("BroadcastConfig must survive the wire");
+        let non_root_tree: Option<BroadcastOpeningTree> =
+            broadcast_round_trip(&bcast_tree).expect("opening tree must survive the wire");
+        let user_tree =
+            non_root_tree.map(|bt| OpeningTree::from_parts(bt.data, bt.openings_per_stage, bt.dim));
         let non_root = reconstruct_stochastic_context_non_root(
-            &prepared.system,
-            &bcast,
-            None,
-            bcast.seed,
-            &case_dir,
+            &non_root_system,
+            &non_root_bcast,
+            user_tree,
+            non_root_bcast.seed,
+            case_dir,
         )
-        .expect("non-root reconstruction must succeed for D29");
-        let non_root_tree = non_root.opening_tree();
+        .expect("non-root reconstruction must succeed");
+        (system, stochastic, non_root)
+    }
 
+    fn assert_same_tree(rank0: &OpeningTree, non_root: &OpeningTree, what: &str) {
         assert_eq!(
-            non_root_tree.data(),
-            rank0_tree.data(),
-            "non-root opening tree data must match rank 0's under shared noise groups"
+            non_root.openings_per_stage_slice(),
+            rank0.openings_per_stage_slice(),
+            "non-root openings per stage must match rank 0's ({what})"
         );
         assert_eq!(
-            non_root_tree.openings_per_stage_slice(),
-            rank0_tree.openings_per_stage_slice(),
-            "non-root opening tree shape must match rank 0's under shared noise groups"
+            non_root.dim(),
+            rank0.dim(),
+            "non-root dim must match rank 0's ({what})"
         );
         assert_eq!(
-            non_root_tree.dim(),
-            rank0_tree.dim(),
-            "non-root opening tree dim must match rank 0's under shared noise groups"
+            tree_bits(non_root),
+            tree_bits(rank0),
+            "non-root tree data must match rank 0's bit for bit ({what})"
         );
+    }
+
+    fn tree_bits(tree: &OpeningTree) -> Vec<u64> {
+        tree.data().iter().map(|v| v.to_bits()).collect()
+    }
+
+    fn set_moment_matching(case: &Path, moment_matching: &str) {
+        crate::varying_external_deck::edit_json(&case.join("config.json"), |config| {
+            config["training"]["scenario_source"]["openings"] =
+                serde_json::json!({"source": "generated", "moment_matching": moment_matching});
+        });
+    }
+
+    fn d56_case_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/deterministic/d56-external-authoritative")
+    }
+
+    fn d56_with_num_openings(num_openings: u32, moment_matching: &str) -> TempDir {
+        let case = TempDir::new().expect("tempdir");
+        copy_dir_recursive(&d56_case_dir(), case.path());
+        set_moment_matching(case.path(), moment_matching);
+        crate::varying_external_deck::edit_json(&case.path().join("stages.json"), |stages| {
+            for stage in stages["stages"]
+                .as_array_mut()
+                .expect("stages.json must hold a stages array")
+            {
+                stage["num_openings"] = serde_json::json!(num_openings);
+            }
+        });
+        case
+    }
+
+    fn copy_dir_recursive(src: &Path, dst: &Path) {
+        fs::create_dir_all(dst).expect("destination directory must be creatable");
+        for entry in fs::read_dir(src).expect("source directory must be readable") {
+            let entry = entry.expect("directory entry must be readable");
+            let to = dst.join(entry.file_name());
+            if entry
+                .file_type()
+                .expect("file type must be readable")
+                .is_dir()
+            {
+                copy_dir_recursive(&entry.path(), &to);
+            } else {
+                fs::copy(entry.path(), &to).expect("file must be copyable");
+            }
+        }
     }
 
     /// Rank 0's own `broadcast_value` returns its input undecoded, so this is
@@ -742,18 +892,7 @@ mod tests {
                     &Term::stderr(),
                 )?;
 
-            let bcast_tree = if prepared.stochastic.provenance().opening_tree
-                == ComponentProvenance::UserSupplied
-            {
-                let t = prepared.stochastic.opening_tree();
-                Some(BroadcastOpeningTree {
-                    data: t.data().to_vec(),
-                    openings_per_stage: t.openings_per_stage_slice().to_vec(),
-                    dim: t.dim(),
-                })
-            } else {
-                None
-            };
+            let bcast_tree = user_supplied_opening_tree(&prepared.stochastic);
             let bcast_params: Vec<BroadcastScalarParameter> =
                 scalars.iter().map(BroadcastScalarParameter::from).collect();
 
@@ -778,6 +917,11 @@ mod tests {
                 non_root_bcast.seed,
                 &deck.dir,
             )?;
+            assert_same_tree(
+                stochastic.opening_tree(),
+                non_root_stochastic.opening_tree(),
+                &deck.key,
+            );
             let non_root_hydro_models = prepare_hydro_models(&non_root_system, &deck.dir, false)
                 .map_err(|e| CliError::Internal {
                     message: format!("hydro model preprocessing error on non-root rank: {e}"),

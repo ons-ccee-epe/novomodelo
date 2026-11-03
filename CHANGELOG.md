@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `training/model_provenance.json` records `inflow.correlation_target` and
+  `inflow.opening_tree_moment_matching`.
+
+### Changed
+
+- **BREAKING:** the spatial correlation estimated from history now comes from
+  the standardized historical inflows instead of the PAR residuals. The new
+  `estimation.correlation_target` in `config.json` selects it; `"residuals"`
+  restores the earlier results.
+- **BREAKING:** generated opening trees are now moment-matched: at each stage,
+  every hydro's inflow openings have mean 0 and the model variance. The new
+  `training.scenario_source.openings.moment_matching` in `config.json` selects
+  it; `"none"` restores the earlier results.
+
+### Fixed
+
+- Training under `mpiexec` with external scenario files
+  (`scenarios/external_inflow_scenarios.parquet` and the other external
+  libraries) holding fewer scenarios than `num_openings` aborted the run with
+  an MPI error.
+- `training/model_provenance.json` and the run summary reported a correlation
+  read from `scenarios/correlation.json` as `estimated`. They now report
+  `user_file`.
+
 ## [0.19.1] - 2026-10-26
 
 ### Added

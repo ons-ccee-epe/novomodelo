@@ -45,6 +45,8 @@ pub struct OpeningTreeInputs<'a> {
     /// receive identical noise. `None` draws independent noise per stage; when
     /// `Some`, length must equal the number of study stages.
     pub noise_group_ids: Option<Vec<u32>>,
+    /// Moment matching applied to a generated tree; ignored when `user_tree` is `Some`.
+    pub moment_matching: MomentMatching,
 }
 
 use crate::{
@@ -56,6 +58,7 @@ use crate::{
     provenance::{ComponentProvenance, StochasticProvenance},
     sampling::historical::HistoricalScenarioLibrary,
     tree::{
+        MomentMatching,
         generate::{ClassDimensions, OpeningTreeGenerationInputs, generate_opening_tree},
         opening_tree::OpeningTreeView,
     },
@@ -665,6 +668,7 @@ pub fn build_stochastic_context(
         historical_library,
         external_scenario_counts,
         noise_group_ids,
+        moment_matching,
     } = opening_tree_inputs;
 
     let study_stages: Vec<_> = system
@@ -694,12 +698,6 @@ pub fn build_stochastic_context(
             ComponentProvenance::NotApplicable
         };
 
-        let correlation_prov = if !system.correlation().profiles.is_empty() && dim > 0 {
-            ComponentProvenance::Generated
-        } else {
-            ComponentProvenance::NotApplicable
-        };
-
         let inflow_prov = if hydro_ids.is_empty() {
             ComponentProvenance::NotApplicable
         } else {
@@ -708,7 +706,8 @@ pub fn build_stochastic_context(
 
         StochasticProvenance {
             opening_tree: opening_tree_prov,
-            correlation: correlation_prov,
+            opening_tree_moment_matching: (opening_tree_prov == ComponentProvenance::Generated)
+                .then_some(moment_matching),
             inflow_model: inflow_prov,
             inflow_scheme: schemes.inflow,
             load_scheme: schemes.load,
@@ -737,6 +736,7 @@ pub fn build_stochastic_context(
                 historical_library,
                 external_scenario_counts: external_scenario_counts.as_deref(),
                 noise_group_ids: noise_group_ids.as_deref(),
+                moment_matching,
             },
         )?
     };
@@ -838,7 +838,7 @@ mod tests {
         ClassSchemes, OpeningTreeInputs, build_inflow_par, build_stochastic_context,
         noise_entity_order,
     };
-    use crate::StochasticError;
+    use crate::{StochasticError, tree::MomentMatching};
 
     fn make_stage(index: usize, id: i32, branching_factor: usize) -> Stage {
         novomodelo_core::test_support::make_stage(StageSpec {
@@ -1837,6 +1837,7 @@ mod tests {
                 historical_library: None,
                 external_scenario_counts: None,
                 noise_group_ids: None,
+                moment_matching: MomentMatching::None,
             },
             ClassSchemes {
                 inflow: Some(SamplingScheme::InSample),
@@ -1979,6 +1980,7 @@ mod tests {
                 historical_library: None,
                 external_scenario_counts: None,
                 noise_group_ids: None,
+                moment_matching: MomentMatching::None,
             },
             ClassSchemes {
                 inflow: Some(SamplingScheme::InSample),

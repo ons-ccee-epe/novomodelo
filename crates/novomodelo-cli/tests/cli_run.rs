@@ -24,7 +24,7 @@ use tempfile::TempDir;
 mod common;
 use common::{
     case_dir, copy_dir_recursive, make_valid_case, novomodelo, restamp_policy_version,
-    snapshot_files, write_file, write_supplied_opening_tree_case,
+    snapshot_files, write_file, write_supplied_correlation_case, write_supplied_opening_tree_case,
 };
 
 #[test]
@@ -1201,7 +1201,7 @@ fn find_line<'a>(haystack: &'a str, label: &str) -> &'a str {
         .unwrap_or_else(|| panic!("expected a {label} Time-split line in run stderr"))
 }
 
-const EXPECTED_MEAN_COST: f64 = 9_679_385.922_404_844;
+const EXPECTED_MEAN_COST: f64 = 12_865_159.706_109_203;
 
 /// Golden LP counts and cost on input-committed `examples/1dtoy` (seed 42, all
 /// `in_sample`). Goldens change only when the case, solver or algorithm changes.
@@ -1239,11 +1239,11 @@ fn run_produces_deterministic_end_block_and_metadata() {
     }
 
     for needle in [
-        "Lower bound:  1.55955e7",
+        "Lower bound:  2.06161e7",
         "Upper bound:  5.79592e5",
         "LP solves:    5632 (",
         "LP solves:    400 (",
-        "Expected cost: 9.67939e6",
+        "Expected cost: 1.28652e7",
         "1 constant",
         "0 linearized, 1 without",
         "user_stats_white_noise",
@@ -2399,6 +2399,62 @@ fn run_accepts_a_supplied_opening_tree_with_historical_residuals_stages() {
         .stderr(predicate::str::contains("V2.").not());
 }
 
+/// Runs `case` with the provenance block printed and returns the run's stdout and
+/// the `inflow` object of its `training/model_provenance.json`.
+fn run_and_read_inflow_provenance(case: &Path) -> (String, serde_json::Value) {
+    let out = TempDir::new().unwrap();
+    let (stdout, _) = run_ok(&[
+        "run",
+        case.to_str().unwrap(),
+        "--output",
+        out.path().to_str().unwrap(),
+    ]);
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(out.path().join("training/model_provenance.json")).unwrap(),
+    )
+    .unwrap();
+    (stdout, report["inflow"].clone())
+}
+
+#[test]
+fn a_supplied_correlation_on_an_estimated_path_is_reported_as_user_file() {
+    let case = TempDir::new().unwrap();
+    write_supplied_correlation_case(case.path());
+    let (stdout, inflow) = run_and_read_inflow_provenance(case.path());
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == "  Correlation:     user_file"),
+        "stdout must name the supplied correlation, got: {stdout}"
+    );
+    assert_eq!(inflow["estimation_path"], "full_estimation");
+    assert_eq!(inflow["correlation_source"], "user_file");
+    assert_eq!(
+        inflow.as_object().unwrap().get("correlation_target"),
+        Some(&serde_json::Value::Null),
+        "correlation_target must be written as null, got: {inflow}"
+    );
+
+    let control = TempDir::new().unwrap();
+    copy_dir_recursive(
+        &case_dir("deterministic/d26-estimated-par2"),
+        control.path(),
+    );
+    rewrite_json(&control.path().join("config.json"), |config| {
+        config["training"]["stopping_rules"] =
+            serde_json::json!([{ "type": "iteration_limit", "limit": 1 }]);
+    });
+    let (stdout, inflow) = run_and_read_inflow_provenance(control.path());
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == "  Correlation:     estimated (target: inflows)"),
+        "stdout must name the estimation target, got: {stdout}"
+    );
+    assert_eq!(inflow["correlation_source"], "estimated");
+    assert_eq!(inflow["correlation_target"], "inflows");
+}
+
 // ── A failed run keeps the last whole checkpoint ──────────────────────────────
 
 /// The deck of `infeasible_training_lp_exits_3_naming_stage_iteration_and_scenario`: with
@@ -2484,6 +2540,7 @@ mod mpi {
     use std::process::Command;
 
     use super::common::mpiexec;
+    use super::common::varying_external_deck::write_varying_external_deck;
     use super::*;
 
     /// Trains `examples/1dtoy` for three iterations with `forward_passes`
@@ -2579,6 +2636,48 @@ mod mpi {
         assert_eq!(
             two_ranks, single,
             "[lower_bound, upper_bound] bits per iteration"
+        );
+    }
+
+    #[test]
+    fn training_matches_a_single_rank_on_a_moment_matched_tree_clamped_by_external_scenarios() {
+        let case = TempDir::new().unwrap();
+        copy_dir_recursive(
+            &case_dir("deterministic/d56-external-authoritative"),
+            case.path(),
+        );
+        write_varying_external_deck(case.path(), "per_coordinate");
+        let case_path = case.path().to_str().unwrap();
+
+        let single = TempDir::new().unwrap();
+        run_case(case.path(), single.path());
+
+        let two_ranks = TempDir::new().unwrap();
+        Command::new("timeout")
+            .args(["-s", "KILL", "300"])
+            .arg(mpiexec())
+            .args(["-n", "2"])
+            .arg(novomodelo().get_program())
+            .args(["run", case_path])
+            .args(["--output", two_ranks.path().to_str().unwrap(), "--quiet"])
+            .assert()
+            .success();
+
+        let single_bounds = bound_bits(single.path());
+        assert_eq!(
+            single_bounds.len(),
+            5,
+            "one [lower_bound, upper_bound] row per iteration of the deck's iteration_limit"
+        );
+        assert_eq!(
+            bound_bits(two_ranks.path()),
+            single_bounds,
+            "[lower_bound, upper_bound] bits per iteration"
+        );
+        assert_eq!(
+            training_solve_counts(two_ranks.path()),
+            training_solve_counts(single.path()),
+            "[total, first_try, retried, failed]"
         );
     }
 }

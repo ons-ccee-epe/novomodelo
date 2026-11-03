@@ -15,6 +15,7 @@ use crate::{
     sampling::historical::HistoricalScenarioLibrary,
     tree::{
         lhs::generate_lhs,
+        moment_matching::{MomentMatching, MomentMatchingTally, match_stage_moments},
         opening_tree::OpeningTree,
         qmc_halton::generate_qmc_halton,
         qmc_sobol::{MAX_SOBOL_DIM, generate_qmc_sobol},
@@ -109,6 +110,10 @@ pub struct OpeningTreeGenerationInputs<'a> {
     /// ID share one noise draw, else each draws independently. `Some` length
     /// must equal the stage count.
     pub noise_group_ids: Option<&'a [u32]>,
+    /// Correction applied to each generated stage's inflow coordinates after
+    /// the correlation; `HistoricalResiduals` stages and noise-group copies are
+    /// never re-matched.
+    pub moment_matching: MomentMatching,
 }
 
 /// Effective opening count per stage: `branching_factor` clamped by the
@@ -355,6 +360,11 @@ pub fn generate_opening_tree<'a>(
 
     let mut data = vec![0.0f64; total_len];
     let mut corr_scratch = vec![0.0f64; 2 * dim];
+    let matching = inputs.moment_matching == MomentMatching::PerCoordinate;
+    let mut target_variance = vec![0.0_f64; dims.n_hydros];
+    let mut tally = MomentMatchingTally::new();
+    // Copies leave this unchanged, so a chain of copies inherits the last generated stage's state.
+    let mut prev_matched = false;
 
     for (stage_idx, stage) in stages.iter().enumerate() {
         let n_openings = openings_per_stage[stage_idx];
@@ -368,6 +378,9 @@ pub fn generate_opening_tree<'a>(
             dim,
             &mut data,
         ) {
+            if matching && prev_matched && n_openings != openings_per_stage[stage_idx - 1] {
+                tally.record_group_k_mismatch();
+            }
             continue;
         }
 
@@ -384,6 +397,7 @@ pub fn generate_opening_tree<'a>(
         )?;
 
         if skip_spectral {
+            prev_matched = false;
             continue;
         }
 
@@ -405,7 +419,23 @@ pub fn generate_opening_tree<'a>(
                 );
             }
         }
+
+        prev_matched = matching && n_openings >= 2 && dims.n_hydros > 0;
+        if prev_matched {
+            DecomposedCorrelation::implied_class_variances(
+                groups,
+                EntityClass::Inflow,
+                &mut target_variance,
+            );
+            tally.record_stage(match_stage_moments(
+                stage_slice,
+                n_openings,
+                dim,
+                &target_variance,
+            ));
+        }
     }
+    tally.emit();
 
     Ok(OpeningTree::from_parts(data, openings_per_stage, dim))
 }
@@ -422,8 +452,11 @@ mod tests {
     };
 
     use crate::{
-        StochasticError, correlation::resolve::DecomposedCorrelation,
+        StochasticError,
+        correlation::resolve::{DecomposedCorrelation, EntityClass},
         sampling::historical::HistoricalScenarioLibrary,
+        test_support::WarnRecorder,
+        tree::{MomentMatching, OpeningTree},
     };
 
     use super::{ClassDimensions, OpeningTreeGenerationInputs, generate_opening_tree};
@@ -917,7 +950,10 @@ mod tests {
             &corr,
             &entity_order,
             dims,
-            &OpeningTreeGenerationInputs::default(),
+            &OpeningTreeGenerationInputs {
+                moment_matching: MomentMatching::None,
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -1964,5 +2000,619 @@ mod tests {
                 );
             }
         }
+    }
+
+    const SEVEN_DIMS: ClassDimensions = ClassDimensions {
+        n_hydros: 5,
+        n_load_buses: 1,
+        n_ncs: 1,
+    };
+
+    struct Pair {
+        unmatched: OpeningTree,
+        matched: OpeningTree,
+        unmatched_warnings: Vec<String>,
+        matched_warnings: Vec<String>,
+    }
+
+    fn seven_entity_order() -> Vec<EntityId> {
+        (1..=7).map(EntityId).collect()
+    }
+
+    fn inflow_group(name: &str, ids: &[i32], matrix: Vec<Vec<f64>>) -> CorrelationGroup {
+        CorrelationGroup {
+            name: name.to_string(),
+            entities: ids
+                .iter()
+                .map(|&id| CorrelationEntity {
+                    entity_type: "inflow".to_string(),
+                    id: EntityId(id),
+                })
+                .collect(),
+            matrix,
+        }
+    }
+
+    fn equicorrelated(n: usize, rho: f64) -> Vec<Vec<f64>> {
+        (0..n)
+            .map(|i| (0..n).map(|j| if i == j { 1.0 } else { rho }).collect())
+            .collect()
+    }
+
+    fn seven_entity_correlation(groups: Vec<CorrelationGroup>) -> DecomposedCorrelation {
+        let mut profiles = BTreeMap::new();
+        profiles.insert("default".to_string(), CorrelationProfile { groups });
+        DecomposedCorrelation::build(
+            &CorrelationModel {
+                method: "spectral".to_string(),
+                profiles,
+                schedule: vec![],
+            },
+            &seven_entity_order(),
+            SEVEN_DIMS,
+        )
+        .unwrap()
+    }
+
+    fn default_correlation() -> DecomposedCorrelation {
+        seven_entity_correlation(vec![inflow_group(
+            "g1",
+            &[1, 2, 3, 4, 5],
+            equicorrelated(5, 0.7),
+        )])
+    }
+
+    fn generate_seven(
+        stages: &[Stage],
+        correlation: &DecomposedCorrelation,
+        inputs: &OpeningTreeGenerationInputs<'_>,
+    ) -> OpeningTree {
+        generate_opening_tree(
+            42,
+            stages,
+            correlation,
+            &seven_entity_order(),
+            SEVEN_DIMS,
+            inputs,
+        )
+        .unwrap()
+    }
+
+    fn generate_recording(
+        stages: &[Stage],
+        correlation: &DecomposedCorrelation,
+        inputs: &OpeningTreeGenerationInputs<'_>,
+    ) -> (OpeningTree, Vec<String>) {
+        let (subscriber, messages) = WarnRecorder::new();
+        let tree = tracing::subscriber::with_default(subscriber, || {
+            generate_seven(stages, correlation, inputs)
+        });
+        let warnings = messages.lock().unwrap().clone();
+        (tree, warnings)
+    }
+
+    fn generate_pair(
+        stages: &[Stage],
+        correlation: &DecomposedCorrelation,
+        base: OpeningTreeGenerationInputs<'_>,
+    ) -> Pair {
+        let (unmatched, unmatched_warnings) = generate_recording(
+            stages,
+            correlation,
+            &OpeningTreeGenerationInputs {
+                moment_matching: MomentMatching::None,
+                ..base
+            },
+        );
+        let (matched, matched_warnings) = generate_recording(
+            stages,
+            correlation,
+            &OpeningTreeGenerationInputs {
+                moment_matching: MomentMatching::PerCoordinate,
+                ..base
+            },
+        );
+        Pair {
+            unmatched,
+            matched,
+            unmatched_warnings,
+            matched_warnings,
+        }
+    }
+
+    fn population_moments(tree: &OpeningTree, stage: usize, coord: usize) -> (f64, f64) {
+        let n_openings = tree.n_openings(stage);
+        let count = f64::from(u32::try_from(n_openings).unwrap());
+        let mut sum = 0.0;
+        for k in 0..n_openings {
+            sum += tree.opening(stage, k)[coord];
+        }
+        let mean = sum / count;
+        let mut sum_sq = 0.0;
+        for k in 0..n_openings {
+            let d = tree.opening(stage, k)[coord] - mean;
+            sum_sq += d * d;
+        }
+        (mean, sum_sq / count)
+    }
+
+    fn inflow_target(correlation: &DecomposedCorrelation, stage_id: i32) -> Vec<f64> {
+        let mut target = vec![0.0; SEVEN_DIMS.n_hydros];
+        DecomposedCorrelation::implied_class_variances(
+            correlation.groups_for_stage(stage_id),
+            EntityClass::Inflow,
+            &mut target,
+        );
+        target
+    }
+
+    fn assert_exact_inflow_moments(tree: &OpeningTree, stage: usize, target: &[f64]) {
+        for (coord, &variance) in target.iter().enumerate() {
+            let (mean, var) = population_moments(tree, stage, coord);
+            assert!(
+                mean.abs() <= 1e-13 * variance.sqrt(),
+                "stage {stage} coordinate {coord}: mean {mean}"
+            );
+            assert!(
+                (var - variance).abs() <= 1e-13 * variance,
+                "stage {stage} coordinate {coord}: variance {var} vs target {variance}"
+            );
+        }
+    }
+
+    fn bits(values: &[f64]) -> Vec<u64> {
+        values.iter().map(|x| x.to_bits()).collect()
+    }
+
+    fn column(tree: &OpeningTree, stage: usize, coord: usize) -> Vec<f64> {
+        (0..tree.n_openings(stage))
+            .map(|k| tree.opening(stage, k)[coord])
+            .collect()
+    }
+
+    fn stage_values(tree: &OpeningTree, stage: usize) -> Vec<f64> {
+        (0..tree.n_openings(stage))
+            .flat_map(|k| tree.opening(stage, k).to_vec())
+            .collect()
+    }
+
+    fn tree_values(tree: &OpeningTree) -> Vec<f64> {
+        (0..tree.n_stages())
+            .flat_map(|s| stage_values(tree, s))
+            .collect()
+    }
+
+    fn argsort(values: &[f64]) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..values.len()).collect();
+        order.sort_by(|&a, &b| values[a].total_cmp(&values[b]));
+        order
+    }
+
+    fn pearson(a: &[f64], b: &[f64]) -> f64 {
+        let count = f64::from(u32::try_from(a.len()).unwrap());
+        let mean_a = a.iter().sum::<f64>() / count;
+        let mean_b = b.iter().sum::<f64>() / count;
+        let (mut cov, mut var_a, mut var_b) = (0.0, 0.0, 0.0);
+        for (x, y) in a.iter().zip(b) {
+            cov += (x - mean_a) * (y - mean_b);
+            var_a += (x - mean_a) * (x - mean_a);
+            var_b += (y - mean_b) * (y - mean_b);
+        }
+        cov / (var_a * var_b).sqrt()
+    }
+
+    #[test]
+    fn matched_trees_have_exact_inflow_moments_for_every_method() {
+        let correlation = default_correlation();
+        for method in [
+            NoiseMethod::Saa,
+            NoiseMethod::Lhs,
+            NoiseMethod::QmcSobol,
+            NoiseMethod::QmcHalton,
+        ] {
+            let stages = [
+                make_stage_with_method(0, 0, 10, method),
+                make_stage_with_method(1, 1, 7, method),
+            ];
+
+            let pair = generate_pair(
+                &stages,
+                &correlation,
+                OpeningTreeGenerationInputs::default(),
+            );
+
+            for (s, stage) in stages.iter().enumerate() {
+                assert_exact_inflow_moments(
+                    &pair.matched,
+                    s,
+                    &inflow_target(&correlation, stage.id),
+                );
+            }
+            let inflow_differs = (0..stages.len()).any(|s| {
+                (0..SEVEN_DIMS.n_hydros).any(|c| {
+                    bits(&column(&pair.matched, s, c)) != bits(&column(&pair.unmatched, s, c))
+                })
+            });
+            assert!(
+                inflow_differs,
+                "{method:?}: matching changed no inflow value"
+            );
+        }
+    }
+
+    #[test]
+    fn matching_preserves_the_inflow_sample_correlations() {
+        let correlation = default_correlation();
+        let stages = [make_stage(0, 0, 20)];
+
+        let pair = generate_pair(
+            &stages,
+            &correlation,
+            OpeningTreeGenerationInputs::default(),
+        );
+
+        for i in 0..SEVEN_DIMS.n_hydros {
+            for j in i + 1..SEVEN_DIMS.n_hydros {
+                let before = pearson(
+                    &column(&pair.unmatched, 0, i),
+                    &column(&pair.unmatched, 0, j),
+                );
+                let after = pearson(&column(&pair.matched, 0, i), &column(&pair.matched, 0, j));
+                assert!(
+                    (after - before).abs() <= 1e-12,
+                    "pair ({i}, {j}): {before} vs {after}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn matching_preserves_the_ranks_of_openings() {
+        let correlation = default_correlation();
+        let stages = [make_stage(0, 0, 15)];
+
+        let pair = generate_pair(
+            &stages,
+            &correlation,
+            OpeningTreeGenerationInputs::default(),
+        );
+
+        for c in 0..SEVEN_DIMS.n_hydros {
+            assert_eq!(
+                argsort(&column(&pair.matched, 0, c)),
+                argsort(&column(&pair.unmatched, 0, c)),
+                "coordinate {c}"
+            );
+        }
+    }
+
+    #[test]
+    fn matching_targets_the_clipped_factor_variance() {
+        let correlation = seven_entity_correlation(vec![inflow_group(
+            "g1",
+            &[1, 2, 3],
+            vec![
+                vec![1.0, 0.9, -0.6],
+                vec![0.9, 1.0, 0.8],
+                vec![-0.6, 0.8, 1.0],
+            ],
+        )]);
+        let target = inflow_target(&correlation, 0);
+        for (a, b) in [(0, 1), (0, 2), (1, 2)] {
+            assert!(
+                (target[a] - target[b]).abs() > 1e-3,
+                "targets {a} and {b} not distinct: {target:?}"
+            );
+        }
+        for &variance in &target[..3] {
+            assert!(variance > 1.0 + 1e-3, "group did not clip: {target:?}");
+        }
+        assert_eq!(target[3].to_bits(), 1.0_f64.to_bits());
+        assert_eq!(target[4].to_bits(), 1.0_f64.to_bits());
+
+        let pair = generate_pair(
+            &[make_stage(0, 0, 12)],
+            &correlation,
+            OpeningTreeGenerationInputs::default(),
+        );
+
+        assert_exact_inflow_moments(&pair.matched, 0, &target);
+        for c in 0..3 {
+            let (_, var) = population_moments(&pair.matched, 0, c);
+            assert!((var - 1.0).abs() > 1e-2, "coordinate {c}: variance {var}");
+        }
+    }
+
+    #[test]
+    fn matching_leaves_historical_stages_and_load_and_ncs_coordinates_untouched() {
+        let correlation = default_correlation();
+        let library = make_test_library(6, 2, 5);
+        let stages = [
+            make_stage(0, 0, 10),
+            make_stage_with_method(1, 1, 6, NoiseMethod::HistoricalResiduals),
+        ];
+
+        let pair = generate_pair(
+            &stages,
+            &correlation,
+            OpeningTreeGenerationInputs {
+                historical_library: Some(&library),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            bits(&stage_values(&pair.matched, 1)),
+            bits(&stage_values(&pair.unmatched, 1))
+        );
+        for c in [5, 6] {
+            assert_eq!(
+                bits(&column(&pair.matched, 0, c)),
+                bits(&column(&pair.unmatched, 0, c)),
+                "coordinate {c}"
+            );
+        }
+        assert_exact_inflow_moments(&pair.matched, 0, &inflow_target(&correlation, 0));
+    }
+
+    #[test]
+    fn noise_group_copies_inherit_the_matched_source() {
+        let correlation = default_correlation();
+
+        let same_group = [0_u32, 0, 0];
+        let three_stages = [
+            make_stage(0, 0, 10),
+            make_stage(1, 1, 10),
+            make_stage(2, 2, 10),
+        ];
+        let copies = generate_pair(
+            &three_stages,
+            &correlation,
+            OpeningTreeGenerationInputs {
+                noise_group_ids: Some(&same_group),
+                ..Default::default()
+            },
+        );
+        for (s, stage) in three_stages.iter().enumerate() {
+            assert_eq!(
+                bits(&stage_values(&copies.matched, s)),
+                bits(&stage_values(&copies.matched, 0)),
+                "stage {s}"
+            );
+            assert_exact_inflow_moments(&copies.matched, s, &inflow_target(&correlation, stage.id));
+        }
+
+        let library = make_test_library(6, 2, 5);
+        let historical_group = [0_u32, 0];
+        let historical_stages = [
+            make_stage_with_method(0, 0, 6, NoiseMethod::HistoricalResiduals),
+            make_stage_with_method(1, 1, 4, NoiseMethod::HistoricalResiduals),
+        ];
+        let historical = generate_pair(
+            &historical_stages,
+            &correlation,
+            OpeningTreeGenerationInputs {
+                historical_library: Some(&library),
+                noise_group_ids: Some(&historical_group),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            bits(&tree_values(&historical.matched)),
+            bits(&tree_values(&historical.unmatched))
+        );
+        assert!(
+            !historical
+                .matched_warnings
+                .iter()
+                .any(|m| m.contains("different opening count")),
+            "{:?}",
+            historical.matched_warnings
+        );
+
+        let counts = [10_usize, 5];
+        let clamped_group = [0_u32, 0];
+        let clamped_stages = [make_stage(0, 0, 10), make_stage(1, 1, 10)];
+        let clamped = generate_pair(
+            &clamped_stages,
+            &correlation,
+            OpeningTreeGenerationInputs {
+                external_scenario_counts: Some(&counts),
+                noise_group_ids: Some(&clamped_group),
+                ..Default::default()
+            },
+        );
+        assert_eq!(clamped.matched.n_openings(0), 10);
+        assert_eq!(clamped.matched.n_openings(1), 5);
+        let mismatches = |warnings: &[String]| {
+            warnings
+                .iter()
+                .filter(|m| m.contains("different opening count"))
+                .count()
+        };
+        assert_eq!(
+            mismatches(&clamped.matched_warnings),
+            1,
+            "{:?}",
+            clamped.matched_warnings
+        );
+        assert_eq!(
+            mismatches(&clamped.unmatched_warnings),
+            0,
+            "{:?}",
+            clamped.unmatched_warnings
+        );
+        for warnings in [&clamped.matched_warnings, &clamped.unmatched_warnings] {
+            assert!(
+                warnings
+                    .iter()
+                    .any(|m| m.contains("External scenarios: 5 raw scenarios")),
+                "{warnings:?}"
+            );
+        }
+
+        let chain_counts = [10_usize, 5, 3];
+        let chain_group = [0_u32, 0, 0];
+        let chain = generate_pair(
+            &three_stages,
+            &correlation,
+            OpeningTreeGenerationInputs {
+                external_scenario_counts: Some(&chain_counts),
+                noise_group_ids: Some(&chain_group),
+                ..Default::default()
+            },
+        );
+        let chain_mismatches: Vec<&String> = chain
+            .matched_warnings
+            .iter()
+            .filter(|m| m.contains("different opening count"))
+            .collect();
+        assert_eq!(chain_mismatches.len(), 1, "{:?}", chain.matched_warnings);
+        assert!(
+            chain_mismatches[0].contains("2 stage(s) copy"),
+            "{}",
+            chain_mismatches[0]
+        );
+    }
+
+    #[test]
+    fn matching_leaves_single_opening_stages_and_constant_coordinates_as_drawn() {
+        let single = generate_pair(
+            &[make_stage(0, 0, 1)],
+            &default_correlation(),
+            OpeningTreeGenerationInputs::default(),
+        );
+        assert_eq!(
+            bits(&tree_values(&single.matched)),
+            bits(&tree_values(&single.unmatched))
+        );
+
+        let constant_correlation = seven_entity_correlation(vec![inflow_group(
+            "g1",
+            &[1, 2],
+            vec![vec![1.0, 0.0], vec![0.0, 0.0]],
+        )]);
+        let constant = generate_pair(
+            &[make_stage(0, 0, 6)],
+            &constant_correlation,
+            OpeningTreeGenerationInputs::default(),
+        );
+        assert_eq!(
+            bits(&column(&constant.matched, 0, 1)),
+            bits(&column(&constant.unmatched, 0, 1))
+        );
+        assert_exact_inflow_moments(
+            &constant.matched,
+            0,
+            &inflow_target(&constant_correlation, 0),
+        );
+        let drawn: Vec<&String> = constant
+            .matched_warnings
+            .iter()
+            .filter(|m| m.contains("as drawn: every opening is equal there"))
+            .collect();
+        assert_eq!(drawn.len(), 1, "{:?}", constant.matched_warnings);
+        assert!(
+            drawn[0].contains("1 inflow coordinate(s) in 1 stage(s)"),
+            "{}",
+            drawn[0]
+        );
+        assert!(
+            !constant
+                .unmatched_warnings
+                .iter()
+                .any(|m| m.contains("as drawn")),
+            "{:?}",
+            constant.unmatched_warnings
+        );
+    }
+
+    #[test]
+    fn mixed_methods_follow_each_stages_method() {
+        let correlation = default_correlation();
+        let library = make_test_library(6, 3, 5);
+        let stages = [
+            make_stage(0, 0, 10),
+            make_stage_with_method(1, 1, 6, NoiseMethod::HistoricalResiduals),
+            make_stage_with_method(2, 2, 10, NoiseMethod::Lhs),
+        ];
+
+        let pair = generate_pair(
+            &stages,
+            &correlation,
+            OpeningTreeGenerationInputs {
+                historical_library: Some(&library),
+                ..Default::default()
+            },
+        );
+
+        assert_exact_inflow_moments(&pair.matched, 0, &inflow_target(&correlation, 0));
+        assert_exact_inflow_moments(&pair.matched, 2, &inflow_target(&correlation, 2));
+        assert_eq!(
+            bits(&stage_values(&pair.matched, 1)),
+            bits(&stage_values(&pair.unmatched, 1))
+        );
+    }
+
+    #[test]
+    fn matched_tree_is_reproducible() {
+        let correlation = default_correlation();
+        let stages = [make_stage(0, 0, 10), make_stage(1, 1, 7)];
+
+        let first = generate_pair(
+            &stages,
+            &correlation,
+            OpeningTreeGenerationInputs::default(),
+        );
+        let second = generate_pair(
+            &stages,
+            &correlation,
+            OpeningTreeGenerationInputs::default(),
+        );
+
+        assert_eq!(
+            bits(&tree_values(&first.matched)),
+            bits(&tree_values(&second.matched))
+        );
+        assert_ne!(
+            bits(&tree_values(&first.matched)),
+            bits(&tree_values(&first.unmatched))
+        );
+    }
+
+    #[test]
+    fn moment_matching_with_no_hydros_leaves_the_tree_unchanged() {
+        let stages = [make_stage(0, 0, 10)];
+        let entity_order = [EntityId(6), EntityId(7)];
+        let dims = ClassDimensions {
+            n_hydros: 0,
+            n_load_buses: 1,
+            n_ncs: 1,
+        };
+        let generate = |moment_matching| {
+            let (subscriber, messages) = WarnRecorder::new();
+            let tree = tracing::subscriber::with_default(subscriber, || {
+                generate_opening_tree(
+                    42,
+                    &stages,
+                    &DecomposedCorrelation::empty(),
+                    &entity_order,
+                    dims,
+                    &OpeningTreeGenerationInputs {
+                        moment_matching,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+            });
+            let warnings = messages.lock().unwrap().clone();
+            (tree, warnings)
+        };
+
+        let (unmatched, _) = generate(MomentMatching::None);
+        let (matched, warnings) = generate(MomentMatching::PerCoordinate);
+
+        assert_eq!(bits(&tree_values(&matched)), bits(&tree_values(&unmatched)));
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 }

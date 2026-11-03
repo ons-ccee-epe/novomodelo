@@ -28,7 +28,8 @@ pub use ar_coefficients::{InflowArCoefficientRow, parse_inflow_ar_coefficients};
 pub use assembly::{assemble_inflow_models, assemble_load_models};
 pub use correlation::parse_correlation;
 pub use estimation::{
-    EstimationError, EstimationPath, estimate_from_history, resolve_model_stage_seasons,
+    CorrelationOrigin, EstimationError, EstimationPath, HistoryEstimate, estimate_from_history,
+    resolve_model_stage_seasons,
 };
 pub use external::{
     ExternalLoadRow, ExternalNcsRow, ExternalScenarioRow, parse_external_inflow_scenarios,
