@@ -254,8 +254,10 @@ impl ThermalUnitInitialState {
 
 /// Initial system state at the start of the optimization study.
 ///
-/// All arrays are sorted by their entity ID after loading to satisfy
-/// declaration-order invariance.
+/// Arrays are sorted by entity ID (then start date, where entries carry one) to
+/// satisfy declaration-order invariance. The file loader sorts every array except
+/// `thermal_unit_states`, which [`SystemBuilder::build`](crate::SystemBuilder::build)
+/// sorts; `build` does not re-sort the others.
 ///
 /// A hydro must appear in exactly one of the two storage arrays, never both:
 /// hydros with a `filling` configuration belong in [`filling_storage`], all
