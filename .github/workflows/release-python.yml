@@ -240,13 +240,16 @@ jobs:
           name: wheels-${{ matrix.target }}
           path: dist/
 
+      # As the runner's user, not the container's root: root ignores the read-only
+      # output directory that test_io_failure_raises_caseio_error relies on.
       - name: Run tests in Alpine
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
-          docker run --rm -v "$PWD:/w" -w /w python:${{ matrix.python-version }}-alpine sh -euc '
-            pip install --no-index --find-links dist/ novomodelo-python
-            pip install pytest pyarrow numpy
-            pytest crates/novomodelo-python/tests/ -v'
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/w" -w /w \
+            python:${{ matrix.python-version }}-alpine sh -euc '
+            pip install --user --no-index --find-links dist/ novomodelo-python
+            pip install --user pytest pyarrow numpy
+            python -m pytest crates/novomodelo-python/tests/ -v'
 
       - uses: actions/setup-python@v6
         if: matrix.target != 'x86_64-unknown-linux-musl'
