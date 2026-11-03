@@ -7,7 +7,7 @@ vertical is SDDP-based hydrothermal dispatch.
 
 - **Language**: Rust 2024 edition, MSRV 1.88
 - **License**: Apache-2.0
-- **Workspace**: Cargo workspace members (`novomodelo-mcp`, `novomodelo-tui`, `novomodelo-flow`, `novomodelo-uc`, `novomodelo-emt` are reserved stubs) plus the maturin-built `novomodelo-python` (excluded from the workspace so `cargo test --workspace` does not require a Python interpreter); `ARCHITECTURE.md` owns the full crate map
+- **Workspace**: Cargo workspace members (`novomodelo-tui`, `novomodelo-flow`, `novomodelo-uc`, `novomodelo-emt` are reserved stubs) plus the maturin-built `novomodelo-python` (excluded from the workspace so `cargo test --workspace` does not require a Python interpreter); `ARCHITECTURE.md` owns the full crate map
 - **Build**: `cargo build --workspace`
 - **Test**: `cargo test --workspace --features "mpi numa shared-memory serde schema slow-tests flatc-conformance test-support"`
 - **Format**: `cargo fmt --all` (CI enforces `--check`)
@@ -55,6 +55,11 @@ These are non-negotiable. Violations must be fixed before committing.
   release consumers. Existing rustdoc/comment references predating this
   rule are tech debt; clean up opportunistically when touching the
   surrounding code.
+- **CHANGELOG entries are written final and compact** — an `[Unreleased]`
+  entry meets `.claude/rules/doc-integrity.md` §6 in the commit that adds it;
+  there is no trim pass before a release. Read §6 before any `CHANGELOG.md`
+  change, however it is made (Edit, a script, a merge resolution): the rule
+  auto-loads only when the file is read.
 - **Comment discipline — default-off** — Code ships with **no comments** unless a
   comment survives the Deletion Test (`.claude/rules/comments.md` §1): delete it;
   if a competent reader of the code alone would then introduce a bug, "simplify"

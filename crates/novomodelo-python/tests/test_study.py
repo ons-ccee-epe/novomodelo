@@ -21,26 +21,25 @@ import shutil
 
 import pytest
 
-
 VALID_CASE = "examples/1dtoy"
 MISSING_CASE = "/tmp/nonexistent_novomodelo_case_xzy123"
 
 
 def _read_training_metadata(output_dir: pathlib.Path) -> dict:
     """Read back the training metadata.json written by a train/run."""
-    with open(output_dir / "training" / "metadata.json") as handle:
+    with open(output_dir / "training" / "metadata.json", encoding="utf-8") as handle:
         return json.load(handle)
 
 
 def _read_simulation_metadata(output_dir: pathlib.Path) -> dict:
     """Read back the simulation metadata.json written by a simulate/run."""
-    with open(output_dir / "simulation" / "metadata.json") as handle:
+    with open(output_dir / "simulation" / "metadata.json", encoding="utf-8") as handle:
         return json.load(handle)
 
 
 def test_study_constructs_and_validates(tmp_path: pathlib.Path) -> None:
     """Study(case_dir) loads once and exposes a valid report + system view."""
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
 
@@ -71,7 +70,7 @@ def test_study_constructs_and_validates(tmp_path: pathlib.Path) -> None:
 
 def test_study_writes_front_half_sidecars(tmp_path: pathlib.Path) -> None:
     """Constructing a Study writes the three front-half training sidecars."""
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
 
@@ -86,7 +85,7 @@ def test_study_writes_front_half_sidecars(tmp_path: pathlib.Path) -> None:
 
 def test_study_missing_case_raises(tmp_path: pathlib.Path) -> None:
     """Study raises OSError when the case directory does not exist."""
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     with pytest.raises(OSError):
         novomodelo.Study(MISSING_CASE, output_dir=str(tmp_path))
@@ -94,7 +93,7 @@ def test_study_missing_case_raises(tmp_path: pathlib.Path) -> None:
 
 def test_study_rejects_threads_zero(tmp_path: pathlib.Path) -> None:
     """Study raises ValueError when threads=0."""
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     with pytest.raises(ValueError, match="threads"):
         novomodelo.Study(VALID_CASE, output_dir=str(tmp_path), threads=0)
@@ -102,7 +101,7 @@ def test_study_rejects_threads_zero(tmp_path: pathlib.Path) -> None:
 
 def test_study_train_returns_policy(tmp_path: pathlib.Path) -> None:
     """Study.train() trains in-memory, writes _SUCCESS, and returns a Policy."""
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
     policy = study.train()
@@ -126,7 +125,7 @@ def test_study_train_matches_run_lower_bound(tmp_path: pathlib.Path) -> None:
     training metadata final_lower_bound must agree within 1e-6 relative, proving
     Study.train and run.run share the training path (no divergence).
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     study_out = tmp_path / "study_out"
     run_out = tmp_path / "run_out"
@@ -164,7 +163,7 @@ def test_study_train_callback_cooperative_stop(tmp_path: pathlib.Path) -> None:
     a 1dtoy-calibrated ceiling (k is small for this case), documented here as a
     test heuristic, not an API guarantee.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     calls = []
 
@@ -201,7 +200,7 @@ def test_study_train_raising_callback_propagates_after_artifacts(
     tmp_path: pathlib.Path,
 ) -> None:
     """A raising callback re-raises verbatim AFTER artifacts are written."""
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     def on_iteration(event):
         raise ValueError("boom")
@@ -224,7 +223,7 @@ def test_study_train_then_simulate(tmp_path: pathlib.Path) -> None:
     without any checkpoint reload. Asserts the returned dict and the _SUCCESS
     marker.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
     policy = study.train()
@@ -247,7 +246,7 @@ def test_in_memory_simulate_matches_run_metadata(tmp_path: pathlib.Path) -> None
     the load-bearing invariant: the in-memory simulate must be bit-identical to
     the monolithic on-disk simulate.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     tmp_a = tmp_path / "study_out"
     tmp_b = tmp_path / "run_out"
@@ -282,7 +281,7 @@ def test_repeated_simulate_one_policy(tmp_path: pathlib.Path) -> None:
     return the full scenario counts and write equal mean_cost (the study's
     simulate is read-only over the setup, so repeated calls are deterministic).
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
     policy = study.train()
@@ -311,8 +310,8 @@ def test_load_policy_missing_dir_raises_validation_error(
     The error message must mention the missing policy directory so callers can
     diagnose a simulation-only request against an untrained output dir.
     """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.errors  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.errors
 
     study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
 
@@ -327,9 +326,9 @@ def test_stochastic_data_refusal_raises_validation_error(
 ) -> None:
     """A historical inflow scheme over a case with no inflow history is refused
     at setup with ValidationError, from both `Study(...)` and `run(...)`."""
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.errors  # noqa: PLC0415
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.errors
+    import novomodelo.run
 
     case = tmp_path / "case"
     shutil.copytree(VALID_CASE, case)
@@ -354,7 +353,7 @@ def test_simulate_zero_cut_policy_raises(tmp_path: pathlib.Path) -> None:
     a wrong result, so simulate() must raise and direct the caller to
     load_policy() instead.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     study = novomodelo.Study(
         VALID_CASE,
@@ -375,7 +374,7 @@ def test_load_policy_then_simulate_matches_run(tmp_path: pathlib.Path) -> None:
     equal the run's completed iterations and the simulate must return the full
     scenario counts.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     run_dir = tmp_path / "run_dir"
     study_dir = tmp_path / "study_dir"
@@ -401,7 +400,7 @@ def test_policy_evaluate_matches_cut_matrix_max(tmp_path: pathlib.Path) -> None:
     equality is exact f64 (no tolerance).
     """
     np = pytest.importorskip("numpy")
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
     policy = study.train()
@@ -424,7 +423,7 @@ def test_policy_evaluate_matches_cut_matrix_max(tmp_path: pathlib.Path) -> None:
 def test_policy_cut_matrix_shapes_and_dtype(tmp_path: pathlib.Path) -> None:
     """cut_matrix(0) returns (n,)/(n, dim) float64 arrays; n == active-cut count."""
     np = pytest.importorskip("numpy")
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
     policy = study.train()
@@ -451,7 +450,7 @@ def test_policy_evaluate_stage_out_of_range_raises_indexerror(
 ) -> None:
     """evaluate() with a stage index past the horizon raises IndexError."""
     pytest.importorskip("numpy")
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
     policy = study.train()
@@ -468,7 +467,7 @@ def test_policy_evaluate_bad_state_length_raises_valueerror(
 ) -> None:
     """evaluate() with a state of the wrong length raises ValueError."""
     pytest.importorskip("numpy")
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
     policy = study.train()
@@ -486,7 +485,7 @@ def test_train_and_simulate_docstrings_name_written_paths(
     exist on disk after a 1dtoy train+simulate AND appear verbatim in the
     corresponding __doc__. The four historically drifted paths must be absent.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
     policy = study.train()
@@ -580,7 +579,7 @@ def test_study_summary_properties_match_run_result(tmp_path: pathlib.Path) -> No
     the sections carry no output-path-dependent values, which makes the equality
     assertion a parity claim rather than a coincidence.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     run_dir = tmp_path / "run"
     study_dir = tmp_path / "study"
@@ -619,7 +618,7 @@ _SIMULATION_ONLY = {
 def _restamp_policy_version(policy_dir: pathlib.Path) -> None:
     """Rewrite the novomodelo version in `policy_dir/manifest.bin` to another string of
     the same byte length, so the FlatBuffers layout is unchanged."""
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     manifest = policy_dir / "manifest.bin"
     data = manifest.read_bytes()
@@ -654,10 +653,10 @@ def test_study_validate_refuses_a_policy_that_train_refuses(
 ) -> None:
     """A warm-start Study whose policy `train()` refuses validates as invalid,
     with the errors `novomodelo.io.validate` reports for the same output directory."""
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.errors  # noqa: PLC0415
-    import novomodelo.io  # noqa: PLC0415
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.errors
+    import novomodelo.io
+    import novomodelo.run
 
     out = tmp_path / "out"
     novomodelo.run.run(
@@ -687,9 +686,9 @@ def test_study_validate_reports_unused_stored_bases_as_a_warning(
     """A simulation-only Study over a policy trained with an extra thermal is
     valid and warns about the stored bases that no longer fit, with the warnings
     `novomodelo.io.validate` reports for the same output directory."""
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.io  # noqa: PLC0415
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.io
+    import novomodelo.run
 
     variant = tmp_path / "variant"
     _copy_case_with_extra_thermal(variant)

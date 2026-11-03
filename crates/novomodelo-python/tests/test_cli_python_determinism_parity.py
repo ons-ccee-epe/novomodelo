@@ -58,6 +58,7 @@ import json
 import pathlib
 import re
 import shutil
+from collections.abc import Mapping
 from typing import Any
 
 import pyarrow.parquet as pq
@@ -186,7 +187,7 @@ def _json_mismatches(
                 f"(CLI={len(cli_obj)}, Python={len(py_obj)})"
             )
         else:
-            for i, (cli_item, py_item) in enumerate(zip(cli_obj, py_obj)):
+            for i, (cli_item, py_item) in enumerate(zip(cli_obj, py_obj, strict=True)):
                 diffs.extend(_json_mismatches(cli_item, py_item, label, f"{path}[{i}]"))
     elif cli_obj != py_obj:
         diffs.append(
@@ -301,9 +302,9 @@ def toy_cli_output(
 @pytest.fixture(scope="module")
 def toy_python_run(
     tmp_path_factory: pytest.TempPathFactory,
-) -> tuple[pathlib.Path, dict[str, Any]]:
+) -> tuple[pathlib.Path, Mapping[str, Any]]:
     """Run 1dtoy once through `novomodelo.run.run()`; return the output dir and result."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     assert TOY_CASE.is_dir(), f"the 1dtoy fixture must exist at {TOY_CASE}"
     output_dir = tmp_path_factory.mktemp("toy_python_out")
@@ -313,7 +314,7 @@ def toy_python_run(
 
 @pytest.fixture(scope="module")
 def toy_python_output(
-    toy_python_run: tuple[pathlib.Path, dict[str, Any]],
+    toy_python_run: tuple[pathlib.Path, Mapping[str, Any]],
 ) -> pathlib.Path:
     """The output directory of the single Python run."""
     return toy_python_run[0]
@@ -321,8 +322,8 @@ def toy_python_output(
 
 @pytest.fixture(scope="module")
 def toy_python_result(
-    toy_python_run: tuple[pathlib.Path, dict[str, Any]],
-) -> dict[str, Any]:
+    toy_python_run: tuple[pathlib.Path, Mapping[str, Any]],
+) -> Mapping[str, Any]:
     """The result dict of the single Python run (the run that wrote `toy_python_output`)."""
     return toy_python_run[1]
 
@@ -400,7 +401,7 @@ def selection_python_output(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> pathlib.Path:
     """Run 1dtoy with `level1` row selection through `novomodelo.run.run()`."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     case = _selection_case(tmp_path_factory.mktemp("selection_python_case"))
     output_dir = tmp_path_factory.mktemp("selection_python_out")
@@ -438,7 +439,7 @@ def states_python_output(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> pathlib.Path:
     """Run 1dtoy with `dynamic` selection and `exports.states` through `novomodelo.run.run()`."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     case = _exported_states_case(tmp_path_factory.mktemp("states_python_case"))
     output_dir = tmp_path_factory.mktemp("states_python_out")
@@ -611,7 +612,7 @@ def test_negative_self_test_json_comparison_fails_on_perturbation(
 
 
 def test_python_result_dict_matches_written_metadata(
-    toy_python_result: dict[str, Any], toy_python_output: pathlib.Path
+    toy_python_result: Mapping[str, Any], toy_python_output: pathlib.Path
 ) -> None:
     """The Python result dict agrees with the training metadata the same call wrote.
 

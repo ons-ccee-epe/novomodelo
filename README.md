@@ -18,7 +18,7 @@
 - **Production performance** -- Rust gives C/C++-level speed with memory safety. For software that dispatches national power grids, both matter.
 - **Reproducibility** -- Declaration-order invariance guarantees bit-for-bit identical results regardless of input entity ordering.
 - **Modularity** -- Pick the crates you need. Use `novomodelo-core` for data modeling alone, or `novomodelo-sddp` for the full solver.
-- **Interoperability** -- JSON/Parquet input, Python bindings for Jupyter workflows, MCP server for AI agents (reserved; not yet implemented).
+- **Interoperability** -- JSON/Parquet input, Python bindings for Jupyter workflows, and an MCP server for AI agents shipped as the separate Python package [`novomodelo-mcp`](https://github.com/ons-ccee-epe/novomodelo-mcp) (PyPI).
 
 ## Install
 

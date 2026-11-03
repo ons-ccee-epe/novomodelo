@@ -239,9 +239,9 @@ no authored input reaches, and cosmetic fixes such as a duplicated message.
 
 ### Shape — short and action-first
 
-- One or two lines per entry: what changed, then what the user must do.
-  Lead with the config key, file or command, with its path
-  (`training.cut_selection.selection.lookback_iterations`,
+- At most four lines per entry, wrapped at 80 columns: what changed, then
+  what the user must do. Lead with the config key, file or command, with its
+  path (`training.cut_selection.selection.lookback_iterations`,
   `constraints/hydro_bounds.parquet`, `novomodelo validate --json`).
 - Keep the new default, the refusal condition, the remedy ("set it to
   `active` for the earlier behaviour", "retrain `level1` policies", "update
@@ -258,5 +258,47 @@ no authored input reaches, and cosmetic fixes such as a duplicated message.
   feature should absorb the new change instead.
 - Sections follow Keep a Changelog: Added, Changed, Removed, Fixed. A removal
   goes under Removed even when it is breaking.
-- Released sections stay as published; trim `[Unreleased]` before a release,
-  not history after it.
+
+### Written final, never trimmed later
+
+- Write each entry in its final shape in the commit that makes the change.
+  `[Unreleased]` ships as it stands; there is no trim pass before a release.
+- This section applies however `CHANGELOG.md` is edited: the Edit tool, a
+  script, or a merge resolution. A merge that combines two `[Unreleased]`
+  sections keeps one heading per section, in the order above, and re-checks
+  every entry it combines.
+- Released sections stay as published.
+
+### Cut on sight
+
+The drop list above, as it shows up in drafts:
+
+| Cut                                | As seen in a draft                                                   |
+| ---------------------------------- | -------------------------------------------------------------------- |
+| The option's status or plans       | "an evaluation option expected to be removed once evaluated"         |
+| Rationale or provenance            | "the correlation NEWAVE takes as input"                              |
+| Mechanism                          | "shifts and scales each generated stage's inflow openings so that …" |
+| Scope carve-outs the user docs own | "It has no effect when `scenarios/correlation.json` is supplied."    |
+| The fix restated after its symptom | "Multi-rank runs now complete and match the single-rank run."        |
+
+Before committing, delete each clause of every entry you touched in turn; keep
+it only if, without it, the user would not know what changed, what to do, or
+that results change. A draft:
+
+```markdown
+- `training.scenario_source.openings.moment_matching` in `config.json`, an
+  evaluation option expected to be removed once evaluated. `"per_coordinate"`
+  shifts and scales each generated stage's inflow openings so that every
+  hydro's opening mean is 0 and its variance is the model variance. `"none"`,
+  the default, keeps the tree as drawn. Stages using `historical_residuals`
+  and trees read from file are not changed.
+```
+
+and its cut:
+
+```markdown
+- `training.scenario_source.openings.moment_matching` in `config.json`:
+  `"per_coordinate"` gives each hydro's generated inflow openings mean 0 and
+  the model variance at every stage. `"none"`, the default, keeps the tree as
+  drawn.
+```

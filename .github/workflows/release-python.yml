@@ -1,14 +1,18 @@
-# Build platform-specific wheels for the `novomodelo` Python package and publish
-# to PyPI.  Wheels contain the compiled Rust extension (PyO3/maturin) with
-# the HiGHS LP solver statically linked.
+# Build platform-specific wheels and an sdist for the `novomodelo` Python package
+# and publish them to PyPI.  Wheels contain the compiled Rust extension
+# (PyO3/maturin) with the HiGHS LP solver statically linked; the sdist carries the
+# workspace crates it depends on and the vendored solver sources.
 #
 # Platforms:  linux x86_64 (manylinux_2_34), linux aarch64 (manylinux_2_28),
-#             linux musl x86_64, macOS x86_64/aarch64, Windows x86_64
+#             linux musl x86_64, macOS x86_64/aarch64, Windows x86_64; each wheel
+#             is tested on its own platform before publish
 # Python:    3.12+ (single abi3 wheel per platform via PyO3 stable ABI)
 #
-# Note: sdist is not built because maturin cannot package crates with path
-# dependencies outside the crate directory (known maturin limitation).
-# Users who need to build from source should clone the full workspace.
+# glibc floor: the manylinux_2_34 wheel needs glibc >= 2.34 (RHEL and Rocky
+# Linux 9+, Ubuntu 22.04+, Debian 12+); on RHEL 8 and Ubuntu 20.04, below it, pip
+# builds the sdist instead, which needs a Rust toolchain, cmake and a C++
+# compiler. The aarch64 wheel needs glibc >= 2.28. Keep
+# crates/novomodelo-python/README.md in step when the tag changes.
 #
 # Uses PyPI trusted publishing (OIDC) — no API tokens needed.
 # Configure at: https://pypi.org/manage/project/novomodelo-python/settings/publishing/
@@ -121,8 +125,8 @@ jobs:
             sudo chown -R "$(id -u):$(id -g)" crates/novomodelo-python/dist
           fi
           python -m pip install --quiet wheel
-          python scripts/gen/inject_wheel_licenses.py crates/novomodelo-python/dist \
-            LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.md
+          python scripts/gen/inject_dist_licenses.py crates/novomodelo-python/dist \
+            LICENSE NOTICE THIRD_PARTY_NOTICES.md crates/novomodelo-python/THIRD_PARTY_LICENSES.md
 
       - name: Probe the dgemm kernel of the wheels
         if: startsWith(matrix.target, 'x86_64-unknown-linux')
@@ -133,48 +137,151 @@ jobs:
           name: wheels-${{ matrix.target }}
           path: crates/novomodelo-python/dist/
 
-  # Smoke-test the built wheels on native platforms across Python versions.
+  # The sdist, then the package built from it the way pip does where no wheel fits.
+  sdist:
+    name: sdist
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+          working-directory: crates/novomodelo-python
+
+      - name: Bundle license notices into the sdist
+        run: |
+          python scripts/gen/inject_dist_licenses.py crates/novomodelo-python/dist \
+            LICENSE NOTICE THIRD_PARTY_NOTICES.md
+
+      - name: Install from the sdist and test
+        run: |
+          pip install crates/novomodelo-python/dist/*.tar.gz
+          pip install pytest pyarrow numpy
+          pytest crates/novomodelo-python/tests/ -v
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: sdist
+          path: crates/novomodelo-python/dist/*.tar.gz
+          if-no-files-found: error
+
+  # The CLI the parity tests compare the wheel against. Built once on the host
+  # runner and shared by the linux x86_64 test cells, rather than once per cell.
+  cli:
+    name: CLI (x86_64-unknown-linux-gnu)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: release-python-cli
+
+      - run: cargo build --release -p novomodelo-cli
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: cli-x86_64-unknown-linux-gnu
+          path: target/release/novomodelo
+          if-no-files-found: error
+
+  # Smoke-test the built wheels on every target they are built for, across
+  # Python versions. The linux x86_64 cells also run the CLI-vs-Python parity
+  # modules, which skip without a CLI binary; --require-cli-binary makes a missing
+  # one a failure. The musl wheel runs in an Alpine container, where pip selects
+  # musllinux wheels for the test dependencies too.
   test:
     name: test (${{ matrix.target }}, py${{ matrix.python-version }})
-    needs: [build]
+    needs: [build, cli]
     strategy:
       fail-fast: false
       matrix:
         target:
           - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
           - aarch64-apple-darwin
+          - x86_64-apple-darwin
           - x86_64-pc-windows-msvc
         python-version: ["3.12", "3.13", "3.14"]
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
           - target: aarch64-apple-darwin
             os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-          allow-prereleases: true
-
       - uses: actions/download-artifact@v7
         with:
           name: wheels-${{ matrix.target }}
           path: dist/
 
+      # As the runner's user, not the container's root: root ignores the read-only
+      # output directory that test_io_failure_raises_caseio_error relies on.
+      - name: Run tests in Alpine
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/w" -w /w \
+            python:${{ matrix.python-version }}-alpine sh -euc '
+            pip install --user --no-index --find-links dist/ novomodelo-python
+            pip install --user pytest pyarrow numpy
+            python -m pytest crates/novomodelo-python/tests/ -v'
+
+      - uses: actions/setup-python@v6
+        if: matrix.target != 'x86_64-unknown-linux-musl'
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+
       - name: Install wheel and test dependencies
+        if: matrix.target != 'x86_64-unknown-linux-musl'
         run: |
           pip install --no-index --find-links dist/ novomodelo-python
-          pip install pytest pyarrow
+          pip install pytest pyarrow numpy
+
+      - uses: actions/download-artifact@v7
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        with:
+          name: cli-x86_64-unknown-linux-gnu
+          path: target/release/
 
       - name: Run tests
+        if: >-
+          matrix.target != 'x86_64-unknown-linux-gnu'
+          && matrix.target != 'x86_64-unknown-linux-musl'
         run: pytest crates/novomodelo-python/tests/ -v
 
-  # Publish all wheels to PyPI.
+      - name: Run tests with the CLI parity modules
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          chmod +x target/release/novomodelo
+          pytest crates/novomodelo-python/tests/ -v --require-cli-binary
+
+  # Publish all wheels and the sdist to PyPI.
   #
   # Runs on either a version tag push or an explicit workflow_dispatch
   # invocation (so we can recover from a transient build failure on the
@@ -182,7 +289,7 @@ jobs:
   # short-circuits to skip in either case.
   publish:
     name: Publish to PyPI
-    needs: [build, test]
+    needs: [build, test, sdist]
     if: >-
       (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
       && !(github.event.inputs.dry-run == 'true')
@@ -195,6 +302,11 @@ jobs:
         with:
           pattern: "wheels-*"
           merge-multiple: true
+          path: dist/
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: sdist
           path: dist/
 
       - name: List artifacts

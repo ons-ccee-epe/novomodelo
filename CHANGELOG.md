@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `training/model_provenance.json` records `inflow.correlation_target` and
   `inflow.opening_tree_moment_matching`.
+- `novomodelo-python` is published with an sdist next to the wheels. Where no
+  wheel fits, such as Linux with glibc older than 2.34 (RHEL 8, Ubuntu 20.04),
+  pip builds the sdist, given a Rust toolchain, cmake and a C++ compiler.
 
 ### Changed
 
@@ -26,10 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it; `"none"` restores the earlier results.
 - **BREAKING:** a stage in `stages.json` with more openings than the first stage
   of its noise group (consecutive stages with the same `season_id` in one year)
-  is refused; its extra openings carried zero inflow noise. Lower its
-  `num_openings` to the first stage's count. Results change when a group's
-  opening count drops and rises again: the later stages now copy the first
-  stage's openings where they used zeros.
+  is refused. Lower its `num_openings` to the first stage's count. Results
+  change where a group's opening count drops and rises again.
+
+### Removed
+
+- Releases no longer include the `novomodelo-mcp` placeholder binary, and its
+  installers and archives were removed from the earlier releases. The MCP server
+  is the separate `novomodelo-mcp` Python package.
 
 ### Fixed
 

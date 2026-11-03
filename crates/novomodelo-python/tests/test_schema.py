@@ -17,7 +17,7 @@ import pathlib
 
 def test_export_returns_file_count(tmp_path: pathlib.Path) -> None:
     """export returns the number of files written, matching the directory."""
-    import novomodelo.schema  # noqa: PLC0415
+    import novomodelo.schema
 
     count = novomodelo.schema.export(str(tmp_path))
 
@@ -28,7 +28,7 @@ def test_export_returns_file_count(tmp_path: pathlib.Path) -> None:
 
 def test_export_writes_valid_json(tmp_path: pathlib.Path) -> None:
     """Every file written by export parses as JSON."""
-    import novomodelo.schema  # noqa: PLC0415
+    import novomodelo.schema
 
     novomodelo.schema.export(str(tmp_path))
 
@@ -41,7 +41,7 @@ def test_export_writes_valid_json(tmp_path: pathlib.Path) -> None:
 
 def test_export_creates_missing_directory(tmp_path: pathlib.Path) -> None:
     """export creates the output directory if it does not yet exist."""
-    import novomodelo.schema  # noqa: PLC0415
+    import novomodelo.schema
 
     target = tmp_path / "nested" / "schemas"
     count = novomodelo.schema.export(str(target))
@@ -52,6 +52,6 @@ def test_export_creates_missing_directory(tmp_path: pathlib.Path) -> None:
 
 def test_export_accessible_as_submodule() -> None:
     """novomodelo.schema.export must be importable as a submodule function."""
-    import novomodelo.schema  # noqa: PLC0415
+    import novomodelo.schema
 
     assert callable(novomodelo.schema.export)

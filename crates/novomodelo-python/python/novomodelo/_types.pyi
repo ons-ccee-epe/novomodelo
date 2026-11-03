@@ -3,12 +3,12 @@
 This module carries **no** compiled counterpart: the leading underscore marks it
 as a pure typing helper (`PEP 589` `TypedDict`s). It is never registered as a
 runtime submodule -- importing it from compiled code would fail. Type checkers
-pick it up via `[tool.pyright] stubPath = "stubs"`. The field set of each
-`TypedDict` mirrors the `set_item` call sites in `src/run.rs`; do not invent
-keys.
+reach it through the `from ._types import ...` lines of `__init__.pyi` and `run.pyi`.
+The field set of each `TypedDict` mirrors the `set_item` call sites in `src/run.rs`;
+do not invent keys.
 """
 
-from typing import Any, NotRequired, Optional, TypedDict
+from typing import Any, TypedDict
 
 class SimulationSummary(TypedDict):
     """Nested `simulation` sub-dict built by `novomodelo.run.run`."""
@@ -29,8 +29,8 @@ class TrainingSummary(TypedDict):
     converged: bool
     iterations: int
     lower_bound: float
-    upper_bound: Optional[float]
-    gap_percent: Optional[float]
+    upper_bound: float | None
+    gap_percent: float | None
     total_time_ms: int
 
 class StochasticSummary(TypedDict, total=False):
@@ -42,15 +42,15 @@ class StochasticSummary(TypedDict, total=False):
     `None`.
     """
 
-    inflow_source: Optional[str]
+    inflow_source: str | None
     n_hydros: int
     n_seasons: int
-    ar_order: Optional[Any]
-    correlation_source: Optional[str]
-    correlation_target: Optional[str]
-    correlation_dim: Optional[str]
-    opening_tree_source: Optional[str]
-    opening_tree_moment_matching: Optional[str]
+    ar_order: Any | None
+    correlation_source: str | None
+    correlation_target: str | None
+    correlation_dim: str | None
+    opening_tree_source: str | None
+    opening_tree_moment_matching: str | None
     openings_per_stage: Any
     n_stages: int
     n_load_buses: int
@@ -77,12 +77,12 @@ class ProvenanceReport(TypedDict, total=False):
     seasonal_stats_source: str
     ar_coefficients_source: str
     correlation_source: str
-    correlation_target: Optional[str]
+    correlation_target: str | None
     opening_tree_source: str
-    opening_tree_moment_matching: Optional[str]
+    opening_tree_moment_matching: str | None
     n_hydros: int
-    ar_method: Optional[str]
-    ar_max_order: Optional[int]
+    ar_method: str | None
+    ar_max_order: int | None
     white_noise_fallbacks: list[int]
     hydro_production: Any
 
@@ -99,11 +99,11 @@ class RunResult(TypedDict):
     converged: bool
     iterations: int
     lower_bound: float
-    upper_bound: Optional[float]
-    gap_percent: Optional[float]
+    upper_bound: float | None
+    gap_percent: float | None
     total_time_ms: int
     output_dir: str
-    simulation: Optional[SimulationSummary]
-    stochastic: Optional[StochasticSummary]
-    hydro_models: Optional[HydroModelsSummary]
-    provenance: Optional[ProvenanceReport]
+    simulation: SimulationSummary | None
+    stochastic: StochasticSummary | None
+    hydro_models: HydroModelsSummary | None
+    provenance: ProvenanceReport | None

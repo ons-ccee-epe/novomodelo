@@ -26,8 +26,8 @@ D48_CASE = _REPO_ROOT / "examples" / "deterministic" / "d48-travel-time-ic-seed"
 
 def test_load_case_accepts_windowed_defluence_shape() -> None:
     """load_case succeeds on d48 and returns a two-hydro System."""
-    import novomodelo.io  # noqa: PLC0415
-    import novomodelo.model  # noqa: PLC0415
+    import novomodelo.io
+    import novomodelo.model
 
     system = novomodelo.io.load_case(str(D48_CASE))
     assert isinstance(system, novomodelo.model.System)
@@ -41,7 +41,7 @@ def test_validate_reports_no_errors_for_windowed_defluence() -> None:
     The window covers `[start_0 - t_v, start_0)`, so the io coverage gate passes;
     the case ships only benign advisories (e.g. deterministic-inflow notices).
     """
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     result = novomodelo.io.validate(str(D48_CASE))
     assert isinstance(result, dict)
@@ -51,7 +51,7 @@ def test_validate_reports_no_errors_for_windowed_defluence() -> None:
 
 def test_study_constructs_on_windowed_defluence_seed(tmp_path: pathlib.Path) -> None:
     """Study(d48) runs the front-half lifecycle, unrolling the windowed seed."""
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     study = novomodelo.Study(str(D48_CASE), output_dir=str(tmp_path))
     system = study.system

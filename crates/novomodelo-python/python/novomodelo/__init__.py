@@ -17,36 +17,33 @@ import sys
 
 # Pull the top-level public names (Study, Policy, version_info, __version__)
 # from the compiled extension module.
-from ._native import *  # noqa: F401,F403
+from ._native import *  # noqa: F403
+from ._native import Policy as Policy
+from ._native import Study as Study
 
 # `from ._native import *` may skip dunders; re-bind __version__ explicitly so
 # `novomodelo.__version__` is preserved byte-for-byte from the compiled module.
 from ._native import __version__ as __version__
-
-# Re-export the compiled submodules under their public `novomodelo.*` names. Binding
-# them here exposes `novomodelo.run` etc. as attributes; registering each in
-# `sys.modules` under the public name makes `import novomodelo.run` resolve to the
-# very same compiled module object (no shadowing copy). This mirrors the Rust
-# `register_submodule` sys.modules trick, but on the public side.
 from ._native import errors as errors
 from ._native import io as io
 from ._native import model as model
 from ._native import results as results
 from ._native import run as run
 from ._native import schema as schema
+from ._native import version_info as version_info
+from ._native import write_policy_checkpoint as write_policy_checkpoint
 
+# The imports above bind the compiled submodules under their public `novomodelo.*`
+# names, exposing `novomodelo.run` etc. as attributes; registering each in
+# `sys.modules` under the public name makes `import novomodelo.run` resolve to the
+# very same compiled module object (no shadowing copy). This mirrors the Rust
+# `register_submodule` sys.modules trick, but on the public side.
 sys.modules["novomodelo.errors"] = errors
 sys.modules["novomodelo.io"] = io
 sys.modules["novomodelo.model"] = model
 sys.modules["novomodelo.results"] = results
 sys.modules["novomodelo.run"] = run
 sys.modules["novomodelo.schema"] = schema
-
-# Top-level public classes/functions re-exported from `_native`.
-from ._native import Policy as Policy
-from ._native import Study as Study
-from ._native import version_info as version_info
-from ._native import write_policy_checkpoint as write_policy_checkpoint
 
 # --- Extension point ---------------------------------------------------------
 # Pure-Python ergonomic wrappers can be layered on top of the compiled surface
