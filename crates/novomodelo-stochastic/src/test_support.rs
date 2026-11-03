@@ -1,11 +1,14 @@
 //! Test-only fixture builders for this crate's `OpeningTree`, `SeasonMap` and
-//! `InflowModel` shapes, shared across this crate's unit and integration
-//! tests and reachable from downstream crates via the `test-support`
-//! feature. Compiles only under `cfg(test)` or that feature; must never be
-//! enabled in a production build.
+//! `InflowModel` shapes and a WARN-message recorder, shared across this crate's
+//! unit and integration tests and reachable from downstream crates via the
+//! `test-support` feature. Compiles only under `cfg(test)` or that feature;
+//! must never be enabled in a production build.
+
+use std::sync::{Arc, Mutex};
 
 use novomodelo_core::scenario::AnnualComponent;
 use novomodelo_core::{EntityId, InflowModel, SeasonCycleType, SeasonDefinition, SeasonMap};
+use tracing::{Event, Level, Metadata, Subscriber, span};
 
 use crate::OpeningTree;
 
@@ -251,4 +254,72 @@ pub fn make_inflow_model(
         residual_std_ratio,
         annual,
     }
+}
+
+/// Records the `message` of every WARN event.
+pub struct WarnRecorder {
+    messages: Arc<Mutex<Vec<String>>>,
+}
+
+impl WarnRecorder {
+    /// A recorder and the shared list it appends to.
+    #[must_use]
+    pub fn new() -> (Self, Arc<Mutex<Vec<String>>>) {
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        (
+            Self {
+                messages: Arc::clone(&messages),
+            },
+            messages,
+        )
+    }
+}
+
+impl Subscriber for WarnRecorder {
+    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+        *metadata.level() <= Level::WARN
+    }
+
+    fn new_span(&self, _attrs: &span::Attributes<'_>) -> span::Id {
+        span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
+
+    #[allow(clippy::expect_used)]
+    // Rationale: only a panic in another test thread poisons the list, and that test has failed.
+    fn event(&self, event: &Event<'_>) {
+        if *event.metadata().level() == Level::WARN {
+            struct MessageVisitor(String);
+            impl tracing::field::Visit for MessageVisitor {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "message" {
+                        self.0 = format!("{value:?}");
+                    }
+                }
+
+                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                    if field.name() == "message" {
+                        self.0 = value.to_string();
+                    }
+                }
+            }
+            let mut visitor = MessageVisitor(String::new());
+            event.record(&mut visitor);
+            self.messages
+                .lock()
+                .expect("warn message list is never poisoned")
+                .push(visitor.0);
+        }
+    }
+
+    fn enter(&self, _span: &span::Id) {}
+
+    fn exit(&self, _span: &span::Id) {}
 }

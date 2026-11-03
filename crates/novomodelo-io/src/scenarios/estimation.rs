@@ -44,7 +44,7 @@
 //!
 //! `correlation.json` is handled independently: if present, the existing
 //! `system.correlation()` is kept; if absent, the correlation is estimated from
-//! residuals.
+//! the series `estimation.correlation_target` selects.
 //!
 //! ## PACF order selection
 //!
@@ -76,6 +76,7 @@ use novomodelo_stochastic::{
 use crate::LoadError::ConstraintError;
 use crate::{
     Config, FileManifest, InputFile, LoadError, OrderSelectionMethod, ValidationContext,
+    config::CorrelationTarget,
     parse_inflow_ar_coefficients, parse_inflow_history,
     scenarios::{
         InflowAnnualComponentRow, InflowArCoefficientRow, InflowHistoryRow, InflowSeasonalStatsRow,
@@ -149,6 +150,20 @@ impl EstimationPath {
     }
 }
 
+/// Where the study's spatial inflow correlation comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CorrelationOrigin {
+    /// Read from `scenarios/correlation.json`.
+    UserFile,
+    /// Estimated from inflow history.
+    Estimated {
+        /// Series it was estimated from.
+        target: CorrelationTarget,
+    },
+    /// Neither supplied nor estimated.
+    NotApplicable,
+}
+
 /// Errors that can occur during the automatic estimation pipeline.
 #[derive(Debug, thiserror::Error)]
 pub enum EstimationError {
@@ -166,10 +181,24 @@ pub enum EstimationError {
     Validation(#[from] ValidationError),
 }
 
+/// What [`estimate_from_history`] returns.
+#[derive(Debug)]
+pub struct HistoryEstimate {
+    /// System carrying the estimated or user-provided scenario models.
+    pub system: System,
+    /// Estimation report; `None` on the pass-through paths.
+    pub report: Option<EstimationReport>,
+    /// Resolved input path.
+    pub path: EstimationPath,
+    /// Where the spatial correlation comes from.
+    pub correlation_origin: CorrelationOrigin,
+}
+
 /// Estimate or load PAR(p) model parameters based on the input file manifest.
 ///
-/// Resolves the [`EstimationPath`] for `case_dir` and dispatches to the matching
-/// `run_*` pipeline; pass-through paths return `system` unchanged with `None` report.
+/// Resolves the [`EstimationPath`] and the [`CorrelationOrigin`] for `case_dir` and
+/// dispatches to the matching `run_*` pipeline; pass-through paths return `system`
+/// unchanged with `None` report.
 ///
 /// # Errors
 ///
@@ -182,37 +211,86 @@ pub fn estimate_from_history(
     system: System,
     case_dir: &Path,
     config: &Config,
-) -> Result<(System, Option<EstimationReport>, EstimationPath), EstimationError> {
+) -> Result<HistoryEstimate, EstimationError> {
     let mut ctx = ValidationContext::new();
     let manifest = validate_structure(case_dir, &mut ctx);
 
-    // Treat structural validation errors as a no-op deterministic path.
-    if ctx.into_result().is_err() {
-        return Ok((system, None, EstimationPath::Deterministic));
-    }
-
-    let path = EstimationPath::resolve(&manifest);
+    let path = if ctx.into_result().is_ok() {
+        EstimationPath::resolve(&manifest)
+    } else {
+        EstimationPath::Deterministic
+    };
+    let correlation_origin = resolve_correlation_origin(
+        &manifest,
+        path,
+        &system,
+        config.estimation.correlation_target,
+    );
 
     match path {
         EstimationPath::Deterministic
         | EstimationPath::UserStatsWhiteNoise
         | EstimationPath::UserProvidedNoHistory
-        | EstimationPath::UserProvidedAll => Ok((system, None, path)),
+        | EstimationPath::UserProvidedAll => Ok(HistoryEstimate {
+            system,
+            report: None,
+            path,
+            correlation_origin,
+        }),
 
         EstimationPath::PartialEstimation => {
-            let (system, report) = run_partial_estimation(system, case_dir, config, &manifest)?;
-            Ok((system, Some(report), path))
+            let (system, report) =
+                run_partial_estimation(system, case_dir, config, correlation_origin)?;
+            Ok(HistoryEstimate {
+                system,
+                report: Some(report),
+                path,
+                correlation_origin,
+            })
         }
 
         EstimationPath::FullEstimation => {
-            let (system, report) = run_estimation(system, case_dir, config, &manifest)?;
-            Ok((system, Some(report), path))
+            let (system, report) = run_estimation(system, case_dir, config, correlation_origin)?;
+            Ok(HistoryEstimate {
+                system,
+                report: Some(report),
+                path,
+                correlation_origin,
+            })
         }
 
         EstimationPath::UserArHistoryStats => {
-            let (system, report) = run_user_ar_estimation(system, case_dir, config, &manifest)?;
-            Ok((system, Some(report), path))
+            let (system, report) =
+                run_user_ar_estimation(system, case_dir, config, correlation_origin)?;
+            Ok(HistoryEstimate {
+                system,
+                report: Some(report),
+                path,
+                correlation_origin,
+            })
         }
+    }
+}
+
+fn resolve_correlation_origin(
+    manifest: &FileManifest,
+    path: EstimationPath,
+    system: &System,
+    target: CorrelationTarget,
+) -> CorrelationOrigin {
+    if manifest.present(InputFile::ScenariosCorrelationJson) {
+        return CorrelationOrigin::UserFile;
+    }
+    let estimating = matches!(
+        path,
+        EstimationPath::FullEstimation
+            | EstimationPath::PartialEstimation
+            | EstimationPath::UserArHistoryStats
+    );
+    if estimating && !system.hydros().is_empty() {
+        CorrelationOrigin::Estimated { target }
+    } else {
+        CorrelationOrigin::NotApplicable
     }
 }
 
@@ -220,7 +298,7 @@ fn run_estimation(
     system: System,
     case_dir: &Path,
     config: &Config,
-    manifest: &FileManifest,
+    correlation_origin: CorrelationOrigin,
 ) -> Result<(System, EstimationReport), EstimationError> {
     let hydro_ids: Vec<EntityId> = system.hydros().iter().map(|h| h.id).collect();
 
@@ -258,7 +336,7 @@ fn run_estimation(
         },
     )?;
 
-    let correlation = if manifest.present(InputFile::ScenariosCorrelationJson) {
+    let correlation = if correlation_origin == CorrelationOrigin::UserFile {
         system.correlation().clone()
     } else {
         estimate_correlation_with_season_map(
@@ -268,6 +346,7 @@ fn run_estimation(
             stages,
             &hydro_ids,
             season_map,
+            config.estimation.correlation_target.into(),
         )?
     };
 
@@ -294,7 +373,7 @@ fn run_partial_estimation(
     system: System,
     case_dir: &Path,
     config: &Config,
-    manifest: &FileManifest,
+    correlation_origin: CorrelationOrigin,
 ) -> Result<(System, EstimationReport), EstimationError> {
     let hydro_ids: Vec<EntityId> = system.hydros().iter().map(|h| h.id).collect();
     let study_stages = system.stages();
@@ -345,7 +424,7 @@ fn run_partial_estimation(
     let (white_noise_fallbacks, std_ratio_warnings) =
         validate_partial_estimation_coverage(&system, &fitting_stats, study_stages)?;
 
-    let correlation = if manifest.present(InputFile::ScenariosCorrelationJson) {
+    let correlation = if correlation_origin == CorrelationOrigin::UserFile {
         system.correlation().clone()
     } else {
         estimate_correlation_with_season_map(
@@ -355,6 +434,7 @@ fn run_partial_estimation(
             stages,
             &hydro_ids,
             season_map,
+            config.estimation.correlation_target.into(),
         )?
     };
 
@@ -653,7 +733,7 @@ fn run_user_ar_estimation(
     system: System,
     case_dir: &Path,
     config: &Config,
-    manifest: &FileManifest,
+    correlation_origin: CorrelationOrigin,
 ) -> Result<(System, EstimationReport), EstimationError> {
     let hydro_ids: Vec<EntityId> = system.hydros().iter().map(|h| h.id).collect();
     let stages = system.stages();
@@ -679,7 +759,7 @@ fn run_user_ar_estimation(
 
     let user_ar_estimates = ar_rows_to_estimates(&user_ar_rows, stages);
 
-    let correlation = if manifest.present(InputFile::ScenariosCorrelationJson) {
+    let correlation = if correlation_origin == CorrelationOrigin::UserFile {
         system.correlation().clone()
     } else {
         estimate_correlation_with_season_map(
@@ -689,6 +769,7 @@ fn run_user_ar_estimation(
             extended,
             &hydro_ids,
             season_map,
+            config.estimation.correlation_target.into(),
         )?
     };
 
