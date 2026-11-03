@@ -12,7 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `training/model_provenance.json` records `inflow.correlation_target` and
-  `inflow.opening_tree_moment_matching`.
+  `inflow.opening_tree_moment_matching`, and the Python `StochasticSummary`
+  and `ProvenanceReport` carry them as `correlation_target` and
+  `opening_tree_moment_matching`.
+- `novomodelo run` under `mpiexec` checks that every rank built the same opening
+  tree and exits 4 when they differ.
 - `novomodelo-python` is published with an sdist next to the wheels. Where no
   wheel fits, such as Linux with glibc older than 2.34 (RHEL 8, Ubuntu 20.04),
   pip builds the sdist, given a Rust toolchain, cmake and a C++ compiler.
@@ -26,9 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `estimation.correlation_target` in `config.json` selects it; `"residuals"`
   restores the earlier results.
 - **BREAKING:** generated opening trees are now moment-matched: at each stage,
-  every hydro's inflow openings have mean 0 and the model variance. The new
-  `training.scenario_source.openings.moment_matching` in `config.json` selects
-  it; `"none"` restores the earlier results.
+  every hydro's inflow openings have mean 0 and the variance of its correlated
+  noise (1 unless factoring the correlation clips a negative eigenvalue). The
+  new `training.scenario_source.openings.moment_matching` in `config.json`
+  selects it; `"none"` restores the earlier results.
 - **BREAKING:** a stage in `stages.json` with more openings than the first stage
   of its noise group (consecutive stages with the same `season_id` in one year)
   is refused. Lower its `num_openings` to the first stage's count. Results
@@ -36,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `training.solver.forward.use_warm_start` defaults to `true` again, so forward
   solves start warm; results change. Simulation solves stay cold; set
   `simulation.solver.use_warm_start: true` to opt in.
+- Under `mpiexec`, only rank 0 prints warnings; every rank prints its errors.
 
 ### Removed
 
