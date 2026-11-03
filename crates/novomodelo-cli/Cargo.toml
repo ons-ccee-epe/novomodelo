@@ -68,6 +68,7 @@ novomodelo-sddp = { version = "0.19.1", path = "../novomodelo-sddp", default-fea
 novomodelo-solver = { version = "0.19.1", path = "../novomodelo-solver", default-features = false }
 parquet = { version = "60", default-features = false, features = ["arrow"] }
 predicates = "3"
+sha2 = "0.11"
 tempfile = "3"
 
 [lints]
