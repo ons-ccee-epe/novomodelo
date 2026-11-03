@@ -197,6 +197,9 @@ unsafe extern "C" {
     /// Set the primal feasibility tolerance. Wraps `Clp_setPrimalTolerance()`.
     pub fn novomodelo_clp_set_primal_tolerance(model: *mut c_void, value: c_double);
 
+    /// Get the primal feasibility tolerance. Wraps `Clp_primalTolerance()`.
+    pub fn novomodelo_clp_primal_tolerance(model: *const c_void) -> c_double;
+
     /// Set the dual feasibility tolerance. Wraps `Clp_setDualTolerance()`.
     pub fn novomodelo_clp_set_dual_tolerance(model: *mut c_void, value: c_double);
 
@@ -223,7 +226,7 @@ unsafe extern "C" {
     pub fn novomodelo_clp_set_row_status(model: *mut c_void, sequence: int32_t, value: int32_t);
 
     // ============================================================
-    // C++ class-only knobs (implemented in clp_wrapper_cpp.cpp)
+    // C++ class-only operations (implemented in clp_wrapper_cpp.cpp)
     // ============================================================
 
     /// Select dual-steepest-edge pricing. Wraps
@@ -244,6 +247,26 @@ unsafe extern "C" {
     /// `model` must be a valid, non-null CLP model pointer from
     /// `novomodelo_clp_create`.
     pub fn novomodelo_clp_set_factorization_frequency(model: *mut c_void, value: int32_t);
+
+    /// Row excess of `col_value` against the model's rows: writes each row's
+    /// activity and magnitude into the caller's buffers and returns the largest
+    /// bound violation minus `primal_tolerance`, relative to the row magnitude
+    /// (0 when `num_row` is zero or differs from the model's row count).
+    /// Reads the constraint matrix by pointer, without copying the model.
+    ///
+    /// # Safety
+    ///
+    /// `model` must be a valid, non-null CLP model pointer from
+    /// `novomodelo_clp_create`; `col_value` must hold the model's column count
+    /// and `activity`/`magnitude` must hold `num_row` entries each.
+    pub fn novomodelo_clp_max_row_violation(
+        model: *mut c_void,
+        col_value: *const c_double,
+        activity: *mut c_double,
+        magnitude: *mut c_double,
+        num_row: int32_t,
+        primal_tolerance: c_double,
+    ) -> c_double;
 
     // ============================================================
     // Version query (no instance required)

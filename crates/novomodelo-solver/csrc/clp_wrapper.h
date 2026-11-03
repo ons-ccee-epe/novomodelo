@@ -195,6 +195,10 @@ void novomodelo_clp_scaling(void* model, int32_t mode);
  *  Wraps Clp_setPrimalTolerance(). */
 void novomodelo_clp_set_primal_tolerance(void* model, double value);
 
+/** Get the primal feasibility tolerance.
+ *  Wraps Clp_primalTolerance(). */
+double novomodelo_clp_primal_tolerance(const void* model);
+
 /** Set the dual feasibility tolerance.
  *  Wraps Clp_setDualTolerance(). */
 void novomodelo_clp_set_dual_tolerance(void* model, double value);
@@ -227,11 +231,12 @@ int32_t novomodelo_clp_get_row_status(const void* model, int32_t sequence);
 void novomodelo_clp_set_row_status(void* model, int32_t sequence, int32_t value);
 
 /* =========================================================================
- * C++ class-only knobs (implemented in clp_wrapper_cpp.cpp)
+ * C++ class-only operations (implemented in clp_wrapper_cpp.cpp)
  *
- * These two entry points reach methods that exist only on the C++ ClpSimplex
- * class and are NOT in Clp_C_Interface.h: the dual-row pivot setter and the
- * factorization frequency. The opaque model handle from novomodelo_clp_create is a
+ * These entry points reach methods that exist only on the C++ ClpSimplex
+ * class and are NOT in Clp_C_Interface.h: the dual-row pivot setter, the
+ * factorization frequency, and the constraint matrix read by the row-excess
+ * check. The opaque model handle from novomodelo_clp_create is a
  * Clp_Simplex* wrapper struct whose ->model_ member is the real C++ ClpSimplex;
  * the shim casts the handle to that wrapper and calls the class API on
  * ->model_ (the same model the Clp_* C API reaches). They are declared here
@@ -248,6 +253,25 @@ void novomodelo_clp_set_dual_row_steepest(void* model, int32_t mode);
 /** Set the simplex factorization refactor cadence.
  *  Wraps ClpSimplex::setFactorizationFrequency(value). */
 void novomodelo_clp_set_factorization_frequency(void* model, int32_t value);
+
+/** Row excess of col_value against the model's rows.
+ *  For each row i, writes act_i = sum_j a_ij x_j into activity[i] and
+ *  mag_i = sum_j |a_ij x_j| into magnitude[i]. With v_i the bound violation
+ *  of act_i and t = primal_tolerance, returns
+ *  max(0, max_i (v_i - t) / max(1, mag_i)).
+ *  col_value must hold the model's column count; activity and magnitude must
+ *  hold num_row entries. Returns 0 without touching the buffers when num_row is
+ *  zero or differs from the model's row count.
+ *  Reads ClpSimplex::matrix() (column- or row-ordered) by pointer, without
+ *  copying. */
+double novomodelo_clp_max_row_violation(
+    void*         model,
+    const double* col_value,
+    double*       activity,
+    double*       magnitude,
+    int32_t       num_row,
+    double        primal_tolerance
+);
 
 /* =========================================================================
  * Version query (no instance required)

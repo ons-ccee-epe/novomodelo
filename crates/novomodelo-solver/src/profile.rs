@@ -21,7 +21,6 @@ pub const DEFAULT_PROFILE_IPM_UNBOUNDED_SENTINEL: u32 = 0;
 /// A solution counts when that excess is strictly greater than this allowance.
 pub const ROW_VIOLATION_RELATIVE_ALLOWANCE: f64 = 1e-11;
 
-#[cfg_attr(not(feature = "highs"), expect(dead_code))]
 pub(crate) fn counts_as_row_violation(rho: f64) -> bool {
     rho > ROW_VIOLATION_RELATIVE_ALLOWANCE
 }

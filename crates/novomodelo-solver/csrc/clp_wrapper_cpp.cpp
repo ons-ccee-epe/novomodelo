@@ -1,7 +1,8 @@
-/* C++ shim for the CLP class-only knobs (dual-steepest-edge pricing,
- * factorization frequency).
+/* C++ shims for CLP operations that only the C++ ClpSimplex class exposes:
+ * dual-steepest-edge pricing, factorization frequency, and the row excess of a
+ * primal solution against the model's rows.
  *
- * This file is compiled as C++17 and exposes two functions with C linkage. It
+ * This file is compiled as C++17 and exposes functions with C linkage. It
  * exists as a separate translation unit because the main wrapper
  * (clp_wrapper.c) is compiled as plain C and reaches CLP only through
  * <Clp_C_Interface.h>, which does NOT expose setFactorizationFrequency or the
@@ -43,6 +44,10 @@
 
 #include <Clp_C_Interface.h>
 
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+
 extern "C" {
 
 void novomodelo_clp_set_dual_row_steepest(void* model, int32_t mode) {
@@ -60,6 +65,70 @@ void novomodelo_clp_set_factorization_frequency(void* model, int32_t value) {
     // real ClpSimplex is `wrapper->model_`. See the file header invariant.
     ClpSimplex* simplex = static_cast<Clp_Simplex*>(model)->model_;
     simplex->setFactorizationFrequency(value);
+}
+
+double novomodelo_clp_max_row_violation(
+    void*         model,
+    const double* col_value,
+    double*       activity,
+    double*       magnitude,
+    int32_t       num_row,
+    double        primal_tolerance
+) {
+    // SAFETY: `model` is a `Clp_Simplex*` wrapper from novomodelo_clp_create(); the
+    // real ClpSimplex is `wrapper->model_`. See the file header invariant.
+    const ClpSimplex* simplex = static_cast<Clp_Simplex*>(model)->model_;
+    if (num_row <= 0 || num_row != simplex->numberRows()) {
+        return 0.0;
+    }
+    const CoinPackedMatrix* a = simplex->matrix();
+    if (a == nullptr) {
+        return 0.0;
+    }
+
+    const std::size_t m = static_cast<std::size_t>(num_row);
+    std::fill(activity, activity + m, 0.0);
+    std::fill(magnitude, magnitude + m, 0.0);
+
+    const CoinBigIndex* start = a->getVectorStarts();
+    const int* length = a->getVectorLengths();
+    const int* index = a->getIndices();
+    const double* value = a->getElements();
+    const int major_dim = a->getMajorDim();
+    if (a->isColOrdered()) {
+        for (int j = 0; j < major_dim; ++j) {
+            const double x = col_value[j];
+            for (CoinBigIndex k = start[j]; k < start[j] + length[j]; ++k) {
+                const double term = value[k] * x;
+                const std::size_t i = static_cast<std::size_t>(index[k]);
+                activity[i] += term;
+                magnitude[i] += std::fabs(term);
+            }
+        }
+    } else {
+        for (int i = 0; i < major_dim; ++i) {
+            double act = 0.0;
+            double mag = 0.0;
+            for (CoinBigIndex k = start[i]; k < start[i] + length[i]; ++k) {
+                const double term = value[k] * col_value[index[k]];
+                act += term;
+                mag += std::fabs(term);
+            }
+            activity[i] = act;
+            magnitude[i] = mag;
+        }
+    }
+
+    const double* row_lower = simplex->rowLower();
+    const double* row_upper = simplex->rowUpper();
+    double rho = 0.0;
+    for (std::size_t i = 0; i < m; ++i) {
+        const double v = std::max(row_lower[i] - activity[i], activity[i] - row_upper[i]);
+        if (v > primal_tolerance) {
+            rho = std::max(rho, (v - primal_tolerance) / std::max(1.0, magnitude[i]));
+        }
+    }
+    return rho;
 }
 
 } /* extern "C" */
