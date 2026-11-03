@@ -34,6 +34,10 @@ pub struct SolverStatsDelta {
     /// Times the offered basis was rejected because `isBasisConsistent` returned false.
     pub basis_consistency_failures: u64,
 
+    /// Solves whose returned primal solution misses a row bound by more than
+    /// the primal feasibility tolerance plus the relative allowance.
+    pub row_violations: u64,
+
     /// Total simplex iterations across all solves.
     pub simplex_iterations: u64,
 
@@ -77,6 +81,7 @@ impl SolverStatsDelta {
             basis_offered: after.basis_offered - before.basis_offered,
             basis_consistency_failures: after.basis_consistency_failures
                 - before.basis_consistency_failures,
+            row_violations: after.row_violations - before.row_violations,
             simplex_iterations: after.total_iterations - before.total_iterations,
             solve_time_ms: (after.total_solve_time_seconds - before.total_solve_time_seconds)
                 * 1000.0,
@@ -108,6 +113,7 @@ impl SolverStatsDelta {
         dst.retry_attempts += rhs.retry_attempts;
         dst.basis_offered += rhs.basis_offered;
         dst.basis_consistency_failures += rhs.basis_consistency_failures;
+        dst.row_violations += rhs.row_violations;
         dst.simplex_iterations += rhs.simplex_iterations;
         dst.solve_time_ms += rhs.solve_time_ms;
         dst.load_model_count += rhs.load_model_count;
@@ -135,6 +141,7 @@ impl SolverStatsDelta {
         dst.retry_attempts = self.retry_attempts;
         dst.basis_offered = self.basis_offered;
         dst.basis_consistency_failures = self.basis_consistency_failures;
+        dst.row_violations = self.row_violations;
         dst.simplex_iterations = self.simplex_iterations;
         dst.solve_time_ms = self.solve_time_ms;
         dst.load_model_count = self.load_model_count;
@@ -157,6 +164,7 @@ impl SolverStatsDelta {
         self.retry_attempts = 0;
         self.basis_offered = 0;
         self.basis_consistency_failures = 0;
+        self.row_violations = 0;
         self.simplex_iterations = 0;
         self.solve_time_ms = 0.0;
         self.load_model_count = 0;
@@ -193,6 +201,7 @@ pub fn aggregate_solver_statistics(
         result.retry_count += s.retry_count;
         result.total_solve_time_seconds += s.total_solve_time_seconds;
         result.basis_consistency_failures += s.basis_consistency_failures;
+        result.row_violations += s.row_violations;
         result.first_try_successes += s.first_try_successes;
         result.basis_offered += s.basis_offered;
         result.load_model_count += s.load_model_count;
@@ -297,6 +306,7 @@ pub fn delta_to_stats_row(
         retry_attempts: delta.retry_attempts as u32,
         basis_offered: delta.basis_offered as u32,
         basis_consistency_failures: delta.basis_consistency_failures as u32,
+        lp_row_violations: delta.row_violations as u32,
         simplex_iterations: delta.simplex_iterations,
         solve_time_ms: delta.solve_time_ms,
         load_model_time_ms: delta.load_model_time_ms,
@@ -399,13 +409,14 @@ pub fn solver_stats_log_to_rows(log: &[SolverStatsLogEntry]) -> Vec<SolverStatsR
 }
 
 /// Number of scalar fields in [`SolverStatsDelta`] (excludes histogram `Vec`).
-/// Buffer size for MPI allreduce/allgatherv: 8 `u64` fields cast to `f64` + 5 native `f64` fields.
-pub const SOLVER_STATS_DELTA_SCALAR_FIELDS: usize = 13;
+/// Buffer size for MPI allreduce/allgatherv: the `u64` fields, cast to `f64`,
+/// come first; the native `f64` fields follow.
+pub const SOLVER_STATS_DELTA_SCALAR_FIELDS: usize = 14;
 
-/// Packed `f64` stride per scenario: `scenario_id` + 13 scalar fields.
+/// Packed `f64` stride per scenario: `scenario_id` + the scalar fields.
 pub const SCENARIO_STATS_STRIDE: usize = 1 + SOLVER_STATS_DELTA_SCALAR_FIELDS;
 
-/// Packed `f64` stride per entry: `worker_id`, `slot_idx`, + 13 scalar fields (total 15).
+/// Packed `f64` stride per entry: `worker_id`, `slot_idx`, + the scalar fields.
 pub const WORKER_STATS_ENTRY_STRIDE: usize = 2 + SOLVER_STATS_DELTA_SCALAR_FIELDS;
 
 /// Preallocate buffer size for per-worker per-slot MPI payloads.
@@ -415,8 +426,8 @@ pub fn worker_opening_stats_buffer_size(n_workers: usize, n_slots: usize) -> usi
     n_workers * n_slots * WORKER_STATS_ENTRY_STRIDE
 }
 
-/// Pack the 13 scalar fields of a [`SolverStatsDelta`] into a fixed-size `f64` array.
-/// Indices 0–7: eight `u64` fields cast to `f64`. Indices 8–12: five native `f64` fields.
+/// Pack the scalar fields of a [`SolverStatsDelta`] into a fixed-size `f64` array.
+/// The `u64` fields, cast to `f64`, come first; the native `f64` fields follow.
 /// The `retry_level_histogram` is excluded from MPI packing and Parquet output.
 ///
 /// # Precision contract
@@ -432,7 +443,7 @@ pub fn worker_opening_stats_buffer_size(n_workers: usize, n_slots: usize) -> usi
 ///
 /// # Timing precision
 ///
-/// `solve_time_ms` (index 9) and the other `f64` timing fields are summed natively
+/// `solve_time_ms` and the other `f64` timing fields are summed natively
 /// without a cast. `f64` addition is non-associative, so rank-order changes across
 /// MPI runs can cause ULP-level drift in `total_solve_time_seconds`. This is
 /// acceptable: timing metrics require semantic parity (same order of magnitude),
@@ -449,12 +460,13 @@ pub fn pack_delta_scalars(delta: &SolverStatsDelta) -> [f64; SOLVER_STATS_DELTA_
         delta.retry_attempts as f64,             // index 4
         delta.basis_offered as f64,              // index 5
         delta.basis_consistency_failures as f64, // index 6
-        delta.simplex_iterations as f64,         // index 7
-        delta.load_model_count as f64,           // index 8
-        delta.solve_time_ms,                     // index 9
-        delta.load_model_time_ms,                // index 10
-        delta.set_bounds_time_ms,                // index 11
-        delta.basis_set_time_ms,                 // index 12
+        delta.row_violations as f64,             // index 7
+        delta.simplex_iterations as f64,         // index 8
+        delta.load_model_count as f64,           // index 9
+        delta.solve_time_ms,                     // index 10
+        delta.load_model_time_ms,                // index 11
+        delta.set_bounds_time_ms,                // index 12
+        delta.basis_set_time_ms,                 // index 13
     ]
 }
 
@@ -471,12 +483,13 @@ pub fn unpack_delta_scalars(buf: &[f64; SOLVER_STATS_DELTA_SCALAR_FIELDS]) -> So
         retry_attempts: buf[4] as u64,
         basis_offered: buf[5] as u64,
         basis_consistency_failures: buf[6] as u64,
-        simplex_iterations: buf[7] as u64,
-        load_model_count: buf[8] as u64,
-        solve_time_ms: buf[9],
-        load_model_time_ms: buf[10],
-        set_bounds_time_ms: buf[11],
-        basis_set_time_ms: buf[12],
+        row_violations: buf[7] as u64,
+        simplex_iterations: buf[8] as u64,
+        load_model_count: buf[9] as u64,
+        solve_time_ms: buf[10],
+        load_model_time_ms: buf[11],
+        set_bounds_time_ms: buf[12],
+        basis_set_time_ms: buf[13],
         retry_level_histogram: Vec::new(),
     }
 }
@@ -507,10 +520,8 @@ pub fn unpack_scenario_stats(buf: &[f64]) -> Vec<(u32, SolverStatsDelta)> {
     buf.chunks_exact(SCENARIO_STATS_STRIDE)
         .map(|chunk| {
             let scenario_id = chunk[0] as u32;
-            let arr = [
-                chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7], chunk[8],
-                chunk[9], chunk[10], chunk[11], chunk[12], chunk[13],
-            ];
+            let mut arr = [0.0_f64; SOLVER_STATS_DELTA_SCALAR_FIELDS];
+            arr.copy_from_slice(&chunk[1..]);
             (scenario_id, unpack_delta_scalars(&arr))
         })
         .collect()
@@ -702,7 +713,7 @@ mod tests {
             total_set_bounds_time_seconds: 0.25,
             total_basis_set_time_seconds: 0.1,
             basis_reconstructions: 0,
-            row_violations: 0,
+            row_violations: 1,
             retry_level_histogram: vec![0; 12],
         };
         let after = SolverStatistics {
@@ -720,7 +731,7 @@ mod tests {
             total_set_bounds_time_seconds: 0.75,
             total_basis_set_time_seconds: 0.3,
             basis_reconstructions: 0,
-            row_violations: 0,
+            row_violations: 6,
             retry_level_histogram: vec![0; 12],
         };
 
@@ -732,6 +743,7 @@ mod tests {
         assert_eq!(delta.retry_attempts, 2);
         assert_eq!(delta.basis_offered, 9);
         assert_eq!(delta.basis_consistency_failures, 2);
+        assert_eq!(delta.row_violations, 5);
         assert_eq!(delta.simplex_iterations, 600);
         assert!((delta.solve_time_ms - 2500.0).abs() < 1e-6);
         assert_eq!(delta.load_model_count, 7);
@@ -792,6 +804,7 @@ mod tests {
             retry_attempts: 2,
             basis_offered: 7,
             basis_consistency_failures: 1,
+            row_violations: 2,
             simplex_iterations: 500,
             solve_time_ms: 100.0,
             load_model_count: 5,
@@ -808,6 +821,7 @@ mod tests {
             retry_attempts: 3,
             basis_offered: 15,
             basis_consistency_failures: 2,
+            row_violations: 3,
             simplex_iterations: 800,
             solve_time_ms: 200.0,
             load_model_count: 10,
@@ -825,6 +839,7 @@ mod tests {
         assert_eq!(agg.retry_attempts, 5);
         assert_eq!(agg.basis_offered, 22);
         assert_eq!(agg.basis_consistency_failures, 3);
+        assert_eq!(agg.row_violations, 5);
         assert_eq!(agg.simplex_iterations, 1300);
         assert!((agg.solve_time_ms - 300.0).abs() < 1e-6);
         assert_eq!(agg.load_model_count, 15);
@@ -850,7 +865,7 @@ mod tests {
             total_set_bounds_time_seconds: 0.25,
             total_basis_set_time_seconds: 0.05,
             basis_reconstructions: 4,
-            row_violations: 0,
+            row_violations: 2,
             retry_level_histogram: vec![1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         };
         let s2 = SolverStatistics {
@@ -868,7 +883,7 @@ mod tests {
             total_set_bounds_time_seconds: 0.75,
             total_basis_set_time_seconds: 0.15,
             basis_reconstructions: 10,
-            row_violations: 0,
+            row_violations: 3,
             retry_level_histogram: vec![0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         };
 
@@ -880,6 +895,7 @@ mod tests {
         assert_eq!(agg.retry_count, 8);
         assert!((agg.total_solve_time_seconds - 6.5).abs() < 1e-10);
         assert_eq!(agg.basis_consistency_failures, 4);
+        assert_eq!(agg.row_violations, 5);
         assert_eq!(agg.first_try_successes, 22);
         assert_eq!(agg.basis_offered, 25);
         assert_eq!(agg.load_model_count, 17);
@@ -901,6 +917,7 @@ mod tests {
             retry_attempts: 1,
             basis_offered: lp_solves,
             basis_consistency_failures: 2,
+            row_violations: 7,
             simplex_iterations: lp_solves * 10,
             solve_time_ms: lp_solves as f64 * 0.5,
             load_model_count: 3,
@@ -928,6 +945,7 @@ mod tests {
             unpacked.basis_consistency_failures,
             delta.basis_consistency_failures
         );
+        assert_eq!(unpacked.row_violations, 7);
         assert_eq!(unpacked.simplex_iterations, delta.simplex_iterations);
         assert_eq!(unpacked.load_model_count, delta.load_model_count);
         assert!((unpacked.solve_time_ms - delta.solve_time_ms).abs() < 1e-10);
@@ -968,6 +986,8 @@ mod tests {
         assert_eq!(unpacked[2].0, 25);
 
         // Verify field values for each scenario
+        assert_eq!(unpacked[0].1.row_violations, 7);
+        assert_eq!(unpacked[2].1.row_violations, 7);
         assert_eq!(unpacked[0].1.lp_solves, 100);
         assert_eq!(unpacked[1].1.lp_solves, 200);
         assert_eq!(unpacked[2].1.lp_solves, 300);
@@ -987,16 +1007,16 @@ mod tests {
 
     #[test]
     fn test_pack_delta_scalars_field_count() {
-        // Regression: pack_delta_scalars must produce a 13-element array.
+        // Regression: pack_delta_scalars must produce a 14-element array.
         let delta = SolverStatsDelta::default();
         let packed = pack_delta_scalars(&delta);
         assert_eq!(
             packed.len(),
-            13,
-            "pack_delta_scalars must return 13 elements"
+            14,
+            "pack_delta_scalars must return 14 elements"
         );
         assert_eq!(packed.len(), SOLVER_STATS_DELTA_SCALAR_FIELDS);
-        assert_eq!(SOLVER_STATS_DELTA_SCALAR_FIELDS, 13);
+        assert_eq!(SOLVER_STATS_DELTA_SCALAR_FIELDS, 14);
     }
 
     #[test]
@@ -1017,6 +1037,7 @@ mod tests {
         assert_eq!(dst.retry_attempts, 2); // 1 + 1
         assert_eq!(dst.basis_offered, 15);
         assert_eq!(dst.basis_consistency_failures, 4); // 2 + 2
+        assert_eq!(dst.row_violations, 14); // 7 + 7
         assert_eq!(dst.simplex_iterations, 150); // 100 + 50
         assert!((dst.solve_time_ms - 7.5).abs() < 1e-10); // 5.0 + 2.5
         assert_eq!(dst.load_model_count, 6); // 3 + 3
@@ -1461,6 +1482,7 @@ mod tests {
             for k in 0..n_slots {
                 input.push(SolverStatsDelta {
                     lp_solves: (w * 10 + k) as u64,
+                    row_violations: 7,
                     ..SolverStatsDelta::default()
                 });
             }
@@ -1479,6 +1501,11 @@ mod tests {
                     (w * 10 + k) as u64,
                     "lp_solves mismatch at (w={w}, k={k})"
                 );
+                assert_eq!(
+                    recovered[w * n_slots + k].row_violations,
+                    7,
+                    "row_violations mismatch at (w={w}, k={k})"
+                );
             }
         }
     }
@@ -1486,8 +1513,8 @@ mod tests {
     /// Helper returns the precise `stride * n_workers * n_slots` size in `f64` units.
     #[test]
     fn test_pack_worker_opening_stats_buffer_size() {
-        assert_eq!(worker_opening_stats_buffer_size(10, 20), 10 * 20 * 15);
-        assert_eq!(worker_opening_stats_buffer_size(10, 20), 3000);
+        assert_eq!(worker_opening_stats_buffer_size(10, 20), 10 * 20 * 16);
+        assert_eq!(worker_opening_stats_buffer_size(10, 20), 3200);
     }
 
     /// Layout invariants — `[w as f64, k as f64, ...]` per entry, row-major.
@@ -1502,24 +1529,24 @@ mod tests {
         // entry(w=0, k=0) at offset 0
         assert_eq!(buf[0], 0.0);
         assert_eq!(buf[1], 0.0);
-        // entry(w=0, k=1) at offset WORKER_STATS_ENTRY_STRIDE (= 15)
+        // entry(w=0, k=1) at offset WORKER_STATS_ENTRY_STRIDE (= 16)
         assert_eq!(buf[WORKER_STATS_ENTRY_STRIDE], 0.0);
         assert_eq!(buf[WORKER_STATS_ENTRY_STRIDE + 1], 1.0);
-        // entry(w=1, k=0) at offset WORKER_STATS_ENTRY_STRIDE * n_slots (= 15 * 4)
+        // entry(w=1, k=0) at offset WORKER_STATS_ENTRY_STRIDE * n_slots (= 16 * 4)
         let w1_k0 = WORKER_STATS_ENTRY_STRIDE * n_slots;
         assert_eq!(buf[w1_k0], 1.0);
         assert_eq!(buf[w1_k0 + 1], 0.0);
     }
 
-    /// MPI wire-format pin: `SolverStatsDelta` pack/unpack uses a 13-element `f64` array.
+    /// MPI wire-format pin: `SolverStatsDelta` pack/unpack uses a 14-element `f64` array.
     /// Uses distinct nonzero values for every field so that field-order swaps are caught
     /// at both pack and unpack.
     #[test]
-    fn test_solver_stats_delta_mpi_wire_format_13_fields() {
+    fn test_solver_stats_delta_mpi_wire_format_14_fields() {
         // Wire-format constant assertions.
-        assert_eq!(SOLVER_STATS_DELTA_SCALAR_FIELDS, 13);
-        assert_eq!(SCENARIO_STATS_STRIDE, 14);
-        assert_eq!(WORKER_STATS_ENTRY_STRIDE, 15);
+        assert_eq!(SOLVER_STATS_DELTA_SCALAR_FIELDS, 14);
+        assert_eq!(SCENARIO_STATS_STRIDE, 15);
+        assert_eq!(WORKER_STATS_ENTRY_STRIDE, 16);
 
         // Construct a populated delta. Use distinct nonzero values
         // to catch field-order swaps at pack/unpack.
@@ -1531,24 +1558,26 @@ mod tests {
             retry_attempts: 5,
             basis_offered: 6,
             basis_consistency_failures: 7,
-            simplex_iterations: 8,
-            load_model_count: 9,
-            solve_time_ms: 10.5,
-            load_model_time_ms: 11.25,
-            set_bounds_time_ms: 12.125,
-            basis_set_time_ms: 13.0625,
+            row_violations: 8,
+            simplex_iterations: 9,
+            load_model_count: 10,
+            solve_time_ms: 11.5,
+            load_model_time_ms: 12.25,
+            set_bounds_time_ms: 13.125,
+            basis_set_time_ms: 14.0625,
             retry_level_histogram: vec![1, 2, 3], // application-level; not in wire
         };
 
         let packed = pack_delta_scalars(&delta);
-        assert_eq!(packed.len(), 13);
+        assert_eq!(packed.len(), 14);
 
         // Cross-check packed field ordering via explicit index reads.
-        // Indices 0..=8 are u64 fields cast to f64; indices 9..=12 are f64.
+        // Indices 0..=9 are u64 fields cast to f64; indices 10..=13 are f64.
         assert_eq!(packed[0], 1.0); // lp_solves
-        assert_eq!(packed[8], 9.0); // load_model_count
-        assert!((packed[9] - 10.5).abs() < 1e-10); // solve_time_ms
-        assert!((packed[12] - 13.0625).abs() < 1e-10); // basis_set_time_ms
+        assert_eq!(packed[7], 8.0); // row_violations
+        assert_eq!(packed[9], 10.0); // load_model_count
+        assert!((packed[10] - 11.5).abs() < 1e-10); // solve_time_ms
+        assert!((packed[13] - 14.0625).abs() < 1e-10); // basis_set_time_ms
 
         let unpacked = unpack_delta_scalars(&packed);
 
@@ -1560,12 +1589,13 @@ mod tests {
         assert_eq!(unpacked.retry_attempts, 5);
         assert_eq!(unpacked.basis_offered, 6);
         assert_eq!(unpacked.basis_consistency_failures, 7);
-        assert_eq!(unpacked.simplex_iterations, 8);
-        assert_eq!(unpacked.load_model_count, 9);
-        assert!((unpacked.solve_time_ms - 10.5).abs() < 1e-10);
-        assert!((unpacked.load_model_time_ms - 11.25).abs() < 1e-10);
-        assert!((unpacked.set_bounds_time_ms - 12.125).abs() < 1e-10);
-        assert!((unpacked.basis_set_time_ms - 13.0625).abs() < 1e-10);
+        assert_eq!(unpacked.row_violations, 8);
+        assert_eq!(unpacked.simplex_iterations, 9);
+        assert_eq!(unpacked.load_model_count, 10);
+        assert!((unpacked.solve_time_ms - 11.5).abs() < 1e-10);
+        assert!((unpacked.load_model_time_ms - 12.25).abs() < 1e-10);
+        assert!((unpacked.set_bounds_time_ms - 13.125).abs() < 1e-10);
+        assert!((unpacked.basis_set_time_ms - 14.0625).abs() < 1e-10);
 
         // The histogram is NOT in the wire — unpack leaves it empty.
         assert!(unpacked.retry_level_histogram.is_empty());
@@ -1573,16 +1603,16 @@ mod tests {
 
     /// Pins the wire-format array length at the type level. The function signature
     /// is `unpack_delta_scalars(&[f64; SOLVER_STATS_DELTA_SCALAR_FIELDS])`, so the
-    /// compiler enforces the length. This test confirms the constant equals 13 and
-    /// that the `size_of` the array is exactly `13 * 8` bytes.
+    /// compiler enforces the length. This test confirms the constant equals 14 and
+    /// that the `size_of` the array is exactly `14 * 8` bytes.
     #[test]
     fn test_unpack_delta_scalars_array_length_is_compile_time() {
         assert_eq!(
             std::mem::size_of::<[f64; SOLVER_STATS_DELTA_SCALAR_FIELDS]>(),
-            13 * std::mem::size_of::<f64>()
+            14 * std::mem::size_of::<f64>()
         );
-        // Also confirm that a valid 13-element buffer round-trips without panic.
-        let buf: [f64; 13] = [0.0; 13];
+        // Also confirm that a valid 14-element buffer round-trips without panic.
+        let buf: [f64; 14] = [0.0; 14];
         let _ = unpack_delta_scalars(&buf);
     }
 
@@ -1600,6 +1630,7 @@ mod tests {
             retry_attempts: 5,
             basis_offered: 35,
             basis_consistency_failures: 3,
+            row_violations: 5,
             simplex_iterations: 1200,
             solve_time_ms: 99.5,
             load_model_count: 10,
@@ -1625,6 +1656,7 @@ mod tests {
         assert_eq!(dst.retry_attempts, 5);
         assert_eq!(dst.basis_offered, 35);
         assert_eq!(dst.basis_consistency_failures, 3);
+        assert_eq!(dst.row_violations, 5);
         assert_eq!(dst.simplex_iterations, 1200);
         assert!((dst.solve_time_ms - 99.5).abs() < 1e-10);
         assert_eq!(dst.load_model_count, 10);
@@ -1660,6 +1692,7 @@ mod tests {
             retry_attempts: 6,
             basis_offered: 50,
             basis_consistency_failures: 4,
+            row_violations: 9,
             simplex_iterations: 500,
             solve_time_ms: 42.0,
             load_model_count: 8,
@@ -1678,6 +1711,7 @@ mod tests {
         assert_eq!(d.retry_attempts, 0);
         assert_eq!(d.basis_offered, 0);
         assert_eq!(d.basis_consistency_failures, 0);
+        assert_eq!(d.row_violations, 0);
         assert_eq!(d.simplex_iterations, 0);
         assert_eq!(d.solve_time_ms, 0.0);
         assert_eq!(d.load_model_count, 0);

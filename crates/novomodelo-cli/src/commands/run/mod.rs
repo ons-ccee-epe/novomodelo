@@ -368,6 +368,7 @@ pub(super) fn check_stats_overflow(delta: &SolverStatsDelta) -> Result<(), CliEr
             "basis_consistency_failures",
             delta.basis_consistency_failures,
         ),
+        ("lp_row_violations", delta.row_violations),
         ("simplex_iterations", delta.simplex_iterations),
         ("load_model_count", delta.load_model_count),
     ] {
@@ -576,6 +577,7 @@ mod tests {
             "retry_attempts" => d.retry_attempts = value,
             "basis_offered" => d.basis_offered = value,
             "basis_consistency_failures" => d.basis_consistency_failures = value,
+            "lp_row_violations" => d.row_violations = value,
             "simplex_iterations" => d.simplex_iterations = value,
             "load_model_count" => d.load_model_count = value,
             other => panic!("unknown field: {other}"),
@@ -595,6 +597,7 @@ mod tests {
             "retry_attempts",
             "basis_offered",
             "basis_consistency_failures",
+            "lp_row_violations",
             "simplex_iterations",
             "load_model_count",
         ];
@@ -627,6 +630,7 @@ mod tests {
             retry_attempts: at_limit,
             basis_offered: at_limit,
             basis_consistency_failures: at_limit,
+            row_violations: at_limit,
             simplex_iterations: at_limit,
             load_model_count: at_limit,
             ..SolverStatsDelta::default()

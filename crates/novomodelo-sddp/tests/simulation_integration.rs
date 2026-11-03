@@ -1737,6 +1737,7 @@ fn solver_counters(delta: &SolverStatsDelta) -> Vec<u64> {
         retry_attempts,
         basis_offered,
         basis_consistency_failures,
+        row_violations,
         simplex_iterations,
         solve_time_ms: _,
         load_model_count,
@@ -1753,6 +1754,7 @@ fn solver_counters(delta: &SolverStatsDelta) -> Vec<u64> {
         *retry_attempts,
         *basis_offered,
         *basis_consistency_failures,
+        *row_violations,
         *simplex_iterations,
         *load_model_count,
     ]

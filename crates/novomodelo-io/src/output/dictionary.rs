@@ -1078,6 +1078,11 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     ),
     (
         "solver_iterations",
+        "lp_row_violations",
+        "LP solves whose returned primal solution misses a row bound by more than the primal feasibility tolerance plus the relative allowance",
+    ),
+    (
+        "solver_iterations",
         "retry_attempts",
         "Total retry attempts across all solves",
     ),
@@ -3014,8 +3019,8 @@ mod tests {
 
         let row_count = rdr.records().count();
         assert_eq!(
-            row_count, 252,
-            "variables.csv must have exactly 252 data rows (one per column across all schemas)"
+            row_count, 253,
+            "variables.csv must have exactly 253 data rows (one per column across all schemas)"
         );
     }
 
@@ -4145,6 +4150,7 @@ mod tests {
                 "lp_successes",
                 "lp_retries",
                 "lp_failures",
+                "lp_row_violations",
                 "retry_attempts",
                 "basis_offered",
                 "basis_consistency_failures",

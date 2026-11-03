@@ -566,6 +566,7 @@ pub(crate) fn solver_iterations_schema() -> Schema {
         Field::new("lp_successes", DataType::UInt32, false),
         Field::new("lp_retries", DataType::UInt32, false),
         Field::new("lp_failures", DataType::UInt32, false),
+        Field::new("lp_row_violations", DataType::UInt32, false),
         Field::new("retry_attempts", DataType::UInt32, false),
         Field::new("basis_offered", DataType::UInt32, false),
         Field::new("basis_consistency_failures", DataType::UInt32, false),
@@ -1593,8 +1594,8 @@ mod tests {
         let schema = solver_iterations_schema();
         assert_eq!(
             schema.fields().len(),
-            19,
-            "solver_iterations schema must have 19 fields"
+            20,
+            "solver_iterations schema must have 20 fields"
         );
         let expected: &[(&str, DataType, bool)] = &[
             ("iteration", DataType::Int32, true),
@@ -1608,6 +1609,7 @@ mod tests {
             ("lp_successes", DataType::UInt32, false),
             ("lp_retries", DataType::UInt32, false),
             ("lp_failures", DataType::UInt32, false),
+            ("lp_row_violations", DataType::UInt32, false),
             ("retry_attempts", DataType::UInt32, false),
             ("basis_offered", DataType::UInt32, false),
             ("basis_consistency_failures", DataType::UInt32, false),
@@ -1709,7 +1711,7 @@ mod tests {
             ("convergence", 16),
             ("iteration_timing", 19),
             ("cut_selection", 13),
-            ("solver_iterations", 19),
+            ("solver_iterations", 20),
             ("retry_histogram", 5),
             ("generic_constraint_echo", 14),
         ];

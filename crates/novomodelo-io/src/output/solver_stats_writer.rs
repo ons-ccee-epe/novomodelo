@@ -52,6 +52,9 @@ pub struct SolverStatsRow {
     pub lp_retries: u32,
     /// Solves that exhausted all retry levels.
     pub lp_failures: u32,
+    /// Solves whose returned primal solution misses a row bound by more than
+    /// the primal feasibility tolerance plus the relative allowance.
+    pub lp_row_violations: u32,
     /// Total retry attempts across all retried solves.
     pub retry_attempts: u32,
     /// Number of warm-start `solve(Some(&basis))` calls.
@@ -108,6 +111,7 @@ fn build_iterations_columns(rows: &[SolverStatsRow]) -> Vec<Arc<dyn arrow::array
     let mut lp_successes = UInt32Builder::with_capacity(n);
     let mut lp_retries = UInt32Builder::with_capacity(n);
     let mut lp_failures = UInt32Builder::with_capacity(n);
+    let mut lp_row_violations = UInt32Builder::with_capacity(n);
     let mut retry_attempts = UInt32Builder::with_capacity(n);
     let mut basis_offered = UInt32Builder::with_capacity(n);
     let mut basis_consistency_failures = UInt32Builder::with_capacity(n);
@@ -129,6 +133,7 @@ fn build_iterations_columns(rows: &[SolverStatsRow]) -> Vec<Arc<dyn arrow::array
         lp_successes.append_value(r.lp_successes);
         lp_retries.append_value(r.lp_retries);
         lp_failures.append_value(r.lp_failures);
+        lp_row_violations.append_value(r.lp_row_violations);
         retry_attempts.append_value(r.retry_attempts);
         basis_offered.append_value(r.basis_offered);
         basis_consistency_failures.append_value(r.basis_consistency_failures);
@@ -151,6 +156,7 @@ fn build_iterations_columns(rows: &[SolverStatsRow]) -> Vec<Arc<dyn arrow::array
         Arc::new(lp_successes.finish()),
         Arc::new(lp_retries.finish()),
         Arc::new(lp_failures.finish()),
+        Arc::new(lp_row_violations.finish()),
         Arc::new(retry_attempts.finish()),
         Arc::new(basis_offered.finish()),
         Arc::new(basis_consistency_failures.finish()),
@@ -263,6 +269,7 @@ mod tests {
             lp_successes: 0,
             lp_retries: 0,
             lp_failures: 0,
+            lp_row_violations: 0,
             retry_attempts: 0,
             basis_offered: 0,
             basis_consistency_failures: 0,
@@ -283,6 +290,7 @@ mod tests {
                 lp_solves: 100,
                 lp_successes: 98,
                 lp_retries: 2,
+                lp_row_violations: 3,
                 basis_offered: 90,
                 basis_consistency_failures: 3,
                 simplex_iterations: 5000,
@@ -316,7 +324,7 @@ mod tests {
         let batch = read_first_batch(&iter_path);
 
         assert_eq!(batch.num_rows(), 2);
-        assert_eq!(batch.num_columns(), 19);
+        assert_eq!(batch.num_columns(), 20);
 
         let iteration_col = batch
             .column_by_name("iteration")
@@ -344,6 +352,15 @@ mod tests {
             .unwrap();
         assert_eq!(simplex_col.value(0), 5000);
 
+        let row_violations_col = batch
+            .column_by_name("lp_row_violations")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .unwrap();
+        assert_eq!(row_violations_col.value(0), 3);
+        assert_eq!(row_violations_col.value(1), 0);
+
         // retry_histogram.parquet — empty (make_rows has all-zero histograms)
         let hist_path = dir.path().join("training/solver/retry_histogram.parquet");
         assert!(hist_path.exists());
@@ -368,7 +385,7 @@ mod tests {
         assert!(iter_path.exists());
         let file = std::fs::File::open(&iter_path).unwrap();
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-        assert_eq!(builder.schema().fields().len(), 19);
+        assert_eq!(builder.schema().fields().len(), 20);
 
         let hist_path = dir.path().join("training/solver/retry_histogram.parquet");
         assert!(hist_path.exists());
@@ -684,7 +701,7 @@ mod tests {
         write_solver_stats(dir.path(), &rows).unwrap();
 
         let batch = read_first_batch(&dir.path().join("training/solver/iterations.parquet"));
-        assert_eq!(batch.num_columns(), 19);
+        assert_eq!(batch.num_columns(), 20);
 
         assert_eq!(
             batch.column_by_name("rank").unwrap().null_count(),
