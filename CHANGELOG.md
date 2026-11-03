@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `lp_row_violations` in `solver/iterations.parquet`; `novomodelo run` warns if nonzero.
+
 ### Changed
 
 - `training.solver.forward.use_warm_start` defaults to `true` again, so forward
@@ -23,10 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- HiGHS: load and water balances recomputed from outputs could fail to close,
-  and cuts could carry wrong duals. A new `lp_row_violations` column in the
-  solver `iterations.parquet` files counts LP solves that miss a row bound, and
-  `novomodelo run` warns when any does. Retrain policies trained with HiGHS.
+- **BREAKING:** HiGHS: balances recomputed from outputs could fail to close and cuts
+  could carry wrong duals; results change. Retrain policies trained with HiGHS.
 
 ## [0.19.1] - 2026-10-26
 

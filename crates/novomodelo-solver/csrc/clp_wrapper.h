@@ -255,10 +255,11 @@ void novomodelo_clp_set_dual_row_steepest(void* model, int32_t mode);
 void novomodelo_clp_set_factorization_frequency(void* model, int32_t value);
 
 /** Row excess of col_value against the model's rows.
- *  For each row i, writes act_i = sum_j a_ij x_j into activity[i] and
- *  mag_i = sum_j |a_ij x_j| into magnitude[i]. With v_i the bound violation
- *  of act_i and t = primal_tolerance, returns
- *  max(0, max_i (v_i - t) / max(1, mag_i)).
+ *  For each row i, writes act_i = sum_j a_ij x_j into activity[i], and
+ *  writes mag_i = sum_j |a_ij x_j| into magnitude[i] only for rows whose
+ *  violation exceeds the tolerance. With v_i the bound violation of act_i and
+ *  t = primal_tolerance, returns max(0, max_i (v_i - t) / max(1, mag_i)),
+ *  or +infinity when some act_i or that ratio is NaN.
  *  col_value must hold the model's column count; activity and magnitude must
  *  hold num_row entries. Returns 0 without touching the buffers when num_row is
  *  zero or differs from the model's row count.

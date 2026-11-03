@@ -1079,7 +1079,7 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "solver_iterations",
         "lp_row_violations",
-        "LP solves whose returned primal solution misses a row bound by more than the primal feasibility tolerance plus the relative allowance",
+        "LP solves whose returned primal solution misses a row bound by more than the primal feasibility tolerance plus 1e-11 times the row's magnitude Σ|a_ij·x_j| (taken as at least 1)",
     ),
     (
         "solver_iterations",

@@ -2445,9 +2445,14 @@ fn warm_4ree_solves_meet_every_row() {
     assert_eq!(drain.join().expect("drain thread"), n_scenarios);
 
     let mut violations = BTreeMap::<&str, u64>::new();
+    let mut forward_basis_offered = 0_u64;
     for entry in &outcome.result.solver_stats_log {
         *violations.entry(entry.phase).or_default() += entry.delta.row_violations;
+        if entry.phase == "forward" {
+            forward_basis_offered += entry.delta.basis_offered;
+        }
     }
+    assert!(forward_basis_offered > 0, "the forward pass must run warm");
     let simulation_delta =
         SolverStatsDelta::aggregate(simulation.solver_stats.iter().map(|(_, _, delta)| delta));
     assert!(

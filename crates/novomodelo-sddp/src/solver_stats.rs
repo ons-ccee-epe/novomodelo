@@ -37,7 +37,8 @@ pub struct SolverStatsDelta {
     pub basis_consistency_failures: u64,
 
     /// Solves whose returned primal solution misses a row bound by more than
-    /// the primal feasibility tolerance plus the relative allowance.
+    /// the primal feasibility tolerance plus 1e-11 times the row's magnitude
+    /// `Σ|a_ij·x_j|` (taken as at least 1).
     pub row_violations: u64,
 
     /// Total simplex iterations across all solves.

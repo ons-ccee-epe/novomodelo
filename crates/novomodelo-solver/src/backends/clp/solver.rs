@@ -139,14 +139,9 @@ impl ClpSolver {
         })
     }
 
-    /// Copies the three CLP-owned solution pointers into the owned buffers, then
-    /// counts the solve in `row_violations` when the copied primal solution
-    /// misses a row bound beyond `accepted_primal_tolerance`.
-    ///
-    /// CLP-owned pointers are valid only until the next solve. Each copy is
-    /// guarded with `if len > 0` because passing a null or dangling pointer to
-    /// `std::slice::from_raw_parts` is undefined behavior even with length 0 (a
-    /// zero-column or zero-row LP may yield such a pointer from CLP).
+    /// Copies the CLP-owned solution into the owned buffers and counts the solve
+    /// in `row_violations` when the primal solution misses a row bound beyond
+    /// `accepted_primal_tolerance`.
     pub(super) fn copy_solution(&mut self) {
         if self.num_cols > 0 {
             // SAFETY: `self.handle` is a valid, non-null CLP pointer that has
@@ -187,8 +182,9 @@ impl ClpSolver {
         let rho = row_excess(
             self.handle,
             &self.col_value[..self.num_cols],
-            &mut self.row_activity[..self.num_rows],
-            &mut self.row_magnitude[..self.num_rows],
+            &mut self.row_activity,
+            &mut self.row_magnitude,
+            self.num_rows,
             self.accepted_primal_tolerance,
         );
         if counts_as_row_violation(rho) {
@@ -199,7 +195,8 @@ impl ClpSolver {
     /// Returns the row excess of `col_value` against the loaded LP: the largest,
     /// over rows, of `(v_i − t) / max(1, Σ_j |a_ij x_j|)`, floored at 0, where `v_i`
     /// is the row's bound violation and `t` the [`primal_tolerance`](Self::primal_tolerance)
-    /// currently set. Returns 0 for an LP without rows.
+    /// currently set. Returns +∞ when a row's activity is NaN and 0 for an LP
+    /// without rows.
     ///
     /// # Panics
     ///
@@ -216,8 +213,9 @@ impl ClpSolver {
         row_excess(
             self.handle,
             col_value,
-            &mut self.row_activity[..self.num_rows],
-            &mut self.row_magnitude[..self.num_rows],
+            &mut self.row_activity,
+            &mut self.row_magnitude,
+            self.num_rows,
             primal_tolerance,
         )
     }
@@ -392,9 +390,19 @@ fn row_excess(
     col_value: &[f64],
     activity: &mut [f64],
     magnitude: &mut [f64],
+    num_rows: usize,
     primal_tolerance: f64,
 ) -> f64 {
-    debug_assert_eq!(activity.len(), magnitude.len());
+    debug_assert_eq!(
+        activity.len(),
+        num_rows,
+        "row activity buffer len != num_rows"
+    );
+    debug_assert_eq!(
+        magnitude.len(),
+        num_rows,
+        "row magnitude buffer len != num_rows"
+    );
     // `load_model` and `add_rows` assert each dimension fits in `i32`.
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     let num_row = activity.len() as i32;

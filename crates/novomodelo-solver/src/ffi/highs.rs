@@ -190,9 +190,10 @@ unsafe extern "C" {
     ) -> c_int;
 
     /// Row excess of `col_value` against the incumbent LP: writes each row's
-    /// activity and magnitude into the caller's buffers and returns the largest
+    /// activity into `activity`, and the magnitude only of rows whose violation
+    /// exceeds `primal_tolerance` into `magnitude`, and returns the largest
     /// bound violation minus `primal_tolerance`, relative to the row magnitude
-    /// (0 when `num_row` is zero or differs from the incumbent LP's row count).
+    /// (+infinity for a NaN activity; 0 when `num_row` is zero or differs from the incumbent LP's row count).
     /// Reads the LP by reference, without copying the model.
     pub fn novomodelo_highs_max_row_violation(
         highs: *mut c_void,

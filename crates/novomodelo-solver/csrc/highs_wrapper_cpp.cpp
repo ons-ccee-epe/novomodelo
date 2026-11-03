@@ -51,12 +51,12 @@ int32_t novomodelo_highs_set_basis_non_alien(
 }
 
 double novomodelo_highs_max_row_violation(
-    void*         highs,
-    const double* col_value,
-    double*       activity,
-    double*       magnitude,
-    int32_t       num_row,
-    double        primal_tolerance
+    void*                    highs,
+    const double* __restrict col_value,
+    double* __restrict       activity,
+    double* __restrict       magnitude,
+    int32_t                  num_row,
+    double                   primal_tolerance
 ) {
     const Highs* h = reinterpret_cast<const Highs*>(highs);
     const HighsLp& lp = h->getLp();
@@ -66,7 +66,6 @@ double novomodelo_highs_max_row_violation(
 
     const std::size_t m = static_cast<std::size_t>(num_row);
     std::fill(activity, activity + m, 0.0);
-    std::fill(magnitude, magnitude + m, 0.0);
 
     const HighsSparseMatrix& a = lp.a_matrix_;
     if (a.isColwise()) {
@@ -74,32 +73,80 @@ double novomodelo_highs_max_row_violation(
             const double x = col_value[j];
             for (HighsInt k = a.start_[j]; k < a.start_[j + 1]; ++k) {
                 const double term = a.value_[k] * x;
-                const std::size_t i = static_cast<std::size_t>(a.index_[k]);
-                activity[i] += term;
-                magnitude[i] += std::fabs(term);
+                activity[static_cast<std::size_t>(a.index_[k])] += term;
             }
         }
     } else {
         for (HighsInt i = 0; i < lp.num_row_; ++i) {
             double act = 0.0;
-            double mag = 0.0;
             for (HighsInt k = a.start_[i]; k < a.start_[i + 1]; ++k) {
                 const double term = a.value_[k] * col_value[a.index_[k]];
                 act += term;
-                mag += std::fabs(term);
             }
             activity[i] = act;
+        }
+    }
+
+    const double* row_lower = lp.row_lower_.data();
+    const double* row_upper = lp.row_upper_.data();
+    /* A NaN activity yields a NaN violation, which this test flags. */
+    const auto flagged = [&](std::size_t i) {
+        const double v = std::max(row_lower[i] - activity[i], activity[i] - row_upper[i]);
+        return !(v <= primal_tolerance);
+    };
+
+    bool any_flagged = false;
+    for (std::size_t i = 0; i < m; ++i) {
+        if (flagged(i)) {
+            any_flagged = true;
+            break;
+        }
+    }
+    if (!any_flagged) {
+        return 0.0;
+    }
+
+    /* Accumulates magnitude for the flagged rows in the same order as the
+     * activity, so the result does not depend on how many rows are flagged. */
+    for (std::size_t i = 0; i < m; ++i) {
+        if (flagged(i)) {
+            magnitude[i] = 0.0;
+        }
+    }
+    if (a.isColwise()) {
+        for (HighsInt j = 0; j < lp.num_col_; ++j) {
+            const double x = col_value[j];
+            for (HighsInt k = a.start_[j]; k < a.start_[j + 1]; ++k) {
+                const std::size_t i = static_cast<std::size_t>(a.index_[k]);
+                if (flagged(i)) {
+                    const double term = a.value_[k] * x;
+                    magnitude[i] += std::fabs(term);
+                }
+            }
+        }
+    } else {
+        for (HighsInt i = 0; i < lp.num_row_; ++i) {
+            if (!flagged(static_cast<std::size_t>(i))) {
+                continue;
+            }
+            double mag = 0.0;
+            for (HighsInt k = a.start_[i]; k < a.start_[i + 1]; ++k) {
+                const double term = a.value_[k] * col_value[a.index_[k]];
+                mag += std::fabs(term);
+            }
             magnitude[i] = mag;
         }
     }
 
     double rho = 0.0;
     for (std::size_t i = 0; i < m; ++i) {
-        const double v = std::max(
-            lp.row_lower_[i] - activity[i], activity[i] - lp.row_upper_[i]);
-        if (v > primal_tolerance) {
-            rho = std::max(
-                rho, (v - primal_tolerance) / std::max(1.0, magnitude[i]));
+        if (!flagged(i)) {
+            continue;
+        }
+        const double v = std::max(row_lower[i] - activity[i], activity[i] - row_upper[i]);
+        const double r = (v - primal_tolerance) / std::max(1.0, magnitude[i]);
+        if (!(r <= rho)) {
+            rho = std::isnan(r) ? HUGE_VAL : r;
         }
     }
     return rho;

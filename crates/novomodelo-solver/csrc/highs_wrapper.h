@@ -152,10 +152,11 @@ int32_t novomodelo_highs_set_basis_non_alien(
 );
 
 /** Row excess of col_value against the incumbent LP's rows.
- *  For each row i, writes act_i = sum_j a_ij x_j into activity[i] and
- *  mag_i = sum_j |a_ij x_j| into magnitude[i]. With v_i the bound violation
- *  of act_i and t = primal_tolerance, returns
- *  max(0, max_i (v_i - t) / max(1, mag_i)).
+ *  For each row i, writes act_i = sum_j a_ij x_j into activity[i], and
+ *  writes mag_i = sum_j |a_ij x_j| into magnitude[i] only for rows whose
+ *  violation exceeds the tolerance. With v_i the bound violation of act_i and
+ *  t = primal_tolerance, returns max(0, max_i (v_i - t) / max(1, mag_i)),
+ *  or +infinity when some act_i or that ratio is NaN.
  *  col_value must hold num_col entries; activity and magnitude must hold
  *  num_row entries. Returns 0 without touching the buffers when num_row is
  *  zero or differs from the incumbent LP's row count.

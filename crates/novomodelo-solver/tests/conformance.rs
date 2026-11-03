@@ -1800,3 +1800,29 @@ fn clp_max_row_violation_detects_a_perturbed_solution() {
         "rho {rho:e} != expected {expected:e}"
     );
 }
+
+#[cfg(all(feature = "test-support", feature = "highs"))]
+#[test]
+fn max_row_violation_counts_a_nan_primal_value() {
+    let mut solver = HighsSolver::new().expect("solver");
+    solver.load_model(&make_fixture_stage_template());
+    let mut x = solver.solve(None).expect("solve").primal.to_vec();
+
+    x[2] = f64::NAN;
+    let rho = solver.max_row_violation(&x);
+    assert_eq!(rho, f64::INFINITY, "rho = {rho:e}");
+    assert!(rho > novomodelo_solver::ROW_VIOLATION_RELATIVE_ALLOWANCE);
+}
+
+#[cfg(feature = "clp")]
+#[test]
+fn clp_max_row_violation_counts_a_nan_primal_value() {
+    let mut solver = ClpSolver::new().expect("solver");
+    solver.load_model(&make_fixture_stage_template());
+    let mut x = solver.solve(None).expect("solve").primal.to_vec();
+
+    x[2] = f64::NAN;
+    let rho = solver.max_row_violation(&x);
+    assert_eq!(rho, f64::INFINITY, "rho = {rho:e}");
+    assert!(rho > novomodelo_solver::ROW_VIOLATION_RELATIVE_ALLOWANCE);
+}

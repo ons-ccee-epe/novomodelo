@@ -190,8 +190,9 @@ impl HighsSolver {
         let rho = row_excess(
             self.handle,
             &self.col_value[..self.num_cols],
-            &mut self.row_activity[..self.num_rows],
-            &mut self.row_magnitude[..self.num_rows],
+            &mut self.row_activity,
+            &mut self.row_magnitude,
+            self.num_rows,
             self.accepted_primal_tolerance,
         );
         if counts_as_row_violation(rho) {
@@ -219,8 +220,8 @@ impl HighsSolver {
     /// Returns the row excess of `col_value` against the loaded LP: the largest,
     /// over rows, of `(v_i − t) / max(1, Σ_j |a_ij x_j|)`, floored at 0, where `v_i`
     /// is the row's bound violation and `t` the primal feasibility tolerance under
-    /// the current options (scaled by `2^(−user_bound_scale)`). Returns 0 for an
-    /// LP without rows.
+    /// the current options (scaled by `2^(−user_bound_scale)`). Returns +∞ when a
+    /// row's activity is NaN and 0 for an LP without rows.
     ///
     /// # Panics
     ///
@@ -237,8 +238,9 @@ impl HighsSolver {
         row_excess(
             self.handle,
             col_value,
-            &mut self.row_activity[..self.num_rows],
-            &mut self.row_magnitude[..self.num_rows],
+            &mut self.row_activity,
+            &mut self.row_magnitude,
+            self.num_rows,
             primal_tolerance,
         )
     }
@@ -613,9 +615,19 @@ fn row_excess(
     col_value: &[f64],
     activity: &mut [f64],
     magnitude: &mut [f64],
+    num_rows: usize,
     primal_tolerance: f64,
 ) -> f64 {
-    debug_assert_eq!(activity.len(), magnitude.len());
+    debug_assert_eq!(
+        activity.len(),
+        num_rows,
+        "row activity buffer len != num_rows"
+    );
+    debug_assert_eq!(
+        magnitude.len(),
+        num_rows,
+        "row magnitude buffer len != num_rows"
+    );
     // `load_model` and `add_rows` assert each dimension fits in `i32`, and HiGHS
     // stores the row count as a 32-bit `HighsInt`.
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]

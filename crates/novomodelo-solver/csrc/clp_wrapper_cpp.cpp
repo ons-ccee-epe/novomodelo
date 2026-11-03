@@ -68,12 +68,12 @@ void novomodelo_clp_set_factorization_frequency(void* model, int32_t value) {
 }
 
 double novomodelo_clp_max_row_violation(
-    void*         model,
-    const double* col_value,
-    double*       activity,
-    double*       magnitude,
-    int32_t       num_row,
-    double        primal_tolerance
+    void*                    model,
+    const double* __restrict col_value,
+    double* __restrict       activity,
+    double* __restrict       magnitude,
+    int32_t                  num_row,
+    double                   primal_tolerance
 ) {
     // SAFETY: `model` is a `Clp_Simplex*` wrapper from novomodelo_clp_create(); the
     // real ClpSimplex is `wrapper->model_`. See the file header invariant.
@@ -88,44 +88,92 @@ double novomodelo_clp_max_row_violation(
 
     const std::size_t m = static_cast<std::size_t>(num_row);
     std::fill(activity, activity + m, 0.0);
-    std::fill(magnitude, magnitude + m, 0.0);
 
     const CoinBigIndex* start = a->getVectorStarts();
     const int* length = a->getVectorLengths();
     const int* index = a->getIndices();
     const double* value = a->getElements();
     const int major_dim = a->getMajorDim();
-    if (a->isColOrdered()) {
+    const bool col_ordered = a->isColOrdered();
+    if (col_ordered) {
         for (int j = 0; j < major_dim; ++j) {
             const double x = col_value[j];
             for (CoinBigIndex k = start[j]; k < start[j] + length[j]; ++k) {
                 const double term = value[k] * x;
-                const std::size_t i = static_cast<std::size_t>(index[k]);
-                activity[i] += term;
-                magnitude[i] += std::fabs(term);
+                activity[static_cast<std::size_t>(index[k])] += term;
             }
         }
     } else {
         for (int i = 0; i < major_dim; ++i) {
             double act = 0.0;
-            double mag = 0.0;
             for (CoinBigIndex k = start[i]; k < start[i] + length[i]; ++k) {
                 const double term = value[k] * col_value[index[k]];
                 act += term;
-                mag += std::fabs(term);
             }
             activity[i] = act;
-            magnitude[i] = mag;
         }
     }
 
     const double* row_lower = simplex->rowLower();
     const double* row_upper = simplex->rowUpper();
+    // A NaN activity yields a NaN violation, which this test flags.
+    const auto flagged = [&](std::size_t i) {
+        const double v = std::max(row_lower[i] - activity[i], activity[i] - row_upper[i]);
+        return !(v <= primal_tolerance);
+    };
+
+    bool any_flagged = false;
+    for (std::size_t i = 0; i < m; ++i) {
+        if (flagged(i)) {
+            any_flagged = true;
+            break;
+        }
+    }
+    if (!any_flagged) {
+        return 0.0;
+    }
+
+    // Accumulates magnitude for the flagged rows in the same order as the
+    // activity, so the result does not depend on how many rows are flagged.
+    for (std::size_t i = 0; i < m; ++i) {
+        if (flagged(i)) {
+            magnitude[i] = 0.0;
+        }
+    }
+    if (col_ordered) {
+        for (int j = 0; j < major_dim; ++j) {
+            const double x = col_value[j];
+            for (CoinBigIndex k = start[j]; k < start[j] + length[j]; ++k) {
+                const std::size_t i = static_cast<std::size_t>(index[k]);
+                if (flagged(i)) {
+                    const double term = value[k] * x;
+                    magnitude[i] += std::fabs(term);
+                }
+            }
+        }
+    } else {
+        for (int i = 0; i < major_dim; ++i) {
+            if (!flagged(static_cast<std::size_t>(i))) {
+                continue;
+            }
+            double mag = 0.0;
+            for (CoinBigIndex k = start[i]; k < start[i] + length[i]; ++k) {
+                const double term = value[k] * col_value[index[k]];
+                mag += std::fabs(term);
+            }
+            magnitude[i] = mag;
+        }
+    }
+
     double rho = 0.0;
     for (std::size_t i = 0; i < m; ++i) {
+        if (!flagged(i)) {
+            continue;
+        }
         const double v = std::max(row_lower[i] - activity[i], activity[i] - row_upper[i]);
-        if (v > primal_tolerance) {
-            rho = std::max(rho, (v - primal_tolerance) / std::max(1.0, magnitude[i]));
+        const double r = (v - primal_tolerance) / std::max(1.0, magnitude[i]);
+        if (!(r <= rho)) {
+            rho = std::isnan(r) ? HUGE_VAL : r;
         }
     }
     return rho;

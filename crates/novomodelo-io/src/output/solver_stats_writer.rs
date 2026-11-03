@@ -53,7 +53,8 @@ pub struct SolverStatsRow {
     /// Solves that exhausted all retry levels.
     pub lp_failures: u32,
     /// Solves whose returned primal solution misses a row bound by more than
-    /// the primal feasibility tolerance plus the relative allowance.
+    /// the primal feasibility tolerance plus 1e-11 times the row's magnitude
+    /// `Σ|a_ij·x_j|` (taken as at least 1).
     pub lp_row_violations: u32,
     /// Total retry attempts across all retried solves.
     pub retry_attempts: u32,
