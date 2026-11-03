@@ -128,9 +128,9 @@ Rules that follow:
   silently.
 
   ```bash
-  cargo nextest run -p novomodelo-sddp --features slow-tests --test parity \
+  cargo nextest run -p novomodelo-sddp --features "slow-tests test-support" --test parity \
     -E 'test(parity_regen)' --run-ignored ignored-only
-  cargo nextest run -p novomodelo-sddp --no-default-features --features "clp slow-tests" \
+  cargo nextest run -p novomodelo-sddp --no-default-features --features "clp slow-tests test-support" \
     --test parity -E 'test(parity_regen)' --run-ignored ignored-only
   ```
 
