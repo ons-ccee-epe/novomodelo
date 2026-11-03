@@ -589,12 +589,12 @@ fn boundary_injection_transit_bucket_blends_on_identical_arrival_interval() {
 /// mismatched-calendar transit boundary, unlike
 /// `boundary_injection_transit_bucket_blends_on_identical_arrival_interval`'s
 /// matching-interval case — when the `BoundaryInjection` load runs, then the
-/// loaded coefficient equals the source coefficient scaled by the target's
-/// own span over the source's own span: the target draws the source's
-/// density over its own overlapping hours. The report still tallies the
-/// slot as a fully-covered `fan_out`, never `straddling`.
+/// loaded coefficient equals the source coefficient: a held volume takes its
+/// `overlap / H_target` share, `1.0` for a target inside one source bucket.
+/// The report still tallies the slot as a fully-covered `fan_out`, never
+/// `straddling`.
 #[test]
-fn boundary_injection_transit_bucket_blends_at_fractional_source_hours() {
+fn boundary_injection_transit_bucket_takes_its_target_hours_share() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let source_start = ymd(2026, 4, 1);
     let source_end = ymd(2026, 5, 1);
@@ -626,14 +626,11 @@ fn boundary_injection_transit_bucket_blends_at_fractional_source_hours() {
 
     assert_eq!(cuts.len(), 1);
 
-    let source_span_hours = (source_end - source_start).num_days() as f64 * 24.0;
-    let target_span_hours = (target_end - target_start).num_days() as f64 * 24.0;
-    let expected = source_coeff * target_span_hours / source_span_hours;
+    let expected = source_coeff;
     let actual = cuts[0].coefficients[0];
     assert!(
         (actual - expected).abs() < expected.abs() * 1e-9,
-        "coefficient {actual} != expected {expected} (source_coeff * target_span_hours / \
-         source_span_hours)"
+        "coefficient {actual} != expected {expected} (source_coeff, the full target-hours share)"
     );
 
     let report = cuts.report();

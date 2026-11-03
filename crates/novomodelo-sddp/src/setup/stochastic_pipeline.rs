@@ -1777,9 +1777,10 @@ mod tests {
         let par_lp = PrecomputedPar::build(system.inflow_models(), &study_stages, &hydro_ids, None)
             .expect("PrecomputedPar must build");
         let thermal = crate::time_value::DeliveryCalendar::thermal(&system);
-        let water = crate::time_value::DeliveryCalendar::water(&system);
+        let basis = crate::time_value::WaterDeliveryBasis::of(&system);
+        let water = crate::time_value::DeliveryCalendar::water(&system, basis);
         let topology =
-            crate::bucket_topology::build_transit_bucket_topology(&system, &water, false);
+            crate::bucket_topology::build_transit_bucket_topology(&system, &water, basis, false);
         let layout = crate::setup::resolve_state_layout(
             &system,
             &thermal,

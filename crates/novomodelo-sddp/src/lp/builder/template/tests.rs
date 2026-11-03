@@ -17,6 +17,7 @@ use novomodelo_core::{
     PostStudyThermalBound, PumpingBlockBounds, PumpingStation, ResolvedBounds, ResolvedNcsBounds,
     ResolvedNcsFactors, ResolvedPenalties, ScenarioSourceConfig, Stage, StageRiskConfig,
     StageStateConfig, SystemBuilder, Thermal, ThermalBlockBounds, ThermalStageBounds,
+    WaterBucketStages,
 };
 use novomodelo_stochastic::PrecomputedNormal;
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
@@ -2581,7 +2582,7 @@ fn theta_discount_lands_on_the_state_theta_column_with_anticipated_thermals() {
 /// the per-thermal cost/bounds lookup.
 fn two_post_study_stages() -> PostStudyStages {
     PostStudyStages {
-        stages: vec![
+        thermal_stages: vec![
             PostStudyStage {
                 start_date: NaiveDate::from_ymd_opt(2024, 4, 1).unwrap(),
                 duration_hours: 720.0,
@@ -2592,6 +2593,7 @@ fn two_post_study_stages() -> PostStudyStages {
             },
         ],
         thermal_bounds: vec![],
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     }
 }
 
@@ -2742,7 +2744,7 @@ fn delivery_vectors_read_the_post_study_element_at_its_delivery_index() {
 
     assert_eq!(
         ctx.time_value.delivery_total_hours(3),
-        post_study.stages[0].duration_hours
+        post_study.thermal_stages[0].duration_hours
     );
     assert_eq!(
         ctx.time_value.relative_delivery_discount(0, 3),
@@ -2802,7 +2804,7 @@ fn delivery_cumulative_discount_matches_recomputed_extended_horizon() {
         annual_discount_rate: system.policy_graph().annual_discount_rate,
         ..novomodelo_core::HorizonGraph::default()
     };
-    let calendar_stages = post_study_calendar_stages(&post_study.stages);
+    let calendar_stages = post_study_calendar_stages(&post_study.thermal_stages);
     let calendar_stage_refs: Vec<_> = calendar_stages.iter().collect();
     let per_stage_post = compute_per_stage_discount_factors(&calendar_stage_refs, &rate_graph);
 
@@ -2976,8 +2978,9 @@ fn build_post_study_resolved_for(
     let system = system_with_anticipated_thermals_and_post_study(
         two_anticipated_thermals(ids),
         PostStudyStages {
-            stages: three_post_study_stages(),
+            thermal_stages: three_post_study_stages(),
             thermal_bounds,
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         },
     );
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);

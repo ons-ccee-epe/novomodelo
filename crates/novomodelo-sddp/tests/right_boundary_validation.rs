@@ -41,7 +41,7 @@ use novomodelo_core::{
     AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId,
     HydroBlockBounds, HydroStageBounds, InitialConditions, LineBlockBounds, PostStudyStage,
     PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds, System,
-    SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+    SystemBuilder, ThermalBlockBounds, ThermalStageBounds, WaterBucketStages,
 };
 use novomodelo_sddp::indexer::CutStateProjection;
 use novomodelo_sddp::setup::{NodeId, StageIdx};
@@ -140,7 +140,7 @@ fn stages() -> Vec<novomodelo_core::temporal::Stage> {
 /// bound comes SOLELY from `post_study_stages.json`'s own table.
 fn post_study_stages(v: f64) -> PostStudyStages {
     PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: study_end(),
             duration_hours: POST_STUDY_HOURS,
         }],
@@ -151,6 +151,7 @@ fn post_study_stages(v: f64) -> PostStudyStages {
             min_mw: v,
             max_mw: v,
         }],
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     }
 }
 

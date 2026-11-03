@@ -29,7 +29,7 @@ use crate::lp::indexer::{
     for_each_live_commitment_slot,
 };
 use crate::setup::{NodeGraph, extended_delivery_stages};
-use crate::time_value::DeliveryCalendar;
+use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 use crate::training::training::CheckpointBasisStore;
 use crate::workspace::CapturedBasis;
 
@@ -110,7 +110,7 @@ pub fn build_stage_entity_manifest(
     stage_id: i32,
 ) -> Vec<EntitySlot> {
     let thermal = DeliveryCalendar::thermal(system);
-    let water = DeliveryCalendar::water(system);
+    let water = DeliveryCalendar::water(system, WaterDeliveryBasis::of(system));
     build_stage_entity_manifest_dated(
         system,
         global_layout,
@@ -806,6 +806,7 @@ mod tests {
         AnticipatedConfig, Block, BlockMode, Bus, DeficitSegment, EntityId, Hydro,
         HydroGenerationModel, HydroPenalties, NoiseMethod, PostStudyStage, PostStudyStages,
         ScenarioSourceConfig, Stage, StageRiskConfig, System, SystemBuilder, Thermal,
+        WaterBucketStages,
         resolved::{
             BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds,
             HydroStageBounds, LineBlockBounds, PumpingBlockBounds, ResolvedBounds,
@@ -1006,11 +1007,12 @@ mod tests {
     /// post-study delivery target on the anticipated ring.
     fn post_study_stages_from(start_date: chrono::NaiveDate) -> PostStudyStages {
         PostStudyStages {
-            stages: vec![PostStudyStage {
+            thermal_stages: vec![PostStudyStage {
                 start_date,
                 duration_hours: 720.0,
             }],
             thermal_bounds: Vec::new(),
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         }
     }
 
@@ -1228,9 +1230,9 @@ mod tests {
     #[test]
     fn manifest_dates_ring_slots_from_thermal_and_buckets_from_water_calendar() {
         let thermal_post_study =
-            post_study_calendar_stages(&post_study_stages_from_months(&[(2024, 3)]).stages);
+            post_study_calendar_stages(&post_study_stages_from_months(&[(2024, 3)]).thermal_stages);
         let water_post_study =
-            post_study_calendar_stages(&post_study_stages_from_months(&[(2024, 5)]).stages);
+            post_study_calendar_stages(&post_study_stages_from_months(&[(2024, 5)]).thermal_stages);
         let system = system_2h_1ant((None, None), (None, None), None);
         let plants = AnticipatedPlants::build(system.thermals());
 
@@ -1753,7 +1755,7 @@ mod tests {
     /// A post-study calendar of consecutive `(year, month)` monthly stages.
     fn post_study_stages_from_months(months: &[(i32, u32)]) -> PostStudyStages {
         PostStudyStages {
-            stages: months
+            thermal_stages: months
                 .iter()
                 .map(|&(year, month)| PostStudyStage {
                     start_date: chrono::NaiveDate::from_ymd_opt(year, month, 1).unwrap(),
@@ -1761,6 +1763,7 @@ mod tests {
                 })
                 .collect(),
             thermal_bounds: Vec::new(),
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         }
     }
 

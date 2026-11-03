@@ -89,7 +89,7 @@ use std::path::Path;
 
 use novomodelo_core::{
     AnticipatedConfig, EntityId, Hydro, HydroPastDefluence, ScalarParameter, Stage, StageId,
-    System, Thermal,
+    System, Thermal, deepest_uncovered_travel_time_arc,
     scenario::{SamplingScheme, ScenarioSource},
 };
 use novomodelo_io::StageIdResolver;
@@ -123,7 +123,7 @@ use crate::{
     simulation::EntityCounts,
     simulation::extraction::TransitSeedArc,
     stopping_rule::{StopDecision, StopMask, StoppingRule, StoppingRuleSet},
-    time_value::{DeliveryCalendar, TimeValue},
+    time_value::{DeliveryCalendar, TimeValue, WaterDeliveryBasis},
     training::LoadedPolicy,
 };
 
@@ -1247,16 +1247,29 @@ pub(crate) fn resolve_state_layout(
 ///
 /// # Errors
 ///
-/// Propagates [`resolve_state_layout`]'s `LeadTime` fan-out rejection.
+/// [`SddpError::Validation`] when a declared water calendar is shorter than the
+/// deepest travel-time arc, checked before the topology is built; otherwise
+/// propagates [`resolve_state_layout`]'s `LeadTime` fan-out rejection.
 pub(crate) fn resolve_state_and_topology(
     system: &System,
     thermal: &DeliveryCalendar,
     water: &DeliveryCalendar,
+    basis: WaterDeliveryBasis<'_>,
     par_lp: &PrecomputedPar,
     inflow_lag_depth: Option<u32>,
     boundary_present: bool,
 ) -> Result<(bucket_topology::TransitBucketTopology, ResolvedStateLayout), SddpError> {
-    let topology = bucket_topology::build_transit_bucket_topology(system, water, boundary_present);
+    if let WaterDeliveryBasis::Declared(water_stages) = basis
+        && let Some(arc) = deepest_uncovered_travel_time_arc(system.hydros(), water_stages)
+    {
+        return Err(SddpError::Validation(format!(
+            "hydro {} declares a travel time of {} h but the declared water_bucket_stages span \
+             {} h; water_bucket_stages must cover the deepest travel time",
+            arc.hydro_id, arc.travel_time_hours, arc.declared_hours
+        )));
+    }
+    let topology =
+        bucket_topology::build_transit_bucket_topology(system, water, basis, boundary_present);
     let layout = resolve_state_layout(system, thermal, par_lp, &topology, inflow_lag_depth)?;
     Ok((topology, layout))
 }
@@ -1898,11 +1911,13 @@ fn resolve_stage_data(
     hydro_models: &PrepareHydroModelsResult,
 ) -> Result<ResolvedStageInputs, SddpError> {
     let thermal = DeliveryCalendar::thermal(system);
-    let water = DeliveryCalendar::water(system);
+    let basis = WaterDeliveryBasis::of(system);
+    let water = DeliveryCalendar::water(system, basis);
     let (transit_bucket_topology, layout) = resolve_state_and_topology(
         system,
         &thermal,
         &water,
+        basis,
         stochastic.par(),
         config.boundary.inflow_lag_depth(),
         config.boundary.is_present(),
@@ -3090,7 +3105,7 @@ mod transit_seed_round_trip_tests {
     use crate::bucket_topology;
     use crate::simulation::extraction::build_transit_seed;
     use crate::simulation::types::{SimulationHydroResult, SimulationStageResult};
-    use crate::time_value::DeliveryCalendar;
+    use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 
     fn date(y: i32, m: u32, d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, d).unwrap_or_else(|| unreachable!("hardcoded date is valid"))
@@ -3337,9 +3352,10 @@ mod transit_seed_round_trip_tests {
                 })
                 .collect(),
         );
-        let calendar_b = DeliveryCalendar::water(&system_b);
+        let basis_b = WaterDeliveryBasis::of(&system_b);
+        let calendar_b = DeliveryCalendar::water(&system_b, basis_b);
         let topology_b =
-            bucket_topology::build_transit_bucket_topology(&system_b, &calendar_b, false);
+            bucket_topology::build_transit_bucket_topology(&system_b, &calendar_b, basis_b, false);
         let state_b = crate::test_support::bucket_seed_state(&system_b, &topology_b);
         let seed_from_emission =
             build_initial_transit_bucket_state(&system_b, &topology_b, &state_b);
@@ -3363,10 +3379,12 @@ mod transit_seed_round_trip_tests {
                 },
             ],
         );
-        let calendar_reference = DeliveryCalendar::water(&system_reference);
+        let basis_reference = WaterDeliveryBasis::of(&system_reference);
+        let calendar_reference = DeliveryCalendar::water(&system_reference, basis_reference);
         let topology_reference = bucket_topology::build_transit_bucket_topology(
             &system_reference,
             &calendar_reference,
+            basis_reference,
             false,
         );
         let state_reference =

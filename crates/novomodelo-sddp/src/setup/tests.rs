@@ -9,7 +9,7 @@ use crate::hydro_models::{PrepareHydroModelsResult, ProductionModelSet, Resolved
 use crate::lp::builder::StageGeometry;
 use crate::lp::indexer::{AnticipatedPlants, StateSpace, ThermalSys};
 use crate::test_support;
-use crate::time_value::DeliveryCalendar;
+use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 use novomodelo_io::test_support::owned_piece_defaults;
 use novomodelo_stochastic::ExternalScenarioLibrary;
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
@@ -25,7 +25,7 @@ use novomodelo_core::{
 };
 use novomodelo_core::{
     ContractType, EnergyContract, EntityId, HorizonGraph, HydroPastDefluence, InitialConditions,
-    PostStudyStage, PostStudyStages, System, SystemBuilder,
+    PostStudyStage, PostStudyStages, System, SystemBuilder, WaterBucketStages,
     entities::{
         bus::{Bus, DeficitSegment},
         hydro::{Hydro, HydroGenerationModel},
@@ -4683,11 +4683,12 @@ fn bug_doc_reproduction_past_commits() -> Vec<novomodelo_core::AnticipatedCommit
 /// pins `resolution.anchored_depth() == 4` and `lead_stages == [4]` for this exact shape.
 fn bug_doc_reproduction_system() -> novomodelo_core::System {
     let post_study = PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: NaiveDate::from_ymd_opt(2024, 2, 18).unwrap(),
             duration_hours: 648.0,
         }],
         thermal_bounds: Vec::new(),
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
     minimal_system_with_anticipated_and_commitments(
         &[168.0, 168.0, 168.0, 648.0],
@@ -7349,11 +7350,12 @@ fn test_anticipated_resolve_point_fanout_calendar() {
 #[test]
 fn resolve_anticipated_commitments_widens_lead_time_plant_lead_to_the_ring_depth() {
     let post_study = PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: NaiveDate::from_ymd_opt(2024, 2, 18).unwrap(),
             duration_hours: 648.0,
         }],
         thermal_bounds: Vec::new(),
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
     let system = minimal_system_with_anticipated(
         &[168.0, 168.0, 168.0, 648.0],
@@ -7475,8 +7477,10 @@ fn state_space_build_matches_the_loose_constructor() {
         .build()
         .expect("valid system");
 
-    let calendar = DeliveryCalendar::water(&system);
-    let topology = crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, false);
+    let basis = WaterDeliveryBasis::of(&system);
+    let calendar = DeliveryCalendar::water(&system, basis);
+    let topology =
+        crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, basis, false);
     let anticipated_plants = AnticipatedPlants::build(system.thermals());
     let leads = vec![2; anticipated_plants.len()];
     let n_stages = leads.iter().copied().max().unwrap_or(0) + 2;
@@ -8865,7 +8869,7 @@ fn warn_on_sub_stage_lead_emits_once_per_self_delivered_stage() {
 #[test]
 fn resolve_anticipated_commitments_core_reports_the_extended_delivery_width() {
     let post_study = PostStudyStages {
-        stages: vec![
+        thermal_stages: vec![
             PostStudyStage {
                 start_date: NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
                 duration_hours: 744.0,
@@ -8876,6 +8880,7 @@ fn resolve_anticipated_commitments_core_reports_the_extended_delivery_width() {
             },
         ],
         thermal_bounds: Vec::new(),
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
     let system = minimal_system_with_anticipated(
         &[744.0, 744.0],
@@ -8929,11 +8934,12 @@ fn resolve_anticipated_commitments_core_matches_study_only_width_without_post_st
 #[test]
 fn warn_on_boundary_absent_post_study_delivery_fires_once_when_boundary_absent() {
     let post_study = PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
             duration_hours: 744.0,
         }],
         thermal_bounds: Vec::new(),
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
     let system = minimal_system_with_anticipated(
         &[744.0, 744.0],
@@ -8980,11 +8986,12 @@ fn warn_on_boundary_absent_post_study_delivery_fires_once_when_boundary_absent()
 #[test]
 fn warn_on_boundary_absent_post_study_delivery_silent_when_boundary_present() {
     let post_study = PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
             duration_hours: 744.0,
         }],
         thermal_bounds: Vec::new(),
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
     let system = minimal_system_with_anticipated(
         &[744.0, 744.0],
@@ -9123,11 +9130,12 @@ fn warn_on_boundary_absent_names_dual_cause_plant_once() {
     use novomodelo_core::AnticipatedCommitmentHistory;
 
     let post_study = PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
             duration_hours: 744.0,
         }],
         thermal_bounds: Vec::new(),
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
     let system = minimal_system_with_anticipated_and_commitments(
         &[744.0, 744.0],
@@ -10799,8 +10807,10 @@ fn test_single_arc_unroll_matches_ac1() {
         vec![bucket_seed_defluence_window(2, 0.0, 24.0, 100.0)],
     );
 
-    let calendar = DeliveryCalendar::water(&system);
-    let topology = crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, false);
+    let basis = WaterDeliveryBasis::of(&system);
+    let calendar = DeliveryCalendar::water(&system, basis);
+    let topology =
+        crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, basis, false);
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     assert_eq!(
         state
@@ -10840,8 +10850,10 @@ fn test_mid_horizon_entrant_zero_history_zero_seeds_stage_0_transit_buckets() {
         vec![bucket_seed_defluence_window(2, 0.0, 24.0, 0.0)],
     );
 
-    let calendar = DeliveryCalendar::water(&system);
-    let topology = crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, false);
+    let basis = WaterDeliveryBasis::of(&system);
+    let calendar = DeliveryCalendar::water(&system, basis);
+    let topology =
+        crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, basis, false);
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     assert_eq!(
         state
@@ -10877,8 +10889,10 @@ fn test_confluence_aggregates_two_upstreams_into_shared_transit_buckets() {
         ],
     );
 
-    let calendar = DeliveryCalendar::water(&system);
-    let topology = crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, false);
+    let basis = WaterDeliveryBasis::of(&system);
+    let calendar = DeliveryCalendar::water(&system, basis);
+    let topology =
+        crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, basis, false);
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     assert_eq!(
         state
@@ -10932,12 +10946,22 @@ fn test_seed_is_declaration_order_invariant() {
         defluences,
     );
 
-    let calendar_a = DeliveryCalendar::water(&system_a);
-    let calendar_b = DeliveryCalendar::water(&system_b);
-    let topology_a =
-        crate::bucket_topology::build_transit_bucket_topology(&system_a, &calendar_a, false);
-    let topology_b =
-        crate::bucket_topology::build_transit_bucket_topology(&system_b, &calendar_b, false);
+    let basis_a = WaterDeliveryBasis::of(&system_a);
+    let calendar_a = DeliveryCalendar::water(&system_a, basis_a);
+    let basis_b = WaterDeliveryBasis::of(&system_b);
+    let calendar_b = DeliveryCalendar::water(&system_b, basis_b);
+    let topology_a = crate::bucket_topology::build_transit_bucket_topology(
+        &system_a,
+        &calendar_a,
+        basis_a,
+        false,
+    );
+    let topology_b = crate::bucket_topology::build_transit_bucket_topology(
+        &system_b,
+        &calendar_b,
+        basis_b,
+        false,
+    );
     let state_a = crate::test_support::bucket_seed_state(&system_a, &topology_a);
     let state_b = crate::test_support::bucket_seed_state(&system_b, &topology_b);
     let seed_a = super::build_initial_transit_bucket_state(&system_a, &topology_a, &state_a);
@@ -10960,8 +10984,10 @@ fn test_seed_len_matches_n_buckets() {
         bucket_seed_study_stages(4, 12.0),
         vec![bucket_seed_defluence_window(2, 0.0, 24.0, 100.0)],
     );
-    let calendar = DeliveryCalendar::water(&system);
-    let topology = crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, false);
+    let basis = WaterDeliveryBasis::of(&system);
+    let calendar = DeliveryCalendar::water(&system, basis);
+    let topology =
+        crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, basis, false);
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     let seed = super::build_initial_transit_bucket_state(&system, &topology, &state);
     assert_eq!(seed.len(), topology.n_buckets());
@@ -10972,10 +10998,12 @@ fn test_seed_len_matches_n_buckets() {
         bucket_seed_study_stages(3, 24.0),
         vec![],
     );
-    let no_arc_calendar = DeliveryCalendar::water(&no_arc_system);
+    let basis_no_arc = WaterDeliveryBasis::of(&no_arc_system);
+    let no_arc_calendar = DeliveryCalendar::water(&no_arc_system, basis_no_arc);
     let no_arc_topology = crate::bucket_topology::build_transit_bucket_topology(
         &no_arc_system,
         &no_arc_calendar,
+        basis_no_arc,
         false,
     );
     assert_eq!(no_arc_topology.n_buckets(), 0);
@@ -11007,9 +11035,14 @@ fn test_gapped_windows_contribute_additively() {
         ],
     );
 
-    let delivery_calendar = DeliveryCalendar::water(&system);
-    let topology =
-        crate::bucket_topology::build_transit_bucket_topology(&system, &delivery_calendar, false);
+    let basis = WaterDeliveryBasis::of(&system);
+    let delivery_calendar = DeliveryCalendar::water(&system, basis);
+    let topology = crate::bucket_topology::build_transit_bucket_topology(
+        &system,
+        &delivery_calendar,
+        basis,
+        false,
+    );
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     let seed = super::build_initial_transit_bucket_state(&system, &topology, &state);
 
@@ -11040,6 +11073,94 @@ fn test_gapped_windows_contribute_additively() {
             "bucket {idx}: gapped windows must contribute additively, got {got} vs expected {want}"
         );
     }
+}
+
+// ── resolve_state_and_topology: declared water calendar coverage ────────────
+
+const SHORT_POST_STUDY_HOURS: [f64; 2] = [168.0, 167.0];
+
+fn post_study_stage_hours(hours: &[f64]) -> Vec<PostStudyStage> {
+    hours
+        .iter()
+        .zip(0_i64..)
+        .map(|(&duration_hours, week)| PostStudyStage {
+            start_date: bucket_seed_date(2024, 1, 5) + Duration::weeks(week),
+            duration_hours,
+        })
+        .collect()
+}
+
+/// Hydro 2 declares a 336 h arc into hydro 1. The thermal calendar is
+/// [`SHORT_POST_STUDY_HOURS`], one hour short of it; the water calendar is
+/// `declared_water_hours` when given, else the thermal one.
+fn system_with_water_arc(declared_water_hours: Option<&[f64]>) -> System {
+    SystemBuilder::new()
+        .buses(vec![Bus {
+            id: EntityId(1),
+            name: "B1".to_string(),
+            operational_start_date: bucket_seed_date(2024, 1, 1),
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 500.0,
+            }],
+            excess_cost: 0.0,
+        }])
+        .hydros(vec![
+            bucket_seed_hydro(1, None, None),
+            bucket_seed_hydro(2, Some(1), Some(336.0)),
+        ])
+        .stages(bucket_seed_study_stages(4, 168.0))
+        .post_study_stages(Some(PostStudyStages {
+            thermal_stages: post_study_stage_hours(&SHORT_POST_STUDY_HOURS),
+            thermal_bounds: Vec::new(),
+            water_bucket_stages: declared_water_hours
+                .map_or(WaterBucketStages::FromThermalStages, |hours| {
+                    WaterBucketStages::Declared(post_study_stage_hours(hours))
+                }),
+        }))
+        .build()
+        .expect("valid system")
+}
+
+fn resolve_water_arc_system(system: &System) -> Result<(), SddpError> {
+    let basis = WaterDeliveryBasis::of(system);
+    super::resolve_state_and_topology(
+        system,
+        &DeliveryCalendar::thermal(system),
+        &DeliveryCalendar::water(system, basis),
+        basis,
+        &PrecomputedPar::default(),
+        None,
+        false,
+    )
+    .map(|_| ())
+}
+
+#[test]
+fn resolve_state_and_topology_refuses_uncovered_declared_water_calendar() {
+    let system = system_with_water_arc(Some(&SHORT_POST_STUDY_HOURS));
+
+    let result = resolve_water_arc_system(&system);
+    let Err(SddpError::Validation(msg)) = result else {
+        panic!("expected a Validation refusal, got {result:?}");
+    };
+    assert!(msg.contains("hydro 2 "), "{msg}");
+    assert!(msg.contains("336 h"), "{msg}");
+    assert!(msg.contains("335 h"), "{msg}");
+}
+
+#[test]
+fn resolve_state_and_topology_accepts_covering_declared_water_calendar() {
+    let system = system_with_water_arc(Some(&[168.0, 168.0]));
+
+    resolve_water_arc_system(&system).expect("a calendar spanning the travel time resolves");
+}
+
+#[test]
+fn resolve_state_and_topology_pads_a_short_legacy_water_calendar() {
+    let system = system_with_water_arc(None);
+
+    resolve_water_arc_system(&system).expect("the legacy calendar is padded, not refused");
 }
 
 // ── study_horizon_end ───────────────────────────────────────────────────────

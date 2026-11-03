@@ -3,6 +3,7 @@
 
 use novomodelo_core::{
     EntityId, HorizonGraph, PostStudyStage, PostStudyStages, PostStudyThermalBound, Stage, System,
+    WaterBucketStages,
 };
 use novomodelo_stochastic::season_cast::post_study_calendar_stages;
 
@@ -219,7 +220,7 @@ pub(crate) fn resolve_post_study_artifacts(
     let Some(post_study) = post_study else {
         return PostStudyResolved::default();
     };
-    if post_study.stages.is_empty() {
+    if post_study.thermal_stages.is_empty() {
         return PostStudyResolved::default();
     }
 
@@ -270,6 +271,26 @@ pub(crate) fn resolve_post_study_artifacts(
     }
 }
 
+/// Which water calendar a deck carries. `Declared` is a water calendar used
+/// exactly; `Legacy` is a deck without a declared water calendar, whose water
+/// calendar is the thermal calendar, padded by the bucket topology. Resolved
+/// once per study from the [`System`] by [`Self::of`], passed by value and
+/// never stored on a digested struct.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum WaterDeliveryBasis<'a> {
+    Declared(&'a [PostStudyStage]),
+    Legacy,
+}
+
+impl<'a> WaterDeliveryBasis<'a> {
+    pub(crate) fn of(system: &'a System) -> Self {
+        match system.post_study_stages().map(|p| &p.water_bucket_stages) {
+            Some(WaterBucketStages::Declared(w)) => Self::Declared(w),
+            Some(WaterBucketStages::FromThermalStages) | None => Self::Legacy,
+        }
+    }
+}
+
 /// The delivery axis — study stages then post-study stages. Kind-neutral:
 /// setup builds one per delivery kind ([`Self::thermal`], [`Self::water`]),
 /// once each, and every consumer borrows the one of its kind. Stores no
@@ -291,18 +312,20 @@ impl DeliveryCalendar {
     pub(crate) fn thermal(system: &System) -> Self {
         Self::from_post_study(
             system,
-            system.post_study_stages().map(|p| p.stages.as_slice()),
+            system
+                .post_study_stages()
+                .map(|p| p.thermal_stages.as_slice()),
         )
     }
 
     /// The water calendar, read only by
     /// `crate::bucket_topology::build_transit_bucket_topology`; never stored in
     /// [`TimeValue`].
-    pub(crate) fn water(system: &System) -> Self {
-        Self::from_post_study(
-            system,
-            system.post_study_stages().map(|p| p.stages.as_slice()),
-        )
+    pub(crate) fn water(system: &System, basis: WaterDeliveryBasis<'_>) -> Self {
+        match basis {
+            WaterDeliveryBasis::Declared(water) => Self::from_post_study(system, Some(water)),
+            WaterDeliveryBasis::Legacy => Self::thermal(system),
+        }
     }
 
     /// The study stages' (`id >= 0`) total hours, each `post_study` stage's own
@@ -637,9 +660,12 @@ impl TimeValue {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeliveryCalendar, PostStudyResolved, PostStudyStages, TimeValue, stage};
+    use super::{
+        DeliveryCalendar, PostStudyResolved, PostStudyStages, TimeValue, WaterBucketStages,
+        WaterDeliveryBasis, stage,
+    };
     use crate::test_support::ymd;
-    use novomodelo_core::{Block, PostStudyStage, SystemBuilder};
+    use novomodelo_core::{Block, PostStudyStage, Stage, SystemBuilder};
 
     fn fixture() -> Vec<f64> {
         vec![1.0, 0.9, 0.81, 0.729]
@@ -701,11 +727,7 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
-    /// The new owner: `DeliveryCalendar` splits a deck's study
-    /// and post-study hours into disjoint prefix/suffix slices, and the split
-    /// point matches `n_study`/`n_post`.
-    #[test]
-    fn delivery_calendar_splits_study_and_post_study_hours() {
+    fn two_study_stages() -> Vec<Stage> {
         let mut s0 = stage(0, ymd(2024, 1, 1), ymd(2024, 2, 1));
         s0.blocks = vec![Block {
             index: 0,
@@ -718,10 +740,14 @@ mod tests {
             name: "BLK0".to_string(),
             duration_hours: 696.0,
         }];
-        let system = SystemBuilder::new()
-            .stages(vec![s0, s1])
+        vec![s0, s1]
+    }
+
+    fn system_with_post_study(water_bucket_stages: WaterBucketStages) -> novomodelo_core::System {
+        SystemBuilder::new()
+            .stages(two_study_stages())
             .post_study_stages(Some(PostStudyStages {
-                stages: vec![
+                thermal_stages: vec![
                     PostStudyStage {
                         start_date: ymd(2024, 3, 1),
                         duration_hours: 720.0,
@@ -732,9 +758,18 @@ mod tests {
                     },
                 ],
                 thermal_bounds: vec![],
+                water_bucket_stages,
             }))
             .build()
-            .expect("two-study-stage, two-post-study-stage system must build");
+            .expect("two-study-stage, two-post-study-stage system must build")
+    }
+
+    /// The new owner: `DeliveryCalendar` splits a deck's study
+    /// and post-study hours into disjoint prefix/suffix slices, and the split
+    /// point matches `n_study`/`n_post`.
+    #[test]
+    fn delivery_calendar_splits_study_and_post_study_hours() {
+        let system = system_with_post_study(WaterBucketStages::FromThermalStages);
 
         let calendar = DeliveryCalendar::thermal(&system);
 
@@ -743,6 +778,66 @@ mod tests {
         assert_eq!(calendar.n_delivery(), 4);
         assert_eq!(calendar.study_total_hours(), &[744.0, 696.0]);
         assert_eq!(calendar.post_study_total_hours(), &[720.0, 744.0]);
+    }
+
+    #[test]
+    fn water_calendar_reads_the_declared_list_and_otherwise_the_thermal_stages() {
+        let from_thermal = system_with_post_study(WaterBucketStages::FromThermalStages);
+        assert_eq!(
+            DeliveryCalendar::water(&from_thermal, WaterDeliveryBasis::of(&from_thermal))
+                .post_study_total_hours(),
+            &[720.0, 744.0]
+        );
+
+        let declared = system_with_post_study(WaterBucketStages::Declared(vec![PostStudyStage {
+            start_date: ymd(2024, 3, 1),
+            duration_hours: 168.0,
+        }]));
+        assert_eq!(
+            DeliveryCalendar::water(&declared, WaterDeliveryBasis::of(&declared))
+                .post_study_total_hours(),
+            &[168.0]
+        );
+        assert_eq!(
+            DeliveryCalendar::thermal(&declared).post_study_total_hours(),
+            &[720.0, 744.0]
+        );
+    }
+
+    #[test]
+    fn water_delivery_basis_maps_absent_and_from_thermal_stages_to_legacy() {
+        let absent = SystemBuilder::new()
+            .stages(two_study_stages())
+            .build()
+            .expect("a system without a post-study carrier must build");
+        assert_eq!(WaterDeliveryBasis::of(&absent), WaterDeliveryBasis::Legacy);
+
+        let from_thermal = system_with_post_study(WaterBucketStages::FromThermalStages);
+        assert_eq!(
+            WaterDeliveryBasis::of(&from_thermal),
+            WaterDeliveryBasis::Legacy
+        );
+
+        let declared_stages = vec![PostStudyStage {
+            start_date: ymd(2024, 3, 1),
+            duration_hours: 168.0,
+        }];
+        let declared = system_with_post_study(WaterBucketStages::Declared(declared_stages.clone()));
+        assert_eq!(
+            WaterDeliveryBasis::of(&declared),
+            WaterDeliveryBasis::Declared(&declared_stages)
+        );
+    }
+
+    #[test]
+    fn legacy_water_calendar_equals_thermal_calendar() {
+        let system = system_with_post_study(WaterBucketStages::FromThermalStages);
+
+        let water = DeliveryCalendar::water(&system, WaterDeliveryBasis::of(&system));
+        let thermal = DeliveryCalendar::thermal(&system);
+
+        assert_eq!(water.total_hours(), thermal.total_hours());
+        assert_eq!(water.post_study_stages(), thermal.post_study_stages());
     }
 }
 
@@ -836,12 +931,13 @@ mod post_study_resolution_tests {
     use chrono::NaiveDate;
     use novomodelo_core::{
         EntityId, HorizonGraph, PostStudyStage, PostStudyStages, PostStudyThermalBound,
+        WaterBucketStages,
     };
     use novomodelo_stochastic::season_cast::post_study_calendar_stages;
 
     fn two_stage_post_study() -> PostStudyStages {
         PostStudyStages {
-            stages: vec![
+            thermal_stages: vec![
                 PostStudyStage {
                     start_date: NaiveDate::from_ymd_opt(2026, 11, 1)
                         .unwrap_or_else(|| unreachable!("hardcoded date is valid")),
@@ -869,6 +965,7 @@ mod post_study_resolution_tests {
                     max_mw: 300.0,
                 },
             ],
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         }
     }
 
@@ -882,8 +979,9 @@ mod post_study_resolution_tests {
     #[test]
     fn post_study_with_no_stages_returns_default() {
         let empty = PostStudyStages {
-            stages: Vec::new(),
+            thermal_stages: Vec::new(),
             thermal_bounds: Vec::new(),
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         };
         let resolved = resolve_post_study_artifacts(
             Some(&empty),
@@ -899,7 +997,7 @@ mod post_study_resolution_tests {
     #[test]
     fn continued_cumulative_discount_is_seed_at_zero_rate() {
         let post_study = two_stage_post_study();
-        let calendar_stages = post_study_calendar_stages(&post_study.stages);
+        let calendar_stages = post_study_calendar_stages(&post_study.thermal_stages);
         let resolved = resolve_post_study_artifacts(
             Some(&post_study),
             &[],
@@ -914,7 +1012,7 @@ mod post_study_resolution_tests {
     #[test]
     fn continued_cumulative_discount_matches_extended_horizon() {
         let post_study = two_stage_post_study();
-        let calendar_stages = post_study_calendar_stages(&post_study.stages);
+        let calendar_stages = post_study_calendar_stages(&post_study.thermal_stages);
         let pg = HorizonGraph {
             annual_discount_rate: 0.08,
             ..HorizonGraph::default()
@@ -955,7 +1053,7 @@ mod post_study_resolution_tests {
     #[test]
     fn thermal_bound_lookup_returns_declared_triple() {
         let post_study = two_stage_post_study();
-        let calendar_stages = post_study_calendar_stages(&post_study.stages);
+        let calendar_stages = post_study_calendar_stages(&post_study.thermal_stages);
         let resolved = resolve_post_study_artifacts(
             Some(&post_study),
             &[],
@@ -1112,7 +1210,9 @@ mod resolve_tests {
         compute_per_stage_discount_factors, resolve_post_study_artifacts, stage,
     };
     use crate::test_support::ymd;
-    use novomodelo_core::{HorizonGraph, PostStudyStage, PostStudyStages, Stage};
+    use novomodelo_core::{
+        HorizonGraph, PostStudyStage, PostStudyStages, Stage, WaterBucketStages,
+    };
     use novomodelo_stochastic::season_cast::post_study_calendar_stages;
 
     /// `resolve` concatenates the study and post-study hours, cumulative
@@ -1129,7 +1229,7 @@ mod resolve_tests {
             ..HorizonGraph::default()
         };
         let post_study = PostStudyStages {
-            stages: vec![
+            thermal_stages: vec![
                 PostStudyStage {
                     start_date: ymd(2024, 3, 1),
                     duration_hours: 720.0,
@@ -1140,10 +1240,14 @@ mod resolve_tests {
                 },
             ],
             thermal_bounds: vec![],
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         };
-        let post_study_durations: Vec<f64> =
-            post_study.stages.iter().map(|s| s.duration_hours).collect();
-        let post_study_dated = post_study_calendar_stages(&post_study.stages);
+        let post_study_durations: Vec<f64> = post_study
+            .thermal_stages
+            .iter()
+            .map(|s| s.duration_hours)
+            .collect();
+        let post_study_dated = post_study_calendar_stages(&post_study.thermal_stages);
 
         let per_stage = compute_per_stage_discount_factors(&study_stages, &pg);
         let cumulative = compute_cumulative_discount_factors(&per_stage);

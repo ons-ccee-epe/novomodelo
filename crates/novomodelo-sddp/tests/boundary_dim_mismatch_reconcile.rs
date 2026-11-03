@@ -34,7 +34,7 @@ use novomodelo_core::{
     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
     HydroPastDefluence, HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds,
     PostStudyStage, PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds,
-    System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+    System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds, WaterBucketStages,
 };
 use novomodelo_io::config::{
     BoundaryPolicy, Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -375,7 +375,7 @@ fn run_stages() -> Vec<Stage> {
 
 fn run_post_study_stages() -> PostStudyStages {
     PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: run_study_end(),
             duration_hours: RUN_POST_STUDY_HOURS,
         }],
@@ -386,6 +386,7 @@ fn run_post_study_stages() -> PostStudyStages {
             min_mw: 0.0,
             max_mw: 100.0,
         }],
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     }
 }
 

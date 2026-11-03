@@ -3464,7 +3464,7 @@ and `newave_boundary_injected_decomp_run_converges`
 `reserve_boundary_inflow_lag_slots`-built source stays sentinel-dated and
 must keep loading.
 
-### Dated forward-family fan-out reconciliation is hour-weighted by the SOURCE interval
+### Dated forward-family fan-out reconciliation is hour-weighted by quantity class: rates by the SOURCE interval, volumes by the TARGET interval
 
 A forward-family slot's identity date is its `[interval_start, interval_end)`
 span, never a single anchor — `HydroInflowLag` is the one family keyed on a
@@ -3480,15 +3480,35 @@ monthly delivery calendar and its transit-bucket arrivals on their own per-arc
 arrival calendar; the current study may deliver either on a differently-shaped
 calendar (weekly, monthly, or a differing arc topology). `resolve_by_interval_overlap`
 reconciles each target slot `w` against the source intervals `M` of the SAME family
-it overlaps **by real calendar date**, not by subindex: full coverage yields
-`RebindOp::Blend` with per-interval weight `overlap_hours(w, M) / H_M` — divided by
-the **source** interval's hours `H_M`, the conservation identity that makes a
-slot's fanned coefficients sum back to the source's (a covered target slot's coeff
-ratio equals `H_w / H_M`). A target slot straddling into unpriced time yields
-`RebindOp::Renormalize`: the same weights additionally scaled by
-`H_w / Σ_covered overlap`, so the covered intervals' price density replicates
-across the uncovered span instead of deflating the boundary FCF with an implicit
-`0.0` term. No covered interval yields `Zero` — for `AnticipatedThermalState` this
+it overlaps **by real calendar date**, not by subindex. The weight depends on
+the family's `QuantityClass` (`quantity_class` in `policy/reconcile.rs`, an
+exhaustive match with no wildcard arm, so a new `StateFamily` variant must declare
+its class before it compiles). The rule applies to every deck, legacy included.
+It moves a legacy deck's results only when that deck loads a boundary policy whose
+source and target bucket grids differ. The old source-hours weight for volumes is
+replaced, not kept behind a flag.
+
+- **`Rate` (`AnticipatedThermalState`, MW).** Full coverage yields
+  `RebindOp::Blend` with per-interval weight `overlap_hours(w, M) / H_M`, divided
+  by the **source** interval's hours `H_M`. This is the conservation identity that
+  makes a slot's fanned coefficients sum back to the source's: a covered target
+  slot's coeff ratio equals `H_w / H_M`. A source `[Jan 1, Feb 1)` at
+  `beta = -30` split into 14- and 17-day slots gives `-13.548` and `-16.452`, so
+  60 MW committed across both prices `-1,800`, the unsplit term. A target slot
+  straddling into unpriced time yields `RebindOp::Renormalize`: the same weights
+  additionally scaled by `H_w / Σ_covered overlap`.
+- **`Volume` (`HydroTransitBucket`, hm3 in transit).** Full coverage yields
+  `Blend` with weight `overlap_hours(w, M) / H_w`, divided by the **target**
+  slot's own hours, so each target takes the hours-average of the source $/hm3
+  values it overlaps. A target inside one source bucket carries the source
+  coefficient verbatim (weight `1.0`). A source `[Jan 1, Jan 21)` at
+  `beta = -50` $/hm3 read by buckets holding 43.2, 43.2 and 86.4 hm3 prices
+  `-8,640`, the unsplit term; the source-hours weight would give `-3,240`. A
+  straddling target yields `Renormalize` with weight `overlap / Σ_covered overlap`.
+
+Under either class, `Renormalize` extends the covered intervals across the
+uncovered span instead of deflating the boundary FCF with an implicit `0.0` term.
+No covered interval yields `Zero` — for `AnticipatedThermalState` this
 is usually an in-study delivery (below); for `HydroTransitBucket` this is the
 expected outcome when the source is NEWAVE-shaped and carries no transit arcs at
 all, the same "miss is expected, not incompatible" status the identity join used
@@ -3541,9 +3561,11 @@ delivery against the source's months.
 `rebind_cut` applies both through the identical weighted-sum, so unifying them
 reads like harmless dedup — but only `build_rebind` carries the `Renormalize`
 anti-deflation scale, and dropping it silently understates the boundary FCF on any
-partial-coverage calendar. Two further wrong-but-compiling alternatives: dividing
-by the **target** slot's `H_w` instead of the source `H_M` (breaks the
-`H_w / H_M` conservation ratio), and joining on `subindex` instead of the real
+partial-coverage calendar. Three further wrong-but-compiling alternatives:
+dividing a `Rate` by the **target** slot's `H_w` instead of the source `H_M`
+(breaks the `H_w / H_M` conservation ratio); dividing a `Volume` by the
+**source** `H_M` instead of the target `H_w` (prices a held volume as a density
+and understates it on any mismatched bucket grid); and joining on `subindex` instead of the real
 interval (anticipated delivery is NON-monotone in subindex — the modular
 delivery-target residue of the ring contract above — so a subindex join misaligns
 months to weeks). Source intervals are read from each live source slot's OWN
@@ -3555,8 +3577,8 @@ division is guarded: `resolve_by_interval_overlap` returns `Zero` on
 `terms.is_empty()` before it can divide by a zero covered span.
 
 `HydroTransitBucket` target and source slots reconcile through this EXACT SAME
-`resolve_by_interval_overlap` call and the exact same `÷H_m` math above — there is
-no separate transit resolver. `build_source_interval_index` selects live
+`resolve_by_interval_overlap` call, with the `Volume` weight above — there is
+no separate transit resolver; the class is the only thing that differs. `build_source_interval_index` selects live
 (non-sentinel) source slots of EITHER family into one shared index, keyed
 `(entity_type, entity_id)`; the family byte already in that key is what keeps an
 anticipated and a transit source entry sharing one `entity_id` disjoint, so
@@ -3570,7 +3592,7 @@ extended delivery calendar) and are told apart by that alone; re-introducing
 `subindex` into the join would reject a legitimate source whose lag indexing
 differs from the current study's. Under an identical source/current arrival
 interval the overlap is full and the single term's weight is
-`overlap / H_m == 1.0`, reproducing today's coefficient bit-for-bit — but the
+`overlap / H_w == 1.0`, reproducing today's coefficient bit-for-bit — but the
 reconciliation report tallies that slot as `fan_out`, never `copy`: the
 coefficients are unchanged, the JOIN MECHANISM is not, and collapsing a
 full-coverage single term back into `RebindOp::Copy` would hide that the family is
@@ -3581,7 +3603,7 @@ both sides declare transit arcs but their intervals do not overlap — still res
 `Zero` at the same report tier as any other miss; promoting it to a louder tier is
 diagnostics work this contract does not cover.
 
-The constant intercept fold (`build_boundary_fold`) reuses this SAME
+The constant intercept fold (`build_boundary_fold`) reuses this SAME `Rate`
 `overlap/H_m` source-interval weighting on a different object: a class-4 fixed
 post-horizon window's declared MW is a CONSTANT, not a state dimension, so
 `Σ_m (overlap_hours(w, m) / H_m) · v_w` sums directly into a `(source_pos,
@@ -3601,7 +3623,8 @@ rest of the intercept. Folding after rescale, or reading a rescaled coefficient
 into the fold sum, is the wrong-but-compiling alternative: the transforms are
 not idempotent across that boundary, so a post-rescale fold prices the fixed
 commitment at the wrong scale.
-Read: `policy/reconcile.rs` (`resolve_by_interval_overlap`, `build_rebind`,
+Read: `policy/reconcile.rs` (`QuantityClass`, `quantity_class`,
+`resolve_by_interval_overlap`, `build_rebind`,
 `rebind_cut`, `build_source_interval_index`, `overlap_hours`, `build_boundary_fold`,
 the `Blend`/`Renormalize` variants), `policy/policy_export.rs`
 (`build_stage_entity_manifest`, intervalling each ring slot at its modular
@@ -3610,7 +3633,12 @@ delivery stage via `slot_lane_at`), `policy/policy_load.rs` (`load_boundary_cuts
 `boundary_date` into `build_rebind`, and applies the fold before rescale).
 Pinned by the `hm_distribute_conservation` fixtures in
 `tests/anticipated_core.rs` (coeff ratio equals `H_w / H_M`, invariant to the
-delivery stage's hours), the `Blend`/`Renormalize` `rebind_cut` unit tests (both
+delivery stage's hours), the two quantity-class goldens
+`anticipated_lane_target_inside_one_source_interval_keeps_source_hours_weight`
+(`-1,800`) and `transit_bucket_volume_golden_matches_unsplit_term` (`-8,640`),
+`mismatched_bucket_grid_uses_target_hours_for_every_deck` (a weekly source
+bucket grid read by a monthly target, the every-deck exception),
+`quantity_class_covers_every_state_family`, the `Blend`/`Renormalize` `rebind_cut` unit tests (both
 apply identical mechanics, distinction is only the weight),
 `tests/boundary_reconcile_defaults.rs` (the fan-out matrix and the superset
 bit-identity `to_bits` pin),
@@ -3626,14 +3654,15 @@ intercept fold's own regressions
 `resolve_by_interval_overlap`/`build_source_interval_index` pins above and is
 additionally pinned by `policy/reconcile.rs`'s own
 `transit_bucket_identical_arrival_interval_blends_at_unit_weight`,
-`transit_bucket_target_inside_one_source_interval_blends_at_fractional_source_hours`,
+`transit_bucket_target_inside_one_source_interval_takes_its_target_hours_share`,
 `transit_bucket_non_overlapping_arrival_interval_zeroes`,
 `transit_bucket_join_ignores_subindex`,
 `transit_bucket_sentinel_interval_is_a_structural_pad`, and
 `unrecognized_entity_type_still_rejects_by_identity`, plus the boundary-load
 round trip `load_boundary_cuts_matching_transit_bucket_arrival_interval_round_trips`
 (`policy/policy_load.rs`) and
-`boundary_injection_transit_bucket_blends_on_identical_arrival_interval`
+`boundary_injection_transit_bucket_blends_on_identical_arrival_interval` and
+`boundary_injection_transit_bucket_takes_its_target_hours_share`
 (`tests/boundary_reconcile_defaults.rs`).
 
 A sentinel-interval forward-family slot is a structural ring pad on BOTH sides

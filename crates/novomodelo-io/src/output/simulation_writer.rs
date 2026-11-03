@@ -779,7 +779,7 @@ fn family_has_generic_constraints(system: &System) -> bool {
 fn family_declares_post_study(system: &System) -> bool {
     system
         .post_study_stages()
-        .is_some_and(|ps| !ps.stages.is_empty())
+        .is_some_and(|ps| !ps.thermal_stages.is_empty())
 }
 
 fn scenario_batch_costs(

@@ -3051,7 +3051,7 @@ mod faithful_resolution {
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PostStudyStage, PostStudyStages,
         PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
-        ThermalStageBounds,
+        ThermalStageBounds, WaterBucketStages,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -3148,8 +3148,9 @@ mod faithful_resolution {
             })
             .collect();
         PostStudyStages {
-            stages,
+            thermal_stages: stages,
             thermal_bounds: vec![],
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         }
     }
 

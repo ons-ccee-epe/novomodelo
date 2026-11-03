@@ -90,7 +90,7 @@ use crate::setup::{ResolvedStateLayout, resolve_state_layout};
 use crate::solve::stage_solve::{StageInputs, assemble_outgoing_state, run_stage_solve};
 use crate::solver_stats::SolverStatsDelta;
 #[cfg(test)]
-use crate::time_value::DeliveryCalendar;
+use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 use crate::time_value::{PostStudyResolved, TimeValue};
 use crate::training::backward::{
     extract_state_duals_only, fill_external_opening_noise, write_opening_outcome,
@@ -346,8 +346,9 @@ pub(crate) fn resolved_layout_for(
     par_lp: &PrecomputedPar,
 ) -> (TransitBucketTopology, ResolvedStateLayout) {
     let thermal = DeliveryCalendar::thermal(system);
-    let water = DeliveryCalendar::water(system);
-    let topology = build_transit_bucket_topology(system, &water, false);
+    let basis = WaterDeliveryBasis::of(system);
+    let water = DeliveryCalendar::water(system, basis);
+    let topology = build_transit_bucket_topology(system, &water, basis, false);
     let layout = resolve_state_layout(system, &thermal, par_lp, &topology, None)
         .expect("resolved_layout_for: valid test fixture");
     (topology, layout)

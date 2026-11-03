@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use novomodelo_core::{
     AnticipatedConfig, Block, BlockMode, Bus, DeficitSegment, EntityId, NoiseMethod,
     PostStudyStage, PostStudyStages, PostStudyThermalBound, ScenarioSourceConfig, Stage,
-    StageRiskConfig, StageStateConfig, System, SystemBuilder, Thermal,
+    StageRiskConfig, StageStateConfig, System, SystemBuilder, Thermal, WaterBucketStages,
 };
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
@@ -12,7 +12,7 @@ use crate::bucket_topology::TransitBucketTopology;
 use crate::lp::builder::{FactGroups, encode_time_value_facts};
 use crate::lp::indexer::AnticipatedPlants;
 use crate::test_support::{geometry_hydro, ymd};
-use crate::time_value::{DeliveryCalendar, TimeValue};
+use crate::time_value::{DeliveryCalendar, TimeValue, WaterDeliveryBasis};
 
 const STUDY_MONTHS: [(u32, f64); 6] = [
     (1, 744.0),
@@ -55,7 +55,7 @@ fn system_with_post_study(n_post: usize) -> System {
         })
         .collect();
     let post_study = PostStudyStages {
-        stages: POST_STUDY_MONTHS[..n_post]
+        thermal_stages: POST_STUDY_MONTHS[..n_post]
             .iter()
             .map(|&(month, duration_hours)| PostStudyStage {
                 start_date: ymd(2024, month, 1),
@@ -71,6 +71,7 @@ fn system_with_post_study(n_post: usize) -> System {
                 max_mw: 500.0,
             })
             .collect(),
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
     let mut upstream = geometry_hydro(1);
     upstream.downstream_id = Some(EntityId(0));
@@ -122,6 +123,7 @@ fn resolve(
         system,
         thermal,
         water,
+        WaterDeliveryBasis::of(system),
         &PrecomputedPar::default(),
         None,
         false,
@@ -183,8 +185,16 @@ fn thermal_consumers_ignore_the_water_calendar() {
     let thermal = DeliveryCalendar::thermal(&a);
 
     assert_eq!(
-        thermal_facts(&a, &thermal, &DeliveryCalendar::water(&a)),
-        thermal_facts(&a, &thermal, &DeliveryCalendar::water(&b)),
+        thermal_facts(
+            &a,
+            &thermal,
+            &DeliveryCalendar::water(&a, WaterDeliveryBasis::of(&a))
+        ),
+        thermal_facts(
+            &a,
+            &thermal,
+            &DeliveryCalendar::water(&b, WaterDeliveryBasis::of(&b))
+        ),
     );
 }
 
@@ -192,7 +202,10 @@ fn thermal_consumers_ignore_the_water_calendar() {
 fn water_consumers_ignore_the_thermal_calendar() {
     let (a, b) = (system_a(), system_b());
     let (thermal_a, thermal_b) = (DeliveryCalendar::thermal(&a), DeliveryCalendar::thermal(&b));
-    let (water_a, water_b) = (DeliveryCalendar::water(&a), DeliveryCalendar::water(&b));
+    let (water_a, water_b) = (
+        DeliveryCalendar::water(&a, WaterDeliveryBasis::of(&a)),
+        DeliveryCalendar::water(&b, WaterDeliveryBasis::of(&b)),
+    );
 
     assert_eq!(
         water_facts(&resolve(&a, &thermal_a, &water_b).0),
@@ -207,7 +220,7 @@ fn water_consumers_ignore_the_thermal_calendar() {
 #[test]
 fn thermal_consumers_follow_the_thermal_calendar() {
     let (a, b) = (system_a(), system_b());
-    let water = DeliveryCalendar::water(&a);
+    let water = DeliveryCalendar::water(&a, WaterDeliveryBasis::of(&a));
 
     let from_a = thermal_facts(&a, &DeliveryCalendar::thermal(&a), &water);
     let from_b = thermal_facts(&a, &DeliveryCalendar::thermal(&b), &water);

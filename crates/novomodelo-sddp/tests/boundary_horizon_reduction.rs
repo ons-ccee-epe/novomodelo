@@ -39,7 +39,7 @@ use novomodelo_core::{
     HydroBlockBounds, HydroPastDefluence, HydroPenalties, HydroStageBounds, HydroStorage,
     InitialConditions, LineBlockBounds, PostStudyStage, PostStudyStages, PostStudyThermalBound,
     PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SeasonCycleType, SeasonDefinition,
-    SeasonMap, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+    SeasonMap, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds, WaterBucketStages,
 };
 use novomodelo_io::config::{
     BoundaryPolicy, Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -180,7 +180,7 @@ fn truncated_post_study_stages() -> PostStudyStages {
         duration_hours: (bounds[i + 1] - bounds[i]).num_hours() as f64,
     };
     PostStudyStages {
-        stages: vec![stage(2), stage(3)],
+        thermal_stages: vec![stage(2), stage(3)],
         thermal_bounds: vec![
             PostStudyThermalBound {
                 thermal_id: THERMAL_ID,
@@ -197,6 +197,7 @@ fn truncated_post_study_stages() -> PostStudyStages {
                 max_mw: 100.0,
             },
         ],
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     }
 }
 

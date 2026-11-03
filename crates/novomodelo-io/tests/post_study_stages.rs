@@ -204,9 +204,9 @@ fn test_present_carries_sorted_post_study_stages_onto_system() {
         .post_study_stages()
         .expect("post_study_stages must be Some when the file is present");
 
-    assert_eq!(ps.stages.len(), 2);
+    assert_eq!(ps.thermal_stages.len(), 2);
     assert_eq!(
-        ps.stages[0].start_date,
+        ps.thermal_stages[0].start_date,
         chrono::NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
         "stages must be ascending by start_date"
     );

@@ -28,9 +28,9 @@ use crate::lp::builder::{StageTemplates, build_stage_templates};
 use crate::lp::indexer::{EntityPositions, HydroCellIndex, StudyDimensions};
 use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::ResolvedParameters;
-#[cfg(any(test, feature = "test-support"))]
-use crate::time_value::DeliveryCalendar;
 use crate::time_value::TimeValue;
+#[cfg(any(test, feature = "test-support"))]
+use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 
 /// Precompute the per-stage minimum target-storage trajectory `V_target[t]` for
 /// every filling hydro, keyed `(hydro_idx, stage_id) → V_target` \[hm³\].
@@ -241,9 +241,10 @@ pub fn build_stage_templates_resolving_layout(
     resolved_parameters: &ResolvedParameters,
 ) -> Result<StageTemplates, SddpError> {
     let thermal = DeliveryCalendar::thermal(system);
-    let water = DeliveryCalendar::water(system);
+    let basis = WaterDeliveryBasis::of(system);
+    let water = DeliveryCalendar::water(system, basis);
     let (topology, layout) =
-        super::resolve_state_and_topology(system, &thermal, &water, par_lp, None, false)?;
+        super::resolve_state_and_topology(system, &thermal, &water, basis, par_lp, None, false)?;
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
     let stages: Vec<Stage> = system
         .stages()

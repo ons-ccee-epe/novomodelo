@@ -32,7 +32,7 @@ use novomodelo_core::{
     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
     HydroStageBounds, LineBlockBounds, PostStudyStage, PostStudyStages, PostStudyThermalBound,
     PumpingBlockBounds, ResolvedBounds, System, SystemBuilder, ThermalBlockBounds,
-    ThermalStageBounds,
+    ThermalStageBounds, WaterBucketStages,
 };
 use novomodelo_solver::{ActiveSolver, SolverInterface};
 
@@ -106,7 +106,7 @@ fn stages() -> Vec<novomodelo_core::temporal::Stage> {
 /// bound surface).
 fn post_study_stages(min_k: f64, max_k: f64) -> PostStudyStages {
     PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: NaiveDate::from_ymd_opt(2024, 4, 1).expect("valid date"),
             duration_hours: POST_STUDY_HOURS,
         }],
@@ -117,6 +117,7 @@ fn post_study_stages(min_k: f64, max_k: f64) -> PostStudyStages {
             min_mw: min_k,
             max_mw: max_k,
         }],
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     }
 }
 

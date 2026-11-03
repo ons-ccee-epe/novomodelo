@@ -10,13 +10,14 @@
 //! into a single aggregated block ordered by the canonical
 //! `(operational_start_date, id)` index every other state block uses.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use novomodelo_core::{BlockMode, EntityId, Hydro, Stage, System, window_period_overlaps};
 
 use crate::lead_time::{SpreadResolution, resolve_arrival_density_at, resolve_spread};
 use crate::lp::indexer::HydroSys;
-use crate::time_value::DeliveryCalendar;
+use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct TravelTimeArc {
@@ -118,13 +119,29 @@ fn resolve_travel_time_arcs(hydros: &[Hydro]) -> Vec<TravelTimeArc> {
         .collect()
 }
 
-/// Extends the base calendar — study stages plus any declared post-study
-/// stages ([`DeliveryCalendar::total_hours`]) — with copies of its trailing
-/// duration so [`resolve_spread`] never sees a window it cannot absorb; its
-/// conservation check panics otherwise. The pad runs only past what the base
-/// calendar already covers, so a declared post-study calendar shorter than
-/// the travel time still gets padded. Horizon capping is a separate, later
-/// step this does not take.
+/// The resolution base for one arc: the water calendar exactly under a
+/// [`WaterDeliveryBasis::Declared`] basis, with no padding and no fallback;
+/// under [`WaterDeliveryBasis::Legacy`] [`extend_for_resolution`]'s padded base.
+/// The basis is passed in, never stored on [`DeliveryCalendar`], which feeds the
+/// frozen digest.
+fn resolution_base<'a>(
+    basis: WaterDeliveryBasis<'_>,
+    calendar: &'a DeliveryCalendar,
+    t_v: f64,
+) -> Cow<'a, [f64]> {
+    match basis {
+        WaterDeliveryBasis::Declared(_) => Cow::Borrowed(calendar.total_hours()),
+        WaterDeliveryBasis::Legacy => {
+            Cow::Owned(extend_for_resolution(calendar.total_hours(), t_v))
+        }
+    }
+}
+
+/// The legacy-path base only, for a deck without a declared water calendar:
+/// extends the base calendar ([`DeliveryCalendar::total_hours`]) with copies of
+/// its trailing duration so [`resolve_spread`] never sees a window it cannot
+/// absorb; its conservation check panics otherwise. Horizon capping is a
+/// separate, later step this does not take.
 fn extend_for_resolution(base_calendar: &[f64], t_v: f64) -> Vec<f64> {
     let Some(&last) = base_calendar.last() else {
         return base_calendar.to_vec();
@@ -176,6 +193,7 @@ fn horizon_cap_active(active: usize, stage: usize, n_stages: usize) -> usize {
 pub(crate) fn build_transit_bucket_topology(
     system: &System,
     calendar: &DeliveryCalendar,
+    basis: WaterDeliveryBasis<'_>,
     boundary_present: bool,
 ) -> TransitBucketTopology {
     let n_stages = calendar.n_study();
@@ -204,9 +222,9 @@ pub(crate) fn build_transit_bucket_topology(
         let mut own_release_by_stage = vec![0_usize; n_stages];
         let mut ic_depth = 0_usize;
         for &t_v in &t_vs {
-            let extended = extend_for_resolution(calendar.total_hours(), t_v);
+            let base = resolution_base(basis, calendar, t_v);
             for (stage, slot) in own_release_by_stage.iter_mut().enumerate() {
-                *slot = (*slot).max(in_study_depth(t_v, stage, &extended));
+                *slot = (*slot).max(in_study_depth(t_v, stage, &base));
             }
             ic_depth = ic_depth.max(ic_only_depth(t_v, &study_hours));
         }
@@ -239,10 +257,10 @@ pub(crate) fn build_transit_bucket_topology(
         }
     }
 
-    let arc_stage_weights = build_arc_stage_weights(&arcs, calendar);
-    let arc_spread_chrono = build_arc_spread_chrono(system, &arcs, calendar);
+    let arc_stage_weights = build_arc_stage_weights(basis, &arcs, calendar);
+    let arc_spread_chrono = build_arc_spread_chrono(system, basis, &arcs, calendar);
     let arc_arrival_density =
-        build_arc_arrival_density(system, &arcs, calendar, &arc_stage_weights);
+        build_arc_arrival_density(system, basis, &arcs, calendar, &arc_stage_weights);
 
     let topology = TransitBucketTopology {
         column_order,
@@ -264,6 +282,7 @@ pub(crate) fn build_transit_bucket_topology(
 /// `stage_weights` anchored at that in-study stage (`stage_weights[0]` is the
 /// same-stage share); a hydro absent declares no arc.
 pub(crate) fn build_arc_stage_weights(
+    basis: WaterDeliveryBasis<'_>,
     arcs: &[TravelTimeArc],
     calendar: &DeliveryCalendar,
 ) -> HashMap<usize, Vec<Vec<f64>>> {
@@ -273,9 +292,9 @@ pub(crate) fn build_arc_stage_weights(
     for arc in arcs {
         let u_idx = arc.upstream.get();
         let t_v = arc.travel_time_hours;
-        let extended = extend_for_resolution(calendar.total_hours(), t_v);
+        let base = resolution_base(basis, calendar, t_v);
         let k_by_stage: Vec<Vec<f64>> = (0..n_stages)
-            .map(|stage| resolve_spread(t_v, stage, &extended, None).stage_weights)
+            .map(|stage| resolve_spread(t_v, stage, &base, None).stage_weights)
             .collect();
         arc_stage_weights.insert(u_idx, k_by_stage);
     }
@@ -291,6 +310,7 @@ pub(crate) fn build_arc_stage_weights(
 /// stage (no block-resolved routing there).
 pub(crate) fn build_arc_spread_chrono(
     system: &System,
+    basis: WaterDeliveryBasis<'_>,
     arcs: &[TravelTimeArc],
     calendar: &DeliveryCalendar,
 ) -> HashMap<usize, Vec<Option<SpreadResolution>>> {
@@ -303,7 +323,7 @@ pub(crate) fn build_arc_spread_chrono(
     for arc in arcs {
         let u_idx = arc.upstream.get();
         let t_v = arc.travel_time_hours;
-        let extended = extend_for_resolution(calendar.total_hours(), t_v);
+        let base = resolution_base(basis, calendar, t_v);
         let by_stage: Vec<Option<SpreadResolution>> = (0..n_stages)
             .map(|stage_idx| {
                 if study_stages[stage_idx].block_mode != BlockMode::Chronological {
@@ -314,7 +334,7 @@ pub(crate) fn build_arc_spread_chrono(
                     .iter()
                     .map(|b| b.duration_hours)
                     .collect();
-                Some(resolve_spread(t_v, stage_idx, &extended, Some(&blocks)))
+                Some(resolve_spread(t_v, stage_idx, &base, Some(&blocks)))
             })
             .collect();
         arc_spread_chrono.insert(u_idx, by_stage);
@@ -334,6 +354,7 @@ pub(crate) fn build_arc_spread_chrono(
 /// source stage reaches it (total weight `== 0`, e.g. the first stage).
 pub(crate) fn build_arc_arrival_density(
     system: &System,
+    basis: WaterDeliveryBasis<'_>,
     arcs: &[TravelTimeArc],
     calendar: &DeliveryCalendar,
     arc_stage_weights: &HashMap<usize, Vec<Vec<f64>>>,
@@ -350,18 +371,11 @@ pub(crate) fn build_arc_arrival_density(
         let Some(k_by_stage) = arc_stage_weights.get(&u_idx) else {
             continue;
         };
-        let extended = extend_for_resolution(calendar.total_hours(), t_v);
+        let base = resolution_base(basis, calendar, t_v);
 
         let density_by_stage: Vec<Option<Vec<f64>>> = (0..n_stages)
             .map(|arrival_stage| {
-                arrival_frame_density(
-                    t_v,
-                    arrival_stage,
-                    &extended,
-                    &study_stages,
-                    k_by_stage,
-                    u_idx,
-                )
+                arrival_frame_density(t_v, arrival_stage, &base, &study_stages, k_by_stage, u_idx)
             })
             .collect();
 
@@ -440,13 +454,16 @@ fn arrival_frame_density(
 }
 
 #[cfg(test)]
+mod neutrality_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use chrono::NaiveDate;
     use novomodelo_core::{
         Block, BlockMode, Bus, DeficitSegment, Hydro, HydroGenerationModel, HydroPenalties,
         NoiseMethod, PostStudyStage, PostStudyStages, ScenarioSourceConfig, Stage, StageRiskConfig,
-        StageStateConfig, SystemBuilder,
+        StageStateConfig, SystemBuilder, WaterBucketStages,
     };
 
     fn zero_penalties() -> HydroPenalties {
@@ -598,7 +615,7 @@ mod tests {
     /// a calendar month apart.
     fn post_study_stages_hours(hours: &[f64]) -> PostStudyStages {
         PostStudyStages {
-            stages: hours
+            thermal_stages: hours
                 .iter()
                 .enumerate()
                 .map(|(i, &duration_hours)| PostStudyStage {
@@ -607,6 +624,7 @@ mod tests {
                 })
                 .collect(),
             thermal_bounds: Vec::new(),
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         }
     }
 
@@ -615,8 +633,9 @@ mod tests {
         let downstream = hydro(1, None, None);
         let system = build_system(vec![downstream], uniform_stages(3, 24.0));
 
-        let calendar = DeliveryCalendar::water(&system);
-        let topology = build_transit_bucket_topology(&system, &calendar, false);
+        let basis = WaterDeliveryBasis::of(&system);
+        let calendar = DeliveryCalendar::water(&system, basis);
+        let topology = build_transit_bucket_topology(&system, &calendar, basis, false);
 
         assert_eq!(topology.n_buckets(), 0);
         assert!(topology.column_order.is_empty());
@@ -638,8 +657,9 @@ mod tests {
             uniform_stages(3, 24.0),
         );
 
-        let calendar = DeliveryCalendar::water(&system);
-        let topology = build_transit_bucket_topology(&system, &calendar, false);
+        let basis = WaterDeliveryBasis::of(&system);
+        let calendar = DeliveryCalendar::water(&system, basis);
+        let topology = build_transit_bucket_topology(&system, &calendar, basis, false);
 
         assert_eq!(
             topology.arcs(),
@@ -664,8 +684,9 @@ mod tests {
         let upstream = hydro(2, Some(1), Some(0.0));
         let system = build_system(vec![downstream, upstream], uniform_stages(3, 24.0));
 
-        let calendar = DeliveryCalendar::water(&system);
-        let topology = build_transit_bucket_topology(&system, &calendar, false);
+        let basis = WaterDeliveryBasis::of(&system);
+        let calendar = DeliveryCalendar::water(&system, basis);
+        let topology = build_transit_bucket_topology(&system, &calendar, basis, false);
 
         assert_eq!(topology.n_buckets(), 0);
     }
@@ -680,8 +701,9 @@ mod tests {
             uniform_stages(10, 24.0),
         );
 
-        let calendar = DeliveryCalendar::water(&system);
-        let topology = build_transit_bucket_topology(&system, &calendar, false);
+        let basis = WaterDeliveryBasis::of(&system);
+        let calendar = DeliveryCalendar::water(&system, basis);
+        let topology = build_transit_bucket_topology(&system, &calendar, basis, false);
 
         assert_eq!(topology.n_buckets(), 5);
         assert_eq!(
@@ -697,7 +719,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fine_first_coarse_next_ic_anchor_deepens_beyond_in_study_max() {
+    fn legacy_fine_first_coarse_next_ic_anchor_deepens_beyond_in_study_max() {
         let downstream = hydro(1, None, None);
         let upstream = hydro(2, Some(1), Some(30.0));
         let durations = [24.0, 720.0, 720.0, 720.0];
@@ -718,8 +740,9 @@ mod tests {
         );
         assert_eq!(ic_depth, 2, "the IC anchor must give L_arc(IC) == 2");
 
-        let calendar = DeliveryCalendar::water(&system);
-        let topology = build_transit_bucket_topology(&system, &calendar, false);
+        let basis = WaterDeliveryBasis::of(&system);
+        let calendar = DeliveryCalendar::water(&system, basis);
+        let topology = build_transit_bucket_topology(&system, &calendar, basis, false);
 
         assert_eq!(topology.n_buckets(), 2);
 
@@ -733,7 +756,7 @@ mod tests {
     }
 
     #[test]
-    fn test_uniform_calendar_ic_anchor_does_not_deepen() {
+    fn legacy_uniform_calendar_ic_anchor_does_not_deepen() {
         let downstream = hydro(1, None, None);
         let upstream = hydro(2, Some(1), Some(24.0));
         let durations = vec![24.0; 6];
@@ -750,14 +773,15 @@ mod tests {
         let ic_depth = ic_only_depth(24.0, &durations);
         assert_eq!(ic_depth, in_study_max, "uniform calendar: no IC deepening");
 
-        let calendar = DeliveryCalendar::water(&system);
-        let topology = build_transit_bucket_topology(&system, &calendar, false);
+        let basis = WaterDeliveryBasis::of(&system);
+        let calendar = DeliveryCalendar::water(&system, basis);
+        let topology = build_transit_bucket_topology(&system, &calendar, basis, false);
 
         assert_eq!(topology.n_buckets(), in_study_max);
     }
 
     #[test]
-    fn test_horizon_cap_drops_lag_targeting_past_last_stage() {
+    fn legacy_horizon_cap_drops_lag_targeting_past_last_stage() {
         let downstream = hydro(1, None, None);
         let upstream = hydro(2, Some(1), Some(72.0));
         let durations = [24.0, 24.0, 24.0];
@@ -778,8 +802,9 @@ mod tests {
         );
         assert_eq!(ic_depth, 3, "the IC anchor must also reach 3 stages ahead");
 
-        let calendar = DeliveryCalendar::water(&system);
-        let topology = build_transit_bucket_topology(&system, &calendar, false);
+        let basis = WaterDeliveryBasis::of(&system);
+        let calendar = DeliveryCalendar::water(&system, basis);
+        let topology = build_transit_bucket_topology(&system, &calendar, basis, false);
 
         assert_eq!(
             topology.n_buckets(),
@@ -827,9 +852,10 @@ mod tests {
             stages_with_durations(&durations),
         );
 
-        let calendar = DeliveryCalendar::water(&system);
-        let topology_off = build_transit_bucket_topology(&system, &calendar, false);
-        let topology_on = build_transit_bucket_topology(&system, &calendar, true);
+        let basis = WaterDeliveryBasis::of(&system);
+        let calendar = DeliveryCalendar::water(&system, basis);
+        let topology_off = build_transit_bucket_topology(&system, &calendar, basis, false);
+        let topology_on = build_transit_bucket_topology(&system, &calendar, basis, true);
 
         assert_eq!(
             topology_on.column_order, topology_off.column_order,
@@ -874,12 +900,13 @@ mod tests {
         );
 
         let upstream_idx = 1;
-        let calendar = DeliveryCalendar::water(&system);
+        let basis = WaterDeliveryBasis::of(&system);
+        let calendar = DeliveryCalendar::water(&system, basis);
         let arcs = resolve_travel_time_arcs(system.hydros());
-        let topology_on = build_transit_bucket_topology(&system, &calendar, true);
-        let topology_off = build_transit_bucket_topology(&system, &calendar, false);
-        let arc_stage_weights = build_arc_stage_weights(&arcs, &calendar);
-        let arc_spread_chrono = build_arc_spread_chrono(&system, &arcs, &calendar);
+        let topology_on = build_transit_bucket_topology(&system, &calendar, basis, true);
+        let topology_off = build_transit_bucket_topology(&system, &calendar, basis, false);
+        let arc_stage_weights = build_arc_stage_weights(basis, &arcs, &calendar);
+        let arc_spread_chrono = build_arc_spread_chrono(&system, basis, &arcs, &calendar);
 
         let k_by_stage = arc_stage_weights
             .get(&upstream_idx)
@@ -935,10 +962,12 @@ mod tests {
         );
         let system_b = build_system(vec![upstream, downstream], uniform_stages(5, 24.0));
 
-        let calendar_a = DeliveryCalendar::water(&system_a);
-        let calendar_b = DeliveryCalendar::water(&system_b);
-        let topology_a = build_transit_bucket_topology(&system_a, &calendar_a, false);
-        let topology_b = build_transit_bucket_topology(&system_b, &calendar_b, false);
+        let basis_a = WaterDeliveryBasis::of(&system_a);
+        let calendar_a = DeliveryCalendar::water(&system_a, basis_a);
+        let basis_b = WaterDeliveryBasis::of(&system_b);
+        let calendar_b = DeliveryCalendar::water(&system_b, basis_b);
+        let topology_a = build_transit_bucket_topology(&system_a, &calendar_a, basis_a, false);
+        let topology_b = build_transit_bucket_topology(&system_b, &calendar_b, basis_b, false);
 
         assert_eq!(topology_a.column_order, topology_b.column_order);
         assert_eq!(topology_a.n_buckets(), topology_b.n_buckets());
@@ -949,10 +978,11 @@ mod tests {
         let downstream = hydro(1, None, None);
         let upstream = hydro(2, Some(1), None);
         let system = build_system(vec![downstream, upstream], uniform_stages(3, 24.0));
-        let calendar = DeliveryCalendar::water(&system);
+        let basis = WaterDeliveryBasis::of(&system);
+        let calendar = DeliveryCalendar::water(&system, basis);
         let arcs = resolve_travel_time_arcs(system.hydros());
 
-        let arc_stage_weights = build_arc_stage_weights(&arcs, &calendar);
+        let arc_stage_weights = build_arc_stage_weights(basis, &arcs, &calendar);
 
         assert!(arc_stage_weights.is_empty());
     }
@@ -963,10 +993,11 @@ mod tests {
         let upstream = hydro(2, Some(1), Some(24.0));
         let system = build_system(vec![downstream, upstream], uniform_stages(10, 24.0));
 
-        let calendar = DeliveryCalendar::water(&system);
+        let basis = WaterDeliveryBasis::of(&system);
+        let calendar = DeliveryCalendar::water(&system, basis);
         let arcs = resolve_travel_time_arcs(system.hydros());
-        let topology = build_transit_bucket_topology(&system, &calendar, false);
-        let arc_stage_weights = build_arc_stage_weights(&arcs, &calendar);
+        let topology = build_transit_bucket_topology(&system, &calendar, basis, false);
+        let arc_stage_weights = build_arc_stage_weights(basis, &arcs, &calendar);
 
         let upstream_idx = 1;
         let k_by_stage = arc_stage_weights
@@ -1000,9 +1031,10 @@ mod tests {
             ],
         );
 
-        let calendar = DeliveryCalendar::water(&system);
+        let basis = WaterDeliveryBasis::of(&system);
+        let calendar = DeliveryCalendar::water(&system, basis);
         let arcs = resolve_travel_time_arcs(system.hydros());
-        let arc_spread_chrono = build_arc_spread_chrono(&system, &arcs, &calendar);
+        let arc_spread_chrono = build_arc_spread_chrono(&system, basis, &arcs, &calendar);
         let upstream_idx = 1;
         let by_stage = arc_spread_chrono
             .get(&upstream_idx)
@@ -1058,11 +1090,12 @@ mod tests {
             ],
         );
 
-        let calendar = DeliveryCalendar::water(&system);
+        let basis = WaterDeliveryBasis::of(&system);
+        let calendar = DeliveryCalendar::water(&system, basis);
         let arcs = resolve_travel_time_arcs(system.hydros());
-        let arc_stage_weights = build_arc_stage_weights(&arcs, &calendar);
+        let arc_stage_weights = build_arc_stage_weights(basis, &arcs, &calendar);
         let arc_arrival_density =
-            build_arc_arrival_density(&system, &arcs, &calendar, &arc_stage_weights);
+            build_arc_arrival_density(&system, basis, &arcs, &calendar, &arc_stage_weights);
 
         let upstream_idx = 1;
         let density_by_stage = arc_arrival_density
@@ -1106,11 +1139,12 @@ mod tests {
             ],
         );
 
-        let calendar = DeliveryCalendar::water(&system);
+        let basis = WaterDeliveryBasis::of(&system);
+        let calendar = DeliveryCalendar::water(&system, basis);
         let arcs = resolve_travel_time_arcs(system.hydros());
-        let arc_stage_weights = build_arc_stage_weights(&arcs, &calendar);
+        let arc_stage_weights = build_arc_stage_weights(basis, &arcs, &calendar);
         let arc_arrival_density =
-            build_arc_arrival_density(&system, &arcs, &calendar, &arc_stage_weights);
+            build_arc_arrival_density(&system, basis, &arcs, &calendar, &arc_stage_weights);
 
         let upstream_idx = 1;
         let density_by_stage = arc_arrival_density
@@ -1150,11 +1184,12 @@ mod tests {
             ],
         );
 
-        let calendar = DeliveryCalendar::water(&system);
+        let basis = WaterDeliveryBasis::of(&system);
+        let calendar = DeliveryCalendar::water(&system, basis);
         let arcs = resolve_travel_time_arcs(system.hydros());
-        let arc_stage_weights = build_arc_stage_weights(&arcs, &calendar);
+        let arc_stage_weights = build_arc_stage_weights(basis, &arcs, &calendar);
         let arc_arrival_density =
-            build_arc_arrival_density(&system, &arcs, &calendar, &arc_stage_weights);
+            build_arc_arrival_density(&system, basis, &arcs, &calendar, &arc_stage_weights);
 
         let mut n_checked = 0;
         for density_by_stage in arc_arrival_density.values() {
@@ -1185,22 +1220,26 @@ mod tests {
 
         let system_a = build_system(vec![downstream.clone(), upstream.clone()], stages.clone());
         let system_b = build_system(vec![upstream, downstream], stages);
-        let calendar_a = DeliveryCalendar::water(&system_a);
-        let calendar_b = DeliveryCalendar::water(&system_b);
+        let basis_a = WaterDeliveryBasis::of(&system_a);
+        let calendar_a = DeliveryCalendar::water(&system_a, basis_a);
+        let basis_b = WaterDeliveryBasis::of(&system_b);
+        let calendar_b = DeliveryCalendar::water(&system_b, basis_b);
         let arcs_a = resolve_travel_time_arcs(system_a.hydros());
         let arcs_b = resolve_travel_time_arcs(system_b.hydros());
 
         let density_a = build_arc_arrival_density(
             &system_a,
+            basis_a,
             &arcs_a,
             &calendar_a,
-            &build_arc_stage_weights(&arcs_a, &calendar_a),
+            &build_arc_stage_weights(basis_a, &arcs_a, &calendar_a),
         );
         let density_b = build_arc_arrival_density(
             &system_b,
+            basis_b,
             &arcs_b,
             &calendar_b,
-            &build_arc_stage_weights(&arcs_b, &calendar_b),
+            &build_arc_stage_weights(basis_b, &arcs_b, &calendar_b),
         );
 
         assert_eq!(density_a, density_b);
@@ -1214,9 +1253,9 @@ mod tests {
     /// (`k_5 = k_6 = 0.5`), so `stage_reach = 6`. The pad-only calendar
     /// (`extend_for_resolution` on the study-only vector) instead replicates
     /// 24h stages, whose window `[72, 96)` lands squarely on a single 24h pad
-    /// copy (`stage_reach = 3`) — the value `test_horizon_cap_drops_lag_
-    /// targeting_past_last_stage` pins for the same arc with no post-study
-    /// calendar declared.
+    /// copy (`stage_reach = 3`) — the value
+    /// `legacy_horizon_cap_drops_lag_targeting_past_last_stage` pins for the
+    /// same arc with no post-study calendar declared.
     #[test]
     fn post_study_calendar_replaces_the_synthetic_pad_in_arrival_resolution() {
         let downstream = hydro(1, None, None);
@@ -1233,12 +1272,23 @@ mod tests {
             stages_with_durations(&durations),
         );
 
-        let calendar_with_post_study = DeliveryCalendar::water(&system_with_post_study);
-        let calendar_pad_only = DeliveryCalendar::water(&system_pad_only);
-        let topology =
-            build_transit_bucket_topology(&system_with_post_study, &calendar_with_post_study, true);
-        let topology_pad_only =
-            build_transit_bucket_topology(&system_pad_only, &calendar_pad_only, true);
+        let basis_with_post_study = WaterDeliveryBasis::of(&system_with_post_study);
+        let calendar_with_post_study =
+            DeliveryCalendar::water(&system_with_post_study, basis_with_post_study);
+        let basis_pad_only = WaterDeliveryBasis::of(&system_pad_only);
+        let calendar_pad_only = DeliveryCalendar::water(&system_pad_only, basis_pad_only);
+        let topology = build_transit_bucket_topology(
+            &system_with_post_study,
+            &calendar_with_post_study,
+            basis_with_post_study,
+            true,
+        );
+        let topology_pad_only = build_transit_bucket_topology(
+            &system_pad_only,
+            &calendar_pad_only,
+            basis_pad_only,
+            true,
+        );
 
         assert_eq!(
             topology.n_buckets(),
@@ -1261,6 +1311,64 @@ mod tests {
         );
     }
 
+    fn declared_water_stages(hours: &[f64]) -> WaterBucketStages {
+        WaterBucketStages::Declared(post_study_stages_hours(hours).thermal_stages)
+    }
+
+    #[test]
+    fn resolution_base_uses_declared_water_calendar_unpadded() {
+        let system = build_system_with_post_study(
+            vec![hydro(1, None, None), hydro(2, Some(1), Some(300.0))],
+            uniform_stages(3, 24.0),
+            PostStudyStages {
+                water_bucket_stages: declared_water_stages(&[168.0, 168.0]),
+                ..post_study_stages_hours(&[24.0])
+            },
+        );
+        let basis = WaterDeliveryBasis::of(&system);
+        let calendar = DeliveryCalendar::water(&system, basis);
+
+        let base = resolution_base(basis, &calendar, 300.0);
+
+        assert!(matches!(base, Cow::Borrowed(_)));
+        assert_eq!(&*base, &[24.0, 24.0, 24.0, 168.0, 168.0][..]);
+    }
+
+    #[test]
+    fn resolution_base_pads_from_thermal_stages() {
+        let system = build_system_with_post_study(
+            vec![hydro(1, None, None), hydro(2, Some(1), Some(300.0))],
+            uniform_stages(3, 24.0),
+            post_study_stages_hours(&[168.0, 168.0]),
+        );
+        let basis = WaterDeliveryBasis::of(&system);
+        let calendar = DeliveryCalendar::water(&system, basis);
+
+        let base = resolution_base(basis, &calendar, 300.0);
+
+        assert!(matches!(base, Cow::Owned(_)));
+        assert_eq!(&*base, extend_for_resolution(calendar.total_hours(), 300.0));
+    }
+
+    #[test]
+    fn resolution_base_pads_without_post_study_file() {
+        let durations = [24.0, 24.0, 24.0];
+        let system = build_system(
+            vec![hydro(1, None, None), hydro(2, Some(1), Some(300.0))],
+            stages_with_durations(&durations),
+        );
+        let basis = WaterDeliveryBasis::of(&system);
+        let calendar = DeliveryCalendar::water(&system, basis);
+        let arcs = resolve_travel_time_arcs(system.hydros());
+        assert_eq!(arcs.len(), 1);
+        let t_v = arcs[0].travel_time_hours;
+
+        let base = resolution_base(basis, &calendar, t_v);
+
+        assert!(matches!(base, Cow::Owned(_)));
+        assert_eq!(&*base, extend_for_resolution(&durations, t_v));
+    }
+
     #[test]
     fn post_study_calendar_shorter_than_travel_time_still_pads() {
         let downstream = hydro(1, None, None);
@@ -1272,9 +1380,10 @@ mod tests {
             post_study_stages_hours(&[24.0]),
         );
 
-        let calendar = DeliveryCalendar::water(&system);
+        let basis = WaterDeliveryBasis::of(&system);
+        let calendar = DeliveryCalendar::water(&system, basis);
         let arcs = resolve_travel_time_arcs(system.hydros());
-        let arc_stage_weights = build_arc_stage_weights(&arcs, &calendar);
+        let arc_stage_weights = build_arc_stage_weights(basis, &arcs, &calendar);
         let upstream_idx = 1;
         let k_by_stage = arc_stage_weights
             .get(&upstream_idx)
@@ -1307,10 +1416,12 @@ mod tests {
             post_study,
         );
 
-        let calendar_a = DeliveryCalendar::water(&system_a);
-        let calendar_b = DeliveryCalendar::water(&system_b);
-        let topology_a = build_transit_bucket_topology(&system_a, &calendar_a, false);
-        let topology_b = build_transit_bucket_topology(&system_b, &calendar_b, false);
+        let basis_a = WaterDeliveryBasis::of(&system_a);
+        let calendar_a = DeliveryCalendar::water(&system_a, basis_a);
+        let basis_b = WaterDeliveryBasis::of(&system_b);
+        let calendar_b = DeliveryCalendar::water(&system_b, basis_b);
+        let topology_a = build_transit_bucket_topology(&system_a, &calendar_a, basis_a, false);
+        let topology_b = build_transit_bucket_topology(&system_b, &calendar_b, basis_b, false);
 
         assert_eq!(topology_a.column_order, topology_b.column_order);
         assert_eq!(topology_a.n_buckets(), topology_b.n_buckets());
@@ -1337,12 +1448,23 @@ mod tests {
             stages_with_durations(&durations),
         );
 
-        let calendar_with_calendar = DeliveryCalendar::water(&system_with_calendar);
-        let calendar_no_calendar = DeliveryCalendar::water(&system_no_calendar);
-        let topology_with_calendar =
-            build_transit_bucket_topology(&system_with_calendar, &calendar_with_calendar, false);
-        let topology_no_calendar =
-            build_transit_bucket_topology(&system_no_calendar, &calendar_no_calendar, false);
+        let basis_with_calendar = WaterDeliveryBasis::of(&system_with_calendar);
+        let calendar_with_calendar =
+            DeliveryCalendar::water(&system_with_calendar, basis_with_calendar);
+        let basis_no_calendar = WaterDeliveryBasis::of(&system_no_calendar);
+        let calendar_no_calendar = DeliveryCalendar::water(&system_no_calendar, basis_no_calendar);
+        let topology_with_calendar = build_transit_bucket_topology(
+            &system_with_calendar,
+            &calendar_with_calendar,
+            basis_with_calendar,
+            false,
+        );
+        let topology_no_calendar = build_transit_bucket_topology(
+            &system_no_calendar,
+            &calendar_no_calendar,
+            basis_no_calendar,
+            false,
+        );
 
         assert!(
             topology_no_calendar.n_buckets() > 0,
@@ -1394,12 +1516,23 @@ mod tests {
             stages_with_durations(&durations),
         );
 
-        let calendar_with_calendar = DeliveryCalendar::water(&system_with_calendar);
-        let calendar_no_calendar = DeliveryCalendar::water(&system_no_calendar);
-        let topology_with_calendar =
-            build_transit_bucket_topology(&system_with_calendar, &calendar_with_calendar, false);
-        let topology_no_calendar =
-            build_transit_bucket_topology(&system_no_calendar, &calendar_no_calendar, false);
+        let basis_with_calendar = WaterDeliveryBasis::of(&system_with_calendar);
+        let calendar_with_calendar =
+            DeliveryCalendar::water(&system_with_calendar, basis_with_calendar);
+        let basis_no_calendar = WaterDeliveryBasis::of(&system_no_calendar);
+        let calendar_no_calendar = DeliveryCalendar::water(&system_no_calendar, basis_no_calendar);
+        let topology_with_calendar = build_transit_bucket_topology(
+            &system_with_calendar,
+            &calendar_with_calendar,
+            basis_with_calendar,
+            false,
+        );
+        let topology_no_calendar = build_transit_bucket_topology(
+            &system_no_calendar,
+            &calendar_no_calendar,
+            basis_no_calendar,
+            false,
+        );
 
         assert!(
             topology_no_calendar.n_buckets() > 0,

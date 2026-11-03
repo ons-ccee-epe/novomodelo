@@ -2,7 +2,7 @@
 //! per-`(thermal, post-study stage)` cost/bounds table.
 //!
 //! [`parse_post_study_stages`] reads `post_study_stages.json` from the case
-//! directory root and returns a [`PostStudyStages`] whose `stages` are ordered
+//! directory root and returns a [`PostStudyStages`] whose `thermal_stages` are ordered
 //! ascending by `start_date` and whose `thermal_bounds` are in
 //! `(thermal_id, post_study_stage_index)` order.
 //!
@@ -40,7 +40,9 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use novomodelo_core::{EntityId, PostStudyStage, PostStudyStages, PostStudyThermalBound};
+use novomodelo_core::{
+    EntityId, PostStudyStage, PostStudyStages, PostStudyThermalBound, WaterBucketStages,
+};
 use serde::Deserialize;
 
 use crate::LoadError;
@@ -119,8 +121,9 @@ pub fn parse_post_study_stages(path: &Path) -> Result<PostStudyStages, LoadError
     let thermal_bounds = convert_thermal_bounds(&raw.thermal_bounds, stages.len(), path)?;
 
     Ok(PostStudyStages {
-        stages,
+        thermal_stages: stages,
         thermal_bounds,
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     })
 }
 
@@ -253,9 +256,9 @@ mod tests {
     fn test_parse_valid_sorts_both_collections() {
         let f = write_json(VALID_JSON);
         let ps = parse_post_study_stages(f.path()).unwrap();
-        assert_eq!(ps.stages.len(), 2);
+        assert_eq!(ps.thermal_stages.len(), 2);
         assert_eq!(
-            ps.stages[0].start_date,
+            ps.thermal_stages[0].start_date,
             chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap()
         );
         // thermal_bounds sorted by (thermal_id, post_study_stage_index).
