@@ -4009,11 +4009,12 @@ The bucket state stays a pure function of stage lengths, never of
 `n_blks`/`block_mode`, only because each of the following holds:
 
 - **Depth from stage lengths alone.** Bucket depth and `n_buckets` derive from
-  the per-stage calendar, the declared post-study calendar, and the pre-study
-  anchor alone (`DeliveryCalendar`, `build_transit_bucket_topology`) — never
-  from `n_blks` or `block_mode`. Deriving any part of the depth inside a
-  block-aware code path re-couples the state dimension to how a stage happens
-  to be resolved.
+  the per-stage calendar, the water calendar (`DeliveryCalendar::water`), and
+  the pre-study anchor alone (`DeliveryCalendar`,
+  `build_transit_bucket_topology`) — never from `n_blks` or `block_mode`.
+  Deriving any part of the depth inside a block-aware code path re-couples the
+  state dimension to how a stage happens to be resolved. Pinned by
+  `setup::calendar_cross_wire_tests::water_consumers_ignore_the_thermal_calendar`.
 - **Shared arrival density.** A chronological stage's per-block deposit shares
   `block_deposits`/`within_stage_routing` and the stage-level `stage_weights`
   come from the same shared arrival density (`resolve_spread`'s
@@ -4467,11 +4468,12 @@ commitment — in-study or post-study-targeted — is ever discarded at the
 delivery-axis boundary; none is created past it in the first place.
 `is_anticipated_decision_active_for_delivery` gates a decision column's
 existence on the strict clause `stage_idx + K_i < n_delivery`, against the
-EXTENDED delivery calendar (`n_delivery = StateSpace::n_delivery`, the
-study stages plus the `post_study_stages.json` continuation), not merely
-`n_stages`; `PointResolution::decider` has the matching domain
-`m in [0, n_delivery)`, so no code path ever computes a commitment targeting a
-delivery past the extended axis and then truncates it. A post-study-targeted
+EXTENDED thermal calendar (`n_delivery = StateSpace::n_delivery`, the
+study stages plus the thermal calendar's post-study stages,
+`DeliveryCalendar::thermal`), not merely `n_stages`;
+`PointResolution::decider` has the matching domain `m in [0, n_delivery)`, so
+no code path ever computes a commitment targeting a delivery past the extended
+axis and then truncates it. A post-study-targeted
 delivery (`m` in `[n_stages, n_delivery)`) is CREATED and rides the ring, priced
 through the boundary FCF — masking is exact at `n_delivery`, not `n_stages`.
 `build_anticipated_slot_row_pos`'s per-slot `None` (no carry row) and
@@ -4499,7 +4501,8 @@ Read: `lp/indexer/anticipated_gate.rs`
 `is_anticipated_decision_active_for_delivery_strict_extended_bound` (the strict
 `< n_delivery` gate on the extended axis; `<=` would admit a delivery at
 `n_delivery`) and `a1c_lead_stages_is_pure_index_shift`'s
-empty-`decision_sets`-past-the-delivery-bound assertion.
+empty-`decision_sets`-past-the-delivery-bound assertion. Pinned by
+`setup::calendar_cross_wire_tests::thermal_consumers_follow_the_thermal_calendar`.
 
 ### In-LP anticipated ring: single-decider deposit & `K = 0` exclusion
 

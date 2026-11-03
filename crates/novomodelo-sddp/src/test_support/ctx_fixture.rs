@@ -180,12 +180,13 @@ impl CtxFixture {
             self.anticipated_resolution.clone()
         };
         self.state = self.build_state(resolution);
-        let (_, cumulative, calendar, post_study) = self.time_value.canonical_fields();
+        let (_, cumulative, delivery_stage_ids, calendar, post_study) =
+            self.time_value.canonical_fields();
         self.time_value = TimeValue::from_parts(
             vec![1.0; self.bounds.n_stages()],
             cumulative.to_vec(),
             calendar.total_hours().to_vec(),
-            calendar.stage_ids().to_vec(),
+            delivery_stage_ids.to_vec(),
             post_study.clone(),
         );
         self.study_dims = StudyDimensions {

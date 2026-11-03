@@ -1250,14 +1250,14 @@ pub(crate) fn resolve_state_layout(
 /// Propagates [`resolve_state_layout`]'s `LeadTime` fan-out rejection.
 pub(crate) fn resolve_state_and_topology(
     system: &System,
-    calendar: &DeliveryCalendar,
+    thermal: &DeliveryCalendar,
+    water: &DeliveryCalendar,
     par_lp: &PrecomputedPar,
     inflow_lag_depth: Option<u32>,
     boundary_present: bool,
 ) -> Result<(bucket_topology::TransitBucketTopology, ResolvedStateLayout), SddpError> {
-    let topology =
-        bucket_topology::build_transit_bucket_topology(system, calendar, boundary_present);
-    let layout = resolve_state_layout(system, calendar, par_lp, &topology, inflow_lag_depth)?;
+    let topology = bucket_topology::build_transit_bucket_topology(system, water, boundary_present);
+    let layout = resolve_state_layout(system, thermal, par_lp, &topology, inflow_lag_depth)?;
     Ok((topology, layout))
 }
 
@@ -1897,10 +1897,12 @@ fn resolve_stage_data(
     stochastic: &StochasticContext,
     hydro_models: &PrepareHydroModelsResult,
 ) -> Result<ResolvedStageInputs, SddpError> {
-    let calendar = DeliveryCalendar::from_system(system);
+    let thermal = DeliveryCalendar::thermal(system);
+    let water = DeliveryCalendar::water(system);
     let (transit_bucket_topology, layout) = resolve_state_and_topology(
         system,
-        &calendar,
+        &thermal,
+        &water,
         stochastic.par(),
         config.boundary.inflow_lag_depth(),
         config.boundary.is_present(),
@@ -1908,7 +1910,7 @@ fn resolve_stage_data(
     let transit_seed_arcs = build_transit_seed_arcs(system, &transit_bucket_topology);
     warn_on_boundary_absent_post_study_delivery(
         system,
-        &calendar,
+        &thermal,
         &layout.anticipated_plants,
         &layout.state.anticipated_resolution,
         config.boundary.is_present(),
@@ -1940,7 +1942,7 @@ fn resolve_stage_data(
         downstream_par_order,
     );
 
-    let time_value = TimeValue::from_system(system, &study_dims.anticipated_plants, calendar);
+    let time_value = TimeValue::from_system(system, &study_dims.anticipated_plants, thermal);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
     warn_on_inert_plant_floor_overrides(
         system.hydros(),
@@ -3062,6 +3064,9 @@ fn splice_transit_bucket_seed(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+mod calendar_cross_wire_tests;
+
+#[cfg(test)]
 mod tests;
 
 /// Round-trip fidelity: the rolling-seed emitter's output, re-anchored at the
@@ -3332,7 +3337,7 @@ mod transit_seed_round_trip_tests {
                 })
                 .collect(),
         );
-        let calendar_b = DeliveryCalendar::from_system(&system_b);
+        let calendar_b = DeliveryCalendar::water(&system_b);
         let topology_b =
             bucket_topology::build_transit_bucket_topology(&system_b, &calendar_b, false);
         let state_b = crate::test_support::bucket_seed_state(&system_b, &topology_b);
@@ -3358,7 +3363,7 @@ mod transit_seed_round_trip_tests {
                 },
             ],
         );
-        let calendar_reference = DeliveryCalendar::from_system(&system_reference);
+        let calendar_reference = DeliveryCalendar::water(&system_reference);
         let topology_reference = bucket_topology::build_transit_bucket_topology(
             &system_reference,
             &calendar_reference,

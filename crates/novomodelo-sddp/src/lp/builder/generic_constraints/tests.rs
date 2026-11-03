@@ -430,7 +430,7 @@ fn call(
     ctx: &TemplateBuildCtx<'_>,
     layout: &StageLayout<'_>,
 ) -> Vec<(usize, f64)> {
-    resolve_variable_ref(&var_ref, block_idx, 0, ctx, layout)
+    resolve_variable_ref(&var_ref, block_idx, 0, 0, ctx, layout)
 }
 
 /// An energy contract carrying only the `id`/`bus_id`/`contract_type` the
@@ -1627,7 +1627,7 @@ fn generic_row_merges_line_exchange_and_line_direct() {
         row_lower: &mut row_lower,
         row_upper: &mut row_upper,
     };
-    fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers);
+    fill_generic_constraint_entries(&ctx, &fx.stage, 0, &layout, &mut buffers);
 
     for blk in 0..n_blks {
         let direct = VariableRef::LineDirect {

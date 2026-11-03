@@ -148,7 +148,7 @@ pub(super) fn build_single_stage_template(
         row_lower: &mut row_lower,
         row_upper: &mut row_upper,
     };
-    entries::fill_generic_constraint_entries(ctx, stage_idx, &layout, &mut buffers);
+    entries::fill_generic_constraint_entries(ctx, stage, stage_idx, &layout, &mut buffers);
 
     finalize_stage_objective(ctx, stage_idx, &layout, &mut objective);
 

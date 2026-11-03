@@ -1147,6 +1147,7 @@ pub(super) struct LpMatrixBuffers<'a> {
 /// column, and no entry when that sum is an exact zero.
 pub(super) fn fill_generic_constraint_entries(
     ctx: &TemplateBuildCtx<'_>,
+    stage: &Stage,
     stage_idx: usize,
     layout: &StageLayout,
     buffers: &mut LpMatrixBuffers<'_>,
@@ -1187,8 +1188,14 @@ pub(super) fn fill_generic_constraint_entries(
                 stage_idx,
                 entry.block_idx,
             );
-            let pairs =
-                resolve_variable_ref(&term.variable, entry.block_idx, stage_idx, ctx, layout);
+            let pairs = resolve_variable_ref(
+                &term.variable,
+                entry.block_idx,
+                stage.id,
+                stage_idx,
+                ctx,
+                layout,
+            );
             for (col, multiplier) in pairs {
                 row_entries.push((col, coefficient * multiplier));
             }
@@ -4646,7 +4653,7 @@ mod pumping_water_tests {
                 row_lower: &mut row_lower,
                 row_upper: &mut row_upper,
             };
-            fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers);
+            fill_generic_constraint_entries(&ctx, &stage, 0, &layout, &mut buffers);
 
             // Mirror the production per-column row-sort (see
             // build_single_stage_template) before assembling the CSC.
@@ -8201,7 +8208,7 @@ mod pumping_water_tests {
             row_upper: &mut row_upper,
         };
 
-        fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers);
+        fill_generic_constraint_entries(&ctx, &stage, 0, &layout, &mut buffers);
 
         // Each generic row `blk` lands on the station's flow column for that block,
         // with the flow (1.0) and power (consumption) terms aliasing the SAME column.
@@ -8272,7 +8279,7 @@ mod pumping_water_tests {
             "block-dependent pumping constraint must expand to one row per block"
         );
 
-        let col_entries = filled_generic_rows(&ctx, &layout);
+        let col_entries = filled_generic_rows(&ctx, &stage, &layout);
 
         (0..n_blks)
             .map(|blk| {
@@ -8336,6 +8343,7 @@ mod pumping_water_tests {
 
     fn filled_generic_rows(
         ctx: &TemplateBuildCtx<'_>,
+        stage: &Stage,
         layout: &StageLayout<'_>,
     ) -> Vec<Vec<(usize, f64)>> {
         let mut col_entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); layout.num_cols];
@@ -8350,7 +8358,7 @@ mod pumping_water_tests {
             row_lower: &mut row_lower,
             row_upper: &mut row_upper,
         };
-        fill_generic_constraint_entries(ctx, 0, layout, &mut buffers);
+        fill_generic_constraint_entries(ctx, stage, 0, layout, &mut buffers);
         col_entries
     }
 
@@ -8393,17 +8401,17 @@ mod pumping_water_tests {
             .geometry
             .turbine_col(HydroCell::new(0), BlockIdx::new(0));
         assert_eq!(
-            resolve_variable_ref(&turbined, 0, 0, &ctx, &layout),
+            resolve_variable_ref(&turbined, 0, stage.id, 0, &ctx, &layout),
             vec![(turbine_col, 1.0)]
         );
         assert_eq!(
-            resolve_variable_ref(&generation, 0, 0, &ctx, &layout),
+            resolve_variable_ref(&generation, 0, stage.id, 0, &ctx, &layout),
             vec![(turbine_col, 2.5)],
             "generation must alias the turbine column at the overridden productivity"
         );
         assert_eq!(layout.rows.n_generic_rows, 2, "one generic row per block");
 
-        let col_entries = filled_generic_rows(&ctx, &layout);
+        let col_entries = filled_generic_rows(&ctx, &stage, &layout);
         for (i, row_entry) in layout.generic_constraint_rows.iter().enumerate() {
             let blk = row_entry.block_idx;
             let row = layout.generic_row(i);
@@ -8446,11 +8454,11 @@ mod pumping_water_tests {
 
         let storage_col = layout.state.storage_outgoing_col(HydroSys::new(0)).get();
         assert_eq!(
-            resolve_variable_ref(&storage, 0, 0, &ctx, &layout),
+            resolve_variable_ref(&storage, 0, stage.id, 0, &ctx, &layout),
             vec![(storage_col, 1.0)]
         );
         assert_eq!(
-            resolve_variable_ref(&useful_final, 0, 0, &ctx, &layout),
+            resolve_variable_ref(&useful_final, 0, stage.id, 0, &ctx, &layout),
             vec![(storage_col, 1.0)],
             "useful_volume_final must alias the stage-final storage column"
         );
@@ -8459,7 +8467,7 @@ mod pumping_water_tests {
             "block-independent variables collapse to one stage-level row"
         );
 
-        let col_entries = filled_generic_rows(&ctx, &layout);
+        let col_entries = filled_generic_rows(&ctx, &stage, &layout);
         let row = layout.generic_row(0);
         assert_eq!(
             entry_count_at(&col_entries, storage_col, row),
@@ -8502,7 +8510,7 @@ mod pumping_water_tests {
         let storage_col = layout.state.storage_outgoing_col(HydroSys::new(0)).get();
         for variable in [&storage, &storage_final, &useful_final] {
             assert_eq!(
-                resolve_variable_ref(variable, 0, 0, &ctx, &layout),
+                resolve_variable_ref(variable, 0, stage.id, 0, &ctx, &layout),
                 vec![(storage_col, 1.0)],
                 "{variable:?} must alias the stage-final storage column"
             );
@@ -8512,7 +8520,7 @@ mod pumping_water_tests {
             "block-independent variables collapse to one stage-level row"
         );
 
-        let col_entries = filled_generic_rows(&ctx, &layout);
+        let col_entries = filled_generic_rows(&ctx, &stage, &layout);
         let row = layout.generic_row(0);
         assert_eq!(
             entry_count_at(&col_entries, storage_col, row),
@@ -8606,7 +8614,7 @@ mod pumping_water_tests {
             row_upper: &mut row_upper,
         };
 
-        fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers);
+        fill_generic_constraint_entries(&ctx, &stage, 0, &layout, &mut buffers);
 
         assert_eq!(
             block_hours.len(),

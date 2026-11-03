@@ -240,9 +240,10 @@ pub fn build_stage_templates_resolving_layout(
     evaporation_models: &EvaporationModelSet,
     resolved_parameters: &ResolvedParameters,
 ) -> Result<StageTemplates, SddpError> {
-    let calendar = DeliveryCalendar::from_system(system);
+    let thermal = DeliveryCalendar::thermal(system);
+    let water = DeliveryCalendar::water(system);
     let (topology, layout) =
-        super::resolve_state_and_topology(system, &calendar, par_lp, None, false)?;
+        super::resolve_state_and_topology(system, &thermal, &water, par_lp, None, false)?;
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
     let stages: Vec<Stage> = system
         .stages()
@@ -261,7 +262,7 @@ pub fn build_stage_templates_resolving_layout(
         layout.anticipated_plants.clone(),
         downstream_par_order,
     );
-    let time_value = TimeValue::from_system(system, &study_dims.anticipated_plants, calendar);
+    let time_value = TimeValue::from_system(system, &study_dims.anticipated_plants, thermal);
     let study_stage_ids: Vec<StageId> = stages.iter().map(|s| StageId(s.id)).collect();
     let stage_block_counts: Vec<usize> = stages.iter().map(|s| s.blocks.len()).collect();
     let resolved_generic_coefficients = ResolvedGenericCoefficients::build(

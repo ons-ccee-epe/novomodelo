@@ -1776,12 +1776,13 @@ mod tests {
         let hydro_ids: Vec<EntityId> = system.hydros().iter().map(|h| h.id).collect();
         let par_lp = PrecomputedPar::build(system.inflow_models(), &study_stages, &hydro_ids, None)
             .expect("PrecomputedPar must build");
-        let calendar = crate::time_value::DeliveryCalendar::from_system(&system);
+        let thermal = crate::time_value::DeliveryCalendar::thermal(&system);
+        let water = crate::time_value::DeliveryCalendar::water(&system);
         let topology =
-            crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, false);
+            crate::bucket_topology::build_transit_bucket_topology(&system, &water, false);
         let layout = crate::setup::resolve_state_layout(
             &system,
-            &calendar,
+            &thermal,
             &par_lp,
             &topology,
             declared_depth,

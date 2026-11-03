@@ -48,7 +48,7 @@ fn build_time_value_for(system: &novomodelo_core::System) -> TimeValue {
     TimeValue::from_system(
         system,
         &anticipated_plants,
-        DeliveryCalendar::from_system(system),
+        DeliveryCalendar::thermal(system),
     )
 }
 
@@ -5436,7 +5436,7 @@ fn template_anticipated_resolution_matches_setup_lead_time() {
 
     let (setup_resolution, setup_lead_stages) = resolve_anticipated_commitments(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
     assert_eq!(
@@ -5505,7 +5505,7 @@ fn template_leadstages_byte_identical_to_setup_and_fallback() {
 
     let (setup_resolution, setup_lead_stages) = resolve_anticipated_commitments(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
     assert_eq!(setup_lead_stages, ctx.state.anticipated_lead_stages);

@@ -21,6 +21,9 @@ Helper scripts for Novomodelo, grouped by role.
   with all states and with state windows, and a simulation of all cuts against
   active cuts, on a case, and reports lower bound, simulated cost, wall time and
   peak memory.
+- **`measure_run_wallclock.py`** — reporting tool (not a CI gate): compares
+  training and simulation wall-clock of two `novomodelo` binaries on given
+  cases.
 
 ## `ci/` — quality gates
 

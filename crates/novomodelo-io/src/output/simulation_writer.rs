@@ -51,7 +51,7 @@ use arrow::array::{
 use chrono::NaiveDate;
 
 use super::date32_days;
-use novomodelo_core::System;
+use novomodelo_core::{Hydro, System};
 
 use crate::MetadataSimulationSolveStats;
 use crate::output::SimulationOutput;
@@ -768,13 +768,8 @@ fn family_has_non_controllables(system: &System) -> bool {
     system.n_non_controllable_sources() > 0
 }
 
-/// A declared travel-time arc: `travel_time_hours > 0` and a downstream
-/// target. Mirrors `bucket_topology`'s arc predicate.
 fn family_declares_travel_time(system: &System) -> bool {
-    system
-        .hydros()
-        .iter()
-        .any(|h| h.travel_time_hours.is_some_and(|t| t > 0.0) && h.downstream_id.is_some())
+    system.hydros().iter().any(Hydro::declares_travel_time_arc)
 }
 
 fn family_has_generic_constraints(system: &System) -> bool {
