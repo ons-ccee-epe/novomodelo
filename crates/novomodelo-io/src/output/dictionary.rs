@@ -3602,6 +3602,7 @@ mod tests {
                 max_generation_mw: 20.0,
                 min_turbined_m3s: 2.0,
                 max_turbined_m3s: 25.0,
+                ..Default::default()
             }),
             make_unit_group(UnitGroupSpec {
                 id: 2,
@@ -3611,6 +3612,7 @@ mod tests {
                 max_generation_mw: 15.0,
                 min_turbined_m3s: 4.0,
                 max_turbined_m3s: 18.0,
+                ..Default::default()
             }),
         ];
         let stage0 = make_stage(0);

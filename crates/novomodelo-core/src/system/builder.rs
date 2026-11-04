@@ -352,6 +352,9 @@ impl SystemBuilder {
 
         for hydro in &mut self.hydros {
             hydro.sort_unit_groups();
+            for group in &mut hydro.unit_groups {
+                group.sort_units();
+            }
         }
         sort_canonical(&mut self.thermals, |t| t.operational_start_date, |t| t.id.0);
         for thermal in &mut self.thermals {
@@ -548,8 +551,9 @@ pub(crate) fn check_canonical_order<T, K: Ord>(
 mod tests {
     use super::*;
     use crate::test_support::{
-        BusSpec, HydroSpec, MirrorUnitGroup, ThermalSpec, ThermalUnitSpec, ThermalUnitStateSpec,
-        make_bus, make_hydro, make_thermal, make_thermal_unit, make_thermal_unit_state,
+        BusSpec, HydroSpec, HydroUnitSpec, MirrorUnitGroup, ThermalSpec, ThermalUnitSpec,
+        ThermalUnitStateSpec, UnitGroupSpec, make_bus, make_hydro, make_hydro_unit, make_thermal,
+        make_thermal_unit, make_thermal_unit_state, make_unit_group,
     };
     use crate::{
         Block, BlockMode, DeficitSegment, HydroPenalties, NoiseMethod, ScenarioSourceConfig,
@@ -725,6 +729,57 @@ mod tests {
 
         let unit_ids: Vec<i32> = system.thermals()[0].units.iter().map(|u| u.id.0).collect();
         assert_eq!(unit_ids, vec![3, 5, 7]);
+    }
+
+    #[test]
+    fn build_sorts_hydro_units_by_id_within_each_group() {
+        let group = |id, unit_ids: &[i32]| {
+            make_unit_group(UnitGroupSpec {
+                id,
+                bus_id: 1,
+                units: unit_ids
+                    .iter()
+                    .map(|&unit_id| {
+                        make_hydro_unit(HydroUnitSpec {
+                            id: unit_id,
+                            ..Default::default()
+                        })
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+        };
+        let mut hydro = make_hydro(HydroSpec {
+            id: 1,
+            bus_id: 1,
+            mirror_unit_group: MirrorUnitGroup::None,
+            ..Default::default()
+        });
+        hydro.unit_groups = vec![group(0, &[7, 3, 5]), group(1, &[4, 1])];
+
+        let system = SystemBuilder::new()
+            .buses(vec![make_bus(BusSpec {
+                id: 1,
+                name: format!("bus-{}", 1),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 5000.0,
+                }],
+                ..Default::default()
+            })])
+            .hydros(vec![hydro])
+            .build()
+            .expect("hydro with units is valid");
+
+        let unit_ids = |group: usize| -> Vec<i32> {
+            system.hydros()[0].unit_groups[group]
+                .units
+                .iter()
+                .map(|u| u.id.0)
+                .collect()
+        };
+        assert_eq!(unit_ids(0), vec![3, 5, 7]);
+        assert_eq!(unit_ids(1), vec![1, 4]);
     }
 
     #[test]
@@ -1206,13 +1261,14 @@ mod tests {
 mod proptests {
     use super::*;
     use crate::test_support::{
-        BusSpec, ContractSpec, HydroSpec, LineSpec, NcsSpec, PumpingSpec, StageSpec, ThermalSpec,
-        ThermalUnitSpec, ThermalUnitStateSpec, make_bus, make_contract, make_hydro, make_line,
-        make_ncs, make_pumping_station, make_stage, make_thermal, make_thermal_unit,
-        make_thermal_unit_state,
+        BusSpec, ContractSpec, HydroSpec, HydroUnitSpec, LineSpec, NcsSpec, PumpingSpec, StageSpec,
+        ThermalSpec, ThermalUnitSpec, ThermalUnitStateSpec, make_bus, make_contract, make_hydro,
+        make_hydro_unit, make_line, make_ncs, make_pumping_station, make_stage, make_thermal,
+        make_thermal_unit, make_thermal_unit_state,
     };
     use crate::{
-        ConstraintExpression, ContractType, DeficitSegment, ThermalUnit, ThermalUnitInitialState,
+        ConstraintExpression, ContractType, DeficitSegment, HydroUnit, ThermalUnit,
+        ThermalUnitInitialState,
     };
     use proptest::prelude::*;
 
@@ -1352,6 +1408,20 @@ mod proptests {
                 make_thermal_unit(ThermalUnitSpec {
                     id,
                     max_generation_mw: 50.0,
+                    ..Default::default()
+                })
+            })
+            .collect()
+    }
+
+    fn reference_hydro_units() -> Vec<HydroUnit> {
+        [30, 10, 20]
+            .into_iter()
+            .map(|id| {
+                make_hydro_unit(HydroUnitSpec {
+                    id,
+                    max_generation_mw: 50.0,
+                    max_turbined_m3s: 50.0,
                     ..Default::default()
                 })
             })
@@ -1520,6 +1590,12 @@ mod proptests {
         u.iter().map(|u| u.id.0).collect()
     }
 
+    fn expected_hydro_unit_ids() -> Vec<i32> {
+        let mut u = reference_hydro_units();
+        u.sort_by_key(|u| u.id.0);
+        u.iter().map(|u| u.id.0).collect()
+    }
+
     fn expected_unit_state_keys() -> Vec<(i32, i32)> {
         let mut s = reference_unit_states();
         s.sort_by_key(|s| (s.thermal_id.0, s.unit_id.0));
@@ -1541,7 +1617,8 @@ mod proptests {
         fn build_canonical_order_invariant_under_input_permutation(
             buses in Just(reference_buses()).prop_shuffle(),
             lines in Just(reference_lines()).prop_shuffle(),
-            hydros in Just(reference_hydros()).prop_shuffle(),
+            mut hydros in Just(reference_hydros()).prop_shuffle(),
+            hydro_units in Just(reference_hydro_units()).prop_shuffle(),
             mut thermals in Just(reference_thermals()).prop_shuffle(),
             units in Just(reference_units()).prop_shuffle(),
             pumping in Just(reference_pumping()).prop_shuffle(),
@@ -1551,6 +1628,12 @@ mod proptests {
             gcs in Just(reference_generic_constraints()).prop_shuffle(),
             states in Just(reference_unit_states()).prop_shuffle(),
         ) {
+            hydros
+                .iter_mut()
+                .find(|h| h.id == EntityId(1))
+                .expect("reference hydros include id 1")
+                .unit_groups[0]
+                .units = hydro_units;
             thermals
                 .iter_mut()
                 .find(|t| t.id == EntityId(1))
@@ -1581,6 +1664,7 @@ mod proptests {
             let expected_contracts = expected_op(reference_contracts());
             let expected_ncs = expected_op(reference_ncs());
             let expected_units = expected_unit_ids();
+            let expected_hydro_units = expected_hydro_unit_ids();
             let expected_stages = expected_stage_ids();
             let expected_gcs = expected_gc_ids();
             let expected_states = expected_unit_state_keys();
@@ -1595,6 +1679,7 @@ mod proptests {
             prop_assert!(expected_contracts.is_sorted());
             prop_assert!(expected_ncs.is_sorted());
             prop_assert!(expected_units.is_sorted());
+            prop_assert!(expected_hydro_units.is_sorted());
             prop_assert!(expected_stages.is_sorted());
             prop_assert!(expected_gcs.is_sorted());
             prop_assert!(expected_states.is_sorted());
@@ -1615,6 +1700,17 @@ mod proptests {
                     .map(|u| u.id.0)
                     .collect::<Vec<_>>(),
                 expected_units
+            );
+            prop_assert_eq!(
+                system
+                    .hydro(EntityId(1))
+                    .expect("hydro 1 is built")
+                    .unit_groups[0]
+                    .units
+                    .iter()
+                    .map(|u| u.id.0)
+                    .collect::<Vec<_>>(),
+                expected_hydro_units
             );
             prop_assert_eq!(
                 system.stages().iter().map(|s| s.id).collect::<Vec<_>>(),

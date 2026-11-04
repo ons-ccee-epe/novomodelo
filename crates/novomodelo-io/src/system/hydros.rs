@@ -810,6 +810,7 @@ fn convert_hydros(
                     max_generation_mw: g.max_generation_mw,
                     min_turbined_m3s: g.min_turbined_m3s,
                     max_turbined_m3s: g.max_turbined_m3s,
+                    units: Vec::new(),
                 })
                 .collect();
 

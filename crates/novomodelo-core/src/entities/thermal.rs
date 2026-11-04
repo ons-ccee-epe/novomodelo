@@ -314,6 +314,42 @@ mod tests {
 
     #[cfg(feature = "serde")]
     #[test]
+    fn thermal_units_postcard_field_order_is_last() {
+        let base = make_thermal(ThermalSpec {
+            id: 9,
+            name: "T9".to_string(),
+            bus_id: 4,
+            cost_per_mwh: 87.5,
+            min_generation_mw: 25.5,
+            max_generation_mw: 340.25,
+            ..Default::default()
+        });
+        let mut with_units = base.clone();
+        with_units.units = vec![make_thermal_unit(ThermalUnitSpec {
+            id: 1,
+            name: "T9-U1".to_string(),
+            max_generation_mw: 340.25,
+            ..Default::default()
+        })];
+
+        let prefix = postcard::to_allocvec(&base).unwrap();
+        let full = postcard::to_allocvec(&with_units).unwrap();
+
+        assert_eq!(
+            prefix.last(),
+            Some(&0x00),
+            "an empty units list encodes as one trailing length byte"
+        );
+        assert!(full.len() > prefix.len());
+        assert_eq!(
+            &full[..prefix.len() - 1],
+            &prefix[..prefix.len() - 1],
+            "units must serialize last (append-last wire contract)"
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
     fn thermal_unit_json_roundtrip_preserves_every_field_bit_exact() {
         let unit = thermal_unit_fixture();
         let json = serde_json::to_string(&unit).unwrap();

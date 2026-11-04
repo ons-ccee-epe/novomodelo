@@ -70,8 +70,9 @@ pub use constraints::training_event::{
 pub use entities::{
     AnticipatedConfig, Bus, ContractType, DeficitSegment, DiversionChannel, EfficiencyModel,
     EnergyContract, FillingConfig, HydraulicLossesModel, Hydro, HydroGenerationModel,
-    HydroPenalties, HydroUnitGroup, Line, NonControllableSource, PumpingStation,
-    THERMAL_RAMP_INTERVAL_HOURS, TailraceModel, TailracePoint, Thermal, ThermalUnit,
+    HydroPenalties, HydroTurbineType, HydroUnit, HydroUnitGroup, Line, NonControllableSource,
+    PumpingStation, THERMAL_RAMP_INTERVAL_HOURS, TailraceModel, TailracePoint, Thermal,
+    ThermalUnit,
 };
 pub use entity_id::EntityId;
 pub use error::{ThermalUnitStateViolation, ThermalUnitViolation, ValidationError};

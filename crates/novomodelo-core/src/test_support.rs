@@ -14,9 +14,10 @@ use chrono::NaiveDate;
 
 use crate::{
     Block, BlockMode, Bus, ContractType, DeficitSegment, EnergyContract, EntityId, Hydro,
-    HydroGenerationModel, HydroPenalties, HydroUnitGroup, Line, NoiseMethod, NonControllableSource,
-    PumpingStation, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, Thermal,
-    ThermalUnit, ThermalUnitInitialState, ThermalUnitStatus,
+    HydroGenerationModel, HydroPenalties, HydroTurbineType, HydroUnit, HydroUnitGroup, Line,
+    NoiseMethod, NonControllableSource, PumpingStation, ScenarioSourceConfig, Stage,
+    StageRiskConfig, StageStateConfig, Thermal, ThermalUnit, ThermalUnitInitialState,
+    ThermalUnitStatus,
 };
 
 /// The `NaiveDate` for a calendar-valid `(year, month, day)` triple.
@@ -630,6 +631,73 @@ pub fn make_pumping_station(
     }
 }
 
+/// Fixture fields for [`make_hydro_unit`].
+#[derive(Debug, Clone)]
+pub struct HydroUnitSpec {
+    /// Unit identifier, unique within the owning group.
+    pub id: i32,
+    /// Unit name.
+    pub name: String,
+    /// Minimum generation.
+    pub min_generation_mw: f64,
+    /// Maximum generation.
+    pub max_generation_mw: f64,
+    /// Minimum turbined flow.
+    pub min_turbined_m3s: f64,
+    /// Maximum turbined flow.
+    pub max_turbined_m3s: f64,
+    /// Turbine type.
+    pub turbine_type: HydroTurbineType,
+    /// Minimum time on before a switch-off.
+    pub min_up_time_hours: f64,
+    /// Minimum time off before a switch-on.
+    pub min_down_time_hours: f64,
+}
+
+impl Default for HydroUnitSpec {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            name: String::new(),
+            min_generation_mw: 0.0,
+            max_generation_mw: 1.0,
+            min_turbined_m3s: 0.0,
+            max_turbined_m3s: 1.0,
+            turbine_type: HydroTurbineType::Francis,
+            min_up_time_hours: 0.0,
+            min_down_time_hours: 0.0,
+        }
+    }
+}
+
+/// Build a [`HydroUnit`] from `spec`.
+#[must_use]
+pub fn make_hydro_unit(
+    HydroUnitSpec {
+        id,
+        name,
+        min_generation_mw,
+        max_generation_mw,
+        min_turbined_m3s,
+        max_turbined_m3s,
+        turbine_type,
+        min_up_time_hours,
+        min_down_time_hours,
+    }: HydroUnitSpec,
+) -> HydroUnit {
+    HydroUnit {
+        id: EntityId(id),
+        name,
+        min_generation_mw,
+        max_generation_mw,
+        min_turbined_m3s,
+        max_turbined_m3s,
+        turbine_type,
+        min_up_time_hours,
+        min_down_time_hours,
+    }
+}
+
 /// Fixture fields for [`make_unit_group`].
 #[derive(Debug, Clone)]
 pub struct UnitGroupSpec {
@@ -647,6 +715,8 @@ pub struct UnitGroupSpec {
     pub min_turbined_m3s: f64,
     /// Maximum turbined flow.
     pub max_turbined_m3s: f64,
+    /// Generating units of the group.
+    pub units: Vec<HydroUnit>,
 }
 
 impl Default for UnitGroupSpec {
@@ -659,6 +729,7 @@ impl Default for UnitGroupSpec {
             max_generation_mw: 1.0,
             min_turbined_m3s: 0.0,
             max_turbined_m3s: 1.0,
+            units: Vec::new(),
         }
     }
 }
@@ -674,6 +745,7 @@ pub fn make_unit_group(
         max_generation_mw,
         min_turbined_m3s,
         max_turbined_m3s,
+        units,
     }: UnitGroupSpec,
 ) -> HydroUnitGroup {
     HydroUnitGroup {
@@ -684,6 +756,7 @@ pub fn make_unit_group(
         max_generation_mw,
         min_turbined_m3s,
         max_turbined_m3s,
+        units,
     }
 }
 

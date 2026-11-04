@@ -183,6 +183,50 @@ pub enum EfficiencyModel {
     },
 }
 
+/// Turbine type of a hydro unit. Classificatory: no model behavior depends on it.
+///
+/// Postcard encodes variants by position: append new variants, never reorder
+/// (pinned by `hydro_turbine_type_postcard_discriminant_pin`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum HydroTurbineType {
+    /// Francis reaction turbine.
+    Francis,
+    /// Kaplan axial-flow turbine.
+    Kaplan,
+    /// Pelton impulse turbine.
+    Pelton,
+    /// Bulb axial-flow turbine.
+    Bulbo,
+}
+
+/// One generating unit of a hydro unit group, injecting at its group's bus.
+/// A unit has no productivity: its generation and turbined-flow bounds are
+/// independent, with no conversion between them. The two durations are physical
+/// hours on one on/off clock.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct HydroUnit {
+    /// Identifier, unique within the owning group (not globally).
+    pub id: EntityId,
+    /// Human-readable unit name.
+    pub name: String,
+    /// Minimum generation \[MW\].
+    pub min_generation_mw: f64,
+    /// Maximum generation \[MW\].
+    pub max_generation_mw: f64,
+    /// Minimum turbined flow \[m³/s\].
+    pub min_turbined_m3s: f64,
+    /// Maximum turbined flow \[m³/s\].
+    pub max_turbined_m3s: f64,
+    /// Turbine type.
+    pub turbine_type: HydroTurbineType,
+    /// Minimum time on before a switch-off \[h\]; `0` means no minimum.
+    pub min_up_time_hours: f64,
+    /// Minimum time off before a switch-on \[h\]; `0` means no minimum.
+    pub min_down_time_hours: f64,
+}
+
 /// A turbine group within a hydro plant: the plant owns the water (storage,
 /// inflow, spillage, cascade topology), each group owns a share of the power
 /// (its own bus and its own generation/turbining envelope).
@@ -205,6 +249,17 @@ pub struct HydroUnitGroup {
     pub min_turbined_m3s: f64,
     /// Maximum turbined flow \[m³/s\].
     pub max_turbined_m3s: f64,
+    /// Generating units of this group; empty means the group is modeled only in aggregate.
+    /// The group's bounds floor and cap the units' summed generation and turbined flow.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub units: Vec<HydroUnit>,
+}
+
+impl HydroUnitGroup {
+    /// Puts `units` in canonical id order so results do not depend on declaration order.
+    pub fn sort_units(&mut self) {
+        self.units.sort_by_key(|u| u.id.0);
+    }
 }
 
 /// Hydroelectric power plant with reservoir storage and cascade topology.
@@ -329,6 +384,7 @@ impl Hydro {
                 max_generation_mw: self.max_generation_mw,
                 min_turbined_m3s: self.min_turbined_m3s,
                 max_turbined_m3s: self.max_turbined_m3s,
+                ..Default::default()
             }));
         }
     }
@@ -337,7 +393,9 @@ impl Hydro {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{UnitGroupSpec, make_unit_group};
+    #[cfg(feature = "serde")]
+    use crate::test_support::f64_bits_eq;
+    use crate::test_support::{HydroUnitSpec, UnitGroupSpec, make_hydro_unit, make_unit_group};
 
     fn penalties_all(v: f64) -> HydroPenalties {
         HydroPenalties {
@@ -768,6 +826,7 @@ mod tests {
                 max_generation_mw: 20.0,
                 min_turbined_m3s: 30.0,
                 max_turbined_m3s: 40.0,
+                ..Default::default()
             }),
             make_unit_group(UnitGroupSpec {
                 id: 7,
@@ -777,6 +836,7 @@ mod tests {
                 max_generation_mw: 60.0,
                 min_turbined_m3s: 70.0,
                 max_turbined_m3s: 80.0,
+                ..Default::default()
             }),
         ];
         hydro
@@ -833,6 +893,61 @@ mod tests {
         assert!(
             err.to_string().contains("unit_groups"),
             "error message must mention unit_groups, got: {err}"
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn hydro_unit_group_json_without_units_key_loads_with_no_units() {
+        let group = make_unit_group(UnitGroupSpec {
+            id: 3,
+            name: "G3".to_string(),
+            bus_id: 4,
+            ..Default::default()
+        });
+        let mut document = serde_json::to_value(&group).unwrap();
+        assert!(document.as_object_mut().unwrap().remove("units").is_some());
+        let deserialized: HydroUnitGroup = serde_json::from_value(document).unwrap();
+        assert!(deserialized.units.is_empty());
+        assert_eq!(deserialized, group);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn hydro_unit_group_units_postcard_field_order_is_last() {
+        let base = make_unit_group(UnitGroupSpec {
+            id: 3,
+            name: "G3".to_string(),
+            bus_id: 4,
+            min_generation_mw: 1.5,
+            max_generation_mw: 40.25,
+            min_turbined_m3s: 2.5,
+            max_turbined_m3s: 60.75,
+            ..Default::default()
+        });
+        let mut with_units = base.clone();
+        with_units.units = vec![make_hydro_unit(HydroUnitSpec {
+            id: 1,
+            name: "G3-U1".to_string(),
+            max_generation_mw: 40.25,
+            max_turbined_m3s: 60.75,
+            turbine_type: HydroTurbineType::Pelton,
+            ..Default::default()
+        })];
+
+        let prefix = postcard::to_allocvec(&base).unwrap();
+        let full = postcard::to_allocvec(&with_units).unwrap();
+
+        assert_eq!(
+            prefix.last(),
+            Some(&0x00),
+            "an empty units list encodes as one trailing length byte"
+        );
+        assert!(full.len() > prefix.len());
+        assert_eq!(
+            &full[..prefix.len() - 1],
+            &prefix[..prefix.len() - 1],
+            "units must serialize last (append-last wire contract)"
         );
     }
 
@@ -894,6 +1009,7 @@ mod tests {
             max_generation_mw: 2.0,
             min_turbined_m3s: 3.0,
             max_turbined_m3s: 4.0,
+            ..Default::default()
         })];
 
         hydro.declare_mirror_unit_group(EntityId::from(10));
@@ -914,6 +1030,7 @@ mod tests {
                 max_generation_mw: 2.0,
                 min_turbined_m3s: 3.0,
                 max_turbined_m3s: 4.0,
+                ..Default::default()
             }),
             make_unit_group(UnitGroupSpec {
                 id: 2,
@@ -923,6 +1040,7 @@ mod tests {
                 max_generation_mw: 6.0,
                 min_turbined_m3s: 7.0,
                 max_turbined_m3s: 8.0,
+                ..Default::default()
             }),
         ];
 
@@ -954,6 +1072,7 @@ mod tests {
                 max_generation_mw: 2.0,
                 min_turbined_m3s: 3.0,
                 max_turbined_m3s: 4.0,
+                ..Default::default()
             }),
             make_unit_group(UnitGroupSpec {
                 id: 2,
@@ -963,6 +1082,7 @@ mod tests {
                 max_generation_mw: 6.0,
                 min_turbined_m3s: 7.0,
                 max_turbined_m3s: 8.0,
+                ..Default::default()
             }),
             make_unit_group(UnitGroupSpec {
                 id: 9,
@@ -972,6 +1092,7 @@ mod tests {
                 max_generation_mw: 10.0,
                 min_turbined_m3s: 11.0,
                 max_turbined_m3s: 12.0,
+                ..Default::default()
             }),
         ];
 
@@ -979,5 +1100,179 @@ mod tests {
 
         let ids: Vec<i32> = hydro.unit_groups.iter().map(|g| g.id.0).collect();
         assert_eq!(ids, vec![2, 5, 9]);
+    }
+
+    #[test]
+    fn test_sort_units_orders_units_by_id_ascending() {
+        let mut group = make_unit_group(UnitGroupSpec {
+            id: 1,
+            units: [5, 2, 9]
+                .into_iter()
+                .map(|id| {
+                    make_hydro_unit(HydroUnitSpec {
+                        id,
+                        ..Default::default()
+                    })
+                })
+                .collect(),
+            ..Default::default()
+        });
+
+        group.sort_units();
+
+        let ids: Vec<i32> = group.units.iter().map(|u| u.id.0).collect();
+        assert_eq!(ids, vec![2, 5, 9]);
+    }
+
+    #[test]
+    fn test_sort_unit_groups_does_not_sort_units() {
+        let mut hydro = minimal_hydro(HydroGenerationModel::ConstantProductivity);
+        hydro.unit_groups = vec![make_unit_group(UnitGroupSpec {
+            id: 1,
+            units: [5, 2, 9]
+                .into_iter()
+                .map(|id| {
+                    make_hydro_unit(HydroUnitSpec {
+                        id,
+                        ..Default::default()
+                    })
+                })
+                .collect(),
+            ..Default::default()
+        })];
+
+        hydro.sort_unit_groups();
+
+        let ids: Vec<i32> = hydro.unit_groups[0].units.iter().map(|u| u.id.0).collect();
+        assert_eq!(ids, vec![5, 2, 9]);
+    }
+
+    #[cfg(feature = "serde")]
+    const HYDRO_UNIT_KEYS: [&str; 9] = [
+        "id",
+        "name",
+        "min_generation_mw",
+        "max_generation_mw",
+        "min_turbined_m3s",
+        "max_turbined_m3s",
+        "turbine_type",
+        "min_up_time_hours",
+        "min_down_time_hours",
+    ];
+
+    #[cfg(feature = "serde")]
+    fn hydro_unit_fixture() -> crate::HydroUnit {
+        make_hydro_unit(HydroUnitSpec {
+            id: 3,
+            name: "U3".to_string(),
+            min_generation_mw: 12.5,
+            max_generation_mw: 47.25,
+            min_turbined_m3s: 8.75,
+            max_turbined_m3s: 31.5,
+            turbine_type: crate::HydroTurbineType::Kaplan,
+            min_up_time_hours: 6.5,
+            min_down_time_hours: 3.25,
+        })
+    }
+
+    #[cfg(feature = "serde")]
+    fn assert_f64_fields_bit_exact(a: &crate::HydroUnit, b: &crate::HydroUnit) {
+        let f64_fields = |unit: &crate::HydroUnit| {
+            [
+                unit.min_generation_mw,
+                unit.max_generation_mw,
+                unit.min_turbined_m3s,
+                unit.max_turbined_m3s,
+                unit.min_up_time_hours,
+                unit.min_down_time_hours,
+            ]
+        };
+        assert!(
+            f64_fields(a)
+                .into_iter()
+                .zip(f64_fields(b))
+                .all(|(x, y)| f64_bits_eq(x, y))
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn hydro_unit_json_roundtrip_preserves_every_field_bit_exact() {
+        let unit = hydro_unit_fixture();
+        let json = serde_json::to_string(&unit).unwrap();
+        let deserialized: crate::HydroUnit = serde_json::from_str(&json).unwrap();
+        assert_eq!(unit, deserialized);
+        assert_f64_fields_bit_exact(&unit, &deserialized);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn hydro_unit_postcard_roundtrip_preserves_every_field_bit_exact() {
+        let unit = hydro_unit_fixture();
+        let bytes = postcard::to_allocvec(&unit).unwrap();
+        let deserialized: crate::HydroUnit = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(unit, deserialized);
+        assert_f64_fields_bit_exact(&unit, &deserialized);
+        assert_eq!(bytes, postcard::to_allocvec(&deserialized).unwrap());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn hydro_unit_document_missing_any_key_fails_to_deserialize() {
+        let value = serde_json::to_value(hydro_unit_fixture()).unwrap();
+        assert_eq!(
+            value.as_object().unwrap().len(),
+            HYDRO_UNIT_KEYS.len(),
+            "a field was added or removed without updating HYDRO_UNIT_KEYS"
+        );
+        for key in HYDRO_UNIT_KEYS {
+            let mut document = value.clone();
+            document.as_object_mut().unwrap().remove(key);
+            assert!(
+                serde_json::from_value::<crate::HydroUnit>(document).is_err(),
+                "document without `{key}` must fail to deserialize"
+            );
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn hydro_turbine_type_postcard_discriminant_pin() {
+        use crate::HydroTurbineType;
+
+        let pins = [
+            (HydroTurbineType::Francis, 0x00_u8),
+            (HydroTurbineType::Kaplan, 0x01),
+            (HydroTurbineType::Pelton, 0x02),
+            (HydroTurbineType::Bulbo, 0x03),
+        ];
+        for (turbine_type, discriminant) in pins {
+            let bytes = postcard::to_allocvec(&turbine_type).unwrap();
+            assert_eq!(
+                bytes,
+                vec![discriminant],
+                "{turbine_type:?} must serialize to the single postcard byte {discriminant:#04x}"
+            );
+            let restored: HydroTurbineType = postcard::from_bytes(&bytes).unwrap();
+            assert_eq!(restored, turbine_type);
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn hydro_turbine_type_serializes_as_bare_pascal_case_string() {
+        use crate::HydroTurbineType;
+
+        let expected = [
+            (HydroTurbineType::Francis, r#""Francis""#),
+            (HydroTurbineType::Kaplan, r#""Kaplan""#),
+            (HydroTurbineType::Pelton, r#""Pelton""#),
+            (HydroTurbineType::Bulbo, r#""Bulbo""#),
+        ];
+        for (turbine_type, json) in expected {
+            assert_eq!(serde_json::to_string(&turbine_type).unwrap(), json);
+            let restored: HydroTurbineType = serde_json::from_str(json).unwrap();
+            assert_eq!(restored, turbine_type);
+        }
     }
 }

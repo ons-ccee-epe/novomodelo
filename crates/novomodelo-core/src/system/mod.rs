@@ -618,7 +618,7 @@ mod tests {
     use crate::ValidationError;
     use crate::entities::FillingConfig;
     #[cfg(feature = "serde")]
-    use crate::entities::HydroUnitGroup;
+    use crate::entities::{HydroTurbineType, HydroUnitGroup};
     use crate::temporal::{Block, NoiseMethod, ScenarioSourceConfig};
     use crate::test_support::{
         BusSpec, ContractSpec, HydroSpec, LineSpec, NcsSpec, PumpingSpec, StageSpec, ThermalSpec,
@@ -627,8 +627,8 @@ mod tests {
     };
     #[cfg(feature = "serde")]
     use crate::test_support::{
-        ThermalUnitSpec, ThermalUnitStateSpec, UnitGroupSpec, make_thermal_unit,
-        make_thermal_unit_state, make_unit_group,
+        HydroUnitSpec, ThermalUnitSpec, ThermalUnitStateSpec, UnitGroupSpec, make_hydro_unit,
+        make_thermal_unit, make_thermal_unit_state, make_unit_group,
     };
     use chrono::NaiveDate;
 
@@ -2258,6 +2258,7 @@ mod tests {
                 max_generation_mw: 20.0,
                 min_turbined_m3s: 30.0,
                 max_turbined_m3s: 40.0,
+                ..Default::default()
             }),
             make_unit_group(UnitGroupSpec {
                 id: 7,
@@ -2267,6 +2268,7 @@ mod tests {
                 max_generation_mw: 60.0,
                 min_turbined_m3s: 70.0,
                 max_turbined_m3s: 80.0,
+                ..Default::default()
             }),
         ];
 
@@ -2290,6 +2292,104 @@ mod tests {
             .hydro(EntityId(2))
             .expect("hydro 2 must round-trip");
         assert_eq!(decoded_two_groups.unit_groups, two_groups_hydro.unit_groups);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_system_postcard_roundtrip_preserves_hydro_units() {
+        let bus0 = make_bus(BusSpec {
+            id: 0,
+            name: format!("bus-{}", 0),
+            ..Default::default()
+        });
+        let bus4 = make_bus(BusSpec {
+            id: 4,
+            name: format!("bus-{}", 4),
+            ..Default::default()
+        });
+        let bus9 = make_bus(BusSpec {
+            id: 9,
+            name: format!("bus-{}", 9),
+            ..Default::default()
+        });
+
+        let mut hydro = make_hydro(HydroSpec {
+            id: 1,
+            name: format!("hydro-{}", 1),
+            bus_id: 0,
+            ..Default::default()
+        });
+        hydro.unit_groups = vec![
+            make_unit_group(UnitGroupSpec {
+                id: 3,
+                name: "No units".to_string(),
+                bus_id: 4,
+                min_generation_mw: 10.0,
+                max_generation_mw: 20.0,
+                min_turbined_m3s: 30.0,
+                max_turbined_m3s: 40.0,
+                ..Default::default()
+            }),
+            make_unit_group(UnitGroupSpec {
+                id: 7,
+                name: "Three units".to_string(),
+                bus_id: 9,
+                min_generation_mw: 50.0,
+                max_generation_mw: 60.0,
+                min_turbined_m3s: 70.0,
+                max_turbined_m3s: 80.0,
+                units: vec![
+                    make_hydro_unit(HydroUnitSpec {
+                        id: 2,
+                        name: "U2".to_string(),
+                        min_generation_mw: 4.25,
+                        max_generation_mw: 20.5,
+                        min_turbined_m3s: 5.5,
+                        max_turbined_m3s: 25.25,
+                        turbine_type: HydroTurbineType::Francis,
+                        min_up_time_hours: 2.5,
+                        min_down_time_hours: 1.5,
+                    }),
+                    make_hydro_unit(HydroUnitSpec {
+                        id: 4,
+                        name: "U4".to_string(),
+                        min_generation_mw: 3.75,
+                        max_generation_mw: 20.25,
+                        min_turbined_m3s: 6.75,
+                        max_turbined_m3s: 30.5,
+                        turbine_type: HydroTurbineType::Pelton,
+                        ..Default::default()
+                    }),
+                    make_hydro_unit(HydroUnitSpec {
+                        id: 6,
+                        name: "U6".to_string(),
+                        min_generation_mw: 2.5,
+                        max_generation_mw: 19.75,
+                        min_turbined_m3s: 4.25,
+                        max_turbined_m3s: 24.5,
+                        turbine_type: HydroTurbineType::Bulbo,
+                        ..Default::default()
+                    }),
+                ],
+            }),
+        ];
+
+        let system = SystemBuilder::new()
+            .buses(vec![bus0, bus4, bus9])
+            .hydros(vec![hydro])
+            .build()
+            .expect("valid system");
+
+        let bytes = postcard::to_allocvec(&system).unwrap();
+        let deserialized: System = postcard::from_bytes(&bytes).unwrap();
+
+        let decoded = deserialized
+            .hydro(EntityId(1))
+            .expect("hydro 1 must round-trip");
+        let built = system.hydro(EntityId(1)).expect("hydro 1 is built");
+        assert!(decoded.unit_groups[0].units.is_empty());
+        assert_eq!(decoded.unit_groups[1].units, built.unit_groups[1].units);
+        assert_eq!(decoded.unit_groups[1].units.len(), 3);
     }
 
     #[cfg(feature = "serde")]
@@ -2394,6 +2494,44 @@ mod tests {
 
     #[cfg(feature = "serde")]
     #[test]
+    fn postcard_wire_bytes_are_identical_regardless_of_hydro_unit_declaration_order() {
+        let make_system = |unit_ids: [i32; 3]| {
+            let mut hydro = make_hydro(HydroSpec {
+                id: 1,
+                bus_id: 1,
+                ..Default::default()
+            });
+            hydro.unit_groups[0].units = unit_ids
+                .into_iter()
+                .map(|id| {
+                    make_hydro_unit(HydroUnitSpec {
+                        id,
+                        ..Default::default()
+                    })
+                })
+                .collect();
+            SystemBuilder::new()
+                .buses(vec![make_bus(BusSpec {
+                    id: 1,
+                    name: format!("bus-{}", 1),
+                    ..Default::default()
+                })])
+                .hydros(vec![hydro])
+                .build()
+                .expect("valid system")
+        };
+
+        let bytes_a = postcard::to_allocvec(&make_system([2, 4, 6])).unwrap();
+        let bytes_b = postcard::to_allocvec(&make_system([6, 2, 4])).unwrap();
+
+        assert_eq!(
+            bytes_a, bytes_b,
+            "wire bytes must not depend on hydro unit declaration order"
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
     fn fully_populated_system_survives_postcard_roundtrip_intact() {
         use crate::{
             AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
@@ -2451,6 +2589,26 @@ mod tests {
                 max_generation_mw: 0.4,
                 min_turbined_m3s: 0.0,
                 max_turbined_m3s: 0.4,
+                units: vec![
+                    make_hydro_unit(HydroUnitSpec {
+                        id: 1,
+                        name: "A-U1".to_string(),
+                        max_generation_mw: 0.25,
+                        max_turbined_m3s: 0.25,
+                        turbine_type: HydroTurbineType::Francis,
+                        min_up_time_hours: 3.0,
+                        min_down_time_hours: 1.5,
+                        ..Default::default()
+                    }),
+                    make_hydro_unit(HydroUnitSpec {
+                        id: 2,
+                        name: "A-U2".to_string(),
+                        max_generation_mw: 0.25,
+                        max_turbined_m3s: 0.25,
+                        turbine_type: HydroTurbineType::Kaplan,
+                        ..Default::default()
+                    }),
+                ],
             },
             make_unit_group(UnitGroupSpec {
                 id: 20,
@@ -2458,6 +2616,24 @@ mod tests {
                 bus_id: 2,
                 max_generation_mw: 0.6,
                 max_turbined_m3s: 0.6,
+                units: vec![
+                    make_hydro_unit(HydroUnitSpec {
+                        id: 1,
+                        name: "B-U1".to_string(),
+                        max_generation_mw: 0.35,
+                        max_turbined_m3s: 0.35,
+                        turbine_type: HydroTurbineType::Pelton,
+                        ..Default::default()
+                    }),
+                    make_hydro_unit(HydroUnitSpec {
+                        id: 2,
+                        name: "B-U2".to_string(),
+                        max_generation_mw: 0.35,
+                        max_turbined_m3s: 0.35,
+                        turbine_type: HydroTurbineType::Bulbo,
+                        ..Default::default()
+                    }),
+                ],
                 ..Default::default()
             }),
         ];

@@ -602,6 +602,7 @@ pub fn make_unit_group(
         max_generation_mw,
         min_turbined_m3s,
         max_turbined_m3s,
+        ..Default::default()
     })
 }
 
