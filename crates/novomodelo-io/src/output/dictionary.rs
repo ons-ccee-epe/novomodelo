@@ -2078,9 +2078,10 @@ mod tests {
     use crate::test_support::output::read_first_batch;
     use arrow::array::Array;
     use chrono::NaiveDate;
+    use novomodelo_core::test_support::{UnitGroupSpec, make_unit_group};
     use novomodelo_core::{
         Block, BlockMode, Bus, ContractType, DeficitSegment, EnergyContract, EntityId, Hydro,
-        HydroGenerationModel, HydroPenalties, HydroUnitGroup, Line, NoiseMethod, PumpingStation,
+        HydroGenerationModel, HydroPenalties, Line, NoiseMethod, PumpingStation,
         ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, SystemBuilder, Thermal,
         resolved::{
             BlockBoundsCountsSpec, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds,
@@ -2755,25 +2756,23 @@ mod tests {
     /// dropped the plant-numeric prefix would collide.
     fn make_system_2h_same_group_id_and_name() -> System {
         let mut h1 = make_hydro(1, "PlantA", 1);
-        h1.unit_groups = vec![HydroUnitGroup {
-            id: EntityId(0),
+        h1.unit_groups = vec![make_unit_group(UnitGroupSpec {
+            id: 0,
             name: "GroupX".to_string(),
-            bus_id: EntityId(1),
-            min_generation_mw: 0.0,
+            bus_id: 1,
             max_generation_mw: 45.0,
-            min_turbined_m3s: 0.0,
             max_turbined_m3s: 50.0,
-        }];
+            ..Default::default()
+        })];
         let mut h2 = make_hydro(2, "PlantB", 1);
-        h2.unit_groups = vec![HydroUnitGroup {
-            id: EntityId(0),
+        h2.unit_groups = vec![make_unit_group(UnitGroupSpec {
+            id: 0,
             name: "GroupX".to_string(),
-            bus_id: EntityId(1),
-            min_generation_mw: 0.0,
+            bus_id: 1,
             max_generation_mw: 45.0,
-            min_turbined_m3s: 0.0,
             max_turbined_m3s: 50.0,
-        }];
+            ..Default::default()
+        })];
 
         let bus = make_bus(1);
         let stage = make_stage(0);
@@ -2854,24 +2853,22 @@ mod tests {
     fn entities_csv_group_row_carries_the_groups_own_bus() {
         let mut h1 = make_hydro(1, "Plant1", 1);
         h1.unit_groups = vec![
-            HydroUnitGroup {
-                id: EntityId(5),
+            make_unit_group(UnitGroupSpec {
+                id: 5,
                 name: "GroupHigh".to_string(),
-                bus_id: EntityId(3),
-                min_generation_mw: 0.0,
+                bus_id: 3,
                 max_generation_mw: 20.0,
-                min_turbined_m3s: 0.0,
                 max_turbined_m3s: 25.0,
-            },
-            HydroUnitGroup {
-                id: EntityId(2),
+                ..Default::default()
+            }),
+            make_unit_group(UnitGroupSpec {
+                id: 2,
                 name: "GroupLow".to_string(),
-                bus_id: EntityId(2),
-                min_generation_mw: 0.0,
+                bus_id: 2,
                 max_generation_mw: 25.0,
-                min_turbined_m3s: 0.0,
                 max_turbined_m3s: 25.0,
-            },
+                ..Default::default()
+            }),
         ];
 
         let bus1 = make_bus(1);
@@ -3597,24 +3594,24 @@ mod tests {
         let bus3 = make_bus(3);
         let mut h1 = make_hydro(7, "Plant7", 2);
         h1.unit_groups = vec![
-            HydroUnitGroup {
-                id: EntityId(5),
+            make_unit_group(UnitGroupSpec {
+                id: 5,
                 name: "GroupHigh".to_string(),
-                bus_id: EntityId(3),
+                bus_id: 3,
                 min_generation_mw: 1.0,
                 max_generation_mw: 20.0,
                 min_turbined_m3s: 2.0,
                 max_turbined_m3s: 25.0,
-            },
-            HydroUnitGroup {
-                id: EntityId(2),
+            }),
+            make_unit_group(UnitGroupSpec {
+                id: 2,
                 name: "GroupLow".to_string(),
-                bus_id: EntityId(2),
+                bus_id: 2,
                 min_generation_mw: 3.0,
                 max_generation_mw: 15.0,
                 min_turbined_m3s: 4.0,
                 max_turbined_m3s: 18.0,
-            },
+            }),
         ];
         let stage0 = make_stage(0);
 

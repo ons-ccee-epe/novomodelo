@@ -11,7 +11,7 @@
 
 #![deny(clippy::allow_attributes, clippy::allow_attributes_without_reason)]
 
-use novomodelo_core::test_support::{ThermalSpec, make_thermal};
+use novomodelo_core::test_support::{ThermalSpec, UnitGroupSpec, make_thermal};
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
@@ -402,9 +402,7 @@ fn geometry_zero_penalties() -> HydroPenalties {
     }
 }
 
-/// Build a [`HydroUnitGroup`] with the given `id`, `bus_id`, and four bounds —
-/// the shared multi-bus fixture helper (`unit_groups` cannot otherwise be
-/// populated from outside `novomodelo-io`'s `pub(super)` validation-module helper).
+/// Builds a [`HydroUnitGroup`] named `G{id}` with the given `id`, `bus_id` and four bounds.
 #[must_use]
 pub fn make_unit_group(
     id: EntityId,
@@ -414,15 +412,15 @@ pub fn make_unit_group(
     min_turbined_m3s: f64,
     max_turbined_m3s: f64,
 ) -> HydroUnitGroup {
-    HydroUnitGroup {
-        id,
+    novomodelo_core::test_support::make_unit_group(UnitGroupSpec {
+        id: id.0,
         name: format!("G{id}"),
-        bus_id,
+        bus_id: bus_id.0,
         min_generation_mw,
         max_generation_mw,
         min_turbined_m3s,
         max_turbined_m3s,
-    }
+    })
 }
 
 /// Fixture hydro at system position `idx`: always `Operating` (`filling`,

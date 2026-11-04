@@ -163,15 +163,7 @@ mod tests {
     }
 
     fn make_group(id: i32) -> HydroUnitGroup {
-        HydroUnitGroup {
-            id: EntityId::from(id),
-            name: format!("Group {id}"),
-            bus_id: EntityId::from(1),
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 50.0,
-        }
+        crate::test_support::make_unit_group(id, 1, 0.0, 100.0, 0.0, 50.0)
     }
 
     fn make_hydro(id: i32, group_ids: &[i32]) -> Hydro {

@@ -594,15 +594,15 @@ pub fn make_unit_group(
     min_turbined_m3s: f64,
     max_turbined_m3s: f64,
 ) -> HydroUnitGroup {
-    HydroUnitGroup {
-        id: EntityId::from(id),
+    novomodelo_core::test_support::make_unit_group(novomodelo_core::test_support::UnitGroupSpec {
+        id,
         name: format!("Group {id}"),
-        bus_id: EntityId::from(bus_id),
+        bus_id,
         min_generation_mw,
         max_generation_mw,
         min_turbined_m3s,
         max_turbined_m3s,
-    }
+    })
 }
 
 /// Build a minimal valid `Thermal`.

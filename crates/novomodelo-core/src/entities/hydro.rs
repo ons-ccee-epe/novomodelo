@@ -320,15 +320,16 @@ impl Hydro {
     #[cfg(any(test, feature = "test-support"))]
     pub fn declare_mirror_unit_group(&mut self, bus_id: EntityId) {
         if self.unit_groups.is_empty() {
-            self.unit_groups.push(HydroUnitGroup {
-                id: EntityId(0),
+            use crate::test_support::{UnitGroupSpec, make_unit_group};
+            self.unit_groups.push(make_unit_group(UnitGroupSpec {
+                id: 0,
                 name: self.name.clone(),
-                bus_id,
+                bus_id: bus_id.0,
                 min_generation_mw: self.min_generation_mw,
                 max_generation_mw: self.max_generation_mw,
                 min_turbined_m3s: self.min_turbined_m3s,
                 max_turbined_m3s: self.max_turbined_m3s,
-            });
+            }));
         }
     }
 }
@@ -336,6 +337,7 @@ impl Hydro {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{UnitGroupSpec, make_unit_group};
 
     fn penalties_all(v: f64) -> HydroPenalties {
         HydroPenalties {
@@ -758,24 +760,24 @@ mod tests {
     fn hydro_with_two_unit_groups() -> Hydro {
         let mut hydro = minimal_hydro(HydroGenerationModel::ConstantProductivity);
         hydro.unit_groups = vec![
-            HydroUnitGroup {
-                id: EntityId::from(3),
+            make_unit_group(UnitGroupSpec {
+                id: 3,
                 name: "Group A".to_string(),
-                bus_id: EntityId::from(4),
+                bus_id: 4,
                 min_generation_mw: 10.0,
                 max_generation_mw: 20.0,
                 min_turbined_m3s: 30.0,
                 max_turbined_m3s: 40.0,
-            },
-            HydroUnitGroup {
-                id: EntityId::from(7),
+            }),
+            make_unit_group(UnitGroupSpec {
+                id: 7,
                 name: "Group B".to_string(),
-                bus_id: EntityId::from(9),
+                bus_id: 9,
                 min_generation_mw: 50.0,
                 max_generation_mw: 60.0,
                 min_turbined_m3s: 70.0,
                 max_turbined_m3s: 80.0,
-            },
+            }),
         ];
         hydro
     }
@@ -884,15 +886,15 @@ mod tests {
     #[test]
     fn test_declare_mirror_unit_group_is_a_noop_when_a_group_exists() {
         let mut hydro = minimal_hydro(HydroGenerationModel::ConstantProductivity);
-        hydro.unit_groups = vec![HydroUnitGroup {
-            id: EntityId::from(7),
+        hydro.unit_groups = vec![make_unit_group(UnitGroupSpec {
+            id: 7,
             name: "ExistingGroup".to_string(),
-            bus_id: EntityId::from(20),
+            bus_id: 20,
             min_generation_mw: 1.0,
             max_generation_mw: 2.0,
             min_turbined_m3s: 3.0,
             max_turbined_m3s: 4.0,
-        }];
+        })];
 
         hydro.declare_mirror_unit_group(EntityId::from(10));
 
@@ -904,24 +906,24 @@ mod tests {
     fn test_declare_mirror_unit_group_does_not_sort() {
         let mut hydro = minimal_hydro(HydroGenerationModel::ConstantProductivity);
         hydro.unit_groups = vec![
-            HydroUnitGroup {
-                id: EntityId::from(5),
+            make_unit_group(UnitGroupSpec {
+                id: 5,
                 name: "GroupFive".to_string(),
-                bus_id: EntityId::from(20),
+                bus_id: 20,
                 min_generation_mw: 1.0,
                 max_generation_mw: 2.0,
                 min_turbined_m3s: 3.0,
                 max_turbined_m3s: 4.0,
-            },
-            HydroUnitGroup {
-                id: EntityId::from(2),
+            }),
+            make_unit_group(UnitGroupSpec {
+                id: 2,
                 name: "GroupTwo".to_string(),
-                bus_id: EntityId::from(21),
+                bus_id: 21,
                 min_generation_mw: 5.0,
                 max_generation_mw: 6.0,
                 min_turbined_m3s: 7.0,
                 max_turbined_m3s: 8.0,
-            },
+            }),
         ];
 
         hydro.declare_mirror_unit_group(EntityId::from(10));
@@ -944,33 +946,33 @@ mod tests {
     fn test_sort_unit_groups_orders_by_id_ascending() {
         let mut hydro = minimal_hydro(HydroGenerationModel::ConstantProductivity);
         hydro.unit_groups = vec![
-            HydroUnitGroup {
-                id: EntityId::from(5),
+            make_unit_group(UnitGroupSpec {
+                id: 5,
                 name: "GroupFive".to_string(),
-                bus_id: EntityId::from(20),
+                bus_id: 20,
                 min_generation_mw: 1.0,
                 max_generation_mw: 2.0,
                 min_turbined_m3s: 3.0,
                 max_turbined_m3s: 4.0,
-            },
-            HydroUnitGroup {
-                id: EntityId::from(2),
+            }),
+            make_unit_group(UnitGroupSpec {
+                id: 2,
                 name: "GroupTwo".to_string(),
-                bus_id: EntityId::from(21),
+                bus_id: 21,
                 min_generation_mw: 5.0,
                 max_generation_mw: 6.0,
                 min_turbined_m3s: 7.0,
                 max_turbined_m3s: 8.0,
-            },
-            HydroUnitGroup {
-                id: EntityId::from(9),
+            }),
+            make_unit_group(UnitGroupSpec {
+                id: 9,
                 name: "GroupNine".to_string(),
-                bus_id: EntityId::from(22),
+                bus_id: 22,
                 min_generation_mw: 9.0,
                 max_generation_mw: 10.0,
                 min_turbined_m3s: 11.0,
                 max_turbined_m3s: 12.0,
-            },
+            }),
         ];
 
         hydro.sort_unit_groups();

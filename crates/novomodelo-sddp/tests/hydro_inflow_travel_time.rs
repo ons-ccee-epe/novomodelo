@@ -24,14 +24,14 @@ use novomodelo_core::scenario::InflowModel;
 use novomodelo_core::temporal::{
     Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig,
 };
+use novomodelo_core::test_support::{UnitGroupSpec, make_unit_group};
 use novomodelo_core::{
     BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties, ConstraintExpression,
     ContractBlockBounds, DeficitSegment, DiversionChannel, EntityId, GenericConstraint,
-    HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, HydroUnitGroup,
-    InitialConditions, LineBlockBounds, LineStagePenalties, LinearTerm, NcsStagePenalties,
-    PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-    ResolvedGenericConstraintBounds, ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds,
-    ThermalStageBounds, VariableRef,
+    HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, InitialConditions,
+    LineBlockBounds, LineStagePenalties, LinearTerm, NcsStagePenalties, PenaltiesCountsSpec,
+    PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedGenericConstraintBounds,
+    ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds, VariableRef,
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig, InflowNonNegativityMethod,
@@ -375,24 +375,22 @@ fn build_two_cell_system(block_mode: BlockMode) -> System {
             max_generation_mw: 1_000.0,
             generation_model: HydroGenerationModel::ConstantProductivity,
             unit_groups: vec![
-                HydroUnitGroup {
-                    id: EntityId(0),
+                make_unit_group(UnitGroupSpec {
+                    id: 0,
                     name: "U1-A".to_string(),
-                    bus_id: EntityId(BUS_ID),
-                    min_generation_mw: 0.0,
+                    bus_id: BUS_ID,
                     max_generation_mw: 500.0,
-                    min_turbined_m3s: 0.0,
                     max_turbined_m3s: 250.0,
-                },
-                HydroUnitGroup {
-                    id: EntityId(1),
+                    ..Default::default()
+                }),
+                make_unit_group(UnitGroupSpec {
+                    id: 1,
                     name: "U1-B".to_string(),
-                    bus_id: split_bus_id,
-                    min_generation_mw: 0.0,
+                    bus_id: split_bus_id.0,
                     max_generation_mw: 500.0,
-                    min_turbined_m3s: 0.0,
                     max_turbined_m3s: 250.0,
-                },
+                    ..Default::default()
+                }),
             ],
             ..HydroSpec::default()
         },

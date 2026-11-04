@@ -1186,12 +1186,10 @@ fn validate_variable_ref_entity(
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use novomodelo_core::test_support::{ThermalSpec, make_thermal};
+    use novomodelo_core::test_support::{ThermalSpec, UnitGroupSpec, make_thermal};
     use novomodelo_core::{
         EntityId,
-        entities::{
-            Bus, DiversionChannel, HydroUnitGroup, Line, NonControllableSource, PumpingStation,
-        },
+        entities::{Bus, DiversionChannel, Line, NonControllableSource, PumpingStation},
         scenario::{CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile},
     };
     use std::collections::BTreeMap;
@@ -1562,26 +1560,28 @@ mod tests {
         });
 
         let mut hydro1 = make_hydro(1, None);
-        hydro1.unit_groups = vec![HydroUnitGroup {
-            id: EntityId::from(4),
-            name: "Group A".to_string(),
-            bus_id: EntityId::from(0), // bus 0 exists, distinct from hydro1's own bus 1
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 100.0,
-        }];
+        hydro1.unit_groups = vec![novomodelo_core::test_support::make_unit_group(
+            UnitGroupSpec {
+                id: 4,
+                name: "Group A".to_string(),
+                bus_id: 0, // bus 0 exists, distinct from hydro1's own bus 1
+                max_generation_mw: 100.0,
+                max_turbined_m3s: 100.0,
+                ..Default::default()
+            },
+        )];
 
         let mut hydro2 = make_hydro(2, None);
-        hydro2.unit_groups = vec![HydroUnitGroup {
-            id: EntityId::from(7),
-            name: "Group B".to_string(),
-            bus_id: EntityId::from(42), // does not exist
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 100.0,
-        }];
+        hydro2.unit_groups = vec![novomodelo_core::test_support::make_unit_group(
+            UnitGroupSpec {
+                id: 7,
+                name: "Group B".to_string(),
+                bus_id: 42, // does not exist
+                max_generation_mw: 100.0,
+                max_turbined_m3s: 100.0,
+                ..Default::default()
+            },
+        )];
 
         data.hydros = vec![hydro1, hydro2];
 

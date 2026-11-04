@@ -627,7 +627,8 @@ mod tests {
     };
     #[cfg(feature = "serde")]
     use crate::test_support::{
-        ThermalUnitSpec, ThermalUnitStateSpec, make_thermal_unit, make_thermal_unit_state,
+        ThermalUnitSpec, ThermalUnitStateSpec, UnitGroupSpec, make_thermal_unit,
+        make_thermal_unit_state, make_unit_group,
     };
     use chrono::NaiveDate;
 
@@ -2249,24 +2250,24 @@ mod tests {
             ..Default::default()
         });
         two_groups_hydro.unit_groups = vec![
-            HydroUnitGroup {
-                id: EntityId(3),
+            make_unit_group(UnitGroupSpec {
+                id: 3,
                 name: "Group A".to_string(),
-                bus_id: EntityId(4),
+                bus_id: 4,
                 min_generation_mw: 10.0,
                 max_generation_mw: 20.0,
                 min_turbined_m3s: 30.0,
                 max_turbined_m3s: 40.0,
-            },
-            HydroUnitGroup {
-                id: EntityId(7),
+            }),
+            make_unit_group(UnitGroupSpec {
+                id: 7,
                 name: "Group B".to_string(),
-                bus_id: EntityId(9),
+                bus_id: 9,
                 min_generation_mw: 50.0,
                 max_generation_mw: 60.0,
                 min_turbined_m3s: 70.0,
                 max_turbined_m3s: 80.0,
-            },
+            }),
         ];
 
         let system = SystemBuilder::new()
@@ -2451,15 +2452,14 @@ mod tests {
                 min_turbined_m3s: 0.0,
                 max_turbined_m3s: 0.4,
             },
-            HydroUnitGroup {
-                id: EntityId(20),
+            make_unit_group(UnitGroupSpec {
+                id: 20,
                 name: "Group B".to_string(),
-                bus_id: EntityId(2),
-                min_generation_mw: 0.0,
+                bus_id: 2,
                 max_generation_mw: 0.6,
-                min_turbined_m3s: 0.0,
                 max_turbined_m3s: 0.6,
-            },
+                ..Default::default()
+            }),
         ];
         let hydro2 = make_hydro(HydroSpec {
             id: 2,
