@@ -383,6 +383,9 @@ impl SystemBuilder {
         self.initial_conditions
             .thermal_unit_states
             .sort_by_key(|s| (s.thermal_id.0, s.unit_id.0));
+        self.initial_conditions
+            .hydro_unit_states
+            .sort_by_key(|s| (s.hydro_id.0, s.group_id.0, s.unit_id.0));
 
         let mut errors: Vec<ValidationError> = Vec::new();
         check_duplicates(&self.buses, "Bus", &mut errors);
@@ -551,9 +554,10 @@ pub(crate) fn check_canonical_order<T, K: Ord>(
 mod tests {
     use super::*;
     use crate::test_support::{
-        BusSpec, HydroSpec, HydroUnitSpec, MirrorUnitGroup, ThermalSpec, ThermalUnitSpec,
-        ThermalUnitStateSpec, UnitGroupSpec, make_bus, make_hydro, make_hydro_unit, make_thermal,
-        make_thermal_unit, make_thermal_unit_state, make_unit_group,
+        BusSpec, HydroSpec, HydroUnitSpec, HydroUnitStateSpec, MirrorUnitGroup, ThermalSpec,
+        ThermalUnitSpec, ThermalUnitStateSpec, UnitGroupSpec, make_bus, make_hydro,
+        make_hydro_unit, make_hydro_unit_state, make_thermal, make_thermal_unit,
+        make_thermal_unit_state, make_unit_group,
     };
     use crate::{
         Block, BlockMode, DeficitSegment, HydroPenalties, NoiseMethod, ScenarioSourceConfig,
@@ -780,6 +784,78 @@ mod tests {
         };
         assert_eq!(unit_ids(0), vec![3, 5, 7]);
         assert_eq!(unit_ids(1), vec![1, 4]);
+    }
+
+    #[test]
+    fn build_sorts_hydro_unit_states_by_hydro_then_group_then_unit_id() {
+        let group = |id, unit_ids: &[i32]| {
+            make_unit_group(UnitGroupSpec {
+                id,
+                bus_id: 1,
+                units: unit_ids
+                    .iter()
+                    .map(|&unit_id| {
+                        make_hydro_unit(HydroUnitSpec {
+                            id: unit_id,
+                            ..Default::default()
+                        })
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+        };
+        let plant = |id, unit_groups| {
+            let mut hydro = make_hydro(HydroSpec {
+                id,
+                bus_id: 1,
+                mirror_unit_group: MirrorUnitGroup::None,
+                ..Default::default()
+            });
+            hydro.unit_groups = unit_groups;
+            hydro
+        };
+        let state = |hydro_id, group_id, unit_id| {
+            make_hydro_unit_state(HydroUnitStateSpec {
+                hydro_id,
+                group_id,
+                unit_id,
+                ..Default::default()
+            })
+        };
+
+        let system = SystemBuilder::new()
+            .buses(vec![make_bus(BusSpec {
+                id: 1,
+                name: format!("bus-{}", 1),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 5000.0,
+                }],
+                ..Default::default()
+            })])
+            .hydros(vec![
+                plant(1, vec![group(1, &[1, 2]), group(2, &[1])]),
+                plant(2, vec![group(1, &[1])]),
+            ])
+            .initial_conditions(InitialConditions {
+                hydro_unit_states: vec![
+                    state(2, 1, 1),
+                    state(1, 2, 1),
+                    state(1, 1, 2),
+                    state(1, 1, 1),
+                ],
+                ..InitialConditions::default()
+            })
+            .build()
+            .expect("units and records are valid");
+
+        let keys: Vec<(i32, i32, i32)> = system
+            .initial_conditions()
+            .hydro_unit_states
+            .iter()
+            .map(|s| (s.hydro_id.0, s.group_id.0, s.unit_id.0))
+            .collect();
+        assert_eq!(keys, vec![(1, 1, 1), (1, 1, 2), (1, 2, 1), (2, 1, 1)]);
     }
 
     #[test]
@@ -1261,14 +1337,14 @@ mod tests {
 mod proptests {
     use super::*;
     use crate::test_support::{
-        BusSpec, ContractSpec, HydroSpec, HydroUnitSpec, LineSpec, NcsSpec, PumpingSpec, StageSpec,
-        ThermalSpec, ThermalUnitSpec, ThermalUnitStateSpec, make_bus, make_contract, make_hydro,
-        make_hydro_unit, make_line, make_ncs, make_pumping_station, make_stage, make_thermal,
-        make_thermal_unit, make_thermal_unit_state,
+        BusSpec, ContractSpec, HydroSpec, HydroUnitSpec, HydroUnitStateSpec, LineSpec, NcsSpec,
+        PumpingSpec, StageSpec, ThermalSpec, ThermalUnitSpec, ThermalUnitStateSpec, make_bus,
+        make_contract, make_hydro, make_hydro_unit, make_hydro_unit_state, make_line, make_ncs,
+        make_pumping_station, make_stage, make_thermal, make_thermal_unit, make_thermal_unit_state,
     };
     use crate::{
-        ConstraintExpression, ContractType, DeficitSegment, HydroUnit, ThermalUnit,
-        ThermalUnitInitialState,
+        ConstraintExpression, ContractType, DeficitSegment, HydroUnit, HydroUnitInitialState,
+        ThermalUnit, ThermalUnitInitialState,
     };
     use proptest::prelude::*;
 
@@ -1441,6 +1517,20 @@ mod proptests {
             .collect()
     }
 
+    fn reference_hydro_unit_states() -> Vec<HydroUnitInitialState> {
+        [30, 10, 20]
+            .into_iter()
+            .map(|unit_id| {
+                make_hydro_unit_state(HydroUnitStateSpec {
+                    hydro_id: 1,
+                    group_id: 0,
+                    unit_id,
+                    ..Default::default()
+                })
+            })
+            .collect()
+    }
+
     fn reference_pumping() -> Vec<PumpingStation> {
         vec![
             make_pumping_station(PumpingSpec {
@@ -1602,6 +1692,14 @@ mod proptests {
         s.iter().map(|s| (s.thermal_id.0, s.unit_id.0)).collect()
     }
 
+    fn expected_hydro_unit_state_keys() -> Vec<(i32, i32, i32)> {
+        let mut s = reference_hydro_unit_states();
+        s.sort_by_key(|s| (s.hydro_id.0, s.group_id.0, s.unit_id.0));
+        s.iter()
+            .map(|s| (s.hydro_id.0, s.group_id.0, s.unit_id.0))
+            .collect()
+    }
+
     fn expected_gc_ids() -> Vec<i32> {
         let mut g = reference_generic_constraints();
         g.sort_by_key(|c| c.id.0);
@@ -1627,6 +1725,7 @@ mod proptests {
             stages in Just(reference_stages()).prop_shuffle(),
             gcs in Just(reference_generic_constraints()).prop_shuffle(),
             states in Just(reference_unit_states()).prop_shuffle(),
+            hydro_states in Just(reference_hydro_unit_states()).prop_shuffle(),
         ) {
             hydros
                 .iter_mut()
@@ -1651,6 +1750,7 @@ mod proptests {
                 .generic_constraints(gcs)
                 .initial_conditions(InitialConditions {
                     thermal_unit_states: states,
+                    hydro_unit_states: hydro_states,
                     ..InitialConditions::default()
                 })
                 .build()
@@ -1668,6 +1768,7 @@ mod proptests {
             let expected_stages = expected_stage_ids();
             let expected_gcs = expected_gc_ids();
             let expected_states = expected_unit_state_keys();
+            let expected_hydro_states = expected_hydro_unit_state_keys();
 
             // Sortedness: the precomputed expectation is itself non-decreasing under
             // the canonical key, so a mistake in the expectation cannot mask a sort bug.
@@ -1683,6 +1784,7 @@ mod proptests {
             prop_assert!(expected_stages.is_sorted());
             prop_assert!(expected_gcs.is_sorted());
             prop_assert!(expected_states.is_sorted());
+            prop_assert!(expected_hydro_states.is_sorted());
 
             prop_assert_eq!(project_op(system.buses()), expected_buses);
             prop_assert_eq!(project_op(system.lines()), expected_lines);
@@ -1728,6 +1830,15 @@ mod proptests {
                     .map(|s| (s.thermal_id.0, s.unit_id.0))
                     .collect::<Vec<_>>(),
                 expected_states
+            );
+            prop_assert_eq!(
+                system
+                    .initial_conditions()
+                    .hydro_unit_states
+                    .iter()
+                    .map(|s| (s.hydro_id.0, s.group_id.0, s.unit_id.0))
+                    .collect::<Vec<_>>(),
+                expected_hydro_states
             );
         }
     }

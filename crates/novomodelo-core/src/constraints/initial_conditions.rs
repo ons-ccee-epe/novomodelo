@@ -250,12 +250,57 @@ impl ThermalUnitInitialState {
     }
 }
 
+/// Operating status of a hydro unit at the start of the study.
+///
+/// Postcard encodes variants by position: append new variants, never reorder
+/// (pinned by `hydro_unit_status_postcard_discriminant_pin`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum HydroUnitStatus {
+    /// Offline.
+    Off,
+    /// Online.
+    On,
+}
+
+/// Initial state of one hydro unit at the start of the study.
+///
+/// - **Timing.** `status`, `previous_generation_mw` and `previous_turbined_m3s` describe
+///   the same pre-study interval as on [`ThermalUnitInitialState`]; each previous value
+///   is the average over it.
+/// - **Clock.** `time_in_state_hours` counts the hours the unit has been continuously in
+///   `status` at the study start. The obligation left then is
+///   `max(0, min_up_time_hours - time_in_state_hours)` for `On` and
+///   `max(0, min_down_time_hours - time_in_state_hours)` for `Off`
+///   ([`HydroUnit`](crate::HydroUnit)); nothing enforces it.
+/// - **Optional per unit.** A unit may have no record; its initial state is then
+///   undefined.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct HydroUnitInitialState {
+    /// Owning plant.
+    pub hydro_id: EntityId,
+    /// Owning group, unique within the plant.
+    pub group_id: EntityId,
+    /// Unit, unique within the group.
+    pub unit_id: EntityId,
+    /// Operating status.
+    pub status: HydroUnitStatus,
+    /// Time in the current status \[h\]; a large finite value for "indefinitely".
+    pub time_in_state_hours: f64,
+    /// Average generation \[MW\].
+    pub previous_generation_mw: f64,
+    /// Average turbined flow \[m³/s\].
+    pub previous_turbined_m3s: f64,
+}
+
 /// Initial system state at the start of the optimization study.
 ///
 /// Arrays are sorted by entity ID (then start date, where entries carry one) to
 /// satisfy declaration-order invariance. The file loader sorts every array except
-/// `thermal_unit_states`, which [`SystemBuilder::build`](crate::SystemBuilder::build)
-/// sorts; `build` does not re-sort the others.
+/// `thermal_unit_states` and `hydro_unit_states`, which
+/// [`SystemBuilder::build`](crate::SystemBuilder::build) sorts; `build` does not
+/// re-sort the others.
 ///
 /// A hydro must appear in exactly one of the two storage arrays, never both:
 /// hydros with a `filling` configuration belong in [`filling_storage`], all
@@ -300,13 +345,17 @@ pub struct InitialConditions {
     /// [`ThermalUnitInitialState`].
     #[cfg_attr(feature = "serde", serde(default))]
     pub thermal_unit_states: Vec<ThermalUnitInitialState>,
+    /// Initial state per hydro unit, keyed by `(hydro_id, group_id, unit_id)`; see
+    /// [`HydroUnitInitialState`].
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub hydro_unit_states: Vec<HydroUnitInitialState>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[cfg(feature = "serde")]
-    use crate::test_support::f64_bits_eq;
+    use crate::test_support::{HydroUnitStateSpec, f64_bits_eq, make_hydro_unit_state};
     use crate::test_support::{
         ThermalUnitSpec, ThermalUnitStateSpec, make_thermal_unit, make_thermal_unit_state,
     };
@@ -622,7 +671,7 @@ mod tests {
 
     #[cfg(feature = "serde")]
     #[test]
-    fn test_thermal_unit_states_postcard_field_order_is_last() {
+    fn test_thermal_unit_states_postcard_field_order_precedes_hydro_unit_states() {
         let base = InitialConditions {
             storage: vec![HydroStorage {
                 hydro_id: EntityId(0),
@@ -653,9 +702,45 @@ mod tests {
 
         assert!(full.len() > prefix.len());
         assert_eq!(
+            &full[..prefix.len() - 2],
+            &prefix[..prefix.len() - 2],
+            "thermal_unit_states must serialize after every earlier field"
+        );
+        assert_eq!(
+            full.last(),
+            Some(&0x00),
+            "an empty hydro_unit_states list must be the final byte, after thermal_unit_states"
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_hydro_unit_states_postcard_field_order_is_last() {
+        let base = InitialConditions {
+            storage: vec![HydroStorage {
+                hydro_id: EntityId(0),
+                value_hm3: 1_000.0,
+            }],
+            past_defluences: vec![past_defluence_window()],
+            thermal_unit_states: thermal_unit_state_records().to_vec(),
+            ..InitialConditions::default()
+        };
+        let mut with_state = base.clone();
+        with_state.hydro_unit_states = hydro_unit_state_records().to_vec();
+
+        let prefix = postcard::to_allocvec(&base).unwrap();
+        let full = postcard::to_allocvec(&with_state).unwrap();
+
+        assert_eq!(
+            prefix.last(),
+            Some(&0x00),
+            "an empty hydro_unit_states list encodes as one trailing length byte"
+        );
+        assert!(full.len() > prefix.len());
+        assert_eq!(
             &full[..prefix.len() - 1],
             &prefix[..prefix.len() - 1],
-            "thermal_unit_states must serialize last (append-last wire contract)"
+            "hydro_unit_states must serialize last (append-last wire contract)"
         );
     }
 
@@ -691,6 +776,53 @@ mod tests {
         assert_eq!(ic, restored);
         assert_eq!(bytes, postcard::to_allocvec(&restored).unwrap());
         assert_eq!(restored.thermal_unit_states.len(), 4);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn initial_conditions_json_without_hydro_unit_states_key_loads_with_no_records() {
+        let ic = InitialConditions {
+            storage: vec![HydroStorage {
+                hydro_id: EntityId(0),
+                value_hm3: 1_000.0,
+            }],
+            thermal_unit_states: thermal_unit_state_records().to_vec(),
+            ..InitialConditions::default()
+        };
+        let mut value = serde_json::to_value(&ic).unwrap();
+        assert!(
+            value
+                .as_object_mut()
+                .unwrap()
+                .remove("hydro_unit_states")
+                .is_some(),
+            "hydro_unit_states must always be serialized"
+        );
+
+        let restored: InitialConditions = serde_json::from_value(value).unwrap();
+        assert!(restored.hydro_unit_states.is_empty());
+        assert_eq!(restored, ic);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn initial_conditions_postcard_roundtrip_preserves_hydro_unit_states() {
+        let ic = InitialConditions {
+            storage: vec![HydroStorage {
+                hydro_id: EntityId(0),
+                value_hm3: 1_000.0,
+            }],
+            past_defluences: vec![past_defluence_window()],
+            thermal_unit_states: thermal_unit_state_records().to_vec(),
+            hydro_unit_states: hydro_unit_state_records().to_vec(),
+            ..InitialConditions::default()
+        };
+
+        let bytes = postcard::to_allocvec(&ic).unwrap();
+        let restored: InitialConditions = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(ic, restored);
+        assert_eq!(bytes, postcard::to_allocvec(&restored).unwrap());
+        assert_eq!(restored.hydro_unit_states.len(), 2);
     }
 
     #[cfg(feature = "serde")]
@@ -894,6 +1026,135 @@ mod tests {
             document.as_object_mut().unwrap().remove(key);
             assert!(
                 serde_json::from_value::<ThermalUnitInitialState>(document).is_err(),
+                "document without `{key}` must fail to deserialize"
+            );
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn hydro_unit_status_postcard_discriminant_pin() {
+        let pins = [(HydroUnitStatus::Off, 0x00_u8), (HydroUnitStatus::On, 0x01)];
+        for (status, discriminant) in pins {
+            let bytes = postcard::to_allocvec(&status).unwrap();
+            assert_eq!(
+                bytes,
+                vec![discriminant],
+                "{status:?} must serialize to the single postcard byte {discriminant:#04x}"
+            );
+            let restored: HydroUnitStatus = postcard::from_bytes(&bytes).unwrap();
+            assert_eq!(restored, status);
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn hydro_unit_status_serializes_as_bare_pascal_case_string() {
+        let expected = [
+            (HydroUnitStatus::Off, r#""Off""#),
+            (HydroUnitStatus::On, r#""On""#),
+        ];
+        for (status, json) in expected {
+            assert_eq!(serde_json::to_string(&status).unwrap(), json);
+            let restored: HydroUnitStatus = serde_json::from_str(json).unwrap();
+            assert_eq!(restored, status);
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    const HYDRO_UNIT_STATE_KEYS: [&str; 7] = [
+        "hydro_id",
+        "group_id",
+        "unit_id",
+        "status",
+        "time_in_state_hours",
+        "previous_generation_mw",
+        "previous_turbined_m3s",
+    ];
+
+    #[cfg(feature = "serde")]
+    fn hydro_unit_state_records() -> [HydroUnitInitialState; 2] {
+        [
+            (4, 5, 6, HydroUnitStatus::Off, 12.5, 0.0, 0.0),
+            (1, 2, 3, HydroUnitStatus::On, 6.25, 41.5, 87.75),
+        ]
+        .map(
+            |(
+                hydro_id,
+                group_id,
+                unit_id,
+                status,
+                time_in_state_hours,
+                previous_generation_mw,
+                previous_turbined_m3s,
+            )| {
+                make_hydro_unit_state(HydroUnitStateSpec {
+                    hydro_id,
+                    group_id,
+                    unit_id,
+                    status,
+                    time_in_state_hours,
+                    previous_generation_mw,
+                    previous_turbined_m3s,
+                })
+            },
+        )
+    }
+
+    #[cfg(feature = "serde")]
+    fn assert_hydro_unit_state_f64_fields_bit_exact(
+        a: &HydroUnitInitialState,
+        b: &HydroUnitInitialState,
+    ) {
+        assert!(f64_bits_eq(a.time_in_state_hours, b.time_in_state_hours));
+        assert!(f64_bits_eq(
+            a.previous_generation_mw,
+            b.previous_generation_mw
+        ));
+        assert!(f64_bits_eq(
+            a.previous_turbined_m3s,
+            b.previous_turbined_m3s
+        ));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn hydro_unit_initial_state_json_roundtrip_preserves_every_field_bit_exact() {
+        for record in hydro_unit_state_records() {
+            let json = serde_json::to_string(&record).unwrap();
+            let restored: HydroUnitInitialState = serde_json::from_str(&json).unwrap();
+            assert_eq!(restored, record);
+            assert_hydro_unit_state_f64_fields_bit_exact(&restored, &record);
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn hydro_unit_initial_state_postcard_roundtrip_preserves_every_field_bit_exact() {
+        for record in hydro_unit_state_records() {
+            let bytes = postcard::to_allocvec(&record).unwrap();
+            let restored: HydroUnitInitialState = postcard::from_bytes(&bytes).unwrap();
+            assert_eq!(restored, record);
+            assert_hydro_unit_state_f64_fields_bit_exact(&restored, &record);
+            assert_eq!(postcard::to_allocvec(&restored).unwrap(), bytes);
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn hydro_unit_initial_state_document_missing_any_key_fails_to_deserialize() {
+        let [_, record] = hydro_unit_state_records();
+        let value = serde_json::to_value(record).unwrap();
+        assert_eq!(
+            value.as_object().unwrap().len(),
+            HYDRO_UNIT_STATE_KEYS.len(),
+            "a field was added or removed without updating HYDRO_UNIT_STATE_KEYS"
+        );
+        for key in HYDRO_UNIT_STATE_KEYS {
+            let mut document = value.clone();
+            document.as_object_mut().unwrap().remove(key);
+            assert!(
+                serde_json::from_value::<HydroUnitInitialState>(document).is_err(),
                 "document without `{key}` must fail to deserialize"
             );
         }

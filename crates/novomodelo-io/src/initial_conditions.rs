@@ -583,6 +583,7 @@ fn convert(raw: RawInitialConditions) -> InitialConditions {
         recent_observations,
         past_defluences,
         thermal_unit_states: Vec::new(),
+        hydro_unit_states: Vec::new(),
     }
 }
 

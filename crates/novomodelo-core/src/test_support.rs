@@ -14,10 +14,10 @@ use chrono::NaiveDate;
 
 use crate::{
     Block, BlockMode, Bus, ContractType, DeficitSegment, EnergyContract, EntityId, Hydro,
-    HydroGenerationModel, HydroPenalties, HydroTurbineType, HydroUnit, HydroUnitGroup, Line,
-    NoiseMethod, NonControllableSource, PumpingStation, ScenarioSourceConfig, Stage,
-    StageRiskConfig, StageStateConfig, Thermal, ThermalUnit, ThermalUnitInitialState,
-    ThermalUnitStatus,
+    HydroGenerationModel, HydroPenalties, HydroTurbineType, HydroUnit, HydroUnitGroup,
+    HydroUnitInitialState, HydroUnitStatus, Line, NoiseMethod, NonControllableSource,
+    PumpingStation, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, Thermal,
+    ThermalUnit, ThermalUnitInitialState, ThermalUnitStatus,
 };
 
 /// The `NaiveDate` for a calendar-valid `(year, month, day)` triple.
@@ -757,6 +757,63 @@ pub fn make_unit_group(
         min_turbined_m3s,
         max_turbined_m3s,
         units,
+    }
+}
+
+/// Fixture fields for [`make_hydro_unit_state`].
+#[derive(Debug, Clone)]
+pub struct HydroUnitStateSpec {
+    /// Owning plant identifier.
+    pub hydro_id: i32,
+    /// Group identifier, unique within the plant.
+    pub group_id: i32,
+    /// Unit identifier, unique within the group.
+    pub unit_id: i32,
+    /// Operating status before the study start.
+    pub status: HydroUnitStatus,
+    /// Hours in the current status.
+    pub time_in_state_hours: f64,
+    /// Average generation before the study start.
+    pub previous_generation_mw: f64,
+    /// Average turbined flow before the study start.
+    pub previous_turbined_m3s: f64,
+}
+
+impl Default for HydroUnitStateSpec {
+    fn default() -> Self {
+        Self {
+            hydro_id: 0,
+            group_id: 0,
+            unit_id: 0,
+            status: HydroUnitStatus::Off,
+            time_in_state_hours: 0.0,
+            previous_generation_mw: 0.0,
+            previous_turbined_m3s: 0.0,
+        }
+    }
+}
+
+/// Build a [`HydroUnitInitialState`] from `spec`.
+#[must_use]
+pub fn make_hydro_unit_state(
+    HydroUnitStateSpec {
+        hydro_id,
+        group_id,
+        unit_id,
+        status,
+        time_in_state_hours,
+        previous_generation_mw,
+        previous_turbined_m3s,
+    }: HydroUnitStateSpec,
+) -> HydroUnitInitialState {
+    HydroUnitInitialState {
+        hydro_id: EntityId(hydro_id),
+        group_id: EntityId(group_id),
+        unit_id: EntityId(unit_id),
+        status,
+        time_in_state_hours,
+        previous_generation_mw,
+        previous_turbined_m3s,
     }
 }
 

@@ -627,8 +627,9 @@ mod tests {
     };
     #[cfg(feature = "serde")]
     use crate::test_support::{
-        HydroUnitSpec, ThermalUnitSpec, ThermalUnitStateSpec, UnitGroupSpec, make_hydro_unit,
-        make_thermal_unit, make_thermal_unit_state, make_unit_group,
+        HydroUnitSpec, HydroUnitStateSpec, ThermalUnitSpec, ThermalUnitStateSpec, UnitGroupSpec,
+        make_hydro_unit, make_hydro_unit_state, make_thermal_unit, make_thermal_unit_state,
+        make_unit_group,
     };
     use chrono::NaiveDate;
 
@@ -2532,16 +2533,73 @@ mod tests {
 
     #[cfg(feature = "serde")]
     #[test]
+    fn postcard_wire_bytes_are_identical_regardless_of_hydro_unit_state_declaration_order() {
+        let plant = |id| {
+            let mut hydro = make_hydro(HydroSpec {
+                id,
+                bus_id: 1,
+                ..Default::default()
+            });
+            hydro.unit_groups[0].units = [1, 2]
+                .into_iter()
+                .map(|unit_id| {
+                    make_hydro_unit(HydroUnitSpec {
+                        id: unit_id,
+                        ..Default::default()
+                    })
+                })
+                .collect();
+            hydro
+        };
+        let make_system = |order: [(i32, i32, i32); 3]| {
+            SystemBuilder::new()
+                .buses(vec![make_bus(BusSpec {
+                    id: 1,
+                    name: format!("bus-{}", 1),
+                    ..Default::default()
+                })])
+                .hydros(vec![plant(1), plant(2)])
+                .initial_conditions(InitialConditions {
+                    hydro_unit_states: order
+                        .into_iter()
+                        .map(|(hydro_id, group_id, unit_id)| {
+                            make_hydro_unit_state(HydroUnitStateSpec {
+                                hydro_id,
+                                group_id,
+                                unit_id,
+                                ..Default::default()
+                            })
+                        })
+                        .collect(),
+                    ..InitialConditions::default()
+                })
+                .build()
+                .expect("valid system")
+        };
+
+        let bytes_a =
+            postcard::to_allocvec(&make_system([(2, 0, 1), (1, 0, 2), (1, 0, 1)])).unwrap();
+        let bytes_b =
+            postcard::to_allocvec(&make_system([(1, 0, 1), (2, 0, 1), (1, 0, 2)])).unwrap();
+
+        assert_eq!(
+            bytes_a, bytes_b,
+            "wire bytes must not depend on hydro unit state declaration order"
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
     fn fully_populated_system_survives_postcard_roundtrip_intact() {
         use crate::{
             AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
             ConstraintExpression, ContractBlockBounds, CorrelationEntity, CorrelationGroup,
             CorrelationProfile, CorrelationScheduleEntry, DeficitSegment, HydroBlockBounds,
-            HydroPastDefluence, HydroPenalties, HydroStageBounds, HydroStorage, LineBlockBounds,
-            LineStagePenalties, LinearTerm, NcsStagePenalties, PenaltiesCountsSpec,
-            PenaltiesDefaults, PenaltyBasis, PolicyGraphType, PumpingBlockBounds,
-            RecentObservation, SlackConfig, ThermalBlockBounds, ThermalStageBounds,
-            ThermalUnitStatus, Transition, VariableRef,
+            HydroPastDefluence, HydroPenalties, HydroStageBounds, HydroStorage, HydroUnitStatus,
+            LineBlockBounds, LineStagePenalties, LinearTerm, NcsStagePenalties,
+            PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis, PolicyGraphType,
+            PumpingBlockBounds, RecentObservation, SlackConfig, ThermalBlockBounds,
+            ThermalStageBounds, ThermalUnitStatus, Transition, VariableRef,
         };
 
         let bus1 = {
@@ -2971,6 +3029,26 @@ mod tests {
                     status: ThermalUnitStatus::Off,
                     time_in_state_hours: 12.0,
                     previous_generation_mw: 0.0,
+                }),
+            ],
+            hydro_unit_states: vec![
+                make_hydro_unit_state(HydroUnitStateSpec {
+                    hydro_id: 1,
+                    group_id: 10,
+                    unit_id: 1,
+                    status: HydroUnitStatus::On,
+                    time_in_state_hours: 4.5,
+                    previous_generation_mw: 0.125,
+                    previous_turbined_m3s: 0.1875,
+                }),
+                make_hydro_unit_state(HydroUnitStateSpec {
+                    hydro_id: 1,
+                    group_id: 20,
+                    unit_id: 2,
+                    status: HydroUnitStatus::Off,
+                    time_in_state_hours: 7.25,
+                    previous_generation_mw: 0.0,
+                    previous_turbined_m3s: 0.0,
                 }),
             ],
         };

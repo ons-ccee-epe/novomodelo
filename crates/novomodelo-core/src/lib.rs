@@ -59,8 +59,9 @@ pub use constraints::generic_constraint::{
     ConstraintExpression, GenericConstraint, LinearTerm, PenaltyBasis, SlackConfig, VariableRef,
 };
 pub use constraints::initial_conditions::{
-    AnticipatedCommitmentHistory, HydroPastDefluence, HydroStorage, InitialConditions,
-    RecentObservation, ThermalUnitInitialState, ThermalUnitStatus, ThermalUnitTransition,
+    AnticipatedCommitmentHistory, HydroPastDefluence, HydroStorage, HydroUnitInitialState,
+    HydroUnitStatus, InitialConditions, RecentObservation, ThermalUnitInitialState,
+    ThermalUnitStatus, ThermalUnitTransition,
 };
 pub use constraints::training_event::{
     PoolRowCounts, TrainingEvent, WORKER_TIMING_SLOT_BWD_SETUP, WORKER_TIMING_SLOT_BWD_WALL,
