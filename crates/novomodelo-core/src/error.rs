@@ -94,6 +94,37 @@ pub enum ValidationError {
         /// Rule the record breaks.
         violation: ThermalUnitStateViolation,
     },
+    /// A hydro unit group breaks a [`HydroUnitGroupViolation`] rule.
+    InvalidHydroUnitGroup {
+        /// Plant owning the group.
+        hydro_id: EntityId,
+        /// Group that breaks the rule.
+        group_id: EntityId,
+        /// Rule the group breaks.
+        violation: HydroUnitGroupViolation,
+    },
+    /// A hydro unit breaks a [`HydroUnitViolation`] rule.
+    InvalidHydroUnit {
+        /// Plant owning the unit.
+        hydro_id: EntityId,
+        /// Group owning the unit.
+        group_id: EntityId,
+        /// Unit that breaks the rule.
+        unit_id: EntityId,
+        /// Rule the unit breaks.
+        violation: HydroUnitViolation,
+    },
+    /// A hydro unit initial state breaks a [`HydroUnitStateViolation`] rule.
+    InvalidHydroUnitInitialState {
+        /// Plant of the record.
+        hydro_id: EntityId,
+        /// Group of the record.
+        group_id: EntityId,
+        /// Unit of the record.
+        unit_id: EntityId,
+        /// Rule the record breaks.
+        violation: HydroUnitStateViolation,
+    },
 }
 
 /// Rule a thermal unit breaks, carried by [`ValidationError::InvalidThermalUnit`].
@@ -186,6 +217,115 @@ pub enum ThermalUnitStateViolation {
     },
 }
 
+/// Rule a hydro unit group breaks, carried by [`ValidationError::InvalidHydroUnitGroup`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HydroUnitGroupViolation {
+    /// Another group of the same plant has this id.
+    DuplicateId,
+    /// The units' maximum generation sums to less than the group maximum.
+    InsufficientGenerationCapacity {
+        /// Compensated sum of the units' maximum generation \[MW\].
+        units_max_mw: f64,
+        /// Declared group maximum generation \[MW\].
+        group_max_mw: f64,
+    },
+    /// The units' maximum turbined flow sums to less than the group maximum.
+    InsufficientTurbinedCapacity {
+        /// Compensated sum of the units' maximum turbined flow \[m³/s\].
+        units_max_m3s: f64,
+        /// Declared group maximum turbined flow \[m³/s\].
+        group_max_m3s: f64,
+    },
+}
+
+/// Rule a hydro unit breaks, carried by [`ValidationError::InvalidHydroUnit`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HydroUnitViolation {
+    /// Another unit of the same group has this id.
+    DuplicateId,
+    /// Generation bounds are not finite with `0 <= min <= max`.
+    InvalidGenerationBounds {
+        /// Declared minimum generation \[MW\].
+        min_generation_mw: f64,
+        /// Declared maximum generation \[MW\].
+        max_generation_mw: f64,
+    },
+    /// Turbined-flow bounds are not finite with `0 <= min <= max`.
+    InvalidTurbinedBounds {
+        /// Declared minimum turbined flow \[m³/s\].
+        min_turbined_m3s: f64,
+        /// Declared maximum turbined flow \[m³/s\].
+        max_turbined_m3s: f64,
+    },
+    /// Minimum up time is negative or not finite.
+    InvalidMinUpTime {
+        /// Declared minimum up time \[h\].
+        min_up_time_hours: f64,
+    },
+    /// Minimum down time is negative or not finite.
+    InvalidMinDownTime {
+        /// Declared minimum down time \[h\].
+        min_down_time_hours: f64,
+    },
+}
+
+/// Rule a hydro unit initial state breaks, carried by
+/// [`ValidationError::InvalidHydroUnitInitialState`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HydroUnitStateViolation {
+    /// Another record has the same `(hydro_id, group_id, unit_id)` key.
+    DuplicateRecord,
+    /// No hydro plant has the record's `hydro_id`.
+    UnknownHydro,
+    /// The plant declares no unit group with the record's `group_id`.
+    UnknownGroup,
+    /// The group declares no unit with the record's `unit_id`.
+    UnknownUnit,
+    /// Time in state is negative or not finite.
+    InvalidTimeInState {
+        /// Declared time in the current state \[h\].
+        time_in_state_hours: f64,
+    },
+    /// Previous generation is negative or not finite.
+    InvalidPreviousGeneration {
+        /// Declared previous generation \[MW\].
+        previous_generation_mw: f64,
+    },
+    /// Previous turbined flow is negative or not finite.
+    InvalidPreviousTurbined {
+        /// Declared previous turbined flow \[m³/s\].
+        previous_turbined_m3s: f64,
+    },
+    /// Status `Off` with a non-zero previous generation.
+    OffWithGeneration {
+        /// Declared previous generation \[MW\].
+        previous_generation_mw: f64,
+    },
+    /// Status `Off` with a non-zero previous turbined flow.
+    OffWithTurbinedFlow {
+        /// Declared previous turbined flow \[m³/s\].
+        previous_turbined_m3s: f64,
+    },
+    /// Status `On` with a previous generation outside the unit's generation bounds.
+    OnGenerationOutsideBounds {
+        /// Declared previous generation \[MW\].
+        previous_generation_mw: f64,
+        /// Unit minimum generation \[MW\].
+        min_generation_mw: f64,
+        /// Unit maximum generation \[MW\].
+        max_generation_mw: f64,
+    },
+    /// Status `On` with a previous turbined flow outside the unit's turbined-flow bounds.
+    OnTurbinedOutsideBounds {
+        /// Declared previous turbined flow \[m³/s\].
+        previous_turbined_m3s: f64,
+        /// Unit minimum turbined flow \[m³/s\].
+        min_turbined_m3s: f64,
+        /// Unit maximum turbined flow \[m³/s\].
+        max_turbined_m3s: f64,
+    },
+}
+
 fn ramp_name(transition: ThermalUnitTransition) -> &'static str {
     match transition {
         ThermalUnitTransition::StartingUp => "startup",
@@ -252,6 +392,33 @@ impl fmt::Display for ValidationError {
             } => write!(
                 f,
                 "initial state of thermal {thermal_id} unit {unit_id} is invalid: {violation}"
+            ),
+            Self::InvalidHydroUnitGroup {
+                hydro_id,
+                group_id,
+                violation,
+            } => write!(
+                f,
+                "hydro {hydro_id} unit group {group_id} is invalid: {violation}"
+            ),
+            Self::InvalidHydroUnit {
+                hydro_id,
+                group_id,
+                unit_id,
+                violation,
+            } => write!(
+                f,
+                "hydro {hydro_id} unit group {group_id} unit {unit_id} is invalid: {violation}"
+            ),
+            Self::InvalidHydroUnitInitialState {
+                hydro_id,
+                group_id,
+                unit_id,
+                violation,
+            } => write!(
+                f,
+                "initial state of hydro {hydro_id} unit group {group_id} unit {unit_id} \
+                 is invalid: {violation}"
             ),
         }
     }
@@ -351,11 +518,131 @@ impl fmt::Display for ThermalUnitStateViolation {
     }
 }
 
+impl fmt::Display for HydroUnitGroupViolation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateId => write!(f, "duplicate unit group id within the plant"),
+            Self::InsufficientGenerationCapacity {
+                units_max_mw,
+                group_max_mw,
+            } => write!(
+                f,
+                "units sum to {units_max_mw} MW, \
+                 below the group maximum generation of {group_max_mw} MW"
+            ),
+            Self::InsufficientTurbinedCapacity {
+                units_max_m3s,
+                group_max_m3s,
+            } => write!(
+                f,
+                "units sum to {units_max_m3s} m³/s, \
+                 below the group maximum turbined flow of {group_max_m3s} m³/s"
+            ),
+        }
+    }
+}
+
+impl fmt::Display for HydroUnitViolation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateId => write!(f, "duplicate unit id within the unit group"),
+            Self::InvalidGenerationBounds {
+                min_generation_mw,
+                max_generation_mw,
+            } => write!(
+                f,
+                "generation bounds must be finite with 0 <= min <= max, \
+                 got min {min_generation_mw} MW and max {max_generation_mw} MW"
+            ),
+            Self::InvalidTurbinedBounds {
+                min_turbined_m3s,
+                max_turbined_m3s,
+            } => write!(
+                f,
+                "turbined-flow bounds must be finite with 0 <= min <= max, \
+                 got min {min_turbined_m3s} m³/s and max {max_turbined_m3s} m³/s"
+            ),
+            Self::InvalidMinUpTime { min_up_time_hours } => write!(
+                f,
+                "min_up_time_hours must be finite and >= 0, got {min_up_time_hours}"
+            ),
+            Self::InvalidMinDownTime {
+                min_down_time_hours,
+            } => write!(
+                f,
+                "min_down_time_hours must be finite and >= 0, got {min_down_time_hours}"
+            ),
+        }
+    }
+}
+
+impl fmt::Display for HydroUnitStateViolation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateRecord => write!(f, "duplicate record for this unit"),
+            Self::UnknownHydro => write!(f, "no hydro plant has this id"),
+            Self::UnknownGroup => write!(f, "the plant declares no unit group with this id"),
+            Self::UnknownUnit => write!(f, "the unit group declares no unit with this id"),
+            Self::InvalidTimeInState {
+                time_in_state_hours,
+            } => write!(
+                f,
+                "time_in_state_hours must be finite and >= 0, got {time_in_state_hours}"
+            ),
+            Self::InvalidPreviousGeneration {
+                previous_generation_mw,
+            } => write!(
+                f,
+                "previous_generation_mw must be finite and >= 0, got {previous_generation_mw}"
+            ),
+            Self::InvalidPreviousTurbined {
+                previous_turbined_m3s,
+            } => write!(
+                f,
+                "previous_turbined_m3s must be finite and >= 0, got {previous_turbined_m3s}"
+            ),
+            Self::OffWithGeneration {
+                previous_generation_mw,
+            } => write!(
+                f,
+                "status Off requires previous_generation_mw == 0, got {previous_generation_mw} MW"
+            ),
+            Self::OffWithTurbinedFlow {
+                previous_turbined_m3s,
+            } => write!(
+                f,
+                "status Off requires previous_turbined_m3s == 0, got {previous_turbined_m3s} m³/s"
+            ),
+            Self::OnGenerationOutsideBounds {
+                previous_generation_mw,
+                min_generation_mw,
+                max_generation_mw,
+            } => write!(
+                f,
+                "status On requires previous_generation_mw in \
+                 [{min_generation_mw}, {max_generation_mw}] MW, got {previous_generation_mw} MW"
+            ),
+            Self::OnTurbinedOutsideBounds {
+                previous_turbined_m3s,
+                min_turbined_m3s,
+                max_turbined_m3s,
+            } => write!(
+                f,
+                "status On requires previous_turbined_m3s in \
+                 [{min_turbined_m3s}, {max_turbined_m3s}] m³/s, got {previous_turbined_m3s} m³/s"
+            ),
+        }
+    }
+}
+
 impl std::error::Error for ValidationError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{ThermalUnitStateViolation, ThermalUnitViolation, ValidationError};
+    use super::{
+        HydroUnitGroupViolation, HydroUnitStateViolation, HydroUnitViolation,
+        ThermalUnitStateViolation, ThermalUnitViolation, ValidationError,
+    };
     use crate::{EntityId, ThermalUnitTransition};
 
     #[test]
@@ -504,6 +791,175 @@ mod tests {
         let msg = trajectory.to_string();
         assert!(msg.contains("shutdown"), "missing ramp name: {msg}");
         assert!(msg.contains('7'), "missing generation: {msg}");
+    }
+
+    #[test]
+    fn test_display_invalid_hydro_unit_group() {
+        let error = |violation| ValidationError::InvalidHydroUnitGroup {
+            hydro_id: EntityId(3),
+            group_id: EntityId(7),
+            violation,
+        };
+        let cases: [(ValidationError, &[&str]); 3] = [
+            (
+                error(HydroUnitGroupViolation::DuplicateId),
+                &["hydro 3 unit group 7 is invalid", "duplicate unit group id"],
+            ),
+            (
+                error(HydroUnitGroupViolation::InsufficientGenerationCapacity {
+                    units_max_mw: 99.5,
+                    group_max_mw: 100.25,
+                }),
+                &["hydro 3 unit group 7", "99.5 MW", "100.25 MW"],
+            ),
+            (
+                error(HydroUnitGroupViolation::InsufficientTurbinedCapacity {
+                    units_max_m3s: 49.5,
+                    group_max_m3s: 50.75,
+                }),
+                &["hydro 3 unit group 7", "49.5 m³/s", "50.75 m³/s"],
+            ),
+        ];
+        for (err, needles) in cases {
+            let msg = err.to_string();
+            for needle in needles {
+                assert!(msg.contains(needle), "missing {needle:?}: {msg}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_display_invalid_hydro_unit() {
+        let error = |violation| ValidationError::InvalidHydroUnit {
+            hydro_id: EntityId(3),
+            group_id: EntityId(7),
+            unit_id: EntityId(9),
+            violation,
+        };
+        let cases: [(ValidationError, &[&str]); 5] = [
+            (
+                error(HydroUnitViolation::DuplicateId),
+                &[
+                    "hydro 3 unit group 7 unit 9 is invalid",
+                    "duplicate unit id within the unit group",
+                ],
+            ),
+            (
+                error(HydroUnitViolation::InvalidGenerationBounds {
+                    min_generation_mw: 50.5,
+                    max_generation_mw: 40.5,
+                }),
+                &["min 50.5 MW", "max 40.5 MW"],
+            ),
+            (
+                error(HydroUnitViolation::InvalidTurbinedBounds {
+                    min_turbined_m3s: 1.5,
+                    max_turbined_m3s: 0.5,
+                }),
+                &["min 1.5 m³/s", "max 0.5 m³/s"],
+            ),
+            (
+                error(HydroUnitViolation::InvalidMinUpTime {
+                    min_up_time_hours: -2.5,
+                }),
+                &["min_up_time_hours", "-2.5"],
+            ),
+            (
+                error(HydroUnitViolation::InvalidMinDownTime {
+                    min_down_time_hours: -3.5,
+                }),
+                &["min_down_time_hours", "-3.5"],
+            ),
+        ];
+        for (err, needles) in cases {
+            let msg = err.to_string();
+            for needle in needles {
+                assert!(msg.contains(needle), "missing {needle:?}: {msg}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_display_invalid_hydro_unit_initial_state() {
+        let error = |violation| ValidationError::InvalidHydroUnitInitialState {
+            hydro_id: EntityId(4),
+            group_id: EntityId(6),
+            unit_id: EntityId(8),
+            violation,
+        };
+        let cases: [(ValidationError, &[&str]); 11] = [
+            (
+                error(HydroUnitStateViolation::DuplicateRecord),
+                &[
+                    "initial state of hydro 4 unit group 6 unit 8 is invalid",
+                    "duplicate record",
+                ],
+            ),
+            (
+                error(HydroUnitStateViolation::UnknownHydro),
+                &["no hydro plant"],
+            ),
+            (
+                error(HydroUnitStateViolation::UnknownGroup),
+                &["no unit group"],
+            ),
+            (
+                error(HydroUnitStateViolation::UnknownUnit),
+                &["the unit group declares no unit"],
+            ),
+            (
+                error(HydroUnitStateViolation::InvalidTimeInState {
+                    time_in_state_hours: -1.5,
+                }),
+                &["time_in_state_hours", "-1.5"],
+            ),
+            (
+                error(HydroUnitStateViolation::InvalidPreviousGeneration {
+                    previous_generation_mw: -2.5,
+                }),
+                &["previous_generation_mw", "-2.5"],
+            ),
+            (
+                error(HydroUnitStateViolation::InvalidPreviousTurbined {
+                    previous_turbined_m3s: -3.5,
+                }),
+                &["previous_turbined_m3s", "-3.5"],
+            ),
+            (
+                error(HydroUnitStateViolation::OffWithGeneration {
+                    previous_generation_mw: 5.5,
+                }),
+                &["status Off", "5.5 MW"],
+            ),
+            (
+                error(HydroUnitStateViolation::OffWithTurbinedFlow {
+                    previous_turbined_m3s: 6.5,
+                }),
+                &["status Off", "6.5 m³/s"],
+            ),
+            (
+                error(HydroUnitStateViolation::OnGenerationOutsideBounds {
+                    previous_generation_mw: 10.5,
+                    min_generation_mw: 20.5,
+                    max_generation_mw: 60.5,
+                }),
+                &["status On", "[20.5, 60.5] MW", "got 10.5 MW"],
+            ),
+            (
+                error(HydroUnitStateViolation::OnTurbinedOutsideBounds {
+                    previous_turbined_m3s: 70.5,
+                    min_turbined_m3s: 10.5,
+                    max_turbined_m3s: 30.5,
+                }),
+                &["status On", "[10.5, 30.5] m³/s", "got 70.5 m³/s"],
+            ),
+        ];
+        for (err, needles) in cases {
+            let msg = err.to_string();
+            for needle in needles {
+                assert!(msg.contains(needle), "missing {needle:?}: {msg}");
+            }
+        }
     }
 
     #[test]

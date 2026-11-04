@@ -76,7 +76,10 @@ pub use entities::{
     ThermalUnit,
 };
 pub use entity_id::EntityId;
-pub use error::{ThermalUnitStateViolation, ThermalUnitViolation, ValidationError};
+pub use error::{
+    HydroUnitGroupViolation, HydroUnitStateViolation, HydroUnitViolation,
+    ThermalUnitStateViolation, ThermalUnitViolation, ValidationError,
+};
 pub use model::horizon::HorizonGraph;
 pub use model::parameters::{
     ComputedParameter, ParameterKind, ScalarParameter, expand_expression_parameters,

@@ -6,10 +6,11 @@ use chrono::NaiveDate;
 
 use super::System;
 use super::validate::{
-    CrossRefEntities, build_index, build_stage_index, check_duplicate_stages,
+    CrossRefEntities, build_index, build_stage_index, check_duplicate_hydro_unit_group_ids,
+    check_duplicate_hydro_unit_ids, check_duplicate_hydro_unit_states, check_duplicate_stages,
     check_duplicate_thermal_unit_ids, check_duplicate_thermal_unit_states, check_duplicates,
-    validate_cross_references, validate_filling_configs, validate_thermal_unit_states,
-    validate_thermal_units,
+    validate_cross_references, validate_filling_configs, validate_hydro_unit_states,
+    validate_hydro_units, validate_thermal_unit_states, validate_thermal_units,
 };
 use crate::{
     Bus, CascadeTopology, CorrelationModel, EnergyContract, EntityId, ExternalLoadRow,
@@ -331,6 +332,9 @@ impl SystemBuilder {
     /// - A thermal unit breaks a [`ThermalUnitViolation`](crate::ThermalUnitViolation) rule.
     /// - A thermal plant's units sum to less than its maximum generation ([`ValidationError::InsufficientThermalUnitCapacity`]).
     /// - A thermal unit initial state breaks a [`ThermalUnitStateViolation`](crate::ThermalUnitStateViolation) rule.
+    /// - A hydro unit group breaks a [`HydroUnitGroupViolation`](crate::HydroUnitGroupViolation) rule.
+    /// - A hydro unit breaks a [`HydroUnitViolation`](crate::HydroUnitViolation) rule.
+    /// - A hydro unit initial state breaks a [`HydroUnitStateViolation`](crate::HydroUnitStateViolation) rule.
     // Rationale: sort, duplicate/cross-ref/cycle checks, and `System` assembly share
     // one `errors` accumulator and the intermediate index maps; splitting them would
     // thread those through every call and lose the fail-fast-on-duplicates short-circuit.
@@ -405,6 +409,9 @@ impl SystemBuilder {
             &self.initial_conditions.thermal_unit_states,
             &mut errors,
         );
+        check_duplicate_hydro_unit_group_ids(&self.hydros, &mut errors);
+        check_duplicate_hydro_unit_ids(&self.hydros, &mut errors);
+        check_duplicate_hydro_unit_states(&self.initial_conditions.hydro_unit_states, &mut errors);
         check_canonical_order(
             &self.inflow_models,
             |m| (m.hydro_id.0, m.stage_id),
@@ -474,6 +481,13 @@ impl SystemBuilder {
             &self.initial_conditions.thermal_unit_states,
             &self.thermals,
             &thermal_index,
+            &mut errors,
+        );
+        validate_hydro_units(&self.hydros, &mut errors);
+        validate_hydro_unit_states(
+            &self.initial_conditions.hydro_unit_states,
+            &self.hydros,
+            &hydro_index,
             &mut errors,
         );
 
@@ -560,9 +574,10 @@ mod tests {
         make_thermal_unit_state, make_unit_group,
     };
     use crate::{
-        Block, BlockMode, DeficitSegment, HydroPenalties, NoiseMethod, ScenarioSourceConfig,
-        StageRiskConfig, StageStateConfig, ThermalUnitStateViolation, ThermalUnitStatus,
-        ThermalUnitViolation,
+        Block, BlockMode, DeficitSegment, HydroPenalties, HydroUnitGroupViolation,
+        HydroUnitStateViolation, HydroUnitStatus, HydroUnitViolation, NoiseMethod,
+        ScenarioSourceConfig, StageRiskConfig, StageStateConfig, ThermalUnitStateViolation,
+        ThermalUnitStatus, ThermalUnitViolation,
     };
 
     pub(super) fn zero_penalties() -> HydroPenalties {
@@ -959,6 +974,379 @@ mod tests {
                 unit_id: EntityId(5),
                 violation: ThermalUnitStateViolation::DuplicateRecord,
             },
+        ];
+        assert_eq!(order_a, expected);
+        assert_eq!(order_b, expected);
+    }
+
+    #[test]
+    fn build_reports_duplicate_hydro_unit_keys_in_first_pass() {
+        let group = |id, unit_ids: &[i32]| {
+            make_unit_group(UnitGroupSpec {
+                id,
+                bus_id: 1,
+                units: unit_ids
+                    .iter()
+                    .map(|&unit_id| {
+                        make_hydro_unit(HydroUnitSpec {
+                            id: unit_id,
+                            ..Default::default()
+                        })
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+        };
+        let plant = |id, downstream_id, unit_groups| {
+            let mut hydro = make_hydro(HydroSpec {
+                id,
+                bus_id: 1,
+                downstream_id,
+                mirror_unit_group: MirrorUnitGroup::None,
+                ..Default::default()
+            });
+            hydro.unit_groups = unit_groups;
+            hydro
+        };
+        let state = |hydro_id, group_id, unit_id| {
+            make_hydro_unit_state(HydroUnitStateSpec {
+                hydro_id,
+                group_id,
+                unit_id,
+                ..Default::default()
+            })
+        };
+        let build_errors = |hydros, hydro_unit_states| {
+            SystemBuilder::new()
+                .buses(vec![make_bus(BusSpec {
+                    id: 1,
+                    ..Default::default()
+                })])
+                .hydros(hydros)
+                .initial_conditions(InitialConditions {
+                    hydro_unit_states,
+                    ..InitialConditions::default()
+                })
+                .build()
+                .expect_err("duplicate hydro unit keys must be rejected")
+        };
+
+        let order_a = build_errors(
+            vec![
+                plant(
+                    1,
+                    Some(99),
+                    vec![group(0, &[4, 4]), group(2, &[1]), group(2, &[1])],
+                ),
+                plant(2, None, vec![group(1, &[3, 3])]),
+            ],
+            vec![state(1, 0, 4), state(1, 0, 4), state(2, 1, 3)],
+        );
+        let order_b = build_errors(
+            vec![
+                plant(2, None, vec![group(1, &[3, 3])]),
+                plant(
+                    1,
+                    Some(99),
+                    vec![group(2, &[1]), group(2, &[1]), group(0, &[4, 4])],
+                ),
+            ],
+            vec![state(2, 1, 3), state(1, 0, 4), state(1, 0, 4)],
+        );
+
+        let expected = vec![
+            ValidationError::InvalidHydroUnitGroup {
+                hydro_id: EntityId(1),
+                group_id: EntityId(2),
+                violation: HydroUnitGroupViolation::DuplicateId,
+            },
+            ValidationError::InvalidHydroUnit {
+                hydro_id: EntityId(1),
+                group_id: EntityId(0),
+                unit_id: EntityId(4),
+                violation: HydroUnitViolation::DuplicateId,
+            },
+            ValidationError::InvalidHydroUnit {
+                hydro_id: EntityId(2),
+                group_id: EntityId(1),
+                unit_id: EntityId(3),
+                violation: HydroUnitViolation::DuplicateId,
+            },
+            ValidationError::InvalidHydroUnitInitialState {
+                hydro_id: EntityId(1),
+                group_id: EntityId(0),
+                unit_id: EntityId(4),
+                violation: HydroUnitStateViolation::DuplicateRecord,
+            },
+        ];
+        assert_eq!(order_a, expected);
+        assert_eq!(order_b, expected);
+    }
+
+    #[test]
+    fn build_reports_hydro_unit_field_violations_in_final_pass() {
+        let plant = |id, unit_groups| {
+            let mut hydro = make_hydro(HydroSpec {
+                id,
+                bus_id: 1,
+                mirror_unit_group: MirrorUnitGroup::None,
+                ..Default::default()
+            });
+            hydro.unit_groups = unit_groups;
+            hydro
+        };
+        let first = make_unit_group(UnitGroupSpec {
+            id: 0,
+            bus_id: 1,
+            max_generation_mw: 10.0,
+            max_turbined_m3s: 10.0,
+            units: vec![
+                make_hydro_unit(HydroUnitSpec {
+                    id: 1,
+                    min_generation_mw: 50.0,
+                    max_generation_mw: 40.0,
+                    ..Default::default()
+                }),
+                make_hydro_unit(HydroUnitSpec {
+                    id: 2,
+                    max_generation_mw: 10.0,
+                    max_turbined_m3s: 10.0,
+                    ..Default::default()
+                }),
+            ],
+            ..Default::default()
+        });
+        let second = make_unit_group(UnitGroupSpec {
+            id: 0,
+            bus_id: 1,
+            max_generation_mw: 0.0,
+            max_turbined_m3s: 0.0,
+            units: vec![make_hydro_unit(HydroUnitSpec {
+                id: 3,
+                min_turbined_m3s: 5.0,
+                max_turbined_m3s: 4.0,
+                min_down_time_hours: -2.0,
+                ..Default::default()
+            })],
+            ..Default::default()
+        });
+
+        let errors = SystemBuilder::new()
+            .buses(vec![make_bus(BusSpec {
+                id: 1,
+                ..Default::default()
+            })])
+            .hydros(vec![plant(2, vec![second]), plant(1, vec![first])])
+            .build()
+            .expect_err("invalid unit fields must be rejected");
+
+        let invalid = |hydro_id, unit_id, violation| ValidationError::InvalidHydroUnit {
+            hydro_id: EntityId(hydro_id),
+            group_id: EntityId(0),
+            unit_id: EntityId(unit_id),
+            violation,
+        };
+        assert_eq!(
+            errors,
+            vec![
+                invalid(
+                    1,
+                    1,
+                    HydroUnitViolation::InvalidGenerationBounds {
+                        min_generation_mw: 50.0,
+                        max_generation_mw: 40.0,
+                    }
+                ),
+                invalid(
+                    2,
+                    3,
+                    HydroUnitViolation::InvalidTurbinedBounds {
+                        min_turbined_m3s: 5.0,
+                        max_turbined_m3s: 4.0,
+                    }
+                ),
+                invalid(
+                    2,
+                    3,
+                    HydroUnitViolation::InvalidMinDownTime {
+                        min_down_time_hours: -2.0,
+                    }
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_reports_identical_hydro_unit_errors_regardless_of_declaration_order() {
+        let unit = |id, max_turbined_m3s, min_up_time_hours| {
+            make_hydro_unit(HydroUnitSpec {
+                id,
+                max_generation_mw: 10.0,
+                max_turbined_m3s,
+                min_up_time_hours,
+                ..Default::default()
+            })
+        };
+        let inverted = || {
+            make_hydro_unit(HydroUnitSpec {
+                id: 1,
+                min_generation_mw: 50.0,
+                max_generation_mw: 40.0,
+                max_turbined_m3s: 10.0,
+                ..Default::default()
+            })
+        };
+        let group = |id, max_generation_mw, max_turbined_m3s, units| {
+            make_unit_group(UnitGroupSpec {
+                id,
+                bus_id: 1,
+                max_generation_mw,
+                max_turbined_m3s,
+                units,
+                ..Default::default()
+            })
+        };
+        let plant = |id, unit_groups| {
+            let mut hydro = make_hydro(HydroSpec {
+                id,
+                bus_id: 1,
+                mirror_unit_group: MirrorUnitGroup::None,
+                ..Default::default()
+            });
+            hydro.unit_groups = unit_groups;
+            hydro
+        };
+        let state = |(hydro_id, group_id, unit_id),
+                     status,
+                     previous_generation_mw,
+                     previous_turbined_m3s| {
+            make_hydro_unit_state(HydroUnitStateSpec {
+                hydro_id,
+                group_id,
+                unit_id,
+                status,
+                previous_generation_mw,
+                previous_turbined_m3s,
+                ..Default::default()
+            })
+        };
+        let states = || {
+            vec![
+                state((1, 1, 1), HydroUnitStatus::On, 45.0, 5.0),
+                state((1, 2, 1), HydroUnitStatus::On, 5.0, 12.0),
+                state((2, 0, 5), HydroUnitStatus::Off, 3.0, 0.0),
+                state((2, 0, 9), HydroUnitStatus::Off, 0.0, 0.0),
+            ]
+        };
+        let build_errors = |hydros, hydro_unit_states| {
+            SystemBuilder::new()
+                .buses(vec![make_bus(BusSpec {
+                    id: 1,
+                    ..Default::default()
+                })])
+                .hydros(hydros)
+                .initial_conditions(InitialConditions {
+                    hydro_unit_states,
+                    ..InitialConditions::default()
+                })
+                .build()
+                .expect_err("invalid hydro unit data must be rejected")
+        };
+
+        let order_a = build_errors(
+            vec![
+                plant(
+                    1,
+                    vec![
+                        group(1, 0.0, 0.0, vec![inverted(), unit(2, 10.0, 0.0)]),
+                        group(2, 30.0, 10.0, vec![unit(1, 10.0, 0.0), unit(2, 5.0, 0.0)]),
+                    ],
+                ),
+                plant(
+                    2,
+                    vec![group(
+                        0,
+                        0.0,
+                        0.0,
+                        vec![unit(3, 10.0, -1.0), unit(5, 10.0, 0.0)],
+                    )],
+                ),
+            ],
+            states(),
+        );
+        let mut reversed_states = states();
+        reversed_states.reverse();
+        let order_b = build_errors(
+            vec![
+                plant(
+                    2,
+                    vec![group(
+                        0,
+                        0.0,
+                        0.0,
+                        vec![unit(5, 10.0, 0.0), unit(3, 10.0, -1.0)],
+                    )],
+                ),
+                plant(
+                    1,
+                    vec![
+                        group(2, 30.0, 10.0, vec![unit(2, 5.0, 0.0), unit(1, 10.0, 0.0)]),
+                        group(1, 0.0, 0.0, vec![unit(2, 10.0, 0.0), inverted()]),
+                    ],
+                ),
+            ],
+            reversed_states,
+        );
+
+        let invalid_state = |(hydro_id, group_id, unit_id), violation| {
+            ValidationError::InvalidHydroUnitInitialState {
+                hydro_id: EntityId(hydro_id),
+                group_id: EntityId(group_id),
+                unit_id: EntityId(unit_id),
+                violation,
+            }
+        };
+        let expected = vec![
+            ValidationError::InvalidHydroUnit {
+                hydro_id: EntityId(1),
+                group_id: EntityId(1),
+                unit_id: EntityId(1),
+                violation: HydroUnitViolation::InvalidGenerationBounds {
+                    min_generation_mw: 50.0,
+                    max_generation_mw: 40.0,
+                },
+            },
+            ValidationError::InvalidHydroUnitGroup {
+                hydro_id: EntityId(1),
+                group_id: EntityId(2),
+                violation: HydroUnitGroupViolation::InsufficientGenerationCapacity {
+                    units_max_mw: 20.0,
+                    group_max_mw: 30.0,
+                },
+            },
+            ValidationError::InvalidHydroUnit {
+                hydro_id: EntityId(2),
+                group_id: EntityId(0),
+                unit_id: EntityId(3),
+                violation: HydroUnitViolation::InvalidMinUpTime {
+                    min_up_time_hours: -1.0,
+                },
+            },
+            invalid_state(
+                (1, 2, 1),
+                HydroUnitStateViolation::OnTurbinedOutsideBounds {
+                    previous_turbined_m3s: 12.0,
+                    min_turbined_m3s: 0.0,
+                    max_turbined_m3s: 10.0,
+                },
+            ),
+            invalid_state(
+                (2, 0, 5),
+                HydroUnitStateViolation::OffWithGeneration {
+                    previous_generation_mw: 3.0,
+                },
+            ),
+            invalid_state((2, 0, 9), HydroUnitStateViolation::UnknownUnit),
         ];
         assert_eq!(order_a, expected);
         assert_eq!(order_b, expected);
