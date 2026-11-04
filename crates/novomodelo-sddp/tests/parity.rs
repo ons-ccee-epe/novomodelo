@@ -3376,3 +3376,515 @@ mod thermal_unit_neutrality {
         );
     }
 }
+
+mod hydro_unit_neutrality {
+    use chrono::NaiveDate;
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{BlockMode, Stage};
+    use novomodelo_core::test_support::{
+        HydroUnitSpec, HydroUnitStateSpec, UnitGroupSpec, make_hydro_unit, make_hydro_unit_state,
+        make_unit_group,
+    };
+    use novomodelo_core::{
+        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, DeficitSegment,
+        EntityId, HydroBlockBounds, HydroGenerationModel, HydroStageBounds, HydroStorage,
+        HydroTurbineType, HydroUnit, HydroUnitGroup, HydroUnitInitialState, HydroUnitStatus,
+        InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
+        PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
+        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+    };
+    use novomodelo_io::config::{
+        Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, ParallelismConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        SimulationSelection, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
+        TrainingSolverConfig, UpperBoundEvaluationConfig,
+    };
+    use novomodelo_io::validation::semantic::envelope_tolerance;
+    use novomodelo_sddp::StudySetup;
+    use novomodelo_sddp::hydro_models::{
+        PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel,
+    };
+    use novomodelo_sddp::test_support::{
+        assert_all_templates_byte_identical, template_fact_groups,
+    };
+
+    use super::common::builders::{
+        BusSpec, HydroSpec, StageSpec, ThermalSpec, make_bus, make_hydro, make_stage, make_thermal,
+    };
+    use super::common::parity_hash::compute_parity_hash;
+    use super::common::{build_setup_in_code_with_models, run_simulation};
+
+    const N_STAGES: usize = 3;
+    const BUS_ID: i32 = 2;
+    const HYDRO_ID: i32 = 1;
+    const THERMAL_ID: i32 = 3;
+    const RHO: f64 = 1.0;
+    const PLANT_MIN_M3S: f64 = 0.0;
+    const PLANT_MAX_M3S: f64 = 400.0;
+    const PLANT_MIN_MW: f64 = 0.0;
+    const PLANT_MAX_MW: f64 = 400.0;
+    const INFLOW_M3S: f64 = 150.0;
+    const THERMAL_MAX_MW: f64 = 100.0;
+    const LOAD_MW: f64 = 200.0;
+    const GROUP_A_ID: i32 = 1;
+    const GROUP_A_MAX_M3S: f64 = 100.0;
+    const GROUP_A_MAX_MW: f64 = 50.0;
+    const GROUP_B_ID: i32 = 2;
+    const GROUP_B_MAX_M3S: f64 = 10.0;
+    const GROUP_B_MAX_MW: f64 = 100.0;
+    const A_UNIT_MIN_M3S: f64 = 20.0;
+    const A_UNIT_MAX_M3S: f64 = 70.0;
+    const A_UNIT_MIN_MW: f64 = 10.0;
+    const A_UNIT_MAX_MW: f64 = 40.0;
+    const B_UNIT_MAX_M3S: f64 = 15.0;
+    const B_UNIT_MAX_MW: f64 = 70.0;
+
+    fn group_a() -> UnitGroupSpec {
+        UnitGroupSpec {
+            id: GROUP_A_ID,
+            name: "A".to_string(),
+            bus_id: BUS_ID,
+            max_generation_mw: GROUP_A_MAX_MW,
+            max_turbined_m3s: GROUP_A_MAX_M3S,
+            ..Default::default()
+        }
+    }
+
+    fn group_b() -> UnitGroupSpec {
+        UnitGroupSpec {
+            id: GROUP_B_ID,
+            name: "B".to_string(),
+            bus_id: BUS_ID,
+            max_generation_mw: GROUP_B_MAX_MW,
+            max_turbined_m3s: GROUP_B_MAX_M3S,
+            ..Default::default()
+        }
+    }
+
+    fn group_a_units() -> Vec<HydroUnit> {
+        [
+            (1, HydroTurbineType::Francis),
+            (2, HydroTurbineType::Kaplan),
+        ]
+        .into_iter()
+        .map(|(id, turbine_type)| {
+            make_hydro_unit(HydroUnitSpec {
+                id,
+                name: format!("A{id}"),
+                min_generation_mw: A_UNIT_MIN_MW,
+                max_generation_mw: A_UNIT_MAX_MW,
+                min_turbined_m3s: A_UNIT_MIN_M3S,
+                max_turbined_m3s: A_UNIT_MAX_M3S,
+                turbine_type,
+                min_up_time_hours: 8.0,
+                min_down_time_hours: 4.0,
+            })
+        })
+        .collect()
+    }
+
+    fn group_b_units() -> Vec<HydroUnit> {
+        [(1, HydroTurbineType::Pelton), (2, HydroTurbineType::Bulbo)]
+            .into_iter()
+            .map(|(id, turbine_type)| {
+                make_hydro_unit(HydroUnitSpec {
+                    id,
+                    name: format!("B{id}"),
+                    min_generation_mw: 0.0,
+                    max_generation_mw: B_UNIT_MAX_MW,
+                    min_turbined_m3s: 0.0,
+                    max_turbined_m3s: B_UNIT_MAX_M3S,
+                    turbine_type,
+                    min_up_time_hours: 6.0,
+                    min_down_time_hours: 3.0,
+                })
+            })
+            .collect()
+    }
+
+    fn sized_to_units(group: UnitGroupSpec, units: &[HydroUnit]) -> UnitGroupSpec {
+        UnitGroupSpec {
+            max_generation_mw: units.iter().map(|unit| unit.max_generation_mw).sum(),
+            max_turbined_m3s: units.iter().map(|unit| unit.max_turbined_m3s).sum(),
+            ..group
+        }
+    }
+
+    fn declared_unit_states() -> Vec<HydroUnitInitialState> {
+        vec![
+            make_hydro_unit_state(HydroUnitStateSpec {
+                hydro_id: HYDRO_ID,
+                group_id: GROUP_A_ID,
+                unit_id: 1,
+                status: HydroUnitStatus::On,
+                time_in_state_hours: 2.0,
+                previous_generation_mw: 25.0,
+                previous_turbined_m3s: 45.0,
+            }),
+            make_hydro_unit_state(HydroUnitStateSpec {
+                hydro_id: HYDRO_ID,
+                group_id: GROUP_A_ID,
+                unit_id: 2,
+                status: HydroUnitStatus::Off,
+                time_in_state_hours: 1.0,
+                previous_generation_mw: 0.0,
+                previous_turbined_m3s: 0.0,
+            }),
+            make_hydro_unit_state(HydroUnitStateSpec {
+                hydro_id: HYDRO_ID,
+                group_id: GROUP_B_ID,
+                unit_id: 1,
+                status: HydroUnitStatus::On,
+                time_in_state_hours: 3.0,
+                previous_generation_mw: 30.0,
+                previous_turbined_m3s: 10.0,
+            }),
+            make_hydro_unit_state(HydroUnitStateSpec {
+                hydro_id: HYDRO_ID,
+                group_id: GROUP_B_ID,
+                unit_id: 2,
+                status: HydroUnitStatus::Off,
+                time_in_state_hours: 2.0,
+                previous_generation_mw: 0.0,
+                previous_turbined_m3s: 0.0,
+            }),
+        ]
+    }
+
+    fn build_system(
+        unit_groups: Vec<HydroUnitGroup>,
+        hydro_unit_states: Vec<HydroUnitInitialState>,
+    ) -> System {
+        let start = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        let bus = make_bus(
+            EntityId(BUS_ID),
+            BusSpec {
+                name: "B1".to_string(),
+                operational_start_date: start,
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 500.0,
+                }],
+                excess_cost: 0.0,
+            },
+        );
+        let hydro = make_hydro(
+            EntityId(HYDRO_ID),
+            HydroSpec {
+                name: "H1".to_string(),
+                operational_start_date: start,
+                bus_id: EntityId(BUS_ID),
+                min_storage_hm3: 0.0,
+                max_storage_hm3: 500.0,
+                generation_model: HydroGenerationModel::ConstantProductivity,
+                min_turbined_m3s: PLANT_MIN_M3S,
+                max_turbined_m3s: PLANT_MAX_M3S,
+                min_generation_mw: PLANT_MIN_MW,
+                max_generation_mw: PLANT_MAX_MW,
+                unit_groups,
+                ..Default::default()
+            },
+        );
+        let thermal = make_thermal(
+            EntityId(THERMAL_ID),
+            ThermalSpec {
+                name: "T1".to_string(),
+                operational_start_date: start,
+                bus_id: EntityId(BUS_ID),
+                cost_per_mwh: 100.0,
+                max_generation_mw: THERMAL_MAX_MW,
+                ..Default::default()
+            },
+        );
+        let stages: Vec<Stage> = (0..N_STAGES)
+            .map(|i| {
+                let month = i as u32 + 1;
+                make_stage(
+                    i,
+                    StageSpec {
+                        start_date: NaiveDate::from_ymd_opt(2024, month, 1).unwrap(),
+                        end_date: NaiveDate::from_ymd_opt(2024, month + 1, 1).unwrap(),
+                        season_id: Some(0),
+                        block_mode: BlockMode::Parallel,
+                        ..StageSpec::default()
+                    },
+                )
+            })
+            .collect();
+        let inflow_models: Vec<InflowModel> = (0..N_STAGES)
+            .map(|i| InflowModel {
+                hydro_id: EntityId(HYDRO_ID),
+                stage_id: i as i32,
+                mean_m3s: INFLOW_M3S,
+                std_m3s: 0.0,
+                ar_coefficients: vec![],
+                residual_std_ratio: 1.0,
+                annual: None,
+            })
+            .collect();
+        let load_models: Vec<LoadModel> = (0..N_STAGES)
+            .map(|i| LoadModel {
+                bus_id: EntityId(BUS_ID),
+                stage_id: i as i32,
+                mean_mw: LOAD_MW,
+                std_mw: 0.0,
+            })
+            .collect();
+        let bounds = ResolvedBounds::new(
+            &BoundsCountsSpec {
+                n_hydros: 1,
+                n_thermals: 1,
+                n_lines: 0,
+                n_pumping: 0,
+                n_contracts: 0,
+                n_stages: N_STAGES,
+                k_max: 0,
+            },
+            &BoundsDefaults {
+                hydro: HydroStageBounds {
+                    min_storage_hm3: 0.0,
+                    max_storage_hm3: 500.0,
+                    filling_min_rate_m3s: 0.0,
+                    water_withdrawal_m3s: 0.0,
+                },
+                hydro_block: HydroBlockBounds {
+                    min_turbined_m3s: PLANT_MIN_M3S,
+                    max_turbined_m3s: PLANT_MAX_M3S,
+                    min_generation_mw: PLANT_MIN_MW,
+                    max_generation_mw: PLANT_MAX_MW,
+                    ..Default::default()
+                },
+                thermal: ThermalStageBounds {
+                    cost_per_mwh: 100.0,
+                },
+                thermal_block: ThermalBlockBounds {
+                    min_generation_mw: 0.0,
+                    max_generation_mw: THERMAL_MAX_MW,
+                },
+                line_block: LineBlockBounds {
+                    direct_mw: 0.0,
+                    reverse_mw: 0.0,
+                },
+                pumping_block: PumpingBlockBounds {
+                    min_flow_m3s: 0.0,
+                    max_flow_m3s: 0.0,
+                },
+                contract_block: ContractBlockBounds {
+                    min_mw: 0.0,
+                    max_mw: 0.0,
+                    price_per_mwh: 0.0,
+                },
+            },
+        );
+        let penalties = ResolvedPenalties::new(
+            &PenaltiesCountsSpec {
+                n_hydros: 1,
+                n_buses: 1,
+                n_lines: 0,
+                n_ncs: 0,
+                n_stages: N_STAGES,
+            },
+            &PenaltiesDefaults {
+                hydro: HydroSpec::default().penalties,
+                bus: BusStagePenalties { excess_cost: 0.0 },
+                line: LineStagePenalties { exchange_cost: 0.0 },
+                ncs: NcsStagePenalties {
+                    curtailment_cost: 0.0,
+                },
+            },
+        );
+        let initial_conditions = InitialConditions {
+            storage: vec![HydroStorage {
+                hydro_id: EntityId(HYDRO_ID),
+                value_hm3: 200.0,
+            }],
+            hydro_unit_states,
+            ..InitialConditions::default()
+        };
+        SystemBuilder::new()
+            .buses(vec![bus])
+            .thermals(vec![thermal])
+            .hydros(vec![hydro])
+            .stages(stages)
+            .inflow_models(inflow_models)
+            .load_models(load_models)
+            .bounds(bounds)
+            .penalties(penalties)
+            .initial_conditions(initial_conditions)
+            .build()
+            .expect("units and unit states pass every build rule")
+    }
+
+    fn build_config() -> Config {
+        Config {
+            schema: None,
+            modeling: ModelingConfig {
+                inflow_non_negativity: InflowNonNegativityConfig {
+                    method: CfgInflowMethod::None,
+                },
+                cost_scale_factor: None,
+            },
+            training: TrainingConfig {
+                enabled: true,
+                tree_seed: Some(42),
+                stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit { limit: 3 }]),
+                stopping_mode: StoppingMode::Any,
+                cut_selection: RowSelectionConfig::default(),
+                solver: TrainingSolverConfig::default(),
+                parallelism: ParallelismConfig::default(),
+                scenario_source: None,
+                selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+            },
+            upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
+            policy: PolicyConfig::default(),
+            simulation: IoSimulationConfig {
+                enabled: true,
+                selection: Some(SimulationSelection::Sampled { num_scenarios: 1 }),
+                ..IoSimulationConfig::default()
+            },
+            exports: ExportsConfig::default(),
+            estimation: EstimationConfig::default(),
+        }
+    }
+
+    fn setup_at_rho(system: System, config: &Config) -> StudySetup {
+        let mut hydro_models = PrepareHydroModelsResult::default_from_system(&system);
+        hydro_models.production = ProductionModelSet::new(
+            vec![vec![
+                ResolvedProductionModel::ConstantProductivity {
+                    productivity: RHO
+                };
+                N_STAGES
+            ]],
+            system.hydros(),
+            N_STAGES,
+        );
+        build_setup_in_code_with_models(system, config, hydro_models)
+    }
+
+    fn differing_fact_groups(a: &StudySetup, b: &StudySetup) -> Vec<&'static str> {
+        let facts_a = template_fact_groups(a);
+        let facts_b = template_fact_groups(b);
+        assert!(facts_a.keys().eq(facts_b.keys()));
+        facts_a
+            .iter()
+            .filter(|(group, bytes)| facts_b.get(*group) != Some(*bytes))
+            .map(|(group, _)| *group)
+            .collect()
+    }
+
+    fn parity_hash(mut setup: StudySetup) -> String {
+        let results = run_simulation(&mut setup, 1);
+        compute_parity_hash(&setup, results)
+    }
+
+    #[test]
+    fn declared_hydro_units_leave_the_stage_lp_and_parity_hash_unchanged() {
+        const {
+            assert!(GROUP_A_MAX_MW / RHO < GROUP_A_MAX_M3S);
+            assert!(GROUP_B_MAX_M3S < GROUP_B_MAX_MW / RHO);
+            assert!(THERMAL_MAX_MW + RHO * (GROUP_A_MAX_MW / RHO + GROUP_B_MAX_M3S) < LOAD_MW);
+        }
+        let units_a = group_a_units();
+        let units_b = group_b_units();
+        let units_sized_a = sized_to_units(group_a(), &units_a);
+        let units_sized_b = sized_to_units(group_b(), &units_b);
+        assert!(GROUP_A_MAX_MW < units_sized_a.max_generation_mw);
+        assert!(GROUP_B_MAX_M3S < units_sized_b.max_turbined_m3s);
+        let cell_cap_m3s =
+            |group: &UnitGroupSpec| group.max_turbined_m3s.min(group.max_generation_mw / RHO);
+        assert!(
+            cell_cap_m3s(&units_sized_a) + cell_cap_m3s(&units_sized_b)
+                < INFLOW_M3S.min(PLANT_MAX_M3S).min(PLANT_MAX_MW / RHO)
+        );
+        assert!(PLANT_MIN_M3S + envelope_tolerance(PLANT_MIN_M3S) <= A_UNIT_MIN_M3S);
+        assert!(PLANT_MIN_MW + envelope_tolerance(PLANT_MIN_MW) <= A_UNIT_MIN_MW);
+
+        let system_with_units = build_system(
+            vec![
+                make_unit_group(UnitGroupSpec {
+                    units: units_a,
+                    ..group_a()
+                }),
+                make_unit_group(UnitGroupSpec {
+                    units: units_b,
+                    ..group_b()
+                }),
+            ],
+            declared_unit_states(),
+        );
+        let groups = &system_with_units.hydros()[0].unit_groups;
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| group.units.len())
+                .collect::<Vec<_>>(),
+            [2, 2]
+        );
+        assert_eq!(
+            system_with_units
+                .initial_conditions()
+                .hydro_unit_states
+                .len(),
+            4
+        );
+
+        let config = build_config();
+        let without = setup_at_rho(
+            build_system(
+                vec![make_unit_group(group_a()), make_unit_group(group_b())],
+                Vec::new(),
+            ),
+            &config,
+        );
+        let with = setup_at_rho(system_with_units, &config);
+        let units_sized_caps = setup_at_rho(
+            build_system(
+                vec![
+                    make_unit_group(units_sized_a),
+                    make_unit_group(units_sized_b),
+                ],
+                Vec::new(),
+            ),
+            &config,
+        );
+        let on_unit_floor = setup_at_rho(
+            build_system(
+                vec![
+                    make_unit_group(UnitGroupSpec {
+                        min_generation_mw: A_UNIT_MIN_MW,
+                        min_turbined_m3s: A_UNIT_MIN_M3S,
+                        ..group_a()
+                    }),
+                    make_unit_group(group_b()),
+                ],
+                Vec::new(),
+            ),
+            &config,
+        );
+
+        assert_all_templates_byte_identical(
+            &without.inputs.stage_data.stage_templates.templates,
+            &with.inputs.stage_data.stage_templates.templates,
+            "without vs with hydro units",
+        );
+        assert_eq!(differing_fact_groups(&without, &with), Vec::<&str>::new());
+        assert!(
+            differing_fact_groups(&without, &units_sized_caps).contains(&"lp.col_bounds"),
+            "group maxima at the units' summed maxima must move the column bounds"
+        );
+        assert!(
+            differing_fact_groups(&without, &on_unit_floor).contains(&"lp.row_bounds"),
+            "group minima at an On unit's minima must move the row bounds"
+        );
+
+        let hash_without = parity_hash(without);
+        assert_eq!(hash_without, parity_hash(with));
+        assert_ne!(
+            hash_without,
+            parity_hash(units_sized_caps),
+            "group maxima at the units' summed maxima must move the parity hash"
+        );
+    }
+}

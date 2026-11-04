@@ -4777,3 +4777,40 @@ with one unit starting up and another shutting down, builds byte-identical stage
 templates and setup facts and gives the parity hash of the same study without
 units, while a twin whose plant maximum is raised to the units' summed maximum
 moves both the column bounds and the hash.
+
+## Hydro units and their initial states never enter the stage LP
+
+A hydro plant is modelled at the plant, unit-group and unit levels: its unit
+groups (`HydroUnitGroup`) partition the plant into bus cells, and each group's
+units (`HydroUnit`) cover the group. The units (`HydroUnitGroup.units`) and
+their initial operating states (`InitialConditions.hydro_unit_states`) are
+validated and put in canonical order when the `System` is built. No stage-LP,
+policy or simulation code reads them: a group's own `bus_id` and bounds stay
+its only input to the stage LP (`GroupBoundLookup` resolves each bound per
+block, the stage override or else the declared value), so a study that
+declares units builds the same stage LPs, cuts and simulation results as the
+same study without them. Both fields are a reserved seam for a unit-level
+formulation, not dead data. A change that makes the LP read them replaces this
+contract and rewrites this entry and its pinning test in the same change.
+
+Deriving a cell's bounds from its units is the wrong-but-compiling
+alternative. Groups partition a plant, so a cell sums its groups' bounds (the
+hydro-cell sections above). Units cover a group instead: their maxima sum to at
+least the group's maxima, and an initial state starts the minimum up- and
+down-time clocks (`min_up_time_hours`, `min_down_time_hours`) that no stage LP
+represents. Raising a group's turbined-flow or generation cap to its units'
+summed maxima, or a group floor to an `On` unit's minima, still builds, solves
+and converges, and it changes the dispatch of every study that declares units.
+
+Read: `crates/novomodelo-core/src/entities/hydro.rs` (`HydroUnitGroup.units`,
+`HydroUnit`), `crates/novomodelo-core/src/constraints/initial_conditions.rs`
+(`InitialConditions.hydro_unit_states`, `HydroUnitInitialState`), and
+`lp/builder/hydro_state.rs` (`GroupBoundLookup`, which the cell-bound folds
+read). Pinned by
+`declared_hydro_units_leave_the_stage_lp_and_parity_hash_unchanged`
+(`tests/parity.rs`): a study whose units' maxima sum above both maxima of each
+group, with units on and off at the start, builds byte-identical stage
+templates and setup facts and gives the parity hash of the same study without
+units; a twin whose group maxima are raised to the units' summed maxima moves
+both the column bounds and the hash, and a twin whose group minima are raised to
+an `On` unit's minima moves the row bounds.
