@@ -4,6 +4,14 @@
 //! Only wall-clock, hostname and software-version fields are canonicalized; every
 //! other byte is result-bearing. A one-time capture on the baseline commit writes
 //! the file (`NOVOMODELO_BIT_IDENTITY_CAPTURE=1` with `bit_identity_full_sweep`).
+//!
+//! The migrated leg runs the committed decks as they are. Inputs hash to the
+//! baseline except the migrated post-study files, and an output file hashes to the
+//! baseline unless `phase2_expected_deltas.json` names it: a listed `files` path
+//! must differ, and a named `policy/cuts` or `policy/basis` file is decoded and
+//! diffed against the legacy-input run of the same deck. The legacy leg rebuilds
+//! each migrated deck from its overlay and holds it to the baseline, input hashes
+//! included.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -18,7 +26,11 @@ use arrow::datatypes::{
     ArrowPrimitiveType, DataType, Date32Type, Float64Type, Int8Type, Int32Type, Int64Type,
     UInt32Type, UInt64Type,
 };
+use novomodelo_io::{
+    OwnedPolicyBasisRecord, StageCutsReadResult, deserialize_stage_basis, deserialize_stage_cuts,
+};
 use novomodelo_sddp::test_support::decks::committed_decks;
+use novomodelo_sddp::test_support::legacy_inputs::{flatten_key, materialize, overlay_dir};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,7 +38,11 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 mod common;
-use common::{copy_dir_recursive, novomodelo, prepare_dual_calendar_boundary_case};
+use common::expected_deltas::{
+    ExpectedDeck, ExpectedList, check_expected_deltas, check_files, diff_bases, diff_coefficients,
+    diff_manifests,
+};
+use common::{copy_dir_recursive, novomodelo, prepare_dual_calendar_boundary_case_from};
 
 const BASELINE_COMMIT: &str = "93996013";
 const CAPTURE_ENV: &str = "NOVOMODELO_BIT_IDENTITY_CAPTURE";
@@ -35,6 +51,9 @@ const CAP_SCENARIOS: u64 = 10;
 
 const D55_KEY: &str = "examples/deterministic/d55-post-study-anticipated-lanes";
 const BOUNDARY_KEY: &str = "crates/novomodelo-sddp/tests/gate_fixtures/dual_calendar_boundary";
+
+const POST_STUDY_FILE: &str = "post_study_stages.json";
+const MIGRATED_POST_STUDY_FILES: [&str; 2] = [POST_STUDY_FILE, "source/post_study_stages.json"];
 
 const PRODUCT_SOURCES: [&str; 8] = [
     "crates/novomodelo-core/src",
@@ -309,7 +328,7 @@ fn run_deck(key: &str, dir: &Path) -> (TempDir, i32) {
     let work = TempDir::new().unwrap();
     let case = work.path().join("case");
     if key == BOUNDARY_KEY {
-        prepare_dual_calendar_boundary_case(&case);
+        prepare_dual_calendar_boundary_case_from(dir, &case, |_| {});
     } else {
         copy_dir_recursive(dir, &case);
     }
@@ -329,16 +348,18 @@ fn run_deck(key: &str, dir: &Path) -> (TempDir, i32) {
     (work, exit_code)
 }
 
-fn entry_for(key: &str, dir: &Path) -> Entry {
-    let input_sha256 = list_files(dir)
+fn input_hashes(dir: &Path) -> BTreeMap<String, String> {
+    list_files(dir)
         .into_iter()
         .map(|rel| {
             let digest = sha256_hex(&fs::read(dir.join(&rel)).unwrap());
             (rel, digest)
         })
-        .collect();
-    let (work, exit_code) = run_deck(key, dir);
-    let out = work.path().join("out");
+        .collect()
+}
+
+fn entry_from_run(work: &Path, exit_code: i32, input_sha256: BTreeMap<String, String>) -> Entry {
+    let out = work.join("out");
     let files = if out.exists() {
         list_files(&out)
             .into_iter()
@@ -358,6 +379,56 @@ fn entry_for(key: &str, dir: &Path) -> Entry {
     }
 }
 
+fn entry_for(key: &str, dir: &Path) -> Entry {
+    let input_sha256 = input_hashes(dir);
+    let (work, exit_code) = run_deck(key, dir);
+    entry_from_run(work.path(), exit_code, input_sha256)
+}
+
+fn deprecation_lines(case: &Path) -> Vec<String> {
+    let output = novomodelo()
+        .env_remove("RUST_LOG")
+        .arg("validate")
+        .arg(case)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .chain(String::from_utf8_lossy(&output.stderr).lines())
+        .filter(|line| line.contains("is deprecated"))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn legacy_run_for(
+    key: &str,
+    committed: &Path,
+    baseline_inputs: &BTreeMap<String, String>,
+) -> (TempDir, i32, BTreeMap<String, String>) {
+    let staging = TempDir::new().unwrap();
+    let legacy = staging.path().join("legacy");
+    copy_dir_recursive(committed, &legacy);
+    materialize(&overlay_dir(key), &legacy).expect("the legacy overlay must materialize");
+    let input_sha256 = input_hashes(&legacy);
+    let drift = diff_hashes("input changed: ", key, baseline_inputs, &input_sha256);
+    assert!(drift.is_empty(), "{}", drift.join("\n"));
+    let (work, exit_code) = run_deck(key, &legacy);
+    (work, exit_code, input_sha256)
+}
+
+fn legacy_entry_for(
+    key: &str,
+    committed: &Path,
+    baseline_inputs: &BTreeMap<String, String>,
+) -> (Entry, Vec<String>) {
+    let (work, exit_code, input_sha256) = legacy_run_for(key, committed, baseline_inputs);
+    let deprecations = deprecation_lines(&work.path().join("case"));
+    (
+        entry_from_run(work.path(), exit_code, input_sha256),
+        deprecations,
+    )
+}
+
 fn sweep(decks: Vec<(String, PathBuf)>) -> BTreeMap<String, Entry> {
     decks
         .into_iter()
@@ -368,25 +439,62 @@ fn sweep(decks: Vec<(String, PathBuf)>) -> BTreeMap<String, Entry> {
         .collect()
 }
 
+fn differing_paths(
+    baseline: &BTreeMap<String, String>,
+    actual: &BTreeMap<String, String>,
+) -> BTreeSet<String> {
+    baseline
+        .keys()
+        .chain(actual.keys())
+        .filter(|path| baseline.get(*path) != actual.get(*path))
+        .cloned()
+        .collect()
+}
+
 fn diff_hashes(
     prefix: &str,
     deck: &str,
     baseline: &BTreeMap<String, String>,
     actual: &BTreeMap<String, String>,
 ) -> Vec<String> {
-    let paths: BTreeSet<&String> = baseline.keys().chain(actual.keys()).collect();
-    paths
+    differing_paths(baseline, actual)
         .into_iter()
-        .filter(|path| baseline.get(*path) != actual.get(*path))
         .map(|path| {
             let show = |hash: Option<&String>| hash.map_or("<missing>", String::as_str).to_string();
             format!(
                 "{prefix}{deck}: {path}: baseline {} actual {}",
-                show(baseline.get(path)),
-                show(actual.get(path))
+                show(baseline.get(&path)),
+                show(actual.get(&path))
             )
         })
         .collect()
+}
+
+fn filtered(
+    hashes: &BTreeMap<String, String>,
+    keep: impl Fn(&str) -> bool,
+) -> BTreeMap<String, String> {
+    hashes
+        .iter()
+        .filter(|(path, _)| keep(path))
+        .map(|(path, hash)| (path.clone(), hash.clone()))
+        .collect()
+}
+
+fn status_diffs(deck: &str, baseline: &Entry, actual: &Entry) -> Vec<String> {
+    if (&baseline.status, baseline.exit_code) == (&actual.status, actual.exit_code) {
+        return Vec::new();
+    }
+    vec![format!(
+        "{deck}: baseline {} (exit {}) actual {} (exit {})",
+        baseline.status, baseline.exit_code, actual.status, actual.exit_code
+    )]
+}
+
+fn compare_outputs(deck: &str, baseline: &Entry, actual: &Entry) -> Vec<String> {
+    let mut diffs = status_diffs(deck, baseline, actual);
+    diffs.extend(diff_hashes("", deck, &baseline.files, &actual.files));
+    diffs
 }
 
 fn compare(deck: &str, baseline: &Entry, actual: &Entry) -> Vec<String> {
@@ -396,17 +504,51 @@ fn compare(deck: &str, baseline: &Entry, actual: &Entry) -> Vec<String> {
         &baseline.input_sha256,
         &actual.input_sha256,
     );
-    if !inputs.is_empty() {
-        return inputs;
+    if inputs.is_empty() {
+        compare_outputs(deck, baseline, actual)
+    } else {
+        inputs
     }
-    let mut diffs = Vec::new();
-    if (&baseline.status, baseline.exit_code) != (&actual.status, actual.exit_code) {
+}
+
+fn decoded_files(expected: &ExpectedDeck) -> BTreeSet<&str> {
+    expected
+        .cut_files()
+        .into_iter()
+        .chain(expected.basis_files())
+        .collect()
+}
+
+fn compare_migrated(
+    deck: &str,
+    baseline: &Entry,
+    actual: &Entry,
+    expected: Option<&ExpectedDeck>,
+) -> Vec<String> {
+    let Some(expected) = expected else {
+        return compare(deck, baseline, actual);
+    };
+    let unmigrated = |path: &str| !MIGRATED_POST_STUDY_FILES.contains(&path);
+    let mut diffs = diff_hashes(
+        "input changed: ",
+        deck,
+        &filtered(&baseline.input_sha256, unmigrated),
+        &filtered(&actual.input_sha256, unmigrated),
+    );
+    if baseline.input_sha256.get(POST_STUDY_FILE) == actual.input_sha256.get(POST_STUDY_FILE) {
         diffs.push(format!(
-            "{deck}: baseline {} (exit {}) actual {} (exit {})",
-            baseline.status, baseline.exit_code, actual.status, actual.exit_code
+            "input not migrated: {deck}: {POST_STUDY_FILE} equals the baseline"
         ));
     }
-    diffs.extend(diff_hashes("", deck, &baseline.files, &actual.files));
+    if diffs.is_empty() {
+        diffs = status_diffs(deck, baseline, actual);
+        diffs.extend(check_files(
+            deck,
+            &differing_paths(&baseline.files, &actual.files),
+            &decoded_files(expected),
+            &expected.files,
+        ));
+    }
     diffs
 }
 
@@ -416,7 +558,7 @@ fn load_baseline() -> Baseline {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-fn assert_matches_baseline(baseline: &Baseline, swept: &BTreeMap<String, Entry>) {
+fn assert_baseline_identity(baseline: &Baseline) {
     assert_eq!(baseline.generated_on, BASELINE_COMMIT);
     assert_eq!(
         baseline.cap,
@@ -425,6 +567,10 @@ fn assert_matches_baseline(baseline: &Baseline, swept: &BTreeMap<String, Entry>)
             scenarios: CAP_SCENARIOS
         }
     );
+}
+
+fn assert_matches_baseline(baseline: &Baseline, swept: &BTreeMap<String, Entry>) {
+    assert_baseline_identity(baseline);
     let mut diffs = Vec::new();
     for (key, actual) in swept {
         match baseline.decks.get(key) {
@@ -472,11 +618,142 @@ fn write_baseline(path: &Path, swept: BTreeMap<String, Entry>) {
     fs::write(path, json).unwrap();
 }
 
+fn expected_list() -> ExpectedList {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/bit_identity/phase2_expected_deltas.json");
+    serde_json::from_slice(&fs::read(&path).unwrap()).unwrap()
+}
+
+fn expected_delta_deck_keys() -> Vec<String> {
+    expected_list().decks.into_keys().collect()
+}
+
+fn read_cuts(work: &Path, file: &str) -> StageCutsReadResult {
+    let path = work.join("out").join(file);
+    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    deserialize_stage_cuts(&bytes).unwrap_or_else(|e| panic!("{}: {e:?}", path.display()))
+}
+
+fn read_basis(work: &Path, file: &str) -> OwnedPolicyBasisRecord {
+    let path = work.join("out").join(file);
+    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    deserialize_stage_basis(&bytes).unwrap_or_else(|e| panic!("{}: {e:?}", path.display()))
+}
+
+fn decoded_delta_failures(
+    deck: &str,
+    expected: &ExpectedDeck,
+    migrated: &Path,
+    legacy: &Path,
+) -> Vec<String> {
+    let mut slots = Vec::new();
+    let mut coefficients = Vec::new();
+    let mut bases = Vec::new();
+    let mut failures = Vec::new();
+    for file in expected.cut_files() {
+        let before = read_cuts(legacy, file);
+        let after = read_cuts(migrated, file);
+        if before.cuts.len() != after.cuts.len() {
+            failures.push(format!(
+                "{deck}: {file}: {} cuts (legacy) != {} (migrated)",
+                before.cuts.len(),
+                after.cuts.len()
+            ));
+            continue;
+        }
+        match diff_manifests(file, &before.entity_manifest, &after.entity_manifest) {
+            Ok(deltas) => slots.extend(deltas),
+            Err(failure) => failures.push(format!("{deck}: {failure}")),
+        }
+        coefficients.extend(diff_coefficients(file, &before, &after));
+    }
+    for file in expected.basis_files() {
+        match diff_bases(file, &read_basis(legacy, file), &read_basis(migrated, file)) {
+            Ok(deltas) => bases.extend(deltas),
+            Err(failure) => failures.push(format!("{deck}: {failure}")),
+        }
+    }
+    if let Err(unlisted) = check_expected_deltas(deck, &slots, &coefficients, &bases, expected) {
+        failures.extend(unlisted);
+    }
+    failures
+}
+
+fn migrated_failures(
+    key: &str,
+    committed: &Path,
+    baseline: &Entry,
+    expected: Option<&ExpectedDeck>,
+) -> Vec<String> {
+    let (work, exit_code) = run_deck(key, committed);
+    let actual = entry_from_run(work.path(), exit_code, input_hashes(committed));
+    let mut failures = compare_migrated(key, baseline, &actual, expected);
+    if let Some(expected) = expected.filter(|e| !decoded_files(e).is_empty()) {
+        let (legacy, _, _) = legacy_run_for(key, committed, &baseline.input_sha256);
+        failures.extend(decoded_delta_failures(
+            key,
+            expected,
+            work.path(),
+            legacy.path(),
+        ));
+    }
+    failures
+}
+
+fn assert_migrated_leg_matches_baseline(baseline: &Baseline, decks: Vec<(String, PathBuf)>) {
+    assert_baseline_identity(baseline);
+    let expected = expected_list();
+    let mut failures = Vec::new();
+    for (key, dir) in decks {
+        match baseline.decks.get(&key) {
+            Some(entry) => {
+                failures.extend(migrated_failures(
+                    &key,
+                    &dir,
+                    entry,
+                    expected.decks.get(&key),
+                ));
+            }
+            None => failures.push(format!("{key}: missing from the baseline")),
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "migrated leg violations:\n{}",
+        failures.join("\n")
+    );
+}
+
+fn assert_legacy_leg_matches_baseline(keys: &[String]) {
+    let baseline = load_baseline();
+    let mut swept = BTreeMap::new();
+    let mut deprecation_diffs = Vec::new();
+    for key in keys {
+        let (key, committed) = deck(key);
+        let expected = baseline
+            .decks
+            .get(&key)
+            .unwrap_or_else(|| panic!("{key}: missing from the baseline"));
+        let (entry, deprecations) = legacy_entry_for(&key, &committed, &expected.input_sha256);
+        if deprecations.len() != 1 {
+            deprecation_diffs.push(format!(
+                "{key}: validate printed {} `is deprecated` lines, expected 1: {deprecations:?}",
+                deprecations.len()
+            ));
+        }
+        swept.insert(key, entry);
+    }
+    assert_matches_baseline(&baseline, &swept);
+    assert!(
+        deprecation_diffs.is_empty(),
+        "legacy deprecation warning violations:\n{}",
+        deprecation_diffs.join("\n")
+    );
+}
+
 #[test]
 fn bit_identity_default_subset() {
-    let swept = sweep(vec![deck(D55_KEY), deck(BOUNDARY_KEY)]);
-    assert_eq!(swept.len(), 2);
-    assert_matches_baseline(&load_baseline(), &swept);
+    assert_migrated_leg_matches_baseline(&load_baseline(), vec![deck(D55_KEY), deck(BOUNDARY_KEY)]);
 }
 
 #[test]
@@ -494,18 +771,40 @@ fn bit_identity_full_sweep() {
         .map(|d| (d.key, d.dir))
         .chain([deck(BOUNDARY_KEY)])
         .collect();
-    let swept = sweep(decks);
     if capture {
-        write_baseline(&baseline_path(), swept);
+        write_baseline(&baseline_path(), sweep(decks));
         return;
     }
     let baseline = load_baseline();
     assert_eq!(
-        baseline.decks.keys().collect::<Vec<_>>(),
-        swept.keys().collect::<Vec<_>>(),
+        baseline.decks.keys().collect::<BTreeSet<_>>(),
+        decks.iter().map(|(key, _)| key).collect::<BTreeSet<_>>(),
         "the baseline holds one entry per committed deck plus the boundary fixture"
     );
-    assert_matches_baseline(&baseline, &swept);
+    assert_migrated_leg_matches_baseline(&baseline, decks);
+}
+
+#[test]
+fn bit_identity_legacy_leg_default_subset() {
+    assert_legacy_leg_matches_baseline(&[D55_KEY.to_string(), BOUNDARY_KEY.to_string()]);
+}
+
+#[test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "full legacy-input output sweep")]
+fn bit_identity_legacy_leg_full_sweep() {
+    assert_legacy_leg_matches_baseline(&expected_delta_deck_keys());
+}
+
+#[test]
+fn every_expected_delta_deck_has_an_overlay() {
+    let keys = expected_delta_deck_keys();
+    let overlay_root = overlay_dir(&keys[0]);
+    let overlays: BTreeSet<String> = fs::read_dir(overlay_root.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    let flattened: BTreeSet<String> = keys.iter().map(|key| flatten_key(key)).collect();
+    assert_eq!(overlays, flattened);
 }
 
 #[cfg(test)]

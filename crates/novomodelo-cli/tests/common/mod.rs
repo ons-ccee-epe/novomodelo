@@ -90,12 +90,19 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) {
     }
 }
 
-/// Copies the dual-calendar boundary gate fixture, minus its `source/` deck, into
-/// `dst`, then trains `source/` and copies its `policy/` to `dst/source_policy`,
-/// where the target's `config.policy.boundary.path` points. Panics with the
-/// failing run's stderr.
+fn dual_calendar_boundary_fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates dir must be one level above CARGO_MANIFEST_DIR")
+        .join("novomodelo-sddp/tests/gate_fixtures/dual_calendar_boundary")
+}
+
+/// Copies the committed dual-calendar boundary gate fixture, minus its `source/`
+/// deck, into `dst`, then trains `source/` and copies its `policy/` to
+/// `dst/source_policy`, where the target's `config.policy.boundary.path` points.
+/// Panics with the failing run's stderr.
 pub fn prepare_dual_calendar_boundary_case(dst: &Path) {
-    prepare_dual_calendar_boundary_case_with(dst, |_| {});
+    prepare_dual_calendar_boundary_case_from(&dual_calendar_boundary_fixture(), dst, |_| {});
 }
 
 /// [`prepare_dual_calendar_boundary_case`] with `mutate_source_config` applied
@@ -104,17 +111,27 @@ pub fn prepare_dual_calendar_boundary_case_with(
     dst: &Path,
     mutate_source_config: impl FnOnce(&mut serde_json::Value),
 ) {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("crates dir must be one level above CARGO_MANIFEST_DIR")
-        .join("novomodelo-sddp/tests/gate_fixtures/dual_calendar_boundary");
-    copy_dir_recursive(&fixture, dst);
+    prepare_dual_calendar_boundary_case_from(
+        &dual_calendar_boundary_fixture(),
+        dst,
+        mutate_source_config,
+    );
+}
+
+/// [`prepare_dual_calendar_boundary_case_with`] over the boundary fixture
+/// copy at `src`.
+pub fn prepare_dual_calendar_boundary_case_from(
+    src: &Path,
+    dst: &Path,
+    mutate_source_config: impl FnOnce(&mut serde_json::Value),
+) {
+    copy_dir_recursive(src, dst);
     fs::remove_dir_all(dst.join("source")).unwrap();
 
     let work = tempfile::TempDir::new().unwrap();
     let source = work.path().join("source");
     let source_out = work.path().join("source_out");
-    copy_dir_recursive(&fixture.join("source"), &source);
+    copy_dir_recursive(&src.join("source"), &source);
     let config_path = source.join("config.json");
     let mut config: serde_json::Value =
         serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();

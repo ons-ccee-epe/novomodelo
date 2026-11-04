@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/post_study_stages.schema.json",
+  "stages": [{ "start_date": "2024-07-01", "duration_hours": 744.0 }],
+  "thermal_bounds": [
+    {
+      "thermal_id": 1,
+      "post_study_stage_index": 0,
+      "cost_per_mwh": 5.0,
+      "min_mw": 0.0,
+      "max_mw": 150.0
+    }
+  ]
+}

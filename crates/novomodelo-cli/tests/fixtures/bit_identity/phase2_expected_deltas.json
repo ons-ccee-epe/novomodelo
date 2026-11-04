@@ -92,9 +92,38 @@
       "slots": [
         {"file": "policy/cuts/001.bin", "entity_id": 1, "subindex": 2, "legacy": [null, null], "migrated": [20240401, 20240501]},
         {"file": "policy/cuts/002.bin", "entity_id": 1, "subindex": 1, "legacy": [null, null], "migrated": [20240401, 20240501]},
-        {"file": "policy/cuts/002.bin", "entity_id": 1, "subindex": 2, "legacy": [null, null], "migrated": [20240501, 20240601]}
+        {"file": "policy/cuts/002.bin", "entity_id": 1, "subindex": 2, "legacy": [null, null], "migrated": [20240501, 20240601]},
+        {"file": "policy/cuts/000.bin", "entity_id": 1, "subindex": 3, "legacy": "absent", "migrated": [20240401, 20240501]},
+        {"file": "policy/cuts/001.bin", "entity_id": 1, "subindex": 3, "legacy": "absent", "migrated": [20240501, 20240601]},
+        {"file": "policy/cuts/002.bin", "entity_id": 1, "subindex": 3, "legacy": "absent", "migrated": [null, null]}
       ],
-      "coefficients": []
+      "coefficients": [
+        {"file": "policy/cuts/000.bin", "slot": {"entity_id": 1, "subindex": 3}, "rows": "all", "migrated": 0.0},
+        {"file": "policy/cuts/001.bin", "slot": {"entity_id": 1, "subindex": 3}, "rows": "all", "migrated": 0.0}
+      ],
+      "files": [
+        "policy/basis/000.bin",
+        "policy/basis/001.bin",
+        "policy/basis/002.bin",
+        "policy/cuts/000.bin",
+        "simulation/in_transit/scenario_id=0000/data.parquet",
+        "simulation/in_transit/scenario_id=0001/data.parquet",
+        "training/scaling_report.json"
+      ],
+      "lp_facts": [
+        "layout.geometry",
+        "layout.ncs_cols",
+        "layout.pumping_cols",
+        "lp.col_bounds",
+        "lp.dims",
+        "lp.objective",
+        "lp.scaling",
+        "lp.sparsity",
+        "lp.values",
+        "reporting.generic_constraint_row_entries",
+        "state_boxes",
+        "parity_hash"
+      ]
     },
     "crates/novomodelo-sddp/tests/fixtures/exited_plant_transit": {
       "water_bucket_stages": [
@@ -115,11 +144,16 @@
       ],
       "coefficients": [
         {"file": "policy/cuts/005.bin", "slot": {"entity_id": 1, "subindex": 3}, "rows": "boundary", "migrated": 0.0}
+      ],
+      "bases": [
+        {"file": "policy/basis/005.bin", "column": 4, "legacy": "Upper", "migrated": "Lower"}
       ]
     }
   },
   "informational": [
     "boundary fixture: the boundary rebind of the slot of hydro 1 at lag 3 in policy/cuts/005.bin changes from an overlap copy to Zero; reported on stdout and stderr only, written to no output file",
-    "boundary fixture: the boundary-injection tally reported on stdout and stderr shifts by one slot; written to no output file"
+    "boundary fixture: the boundary-injection tally reported on stdout and stderr shifts by one slot; written to no output file",
+    "boundary fixture: column 4 of policy/basis/005.bin is the empty frozen bucket of hydro 1 at lag 3, masked in both runs; its nonbasic status follows the sign of the boundary coefficient, which the rebind changes from a nonzero overlap copy to Zero",
+    "travel_time_arc: the 1460 h arc crosses the 2180 h boundary of the unpadded water calendar, so the transit depth is 3 instead of 2; the added lag-3 slot is masked [0, 0] and its coefficients are 0.0, so every cost, trajectory and simulation value is unchanged"
   ]
 }

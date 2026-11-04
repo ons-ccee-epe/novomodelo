@@ -11,6 +11,7 @@
 
 use std::path::Path;
 
+use novomodelo_core::WaterBucketStages;
 use novomodelo_io::{load_case, validate_case};
 use tempfile::TempDir;
 
@@ -170,7 +171,7 @@ fn write_seven_stage_post_study(root: &Path, bounds: &[(usize, f64, f64)]) {
         root,
         "post_study_stages.json",
         &format!(
-            r#"{{ "stages": [{}], "thermal_bounds": [{}] }}"#,
+            r#"{{ "thermal_stages": [{}], "thermal_bounds": [{}] }}"#,
             stages.join(",\n"),
             bound_entries.join(",\n")
         ),
@@ -188,7 +189,7 @@ fn test_present_carries_sorted_post_study_stages_onto_system() {
         dir.path(),
         "post_study_stages.json",
         r#"{
-          "stages": [
+          "thermal_stages": [
             { "start_date": "2024-03-01", "duration_hours": 744.0 },
             { "start_date": "2024-02-01", "duration_hours": 696.0 }
           ],
@@ -208,7 +209,7 @@ fn test_present_carries_sorted_post_study_stages_onto_system() {
     assert_eq!(
         ps.thermal_stages[0].start_date,
         chrono::NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        "stages must be ascending by start_date"
+        "thermal_stages must be ascending by start_date"
     );
     assert_eq!(ps.thermal_bounds[0].post_study_stage_index, 0);
     assert_eq!(ps.thermal_bounds[1].post_study_stage_index, 1);
@@ -241,7 +242,7 @@ fn test_first_start_not_study_end_rejected() {
         dir.path(),
         "post_study_stages.json",
         r#"{
-          "stages": [ { "start_date": "2024-03-01", "duration_hours": 744.0 } ],
+          "thermal_stages": [ { "start_date": "2024-03-01", "duration_hours": 744.0 } ],
           "thermal_bounds": []
         }"#,
     );
@@ -265,7 +266,7 @@ fn test_non_contiguous_stages_rejected() {
         dir.path(),
         "post_study_stages.json",
         r#"{
-          "stages": [
+          "thermal_stages": [
             { "start_date": "2024-02-01", "duration_hours": 696.0 },
             { "start_date": "2024-04-01", "duration_hours": 720.0 }
           ],
@@ -290,7 +291,6 @@ fn test_lead_exceeds_horizon_without_post_study_rejected() {
     // post_study_stages.json declared, the plant can never deliver.
     write_anticipated_thermal_86(dir.path(), 1440.0);
     write_ic_with_past_commitment(dir.path());
-    // No post_study_stages.json written.
 
     let msg = load_case(dir.path()).unwrap_err().to_string();
     assert!(
@@ -313,7 +313,7 @@ fn test_missing_post_study_bound_cell_rejected() {
         dir.path(),
         "post_study_stages.json",
         r#"{
-          "stages": [ { "start_date": "2024-02-01", "duration_hours": 696.0 } ],
+          "thermal_stages": [ { "start_date": "2024-02-01", "duration_hours": 696.0 } ],
           "thermal_bounds": []
         }"#,
     );
@@ -348,7 +348,7 @@ fn test_pre_study_decided_post_study_delivery_loads_when_tiled() {
         dir.path(),
         "post_study_stages.json",
         r#"{
-          "stages": [
+          "thermal_stages": [
             { "start_date": "2024-02-01", "duration_hours": 696.0 },
             { "start_date": "2024-03-01", "duration_hours": 744.0 }
           ],
@@ -376,7 +376,7 @@ fn test_valid_covered_delivery_loads() {
         dir.path(),
         "post_study_stages.json",
         r#"{
-          "stages": [ { "start_date": "2024-02-01", "duration_hours": 696.0 } ],
+          "thermal_stages": [ { "start_date": "2024-02-01", "duration_hours": 696.0 } ],
           "thermal_bounds": [
             { "thermal_id": 86, "post_study_stage_index": 0, "cost_per_mwh": 210.0, "min_mw": 0.0, "max_mw": 350.0 }
           ]
@@ -393,7 +393,7 @@ fn test_valid_covered_delivery_loads() {
 #[test]
 fn test_declaration_order_invariance_through_system() {
     let forward = r#"{
-      "stages": [
+      "thermal_stages": [
         { "start_date": "2024-02-01", "duration_hours": 696.0 },
         { "start_date": "2024-03-01", "duration_hours": 744.0 }
       ],
@@ -403,7 +403,7 @@ fn test_declaration_order_invariance_through_system() {
       ]
     }"#;
     let reversed = r#"{
-      "stages": [
+      "thermal_stages": [
         { "start_date": "2024-03-01", "duration_hours": 744.0 },
         { "start_date": "2024-02-01", "duration_hours": 696.0 }
       ],
@@ -480,7 +480,7 @@ fn test_horizon_split_commitment_window_pair_loads_cleanly() {
         dir.path(),
         "post_study_stages.json",
         r#"{
-          "stages": [
+          "thermal_stages": [
             { "start_date": "2024-02-01", "duration_hours": 696.0 },
             { "start_date": "2024-03-01", "duration_hours": 744.0 }
           ],
@@ -603,7 +603,7 @@ fn test_empty_class_four_set_requires_no_post_horizon_window() {
         dir.path(),
         "post_study_stages.json",
         r#"{
-          "stages": [ { "start_date": "2024-02-01", "duration_hours": 696.0 } ],
+          "thermal_stages": [ { "start_date": "2024-02-01", "duration_hours": 696.0 } ],
           "thermal_bounds": [
             { "thermal_id": 86, "post_study_stage_index": 0, "cost_per_mwh": 210.0, "min_mw": 0.0, "max_mw": 350.0 }
           ]
@@ -633,7 +633,7 @@ fn test_commissioning_inactive_post_study_stage_requires_no_window() {
         dir.path(),
         "post_study_stages.json",
         r#"{
-          "stages": [
+          "thermal_stages": [
             { "start_date": "2024-02-01", "duration_hours": 696.0 },
             { "start_date": "2024-03-01", "duration_hours": 744.0 },
             { "start_date": "2024-04-01", "duration_hours": 720.0 }
@@ -827,7 +827,7 @@ fn test_window_on_a_commissioning_inactive_post_study_stage_accepted() {
         dir.path(),
         "post_study_stages.json",
         r#"{
-          "stages": [
+          "thermal_stages": [
             { "start_date": "2024-02-01", "duration_hours": 696.0 },
             { "start_date": "2024-03-01", "duration_hours": 744.0 },
             { "start_date": "2024-04-01", "duration_hours": 720.0 }
@@ -964,7 +964,7 @@ fn test_nonzero_fixed_commitment_outside_commissioning_window_rejected() {
         dir.path(),
         "post_study_stages.json",
         r#"{
-          "stages": [
+          "thermal_stages": [
             { "start_date": "2024-02-01", "duration_hours": 696.0 },
             { "start_date": "2024-03-01", "duration_hours": 744.0 },
             { "start_date": "2024-04-01", "duration_hours": 720.0 }
@@ -1017,7 +1017,7 @@ fn test_zero_fixed_commitment_outside_commissioning_window_accepted() {
         dir.path(),
         "post_study_stages.json",
         r#"{
-          "stages": [
+          "thermal_stages": [
             { "start_date": "2024-02-01", "duration_hours": 696.0 },
             { "start_date": "2024-03-01", "duration_hours": 744.0 },
             { "start_date": "2024-04-01", "duration_hours": 720.0 }
@@ -1057,7 +1057,7 @@ fn test_windowless_plant_fixed_commitment_accepted() {
         dir.path(),
         "post_study_stages.json",
         r#"{
-          "stages": [
+          "thermal_stages": [
             { "start_date": "2024-02-01", "duration_hours": 696.0 },
             { "start_date": "2024-03-01", "duration_hours": 744.0 }
           ],
@@ -1130,7 +1130,7 @@ fn test_fixed_commitment_window_message_makes_no_infeasibility_claim() {
         dir.path(),
         "post_study_stages.json",
         r#"{
-          "stages": [ { "start_date": "2024-02-01", "duration_hours": 696.0 } ],
+          "thermal_stages": [ { "start_date": "2024-02-01", "duration_hours": 696.0 } ],
           "thermal_bounds": []
         }"#,
     );
@@ -1338,7 +1338,7 @@ fn test_retired_no_carrier_advice_is_absent_from_every_diagnostic() {
         dir2.path(),
         "post_study_stages.json",
         r#"{
-          "stages": [
+          "thermal_stages": [
             { "start_date": "2024-02-01", "duration_hours": 696.0 },
             { "start_date": "2024-03-01", "duration_hours": 744.0 }
           ],
@@ -1410,5 +1410,80 @@ fn test_commitment_window_declaration_order_invariance_through_system() {
         s1, s2,
         "the loaded System must be identical regardless of commitment-window \
          declaration order"
+    );
+}
+
+// ── legacy `stages` shape ─────────────────────────────────────────────────
+
+#[test]
+fn legacy_stages_file_loads_and_sorts_both_collections() {
+    let dir = TempDir::new().unwrap();
+    make_minimal_case(&dir);
+    write_file(
+        dir.path(),
+        "post_study_stages.json",
+        r#"{
+          "stages": [
+            { "start_date": "2024-03-01", "duration_hours": 744.0 },
+            { "start_date": "2024-02-01", "duration_hours": 696.0 }
+          ],
+          "thermal_bounds": [
+            { "thermal_id": 86, "post_study_stage_index": 1, "cost_per_mwh": 220.0, "min_mw": 0.0, "max_mw": 300.0 },
+            { "thermal_id": 86, "post_study_stage_index": 0, "cost_per_mwh": 210.0, "min_mw": 0.0, "max_mw": 350.0 }
+          ]
+        }"#,
+    );
+
+    let system = load_case(dir.path()).unwrap_or_else(|e| panic!("expected Ok(System), got: {e}"));
+    let ps = system
+        .post_study_stages()
+        .expect("post_study_stages must be Some");
+
+    assert_eq!(ps.thermal_stages.len(), 2);
+    assert_eq!(
+        ps.thermal_stages[0].start_date,
+        chrono::NaiveDate::from_ymd_opt(2024, 2, 1).unwrap()
+    );
+    assert_eq!(ps.thermal_bounds[0].post_study_stage_index, 0);
+    assert_eq!(ps.water_bucket_stages, WaterBucketStages::FromThermalStages);
+}
+
+#[test]
+fn legacy_file_missing_thermal_bounds_rejected() {
+    let dir = TempDir::new().unwrap();
+    make_minimal_case(&dir);
+    write_file(
+        dir.path(),
+        "post_study_stages.json",
+        r#"{ "stages": [ { "start_date": "2024-02-01", "duration_hours": 696.0 } ] }"#,
+    );
+
+    let msg = load_case(dir.path()).unwrap_err().to_string();
+    assert!(
+        msg.contains("missing field `thermal_bounds`"),
+        "error should name the missing key, got: {msg}"
+    );
+}
+
+#[test]
+fn legacy_thermal_bound_index_out_of_range_rejected() {
+    let dir = TempDir::new().unwrap();
+    make_minimal_case(&dir);
+    write_file(
+        dir.path(),
+        "post_study_stages.json",
+        r#"{
+          "stages": [ { "start_date": "2024-02-01", "duration_hours": 696.0 } ],
+          "thermal_bounds": [
+            { "thermal_id": 86, "post_study_stage_index": 3, "cost_per_mwh": 210.0, "min_mw": 0.0, "max_mw": 350.0 }
+          ]
+        }"#,
+    );
+
+    let msg = load_case(dir.path()).unwrap_err().to_string();
+    assert!(
+        msg.contains("thermal_bounds[0].post_study_stage_index")
+            && msg.contains("post_study_stage_index 3 is out of range for 1 post-study stage(s)"),
+        "error should name the out-of-range index, got: {msg}"
     );
 }

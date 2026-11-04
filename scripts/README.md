@@ -11,6 +11,14 @@ Helper scripts for Novomodelo, grouped by role.
 - **`rebrand/`** — the fork's rename tool. `rebrand.py paths|tokens|check`
   moves paths, rewrites contents and guards against leftovers, all driven by
   the one name map `map.toml`; `test_rebrand.py` covers it.
+- **`migrate/`** — one-time deck migrations. `post_study_stages.py DECK_DIR [DECK_DIR ...]`
+  rewrites each deck's `post_study_stages.json` from the deprecated `stages` format:
+  `stages` becomes `thermal_stages` (kept with `thermal_bounds` only when a thermal is
+  anticipated, dropped otherwise) and `water_bucket_stages` is inferred from the last
+  study stage for decks with a travel-time arc. All decks are planned before any file is
+  written, so one refused deck writes nothing (exit 1; usage errors exit 2), and a second
+  run changes nothing. `test_post_study_stages.py` covers it; its `validate` cases need
+  `NOVOMODELO_BIN` to point at a built `novomodelo` binary and skip without it.
 - **`pre-commit`** — the git pre-commit hook. Install with
   `ln -sf ../../scripts/pre-commit .git/hooks/pre-commit`.
 - **`loc-stats.sh`** — refreshable reporting tool (not a CI gate): Rust line

@@ -2343,21 +2343,27 @@ mod water_travel_time_gate_byte_neutrality {
     //! alone does not pin.
     //!
     //! The second is the arrival-calendar gate: the topology sizing derived
-    //! from a declared post-study calendar only diverges from today's
-    //! synthetic pad when the deck actually declares one. This deck declares
-    //! none, so that gate is structurally incapable of moving these goldens —
-    //! asserted directly below rather than assumed.
+    //! from a declared post-study calendar only diverges from the synthetic
+    //! pad when the declared calendar changes the transit depth. This deck
+    //! declares its water calendar, and its legacy-input overlay does not, so
+    //! the gate is pinned by building both and comparing the state topology
+    //! and the bucket masks.
 
     use std::path::Path;
 
     use novomodelo_io::config::BoundaryPolicy;
+    use novomodelo_sddp::test_support::legacy_inputs::{materialize, overlay_dir};
     use novomodelo_solver::ActiveSolver;
+    use tempfile::TempDir;
 
-    use super::common::{StubComm, fresh_setup_with};
+    use super::common::{StubComm, copy_toy_case, fresh_setup_with};
+
+    const CASE_KEY: &str = "examples/deterministic/d44-travel-time-substage";
 
     fn case_dir() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/deterministic/d44-travel-time-substage")
+            .join("../..")
+            .join(CASE_KEY)
     }
 
     fn train_gated_off() -> f64 {
@@ -2444,13 +2450,47 @@ mod water_travel_time_gate_byte_neutrality {
     }
 
     #[test]
-    fn declared_arc_golden_deck_declares_no_post_study_calendar() {
-        let system = novomodelo_io::load_case(&case_dir()).expect("load_case must succeed");
+    fn declared_arc_golden_deck_topology_matches_its_legacy_overlay() {
+        let legacy_case = TempDir::new().expect("tempdir");
+        copy_toy_case(&case_dir(), legacy_case.path());
+        materialize(&overlay_dir(CASE_KEY), legacy_case.path())
+            .expect("the legacy overlay must materialize");
+
+        let migrated = fresh_setup_with(&case_dir(), |_cfg| {});
+        let legacy = fresh_setup_with(legacy_case.path(), |_cfg| {});
+
+        let (state_migrated, state_legacy) = (migrated.stage_state(), legacy.stage_state());
         assert!(
-            system.post_study_stages().is_none(),
-            "the water goldens' deck declares no post-study calendar, so the \
-             arrival-calendar extension cannot move them"
+            state_migrated.n_buckets > 0,
+            "fixture has no power unless it declares at least one travel-time bucket"
         );
+        assert_eq!(state_migrated.n_state, state_legacy.n_state);
+        assert_eq!(
+            state_migrated.transit_bucket_column_order,
+            state_legacy.transit_bucket_column_order
+        );
+
+        assert_eq!(migrated.num_stages(), legacy.num_stages());
+        let buckets = state_migrated.transit_buckets_out.clone();
+        let bounds = |setup: &novomodelo_sddp::StudySetup, stage: usize| {
+            let template = &setup.stage_ctx().templates[stage];
+            buckets
+                .clone()
+                .map(|col| {
+                    (
+                        template.col_lower[col].to_bits(),
+                        template.col_upper[col].to_bits(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        for stage in 0..migrated.num_stages() {
+            assert_eq!(
+                bounds(&migrated, stage),
+                bounds(&legacy, stage),
+                "stage {stage}: the bucket masks must equal the legacy overlay's"
+            );
+        }
     }
 }
 

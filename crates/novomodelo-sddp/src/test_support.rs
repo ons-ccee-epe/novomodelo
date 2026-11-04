@@ -105,6 +105,7 @@ use novomodelo_solver::{
 };
 
 pub mod decks;
+pub mod legacy_inputs;
 pub mod template_structure;
 
 pub(crate) mod ctx_fixture;
