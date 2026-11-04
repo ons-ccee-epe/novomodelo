@@ -131,6 +131,36 @@ So every ring slot is a priced future-cost dimension that a loaded boundary cut'
 coefficient `β` lands on directly, via the one generic `β·state` projection
 (`CutStateProjection::new`) — never a per-family pricing arm.
 
+### 1.6 Post-study calendars
+
+`post_study_stages.json` carries **one calendar per kind**
+(`PostStudyStages`, `crates/novomodelo-core/src/model/post_study.rs`):
+
+- `thermal_stages` (with `thermal_bounds`) dates **thermal** deliveries. It feeds
+  the discounting continuation, delivery ids, ring sizing and dating, the
+  anticipated bounds, and `anticipated_lanes`.
+- `water_bucket_stages` (`WaterBucketStages`) dates **water** buckets. It feeds the
+  bucket topology and arrival dating.
+
+The water calendar is never digested. The two calendars are independent: a
+thermal-only deck needs no water key, and a deck with a travel-time arc declares
+the water key whatever its thermals do.
+
+**New format.** On a deck with a travel-time arc the water key is required. The
+declared calendar is used exactly — no padding, no fallback to `thermal_stages` —
+and must cover the deepest travel time, or setup refuses the study. The rule codes
+for the format checks are owned by `crates/novomodelo-io/src/validation/rules.rs`
+(the `POST_STUDY_*` rules); the table is not copied here.
+
+**Deprecated format.** The legacy `stages` key (or a travel-time arc with no
+post-study file) keeps today's behavior: the water calendar is the thermal one,
+padded for resolution. The validator warns on it and names the migration script
+`scripts/migrate/post_study_stages.py`. Removing the legacy path is a later
+decision, not part of the new format.
+
+`.claude/rules/sddp.md` (§ "Water calendar paths") owns the contracts of the two
+paths and the quantity-class rebind weights used when a boundary policy is loaded.
+
 ---
 
 ## 2. Water travel time
@@ -206,11 +236,28 @@ n_buckets = Σ_j L_j
 column_order = [(j, 1), (j, 2), …, (j, L_j)] for each plant j in canonical order
 ```
 
-`extended` is the study calendar followed by any declared post-study calendar
-(`DeliveryCalendar::total_hours`), padded with copies of its trailing duration
-only past what that base calendar already covers (`extend_for_resolution`,
-`bucket_topology.rs`). With no declared post-study calendar the base is the
-study-only vector and the formula above is unchanged.
+`extended` is the **resolution base**, one of two (`resolution_base`,
+`bucket_topology.rs`), selected by `WaterDeliveryBasis`:
+
+- **Declared water calendar (new format):** the study calendar followed by
+  `water_bucket_stages`, **unpadded**. If it does not cover the deepest
+  travel-time arc, setup refuses the study (`resolve_state_and_topology`) rather
+  than extending it.
+- **Legacy deck:** the study calendar followed by the thermal post-study `stages`,
+  padded with copies of its trailing duration only past what that base already
+  covers (`extend_for_resolution`). A short legacy calendar is padded, never
+  refused. With no post-study calendar the base is the study-only vector.
+
+For a water calendar that covers every arc the two bases build the same topology.
+Bucket slots of a new-format deck are dated from `water_bucket_stages`, with or
+without a loaded boundary; legacy slots are dated from the thermal post-study
+stages.
+
+There is no water analog of the boundary-absent post-study warning of §3.5, by
+design. On an arc deck the water calendar is required and checked at load, so a
+missing or short water calendar is an error rather than a silent zero-valued
+terminal; the thermal calendar is optional, which is what makes its silence worth
+a warning.
 
 Key properties (each pinned by a named test in `bucket_topology.rs`):
 
@@ -312,8 +359,8 @@ on two separate surfaces:
   pre-study **decided** MW windows that deliver into the study's leading stages
   (the stage-0 ring seed; sunk cost, never in the objective).
 - `post_study_stages.json` (`crates/novomodelo-core/src/model/post_study.rs`) — the
-  **sole** post-study declaration surface: an ordered post-study calendar
-  segment plus a per-`(thermal, post-study stage)` `cost_per_mwh`/`min_mw`/`max_mw`
+  **sole** post-study declaration surface: the ordered post-study calendar
+  `thermal_stages` (the water calendar `water_bucket_stages` is separate; §1.6) plus a per-`(thermal, post-study stage)` `cost_per_mwh`/`min_mw`/`max_mw`
   an in-study decision delivering past the horizon is priced and bounded against.
   It extends the delivery axis to `n_delivery = n_stages + n_post` — the runtime
   axis is `DeliveryCalendar::total_hours`, read by `resolve_anticipated_commitments_core`
@@ -353,7 +400,7 @@ overlay-ignoring bound read (§3.4).
 
 The lead resolves to a **decider** `c(m)` = the decision stage for each delivery
 stage `m` on the **extended delivery axis** `[0, n_delivery)` (`n_delivery =
-n_stages + n_post`, study-only when no `post_study_stages.json` is declared), via
+n_stages + n_post`, study-only when no `thermal_stages` calendar is declared), via
 `PointResolution` (`crates/novomodelo-sddp/src/lead_time/mod.rs`):
 
 - `LeadTime` (`resolve_decider_physical`): `c(m)` is the stage containing

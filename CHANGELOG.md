@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `post_study_stages.json` accepts `thermal_stages` and `water_bucket_stages`.
+  A deck with a travel-time arc must declare `water_bucket_stages`, which is
+  used without padding; validation refuses a missing key or incomplete
+  coverage.
+
+### Changed
+
+- For a migrated deck with a travel-time arc, the transit-bucket slots in
+  `policy/cuts/*.bin` past the study horizon are now dated, so a later study
+  loading that policy as a boundary reads them.
+- Boundary cuts read on a different bucket calendar than they were trained on
+  price in-transit water by the target bucket's hours. Results change for such
+  runs.
+- `post_study_stages.json` `stages` is deprecated in favour of `thermal_stages`.
+  A deck that still uses it keeps running and warns; run
+  `python3 scripts/migrate/post_study_stages.py <deck-dir>` to migrate it. Decks under
+  `casos/` and hpc-model-utils decks keep running with the warning.
+
 ## [0.19.1] - 2026-10-26
 
 ### Added

@@ -3584,7 +3584,9 @@ above — the identical family-byte discipline). A transit target's `subindex` (
 maturity lag) plays no part in the join, for a reason distinct from anticipated's
 non-monotone-residue one: two buckets of one downstream plant at different lags
 have disjoint arrival intervals (each stamped from its own arrival stage on the
-extended delivery calendar) and are told apart by that alone; re-introducing
+study stages extended by the water calendar — the declared
+`water_bucket_stages`, or the thermal post-study `stages` on the legacy path;
+Water calendar paths below) and are told apart by that alone; re-introducing
 `subindex` into the join would reject a legitimate source whose lag indexing
 differs from the current study's. Under an identical source/current arrival
 interval the overlap is full and the single term's weight is
@@ -4038,8 +4040,19 @@ The bucket state stays a pure function of stage lengths, never of
   the pre-study anchor alone (`DeliveryCalendar`,
   `build_transit_bucket_topology`) — never from `n_blks` or `block_mode`.
   Deriving any part of the depth inside a block-aware code path re-couples the
-  state dimension to how a stage happens to be resolved. Pinned by
-  `setup::calendar_cross_wire_tests::water_consumers_ignore_the_thermal_calendar`.
+  state dimension to how a stage happens to be resolved. The water calendar
+  reaches the depth arithmetic through one of two paths (Water calendar paths
+  below): a deck declaring `water_bucket_stages` is resolved on the study
+  stages plus that calendar UNPADDED, and must cover the deepest travel time
+  or setup refuses it; a deck without it (the legacy `stages` key of
+  `post_study_stages.json`, or no file) is resolved on the study stages plus
+  the thermal post-study `stages`, padded by `extend_for_resolution`, which is
+  reachable only through `resolution_base`'s `WaterDeliveryBasis::Legacy` arm.
+  Either way the base is a list of stage lengths, so the property holds on both
+  paths. Pinned by
+  `setup::calendar_cross_wire_tests::water_consumers_ignore_the_thermal_calendar`,
+  `resolution_base_uses_declared_water_calendar_unpadded` and
+  `resolution_base_pads_without_post_study_file` (`bucket_topology.rs`).
 - **Shared arrival density.** A chronological stage's per-block deposit shares
   `block_deposits`/`within_stage_routing` and the stage-level `stage_weights`
   come from the same shared arrival density (`resolve_spread`'s
@@ -4075,6 +4088,70 @@ precomputed `arc_arrival_density` table entry verbatim) is the direct pin for
 the fixed-delivery-density clause itself; the parallel-fill regression (the
 maturing bucket keeps a single `-1.0` regardless of the table's contents)
 pins that `fill_parallel_water_entries` never reads it.
+
+### Water calendar paths
+
+The transit-bucket water calendar has exactly two paths, selected once per study
+by `WaterDeliveryBasis::of` from the core `WaterBucketStages` carried on
+`PostStudyStages`:
+
+- **Declared (`WaterBucketStages::Declared`, the `water_bucket_stages` key of
+  `post_study_stages.json`).** `DeliveryCalendar::water` is the study stages plus
+  the declared water stages, and `resolution_base`'s `Declared` arm borrows it
+  UNPADDED — no padding, no fallback to the thermal calendar.
+- **Legacy (`WaterBucketStages::FromThermalStages`, the core default: the
+  deprecated `stages` key, or no post-study file).** `DeliveryCalendar::water` is
+  `DeliveryCalendar::thermal`, and `resolution_base`'s `Legacy` arm pads it with
+  `extend_for_resolution`. That arm is `extend_for_resolution`'s only production
+  caller; the pad never exists on the declared path. This path is recorded
+  debt: it exists for decks still in the deprecated format and is removed
+  together with that format, not on its own.
+
+The basis is passed by value and never stored on `DeliveryCalendar`, which feeds
+the frozen digest. Four invariants hold across the two paths:
+
+- **Pad-free neutrality.** For any water calendar covering the deepest travel
+  time, the declared-unpadded and the legacy-padded bases build a bit-identical
+  `TransitBucketTopology` — `column_order`, `per_stage_mask`, stage weights, the
+  chronological spreads (`stage_reach` included) and `arc_arrival_density` —
+  with and without a loaded boundary: a covering calendar already holds every
+  travel-time window, so the pad is never read. This is what makes the declared
+  path a format change, not a results change, for a deck whose migrated water
+  calendar covers its arcs. Pinned by the
+  `declared_and_padded_bases_agree_on_covering_water_calendars` property test
+  and `declared_and_padded_bases_agree_at_equality_coverage`
+  (`bucket_topology/neutrality_tests.rs`).
+- **A declared calendar that does not cover is refused, never padded.**
+  `resolve_state_and_topology` calls `deepest_uncovered_travel_time_arc`
+  (core) before building the topology and returns `SddpError::Validation` naming
+  the hydro, its travel time and the declared span. Padding the declared
+  calendar, or falling back to the legacy base, is the wrong-but-compiling
+  alternative: it silently invents water stages the deck did not declare. Pinned
+  by `resolve_state_and_topology_refuses_uncovered_declared_water_calendar` and
+  `resolve_state_and_topology_accepts_covering_declared_water_calendar`
+  (`setup/tests.rs`).
+- **A short legacy calendar is padded, never refused.** The refusal is scoped to
+  the declared path; applying it to a legacy deck rejects decks the deprecated
+  format accepts. Pinned by
+  `resolve_state_and_topology_pads_a_short_legacy_water_calendar`.
+- **Bucket slots are dated from the water calendar, never from the pad.**
+  `build_stage_entity_manifest` dates a `HydroTransitBucket` slot's arrival
+  interval over the study stages extended by `DeliveryCalendar::water`: the
+  declared `water_bucket_stages` on the declared path, with or without a loaded
+  boundary; the thermal post-study stages on the legacy path, as before. A slot
+  whose arrival lands past that calendar carries the sentinel. Anticipated ring
+  slots stay on `DeliveryCalendar::thermal`. Dating a bucket from the thermal
+  calendar on the declared path moves every bucket interval a boundary fan-out
+  joins on. Pinned by
+  `public_manifest_dates_bucket_slots_from_water_bucket_stages`
+  (`tests/water_calendar_differential.rs`) and
+  `transit_bucket_dates_onto_the_post_study_calendar_and_sentinels_past_it`
+  (`policy/policy_export.rs`).
+
+Read: `time_value.rs` (`WaterDeliveryBasis`, `DeliveryCalendar::water`),
+`bucket_topology.rs` (`resolution_base`, `extend_for_resolution`),
+`setup/mod.rs` (`resolve_state_and_topology`), `policy/policy_export.rs`
+(`build_stage_entity_manifest`).
 
 ### Maturing transit into a `PreFilling` plant follows the short-circuit target
 
@@ -4525,8 +4602,8 @@ Read: `lp/indexer/anticipated_gate.rs`
 (`fill_anticipated_slot_columns`). Pinned by
 `is_anticipated_decision_active_for_delivery_strict_extended_bound` (the strict
 `< n_delivery` gate on the extended axis; `<=` would admit a delivery at
-`n_delivery`) and `a1c_lead_stages_is_pure_index_shift`'s
-empty-`decision_sets`-past-the-delivery-bound assertion. Pinned by
+`n_delivery`), `a1c_lead_stages_is_pure_index_shift`'s
+empty-`decision_sets`-past-the-delivery-bound assertion, and
 `setup::calendar_cross_wire_tests::thermal_consumers_follow_the_thermal_calendar`.
 
 ### In-LP anticipated ring: single-decider deposit & `K = 0` exclusion
