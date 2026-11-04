@@ -328,6 +328,27 @@ declare_rules! {
     SEMANTIC_INITIAL_STORAGE_OUTSIDE_FIRST_STAGE_BOUNDS = "semantic.5a.55",
         Semantic, ModelQuality, Warning,
         "A hydro's initial storage lies outside the storage bounds at the end of its first operating stage";
+    POST_STUDY_LEGACY_FORMAT_DEPRECATED = "semantic.5a.56",
+        Semantic, ModelQuality, Warning,
+        "post_study_stages.json uses the deprecated stages key, or a deck declaring a travel-time arc has no post_study_stages.json";
+    POST_STUDY_MIXED_FORMAT = "semantic.5a.57",
+        Semantic, BusinessRuleViolation, Error,
+        "post_study_stages.json declares stages together with thermal_stages or water_bucket_stages";
+    POST_STUDY_WATER_CALENDAR_MISSING = "semantic.5a.58",
+        Semantic, BusinessRuleViolation, Error,
+        "A current-format post_study_stages.json on a deck declaring a travel-time arc has no water_bucket_stages key";
+    POST_STUDY_WATER_CALENDAR_SHORT = "semantic.5a.59",
+        Semantic, BusinessRuleViolation, Error,
+        "The declared water_bucket_stages calendar covers fewer hours than the deepest travel-time arc";
+    POST_STUDY_THERMAL_PAIR_INCOMPLETE = "semantic.5a.60",
+        Semantic, BusinessRuleViolation, Error,
+        "post_study_stages.json declares one of thermal_stages and thermal_bounds without the other; the two must be declared together";
+    POST_STUDY_WATER_CALENDAR_UNUSED = "semantic.5a.61",
+        Semantic, ModelQuality, Warning,
+        "A current-format post_study_stages.json declares water_bucket_stages on a deck with no travel-time arc, so the key has no effect";
+    POST_STUDY_THERMAL_CALENDAR_UNUSED = "semantic.5a.62",
+        Semantic, ModelQuality, Warning,
+        "A current-format post_study_stages.json declares thermal_stages on a deck with no anticipated thermal, so the key has no effect";
     TRAVEL_TIME_INVALID = "travel_time.1",
         Semantic, InvalidValue, Error,
         "A hydro's travel_time_hours is negative or not finite";

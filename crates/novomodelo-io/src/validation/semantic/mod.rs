@@ -35,6 +35,8 @@ mod constraints;
 mod correlation;
 mod hydro;
 mod inflow_seeding;
+mod post_study_calendar;
+mod post_study_format;
 mod pumping;
 mod scenarios;
 mod season;
@@ -63,6 +65,7 @@ pub(crate) fn validate_semantic_hydro_thermal(data: &ParsedData, ctx: &mut Valid
     thermal::check_thermal_generation_bounds(data, ctx);
     thermal::check_anticipated_thermals(data, ctx);
     thermal::check_anticipated_cadence_transition(data, ctx);
+    post_study_format::check_post_study_format(data, ctx);
     thermal::check_post_study_stages(data, ctx);
     thermal::check_anticipated_decision_target_is_anticipated(data, ctx);
     thermal::warn_thermal_generation_on_anticipated_thermal(data, ctx);

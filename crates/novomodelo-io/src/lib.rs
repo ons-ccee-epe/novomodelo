@@ -50,7 +50,7 @@ pub mod output;
 pub(crate) mod parquet_helpers;
 pub mod penalties;
 pub(crate) mod pipeline;
-pub mod post_study_stages;
+pub(crate) mod post_study_stages;
 pub mod report;
 pub mod resolution;
 pub mod scenarios;
@@ -126,7 +126,6 @@ pub use output::{
     write_success_marker, write_training_metadata, write_training_results,
 };
 pub use penalties::parse_penalties;
-pub use post_study_stages::parse_post_study_stages;
 pub use report::{ReportEntry, ValidationReport, generate_report};
 pub use resolution::{resolve_bounds, resolve_penalties};
 pub use scenarios::{

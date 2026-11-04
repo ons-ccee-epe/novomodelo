@@ -40,7 +40,7 @@ use crate::{
     },
     initial_conditions::parse_initial_conditions,
     penalties::parse_penalties,
-    post_study_stages::parse_post_study_stages,
+    post_study_stages::{PostStudyFormat, parse_post_study_file},
     scenarios::{
         ExternalLoadRow, ExternalNcsRow, ExternalScenarioRow, InflowAnnualComponentRow,
         InflowArCoefficientRow, InflowHistoryRow, InflowSeasonalStatsRow, LoadFactorEntry,
@@ -76,6 +76,8 @@ pub(crate) struct ParsedData {
     pub(crate) initial_conditions: InitialConditions,
     /// `post_study_stages.json`. `None` when absent.
     pub(crate) post_study_stages: Option<PostStudyStages>,
+    /// Format of `post_study_stages.json`; `None` when the file failed to parse.
+    pub(crate) post_study_format: Option<PostStudyFormat>,
 
     /// `system/buses.json`.
     pub(crate) buses: Vec<Bus>,
@@ -253,13 +255,18 @@ pub(crate) fn validate_schema(
     );
 
     // `Option` (not the aggregate): callers distinguish "no file" from an empty deck.
-    let post_study_stages: Option<PostStudyStages> = optional_or_error(
-        manifest.present(InputFile::PostStudyStagesJson),
-        || parse_post_study_stages(&case_root.join("post_study_stages.json")).map(Some),
+    let post_study_file_present = manifest.present(InputFile::PostStudyStagesJson);
+    let (post_study_format, post_study_stages) = match optional_or_error(
+        post_study_file_present,
+        || parse_post_study_file(&case_root.join("post_study_stages.json")).map(Some),
         || None,
         "post_study_stages.json",
         ctx,
-    );
+    ) {
+        Some((format, stages)) => (Some(format), stages),
+        None if post_study_file_present => (None, None),
+        None => (Some(PostStudyFormat::Absent), None),
+    };
 
     // Fall back to a sentinel when penalties failed to parse, so penalty-dependent
     // parsers still run and their own errors are collected in this pass.
@@ -661,6 +668,7 @@ pub(crate) fn validate_schema(
         stages,
         initial_conditions,
         post_study_stages,
+        post_study_format,
         buses,
         thermals,
         hydros,
