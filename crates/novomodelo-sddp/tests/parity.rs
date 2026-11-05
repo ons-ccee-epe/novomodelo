@@ -1,16 +1,9 @@
 //! Consolidated parity / determinism / reproducibility integration tests for
-//! `novomodelo-sddp`.
-//!
-//! Groups the golden parity-hash regression, the self-reproducibility regression,
-//! the b6a hydro-inflow parity, the determinism conformance suite,
-//! `simulation_scenario_seed` (the simulation seed's effect on out-of-sample
-//! draws, its fallback to the training seed, and their declaration-order and
-//! thread-count invariance), and `moment_matched_opening_tree` (properties of a
-//! moment-matched opening tree built from a committed deck) into one
-//! binary so the statically-linked solver links once rather than once per file.
-//! The two parity-hash sources carry mutually exclusive solver-backend gates, so
-//! each is a per-`mod` `#[cfg(feature = …)]`: `parity_hash_highs` compiles under
-//! HiGHS and `parity_hash_clp` under CLP.
+//! `novomodelo-sddp`, one `mod` per suite in one binary so the statically-linked
+//! solver links once rather than once per file. The two parity-hash sources carry
+//! mutually exclusive solver-backend gates, so each is a per-`mod`
+//! `#[cfg(feature = …)]`: `parity_hash_highs` compiles under HiGHS and
+//! `parity_hash_clp` under CLP.
 
 #![allow(
     clippy::unwrap_used,
