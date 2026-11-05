@@ -292,9 +292,10 @@ impl<'a> WaterDeliveryBasis<'a> {
 }
 
 /// The delivery axis — study stages then post-study stages. Kind-neutral:
-/// setup builds one per delivery kind ([`Self::thermal`], [`Self::water`]),
-/// once each, and every consumer borrows the one of its kind. Stores no
-/// count: [`Self::n_study`]/[`Self::n_post`]/[`Self::n_delivery`] read slice
+/// one per delivery kind ([`Self::thermal`], [`Self::water`]), each a pure
+/// function of `System`, so setup and the checkpoint manifest, which build
+/// their own, agree. Stores no count:
+/// [`Self::n_study`]/[`Self::n_post`]/[`Self::n_delivery`] read slice
 /// lengths.
 #[derive(Debug, Clone)]
 pub(crate) struct DeliveryCalendar {
