@@ -10774,6 +10774,12 @@ fn bucket_seed_build_system(
         .expect("valid system")
 }
 
+fn bucket_seed_water_topology(system: &System) -> crate::bucket_topology::TransitBucketTopology {
+    let basis = WaterDeliveryBasis::of(system);
+    let calendar = DeliveryCalendar::water(system, basis);
+    crate::bucket_topology::build_transit_bucket_topology(system, &calendar, basis, false)
+}
+
 /// `start_0 = 2024-01-01`. A single `past_defluences` window ending
 /// `start_0_minus_hours` before `start_0` and spanning `width_hours`, at rate
 /// `value` m³/s.
@@ -10807,10 +10813,7 @@ fn test_single_arc_unroll_matches_ac1() {
         vec![bucket_seed_defluence_window(2, 0.0, 24.0, 100.0)],
     );
 
-    let basis = WaterDeliveryBasis::of(&system);
-    let calendar = DeliveryCalendar::water(&system, basis);
-    let topology =
-        crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, basis, false);
+    let topology = bucket_seed_water_topology(&system);
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     assert_eq!(
         state
@@ -10850,10 +10853,7 @@ fn test_mid_horizon_entrant_zero_history_zero_seeds_stage_0_transit_buckets() {
         vec![bucket_seed_defluence_window(2, 0.0, 24.0, 0.0)],
     );
 
-    let basis = WaterDeliveryBasis::of(&system);
-    let calendar = DeliveryCalendar::water(&system, basis);
-    let topology =
-        crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, basis, false);
+    let topology = bucket_seed_water_topology(&system);
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     assert_eq!(
         state
@@ -10889,10 +10889,7 @@ fn test_confluence_aggregates_two_upstreams_into_shared_transit_buckets() {
         ],
     );
 
-    let basis = WaterDeliveryBasis::of(&system);
-    let calendar = DeliveryCalendar::water(&system, basis);
-    let topology =
-        crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, basis, false);
+    let topology = bucket_seed_water_topology(&system);
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     assert_eq!(
         state
@@ -10946,22 +10943,8 @@ fn test_seed_is_declaration_order_invariant() {
         defluences,
     );
 
-    let basis_a = WaterDeliveryBasis::of(&system_a);
-    let calendar_a = DeliveryCalendar::water(&system_a, basis_a);
-    let basis_b = WaterDeliveryBasis::of(&system_b);
-    let calendar_b = DeliveryCalendar::water(&system_b, basis_b);
-    let topology_a = crate::bucket_topology::build_transit_bucket_topology(
-        &system_a,
-        &calendar_a,
-        basis_a,
-        false,
-    );
-    let topology_b = crate::bucket_topology::build_transit_bucket_topology(
-        &system_b,
-        &calendar_b,
-        basis_b,
-        false,
-    );
+    let topology_a = bucket_seed_water_topology(&system_a);
+    let topology_b = bucket_seed_water_topology(&system_b);
     let state_a = crate::test_support::bucket_seed_state(&system_a, &topology_a);
     let state_b = crate::test_support::bucket_seed_state(&system_b, &topology_b);
     let seed_a = super::build_initial_transit_bucket_state(&system_a, &topology_a, &state_a);
@@ -10984,10 +10967,7 @@ fn test_seed_len_matches_n_buckets() {
         bucket_seed_study_stages(4, 12.0),
         vec![bucket_seed_defluence_window(2, 0.0, 24.0, 100.0)],
     );
-    let basis = WaterDeliveryBasis::of(&system);
-    let calendar = DeliveryCalendar::water(&system, basis);
-    let topology =
-        crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, basis, false);
+    let topology = bucket_seed_water_topology(&system);
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     let seed = super::build_initial_transit_bucket_state(&system, &topology, &state);
     assert_eq!(seed.len(), topology.n_buckets());
@@ -10998,14 +10978,7 @@ fn test_seed_len_matches_n_buckets() {
         bucket_seed_study_stages(3, 24.0),
         vec![],
     );
-    let basis_no_arc = WaterDeliveryBasis::of(&no_arc_system);
-    let no_arc_calendar = DeliveryCalendar::water(&no_arc_system, basis_no_arc);
-    let no_arc_topology = crate::bucket_topology::build_transit_bucket_topology(
-        &no_arc_system,
-        &no_arc_calendar,
-        basis_no_arc,
-        false,
-    );
+    let no_arc_topology = bucket_seed_water_topology(&no_arc_system);
     assert_eq!(no_arc_topology.n_buckets(), 0);
     let no_arc_state = crate::test_support::bucket_seed_state(&no_arc_system, &no_arc_topology);
     let no_arc_seed =
@@ -11035,14 +11008,7 @@ fn test_gapped_windows_contribute_additively() {
         ],
     );
 
-    let basis = WaterDeliveryBasis::of(&system);
-    let delivery_calendar = DeliveryCalendar::water(&system, basis);
-    let topology = crate::bucket_topology::build_transit_bucket_topology(
-        &system,
-        &delivery_calendar,
-        basis,
-        false,
-    );
+    let topology = bucket_seed_water_topology(&system);
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     let seed = super::build_initial_transit_bucket_state(&system, &topology, &state);
 

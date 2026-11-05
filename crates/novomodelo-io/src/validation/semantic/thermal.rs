@@ -177,7 +177,7 @@ pub(super) fn check_anticipated_thermals(data: &ParsedData, ctx: &mut Validation
     let bounds = (!windows_by_id.is_empty())
         .then(|| build_thermal_delivery_bounds(data, study_stages, n_stages, &study_stage_ids));
 
-    let anticipated_thermal_ids: HashSet<EntityId> = collect_anticipated_thermal_ids(data);
+    let anticipated_thermal_ids = collect_anticipated_thermal_ids(data);
 
     for (thermal_pos, thermal) in data.thermals.iter().enumerate() {
         let Some(cfg) = thermal.anticipated_config else {
@@ -1018,7 +1018,7 @@ pub(super) fn check_anticipated_decision_target_is_anticipated(
     data: &ParsedData,
     ctx: &mut ValidationContext,
 ) {
-    let anticipated_ids: HashSet<EntityId> = collect_anticipated_thermal_ids(data);
+    let anticipated_ids = collect_anticipated_thermal_ids(data);
 
     for constraint in &data.generic_constraints {
         for term in &constraint.expression.terms {
@@ -1054,7 +1054,7 @@ pub(super) fn warn_thermal_generation_on_anticipated_thermal(
     data: &ParsedData,
     ctx: &mut ValidationContext,
 ) {
-    let anticipated_ids: HashSet<EntityId> = collect_anticipated_thermal_ids(data);
+    let anticipated_ids = collect_anticipated_thermal_ids(data);
 
     if anticipated_ids.is_empty() {
         return;

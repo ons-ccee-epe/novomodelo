@@ -46,17 +46,7 @@ fn write_anticipated_thermal_86(root: &Path, lead_time_hours: f64) {
 /// window tiles the leading study stage (id 0, `[2024-01-01, 2024-02-01)`) at
 /// 0 MW — the bijection every anticipated thermal needs.
 fn write_ic_with_past_commitment(root: &Path) {
-    write_file(
-        root,
-        "initial_conditions.json",
-        r#"{
-          "storage": [],
-          "filling_storage": [],
-          "past_anticipated_commitments": [
-            { "thermal_id": 86, "start_date": "2024-01-01", "end_date": "2024-02-01", "value_mw": 0.0 }
-          ]
-        }"#,
-    );
+    write_ic_with_commitments(root, &[("2024-01-01", "2024-02-01", 0.0)]);
 }
 
 /// Write `system/thermals.json` declaring thermal 86 as an anticipated
