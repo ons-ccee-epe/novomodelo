@@ -7,7 +7,7 @@
 //!
 //! The migrated leg runs the committed decks as they are. Inputs hash to the
 //! baseline except the migrated post-study files, and an output file hashes to the
-//! baseline unless `phase2_expected_deltas.json` names it: a listed `files` path
+//! baseline unless `expected_deltas.json` names it: a listed `files` path
 //! must differ, and a named `policy/cuts` or `policy/basis` file is decoded and
 //! diffed against the legacy-input run of the same deck. The legacy leg rebuilds
 //! each migrated deck from its overlay and holds it to the baseline, input hashes
@@ -620,7 +620,7 @@ fn write_baseline(path: &Path, swept: BTreeMap<String, Entry>) {
 
 fn expected_list() -> ExpectedList {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/bit_identity/phase2_expected_deltas.json");
+        .join("tests/fixtures/bit_identity/expected_deltas.json");
     serde_json::from_slice(&fs::read(&path).unwrap()).unwrap()
 }
 

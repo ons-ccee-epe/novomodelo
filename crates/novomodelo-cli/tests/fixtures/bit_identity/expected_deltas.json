@@ -1,5 +1,4 @@
 {
-  "frozen_before": "first Phase 2 product commit",
   "decks": {
     "examples/deterministic/d44-travel-time-substage": {
       "water_bucket_stages": [

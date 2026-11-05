@@ -1,4 +1,4 @@
-//! The expected-delta list parses, names every planned deck and follows its own
+//! The expected-delta list parses, names every migrated deck and follows its own
 //! water calendars; the diff and check helpers behave on in-memory input, and each
 //! list kind (slots, coefficients, bases, files) fails in both directions.
 
@@ -25,7 +25,7 @@ use common::expected_deltas::{
 const BOUNDARY_KEY: &str = "crates/novomodelo-sddp/tests/gate_fixtures/dual_calendar_boundary";
 const TRAVEL_TIME_ARC_KEY: &str = "crates/novomodelo-sddp/tests/fixtures/travel_time_arc";
 
-const PLANNED_DECKS: [&str; 11] = [
+const MIGRATED_DECKS: [&str; 11] = [
     "examples/deterministic/d44-travel-time-substage",
     "examples/deterministic/d45-travel-time-mixed-calendar",
     "examples/deterministic/d46-travel-time-chronological",
@@ -47,7 +47,7 @@ fn fixture(name: &str) -> String {
 }
 
 fn load_list() -> ExpectedList {
-    serde_json::from_str(&fixture("phase2_expected_deltas.json")).unwrap()
+    serde_json::from_str(&fixture("expected_deltas.json")).unwrap()
 }
 
 fn encode(date: NaiveDate) -> i32 {
@@ -55,16 +55,15 @@ fn encode(date: NaiveDate) -> i32 {
 }
 
 #[test]
-fn expected_delta_list_parses_and_names_every_planned_deck() {
+fn expected_delta_list_parses_and_names_every_migrated_deck() {
     let list = load_list();
-    assert!(!list.frozen_before.is_empty());
     assert!(!list.informational.is_empty());
 
     let listed: BTreeSet<&str> = list.decks.keys().map(String::as_str).collect();
-    assert_eq!(listed, BTreeSet::from(PLANNED_DECKS));
+    assert_eq!(listed, BTreeSet::from(MIGRATED_DECKS));
 
     let baseline: Value = serde_json::from_str(&fixture("highs.json")).unwrap();
-    for deck in PLANNED_DECKS {
+    for deck in MIGRATED_DECKS {
         assert!(
             baseline["decks"].get(deck).is_some(),
             "{deck} is not a deck key of highs.json"

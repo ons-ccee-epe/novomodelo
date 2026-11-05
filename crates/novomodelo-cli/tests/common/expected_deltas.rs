@@ -1,6 +1,6 @@
 //! Diffs of two `policy/cuts/NNN.bin` and `policy/basis/NNN.bin` reads, and of two
 //! output-file and LP-fact sets, checked against the committed list in
-//! `fixtures/bit_identity/phase2_expected_deltas.json`.
+//! `fixtures/bit_identity/expected_deltas.json`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -76,7 +76,6 @@ pub struct BasisDelta {
 
 #[derive(Debug, Deserialize)]
 pub struct ExpectedList {
-    pub frozen_before: String,
     pub decks: BTreeMap<String, ExpectedDeck>,
     pub informational: Vec<String>,
 }

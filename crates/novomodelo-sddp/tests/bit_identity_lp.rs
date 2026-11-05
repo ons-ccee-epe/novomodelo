@@ -8,7 +8,7 @@
 //! (`NOVOMODELO_BIT_IDENTITY_CAPTURE=1` with `bit_identity_lp_full_sweep`).
 //!
 //! The migrated leg runs the committed decks as they are: every fact group and
-//! parity hash equals the baseline unless `phase2_expected_deltas.json` lists it
+//! parity hash equals the baseline unless `expected_deltas.json` lists it
 //! under the deck's `lp_facts` (a listed name must differ), and the inputs equal
 //! the baseline too, except the migrated post-study files of a deck that has a
 //! legacy-input overlay. The legacy leg rebuilds each such deck from its overlay
@@ -112,7 +112,7 @@ fn baseline_path() -> PathBuf {
 
 fn expected_deltas_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../novomodelo-cli/tests/fixtures/bit_identity/phase2_expected_deltas.json")
+        .join("../novomodelo-cli/tests/fixtures/bit_identity/expected_deltas.json")
 }
 
 fn expected_lp_facts(deck: &str) -> Vec<String> {
