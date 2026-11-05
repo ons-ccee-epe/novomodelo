@@ -53,6 +53,14 @@ vendored C++ solver). The maturin-built `novomodelo-python` crate is excluded fr
 workspace and builds into a separate `target/` directory of its own under
 `crates/novomodelo-python/` — sweep or clean that one separately.
 
+### Profiling
+
+[`docs/profiling.md`](docs/profiling.md) walks through CPU profiling (`perf`,
+flamegraphs, Callgrind), heap profiling (DHAT, heaptrack) and Valgrind Memcheck
+on Ubuntu 24.04. Build the binaries you profile with
+`scripts/build-profiling.sh`, not a plain `cargo build --profile profiling`;
+the guide explains why.
+
 ### Solver Backend Selection
 
 `novomodelo-solver` ships two LP backends behind **mutually exclusive** Cargo features:
@@ -453,6 +461,7 @@ to it rather than restating it:
 | Per-crate reference      | `crates/*/README.md`                                                          | A crate's responsibility and internals                   |
 | Workspace map            | `ARCHITECTURE.md`                                                             | Crate boundaries and the dependency graph                |
 | Contributor guide        | `CONTRIBUTING.md` (this file)                                                 | Build, test, and PR workflow                             |
+| Profiling guide          | `docs/profiling.md`                                                           | Profiling builds, tools and workflow                     |
 | User guides & tutorials  | [docs.modelossetoreletrico.org.br](https://docs.modelossetoreletrico.org.br/) | Installation, CLI and Python usage                       |
 | Methodology & theory     | [novomodelo-docs](https://github.com/ons-ccee-epe/novomodelo-docs)            | SDDP formulation, cut derivation, math specs             |
 | Design specs & decisions | `docs/design/` (`docs/design/README.md` is the status index)                  | Shipped-behavior specs, decision records, proposals      |

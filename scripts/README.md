@@ -13,6 +13,9 @@ Helper scripts for Novomodelo, grouped by role.
   the one name map `map.toml`; `test_rebrand.py` covers it.
 - **`pre-commit`** — the git pre-commit hook. Install with
   `ln -sf ../../scripts/pre-commit .git/hooks/pre-commit`.
+- **`build-profiling.sh`** — builds with the `profiling` profile into
+  `target/perf/`, linked with GNU `ld` so `perf` can unwind call stacks; runs
+  from anywhere. Usage and the profiling workflow are in `docs/profiling.md`.
 - **`loc-stats.sh`** — refreshable reporting tool (not a CI gate): Rust line
   counts split into production vs test, per crate and global, plus test-function
   counts. `--nextest` adds the runtime test count, `--worktree`/`--csv` vary the
