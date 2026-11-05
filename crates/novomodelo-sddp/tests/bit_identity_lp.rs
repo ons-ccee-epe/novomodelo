@@ -40,7 +40,7 @@ use common::copy_toy_case;
 use common::fresh_setup_with;
 use common::parity_hash::compute_case_hash_at_dir;
 
-const BASELINE_COMMIT: &str = "93996013";
+const BASELINE_COMMIT: &str = "55a2181e";
 const CAPTURE_ENV: &str = "NOVOMODELO_BIT_IDENTITY_CAPTURE";
 const CAP_ITERATIONS: u32 = 10;
 const CAP_SCENARIOS: u32 = 10;

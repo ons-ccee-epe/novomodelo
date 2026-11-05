@@ -44,7 +44,7 @@ use common::expected_deltas::{
 };
 use common::{copy_dir_recursive, novomodelo, prepare_dual_calendar_boundary_case_from};
 
-const BASELINE_COMMIT: &str = "93996013";
+const BASELINE_COMMIT: &str = "55a2181e";
 const CAPTURE_ENV: &str = "NOVOMODELO_BIT_IDENTITY_CAPTURE";
 const CAP_ITERATIONS: u64 = 10;
 const CAP_SCENARIOS: u64 = 10;
