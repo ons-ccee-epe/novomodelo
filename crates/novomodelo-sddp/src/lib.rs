@@ -92,7 +92,7 @@ pub use fixed_delivery_echo::build_fixed_delivery_rows;
 pub use generic_constraint_echo::build_generic_constraint_echo_rows;
 pub use lp::builder::StageTemplates;
 pub use novomodelo_io::scenarios::estimation::{
-    EstimationPath, EstimationReport, estimate_from_history,
+    CorrelationOrigin, EstimationPath, EstimationReport, HistoryEstimate, estimate_from_history,
 };
 pub use policy::policy_export::{ReservedInflowLagLayout, reserve_boundary_inflow_lag_slots};
 pub use policy::policy_load::{
@@ -136,9 +136,10 @@ pub use simulation::{
 pub use solve::solver_phase::{BACKWARD_PROFILE, FORWARD_PROFILE, SIMULATION_PROFILE};
 pub use solve::solver_phase::{Phase, SolverProfiles};
 pub use solver_stats::{
-    SOLVER_STATS_DELTA_SCALAR_FIELDS, SolverStatsDelta, SolverStatsLogEntry, StatsFoldMode,
-    aggregate_solver_stats_log, delta_to_stats_row, pack_delta_scalars, pack_scenario_stats,
-    solver_stats_log_to_rows, unpack_delta_scalars, unpack_scenario_stats,
+    PhaseCounts, RowViolationReport, SOLVER_STATS_DELTA_SCALAR_FIELDS, SolveTotals,
+    SolverStatsDelta, SolverStatsLogEntry, StatsFoldMode, aggregate_solver_stats_log,
+    delta_to_stats_row, pack_delta_scalars, pack_scenario_stats, solver_stats_log_to_rows,
+    unpack_delta_scalars, unpack_scenario_stats,
 };
 pub use stochastic::inflow_method::InflowNonNegativityMethod;
 pub use stochastic::stochastic_summary::{

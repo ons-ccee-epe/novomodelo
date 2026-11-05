@@ -8,6 +8,7 @@ use super::config::ClpProfile;
 use crate::Basis;
 use crate::{
     DEFAULT_PROFILE_HEURISTIC_SENTINEL, clp_ffi,
+    profile::counts_as_row_violation,
     types::{SolverError, SolverStatistics},
 };
 
@@ -41,6 +42,13 @@ pub struct ClpSolver {
     pub(super) col_dual: Vec<f64>,
     /// Row dual multipliers (shadow prices).
     pub(super) row_dual: Vec<f64>,
+    /// Row activity recomputed from the returned primal solution.
+    pub(super) row_activity: Vec<f64>,
+    /// Row magnitude `Σ|a_ij x_j|` of the returned primal solution.
+    pub(super) row_magnitude: Vec<f64>,
+    /// Primal tolerance under which CLP accepted the current solution; captured
+    /// on every accepted solve, before any profile re-apply.
+    pub(super) accepted_primal_tolerance: f64,
     /// Retained CSC column-start offsets (length `num_cols + 1`).
     pub(super) col_starts: Vec<i32>,
     /// Retained CSC row indices for each non-zero (length `num_nz`).
@@ -112,6 +120,9 @@ impl ClpSolver {
             col_value: Vec::new(),
             col_dual: Vec::new(),
             row_dual: Vec::new(),
+            row_activity: Vec::new(),
+            row_magnitude: Vec::new(),
+            accepted_primal_tolerance: 0.0,
             col_starts: Vec::new(),
             row_indices: Vec::new(),
             values: Vec::new(),
@@ -128,12 +139,9 @@ impl ClpSolver {
         })
     }
 
-    /// Copies the three CLP-owned solution pointers into the owned buffers.
-    ///
-    /// CLP-owned pointers are valid only until the next solve. Each copy is
-    /// guarded with `if len > 0` because passing a null or dangling pointer to
-    /// `std::slice::from_raw_parts` is undefined behavior even with length 0 (a
-    /// zero-column or zero-row LP may yield such a pointer from CLP).
+    /// Copies the CLP-owned solution into the owned buffers and counts the solve
+    /// in `row_violations` when the primal solution misses a row bound beyond
+    /// `accepted_primal_tolerance`.
     pub(super) fn copy_solution(&mut self) {
         if self.num_cols > 0 {
             // SAFETY: `self.handle` is a valid, non-null CLP pointer that has
@@ -170,6 +178,54 @@ impl ClpSolver {
                 *dst = normalize_row_dual(raw);
             }
         }
+
+        let rho = row_excess(
+            self.handle,
+            &self.col_value[..self.num_cols],
+            &mut self.row_activity,
+            &mut self.row_magnitude,
+            self.num_rows,
+            self.accepted_primal_tolerance,
+        );
+        if counts_as_row_violation(rho) {
+            self.stats.row_violations += 1;
+        }
+    }
+
+    /// Returns the row excess of `col_value` against the loaded LP: the largest,
+    /// over rows, of `(v_i − t) / max(1, Σ_j |a_ij x_j|)`, floored at 0, where `v_i`
+    /// is the row's bound violation and `t` the [`primal_tolerance`](Self::primal_tolerance)
+    /// currently set. Returns +∞ when a row's activity is NaN and 0 for an LP
+    /// without rows.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `col_value.len()` differs from the loaded LP's column count.
+    pub fn max_row_violation(&mut self, col_value: &[f64]) -> f64 {
+        assert_eq!(
+            col_value.len(),
+            self.num_cols,
+            "max_row_violation: col_value len {} != num_cols {}",
+            col_value.len(),
+            self.num_cols
+        );
+        let primal_tolerance = self.primal_tolerance();
+        row_excess(
+            self.handle,
+            col_value,
+            &mut self.row_activity,
+            &mut self.row_magnitude,
+            self.num_rows,
+            primal_tolerance,
+        )
+    }
+
+    /// Returns the primal feasibility tolerance currently set on the CLP model.
+    #[must_use]
+    pub fn primal_tolerance(&self) -> f64 {
+        // SAFETY: `self.handle` is a valid, non-null CLP pointer; the getter only
+        // reads a stored parameter.
+        unsafe { clp_ffi::novomodelo_clp_primal_tolerance(self.handle) }
     }
 
     /// Reinstalls an offered warm-start basis into the CLP model element-by-element.
@@ -327,6 +383,43 @@ impl ClpSolver {
 /// convention. See `tests/_clp_sign_convention_probe.rs`.
 const fn normalize_row_dual(raw: f64) -> f64 {
     raw
+}
+
+fn row_excess(
+    handle: *mut c_void,
+    col_value: &[f64],
+    activity: &mut [f64],
+    magnitude: &mut [f64],
+    num_rows: usize,
+    primal_tolerance: f64,
+) -> f64 {
+    debug_assert_eq!(
+        activity.len(),
+        num_rows,
+        "row activity buffer len != num_rows"
+    );
+    debug_assert_eq!(
+        magnitude.len(),
+        num_rows,
+        "row magnitude buffer len != num_rows"
+    );
+    // `load_model` and `add_rows` assert each dimension fits in `i32`.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    let num_row = activity.len() as i32;
+    // SAFETY: `handle` is a valid, non-null CLP pointer; `col_value` holds the
+    // model's column count and `activity`/`magnitude` hold `num_row` entries, and
+    // the shim returns before touching them when `num_row` differs from the
+    // model's row count.
+    unsafe {
+        clp_ffi::novomodelo_clp_max_row_violation(
+            handle,
+            col_value.as_ptr(),
+            activity.as_mut_ptr(),
+            magnitude.as_mut_ptr(),
+            num_row,
+            primal_tolerance,
+        )
+    }
 }
 
 /// Converts a `usize` to `i32`, debug-asserting on overflow.

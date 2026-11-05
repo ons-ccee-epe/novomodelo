@@ -157,6 +157,8 @@ impl SolverInterface for ClpSolver {
         self.col_value.resize(self.num_cols, 0.0);
         self.col_dual.resize(self.num_cols, 0.0);
         self.row_dual.resize(self.num_rows, 0.0);
+        self.row_activity.resize(self.num_rows, 0.0);
+        self.row_magnitude.resize(self.num_rows, 0.0);
 
         // Clone the template CSC/bounds into the retained buffers — the
         // canonical, declaration-ordered mirror that `add_rows`/`set_*_bounds`
@@ -305,6 +307,8 @@ impl SolverInterface for ClpSolver {
         }
 
         self.row_dual.resize(self.num_rows, 0.0);
+        self.row_activity.resize(self.num_rows, 0.0);
+        self.row_magnitude.resize(self.num_rows, 0.0);
     }
 
     /// Patches the bounds of an arbitrary set of rows in place.
@@ -485,6 +489,7 @@ impl SolverInterface for ClpSolver {
             // wrapper set the optimization direction at load); returned as-is.
             let objective = unsafe { clp_ffi::novomodelo_clp_objective_value(self.handle) };
 
+            self.accepted_primal_tolerance = self.primal_tolerance();
             self.copy_solution();
 
             self.stats.success_count += 1;

@@ -31,6 +31,14 @@ impl HighsSolver {
         &mut self,
         is_unbounded: bool,
     ) -> Result<RetryOutcome, (u64, SolverError)> {
+        self.retry_escalation_from(0, is_unbounded)
+    }
+
+    pub(super) fn retry_escalation_from(
+        &mut self,
+        first_level: u32,
+        is_unbounded: bool,
+    ) -> Result<RetryOutcome, (u64, SolverError)> {
         // HiGHS `time_limit` is NOT used because HiGHS tracks elapsed time
         // cumulatively from instance creation — neither `clear_solver()` nor
         // option changes reset the internal timer. Iteration limits provide the
@@ -45,7 +53,7 @@ impl HighsSolver {
         let mut terminal_err: Option<SolverError> = None;
         let mut outcome: Option<RetryOutcome> = None;
 
-        for level in 0..num_retry_levels {
+        for level in first_level..num_retry_levels {
             if retry_start.elapsed().as_secs_f64() >= overall_budget {
                 break;
             }
@@ -64,6 +72,7 @@ impl HighsSolver {
                 let iters =
                     unsafe { ffi::novomodelo_highs_get_simplex_iteration_count(self.handle) }
                         as u64;
+                self.accepted_primal_tolerance = self.primal_tolerance_in_effect();
                 outcome = Some(RetryOutcome {
                     attempts: retry_attempts,
                     solve_time: retry_time,

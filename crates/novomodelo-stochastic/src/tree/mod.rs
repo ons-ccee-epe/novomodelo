@@ -6,11 +6,13 @@
 
 pub mod generate;
 pub mod lhs;
+pub mod moment_matching;
 pub mod opening_tree;
 pub mod point_spec;
 pub mod qmc_halton;
 pub mod qmc_sobol;
 
 pub use generate::{ClassDimensions, OpeningTreeGenerationInputs, generate_opening_tree};
+pub use moment_matching::MomentMatching;
 pub use opening_tree::{OpeningTree, OpeningTreeView};
 pub use point_spec::NoisePointSpec;

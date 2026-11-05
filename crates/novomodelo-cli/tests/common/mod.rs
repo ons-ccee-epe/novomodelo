@@ -6,6 +6,7 @@
 // Items may be unused in one binary but used in another.
 
 pub mod expected_deltas;
+pub mod varying_external_deck;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -330,5 +331,38 @@ pub fn write_supplied_opening_tree_case(case: &Path) {
 
     config.as_object_mut().unwrap().remove("exports");
     config["training"]["scenario_source"]["openings"] = serde_json::json!({ "source": "file" });
+    write_file(case, "config.json", &config.to_string());
+}
+
+/// Builds a one-iteration d26 case under `case` that estimates its PAR models from
+/// inflow history and supplies, as `scenarios/correlation.json`, the correlation a
+/// first run of it estimated and exported.
+pub fn write_supplied_correlation_case(case: &Path) {
+    copy_dir_recursive(&case_dir("deterministic/d26-estimated-par2"), case);
+    let mut config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(case.join("config.json")).unwrap()).unwrap();
+    config["training"]["stopping_rules"] =
+        serde_json::json!([{ "type": "iteration_limit", "limit": 1 }]);
+    config["exports"] = serde_json::json!({ "stochastic": true });
+    write_file(case, "config.json", &config.to_string());
+
+    let export = tempfile::TempDir::new().unwrap();
+    let run = novomodelo()
+        .args(["run", case.to_str().unwrap()])
+        .args(["--output", export.path().to_str().unwrap(), "--quiet"])
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "the export run must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    fs::copy(
+        export.path().join("stochastic/correlation.json"),
+        case.join("scenarios/correlation.json"),
+    )
+    .unwrap();
+
+    config.as_object_mut().unwrap().remove("exports");
     write_file(case, "config.json", &config.to_string());
 }

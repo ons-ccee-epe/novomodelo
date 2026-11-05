@@ -1,8 +1,14 @@
 # cargo-about configuration — drives generation of THIRD_PARTY_LICENSES.md (the
 # per-crate license texts of novomodelo's Rust dependency graph, reproduced for binary
-# distribution). Regenerate with:
+# distribution), once for the workspace and once for crates/novomodelo-python, which
+# is outside the workspace and has its own Cargo.lock. Regenerate both with:
 #
 #   cargo about generate --all-features about.hbs -o THIRD_PARTY_LICENSES.md
+#   cargo about generate --manifest-path crates/novomodelo-python/Cargo.toml \
+#       --all-features -c about.toml about.hbs \
+#       -o crates/novomodelo-python/THIRD_PARTY_LICENSES.md
+#
+# The wheels bundle the second file (release-python.yml); the CLI archives bundle the first.
 #
 # `--all-features` unions every feature-gated dependency (both the `highs` and
 # `clp` solver-backend trees, `serde`, `mpi`, …) so the file is a superset of any

@@ -882,7 +882,7 @@ mod basis_reconstruct_churn {
     use novomodelo_solver::ActiveSolver;
 
     use super::common::selection_fingerprint::SelectionPower;
-    use super::common::{D03_EXPECTED_COST, StubComm, enable_forward_warm_start, positive};
+    use super::common::{D03_EXPECTED_COST, StubComm, positive};
     use super::sum_forward_deltas;
 
     // ---------------------------------------------------------------------------
@@ -933,8 +933,6 @@ mod basis_reconstruct_churn {
         // check_frequency 1 and a cap of 4 both evict nothing on d03; 3 is the
         // forward passes of one iteration, the floor.
         config.training.cut_selection.max_active_per_stage = Some(3);
-        // The simplex pin measures forward basis reconstruction, so warm-start it.
-        enable_forward_warm_start(&mut config);
 
         let system = novomodelo_io::load_case(&case_dir).expect("load_case must succeed");
         let prepare_result = prepare_stochastic(
@@ -1435,7 +1433,7 @@ mod selection_in_a_training_run {
     use super::common::selection_fingerprint::{
         PoolOwnership, SelectionFingerprint, SelectionPower, interior_pool_ids,
     };
-    use super::common::{StubComm, enable_forward_warm_start, positive};
+    use super::common::{StubComm, positive};
     use super::simulation_cut_set::{bitwise, simulate_with};
     use super::sum_forward_deltas;
 
@@ -2172,7 +2170,6 @@ mod selection_in_a_training_run {
     fn a_level1_run_with_a_budget_rejects_no_reconstructed_basis() {
         let (tx, rx) = mpsc::channel();
         let (setup, result) = train_configured(ITERATIONS, Some(tx), |config| {
-            enable_forward_warm_start(config);
             config.training.cut_selection.selection = Some(level1());
             config.training.cut_selection.max_active_per_stage = Some(BUDGET_BELOW_THE_POOL_SIZE);
         });
@@ -3202,7 +3199,7 @@ mod warm_start {
     };
     use novomodelo_solver::ActiveSolver;
 
-    use super::common::{StubComm, enable_forward_warm_start};
+    use super::common::StubComm;
 
     fn d01_case_dir() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -3522,9 +3519,8 @@ mod warm_start {
         const OTHER_STAGE: i32 = 0;
 
         let case_dir = d01_case_dir();
-        let mut config =
+        let config =
             novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
-        enable_forward_warm_start(&mut config);
 
         let mut setup_fresh = build_setup(&case_dir, &config);
         let comm = StubComm;

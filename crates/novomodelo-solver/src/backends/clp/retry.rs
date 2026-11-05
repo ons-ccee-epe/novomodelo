@@ -114,14 +114,17 @@ impl ClpSolver {
                 // solved to optimality; objective is in minimize sense.
                 let objective = unsafe { clp_ffi::novomodelo_clp_objective_value(self.handle) };
 
+                let solve_time = t0.elapsed().as_secs_f64();
+
                 // Copy before any further CLP call — pointers are valid only
                 // until the next solve.
+                self.accepted_primal_tolerance = self.primal_tolerance();
                 self.copy_solution();
 
                 return Some(EscalationOutcome {
                     objective,
                     iterations,
-                    solve_time: t0.elapsed().as_secs_f64(),
+                    solve_time,
                     // `idx` in `0..LADDER_RUNGS` (<= 5): `+1` and the u64 widening
                     // cannot overflow.
                     attempts: idx as u64 + 1,

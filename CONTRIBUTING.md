@@ -221,7 +221,7 @@ the one CI runs — builds the extension into a virtualenv and runs pytest:
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install maturin pytest pyarrow
+pip install maturin pytest pyarrow numpy
 (cd crates/novomodelo-python && maturin develop --release)
 pytest crates/novomodelo-python/tests/
 ```
@@ -229,6 +229,27 @@ pytest crates/novomodelo-python/tests/
 GIL-bound conversion helpers (Python↔JSON value mapping, result dict shapes) are
 covered by the pytest suite rather than Rust unit tests — extend the pytest
 suite when touching them.
+
+The Python half (stubs and tests) is linted and formatted with ruff and type-checked
+with ty, both configured in `crates/novomodelo-python/pyproject.toml`; CI pins their
+versions (the `Python Lint` job and the `Python Bindings` job). ty reads the installed
+extension, so run it in the virtualenv above after `maturin develop`:
+
+```bash
+pip install ruff ty
+ruff check crates/novomodelo-python
+ruff format --check crates/novomodelo-python
+(cd crates/novomodelo-python && ty check)
+```
+
+The crate's Rust side is linted against its own manifest, once per solver backend as the
+workspace is (CI's `Python Bindings` job):
+
+```bash
+cargo clippy --manifest-path crates/novomodelo-python/Cargo.toml --all-targets -- -D warnings
+cargo clippy --manifest-path crates/novomodelo-python/Cargo.toml --all-targets \
+  --no-default-features --features clp -- -D warnings
+```
 
 ### Manual boundary-reduction regression
 
@@ -338,7 +359,6 @@ novomodelo/
 │   ├── novomodelo-comm/         # Communication abstraction (MPI, local)
 │   ├── novomodelo-sddp/         # SDDP training loop, simulation, cut management
 │   ├── novomodelo-cli/          # Binary: run/validate/init/schema/version
-│   ├── novomodelo-mcp/          # Binary: MCP server for AI agent integration (reserved)
 │   ├── novomodelo-python/       # cdylib: PyO3 Python bindings
 │   ├── novomodelo-tui/          # Library: ratatui terminal UI (reserved)
 │   ├── novomodelo-flow/         # Library: power flow algorithms (reserved)
@@ -528,10 +548,10 @@ See `.claude/architecture-rules.md` for the full Python parity checklist.
 - The local backend's calls compile to no-ops on the hot path — do not add indirection that penalizes single-process users.
 - MPI code requires an MPI installation to test; gate MPI tests appropriately.
 
-#### novomodelo-mcp and novomodelo-python
+#### novomodelo-python
 
-- These crates are **single-process only** — they must never initialize MPI or depend on `ferrompi`.
-- `novomodelo-python` must release the GIL (`py.allow_threads()`) during all Rust computation.
+- This crate is **single-process only** — it must never initialize MPI or depend on `ferrompi`.
+- It must release the GIL (`py.allow_threads()`) during all Rust computation.
 
 ### Testing
 
@@ -611,14 +631,19 @@ Novomodelo is currently maintained by [@rjmalves](https://github.com/rjmalves). 
 Before tagging a new release:
 
 1. Update `CHANGELOG.md` with the new version's changes
-2. If the release changed deterministic numerical output (solver tolerances,
+2. Bump the version: `[workspace.package]` in `Cargo.toml`, every first-party `version`
+   pin, and `version` in `crates/novomodelo-python/Cargo.toml` (outside the workspace,
+   so it does not inherit it). Refresh both `Cargo.lock` files and both
+   `THIRD_PARTY_LICENSES.md` copies (commands in `about.toml`), then run
+   `python3 scripts/ci/check_binding_version.py`
+3. If the release changed deterministic numerical output (solver tolerances,
    scaling, cut selection, basis handling, …), regenerate the parity baselines
    and update the guard table **in the same change** — otherwise the `Test`
    job goes red on the stale baselines:
    ```bash
-   cargo nextest run -p novomodelo-sddp --features slow-tests --test parity \
+   cargo nextest run -p novomodelo-sddp --features "slow-tests test-support" --test parity \
      -E 'test(parity_regen)' --run-ignored ignored-only
-   cargo nextest run -p novomodelo-sddp --no-default-features --features "clp slow-tests" \
+   cargo nextest run -p novomodelo-sddp --no-default-features --features "clp slow-tests test-support" \
      --test parity -E 'test(parity_regen)' --run-ignored ignored-only
    # These rewrite the committed baselines under
    # crates/novomodelo-sddp/tests/fixtures/parity_baselines/ (HiGHS) and
@@ -627,22 +652,22 @@ Before tagging a new release:
    # only one lets the other backend's slow-gated suite rot silently. Review
    # the .sha256 diffs and commit them in the same change.
    ```
-3. Run quality checks:
+4. Run quality checks:
    ```bash
    python3 scripts/ci/check_python_parity.py --max 0
    ```
-4. If `schemas/` changed since the last release, refresh the vendored copy in
+5. If `schemas/` changed since the last release, refresh the vendored copy in
    the `novomodelo-docs` repository (`npm run refresh:schemas` there) so the
    published reference stays in sync — see
    [JSON schemas and the novomodelo-docs vendored copy](#json-schemas-and-the-novomodelo-docs-vendored-copy)
-5. Run `cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings`,
+6. Run `cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings`,
    then repeat clippy for the CLP backend:
    `cargo clippy --workspace --all-targets --no-default-features --features clp -- -D warnings`
    (the two backends are mutually exclusive — see [Solver Backend Selection](#solver-backend-selection))
-6. If `policy.boundary` reconciliation changed since the last release, run the
+7. If `policy.boundary` reconciliation changed since the last release, run the
    [Manual boundary-reduction regression](#manual-boundary-reduction-regression) procedure
    against your own deck before tagging
-7. Tag: `git tag v<version>`
+8. Tag: `git tag v<version>`
 
 ## License
 

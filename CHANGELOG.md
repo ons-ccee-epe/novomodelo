@@ -26,8 +26,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs.
 - `post_study_stages.json` `stages` is deprecated in favour of `thermal_stages`.
   A deck that still uses it keeps running and warns; run
-  `python3 scripts/migrate/post_study_stages.py <deck-dir>` to migrate it. Decks under
-  `casos/` and hpc-model-utils decks keep running with the warning.
+  `python3 scripts/migrate/post_study_stages.py <deck-dir>` to migrate it.
+  Decks under `casos/` and hpc-model-utils decks keep running with the warning.
+
+## [0.20.0] - 2026-11-03
+
+### Added
+
+- `training/model_provenance.json` records `inflow.correlation_target` and
+  `inflow.opening_tree_moment_matching`, and the Python `StochasticSummary`
+  and `ProvenanceReport` carry them as `correlation_target` and
+  `opening_tree_moment_matching`.
+- `novomodelo run` under `mpiexec` checks that every rank built the same opening
+  tree and exits 4 when they differ.
+- `novomodelo-python` is published with an sdist next to the wheels. Where no
+  wheel fits, such as Linux with glibc older than 2.34 (RHEL 8, Ubuntu 20.04),
+  pip builds the sdist, given a Rust toolchain, cmake and a C++ compiler.
+- `lp_row_violations` in `solver/iterations.parquet`; `novomodelo run` warns if
+  nonzero.
+
+### Changed
+
+- **BREAKING:** the spatial correlation estimated from history now comes from
+  the standardized historical inflows instead of the PAR residuals. The new
+  `estimation.correlation_target` in `config.json` selects it; `"residuals"`
+  restores the earlier results.
+- **BREAKING:** generated opening trees are now moment-matched: at each stage,
+  every hydro's inflow openings have mean 0 and the variance of its correlated
+  noise (1 unless factoring the correlation clips a negative eigenvalue). The
+  new `training.scenario_source.openings.moment_matching` in `config.json`
+  selects it; `"none"` restores the earlier results.
+- **BREAKING:** a stage in `stages.json` with more openings than the first stage
+  of its noise group (consecutive stages with the same `season_id` in one year)
+  is refused. Lower its `num_openings` to the first stage's count. Results
+  change where a group's opening count drops and rises again.
+- `training.solver.forward.use_warm_start` defaults to `true` again, so forward
+  solves start warm; results change. Simulation solves stay cold; set
+  `simulation.solver.use_warm_start: true` to opt in.
+- Under `mpiexec`, only rank 0 prints warnings; every rank prints its errors.
+
+### Removed
+
+- Releases no longer include the `novomodelo-mcp` placeholder binary, and its
+  installers and archives were removed from the earlier releases. The MCP server
+  is the separate `novomodelo-mcp` Python package.
+- **BREAKING:** `training.solver.forward.refactor_error_tolerance`,
+  `training.solver.backward.refactor_error_tolerance` and
+  `simulation.solver.refactor_error_tolerance` are refused; delete the key.
+
+### Fixed
+
+- Training under `mpiexec` with external scenario files
+  (`scenarios/external_inflow_scenarios.parquet` and the other external
+  libraries) holding fewer scenarios than `num_openings` aborted the run with
+  an MPI error.
+- `training/model_provenance.json` and the run summary reported a correlation
+  read from `scenarios/correlation.json` as `estimated`. They now report
+  `user_file`.
+- A policy checkpoint in `policy.path` or `policy.boundary` without its empty
+  `basis/` directory, which zip tools drop, failed to load.
+- **BREAKING:** HiGHS: balances recomputed from outputs could fail to close and
+  cuts could carry wrong duals; results change. Retrain policies trained with
+  HiGHS.
 
 ## [0.19.1] - 2026-10-26
 
@@ -1810,7 +1870,8 @@ target_bus)`.
 
 <!-- next-url -->
 
-[Unreleased]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.19.1...HEAD
+[Unreleased]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.18.0...v0.18.1

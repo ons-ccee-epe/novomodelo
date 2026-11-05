@@ -37,7 +37,7 @@ def copy_case_to_tempdir(src: str) -> pathlib.Path:
 
 def test_validate_result_has_required_keys() -> None:
     """validate() always returns a dict with valid, errors, and warnings keys."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     result = novomodelo.io.validate(VALID_CASE_1DTOY)
     assert isinstance(result, dict)
@@ -48,7 +48,7 @@ def test_validate_result_has_required_keys() -> None:
 
 def test_validate_warning_entries_have_required_fields() -> None:
     """Each warning entry has kind, message, file, and entity fields."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     result = novomodelo.io.validate(VALID_CASE_1DTOY)
     for w in result["warnings"]:
@@ -63,7 +63,7 @@ def test_validate_warning_entries_have_required_fields() -> None:
 
 def test_validate_clean_case_returns_valid_true() -> None:
     """validate(examples/1dtoy) returns valid=True with no errors."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     result = novomodelo.io.validate(VALID_CASE_1DTOY)
     assert result["valid"] is True, (
@@ -87,7 +87,7 @@ def test_validate_emits_penalty_ordering_warning() -> None:
     end-to-end and is robust to future curation of the shipped example. A
     warning must NOT invalidate the case, so ``valid`` stays ``True``.
     """
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     case_dir = copy_case_to_tempdir(VALID_CASE_1DTOY)
     try:
@@ -171,7 +171,7 @@ def test_validate_warns_on_legacy_post_study_format() -> None:
 
 def test_validate_clean_case_accepts_pathlib_path() -> None:
     """validate() accepts a pathlib.Path, not just a str."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     result = novomodelo.io.validate(pathlib.Path(VALID_CASE_1DTOY))
     assert result["valid"] is True
@@ -179,7 +179,7 @@ def test_validate_clean_case_accepts_pathlib_path() -> None:
 
 def test_validate_4ree_warnings_populated() -> None:
     """validate(examples/4ree) also populates warnings from the pipeline."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     result = novomodelo.io.validate(VALID_CASE_4REE)
     assert result["valid"] is True, f"4ree should be valid, errors: {result['errors']}"
@@ -192,7 +192,7 @@ def test_validate_4ree_warnings_populated() -> None:
 
 def test_validate_missing_directory_returns_invalid() -> None:
     """validate() returns valid=False for a non-existent path without raising."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     result = novomodelo.io.validate("/tmp/nonexistent_novomodelo_case_abc999xyz")
     assert result["valid"] is False
@@ -213,7 +213,7 @@ def test_validate_basis_activity_window_is_rejected() -> None:
     validate() must surface this as valid=False and name the offending field,
     rather than silently ignoring it.
     """
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     case_dir = copy_case_to_tempdir(VALID_CASE_1DTOY)
     try:
@@ -245,7 +245,7 @@ def test_validate_basis_activity_window_is_rejected() -> None:
 
 def test_validate_missing_config_returns_error() -> None:
     """An empty directory (no config.json) returns valid=False with an error."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     with tempfile.TemporaryDirectory() as tmp:
         result = novomodelo.io.validate(tmp)
@@ -264,7 +264,7 @@ def test_validate_missing_config_returns_error() -> None:
 
 def test_validate_never_raises_for_missing_case() -> None:
     """validate() must not raise any exception, even for bad inputs."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     result = novomodelo.io.validate("/dev/null/this/cannot/exist")
     assert isinstance(result, dict)
@@ -273,7 +273,7 @@ def test_validate_never_raises_for_missing_case() -> None:
 
 def test_validate_never_raises_for_valid_case() -> None:
     """validate() must not raise any exception for a valid case."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     result = novomodelo.io.validate(VALID_CASE_1DTOY)
     assert isinstance(result, dict)
@@ -284,7 +284,7 @@ def test_validate_never_raises_for_valid_case() -> None:
 
 def test_validate_config_overrides_none_is_valid() -> None:
     """config_overrides=None reproduces the default valid result."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     result = novomodelo.io.validate(VALID_CASE_1DTOY, config_overrides=None)
     assert result["valid"] is True, f"errors: {result['errors']}"
@@ -298,7 +298,7 @@ def test_validate_config_overrides_invalid_value_surfaces_schema_error() -> None
     identically to an edited config.json. 1dtoy uses `in_sample` for every
     class, so the override is rejected with the offending field named.
     """
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     result = novomodelo.io.validate(
         VALID_CASE_1DTOY,
@@ -315,7 +315,7 @@ def test_validate_config_overrides_invalid_value_surfaces_schema_error() -> None
 
 def test_validate_config_overrides_typo_surfaces_schema_error() -> None:
     """A typo override key is rejected via deny_unknown_fields as a SchemaError."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     result = novomodelo.io.validate(
         VALID_CASE_1DTOY,
@@ -332,7 +332,7 @@ def test_validate_config_overrides_unsupported_value_raises_value_error() -> Non
     Unlike case-validation failures (returned as data), a malformed call payload
     is a programming error and is raised under the GIL before py.detach.
     """
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     with pytest.raises(ValueError):
         novomodelo.io.validate(
@@ -351,7 +351,7 @@ def test_validate_missing_boundary_checkpoint_returns_invalid() -> None:
     Pre-fix: this same call returned {"valid": True, "errors": []}, diverging from
     the CLI validate which exited 1 for the identical case.
     """
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     case_dir = copy_case_to_tempdir(VALID_CASE_1DTOY)
     try:
@@ -383,7 +383,7 @@ def test_validate_without_boundary_policy_is_unchanged() -> None:
     """Validate with no boundary policy skips phase 11 and returns the same
     result as before the phase 11 addition.
     """
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     result = novomodelo.io.validate(VALID_CASE_1DTOY)
     assert result["valid"] is True
@@ -406,7 +406,7 @@ def _build_case_with_boundary_and_scalar_parameter(
     self-checkpoint, and add a single scalar-parameter `entry` to
     `constraints/generic_parameters.json`.
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     source_output = tmp_path / "source"
     novomodelo.run.run(VALID_CASE_1DTOY, output_dir=str(source_output))
@@ -437,7 +437,7 @@ def test_validate_rejects_missing_season_scalar_parameter_gap(
     season (1dtoy's stages carry no `season_id`, so every stage resolves to
     season 0) is rejected as `BoundaryReconciliationError`.
     """
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     target_case = _build_case_with_boundary_and_scalar_parameter(
         tmp_path,
@@ -460,7 +460,7 @@ def test_validate_rejects_per_stage_block_coverage_gap(
     rejected. (novomodelo-io's parser requires at least one entry, so the gap must
     be a partial rather than an empty `block_values`.)
     """
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     target_case = _build_case_with_boundary_and_scalar_parameter(
         tmp_path,
@@ -488,7 +488,7 @@ def test_validate_rejects_missing_specific_productivity(
     no productivity override and no entity-level value is rejected. 1dtoy's
     hydro 0 declares neither.
     """
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     target_case = _build_case_with_boundary_and_scalar_parameter(
         tmp_path,
@@ -533,7 +533,7 @@ def test_validate_rejects_non_boundary_scalar_parameter_gap() -> None:
     stage to season 0) is rejected as GenericConstraintValidationError, closing
     the gap that previously let it pass validate while `novomodelo run` failed.
     """
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     case_dir = copy_case_to_tempdir(VALID_CASE_1DTOY)
     try:
@@ -561,7 +561,7 @@ def test_validate_rejects_non_boundary_scalar_parameter_gap() -> None:
 def test_validate_accepts_non_boundary_resolved_scalar_parameter() -> None:
     """A non-boundary deck whose scalar-parameter table resolves cleanly still
     validates with zero errors (the new guard raises no false rejection)."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     case_dir = copy_case_to_tempdir(VALID_CASE_1DTOY)
     try:
@@ -583,7 +583,7 @@ WARM_START = {"policy.mode": "warm_start"}
 
 def _train_one_iteration(case: pathlib.Path, out: pathlib.Path) -> None:
     """Train `case` for one iteration into `out`, leaving a policy in `out/policy`."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     novomodelo.run.run(
         str(case),
@@ -598,7 +598,7 @@ def _train_one_iteration(case: pathlib.Path, out: pathlib.Path) -> None:
 def _restamp_policy_version(policy_dir: pathlib.Path) -> None:
     """Rewrite the novomodelo version in `policy_dir/manifest.bin` to another string of
     the same byte length, so the FlatBuffers layout is unchanged."""
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     manifest = policy_dir / "manifest.bin"
     data = manifest.read_bytes()
@@ -625,9 +625,9 @@ def test_validate_output_dir_checks_the_policy_run_loads_from_that_directory(
 ) -> None:
     """validate(output_dir=out) refuses the warm-start policy in `out` that
     run(output_dir=out) refuses, with the same message."""
-    import novomodelo.errors  # noqa: PLC0415
-    import novomodelo.io  # noqa: PLC0415
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.errors
+    import novomodelo.io
+    import novomodelo.run
 
     case, out = _case_with_restamped_policy(tmp_path)
 
@@ -648,7 +648,7 @@ def test_validate_without_output_dir_reads_the_case_output_subdirectory(
 ) -> None:
     """Without output_dir, validate reads `<case>/output`, where the policy
     trained into a sibling directory is absent."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     case, _ = _case_with_restamped_policy(tmp_path)
 
@@ -662,7 +662,7 @@ def test_validate_without_output_dir_reads_the_case_output_subdirectory(
 
 def test_validate_output_dir_is_never_created(tmp_path: pathlib.Path) -> None:
     """validate leaves an absent output_dir absent."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     absent = tmp_path / "absent"
 
@@ -678,7 +678,7 @@ def test_validate_relative_output_dir_resolves_against_the_working_directory(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A relative output_dir is read from the process working directory."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     case, _ = _case_with_restamped_policy(tmp_path)
     monkeypatch.chdir(tmp_path)
@@ -691,7 +691,7 @@ def test_validate_relative_output_dir_resolves_against_the_working_directory(
 
 def test_validate_output_dir_is_keyword_only() -> None:
     """output_dir cannot be passed positionally."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     with pytest.raises(TypeError):
-        novomodelo.io.validate(VALID_CASE_1DTOY, None, "out")  # type: ignore[call-arg]
+        novomodelo.io.validate(VALID_CASE_1DTOY, None, "out")  # ty: ignore[too-many-positional-arguments]  # keyword-only

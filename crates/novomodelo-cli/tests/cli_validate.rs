@@ -403,6 +403,25 @@ fn validate_rejects_the_removed_tie_tolerance_key() {
         ));
 }
 
+#[test]
+fn validate_rejects_refactor_error_tolerance_naming_the_key() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG_JSON).unwrap();
+    config["training"]["solver"] =
+        serde_json::json!({ "forward": { "refactor_error_tolerance": 1e-6 } });
+    write_file(dir.path(), "config.json", &config.to_string());
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains(
+            "unknown field `refactor_error_tolerance`",
+        ));
+}
+
 /// Writes a `level1` selection with `lookback_iterations` set to `lookback`
 /// and returns the result of `novomodelo validate` on the case.
 fn validate_level1_lookback(dir: &TempDir, lookback: u32) -> assert_cmd::assert::Assert {

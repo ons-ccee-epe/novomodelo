@@ -82,7 +82,7 @@ pub(crate) fn run_stage_solve_over<'ws, 'c, S: SolverInterface>(
             .resize(inputs.pool.populated(), None);
     }
 
-    let stored_basis = filtered_stored_basis(inputs);
+    let stored_basis = filtered_stored_basis(ws, inputs);
 
     let solved = if let Some(captured) = stored_basis {
         let template = inputs.stage_context.template(inputs.stage_index);
@@ -144,7 +144,7 @@ pub fn run_stage_solve_terminal_static<'ws, S: SolverInterface>(
     ws: &'ws mut SolverWorkspace<S>,
     inputs: &StageInputs<'_>,
 ) -> Result<SolutionView<'ws>, SddpError> {
-    let stored_basis = filtered_stored_basis(inputs)
+    let stored_basis = filtered_stored_basis(ws, inputs)
         .filter(|captured| terminal_basis_shape_matches(captured, inputs));
 
     let solved = if let Some(captured) = stored_basis {
@@ -165,11 +165,20 @@ pub fn run_stage_solve_terminal_static<'ws, S: SolverInterface>(
     finish_solve(solved, inputs)
 }
 
+/// The stored basis to offer the next solve, if any.
+///
+/// A solver that will run cold gets none, sparing a basis it would discard.
 /// A stored basis whose `node_id` differs from the node being solved is
 /// treated as cold: a resampled path may visit a different node than the
 /// one that captured it, and CLP accepts a shape-mismatched basis silently,
 /// so the check must live here, never delegated to a solver-specific path.
-fn filtered_stored_basis<'a>(inputs: &StageInputs<'a>) -> Option<&'a CapturedBasis> {
+fn filtered_stored_basis<'a, S: SolverInterface>(
+    ws: &SolverWorkspace<S>,
+    inputs: &StageInputs<'a>,
+) -> Option<&'a CapturedBasis> {
+    if !ws.solver.warm_starts() {
+        return None;
+    }
     inputs
         .stored_basis
         .filter(|captured| captured.node_id == inputs.node_id)
@@ -356,7 +365,10 @@ fn debug_assert_bucket_copy_gap_intact(
 mod tests {
     use novomodelo_core::temporal::StageLagTransition;
     use novomodelo_solver::BasisStatus::{Basic as B, Lower as L};
-    use novomodelo_solver::{ActiveSolver, RowBatch, SolverError, SolverInterface, StageTemplate};
+    use novomodelo_solver::{
+        ActiveSolver, Basis, RowBatch, SolutionView, SolverError, SolverInterface,
+        SolverStatistics, StageTemplate,
+    };
 
     use super::{
         StageInputs, assemble_outgoing_state, run_stage_solve, run_stage_solve_over,
@@ -427,7 +439,13 @@ mod tests {
 
     /// Build a fresh `SolverWorkspace<ActiveSolver>` with an LP loaded.
     fn make_workspace(template: &StageTemplate) -> SolverWorkspace<ActiveSolver> {
-        let mut solver = ActiveSolver::new().expect("ActiveSolver::new()");
+        make_workspace_with(template, ActiveSolver::new().expect("ActiveSolver::new()"))
+    }
+
+    fn make_workspace_with<S: SolverInterface>(
+        template: &StageTemplate,
+        mut solver: S,
+    ) -> SolverWorkspace<S> {
         solver.load_model(template);
         let training_fixture = TrainingContextFixture::new(state_layout(0, 0));
         let training_ctx = training_fixture.training_ctx();
@@ -891,6 +909,150 @@ mod tests {
             ws.solver.statistics().basis_reconstructions,
             1,
             "run_stage_solve's slot-identity path must invoke reconstruct_basis"
+        );
+    }
+
+    /// Wraps [`ActiveSolver`] with a fixed `warm_starts()` answer, recording each
+    /// `solve`'s basis argument and each `record_reconstruction_stats` call.
+    struct WarmStartProbe {
+        inner: ActiveSolver,
+        warm: bool,
+        offered: Vec<bool>,
+        reconstructions_recorded: usize,
+    }
+
+    impl WarmStartProbe {
+        fn new(warm: bool) -> Self {
+            Self {
+                inner: ActiveSolver::new().expect("ActiveSolver::new()"),
+                warm,
+                offered: Vec::new(),
+                reconstructions_recorded: 0,
+            }
+        }
+    }
+
+    impl SolverInterface for WarmStartProbe {
+        type Profile = <ActiveSolver as SolverInterface>::Profile;
+        fn apply_profile(&mut self, profile: &Self::Profile) {
+            self.inner.apply_profile(profile);
+        }
+        fn load_model(&mut self, template: &StageTemplate) {
+            self.inner.load_model(template);
+        }
+        fn add_rows(&mut self, rows: &RowBatch) {
+            self.inner.add_rows(rows);
+        }
+        fn set_row_bounds(&mut self, indices: &[usize], lower: &[f64], upper: &[f64]) {
+            self.inner.set_row_bounds(indices, lower, upper);
+        }
+        fn set_col_bounds(&mut self, indices: &[usize], lower: &[f64], upper: &[f64]) {
+            self.inner.set_col_bounds(indices, lower, upper);
+        }
+        fn solve(&mut self, basis: Option<&Basis>) -> Result<SolutionView<'_>, SolverError> {
+            self.offered.push(basis.is_some());
+            self.inner.solve(basis)
+        }
+        fn warm_starts(&self) -> bool {
+            self.warm
+        }
+        fn get_basis(&mut self, out: &mut Basis) {
+            self.inner.get_basis(out);
+        }
+        fn statistics(&self) -> SolverStatistics {
+            self.inner.statistics()
+        }
+        fn statistics_into(&self, out: &mut SolverStatistics) {
+            self.inner.statistics_into(out);
+        }
+        fn name(&self) -> &'static str {
+            "WarmStartProbe"
+        }
+        fn solver_name_version(&self) -> String {
+            self.inner.solver_name_version()
+        }
+        fn record_reconstruction_stats(&mut self) {
+            self.reconstructions_recorded += 1;
+            self.inner.record_reconstruction_stats();
+        }
+    }
+
+    /// A node-matching, well-formed stored basis for `make_template()`.
+    fn valid_stored_basis(template: &StageTemplate, node_id: NodeId) -> CapturedBasis {
+        let mut captured = CapturedBasis::new(
+            template.num_cols,
+            template.num_rows,
+            template.num_rows,
+            0,
+            1,
+            node_id,
+        );
+        captured.basis.col_status.clear();
+        captured.basis.col_status.extend_from_slice(&[B, B, L]);
+        captured.basis.row_status.clear();
+        captured.basis.row_status.extend_from_slice(&[L, L]);
+        captured.state_at_capture.push(6.0);
+        captured
+    }
+
+    /// Solves once through the interior entry and once through the
+    /// terminal-static entry with a valid same-node stored basis, returning
+    /// the probe's recorded `(offered, reconstructions_recorded)`.
+    fn probe_both_entries(warm: bool) -> (Vec<bool>, usize, SolverWorkspace<WarmStartProbe>) {
+        let template = make_template();
+        let templates = std::slice::from_ref(&template);
+        let geometry = equipment_free_geometry(&[0]);
+        let fixture = make_context(templates, &geometry);
+        let ctx = fixture.ctx();
+        let pool = make_empty_pool();
+        let mut ws = make_workspace_with(&template, WarmStartProbe::new(warm));
+        ws.scratch.recon_slot_lookup = vec![None; 16];
+        let captured = valid_stored_basis(&template, NodeId(5));
+        let inputs = StageInputs {
+            stage_context: &ctx,
+            pool: &pool,
+            stored_basis: Some(&captured),
+            stage_index: StageIdx(0),
+            scenario_index: 0,
+            iteration: None,
+            node_id: NodeId(5),
+        };
+
+        run_stage_solve(&mut ws, &inputs).expect("interior solve must succeed");
+        ws.scratch_basis.col_status.clear();
+        ws.scratch_basis.row_status.clear();
+        run_stage_solve_terminal_static(&mut ws, &inputs)
+            .expect("terminal-static solve must succeed");
+
+        let probe = ws.solver.inner();
+        (probe.offered.clone(), probe.reconstructions_recorded, ws)
+    }
+
+    #[test]
+    fn run_stage_solve_cold_profile_skips_reconstruction() {
+        let (offered, reconstructions, ws) = probe_both_entries(false);
+        assert_eq!(
+            offered,
+            vec![false, false],
+            "a cold solver must receive solve(None) on both entries"
+        );
+        assert_eq!(
+            reconstructions, 0,
+            "a cold solver must never record a reconstruction"
+        );
+        assert!(
+            ws.scratch_basis.col_status.is_empty() && ws.scratch_basis.row_status.is_empty(),
+            "terminal-static must not copy the stored basis for a cold solver"
+        );
+    }
+
+    #[test]
+    fn run_stage_solve_warm_profile_still_offers_the_stored_basis() {
+        let (offered, reconstructions, _) = probe_both_entries(true);
+        assert_eq!(offered, vec![true, true]);
+        assert_eq!(
+            reconstructions, 1,
+            "only the interior entry reconstructs; terminal-static copies 1:1"
         );
     }
 

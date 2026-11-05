@@ -10,25 +10,25 @@ Run with:
 
 
 def test_import_novomodelo() -> None:
-    import novomodelo  # noqa: F401, PLC0415
+    import novomodelo  # noqa: F401
 
 
 def test_version() -> None:
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     assert isinstance(novomodelo.__version__, str)
     assert len(novomodelo.__version__) > 0
 
 
 def test_submodules_exist() -> None:
-    import novomodelo.io  # noqa: F401, PLC0415
-    import novomodelo.model  # noqa: F401, PLC0415
-    import novomodelo.results  # noqa: F401, PLC0415
-    import novomodelo.run  # noqa: F401, PLC0415
+    import novomodelo.io  # noqa: F401
+    import novomodelo.model  # noqa: F401
+    import novomodelo.results  # noqa: F401
+    import novomodelo.run  # noqa: F401
 
 
 def test_native_module_importable() -> None:
-    import novomodelo._native  # noqa: F401, PLC0415
+    import novomodelo._native  # noqa: F401
 
 
 def test_public_submodules_are_the_native_modules() -> None:
@@ -37,8 +37,8 @@ def test_public_submodules_are_the_native_modules() -> None:
     The package re-exports the compiled submodules rather than copying them, so
     identity must hold for all compiled-only modules.
     """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo._native  # noqa: PLC0415
+    import novomodelo
+    import novomodelo._native
 
     assert novomodelo.run is novomodelo._native.run
     assert novomodelo.io is novomodelo._native.io
@@ -48,15 +48,15 @@ def test_public_submodules_are_the_native_modules() -> None:
 
 
 def test_version_matches_native() -> None:
-    import novomodelo  # noqa: PLC0415
-    import novomodelo._native  # noqa: PLC0415
+    import novomodelo
+    import novomodelo._native
 
     assert novomodelo.__version__ == novomodelo._native.__version__
 
 
 def test_submodule_docstrings_are_the_installed_one_liners() -> None:
     """Each novomodelo.* submodule __doc__ is the lib.rs override, not the //! module doc."""
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     expected = {
         "model": "Data model types for the Novomodelo power systems solver.",

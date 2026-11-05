@@ -113,6 +113,21 @@
       },
       "type": "object"
     },
+    "CorrelationTarget": {
+      "description": "Series the estimated spatial inflow correlation is computed from.",
+      "oneOf": [
+        {
+          "const": "residuals",
+          "description": "Residuals of the fitted PAR lags.",
+          "type": "string"
+        },
+        {
+          "const": "inflows",
+          "description": "Standardized historical inflows.",
+          "type": "string"
+        }
+      ]
+    },
     "DualEdgeWeight": {
       "description": "Dual simplex edge-weight (pricing) strategy.",
       "oneOf": [
@@ -137,6 +152,11 @@
       "additionalProperties": false,
       "description": "Time series estimation settings (`config.json → estimation`).\n\nControls automatic parameter estimation when historical inflow data is\nprovided without explicit model statistics or coefficients.",
       "properties": {
+        "correlation_target": {
+          "$ref": "#/$defs/CorrelationTarget",
+          "default": "inflows",
+          "description": "Series the spatial inflow correlation is estimated from when no\n`scenarios/correlation.json` is supplied: `\"inflows\"` (default) or `\"residuals\"`.\n\nEvaluation option, expected to be removed once evaluated."
+        },
         "max_coefficient_magnitude": {
           "default": null,
           "description": "Maximum allowed absolute magnitude for any AR coefficient.\n\nWhen set, any (entity, season) pair with `|coefficient| > threshold`\nis immediately reduced to order 0 before the contribution analysis\nruns. This acts as a fast-path safety net for the most extreme\nexplosive models. Absent by default (disabled; contribution analysis\nis the primary guard).",
@@ -304,6 +324,21 @@
       },
       "type": "object"
     },
+    "MomentMatching": {
+      "description": "How generated openings are corrected after the correlation is applied.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "Keep the openings as drawn.",
+          "type": "string"
+        },
+        {
+          "const": "per_coordinate",
+          "description": "Shift and scale each hydro's openings to mean 0 and the variance of its correlated noise.",
+          "type": "string"
+        }
+      ]
+    },
     "Openings": {
       "description": "Where a stage's openings originate (`config.json` scenario-source `source`).\n\nThe tag key is `source` and the field is `openings`, deliberately distinct\nfrom the per-class `scheme` key: `openings.source` selects where a stage's\nopenings come from, while `scheme` selects how a class's noise is modelled.\nA single word would otherwise carry both axes. An absent `openings`\ndeclaration is equivalent to `generated`.",
       "oneOf": [
@@ -311,6 +346,11 @@
           "additionalProperties": false,
           "description": "Openings come from noise generation (the default when `openings` is absent).",
           "properties": {
+            "moment_matching": {
+              "$ref": "#/$defs/MomentMatching",
+              "default": "per_coordinate",
+              "description": "`per_coordinate` (default) shifts and scales each generated stage's\ninflow openings so that every hydro's opening mean is 0 and its\nvariance is that of its correlated noise: 1, or more where factoring\nthe correlation clips a negative eigenvalue; `none` keeps the\nopenings as drawn. Stages using `historical_residuals`, stages with\none opening and hydros whose openings are all equal are left as\ndrawn; load and non-controllable-source noise is never matched.\n\nEvaluation option, expected to be removed once evaluated."
+            },
             "source": {
               "const": "generated",
               "type": "string"
@@ -347,7 +387,7 @@
         },
         {
           "const": "pacf_annual",
-          "description": "Periodic Yule-Walker order selection augmented with an annual component.\n\nWhen selected, the estimation pipeline performs four steps beyond the\nclassical `pacf` path:\n\n1. **Extended Yule-Walker fitting** — the system is augmented with a\n   cross-correlation term between the current-season inflow and the\n   rolling 12-month average, yielding the annual coefficient ψ\n   alongside the classical AR coefficients.\n2. **Annual-stats computation** — per-season sample mean μ^A and\n   Bessel-corrected standard deviation σ^A of the rolling 12-month\n   average are computed for each hydro plant.\n3. **Parquet emission** — the triple (ψ, μ^A, σ^A) is written to\n   `inflow_annual_component.parquet` in the output directory.\n4. **Widened LP lag stride** — the noise-column layout in the LP is\n   extended to accommodate the annual term alongside the classical lags.",
+          "description": "Periodic Yule-Walker order selection augmented with an annual component.\n\nWhen selected, the estimation pipeline performs four steps beyond the\nclassical `pacf` path:\n\n1. **Extended Yule-Walker fitting** — the system is augmented with a\n   cross-correlation term between the current-season inflow and the\n   rolling 12-month average, yielding the annual coefficient ψ\n   alongside the classical AR coefficients.\n2. **Annual-stats computation** — per-season sample mean μ^A and\n   population standard deviation σ^A of the rolling 12-month\n   average are computed for each hydro plant.\n3. **Parquet emission** — the triple (ψ, μ^A, σ^A) is written to\n   `inflow_annual_component.parquet` in the output directory.\n4. **Widened LP lag stride** — the noise-column layout in the LP is\n   extended to accommodate the annual term alongside the classical lags.",
           "type": "string"
         }
       ]
@@ -442,15 +482,6 @@
             "null"
           ]
         },
-        "refactor_error_tolerance": {
-          "default": null,
-          "description": "Refactorization solution-error tolerance override.",
-          "format": "double",
-          "type": [
-            "number",
-            "null"
-          ]
-        },
         "scale": {
           "anyOf": [
             {
@@ -484,7 +515,7 @@
         },
         "use_warm_start": {
           "default": null,
-          "description": "Warm-start override. By default backward solves warm-start from the\nstored basis and forward and simulation solves are cold.",
+          "description": "Warm-start override. By default forward and backward solves warm-start\nfrom the stored basis and simulation solves are cold.",
           "type": [
             "boolean",
             "null"
@@ -1325,6 +1356,7 @@
     "estimation": {
       "$ref": "#/$defs/EstimationConfig",
       "default": {
+        "correlation_target": "inflows",
         "max_coefficient_magnitude": null,
         "max_order": 6,
         "min_observations_per_season": 30,

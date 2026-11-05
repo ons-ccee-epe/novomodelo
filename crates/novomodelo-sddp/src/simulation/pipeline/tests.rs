@@ -953,7 +953,6 @@ fn simulation_state_set_profile_reaches_current_profile_after_run() {
             presolve: None,
             simplex_update_limit: None,
             cost_perturbation: None,
-            refactor_error_tolerance: None,
             factor_pivot_threshold: None,
             use_warm_start: None,
             steepest_edge_devex_fallback_threshold: None,

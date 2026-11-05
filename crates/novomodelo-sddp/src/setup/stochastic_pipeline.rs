@@ -25,12 +25,13 @@ use novomodelo_stochastic::build_stochastic_context;
 use novomodelo_stochastic::noise_entity_order;
 use novomodelo_stochastic::normal::precompute::EntityFactorEntry;
 use novomodelo_stochastic::par::lag_transition::precompute_noise_groups;
+use novomodelo_stochastic::tree::MomentMatching;
 use novomodelo_stochastic::{OpeningTreeInputs, StochasticContext, context::OpeningTree};
 
 use super::resolve_inflow_seeds;
 use super::scenario_libraries;
 use super::widen_lag_state_depth;
-use crate::{EstimationPath, EstimationReport, SddpError};
+use crate::{CorrelationOrigin, EstimationPath, EstimationReport, HistoryEstimate, SddpError};
 
 /// Result of the stochastic preprocessing pipeline.
 #[derive(Debug)]
@@ -44,6 +45,8 @@ pub struct PrepareStochasticResult {
     pub estimation_report: Option<EstimationReport>,
     /// Which estimation path row was taken during preprocessing.
     pub estimation_path: EstimationPath,
+    /// Where the spatial correlation came from.
+    pub correlation_origin: CorrelationOrigin,
 }
 
 fn class_schemes_for(training_source: &ScenarioSource) -> ClassSchemes {
@@ -78,7 +81,7 @@ fn load_user_opening_tree_inner(
     training_source: &ScenarioSource,
 ) -> Result<Option<OpeningTree>, SddpError> {
     match config.training_openings() {
-        None | Some(Openings::Generated {}) => Ok(None),
+        None | Some(Openings::Generated { .. }) => Ok(None),
         Some(Openings::File {}) => {
             let path = case_dir.join("scenarios").join("noise_openings.parquet");
             if !path.exists() {
@@ -322,12 +325,15 @@ pub fn prepare_stochastic(
     training_source: &ScenarioSource,
     inflow_lag_depth: Option<u32>,
 ) -> Result<PrepareStochasticResult, SddpError> {
-    let (system, estimation_report, estimation_path) =
-        estimate_from_history(system, case_dir, config)?;
+    let HistoryEstimate {
+        system,
+        report: estimation_report,
+        path: estimation_path,
+        correlation_origin,
+    } = estimate_from_history(system, case_dir, config)?;
 
     let user_opening_tree =
         load_user_opening_tree_inner(case_dir, &system, config, training_source)?;
-    let external_scenario_counts = compute_external_scenario_counts(&system, training_source);
 
     let stochastic = build_stochastic_context_for_study(
         &system,
@@ -336,7 +342,7 @@ pub fn prepare_stochastic(
         training_source,
         inflow_lag_depth,
         user_opening_tree,
-        external_scenario_counts,
+        config.training_moment_matching().into(),
     )?;
 
     Ok(PrepareStochasticResult {
@@ -344,6 +350,7 @@ pub fn prepare_stochastic(
         stochastic,
         estimation_report,
         estimation_path,
+        correlation_origin,
     })
 }
 
@@ -352,10 +359,11 @@ pub fn prepare_stochastic(
 /// factors re-read from `case_dir`), the opening-tree historical library (only
 /// when `user_tree` is `None`), and the forward seed. Both rank 0 (via
 /// [`prepare_stochastic`], after PAR estimation and user-tree loading) and the CLI
-/// non-root reconstruction call this one builder, so
-/// the two paths cannot drift. `user_tree` and `external_scenario_counts` are the two inputs that
-/// differ by rank — rank 0 loads / computes them; a non-root rank receives the tree
-/// over the wire and passes `None` counts.
+/// non-root reconstruction call this one builder, so the two paths cannot drift.
+/// `moment_matching` is `Config::training_moment_matching`'s value, which rank 0
+/// reads from the config and a non-root rank receives in its broadcast config, so
+/// it is identical on every rank. `user_tree` is the only input that differs by
+/// rank: rank 0 loads it, and a non-root rank receives it over the wire.
 ///
 /// # Errors
 ///
@@ -368,7 +376,7 @@ pub fn build_stochastic_context_for_study(
     training_source: &ScenarioSource,
     inflow_lag_depth: Option<u32>,
     user_tree: Option<OpeningTree>,
-    external_scenario_counts: Option<Vec<usize>>,
+    moment_matching: MomentMatching,
 ) -> Result<StochasticContext, SddpError> {
     let load_factor_entries = load_load_factors_for_stochastic(case_dir)?;
     let block_pairs: Vec<Vec<BlockFactorPair>> = load_factor_entries
@@ -407,8 +415,9 @@ pub fn build_stochastic_context_for_study(
         OpeningTreeInputs {
             user_tree,
             historical_library: opening_tree_library.as_ref(),
-            external_scenario_counts,
+            external_scenario_counts: compute_external_scenario_counts(system, training_source),
             noise_group_ids: Some(study_stage_noise_group_ids(system)),
+            moment_matching,
         },
         class_schemes_for(training_source),
     )?)
@@ -1061,7 +1070,7 @@ mod tests {
             &training_source,
             Some(3),
             None,
-            None,
+            MomentMatching::None,
         )
         .expect("stochastic context must build");
 
@@ -1219,7 +1228,6 @@ mod tests {
             seed: Some(7),
             historical_years: None,
         };
-        let counts = compute_external_scenario_counts(&system, &training_source);
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let stochastic = build_stochastic_context_for_study(
             &system,
@@ -1228,7 +1236,7 @@ mod tests {
             &training_source,
             None,
             None,
-            counts,
+            MomentMatching::None,
         )
         .expect("stochastic context must build");
         let applied = stochastic.par();
@@ -1906,7 +1914,7 @@ mod tests {
         );
     }
 
-    // ── compute_external_scenario_counts: min + silent-drop deletion ──────────
+    // ── compute_external_scenario_counts ──────────────────────────────────────
 
     /// A `System` with one hydro and one std-bearing load bus over `stage_ids`,
     /// carrying `inflow_per_stage`/`load_per_stage` external realizations per stage
@@ -2173,11 +2181,10 @@ mod tests {
         }
     }
 
-    /// The element-wise minimum is gone: with inflow (3) and load (2) external
-    /// classes disagreeing on the per-stage raw count, the returned vector is the
-    /// first present class's (inflow, 3) — never `min(3, 2) = 2`. This deck is
-    /// P-B1-rejected at load; the direct call is the only way to observe the
-    /// reconciliation was deleted rather than relocated.
+    /// With inflow (3) and load (2) external classes disagreeing on the per-stage
+    /// raw count, the returned vector is the first present class's (inflow, 3),
+    /// never the element-wise minimum `min(3, 2) = 2`. P-B1 rejects this deck at
+    /// load, so only a direct call can observe it.
     #[test]
     fn compute_external_scenario_counts_takes_first_never_min() {
         let system = external_count_system(&[0], 3, 2);
@@ -2190,10 +2197,9 @@ mod tests {
         );
     }
 
-    /// The `if stage_id as usize < n_stages` silent-drop is gone: a study numbered
-    /// `[10, 11]` (never 0-based) counts every external row through the resolver.
-    /// The pre-deletion code keyed on `stage_id as usize` and dropped all
-    /// rows (`10 < 2` is false), returning `[0, 0]`; the resolver returns `[1, 1]`.
+    /// A study numbered `[10, 11]` (never 0-based) counts every external row
+    /// through the resolver. Keying on `stage_id as usize` would drop all rows
+    /// (`10 < 2` is false) and return `[0, 0]`; the resolver returns `[1, 1]`.
     #[test]
     fn compute_external_scenario_counts_resolves_non_zero_based_stage_ids() {
         let system = external_count_system(&[10, 11], 1, 0);
@@ -2407,7 +2413,7 @@ mod tests {
             &ScenarioSource::default(),
             None,
             Some(ring_user_tree()),
-            None,
+            MomentMatching::None,
         )
         .expect("a supplied opening tree must not need the historical library");
         assert_eq!(
@@ -2428,6 +2434,36 @@ mod tests {
     }
 
     #[test]
+    fn a_user_tree_is_not_moment_matched() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let data = vec![0.1, 0.3, 0.2, 0.6, 0.3, 0.9, 0.4, 1.2, 0.5, 1.5];
+        let ctx = build_stochastic_context_for_study(
+            &ring_without_inflow_history(),
+            tmp.path(),
+            42,
+            &ScenarioSource::default(),
+            None,
+            Some(OpeningTree::from_parts(data.clone(), vec![2; 5], 1)),
+            MomentMatching::PerCoordinate,
+        )
+        .expect("a supplied two-opening tree must build");
+
+        assert_eq!(
+            ctx.provenance().opening_tree,
+            ComponentProvenance::UserSupplied
+        );
+        assert_eq!(ctx.provenance().opening_tree_moment_matching, None);
+        assert_eq!(
+            ctx.opening_tree()
+                .data()
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>(),
+            data.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn generated_opening_tree_still_refuses_a_historical_library_that_fails_validation() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let result = build_stochastic_context_for_study(
@@ -2437,7 +2473,7 @@ mod tests {
             &ScenarioSource::default(),
             None,
             None,
-            None,
+            MomentMatching::None,
         );
         match result {
             Err(SddpError::Stochastic(StochasticError::InsufficientData { context })) => {

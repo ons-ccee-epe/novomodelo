@@ -37,13 +37,13 @@ import pathlib
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-
-from _novomodelo_cli import run_cli
 from test_parity_hydros import (
     _collect_hydros_parquet,
     _make_case_with_simulation,
     _read_hydros,
 )
+
+from _novomodelo_cli import run_cli
 
 # Filling case re-derived to a sufficiency-passing, binding per-stage sigma_fill.
 D38_CASE = "examples/deterministic/d38-dead-volume-filling"

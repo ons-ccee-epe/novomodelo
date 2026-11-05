@@ -160,6 +160,14 @@ pub trait SolverInterface: Send {
     /// from the trait's `Send` bound.
     fn solve(&mut self, basis: Option<&Basis>) -> Result<SolutionView<'_>, SolverError>;
 
+    /// Whether the next [`solve`](Self::solve) installs an offered basis.
+    ///
+    /// When `false`, `solve(Some(&b))` runs cold and ignores `b`, so a caller
+    /// may skip building `b` and pass `None`. Default `true`.
+    fn warm_starts(&self) -> bool {
+        true
+    }
+
     /// Writes canonical [`BasisStatus`](crate::BasisStatus) values into a caller-owned [`Basis`] buffer.
     ///
     /// The buffer (from [`Basis::new`], reused across iterations) is **not** resized;

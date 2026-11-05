@@ -65,6 +65,8 @@ use novomodelo_io::ReportEntry;
 use novomodelo_io::SetupTimings;
 use novomodelo_io::SolverStatsRow;
 use novomodelo_io::TrainingOutput;
+use novomodelo_io::config::CorrelationTarget;
+use novomodelo_io::config::MomentMatching;
 use novomodelo_io::get_hostname;
 use novomodelo_io::now_iso8601;
 use novomodelo_io::output::simulation_writer::{
@@ -90,8 +92,10 @@ use novomodelo_io::write_solver_stats;
 use novomodelo_io::write_success_marker;
 use novomodelo_io::write_training_results;
 use novomodelo_sddp::HydroFitTimings;
+use novomodelo_sddp::RowViolationReport;
 use novomodelo_sddp::SddpError;
 use novomodelo_sddp::SimulationWeighting;
+use novomodelo_sddp::SolveTotals;
 use novomodelo_sddp::StatsFoldMode;
 use novomodelo_sddp::TrainingResult;
 use novomodelo_sddp::aggregate_simulation;
@@ -231,6 +235,8 @@ pub(crate) struct RunSummary {
 pub(crate) struct SimSummary {
     pub(crate) n_scenarios: u32,
     pub(crate) completed: u32,
+    /// Solver-stats aggregate over every simulated scenario; zero when skipped.
+    pub(crate) solve_stats: SolverStatsDelta,
 }
 
 /// Validate that `threads`, when given, is >= 1.
@@ -311,15 +317,15 @@ fn build_training_phase_result(
         .iter()
         .map(|r| u64::from(r.lp_solves))
         .sum();
-    let (first_try, retried, failed, forward_solve_seconds, backward_solve_seconds) =
+    let totals =
         aggregate_solver_stats_log(&training_result.solver_stats_log, StatsFoldMode::AllEntries);
     training_output.training_solve_stats = MetadataTrainingSolveStats {
         total_lp_solves: Some(total_lp_solves),
-        first_try: Some(first_try),
-        retried: Some(retried),
-        failed: Some(failed),
-        forward_solve_seconds: Some(forward_solve_seconds),
-        backward_solve_seconds: Some(backward_solve_seconds),
+        first_try: Some(totals.first_try),
+        retried: Some(totals.retried),
+        failed: Some(totals.failed),
+        forward_solve_seconds: Some(totals.forward_solve_seconds),
+        backward_solve_seconds: Some(totals.backward_solve_seconds),
         parallelism: Some(u32::try_from(n_threads).unwrap_or(u32::MAX)),
     };
 
@@ -786,6 +792,7 @@ pub(crate) fn run_simulation_phase_py(
     Ok(SimSummary {
         n_scenarios: sim_out.n_scenarios,
         completed: sim_out.completed,
+        solve_stats: agg,
     })
 }
 
@@ -815,6 +822,7 @@ pub(crate) fn write_skipped_simulation_py(
     Ok(SimSummary {
         n_scenarios,
         completed: 0,
+        solve_stats: SolverStatsDelta::default(),
     })
 }
 
@@ -980,6 +988,7 @@ pub(crate) fn build_study_setup(
     let system = result.system;
     let estimation_report = result.estimation_report;
     let estimation_path = result.estimation_path;
+    let correlation_origin = result.correlation_origin;
 
     let mut hydro_timings = HydroFitTimings::default();
     let hydro_models_result = prepare_hydro_models_from_artifacts(
@@ -1012,6 +1021,7 @@ pub(crate) fn build_study_setup(
     let mut provenance_report = build_provenance_report(
         estimation_path,
         estimation_report.as_ref(),
+        correlation_origin,
         setup.inputs.stochastic.provenance(),
         system.hydros(),
         &setup.hydro_models.provenance,
@@ -1052,6 +1062,7 @@ pub(crate) fn build_study_setup(
         &system,
         &setup.inputs.stochastic,
         estimation_report.as_ref(),
+        correlation_origin,
         seed,
     );
     let hydro_models_summary = build_hydro_model_summary(&setup.hydro_models, &system);
@@ -1182,6 +1193,12 @@ pub(crate) fn run_via_study(
             };
 
             let result = policy.training_result();
+            let training_totals =
+                aggregate_solver_stats_log(&result.solver_stats_log, StatsFoldMode::AllEntries);
+            warn_on_row_violations(&RowViolationReport::new(
+                &training_totals,
+                simulation.as_ref().map(|sim| &sim.solve_stats),
+            ));
             Ok(RunSummary {
                 converged: policy.converged,
                 iterations: result.iterations,
@@ -1198,7 +1215,12 @@ pub(crate) fn run_via_study(
         }
         RunPhasePlan::SimulateFromPolicy => {
             let policy = study.load_policy_native(None)?;
-            let simulation = Some(study.simulate_native(&policy, None)?);
+            let simulation = study.simulate_native(&policy, None)?;
+            warn_on_row_violations(&RowViolationReport::new(
+                &SolveTotals::default(),
+                Some(&simulation.solve_stats),
+            ));
+            let simulation = Some(simulation);
 
             let result = policy.training_result();
             Ok(RunSummary {
@@ -1228,6 +1250,13 @@ pub(crate) fn run_via_study(
             hydro_models,
             provenance,
         }),
+    }
+}
+
+/// Print the end-of-run row-violation warning when any solve was counted.
+fn warn_on_row_violations(report: &RowViolationReport) {
+    if report.should_emit() {
+        eprintln!("novomodelo-python: warning: {report}");
     }
 }
 
@@ -1302,10 +1331,20 @@ pub(crate) fn stochastic_summary_to_dict<'py>(
         "correlation_source",
         stochastic_source_str(&summary.correlation_source),
     )?;
+    dict.set_item(
+        "correlation_target",
+        summary.correlation_target.map(CorrelationTarget::as_str),
+    )?;
     dict.set_item("correlation_dim", summary.correlation_dim.as_deref())?;
     dict.set_item(
         "opening_tree_source",
         stochastic_source_str(&summary.opening_tree_source),
+    )?;
+    dict.set_item(
+        "opening_tree_moment_matching",
+        summary
+            .opening_tree_moment_matching
+            .map(MomentMatching::as_str),
     )?;
     dict.set_item("openings_per_stage", summary.openings_per_stage.clone())?;
     dict.set_item("n_stages", summary.n_stages)?;
@@ -1334,8 +1373,22 @@ pub(crate) fn provenance_to_dict<'py>(
         report.inflow.correlation_source.to_string(),
     )?;
     dict.set_item(
+        "correlation_target",
+        report
+            .inflow
+            .correlation_target
+            .map(CorrelationTarget::as_str),
+    )?;
+    dict.set_item(
         "opening_tree_source",
         report.inflow.opening_tree_source.to_string(),
+    )?;
+    dict.set_item(
+        "opening_tree_moment_matching",
+        report
+            .inflow
+            .opening_tree_moment_matching
+            .map(MomentMatching::as_str),
     )?;
     dict.set_item("n_hydros", report.inflow.n_hydros)?;
     dict.set_item("ar_method", report.inflow.ar_method.as_deref())?;
@@ -1861,6 +1914,7 @@ mod tests {
     fn aggregate_training_solve_stats_folds_and_splits_by_phase() {
         let forward_delta = SolverStatsDelta {
             lp_solves: 10,
+            row_violations: 2,
             first_try_successes: 7,
             lp_successes: 9,
             lp_failures: 1,
@@ -1882,20 +1936,30 @@ mod tests {
             SolverStatsLogEntry::from_raw(0, "backward", Some(0), 0, 0, 0, backward_delta),
         ];
 
-        // The shared fold returns the 5 phase-derived counts only; `None` folds
-        // every entry (the single-process Python caller). `total_lp_solves` is
-        // sourced at the call site from the per-iteration convergence records
-        // to mirror the CLI (see `aggregate_solver_stats_log`'s doc).
-        let (first_try, retried, failed, forward_seconds, backward_seconds) =
-            aggregate_solver_stats_log(&stats_log, StatsFoldMode::AllEntries);
+        // `AllEntries` folds every entry (the single-process Python caller).
+        // `total_lp_solves` is sourced at the call site from the per-iteration
+        // convergence records to mirror the CLI (see
+        // `aggregate_solver_stats_log`'s doc).
+        let totals = aggregate_solver_stats_log(&stats_log, StatsFoldMode::AllEntries);
 
         // first_try = 7 + 2; retried = (9-7) + (4-2) = 4; failed = 1 + 0.
-        assert_eq!(first_try, 9);
-        assert_eq!(retried, 4);
-        assert_eq!(failed, 1);
+        assert_eq!(totals.first_try, 9);
+        assert_eq!(totals.retried, 4);
+        assert_eq!(totals.failed, 1);
         // Phase split with /1000.0 ms→s conversion.
-        assert_eq!(forward_seconds, 2.5);
-        assert_eq!(backward_seconds, 1.5);
+        assert_eq!(totals.forward_solve_seconds, 2.5);
+        assert_eq!(totals.backward_solve_seconds, 1.5);
+        assert_eq!(
+            (
+                totals.row_violations.forward,
+                totals.row_violations.backward
+            ),
+            (2, 0)
+        );
+        assert_eq!(
+            (totals.lp_solves.forward, totals.lp_solves.backward),
+            (10, 4)
+        );
     }
 
     #[test]
@@ -1958,7 +2022,7 @@ mod tests {
             "1dtoy must be a 4-stage case so total_lp_solves is a multi-stage guard"
         );
 
-        let golden_lower_bound = 15_595_518.381_798_638;
+        let golden_lower_bound = 20_616_141.776_970_58;
         assert!(
             close(training.bounds.final_lower_bound, golden_lower_bound),
             "final_lower_bound {} not within 1e-6 of golden {golden_lower_bound}",
@@ -1986,7 +2050,7 @@ mod tests {
             .cost
             .as_ref()
             .expect("simulation cost must be populated by the run path");
-        let golden_mean_cost = 9_679_385.922_404_84;
+        let golden_mean_cost = 12_865_159.706_109_203;
         assert!(
             close(cost.mean_cost, golden_mean_cost),
             "mean_cost {} not within 1e-6 of golden {golden_mean_cost}",
