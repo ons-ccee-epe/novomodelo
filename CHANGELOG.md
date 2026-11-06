@@ -25,9 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   price in-transit water by the target bucket's hours. Results change for such
   runs.
 - `post_study_stages.json` `stages` is deprecated in favour of `thermal_stages`.
-  A deck that still uses it keeps running and warns; run
+  A deck that still uses it keeps running, and `novomodelo validate` warns; run
   `python3 scripts/migrate/post_study_stages.py <deck-dir>` to migrate it.
-  Decks under `casos/` and hpc-model-utils decks keep running with the warning.
 
 ## [0.20.0] - 2026-11-03
 
