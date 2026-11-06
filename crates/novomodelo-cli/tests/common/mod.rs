@@ -5,7 +5,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 // Items may be unused in one binary but used in another.
 
-pub mod expected_deltas;
 pub mod varying_external_deck;
 
 use std::collections::BTreeMap;
@@ -89,66 +88,6 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) {
             fs::copy(&from, &to).unwrap();
         }
     }
-}
-
-fn dual_calendar_boundary_fixture() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("crates dir must be one level above CARGO_MANIFEST_DIR")
-        .join("novomodelo-sddp/tests/gate_fixtures/dual_calendar_boundary")
-}
-
-/// Copies the committed dual-calendar boundary gate fixture, minus its `source/`
-/// deck, into `dst`, then trains `source/` and copies its `policy/` to
-/// `dst/source_policy`, where the target's `config.policy.boundary.path` points.
-/// Panics with the failing run's stderr.
-pub fn prepare_dual_calendar_boundary_case(dst: &Path) {
-    prepare_dual_calendar_boundary_case_from(&dual_calendar_boundary_fixture(), dst, |_| {});
-}
-
-/// [`prepare_dual_calendar_boundary_case`] with `mutate_source_config` applied
-/// to the copied source deck's `config.json` before that deck is trained.
-pub fn prepare_dual_calendar_boundary_case_with(
-    dst: &Path,
-    mutate_source_config: impl FnOnce(&mut serde_json::Value),
-) {
-    prepare_dual_calendar_boundary_case_from(
-        &dual_calendar_boundary_fixture(),
-        dst,
-        mutate_source_config,
-    );
-}
-
-/// [`prepare_dual_calendar_boundary_case_with`] over the boundary fixture
-/// copy at `src`.
-pub fn prepare_dual_calendar_boundary_case_from(
-    src: &Path,
-    dst: &Path,
-    mutate_source_config: impl FnOnce(&mut serde_json::Value),
-) {
-    copy_dir_recursive(src, dst);
-    fs::remove_dir_all(dst.join("source")).unwrap();
-
-    let work = tempfile::TempDir::new().unwrap();
-    let source = work.path().join("source");
-    let source_out = work.path().join("source_out");
-    copy_dir_recursive(&src.join("source"), &source);
-    let config_path = source.join("config.json");
-    let mut config: serde_json::Value =
-        serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
-    mutate_source_config(&mut config);
-    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
-    let run = novomodelo()
-        .args(["run", source.to_str().unwrap()])
-        .args(["--output", source_out.to_str().unwrap(), "--quiet"])
-        .output()
-        .unwrap();
-    assert!(
-        run.status.success(),
-        "the source deck run must succeed: {}",
-        String::from_utf8_lossy(&run.stderr)
-    );
-    copy_dir_recursive(&source_out.join("policy"), &dst.join("source_policy"));
 }
 
 /// Penalty config shared by every programmatically-built case fixture.

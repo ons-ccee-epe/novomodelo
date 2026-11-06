@@ -69,7 +69,6 @@ fn case_with_water_bucket_stages(water: &[WaterStage]) -> TempDir {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/gate_fixtures/dual_calendar_boundary");
     let dir = TempDir::new().expect("tempdir");
     copy_toy_case(&fixture, dir.path());
-    fs::remove_dir_all(dir.path().join("source")).expect("remove source deck");
 
     let thermal_bound = |post_study_stage_index: u32| {
         json!({

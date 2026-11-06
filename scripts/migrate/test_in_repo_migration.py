@@ -18,7 +18,6 @@ _OVERLAY_ROOT = (
     _ROOT / "crates" / "novomodelo-sddp" / "tests" / "gate_fixtures" / "legacy_inputs"
 )
 _ABSENT = "absent.json"
-_SOURCE = "source"
 
 _OVERLAYS = sorted(path for path in _OVERLAY_ROOT.iterdir() if path.is_dir())
 assert _OVERLAYS, f"no legacy-input overlay under {_OVERLAY_ROOT}"
@@ -51,13 +50,9 @@ def test_main_on_the_legacy_inputs_reproduces_the_committed_migrated_decks(
     legacy = tmp_path / "deck"
     shutil.copytree(committed, legacy, ignore=shutil.ignore_patterns("scenarios"))
     materialize(overlay, legacy)
-    decks = [legacy]
-    if (legacy / _SOURCE / "stages.json").is_file():
-        decks.append(legacy / _SOURCE)
-    assert all(is_unmigrated(deck) for deck in decks)
+    assert is_unmigrated(legacy)
 
-    assert pss.main([str(deck) for deck in decks]) == 0
+    assert pss.main([str(legacy)]) == 0
 
-    for deck in decks:
-        migrated = committed / deck.relative_to(legacy) / pss.FILE_NAME
-        assert (deck / pss.FILE_NAME).read_bytes() == migrated.read_bytes()
+    migrated = committed / pss.FILE_NAME
+    assert (legacy / pss.FILE_NAME).read_bytes() == migrated.read_bytes()

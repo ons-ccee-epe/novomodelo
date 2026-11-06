@@ -2,33 +2,25 @@
 
 Decks that exercise a combination no committed deck covers. They sit outside
 the `committed_decks()` scan, which reads only `examples/deterministic/` and
-`crates/novomodelo-sddp/tests/fixtures/`, so the sweeps that build a `StudySetup`
-without a source checkpoint never load them. A gate sweep adds a deck from this
-directory explicitly.
+`crates/novomodelo-sddp/tests/fixtures/`, so the sweeps over committed decks never
+load them. A test that needs one names it explicitly.
 
 ## `dual_calendar_boundary/`
 
 A travel-time arc (H0 -> H1), a lead-time anticipated thermal whose lead reaches
 past the horizon, `post_study_stages.json`, and `config.policy.boundary`.
 
-The boundary policy is not committed: a checkpoint is refused when its
-`software_version` differs from the running binary. The deck nests a `source/`
-deck instead, and a gate run:
+`water_calendar_differential.rs` builds its setups from this deck; the declared
+boundary keeps the terminal bucket slots live. The boundary policy is not
+committed, so never run the deck in place: `source_policy` does not exist in the
+tree.
 
-1. runs `source/` and keeps its `policy/`;
-2. copies that `policy/` to `<tmp copy of target>/source_policy`, the path
-   `config.policy.boundary.path` names;
-3. runs the target from the copy.
+## `legacy_inputs/`
 
-`prepare_dual_calendar_boundary_case` in `crates/novomodelo-cli/tests/common/mod.rs`
-does steps 1 and 2.
-
-Never run the target in place: `source_policy` does not exist in the tree.
-
-The source's pool priced at the target's last stage `end_date` is the one the
-target loads, so `source/` leads with a stage that ends on that date. Its
-remaining stages equal the target's post-study stages, so both decks price the
-same months on the same grid.
-
-The inputs are frozen once a baseline is captured over this deck; editing one
-invalidates that baseline's input hash.
+One overlay per committed deck whose post-study input was migrated to
+`thermal_stages`/`water_bucket_stages`: the files the deck had before
+migration, plus `absent.json`, the files it did not have.
+`novomodelo_sddp::test_support::legacy_inputs::materialize` applies an overlay to a
+deck copy. `scripts/migrate/test_in_repo_migration.py` migrates every overlay and
+compares the result with the committed deck, and the legacy-vs-migrated tests
+run a deck from its overlay.

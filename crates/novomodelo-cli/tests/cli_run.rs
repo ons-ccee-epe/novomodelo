@@ -9,19 +9,22 @@
     clippy::float_cmp
 )]
 
+use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray};
 use arrow::record_batch::RecordBatch;
 use assert_cmd::prelude::*;
 use novomodelo_io::scenarios::parse_inflow_annual_component;
 use novomodelo_io::{EntitySlot, StateFamily, deserialize_stage_cuts};
+use novomodelo_sddp::test_support::legacy_inputs::{materialize, overlay_dir};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
 mod common;
+use common::varying_external_deck::edit_json;
 use common::{
     case_dir, copy_dir_recursive, make_valid_case, novomodelo, restamp_policy_version,
     snapshot_files, write_file, write_supplied_correlation_case, write_supplied_opening_tree_case,
@@ -1597,7 +1600,7 @@ fn unreadable_policy_checkpoint_is_reported_as_a_read_failure() {
         .stderr(predicate::str::contains("report this at").not());
 }
 
-fn warm_start_case_with_output_policy_dir() -> (TempDir, TempDir, std::path::PathBuf) {
+fn warm_start_case_with_output_policy_dir() -> (TempDir, TempDir, PathBuf) {
     let case = TempDir::new().unwrap();
     copy_dir_recursive(&case_dir("1dtoy"), case.path());
     rewrite_json(&case.path().join("config.json"), |config| {
@@ -2772,4 +2775,81 @@ fn run_reports_no_row_violation_warning_on_4ree() {
         "unexpected row-violation warning: {stderr}"
     );
     assert!(output.path().join("simulation/_SUCCESS").exists());
+}
+
+/// Outputs that hold the run's wall-clock time or solver timings, so two runs of
+/// the same inputs never write them identically.
+const RUN_IDENTITY_OUTPUTS: [&str; 8] = [
+    "policy/manifest.bin",
+    "simulation/metadata.json",
+    "simulation/solver/",
+    "training/convergence.parquet",
+    "training/dictionaries/codes.json",
+    "training/metadata.json",
+    "training/solver/",
+    "training/timing/",
+];
+
+fn result_outputs(output: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    snapshot_files(output)
+        .into_iter()
+        .filter(|(path, _)| {
+            let path = path.to_str().unwrap();
+            !RUN_IDENTITY_OUTPUTS
+                .iter()
+                .any(|identity| path.starts_with(identity))
+        })
+        .collect()
+}
+
+#[test]
+fn legacy_post_study_deck_writes_the_outputs_of_its_migrated_deck() {
+    const DECK: &str = "deterministic/d55-post-study-anticipated-lanes";
+    let [migrated, legacy] = [false, true].map(|legacy| {
+        let case = TempDir::new().unwrap();
+        copy_dir_recursive(&case_dir(DECK), case.path());
+        if legacy {
+            materialize(&overlay_dir(&format!("examples/{DECK}")), case.path()).unwrap();
+            let post_study =
+                fs::read_to_string(case.path().join("post_study_stages.json")).unwrap();
+            assert!(
+                post_study.contains("\"stages\"") && !post_study.contains("thermal_stages"),
+                "the overlay must restore the deprecated format: {post_study}"
+            );
+        }
+        edit_json(&case.path().join("config.json"), |config| {
+            config["simulation"] = serde_json::json!({
+                "enabled": true,
+                "selection": { "method": "sampled", "num_scenarios": 1 }
+            });
+        });
+        let output = TempDir::new().unwrap();
+        novomodelo()
+            .args(["run", case.path().to_str().unwrap()])
+            .args(["--output", output.path().to_str().unwrap(), "--quiet"])
+            .assert()
+            .success();
+        result_outputs(output.path())
+    });
+
+    for compared in ["policy/cuts/", "simulation/anticipated_lanes/"] {
+        assert!(
+            migrated
+                .keys()
+                .any(|path| path.to_str().unwrap().starts_with(compared)),
+            "the comparison has no power unless it covers {compared}"
+        );
+    }
+    assert!(
+        migrated.keys().eq(legacy.keys()),
+        "output files: migrated {:?}, legacy {:?}",
+        migrated.keys().collect::<Vec<_>>(),
+        legacy.keys().collect::<Vec<_>>()
+    );
+    let differing: Vec<_> = migrated
+        .iter()
+        .filter(|(path, bytes)| legacy[*path] != **bytes)
+        .map(|(path, _)| path)
+        .collect();
+    assert!(differing.is_empty(), "outputs differ: {differing:?}");
 }
