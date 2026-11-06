@@ -22,8 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `policy/cuts/*.bin` past the study horizon are now dated, so a later study
   loading that policy as a boundary reads them.
 - Boundary cuts read on a different bucket calendar than they were trained on
-  price in-transit water by the target bucket's hours. Results change for such
-  runs.
+  price in-transit water by the target bucket's hours, and water bound for a
+  hydro the policy has no buckets for at that hydro's storage value
+  (`filled_from_storage` in `novomodelo validate --json`). Results change.
 - `post_study_stages.json` `stages`, and a deck with a travel-time arc but no
   `post_study_stages.json`, are deprecated. Such a deck keeps running, and
   `novomodelo validate` warns; run

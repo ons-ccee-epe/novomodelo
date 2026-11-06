@@ -3473,12 +3473,14 @@ single `reference_date` instead (a past stage, not a delivery target).
 The calendar-`subindex` relaxation the parent section reserves for a date family
 IS this fan-out, and it now covers BOTH forward-dated families —
 `AnticipatedThermalState` and `HydroTransitBucket` — inside `load_boundary_cuts`,
-dispatched through the single `resolve_by_interval_overlap` resolver; there is no
-per-family miss-rule parameter, because both families miss to `Zero` for their own
-expected reason (below). A source study prices its anticipated commitments on a
-monthly delivery calendar and its transit-bucket arrivals on their own per-arc
-arrival calendar; the current study may deliver either on a differently-shaped
-calendar (weekly, monthly, or a differing arc topology). `resolve_by_interval_overlap`
+dispatched through the single `resolve_by_interval_overlap` resolver, which takes
+one `on_source_miss` op. `resolve_target_slot` chooses it per family and the
+resolver returns it only on the `source_index` miss: `AnticipatedThermalState`
+passes `Zero`, `HydroTransitBucket` passes `receiver_storage_fill`. A source
+study prices its anticipated commitments on a monthly delivery calendar and its
+transit-bucket arrivals on their own per-arc arrival calendar; the current
+study may deliver either on a differently-shaped calendar (weekly, monthly, or
+a differing arc topology). `resolve_by_interval_overlap`
 reconciles each target slot `w` against the source intervals `M` of the SAME family
 it overlaps **by real calendar date**, not by subindex. The weight depends on
 the family's `QuantityClass` (`quantity_class` in `policy/reconcile.rs`, an
@@ -3508,11 +3510,30 @@ replaced, not kept behind a flag.
 
 Under either class, `Renormalize` extends the covered intervals across the
 uncovered span instead of deflating the boundary FCF with an implicit `0.0` term.
-No covered interval yields `Zero` — for `AnticipatedThermalState` this
-is usually an in-study delivery (below); for `HydroTransitBucket` this is the
-expected outcome when the source is NEWAVE-shaped and carries no transit arcs at
-all, the same "miss is expected, not incompatible" status the identity join used
-to grant it, now reached through the calendar join instead.
+No covered interval yields `Zero` for `AnticipatedThermalState`; that miss is
+usually an in-study delivery (below).
+
+A `HydroTransitBucket` miss is different. A live target with
+`interval_end > boundary_date` whose receiver has no live source transit
+interval (a source whose transit slots for it are all sentinel included)
+resolves to `RebindOp::FillFromStorage(p)`, `p` being the receiver's source
+`HydroStorage` position found by identity (the `EntitySlot::storage` key). A
+receiver with no source storage keeps `Zero`, counted `default_zero`; there is no
+inflow-lag fallback. The receiver's own coefficient is used whatever its
+operating status. `rebind_cut` reads `cut.coefficients[p]` verbatim from the
+post-rescale record, per cut: the intercept is untouched, there is no sign flip,
+and the value is undiscounted. This is the cut-wise composition of the source
+FCF with `v_h <- v_h + sum_d b_{h,d}`, a documented boundary approximation that
+ignores the arrival delay and the receiver's capacity, and stays a lower bound
+where `beta_v(h) <= 0`. The fill is counted in `FamilyTally::filled_from_storage`
+and listed in `filled_from_storage_slots`; the consumed storage position is
+referenced, so it leaves `dropped_source` and cannot trip
+`policy.boundary.strict`. Wrong-but-compiling alternatives: expressing the fill
+as `Blend(vec![(p, 1.0)])` or `Copy(p)` (misreports the tally); filling a bucket
+whose hydro has source intervals, none overlapping (below); applying it in
+`build_boundary_fold` or before `rescale_cut_records_for_load`; averaging
+storage coefficients across cuts; filling an `AnticipatedThermalState` miss
+from a same-id storage slot.
 
 Only a live anticipated target slot whose interval reaches past
 `boundary_date` fans out. A live target slot whose `interval_end` is at or
@@ -3578,7 +3599,8 @@ division is guarded: `resolve_by_interval_overlap` returns `Zero` on
 
 `HydroTransitBucket` target and source slots reconcile through this EXACT SAME
 `resolve_by_interval_overlap` call, with the `Volume` weight above — there is
-no separate transit resolver; the class is the only thing that differs. `build_source_interval_index` selects live
+no separate transit resolver; the class and its `on_source_miss` op are the
+only things that differ. `build_source_interval_index` selects live
 (non-sentinel) source slots of EITHER family into one shared index, keyed
 `(entity_type, entity_id)`; the family byte already in that key is what keeps an
 anticipated and a transit source entry sharing one `entity_id` disjoint, so
@@ -3600,7 +3622,7 @@ coefficients are unchanged, the JOIN MECHANISM is not, and collapsing a
 full-coverage single term back into `RebindOp::Copy` would hide that the family is
 now date-validated (and would have to apply to the anticipated family's own
 copy-equivalent, fully-inside-one-source-interval case too, silently changing its
-tally as well). A dated transit miss that is NOT the NEWAVE-shaped no-arcs case —
+tally as well). A dated transit miss that is NOT the storage-fill case above —
 both sides declare transit arcs but their intervals do not overlap — still resolves
 `Zero` at the same report tier as any other miss; promoting it to a louder tier is
 diagnostics work this contract does not cover.
@@ -3626,8 +3648,8 @@ into the fold sum, is the wrong-but-compiling alternative: the transforms are
 not idempotent across that boundary, so a post-rescale fold prices the fixed
 commitment at the wrong scale.
 Read: `policy/reconcile.rs` (`QuantityClass`, `quantity_class`,
-`resolve_by_interval_overlap`, `build_rebind`,
-`rebind_cut`, `build_source_interval_index`, `overlap_hours`, `build_boundary_fold`,
+`resolve_by_interval_overlap`, `build_rebind`, `FillFromStorage`,
+`receiver_storage_fill`, `rebind_cut`, `build_source_interval_index`, `overlap_hours`, `build_boundary_fold`,
 the `Blend`/`Renormalize` variants), `policy/policy_export.rs`
 (`build_stage_entity_manifest`, intervalling each ring slot at its modular
 delivery stage via `slot_lane_at`), `policy/policy_load.rs` (`load_boundary_cuts` builds one
@@ -3665,7 +3687,20 @@ round trip `load_boundary_cuts_matching_transit_bucket_arrival_interval_round_tr
 (`policy/policy_load.rs`) and
 `boundary_injection_transit_bucket_blends_on_identical_arrival_interval` and
 `boundary_injection_transit_bucket_takes_its_target_hours_share`
-(`tests/boundary_reconcile_defaults.rs`).
+(`tests/boundary_reconcile_defaults.rs`). The storage fill is pinned by
+`transit_bucket_source_miss_fills_from_receiver_storage`,
+`transit_bucket_fill_consumes_the_receiver_storage_position`,
+`transit_bucket_source_miss_without_receiver_storage_stays_zero`,
+`transit_bucket_in_study_target_stays_zero_when_receiver_storage_is_priced`,
+`transit_bucket_all_sentinel_source_transit_fills_from_storage`,
+`anticipated_source_miss_never_fills_from_a_same_id_storage_slot` and
+`transit_bucket_fill_is_declaration_order_invariant` (`policy/reconcile.rs`),
+by `boundary_injection_transit_bucket_fills_from_receiver_storage` and
+`boundary_injection_transit_fill_matches_the_storage_copy_under_cost_rescale`
+(`tests/boundary_reconcile_defaults.rs`), and by
+`newave_source_reconciles_into_decomp_current` and
+`newave_source_without_receiver_storage_keeps_transit_zero`
+(`tests/boundary_dim_mismatch_reconcile.rs`).
 
 A sentinel-interval forward-family slot is a structural ring pad on BOTH sides
 of reconciliation, not just the target: `dropped_source_positions` excludes it
