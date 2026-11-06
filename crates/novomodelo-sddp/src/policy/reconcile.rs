@@ -1505,6 +1505,65 @@ mod tests {
         assert!((coefficients[1] - (-35.0)).abs() < 35.0 * 1e-9);
     }
 
+    /// Given source buckets of unequal width (7 d, 14 d) read by two 10 d
+    /// target buckets, the first straddling the source edge 7 d / 3 d, when
+    /// the cut is rebound, then every non-zero term is weighted
+    /// `overlap / H_target`: `-10·7/10 - 40·3/10 = -19` and `-40·10/10 = -40`.
+    /// `overlap / H_source` would give `-10 - 40·3/14` and `-40·10/14`, so
+    /// each term tells the two weightings apart.
+    #[test]
+    fn uneven_bucket_straddle_weights_every_nonzero_term_by_target_hours() {
+        let source = vec![
+            transit_bucket_slot_over(
+                2,
+                1,
+                encode_slot_date(ymd(2027, 1, 1)),
+                encode_slot_date(ymd(2027, 1, 8)),
+            ),
+            transit_bucket_slot_over(
+                2,
+                2,
+                encode_slot_date(ymd(2027, 1, 8)),
+                encode_slot_date(ymd(2027, 1, 22)),
+            ),
+        ];
+        let target = vec![
+            transit_bucket_slot_over(
+                2,
+                1,
+                encode_slot_date(ymd(2027, 1, 1)),
+                encode_slot_date(ymd(2027, 1, 11)),
+            ),
+            transit_bucket_slot_over(
+                2,
+                2,
+                encode_slot_date(ymd(2027, 1, 11)),
+                encode_slot_date(ymd(2027, 1, 21)),
+            ),
+        ];
+
+        let rebind = rebind_via_index(&source, &target, ymd(2027, 1, 1)).unwrap();
+        let coefficients = rebind_cut(&owned_cut(vec![-10.0, -40.0]), &rebind);
+
+        let expected = [-10.0 * 7.0 / 10.0 - 40.0 * 3.0 / 10.0, -40.0];
+        let source_hours = [-10.0 - 40.0 * 3.0 / 14.0, -40.0 * 10.0 / 14.0];
+        for (slot, ((&actual, want), wrong)) in coefficients
+            .iter()
+            .zip(expected)
+            .zip(source_hours)
+            .enumerate()
+        {
+            assert!(
+                (actual - want).abs() < want.abs() * 1e-12,
+                "target bucket {slot}: {actual} != {want}"
+            );
+            assert!(
+                (want - wrong).abs() > want.abs() * 1e-3,
+                "target bucket {slot} cannot tell target- from source-hours weighting"
+            );
+        }
+    }
+
     /// Given every `StateFamily`, when it is classified, then the anticipated
     /// lane is a `Rate`, the transit bucket a `Volume`, and the two
     /// identity-joined families have no class.
