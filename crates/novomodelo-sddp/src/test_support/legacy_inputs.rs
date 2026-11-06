@@ -6,7 +6,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const OVERLAY_ROOT: &str = "tests/gate_fixtures/legacy_inputs";
+const OVERLAY_ROOT: &str = "tests/unswept_fixtures/legacy_inputs";
 const ABSENT_FILE: &str = "absent.json";
 
 /// The overlay directory name of a deck key: each `/` becomes `__`.

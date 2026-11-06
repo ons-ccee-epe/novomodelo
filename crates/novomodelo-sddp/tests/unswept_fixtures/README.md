@@ -1,9 +1,10 @@
-# Gate fixtures
+# Unswept fixtures
 
 Decks that exercise a combination no committed deck covers. They sit outside
-the `committed_decks()` scan, which reads only `examples/deterministic/` and
-`crates/novomodelo-sddp/tests/fixtures/`, so the sweeps over committed decks never
-load them. A test that needs one names it explicitly.
+the `committed_decks()` scan, which reads `examples/deterministic/`,
+`crates/novomodelo-sddp/tests/fixtures/`, `examples/1dtoy` and `examples/4ree`,
+so the sweeps over committed decks never load them. A test that needs one names
+it explicitly.
 
 ## `dual_calendar_boundary/`
 

@@ -15,7 +15,7 @@ import post_study_stages as pss
 
 _ROOT = Path(__file__).resolve().parents[2]
 _OVERLAY_ROOT = (
-    _ROOT / "crates" / "novomodelo-sddp" / "tests" / "gate_fixtures" / "legacy_inputs"
+    _ROOT / "crates" / "novomodelo-sddp" / "tests" / "unswept_fixtures" / "legacy_inputs"
 )
 _ABSENT = "absent.json"
 

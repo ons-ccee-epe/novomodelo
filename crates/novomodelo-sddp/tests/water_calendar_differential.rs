@@ -66,7 +66,7 @@ fn weekly_water_stages() -> Vec<WaterStage> {
 
 fn case_with_water_bucket_stages(water: &[WaterStage]) -> TempDir {
     let fixture =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/gate_fixtures/dual_calendar_boundary");
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/unswept_fixtures/dual_calendar_boundary");
     let dir = TempDir::new().expect("tempdir");
     copy_toy_case(&fixture, dir.path());
 
