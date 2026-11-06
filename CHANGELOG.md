@@ -12,9 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `post_study_stages.json` accepts `thermal_stages` and `water_bucket_stages`.
-  A deck with a travel-time arc must declare `water_bucket_stages`, which is
-  used without padding; validation refuses a missing key or incomplete
-  coverage.
+  On a deck with a travel-time arc, a file without `stages` must declare
+  `water_bucket_stages`, which is used without padding; validation refuses a
+  missing key or incomplete coverage.
 
 ### Changed
 
@@ -24,8 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Boundary cuts read on a different bucket calendar than they were trained on
   price in-transit water by the target bucket's hours. Results change for such
   runs.
-- `post_study_stages.json` `stages` is deprecated in favour of `thermal_stages`.
-  A deck that still uses it keeps running, and `novomodelo validate` warns; run
+- `post_study_stages.json` `stages`, and a deck with a travel-time arc but no
+  `post_study_stages.json`, are deprecated. Such a deck keeps running, and
+  `novomodelo validate` warns; run
   `python3 scripts/migrate/post_study_stages.py <deck-dir>` to migrate it.
 
 ## [0.20.0] - 2026-11-03
