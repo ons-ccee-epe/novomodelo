@@ -1,10 +1,12 @@
 //! End-to-end NEWAVE-to-DECOMP boundary reconciliation regression. A
 //! NEWAVE-shaped SOURCE checkpoint (one storage slot, twelve monthly
 //! `HydroInflowLag` slots, two dated monthly `AnticipatedThermalState` slots,
-//! no transit buckets; dimension 15) reconciles into a DECOMP-shaped CURRENT
-//! terminal manifest (the same storage and twelve lags as `Copy` targets, an
-//! hour-based anticipated ring `Blend`ing the source months, and two
-//! `HydroTransitBucket` `Zero` targets; a larger dimension). The reconciled
+//! no transit buckets; dimension 15, or 16 with the transit receiver's storage
+//! priced) reconciles into a DECOMP-shaped CURRENT terminal manifest (the same
+//! storage and twelve lags as `Copy` targets, an hour-based anticipated ring
+//! `Blend`ing the source months, and two `HydroTransitBucket` targets filled
+//! from the receiver's storage coefficient when the source prices it, `Zero`
+//! otherwise; a larger dimension). The reconciled
 //! cuts, injected into a runnable DECOMP-shaped study (a water-arc plus
 //! anticipated-post-study cascade), then train to a finite, bit-reproducible
 //! lower bound. Proves the relaxed `state_dimension` gate lets the
@@ -162,11 +164,26 @@ fn newave_source_coefficients() -> Vec<f64> {
     coeffs
 }
 
+/// [`newave_source_manifest`] plus the transit receiver's storage slot at index 1.
+fn newave_source_manifest_with_receiver_storage() -> Vec<EntitySlot> {
+    let mut manifest = newave_source_manifest();
+    manifest.insert(1, storage_slot(DOWNSTREAM_ID));
+    manifest
+}
+
+/// [`newave_source_coefficients`] plus `700.0` for the receiver's storage at index 1.
+fn newave_source_coefficients_with_receiver_storage() -> Vec<f64> {
+    let mut coeffs = newave_source_coefficients();
+    coeffs.insert(1, 700.0);
+    coeffs
+}
+
 /// The DECOMP-shaped current terminal manifest: same storage + 12 lags (`Copy`
 /// targets), 2 hour-based anticipated ring slots dated to overlap the source
 /// months (`Blend` targets), and 2 DATED transit-bucket slots the source has
-/// no transit arc at all to overlap (`Zero` targets) — 17 slots, a larger
-/// `state_dimension` than the source's 15.
+/// no transit arc at all to overlap (filled from the receiver's storage
+/// coefficient when the source prices it, `Zero` otherwise) — 17 slots, a
+/// larger `state_dimension` than the 15-slot source's.
 fn decomp_current_manifest() -> Vec<EntitySlot> {
     let mut manifest = Vec::with_capacity(17);
     manifest.push(storage_slot(HYDRO_ID));
@@ -196,17 +213,18 @@ fn decomp_current_manifest() -> Vec<EntitySlot> {
     manifest
 }
 
-/// Given the 15-dim NEWAVE source and the 17-dim DECOMP current manifest, the
-/// relaxed `state_dimension` gate lets the differing-dimension load reconcile:
-/// storage + 12 lags `Copy` (13 total), the two ring slots `Blend` the source
-/// months, the two transit slots resolve to `Zero`, and every returned record
-/// projects to `current_state_dimension`.
+/// Given the 16-dim NEWAVE source (the transit receiver's storage priced) and
+/// the 17-dim DECOMP current manifest, the relaxed `state_dimension` gate lets
+/// the differing-dimension load reconcile: storage + 12 lags `Copy` (13 total),
+/// the two ring slots `Blend` the source months, the two transit slots fill
+/// from the receiver's storage coefficient, and every returned record projects
+/// to `current_state_dimension`.
 #[test]
 fn newave_source_reconciles_into_decomp_current() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let source_manifest = newave_source_manifest();
-    let source_coefficients = newave_source_coefficients();
-    assert_eq!(source_manifest.len(), 15, "NEWAVE source state dimension");
+    let source_manifest = newave_source_manifest_with_receiver_storage();
+    let source_coefficients = newave_source_coefficients_with_receiver_storage();
+    assert_eq!(source_manifest.len(), 16, "NEWAVE source state dimension");
     write_source_checkpoint(
         tmp.path(),
         &source_manifest,
@@ -246,7 +264,7 @@ fn newave_source_reconciles_into_decomp_current() {
     assert_eq!(report.storage.copy, 1, "the one storage slot copies");
     assert_eq!(report.inflow_lag.copy, 12, "all 12 lag slots copy");
     assert_eq!(
-        report.tally_totals().0,
+        report.tally_totals().copy,
         13,
         "copy == 13 (1 storage + 12 lags)"
     );
@@ -263,18 +281,28 @@ fn newave_source_reconciles_into_decomp_current() {
         "two live dated source anticipated delivery intervals"
     );
     assert_eq!(
-        report.transit_bucket.default_zero, 2,
-        "the two transit-bucket targets the source lacks default to Zero"
+        report.transit_bucket.filled_from_storage, 2,
+        "the two transit-bucket targets the source lacks fill from the receiver's storage"
+    );
+    assert_eq!(
+        report.transit_bucket.default_zero, 0,
+        "no transit-bucket target defaults to Zero when the source prices the receiver"
+    );
+    assert_eq!(
+        report.storage.dropped_source, 0,
+        "the receiver's source storage is consumed by the fill, not dropped"
     );
 
     for record in cuts.iter() {
         assert_eq!(
-            record.coefficients[15], 0.0,
-            "transit-bucket target slot 1 carries 0.0 in every reconciled vector"
+            record.coefficients[15].to_bits(),
+            700.0_f64.to_bits(),
+            "transit-bucket target slot 1 carries the receiver's storage coefficient"
         );
         assert_eq!(
-            record.coefficients[16], 0.0,
-            "transit-bucket target slot 2 carries 0.0 in every reconciled vector"
+            record.coefficients[16].to_bits(),
+            700.0_f64.to_bits(),
+            "transit-bucket target slot 2 carries the receiver's storage coefficient"
         );
     }
 
@@ -302,6 +330,52 @@ fn newave_source_reconciles_into_decomp_current() {
         record.coefficients[13], 0.0,
         "the anticipated fan-out contributes a nonzero coefficient"
     );
+}
+
+/// Given the 15-dim NEWAVE source that does not price the transit receiver's
+/// storage, the two transit-bucket targets have nothing to fill from and
+/// resolve to `Zero`.
+#[test]
+fn newave_source_without_receiver_storage_keeps_transit_zero() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let source_manifest = newave_source_manifest();
+    assert_eq!(source_manifest.len(), 15, "NEWAVE source state dimension");
+    write_source_checkpoint(
+        tmp.path(),
+        &source_manifest,
+        &newave_source_coefficients(),
+        Some(RUN_LOADING_FACTOR),
+    );
+
+    let current = decomp_current_manifest();
+    let cuts = load_boundary_cuts(&BoundaryLoadRequest::new(
+        tmp.path(),
+        fixture_priced_date(0),
+        u32::try_from(current.len()).expect("small dimension"),
+        &current,
+        RUN_LOADING_FACTOR,
+    ))
+    .expect("the differing-dimension NEWAVE source must reconcile into the DECOMP current");
+
+    let report = cuts.report();
+    assert_eq!(
+        report.transit_bucket.default_zero, 2,
+        "the two transit-bucket targets default to Zero without a priced receiver storage"
+    );
+    assert_eq!(
+        report.transit_bucket.filled_from_storage, 0,
+        "no transit-bucket target fills when the source does not price the receiver"
+    );
+    for record in cuts.iter() {
+        assert_eq!(
+            record.coefficients[15], 0.0,
+            "transit-bucket target slot 1 carries 0.0 in every reconciled vector"
+        );
+        assert_eq!(
+            record.coefficients[16], 0.0,
+            "transit-bucket target slot 2 carries 0.0 in every reconciled vector"
+        );
+    }
 }
 
 // ── run: reconciled cuts injected into a runnable DECOMP-shaped study ───────
@@ -606,8 +680,9 @@ fn run_config() -> Config {
 /// from the study's own terminal `manifest`: every storage/inflow-lag target
 /// slot becomes a same-identity source slot (`Copy` core), one anticipated
 /// source slot per distinct dated post-study delivery month (so each dated ring
-/// target `Blend`s), and NO transit slot (so every transit target resolves to
-/// `Zero`).
+/// target `Blend`s), and NO transit slot (so each transit target resolves
+/// through the source-miss arm: a live post-boundary bucket fills from its
+/// receiver's storage coefficient, a sentinel or in-study bucket stays `Zero`).
 fn derive_newave_source(manifest: &[EntitySlot]) -> (Vec<EntitySlot>, Vec<f64>) {
     let mut source = Vec::new();
     let mut coefficients = Vec::new();
@@ -671,7 +746,7 @@ fn run_injected_decomp() -> f64 {
     );
     assert_eq!(
         n_transit, 2,
-        "the DECOMP run study must carry exactly two transit-bucket Zero targets"
+        "the DECOMP run study must carry exactly two transit-bucket targets"
     );
     assert!(
         n_dated_anticipated >= 1,
@@ -743,7 +818,10 @@ fn run_injected_decomp() -> f64 {
 /// The reconciled NEWAVE boundary injected into a runnable DECOMP-shaped study
 /// trains to a finite lower bound, and two identical runs reproduce it
 /// bit-for-bit (run-to-run reproducibility per the determinism contract — never
-/// a hot-vs-cold claim).
+/// a hot-vs-cold claim). The derived source carries no transit slot, so each
+/// transit target resolves through the source-miss arm: a live post-boundary
+/// bucket fills from its receiver's storage coefficient, a sentinel or in-study
+/// bucket stays `Zero`.
 #[test]
 fn newave_boundary_injected_decomp_run_converges() {
     let final_lb_a = run_injected_decomp();

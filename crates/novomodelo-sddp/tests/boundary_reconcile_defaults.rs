@@ -5,9 +5,10 @@
 //! `load_boundary_cuts`.
 //!
 //! Also covers transit-bucket (an identical arrival interval blends at unit
-//! weight, a miss defaults to `0.0`), sentinel-dated-anticipated default-`0.0`,
-//! and the dated-anticipated
-//! date-driven fan-out (`÷H_M` `Blend`, coverage-`Renormalize`) — including a
+//! weight, a miss fills from the receiver's storage coefficient and defaults to
+//! `0.0` without one), sentinel-dated-anticipated default-`0.0`, and the
+//! dated-anticipated date-driven fan-out (`÷H_M` `Blend`,
+//! coverage-`Renormalize`) — including a
 //! ring-sourced post-study slot reconciling bit-identically to the
 //! pre-switchover shape, and an in-study ring slot (its own interval ending
 //! at the boundary date) defaulting to `Zero`.
@@ -318,13 +319,10 @@ fn full_fcf_manifest_check_unaffected_by_boundary_reconcile_wiring() {
     );
 }
 
-/// Given a current terminal manifest with a DATED transit-bucket slot and a
-/// source carrying no transit slots at all (the NEWAVE-shaped case), when the
-/// `BoundaryInjection` load runs, then it succeeds and the transit
-/// coefficient defaults to `0.0` — no source interval exists to overlap —
-/// while the storage slot still loads its identity-matched coefficient.
+/// A receiver whose source has no transit slot fills from its storage
+/// coefficient, and strict admits the load.
 #[test]
-fn boundary_injection_transit_bucket_defaults_to_zero() {
+fn boundary_injection_transit_bucket_fills_from_receiver_storage() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let manifest = vec![storage_slot(1), storage_slot(2)];
     write_checkpoint(tmp.path(), &manifest, &[10.0, 20.0]);
@@ -338,21 +336,53 @@ fn boundary_injection_transit_bucket_defaults_to_zero() {
             encode_slot_date(ymd(2026, 4, 15)),
         ),
     ];
+    let request = BoundaryLoadRequest::new(tmp.path(), fixture_priced_date(0), 2, &current, 1.0);
+
+    for request in [request, request.with_strict(true)] {
+        let cuts = load_boundary_cuts(&request).expect("a filled transit bucket must load");
+
+        assert_eq!(cuts.len(), 1);
+        assert_eq!(cuts[0].coefficients, vec![10.0, 20.0]);
+        let report = cuts.report();
+        assert_eq!(report.transit_bucket.filled_from_storage, 1);
+        assert_eq!(report.transit_bucket.default_zero, 0);
+        assert_eq!(report.storage.dropped_source, 0);
+    }
+}
+
+/// Given a checkpoint rescaled by a loading factor that differs from its own
+/// cost scale (1.0 against 3.0), when a source-miss transit bucket is filled
+/// from its receiver's storage, then every loaded cut carries the storage
+/// slot's rescaled coefficient bit-for-bit in the bucket, and that value is
+/// not the stored `7.0`.
+#[test]
+fn boundary_injection_transit_fill_matches_the_storage_copy_under_cost_rescale() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_checkpoint(tmp.path(), &[storage_slot(2)], &[7.0]);
+    let current = vec![
+        storage_slot(2),
+        transit_bucket_slot_over(
+            2,
+            1,
+            encode_slot_date(ymd(2026, 4, 8)),
+            encode_slot_date(ymd(2026, 4, 15)),
+        ),
+    ];
+
     let cuts = load_boundary_cuts(&BoundaryLoadRequest::new(
         tmp.path(),
         fixture_priced_date(0),
         2,
         &current,
-        1.0,
+        3.0,
     ))
-    .expect("a transit-only-target load must succeed via the default-zero arm");
+    .expect("a filled transit bucket must load");
 
     assert_eq!(cuts.len(), 1);
-    assert_eq!(
-        cuts[0].coefficients,
-        vec![10.0, 0.0],
-        "the transit slot must default to 0.0"
-    );
+    for cut in cuts.iter() {
+        assert_eq!(cut.coefficients[1].to_bits(), cut.coefficients[0].to_bits());
+        assert_ne!(cut.coefficients[0], 7.0);
+    }
 }
 
 /// Given a boundary SOURCE that prices a transit-bucket arrival interval for
@@ -543,8 +573,8 @@ fn boundary_injection_target_shaped_source_reconciles_bit_identically() {
 /// Novomodelo-to-Novomodelo boundary with matching transit arcs), when the
 /// `BoundaryInjection` load runs, then the transit coefficient blends at
 /// unit weight from the source verbatim, never zeroed — distinct from
-/// `boundary_injection_transit_bucket_defaults_to_zero`'s no-source-transit
-/// (NEWAVE) case, which still defaults to `0.0` on a miss — and the report
+/// `boundary_injection_transit_bucket_fills_from_receiver_storage`'s
+/// no-source-transit (NEWAVE) case, which fills from storage on a miss — and the report
 /// tallies the slot as `fan_out`, not `copy`: an exact interval match now
 /// routes through the date-driven join.
 #[test]
