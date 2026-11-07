@@ -946,6 +946,9 @@ mod tests {
         fn set_row_bounds(&mut self, indices: &[usize], lower: &[f64], upper: &[f64]) {
             self.inner.set_row_bounds(indices, lower, upper);
         }
+        fn set_row_lower_bounds_range(&mut self, first_row: usize, lower: &[f64]) {
+            self.inner.set_row_lower_bounds_range(first_row, lower);
+        }
         fn set_col_bounds(&mut self, indices: &[usize], lower: &[f64], upper: &[f64]) {
             self.inner.set_col_bounds(indices, lower, upper);
         }

@@ -366,6 +366,7 @@ impl SolverInterface for MockSolver {
     }
 
     fn set_row_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
+    fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
     fn set_col_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
 
     fn solve(
@@ -461,6 +462,7 @@ impl SolverInterface for PerChildProbeSolver {
     fn set_row_bounds(&mut self, _indices: &[usize], lower: &[f64], _upper: &[f64]) {
         self.pending_row_lower.extend_from_slice(lower);
     }
+    fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
     fn set_col_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
     fn solve(
         &mut self,

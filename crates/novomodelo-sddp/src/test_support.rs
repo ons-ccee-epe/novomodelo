@@ -3117,6 +3117,21 @@ impl SolverInterface for TemplateCaptureSolver {
 
     #[expect(
         clippy::expect_used,
+        reason = "every caller invokes load_model before set_row_lower_bounds_range, so template is always Some"
+    )]
+    fn set_row_lower_bounds_range(&mut self, first_row: usize, lower: &[f64]) {
+        let t = self
+            .template
+            .as_mut()
+            .expect("capture: load_model precedes set_row_lower_bounds_range");
+        for (k, &v) in lower.iter().enumerate() {
+            t.row_lower[first_row + k] = v;
+            t.row_upper[first_row + k] = f64::INFINITY;
+        }
+    }
+
+    #[expect(
+        clippy::expect_used,
         reason = "every caller invokes load_model before set_col_bounds, so template is always Some"
     )]
     fn set_col_bounds(&mut self, indices: &[usize], lower: &[f64], upper: &[f64]) {
@@ -3197,6 +3212,22 @@ impl<S: SolverInterface> SolverInterface for BoundRecordingSolver<S> {
             t.row_upper[i] = upper[k];
         }
         self.inner.set_row_bounds(indices, lower, upper);
+    }
+
+    #[expect(
+        clippy::expect_used,
+        reason = "every caller invokes load_model before set_row_lower_bounds_range, so current is always Some"
+    )]
+    fn set_row_lower_bounds_range(&mut self, first_row: usize, lower: &[f64]) {
+        let t = self
+            .current
+            .as_mut()
+            .expect("BoundRecordingSolver: load_model precedes set_row_lower_bounds_range");
+        for (k, &v) in lower.iter().enumerate() {
+            t.row_lower[first_row + k] = v;
+            t.row_upper[first_row + k] = f64::INFINITY;
+        }
+        self.inner.set_row_lower_bounds_range(first_row, lower);
     }
 
     #[expect(

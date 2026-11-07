@@ -74,17 +74,26 @@ pub trait SolverInterface: Send {
     /// Updates row bounds.
     ///
     /// `indices`, `lower`, and `upper` must have equal length, with all indices
-    /// referencing valid rows and bounds finite. For equality constraints, set
-    /// `lower[i] == upper[i]`. Panics if lengths differ or indices are out-of-bounds.
+    /// referencing valid rows. A bound of `f64::NEG_INFINITY` (lower) or
+    /// `f64::INFINITY` (upper) means no bound; the backend translates it. For
+    /// equality constraints, set `lower[i] == upper[i]`. Panics if lengths differ
+    /// or indices are out-of-bounds.
     ///
     /// See Solver Interface Trait SS2.3.
     fn set_row_bounds(&mut self, indices: &[usize], lower: &[f64], upper: &[f64]);
 
+    /// Sets the contiguous rows `[first_row, first_row + lower.len())` to
+    /// `[lower[i], +inf)`. The `f64::INFINITY` upper means no bound; the backend
+    /// supplies it. An empty `lower` is a no-op. Panics if the range extends past
+    /// the last row.
+    fn set_row_lower_bounds_range(&mut self, first_row: usize, lower: &[f64]);
+
     /// Updates column bounds.
     ///
     /// `indices`, `lower`, and `upper` must have equal length, with all indices
-    /// referencing valid columns and bounds finite. Panics if lengths differ or
-    /// indices are out-of-bounds.
+    /// referencing valid columns. A bound of `f64::NEG_INFINITY` (lower) or
+    /// `f64::INFINITY` (upper) means no bound; the backend translates it. Panics
+    /// if lengths differ or indices are out-of-bounds.
     ///
     /// See Solver Interface Trait SS2.3a.
     fn set_col_bounds(&mut self, indices: &[usize], lower: &[f64], upper: &[f64]);
@@ -245,6 +254,8 @@ mod tests {
         fn add_rows(&mut self, _rows: &RowBatch) {}
 
         fn set_row_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
+
+        fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
 
         fn set_col_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
 

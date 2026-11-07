@@ -183,6 +183,48 @@ fn test_highs_set_bounds_empty_no_panic() {
     solver.set_col_bounds(&[], &[], &[]);
 }
 
+#[test]
+fn change_rows_bounds_by_range_wrapper_sets_inclusive_range() {
+    let mut solver = HighsSolver::new().expect("HighsSolver::new() must succeed");
+    solver.load_model(&StageTemplate {
+        num_cols: 3,
+        num_rows: 3,
+        num_nz: 3,
+        col_starts: vec![0_i32, 1, 2, 3],
+        row_indices: vec![0_i32, 1, 2],
+        values: vec![1.0, 1.0, 1.0],
+        col_lower: vec![0.0; 3],
+        col_upper: vec![10.0; 3],
+        objective: vec![1.0; 3],
+        row_lower: vec![1.0; 3],
+        row_upper: vec![f64::INFINITY; 3],
+        n_state: 1,
+        col_scale: Vec::new(),
+        row_scale: Vec::new(),
+    });
+
+    let lower = [4.0, 5.0];
+    let upper = [f64::INFINITY; 2];
+    // SAFETY: `solver.handle` is a live HiGHS pointer with a 3-row model loaded; rows 1..=2 are in
+    // range, and `lower`/`upper` each hold `to_row - from_row + 1 = 2` elements alive for the call.
+    let status = unsafe {
+        crate::ffi::novomodelo_highs_change_rows_bounds_by_range(
+            solver.handle,
+            1,
+            2,
+            lower.as_ptr(),
+            upper.as_ptr(),
+        )
+    };
+    assert_ne!(status, crate::ffi::HIGHS_STATUS_ERROR);
+
+    let solution = solver
+        .solve(None)
+        .expect("solve() must succeed after the range patch");
+    assert_eq!(solution.primal, [1.0, 4.0, 5.0]);
+    assert!((solution.objective - 10.0).abs() < 1e-8);
+}
+
 /// SS1.1 fixture: min 0*x0 + 1*x1 + 50*x2, s.t. x0=6, 2*x0+x2=14, x>=0.
 /// Optimal: x0=6, x1=0, x2=2, objective=100.
 #[test]

@@ -117,11 +117,36 @@ pub fn evaluate_par_inflow(
     evaluate_par(deterministic_base, psi, lags, sigma, eta)
 }
 
+#[inline]
+fn conditional_mean_at(
+    par_lp: &PrecomputedPar,
+    stage: usize,
+    h: usize,
+    lag_matrix: &[f64],
+    n_series: usize,
+) -> f64 {
+    let mut p_h = par_lp.deterministic_base(stage, h);
+    for (l, &psi) in par_lp.psi_slice(stage, h).iter().enumerate() {
+        p_h += psi * lag_matrix[l * n_series + h];
+    }
+    p_h
+}
+
+/// The single definition of `sigma * eta`, so the standalone noise term and the
+/// realised-value addition read the same product bits.
+#[inline]
+fn noise_term_at(par_lp: &PrecomputedPar, stage: usize, h: usize, eta: f64) -> f64 {
+    par_lp.sigma(stage, h) * eta
+}
+
 /// Evaluate the PAR(p) model equation for all series elements at `stage`, writing
 /// into `output` without allocating (values may be negative).
 ///
 /// `lag_matrix` is flat, length `max_order * n_series`, indexed as
 /// `[lag * n_series + element]` (lag 0 = lag-1 value, contiguous across elements).
+///
+/// Bit-identical to [`evaluate_par_conditional_mean_batch`] followed by
+/// [`add_par_noise_batch`].
 ///
 /// # Examples
 ///
@@ -180,16 +205,78 @@ pub fn evaluate_par_batch(
     );
 
     for h in 0..n_series {
-        let base = par_lp.deterministic_base(stage, h);
-        let sigma = par_lp.sigma(stage, h);
-        let psi = par_lp.psi_slice(stage, h);
+        output[h] = conditional_mean_at(par_lp, stage, h, lag_matrix, n_series)
+            + noise_term_at(par_lp, stage, h, noise[h]);
+    }
+}
 
-        let mut a_h = base;
-        for (l, &p) in psi.iter().enumerate() {
-            a_h += p * lag_matrix[l * n_series + h];
-        }
-        a_h += sigma * noise[h];
-        output[h] = a_h;
+/// Evaluate the PAR(p) conditional mean for all series elements at `stage`,
+/// writing into `output` without allocating:
+///
+/// ```text
+/// p_h = b_h + sum_{l=0}^{max_order-1} psi[h][l] * lag_matrix[l * n_series + h]
+/// ```
+///
+/// The sum starts from the deterministic base `b_h` and adds the lag terms in
+/// ascending `l`. Each product and each addition is rounded separately (no fused
+/// multiply-add). `lag_matrix` is laid out as in [`evaluate_par_batch`].
+pub fn evaluate_par_conditional_mean_batch(
+    par_lp: &PrecomputedPar,
+    stage: usize,
+    lag_matrix: &[f64],
+    output: &mut [f64],
+) {
+    let n_series = par_lp.n_hydros();
+    debug_assert_eq!(output.len(), n_series, "output.len() must equal n_series");
+
+    for (h, out) in output[..n_series].iter_mut().enumerate() {
+        *out = conditional_mean_at(par_lp, stage, h, lag_matrix, n_series);
+    }
+}
+
+/// Evaluate the PAR(p) noise term `w_h = sigma_h * eta_h` for all series elements
+/// at `stage`, writing into `output` without allocating. The product is rounded
+/// once and is the same value [`add_par_noise_batch`] adds.
+pub fn evaluate_par_noise_term_batch(
+    par_lp: &PrecomputedPar,
+    stage: usize,
+    noise: &[f64],
+    output: &mut [f64],
+) {
+    let n_series = par_lp.n_hydros();
+    debug_assert_eq!(noise.len(), n_series, "noise.len() must equal n_series");
+    debug_assert_eq!(output.len(), n_series, "output.len() must equal n_series");
+
+    for h in 0..n_series {
+        output[h] = noise_term_at(par_lp, stage, h, noise[h]);
+    }
+}
+
+/// Add the PAR(p) noise term to a conditional mean for all series elements at
+/// `stage`, writing `z_h = conditional_mean[h] + sigma_h * eta_h` into `output`
+/// without allocating.
+///
+/// With `conditional_mean` from [`evaluate_par_conditional_mean_batch`], `output`
+/// equals [`evaluate_par_batch`] bit for bit. The product `sigma_h * eta_h` is
+/// rounded before the addition, exactly as in [`evaluate_par_noise_term_batch`].
+pub fn add_par_noise_batch(
+    par_lp: &PrecomputedPar,
+    stage: usize,
+    conditional_mean: &[f64],
+    noise: &[f64],
+    output: &mut [f64],
+) {
+    let n_series = par_lp.n_hydros();
+    debug_assert_eq!(
+        conditional_mean.len(),
+        n_series,
+        "conditional_mean.len() must equal n_series"
+    );
+    debug_assert_eq!(noise.len(), n_series, "noise.len() must equal n_series");
+    debug_assert_eq!(output.len(), n_series, "output.len() must equal n_series");
+
+    for h in 0..n_series {
+        output[h] = conditional_mean[h] + noise_term_at(par_lp, stage, h, noise[h]);
     }
 }
 
@@ -336,8 +423,8 @@ mod tests {
     };
 
     use super::{
-        evaluate_par, evaluate_par_batch, evaluate_par_inflow, evaluate_par_inflows,
-        solve_par_noise,
+        add_par_noise_batch, evaluate_par, evaluate_par_batch, evaluate_par_conditional_mean_batch,
+        evaluate_par_inflow, evaluate_par_inflows, evaluate_par_noise_term_batch, solve_par_noise,
     };
     use crate::par::precompute::PrecomputedPar;
     use crate::test_support::InflowModelSpec;
@@ -828,5 +915,116 @@ mod tests {
             output_old[1].to_bits(),
             "evaluate_par_batch / evaluate_par_inflows mismatch at h=1"
         );
+    }
+
+    // Lag-major `[lag * 2 + hydro]`; non-integral lags and noise.
+    const SPLIT_LAGS: [f64; 4] = [85.3, 57.7, 78.9, 41.1];
+    const SPLIT_NOISE: [f64; 2] = [0.37, -0.83];
+
+    fn make_split_par(hydro_ids: [EntityId; 2]) -> PrecomputedPar {
+        let stages = vec![make_stage(0, 0, Some(0))];
+        let models = vec![
+            make_model(3, -2, 80.0, 20.0, vec![], 1.0),
+            make_model(3, -1, 90.0, 25.0, vec![], 1.0),
+            make_model(5, -2, 55.0, 14.0, vec![], 1.0),
+            make_model(5, -1, 60.0, 15.0, vec![], 1.0),
+            make_model(3, 0, 100.0, 30.0, vec![0.4, 0.2], 0.93),
+            make_model(5, 0, 70.0, 18.0, vec![0.5, 0.15], 0.87),
+        ];
+        let par_lp = PrecomputedPar::build(&models, &stages, &hydro_ids, None).unwrap();
+
+        assert!(par_lp.max_order() >= 2);
+        for h in 0..par_lp.n_hydros() {
+            assert!(
+                par_lp.sigma(0, h).fract() != 0.0,
+                "sigma must be non-integral"
+            );
+            assert!(
+                par_lp.psi_slice(0, h).iter().all(|&psi| psi != 0.0),
+                "psi must be nonzero at every lag"
+            );
+        }
+        par_lp
+    }
+
+    /// Returns `[p, w, z]` with every output pre-filled with NaN to prove it is overwritten.
+    fn run_split(par_lp: &PrecomputedPar, lags: &[f64], noise: &[f64]) -> [[f64; 2]; 3] {
+        let mut p = [f64::NAN; 2];
+        let mut w = [f64::NAN; 2];
+        let mut z = [f64::NAN; 2];
+        evaluate_par_conditional_mean_batch(par_lp, 0, lags, &mut p);
+        evaluate_par_noise_term_batch(par_lp, 0, noise, &mut w);
+        add_par_noise_batch(par_lp, 0, &p, noise, &mut z);
+        [p, w, z]
+    }
+
+    fn swap_hydro_pairs(values: &[f64]) -> Vec<f64> {
+        values.chunks_exact(2).flat_map(|c| [c[1], c[0]]).collect()
+    }
+
+    #[test]
+    fn split_matches_single_call_bitwise() {
+        let par_lp = make_split_par([EntityId(3), EntityId(5)]);
+        let mut single = [f64::NAN; 2];
+        evaluate_par_batch(&par_lp, 0, &SPLIT_LAGS, &SPLIT_NOISE, &mut single);
+
+        let [_, _, z] = run_split(&par_lp, &SPLIT_LAGS, &SPLIT_NOISE);
+
+        for h in 0..2 {
+            assert_eq!(
+                z[h].to_bits(),
+                single[h].to_bits(),
+                "split / single-call mismatch at h={h}"
+            );
+        }
+    }
+
+    #[test]
+    fn noise_term_feeds_the_same_product_bits() {
+        let par_lp = make_split_par([EntityId(3), EntityId(5)]);
+
+        let [p, w, z] = run_split(&par_lp, &SPLIT_LAGS, &SPLIT_NOISE);
+
+        for h in 0..2 {
+            assert_eq!(
+                w[h].to_bits(),
+                (par_lp.sigma(0, h) * SPLIT_NOISE[h]).to_bits(),
+                "noise term is not sigma * eta at h={h}"
+            );
+            assert_eq!(
+                z[h].to_bits(),
+                (p[h] + w[h]).to_bits(),
+                "realised value is not p + w at h={h}"
+            );
+        }
+    }
+
+    #[test]
+    fn split_declaration_order_invariance() {
+        let canonical = make_split_par([EntityId(3), EntityId(5)]);
+        let permuted = make_split_par([EntityId(5), EntityId(3)]);
+
+        let out_canonical = run_split(&canonical, &SPLIT_LAGS, &SPLIT_NOISE);
+        let out_permuted = run_split(
+            &permuted,
+            &swap_hydro_pairs(&SPLIT_LAGS),
+            &swap_hydro_pairs(&SPLIT_NOISE),
+        );
+
+        for (name, (c, p)) in ["p", "w", "z"]
+            .into_iter()
+            .zip(out_canonical.iter().zip(&out_permuted))
+        {
+            assert_eq!(
+                c[0].to_bits(),
+                p[1].to_bits(),
+                "{name}: canonical h=0 differs from permuted h=1"
+            );
+            assert_eq!(
+                c[1].to_bits(),
+                p[0].to_bits(),
+                "{name}: canonical h=1 differs from permuted h=0"
+            );
+        }
     }
 }

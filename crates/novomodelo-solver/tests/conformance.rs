@@ -269,6 +269,139 @@ fn test_solver_highs_set_row_bounds_state_change() {
     );
 }
 
+// ─── Row-bound range push conformance tests ───────────────────────────────────
+
+/// Rows `r_i: x_i` over `x_i ∈ [0, 10]` with costs `[-1, 1, 1]`. Only `r0` has a
+/// finite upper (2), so a range push over `r0` must drop it for `x0` to rise.
+/// Baseline optimum: `x = [2, 1, 1]`, objective `0`.
+fn make_range_push_template() -> StageTemplate {
+    StageTemplate {
+        num_cols: 3,
+        num_rows: 3,
+        num_nz: 3,
+        col_starts: vec![0_i32, 1, 2, 3],
+        row_indices: vec![0_i32, 1, 2],
+        values: vec![1.0, 1.0, 1.0],
+        col_lower: vec![0.0, 0.0, 0.0],
+        col_upper: vec![10.0, 10.0, 10.0],
+        objective: vec![-1.0, 1.0, 1.0],
+        row_lower: vec![1.0, 1.0, 1.0],
+        row_upper: vec![2.0, f64::INFINITY, f64::INFINITY],
+        n_state: 0,
+        col_scale: Vec::new(),
+        row_scale: Vec::new(),
+    }
+}
+
+fn assert_optimum<S: SolverInterface>(solver: &mut S, primal: [f64; 3], objective: f64) {
+    let solution = solver
+        .solve(None)
+        .expect("solve() must succeed on feasible LP");
+    assert_eq!(solution.primal, primal);
+    assert_eq!(solution.objective, objective);
+}
+
+fn case_range_push_sets_lower_bounds<S: SolverInterface>(mut solver: S) {
+    solver.load_model(&make_range_push_template());
+    solver.set_row_lower_bounds_range(1, &[4.0, 5.0]);
+    assert_optimum(&mut solver, [2.0, 4.0, 5.0], 7.0);
+}
+
+fn case_range_push_drops_finite_upper<S: SolverInterface>(mut solver: S) {
+    solver.load_model(&make_range_push_template());
+    solver.set_row_lower_bounds_range(0, &[0.5]);
+    assert_optimum(&mut solver, [10.0, 1.0, 1.0], -8.0);
+}
+
+fn case_range_push_at_nonzero_first_row_changes_only_its_rows<S: SolverInterface>(mut solver: S) {
+    solver.load_model(&make_range_push_template());
+    solver.set_row_lower_bounds_range(2, &[3.0]);
+    assert_optimum(&mut solver, [2.0, 1.0, 3.0], 2.0);
+}
+
+fn case_range_push_empty_is_noop<S: SolverInterface>(mut solver: S) {
+    solver.load_model(&make_range_push_template());
+    solver.set_row_lower_bounds_range(3, &[]);
+    solver.set_row_lower_bounds_range(0, &[]);
+    assert_optimum(&mut solver, [2.0, 1.0, 1.0], 0.0);
+}
+
+fn case_set_row_bounds_accepts_infinite_upper<S: SolverInterface>(mut solver: S) {
+    solver.load_model(&make_range_push_template());
+    solver.set_row_bounds(&[0], &[0.5], &[f64::INFINITY]);
+    assert_optimum(&mut solver, [10.0, 1.0, 1.0], -8.0);
+}
+
+#[cfg(feature = "highs")]
+#[test]
+fn highs_range_push_sets_lower_bounds() {
+    case_range_push_sets_lower_bounds(HighsSolver::new().expect("HighsSolver::new() must succeed"));
+}
+
+#[cfg(feature = "highs")]
+#[test]
+fn highs_range_push_drops_finite_upper() {
+    case_range_push_drops_finite_upper(
+        HighsSolver::new().expect("HighsSolver::new() must succeed"),
+    );
+}
+
+#[cfg(feature = "highs")]
+#[test]
+fn highs_range_push_at_nonzero_first_row_changes_only_its_rows() {
+    case_range_push_at_nonzero_first_row_changes_only_its_rows(
+        HighsSolver::new().expect("HighsSolver::new() must succeed"),
+    );
+}
+
+#[cfg(feature = "highs")]
+#[test]
+fn highs_range_push_empty_is_noop() {
+    case_range_push_empty_is_noop(HighsSolver::new().expect("HighsSolver::new() must succeed"));
+}
+
+#[cfg(feature = "highs")]
+#[test]
+fn highs_set_row_bounds_accepts_infinite_upper() {
+    case_set_row_bounds_accepts_infinite_upper(
+        HighsSolver::new().expect("HighsSolver::new() must succeed"),
+    );
+}
+
+#[cfg(feature = "clp")]
+#[test]
+fn clp_range_push_sets_lower_bounds() {
+    case_range_push_sets_lower_bounds(ClpSolver::new().expect("ClpSolver::new() must succeed"));
+}
+
+#[cfg(feature = "clp")]
+#[test]
+fn clp_range_push_drops_finite_upper() {
+    case_range_push_drops_finite_upper(ClpSolver::new().expect("ClpSolver::new() must succeed"));
+}
+
+#[cfg(feature = "clp")]
+#[test]
+fn clp_range_push_at_nonzero_first_row_changes_only_its_rows() {
+    case_range_push_at_nonzero_first_row_changes_only_its_rows(
+        ClpSolver::new().expect("ClpSolver::new() must succeed"),
+    );
+}
+
+#[cfg(feature = "clp")]
+#[test]
+fn clp_range_push_empty_is_noop() {
+    case_range_push_empty_is_noop(ClpSolver::new().expect("ClpSolver::new() must succeed"));
+}
+
+#[cfg(feature = "clp")]
+#[test]
+fn clp_set_row_bounds_accepts_infinite_upper() {
+    case_set_row_bounds_accepts_infinite_upper(
+        ClpSolver::new().expect("ClpSolver::new() must succeed"),
+    );
+}
+
 // ─── SS1.6a set_col_bounds conformance tests ──────────────────────────────────
 
 #[cfg(feature = "highs")]

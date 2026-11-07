@@ -531,6 +531,8 @@ mod tests {
 
         fn set_row_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
 
+        fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
+
         fn set_col_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
 
         fn solve(
