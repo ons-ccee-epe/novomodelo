@@ -419,6 +419,26 @@ impl StateSpace {
         }
     }
 
+    /// The single owner of where `region`'s outgoing values sit in the primal.
+    #[inline]
+    #[must_use]
+    pub(crate) fn outgoing_block_start(&self, region: StateRegion) -> usize {
+        match region {
+            StateRegion::Storage => self.storage.start,
+            StateRegion::Lag => self.inflow_lags.start,
+            StateRegion::Buckets => self.transit_buckets_out.start,
+            StateRegion::CommitmentHold => self.commit_out.start,
+        }
+    }
+
+    /// `region`'s outgoing block as a primal column range.
+    #[inline]
+    #[must_use]
+    pub(crate) fn outgoing_block_range(&self, region: StateRegion) -> Range<usize> {
+        let start = self.outgoing_block_start(region);
+        start..start + self.state_dim_range(region).len()
+    }
+
     /// Classify `j` into its [`StateRegion`] and its offset within that
     /// region's [`Self::state_dim_range`] — the single scan both
     /// [`Self::state_to_lp_column`] and [`Self::state_to_lp_incoming_column`]
@@ -839,7 +859,7 @@ mod tests {
     use std::ops::Range;
 
     use super::{
-        AnticipatedResolution, HydroSys, InCol, OutCol, StateDim, StateSpace,
+        AnticipatedResolution, HydroSys, InCol, OutCol, REGION_ORDER, StateDim, StateSpace,
         for_each_live_commitment_slot,
     };
     use crate::lead_time::{DeliveryAxis, LeadTime, PointResolution};
@@ -1913,6 +1933,26 @@ mod tests {
             commitment_hold.end, idx.n_state,
             "commitment-hold region must end exactly at n_state (no trailing gap)"
         );
+    }
+
+    #[test]
+    fn outgoing_block_start_equals_state_index_on_the_logical_layout() {
+        // N=3, L=2, B=2, A=2, k_max=2: every region non-empty.
+        let idx = finalized_with_transit_buckets_resolved(
+            3,
+            2,
+            vec![(HydroSys::new(0), 1), (HydroSys::new(0), 2)],
+            vec![1, 2],
+        );
+        for region in REGION_ORDER {
+            let state = idx.state_dim_range(region);
+            assert!(!state.is_empty(), "{region:?} must be non-empty");
+            assert_eq!(
+                idx.outgoing_block_range(region),
+                state,
+                "{region:?}: outgoing block must start at its state index"
+            );
+        }
     }
 
     /// [`StateSpace::classify_incoming_column`] must invert

@@ -1,5 +1,5 @@
-//! Shared stage-LP solve-preparation pipeline (`pin → row_patches → ncs_patch →
-//! inflow_slack_patch → commit`): the single owner the forward pass, backward pass, simulation
+//! Shared stage-LP solve-preparation pipeline (`pin → open: row_patches → ncs_patch →
+//! inflow_slack_patch`): the single owner the forward pass, backward pass, simulation
 //! pipeline, and lower-bound evaluation all route through, so every solve site
 //! patches the LP identically (the "patch NCS identically" contract, D15).
 //!
@@ -46,7 +46,7 @@ pub(crate) struct StageSolvePrepParams<'a> {
 pub(crate) struct StageSolvePrep;
 
 impl StageSolvePrep {
-    /// Executes `pin → row_patches → ncs_patch → inflow_slack_patch → commit` over
+    /// Executes `pin → open: row_patches → ncs_patch → inflow_slack_patch` over
     /// caller-owned `&mut` scratch: allocates nothing.
     pub(crate) fn run<S>(
         solver: &mut S,
@@ -121,9 +121,63 @@ impl StageSolvePrep {
     ) where
         S: SolverInterface,
     {
-        let pinned_state = params.state_source.0;
+        Self::pin(
+            solver,
+            patch_buf,
+            ctx,
+            training_ctx,
+            stage,
+            params.state_source.0,
+            producer_box,
+        );
+        Self::open(solver, patch_buf, scratch, ctx, training_ctx, stage, params);
+    }
 
-        transform_inflow_noise(params.raw_noise, stage, pinned_state, training_ctx, scratch);
+    /// Pins the incoming state on the loaded LP; runs once per loaded LP and state.
+    fn pin<S>(
+        solver: &mut S,
+        patch_buf: &mut PatchBuffer,
+        ctx: &StageContext<'_>,
+        training_ctx: &TrainingContext<'_>,
+        stage: StageIdx,
+        pinned_state: &[f64],
+        producer_box: Option<&StateBox>,
+    ) where
+        S: SolverInterface,
+    {
+        patch_buf.fill_col_state_patches(
+            training_ctx.state,
+            pinned_state,
+            &ctx.template(stage).col_scale,
+            producer_box,
+        );
+        let cp = patch_buf.state_col_patch_count();
+        solver.set_col_bounds(
+            &patch_buf.col_indices[..cp],
+            &patch_buf.col_lower[..cp],
+            &patch_buf.col_upper[..cp],
+        );
+    }
+
+    /// Patches this solve's noise-dependent rows and column bounds; runs once per solve.
+    fn open<S>(
+        solver: &mut S,
+        patch_buf: &mut PatchBuffer,
+        scratch: &mut ScratchBuffers,
+        ctx: &StageContext<'_>,
+        training_ctx: &TrainingContext<'_>,
+        stage: StageIdx,
+        params: &StageSolvePrepParams<'_>,
+    ) where
+        S: SolverInterface,
+    {
+        transform_inflow_noise(
+            params.raw_noise,
+            stage,
+            params.state_source.0,
+            training_ctx,
+            scratch,
+        );
 
         let load_blocks = if ctx.load_bus_indices.is_empty() {
             0
@@ -138,12 +192,6 @@ impl StageSolvePrep {
             &mut scratch.load_rhs_buf,
         );
 
-        patch_buf.fill_col_state_patches(
-            training_ctx.state,
-            pinned_state,
-            &ctx.template(stage).col_scale,
-            producer_box,
-        );
         if !ctx.load_bus_indices.is_empty() {
             let grid = BlockGrid::new(load_blocks, training_ctx.study_dims.max_deficit_segments);
             patch_buf.fill_load_patches(
@@ -158,13 +206,6 @@ impl StageSolvePrep {
             training_ctx.state,
             &scratch.z_inflow_rhs_buf,
             &ctx.template(stage).row_scale,
-        );
-
-        let cp = patch_buf.state_col_patch_count();
-        solver.set_col_bounds(
-            &patch_buf.col_indices[..cp],
-            &patch_buf.col_lower[..cp],
-            &patch_buf.col_upper[..cp],
         );
 
         let pc = patch_buf.forward_patch_count();

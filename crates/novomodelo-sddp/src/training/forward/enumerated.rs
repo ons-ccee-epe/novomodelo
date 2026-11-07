@@ -29,32 +29,29 @@ use crate::{
     claim_scatter::{ClaimCursor, canonical_scatter},
     context::{StageContext, TrainingContext},
     cut::FutureCostFunction,
-    dcs::{DcsParams, DcsSolveContext, build_initial_resident_set, lazy_solve_preloaded},
+    dcs::DcsParams,
     error::SddpError,
     indexer::CutStateProjection,
-    noise::{AccumSnapshot, DownstreamAccumState, LagAccumState},
+    noise::AccumSnapshot,
     setup::node_graph::{EnumeratedPlan, NodeGraph, NodeId, NodePos, StageIdx, TypedVec},
+    solve::StageOpeningSolver,
     solver_stats::SolverStatsDelta,
-    stage_solve::{
-        StageInputs, assemble_outgoing_state, fill_unscaled, run_stage_solve,
-        run_stage_solve_terminal_static,
-    },
-    training::{
-        backward::extract_state_duals_only,
-        stage_solve_prep::{StageSolvePrep, StageSolvePrepParams, StateSource},
-    },
+    training::backward::extract_state_duals_only,
     trajectory::TrajectoryRecord,
     workspace::{BasisStore, CapturedBasis, SolverWorkspace},
 };
 
-use super::write_capture_metadata;
+use super::{
+    capture_forward_basis,
+    node_solve::{ForwardBasisApply, ForwardNodeSolve, solve_forward_node_core},
+};
 
 /// A node's terminal-leaf subgradient, captured on the forward for the
 /// backward to consume instead of re-solving (`NodeGraph::is_external_terminal_leaf`).
 /// `captured` is `false` for every non-eligible node; `objective`/`state_duals`
 /// are meaningful only when it is `true`.
 #[derive(Clone, Default)]
-struct FusedTerminalSlice {
+pub(super) struct FusedTerminalSlice {
     captured: bool,
     objective: f64,
     state_duals: Vec<f64>,
@@ -208,7 +205,7 @@ pub(crate) struct EnumeratedForwardResult {
 /// verbatim, never re-derived (`rc / col_scale`, divided; sddp.md "Benders cut
 /// sign & subgradient extraction") — before `view` is dropped; otherwise mark
 /// `fused_out` uncaptured.
-fn capture_fused_terminal_slice(
+pub(super) fn capture_fused_terminal_slice(
     view: &SolutionView<'_>,
     col_scale: &[f64],
     cut_state: Option<&CutStateProjection>,
@@ -225,37 +222,32 @@ fn capture_fused_terminal_slice(
 }
 
 /// Solve one node's LP at the incoming state already installed on
-/// `ws.current_state`, warm-started from `stored_basis` (matched by node id in
-/// `run_stage_solve`, or — at the terminal stage — the 1:1 apply in
-/// `run_stage_solve_terminal_static`); leaves `ws.current_state` holding the
-/// outgoing state and returns the raw stage cost plus the captured basis
-/// (frozen path only) and fused terminal-leaf subgradient.
+/// `ws.current_state`, warm-started from `stored_basis` (matched by node id, or
+/// applied 1:1 at the terminal stage — `ForwardBasisApply`); leaves
+/// `ws.current_state` holding the outgoing state and returns the raw stage cost
+/// plus the captured basis (frozen path only) and fused terminal-leaf
+/// subgradient.
 ///
-/// Mirrors `forward_pass_state::run_forward_stage`'s solve/record/advance
-/// sequence but keys the basis by node — `stored_basis` is read immutably
-/// (shared across the claim loop), and the frozen-path capture is written into
-/// `basis_out` in place (reusing its buffer via `get_or_insert_with`, so no
-/// per-solve allocation), for the caller's sequential post-region scatter. So a
-/// dynamically-claimed node never races the session basis store. The DCS path
-/// captures no basis (leaving `basis_out` untouched), mirroring
-/// `run_forward_stage`. `fused_out` is populated independently of the basis
+/// Keys the basis by node: `stored_basis` is read immutably (shared across the
+/// claim loop) and the frozen-path capture is written into `basis_out` in place,
+/// for the caller's sequential post-region scatter, so a dynamically-claimed node
+/// never races the session basis store. The DCS path captures no basis, leaving
+/// `basis_out` untouched. `fused_out` is populated independently of the basis
 /// capture, gated on `NodeGraph::is_external_terminal_leaf` — see
 /// [`capture_fused_terminal_slice`].
 ///
 /// `scenario_index` (the caller's `EnumeratedForwardScratch::m_rep[node]`) is
-/// this call's solve/stats-bookkeeping role only — `DcsSolveContext`'s and
-/// `StageInputs`' own `scenario_index` field; the SAME underlying value's
+/// this call's solve/stats-bookkeeping role only; the SAME underlying value's
 /// basis-store and noise-sampling roles are the caller's concern
 /// (`BasisStore::get`/`get_mut`, `global_scenario`).
 ///
 /// # Errors
 ///
 /// Propagates `SddpError::Infeasible`/`SddpError::Solver` from the LP solve.
-// RATIONALE: one (node, prefix) LP solve threading disjoint partial borrows of the
-// solver workspace, cut state, and basis store; the pin-noise-solve-capture sequence is
-// one correctness-critical unit — extracting it would pass the whole workspace for no gain
-// or re-introduce the argument count.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+// RATIONALE: disjoint partial borrows of the solver workspace, the shared run
+// params and the per-node outputs (`basis_out`, `fused_out`); grouping them would
+// only re-bundle the same borrows.
+#[allow(clippy::too_many_arguments)]
 fn solve_forward_node<S: SolverInterface + Send>(
     ws: &mut SolverWorkspace<S>,
     params: &EnumeratedParams<'_>,
@@ -271,12 +263,9 @@ fn solve_forward_node<S: SolverInterface + Send>(
     let training_ctx = params.training_ctx;
     let ctx = params.ctx;
     let node_graph = training_ctx.node_graph;
-    let pool_id = node_graph.nodes[node].pool_id;
-    let node_id = node_graph.node_ids[node];
-    let state = training_ctx.state;
     let horizon = training_ctx.horizon;
+    let pool_id = node_graph.nodes[node].pool_id;
     let pool = &params.fcf.pools[pool_id];
-    let is_terminal = horizon.is_terminal(t.next().0);
     // Fuse the leaf's forward slice only with its CUT-GENERATING PARENT's
     // cut-state projection, never the leaf's own pool — the parent-pool
     // fusion-projection contract (sddp.md). Disabled under DCS: the forward's
@@ -290,9 +279,8 @@ fn solve_forward_node<S: SolverInterface + Send>(
     .map(|p| &training_ctx.cut_state_layouts[node_graph.nodes[p].pool_id]);
 
     // Reset + reload per solve so the landed vertex cannot depend on which nodes
-    // a worker solved before it (determinism across worker counts); on the DCS
-    // path `run_stage_solve`/`lazy_solve_preloaded` loads the cut-free base
-    // instead, so the frozen load is skipped — mirrors the sampled driver.
+    // a worker solved before it (determinism across worker counts); the DCS path
+    // loads the cut-free core the lazy loop appends cuts to.
     ws.solver.reset_solver_state();
     if params.dcs.is_none() {
         ws.solver.load_model(&params.frozen[pool_id]);
@@ -300,138 +288,39 @@ fn solve_forward_node<S: SolverInterface + Send>(
         ws.solver.load_model(ctx.template(t));
     }
 
-    let prep_params = StageSolvePrepParams {
-        state_source: StateSource(&ws.current_state),
-        raw_noise,
-    };
-    StageSolvePrep::run(
-        &mut ws.solver,
-        &mut ws.patch_buf,
-        &mut ws.scratch,
+    let opening_solver = StageOpeningSolver::from_dcs_params(params.dcs);
+    let stage_cost = solve_forward_node_core(
+        ws,
         ctx,
         training_ctx,
-        t,
-        &prep_params,
-    );
-    if is_terminal && !pool.has_prefix_cuts() {
-        ws.solver.set_col_bounds(&[state.theta], &[0.0], &[0.0]);
-    }
-
-    let col_scale = &ctx.template(t).col_scale;
-    let mut unscaled_primal: Vec<f64> = std::mem::take(&mut ws.scratch.unscaled_primal);
-
-    let view_objective: f64 = if let Some(dcs_params) = params.dcs {
-        build_initial_resident_set(
-            pool,
-            params.iteration,
-            dcs_params.seed_window,
-            &mut ws.backward_accum.dcs_initial_resident,
-        );
-        let dcs_ctx = DcsSolveContext {
-            stage_index: t,
+        &ForwardNodeSolve {
+            t,
+            node,
             scenario_index,
-            iteration: Some(params.iteration),
-            continue_carry: false,
-            node_id,
-        };
-        lazy_solve_preloaded(
-            &mut ws.solver,
-            ctx.template(t),
-            pool,
-            state,
-            &training_ctx.cut_state_layouts[pool_id],
-            col_scale,
-            None,
-            &ws.backward_accum.dcs_initial_resident,
-            &dcs_params,
-            &mut ws.backward_accum.dcs_solve,
-            dcs_ctx,
-        )?;
-        let view = ws.backward_accum.dcs_solve.result_view();
-        fill_unscaled(&mut unscaled_primal, view.primal, col_scale);
-        capture_fused_terminal_slice(&view, col_scale, fusion_cut_state, fused_out);
-        view.objective
-    } else {
-        let inputs = StageInputs {
-            stage_context: ctx,
+            iteration: params.iteration,
+            raw_noise,
             pool,
             stored_basis,
-            stage_index: t,
-            scenario_index,
-            iteration: Some(params.iteration),
-            node_id,
-        };
-        let view = if is_terminal {
-            run_stage_solve_terminal_static(ws, &inputs)?
-        } else {
-            run_stage_solve(ws, &inputs)?
-        };
-        fill_unscaled(&mut unscaled_primal, view.primal, col_scale);
-        capture_fused_terminal_slice(&view, col_scale, fusion_cut_state, fused_out);
-        view.objective
-    };
-
-    let d_t = ctx.discount_factor(t);
-    // Terminal boundary θ prices the post-horizon value-to-go: KEEP it in the cost
-    // (subtracting it, the interior form, drops it from the UB only — understating
-    // it below the LB). sddp.md "Terminal boundary FCF in the reported total cost".
-    let stage_cost = if is_terminal && pool.has_prefix_cuts() {
-        view_objective * ctx.cost_scale_factor
-    } else {
-        (view_objective - d_t * unscaled_primal[state.theta]) * ctx.cost_scale_factor
-    };
-
-    ws.scratch.lag_matrix_buf.clear();
-    ws.scratch
-        .lag_matrix_buf
-        .extend_from_slice(&ws.current_state[state.inflow_lags.clone()]);
-
-    let stage_lag = ctx.stage_lag(t);
-    let downstream_par_order = training_ctx.study_dims.downstream_par_order;
-    assemble_outgoing_state(
-        &mut ws.current_state,
-        &unscaled_primal,
-        &ws.scratch.lag_matrix_buf,
-        state,
-        ctx.state_box(t),
-        stage_lag,
-        &mut LagAccumState {
-            accumulator: &mut ws.scratch.lag_accumulator,
-            weight_accum: &mut ws.scratch.lag_weight_accum,
+            opening_solver: &opening_solver,
+            basis_apply: if horizon.is_terminal(t.next().0) {
+                ForwardBasisApply::TerminalOneToOne
+            } else {
+                ForwardBasisApply::SlotReconstruct
+            },
+            fusion_cut_state,
         },
-        &mut DownstreamAccumState {
-            accumulator: &mut ws.scratch.downstream_accumulator,
-            weight_accum: &mut ws.scratch.downstream_weight_accum,
-            completed_lags: &mut ws.scratch.downstream_completed_lags,
-            n_completed: &mut ws.scratch.downstream_n_completed,
-            par_order: downstream_par_order,
-        },
-    );
-    ws.scratch.unscaled_primal = unscaled_primal;
+        Some(fused_out),
+    )?;
 
-    if params.dcs.is_none() {
-        let basis_row_capacity = params.frozen[pool_id].num_rows;
-        let cut_row_count = basis_row_capacity.saturating_sub(ctx.template(t).num_rows);
-        // Reuse `basis_out`'s buffer if present (get_basis + write_capture_metadata
-        // fully overwrite every field), so no per-solve allocation.
-        let cap = basis_out.get_or_insert_with(|| {
-            CapturedBasis::new(
-                ctx.template(t).num_cols,
-                basis_row_capacity,
-                ctx.template(t).num_rows,
-                cut_row_count,
-                state.n_state,
-                node_id,
-            )
-        });
-        ws.solver.get_basis(&mut cap.basis);
-        write_capture_metadata(
-            cap,
+    if opening_solver.captures_basis() {
+        capture_forward_basis(
+            &mut ws.solver,
+            basis_out,
+            ctx.template(t),
+            params.frozen[pool_id].num_rows,
             pool,
-            ctx.template(t).num_rows,
-            cut_row_count,
-            &ws.current_state[..state.n_state],
-            node_id,
+            &ws.current_state[..training_ctx.state.n_state],
+            node_graph.node_ids[node],
         );
     }
 
@@ -764,7 +653,7 @@ fn enumerated_stage_worker<S: SolverInterface + Send>(
             params.sampler.apply_initial_state(
                 &class_req,
                 &mut ws.current_state,
-                state_space.inflow_lags.start,
+                state_space.state_dim_lag_range().start,
             );
         }
 

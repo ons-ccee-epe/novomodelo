@@ -34,7 +34,7 @@ use crate::test_support::{
 use crate::time_value::{PostStudyResolved, TimeValue};
 
 use super::super::DeliveryRing;
-use super::super::entries::build_stage_matrix_entries;
+use super::super::entries::build_stage_matrix_entries_with_inflow_coupling;
 use super::super::test_support::zero_hydro_penalties;
 use super::{
     RangeCursor, StageLayout, StateSpace, TemplateBuildCtx, build_anticipated_decision_row_pos,
@@ -1167,7 +1167,7 @@ fn parallel_z_inflow_column_enters_each_target_water_row_once() {
     let stage = stage_with_blocks(BlockMode::Parallel, 3);
     let layout = StageLayout::new(&ctx, &stage, 0);
 
-    let col_entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+    let col_entries = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
     let water_rows = layout.geometry.water_balance.range();
 
     for h in 0..ctx.hydros.len() {

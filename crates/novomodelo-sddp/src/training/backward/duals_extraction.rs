@@ -6,7 +6,10 @@
 
 use novomodelo_solver::SolutionView;
 
-use crate::indexer::{CutSlot, CutStateProjection};
+use crate::{
+    cut::{CutPool, CutRowMap},
+    indexer::{CutSlot, CutStateProjection},
+};
 
 use super::SuccessorChild;
 
@@ -28,11 +31,6 @@ fn fill_state_duals(
         };
         state_duals.push(unscaled);
     }
-    debug_assert_eq!(
-        state_duals.len(),
-        cut_state.n_slots(),
-        "state_duals must contain exactly cut_state.n_slots() entries after fill"
-    );
 }
 
 /// Extract state and cut duals from the live solver view into pre-warmed scratch
@@ -40,29 +38,55 @@ fn fill_state_duals(
 /// incoming-state reduced costs of the stage's enabled cut-state dimensions (the
 /// module-level `col_scale`-division contract), iterated over `cut_state`; a
 /// disabled dimension's reduced cost is computed in the LP but not extracted.
-/// `cut_duals` holds the cut-row slice
-/// `[template_num_rows, template_num_rows + num_cuts)` when binding is tracked
-/// (`succ.cut_activity_tolerance` is `Some`), and is left empty otherwise.
+/// `cut_dual_slots` holds one (pool slot, raw cut-row dual) pair per active cut
+/// row when binding is tracked (`succ.cut_activity_tolerance` is `Some`), and is
+/// left empty otherwise. A zero dual is still a pair.
 pub(crate) fn extract_duals_from_view(
     view: &SolutionView<'_>,
     cut_state: &CutStateProjection,
     col_scale: &[f64],
     succ: &SuccessorChild<'_>,
     state_duals: &mut Vec<f64>,
-    cut_duals: &mut Vec<f64>,
+    cut_dual_slots: &mut Vec<(usize, f64)>,
 ) -> f64 {
-    let objective = view.objective;
-
     fill_state_duals(view, cut_state, col_scale, state_duals);
 
-    cut_duals.clear();
-    if succ.cut_activity_tolerance.is_some() && succ.num_cuts_at_successor > 0 {
-        cut_duals.extend_from_slice(
-            &view.dual[succ.template_num_rows..succ.template_num_rows + succ.num_cuts_at_successor],
+    cut_dual_slots.clear();
+    if succ.cut_activity_tolerance.is_some() {
+        cut_dual_slots.extend(
+            succ.successor_active_slots
+                .iter()
+                .enumerate()
+                .take(succ.num_cuts_at_successor)
+                .map(|(cut_idx, &slot)| (slot, view.dual[succ.template_num_rows + cut_idx])),
         );
     }
 
-    objective
+    view.objective
+}
+
+/// Fills `out` with (pool slot, raw cut-row dual) pairs for the lazy solve's
+/// resident cuts, in ascending slot order.
+///
+/// Under a lazy solve the resident rows are a row-map-ordered subset, not the
+/// frozen cut-row order, so a resident slot's dual is
+/// `dual[row_map.lp_row_for_slot(slot)]`. A non-resident slot did not bind (by
+/// exactness; else the lazy loop would have added it), so leaving it out is
+/// correct.
+///
+/// `dual` must be the FINAL all-satisfied solve's dual vector and `row_map` the
+/// residency that produced it.
+pub(crate) fn fill_resident_cut_dual_slots(
+    dual: &[f64],
+    row_map: &CutRowMap,
+    pool: &CutPool,
+    out: &mut Vec<(usize, f64)>,
+) {
+    out.clear();
+    out.extend((0..pool.populated()).filter_map(|slot| {
+        let lp_row = row_map.lp_row_for_slot(slot)?;
+        dual.get(lp_row).map(|&d| (slot, d))
+    }));
 }
 
 /// State-dual half of [`extract_duals_from_view`] for the lazy-solve path: fills
@@ -71,18 +95,17 @@ pub(crate) fn extract_duals_from_view(
 ///
 /// Unlike [`extract_duals_from_view`] it does NOT read cut-row duals — under
 /// lazy-solve the resident cut rows are an insertion-order subset, so the
-/// cut-row→slot mapping does not apply.
+/// cut-row→slot mapping does not apply ([`fill_resident_cut_dual_slots`] reads
+/// them through the row map).
 pub(crate) fn extract_state_duals_only(
     view: &SolutionView<'_>,
     cut_state: &CutStateProjection,
     col_scale: &[f64],
     state_duals: &mut Vec<f64>,
 ) -> f64 {
-    let objective = view.objective;
-
     fill_state_duals(view, cut_state, col_scale, state_duals);
 
-    objective
+    view.objective
 }
 
 #[cfg(test)]
@@ -90,9 +113,11 @@ pub(crate) fn extract_state_duals_only(
 mod tests {
     use novomodelo_solver::SolutionView;
 
-    use super::extract_state_duals_only;
+    use super::{extract_state_duals_only, fill_resident_cut_dual_slots};
+    use crate::cut::{CutPool, CutRowMap};
     use crate::indexer::{CutStateProjection, StateDim, StateSpace};
     use crate::lead_time::AnticipatedResolution;
+    use crate::setup::NodeId;
     use novomodelo_core::temporal::StageStateConfig;
 
     const ALL_ENABLED: StageStateConfig = StageStateConfig {
@@ -174,5 +199,24 @@ mod tests {
             .collect();
 
         assert_eq!(via_cut_state, global_loop);
+    }
+
+    /// Slots 3 then 1 are resident, so the row map's order (3, 1) is not slot
+    /// order; the pairs follow ascending slot and carry a zero dual.
+    #[test]
+    fn fill_resident_cut_dual_slots_skips_non_resident_slots() {
+        let mut pool = CutPool::new(8, 1, 8, 0);
+        for forward_pass_index in 0..4 {
+            pool.add_cut(NodeId(0), 0, forward_pass_index, 0.0, &[0.0]);
+        }
+        let mut row_map = CutRowMap::new(8, 2);
+        row_map.insert(3);
+        row_map.insert(1);
+        let dual = [9.0, 9.0, 0.5, 0.0];
+        let mut out = vec![(99, 99.0)];
+
+        fill_resident_cut_dual_slots(&dual, &row_map, &pool, &mut out);
+
+        assert_eq!(out, [(1, 0.0), (3, 0.5)]);
     }
 }

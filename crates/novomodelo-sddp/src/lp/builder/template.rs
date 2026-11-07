@@ -8,6 +8,7 @@ use novomodelo_stochastic::par::precompute::PrecomputedPar;
 use crate::bucket_topology::TransitBucketTopology;
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
 
+use super::inflow_coupling::InflowCouplingSink;
 use super::layout::{ResolvedTables, StageGeometry, StageLayout, TemplateBuildCtx};
 use super::{GenericConstraintRowEntry, LpBuildInputs, StateBox, columns, entries, rows, scaling};
 use crate::lp::indexer::StateSpace;
@@ -139,7 +140,9 @@ pub(super) fn build_single_stage_template(
     let (col_lower, mut col_upper, mut objective) =
         columns::fill_stage_columns(ctx, stage, stage_idx, &layout);
     let (mut row_lower, mut row_upper) = rows::fill_stage_rows(ctx, stage, stage_idx, &layout);
-    let mut col_entries = entries::build_stage_matrix_entries(ctx, stage, stage_idx, &layout);
+    let mut inflow_sink = InflowCouplingSink::new(layout.state.hydro_count);
+    let mut col_entries =
+        entries::build_stage_matrix_entries(ctx, stage, stage_idx, &layout, &mut inflow_sink);
 
     let mut buffers = entries::LpMatrixBuffers {
         col_entries: &mut col_entries,
@@ -148,7 +151,19 @@ pub(super) fn build_single_stage_template(
         row_lower: &mut row_lower,
         row_upper: &mut row_upper,
     };
-    entries::fill_generic_constraint_entries(ctx, stage_idx, &layout, &mut buffers);
+    entries::fill_generic_constraint_entries(
+        ctx,
+        stage_idx,
+        &layout,
+        &mut buffers,
+        &mut inflow_sink,
+    );
+
+    entries::fill_z_inflow_coupling_entries(
+        &inflow_sink.finish(layout.rows.num_rows),
+        &layout,
+        &mut col_entries,
+    );
 
     finalize_stage_objective(ctx, stage_idx, &layout, &mut objective);
 

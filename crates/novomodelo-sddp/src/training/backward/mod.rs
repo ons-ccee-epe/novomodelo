@@ -69,6 +69,7 @@ mod by_node;
 mod by_scenario;
 mod duals_extraction;
 mod lp_setup;
+mod opening_solve;
 mod outcome_aggregation;
 mod replicated;
 
@@ -79,12 +80,13 @@ pub(crate) use by_node::{
     OpeningOutcome, by_node_block_count, by_node_finish, hardest_first_block_order,
     identity_block_order, merge_block_pivots, process_stage_backward_by_node, resolve_block_size,
 };
-pub(crate) use by_scenario::{
-    StageOpeningSolver, by_scenario_finish, process_by_scenario_backward,
-};
+pub(crate) use by_scenario::{by_scenario_finish, process_by_scenario_backward};
 pub(crate) use duals_extraction::extract_state_duals_only;
-pub(crate) use lp_setup::fill_external_opening_noise;
+pub(crate) use lp_setup::{OpeningNoise, resolve_opening_noise};
 pub(crate) use replicated::{ReplicatedScratch, run_backward_node_replicated};
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use lp_setup::fill_external_opening_noise;
 
 #[cfg(test)]
 pub(crate) use lp_setup::{load_backward_lp, patch_opening_bounds, resolve_backward_basis};

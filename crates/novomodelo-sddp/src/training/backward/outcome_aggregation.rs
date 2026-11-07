@@ -1,12 +1,11 @@
 //! Per-opening outcome, binding-count, and basis-capture accumulators for the
 //! backward pass: write the per-opening stats delta and aggregated outcome, bump
-//! binding-cut slot increments (frozen-order or, for the DCS lazy layout,
-//! row-map-correct), and capture the first-solved opening's basis.
+//! binding-cut slot increments from (slot, y) pairs, and capture the
+//! first-solved opening's basis.
 
 use novomodelo_solver::{SolverInterface, SolverStatistics};
 
 use crate::{
-    cut::{CutRowMap, pool::CutPool},
     forward::write_capture_metadata,
     indexer::CutStateProjection,
     solver_stats::SolverStatsDelta,
@@ -15,83 +14,26 @@ use crate::{
 
 use super::SuccessorChild;
 
-/// Accumulate one opening's solve result (stats delta, outcome, and, when binding
-/// is tracked, binding-cut slot increments) into the workspace accumulators. Call
-/// after `view` is dropped.
-pub(crate) fn accumulate_opening_outcome<S: SolverInterface + Send>(
-    ws: &mut SolverWorkspace<S>,
-    succ: &SuccessorChild<'_>,
-    cut_state: &CutStateProjection,
-    omega: usize,
-    objective: f64,
-    x_hat: &[f64],
-    stats_before: &SolverStatistics,
-    stats_after: &SolverStatistics,
-) {
-    write_opening_outcome(
-        ws,
-        cut_state,
-        omega,
-        objective,
-        x_hat,
-        stats_before,
-        stats_after,
-    );
-
-    let Some(threshold) = succ.cut_activity_tolerance else {
-        return;
-    };
-    // Bump the child's OWN pool region (`metadata_offset + slot`), so a fan's
-    // sibling pools never collide on a shared slot index.
-    for (cut_idx, &slot) in succ.successor_active_slots.iter().enumerate() {
-        if ws
-            .backward_accum
-            .cut_duals_buf
-            .get(cut_idx)
-            .is_some_and(|&d| d > threshold)
-        {
-            ws.backward_accum.slot_increments[succ.metadata_offset + slot] += 1;
-        }
-    }
-}
-
-/// Accumulate binding-cut slot increments from the DCS lazy solve's final
-/// all-satisfied LP, slot-correct under the resident [`CutRowMap`] layout.
+/// Bumps `slot_increments[metadata_offset + slot]` for each (slot, y) pair whose
+/// raw cut-row dual exceeds `threshold`.
 ///
-/// The frozen path bumps by **frozen cut-row order**; under DCS the resident rows
-/// are a row-map-ordered subset, so a resident slot's dual is
-/// `dual[row_map.lp_row_for_slot(slot)]`. Bumps `slot_increments[slot]` when that
-/// dual exceeds `cut_activity_tolerance` — the same binding criterion as the frozen
-/// path (raw dual, not magnitude). A non-resident slot did not bind (by exactness;
-/// else the lazy loop would have added it), so leaving it uncounted is correct.
-///
-/// `dual` must be the FINAL all-satisfied solve's dual vector and `row_map` the
-/// residency that produced it. The bump is a deterministic function of the
-/// resident map and cut-row duals only — no worker id, rank, or trace — so the
-/// order-insensitive metadata allreduce stays rank-invariant.
+/// The bump lands in the child's OWN pool region (`metadata_offset + slot`), so a
+/// fan's sibling pools never collide on a shared slot index. The criterion is the
+/// raw dual, strictly, not its magnitude. The bump is a deterministic function of
+/// the pairs only — no worker id, rank, or trace — so the order-insensitive
+/// metadata allreduce stays rank-invariant.
 ///
 /// `slot_increments` accumulates (summed) across the trial point's openings; the
 /// per-trial-point reset happens in the stage loop before the openings run.
-pub(crate) fn accumulate_dcs_binding_counts(
-    dual: &[f64],
-    row_map: &CutRowMap,
-    pool: &CutPool,
-    cut_activity_tolerance: f64,
+pub(crate) fn count_binding_slots(
+    cut_dual_slots: &[(usize, f64)],
+    threshold: f64,
     slot_increments: &mut [u64],
+    metadata_offset: usize,
 ) {
-    for (slot, increment) in slot_increments
-        .iter_mut()
-        .enumerate()
-        .take(pool.populated())
-    {
-        let Some(lp_row) = row_map.lp_row_for_slot(slot) else {
-            continue;
-        };
-        if dual
-            .get(lp_row)
-            .is_some_and(|&d| d > cut_activity_tolerance)
-        {
-            *increment += 1;
+    for &(slot, y) in cut_dual_slots {
+        if y > threshold {
+            slot_increments[metadata_offset + slot] += 1;
         }
     }
 }
@@ -117,12 +59,8 @@ pub(crate) fn fold_slot_increments_into_sync(
 }
 
 /// Write one opening's stats delta and outcome (coefficients + intercept) into
-/// the workspace accumulators, without touching binding-count metadata.
-///
-/// Shared by the all-cuts path (which adds the `slot_increments` update) and the
-/// lazy-solve path (which skips it because its resident cut rows are a
-/// row-map-ordered subset whose cut-row→slot mapping differs). The gradient and
-/// intercept come from the state duals and are identical either way.
+/// the workspace accumulators, without touching binding-count metadata. The
+/// gradient and intercept come from the state duals alone.
 pub(crate) fn write_opening_outcome<S: SolverInterface + Send>(
     ws: &mut SolverWorkspace<S>,
     cut_state: &CutStateProjection,
@@ -184,4 +122,23 @@ pub(crate) fn save_basis_at_omega_zero<S: SolverInterface + Send>(
         x_hat,
         succ.successor_node_id,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::count_binding_slots;
+
+    #[test]
+    fn count_binding_slots_bumps_only_strictly_binding_pairs_in_the_child_region() {
+        let mut slot_increments = vec![0_u64; 10];
+
+        count_binding_slots(
+            &[(0, 0.0), (2, 1e-9), (3, 5.0)],
+            1e-9,
+            &mut slot_increments,
+            4,
+        );
+
+        assert_eq!(slot_increments, [0, 0, 0, 0, 0, 0, 0, 1, 0, 0]);
+    }
 }

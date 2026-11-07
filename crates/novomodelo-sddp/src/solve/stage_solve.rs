@@ -14,7 +14,7 @@ use crate::{
     cut::pool::CutPool,
     error::SddpError,
     lp::builder::StateBox,
-    lp::indexer::StateSpace,
+    lp::indexer::{REGION_ORDER, StateRegion, StateSpace},
     noise::{DownstreamAccumState, LagAccumState, accumulate_and_shift_lag_state},
     setup::{NodeId, StageIdx},
     workspace::{CapturedBasis, SolverWorkspace},
@@ -272,9 +272,10 @@ pub(crate) fn fill_unscaled_dual(out: &mut Vec<f64>, scaled: &[f64], row_scale: 
     }
 }
 
-/// Canonicalize the outgoing state vector: copy the LP primal's state
-/// columns, run the lag accumulation/shift, verify the bucket/commitment-hold
-/// copy-gap invariant, then clamp every dimension onto its admissible box.
+/// Canonicalize the outgoing state vector: copy each region's outgoing block
+/// of the LP primal, run the lag accumulation/shift, verify the
+/// bucket/commitment-hold copy-gap invariant, then clamp every dimension onto
+/// its admissible box.
 /// The clamp is the identity for an in-box value — a solve whose state stays
 /// in box is byte-for-byte unaffected by it. Every consumer of the outgoing
 /// state (the trajectory, the backward pass's `x_hat`, the cut intercept, the
@@ -297,7 +298,9 @@ pub(crate) fn assemble_outgoing_state(
     ds: &mut DownstreamAccumState<'_>,
 ) {
     current_state.clear();
-    current_state.extend_from_slice(&unscaled_primal[..layout.n_state]);
+    for region in REGION_ORDER {
+        current_state.extend_from_slice(&unscaled_primal[layout.outgoing_block_range(region)]);
+    }
     accumulate_and_shift_lag_state(
         current_state,
         lag_matrix_buf,
@@ -328,13 +331,12 @@ pub(crate) fn assemble_outgoing_state(
 /// Assert the bucket and commitment-hold state rode the state-assembly plain
 /// copy untouched.
 ///
-/// The forward/simulation assembly plain-copies `unscaled_primal[..n_state]`
-/// into the advanced state, then overwrites only `inflow_lags` in place;
-/// `transit_buckets_out` and `commit_out` sit in the shift-gap that overwrite
-/// never reaches, because both outgoing columns equal their state-vector
-/// index (the `storage` identity convention). Call after the lag overwrite,
-/// before the clamp — the clamp legitimately moves bucket/commitment-hold
-/// values off the primal, which would trip this assert if it ran after.
+/// The forward/simulation assembly plain-copies each region's outgoing block
+/// into the advanced state, then overwrites only the lag region in place;
+/// the bucket and commitment-hold regions sit in the shift-gap that overwrite
+/// never reaches. Call after the lag overwrite, before the clamp — the clamp
+/// legitimately moves bucket/commitment-hold values off the primal, which
+/// would trip this assert if it ran after.
 // Rationale: this checks a verbatim copy invariant (`extend_from_slice`), not
 // a numerical result, so exact equality is the correct comparison — a
 // tolerance would mask the one bug this guards against (an overwrite landing
@@ -346,13 +348,16 @@ fn debug_assert_bucket_copy_gap_intact(
     layout: &StateSpace,
 ) {
     debug_assert!(
-        layout
-            .transit_buckets_out
-            .clone()
-            .chain(layout.commit_out.clone())
-            .all(|j| assembled_state[j] == unscaled_primal[j]),
-        "bucket/commitment-hold state must equal the LP primal's identity \
-         columns: the lag overwrite must never touch the bucket/commitment-hold \
+        [StateRegion::Buckets, StateRegion::CommitmentHold]
+            .into_iter()
+            .all(|region| {
+                layout
+                    .state_dim_range(region)
+                    .zip(layout.outgoing_block_range(region))
+                    .all(|(j, column)| assembled_state[j] == unscaled_primal[column])
+            }),
+        "bucket/commitment-hold state must equal the LP primal's outgoing \
+         block: the lag overwrite must never touch the bucket/commitment-hold \
          shift-gap"
     );
 }
@@ -371,8 +376,8 @@ mod tests {
     };
 
     use super::{
-        StageInputs, assemble_outgoing_state, run_stage_solve, run_stage_solve_over,
-        run_stage_solve_terminal_static,
+        REGION_ORDER, StageInputs, StateRegion, assemble_outgoing_state, run_stage_solve,
+        run_stage_solve_over, run_stage_solve_terminal_static,
     };
     use crate::{
         SddpError,
@@ -1190,7 +1195,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "bucket/commitment-hold state must equal the LP primal's identity")]
+    #[should_panic(expected = "bucket/commitment-hold state must equal the LP primal's outgoing")]
     fn debug_assert_bucket_copy_gap_intact_panics_when_bucket_diverges() {
         let layout = state_layout_with_transit_buckets(
             0,
@@ -1213,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "bucket/commitment-hold state must equal the LP primal's identity")]
+    #[should_panic(expected = "bucket/commitment-hold state must equal the LP primal's outgoing")]
     fn debug_assert_bucket_copy_gap_intact_panics_when_commitment_hold_diverges() {
         let layout = state_layout_with_transit_buckets(0, 0, vec![], vec![1, 1]);
         let primal = vec![3.0, 5.0];
@@ -1266,7 +1271,9 @@ mod tests {
 
         // Reference: the pre-seam copy + lag accumulation, with no clamp step.
         let mut expected = Vec::new();
-        expected.extend_from_slice(&unscaled_primal[..layout.n_state]);
+        for region in REGION_ORDER {
+            expected.extend_from_slice(&unscaled_primal[layout.outgoing_block_range(region)]);
+        }
         let mut exp_lag_accumulator = vec![0.0_f64; 1];
         let mut exp_lag_weight_accum = vec![0.0_f64; 1];
         let mut exp_ds_accum: Vec<f64> = vec![];
@@ -1367,5 +1374,59 @@ mod tests {
         );
 
         assert_eq!(current_state[commit_j], 0.0, "must equal the clamped bound");
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn assemble_outgoing_state_copies_each_region_from_its_outgoing_block() {
+        // Displace the bucket and commitment outgoing blocks past the prefix so a
+        // `[..n_state]` copy cannot satisfy the assertions.
+        let mut layout = seam_layout();
+        layout.transit_buckets_out = 9..10;
+        layout.commit_out = 10..11;
+        let unscaled_primal: Vec<f64> = (0..11_u32).map(|i| 100.0 + f64::from(i)).collect();
+        let state_box = StateBox {
+            lower: vec![f64::NEG_INFINITY; layout.n_state],
+            upper: vec![f64::INFINITY; layout.n_state],
+        };
+
+        let mut current_state = Vec::new();
+        let mut lag_accumulator = vec![0.0_f64; 1];
+        let mut lag_weight_accum = vec![0.0_f64; 1];
+        let mut ds_accum: Vec<f64> = vec![];
+        let mut ds_weight = 0.0_f64;
+        let mut ds_completed: Vec<f64> = vec![];
+        let mut ds_n_completed = 0_usize;
+        assemble_outgoing_state(
+            &mut current_state,
+            &unscaled_primal,
+            &[2.0_f64],
+            &layout,
+            &state_box,
+            identity_stage_lag(),
+            &mut LagAccumState {
+                accumulator: &mut lag_accumulator,
+                weight_accum: &mut lag_weight_accum,
+            },
+            &mut DownstreamAccumState {
+                accumulator: &mut ds_accum,
+                weight_accum: &mut ds_weight,
+                completed_lags: &mut ds_completed,
+                n_completed: &mut ds_n_completed,
+                par_order: 0,
+            },
+        );
+
+        for region in [
+            StateRegion::Storage,
+            StateRegion::Buckets,
+            StateRegion::CommitmentHold,
+        ] {
+            assert_eq!(
+                current_state[layout.state_dim_range(region)],
+                unscaled_primal[layout.outgoing_block_range(region)],
+                "{region:?} must be copied from its outgoing block"
+            );
+        }
     }
 }

@@ -14,7 +14,7 @@ use novomodelo_solver::{RowBatch, SolverError, SolverInterface};
 use crate::cut::CutRowMap;
 use crate::cut::row::append_new_cuts_to_lp;
 use crate::{
-    backward::fill_external_opening_noise,
+    backward::{OpeningNoise, resolve_opening_noise},
     context::{StageContext, TrainingContext},
     cut::FutureCostFunction,
     cut::row::build_cut_row_batch_into,
@@ -24,7 +24,7 @@ use crate::{
     rank_reconcile::reconcile_error_flag,
     risk_measure::{RiskMeasure, RiskMeasureScratch},
     setup::{
-        NodeGraph, NodeSuccessor, OpeningSource,
+        NodeGraph, NodeSuccessor,
         node_graph::{NodePos, StageIdx, assemble_outcome_weights},
     },
     training::stage_solve_prep::{StageSolvePrep, StageSolvePrepParams, StateSource},
@@ -189,27 +189,22 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
     let root_node_id = training_ctx.node_graph.node_ids[root_pos];
     let n_openings = root_openings.len;
 
-    // An External root reads its pinned column (assembled once, `len == 1`); a
-    // Generated root reads the generated tree opening-by-opening. `raw_noise_buf`
-    // holds the External column across the loop without a per-iteration allocation.
+    // `raw_noise_buf` holds the External column across the loop without a per-iteration allocation.
     let mut ext_buf = std::mem::take(&mut scratch.raw_noise_buf);
-    if root_openings.source == OpeningSource::External {
-        fill_external_opening_noise(
-            training_ctx,
-            StageIdx(0),
-            root_openings.offset,
-            root_node_id,
-            &mut ext_buf,
-        )?;
-    }
+    let noise = resolve_opening_noise(
+        training_ctx,
+        StageIdx(0),
+        &root_openings,
+        root_node_id,
+        &mut ext_buf,
+    )?;
 
     objectives_buf.clear();
 
     for opening_idx in 0..n_openings {
-        let raw_noise: &[f64] = if root_openings.source == OpeningSource::External {
-            &ext_buf
-        } else {
-            opening_tree.opening(0, root_openings.offset + opening_idx)
+        let raw_noise: &[f64] = match &noise {
+            OpeningNoise::External(column) => column,
+            OpeningNoise::Generated => opening_tree.opening(0, root_openings.offset + opening_idx),
         };
 
         let prep_params = StageSolvePrepParams {

@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use super::super::entries::{LpMatrixBuffers, fill_generic_constraint_entries};
+use super::super::inflow_coupling::InflowCouplingSink;
 use super::super::layout::variable_ref_is_block_independent;
 use super::{contract_family_slot, resolve_variable_ref};
 use crate::hydro_models::{
@@ -424,13 +425,26 @@ fn make_production_models() -> ProductionModelSet {
 /// pair `resolve_variable_ref` reads in production. A test that needs a cascade,
 /// pumping/contract set, or production-model set different from the fixture's own
 /// overrides the relevant `ctx` field with struct-update syntax before calling.
+///
+/// A realized-inflow term comes back as its hydro's `z` column, ahead of the column pairs.
 fn call(
     var_ref: VariableRef,
     block_idx: usize,
     ctx: &TemplateBuildCtx<'_>,
     layout: &StageLayout<'_>,
 ) -> Vec<(usize, f64)> {
-    resolve_variable_ref(&var_ref, block_idx, 0, ctx, layout)
+    let mut inflow = Vec::new();
+    let columns = resolve_variable_ref(&var_ref, block_idx, 0, ctx, layout, &mut inflow);
+    inflow
+        .into_iter()
+        .map(|(hydro, multiplier)| {
+            (
+                layout.state.z_inflow_col(HydroSys::new(hydro)).get(),
+                multiplier,
+            )
+        })
+        .chain(columns)
+        .collect()
 }
 
 /// An energy contract carrying only the `id`/`bus_id`/`contract_type` the
@@ -1627,7 +1641,8 @@ fn generic_row_merges_line_exchange_and_line_direct() {
         row_lower: &mut row_lower,
         row_upper: &mut row_upper,
     };
-    fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers);
+    let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
+    fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers, &mut sink);
 
     for blk in 0..n_blks {
         let direct = VariableRef::LineDirect {
@@ -2120,6 +2135,82 @@ fn hydro_inflow_empty_when_no_hydros() {
         result.is_empty(),
         "HydroInflow with hydro_count == 0 must return empty vec, got: {result:?}"
     );
+}
+
+/// Two `HydroInflow` terms on one hydro merge into one inflow-coupling entry on the
+/// row, summed in push order; two terms that cancel exactly leave no entry.
+///
+/// derived: a realized-inflow term enters at unit rate, so each term's multiplier is
+/// its coefficient; `0.1 + 0.2` is not `0.3`, which `to_bits` can tell.
+#[test]
+fn inflow_coupling_merges_generic_hydro_inflow_terms_on_one_hydro() {
+    let hydro_id = EntityId(20);
+    let inflow = |coefficient: f64, block_id: Option<usize>| {
+        LinearTerm::literal(coefficient, VariableRef::HydroInflow { hydro_id, block_id })
+    };
+    let constraint = |id: i32, terms: Vec<LinearTerm>| GenericConstraint {
+        id: EntityId(id),
+        name: format!("inflow_{id}"),
+        description: None,
+        expression: ConstraintExpression { terms },
+        slack: None,
+        bound_lower: None,
+        bound_upper: None,
+    };
+    let (a, b, cancelled) = (0.1_f64, 0.2_f64, 0.7_f64);
+    let unit_rate = 1.0_f64;
+
+    let mut fx = default_fixture();
+    let id_map: HashMap<i32, usize> = [(7, 0), (8, 1)].into_iter().collect();
+    let rows = [
+        (7_i32, 0_i32, Some(0_i32), None::<f64>, Some(100.0_f64)),
+        (8, 0, Some(0), None, Some(100.0)),
+    ];
+    fx.base.resolved_generic_bounds =
+        ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter());
+    fx.base.generic_constraints = vec![
+        constraint(7, vec![inflow(a, None), inflow(b, Some(1))]),
+        constraint(
+            8,
+            vec![inflow(cancelled, None), inflow(-cancelled, Some(1))],
+        ),
+    ];
+    let ctx = fx.base.ctx();
+    let layout = StageLayout::new(&ctx, &fx.stage, 0);
+    assert_eq!(layout.rows.n_generic_rows, 2);
+
+    let mut col_entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); layout.num_cols];
+    let mut col_upper = vec![f64::INFINITY; layout.num_cols];
+    let mut objective = vec![0.0_f64; layout.num_cols];
+    let mut row_lower = vec![f64::NEG_INFINITY; layout.rows.num_rows];
+    let mut row_upper = vec![f64::INFINITY; layout.rows.num_rows];
+    let mut buffers = LpMatrixBuffers {
+        col_entries: &mut col_entries,
+        col_upper: &mut col_upper,
+        objective: &mut objective,
+        row_lower: &mut row_lower,
+        row_upper: &mut row_upper,
+    };
+    let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
+    fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers, &mut sink);
+    let coupling = sink.finish(layout.rows.num_rows);
+
+    let target = ctx.positions.hydro(hydro_id).unwrap();
+    for h in 0..layout.state.hydro_count {
+        let entries: Vec<(usize, u64)> = coupling
+            .hydro_entries(HydroSys::new(h))
+            .map(|(row, coefficient)| (row, coefficient.to_bits()))
+            .collect();
+        let expected = if h == target {
+            vec![(
+                layout.generic_row(0),
+                (a * unit_rate + b * unit_rate).to_bits(),
+            )]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(entries, expected, "hydro {h}");
+    }
 }
 
 #[test]

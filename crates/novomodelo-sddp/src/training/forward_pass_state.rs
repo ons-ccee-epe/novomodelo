@@ -817,11 +817,6 @@ pub(crate) fn run_forward_worker<S: SolverInterface + Send>(
     #[allow(clippy::cast_possible_truncation)]
     let total_scenarios_u32 = params.total_forward_passes as u32;
 
-    // Rationale: `t` indexes several parallel per-stage collections
-    // (params.frozen, params.ctx.cumulative_discount_factors) beyond
-    // `per_stage_stats`, so an iterator over `per_stage_stats` alone would not
-    // eliminate the range index.
-    #[allow(clippy::needless_range_loop)]
     for t in (0..num_stages).map(StageIdx) {
         let cum_d = params
             .ctx
@@ -904,7 +899,7 @@ pub(crate) fn run_forward_worker<S: SolverInterface + Send>(
                 params.sampler.apply_initial_state(
                     &class_req,
                     &mut ws.current_state,
-                    params.training_ctx.state.inflow_lags.start,
+                    params.training_ctx.state.state_dim_lag_range().start,
                 );
             }
             let noise = params.sampler.sample(SampleRequest {
@@ -1009,8 +1004,8 @@ mod tests {
         lp::builder::PatchBuffer,
         lp::indexer::{StateSpace, StudyDimensions},
         test_support::{
-            StageContextFixture, equipment_free_geometry, permissive_state_boxes, state_layout,
-            study_dims,
+            StageContextFixture, all_enabled_cut_state_layouts, equipment_free_geometry,
+            permissive_state_boxes, state_layout, study_dims,
         },
         training::session::rank_distribution::RankDistribution,
         trajectory::TrajectoryRecord,
@@ -1377,7 +1372,7 @@ mod tests {
             node_graph: &crate::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
-            cut_state_layouts: &[],
+            cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
             stochastic: &fx.stochastic,
@@ -1455,7 +1450,7 @@ mod tests {
             node_graph: &crate::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
-            cut_state_layouts: &[],
+            cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
             stochastic: &fx.stochastic,
@@ -1517,7 +1512,7 @@ mod tests {
             node_graph: &crate::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
-            cut_state_layouts: &[],
+            cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
             stochastic: &fx.stochastic,
@@ -1591,7 +1586,7 @@ mod tests {
             node_graph: &crate::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
-            cut_state_layouts: &[],
+            cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
             stochastic: &fx.stochastic,
@@ -1702,7 +1697,7 @@ mod tests {
             node_graph: &crate::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
-            cut_state_layouts: &[],
+            cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
             stochastic: &fx.stochastic,
@@ -1815,7 +1810,7 @@ mod tests {
             node_graph: &crate::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
-            cut_state_layouts: &[],
+            cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
             stochastic: &fx.stochastic,
@@ -2088,7 +2083,7 @@ mod tests {
             node_graph: &crate::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
-            cut_state_layouts: &[],
+            cut_state_layouts: &all_enabled_cut_state_layouts(&state, 1),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
             stochastic: &stochastic,
@@ -2362,7 +2357,7 @@ mod tests {
             node_graph: &node_graph,
             horizon: &horizon,
             state: &state,
-            cut_state_layouts: &[],
+            cut_state_layouts: &all_enabled_cut_state_layouts(&state, node_graph.n_pools),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
             stochastic: &stochastic,
@@ -2535,6 +2530,7 @@ mod tests {
         stochastic: &'a StochasticContext,
         node_graph: &'a crate::setup::node_graph::NodeGraph,
         state: &'a StateSpace,
+        cut_state_layouts: &'a [crate::lp::indexer::CutStateProjection],
         stages: &'a [Stage],
         study_dims: &'a StudyDimensions,
         initial_state: &'a [f64],
@@ -2543,7 +2539,7 @@ mod tests {
             node_graph,
             horizon: &HorizonMode::Finite { num_stages: 2 },
             state,
-            cut_state_layouts: &[],
+            cut_state_layouts,
             study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
             stochastic,
@@ -2572,12 +2568,14 @@ mod tests {
         let stages = make_stages_2();
         let study_dims = study_dims();
         let initial_state = vec![0.0; state.n_state];
+        let layouts = all_enabled_cut_state_layouts(&state, node_graph.n_pools);
         let training_ctx = TrainingContext {
             horizon: &HorizonMode::Finite { num_stages: 0 },
             ..terminal_boundary_test_ctx(
                 &stochastic,
                 &node_graph,
                 &state,
+                &layouts,
                 &stages,
                 &study_dims,
                 &initial_state,
@@ -2605,10 +2603,12 @@ mod tests {
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let node_graph = crate::test_support::chain_node_graph(&fx.stochastic);
+        let layouts = all_enabled_cut_state_layouts(&fx.state, fx.n_stages);
         let training_ctx = terminal_boundary_test_ctx(
             &fx.stochastic,
             &node_graph,
             &fx.state,
+            &layouts,
             &fx.stages,
             &study_dims,
             &fx.initial_state,

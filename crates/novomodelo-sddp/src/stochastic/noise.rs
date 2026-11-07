@@ -62,7 +62,7 @@ pub(crate) fn transform_inflow_noise(
     scratch.par_inflow_buf.clear();
     scratch.par_inflow_buf.resize(n_hydros, 0.0);
     if has_par {
-        let pinned_lags = &current_state[state.inflow_lags.clone()];
+        let pinned_lags = &current_state[state.state_dim_lag_range()];
         debug_assert_eq!(pinned_lags.len(), state.max_par_order * n_hydros);
         evaluate_par_batch(
             par_lp,
@@ -102,7 +102,7 @@ pub(crate) fn shift_lag_state(
     if l_max == 0 || n_h == 0 {
         return;
     }
-    let lag_start = layout.inflow_lags.start;
+    let lag_start = layout.state_dim_lag_range().start;
     for h in 0..n_h {
         let z_t_h = unscaled_primal[layout.z_inflow.start + h];
         // Read from incoming_lags (lag-major: lag * n_h + h) to avoid aliasing state.
@@ -155,7 +155,7 @@ pub(crate) fn accumulate_and_shift_lag_state(
     lag: &mut LagAccumState<'_>,
     ds: &mut DownstreamAccumState<'_>,
 ) {
-    let lag_start = layout.inflow_lags.start;
+    let lag_start = layout.state_dim_lag_range().start;
     let n_h = layout.hydro_count;
     let l_max = layout.max_par_order;
 

@@ -12,6 +12,7 @@ use crate::indexer::{
 use super::delivery_ring::{DeliveryRing, maturing_bucket_in_col, resolve_bucket_arrival_density};
 use super::fpha_cursor::for_each_fpha_plane;
 use super::hydro_state::{MaxCap, MinFloor, hydro_phase, resolve_shortcircuit_target};
+use super::inflow_coupling::{InflowCoupling, InflowCouplingSink};
 use super::layout::{StageLayout, StageProductionRole, TemplateBuildCtx, contract_family_slot};
 
 /// Fishing (consumption) coupling: for every anticipated plant whose
@@ -169,6 +170,7 @@ pub(super) fn fill_state_and_water_entries(
     stage: &Stage,
     stage_idx: usize,
     layout: &StageLayout,
+    sink: &mut InflowCouplingSink,
     col_entries: &mut [Vec<(usize, f64)>],
 ) {
     // Mode-independent: the bucket ring-shift never depends on block_mode, so it runs
@@ -177,10 +179,10 @@ pub(super) fn fill_state_and_water_entries(
 
     match stage.block_mode {
         BlockMode::Parallel => {
-            fill_parallel_water_entries(ctx, stage, stage_idx, layout, col_entries);
+            fill_parallel_water_entries(ctx, stage, stage_idx, layout, sink, col_entries);
         }
         BlockMode::Chronological => {
-            fill_chronological_water_entries(ctx, stage, stage_idx, layout, col_entries);
+            fill_chronological_water_entries(ctx, stage, stage_idx, layout, sink, col_entries);
         }
     }
 }
@@ -193,6 +195,7 @@ fn fill_parallel_water_entries(
     stage: &Stage,
     stage_idx: usize,
     layout: &StageLayout,
+    sink: &mut InflowCouplingSink,
     col_entries: &mut [Vec<(usize, f64)>],
 ) {
     let geom = &layout.geometry;
@@ -219,7 +222,7 @@ fn fill_parallel_water_entries(
             // Frozen-storage identity `v_h − v_h_in = 0`: emit ONLY the two storage entries
             // above. Any inflow/upstream/AR-lag/withdrawal/evaporation coupling left here
             // makes `β_h` stale-nonzero — a wrong cut that still compiles.
-            fill_prefilling_shortcircuit(ctx, stage, stage_idx, h_idx, layout, col_entries);
+            fill_prefilling_shortcircuit(ctx, stage, stage_idx, h_idx, layout, sink, col_entries);
             continue;
         }
 
@@ -257,7 +260,7 @@ fn fill_parallel_water_entries(
                 }
             }
         }
-        push_local_inflow_coupling(stage, layout, h_idx, h_idx, col_entries);
+        push_local_inflow_coupling(stage, layout, h_idx, h_idx, sink, col_entries);
     }
 
     // The PreFilling `continue` below keeps the frozen identity row free of slack/flow
@@ -429,6 +432,7 @@ fn fill_chronological_water_entries(
     stage: &Stage,
     stage_idx: usize,
     layout: &StageLayout,
+    sink: &mut InflowCouplingSink,
     col_entries: &mut [Vec<(usize, f64)>],
 ) {
     let geom = &layout.geometry;
@@ -448,12 +452,12 @@ fn fill_chronological_water_entries(
                     .block_storage_col(HydroSys::new(h_idx), Boundary::from_index(k - 1, n_blks))]
                 .push((row, -1.0));
             }
-            fill_prefilling_shortcircuit(ctx, stage, stage_idx, h_idx, layout, col_entries);
+            fill_prefilling_shortcircuit(ctx, stage, stage_idx, h_idx, layout, sink, col_entries);
             continue;
         }
 
         push_maturing_bucket_coupling(ctx, stage, stage_idx, layout, h_idx, h_idx, col_entries);
-        push_local_inflow_coupling(stage, layout, h_idx, h_idx, col_entries);
+        push_local_inflow_coupling(stage, layout, h_idx, h_idx, sink, col_entries);
 
         for k in 1..=n_blks {
             let blk = k - 1;
@@ -645,15 +649,17 @@ fn fill_arc_release_chrono_block_entries(
 /// `z_h`'s routed-entry count, pinned by
 /// `prefilling_upstream_inflow_lands_on_balance_row_only`); Chronological splits into
 /// per-block `−τ_k` (`Σ_k τ_k = ζ`).
+///
+/// The `z_h` entries are recorded into `sink`; the slack's go onto `col_entries`.
 fn push_local_inflow_coupling(
     stage: &Stage,
     layout: &StageLayout,
     h_idx: usize,
     target_idx: usize,
+    sink: &mut InflowCouplingSink,
     col_entries: &mut [Vec<(usize, f64)>],
 ) {
     let hydro = HydroSys::new(h_idx);
-    let z_h = layout.state.z_inflow_col(hydro).get();
     let slack_h =
         (!layout.geometry.inflow_slack.is_empty()).then(|| layout.geometry.inflow_slack_col(hydro));
     let target = HydroSys::new(target_idx);
@@ -669,7 +675,7 @@ fn push_local_inflow_coupling(
         let row = layout
             .geometry
             .water_balance_row(target, BlockIdx::new(blk));
-        col_entries[z_h].push((row, coeff));
+        sink.record(hydro, row, coeff);
         if let Some(slack) = slack_h {
             col_entries[slack].push((row, coeff));
         }
@@ -752,6 +758,7 @@ fn fill_prefilling_shortcircuit(
     stage_idx: usize,
     h_idx: usize,
     layout: &StageLayout,
+    sink: &mut InflowCouplingSink,
     col_entries: &mut [Vec<(usize, f64)>],
 ) {
     let hydro = &ctx.hydros[h_idx];
@@ -763,7 +770,7 @@ fn fill_prefilling_shortcircuit(
     let n_blks = layout.clock.n_blks();
     let target = HydroSys::new(d_idx);
 
-    push_local_inflow_coupling(stage, layout, h_idx, d_idx, col_entries);
+    push_local_inflow_coupling(stage, layout, h_idx, d_idx, sink, col_entries);
     push_maturing_bucket_coupling(ctx, stage, stage_idx, layout, h_idx, d_idx, col_entries);
 
     for blk in 0..n_blks {
@@ -1144,12 +1151,14 @@ pub(super) struct LpMatrixBuffers<'a> {
 /// slack by `SlackConfig::unit_cost` over the row's hours. Unknown entity IDs resolve to
 /// zero contributions (the defense-in-depth fallback for referential-validation gaps).
 /// Each generic row gets one entry per column, the sum of its terms' entries on that
-/// column, and no entry when that sum is an exact zero.
+/// column, and no entry when that sum is an exact zero. The realized-inflow terms go to
+/// `sink` under the same merge, one entry per hydro.
 pub(super) fn fill_generic_constraint_entries(
     ctx: &TemplateBuildCtx<'_>,
     stage_idx: usize,
     layout: &StageLayout,
     buffers: &mut LpMatrixBuffers<'_>,
+    sink: &mut InflowCouplingSink,
 ) {
     if layout.rows.n_generic_rows == 0 {
         return;
@@ -1161,6 +1170,7 @@ pub(super) fn fill_generic_constraint_entries(
     let row_upper = &mut *buffers.row_upper;
 
     let mut row_entries: Vec<(usize, f64)> = Vec::new();
+    let mut row_inflow_entries: Vec<(usize, f64)> = Vec::new();
     for (entry_idx, entry) in layout.generic_constraint_rows.iter().enumerate() {
         let row = layout.generic_row(entry_idx);
         let constraint = &ctx.generic_constraints[entry.constraint_idx];
@@ -1180,6 +1190,7 @@ pub(super) fn fill_generic_constraint_entries(
         row_upper[row] = entry.bound_upper.unwrap_or(f64::INFINITY);
 
         row_entries.clear();
+        row_inflow_entries.clear();
         for (term_idx, term) in constraint.expression.terms.iter().enumerate() {
             let coefficient = ctx.resolved.resolved_generic_coefficients.term_value(
                 entry.constraint_idx,
@@ -1187,13 +1198,24 @@ pub(super) fn fill_generic_constraint_entries(
                 stage_idx,
                 entry.block_idx,
             );
-            let pairs =
-                resolve_variable_ref(&term.variable, entry.block_idx, stage_idx, ctx, layout);
+            let inflow_start = row_inflow_entries.len();
+            let pairs = resolve_variable_ref(
+                &term.variable,
+                entry.block_idx,
+                stage_idx,
+                ctx,
+                layout,
+                &mut row_inflow_entries,
+            );
             for (col, multiplier) in pairs {
                 row_entries.push((col, coefficient * multiplier));
             }
+            for (_, multiplier) in &mut row_inflow_entries[inflow_start..] {
+                *multiplier *= coefficient;
+            }
         }
         push_merged_row_entries(row, &mut row_entries, col_entries);
+        push_merged_row_entries(row, &mut row_inflow_entries, sink.per_hydro_mut());
 
         if let (Some(plus_col), Some(slack)) = (entry.slack_plus_col, entry.slack) {
             let obj_coeff = slack.unit_cost(row_hours);
@@ -1290,6 +1312,18 @@ pub(super) fn fill_z_inflow_entries(
                 }
             }
         }
+    }
+}
+
+pub(super) fn fill_z_inflow_coupling_entries(
+    coupling: &InflowCoupling,
+    layout: &StageLayout,
+    col_entries: &mut [Vec<(usize, f64)>],
+) {
+    for h_idx in 0..coupling.n_hydros() {
+        let hydro = HydroSys::new(h_idx);
+        let z_h = layout.state.z_inflow_col(hydro).get();
+        col_entries[z_h].extend(coupling.hydro_entries(hydro));
     }
 }
 
@@ -1487,15 +1521,19 @@ fn fill_plant_cap_entries(
 /// Build the unsorted CSC matrix entries for one stage: one `Vec<(row, value)>` per column
 /// in insertion order. The caller must sort by row index before assembling (see
 /// `build_single_stage_template`; `assemble_csc` asserts the sort).
+///
+/// The realized-inflow coupling goes to `sink`, not to the z columns; the caller fills
+/// them with [`fill_z_inflow_coupling_entries`] once the sink is finished.
 pub(super) fn build_stage_matrix_entries(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
     stage_idx: usize,
     layout: &StageLayout,
+    sink: &mut InflowCouplingSink,
 ) -> Vec<Vec<(usize, f64)>> {
     let mut col_entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); layout.num_cols];
 
-    fill_state_and_water_entries(ctx, stage, stage_idx, layout, &mut col_entries);
+    fill_state_and_water_entries(ctx, stage, stage_idx, layout, sink, &mut col_entries);
     fill_filling_target_entries(layout, &mut col_entries);
     fill_filled_min_storage_floor_entries(layout, &mut col_entries);
     fill_pumping_water_entries(ctx, layout, &mut col_entries);
@@ -1510,6 +1548,19 @@ pub(super) fn build_stage_matrix_entries(
     fill_plant_cap_entries(ctx, stage_idx, layout, &mut col_entries);
     fill_anticipated_fishing_entries(ctx, stage, stage_idx, layout, &mut col_entries);
 
+    col_entries
+}
+
+#[cfg(test)]
+pub(super) fn build_stage_matrix_entries_with_inflow_coupling(
+    ctx: &TemplateBuildCtx<'_>,
+    stage: &Stage,
+    stage_idx: usize,
+    layout: &StageLayout,
+) -> Vec<Vec<(usize, f64)>> {
+    let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
+    let mut col_entries = build_stage_matrix_entries(ctx, stage, stage_idx, layout, &mut sink);
+    fill_z_inflow_coupling_entries(&sink.finish(layout.rows.num_rows), layout, &mut col_entries);
     col_entries
 }
 
@@ -2125,8 +2176,9 @@ mod zero_cost_tests {
     };
     use super::super::test_support::two_block_stage;
     use super::{
-        DeliveryRing, build_stage_matrix_entries, fill_anticipated_fishing_entries,
-        fill_anticipated_slot_definition_entries, fill_anticipated_state_out_def_entries,
+        DeliveryRing, build_stage_matrix_entries_with_inflow_coupling,
+        fill_anticipated_fishing_entries, fill_anticipated_slot_definition_entries,
+        fill_anticipated_state_out_def_entries,
     };
 
     /// Placeholder thermal at position `idx`, inert past its `id`:
@@ -2731,7 +2783,7 @@ mod zero_cost_tests {
 
         let (col_lower, col_upper, _objective) = fill_stage_columns(&ctx, &stage, 4, &layout);
         let (row_lower, row_upper) = fill_stage_rows(&ctx, &stage, 4, &layout);
-        let col_entries = build_stage_matrix_entries(&ctx, &stage, 4, &layout);
+        let col_entries = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 4, &layout);
 
         let base = layout.state.commit_out.start;
         let row_start = layout.anticipated.slot_definition_rows.start;
@@ -3269,7 +3321,7 @@ mod zero_cost_tests {
         );
 
         let layout = StageLayout::new(&ctx, &stage, 0);
-        let col_entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+        let col_entries = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
 
         let a = ctx.study_dims.anticipated_plants.len();
         let k = ctx
@@ -3365,13 +3417,15 @@ mod pumping_water_tests {
     use super::super::columns::{fill_pumping_columns, fill_stage_columns};
     use super::super::delivery_ring::ColumnBufs;
     use super::super::hydro_state::{MaxCap, MinFloor, warn_on_inert_plant_floor_overrides};
+    use super::super::inflow_coupling::{InflowCoupling, InflowCouplingSink};
     use super::super::layout::{StageLayout, TemplateBuildCtx};
     use super::super::rows::fill_stage_rows;
     use super::super::test_support::{
         BLOCK_HOURS, three_block_stage, two_block_stage, zero_hydro_penalties,
     };
     use super::{
-        LpMatrixBuffers, assemble_csc, build_stage_matrix_entries, fill_fpha_entries,
+        LpMatrixBuffers, assemble_csc, build_stage_matrix_entries,
+        build_stage_matrix_entries_with_inflow_coupling, fill_fpha_entries,
         fill_generic_constraint_entries, fill_load_balance_entries,
         fill_operational_violation_entries, fill_pumping_water_entries,
         fill_transit_bucket_definition_entries, resolve_bucket_arrival_density,
@@ -4444,7 +4498,7 @@ mod pumping_water_tests {
         // fill_generic_constraint_entries (the resolved ContractImport arm). Under
         // debug_assertions every debug_assert! is live; reaching the assertion below
         // proves none fired.
-        let col_entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+        let col_entries = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
         assert_eq!(col_entries.len(), layout.num_cols);
     }
 
@@ -4532,7 +4586,8 @@ mod pumping_water_tests {
             let ctx = fixtures.make_ctx();
             let stage = two_block_stage(0, [300.0, 444.0]);
             let layout = StageLayout::new(&ctx, &stage, 0);
-            let mut entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+            let mut entries =
+                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
             // Mirror the production per-column row-sort (see build_single_stage_template).
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
@@ -4634,7 +4689,8 @@ mod pumping_water_tests {
             let stage = two_block_stage(0, [300.0, 444.0]);
             let layout = StageLayout::new(&ctx, &stage, 0);
 
-            let mut entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+            let mut entries =
+                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
             let mut col_upper = vec![f64::INFINITY; layout.num_cols];
             let mut objective = vec![0.0_f64; layout.num_cols];
             let mut row_lower = vec![f64::NEG_INFINITY; layout.rows.num_rows];
@@ -4646,7 +4702,8 @@ mod pumping_water_tests {
                 row_lower: &mut row_lower,
                 row_upper: &mut row_upper,
             };
-            fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers);
+            let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
+            fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers, &mut sink);
 
             // Mirror the production per-column row-sort (see
             // build_single_stage_template) before assembling the CSC.
@@ -4819,7 +4876,8 @@ mod pumping_water_tests {
             let (row_lower, row_upper) =
                 super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
             let csc = {
-                let mut entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+                let mut entries =
+                    build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
                 for col in &mut entries {
                     col.sort_unstable_by_key(|&(row, _)| row);
                 }
@@ -4891,7 +4949,8 @@ mod pumping_water_tests {
         let stage = two_block_stage(0, [300.0, 444.0]);
         let layout = StageLayout::new(&ctx, &stage, 0);
         let csc = {
-            let mut entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+            let mut entries =
+                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
             // Mirror the production per-column row-sort (see
             // build_single_stage_template) before assembling the CSC.
             for col in &mut entries {
@@ -5026,7 +5085,8 @@ mod pumping_water_tests {
         let ar_stage = two_block_stage(0, [300.0, 444.0]);
         let ar_layout = StageLayout::new(&ar_ctx, &ar_stage, 0);
         let ar_csc = {
-            let mut entries = build_stage_matrix_entries(&ar_ctx, &ar_stage, 0, &ar_layout);
+            let mut entries =
+                build_stage_matrix_entries_with_inflow_coupling(&ar_ctx, &ar_stage, 0, &ar_layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -5139,7 +5199,7 @@ mod pumping_water_tests {
         let ctx = fixtures.make_ctx();
         let stage = three_block_stage(0);
         let layout = StageLayout::new(&ctx, &stage, 0);
-        let entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+        let entries = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
 
         let plant1_idx = 1;
         let row0_u = layout.geometry.water_balance.start();
@@ -6069,7 +6129,7 @@ mod pumping_water_tests {
         layout: &StageLayout,
         h: HydroSys,
     ) {
-        let entries = build_stage_matrix_entries(ctx, stage, 0, layout);
+        let entries = build_stage_matrix_entries_with_inflow_coupling(ctx, stage, 0, layout);
         let local = PlantFloorLocal::new(
             layout
                 .geometry
@@ -6244,7 +6304,8 @@ mod pumping_water_tests {
         stage_idx: usize,
         layout: &StageLayout,
     ) -> (Vec<i32>, Vec<i32>, Vec<f64>) {
-        let mut entries = build_stage_matrix_entries(ctx, stage, stage_idx, layout);
+        let mut entries =
+            build_stage_matrix_entries_with_inflow_coupling(ctx, stage, stage_idx, layout);
         for col in &mut entries {
             col.sort_unstable_by_key(|&(row, _)| row);
         }
@@ -6483,7 +6544,7 @@ mod pumping_water_tests {
         layout: &StageLayout,
         h: HydroSys,
     ) {
-        let entries = build_stage_matrix_entries(ctx, stage, 0, layout);
+        let entries = build_stage_matrix_entries_with_inflow_coupling(ctx, stage, 0, layout);
         let local = PlantCapLocal::new(
             layout
                 .geometry
@@ -7610,7 +7671,7 @@ mod pumping_water_tests {
         let stage = two_block_stage(0, [300.0, 444.0]);
         let layout = StageLayout::new(&ctx, &stage, 0);
 
-        let _ = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+        let _ = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -7889,7 +7950,7 @@ mod pumping_water_tests {
         let stage = chronological_stage(0, &[720.0]);
         let layout = StageLayout::new(&ctx, &stage, 0);
 
-        let _ = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+        let _ = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
     }
 
     /// The `Σ_b w_b·χ_{b,d} == k_d` shared-density consistency (row 9) fires
@@ -7932,7 +7993,7 @@ mod pumping_water_tests {
         let stage = chronological_stage(0, &[720.0]);
         let layout = StageLayout::new(&ctx, &stage, 0);
 
-        let _ = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+        let _ = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
     }
 
     /// `resolve_bucket_arrival_density` returns the precomputed arrival-frame
@@ -8126,7 +8187,7 @@ mod pumping_water_tests {
         let stage = chronological_stage(0, &[300.0, 420.0]);
         let layout = StageLayout::new(&ctx, &stage, 0);
 
-        let _ = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+        let _ = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
     }
 
     /// End-to-end: a generic constraint referencing `pumping_flow` and
@@ -8201,7 +8262,8 @@ mod pumping_water_tests {
             row_upper: &mut row_upper,
         };
 
-        fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers);
+        let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
+        fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers, &mut sink);
 
         // Each generic row `blk` lands on the station's flow column for that block,
         // with the flow (1.0) and power (consumption) terms aliasing the SAME column.
@@ -8350,7 +8412,8 @@ mod pumping_water_tests {
             row_lower: &mut row_lower,
             row_upper: &mut row_upper,
         };
-        fill_generic_constraint_entries(ctx, 0, layout, &mut buffers);
+        let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
+        fill_generic_constraint_entries(ctx, 0, layout, &mut buffers, &mut sink);
         col_entries
     }
 
@@ -8393,11 +8456,11 @@ mod pumping_water_tests {
             .geometry
             .turbine_col(HydroCell::new(0), BlockIdx::new(0));
         assert_eq!(
-            resolve_variable_ref(&turbined, 0, 0, &ctx, &layout),
+            resolve_variable_ref(&turbined, 0, 0, &ctx, &layout, &mut Vec::new()),
             vec![(turbine_col, 1.0)]
         );
         assert_eq!(
-            resolve_variable_ref(&generation, 0, 0, &ctx, &layout),
+            resolve_variable_ref(&generation, 0, 0, &ctx, &layout, &mut Vec::new()),
             vec![(turbine_col, 2.5)],
             "generation must alias the turbine column at the overridden productivity"
         );
@@ -8446,11 +8509,11 @@ mod pumping_water_tests {
 
         let storage_col = layout.state.storage_outgoing_col(HydroSys::new(0)).get();
         assert_eq!(
-            resolve_variable_ref(&storage, 0, 0, &ctx, &layout),
+            resolve_variable_ref(&storage, 0, 0, &ctx, &layout, &mut Vec::new()),
             vec![(storage_col, 1.0)]
         );
         assert_eq!(
-            resolve_variable_ref(&useful_final, 0, 0, &ctx, &layout),
+            resolve_variable_ref(&useful_final, 0, 0, &ctx, &layout, &mut Vec::new()),
             vec![(storage_col, 1.0)],
             "useful_volume_final must alias the stage-final storage column"
         );
@@ -8502,7 +8565,7 @@ mod pumping_water_tests {
         let storage_col = layout.state.storage_outgoing_col(HydroSys::new(0)).get();
         for variable in [&storage, &storage_final, &useful_final] {
             assert_eq!(
-                resolve_variable_ref(variable, 0, 0, &ctx, &layout),
+                resolve_variable_ref(variable, 0, 0, &ctx, &layout, &mut Vec::new()),
                 vec![(storage_col, 1.0)],
                 "{variable:?} must alias the stage-final storage column"
             );
@@ -8606,7 +8669,8 @@ mod pumping_water_tests {
             row_upper: &mut row_upper,
         };
 
-        fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers);
+        let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
+        fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers, &mut sink);
 
         assert_eq!(
             block_hours.len(),
@@ -8770,7 +8834,8 @@ mod pumping_water_tests {
         let stage = two_block_stage(stage_index, [300.0, 444.0]);
         let layout = StageLayout::new(&ctx, &stage, 0);
         let csc = {
-            let mut entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+            let mut entries =
+                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -8898,7 +8963,8 @@ mod pumping_water_tests {
                     let mut stage = two_block_stage(stage_index, [300.0, 444.0]);
                     stage.block_mode = block_mode;
                     let layout = StageLayout::new(&ctx, &stage, 0);
-                    let mut entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+                    let mut entries =
+                        build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
                     for col in &mut entries {
                         col.sort_unstable_by_key(|&(row, _)| row);
                     }
@@ -8954,6 +9020,111 @@ mod pumping_water_tests {
         }
     }
 
+    fn build_inflow_coupling(
+        ctx: &TemplateBuildCtx<'_>,
+        stage: &Stage,
+        layout: &StageLayout,
+    ) -> InflowCoupling {
+        let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
+        build_stage_matrix_entries(ctx, stage, 0, layout, &mut sink);
+        sink.finish(layout.rows.num_rows)
+    }
+
+    fn inflow_entry_bits(coupling: &InflowCoupling, hydro: HydroSys) -> Vec<(usize, u64)> {
+        coupling
+            .hydro_entries(hydro)
+            .map(|(row, coefficient)| (row, coefficient.to_bits()))
+            .collect()
+    }
+
+    #[test]
+    fn inflow_coupling_parallel_stage_is_minus_zeta_on_the_water_row() {
+        let mut fixtures = PumpFixtures::new(vec![fixture_hydro(1)], Vec::new());
+        let ctx = fixtures.make_ctx();
+        let stage = two_block_stage(0, [300.0, 444.0]);
+        let layout = StageLayout::new(&ctx, &stage, 0);
+        let coupling = build_inflow_coupling(&ctx, &stage, &layout);
+
+        let hydro = HydroSys::new(0);
+        let zeta = stage.blocks.iter().map(|b| b.duration_hours).sum::<f64>() * M3S_TO_HM3;
+        let water_row = layout.geometry.water_balance_row(hydro, BlockIdx::new(0));
+        assert_eq!(
+            inflow_entry_bits(&coupling, hydro),
+            vec![(water_row, (-zeta).to_bits())]
+        );
+    }
+
+    #[test]
+    fn inflow_coupling_chronological_stage_is_minus_tau_per_block_row() {
+        let mut fixtures = PumpFixtures::new(vec![fixture_hydro(1)], Vec::new());
+        let ctx = fixtures.make_ctx();
+        let mut stage = two_block_stage(0, [300.0, 444.0]);
+        stage.block_mode = BlockMode::Chronological;
+        let layout = StageLayout::new(&ctx, &stage, 0);
+        let coupling = build_inflow_coupling(&ctx, &stage, &layout);
+
+        let hydro = HydroSys::new(0);
+        let expected: Vec<(usize, u64)> = (0..stage.blocks.len())
+            .map(|blk| {
+                let tau_k = stage.blocks[blk].duration_hours * M3S_TO_HM3;
+                let row = layout.geometry.water_balance_row(hydro, BlockIdx::new(blk));
+                (row, (-tau_k).to_bits())
+            })
+            .collect();
+        assert_eq!(inflow_entry_bits(&coupling, hydro), expected);
+    }
+
+    #[test]
+    fn inflow_coupling_prefilling_routes_to_the_target_water_rows() {
+        for block_mode in [BlockMode::Parallel, BlockMode::Chronological] {
+            let mut fixtures = PumpFixtures::new(
+                vec![
+                    ret_hydro(1, Some(2), None, false),
+                    ret_hydro(2, Some(3), Some(RET_ENTRY_STAGE_ID), true),
+                    ret_hydro(3, None, None, false),
+                ],
+                Vec::new(),
+            );
+            let h2 = HydroSys::new(fixtures.hydro_pos[&EntityId(2)]);
+            let h3 = HydroSys::new(fixtures.hydro_pos[&EntityId(3)]);
+            let ctx = fixtures.make_ctx();
+            let mut stage =
+                two_block_stage(usize::try_from(RET_PREFILLING_ID).unwrap(), [300.0, 444.0]);
+            stage.block_mode = block_mode;
+            let layout = StageLayout::new(&ctx, &stage, 0);
+            let coupling = build_inflow_coupling(&ctx, &stage, &layout);
+
+            let coefficients: Vec<f64> = match block_mode {
+                BlockMode::Parallel => {
+                    vec![stage.blocks.iter().map(|b| b.duration_hours).sum::<f64>() * M3S_TO_HM3]
+                }
+                BlockMode::Chronological => stage
+                    .blocks
+                    .iter()
+                    .map(|b| b.duration_hours * M3S_TO_HM3)
+                    .collect(),
+            };
+            let target_rows: Vec<(usize, u64)> = coefficients
+                .iter()
+                .enumerate()
+                .map(|(blk, c)| {
+                    let row = layout.geometry.water_balance_row(h3, BlockIdx::new(blk));
+                    (row, (-c).to_bits())
+                })
+                .collect();
+            let own_rows: Vec<usize> = (0..layout.clock.n_blks())
+                .map(|blk| layout.geometry.water_balance_row(h2, BlockIdx::new(blk)))
+                .collect();
+
+            let routed = inflow_entry_bits(&coupling, h2);
+            assert_eq!(routed, target_rows, "{block_mode:?}");
+            assert!(
+                routed.iter().all(|(row, _)| !own_rows.contains(row)),
+                "{block_mode:?}: the PreFilling hydro has no entry on its own frozen row"
+            );
+        }
+    }
+
     // ── σ_fill terminal target row + column ──────────────────────────────────
 
     // The terminal Filling stage of the `ret_hydro` window: entry − 1 = 3.
@@ -9005,7 +9176,8 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
         let csc = {
-            let mut entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+            let mut entries =
+                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -9318,7 +9490,8 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
         let csc = {
-            let mut entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+            let mut entries =
+                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -9533,7 +9706,8 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
         let csc = {
-            let mut entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+            let mut entries =
+                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -9719,7 +9893,8 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
         let csc = {
-            let mut entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+            let mut entries =
+                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -9865,7 +10040,8 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
         let (rl_c, ru_c) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
         let csc_c = {
-            let mut entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+            let mut entries =
+                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -9965,7 +10141,8 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
         let csc = {
-            let mut entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+            let mut entries =
+                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -10073,7 +10250,8 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
         let csc = {
-            let mut entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+            let mut entries =
+                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -10189,7 +10367,8 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
         let csc = {
-            let mut entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+            let mut entries =
+                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -10347,7 +10526,8 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
         let csc = {
-            let mut entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+            let mut entries =
+                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -10447,7 +10627,8 @@ mod pumping_water_tests {
         let layout = StageLayout::new(ctx, stage, 0);
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(ctx, stage, 0, &layout);
         let csc = {
-            let mut entries = build_stage_matrix_entries(ctx, stage, 0, &layout);
+            let mut entries =
+                build_stage_matrix_entries_with_inflow_coupling(ctx, stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -10621,7 +10802,8 @@ mod pumping_water_tests {
             let layout = StageLayout::new(&ctx, &stage, 0);
             let (rl, ru) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
             let csc = {
-                let mut entries = build_stage_matrix_entries(&ctx, &stage, 0, &layout);
+                let mut entries =
+                    build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
                 for col in &mut entries {
                     col.sort_unstable_by_key(|&(row, _)| row);
                 }
@@ -10835,7 +11017,8 @@ mod pumping_water_tests {
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(ctx, stage, 0, &layout);
         let cols = super::super::columns::fill_stage_columns(ctx, stage, 0, &layout);
         let csc = {
-            let mut entries = build_stage_matrix_entries(ctx, stage, 0, &layout);
+            let mut entries =
+                build_stage_matrix_entries_with_inflow_coupling(ctx, stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }

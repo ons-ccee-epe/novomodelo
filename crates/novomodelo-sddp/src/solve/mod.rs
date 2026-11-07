@@ -6,13 +6,17 @@
 //! - `stage_solve` — the single unified per-stage LP-solve entry point
 //!   (`run_stage_solve`). Kept as ONE file: fragmenting the
 //!   invariant-enforcement seam would let a driver bypass it.
+//! - `opening_solver` — the frozen-or-lazy dispatch over that solve, so the
+//!   `dynamic` method is a mode of the shared solve and not a separate site.
 //! - `partition` — the deterministic static work partition every driver uses
 //!   to split scenarios across workers.
 
+pub(crate) mod opening_solver;
 pub(crate) mod partition;
 pub mod solver_phase;
 pub(crate) mod stage_solve;
 
+pub(crate) use opening_solver::{LazyInputs, StageOpeningSolver};
 pub(crate) use partition::partition;
 pub use solver_phase::Phase;
 #[cfg(feature = "highs")]

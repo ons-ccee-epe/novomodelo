@@ -26,18 +26,18 @@ use crate::{
     context::{StageContext, TrainingContext},
     cut::FutureCostFunction,
     risk_measure::{BackwardOutcome, RiskMeasure},
-    setup::node_graph::{NodeId, NodePos, OpeningSource},
+    setup::node_graph::{NodeId, NodePos},
+    solve::StageOpeningSolver,
     solver_stats::SolverStatsDelta,
-    stage_solve::{StageInputs, run_stage_solve},
     state_exchange::ExchangeBuffers,
     workspace::{BasisStore, ByNodeScratch, SolverWorkspace},
 };
 
 use super::{
     SuccessorOutcomes, SuccessorSpec,
-    duals_extraction::extract_duals_from_view,
-    lp_setup::{fill_external_opening_noise, load_backward_lp, patch_opening_bounds},
-    outcome_aggregation::{accumulate_opening_outcome, fold_slot_increments_into_sync},
+    lp_setup::{OpeningNoise, load_backward_lp, resolve_opening_noise},
+    opening_solve::solve_backward_opening,
+    outcome_aggregation::fold_slot_increments_into_sync,
 };
 
 /// One solved (trial point, opening) outcome produced by an opening-block unit.
@@ -241,45 +241,28 @@ pub(crate) fn process_stage_backward_by_node<S: SolverInterface + Send>(
                     load_backward_lp(ws, &child);
 
                     // take/fill/restore reuses `external_noise_buf`: no hot-path allocation.
-                    let mut external_noise: Option<Vec<f64>> = None;
-                    if child.openings.source == OpeningSource::External {
-                        let mut buf = std::mem::take(&mut ws.backward_accum.external_noise_buf);
-                        fill_external_opening_noise(
-                            training_ctx,
-                            s,
-                            child.openings.offset,
-                            child.successor_node_id,
-                            &mut buf,
-                        )?;
-                        external_noise = Some(buf);
-                    }
+                    let mut buf = std::mem::take(&mut ws.backward_accum.external_noise_buf);
+                    let noise = resolve_opening_noise(
+                        training_ctx,
+                        s,
+                        &child.openings,
+                        child.successor_node_id,
+                        &mut buf,
+                    )?;
 
                     for (run_local_idx, pp) in (run_lo..run_hi).enumerate() {
                         let sp = pp - child.outcome_range.start;
-                        let (omega, raw_noise): (usize, &[f64]) = if let Some(buf) = &external_noise
-                        {
-                            debug_assert_eq!(
-                                child.openings.len, 1,
-                                "an External child has exactly one opening"
-                            );
-                            (child.outcome_range.start, buf.as_slice())
-                        } else {
-                            // sddp.md "Backward opening order is warm-start-only".
-                            let local_omega = solve_order[sp] as usize;
-                            (
-                                child.outcome_range.start + local_omega,
-                                tree_view.opening(s.0, local_omega),
-                            )
+                        let (omega, raw_noise): (usize, &[f64]) = match &noise {
+                            OpeningNoise::External(column) => (child.outcome_range.start, column),
+                            OpeningNoise::Generated => {
+                                // sddp.md "Backward opening order is warm-start-only".
+                                let local_omega = solve_order[sp] as usize;
+                                (
+                                    child.outcome_range.start + local_omega,
+                                    tree_view.opening(s.0, local_omega),
+                                )
+                            }
                         };
-                        patch_opening_bounds(ws, ctx, training_ctx, raw_noise, x_hat, s);
-
-                        let mut state_duals =
-                            std::mem::take(&mut ws.backward_accum.state_duals_buf);
-                        let mut cut_duals = std::mem::take(&mut ws.backward_accum.cut_duals_buf);
-                        let mut stats_before =
-                            std::mem::take(&mut ws.backward_accum.stats_before_buf);
-                        ws.solver.statistics_into(&mut stats_before);
-
                         // Only each child run's first-solved outcome warm-starts from
                         // the captured `(m, child node)` basis; later outcomes of the
                         // SAME child warm-continue its retained factorization. A child
@@ -291,52 +274,26 @@ pub(crate) fn process_stage_backward_by_node<S: SolverInterface + Send>(
                         } else {
                             None
                         };
-                        let inputs = StageInputs {
-                            stage_context: ctx,
-                            pool: child.successor_pool,
-                            stored_basis: stored,
-                            stage_index: s,
-                            scenario_index: scenario,
-                            iteration: Some(iteration),
-                            node_id: child.successor_node_id,
-                        };
-                        let view = run_stage_solve(ws, &inputs)?;
-                        let objective = extract_duals_from_view(
-                            &view,
-                            succ.cut_state,
-                            &ctx.template(s).col_scale,
+                        let opening_simplex_iters = solve_backward_opening(
+                            &StageOpeningSolver::Frozen,
+                            ws,
+                            ctx,
+                            training_ctx,
+                            succ,
                             &child,
-                            &mut state_duals,
-                            &mut cut_duals,
-                        );
-                        let _ = view;
-                        ws.backward_accum.state_duals_buf = state_duals;
-                        ws.backward_accum.cut_duals_buf = cut_duals;
-
-                        let mut stats_after =
-                            std::mem::take(&mut ws.backward_accum.stats_after_buf);
-                        ws.solver.statistics_into(&mut stats_after);
-                        // Counters are monotonically increasing (mirrors
-                        // `SolverStatsDelta::from_snapshots`); the running sum below
-                        // saturates against overflow across many iterations.
-                        let opening_simplex_iters =
-                            stats_after.total_iterations - stats_before.total_iterations;
+                            stored,
+                            raw_noise,
+                            x_hat,
+                            s,
+                            scenario,
+                            iteration,
+                            omega,
+                            false,
+                        )?;
                         ws.backward_accum.block_pivot_sum[b] = ws.backward_accum.block_pivot_sum[b]
                             .saturating_add(opening_simplex_iters);
                         ws.backward_accum.block_pivot_count[b] =
                             ws.backward_accum.block_pivot_count[b].saturating_add(1);
-                        accumulate_opening_outcome(
-                            ws,
-                            &child,
-                            succ.cut_state,
-                            omega,
-                            objective,
-                            x_hat,
-                            &stats_before,
-                            &stats_after,
-                        );
-                        ws.backward_accum.stats_before_buf = stats_before;
-                        ws.backward_accum.stats_after_buf = stats_after;
 
                         // A reused slot's `coefficients` may carry a DIFFERENT prior
                         // stage's `cut_n_state` (a successor disabling a state group
@@ -368,9 +325,7 @@ pub(crate) fn process_stage_backward_by_node<S: SolverInterface + Send>(
                         count += 1;
                     }
 
-                    if let Some(buf) = external_noise {
-                        ws.backward_accum.external_noise_buf = buf;
-                    }
+                    ws.backward_accum.external_noise_buf = buf;
                 }
             }
 

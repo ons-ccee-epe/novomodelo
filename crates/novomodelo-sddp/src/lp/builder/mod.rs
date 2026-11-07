@@ -48,6 +48,7 @@ mod entries;
 mod fpha_cursor;
 mod generic_constraints;
 mod hydro_state;
+pub(crate) mod inflow_coupling;
 mod layout;
 mod patch;
 mod rows;

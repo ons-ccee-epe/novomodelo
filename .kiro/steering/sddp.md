@@ -932,8 +932,10 @@ from the wrong factorization. The interior hot path is untouched —
 `reconstruct_basis` remains its sole entry, reached through `run_stage_solve`.
 Read: `solve/stage_solve.rs` (`run_stage_solve_terminal_static`,
 `filtered_stored_basis`, `terminal_basis_shape_matches`, and `run_stage_solve`
-for the interior path), `training/forward/enumerated.rs` (`solve_forward_node`'s
-`is_terminal` gate). Pinned by
+for the interior path), `training/forward/node_solve.rs`
+(`solve_forward_node_core`, the one call site of `run_stage_solve_terminal_static`),
+`training/forward/enumerated.rs` (`solve_forward_node`'s `is_terminal` gate).
+Pinned by
 `run_stage_solve_terminal_static_applies_basis_1to1_without_reconstruct_basis`
 (the verbatim copy, no reconstruction) and its interior counterpart
 `run_stage_solve_interior_warm_start_invokes_reconstruct_basis` (an interior
@@ -2109,8 +2111,8 @@ keeps the default, which records.
 
 With the switch off a sampled backward pass does none of the recording work:
 
-- `extract_duals_from_view` copies no cut-row dual;
-- `accumulate_opening_outcome` runs no slot loop;
+- `extract_duals_from_view` and the lazy arm fill no (slot, y) pair;
+  `count_binding_slots` runs no loop;
 - neither scheduler grows or zero-fills a worker's `slot_increments` and
   `metadata_sync_contribution`, or calls `fold_slot_increments_into_sync`;
 - `run_one_backward_level` does not call `sync_stage_metadata`, so no per-worker
@@ -2119,7 +2121,7 @@ With the switch off a sampled backward pass does none of the recording work:
 The workers read the switch from the threshold on the successor view
 (`SuccessorOutcomes`, `SuccessorChild`), an option that is `None` when binding is
 not tracked; the lazy solve reads the same option before
-`accumulate_dcs_binding_counts`. Every cut then keeps `active_count = 0` and
+`fill_resident_cut_dual_slots`. Every cut then keeps `active_count = 0` and
 `last_active_iter` at the value it started with (the activity clock paragraph
 above). The state duals are
 filled by the same routine in both states, so the cuts and the bounds are
@@ -2143,9 +2145,10 @@ Read: `config.rs` (`CutManagementConfig::tracks_binding_activity`),
 `run_one_backward_level`, `compute_one_backward_node`,
 `process_stage_backward`, `sync_stage_metadata`), `training/backward/mod.rs`
 (`SuccessorOutcomes`, `SuccessorChild`),
-`training/backward/duals_extraction.rs` (`extract_duals_from_view`),
-`training/backward/outcome_aggregation.rs` (`accumulate_opening_outcome`,
-`accumulate_dcs_binding_counts`, `fold_slot_increments_into_sync`),
+`training/backward/duals_extraction.rs` (`extract_duals_from_view`,
+`fill_resident_cut_dual_slots`),
+`training/backward/outcome_aggregation.rs` (`count_binding_slots`,
+`fold_slot_increments_into_sync`),
 `training/backward/by_scenario.rs` (`process_by_scenario_backward`),
 `training/backward/by_node.rs` (`process_stage_backward_by_node`),
 `cut/pool.rs` (`CutPool::record_binding`, `CutPool::enforce_budget`),
@@ -2158,8 +2161,8 @@ Read: `config.rs` (`CutManagementConfig::tracks_binding_activity`),
 the truth table over a budget and every strategy),
 `binding_is_recorded_only_when_tracking_is_on`
 (`training/backward/tests.rs`: with the switch off, under both schedulers, the
-pass issues no `u64` sum reduction, moves no slot's metadata, copies no
-cut-row dual and touches no worker buffer, and its cuts equal those of the
+pass issues no `u64` sum reduction, moves no slot's metadata, fills no
+(slot, y) pair and touches no worker buffer, and its cuts equal those of the
 pass with the switch on) and `binding_activity_is_recorded_only_for_a_reader`
 (`tests/cut_basis.rs`: a `level1` run without a budget records nothing, a
 budget-only run and a `dynamic` run record, and a budget that evicts nothing
@@ -2421,7 +2424,7 @@ solves lazily: `run_backward_node_replicated` loads the frozen template of each
 successor it solves and reads state duals only, and nothing in
 `run_enumerated_backward` reaches `sync_stage_metadata`, the only caller of
 `CutPool::record_binding`, so no binding activity is recorded. The enumerated
-forward does have a lazy branch (`solve_forward_node`): it seeds its resident set
+forward does have a lazy branch (`solve_forward_node_core`): it seeds its resident set
 through `build_initial_resident_set` from a window over each cut's
 `last_active_iter`, and under enumerated traversal that clock never advances past
 the cut's generating iteration. Admitting the pairing is the wrong-but-compiling
@@ -2433,8 +2436,8 @@ forwards, are admitted — the reject discriminates on the `Dynamic` variant, no
 any strategy being present.
 
 Read: `setup/mod.rs` (`admission_gate`,
-`reject_dynamic_cut_selection_under_enumerated`), `training/forward/enumerated.rs`
-(`solve_forward_node`), `cut/dcs.rs` (`build_initial_resident_set`),
+`reject_dynamic_cut_selection_under_enumerated`), `training/forward/node_solve.rs`
+(`solve_forward_node_core`), `cut/dcs.rs` (`build_initial_resident_set`),
 `training/backward_pass_state.rs` (`run_enumerated_backward`,
 `sync_stage_metadata`), `training/backward/replicated.rs`
 (`run_backward_node_replicated`). Pinned by
@@ -2656,8 +2659,7 @@ to `[0, 0]` (forward) or leaves the terminal pool empty with `θ`'s `0.0` lower
 bound driving it to `0` (simulation), so the fix is byte-neutral there.
 
 Read: `cut/pool.rs` (`CutPool::has_prefix_cuts`, the flag's only formula),
-`training/forward/enumerated.rs` (`solve_forward_node`),
-`training/forward/stage_solve.rs` (`run_forward_stage`), `simulation/pipeline.rs`
+`training/forward/node_solve.rs` (`solve_forward_node_core`), `simulation/pipeline.rs`
 (`extract_sim_stage_result`, flag read from the stage's pool in
 `solve_simulation_stage`). Do NOT change `evaluate_lower_bound`
 (`training/lower_bound.rs`) — it is correct — and do NOT fold `θ` into the

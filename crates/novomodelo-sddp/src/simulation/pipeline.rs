@@ -28,11 +28,9 @@ use crate::stage_solve::StageInputs;
 use crate::stage_solve::assemble_outgoing_state;
 use crate::stage_solve::fill_unscaled;
 use crate::stage_solve::fill_unscaled_dual;
-use crate::stage_solve::run_stage_solve_over;
 use crate::{
     FutureCostFunction, SddpError,
     context::{StageContext, TrainingContext},
-    dcs::{DcsSolveContext, build_initial_resident_set, lazy_solve_preloaded},
     lp::indexer::HydroCellIndex,
     setup::node_graph::{NodeId, NodePos, StageIdx, Traversal, advance_sampled_node},
     simulation::{
@@ -46,6 +44,7 @@ use crate::{
         },
         types::{ScenarioCategoryCosts, SimulationScenarioResult, SimulationStageResult},
     },
+    solve::{LazyInputs, StageOpeningSolver},
     solver_stats::SolverStatsDelta,
     training::stage_solve_prep::{StageSolvePrep, StageSolvePrepParams, StateSource},
     workspace::{CapturedBasis, SolverWorkspace},
@@ -338,9 +337,8 @@ impl SimLookups {
 }
 
 /// Map a stage-solve [`SddpError`] to a
-/// [`SimulationError`], carrying the scenario/stage ids. Shared by the frozen
-/// `run_stage_solve` path and the DCS `lazy_solve_preloaded` path so both report
-/// failures identically.
+/// [`SimulationError`], carrying the scenario/stage ids. Shared by the frozen and
+/// lazy modes of [`StageOpeningSolver`] so both report failures identically.
 fn map_sim_solver_error(e: SddpError, ids: &SimStageIds) -> SimulationError {
     match e {
         Infeasible {
@@ -377,9 +375,6 @@ fn map_sim_solver_error(e: SddpError, ids: &SimStageIds) -> SimulationError {
 /// cut-free base template (the frozen cut rows are unused); the realized primal is
 /// identical at the optimum by exactness. The lazy solve seeds every active cut, so
 /// scoring finds no candidate and `dcs.violation_tolerance` is never exercised.
-// RATIONALE: the sequential per-stage steps cannot split without fragmenting the
-// per-stage invariant tracking.
-#[allow(clippy::too_many_lines)]
 pub(crate) fn solve_simulation_stage<S: SolverInterface>(
     ws: &mut SolverWorkspace<S>,
     ctx: &StageContext<'_>,
@@ -440,81 +435,57 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
 
     let pool_id = training_ctx.node_graph.nodes[ids.node].pool_id;
 
-    let view_objective = if let Some(params) = dcs {
+    let opening_solver = StageOpeningSolver::from_dcs_params(dcs);
+    let pool = &fcf.pools[pool_id];
+    if !opening_solver.captures_basis() {
         debug_assert_eq!(
-            fcf.pools[pool_id].count_in(load_spec.cut_set),
-            fcf.pools[pool_id].active_count(),
+            pool.count_in(load_spec.cut_set),
+            pool.active_count(),
             "the lazy solve reads the active cuts, so the chosen set must equal them; \
              check_full_fcf_load refuses every load kind, and reconcile_boundary_policy \
              refuses policy.boundary, where it does not"
         );
-        // Simulation has no iteration counter; seed with `current_iteration = 0`.
-        build_initial_resident_set(
-            &fcf.pools[pool_id],
-            0,
-            params.seed_window,
-            &mut ws.backward_accum.dcs_initial_resident,
-        );
-        let dcs_ctx = DcsSolveContext {
-            stage_index: t,
-            scenario_index: ids.scenario_id as usize,
-            iteration: None, // disables the candidate_recency window → every cut a candidate
-            // Simulation solves one LP per (stage, scenario): always fresh.
-            continue_carry: false,
-            node_id: ids.node_id,
-        };
-        // Disjoint borrows of `ws`: `solver`, `dcs_initial_resident` (shared), and
-        // `dcs_solve` (mut) are distinct fields.
-        lazy_solve_preloaded(
-            &mut ws.solver,
-            ctx.template(t),
-            &fcf.pools[pool_id],
-            state,
-            &training_ctx.cut_state_layouts[pool_id],
-            col_scale,
-            None,
-            &ws.backward_accum.dcs_initial_resident,
-            &params,
-            &mut ws.backward_accum.dcs_solve,
-            dcs_ctx,
-        )
-        .map_err(|e| map_sim_solver_error(e, ids))?;
-        let view = ws.backward_accum.dcs_solve.result_view();
-        let objective = view.objective;
-        fill_unscaled(&mut unscaled_primal, view.primal, col_scale);
-        // INVARIANT: on the DCS path `view.dual` is LONGER than the structural
-        // template (the lazy loop appends resident cut rows), carrying cut-row
-        // duals at indices `>= template_num_rows`. Harmless: the reader only reads
-        // structural-row indices. Do NOT truncate or add a `dual.len() ==
-        // template_num_rows` check — that holds on the frozen path but NOT here, and
-        // would drop the structural duals the reader needs.
-        fill_unscaled_dual(&mut unscaled_dual, view.dual, row_scale);
-        objective
-    } else {
-        let inputs = StageInputs {
-            stage_context: ctx,
-            pool: &fcf.pools[pool_id],
-            stored_basis: load_spec.warm_basis,
-            stage_index: t,
-            scenario_index: ids.scenario_id as usize,
-            iteration: None,
-            node_id: ids.node_id,
-        };
-
-        let view = run_stage_solve_over(ws, &inputs, fcf.pools[pool_id].cuts_in(load_spec.cut_set))
-            .map_err(|e| map_sim_solver_error(e, ids))?;
-
-        let objective = view.objective;
-        fill_unscaled(&mut unscaled_primal, view.primal, col_scale);
-        fill_unscaled_dual(&mut unscaled_dual, view.dual, row_scale);
-        objective
+    }
+    // Simulation has no iteration counter; seed with `current_iteration = 0`.
+    opening_solver.seed_resident_set(ws, pool, 0);
+    let inputs = StageInputs {
+        stage_context: ctx,
+        pool,
+        stored_basis: if opening_solver.captures_basis() {
+            load_spec.warm_basis
+        } else {
+            None
+        },
+        stage_index: t,
+        scenario_index: ids.scenario_id as usize,
+        // `None` disables the lazy candidate_recency window: every cut is a candidate.
+        iteration: None,
+        node_id: ids.node_id,
     };
+    let lazy = LazyInputs {
+        state,
+        cut_layout: &training_ctx.cut_state_layouts[pool_id],
+        // One LP per (stage, scenario): always a fresh solve.
+        continue_carry: false,
+    };
+    let view = opening_solver
+        .solve_over(ws, &inputs, pool.cuts_in(load_spec.cut_set), lazy)
+        .map_err(|e| map_sim_solver_error(e, ids))?;
+    let view_objective = view.objective;
+    fill_unscaled(&mut unscaled_primal, view.primal, col_scale);
+    // INVARIANT: on the DCS path `view.dual` is LONGER than the structural
+    // template (the lazy loop appends resident cut rows), carrying cut-row
+    // duals at indices `>= template_num_rows`. Harmless: the reader only reads
+    // structural-row indices. Do NOT truncate or add a `dual.len() ==
+    // template_num_rows` check — that holds on the frozen path but NOT here, and
+    // would drop the structural duals the reader needs.
+    fill_unscaled_dual(&mut unscaled_dual, view.dual, row_scale);
 
     ws.scratch.unscaled_primal = unscaled_primal;
     ws.scratch.unscaled_dual = unscaled_dual;
 
     let include_terminal_theta =
-        training_ctx.horizon.is_terminal(t.next().0) && fcf.pools[pool_id].has_prefix_cuts();
+        training_ctx.horizon.is_terminal(t.next().0) && pool.has_prefix_cuts();
 
     let (immediate_cost, result) = extract_sim_stage_result(
         &mut ws.scratch.inflow_m3s_buf,
@@ -538,7 +509,7 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
     ws.scratch.lag_matrix_buf.clear();
     ws.scratch
         .lag_matrix_buf
-        .extend_from_slice(&ws.current_state[state.inflow_lags.clone()]);
+        .extend_from_slice(&ws.current_state[state.state_dim_lag_range()]);
 
     let stage_lag = ctx.stage_lag(t);
     let downstream_par_order = study_dims.downstream_par_order;
@@ -822,7 +793,7 @@ pub(crate) fn process_scenario_stages<S: SolverInterface>(
         ids.sampler,
         ids.global_scenario,
         ids.total_scenarios,
-        state.inflow_lags.start,
+        state.state_dim_lag_range().start,
         training_ctx,
         ids.root_node,
     );

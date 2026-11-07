@@ -239,12 +239,14 @@ fn minimal_sizing() -> WorkspaceSizing {
     }
 }
 
-/// Records every `set_col_bounds`/`set_row_bounds` call verbatim; `solve` is
-/// never exercised by the solve-preparation pipeline.
+/// Records every `set_col_bounds`/`set_row_bounds` call verbatim, and their
+/// interleaving in `calls` (`'c'` per column call, `'r'` per row call); `solve`
+/// is never exercised by the solve-preparation pipeline.
 #[derive(Default)]
 struct RecordingSolver {
     col_bounds_calls: Vec<(Vec<usize>, Vec<f64>, Vec<f64>)>,
     row_bounds_calls: Vec<(Vec<usize>, Vec<f64>, Vec<f64>)>,
+    calls: Vec<char>,
 }
 
 impl SolverInterface for RecordingSolver {
@@ -261,6 +263,7 @@ impl SolverInterface for RecordingSolver {
     fn add_rows(&mut self, _rows: &RowBatch) {}
 
     fn set_row_bounds(&mut self, indices: &[usize], lower: &[f64], upper: &[f64]) {
+        self.calls.push('r');
         self.row_bounds_calls
             .push((indices.to_vec(), lower.to_vec(), upper.to_vec()));
     }
@@ -268,6 +271,7 @@ impl SolverInterface for RecordingSolver {
     fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
 
     fn set_col_bounds(&mut self, indices: &[usize], lower: &[f64], upper: &[f64]) {
+        self.calls.push('c');
         self.col_bounds_calls
             .push((indices.to_vec(), lower.to_vec(), upper.to_vec()));
     }
@@ -638,6 +642,95 @@ fn run_wires_ncs_patch_matching_pre_collapse_inline_pattern() {
     assert_eq!(lower, &[0.0]);
     let expected_upper = 100.0_f64 * (0.5 + 0.1 * 0.37_f64).clamp(0.0, 1.0);
     assert!((upper[0] - expected_upper).abs() < 1e-9);
+}
+
+/// The state pin reaches the solver first, then the row bounds, then the NCS
+/// column bounds.
+#[test]
+fn run_pins_the_state_columns_before_any_row_bound() {
+    let (stoch, ncs_stage) = make_ncs_stochastic_context();
+    let state = state_layout(0, 0);
+    let templates = vec![StageTemplate {
+        num_cols: 1,
+        num_rows: 0,
+        num_nz: 0,
+        col_starts: vec![0_i32, 0],
+        row_indices: vec![],
+        values: vec![],
+        col_lower: vec![0.0],
+        col_upper: vec![100.0],
+        objective: vec![0.0],
+        row_lower: vec![],
+        row_upper: vec![],
+        n_state: 0,
+        col_scale: Vec::new(),
+        row_scale: Vec::new(),
+    }];
+    let ncs_max_gen = vec![100.0_f64];
+    let ncs_allow_curtailment = vec![true];
+    let ncs_stochastic_dense_col = vec![0_usize];
+    let ncs_stochastic_windows: Vec<(Option<i32>, Option<i32>)> = vec![(None, None)];
+    let state_boxes = vec![unbounded_state_box(state.n_state)];
+    let geometry = vec![StageGeometry {
+        ncs_generation: 0..1,
+        n_blks: 1,
+        ..equipment_free_geometry(&[1]).remove(0)
+    }];
+    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .ncs_stochastic_dense_col(&ncs_stochastic_dense_col)
+        .ncs_stochastic_windows(&ncs_stochastic_windows)
+        .ncs_max_gen(&ncs_max_gen)
+        .ncs_allow_curtailment(&ncs_allow_curtailment);
+    let ctx = fixture.ctx();
+    let horizon = HorizonMode::Finite { num_stages: 1 };
+    let study_dims = StudyDimensions::default();
+    let stages = vec![ncs_stage];
+    let training_ctx = TrainingContext {
+        node_graph: &crate::test_support::chain_node_graph(&stoch),
+        horizon: &horizon,
+        state: &state,
+        cut_state_layouts: &all_enabled_cut_state_layouts(&state, 1),
+        study_dims: &study_dims,
+        inflow_method: &InflowNonNegativityMethod::None,
+        stochastic: &stoch,
+        initial_state: &[],
+        inflow_scheme: SamplingScheme::InSample,
+        load_scheme: SamplingScheme::InSample,
+        ncs_scheme: SamplingScheme::InSample,
+        stages: &stages,
+        historical_library: None,
+        external_inflow_library: None,
+        external_load_library: None,
+        external_ncs_library: None,
+        lag_accum_seed: &[],
+        lag_weight_seed: &[],
+        dcs: None,
+    };
+
+    let raw_noise = vec![0.37_f64];
+    let mut scratch = ScratchBuffers::new(&training_ctx, &ctx, minimal_sizing());
+    let mut solver = RecordingSolver::default();
+    let mut patch_buf = PatchBuffer::new(&state, &[], &[]);
+    let params = StageSolvePrepParams {
+        state_source: StateSource(&[]),
+        raw_noise: &raw_noise,
+    };
+    StageSolvePrep::run(
+        &mut solver,
+        &mut patch_buf,
+        &mut scratch,
+        &ctx,
+        &training_ctx,
+        StageIdx(0),
+        &params,
+    );
+
+    assert_eq!(solver.calls, ['c', 'r', 'c']);
+    assert_eq!(
+        solver.col_bounds_calls[0].0.len(),
+        patch_buf.state_col_patch_count(),
+        "the first column call is the state pin"
+    );
 }
 
 /// `StageSolvePrep::run` patches the load-balance row and the z-inflow row from

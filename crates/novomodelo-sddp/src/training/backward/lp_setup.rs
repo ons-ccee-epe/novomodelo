@@ -8,7 +8,7 @@ use novomodelo_stochastic::{ClassDimensions, ExternalScenarioLibrary};
 use crate::{
     context::{StageContext, TrainingContext},
     error::SddpError,
-    setup::{NodeId, NodePos, StageIdx},
+    setup::{NodeId, NodeOpenings, NodePos, OpeningSource, StageIdx},
     training::stage_solve_prep::{StageSolvePrep, StageSolvePrepParams, StateSource},
     workspace::{BasisStoreSliceMut, CapturedBasis, SolverWorkspace},
 };
@@ -71,7 +71,7 @@ pub(crate) fn patch_opening_bounds<S: SolverInterface + Send>(
 ///
 /// [`SddpError::Validation`] when a class has a nonempty noise segment but no
 /// external library — a genuine setup defect, never a silent fallback to the
-/// generated opening tree (which is exactly the inert-hash bug this removes).
+/// generated opening tree.
 pub(crate) fn fill_external_opening_noise(
     training_ctx: &TrainingContext<'_>,
     stage: StageIdx,
@@ -79,9 +79,8 @@ pub(crate) fn fill_external_opening_noise(
     node_id: NodeId,
     buf: &mut Vec<f64>,
 ) -> Result<(), SddpError> {
-    let stochastic = training_ctx.stochastic;
     assemble_external_opening_noise(
-        stochastic.class_dimensions(),
+        training_ctx.stochastic.class_dimensions(),
         [
             training_ctx.external_inflow_library,
             training_ctx.external_load_library,
@@ -92,6 +91,35 @@ pub(crate) fn fill_external_opening_noise(
         node_id,
         buf,
     )
+}
+
+/// A node's opening noise: its single assembled `External` column, or the
+/// generated tree, which each site indexes with its own opening index.
+pub(crate) enum OpeningNoise<'b> {
+    External(&'b [f64]),
+    Generated,
+}
+
+/// Resolves a node's opening noise, assembling an `External` node's column into `buf`.
+///
+/// # Errors
+///
+/// [`SddpError::Validation`] from [`fill_external_opening_noise`].
+pub(crate) fn resolve_opening_noise<'b>(
+    training_ctx: &TrainingContext<'_>,
+    stage: StageIdx,
+    openings: &NodeOpenings,
+    node_id: NodeId,
+    buf: &'b mut Vec<f64>,
+) -> Result<OpeningNoise<'b>, SddpError> {
+    match openings.source {
+        OpeningSource::External => {
+            debug_assert_eq!(openings.len, 1, "an External node has exactly one opening");
+            fill_external_opening_noise(training_ctx, stage, openings.offset, node_id, buf)?;
+            Ok(OpeningNoise::External(buf.as_slice()))
+        }
+        OpeningSource::Generated => Ok(OpeningNoise::Generated),
+    }
 }
 
 /// Per-class order the assembled noise vector and its dims/libraries follow —

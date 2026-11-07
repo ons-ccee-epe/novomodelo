@@ -72,7 +72,7 @@ use crate::lp::builder::{
 };
 use crate::lp::indexer::{
     AnticipatedPlants, BlockRowFamily, CutStateProjection, EntityPositions, HydroCellIndex,
-    HydroSys, StateDim, StateSpace, StudyDimensions,
+    HydroSys, REGION_ORDER, StateDim, StateSpace, StudyDimensions,
 };
 use crate::noise::{
     DownstreamAccumState, LagAccumState, apply_inflow_slack_col_bounds, transform_inflow_noise,
@@ -1819,7 +1819,10 @@ pub fn write_backward_opening_outcome_for_probe<S: SolverInterface + Send>(
 
     let mut unscaled_primal =
         vec![0.0_f64; ctx.template(producer_stage).num_cols.max(layout.n_state)];
-    unscaled_primal[..layout.n_state].copy_from_slice(raw_producer_state);
+    for region in REGION_ORDER {
+        unscaled_primal[layout.outgoing_block_range(region)]
+            .copy_from_slice(&raw_producer_state[layout.state_dim_range(region)]);
+    }
 
     let mut canonical_state: Vec<f64> = Vec::new();
     let mut lag_accumulator = vec![0.0_f64; layout.hydro_count.max(1)];

@@ -26,7 +26,6 @@ use crate::{
     cut_sync::OutcomeExchangeScratch,
     forward::EnumeratedForwardScratch,
     risk_measure::{BackwardOutcome, RiskMeasure},
-    setup::node_graph::OpeningSource,
     solve::partition,
     stage_solve::{StageInputs, run_stage_solve},
     workspace::SolverWorkspace,
@@ -35,7 +34,7 @@ use crate::{
 use super::{
     SuccessorChild, SuccessorOutcomes, SuccessorSpec,
     duals_extraction::extract_state_duals_only,
-    lp_setup::{fill_external_opening_noise, patch_opening_bounds},
+    lp_setup::{OpeningNoise, load_backward_lp, patch_opening_bounds, resolve_opening_noise},
 };
 
 /// Per-rank scratch for [`run_backward_node_replicated`]: the local
@@ -67,7 +66,7 @@ pub(crate) fn outcome_stride(n_state: usize) -> usize {
 /// arena) at the shared incoming state `x_hat`, appending each opening's
 /// `objective ‖ subgradient` (`1 + cut_state.n_slots()` doubles) to `out`. The
 /// child's LP loads once; an `External` child (`openings.len == 1`) reads its
-/// declared column via [`fill_external_opening_noise`] instead of the
+/// declared column via [`resolve_opening_noise`] instead of the
 /// generated opening tree.
 ///
 /// # Errors
@@ -97,54 +96,31 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
     let tree_view = training_ctx.stochastic.tree_view();
 
     ws.solver.reset_solver_state();
-    super::lp_setup::load_backward_lp(ws, child);
+    load_backward_lp(ws, child);
 
     let mut state_duals = std::mem::take(&mut ws.backward_accum.state_duals_buf);
+    let mut buf = std::mem::take(&mut ws.backward_accum.external_noise_buf);
 
-    if child.openings.source == OpeningSource::External {
-        debug_assert_eq!(
-            (local_start, local_end),
-            (0, 1),
-            "an External child has exactly one opening"
-        );
-        let mut buf = std::mem::take(&mut ws.backward_accum.external_noise_buf);
-        fill_external_opening_noise(
-            training_ctx,
-            s,
-            child.openings.offset,
-            child.successor_node_id,
-            &mut buf,
-        )?;
-        patch_opening_bounds(ws, ctx, training_ctx, &buf, x_hat, s);
-        let inputs = StageInputs {
-            stage_context: ctx,
-            pool: child.successor_pool,
-            stored_basis: None,
-            stage_index: s,
-            scenario_index: scenario_base,
-            iteration: Some(iteration),
-            node_id: child.successor_node_id,
-        };
-        let view = run_stage_solve(ws, &inputs)?;
-        let objective = extract_state_duals_only(
-            &view,
-            succ.cut_state,
-            &ctx.template(s).col_scale,
-            &mut state_duals,
-        );
-        out.push(objective);
-        out.extend_from_slice(&state_duals[..n_state]);
-        ws.backward_accum.external_noise_buf = buf;
-    } else {
-        for local_omega in local_start..local_end {
-            let raw_noise = tree_view.opening(s.0, local_omega);
-            patch_opening_bounds(ws, ctx, training_ctx, raw_noise, x_hat, s);
+    match resolve_opening_noise(
+        training_ctx,
+        s,
+        &child.openings,
+        child.successor_node_id,
+        &mut buf,
+    )? {
+        OpeningNoise::External(noise) => {
+            debug_assert_eq!(
+                (local_start, local_end),
+                (0, 1),
+                "an External child has exactly one opening"
+            );
+            patch_opening_bounds(ws, ctx, training_ctx, noise, x_hat, s);
             let inputs = StageInputs {
                 stage_context: ctx,
                 pool: child.successor_pool,
                 stored_basis: None,
                 stage_index: s,
-                scenario_index: scenario_base + local_omega,
+                scenario_index: scenario_base,
                 iteration: Some(iteration),
                 node_id: child.successor_node_id,
             };
@@ -158,7 +134,32 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
             out.push(objective);
             out.extend_from_slice(&state_duals[..n_state]);
         }
+        OpeningNoise::Generated => {
+            for local_omega in local_start..local_end {
+                let raw_noise = tree_view.opening(s.0, local_omega);
+                patch_opening_bounds(ws, ctx, training_ctx, raw_noise, x_hat, s);
+                let inputs = StageInputs {
+                    stage_context: ctx,
+                    pool: child.successor_pool,
+                    stored_basis: None,
+                    stage_index: s,
+                    scenario_index: scenario_base + local_omega,
+                    iteration: Some(iteration),
+                    node_id: child.successor_node_id,
+                };
+                let view = run_stage_solve(ws, &inputs)?;
+                let objective = extract_state_duals_only(
+                    &view,
+                    succ.cut_state,
+                    &ctx.template(s).col_scale,
+                    &mut state_duals,
+                );
+                out.push(objective);
+                out.extend_from_slice(&state_duals[..n_state]);
+            }
+        }
     }
+    ws.backward_accum.external_noise_buf = buf;
     ws.backward_accum.state_duals_buf = state_duals;
     Ok(())
 }
@@ -184,7 +185,7 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
 /// A Generated terminal leaf or an interior successor is never eligible
 /// (sddp.md "The branching backward integrates every successor
 /// exhaustively") — every non-eligible child still loads and solves its own
-/// LP, exactly as before fusion. A predicate-eligible child whose captured
+/// LP. A predicate-eligible child whose captured
 /// slice is unexpectedly absent falls back to solving it directly instead of
 /// unwrapping — correctness-preserving, logged as an error since the forward
 /// capture should have populated it.

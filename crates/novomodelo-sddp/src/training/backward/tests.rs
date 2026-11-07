@@ -52,7 +52,7 @@ use novomodelo_core::scenario::SamplingScheme;
 use novomodelo_core::{StageStateConfig, WorkerPhaseTimings};
 use novomodelo_io::config::BackwardScheduler;
 
-use super::BackwardResult;
+use super::{BackwardResult, by_scenario::prepare_child_lp};
 use crate::{
     backward_pass_state::{BackwardPassInputs, BackwardPassState},
     build_cut_row_batch_into,
@@ -67,6 +67,7 @@ use crate::{
     risk_measure::{BackwardOutcome, RiskMeasure},
     setup::NodeId,
     setup::node_graph::{NodePos, StageIdx, Traversal},
+    solve::StageOpeningSolver,
     solver_stats::SolverStatsDelta,
     state_exchange::ExchangeBuffers,
     test_support::{self, StageContextFixture, equipment_free_geometry, permissive_state_boxes},
@@ -3383,7 +3384,7 @@ fn binding_is_recorded_only_when_tracking_is_on() {
         assert!(
             on.workspaces
                 .iter()
-                .any(|ws| !ws.backward_accum.cut_duals_buf.is_empty()),
+                .any(|ws| !ws.backward_accum.cut_dual_slots.is_empty()),
             "{scheduler:?}: the fixture must copy cut-row duals for the off leg to have power"
         );
 
@@ -3418,7 +3419,7 @@ fn binding_is_recorded_only_when_tracking_is_on() {
         assert!(
             off.workspaces
                 .iter()
-                .all(|ws| ws.backward_accum.cut_duals_buf.is_empty()),
+                .all(|ws| ws.backward_accum.cut_dual_slots.is_empty()),
             "{scheduler:?}: cut-row duals were copied with tracking off"
         );
 
@@ -4313,7 +4314,7 @@ fn run_one_trial_state_with_stores(
         &succ_spec,
         &outcomes,
         &mut basis_slice,
-        &super::StageOpeningSolver::Frozen,
+        &StageOpeningSolver::Frozen,
         0,
         0,
         0,
@@ -4410,6 +4411,7 @@ fn per_child_backward_isolates_column_basis_and_pool_metadata() {
     use crate::setup::node_graph::{NodeOpenings, OpeningSource};
 
     let n_stages = 2_usize;
+    let n_pools = 3;
     let stochastic = make_stochastic_context(n_stages, 1);
     let state = test_support::state_layout(1, 0);
     let n_state = state.n_state;
@@ -4431,7 +4433,7 @@ fn per_child_backward_isolates_column_basis_and_pool_metadata() {
     };
     let study_dims = test_support::study_dims();
     let node_graph = crate::test_support::chain_node_graph(&stochastic);
-    let cut_state_layouts = test_support::all_enabled_cut_state_layouts(&state, n_stages);
+    let cut_state_layouts = test_support::all_enabled_cut_state_layouts(&state, n_pools);
     let training_ctx = TrainingContext {
         node_graph: &node_graph,
         horizon: &horizon,
@@ -4457,7 +4459,6 @@ fn per_child_backward_isolates_column_basis_and_pool_metadata() {
     // Two distinct non-leaf pools (1 and 2), each carrying active cuts so binding
     // metadata is non-trivial; pool 0 is the generating (root) pool. The populated
     // counts and active slots are read back from the FCF rather than assumed.
-    let n_pools = 3;
     let mut fcf = FutureCostFunction::new(n_pools, n_state, 1, 10, &vec![0u32; n_pools]);
     fcf.add_cut(NodeId(1), 1, 1, 0, 0.0, &vec![0.0; n_state]);
     fcf.add_cut(NodeId(2), 2, 1, 0, 0.0, &vec![0.0; n_state]);
@@ -4570,7 +4571,7 @@ fn per_child_backward_isolates_column_basis_and_pool_metadata() {
         &succ_spec,
         &outcomes,
         &mut basis_slices[0],
-        &super::StageOpeningSolver::Frozen,
+        &StageOpeningSolver::Frozen,
         0,
         0,
         0,
@@ -5264,10 +5265,9 @@ fn run_dcs_backward_trial_state_at(
     // load after the per-child solver-state reset). The `Frozen` variant loads the
     // child's frozen all-cuts LP; the `Lazy` variant loads the cut-free core +
     // builds the metadata seed.
-    let opening_solver = super::StageOpeningSolver::from_dcs_params(
-        dcs.filter(|params| params.is_active(iteration)),
-    );
-    opening_solver.prepare(ws, &ctx, &succ, &child0, iteration);
+    let opening_solver =
+        StageOpeningSolver::from_dcs_params(dcs.filter(|params| params.is_active(iteration)));
+    prepare_child_lp(&opening_solver, ws, &ctx, &succ, &child0, iteration);
     // Initialise the per-opening accumulator buffers the trial-point helper
     // expects (mirrors process_stage_backward's per-stage setup).
     let n_openings = succ.probabilities.len();
@@ -5765,13 +5765,13 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
     // per-child prepare/load (mirrors process_by_scenario_backward's per-child
     // load). A dynamic `dcs` active from iteration 2 with `iteration = 5` selects `Lazy`,
     // whose prepare loads the cut-free core + builds the metadata seed.
-    let opening_solver = super::StageOpeningSolver::from_dcs_params(
+    let opening_solver = StageOpeningSolver::from_dcs_params(
         training_ctx
             .dcs
             .map(|config| config.resolve(Phase::Backward.profile().primal_feasibility_tolerance))
             .filter(|params| params.is_active(iteration)),
     );
-    opening_solver.prepare(ws, &ctx, &succ, &child0, iteration);
+    prepare_child_lp(&opening_solver, ws, &ctx, &succ, &child0, iteration);
     let n_openings = succ.probabilities.len();
     while ws.backward_accum.outcomes.len() < n_openings {
         ws.backward_accum.outcomes.push(BackwardOutcome {

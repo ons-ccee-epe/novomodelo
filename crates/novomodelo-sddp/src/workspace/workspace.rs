@@ -68,7 +68,7 @@ pub struct CapturedBasis {
 /// reader; it is retained for diagnostics and to allow re-introducing a
 /// state-dependent reuse policy without a wire-format change. The DCS arm
 /// captures no basis by design (a captured basis would describe the frozen
-/// layout, not the DCS resident subset — see `StageOpeningSolver::solve_lazy`),
+/// layout, not the DCS resident subset — see `StageOpeningSolver::captures_basis`),
 /// so there the field is never part of a consumed warm-start.
 pub const BASIS_BROADCAST_FORMAT_TAG: i32 = 2;
 
@@ -365,7 +365,7 @@ pub enum NoisePreallocation {
 /// per-worker fields need no synchronisation; the sequential merge phase after
 /// the parallel region sums their contributions.
 ///
-/// `slot_increments`, `metadata_sync_contribution` and `cut_duals_buf` are
+/// `slot_increments`, `metadata_sync_contribution` and `cut_dual_slots` are
 /// grown, zeroed and filled only while the pass records binding activity (the
 /// successor view's `cut_activity_tolerance` is `Some`).
 #[derive(Default)]
@@ -412,9 +412,9 @@ pub(crate) struct BackwardAccumulators {
     pub(crate) block_pivot_count: Vec<u64>,
     /// Per-opening scratch for the incoming-state columns' reduced costs; grows to `indexer.n_state`.
     pub(crate) state_duals_buf: Vec<f64>,
-    /// Per-opening scratch for cut-row duals; grows to
-    /// `succ.num_cuts_at_successor`.
-    pub(crate) cut_duals_buf: Vec<f64>,
+    /// Per-opening scratch of (pool slot, raw cut-row dual) pairs, one per cut
+    /// row the binding count reads; grows to `succ.num_cuts_at_successor`.
+    pub(crate) cut_dual_slots: Vec<(usize, f64)>,
     /// Reusable `[hydro | load-bus | NCS]` opening-noise buffer for an External
     /// successor node, assembled from the external libraries at the node's
     /// column. Empty and never touched on the generated/sampled path.
@@ -472,7 +472,7 @@ impl BackwardAccumulators {
             block_pivot_sum: Vec::new(),
             block_pivot_count: Vec::new(),
             state_duals_buf: Vec::new(),
-            cut_duals_buf: Vec::new(),
+            cut_dual_slots: Vec::new(),
             external_noise_buf: Vec::new(),
             staged_cuts_buf: Vec::new(),
             opening_outcomes_buf: Vec::new(),

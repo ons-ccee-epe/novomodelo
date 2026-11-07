@@ -23,9 +23,9 @@ use crate::setup::node_graph::NodeId;
 use crate::setup::node_graph::{EnumeratedPlan, NodeGraph, NodePos, StageIdx, Traversal};
 use crate::{
     backward::{
-        BackwardResult, ReplicatedScratch, StageOpeningSolver, StageWorkerOpeningDelta, StagedCut,
-        SuccessorEntry, SuccessorOutcomes, SuccessorSpec, by_node_block_count, by_node_finish,
-        by_scenario_finish, hardest_first_block_order, identity_block_order, merge_block_pivots,
+        BackwardResult, ReplicatedScratch, StageWorkerOpeningDelta, StagedCut, SuccessorEntry,
+        SuccessorOutcomes, SuccessorSpec, by_node_block_count, by_node_finish, by_scenario_finish,
+        hardest_first_block_order, identity_block_order, merge_block_pivots,
         process_by_scenario_backward, process_stage_backward_by_node, reify_successor_outcomes,
         resolve_block_size, run_backward_node_replicated,
     },
@@ -40,6 +40,7 @@ use crate::{
     lp::indexer::{CutStateProjection, StateSpace},
     rank_reconcile::reconcile_result_with_max,
     risk_measure::RiskMeasure,
+    solve::StageOpeningSolver,
     solver_phase::Phase,
     solver_stats::{
         SolverStatsDelta, StageWorkerStatsBuffer, WORKER_STATS_ENTRY_STRIDE,
