@@ -68,7 +68,7 @@ fn finish_orders_entries_canonically_whatever_the_push_order() {
     let permuted = finished([4, 1, 6, 0, 3, 5, 2]);
 
     assert_eq!(in_order.hydro_starts, permuted.hydro_starts);
-    assert_eq!(in_order.rows, permuted.rows);
+    assert_eq!(in_order.positions, permuted.positions);
     let bits = |coefficients: &[f64]| coefficients.iter().map(|c| c.to_bits()).collect::<Vec<_>>();
     assert_eq!(bits(&in_order.coefficients), bits(&permuted.coefficients));
 }
@@ -95,4 +95,27 @@ fn finish_lists_each_touched_row_once_with_its_unscaled_bounds() {
         bits(coupling.touched_row_upper()),
         bits(&[row_upper[1], row_upper[4], row_upper[6]])
     );
+}
+
+#[test]
+fn finish_places_each_entry_at_its_touched_row_position() {
+    let mut sink = InflowCouplingSink::new(2);
+    sink.record(HydroSys::new(0), 7, -1.0);
+    sink.record(HydroSys::new(0), 2, -2.0);
+    sink.record(HydroSys::new(1), 2, -3.0);
+    sink.record(HydroSys::new(1), 9, -4.0);
+
+    let coupling = sink.finish(&[0.0; 10], &[0.0; 10]);
+    let shift_entries = |h: usize| {
+        coupling
+            .hydro_shift_entries(HydroSys::new(h))
+            .collect::<Vec<_>>()
+    };
+    let entries = |h: usize| coupling.hydro_entries(HydroSys::new(h)).collect::<Vec<_>>();
+
+    assert_eq!(coupling.touched_rows(), [2, 7, 9]);
+    assert_eq!(shift_entries(0), vec![(0, -2.0), (1, -1.0)]);
+    assert_eq!(shift_entries(1), vec![(0, -3.0), (2, -4.0)]);
+    assert_eq!(entries(0), vec![(2, -2.0), (7, -1.0)]);
+    assert_eq!(entries(1), vec![(2, -3.0), (9, -4.0)]);
 }

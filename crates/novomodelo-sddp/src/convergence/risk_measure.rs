@@ -42,11 +42,7 @@ impl RiskMeasureScratch {
     /// Create an empty scratch; capacities grow lazily on first use.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            upper_bounds: Vec::new(),
-            order: Vec::new(),
-            mu: Vec::new(),
-        }
+        Self::default()
     }
 }
 
@@ -205,6 +201,21 @@ impl RiskMeasure {
         probabilities: &[f64],
         scratch: &mut RiskMeasureScratch,
     ) -> f64 {
+        let weights = self.opening_weights_into(costs, probabilities, scratch);
+        // EAVaR = E_μ*[Z]: by the dual representation (Risk Measures SS4.2)
+        // the greedy allocation in compute_cvar_weights_from_costs_into is
+        // the optimal μ*, so the weighted sum below equals (1-λ)E[Z]+λCVaR_α[Z].
+        costs.iter().zip(weights).map(|(c, w)| c * w).sum()
+    }
+
+    /// The weights `μ*_ω` this measure puts on `costs`: `probabilities` under
+    /// `Expectation`, the `CVaR` allocation held in `scratch.mu` otherwise.
+    pub(crate) fn opening_weights_into<'a>(
+        &self,
+        costs: &[f64],
+        probabilities: &'a [f64],
+        scratch: &'a mut RiskMeasureScratch,
+    ) -> &'a [f64] {
         debug_assert_eq!(
             costs.len(),
             probabilities.len(),
@@ -216,11 +227,8 @@ impl RiskMeasure {
         );
 
         match self {
-            RiskMeasure::Expectation => costs.iter().zip(probabilities).map(|(c, p)| c * p).sum(),
+            RiskMeasure::Expectation => probabilities,
             RiskMeasure::CVaR { alpha, lambda } => {
-                // EAVaR = E_μ*[Z]: by the dual representation (Risk Measures SS4.2)
-                // the greedy allocation in compute_cvar_weights_from_costs_into is
-                // the optimal μ*, so the weighted sum below equals (1-λ)E[Z]+λCVaR_α[Z].
                 compute_cvar_weights_from_costs_into(
                     costs,
                     probabilities,
@@ -228,11 +236,7 @@ impl RiskMeasure {
                     *lambda,
                     scratch,
                 );
-                costs
-                    .iter()
-                    .zip(scratch.mu.iter())
-                    .map(|(c, w)| c * w)
-                    .sum()
+                &scratch.mu
             }
         }
     }
@@ -1185,6 +1189,48 @@ mod tests {
                 "lambda = {lambda} weights over outcomes must be {what}, bit for bit"
             );
         }
+    }
+
+    #[test]
+    fn opening_weights_into_returns_the_weight_kernel_output() {
+        use super::{RiskMeasureScratch, compute_cvar_weights_from_costs_into};
+
+        let costs = [12.0, 40.0, 7.5, 40.0, 23.0];
+        let probs = [0.1_f64, 0.3, 0.2, 0.15, 0.25];
+        let cvar = RiskMeasure::CVaR {
+            alpha: 0.5,
+            lambda: 0.5,
+        };
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<u64>>();
+
+        let mut reference = RiskMeasureScratch::new();
+        compute_cvar_weights_from_costs_into(&costs, &probs, 0.5, 0.5, &mut reference);
+        assert_ne!(
+            bits(&reference.mu),
+            bits(&probs),
+            "the CVaR weights must differ from the probabilities for the pointer check to discriminate"
+        );
+
+        let mut scratch = RiskMeasureScratch::new();
+        let expectation_weights =
+            RiskMeasure::Expectation.opening_weights_into(&costs, &probs, &mut scratch);
+        assert!(std::ptr::eq(expectation_weights, probs.as_slice()));
+        let cvar_weights = cvar.opening_weights_into(&costs, &probs, &mut scratch);
+        assert_eq!(bits(cvar_weights), bits(&reference.mu));
+
+        let inline_expectation: f64 = costs.iter().zip(&probs).map(|(c, p)| c * p).sum();
+        let inline_cvar: f64 = costs.iter().zip(&reference.mu).map(|(c, w)| c * w).sum();
+        assert_eq!(
+            RiskMeasure::Expectation
+                .evaluate_risk_into(&costs, &probs, &mut scratch)
+                .to_bits(),
+            inline_expectation.to_bits()
+        );
+        assert_eq!(
+            cvar.evaluate_risk_into(&costs, &probs, &mut scratch)
+                .to_bits(),
+            inline_cvar.to_bits()
+        );
     }
 }
 

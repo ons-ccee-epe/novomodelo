@@ -752,7 +752,8 @@ pub fn geometry(
         PostStudyResolved::default(),
     );
 
-    let par_lp = geometry_par(dims.max_par_order, &hydros);
+    let hydro_ids: Vec<EntityId> = hydros.iter().map(|hydro| hydro.id).collect();
+    let par_lp = par_with_ar_coefficients(&hydro_ids, &vec![0.1; dims.max_par_order]);
     let mut fixture = CtxFixture {
         hydros,
         thermals,
@@ -785,15 +786,16 @@ pub fn geometry(
     StageLayout::new(&ctx, &stage, 0).geometry
 }
 
-/// A PAR(`order`) model for every hydro in `hydros` (finite placeholder
-/// coefficients), so a [`CtxFixture`] built over them derives a state with
-/// `order` dense lags per hydro.
+/// A PAR model per id in `hydro_ids` with `ar_coefficients` at every stage; every std is 1.0, so
+/// ψ equals the coefficients.
 #[expect(
     clippy::expect_used,
     reason = "geometry_stage carries a season_id, the one input PrecomputedPar::build rejects an AR model for lacking"
 )]
-fn geometry_par(order: usize, hydros: &[Hydro]) -> PrecomputedPar {
-    let hydro_ids: Vec<EntityId> = hydros.iter().map(|hydro| hydro.id).collect();
+pub(crate) fn par_with_ar_coefficients(
+    hydro_ids: &[EntityId],
+    ar_coefficients: &[f64],
+) -> PrecomputedPar {
     let models: Vec<InflowModel> = hydro_ids
         .iter()
         .map(|&hydro_id| InflowModel {
@@ -801,13 +803,13 @@ fn geometry_par(order: usize, hydros: &[Hydro]) -> PrecomputedPar {
             stage_id: 0,
             mean_m3s: 1.0,
             std_m3s: 1.0,
-            ar_coefficients: vec![0.1; order],
+            ar_coefficients: ar_coefficients.to_vec(),
             residual_std_ratio: 1.0,
             annual: None,
         })
         .collect();
-    PrecomputedPar::build(&models, &[geometry_stage(1)], &hydro_ids, None)
-        .expect("geometry_par: placeholder PAR models are valid")
+    PrecomputedPar::build(&models, &[geometry_stage(1)], hydro_ids, None)
+        .expect("par_with_ar_coefficients: placeholder PAR models are valid")
 }
 
 /// Build a [`StageGeometry`] carrying only a load-balance row family

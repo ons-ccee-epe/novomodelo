@@ -56,6 +56,14 @@ impl InflowCouplingSink {
         let mut touched_rows = rows.clone();
         touched_rows.sort_unstable();
         touched_rows.dedup();
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a position is below the touched-row count, at most the base-row count"
+        )]
+        let positions = rows
+            .iter()
+            .map(|&row| touched_rows.partition_point(|&touched| touched < row) as u32)
+            .collect();
         let touched_row_lower = touched_rows
             .iter()
             .map(|&row| row_lower[row as usize])
@@ -66,7 +74,7 @@ impl InflowCouplingSink {
             .collect();
         InflowCoupling {
             hydro_starts,
-            rows,
+            positions,
             coefficients,
             touched_rows,
             touched_row_lower,
@@ -75,13 +83,13 @@ impl InflowCouplingSink {
     }
 }
 
-/// Hydro-major `(base row, unscaled coefficient)` entries, rows ascending within a
-/// hydro and duplicates kept, plus the unscaled template bounds of each distinct
-/// row those entries touch.
+/// Hydro-major `(touched-row position, unscaled coefficient)` entries, positions
+/// ascending within a hydro and duplicates kept, where a position indexes
+/// [`Self::touched_rows`], plus the unscaled template bounds of each of those rows.
 #[derive(Debug, Clone)]
 pub struct InflowCoupling {
     hydro_starts: Vec<usize>,
-    rows: Vec<u32>,
+    positions: Vec<u32>,
     coefficients: Vec<f64>,
     touched_rows: Vec<u32>,
     touched_row_lower: Vec<f64>,
@@ -97,11 +105,21 @@ impl InflowCoupling {
 
     /// Hydro `h`'s `(base row, coefficient)` entries, rows ascending.
     pub fn hydro_entries(&self, h: HydroSys) -> impl Iterator<Item = (usize, f64)> + '_ {
+        self.hydro_shift_entries(h)
+            .map(|(position, coefficient)| (self.touched_rows[position] as usize, coefficient))
+    }
+
+    /// Hydro `h`'s `(touched-row position, coefficient)` entries, positions ascending;
+    /// a position indexes [`Self::touched_rows`].
+    pub(crate) fn hydro_shift_entries(
+        &self,
+        h: HydroSys,
+    ) -> impl Iterator<Item = (usize, f64)> + '_ {
         let span = self.hydro_starts[h.get()]..self.hydro_starts[h.get() + 1];
-        self.rows[span.clone()]
+        self.positions[span.clone()]
             .iter()
             .zip(&self.coefficients[span])
-            .map(|(&row, &coefficient)| (row as usize, coefficient))
+            .map(|(&position, &coefficient)| (position as usize, coefficient))
     }
 
     /// Distinct base rows the entries touch, ascending.

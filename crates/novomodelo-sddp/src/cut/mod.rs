@@ -15,6 +15,7 @@
 //!   wire format.
 //! - [`row`] — cut-row construction; owns the cut-sign convention
 //!   (`push_scaled_coefficient` negates the raw subgradient).
+//! - [`rhs`] — the canonical cut-row RHS association.
 //! - [`row_map`] — [`CutRowMap`]: slot-to-LP-row mapping that preserves cut-pool
 //!   slot identity for warm-start basis reconstruction.
 //! - [`cut_selection`] — [`CutSelectionStrategy`]: the `Level1` periodic
@@ -23,18 +24,22 @@
 //! - [`cut_sync`] — [`CutSyncBuffers`]: MPI cut-synchronization scratch space.
 //! - [`basis_reconstruct`] — warm-start basis reconstruction for the frozen
 //!   hot path and the DCS path.
+//! - [`chain_rule`] — the cut lag coefficients and intercept rebuilt from the
+//!   compact LP's duals.
 //! - `trial_states` — the per-slot rows of the state each scored cut was
 //!   computed at, reached through [`CutPool`].
 //! - `ownership` — the per-state record of the Level 1 owner, a cache of the
 //!   ownership function, reached through [`CutPool`].
 
 pub mod basis_reconstruct;
+pub mod chain_rule;
 pub mod cut_selection;
 pub mod cut_sync;
 pub mod dcs;
 pub mod fcf;
 mod ownership;
 pub mod pool;
+pub mod rhs;
 pub mod row;
 pub mod row_map;
 #[cfg(test)]

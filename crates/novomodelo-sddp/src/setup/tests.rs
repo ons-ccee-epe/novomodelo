@@ -7,7 +7,7 @@ use crate::SddpError;
 use crate::block_clock::M3S_TO_HM3;
 use crate::hydro_models::{PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel};
 use crate::lp::builder::StageGeometry;
-use crate::lp::indexer::{AnticipatedPlants, InflowForm, StateSpace, ThermalSys};
+use crate::lp::indexer::{AnticipatedPlants, ChainRuleSlots, InflowForm, StateSpace, ThermalSys};
 use crate::test_support;
 use crate::time_value::DeliveryCalendar;
 use novomodelo_io::test_support::owned_piece_defaults;
@@ -8699,6 +8699,55 @@ fn cut_state_layouts_stored_one_per_pool_and_reachable() {
         setup.fcf.pools[1].state_dimension > n_hydros,
         "lag-enabled pool 1 must carry storage + lags (dimension > N)",
     );
+}
+
+#[test]
+fn cut_state_layouts_resolve_the_lag_point_per_pool() {
+    let lags = StageStateConfig {
+        storage: true,
+        inflow_lags: true,
+    };
+    let storage_only = StageStateConfig {
+        storage: true,
+        inflow_lags: false,
+    };
+    let system = par2_system_with_state_configs(&[lags, storage_only, lags, lags]);
+    let setup = setup_from_system(&system);
+    let layouts = &setup.inputs.cut_state_layouts;
+
+    assert_eq!(layouts[0].lag_point().lag0(), 0..0);
+    assert_eq!(layouts[0].lag_point().shifted(), 0..0);
+    for layout in &layouts[1..] {
+        assert_eq!(layout.lag_point().lag0(), 1..2);
+        assert_eq!(layout.lag_point().shifted(), 2..3);
+    }
+}
+
+#[test]
+fn chain_rule_slots_of_a_pool_pair_follow_each_pools_layout() {
+    let lags = StageStateConfig {
+        storage: true,
+        inflow_lags: true,
+    };
+    let storage_only = StageStateConfig {
+        storage: true,
+        inflow_lags: false,
+    };
+    let slots_of_pools_1_and_0 = |state_configs: &[StageStateConfig]| {
+        let setup = setup_from_system(&par2_system_with_state_configs(state_configs));
+        let layouts = &setup.inputs.cut_state_layouts;
+        ChainRuleSlots::compose(&setup.inputs.stage_data.state, &layouts[1], &layouts[0])
+    };
+
+    let storage_only_extracted = slots_of_pools_1_and_0(&[lags, storage_only, lags, lags]);
+    assert_eq!(storage_only_extracted.extracted_lag(), 0..0);
+    assert_eq!(storage_only_extracted.resident_lag0(), 1..2);
+    assert_eq!(storage_only_extracted.resident_shifted(), 2..3);
+
+    let storage_only_resident = slots_of_pools_1_and_0(&[lags, lags, storage_only, lags]);
+    assert_eq!(storage_only_resident.resident_lag0(), 0..0);
+    assert_eq!(storage_only_resident.resident_shifted(), 0..0);
+    assert_eq!(storage_only_resident.extracted_lag(), 1..3);
 }
 
 // ---------------------------------------------------------------------------

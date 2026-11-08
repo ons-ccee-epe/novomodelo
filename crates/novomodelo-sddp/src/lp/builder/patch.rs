@@ -73,11 +73,13 @@ pub struct PatchBuffer {
     /// [`fill_load_patches`]: PatchBuffer::fill_load_patches
     active_load_patches: usize,
 
-    /// Number of z-inflow patches from the most recent [`fill_z_inflow_patches`]
-    /// call (`hydro_count` when active, zero otherwise).
+    /// Number of inflow patches from the most recent [`fill_z_inflow_patches`]
+    /// (`hydro_count` when active, zero otherwise) or [`fill_inflow_shift_patches`]
+    /// (the touched-row count) call.
     ///
     /// [`fill_z_inflow_patches`]: PatchBuffer::fill_z_inflow_patches
-    active_z_inflow_patches: usize,
+    /// [`fill_inflow_shift_patches`]: PatchBuffer::fill_inflow_shift_patches
+    active_inflow_patches: usize,
 }
 
 impl PatchBuffer {
@@ -88,11 +90,12 @@ impl PatchBuffer {
     /// `geometry_per_stage`; `R` is chosen by `state.inflow_form`.
     ///
     /// The row region holds load patches at `[0, M*B)` followed by `R` inflow
-    /// patches, populated before each LP solve via [`fill_load_patches`] /
-    /// [`fill_z_inflow_patches`]; the column region is populated by
-    /// `fill_col_state_patches`. Pass `&[]` for `load_bus_indices` when there is
-    /// no stochastic load and `&[]` for `geometry_per_stage` when there is no
-    /// stochastic load or the caller has no geometry to size from.
+    /// patches, populated before each LP solve via [`fill_load_patches`] and
+    /// [`fill_z_inflow_patches`] (logical form) or [`fill_inflow_shift_patches`]
+    /// (compact form); the column region is populated by `fill_col_state_patches`.
+    /// Pass `&[]` for `load_bus_indices` when there is no stochastic load and `&[]`
+    /// for `geometry_per_stage` when there is no stochastic load or the caller has no
+    /// geometry to size from.
     ///
     /// Under the logical form `R = N` z-inflow patches, whatever
     /// `inflow_coupling_per_stage` holds. Under the compact form `R` is the
@@ -116,6 +119,7 @@ impl PatchBuffer {
     ///
     /// [`fill_load_patches`]: PatchBuffer::fill_load_patches
     /// [`fill_z_inflow_patches`]: PatchBuffer::fill_z_inflow_patches
+    /// [`fill_inflow_shift_patches`]: PatchBuffer::fill_inflow_shift_patches
     #[must_use]
     pub fn new(
         state: &StateSpace,
@@ -152,7 +156,7 @@ impl PatchBuffer {
             n_anticipated: state.n_anticipated,
             k_max: state.k_max,
             active_load_patches: 0,
-            active_z_inflow_patches: 0,
+            active_inflow_patches: 0,
         }
     }
 
@@ -336,7 +340,7 @@ impl PatchBuffer {
     ) {
         let n = self.hydro_count;
         if n == 0 || z_inflow_rhs.is_empty() {
-            self.active_z_inflow_patches = 0;
+            self.active_inflow_patches = 0;
             return;
         }
 
@@ -355,15 +359,81 @@ impl PatchBuffer {
             self.upper[slot] = scaled;
         }
 
-        self.active_z_inflow_patches = n;
+        self.active_inflow_patches = n;
     }
 
-    /// Active row-patch count (load + z-inflow) for the full forward-pass
-    /// slice passed to `set_row_bounds`.
+    /// Fill one patch per row `coupling` touches, each bound being its unscaled template
+    /// bound minus `Σ_h G[r,h]·z_hat[h]`, then multiplied by `row_scale[r]` (pass `&[]`
+    /// for no scaling).
+    ///
+    /// The shift accumulates from `+0.0` in ascending hydro, then entry, order and is
+    /// subtracted from the unscaled bound; a scaled bound is never shifted or divided
+    /// back. Must be called after [`fill_load_patches`], whose `active_load_patches`
+    /// sets this region's offset.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if the region does not fit the row buffer or if
+    /// `z_hat.len() != coupling.n_hydros()`.
+    ///
+    /// [`fill_load_patches`]: PatchBuffer::fill_load_patches
+    pub fn fill_inflow_shift_patches(
+        &mut self,
+        coupling: &InflowCoupling,
+        z_hat: &[f64],
+        row_scale: &[f64],
+    ) {
+        let start = self.active_load_patches;
+        let touched_rows = coupling.touched_rows();
+        let n_rows = touched_rows.len();
+        debug_assert!(
+            start + n_rows <= self.indices.len(),
+            "inflow shift region [{start}, {end}) exceeds the row buffer length {len}",
+            end = start + n_rows,
+            len = self.indices.len(),
+        );
+        debug_assert_eq!(
+            z_hat.len(),
+            coupling.n_hydros(),
+            "z_hat length {got} != n_hydros {expected}",
+            got = z_hat.len(),
+            expected = coupling.n_hydros(),
+        );
+
+        for (p, &row) in touched_rows.iter().enumerate() {
+            self.indices[start + p] = row as usize;
+            self.lower[start + p] = 0.0;
+        }
+        for (h, &z) in z_hat[..coupling.n_hydros()].iter().enumerate() {
+            for (p, coefficient) in coupling.hydro_shift_entries(HydroSys::new(h)) {
+                self.lower[start + p] += coefficient * z;
+            }
+        }
+        let scaled = |bound: f64, row: u32| {
+            if row_scale.is_empty() {
+                bound
+            } else {
+                bound * row_scale[row as usize]
+            }
+        };
+        let lower_bounds = coupling.touched_row_lower();
+        let upper_bounds = coupling.touched_row_upper();
+        for (p, &row) in touched_rows.iter().enumerate() {
+            let shift = self.lower[start + p];
+            self.lower[start + p] = scaled(lower_bounds[p] - shift, row);
+            self.upper[start + p] = scaled(upper_bounds[p] - shift, row);
+        }
+
+        self.active_inflow_patches = n_rows;
+    }
+
+    /// Active row-patch count (load + inflow, from [`Self::fill_z_inflow_patches`] or
+    /// [`Self::fill_inflow_shift_patches`]) for the full forward-pass slice passed to
+    /// `set_row_bounds`.
     #[must_use]
     #[inline]
     pub fn forward_patch_count(&self) -> usize {
-        self.active_load_patches + self.active_z_inflow_patches
+        self.active_load_patches + self.active_inflow_patches
     }
 
     /// Column-bound region capacity (`N*(1+L) + n_buckets + A*K` incoming-state pins).
@@ -382,8 +452,9 @@ impl PatchBuffer {
     reason = "test docs name LP symbols that are not code identifiers"
 )]
 mod tests {
-    use super::{PatchBuffer, StateBox, StateSpace};
+    use super::{InflowCoupling, PatchBuffer, StateBox, StateSpace};
     use crate::lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime};
+    use crate::lp::builder::inflow_coupling::InflowCouplingSink;
     use crate::lp::indexer::{BlockGrid, BlockRowFamily, HydroSys};
     use crate::test_support::{
         equipment_free_geometry, inflow_coupling_with_entries, state_layout, state_layout_full,
@@ -575,6 +646,116 @@ mod tests {
             row_lens(&PatchBuffer::new(&compact, &[0], &geometry, &[])),
             [2; 3]
         );
+    }
+
+    fn compact_state(n_hydros: usize) -> StateSpace {
+        StateSpace::new_compact(
+            n_hydros,
+            1,
+            Vec::new(),
+            Vec::new(),
+            AnticipatedResolution::default(),
+            &vec![1; n_hydros],
+        )
+    }
+
+    fn shifted(
+        n_hydros: usize,
+        coupling: &InflowCoupling,
+        z_hat: &[f64],
+        row_scale: &[f64],
+    ) -> PatchBuffer {
+        let mut buf = PatchBuffer::new(
+            &compact_state(n_hydros),
+            &[],
+            &[],
+            std::slice::from_ref(coupling),
+        );
+        buf.fill_inflow_shift_patches(coupling, z_hat, row_scale);
+        buf
+    }
+
+    fn bits(values: &[f64]) -> Vec<u64> {
+        values.iter().map(|v| v.to_bits()).collect()
+    }
+
+    #[test]
+    fn inflow_shift_accumulates_hydros_in_ascending_order_from_positive_zero() {
+        let two_53 = 9_007_199_254_740_992.0_f64;
+        let z_hat = [two_53, 1.0, -two_53];
+        let mut sink = InflowCouplingSink::new(3);
+        for h in 0..3 {
+            sink.record(HydroSys::new(h), 0, 1.0);
+        }
+        let coupling = sink.finish(&[5.0], &[5.0]);
+
+        let buf = shifted(3, &coupling, &z_hat, &[]);
+
+        let reversed_shift = z_hat.iter().rev().fold(0.0, |shift, z| shift + 1.0 * z);
+        assert_eq!((5.0 - reversed_shift).to_bits(), 4.0_f64.to_bits());
+        assert_eq!(bits(&buf.lower[..1]), bits(&[5.0]));
+        assert_eq!(bits(&buf.upper[..1]), bits(&[5.0]));
+    }
+
+    #[test]
+    fn inflow_shift_moves_both_bounds_and_keeps_infinite_ones() {
+        let mut sink = InflowCouplingSink::new(1);
+        for row in 0..4 {
+            sink.record(HydroSys::new(0), row, 2.0);
+        }
+        let coupling = sink.finish(
+            &[5.0, 1.0, 2.0, f64::NEG_INFINITY],
+            &[5.0, 9.0, f64::INFINITY, 7.0],
+        );
+
+        let buf = shifted(1, &coupling, &[1.5], &[]);
+
+        assert_eq!(buf.indices[..4], [0, 1, 2, 3]);
+        assert_eq!(
+            bits(&buf.lower[..4]),
+            bits(&[2.0, -2.0, -1.0, f64::NEG_INFINITY])
+        );
+        assert_eq!(bits(&buf.upper[..4]), bits(&[2.0, 6.0, f64::INFINITY, 4.0]));
+    }
+
+    #[test]
+    fn inflow_shift_scales_the_shifted_unscaled_bound() {
+        let mut sink = InflowCouplingSink::new(1);
+        sink.record(HydroSys::new(0), 1, 1.0);
+        let coupling = sink.finish(&[5.0, 5.0], &[5.0, 5.0]);
+
+        let buf = shifted(1, &coupling, &[3.0], &[7.0, 4.0]);
+
+        assert_eq!(buf.indices[0], 1);
+        assert_eq!(bits(&buf.lower[..1]), bits(&[8.0]));
+        assert_eq!(bits(&buf.upper[..1]), bits(&[8.0]));
+    }
+
+    #[test]
+    fn inflow_shift_region_follows_the_load_patches() {
+        let state = compact_state(2);
+        let coupling = inflow_coupling_with_entries(2, &[(0, 3), (1, 5)]);
+        let mut buf = PatchBuffer::new(
+            &state,
+            &[0, 1],
+            &equipment_free_geometry(&[3]),
+            std::slice::from_ref(&coupling),
+        );
+        let load_rhs = [100.0_f64, 90.0, 80.0, 200.0, 190.0, 180.0];
+        buf.fill_load_patches(
+            BlockRowFamily::per_block(20..26),
+            BlockGrid::new(3, 1),
+            &load_rhs,
+            &[0, 1],
+            &[],
+        );
+
+        buf.fill_inflow_shift_patches(&coupling, &[1.0, 2.0], &[]);
+
+        assert_eq!(buf.indices[..6], [20, 21, 22, 23, 24, 25]);
+        assert_eq!(buf.indices[6..8], [3, 5]);
+        assert_eq!(bits(&buf.lower[6..8]), bits(&[1.0, 2.0]));
+        assert_eq!(buf.forward_patch_count(), 8);
     }
 
     /// `state_col_patch_count` returns N*(1+L) + n_buckets + A*K.

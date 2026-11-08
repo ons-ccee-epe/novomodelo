@@ -2,9 +2,37 @@
 //! dimensions a stage enables, for cut storage, subgradient extraction (incoming
 //! columns), and cut rendering (outgoing columns).
 
+use std::ops::Range;
+
 use novomodelo_core::temporal::StageStateConfig;
 
-use super::{CutSlot, InCol, OutCol, REGION_ORDER, StateDim, StateSpace};
+use super::{CutSlot, HydroSys, InCol, OutCol, REGION_ORDER, StateDim, StateRegion, StateSpace};
+
+/// Cut-slot ranges of the lag point a folded cut row is evaluated at: Φ(h, 0) =
+/// `ẑ_h`, the realized inflow of this stage, and Φ(h, l) = `â_(h, l−1)` for
+/// l ≥ 1, the incoming lag one step back. Slots are lag-major: with N hydros,
+/// slot `lag0.start + l·N + h` holds (h, l).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CutLagPoint {
+    lag0: Range<usize>,
+    shifted: Range<usize>,
+}
+
+impl CutLagPoint {
+    /// Slots of (h, 0), read against p and σ·η.
+    #[inline]
+    #[must_use]
+    pub fn lag0(&self) -> Range<usize> {
+        self.lag0.clone()
+    }
+
+    /// Slots of (h, l ≥ 1), read against â one lag back.
+    #[inline]
+    #[must_use]
+    pub fn shifted(&self) -> Range<usize> {
+        self.shifted.clone()
+    }
+}
 
 /// A storage-scoped view of the global state vector exposing only the cut-state
 /// dimensions a stage enables, plus travel-time buckets and anticipated state
@@ -57,6 +85,9 @@ pub struct CutStateProjection {
     /// LP outgoing column per render pair; parallel to
     /// [`Self::render_coeff_indices`].
     render_columns: Vec<OutCol>,
+
+    /// Slot ranges of the lag region; both `0..0` when the pool holds none.
+    lag_point: CutLagPoint,
 }
 
 impl CutStateProjection {
@@ -121,12 +152,33 @@ impl CutStateProjection {
             incoming_columns.len()
         );
 
+        let lag_dims = global.state_dim_lag_range();
+        let lag_point = if StateRegion::Lag.cut_enabled(state_config) && !lag_dims.is_empty() {
+            let start = global_state_indices.partition_point(|d| d.get() < lag_dims.start);
+            let first_shifted = start + global.hydro_count;
+            CutLagPoint {
+                lag0: start..first_shifted,
+                shifted: first_shifted..start + lag_dims.len(),
+            }
+        } else {
+            CutLagPoint {
+                lag0: 0..0,
+                shifted: 0..0,
+            }
+        };
+
+        debug_assert!(
+            global_state_indices.windows(2).all(|w| w[0] < w[1]),
+            "global_state_indices must ascend strictly: slot_of binary-searches it"
+        );
+
         Self {
             global_state_indices,
             incoming_columns,
             outgoing_columns,
             render_coeff_indices,
             render_columns,
+            lag_point,
         }
     }
 
@@ -136,6 +188,13 @@ impl CutStateProjection {
     #[must_use]
     pub fn n_slots(&self) -> usize {
         self.incoming_columns.len()
+    }
+
+    /// Slot ranges of the lag region.
+    #[inline]
+    #[must_use]
+    pub fn lag_point(&self) -> &CutLagPoint {
+        &self.lag_point
     }
 
     #[inline]
@@ -167,6 +226,17 @@ impl CutStateProjection {
     #[must_use]
     pub fn global_state_index(&self, s: CutSlot) -> StateDim {
         self.global_state_indices[self.checked_slot(s)]
+    }
+
+    /// Inverse of [`Self::global_state_index`]: the slot projecting `dim`, or
+    /// `None` when this pool does not enable it. Logarithmic in [`Self::n_slots`].
+    #[inline]
+    #[must_use]
+    pub(crate) fn slot_of(&self, dim: StateDim) -> Option<CutSlot> {
+        self.global_state_indices
+            .binary_search(&dim)
+            .ok()
+            .map(CutSlot::new)
     }
 
     /// Dot this pool's projected cut `coefficients` (length [`Self::n_slots`])
@@ -318,9 +388,121 @@ impl CutStateProjection {
     }
 }
 
+/// Lag-region slot ranges of one chain-rule step: the cut rows of the resident
+/// pool `P_t` are read, and the new cut's lag coefficients are written into the
+/// extracted pool `P_(t−1)`. Each pool maps global state dimensions to its own
+/// slots, so the pair view composes the two lookups by dimension, never by
+/// position.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainRuleSlots {
+    resident_lag0: Range<usize>,
+    resident_shifted: Range<usize>,
+    extracted_lag: Range<usize>,
+    n_hydros: usize,
+    lag_depth: usize,
+}
+
+impl ChainRuleSlots {
+    /// Compose the pair view of `resident` (`P_t`, read) and `extracted`
+    /// (`P_(t−1)`, written) over the one `global` layout both project. A pool
+    /// without the lag region contributes an empty range.
+    #[must_use]
+    pub fn compose(
+        global: &StateSpace,
+        resident: &CutStateProjection,
+        extracted: &CutStateProjection,
+    ) -> Self {
+        let (n_hydros, lag_depth) = (global.hydro_count, global.max_par_order);
+        if n_hydros * lag_depth == 0 {
+            return Self {
+                resident_lag0: 0..0,
+                resident_shifted: 0..0,
+                extracted_lag: 0..0,
+                n_hydros,
+                lag_depth,
+            };
+        }
+
+        let extracted_lag = extracted
+            .slot_of(global.lag_state_dim(0, HydroSys::new(0)))
+            .map_or(0..0, |s| s.get()..s.get() + n_hydros * lag_depth);
+        let slots = Self {
+            resident_lag0: resident.lag_point().lag0(),
+            resident_shifted: resident.lag_point().shifted(),
+            extracted_lag,
+            n_hydros,
+            lag_depth,
+        };
+
+        if cfg!(debug_assertions) {
+            for l in 0..lag_depth {
+                for h in 0..n_hydros {
+                    let dim = global.lag_state_dim(l, HydroSys::new(h));
+                    let offset = l * n_hydros + h;
+                    if !slots.extracted_lag.is_empty() {
+                        debug_assert_eq!(
+                            extracted.slot_of(dim),
+                            Some(CutSlot::new(slots.extracted_lag.start + offset)),
+                            "extracted pool must hold the whole lag region, lag-major"
+                        );
+                    }
+                    if !slots.resident_lag0.is_empty() {
+                        let slot = CutSlot::new(slots.resident_lag0.start + offset);
+                        debug_assert_eq!(
+                            resident.global_state_index(slot),
+                            dim,
+                            "resident pool must hold the whole lag region, lag-major"
+                        );
+                    }
+                }
+            }
+        }
+
+        slots
+    }
+
+    /// Resident slots of (h, 0); the chain rule's `g_h` reads them.
+    #[inline]
+    #[must_use]
+    pub fn resident_lag0(&self) -> Range<usize> {
+        self.resident_lag0.clone()
+    }
+
+    /// Resident slots of (h, l ≥ 1); the chain rule's w term reads them.
+    #[inline]
+    #[must_use]
+    pub fn resident_shifted(&self) -> Range<usize> {
+        self.resident_shifted.clone()
+    }
+
+    /// Extracted slots of every (h, l), lag-major; the new cut's lag
+    /// coefficients are written here.
+    #[inline]
+    #[must_use]
+    pub fn extracted_lag(&self) -> Range<usize> {
+        self.extracted_lag.clone()
+    }
+
+    /// Hydro count N of the shared layout.
+    #[inline]
+    #[must_use]
+    pub fn n_hydros(&self) -> usize {
+        self.n_hydros
+    }
+
+    /// Lag depth L of the shared layout.
+    #[inline]
+    #[must_use]
+    pub fn lag_depth(&self) -> usize {
+        self.lag_depth
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CutSlot, CutStateProjection, InCol, OutCol, StageStateConfig, StateDim};
+    use super::{
+        ChainRuleSlots, CutSlot, CutStateProjection, InCol, OutCol, StageStateConfig, StateDim,
+    };
     use crate::indexer::{HydroSys, StateRegion, StateSpace};
     use crate::lead_time::AnticipatedResolution;
     use crate::test_support::constant_lead_resolution;
@@ -365,6 +547,10 @@ mod tests {
     const STORAGE_ONLY: StageStateConfig = StageStateConfig {
         storage: true,
         inflow_lags: false,
+    };
+    const LAGS_ONLY: StageStateConfig = StageStateConfig {
+        storage: false,
+        inflow_lags: true,
     };
 
     #[test]
@@ -943,6 +1129,99 @@ mod tests {
         let cut = CutStateProjection::new(&global, ALL_ENABLED);
         let _ = cut.incoming_column(CutSlot::new(global.state_dim_lag_range().start));
     }
+
+    #[test]
+    fn lag_point_follows_the_lag_region_of_each_projection() {
+        let (compact, logical) = compact_and_logical_twins();
+
+        for (config, lag0, shifted) in [
+            (ALL_ENABLED, 2..4, 4..6),
+            (STORAGE_ONLY, 0..0, 0..0),
+            (LAGS_ONLY, 0..2, 2..4),
+        ] {
+            let compact_cut = CutStateProjection::new(&compact, config);
+            let logical_cut = CutStateProjection::new(&logical, config);
+            for cut in [&compact_cut, &logical_cut] {
+                assert_eq!(cut.lag_point().lag0(), lag0, "{config:?}");
+                assert_eq!(cut.lag_point().shifted(), shifted, "{config:?}");
+            }
+            assert_eq!(compact_cut.lag_point(), logical_cut.lag_point());
+        }
+    }
+
+    #[test]
+    fn lag_point_of_a_single_lag_has_no_shifted_slots() {
+        let single_lag = CutStateProjection::new(&finalized(3, 1, &[]), ALL_ENABLED);
+        assert_eq!(single_lag.lag_point().lag0(), 3..6);
+        assert!(single_lag.lag_point().shifted().is_empty());
+
+        for global in [finalized(3, 0, &[]), finalized(0, 2, &[])] {
+            let cut = CutStateProjection::new(&global, ALL_ENABLED);
+            assert_eq!(cut.lag_point().lag0(), 0..0);
+            assert_eq!(cut.lag_point().shifted(), 0..0);
+        }
+    }
+
+    #[test]
+    fn slot_of_finds_each_dim_through_a_reduced_projection() {
+        let (_, global) = compact_and_logical_twins();
+        let cut = CutStateProjection::new(&global, LAGS_ONLY);
+
+        assert_eq!(
+            cut.slot_of(global.lag_state_dim(0, HydroSys::new(0))),
+            Some(CutSlot::new(0))
+        );
+        assert_eq!(
+            cut.slot_of(global.lag_state_dim(1, HydroSys::new(1))),
+            Some(CutSlot::new(3))
+        );
+        assert_eq!(cut.slot_of(StateDim::new(0)), None);
+        for j in 0..cut.n_slots() {
+            let slot = CutSlot::new(j);
+            assert_eq!(cut.slot_of(cut.global_state_index(slot)), Some(slot));
+        }
+    }
+
+    fn compose_pair(resident: StageStateConfig, extracted: StageStateConfig) -> ChainRuleSlots {
+        let (_, global) = compact_and_logical_twins();
+        ChainRuleSlots::compose(
+            &global,
+            &CutStateProjection::new(&global, resident),
+            &CutStateProjection::new(&global, extracted),
+        )
+    }
+
+    #[test]
+    fn chain_rule_slots_compose_identical_projections() {
+        let slots = compose_pair(ALL_ENABLED, ALL_ENABLED);
+
+        assert_eq!(slots.resident_lag0(), 2..4);
+        assert_eq!(slots.resident_shifted(), 4..6);
+        assert_eq!(slots.extracted_lag(), 2..6);
+        assert_eq!(slots.n_hydros(), 2);
+        assert_eq!(slots.lag_depth(), 2);
+    }
+
+    #[test]
+    fn chain_rule_slots_are_empty_on_the_side_without_lags() {
+        let no_extracted_lags = compose_pair(ALL_ENABLED, STORAGE_ONLY);
+        assert_eq!(no_extracted_lags.extracted_lag(), 0..0);
+        assert_eq!(no_extracted_lags.resident_lag0(), 2..4);
+        assert_eq!(no_extracted_lags.resident_shifted(), 4..6);
+
+        let no_resident_lags = compose_pair(STORAGE_ONLY, ALL_ENABLED);
+        assert_eq!(no_resident_lags.resident_lag0(), 0..0);
+        assert_eq!(no_resident_lags.resident_shifted(), 0..0);
+        assert_eq!(no_resident_lags.extracted_lag(), 2..6);
+    }
+
+    #[test]
+    fn chain_rule_slots_map_by_dimension_not_position() {
+        let slots = compose_pair(ALL_ENABLED, LAGS_ONLY);
+
+        assert_eq!(slots.resident_lag0(), 2..4);
+        assert_eq!(slots.extracted_lag(), 0..4);
+    }
 }
 
 #[cfg(test)]
@@ -1151,6 +1430,33 @@ mod proptests {
             for (slot, &(incoming, outgoing)) in expected.iter().enumerate() {
                 prop_assert_eq!(cut.incoming_column(CutSlot::new(slot)).get(), incoming);
                 prop_assert_eq!(cut.outgoing_column(CutSlot::new(slot)).get(), outgoing);
+            }
+        }
+
+        #[test]
+        fn lag_point_slots_map_to_the_lag_state_dims(
+            (global, state_config) in state_layout_and_config_strategy()
+        ) {
+            let cut = CutStateProjection::new(&global, state_config);
+            let lag_point = cut.lag_point();
+            let (n, l) = (global.hydro_count, global.max_par_order);
+
+            if state_config.inflow_lags && n * l > 0 {
+                let (lag0, shifted) = (lag_point.lag0(), lag_point.shifted());
+                prop_assert_eq!(lag0.len(), n);
+                prop_assert_eq!(shifted.len(), n * (l - 1));
+                prop_assert_eq!(shifted.start, lag0.end);
+                for lag in 0..l {
+                    for h in 0..n {
+                        prop_assert_eq!(
+                            cut.global_state_index(CutSlot::new(lag0.start + lag * n + h)),
+                            global.lag_state_dim(lag, HydroSys::new(h))
+                        );
+                    }
+                }
+            } else {
+                prop_assert_eq!(lag_point.lag0(), 0..0);
+                prop_assert_eq!(lag_point.shifted(), 0..0);
             }
         }
     }
