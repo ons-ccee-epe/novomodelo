@@ -265,7 +265,8 @@ pub enum RowOwner {
 
 /// Inverts [`StageGeometry::water_balance_row`], [`StageGeometry::load_balance_row`]
 /// and [`StateSpace::z_inflow_row`] over the `System`'s own entity counts and
-/// `0..family.rows_per_entity(geom.n_blks)`.
+/// `0..family.rows_per_entity(geom.n_blks)`. The z-inflow rows are the ones
+/// [`StateSpace::z_inflow_rows`] lists, so a compact `StateSpace` has none.
 #[must_use]
 pub fn row_owners(
     system: &System,
@@ -290,7 +291,7 @@ pub fn row_owners(
             owners.insert(geom.load_balance_row(bus, blk), RowOwner::Load { bus, blk });
         }
     }
-    for h in 0..system.hydros().len() {
+    for h in 0..state.z_inflow_rows().len() {
         let hydro = HydroSys::new(h);
         owners.insert(state.z_inflow_row(hydro), RowOwner::ZInflow { hydro });
     }

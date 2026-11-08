@@ -4371,6 +4371,8 @@ mod compact_form;
 mod deficit_and_withdrawal;
 #[path = "template_integration/evaporation.rs"]
 mod evaporation;
+#[path = "template_integration/expander.rs"]
+mod expander;
 #[path = "template_integration/fpha_model.rs"]
 mod fpha_model;
 #[path = "template_integration/fpha_structure.rs"]

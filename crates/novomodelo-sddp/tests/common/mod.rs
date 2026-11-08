@@ -31,9 +31,11 @@ pub mod builders;
 pub mod compact_map;
 pub mod cut_oracles;
 pub mod in_code_studies;
+pub mod oracle_tolerance;
 pub mod parity_hash;
 pub mod parquet_fixtures;
 pub mod permute;
+pub mod power_guards;
 pub mod selection_fingerprint;
 
 /// `n` as a positive count; panics on zero.

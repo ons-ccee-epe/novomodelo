@@ -420,3 +420,703 @@ fn frozen_inflow_slack_bounds_reach_the_successor_lp() {
         }
     }
 }
+
+mod power_guard_checks {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use crate::common::power_guards::{DualFamily, Guard, PowerEvidence};
+
+    const ALL_GUARDS: [Guard; 10] = [
+        Guard::BindingLagCut,
+        Guard::BindingShiftedLagCut,
+        Guard::NonUnitZScale,
+        Guard::NonUnitLagScale,
+        Guard::RescaledCoupledRowWithDual,
+        Guard::NonUnitCoupledRowScaleWithDual,
+        Guard::FamilyDual(DualFamily::Fpha),
+        Guard::FamilyDual(DualFamily::Evaporation),
+        Guard::FamilyDual(DualFamily::Generic),
+        Guard::CouplingDualEveryHydro,
+    ];
+
+    fn failure_message(evidence: &PowerEvidence, guards: &[Guard]) -> Option<String> {
+        let payload = catch_unwind(AssertUnwindSafe(|| {
+            evidence.assert_holds("demo gate", guards);
+        }))
+        .err()?;
+        Some(
+            *payload
+                .downcast::<String>()
+                .expect("an assert message is a String"),
+        )
+    }
+
+    #[test]
+    fn complete_evidence_meets_every_guard() {
+        let mut evidence = PowerEvidence::new(2, 2);
+        evidence.record_cut(1.5, &[3.0, 0.0, 0.0, 0.0]);
+        evidence.record_cut(0.5, &[0.0, 0.0, 2.0, 0.0]);
+        evidence.record_expanded_scales(&[0.5, 1.0], &[1.0, 2.0]);
+        evidence.record_coupled_row(0.7, 2.0, 4.0);
+        for family in [
+            DualFamily::Fpha,
+            DualFamily::Evaporation,
+            DualFamily::Generic,
+        ] {
+            evidence.record_family_dual(family, 1.0);
+        }
+        evidence.record_coupling_dual(0, 1.0);
+        evidence.record_coupling_dual(1, -2.0);
+
+        evidence.assert_holds("demo gate", &ALL_GUARDS);
+    }
+
+    #[test]
+    fn a_negative_zero_dual_is_not_binding() {
+        let coefficients = [1.0, 0.0, 0.0, 0.0];
+        let mut evidence = PowerEvidence::new(2, 2);
+        evidence.record_cut(-0.0, &coefficients);
+        evidence.record_cut(1.0, &[-0.0; 4]);
+        let message = failure_message(&evidence, &[Guard::BindingLagCut])
+            .expect("neither a -0.0 dual nor a -0.0 coefficient is binding");
+        assert!(message.contains("[BindingLagCut]"), "{message}");
+
+        evidence.record_cut(1.0, &coefficients);
+        evidence.assert_holds("demo gate", &[Guard::BindingLagCut]);
+    }
+
+    #[test]
+    fn a_lag_zero_only_cut_fails_the_shifted_guard() {
+        let mut evidence = PowerEvidence::new(2, 2);
+        evidence.record_cut(1.0, &[2.0, 0.0, 0.0, 0.0]);
+        evidence.record_cut(1.0, &[0.0, 2.0, 0.0, 0.0]);
+        evidence.assert_holds("demo gate", &[Guard::BindingLagCut]);
+        let message = failure_message(&evidence, &[Guard::BindingShiftedLagCut])
+            .expect("a lag-0 coefficient is not shifted");
+        assert!(message.contains("[BindingShiftedLagCut]"), "{message}");
+
+        evidence.record_cut(1.0, &[0.0, 0.0, 2.0, 0.0]);
+        evidence.assert_holds("demo gate", &[Guard::BindingShiftedLagCut]);
+    }
+
+    #[test]
+    fn every_unmet_guard_is_listed_in_one_panic() {
+        let evidence = PowerEvidence::new(2, 2);
+        evidence.assert_holds("demo gate", &[]);
+        let message = failure_message(
+            &evidence,
+            &[
+                Guard::NonUnitZScale,
+                Guard::FamilyDual(DualFamily::Evaporation),
+                Guard::CouplingDualEveryHydro,
+            ],
+        )
+        .expect("empty evidence meets no guard");
+        assert_eq!(
+            message,
+            "demo gate: the fixture lacks power: unmet guards \
+             [NonUnitZScale, FamilyDual(Evaporation), CouplingDualEveryHydro]"
+        );
+    }
+
+    #[test]
+    fn a_zero_coupling_dual_on_one_hydro_fails() {
+        let mut evidence = PowerEvidence::new(3, 1);
+        evidence.record_coupling_dual(0, 1.0);
+        evidence.record_coupling_dual(1, -0.0);
+        evidence.record_coupling_dual(2, 3.0);
+        let message = failure_message(&evidence, &[Guard::CouplingDualEveryHydro])
+            .expect("hydro 1 has no nonzero coupling dual");
+        assert!(message.contains("[CouplingDualEveryHydro]"), "{message}");
+
+        evidence.record_coupling_dual(1, 0.5);
+        evidence.assert_holds("demo gate", &[Guard::CouplingDualEveryHydro]);
+    }
+
+    #[test]
+    fn unit_scales_fail_the_scale_guards() {
+        let mut evidence = PowerEvidence::new(2, 2);
+        evidence.record_expanded_scales(&[1.0, 1.0], &[1.0, 1.0]);
+        evidence.record_coupled_row(2.0, 1.0, 1.0);
+        evidence.record_coupled_row(0.0, 2.0, 4.0);
+        let message = failure_message(
+            &evidence,
+            &[
+                Guard::NonUnitZScale,
+                Guard::NonUnitLagScale,
+                Guard::RescaledCoupledRowWithDual,
+                Guard::NonUnitCoupledRowScaleWithDual,
+            ],
+        )
+        .expect("unit scales and a zero-dual row are not evidence");
+        assert!(
+            message.ends_with(
+                "[NonUnitZScale, NonUnitLagScale, RescaledCoupledRowWithDual, \
+                 NonUnitCoupledRowScaleWithDual]"
+            ),
+            "{message}"
+        );
+    }
+}
+
+mod fpha_lag_study_checks {
+    use novomodelo_core::temporal::BlockMode;
+    use novomodelo_sddp::StudySetup;
+    use novomodelo_sddp::setup::{NodePos, StageIdx};
+    use novomodelo_sddp::test_support::{capture_patched_node_template_at, oracle_initial_state};
+    use novomodelo_solver::{ActiveSolver, SolverInterface};
+
+    use crate::common::compact_map::CompactMap;
+    use crate::common::in_code_studies::fpha_lag_study;
+    use crate::common::{Emission, build_setup_in_code_with_models_as};
+
+    const CHRONOLOGICAL_STAGE: usize = 1;
+    const UNIT_SCALE_BITS: u64 = 1.0_f64.to_bits();
+
+    fn build(emission: Emission) -> StudySetup {
+        let (system, config, hydro_models) = fpha_lag_study();
+        build_setup_in_code_with_models_as(system, &config, hydro_models, emission)
+    }
+
+    fn generic_row_start(setup: &StudySetup, stage: usize) -> usize {
+        let templates = &setup.inputs.stage_data.stage_templates;
+        templates.templates[stage].num_rows - templates.generic_constraint_row_entries[stage].len()
+    }
+
+    #[test]
+    fn fpha_lag_study_has_every_required_feature() {
+        let (system, _, _) = fpha_lag_study();
+        let logical = build(Emission::Logical);
+        let compact = build(Emission::Compact);
+        let logical_state = logical.stage_state();
+        let compact_state = compact.stage_state();
+
+        assert_eq!(
+            logical_state.max_par_order, 2,
+            "the logical form's lag state must be PAR(2)"
+        );
+        let logical_ctx = logical.training_ctx();
+        let par = logical_ctx.stochastic.par();
+        for stage in 0..system.stages().len() {
+            for hydro in 0..logical_state.hydro_count {
+                for (lag, &psi) in par.psi_slice(stage, hydro).iter().enumerate() {
+                    assert!(
+                        psi != 0.0 && psi.abs() != 1.0,
+                        "stage {stage} hydro {hydro} lag {lag}: psi {psi} must be nonzero with magnitude not 1"
+                    );
+                }
+            }
+        }
+
+        let stages = system.stages();
+        let modes: Vec<BlockMode> = stages.iter().map(|stage| stage.block_mode).collect();
+        assert_eq!(
+            modes,
+            [
+                BlockMode::Parallel,
+                BlockMode::Chronological,
+                BlockMode::Parallel
+            ],
+            "only the middle stage is chronological"
+        );
+        let hours: Vec<f64> = stages[CHRONOLOGICAL_STAGE]
+            .blocks
+            .iter()
+            .map(|block| block.duration_hours)
+            .collect();
+        assert!(
+            hours.len() == 2 && hours[0] != hours[1],
+            "the chronological stage needs two blocks of different hours, got {hours:?}"
+        );
+
+        let compact_templates = &compact.inputs.stage_data.stage_templates;
+        let generic_start = generic_row_start(&compact, CHRONOLOGICAL_STAGE);
+        let coupling = &compact.stage_ctx().inflow_coupling[CHRONOLOGICAL_STAGE];
+        assert!(
+            coupling
+                .touched_rows()
+                .iter()
+                .any(|&row| row as usize >= generic_start),
+            "stage {CHRONOLOGICAL_STAGE}: no inflow-coupling row at or past the generic-row \
+             start {generic_start}; touched rows {:?}",
+            coupling.touched_rows()
+        );
+
+        for (form, state) in [("logical", logical_state), ("compact", compact_state)] {
+            assert!(
+                state.n_anticipated > 0 && !state.commit_out.is_empty(),
+                "{form}: anticipated state absent (n_anticipated {}, commit_out {:?})",
+                state.n_anticipated,
+                state.commit_out
+            );
+        }
+
+        let logical_templates = &logical.inputs.stage_data.stage_templates;
+        let scales_by_stage = |columns: &std::ops::Range<usize>| -> Vec<Vec<f64>> {
+            (0..system.stages().len())
+                .map(|stage| logical_templates.templates[stage].col_scale[columns.clone()].to_vec())
+                .collect()
+        };
+        let any_off_unit = |scales: &[Vec<f64>]| {
+            scales
+                .iter()
+                .flatten()
+                .any(|scale| scale.to_bits() != UNIT_SCALE_BITS)
+        };
+        let z_scales = scales_by_stage(&logical_state.z_inflow);
+        let lag_scales = scales_by_stage(&logical_state.inflow_lags);
+        assert!(
+            any_off_unit(&z_scales),
+            "no z column scale differs from 1.0 on the logical templates; z scales by stage {z_scales:?}"
+        );
+        assert!(
+            any_off_unit(&lag_scales),
+            "no inflow-lag column scale differs from 1.0 on the logical templates; \
+             lag scales by stage {lag_scales:?}"
+        );
+
+        let coupled_row_scales: Vec<(usize, u32, f64, f64)> = (0..system.stages().len())
+            .flat_map(|stage| {
+                let logical_template = &logical_templates.templates[stage];
+                let compact_template = &compact_templates.templates[stage];
+                let map = CompactMap::of_stage(
+                    logical_state,
+                    compact_state,
+                    logical_template,
+                    compact_template,
+                );
+                compact_templates.inflow_coupling_per_stage[stage]
+                    .touched_rows()
+                    .iter()
+                    .map(|&row| {
+                        let logical_row = (0..logical_template.num_rows)
+                            .find(|&r| map.row(r) == Some(row as usize))
+                            .expect("a coupled compact row is a kept logical row");
+                        (
+                            stage,
+                            row,
+                            logical_template.row_scale[logical_row],
+                            compact_template.row_scale[row as usize],
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert!(
+            coupled_row_scales
+                .iter()
+                .any(|&(_, _, logical, compact)| logical.to_bits() != compact.to_bits()),
+            "no compact coupled row's scale differs from its logical row's; \
+             (stage, compact row, logical scale, compact scale): {coupled_row_scales:?}"
+        );
+    }
+
+    #[test]
+    fn fpha_lag_study_duals_bind_on_a_no_cut_stage_solve() {
+        let setup = build(Emission::Logical);
+        assert_eq!(
+            setup.inputs.node_graph.nodes[NodePos(CHRONOLOGICAL_STAGE)].stage,
+            StageIdx(CHRONOLOGICAL_STAGE),
+            "node position and stage coincide on the chain"
+        );
+        let templates = &setup.inputs.stage_data.stage_templates;
+        let geometry = &templates.geometry_per_stage[CHRONOLOGICAL_STAGE];
+        let zero_noise = vec![0.0; setup.inputs.stochastic.dim()];
+        let template = capture_patched_node_template_at(
+            &setup,
+            NodePos(CHRONOLOGICAL_STAGE),
+            &zero_noise,
+            &oracle_initial_state(&setup),
+        );
+        let mut solver = ActiveSolver::new().expect("ActiveSolver::new");
+        solver.load_model(&template);
+        let view = solver.solve(None).expect("the no-cut stage LP must solve");
+        let dual = view.dual;
+
+        let fpha_duals: Vec<(usize, f64)> = geometry.fpha.clone().map(|r| (r, dual[r])).collect();
+        let evap_duals: Vec<(usize, f64)> = geometry
+            .evap_indices
+            .iter()
+            .map(|e| (e.evap_row, dual[e.evap_row]))
+            .collect();
+        let generic_start = generic_row_start(&setup, CHRONOLOGICAL_STAGE);
+        let generic_duals: Vec<(usize, f64)> = (generic_start..template.num_rows)
+            .map(|r| (r, dual[r]))
+            .collect();
+
+        assert!(
+            fpha_duals.iter().any(|&(_, d)| d != 0.0),
+            "stage {CHRONOLOGICAL_STAGE}: every FPHA row dual is zero: {fpha_duals:?}"
+        );
+        assert!(
+            evap_duals.iter().any(|&(_, d)| d != 0.0),
+            "stage {CHRONOLOGICAL_STAGE}: every evaporation row dual is zero: {evap_duals:?}"
+        );
+        assert!(
+            generic_duals.iter().any(|&(_, d)| d != 0.0),
+            "stage {CHRONOLOGICAL_STAGE}: every generic hydro-inflow row dual is zero: {generic_duals:?}"
+        );
+    }
+}
+
+mod expander_cut_rows {
+    use novomodelo_core::System;
+    use novomodelo_sddp::indexer::CutSlot;
+    use novomodelo_sddp::test_support::decks::committed_decks;
+    use novomodelo_sddp::test_support::expander::{expand_stage_templates, expanded_cut_rows_into};
+    use novomodelo_sddp::{StudySetup, build_cut_row_batch_into};
+    use novomodelo_solver::{ActiveSolver, RowBatch};
+
+    use crate::common::cut_oracles::apply_oracle_config;
+    use crate::common::in_code_studies::fpha_lag_study;
+    use crate::common::{
+        Emission, StubComm, build_setup_in_code_with_models_as, fresh_setup_with,
+        fresh_system_and_setup_as,
+    };
+
+    const LAG_STUDY: &str = "structural/fpha-lag";
+
+    struct CutRowPower {
+        successor_pools_without_lag_cut: Vec<usize>,
+        lag_cuts: usize,
+        shifted_lag_cuts: usize,
+    }
+
+    fn empty_batch() -> RowBatch {
+        RowBatch {
+            num_rows: 0,
+            row_starts: Vec::new(),
+            col_indices: Vec::new(),
+            values: Vec::new(),
+            row_lower: Vec::new(),
+            row_upper: Vec::new(),
+        }
+    }
+
+    fn train(key: &str, setup: &mut StudySetup) {
+        let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+        let outcome = setup
+            .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
+            .expect("training must return Ok");
+        assert!(
+            outcome.error.is_none(),
+            "{key}: training must not error: {:?}",
+            outcome.error
+        );
+    }
+
+    fn assert_forms_share_cut_geometry(key: &str, logical: &StudySetup, compact: &StudySetup) {
+        assert_eq!(
+            logical.stage_state().nonzero_state_indices,
+            compact.stage_state().nonzero_state_indices,
+            "{key}: the forms mask different state dimensions"
+        );
+        let (logical_layouts, compact_layouts) = (
+            logical.training_ctx().cut_state_layouts,
+            compact.training_ctx().cut_state_layouts,
+        );
+        assert_eq!(
+            logical_layouts.len(),
+            compact_layouts.len(),
+            "{key}: the forms have different pool counts"
+        );
+        for (pool, (l, c)) in logical_layouts.iter().zip(compact_layouts).enumerate() {
+            assert_eq!(
+                l.n_slots(),
+                c.n_slots(),
+                "{key}: pool {pool}: the forms project different slot counts"
+            );
+            for j in 0..l.n_slots() {
+                let slot = CutSlot::new(j);
+                assert_eq!(
+                    l.global_state_index(slot),
+                    c.global_state_index(slot),
+                    "{key}: pool {pool} slot {j}: the forms project different state dimensions"
+                );
+            }
+        }
+    }
+
+    fn sorted_entries(batch: &RowBatch, row: usize) -> Vec<(i32, u64)> {
+        let offset = |r: usize| usize::try_from(batch.row_starts[r]).expect("CSR offsets are >= 0");
+        let span = offset(row)..offset(row + 1);
+        let mut entries: Vec<(i32, u64)> = batch.col_indices[span.clone()]
+            .iter()
+            .zip(&batch.values[span])
+            .map(|(&col, value)| (col, value.to_bits()))
+            .collect();
+        entries.sort_unstable();
+        entries
+    }
+
+    fn assert_rows_match(key: &str, pool: usize, got: &RowBatch, want: &RowBatch) {
+        assert_eq!(
+            got.num_rows, want.num_rows,
+            "{key}: pool {pool}: expanded row count vs today's"
+        );
+        for row in 0..want.num_rows {
+            for (what, g, w) in [
+                ("row_lower", got.row_lower[row], want.row_lower[row]),
+                ("row_upper", got.row_upper[row], want.row_upper[row]),
+            ] {
+                assert!(
+                    g.to_bits() == w.to_bits(),
+                    "{key}: pool {pool} row {row}: {what} expanded {g:?}, today's {w:?}"
+                );
+            }
+            let (g, w) = (sorted_entries(got, row), sorted_entries(want, row));
+            assert_eq!(
+                g.len(),
+                w.len(),
+                "{key}: pool {pool} row {row}: expanded entry count vs today's"
+            );
+            if let Some(k) = (0..w.len()).find(|&k| g[k] != w[k]) {
+                panic!(
+                    "{key}: pool {pool} row {row}: sorted entry {k}: expanded (col {}, value {:?}), \
+                     today's (col {}, value {:?})",
+                    g[k].0,
+                    f64::from_bits(g[k].1),
+                    w[k].0,
+                    f64::from_bits(w[k].1)
+                );
+            }
+        }
+    }
+
+    fn assert_expanded_cut_rows_match(
+        key: &str,
+        system: &System,
+        logical: &StudySetup,
+        compact: &StudySetup,
+    ) -> CutRowPower {
+        assert_forms_share_cut_geometry(key, logical, compact);
+        let expanded = expand_stage_templates(system, compact);
+        let state = expanded.layout.state();
+        let logical_templates = &logical.inputs.stage_data.stage_templates.templates;
+        let n_pools = logical.fcf.pools.len();
+        assert_eq!(
+            n_pools,
+            logical_templates.len(),
+            "{key}: a pool must render into the template of its own stage"
+        );
+        let (logical_layouts, compact_layouts) = (
+            logical.training_ctx().cut_state_layouts,
+            compact.training_ctx().cut_state_layouts,
+        );
+
+        let (mut want, mut got) = (empty_batch(), empty_batch());
+        let mut power = CutRowPower {
+            successor_pools_without_lag_cut: Vec::new(),
+            lag_cuts: 0,
+            shifted_lag_cuts: 0,
+        };
+        for pool in 0..n_pools {
+            build_cut_row_batch_into(
+                &mut want,
+                &logical.fcf,
+                pool,
+                logical.stage_state(),
+                &logical_layouts[pool],
+                &logical_templates[pool].col_scale,
+            );
+            expanded_cut_rows_into(
+                &mut got,
+                &logical.fcf,
+                pool,
+                &compact_layouts[pool],
+                &expanded.layout,
+                &expanded.scaled[pool].col_scale,
+            );
+            assert_rows_match(key, pool, &got, &want);
+
+            let mut pool_lag_cuts = 0;
+            for (_, _, coefficients) in logical.fcf.active_cuts(pool) {
+                let deepest_lag = coefficients
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(j, &c)| {
+                        let d = logical_layouts[pool].global_state_index(CutSlot::new(j));
+                        let rendered = state.nonzero_state_indices.binary_search(&d).is_ok();
+                        (c != 0.0 && rendered && state.inflow_lags.contains(&d.get()))
+                            .then(|| (d.get() - state.inflow_lags.start) / state.hydro_count)
+                    })
+                    .max();
+                pool_lag_cuts += usize::from(deepest_lag.is_some());
+                power.shifted_lag_cuts += usize::from(deepest_lag >= Some(1));
+            }
+            power.lag_cuts += pool_lag_cuts;
+            if pool + 1 < n_pools && pool_lag_cuts == 0 {
+                power.successor_pools_without_lag_cut.push(pool);
+            }
+        }
+        power
+    }
+
+    #[test]
+    fn expanded_cut_rows_match_todays_cut_rows_on_the_lag_study() {
+        let build = |emission| {
+            let (system, mut config, hydro_models) = fpha_lag_study();
+            apply_oracle_config(&mut config);
+            build_setup_in_code_with_models_as(system, &config, hydro_models, emission)
+        };
+        let mut logical = build(Emission::Logical);
+        let compact = build(Emission::Compact);
+        train(LAG_STUDY, &mut logical);
+        let (system, _, _) = fpha_lag_study();
+
+        let power = assert_expanded_cut_rows_match(LAG_STUDY, &system, &logical, &compact);
+        assert!(
+            power.successor_pools_without_lag_cut.is_empty(),
+            "{LAG_STUDY}: pools {:?} hold no active cut with a nonzero lag coefficient",
+            power.successor_pools_without_lag_cut
+        );
+        assert!(
+            power.shifted_lag_cuts > 0,
+            "{LAG_STUDY}: no active cut has a nonzero coefficient at lag depth 1 or more"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "trains every committed deck with inflow-lag state"
+    )]
+    fn expanded_cut_rows_match_todays_cut_rows_on_every_lag_deck() {
+        let mut selected: Vec<String> = Vec::new();
+        let (mut lag_cuts, mut shifted_lag_cuts) = (0, 0);
+        for deck in committed_decks() {
+            let mut logical = fresh_setup_with(&deck.dir, apply_oracle_config);
+            if logical.stage_state().max_par_order == 0 {
+                continue;
+            }
+            let (system, compact) = fresh_system_and_setup_as(&deck.dir, Emission::Compact);
+            train(&deck.key, &mut logical);
+            let power = assert_expanded_cut_rows_match(&deck.key, &system, &logical, &compact);
+            lag_cuts += power.lag_cuts;
+            shifted_lag_cuts += power.shifted_lag_cuts;
+            selected.push(deck.key.clone());
+        }
+        eprintln!(
+            "selected {} decks: {selected:?}; lag_cuts={lag_cuts} shifted_lag_cuts={shifted_lag_cuts}",
+            selected.len()
+        );
+        assert!(
+            !selected.is_empty(),
+            "no committed deck has inflow-lag state"
+        );
+        assert!(
+            lag_cuts > 0,
+            "no active cut on any selected deck has a nonzero lag coefficient"
+        );
+    }
+}
+
+mod oracle_tolerance_checks {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use novomodelo_sddp::setup::{NodePos, StageIdx};
+    use novomodelo_sddp::test_support::capture_patched_node_template_with_inflow_noise;
+    use novomodelo_solver::{ActiveProfile, ActiveSolver, SolverInterface, SolverStatistics};
+
+    use crate::common::build_setup_in_code;
+    use crate::common::in_code_studies::{
+        CHRONOLOGICAL_NOISE_INFLOW_STD_M3S, ChronologicalNoiseSpec, chronological_noise_study,
+    };
+    use crate::common::oracle_tolerance::{UnscaledTolerance, assert_first_try};
+
+    const CALLER: &str = "root stage oracle";
+
+    fn assert_close(quantity: &str, got: f64, want: f64) {
+        assert!(
+            (got - want).abs() <= 1e-15 * want.abs(),
+            "{quantity}: expected {want}, got {got}"
+        );
+    }
+
+    fn failure_message(before: &SolverStatistics, after: &SolverStatistics) -> Option<String> {
+        let payload = catch_unwind(AssertUnwindSafe(|| {
+            assert_first_try(CALLER, before, after);
+        }))
+        .err()?;
+        Some(
+            *payload
+                .downcast::<String>()
+                .expect("an assert message is a String"),
+        )
+    }
+
+    #[test]
+    fn conversions_scale_by_the_row_or_column_they_bound() {
+        let tolerance = UnscaledTolerance::new(1e-9, 1e-7);
+        let (row_scale, col_scale) = (4.0, 0.5);
+        assert_close("row residual", tolerance.row_residual(row_scale), 2.5e-10);
+        assert_close("column bound", tolerance.col_bound(col_scale), 5e-10);
+        assert_close("reduced cost", tolerance.reduced_cost(col_scale), 2e-7);
+        assert_close("row dual", tolerance.row_dual(row_scale), 4e-7);
+    }
+
+    #[test]
+    fn from_active_profile_reads_the_backend_defaults() {
+        let tolerance = UnscaledTolerance::from_active_profile();
+        let profile = ActiveProfile::default();
+        assert_eq!(
+            tolerance.primal().to_bits(),
+            profile.primal_feasibility_tolerance.to_bits()
+        );
+        assert_eq!(
+            tolerance.dual().to_bits(),
+            profile.dual_feasibility_tolerance.to_bits()
+        );
+    }
+
+    #[test]
+    fn a_first_try_solve_passes() {
+        let (system, config) = chronological_noise_study(&ChronologicalNoiseSpec::default());
+        let setup = build_setup_in_code(system, &config);
+        let graph = &setup.inputs.node_graph;
+        let root = (0..graph.nodes.len())
+            .map(NodePos)
+            .find(|&pos| graph.nodes[pos].stage == StageIdx(0))
+            .expect("study must have a stage-0 node");
+        let zero_draw = [0.0; CHRONOLOGICAL_NOISE_INFLOW_STD_M3S.len()];
+        let template = capture_patched_node_template_with_inflow_noise(&setup, root, &zero_draw);
+        let mut solver = ActiveSolver::new().expect("ActiveSolver::new");
+        solver.load_model(&template);
+
+        let before = solver.statistics();
+        solver.solve(None).expect("root stage LP must solve");
+        let after = solver.statistics();
+
+        assert_first_try(CALLER, &before, &after);
+    }
+
+    #[test]
+    fn a_retried_solve_fails() {
+        let before = SolverStatistics {
+            solve_count: 1,
+            first_try_successes: 1,
+            ..Default::default()
+        };
+        let after = SolverStatistics {
+            solve_count: 2,
+            first_try_successes: 1,
+            retry_count: 3,
+            ..Default::default()
+        };
+        let message = failure_message(&before, &after).expect("a retried solve must fail");
+        assert!(
+            message.contains(CALLER) && message.contains("retried"),
+            "unexpected message: {message}"
+        );
+    }
+
+    #[test]
+    fn no_new_solve_fails() {
+        let snapshot = SolverStatistics::default();
+        let message = failure_message(&snapshot, &snapshot).expect("no new solve must fail");
+        assert!(
+            message.contains(CALLER) && message.contains("no solve ran"),
+            "unexpected message: {message}"
+        );
+    }
+}
