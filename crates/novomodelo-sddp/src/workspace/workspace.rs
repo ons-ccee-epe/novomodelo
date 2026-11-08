@@ -870,6 +870,7 @@ impl<S: SolverInterface> WorkspacePool<S> {
             training_ctx.state,
             stage_ctx.load_bus_indices,
             stage_ctx.geometry_per_stage,
+            stage_ctx.inflow_coupling,
         );
         SolverWorkspace::new(
             rank,
@@ -1214,8 +1215,10 @@ mod tests {
         ScratchBuffers, SolverWorkspace, WorkspacePool, WorkspaceSizing,
     };
     use crate::context::StageContext;
+    use crate::lead_time::AnticipatedResolution;
+    use crate::lp::indexer::StateSpace;
     use crate::solve::partition;
-    use crate::test_support::{TrainingContextFixture, state_layout};
+    use crate::test_support::{TrainingContextFixture, inflow_coupling_with_entries, state_layout};
     use novomodelo_solver::{
         Basis, BasisStatus, SolutionView, SolverError, SolverInterface, SolverStatistics,
         types::{RowBatch, StageTemplate},
@@ -1272,6 +1275,7 @@ mod tests {
             templates: &[],
             state_boxes: &[],
             geometry_per_stage: &[],
+            inflow_coupling: &[],
             cost_scale_factor: 1.0,
             load_bus_indices: &[],
             ncs_stochastic_dense_col: &[],
@@ -1318,6 +1322,51 @@ mod tests {
             assert_eq!(ws.patch_buf.indices.len(), 3, "patch_buf length");
             assert_eq!(ws.current_state.capacity(), 9, "current_state capacity");
             assert_eq!(ws.current_state.len(), 0, "current_state starts empty");
+        }
+    }
+
+    #[test]
+    fn workspace_shift_region_follows_the_most_touched_stage() {
+        let couplings = [
+            inflow_coupling_with_entries(2, &[(0, 1)]),
+            inflow_coupling_with_entries(2, &[(0, 2), (1, 2), (0, 5), (1, 7)]),
+            inflow_coupling_with_entries(2, &[(0, 3), (1, 4)]),
+        ];
+        let stage_ctx = StageContext {
+            inflow_coupling: &couplings,
+            ..empty_stage_ctx()
+        };
+        let compact = StateSpace::new_compact(
+            2,
+            1,
+            Vec::new(),
+            Vec::new(),
+            AnticipatedResolution::default(),
+            &[1, 1],
+        );
+        let logical = StateSpace::new(
+            2,
+            1,
+            Vec::new(),
+            Vec::new(),
+            AnticipatedResolution::default(),
+            &[1, 1],
+        );
+
+        for (state, expected_len) in [(compact, 3), (logical, 2)] {
+            let ctx = TrainingContextFixture::new(state);
+            let pool = WorkspacePool::new(
+                0,
+                2,
+                &ctx.training_ctx(),
+                &stage_ctx,
+                WorkspaceSizing::default(),
+                || MockSolver,
+            );
+            assert_eq!(pool.workspaces.len(), 2);
+            for ws in &pool.workspaces {
+                assert_eq!(ws.patch_buf.indices.len(), expected_len);
+            }
         }
     }
 
@@ -2833,7 +2882,7 @@ mod tests {
             0,
             0,
             MockSolver,
-            PatchBuffer::new(ctx.training_ctx().state, &[], &[]),
+            PatchBuffer::new(ctx.training_ctx().state, &[], &[], &[]),
             &ctx.training_ctx(),
             &empty_stage_ctx(),
             WorkspaceSizing::default(),

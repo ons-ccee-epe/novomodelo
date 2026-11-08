@@ -66,10 +66,14 @@ use crate::hydro_models::{
 };
 use crate::lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime};
 use crate::lower_bound::{LbEvalScratch, LbEvalScratchBundle, evaluate_lower_bound};
+#[cfg(test)]
+use crate::lp::builder::inflow_coupling::InflowCouplingSink;
 use crate::lp::builder::{
-    FactGroups, PatchBuffer, StageGeometry, StageLayout, StageTemplates, StateBox,
+    FactGroups, InflowCoupling, PatchBuffer, StageGeometry, StageLayout, StageTemplates, StateBox,
     encode_stage_templates_facts, encode_time_value_facts,
 };
+#[cfg(test)]
+use crate::lp::indexer::InflowForm;
 use crate::lp::indexer::{
     AnticipatedPlants, BlockRowFamily, CutStateProjection, EntityPositions, HydroCellIndex,
     HydroSys, REGION_ORDER, StateDim, StateSpace, StudyDimensions,
@@ -347,8 +351,15 @@ pub(crate) fn resolved_layout_for(
 ) -> (TransitBucketTopology, ResolvedStateLayout) {
     let calendar = DeliveryCalendar::from_system(system);
     let topology = build_transit_bucket_topology(system, &calendar, false);
-    let layout = resolve_state_layout(system, &calendar, par_lp, &topology, None)
-        .expect("resolved_layout_for: valid test fixture");
+    let layout = resolve_state_layout(
+        system,
+        &calendar,
+        par_lp,
+        &topology,
+        None,
+        InflowForm::Logical,
+    )
+    .expect("resolved_layout_for: valid test fixture");
     (topology, layout)
 }
 
@@ -369,6 +380,7 @@ pub(crate) fn bucket_seed_state(system: &System, topology: &TransitBucketTopolog
         topology,
         Vec::new(),
         AnticipatedResolution::default(),
+        InflowForm::Logical,
     )
 }
 
@@ -909,6 +921,7 @@ pub struct StageContextFixture<'a> {
     templates: &'a [StageTemplate],
     state_boxes: &'a [StateBox],
     geometry_per_stage: &'a [StageGeometry],
+    inflow_coupling: &'a [InflowCoupling],
     cost_scale_factor: f64,
     load_bus_indices: &'a [usize],
     ncs_stochastic_dense_col: &'a [usize],
@@ -944,6 +957,7 @@ impl<'a> StageContextFixture<'a> {
             templates,
             state_boxes,
             geometry_per_stage,
+            inflow_coupling: &[],
             cost_scale_factor: 1_000_000.0,
             load_bus_indices: &[],
             ncs_stochastic_dense_col: &[],
@@ -960,7 +974,8 @@ impl<'a> StageContextFixture<'a> {
     }
 
     /// [`Self::new`], reading `templates`, `geometry_per_stage`,
-    /// `load_bus_indices` and `cost_scale_factor` from `stage_templates` — the
+    /// `inflow_coupling_per_stage`, `load_bus_indices` and `cost_scale_factor` from
+    /// `stage_templates` — the
     /// same fields [`StudySetup::stage_ctx`] reads from it.
     ///
     /// # Panics
@@ -975,9 +990,17 @@ impl<'a> StageContextFixture<'a> {
             state_boxes,
             &stage_templates.geometry_per_stage,
         );
+        fixture.inflow_coupling = &stage_templates.inflow_coupling_per_stage;
         fixture.load_bus_indices = &stage_templates.load_bus_indices;
         fixture.cost_scale_factor = stage_templates.cost_scale_factor;
         fixture
+    }
+
+    /// Sets [`StageContext::inflow_coupling`].
+    #[must_use]
+    pub fn inflow_coupling(mut self, v: &'a [InflowCoupling]) -> Self {
+        self.inflow_coupling = v;
+        self
     }
 
     /// Sets [`StageContext::load_bus_indices`].
@@ -1064,6 +1087,7 @@ impl<'a> StageContextFixture<'a> {
             templates: self.templates,
             state_boxes: self.state_boxes,
             geometry_per_stage: self.geometry_per_stage,
+            inflow_coupling: self.inflow_coupling,
             cost_scale_factor: self.cost_scale_factor,
             load_bus_indices: self.load_bus_indices,
             ncs_stochastic_dense_col: self.ncs_stochastic_dense_col,
@@ -1078,6 +1102,22 @@ impl<'a> StageContextFixture<'a> {
             noise_group_ids: self.noise_group_ids,
         }
     }
+}
+
+/// An [`InflowCoupling`] over `n_hydros` with each `(hydro, row)` recorded at
+/// coefficient `-1.0`, over zero row bounds reaching the largest row.
+#[cfg(test)]
+pub(crate) fn inflow_coupling_with_entries(
+    n_hydros: usize,
+    entries: &[(usize, usize)],
+) -> InflowCoupling {
+    let mut sink = InflowCouplingSink::new(n_hydros);
+    for &(hydro, row) in entries {
+        sink.record(HydroSys::new(hydro), row, -1.0);
+    }
+    let n_rows = entries.iter().map(|&(_, row)| row + 1).max().unwrap_or(0);
+    let bounds = vec![0.0; n_rows];
+    sink.finish(&bounds, &bounds)
 }
 
 /// Owns the pieces a [`TrainingContext`] borrows, so a test can lend one
@@ -3470,7 +3510,12 @@ fn capture_patched_node_template_with_raw_noise(
 
     let space = &setup.inputs.stage_data.state;
     let ctx = setup.stage_ctx();
-    let mut patch_buf = PatchBuffer::new(space, ctx.load_bus_indices, ctx.geometry_per_stage);
+    let mut patch_buf = PatchBuffer::new(
+        space,
+        ctx.load_bus_indices,
+        ctx.geometry_per_stage,
+        ctx.inflow_coupling,
+    );
     let training_ctx = setup.training_ctx();
     let mut scratch = ScratchBuffers::new(&training_ctx, &ctx, WorkspaceSizing::default());
     let params = StageSolvePrepParams {

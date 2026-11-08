@@ -62,6 +62,7 @@ mod test_support;
 // --- Public re-exports (stable API) ---
 #[cfg(any(test, feature = "test-support"))]
 pub use delivery_ring::DeliveryRing;
+pub use inflow_coupling::InflowCoupling;
 pub use layout::StageGeometry;
 pub use patch::PatchBuffer;
 pub use state_box::StateBox;

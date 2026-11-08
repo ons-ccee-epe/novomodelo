@@ -5,13 +5,11 @@
 //! column is free `(-∞, ∞)`, so the box comes from the delivery stage's resolved
 //! generation bound instead, mirroring `fill_anticipated_columns`'s own lookup.
 
-use std::ops::Range;
-
 use novomodelo_core::ResolvedBounds;
 use novomodelo_solver::StageTemplate;
 
 use crate::indexer::{
-    AnticipatedLocal, AnticipatedPlants, StateSpace, anticipated_resolution_for,
+    AnticipatedLocal, AnticipatedPlants, StateRegion, StateSpace, anticipated_resolution_for,
     is_anticipated_decision_active_for_delivery,
 };
 use crate::time_value::TimeValue;
@@ -43,12 +41,19 @@ pub(crate) fn build_state_box(
     let mut lower = vec![f64::NEG_INFINITY; layout.n_state];
     let mut upper = vec![f64::INFINITY; layout.n_state];
 
-    fill_identity_box(&mut lower, &mut upper, template, layout.storage.clone());
     fill_identity_box(
         &mut lower,
         &mut upper,
         template,
-        layout.transit_buckets_out.clone(),
+        layout,
+        StateRegion::Storage,
+    );
+    fill_identity_box(
+        &mut lower,
+        &mut upper,
+        template,
+        layout,
+        StateRegion::Buckets,
     );
     fill_commitment_hold_box(
         &mut lower,
@@ -64,22 +69,25 @@ pub(crate) fn build_state_box(
     StateBox { lower, upper }
 }
 
-/// Storage and transit-bucket outgoing columns are identity-resolved (state index
-/// == LP column), so the box is the template's own `col_lower`/`col_upper`
-/// verbatim.
+/// The box is indexed by state dimension and reads the template at the
+/// outgoing column; the two indices coincide only on the logical layout.
 fn fill_identity_box(
     lower: &mut [f64],
     upper: &mut [f64],
     template: &StageTemplate,
-    range: Range<usize>,
+    layout: &StateSpace,
+    region: StateRegion,
 ) {
-    for j in range {
-        lower[j] = template.col_lower[j];
-        upper[j] = template.col_upper[j];
+    for (j, column) in layout
+        .state_dim_range(region)
+        .zip(layout.outgoing_block_range(region))
+    {
+        lower[j] = template.col_lower[column];
+        upper[j] = template.col_upper[column];
     }
 }
 
-/// Commitment-hold slots (`layout.commit_out`): the carrier column is free
+/// Commitment-hold dimensions: the carrier column is free
 /// `(-∞, ∞)`, so the box is the held physical delivery target's resolved
 /// generation bound instead — read via `thermal_block_base`, never
 /// `template`'s own column bounds, mirroring `fill_anticipated_columns`'s
@@ -107,7 +115,8 @@ fn fill_commitment_hold_box(
     anticipated_windows: &[(Option<i32>, Option<i32>)],
     time_value: &TimeValue,
 ) {
-    for j in layout.commit_out.clone() {
+    let hold = layout.state_dim_commitment_hold_range();
+    for j in hold.clone() {
         lower[j] = 0.0;
         upper[j] = 0.0;
     }
@@ -163,7 +172,7 @@ fn fill_commitment_hold_box(
             };
 
             if let Some((min_mw, max_mw)) = bound {
-                let j = ring.out_col(slot, local_idx);
+                let j = hold.start + ring.lane_offset(slot, local_idx);
                 lower[j] = min_mw;
                 upper[j] = max_mw;
             }
@@ -176,7 +185,8 @@ mod tests {
     use super::*;
     use crate::indexer::HydroSys;
     use crate::test_support::{
-        state_layout_full, state_layout_with_transit_buckets, transit_bucket_only_template,
+        constant_lead_resolution, state_layout_full, state_layout_with_transit_buckets,
+        transit_bucket_only_template,
     };
     use crate::time_value::PostStudyResolved;
 
@@ -209,6 +219,46 @@ mod tests {
 
         assert_eq!(state_box.lower[storage_j], 0.0);
         assert_eq!(state_box.upper[storage_j], 50.0);
+    }
+
+    #[test]
+    fn compact_state_box_indexes_state_dimensions_not_columns() {
+        let layout = StateSpace::new_compact(
+            1,
+            1,
+            vec![(HydroSys::new(0), 1), (HydroSys::new(0), 2)],
+            Vec::new(),
+            constant_lead_resolution(&[], 2),
+            &[1],
+        );
+        let mut template = transit_bucket_only_template(layout.theta + 1, layout.n_state);
+        for (c, lower) in (0_u8..).zip(template.col_lower.iter_mut()) {
+            *lower = f64::from(c);
+        }
+        for (c, upper) in (0_u8..).zip(template.col_upper.iter_mut()) {
+            *upper = 100.0 + f64::from(c);
+        }
+        let (bounds, time_value) = empty_bounds_and_time_value();
+
+        let state_box = build_state_box(
+            &template,
+            &layout,
+            0,
+            &bounds,
+            &AnticipatedPlants::default(),
+            &[],
+            &time_value,
+        );
+
+        let dims = layout.state_dim_bucket_range();
+        assert_ne!(dims.start, layout.transit_buckets_out.start);
+        for (j, column) in dims.zip(layout.transit_buckets_out.clone()) {
+            assert_eq!(state_box.lower[j], template.col_lower[column]);
+            assert_eq!(state_box.upper[j], template.col_upper[column]);
+        }
+        let lag_j = layout.state_dim_lag_range().start;
+        assert_eq!(state_box.lower[lag_j], f64::NEG_INFINITY);
+        assert_eq!(state_box.upper[lag_j], f64::INFINITY);
     }
 
     /// AC: an inflow-lag dimension stays at the unbounded default.

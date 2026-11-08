@@ -2461,6 +2461,7 @@ mod tests {
                 &crate::test_support::state_layout(hydro_count, 0),
                 &[],
                 &[],
+                &[],
             ),
             current_state: Vec::with_capacity(n_state),
             scratch: ScratchBuffers::for_test(0),

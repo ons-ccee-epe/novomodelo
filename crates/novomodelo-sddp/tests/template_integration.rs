@@ -4365,6 +4365,8 @@ fn rt_expected_num_rows(k: usize, stage_idx: usize) -> usize {
     12 + fishing + state_out_def + interior_active
 }
 
+#[path = "template_integration/compact_form.rs"]
+mod compact_form;
 #[path = "template_integration/deficit_and_withdrawal.rs"]
 mod deficit_and_withdrawal;
 #[path = "template_integration/evaporation.rs"]

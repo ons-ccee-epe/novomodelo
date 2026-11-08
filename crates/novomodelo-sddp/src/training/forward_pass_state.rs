@@ -1119,7 +1119,7 @@ mod tests {
             rank: 0,
             worker_id: 0,
             solver: ProfiledSolver::new(solver),
-            patch_buf: PatchBuffer::new(state, &[], &[]),
+            patch_buf: PatchBuffer::new(state, &[], &[], &[]),
             current_state: Vec::with_capacity(state.n_state),
             scratch: ScratchBuffers {
                 lag_accumulator: vec![0.0_f64; state.hydro_count],

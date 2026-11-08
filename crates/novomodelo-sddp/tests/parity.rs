@@ -1408,7 +1408,7 @@ mod determinism {
                     0,
                     i32::try_from(idx).expect("worker_id fits in i32"),
                     MockSolver3H::new(100.0),
-                    PatchBuffer::new(&fx.state, &[], &[]),
+                    PatchBuffer::new(&fx.state, &[], &[], &[]),
                     &sim_training_ctx,
                     &stage_ctx_fixture.ctx(),
                     WorkspaceSizing::default(),

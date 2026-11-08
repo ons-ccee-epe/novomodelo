@@ -829,7 +829,7 @@ mod lb_conformance {
         let templates = vec![template];
         let fcf = make_fcf(2, state_layout.n_state);
         let initial_state = vec![0.0_f64; state_layout.n_state];
-        let mut patch_buf = PatchBuffer::new(&state_layout, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&state_layout, &[], &[], &[]);
         let opening_tree = simple_opening_tree(2);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;

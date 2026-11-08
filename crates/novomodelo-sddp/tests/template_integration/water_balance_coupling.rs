@@ -243,3 +243,71 @@ fn water_rows_carry_no_par_base() {
         );
     }
 }
+
+#[test]
+fn stored_inflow_coupling_rescales_to_every_studys_z_columns_and_row_bounds() {
+    let count = common::for_each_study(|key, _system, setup| {
+        let state = setup.stage_state();
+        let ctx = setup.stage_ctx();
+        assert_eq!(
+            ctx.inflow_coupling.len(),
+            ctx.templates.len(),
+            "{key}: one inflow coupling per stage"
+        );
+
+        for (s, (t, coupling)) in ctx.templates.iter().zip(ctx.inflow_coupling).enumerate() {
+            assert_eq!(coupling.n_hydros(), state.hydro_count, "{key}: stage {s}");
+
+            for h in 0..state.hydro_count {
+                let h_sys = HydroSys::new(h);
+                let col_z = z_inflow_column(state, h_sys);
+                let row_z = state.z_inflow_row(h_sys);
+                let span = usize::try_from(t.col_starts[col_z]).unwrap()
+                    ..usize::try_from(t.col_starts[col_z + 1]).unwrap();
+                let mut in_template: Vec<(usize, u64)> = span
+                    .map(|k| (usize::try_from(t.row_indices[k]).unwrap(), t.values[k]))
+                    .filter(|&(row, _)| row != row_z)
+                    .map(|(row, value)| (row, value.to_bits()))
+                    .collect();
+                let mut rescaled: Vec<(usize, u64)> = coupling
+                    .hydro_entries(h_sys)
+                    .map(|(row, c)| (row, ((c * t.col_scale[col_z]) * t.row_scale[row]).to_bits()))
+                    .collect();
+                in_template.sort_unstable();
+                rescaled.sort_unstable();
+                assert_eq!(
+                    in_template, rescaled,
+                    "{key}: stage {s} hydro {h}: z column entries off the z row"
+                );
+            }
+
+            let touched = coupling.touched_rows();
+            assert!(
+                touched.windows(2).all(|pair| pair[0] < pair[1]),
+                "{key}: stage {s}: touched rows must be distinct and ascending"
+            );
+            assert_eq!(touched.len(), coupling.touched_row_lower().len());
+            assert_eq!(touched.len(), coupling.touched_row_upper().len());
+            for (i, &row) in touched.iter().enumerate() {
+                let row = row as usize;
+                assert_eq!(
+                    (coupling.touched_row_lower()[i] * t.row_scale[row]).to_bits(),
+                    t.row_lower[row].to_bits(),
+                    "{key}: stage {s} row {row}: lower bound"
+                );
+                assert_eq!(
+                    (coupling.touched_row_upper()[i] * t.row_scale[row]).to_bits(),
+                    t.row_upper[row].to_bits(),
+                    "{key}: stage {s} row {row}: upper bound"
+                );
+            }
+        }
+    });
+
+    assert_eq!(
+        count,
+        common::expected_study_count(),
+        "every committed deck (minus SLOW_DECKS skips) plus every in-code and structural \
+         study must be swept"
+    );
+}

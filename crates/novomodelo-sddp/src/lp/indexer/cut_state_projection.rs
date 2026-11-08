@@ -31,7 +31,8 @@ use super::{CutSlot, InCol, OutCol, REGION_ORDER, StateDim, StateSpace};
 /// Incoming ([`Self::incoming_column`]) and outgoing
 /// ([`Self::outgoing_column`]) both span the full enabled range
 /// `[0, n_slots())`, including structurally-zero AR- and anticipated-padding
-/// slots, because dual extraction and DCS scoring read every enabled dimension.
+/// slots, because dual extraction and DCS scoring read every enabled dimension;
+/// under `Compact` a lag slot has no LP column and is never rendered.
 /// Render ([`Self::render_pairs`]) is the **nonzero subset** (padding dropped,
 /// matching the global `nonzero_state_indices`), because a cut row emits no entry
 /// for a structurally-zero coefficient.
@@ -41,12 +42,13 @@ pub struct CutStateProjection {
     /// global→projected gather index (identity for an all-enabled pool).
     global_state_indices: Vec<StateDim>,
 
-    /// LP incoming column per cut slot (extraction hot path).
-    incoming_columns: Vec<InCol>,
+    /// LP incoming column per cut slot (extraction hot path); `None` for a
+    /// compact lag slot.
+    incoming_columns: Vec<Option<InCol>>,
 
     /// LP outgoing column per cut slot (DCS scoring); parallel to
     /// [`Self::incoming_columns`].
-    outgoing_columns: Vec<OutCol>,
+    outgoing_columns: Vec<Option<OutCol>>,
 
     /// Cut slot per render pair, nonzero-subset order; parallel to
     /// [`Self::render_columns`].
@@ -85,15 +87,17 @@ impl CutStateProjection {
         let mut render_coeff_indices = Vec::new();
         let mut render_columns = Vec::new();
 
-        let mut push_dim = |g: StateDim| {
+        let mut push_dim = |g: StateDim, has_columns: bool| {
             let reduced_j = incoming_columns.len();
-            let outgoing = global.lp_column_for_state(g);
+            let outgoing = has_columns.then(|| global.lp_column_for_state(g));
             global_state_indices.push(g);
-            incoming_columns.push(global.state_to_lp_incoming_column(g));
+            incoming_columns.push(has_columns.then(|| global.state_to_lp_incoming_column(g)));
             outgoing_columns.push(outgoing);
             // Drop padding slots, never zero-fill: keeps the default render
             // bit-identical to the global nonzero_state_indices render.
-            if global.nonzero_state_indices.binary_search(&g).is_ok() {
+            if let Some(outgoing) = outgoing
+                && global.nonzero_state_indices.binary_search(&g).is_ok()
+            {
                 render_coeff_indices.push(CutSlot::new(reduced_j));
                 render_columns.push(outgoing);
             }
@@ -101,8 +105,9 @@ impl CutStateProjection {
 
         for region in REGION_ORDER {
             if region.cut_enabled(state_config) {
+                let has_columns = global.has_lp_columns(region);
                 for g in global.state_dim_range(region) {
-                    push_dim(StateDim::new(g));
+                    push_dim(StateDim::new(g), has_columns);
                 }
             }
         }
@@ -250,13 +255,15 @@ impl CutStateProjection {
     /// }
     /// ```
     ///
-    /// # Panics (debug builds only)
+    /// # Panics
     ///
-    /// Panics if `s >= n_slots()`.
+    /// Panics if `s` is a lag slot of a compact layout, which has no LP column;
+    /// in debug builds also if `s >= n_slots()`.
     #[inline]
     #[must_use]
     pub fn incoming_column(&self, s: CutSlot) -> InCol {
         self.incoming_columns[self.checked_slot(s)]
+            .unwrap_or_else(|| unreachable!("compact lag slot has no LP column"))
     }
 
     /// Map a cut slot `s ∈ [0, n_slots())` to its LP **outgoing**-state
@@ -268,13 +275,15 @@ impl CutStateProjection {
     /// full enabled range (padding included); see the struct-level "Incoming vs
     /// outgoing vs render" section for the contrast with [`Self::render_pairs`].
     ///
-    /// # Panics (debug builds only)
+    /// # Panics
     ///
-    /// Panics if `s >= n_slots()`.
+    /// Panics if `s` is a lag slot of a compact layout, which has no LP column;
+    /// in debug builds also if `s >= n_slots()`.
     #[inline]
     #[must_use]
     pub fn outgoing_column(&self, s: CutSlot) -> OutCol {
         self.outgoing_columns[self.checked_slot(s)]
+            .unwrap_or_else(|| unreachable!("compact lag slot has no LP column"))
     }
 
     /// Iterate the cut-row render pairs `(cut_slot, outgoing_lp_column)` for this
@@ -286,8 +295,10 @@ impl CutStateProjection {
     /// the negated, scaled coefficient — identity for storage; for a lag
     /// dimension the outgoing state (after `shift_lag_state`) holds `z_inflow`
     /// at lag 0 and the shifted incoming lags at lag 1+, so the column
-    /// addresses `z_inflow` / incoming lag `l−1`. For an all-enabled study this reproduces
-    /// the global `nonzero_state_indices` render — same reduced index, same column.
+    /// addresses `z_inflow` / incoming lag `l−1`; under `Compact` a lag slot has
+    /// no LP column and is never rendered. For an all-enabled logical study this
+    /// reproduces the global `nonzero_state_indices` render — same reduced index,
+    /// same column.
     #[inline]
     #[must_use]
     pub fn render_pairs(&self) -> impl ExactSizeIterator<Item = (CutSlot, OutCol)> + '_ {
@@ -857,6 +868,80 @@ mod tests {
                 "commitment-hold ring incoming slot {j} must appear in the projection"
             );
         }
+    }
+
+    // ── Compact layout tests ────────────────────────────────────────────────
+
+    /// The compact layout and its logical twin over N = 2, L = 2, two buckets
+    /// and one anticipated plant.
+    fn compact_and_logical_twins() -> (StateSpace, StateSpace) {
+        let buckets = vec![(HydroSys::new(0), 1), (HydroSys::new(1), 1)];
+        let leads = vec![2];
+        let lag_counts = [2, 2];
+        let compact = StateSpace::new_compact(
+            2,
+            2,
+            buckets.clone(),
+            leads.clone(),
+            constant_lead_resolution(&leads, 4),
+            &lag_counts,
+        );
+        let logical = StateSpace::new(
+            2,
+            2,
+            buckets,
+            leads.clone(),
+            constant_lead_resolution(&leads, 4),
+            &lag_counts,
+        );
+        (compact, logical)
+    }
+
+    #[test]
+    fn compact_projection_keeps_every_slot_and_renders_no_lag_slot() {
+        let (global, logical_global) = compact_and_logical_twins();
+        let cut = CutStateProjection::new(&global, ALL_ENABLED);
+        let logical = CutStateProjection::new(&logical_global, ALL_ENABLED);
+        let lag_range = global.state_dim_lag_range();
+
+        assert_eq!(cut.n_slots(), global.n_state);
+        for j in 0..global.n_state {
+            let slot = CutSlot::new(j);
+            let dim = StateDim::new(j);
+            assert_eq!(cut.global_state_index(slot), dim);
+            if lag_range.contains(&j) {
+                continue;
+            }
+            assert_eq!(
+                cut.incoming_column(slot),
+                global.state_to_lp_incoming_column(dim)
+            );
+            assert_eq!(cut.outgoing_column(slot), global.lp_column_for_state(dim));
+        }
+
+        for (slot, _) in cut.render_pairs() {
+            assert!(
+                !lag_range.contains(&cut.global_state_index(slot).get()),
+                "lag slot {} must not be rendered",
+                slot.get()
+            );
+        }
+
+        let lag_dims_in_mask = global
+            .nonzero_state_indices
+            .iter()
+            .filter(|g| lag_range.contains(&g.get()))
+            .count();
+        assert_eq!(lag_dims_in_mask, global.hydro_count * global.max_par_order);
+        assert_eq!(cut.render_len(), logical.render_len() - lag_dims_in_mask);
+    }
+
+    #[test]
+    #[should_panic(expected = "compact lag slot has no LP column")]
+    fn compact_projection_has_no_incoming_column_for_a_lag_slot() {
+        let (global, _) = compact_and_logical_twins();
+        let cut = CutStateProjection::new(&global, ALL_ENABLED);
+        let _ = cut.incoming_column(CutSlot::new(global.state_dim_lag_range().start));
     }
 }
 

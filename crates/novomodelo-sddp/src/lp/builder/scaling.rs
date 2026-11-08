@@ -424,6 +424,51 @@ mod tests {
         }
     }
 
+    #[test]
+    fn apply_commitment_hold_col_scale_unscale_forces_the_compact_hold_to_one() {
+        let compact = StateSpace::new_compact(
+            2,
+            1,
+            vec![],
+            vec![2],
+            constant_lead_resolution(&[2], 4),
+            &[1, 1],
+        );
+        let logical = StateSpace::new(
+            2,
+            1,
+            vec![],
+            vec![2],
+            constant_lead_resolution(&[2], 4),
+            &[1, 1],
+        );
+
+        assert_eq!(logical.commit_out, 4..6);
+        assert_eq!(logical.commit_in, 10..12);
+        assert_eq!(logical.theta, 12);
+        assert_eq!(compact.commit_out, 2..4);
+        assert_eq!(compact.commit_in, 6..8);
+        assert_eq!(compact.theta, 8);
+
+        let mut col_scale: Vec<f64> = (2..11).map(f64::from).collect();
+        assert_eq!(col_scale.len(), compact.theta + 1);
+        let before = col_scale.clone();
+
+        super::apply_commitment_hold_col_scale_unscale(&mut col_scale, &compact);
+
+        for (i, (&got, &want)) in col_scale.iter().zip(&before).enumerate() {
+            if [2, 3, 6, 7].contains(&i) {
+                assert_eq!(got, 1.0, "compact hold index {i}");
+            } else {
+                assert_eq!(
+                    got.to_bits(),
+                    want.to_bits(),
+                    "non-hold index {i} must keep its bits"
+                );
+            }
+        }
+    }
+
     /// `n_anticipated * k_max == 0`: `commit_out`/`commit_in` both collapse to
     /// `0..0`, so the override loop touches no column — `col_scale` is left
     /// exactly as the generic computation produced it.

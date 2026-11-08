@@ -550,7 +550,7 @@ fn single_workspace(solver: MockSolver, state: &StateSpace) -> SolverWorkspace<M
         rank: 0,
         worker_id: 0,
         solver: ProfiledSolver::new(solver),
-        patch_buf: PatchBuffer::new(state, &[], &[]),
+        patch_buf: PatchBuffer::new(state, &[], &[], &[]),
         current_state: Vec::with_capacity(state.n_state),
         scratch: ScratchBuffers::for_test(state.hydro_count),
         scratch_basis: Basis::new(0, 0),
@@ -2489,7 +2489,7 @@ fn forward_pass_load_noise_positive_realization() {
     let state = test_support::state_layout(1, 0);
     let load_bus_indices = vec![0usize];
     let geometry_per_stage = vec![test_support::geometry_with_load_balance(10, 1, 1)];
-    let patch_buf = PatchBuffer::new(&state, &load_bus_indices, &geometry_per_stage);
+    let patch_buf = PatchBuffer::new(&state, &load_bus_indices, &geometry_per_stage, &[]);
     let mut ws = SolverWorkspace {
         rank: 0,
         worker_id: 0,
@@ -2598,7 +2598,7 @@ fn forward_pass_load_noise_clamped_to_zero() {
     let state = test_support::state_layout(1, 0);
     let load_bus_indices = vec![0usize];
     let geometry_per_stage = vec![test_support::geometry_with_load_balance(10, 1, 1)];
-    let patch_buf = PatchBuffer::new(&state, &load_bus_indices, &geometry_per_stage);
+    let patch_buf = PatchBuffer::new(&state, &load_bus_indices, &geometry_per_stage, &[]);
     let mut ws = SolverWorkspace {
         rank: 0,
         worker_id: 0,
@@ -2953,6 +2953,80 @@ fn test_build_delta_matches_full_batch_when_pool_has_only_current_iter() {
 }
 
 #[test]
+fn compact_cut_rows_match_across_writers_and_carry_no_lag_entry() {
+    let lag_counts = [1, 1];
+    let compact = StateSpace::new_compact(
+        2,
+        1,
+        Vec::new(),
+        Vec::new(),
+        test_support::constant_lead_resolution(&[], 2),
+        &lag_counts,
+    );
+    let logical = StateSpace::new(
+        2,
+        1,
+        Vec::new(),
+        Vec::new(),
+        test_support::constant_lead_resolution(&[], 2),
+        &lag_counts,
+    );
+    assert_eq!(compact.n_state, logical.n_state);
+    assert!(compact.theta < logical.theta);
+
+    let mut fcf = FutureCostFunction::new(2, compact.n_state, 2, 10, &[0; 2]);
+    fcf.add_cut(NodeId(0), 0, 1, 0, 10.0, &[1.5, 2.5, 3.5, 4.5]);
+    fcf.add_cut(NodeId(0), 0, 1, 1, 20.0, &[-1.0, 2.0, -3.0, 4.0]);
+
+    let compact_cut_state = test_support::cut_state_projection(&compact);
+    let mut full = empty_delta_batch();
+    build_cut_row_batch_into(&mut full, &fcf, 0, &compact, &compact_cut_state, &[]);
+    let mut delta = empty_delta_batch();
+    build_delta_cut_row_batch_into(&mut delta, &fcf, 0, &compact, &compact_cut_state, &[], 1);
+
+    assert_eq!(delta.num_rows, full.num_rows);
+    assert_eq!(delta.row_starts, full.row_starts);
+    assert_eq!(delta.col_indices, full.col_indices);
+    assert_eq!(delta.values, full.values);
+    assert_eq!(delta.row_lower, full.row_lower);
+    assert_eq!(delta.row_upper, full.row_upper);
+
+    assert_eq!(full.num_rows, 2);
+    assert_eq!(full.row_starts, vec![0_i32, 3, 6]);
+
+    let mut logical_batch = empty_delta_batch();
+    build_cut_row_batch_into(
+        &mut logical_batch,
+        &fcf,
+        0,
+        &logical,
+        &test_support::cut_state_projection(&logical),
+        &[],
+    );
+    assert_eq!(logical_batch.row_starts, vec![0_i32, 5, 10]);
+
+    let compact_theta = i32::try_from(compact.theta).expect("theta fits i32");
+    for row in 0..2 {
+        let compact_entries = 3 * row..3 * row + 3;
+        let logical_entries = 5 * row..5 * row + 5;
+        let logical_cols = &logical_batch.col_indices[logical_entries.clone()];
+        let logical_values = &logical_batch.values[logical_entries];
+
+        assert_eq!(
+            full.col_indices[compact_entries.clone()],
+            [logical_cols[0], logical_cols[1], compact_theta]
+        );
+        assert_eq!(full.col_indices[3 * row..3 * row + 2], [0, 1]);
+        assert_eq!(
+            full.values[compact_entries],
+            [logical_values[0], logical_values[1], logical_values[4]]
+        );
+    }
+    assert_eq!(full.row_lower, logical_batch.row_lower);
+    assert_eq!(full.row_upper, logical_batch.row_upper);
+}
+
+#[test]
 fn test_build_delta_sparse_path() {
     // n_hydro=1, n_lag=1 gives a non-empty nonzero_state_indices mask (n_state=2);
     // full sparse-path correctness is covered by build_cut_row_batch_into's own
@@ -3268,7 +3342,7 @@ mod dcs_forward {
             0,
             0,
             solver,
-            PatchBuffer::new(&state, &[], &[]),
+            PatchBuffer::new(&state, &[], &[], &[]),
             &training_ctx,
             &stage_ctx_fixture.ctx(),
             sizing,
@@ -3665,7 +3739,7 @@ mod transit_bucket_copy_gap {
             0,
             0,
             MockSolver::always_ok(transit_bucket_solution()),
-            PatchBuffer::new(&state, &[], &[]),
+            PatchBuffer::new(&state, &[], &[], &[]),
             &training_ctx,
             &StageContextFixture::new(&[], &[], &[]).ctx(),
             sizing,

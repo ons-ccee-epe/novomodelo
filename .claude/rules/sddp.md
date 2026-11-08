@@ -3716,9 +3716,10 @@ declared, each of the following is a contract.
 
 The water in-transit bucket ring and the anticipated-thermal ring are one
 lagged-delivery ring construct, owned by `DeliveryRing`. They share a borrowed
-outgoing block (identity-resolved, contributing to `n_state`), a separate
-borrowed incoming block (pinned via `state_to_lp_incoming_column`), and the
-paired row-cap/column-freeze masking (`DeliveryRing::freeze_masked_columns`).
+outgoing block (resolved through `StateSpace::outgoing_block_start`,
+contributing to `n_state`), a separate borrowed incoming block (pinned via
+`state_to_lp_incoming_column`), and the paired row-cap/column-freeze masking
+(`DeliveryRing::freeze_masked_columns`).
 The interior transition differs: water shifts one Markov-1 slot per stage
 (`DeliveryRing::emit_shift_rows`, slot → slot+1), while anticipated holds each
 commitment in its own slot (`DeliveryRing::emit_carry_rows`, same slot). The
@@ -3770,7 +3771,7 @@ never falling through to the commitment-hold `commit_in` arm. Subgradient extrac
 divides the incoming bucket column's reduced cost by `col_scale`
 (`extract_duals_from_view`, the same rc/col_scale contract as storage); the
 cut row renders the **outgoing** bucket column through
-`StateSpace::lp_column_for_state`'s identity arm and multiplies `col_scale`
+`StateSpace::lp_column_for_state`'s outgoing-block arm and multiplies `col_scale`
 back on via `push_scaled_coefficient` — divided on extract, multiplied on
 render, identical to storage. Swapping which column is pinned/read, or
 dividing on render instead of extract, prices the in-transit water in the
@@ -3784,11 +3785,11 @@ Read: `lp/builder/entries.rs` (`fill_transit_bucket_definition_entries`,
 (`StateSpace::state_to_lp_incoming_column`, `StateSpace::lp_column_for_state`),
 `training/backward/duals_extraction.rs` (`extract_duals_from_view`), `cut/row.rs`
 (`push_scaled_coefficient`, `push_cut_row`). Pinned by the bucket-arm
-column-resolution tests (outgoing resolves by identity, incoming resolves to the
-pinned column via an explicit arm, never the anticipated catch-all) and the
-per-stage-visit bucket-pinning regressions in the backward pass and lower-bound
-evaluation; a sub-stage-delay bucket-dual regression is the fold-discriminating
-pin for the sign/magnitude itself.
+column-resolution tests (outgoing resolves through the outgoing block, incoming
+resolves to the pinned column via an explicit arm, never the anticipated
+catch-all) and the per-stage-visit bucket-pinning regressions in the backward
+pass and lower-bound evaluation; a sub-stage-delay bucket-dual regression is
+the fold-discriminating pin for the sign/magnitude itself.
 
 ### k-factor conservation
 
@@ -4271,9 +4272,10 @@ Pinned by `ring_depth_covers_every_simultaneous_pre_study_seed`,
 The in-study anticipated ring is `DeliveryRing`'s other instantiation (the shared
 skeleton above), borrowing the LEADING `n_anticipated * k_max` sub-range of the
 merged commitment-hold region: an outgoing block (`StateSpace::commit_out`,
-identity-resolved by `state_to_lp_column`, contributing to `n_state`) and a
-separate incoming block (`StateSpace::commit_in`, pinned via
-`state_to_lp_incoming_column`) — never one dual-purpose range shifted out-of-LP.
+resolved through `StateSpace::outgoing_block_start` by `state_to_lp_column`,
+contributing to `n_state`) and a separate incoming block
+(`StateSpace::commit_in`, pinned via `state_to_lp_incoming_column`) — never one
+dual-purpose range shifted out-of-LP.
 There is no Rust-side shift step: the ring transition is resolved entirely by the
 definition rows below, and `current_state`/`state_at_capture` read the outgoing
 block by the same plain copy already used for storage and travel-time buckets.

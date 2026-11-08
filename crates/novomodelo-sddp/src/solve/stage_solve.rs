@@ -319,11 +319,8 @@ pub(crate) fn assemble_outgoing_state(
         }
         *value = clamped;
         debug_assert!(
-            layout.storage.contains(&j)
-                || layout.transit_buckets_out.contains(&j)
-                || layout.commit_out.contains(&j),
-            "a clamped state dimension must be storage, transit-bucket, or \
-             commitment-hold — inflow lags are unbounded and never clamp"
+            !layout.state_dim_lag_range().contains(&j),
+            "inflow lags are unbounded and never clamp"
         );
     }
 }
@@ -459,7 +456,7 @@ mod tests {
             0,
             0,
             solver,
-            PatchBuffer::new(training_ctx.state, &[], &[]),
+            PatchBuffer::new(training_ctx.state, &[], &[], &[]),
             &training_ctx,
             &stage_ctx_fixture.ctx(),
             WorkspaceSizing::default(),

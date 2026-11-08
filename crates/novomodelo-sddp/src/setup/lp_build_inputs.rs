@@ -25,6 +25,8 @@ use crate::inflow_method::InflowNonNegativityMethod;
 use crate::lp::builder::LpBuildInputs;
 #[cfg(any(test, feature = "test-support"))]
 use crate::lp::builder::{StageTemplates, build_stage_templates};
+#[cfg(any(test, feature = "test-support"))]
+use crate::lp::indexer::InflowForm;
 use crate::lp::indexer::{EntityPositions, HydroCellIndex, StudyDimensions};
 use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::ResolvedParameters;
@@ -241,8 +243,14 @@ pub fn build_stage_templates_resolving_layout(
     resolved_parameters: &ResolvedParameters,
 ) -> Result<StageTemplates, SddpError> {
     let calendar = DeliveryCalendar::from_system(system);
-    let (topology, layout) =
-        super::resolve_state_and_topology(system, &calendar, par_lp, None, false)?;
+    let (topology, layout) = super::resolve_state_and_topology(
+        system,
+        &calendar,
+        par_lp,
+        None,
+        false,
+        InflowForm::Logical,
+    )?;
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
     let stages: Vec<Stage> = system
         .stages()

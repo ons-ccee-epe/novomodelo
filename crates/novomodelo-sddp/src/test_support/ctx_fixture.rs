@@ -14,7 +14,7 @@ use crate::InflowNonNegativityMethod;
 use crate::bucket_topology::TransitBucketTopology;
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
 use crate::indexer::{
-    AnticipatedPlants, EntityPositions, HydroCellIndex, StateSpace, StudyDimensions,
+    AnticipatedPlants, EntityPositions, HydroCellIndex, InflowForm, StateSpace, StudyDimensions,
 };
 use crate::lead_time::AnticipatedResolution;
 use crate::lp::builder::{ResolvedTables, TemplateBuildCtx};
@@ -65,6 +65,7 @@ pub(crate) struct CtxFixture {
     /// [`constant_lead_resolution`] every other fixture gets.
     pub(crate) anticipated_resolution: AnticipatedResolution,
     pub(crate) anticipated_plants: AnticipatedPlants,
+    pub(crate) inflow_form: InflowForm,
     pub(crate) inflow_method: InflowNonNegativityMethod,
     /// Derived fresh, from `anticipated_plants`/`inflow_method` and the slices
     /// below, on every [`Self::ctx`] call — the backing store
@@ -94,6 +95,7 @@ impl Default for CtxFixture {
             &topology,
             Vec::new(),
             AnticipatedResolution::default(),
+            InflowForm::Logical,
         );
         Self {
             positions: EntityPositions::from_slices([], [], [], [], [], []),
@@ -123,6 +125,7 @@ impl Default for CtxFixture {
             anticipated_lead_stages: Vec::new(),
             anticipated_resolution: AnticipatedResolution::default(),
             anticipated_plants: AnticipatedPlants::default(),
+            inflow_form: InflowForm::Logical,
             inflow_method: InflowNonNegativityMethod::None,
             study_dims: StudyDimensions::default(),
             time_value: TimeValue::from_parts(
@@ -278,6 +281,7 @@ impl CtxFixture {
             &self.topology,
             self.anticipated_lead_stages.clone(),
             resolution,
+            self.inflow_form,
         )
     }
 }

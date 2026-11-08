@@ -8,10 +8,10 @@ use novomodelo_stochastic::par::precompute::PrecomputedPar;
 use crate::bucket_topology::TransitBucketTopology;
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
 
-use super::inflow_coupling::InflowCouplingSink;
+use super::inflow_coupling::{InflowCoupling, InflowCouplingSink};
 use super::layout::{ResolvedTables, StageGeometry, StageLayout, TemplateBuildCtx};
 use super::{GenericConstraintRowEntry, LpBuildInputs, StateBox, columns, entries, rows, scaling};
-use crate::lp::indexer::StateSpace;
+use crate::lp::indexer::{InflowForm, StateSpace};
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod canonical;
@@ -27,6 +27,9 @@ pub struct StageTemplates {
     /// `postprocess_templates` from the physical column bounds before column
     /// scaling. Empty until then; read it through `state_boxes()`.
     state_boxes: Vec<StateBox>,
+    /// `templates` as built, before `postprocess_templates` scaled them.
+    #[cfg(any(test, feature = "test-support"))]
+    pre_scaling_templates: Vec<StageTemplate>,
     /// Per-stage block durations in hours (`block_hours_per_stage[stage]` is length
     /// `n_blocks`). Converts load-balance duals $/MW → $/`MWh`:
     /// `spot_price = dual / block_hours`.
@@ -54,6 +57,8 @@ pub struct StageTemplates {
     /// `StageExtractionSpec` so the simulation read-path addresses the columns the
     /// solved primal occupies at the stage being extracted.
     pub geometry_per_stage: Vec<StageGeometry>,
+    /// Per-stage realized-inflow coupling; length equals `templates.len()`.
+    pub inflow_coupling_per_stage: Vec<InflowCoupling>,
     /// Mapping from target hydro ID to source hydro indices that divert to it.
     ///
     /// Used by the simulation extraction pipeline to compute `diverted_inflow_m3s`.
@@ -75,11 +80,14 @@ impl StageTemplates {
         Self {
             templates: Vec::new(),
             state_boxes: Vec::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            pre_scaling_templates: Vec::new(),
             block_hours_per_stage: Vec::new(),
             cost_scale_factor,
             load_bus_indices: Vec::new(),
             generic_constraint_row_entries: Vec::new(),
             geometry_per_stage: Vec::new(),
+            inflow_coupling_per_stage: Vec::new(),
             diversion_upstream: HashMap::new(),
             hydro_productivities_per_stage: Vec::new(),
         }
@@ -115,6 +123,19 @@ impl StageTemplates {
         );
         self.state_boxes = state_boxes;
     }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn record_pre_scaling(&mut self) {
+        self.pre_scaling_templates.clone_from(&self.templates);
+    }
+
+    /// The templates as built, before `postprocess_templates` scaled them;
+    /// empty until it runs.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn pre_scaling_templates(&self) -> &[StageTemplate] {
+        &self.pre_scaling_templates
+    }
 }
 
 /// Per-stage outputs of [`build_single_stage_template`], transposed by
@@ -127,6 +148,7 @@ pub(super) struct StageBuildOutput {
     /// Stage-correct equipment column ranges for simulation extraction, computed
     /// from this stage's [`StageLayout`].
     pub equipment_geometry: StageGeometry,
+    pub inflow_coupling: InflowCoupling,
 }
 
 /// Construct the [`StageBuildOutput`] for a single study stage.
@@ -159,11 +181,13 @@ pub(super) fn build_single_stage_template(
         &mut inflow_sink,
     );
 
-    entries::fill_z_inflow_coupling_entries(
-        &inflow_sink.finish(layout.rows.num_rows),
-        &layout,
-        &mut col_entries,
-    );
+    let inflow_coupling = inflow_sink.finish(&row_lower, &row_upper);
+    match layout.state.inflow_form {
+        InflowForm::Logical => {
+            entries::fill_z_inflow_coupling_entries(&inflow_coupling, &layout, &mut col_entries);
+        }
+        InflowForm::Compact => {}
+    }
 
     finalize_stage_objective(ctx, stage_idx, &layout, &mut objective);
 
@@ -195,6 +219,7 @@ pub(super) fn build_single_stage_template(
         template,
         gc_entries: layout.generic_constraint_rows,
         equipment_geometry: layout.geometry,
+        inflow_coupling,
     }
 }
 
@@ -448,10 +473,12 @@ fn assemble_stage_templates_output(
     let mut templates = Vec::with_capacity(n_study);
     let mut generic_constraint_row_entries = Vec::with_capacity(n_study);
     let mut geometry_per_stage = Vec::with_capacity(n_study);
+    let mut inflow_coupling_per_stage = Vec::with_capacity(n_study);
     for out in stage_outputs {
         templates.push(out.template);
         generic_constraint_row_entries.push(out.gc_entries);
         geometry_per_stage.push(out.equipment_geometry);
+        inflow_coupling_per_stage.push(out.inflow_coupling);
     }
 
     let block_hours_per_stage = scaling::compute_stage_hours(study_stages);
@@ -459,11 +486,14 @@ fn assemble_stage_templates_output(
     StageTemplates {
         templates,
         state_boxes: Vec::new(),
+        #[cfg(any(test, feature = "test-support"))]
+        pre_scaling_templates: Vec::new(),
         block_hours_per_stage,
         cost_scale_factor,
         load_bus_indices,
         generic_constraint_row_entries,
         geometry_per_stage,
+        inflow_coupling_per_stage,
         diversion_upstream,
         hydro_productivities_per_stage,
     }

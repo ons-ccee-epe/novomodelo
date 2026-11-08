@@ -1793,6 +1793,7 @@ mod tests {
             &par_lp,
             &topology,
             declared_depth,
+            crate::lp::indexer::InflowForm::Logical,
         )
         .expect("resolve_state_layout must succeed with a declared depth");
 

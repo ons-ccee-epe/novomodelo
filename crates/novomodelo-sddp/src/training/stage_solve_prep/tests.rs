@@ -339,7 +339,7 @@ fn run_matches_open_coded_forward_block_for_minimal_fixture() {
     // (no load buses, no anticipated thermals, no NCS in scope) ----
     let mut reference_scratch = ScratchBuffers::new(&training_ctx, &ctx, sizing);
     let mut reference_solver = RecordingSolver::default();
-    let mut reference_patch_buf = PatchBuffer::new(&state, &[], &[]);
+    let mut reference_patch_buf = PatchBuffer::new(&state, &[], &[], &[]);
 
     transform_inflow_noise(
         &raw_noise,
@@ -370,7 +370,7 @@ fn run_matches_open_coded_forward_block_for_minimal_fixture() {
     // ---- owner: StageSolvePrep::run configured the way forward would ----
     let mut owner_scratch = ScratchBuffers::new(&training_ctx, &ctx, sizing);
     let mut owner_solver = RecordingSolver::default();
-    let mut owner_patch_buf = PatchBuffer::new(&state, &[], &[]);
+    let mut owner_patch_buf = PatchBuffer::new(&state, &[], &[], &[]);
     let params = StageSolvePrepParams {
         state_source: StateSource(&current_state),
         raw_noise: &raw_noise,
@@ -618,7 +618,7 @@ fn run_wires_ncs_patch_matching_pre_collapse_inline_pattern() {
     // ---- owner: StageSolvePrep::run's internal NCS-patch wiring ----
     let mut owner_scratch = ScratchBuffers::new(&training_ctx, &ctx, sizing);
     let mut owner_solver = RecordingSolver::default();
-    let mut owner_patch_buf = PatchBuffer::new(&state, &[], &[]);
+    let mut owner_patch_buf = PatchBuffer::new(&state, &[], &[], &[]);
     StageSolvePrep::run(
         &mut owner_solver,
         &mut owner_patch_buf,
@@ -710,7 +710,7 @@ fn run_pins_the_state_columns_before_any_row_bound() {
     let raw_noise = vec![0.37_f64];
     let mut scratch = ScratchBuffers::new(&training_ctx, &ctx, minimal_sizing());
     let mut solver = RecordingSolver::default();
-    let mut patch_buf = PatchBuffer::new(&state, &[], &[]);
+    let mut patch_buf = PatchBuffer::new(&state, &[], &[], &[]);
     let params = StageSolvePrepParams {
         state_source: StateSource(&[]),
         raw_noise: &raw_noise,
@@ -782,7 +782,7 @@ fn run_patches_the_load_row_and_the_z_row_from_the_raw_noise() {
     let mut scratch = ScratchBuffers::new(&training_ctx, &ctx, sizing);
 
     let mut solver = RecordingSolver::default();
-    let mut patch_buf = PatchBuffer::new(&state, &load_bus_indices, &geometry_per_stage);
+    let mut patch_buf = PatchBuffer::new(&state, &load_bus_indices, &geometry_per_stage, &[]);
     let params = StageSolvePrepParams {
         state_source: StateSource(&current_state),
         raw_noise: &raw_noise,
@@ -807,7 +807,8 @@ fn run_patches_the_load_row_and_the_z_row_from_the_raw_noise() {
         1,
         &mut reference_scratch.load_rhs_buf,
     );
-    let mut reference_patch_buf = PatchBuffer::new(&state, &load_bus_indices, &geometry_per_stage);
+    let mut reference_patch_buf =
+        PatchBuffer::new(&state, &load_bus_indices, &geometry_per_stage, &[]);
     let grid = BlockGrid::new(1, training_ctx.study_dims.max_deficit_segments);
     let load_rows = BlockRowFamily::per_block(1..2);
     reference_patch_buf.fill_load_patches(
@@ -908,7 +909,7 @@ fn run_patches_the_inflow_slack_bounds_only_under_the_truncation_methods() {
         };
         let mut scratch = ScratchBuffers::new(&training_ctx, &ctx, minimal_sizing());
         let mut solver = RecordingSolver::default();
-        let mut patch_buf = PatchBuffer::new(&state, &[], &geometry);
+        let mut patch_buf = PatchBuffer::new(&state, &[], &geometry, &[]);
         let params = StageSolvePrepParams {
             state_source: StateSource(&current_state),
             raw_noise: &raw_noise,

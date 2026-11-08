@@ -28,7 +28,7 @@ fn bench_patch_fill(c: &mut Criterion) {
         );
         let bus_positions: Vec<usize> = (0..n_buses).rev().collect();
         let geometry = equipment_free_geometry(&[n_blocks]);
-        let mut buf = PatchBuffer::new(&state, &bus_positions, &geometry);
+        let mut buf = PatchBuffer::new(&state, &bus_positions, &geometry, &[]);
         let load_rhs = vec![100.0_f64; n_buses * n_blocks];
         let z_inflow_rhs = vec![0.5_f64; n_hydros];
         let row_scale: [f64; 0] = [];

@@ -166,7 +166,7 @@ pub fn build_stage_entity_manifest(
     let mut manifest = Vec::with_capacity(projection.n_slots());
     for j in 0..projection.n_slots() {
         let (region, offset) =
-            global_layout.classify_incoming_column(projection.incoming_column(CutSlot::new(j)));
+            global_layout.classify(projection.global_state_index(CutSlot::new(j)));
         let slot = match region {
             StateRegion::Storage => {
                 let hydro = &hydros[offset];

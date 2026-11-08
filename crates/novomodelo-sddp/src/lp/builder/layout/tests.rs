@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use chrono::NaiveDate;
+use novomodelo_core::scenario::InflowModel;
 use novomodelo_core::{
     Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, CascadeTopology, ConstraintExpression,
     ContractBlockBounds, ContractType, EnergyContract, EntityId, FillingConfig, GenericConstraint,
@@ -16,12 +17,13 @@ use novomodelo_core::{
     Stage, StageRiskConfig, StageStateConfig, Thermal, ThermalBlockBounds, ThermalStageBounds,
     VariableRef,
 };
+use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
 use crate::indexer::{
     AnticipatedLocal, BlockIdx, BlockRowFamily, Boundary, BusSys, CutStateProjection, EvapLocal,
     FillingTargetLocal, FloorLocal, FphaCellLocal, FphaLocal, HydroCell, HydroCellIndex, HydroSys,
-    NcsSys, PumpingSys, StateDim, StateRegion, ThermalSys, anticipated_resolution_for,
+    InflowForm, NcsSys, PumpingSys, StateDim, StateRegion, ThermalSys, anticipated_resolution_for,
 };
 use crate::lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime, PointResolution};
 use crate::resolved_parameters::ResolvedParameters;
@@ -69,10 +71,6 @@ fn range_cursor_adjacency_and_empty_alloc_carries_position() {
 
 // ── Fixture helpers ───────────────────────────────────────────────────────
 
-/// Owns all data needed to construct a zero-entity `TemplateBuildCtx`.
-///
-/// Fields are kept together so that references into them share a single
-/// lifetime `'_`, avoiding the 16-argument helper that clippy flags.
 struct ZeroEntityFixtures {
     base: CtxFixture,
 }
@@ -157,12 +155,6 @@ impl ZeroEntityFixtures {
         anticipated_positions: &[usize],
     ) -> TemplateBuildCtx<'_> {
         self.base.anticipated_plants = anticipated_plants_at(anticipated_positions);
-        self.build_ctx(anticipated_lead_stages)
-    }
-
-    /// The shared half of `make_ctx`, reading the already-set
-    /// `anticipated_plants` field.
-    fn build_ctx(&mut self, anticipated_lead_stages: Vec<usize>) -> TemplateBuildCtx<'_> {
         self.base.anticipated_lead_stages = anticipated_lead_stages;
         let mut ctx = self.base.ctx();
         ctx.generic_constraints = &[];
@@ -516,51 +508,8 @@ impl UsefulVolumeFixtures {
                 hydro_cell_index,
                 production_models,
                 evaporation_models,
-                bounds: ResolvedBounds::new(
-                    &BoundsCountsSpec {
-                        n_hydros,
-                        n_thermals: 0,
-                        n_lines: 0,
-                        n_pumping: 0,
-                        n_contracts: 0,
-                        n_stages,
-                        k_max: 0,
-                    },
-                    &BoundsDefaults {
-                        hydro: HydroStageBounds {
-                            min_storage_hm3: 0.0,
-                            max_storage_hm3: 0.0,
-                            filling_min_rate_m3s: 0.0,
-                            water_withdrawal_m3s: 0.0,
-                        },
-                        hydro_block: HydroBlockBounds::default(),
-                        thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
-                        thermal_block: ThermalBlockBounds {
-                            min_generation_mw: 0.0,
-                            max_generation_mw: 0.0,
-                        },
-                        line_block: LineBlockBounds {
-                            direct_mw: 0.0,
-                            reverse_mw: 0.0,
-                        },
-                        pumping_block: PumpingBlockBounds {
-                            min_flow_m3s: 0.0,
-                            max_flow_m3s: 0.0,
-                        },
-                        contract_block: ContractBlockBounds {
-                            min_mw: 0.0,
-                            max_mw: 0.0,
-                            price_per_mwh: 0.0,
-                        },
-                    },
-                ),
-                time_value: TimeValue::from_parts(
-                    vec![],
-                    vec![1.0; n_stages],
-                    vec![744.0; n_stages],
-                    (0..i32::try_from(n_stages).unwrap_or(0)).collect(),
-                    PostStudyResolved::default(),
-                ),
+                bounds: bounds_with_entities(n_hydros, 0, n_stages),
+                time_value: study_time_value(n_stages),
                 ..CtxFixture::default()
             },
         }
@@ -2621,6 +2570,17 @@ fn build_anticipated_fishing_row_pos_extended_axis_matches_study_only_count() {
 
 // ── Anticipated-decision range tests ──────────────────────────────────────
 
+/// A `TimeValue` over `n_stages` study stages of 744 hours each, with no post-study horizon.
+fn study_time_value(n_stages: usize) -> TimeValue {
+    TimeValue::from_parts(
+        vec![],
+        vec![1.0; n_stages],
+        vec![744.0; n_stages],
+        (0..i32::try_from(n_stages).unwrap_or(0)).collect(),
+        PostStudyResolved::default(),
+    )
+}
+
 /// Build a `ResolvedBounds` with zero entities but the given `n_stages`.
 ///
 /// Used to exercise the `is_anticipated_decision_active` gate
@@ -2640,13 +2600,7 @@ impl AntFixturesWithNStages {
         Self {
             base: CtxFixture {
                 bounds: bounds_with_n_stages(n_stages),
-                time_value: TimeValue::from_parts(
-                    vec![],
-                    vec![1.0; n_stages],
-                    vec![744.0; n_stages],
-                    (0..i32::try_from(n_stages).unwrap_or(0)).collect(),
-                    PostStudyResolved::default(),
-                ),
+                time_value: study_time_value(n_stages),
                 ..CtxFixture::default()
             },
         }
@@ -2815,13 +2769,7 @@ impl PumpingFixtures {
             base: CtxFixture {
                 bounds: bounds_with_pumping(n_pumping, n_stages),
                 pumping_stations: stations,
-                time_value: TimeValue::from_parts(
-                    vec![],
-                    vec![1.0; n_stages],
-                    vec![744.0; n_stages],
-                    (0..i32::try_from(n_stages).unwrap_or(0)).collect(),
-                    PostStudyResolved::default(),
-                ),
+                time_value: study_time_value(n_stages),
                 ..CtxFixture::default()
             },
         }
@@ -3682,96 +3630,89 @@ struct ColumnAddressCounts {
     pumping_flow: usize,
 }
 
-/// Compares every index of the builder's eight one-per-entity/NCS/pumping
-/// column families on `layout` against `layout.geometry`'s own accessor
-/// (job 3, `docs/design/lp-builder-contract.md`: one address formula per
-/// family). Returns how many addresses each family compared; a family empty
-/// on this particular `layout` compares zero.
+/// Checks every index of the builder's eight one-per-entity/NCS/pumping column
+/// families on `layout` against the family's raw `Range` (job 3,
+/// `docs/design/lp-builder-contract.md`): `start + i` for a one-per-entity
+/// family, `start + i * n_blks + blk` for a block-striped one. Returns how many
+/// addresses each family compared; a family empty on this particular `layout`
+/// compares zero.
 fn compare_column_addresses(
     ctx: &TemplateBuildCtx<'_>,
     layout: &StageLayout,
 ) -> ColumnAddressCounts {
-    let geom = layout.geometry.clone();
-    let mut counts = ColumnAddressCounts::default();
-
-    for h in 0..geom.inflow_slack.len() {
-        assert_eq!(
-            geom.inflow_slack_col(HydroSys::new(h)),
-            layout.geometry.inflow_slack_col(HydroSys::new(h)),
-            "inflow_slack_col mismatch at h={h}"
-        );
-        counts.inflow_slack += 1;
-    }
-    for h in 0..geom.withdrawal_slack_neg.len() {
-        assert_eq!(
-            geom.withdrawal_slack_neg_col(HydroSys::new(h)),
-            layout.geometry.withdrawal_slack_neg_col(HydroSys::new(h)),
-            "withdrawal_slack_neg_col mismatch at h={h}"
-        );
-        counts.withdrawal_slack_neg += 1;
-    }
-    for h in 0..geom.withdrawal_slack_pos.len() {
-        assert_eq!(
-            geom.withdrawal_slack_pos_col(HydroSys::new(h)),
-            layout.geometry.withdrawal_slack_pos_col(HydroSys::new(h)),
-            "withdrawal_slack_pos_col mismatch at h={h}"
-        );
-        counts.withdrawal_slack_pos += 1;
-    }
-    for i in 0..geom.anticipated_decision.len() {
-        assert_eq!(
-            geom.anticipated_decision_col(AnticipatedLocal::new(i)),
-            layout
-                .geometry
-                .anticipated_decision_col(AnticipatedLocal::new(i)),
-            "anticipated_decision_col mismatch at i={i}"
-        );
-        counts.anticipated_decision += 1;
-    }
-    for i in 0..geom.filling_target_col.len() {
-        assert_eq!(
-            geom.filling_target_slack_col(FillingTargetLocal::new(i)),
-            layout
-                .geometry
-                .filling_target_slack_col(FillingTargetLocal::new(i)),
-            "filling_target_slack_col mismatch at i={i}"
-        );
-        counts.filling_target_slack += 1;
-    }
-    for i in 0..geom.filled_min_storage_floor_col.len() {
-        assert_eq!(
-            geom.filled_min_storage_floor_slack_col(FloorLocal::new(i)),
-            layout
-                .geometry
-                .filled_min_storage_floor_slack_col(FloorLocal::new(i)),
-            "filled_min_storage_floor_slack_col mismatch at i={i}"
-        );
-        counts.filled_min_storage_floor_slack += 1;
-    }
-    for i in 0..ctx.non_controllable_sources.len() {
-        for blk in 0..layout.clock.n_blks() {
-            let blk = BlockIdx::new(blk);
-            assert_eq!(
-                geom.ncs_generation_col(NcsSys::new(i), blk),
-                layout.geometry.ncs_generation_col(NcsSys::new(i), blk),
-                "ncs_generation_col mismatch at i={i}"
-            );
-            counts.ncs_generation += 1;
+    fn per_entity(name: &str, family: &Range<usize>, accessor: impl Fn(usize) -> usize) -> usize {
+        for i in 0..family.len() {
+            assert_eq!(accessor(i), family.start + i, "{name} mismatch at i={i}");
         }
-    }
-    for i in 0..ctx.pumping_stations.len() {
-        for blk in 0..layout.clock.n_blks() {
-            let blk = BlockIdx::new(blk);
-            assert_eq!(
-                geom.pumping_flow_col(PumpingSys::new(i), blk),
-                layout.geometry.pumping_flow_col(PumpingSys::new(i), blk),
-                "pumping_flow_col mismatch at i={i}"
-            );
-            counts.pumping_flow += 1;
-        }
+        family.len()
     }
 
-    counts
+    fn block_striped(
+        name: &str,
+        family: &Range<usize>,
+        n_entities: usize,
+        n_blks: usize,
+        accessor: impl Fn(usize, BlockIdx) -> usize,
+    ) -> usize {
+        for i in 0..n_entities {
+            for blk in 0..n_blks {
+                assert_eq!(
+                    accessor(i, BlockIdx::new(blk)),
+                    family.start + i * n_blks + blk,
+                    "{name} mismatch at i={i}, blk={blk}"
+                );
+            }
+        }
+        n_entities * n_blks
+    }
+
+    let geom = &layout.geometry;
+    let n_blks = layout.clock.n_blks();
+
+    ColumnAddressCounts {
+        inflow_slack: per_entity("inflow_slack_col", &geom.inflow_slack, |h| {
+            geom.inflow_slack_col(HydroSys::new(h))
+        }),
+        withdrawal_slack_neg: per_entity(
+            "withdrawal_slack_neg_col",
+            &geom.withdrawal_slack_neg,
+            |h| geom.withdrawal_slack_neg_col(HydroSys::new(h)),
+        ),
+        withdrawal_slack_pos: per_entity(
+            "withdrawal_slack_pos_col",
+            &geom.withdrawal_slack_pos,
+            |h| geom.withdrawal_slack_pos_col(HydroSys::new(h)),
+        ),
+        anticipated_decision: per_entity(
+            "anticipated_decision_col",
+            &geom.anticipated_decision,
+            |i| geom.anticipated_decision_col(AnticipatedLocal::new(i)),
+        ),
+        filling_target_slack: per_entity(
+            "filling_target_slack_col",
+            &geom.filling_target_col,
+            |i| geom.filling_target_slack_col(FillingTargetLocal::new(i)),
+        ),
+        filled_min_storage_floor_slack: per_entity(
+            "filled_min_storage_floor_slack_col",
+            &geom.filled_min_storage_floor_col,
+            |i| geom.filled_min_storage_floor_slack_col(FloorLocal::new(i)),
+        ),
+        ncs_generation: block_striped(
+            "ncs_generation_col",
+            &geom.ncs_generation,
+            ctx.non_controllable_sources.len(),
+            n_blks,
+            |i, blk| geom.ncs_generation_col(NcsSys::new(i), blk),
+        ),
+        pumping_flow: block_striped(
+            "pumping_flow_col",
+            &geom.pumping_flow,
+            ctx.pumping_stations.len(),
+            n_blks,
+            |i, blk| geom.pumping_flow_col(PumpingSys::new(i), blk),
+        ),
+    }
 }
 
 /// Pins every one-per-entity/NCS/pumping column family's raw builder address
@@ -3841,6 +3782,174 @@ fn column_address_pins_cover_every_family() {
     );
     assert!(totals.ncs_generation > 0, "ncs_generation never compared");
     assert!(totals.pumping_flow > 0, "pumping_flow never compared");
+}
+
+fn compact_shift_fixtures(inflow_form: InflowForm) -> FillingMembershipFixtures {
+    let hydro_ids = [EntityId(1), EntityId(2)];
+    let inflow_model = |hydro_id, stage_id| InflowModel {
+        hydro_id,
+        stage_id,
+        mean_m3s: 50.0,
+        std_m3s: 1.0,
+        ar_coefficients: vec![0.6],
+        residual_std_ratio: 1.0,
+        annual: None,
+    };
+    let inflow_models: Vec<InflowModel> = hydro_ids
+        .iter()
+        .flat_map(|&id| [inflow_model(id, 0), inflow_model(id, -1)])
+        .collect();
+    let mut fixtures = FillingMembershipFixtures::new();
+    fixtures.base.par_lp = PrecomputedPar::build(
+        &inflow_models,
+        std::slice::from_ref(&minimal_stage()),
+        &hydro_ids,
+        None,
+    )
+    .unwrap();
+    fixtures.base.inflow_form = inflow_form;
+    fixtures.base.inflow_method = crate::InflowNonNegativityMethod::Penalty;
+    fixtures.base.anticipated_plants = anticipated_plants_at(&[0]);
+    fixtures.base.anticipated_lead_stages = vec![1];
+    fixtures
+}
+
+fn column_family_starts(layout: &StageLayout) -> Vec<(&'static str, usize)> {
+    let g = &layout.geometry;
+    let mut starts = vec![
+        ("storage_internal", g.storage_internal_start),
+        ("turbine", g.turbine.start),
+        ("spillage", g.spillage.start),
+        ("diversion", g.diversion.start),
+        ("thermal", g.thermal.start),
+        ("anticipated_decision", g.anticipated_decision.start),
+        ("line_fwd", g.line_fwd.start),
+        ("line_rev", g.line_rev.start),
+        ("deficit", g.deficit.start),
+        ("excess", g.excess.start),
+        ("generation", g.generation.start),
+        ("inflow_slack", g.inflow_slack.start),
+        ("withdrawal_slack_neg", g.withdrawal_slack_neg.start),
+        ("withdrawal_slack_pos", g.withdrawal_slack_pos.start),
+        ("outflow_below_slack", g.outflow_below_slack.start),
+        ("outflow_above_slack", g.outflow_above_slack.start),
+        ("turbine_below_slack", g.turbine_below_slack.start),
+        ("generation_below_slack", g.generation_below_slack.start),
+        (
+            "plant_turbine_below_slack",
+            g.plant_turbine_below_slack.start,
+        ),
+        (
+            "plant_generation_below_slack",
+            g.plant_generation_below_slack.start,
+        ),
+        ("ncs_generation", g.ncs_generation.start),
+        ("pumping_flow", g.pumping_flow.start),
+        ("contract_import", g.contract_import.start),
+        ("contract_export", g.contract_export.start),
+        ("filling_target_col", g.filling_target_col.start),
+        (
+            "filled_min_storage_floor_col",
+            g.filled_min_storage_floor_col.start,
+        ),
+    ];
+    if let Some(evap) = g.evap_indices.first() {
+        starts.extend([
+            ("evaporation_flow_col", evap.evaporation_flow_col),
+            ("f_evap_plus_col", evap.f_evap_plus_col),
+            ("f_evap_minus_col", evap.f_evap_minus_col),
+        ]);
+    }
+    starts
+}
+
+fn row_family_starts(layout: &StageLayout) -> Vec<(&'static str, usize)> {
+    let g = &layout.geometry;
+    let oper = &layout.oper_violation;
+    let anticipated = &layout.anticipated;
+    let mut starts = vec![
+        ("water_balance", g.water_balance.start()),
+        (
+            "transit_bucket_definition",
+            layout.rows.transit_bucket_definition.start,
+        ),
+        ("load_balance", g.load_balance.start()),
+        ("fpha", g.fpha.start),
+        ("min_outflow", oper.min_outflow.start),
+        ("max_outflow", oper.max_outflow.start),
+        ("min_turbine", oper.min_turbine.start),
+        ("min_generation", oper.min_generation.start),
+        ("plant_min_turbine", oper.plant_min_turbine.start),
+        ("plant_min_generation", oper.plant_min_generation.start),
+        ("plant_max_turbine", g.plant_max_turbine.start),
+        ("plant_max_generation", g.plant_max_generation.start),
+        ("filling_target", g.filling_target.start),
+        ("filled_min_storage_floor", g.filled_min_storage_floor.start),
+        ("fishing_rows", anticipated.fishing_rows.start),
+        ("state_out_def_rows", anticipated.state_out_def_rows.start),
+        (
+            "slot_definition_rows",
+            anticipated.slot_definition_rows.start,
+        ),
+        ("row_generic_start", layout.rows.row_generic_start),
+    ];
+    if let Some(evap) = g.evap_indices.first() {
+        starts.push(("evap_row", evap.evap_row));
+    }
+    starts
+}
+
+#[test]
+fn compact_layout_shifts_every_family_by_the_removed_blocks() {
+    let (n, l) = (2, 1);
+    let removed_cols = n * (l + 1);
+    let removed_rows = n;
+
+    for stage_id in [1, 3] {
+        let stage = stage_with_id(stage_id);
+        let mut logical_fixtures = compact_shift_fixtures(InflowForm::Logical);
+        let mut compact_fixtures = compact_shift_fixtures(InflowForm::Compact);
+        let logical_ctx = logical_fixtures.make_ctx();
+        let compact_ctx = compact_fixtures.make_ctx();
+        assert_eq!(
+            (
+                logical_ctx.state.hydro_count,
+                logical_ctx.state.max_par_order
+            ),
+            (n, l)
+        );
+        let logical = StageLayout::new(&logical_ctx, &stage, 0);
+        let compact = StageLayout::new(&compact_ctx, &stage, 0);
+
+        for (families, removed, logical_starts, compact_starts) in [
+            (
+                "column",
+                removed_cols,
+                column_family_starts(&logical),
+                column_family_starts(&compact),
+            ),
+            (
+                "row",
+                removed_rows,
+                row_family_starts(&logical),
+                row_family_starts(&compact),
+            ),
+        ] {
+            assert_eq!(logical_starts.len(), compact_starts.len());
+            for ((name, logical_start), (compact_name, compact_start)) in
+                logical_starts.into_iter().zip(compact_starts)
+            {
+                assert_eq!(name, compact_name);
+                assert_eq!(
+                    compact_start + removed,
+                    logical_start,
+                    "stage {stage_id}: {families} family {name}"
+                );
+            }
+        }
+        assert_eq!(compact.num_cols + removed_cols, logical.num_cols);
+        assert_eq!(compact.rows.num_rows + removed_rows, logical.rows.num_rows);
+    }
 }
 
 /// Pins the travel-time bucket ring's own addressing against `StateSpace`'s
@@ -4071,6 +4180,11 @@ fn assert_row_addresses(layout: &StageLayout) -> [usize; 8] {
 #[test]
 fn row_address_pins_cover_every_family() {
     let mut totals = [0usize; 8];
+    let mut accumulate = |counts: [usize; 8]| {
+        for (total, count) in totals.iter_mut().zip(counts) {
+            *total += count;
+        }
+    };
 
     // Fishing + state-out-def + slot-definition (carry): two anticipated
     // plants with heterogeneous leads (2, 3) sharing a depth-3 ring — the
@@ -4082,10 +4196,7 @@ fn row_address_pins_cover_every_family() {
     let ant_stage = minimal_stage();
     for stage_idx in [0, 1] {
         let layout = StageLayout::new(&ant_ctx, &ant_stage, stage_idx);
-        let counts = assert_row_addresses(&layout);
-        for (total, count) in totals.iter_mut().zip(counts) {
-            *total += count;
-        }
+        accumulate(assert_row_addresses(&layout));
     }
 
     // Filling target + evaporation (Parallel).
@@ -4093,10 +4204,7 @@ fn row_address_pins_cover_every_family() {
     let filling_ctx = filling_fixtures.make_ctx();
     let filling_stage = stage_with_id(1);
     let filling_layout = StageLayout::new(&filling_ctx, &filling_stage, 0);
-    let filling_counts = assert_row_addresses(&filling_layout);
-    for (total, count) in totals.iter_mut().zip(filling_counts) {
-        *total += count;
-    }
+    accumulate(assert_row_addresses(&filling_layout));
 
     // Floor + evaporation (Chronological — exercises the other block mode).
     let mut operating_stage = stage_with_id(3);
@@ -4109,10 +4217,7 @@ fn row_address_pins_cover_every_family() {
         })
         .collect();
     let operating_layout = StageLayout::new(&filling_ctx, &operating_stage, 0);
-    let operating_counts = assert_row_addresses(&operating_layout);
-    for (total, count) in totals.iter_mut().zip(operating_counts) {
-        *total += count;
-    }
+    accumulate(assert_row_addresses(&operating_layout));
 
     // Generic: one block-varying symbolic-upper-bound constraint, two blocks.
     let mut generic_fixtures = ZeroEntityFixtures::new();
@@ -4120,10 +4225,7 @@ fn row_address_pins_cover_every_family() {
     let generic_ctx = generic_fixtures.make_ctx_generic();
     let generic_stage = stage_with_blocks(BlockMode::Parallel, 2);
     let generic_layout = StageLayout::new(&generic_ctx, &generic_stage, 0);
-    let generic_counts = assert_row_addresses(&generic_layout);
-    for (total, count) in totals.iter_mut().zip(generic_counts) {
-        *total += count;
-    }
+    accumulate(assert_row_addresses(&generic_layout));
 
     // Transit-bucket definition: one downstream plant, one reachable lag.
     let mut transit_fixtures = ZeroEntityFixtures::new();
@@ -4136,10 +4238,7 @@ fn row_address_pins_cover_every_family() {
     );
     let transit_stage = minimal_stage();
     let transit_layout = StageLayout::new(&transit_ctx, &transit_stage, 0);
-    let transit_counts = assert_row_addresses(&transit_layout);
-    for (total, count) in totals.iter_mut().zip(transit_counts) {
-        *total += count;
-    }
+    accumulate(assert_row_addresses(&transit_layout));
 
     let family_names = [
         "fishing",
@@ -4252,7 +4351,7 @@ fn storage_boundary_variants_are_block_independent() {
 #[test]
 fn two_sided_real_layout_allocates_minus_slack_column() {
     let constraint = GenericConstraint {
-        id: novomodelo_core::EntityId(1),
+        id: EntityId(1),
         name: "gc_range_test".to_string(),
         description: None,
         expression: ConstraintExpression { terms: vec![] },

@@ -87,8 +87,9 @@ impl<'a> LbEvalScratchBundle<'a> {
 }
 
 /// The lower bound patches the root stage's own load rows, so the load region
-/// is sized for `stage_ctx`'s root-stage (`StageIdx(0)`) block count, never the
-/// global max. Bucket and anticipated capacity MUST match `n_buckets` /
+/// is sized for `stage_ctx`'s root-stage (`StageIdx(0)`) block count, and its
+/// inflow region for the root-stage inflow coupling, never the global max.
+/// Bucket and anticipated capacity MUST match `n_buckets` /
 /// `n_anticipated * k_max` — undersizing panics in `fill_col_state_patches`.
 pub(crate) fn lower_bound_patch_buffer(
     state: &StateSpace,
@@ -98,6 +99,7 @@ pub(crate) fn lower_bound_patch_buffer(
         state,
         stage_ctx.load_bus_indices,
         stage_ctx.geometry_per_stage.get(..1).unwrap_or_default(),
+        stage_ctx.inflow_coupling.get(..1).unwrap_or_default(),
     )
 }
 
@@ -411,7 +413,7 @@ mod tests {
     use super::{
         LbEvalScratch, LbEvalScratchBundle, assemble_outcome_weights,
         assemble_root_outcome_weights, evaluate_lower_bound, find_root_position,
-        lb_aggregate_and_broadcast, lb_evaluate_stage_0, lb_init_rank0,
+        lb_aggregate_and_broadcast, lb_evaluate_stage_0, lb_init_rank0, lower_bound_patch_buffer,
     };
     use crate::{
         PrepareHydroModelsResult, ResolvedParameters, StageTemplates,
@@ -421,6 +423,7 @@ mod tests {
         error::SddpError,
         horizon_mode::HorizonMode,
         inflow_method::InflowNonNegativityMethod,
+        lead_time::AnticipatedResolution,
         lp::builder::{PatchBuffer, StageGeometry, StateBox},
         lp::indexer::{BlockIdx, CutStateProjection, HydroSys, StateSpace, StudyDimensions},
         risk_measure::{RiskMeasure, RiskMeasureScratch},
@@ -429,7 +432,8 @@ mod tests {
             NodeGraph, NodeId, NodeOpenings, NodePos, NodeRuntime, NodeSuccessor, OpeningSource,
         },
         test_support::{
-            self, StageContextFixture, equipment_free_geometry, permissive_state_boxes,
+            self, StageContextFixture, equipment_free_geometry, inflow_coupling_with_entries,
+            permissive_state_boxes,
         },
         workspace::{ScratchBuffers, WorkspaceSizing},
     };
@@ -968,7 +972,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
         let mut solver = MockSolver::with_objectives(vec![100.0]);
@@ -1014,7 +1018,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
         let mut solver = MockSolver::with_objectives(vec![60.0, 80.0, 100.0]);
@@ -1061,7 +1065,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         // CVaR(alpha=0.5, lambda=1.0): pure CVaR; upper bound per scenario =
         // p / alpha = 0.5 / 0.5 = 1.0. With 2 equal-probability scenarios the
         // greedy allocation places all mass on the worst scenario.
@@ -1115,7 +1119,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::CVaR {
             alpha: 1.0,
             lambda: 1.0,
@@ -1205,7 +1209,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
         let mut solver = MockSolver::infeasible_on_first();
@@ -1250,7 +1254,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = FailingBcastComm;
         let mut solver = MockSolver::with_objectives(vec![100.0]);
@@ -1302,7 +1306,7 @@ mod tests {
                 vec![0.0_f64],
             );
             let fcf = make_fcf(2, fixture.state.n_state);
-            let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+            let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
             let rm = RiskMeasure::Expectation;
             let comm = LbReconcileStub {
                 rank: 0,
@@ -1349,7 +1353,7 @@ mod tests {
                 vec![0.0_f64],
             );
             let fcf = make_fcf(2, fixture.state.n_state);
-            let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+            let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
             let rm = RiskMeasure::Expectation;
             let comm = LbReconcileStub {
                 rank: 1,
@@ -1404,7 +1408,7 @@ mod tests {
         );
         // Start with 0 cuts (empty FCF).
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
         let mut solver = MockSolver::with_objectives(vec![200.0, 300.0]);
@@ -1455,7 +1459,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
 
@@ -1530,7 +1534,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
         let mut solver = MockSolver::with_objectives(vec![60.0, 80.0]);
@@ -1577,7 +1581,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
         let mut solver = MockSolver::with_objectives(vec![100.0]);
@@ -1622,7 +1626,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
         let mut solver = MockSolver::with_objectives(vec![100.0]);
@@ -1865,7 +1869,12 @@ mod tests {
             dcs: None,
         };
 
-        let mut patch_buf = PatchBuffer::new(&state, ctx.load_bus_indices, ctx.geometry_per_stage);
+        let mut patch_buf = PatchBuffer::new(
+            &state,
+            ctx.load_bus_indices,
+            ctx.geometry_per_stage,
+            ctx.inflow_coupling,
+        );
         let mut scratch = ScratchBuffers::new(&training_ctx, &ctx, WorkspaceSizing::default());
         let mut objectives_buf = Vec::new();
         let actual_n_openings = stoch.opening_tree().n_openings(0);
@@ -1917,7 +1926,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
 
@@ -2616,7 +2625,7 @@ mod tests {
         let state = test_support::state_layout(2, 0);
         let fcf = make_fcf(templates.templates.len(), state.n_state);
         let initial_state = vec![0.0_f64; state.n_state];
-        let mut patch_buf = PatchBuffer::new(&state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&state, &[], &[], &[]);
         let opening_tree = filling_opening_tree(1);
         let rm = RiskMeasure::Expectation;
         let stochastic = wrap_opening_tree(state.hydro_count, opening_tree);
@@ -2703,7 +2712,7 @@ mod tests {
         let templates = vec![template];
         let fcf = make_fcf(1, state.n_state);
         let initial_state = vec![7.0_f64, 11.0];
-        let mut patch_buf = PatchBuffer::new(&state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&state, &[], &[], &[]);
         let opening_tree = simple_opening_tree(1);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
@@ -3123,5 +3132,35 @@ mod tests {
             "lower-bound production code must contain no uniform-probability \
              fill; offending fragments: {offenders:?}"
         );
+    }
+
+    #[test]
+    fn lower_bound_shift_region_follows_the_root_stage_coupling() {
+        let couplings = [
+            inflow_coupling_with_entries(2, &[(0, 1)]),
+            inflow_coupling_with_entries(2, &[(0, 2), (1, 2), (0, 5), (1, 7)]),
+            inflow_coupling_with_entries(2, &[(0, 3), (1, 4)]),
+        ];
+        let fixture = StageContextFixture::new(&[], &[], &[]).inflow_coupling(&couplings);
+        let ctx = fixture.ctx();
+        let compact = StateSpace::new_compact(
+            2,
+            1,
+            Vec::new(),
+            Vec::new(),
+            AnticipatedResolution::default(),
+            &[1, 1],
+        );
+        let logical = StateSpace::new(
+            2,
+            1,
+            Vec::new(),
+            Vec::new(),
+            AnticipatedResolution::default(),
+            &[1, 1],
+        );
+
+        assert_eq!(lower_bound_patch_buffer(&compact, &ctx).indices.len(), 1);
+        assert_eq!(lower_bound_patch_buffer(&logical, &ctx).indices.len(), 2);
     }
 }

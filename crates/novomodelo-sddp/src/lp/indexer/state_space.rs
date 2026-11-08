@@ -22,6 +22,22 @@ use crate::lead_time::AnticipatedResolution;
 use novomodelo_core::Hydro;
 use novomodelo_core::temporal::StageStateConfig;
 
+/// Which inflow emission a [`StateSpace`] is laid out for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InflowForm {
+    /// Lag columns and one `z_inflow` column per hydro.
+    Logical,
+    /// Compact emission, built beside [`Self::Logical`].
+    #[cfg_attr(
+        not(any(test, feature = "test-support")),
+        expect(
+            dead_code,
+            reason = "only the test-support constructor selects it until production setup does"
+        )
+    )]
+    Compact,
+}
+
 /// Stage-invariant state-vector layout for one SDDP stage subproblem.
 ///
 /// ## Column layout
@@ -29,8 +45,8 @@ use novomodelo_core::temporal::StageStateConfig;
 /// ```text
 /// [0, N)                                     storage               — outgoing storage volumes (N = hydro_count)
 /// [N, N*(1+L))                               inflow_lags           — AR lag variables (L lags per hydro)
-/// [N*(1+L), N*(1+L) + B)                     transit_buckets_out   — travel-time bucket state (outgoing, identity)
-/// [N*(1+L) + B, N*(1+L) + B + S)             commit_out            — commitment-hold outgoing slots (outgoing, identity)
+/// [N*(1+L), N*(1+L) + B)                     transit_buckets_out   — travel-time bucket state (outgoing)
+/// [N*(1+L) + B, N*(1+L) + B + S)             commit_out            — commitment-hold outgoing slots (outgoing)
 /// [… + S, … + N)                             z_inflow              — realized inflow (auxiliary, not state)
 /// [… + N, … + 2*N)                           storage_in            — incoming storage volumes
 /// [… + 2*N, … + 2*N + B)                     transit_buckets_in    — incoming travel-time bucket volumes (pinned)
@@ -40,10 +56,10 @@ use novomodelo_core::temporal::StageStateConfig;
 ///
 /// `S = A*k_max`: the commitment-hold region is the in-study anticipated-ring
 /// slots in one contiguous out/in pair — an outgoing block
-/// ([`Self::commit_out`], identity-resolved, contributing to
-/// [`Self::n_state`]) and a separate incoming block ([`Self::commit_in`],
-/// pinned via [`Self::state_to_lp_incoming_column`]) — never one
-/// dual-purpose range shifted out-of-LP. Slots are slot-major/plant-minor,
+/// ([`Self::commit_out`], resolved through `outgoing_block_start`,
+/// contributing to [`Self::n_state`]) and a separate incoming block
+/// ([`Self::commit_in`], pinned via [`Self::state_to_lp_incoming_column`]) —
+/// never one dual-purpose range shifted out-of-LP. Slots are slot-major/plant-minor,
 /// keyed ring-axis-modular (delivery target `m`'s slot is `r(m) mod k_max`,
 /// see [`Self::commitment_hold_in_study_offset`]). Like the bucket block,
 /// the whole region is always cut-enabled,
@@ -54,19 +70,20 @@ pub struct StateSpace {
     pub storage: Range<usize>,
 
     /// AR lag variables, lag-major: all hydros for lag 0, then lag 1, …. Hydro
-    /// `h` at lag `l` is at `inflow_lags.start + l * hydro_count + h`.
+    /// `h` at lag `l` is at `inflow_lags.start + l * hydro_count + h`. Empty
+    /// under [`InflowForm::Compact`].
     pub inflow_lags: Range<usize>,
 
     /// Travel-time in-transit bucket state. Outgoing bucket state maps to its
-    /// LP column by identity — the `storage` convention, not the `z_inflow`
-    /// lag remap.
+    /// LP column through `outgoing_block_start` — the `storage`
+    /// convention, not the `z_inflow` lag remap.
     pub transit_buckets_out: Range<usize>,
 
     /// Commitment-hold OUTGOING slots: the `n_anticipated * k_max` in-study
     /// anticipated-ring slots, slot-major/plant-minor (slot `k` for plant `i`
     /// at `commit_out.start + k * n_anticipated + i` —
     /// [`Self::commitment_hold_in_study_offset`]). Every slot is a genuine LP
-    /// column resolved by identity (the `transit_buckets_out` convention) and
+    /// column resolved through `outgoing_block_start` and
     /// defined by an in-LP definition row — never resolved out-of-LP. A slot
     /// `k >= k_i` for a plant whose own reachable depth is smaller is
     /// padding, frozen `[0, 0]`.
@@ -80,7 +97,8 @@ pub struct StateSpace {
     /// [`StateSpace::state_to_lp_incoming_column`].
     pub transit_buckets_in: Range<usize>,
 
-    /// Realized-inflow variables `z_h`, one per hydro.
+    /// Realized-inflow variables `z_h`, one per hydro. Empty under
+    /// [`InflowForm::Compact`].
     pub z_inflow: Range<usize>,
 
     /// Commitment-hold INCOMING slots, the same layout as [`Self::commit_out`],
@@ -119,6 +137,9 @@ pub struct StateSpace {
     /// length [`Self::n_anticipated`].
     pub anticipated_lead_stages: Vec<usize>,
 
+    /// Inflow emission this layout was assembled for.
+    pub(crate) inflow_form: InflowForm,
+
     /// Delivery-anchored point-commitment resolution per anticipated plant
     /// (anticipated-local order), attached at construction.
     pub(crate) anticipated_resolution: AnticipatedResolution,
@@ -133,8 +154,8 @@ pub struct StateSpace {
     pub nonzero_state_indices: Vec<StateDim>,
 
     /// Precomputed `state_to_lp_column(j)` for every `j ∈ [0, n_state)` (cut-row
-    /// hot path).
-    pub state_to_lp_column_map: Vec<OutCol>,
+    /// hot path); `None` for a dimension with no LP column.
+    pub state_to_lp_column_map: Vec<Option<OutCol>>,
 }
 
 /// One of the four stage-invariant state-vector regions, in the canonical walk
@@ -205,6 +226,7 @@ impl StateSpace {
         topology: &TransitBucketTopology,
         anticipated_lead_stages: Vec<usize>,
         anticipated_resolution: AnticipatedResolution,
+        inflow_form: InflowForm,
     ) -> Self {
         Self::assemble(
             hydros.len(),
@@ -213,6 +235,7 @@ impl StateSpace {
             anticipated_lead_stages,
             anticipated_resolution,
             effective_lag_counts,
+            inflow_form,
         )
     }
 
@@ -237,6 +260,29 @@ impl StateSpace {
             anticipated_lead_stages,
             anticipated_resolution,
             effective_lag_count,
+            InflowForm::Logical,
+        )
+    }
+
+    /// [`Self::new`] laid out for [`InflowForm::Compact`].
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn new_compact(
+        hydro_count: usize,
+        max_par_order: usize,
+        transit_bucket_column_order: Vec<(HydroSys, usize)>,
+        anticipated_lead_stages: Vec<usize>,
+        anticipated_resolution: AnticipatedResolution,
+        effective_lag_count: &[usize],
+    ) -> Self {
+        Self::assemble(
+            hydro_count,
+            max_par_order,
+            transit_bucket_column_order,
+            anticipated_lead_stages,
+            anticipated_resolution,
+            effective_lag_count,
+            InflowForm::Compact,
         )
     }
 
@@ -268,6 +314,7 @@ impl StateSpace {
         anticipated_lead_stages: Vec<usize>,
         anticipated_resolution: AnticipatedResolution,
         effective_lag_count: &[usize],
+        inflow_form: InflowForm,
     ) -> Self {
         let n_buckets = transit_bucket_column_order.len();
         debug_assert_eq!(
@@ -295,12 +342,17 @@ impl StateSpace {
         let l = max_par_order;
         let n_ant_state = n_anticipated * k_max;
 
+        let (n_lag_cols, n_z_cols) = match inflow_form {
+            InflowForm::Logical => (n * l, n),
+            InflowForm::Compact => (0, 0),
+        };
+
         let mut cursor = RangeCursor::new(0);
         let storage = cursor.alloc(n);
-        let inflow_lags = cursor.alloc(n * l);
+        let inflow_lags = cursor.alloc(n_lag_cols);
         let transit_buckets_out = alloc_or_empty(&mut cursor, n_buckets);
         let commit_out = alloc_or_empty(&mut cursor, n_ant_state);
-        let z_inflow = cursor.alloc(n);
+        let z_inflow = cursor.alloc(n_z_cols);
         let storage_in = cursor.alloc(n);
         let transit_buckets_in = alloc_or_empty(&mut cursor, n_buckets);
         let commit_in = alloc_or_empty(&mut cursor, n_ant_state);
@@ -338,6 +390,7 @@ impl StateSpace {
             n_anticipated,
             k_max,
             anticipated_lead_stages,
+            inflow_form,
             anticipated_resolution,
             transit_bucket_column_order,
             nonzero_state_indices: Vec::new(),
@@ -406,11 +459,29 @@ impl StateSpace {
         }
     }
 
+    /// Whether `region`'s state dimensions occupy LP columns.
+    #[inline]
+    #[must_use]
+    pub(crate) fn has_lp_columns(&self, region: StateRegion) -> bool {
+        match self.inflow_form {
+            InflowForm::Logical => true,
+            InflowForm::Compact => !matches!(region, StateRegion::Lag),
+        }
+    }
+
     /// `region`'s incoming pinned-block start column — the single owner of
     /// which block [`Self::state_to_lp_incoming_column`] pins.
+    ///
+    /// # Panics (debug builds only)
+    ///
+    /// Panics if `region` has no LP columns ([`Self::has_lp_columns`]).
     #[inline]
     #[must_use]
     pub(crate) fn incoming_block_start(&self, region: StateRegion) -> usize {
+        debug_assert!(
+            self.has_lp_columns(region),
+            "{region:?} has no incoming LP block"
+        );
         match region {
             StateRegion::Storage => self.storage_in.start,
             StateRegion::Lag => self.inflow_lags.start,
@@ -420,9 +491,17 @@ impl StateSpace {
     }
 
     /// The single owner of where `region`'s outgoing values sit in the primal.
+    ///
+    /// # Panics (debug builds only)
+    ///
+    /// Panics if `region` has no LP columns ([`Self::has_lp_columns`]).
     #[inline]
     #[must_use]
     pub(crate) fn outgoing_block_start(&self, region: StateRegion) -> usize {
+        debug_assert!(
+            self.has_lp_columns(region),
+            "{region:?} has no outgoing LP block"
+        );
         match region {
             StateRegion::Storage => self.storage.start,
             StateRegion::Lag => self.inflow_lags.start,
@@ -463,12 +542,18 @@ impl StateSpace {
     ///
     /// Classifies `j` into its `StateRegion` via `REGION_ORDER` before any
     /// lag arithmetic runs, then resolves through an exhaustive match:
-    /// storage, `transit_buckets_out`, and `commit_out` map by identity. Lag
+    /// storage, `transit_buckets_out`, and `commit_out` map to
+    /// `outgoing_block_start(region) + offset`. Lag
     /// indices remap to the outgoing state after `shift_lag_state`: lag 0 is
     /// realised inflow → [`Self::z_inflow_col`]; lag `l ≥ 1` is the previous
     /// stage's lag `l − 1` → [`Self::lag_incoming_col`]. Classifying
     /// first — rather than falling through an `if`/`else` chain — is what
     /// keeps buckets/commitment-hold from ever reaching the lag decode.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `j` is a lag dimension of a compact layout, which has no LP
+    /// column.
     ///
     /// A bare `usize` cannot skip the [`StateDim`] wrap at this resolver
     /// boundary:
@@ -498,17 +583,22 @@ impl StateSpace {
         let (region, offset) = self.classify(j);
 
         OutCol::new(match region {
-            StateRegion::Storage | StateRegion::Buckets | StateRegion::CommitmentHold => j.get(),
-            StateRegion::Lag => {
-                let n = self.hydro_count;
-                let h = offset % n;
-                let lag = offset / n;
-                if lag == 0 {
-                    self.z_inflow_col(HydroSys::new(h)).get()
-                } else {
-                    self.lag_incoming_col(lag - 1, HydroSys::new(h)).get()
-                }
+            StateRegion::Storage | StateRegion::Buckets | StateRegion::CommitmentHold => {
+                self.outgoing_block_start(region) + offset
             }
+            StateRegion::Lag => match self.inflow_form {
+                InflowForm::Logical => {
+                    let n = self.hydro_count;
+                    let h = offset % n;
+                    let lag = offset / n;
+                    if lag == 0 {
+                        self.z_inflow_col(HydroSys::new(h)).get()
+                    } else {
+                        self.lag_incoming_col(lag - 1, HydroSys::new(h)).get()
+                    }
+                }
+                InflowForm::Compact => unreachable!("compact lag dimensions have no LP column"),
+            },
         })
     }
 
@@ -519,8 +609,12 @@ impl StateSpace {
         self.state_to_lp_column_map.clear();
         self.state_to_lp_column_map.reserve(self.n_state);
         for j in 0..self.n_state {
-            self.state_to_lp_column_map
-                .push(self.state_to_lp_column(StateDim::new(j)));
+            let j = StateDim::new(j);
+            let (region, _) = self.classify(j);
+            self.state_to_lp_column_map.push(
+                self.has_lp_columns(region)
+                    .then(|| self.state_to_lp_column(j)),
+            );
         }
         debug_assert_eq!(self.state_to_lp_column_map.len(), self.n_state);
     }
@@ -529,6 +623,11 @@ impl StateSpace {
     /// [`Self::state_to_lp_column_map`], which [`Self::build`] always
     /// finalizes to `n_state` length (indexed read is in range for
     /// `j ∈ [0, n_state)`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `j` is a lag dimension of a compact layout, which has no LP
+    /// column.
     #[inline]
     #[must_use]
     pub fn lp_column_for_state(&self, j: StateDim) -> OutCol {
@@ -538,6 +637,7 @@ impl StateSpace {
             "state_to_lp_column_map must be finalized to n_state length"
         );
         self.state_to_lp_column_map[j.get()]
+            .unwrap_or_else(|| unreachable!("compact lag dimensions have no LP column"))
     }
 
     /// Map a state-vector index to its **incoming-state** LP column — the column
@@ -549,9 +649,6 @@ impl StateSpace {
     /// `view.reduced_costs[col]` at them for the cut subgradient, one per
     /// component `j ∈ [0, n_state)`.
     ///
-    /// The travel-time bucket range resolves through an explicit
-    /// `transit_buckets_in` arm, not the trailing anticipated-state catch-all.
-    ///
     /// Contrast [`state_to_lp_column`], which returns the **outgoing** column
     /// for forward-pass cut-row construction: for storage it returns `j`
     /// (outgoing), this returns `storage_in.start + j` (incoming). The two are
@@ -559,31 +656,20 @@ impl StateSpace {
     /// column's reduced cost equals the dual a row-based state-fixing
     /// formulation would produce, which is why column-bound pinning is exact.
     ///
+    /// # Panics
+    ///
+    /// Panics if `j` is a lag dimension of a compact layout, which has no LP
+    /// column.
+    ///
     /// [`state_to_lp_column`]: Self::state_to_lp_column
     #[inline]
     #[must_use]
     pub fn state_to_lp_incoming_column(&self, j: StateDim) -> InCol {
         let (region, offset) = self.classify(j);
+        if !self.has_lp_columns(region) {
+            unreachable!("compact lag dimensions have no LP column");
+        }
         InCol::new(self.incoming_block_start(region) + offset)
-    }
-
-    /// `region`'s incoming pinned-block column range.
-    fn incoming_block_range(&self, region: StateRegion) -> Range<usize> {
-        let start = self.incoming_block_start(region);
-        start..start + self.state_dim_range(region).len()
-    }
-
-    /// Inverse of [`Self::state_to_lp_incoming_column`]: the region and
-    /// in-region offset owning pinned column `c`. Total for the same reason
-    /// as [`Self::classify`].
-    #[must_use]
-    pub(crate) fn classify_incoming_column(&self, c: InCol) -> (StateRegion, usize) {
-        let c = c.get();
-        let region = REGION_ORDER
-            .into_iter()
-            .find(|&region| self.incoming_block_range(region).contains(&c))
-            .unwrap_or(StateRegion::CommitmentHold);
-        (region, c - self.incoming_block_start(region))
     }
 
     /// Encode an in-study commitment-hold position: anticipated-local plant
@@ -654,7 +740,10 @@ impl StateSpace {
     #[inline]
     #[must_use]
     pub(crate) fn lag_incoming_col(&self, lag: usize, h: HydroSys) -> InCol {
-        debug_assert!(lag < self.max_par_order && h.get() < self.hydro_count);
+        debug_assert!(
+            h.get() < self.hydro_count && lag * self.hydro_count + h.get() < self.inflow_lags.len(),
+            "no lag column at lag {lag} for this hydro"
+        );
         self.state_to_lp_incoming_column(self.lag_state_dim(lag, h))
     }
 
@@ -708,7 +797,7 @@ impl StateSpace {
             })
     }
 
-    fn commitment_hold_state_dim(&self, plant: usize, m: usize) -> StateDim {
+    pub(crate) fn commitment_hold_state_dim(&self, plant: usize, m: usize) -> StateDim {
         StateDim::new(
             self.state_dim_commitment_hold_range().start
                 + self.commitment_hold_in_study_offset(plant, m),
@@ -829,19 +918,22 @@ impl StateSpace {
         self.nonzero_state_indices = mask;
     }
 
-    /// The z-inflow definition rows: one per hydro, leading every stage's row
-    /// space.
+    /// The z-inflow definition rows: one per `z_inflow` column, leading every
+    /// stage's row space.
     #[inline]
     #[must_use]
     pub fn z_inflow_rows(&self) -> Range<usize> {
-        0..self.hydro_count
+        0..self.z_inflow.len()
     }
 
     /// Hydro `h`'s z-inflow definition row.
     #[inline]
     #[must_use]
     pub fn z_inflow_row(&self, h: HydroSys) -> usize {
-        debug_assert!(h.get() < self.hydro_count);
+        debug_assert!(
+            h.get() < self.z_inflow_rows().len(),
+            "no z-inflow row for this hydro"
+        );
         self.z_inflow_rows().start + h.get()
     }
 
@@ -849,7 +941,10 @@ impl StateSpace {
     #[inline]
     #[must_use]
     pub(crate) fn z_inflow_col(&self, h: HydroSys) -> OutCol {
-        debug_assert!(h.get() < self.hydro_count);
+        debug_assert!(
+            h.get() < self.z_inflow.len(),
+            "no z-inflow column for this hydro"
+        );
         OutCol::new(self.z_inflow.start + h.get())
     }
 }
@@ -859,8 +954,8 @@ mod tests {
     use std::ops::Range;
 
     use super::{
-        AnticipatedResolution, HydroSys, InCol, OutCol, REGION_ORDER, StateDim, StateSpace,
-        for_each_live_commitment_slot,
+        AnticipatedResolution, HydroSys, InCol, InflowForm, OutCol, REGION_ORDER, StateDim,
+        StateRegion, StateSpace, for_each_live_commitment_slot,
     };
     use crate::lead_time::{DeliveryAxis, LeadTime, PointResolution};
     use crate::test_support::constant_lead_resolution;
@@ -1004,7 +1099,7 @@ mod tests {
             );
             for j in 0..idx.n_state {
                 assert_eq!(
-                    idx.lp_column_for_state(StateDim::new(j)),
+                    Some(idx.lp_column_for_state(StateDim::new(j))),
                     idx.state_to_lp_column_map[j]
                 );
             }
@@ -1955,29 +2050,6 @@ mod tests {
         }
     }
 
-    /// [`StateSpace::classify_incoming_column`] must invert
-    /// [`StateSpace::state_to_lp_incoming_column`] for every state dimension,
-    /// with every region non-empty.
-    #[test]
-    fn classify_incoming_column_inverts_incoming_resolver() {
-        let idx = finalized_with_transit_buckets_resolved(
-            3,
-            2,
-            vec![(HydroSys::new(0), 1), (HydroSys::new(0), 2)],
-            vec![1, 2],
-        );
-        for j in 0..idx.n_state {
-            let dim = StateDim::new(j);
-            let (region, offset) =
-                idx.classify_incoming_column(idx.state_to_lp_incoming_column(dim));
-            assert_eq!(
-                idx.state_dim_range(region).start + offset,
-                j,
-                "incoming classification must round-trip state dim {j}"
-            );
-        }
-    }
-
     /// `lag_state_dim` is lag-major, right after the storage region.
     #[test]
     fn lag_state_dim_is_lag_major_after_storage() {
@@ -2097,6 +2169,175 @@ mod tests {
         for h in 0..idx.hydro_count {
             assert_eq!(idx.z_inflow_row(HydroSys::new(h)), h);
         }
+    }
+
+    #[test]
+    fn compact_state_space_drops_the_lag_and_z_blocks_and_keeps_n_state() {
+        let (n, l) = (2, 2);
+        let buckets = vec![(HydroSys::new(0), 1)];
+        let lead_stages = vec![1];
+        let lag_counts = [l; 2];
+        let resolution = || constant_lead_resolution(&lead_stages, 3);
+        let logical = StateSpace::new(
+            n,
+            l,
+            buckets.clone(),
+            lead_stages.clone(),
+            resolution(),
+            &lag_counts,
+        );
+        let compact = StateSpace::new_compact(
+            n,
+            l,
+            buckets.clone(),
+            lead_stages.clone(),
+            resolution(),
+            &lag_counts,
+        );
+
+        assert_eq!(logical.inflow_form, InflowForm::Logical);
+        assert_eq!(compact.inflow_form, InflowForm::Compact);
+
+        assert_eq!(logical.inflow_lags.len(), n * l);
+        assert_eq!(logical.z_inflow_rows(), 0..n);
+        assert!(compact.inflow_lags.is_empty());
+        assert!(compact.z_inflow.is_empty());
+        assert!(compact.z_inflow_rows().is_empty());
+
+        assert_eq!(compact.n_state, logical.n_state);
+        assert_eq!(compact.storage, logical.storage);
+
+        let lag_block = n * l;
+        let lag_and_z_blocks = n * (l + 1);
+        assert!(!logical.transit_buckets_out.is_empty() && !logical.commit_out.is_empty());
+        for (name, compact_block, logical_block, shift) in [
+            (
+                "transit_buckets_out",
+                &compact.transit_buckets_out,
+                &logical.transit_buckets_out,
+                lag_block,
+            ),
+            (
+                "commit_out",
+                &compact.commit_out,
+                &logical.commit_out,
+                lag_block,
+            ),
+            (
+                "storage_in",
+                &compact.storage_in,
+                &logical.storage_in,
+                lag_and_z_blocks,
+            ),
+            (
+                "transit_buckets_in",
+                &compact.transit_buckets_in,
+                &logical.transit_buckets_in,
+                lag_and_z_blocks,
+            ),
+            (
+                "commit_in",
+                &compact.commit_in,
+                &logical.commit_in,
+                lag_and_z_blocks,
+            ),
+        ] {
+            assert_eq!(
+                compact_block.start + shift,
+                logical_block.start,
+                "{name}.start"
+            );
+            assert_eq!(compact_block.len(), logical_block.len(), "{name}.len");
+        }
+        assert_eq!(compact.theta + lag_and_z_blocks, logical.theta);
+    }
+
+    fn compact_with_buckets_and_one_plant() -> StateSpace {
+        let lead_stages = vec![1];
+        StateSpace::new_compact(
+            2,
+            1,
+            vec![(HydroSys::new(0), 1), (HydroSys::new(0), 2)],
+            lead_stages.clone(),
+            constant_lead_resolution(&lead_stages, 3),
+            &[1; 2],
+        )
+    }
+
+    #[test]
+    fn compact_state_columns_resolve_through_the_outgoing_block() {
+        let idx = compact_with_buckets_and_one_plant();
+        let lag_block = idx.hydro_count * idx.max_par_order;
+        let families = [
+            (StateRegion::Storage, idx.storage.clone(), 0),
+            (
+                StateRegion::Buckets,
+                idx.transit_buckets_out.clone(),
+                lag_block,
+            ),
+            (
+                StateRegion::CommitmentHold,
+                idx.commit_out.clone(),
+                lag_block,
+            ),
+        ];
+
+        for (region, family, shift) in families {
+            let dims = idx.state_dim_range(region);
+            assert!(!dims.is_empty(), "{region:?} must be non-empty");
+            for j in dims.clone() {
+                let column = OutCol::new(idx.outgoing_block_start(region) + j - dims.start);
+                assert!(family.contains(&column.get()), "{region:?} dim {j}");
+                assert_eq!(column.get() + shift, j, "{region:?} dim {j}");
+                assert_eq!(idx.state_to_lp_column(StateDim::new(j)), column);
+                assert_eq!(idx.state_to_lp_column_map[j], Some(column));
+                assert_eq!(idx.lp_column_for_state(StateDim::new(j)), column);
+            }
+        }
+
+        let lag_dims = idx.state_dim_lag_range();
+        assert_eq!(lag_dims.len(), lag_block);
+        for j in lag_dims {
+            assert_eq!(idx.state_to_lp_column_map[j], None, "lag dim {j}");
+        }
+        assert!(!idx.has_lp_columns(StateRegion::Lag));
+        assert!(
+            [
+                StateRegion::Storage,
+                StateRegion::Buckets,
+                StateRegion::CommitmentHold
+            ]
+            .into_iter()
+            .all(|region| idx.has_lp_columns(region))
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "no z-inflow row for this hydro")]
+    fn compact_z_inflow_row_panics_in_debug() {
+        let _ = compact_with_buckets_and_one_plant().z_inflow_row(HydroSys::new(0));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "no z-inflow column for this hydro")]
+    fn compact_z_inflow_col_panics_in_debug() {
+        let _ = compact_with_buckets_and_one_plant().z_inflow_col(HydroSys::new(0));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "no lag column at lag 0 for this hydro")]
+    fn compact_lag_incoming_col_panics_in_debug() {
+        let _ = compact_with_buckets_and_one_plant().lag_incoming_col(0, HydroSys::new(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "compact lag dimensions have no LP column")]
+    fn compact_state_lag_dimension_has_no_lp_column() {
+        let idx = compact_with_buckets_and_one_plant();
+        let _ = idx.lp_column_for_state(idx.lag_state_dim(0, HydroSys::new(0)));
     }
 
     /// The two commitment-hold column resolvers resolve to the exact columns the

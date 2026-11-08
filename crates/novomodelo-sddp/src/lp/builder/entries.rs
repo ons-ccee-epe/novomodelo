@@ -5,8 +5,8 @@ use super::generic_constraints::resolve_variable_ref;
 use crate::hydro_models::EvaporationModel;
 use crate::indexer::{
     AnticipatedLocal, BlockIdx, Boundary, BusSys, EvapLocal, FillingTargetLocal, FloorLocal,
-    FphaCellLocal, HydroCell, HydroSys, LineSys, NcsSys, PlantCapLocal, PlantFloorLocal,
-    PumpingSys, ThermalSys, for_each_ring_residue,
+    FphaCellLocal, HydroCell, HydroSys, InflowForm, LineSys, NcsSys, PlantCapLocal,
+    PlantFloorLocal, PumpingSys, ThermalSys, for_each_ring_residue,
 };
 
 use super::delivery_ring::{DeliveryRing, maturing_bucket_in_col, resolve_bucket_arrival_density};
@@ -1214,8 +1214,12 @@ pub(super) fn fill_generic_constraint_entries(
                 *multiplier *= coefficient;
             }
         }
-        push_merged_row_entries(row, &mut row_entries, col_entries);
-        push_merged_row_entries(row, &mut row_inflow_entries, sink.per_hydro_mut());
+        for (col, sum) in merged_row_entries(&mut row_entries) {
+            col_entries[col].push((row, sum));
+        }
+        for (h, sum) in merged_row_entries(&mut row_inflow_entries) {
+            sink.record(HydroSys::new(h), row, sum);
+        }
 
         if let (Some(plus_col), Some(slack)) = (entry.slack_plus_col, entry.slack) {
             let obj_coeff = slack.unit_cost(row_hours);
@@ -1243,22 +1247,14 @@ pub(super) fn fill_generic_constraint_entries(
     }
 }
 
-/// The sort must stay stable: equal columns keep push order, which fixes the addition order.
-fn push_merged_row_entries(
-    row: usize,
-    entries: &mut [(usize, f64)],
-    col_entries: &mut [Vec<(usize, f64)>],
-) {
-    entries.sort_by_key(|&(col, _)| col);
-    for run in entries.chunk_by(|a, b| a.0 == b.0) {
-        let Some((&(col, first), rest)) = run.split_first() else {
-            continue;
-        };
+/// The sort must stay stable: equal keys keep push order, which fixes the addition order.
+fn merged_row_entries(entries: &mut [(usize, f64)]) -> impl Iterator<Item = (usize, f64)> + '_ {
+    entries.sort_by_key(|&(key, _)| key);
+    entries.chunk_by(|a, b| a.0 == b.0).filter_map(|run| {
+        let (&(key, first), rest) = run.split_first()?;
         let sum = rest.iter().fold(first, |acc, &(_, v)| acc + v);
-        if !is_exact_zero(sum) {
-            col_entries[col].push((row, sum));
-        }
-    }
+        (!is_exact_zero(sum)).then_some((key, sum))
+    })
 }
 
 /// Inject `+1.0` for each NCS at its connected bus's load-balance row, per block. Written
@@ -1543,7 +1539,10 @@ pub(super) fn build_stage_matrix_entries(
     fill_ncs_load_balance_entries(ctx, layout, &mut col_entries);
     fill_fpha_entries(ctx, stage, stage_idx, layout, &mut col_entries);
     fill_evaporation_entries(ctx, stage, stage_idx, layout, &mut col_entries);
-    fill_z_inflow_entries(ctx, stage_idx, layout, &mut col_entries);
+    match layout.state.inflow_form {
+        InflowForm::Logical => fill_z_inflow_entries(ctx, stage_idx, layout, &mut col_entries),
+        InflowForm::Compact => {}
+    }
     fill_operational_violation_entries(ctx, stage_idx, layout, &mut col_entries);
     fill_plant_cap_entries(ctx, stage_idx, layout, &mut col_entries);
     fill_anticipated_fishing_entries(ctx, stage, stage_idx, layout, &mut col_entries);
@@ -1560,8 +1559,59 @@ pub(super) fn build_stage_matrix_entries_with_inflow_coupling(
 ) -> Vec<Vec<(usize, f64)>> {
     let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
     let mut col_entries = build_stage_matrix_entries(ctx, stage, stage_idx, layout, &mut sink);
-    fill_z_inflow_coupling_entries(&sink.finish(layout.rows.num_rows), layout, &mut col_entries);
+    let (row_lower, row_upper) = super::rows::fill_stage_rows(ctx, stage, stage_idx, layout);
+    let coupling = sink.finish(&row_lower, &row_upper);
+    match layout.state.inflow_form {
+        InflowForm::Logical => fill_z_inflow_coupling_entries(&coupling, layout, &mut col_entries),
+        InflowForm::Compact => {}
+    }
     col_entries
+}
+
+#[cfg(test)]
+pub(super) struct GenericConstraintFill {
+    pub(super) col_entries: Vec<Vec<(usize, f64)>>,
+    pub(super) col_upper: Vec<f64>,
+    pub(super) objective: Vec<f64>,
+    pub(super) row_lower: Vec<f64>,
+    pub(super) row_upper: Vec<f64>,
+    pub(super) coupling: InflowCoupling,
+}
+
+#[cfg(test)]
+pub(super) fn fill_generic_constraints_for_test(
+    ctx: &TemplateBuildCtx<'_>,
+    stage_idx: usize,
+    layout: &StageLayout,
+    mut col_entries: Vec<Vec<(usize, f64)>>,
+) -> GenericConstraintFill {
+    let mut col_upper = vec![f64::INFINITY; layout.num_cols];
+    let mut objective = vec![0.0_f64; layout.num_cols];
+    let mut row_lower = vec![f64::NEG_INFINITY; layout.rows.num_rows];
+    let mut row_upper = vec![f64::INFINITY; layout.rows.num_rows];
+    let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
+    fill_generic_constraint_entries(
+        ctx,
+        stage_idx,
+        layout,
+        &mut LpMatrixBuffers {
+            col_entries: &mut col_entries,
+            col_upper: &mut col_upper,
+            objective: &mut objective,
+            row_lower: &mut row_lower,
+            row_upper: &mut row_upper,
+        },
+        &mut sink,
+    );
+    let coupling = sink.finish(&row_lower, &row_upper);
+    GenericConstraintFill {
+        col_entries,
+        col_upper,
+        objective,
+        row_lower,
+        row_upper,
+        coupling,
+    }
 }
 
 /// Assemble CSC arrays from per-column entry lists.
@@ -3405,7 +3455,7 @@ mod pumping_water_tests {
     };
     use crate::indexer::{
         AnticipatedPlants, BlockIdx, Boundary, BusSys, EvapLocal, FphaCellLocal, HydroCell,
-        HydroCellIndex, HydroSys, LineSys, PlantCapLocal, PlantFloorLocal, StateDim,
+        HydroCellIndex, HydroSys, InflowForm, LineSys, PlantCapLocal, PlantFloorLocal, StateDim,
     };
     use crate::lead_time::{SpreadResolution, resolve_spread};
 
@@ -3424,12 +3474,12 @@ mod pumping_water_tests {
         BLOCK_HOURS, three_block_stage, two_block_stage, zero_hydro_penalties,
     };
     use super::{
-        LpMatrixBuffers, assemble_csc, build_stage_matrix_entries,
+        GenericConstraintFill, assemble_csc, build_stage_matrix_entries,
         build_stage_matrix_entries_with_inflow_coupling, fill_fpha_entries,
-        fill_generic_constraint_entries, fill_load_balance_entries,
+        fill_generic_constraints_for_test, fill_load_balance_entries,
         fill_operational_violation_entries, fill_pumping_water_entries,
-        fill_transit_bucket_definition_entries, resolve_bucket_arrival_density,
-        resolve_variable_ref,
+        fill_transit_bucket_definition_entries, fill_z_inflow_coupling_entries,
+        resolve_bucket_arrival_density, resolve_variable_ref,
     };
 
     const N_STAGES: usize = 1;
@@ -4689,28 +4739,16 @@ mod pumping_water_tests {
             let stage = two_block_stage(0, [300.0, 444.0]);
             let layout = StageLayout::new(&ctx, &stage, 0);
 
-            let mut entries =
-                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
-            let mut col_upper = vec![f64::INFINITY; layout.num_cols];
-            let mut objective = vec![0.0_f64; layout.num_cols];
-            let mut row_lower = vec![f64::NEG_INFINITY; layout.rows.num_rows];
-            let mut row_upper = vec![f64::INFINITY; layout.rows.num_rows];
-            let mut buffers = LpMatrixBuffers {
-                col_entries: &mut entries,
-                col_upper: &mut col_upper,
-                objective: &mut objective,
-                row_lower: &mut row_lower,
-                row_upper: &mut row_upper,
-            };
-            let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
-            fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers, &mut sink);
+            let entries = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+            let mut fill = fill_generic_constraints_for_test(&ctx, 0, &layout, entries);
+            fill_z_inflow_coupling_entries(&fill.coupling, &layout, &mut fill.col_entries);
 
             // Mirror the production per-column row-sort (see
             // build_single_stage_template) before assembling the CSC.
-            for col in &mut entries {
+            for col in &mut fill.col_entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
-            assemble_csc(&entries)
+            assemble_csc(&fill.col_entries)
         };
 
         // Order A: every family declared ascending. The fixture is kept alive so
@@ -8249,21 +8287,12 @@ mod pumping_water_tests {
             "block-dependent pumping constraint must expand to one row per block"
         );
 
-        let mut col_entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); layout.num_cols];
-        let mut col_upper = vec![f64::INFINITY; layout.num_cols];
-        let mut objective = vec![0.0_f64; layout.num_cols];
-        let mut row_lower = vec![f64::NEG_INFINITY; layout.rows.num_rows];
-        let mut row_upper = vec![f64::INFINITY; layout.rows.num_rows];
-        let mut buffers = LpMatrixBuffers {
-            col_entries: &mut col_entries,
-            col_upper: &mut col_upper,
-            objective: &mut objective,
-            row_lower: &mut row_lower,
-            row_upper: &mut row_upper,
-        };
-
-        let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
-        fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers, &mut sink);
+        let GenericConstraintFill {
+            col_entries,
+            row_lower,
+            row_upper,
+            ..
+        } = fill_generic_constraints_for_test(&ctx, 0, &layout, vec![Vec::new(); layout.num_cols]);
 
         // Each generic row `blk` lands on the station's flow column for that block,
         // with the flow (1.0) and power (consumption) terms aliasing the SAME column.
@@ -8400,21 +8429,8 @@ mod pumping_water_tests {
         ctx: &TemplateBuildCtx<'_>,
         layout: &StageLayout<'_>,
     ) -> Vec<Vec<(usize, f64)>> {
-        let mut col_entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); layout.num_cols];
-        let mut col_upper = vec![f64::INFINITY; layout.num_cols];
-        let mut objective = vec![0.0_f64; layout.num_cols];
-        let mut row_lower = vec![f64::NEG_INFINITY; layout.rows.num_rows];
-        let mut row_upper = vec![f64::INFINITY; layout.rows.num_rows];
-        let mut buffers = LpMatrixBuffers {
-            col_entries: &mut col_entries,
-            col_upper: &mut col_upper,
-            objective: &mut objective,
-            row_lower: &mut row_lower,
-            row_upper: &mut row_upper,
-        };
-        let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
-        fill_generic_constraint_entries(ctx, 0, layout, &mut buffers, &mut sink);
-        col_entries
+        fill_generic_constraints_for_test(ctx, 0, layout, vec![Vec::new(); layout.num_cols])
+            .col_entries
     }
 
     /// On a constant-productivity plant `hydro_generation` is the turbine column at the
@@ -8656,21 +8672,14 @@ mod pumping_water_tests {
             );
         }
 
-        let mut col_entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); layout.num_cols];
-        let mut col_upper = vec![f64::INFINITY; layout.num_cols];
-        let mut objective = vec![0.0_f64; layout.num_cols];
-        let mut row_lower = vec![f64::NEG_INFINITY; layout.rows.num_rows];
-        let mut row_upper = vec![f64::INFINITY; layout.rows.num_rows];
-        let mut buffers = LpMatrixBuffers {
-            col_entries: &mut col_entries,
-            col_upper: &mut col_upper,
-            objective: &mut objective,
-            row_lower: &mut row_lower,
-            row_upper: &mut row_upper,
-        };
-
-        let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
-        fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers, &mut sink);
+        let GenericConstraintFill {
+            col_entries,
+            col_upper,
+            objective,
+            row_lower,
+            row_upper,
+            ..
+        } = fill_generic_constraints_for_test(&ctx, 0, &layout, vec![Vec::new(); layout.num_cols]);
 
         assert_eq!(
             block_hours.len(),
@@ -8698,6 +8707,11 @@ mod pumping_water_tests {
             assert!(
                 col_entries[minus_col].contains(&(row, -1.0)),
                 "blk {blk}: minus-slack coefficient must be -1.0 (relaxes the upper bound)"
+            );
+            assert_eq!(
+                (col_upper[plus_col], col_upper[minus_col]),
+                (f64::INFINITY, f64::INFINITY),
+                "blk {blk}: both slack columns are unbounded above"
             );
             let expected_obj = penalty * hours;
             assert_eq!(
@@ -9027,7 +9041,8 @@ mod pumping_water_tests {
     ) -> InflowCoupling {
         let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
         build_stage_matrix_entries(ctx, stage, 0, layout, &mut sink);
-        sink.finish(layout.rows.num_rows)
+        let (row_lower, row_upper) = fill_stage_rows(ctx, stage, 0, layout);
+        sink.finish(&row_lower, &row_upper)
     }
 
     fn inflow_entry_bits(coupling: &InflowCoupling, hydro: HydroSys) -> Vec<(usize, u64)> {
@@ -9123,6 +9138,151 @@ mod pumping_water_tests {
                 "{block_mode:?}: the PreFilling hydro has no entry on its own frozen row"
             );
         }
+    }
+
+    fn two_hydro_ar1_fixtures(inflow_form: InflowForm) -> PumpFixtures {
+        use novomodelo_core::scenario::InflowModel;
+
+        let stage = two_block_stage(0, [300.0, 444.0]);
+        let inflow_models: Vec<InflowModel> = [(1, 0.6), (2, 0.4)]
+            .into_iter()
+            .flat_map(|(id, phi)| {
+                [0, -1].map(|stage_id| InflowModel {
+                    hydro_id: EntityId(id),
+                    stage_id,
+                    mean_m3s: 50.0,
+                    std_m3s: 1.0,
+                    ar_coefficients: vec![phi],
+                    residual_std_ratio: 1.0,
+                    annual: None,
+                })
+            })
+            .collect();
+        let par_lp = PrecomputedPar::build(
+            &inflow_models,
+            std::slice::from_ref(&stage),
+            &[EntityId(1), EntityId(2)],
+            None,
+        )
+        .expect("AR(1) PrecomputedPar build must succeed");
+        let mut fixtures = PumpFixtures::new(vec![fixture_hydro(1), fixture_hydro(2)], Vec::new())
+            .with_resolved_penalties()
+            .with_par_lp(par_lp);
+        fixtures.base.inflow_form = inflow_form;
+        fixtures
+    }
+
+    #[test]
+    fn compact_template_drops_lag_and_z_entities() {
+        let stage = two_block_stage(0, [300.0, 444.0]);
+        let build = |inflow_form: InflowForm| {
+            let mut fixtures = two_hydro_ar1_fixtures(inflow_form);
+            let ctx = fixtures.make_ctx();
+            let layout = StageLayout::new(&ctx, &stage, 0);
+            let dropped: Vec<usize> = layout
+                .state
+                .inflow_lags
+                .clone()
+                .chain(layout.state.z_inflow.clone())
+                .collect();
+            let template =
+                super::super::template::build_single_stage_template(&ctx, &stage, 0).template;
+            (
+                template,
+                dropped,
+                layout.state.hydro_count,
+                ctx.par_lp.max_order(),
+            )
+        };
+        let (logical, logical_dropped, n_hydros, lag_order) = build(InflowForm::Logical);
+        let (compact, compact_dropped, ..) = build(InflowForm::Compact);
+
+        assert_eq!((n_hydros, lag_order), (2, 1));
+        assert_eq!(logical_dropped.len(), n_hydros * (lag_order + 1));
+        assert!(compact_dropped.is_empty());
+        assert_eq!(
+            compact.num_cols + n_hydros * (lag_order + 1),
+            logical.num_cols
+        );
+        assert_eq!(compact.num_rows + n_hydros, logical.num_rows);
+
+        let num_rows = i32::try_from(compact.num_rows).unwrap();
+        assert!(compact.row_indices.iter().all(|&row| row < num_rows));
+
+        let col_span = |col: usize| {
+            usize::try_from(logical.col_starts[col]).unwrap()
+                ..usize::try_from(logical.col_starts[col + 1]).unwrap()
+        };
+        let dropped_entries: usize = logical_dropped.iter().map(|&col| col_span(col).len()).sum();
+        assert!(dropped_entries > 0);
+        assert_eq!(compact.num_nz, logical.num_nz - dropped_entries);
+
+        let z_rows = i32::try_from(n_hydros).unwrap();
+        let z_row_entries_outside_dropped = (0..logical.num_cols)
+            .filter(|col| !logical_dropped.contains(col))
+            .flat_map(|col| logical.row_indices[col_span(col)].iter().copied())
+            .filter(|&row| row < z_rows)
+            .count();
+        assert_eq!(z_row_entries_outside_dropped, 0);
+    }
+
+    #[test]
+    fn compact_template_inflow_coupling_equals_logical_shifted_by_the_z_rows() {
+        let stage = two_block_stage(0, [300.0, 444.0]);
+        let coupling_bits = |inflow_form: InflowForm| {
+            let mut fixtures = two_hydro_ar1_fixtures(inflow_form);
+            let ctx = fixtures.make_ctx();
+            let layout = StageLayout::new(&ctx, &stage, 0);
+            let coupling = build_inflow_coupling(&ctx, &stage, &layout);
+            (0..layout.state.hydro_count)
+                .map(|h| inflow_entry_bits(&coupling, HydroSys::new(h)))
+                .collect::<Vec<_>>()
+        };
+        let logical = coupling_bits(InflowForm::Logical);
+        let compact = coupling_bits(InflowForm::Compact);
+
+        let n_hydros = logical.len();
+        assert_eq!(n_hydros, 2);
+        for (h, (logical_h, compact_h)) in logical.iter().zip(&compact).enumerate() {
+            assert!(!logical_h.is_empty(), "hydro {h}");
+            let shifted: Vec<(usize, u64)> = logical_h
+                .iter()
+                .map(|&(row, bits)| (row - n_hydros, bits))
+                .collect();
+            assert_eq!(compact_h, &shifted, "hydro {h}");
+        }
+    }
+
+    #[test]
+    fn compact_inflow_coupling_keeps_the_logical_touched_row_bounds() {
+        let stage = two_block_stage(0, [300.0, 444.0]);
+        let touched = |inflow_form: InflowForm| {
+            let mut fixtures = two_hydro_ar1_fixtures(inflow_form);
+            let ctx = fixtures.make_ctx();
+            let layout = StageLayout::new(&ctx, &stage, 0);
+            let coupling = build_inflow_coupling(&ctx, &stage, &layout);
+            let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+            (
+                layout.state.hydro_count,
+                coupling.touched_rows().to_vec(),
+                bits(coupling.touched_row_lower()),
+                bits(coupling.touched_row_upper()),
+            )
+        };
+        let (n_hydros, logical_rows, logical_lower, logical_upper) = touched(InflowForm::Logical);
+        let (_, compact_rows, compact_lower, compact_upper) = touched(InflowForm::Compact);
+
+        let z_rows = u32::try_from(n_hydros).unwrap();
+        assert!(!logical_rows.is_empty());
+        assert_eq!(
+            compact_rows,
+            logical_rows
+                .iter()
+                .map(|&row| row - z_rows)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(compact_lower, logical_lower);
+        assert_eq!(compact_upper, logical_upper);
     }
 
     // ── σ_fill terminal target row + column ──────────────────────────────────

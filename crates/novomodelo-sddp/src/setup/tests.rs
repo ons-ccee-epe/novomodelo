@@ -7,7 +7,7 @@ use crate::SddpError;
 use crate::block_clock::M3S_TO_HM3;
 use crate::hydro_models::{PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel};
 use crate::lp::builder::StageGeometry;
-use crate::lp::indexer::{AnticipatedPlants, StateSpace, ThermalSys};
+use crate::lp::indexer::{AnticipatedPlants, InflowForm, StateSpace, ThermalSys};
 use crate::test_support;
 use crate::time_value::DeliveryCalendar;
 use novomodelo_io::test_support::owned_piece_defaults;
@@ -7402,6 +7402,10 @@ fn assert_state_layout_finalized(state: &StateSpace) {
         state.state_to_lp_column_map, reference.state_to_lp_column_map,
         "state_to_lp_column_map must match a fresh StateSpace::new"
     );
+    assert_eq!(
+        state.inflow_form, reference.inflow_form,
+        "inflow_form must match a fresh StateSpace::new"
+    );
     assert_eq!(state.n_state, reference.n_state, "n_state must match");
     assert_eq!(state.theta, reference.theta, "theta column must match");
     assert_eq!(state.storage, reference.storage, "storage range must match");
@@ -7495,6 +7499,7 @@ fn state_space_build_matches_the_loose_constructor() {
         &topology,
         leads.clone(),
         resolution.clone(),
+        InflowForm::Logical,
     );
     let loose = StateSpace::new(
         system.hydros().len(),
@@ -7537,6 +7542,66 @@ fn stage_data_state_matches_indexer_role_a_uniform() {
     .expect("setup");
 
     assert_state_layout_finalized(&setup.inputs.stage_data.state);
+}
+
+#[test]
+fn inflow_form_defaults_to_logical_and_the_test_support_constructor_selects_compact() {
+    use super::StudyParams;
+
+    let system = minimal_system(3);
+    let config = minimal_config(2, 10);
+    let sentinel = std::path::Path::new("config.json");
+    let training_source = config
+        .training_scenario_source(sentinel)
+        .expect("training source");
+    let simulation_source = config
+        .simulation_scenario_source(sentinel)
+        .expect("simulation source");
+    let stochastic = || {
+        build_stochastic_context(
+            &system,
+            42,
+            None,
+            &[],
+            &[],
+            OpeningTreeInputs::default(),
+            ClassSchemes {
+                inflow: Some(SamplingScheme::InSample),
+                load: Some(SamplingScheme::InSample),
+                ncs: Some(SamplingScheme::InSample),
+            },
+        )
+        .expect("stochastic context")
+    };
+    let params = || StudyParams::from_config(&config, Vec::new()).expect("from_config");
+
+    let logical = StudySetup::from_broadcast_params(
+        &system,
+        stochastic(),
+        params(),
+        PrepareHydroModelsResult::default_from_system(&system),
+        &training_source,
+        &simulation_source,
+    )
+    .expect("logical setup");
+    let compact = StudySetup::from_broadcast_params_compact(
+        &system,
+        stochastic(),
+        params(),
+        PrepareHydroModelsResult::default_from_system(&system),
+        &training_source,
+        &simulation_source,
+    )
+    .expect("compact setup");
+
+    assert_eq!(
+        logical.inputs.stage_data.state.inflow_form,
+        InflowForm::Logical
+    );
+    assert_eq!(
+        compact.inputs.stage_data.state.inflow_form,
+        InflowForm::Compact
+    );
 }
 
 /// Given a boundary-inferred depth (24) greater than the fitted AR order

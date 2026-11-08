@@ -116,7 +116,7 @@ use crate::{
     },
     lp::indexer::{
         AnticipatedLocal, AnticipatedPlants, CutStateProjection, HydroCellIndex, HydroSys,
-        StateSpace, StudyDimensions, ThermalSys,
+        InflowForm, StateSpace, StudyDimensions, ThermalSys,
     },
     policy::orchestration::PeriodicCheckpoint,
     risk_measure::{RiskMeasure, uniform_effective_measure},
@@ -375,11 +375,56 @@ impl StudySetup {
     ///   model shape does not match `system` (see `validate_par_shape`).
     pub fn from_broadcast_params(
         system: &System,
+        stochastic: StochasticContext,
+        config: StudyParams,
+        hydro_models: PrepareHydroModelsResult,
+        training_source: &ScenarioSource,
+        simulation_source: &ScenarioSource,
+    ) -> Result<Self, SddpError> {
+        Self::from_broadcast_params_with_form(
+            system,
+            stochastic,
+            config,
+            hydro_models,
+            training_source,
+            simulation_source,
+            InflowForm::Logical,
+        )
+    }
+
+    /// [`Self::from_broadcast_params`] building the compact inflow emission.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::from_broadcast_params`].
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_broadcast_params_compact(
+        system: &System,
+        stochastic: StochasticContext,
+        config: StudyParams,
+        hydro_models: PrepareHydroModelsResult,
+        training_source: &ScenarioSource,
+        simulation_source: &ScenarioSource,
+    ) -> Result<Self, SddpError> {
+        Self::from_broadcast_params_with_form(
+            system,
+            stochastic,
+            config,
+            hydro_models,
+            training_source,
+            simulation_source,
+            InflowForm::Compact,
+        )
+    }
+
+    fn from_broadcast_params_with_form(
+        system: &System,
         mut stochastic: StochasticContext,
         config: StudyParams,
         hydro_models: PrepareHydroModelsResult,
         training_source: &ScenarioSource,
         simulation_source: &ScenarioSource,
+        inflow_form: InflowForm,
     ) -> Result<Self, SddpError> {
         validate_par_shape(system, stochastic.par())?;
 
@@ -406,7 +451,7 @@ impl StudySetup {
             energy_conversion,
             resolved_generic_coefficients,
             transit_seed_arcs,
-        } = resolve_stage_data(system, &config, &stochastic, &hydro_models)?;
+        } = resolve_stage_data(system, &config, &stochastic, &hydro_models, inflow_form)?;
         let n_stages = stage_data.stage_templates.templates.len();
 
         let study_stage_ids: Vec<i32> = stage_data.stages.iter().map(|s| s.id).collect();
@@ -1148,6 +1193,7 @@ pub(crate) fn resolve_state_layout(
     par_lp: &PrecomputedPar,
     transit_bucket_topology: &bucket_topology::TransitBucketTopology,
     inflow_lag_depth: Option<u32>,
+    inflow_form: InflowForm,
 ) -> Result<ResolvedStateLayout, SddpError> {
     let anticipated_plants = AnticipatedPlants::build(system.thermals());
 
@@ -1227,6 +1273,7 @@ pub(crate) fn resolve_state_layout(
         transit_bucket_topology,
         anticipated_lead_stages,
         anticipated_resolution,
+        inflow_form,
     );
 
     debug_assert_eq!(
@@ -1254,10 +1301,18 @@ pub(crate) fn resolve_state_and_topology(
     par_lp: &PrecomputedPar,
     inflow_lag_depth: Option<u32>,
     boundary_present: bool,
+    inflow_form: InflowForm,
 ) -> Result<(bucket_topology::TransitBucketTopology, ResolvedStateLayout), SddpError> {
     let topology =
         bucket_topology::build_transit_bucket_topology(system, calendar, boundary_present);
-    let layout = resolve_state_layout(system, calendar, par_lp, &topology, inflow_lag_depth)?;
+    let layout = resolve_state_layout(
+        system,
+        calendar,
+        par_lp,
+        &topology,
+        inflow_lag_depth,
+        inflow_form,
+    )?;
     Ok((topology, layout))
 }
 
@@ -1896,6 +1951,7 @@ fn resolve_stage_data(
     config: &StudyParams,
     stochastic: &StochasticContext,
     hydro_models: &PrepareHydroModelsResult,
+    inflow_form: InflowForm,
 ) -> Result<ResolvedStageInputs, SddpError> {
     let calendar = DeliveryCalendar::from_system(system);
     let (transit_bucket_topology, layout) = resolve_state_and_topology(
@@ -1904,6 +1960,7 @@ fn resolve_stage_data(
         stochastic.par(),
         config.boundary.inflow_lag_depth(),
         config.boundary.is_present(),
+        inflow_form,
     )?;
     let transit_seed_arcs = build_transit_seed_arcs(system, &transit_bucket_topology);
     warn_on_boundary_absent_post_study_delivery(
@@ -2818,7 +2875,7 @@ fn canonicalize_initial_state(
         }
     }
     if let Some(stage0_box) = stage0_box {
-        for j in layout.transit_buckets_out.clone() {
+        for j in layout.state_dim_bucket_range() {
             state[j] = state[j].clamp(stage0_box.lower[j], stage0_box.upper[j]);
         }
     }
@@ -2904,8 +2961,7 @@ fn build_initial_state(
             for (slot, fraction) in calendar.coverage(&window).into_iter().enumerate() {
                 if fraction == 1.0 {
                     if slot < k_i {
-                        let off = layout.commit_out.start
-                            + layout.commitment_hold_in_study_offset(local_idx, slot);
+                        let j = layout.commitment_hold_state_dim(local_idx, slot).get();
                         // Project the seed onto its delivery stage's generation
                         // bound — the setup-time analog of the read-back seam's
                         // clamp — so a sub-tolerance input overshoot cannot drive
@@ -2916,7 +2972,7 @@ fn build_initial_state(
                         // residue-0 slot bounds a later delivery than the seed held
                         // here.
                         let cap = system.bounds().thermal_block_base(global_idx, slot);
-                        state[off] = history
+                        state[j] = history
                             .value_mw
                             .clamp(cap.min_generation_mw, cap.max_generation_mw);
                     } else {
@@ -2933,10 +2989,9 @@ fn build_initial_state(
                 reason = "padding slots must be exactly 0.0, because a non-zero value corrupts the ring buffer and makes the LP infeasible"
             )]
             for slot in k_i..layout.k_max {
-                let off = layout.commit_out.start
-                    + layout.commitment_hold_in_study_offset(local_idx, slot);
+                let j = layout.commitment_hold_state_dim(local_idx, slot).get();
                 debug_assert_eq!(
-                    state[off], 0.0,
+                    state[j], 0.0,
                     "padding slot must be zero: plant local_idx={local_idx}, slot={slot}, K_i={k_i}, k_max={}",
                     layout.k_max
                 );
@@ -3043,10 +3098,10 @@ fn hours_between(later: NaiveDate, earlier: NaiveDate) -> f64 {
     (later - earlier).num_hours() as f64
 }
 
-/// Write the travel-time bucket seed into `state`'s declared `transit_buckets_out`
-/// slots — the same index space [`StateSpace::state_to_lp_incoming_column`]
-/// remaps to the pinned `transit_buckets_in` LP column, so no separate pin wiring is
-/// needed beyond this splice.
+/// Write the travel-time bucket seed into `state`'s bucket dimensions — the
+/// same index space [`StateSpace::state_to_lp_incoming_column`] remaps to the
+/// pinned `transit_buckets_in` LP column, so no separate pin wiring is needed
+/// beyond this splice.
 fn splice_transit_bucket_seed(
     state: &mut [f64],
     layout: &StateSpace,
@@ -3054,7 +3109,7 @@ fn splice_transit_bucket_seed(
     topology: &bucket_topology::TransitBucketTopology,
 ) {
     let seed = build_initial_transit_bucket_state(system, topology, layout);
-    state[layout.transit_buckets_out.clone()].copy_from_slice(&seed);
+    state[layout.state_dim_bucket_range()].copy_from_slice(&seed);
 }
 
 // ---------------------------------------------------------------------------

@@ -49,6 +49,9 @@ pub(crate) fn postprocess_templates(
         .collect();
     stage_templates.set_state_boxes(state_boxes);
 
+    #[cfg(any(test, feature = "test-support"))]
+    stage_templates.record_pre_scaling();
+
     // Column scaling then row scaling (D_r * A * D_c). Scale factors are stored on
     // the template for unscaling primal/dual solutions in the forward/backward passes.
     let mut stage_scaling_reports = Vec::with_capacity(stage_templates.templates.len());
@@ -150,18 +153,9 @@ mod tests {
         }
     }
 
-    /// Regression: `state_boxes`'s storage bound must be the PHYSICAL
-    /// `col_upper` the template started with, never `col_upper / col_scale` —
-    /// `build_state_box` must read the identity families before
-    /// `apply_col_scale` divides them in place.
-    #[test]
-    fn postprocess_templates_storage_box_is_physical_not_scaled() {
-        const PHYSICAL_UPPER: f64 = 200.0;
-
+    fn postprocess_one(template: StageTemplate) -> (StageTemplates, StateSpace) {
         let mut stage_templates = StageTemplates::empty(1.0);
-        stage_templates
-            .templates
-            .push(scaled_storage_template(PHYSICAL_UPPER));
+        stage_templates.templates.push(template);
         stage_templates
             .geometry_per_stage
             .extend(equipment_free_geometry(&[0]));
@@ -189,6 +183,19 @@ mod tests {
             1.0,
             &time_value,
         );
+        (stage_templates, state_layout)
+    }
+
+    /// Regression: `state_boxes`'s storage bound must be the PHYSICAL
+    /// `col_upper` the template started with, never `col_upper / col_scale` —
+    /// `build_state_box` must read the identity families before
+    /// `apply_col_scale` divides them in place.
+    #[test]
+    fn postprocess_templates_storage_box_is_physical_not_scaled() {
+        const PHYSICAL_UPPER: f64 = 200.0;
+
+        let (stage_templates, state_layout) =
+            postprocess_one(scaled_storage_template(PHYSICAL_UPPER));
 
         assert_ne!(
             stage_templates.templates[0].col_scale[0], 1.0,
@@ -200,6 +207,32 @@ mod tests {
             PHYSICAL_UPPER,
             "the storage box's upper bound must be the physical max_storage, \
              not col_upper / col_scale"
+        );
+    }
+
+    fn bits(values: &[f64]) -> Vec<u64> {
+        values.iter().copied().map(f64::to_bits).collect()
+    }
+
+    #[test]
+    fn postprocess_templates_keeps_each_template_as_built() {
+        let built = scaled_storage_template(200.0);
+
+        let (stage_templates, _) = postprocess_one(built.clone());
+
+        assert_eq!(stage_templates.pre_scaling_templates().len(), 1);
+        let kept = &stage_templates.pre_scaling_templates()[0];
+        assert_eq!(bits(&kept.values), bits(&built.values), "values");
+        assert_eq!(bits(&kept.col_lower), bits(&built.col_lower), "col_lower");
+        assert_eq!(bits(&kept.col_upper), bits(&built.col_upper), "col_upper");
+        assert_eq!(bits(&kept.objective), bits(&built.objective), "objective");
+        assert_eq!(bits(&kept.row_lower), bits(&built.row_lower), "row_lower");
+        assert_eq!(bits(&kept.row_upper), bits(&built.row_upper), "row_upper");
+        assert!(kept.col_scale.is_empty() && kept.row_scale.is_empty());
+        assert_ne!(
+            bits(&stage_templates.templates[0].values),
+            bits(&built.values),
+            "the scaled template must differ from the capture"
         );
     }
 }

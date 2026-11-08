@@ -4,8 +4,8 @@ use novomodelo_core::{BlockMode, ContractType, Stage};
 use crate::hydro_models::EvaporationModel;
 use crate::indexer::{
     AnticipatedLocal, BlockIdx, Boundary, BusSys, EvapLocal, FillingTargetLocal, FloorLocal,
-    FphaCellLocal, FphaLocal, HydroCell, HydroSys, LineSys, NcsSys, PlantFloorLocal, PumpingSys,
-    ThermalSys, for_each_ring_residue, is_anticipated_decision_active_for_delivery,
+    FphaCellLocal, FphaLocal, HydroCell, HydroSys, InflowForm, LineSys, NcsSys, PlantFloorLocal,
+    PumpingSys, ThermalSys, for_each_ring_residue, is_anticipated_decision_active_for_delivery,
 };
 
 use super::EVAPORATION_FLOW_SAFETY_MARGIN;
@@ -38,7 +38,10 @@ pub(super) fn fill_stage_columns(
     fill_storage_columns(ctx, stage, stage_idx, layout, bufs);
     fill_transit_bucket_columns(layout, bufs);
     fill_anticipated_slot_columns(layout, bufs);
-    fill_ar_lag_columns(layout, bufs);
+    match layout.state.inflow_form {
+        InflowForm::Logical => fill_ar_lag_columns(layout, bufs),
+        InflowForm::Compact => {}
+    }
     fill_anticipated_state_columns(layout, bufs);
     fill_theta_column(layout, bufs);
     fill_turbine_columns(ctx, stage, stage_idx, layout, bufs);
@@ -58,7 +61,10 @@ pub(super) fn fill_stage_columns(
     fill_contract_columns(ctx, stage, stage_idx, layout, bufs);
     fill_filling_target_columns(ctx, stage_idx, layout, bufs);
     fill_filled_min_storage_floor_columns(ctx, stage_idx, layout, bufs);
-    fill_z_inflow_columns(layout, bufs);
+    match layout.state.inflow_form {
+        InflowForm::Logical => fill_z_inflow_columns(layout, bufs),
+        InflowForm::Compact => {}
+    }
 
     (col_lower, col_upper, objective)
 }

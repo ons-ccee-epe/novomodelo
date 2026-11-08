@@ -628,7 +628,7 @@ fn simulate_fixture(
         0,
         0,
         ActiveSolver::new().expect("ActiveSolver::new must succeed"),
-        PatchBuffer::new(&fx.state, &[], &[]),
+        PatchBuffer::new(&fx.state, &[], &[], &[]),
         &sim_training_ctx,
         &stage_ctx_sim,
         WorkspaceSizing::default(),

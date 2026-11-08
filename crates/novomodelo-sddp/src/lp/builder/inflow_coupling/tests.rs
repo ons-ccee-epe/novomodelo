@@ -14,7 +14,7 @@ fn record_rejects_a_hydro_past_the_sink() {
 fn finish_rejects_a_row_past_the_base_rows() {
     let mut sink = InflowCouplingSink::new(1);
     sink.record(HydroSys::new(0), 5, -1.0);
-    let _ = sink.finish(5);
+    let _ = sink.finish(&[0.0; 5], &[0.0; 5]);
 }
 
 #[cfg(debug_assertions)]
@@ -23,7 +23,7 @@ fn finish_rejects_a_row_past_the_base_rows() {
 fn finish_rejects_a_nan_coefficient() {
     let mut sink = InflowCouplingSink::new(1);
     sink.record(HydroSys::new(0), 0, f64::NAN);
-    let _ = sink.finish(1);
+    let _ = sink.finish(&[0.0; 1], &[0.0; 1]);
 }
 
 #[test]
@@ -35,7 +35,7 @@ fn finish_orders_hydros_canonically_and_rows_ascending_within_a_hydro() {
     sink.record(HydroSys::new(0), 2, -2.0);
     sink.record(HydroSys::new(0), 2, -2.5);
 
-    let coupling = sink.finish(8);
+    let coupling = sink.finish(&[0.0; 8], &[0.0; 8]);
     let entries = |h: usize| coupling.hydro_entries(HydroSys::new(h)).collect::<Vec<_>>();
 
     assert_eq!(coupling.n_hydros(), 3);
@@ -61,7 +61,7 @@ fn finish_orders_entries_canonically_whatever_the_push_order() {
             let (hydro, row, coefficient) = entries[i];
             sink.record(HydroSys::new(hydro), row, coefficient);
         }
-        sink.finish(8)
+        sink.finish(&[0.0; 8], &[0.0; 8])
     };
 
     let in_order = finished([0, 1, 2, 3, 4, 5, 6]);
@@ -71,4 +71,28 @@ fn finish_orders_entries_canonically_whatever_the_push_order() {
     assert_eq!(in_order.rows, permuted.rows);
     let bits = |coefficients: &[f64]| coefficients.iter().map(|c| c.to_bits()).collect::<Vec<_>>();
     assert_eq!(bits(&in_order.coefficients), bits(&permuted.coefficients));
+}
+
+#[test]
+fn finish_lists_each_touched_row_once_with_its_unscaled_bounds() {
+    let mut sink = InflowCouplingSink::new(3);
+    sink.record(HydroSys::new(0), 4, -4.0);
+    sink.record(HydroSys::new(2), 4, -4.5);
+    sink.record(HydroSys::new(0), 1, -1.0);
+    sink.record(HydroSys::new(1), 6, -6.0);
+    let row_lower = [-0.5, 1.5, -2.5, 3.5, 4.25, -5.5, 6.75, 7.5];
+    let row_upper = [0.5, 11.5, 2.5, -3.5, 14.25, 5.5, -16.75, 17.5];
+
+    let coupling = sink.finish(&row_lower, &row_upper);
+
+    assert_eq!(coupling.touched_rows(), [1, 4, 6]);
+    let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+    assert_eq!(
+        bits(coupling.touched_row_lower()),
+        bits(&[row_lower[1], row_lower[4], row_lower[6]])
+    );
+    assert_eq!(
+        bits(coupling.touched_row_upper()),
+        bits(&[row_upper[1], row_upper[4], row_upper[6]])
+    );
 }

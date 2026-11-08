@@ -3,7 +3,7 @@ use novomodelo_core::{BlockMode, Stage};
 
 use crate::hydro_models::EvaporationModel;
 use crate::indexer::{
-    BlockIdx, BusSys, EvapLocal, FillingTargetLocal, FloorLocal, HydroCell, HydroSys,
+    BlockIdx, BusSys, EvapLocal, FillingTargetLocal, FloorLocal, HydroCell, HydroSys, InflowForm,
     PlantCapLocal, PlantFloorLocal,
 };
 
@@ -56,7 +56,12 @@ pub(super) fn fill_stage_rows(
     fill_anticipated_fishing_rows(layout, &mut row_lower, &mut row_upper);
     fill_anticipated_state_out_def_rows(layout, &mut row_lower, &mut row_upper);
     fill_anticipated_slot_definition_rows(layout, &mut row_lower, &mut row_upper);
-    fill_z_inflow_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
+    match layout.state.inflow_form {
+        InflowForm::Logical => {
+            fill_z_inflow_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
+        }
+        InflowForm::Compact => {}
+    }
 
     (row_lower, row_upper)
 }

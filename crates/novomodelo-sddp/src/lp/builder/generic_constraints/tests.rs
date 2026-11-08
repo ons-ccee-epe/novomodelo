@@ -9,8 +9,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use super::super::entries::{LpMatrixBuffers, fill_generic_constraint_entries};
-use super::super::inflow_coupling::InflowCouplingSink;
+use super::super::entries::fill_generic_constraints_for_test;
 use super::super::layout::variable_ref_is_block_independent;
 use super::{contract_family_slot, resolve_variable_ref};
 use crate::hydro_models::{
@@ -1629,20 +1628,8 @@ fn generic_row_merges_line_exchange_and_line_direct() {
         "a block-dependent expression expands to one generic row per block"
     );
 
-    let mut col_entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); layout.num_cols];
-    let mut col_upper = vec![f64::INFINITY; layout.num_cols];
-    let mut objective = vec![0.0_f64; layout.num_cols];
-    let mut row_lower = vec![f64::NEG_INFINITY; layout.rows.num_rows];
-    let mut row_upper = vec![f64::INFINITY; layout.rows.num_rows];
-    let mut buffers = LpMatrixBuffers {
-        col_entries: &mut col_entries,
-        col_upper: &mut col_upper,
-        objective: &mut objective,
-        row_lower: &mut row_lower,
-        row_upper: &mut row_upper,
-    };
-    let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
-    fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers, &mut sink);
+    let fill =
+        fill_generic_constraints_for_test(&ctx, 0, &layout, vec![Vec::new(); layout.num_cols]);
 
     for blk in 0..n_blks {
         let direct = VariableRef::LineDirect {
@@ -1657,7 +1644,7 @@ fn generic_row_merges_line_exchange_and_line_direct() {
         let reverse = call(exchange, blk, &ctx, &layout)[1].0;
         let row = layout.generic_row(blk);
         let at = |col: usize| -> Vec<f64> {
-            col_entries[col]
+            fill.col_entries[col]
                 .iter()
                 .filter(|&&(r, _)| r == row)
                 .map(|&(_, v)| v)
@@ -2179,21 +2166,9 @@ fn inflow_coupling_merges_generic_hydro_inflow_terms_on_one_hydro() {
     let layout = StageLayout::new(&ctx, &fx.stage, 0);
     assert_eq!(layout.rows.n_generic_rows, 2);
 
-    let mut col_entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); layout.num_cols];
-    let mut col_upper = vec![f64::INFINITY; layout.num_cols];
-    let mut objective = vec![0.0_f64; layout.num_cols];
-    let mut row_lower = vec![f64::NEG_INFINITY; layout.rows.num_rows];
-    let mut row_upper = vec![f64::INFINITY; layout.rows.num_rows];
-    let mut buffers = LpMatrixBuffers {
-        col_entries: &mut col_entries,
-        col_upper: &mut col_upper,
-        objective: &mut objective,
-        row_lower: &mut row_lower,
-        row_upper: &mut row_upper,
-    };
-    let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
-    fill_generic_constraint_entries(&ctx, 0, &layout, &mut buffers, &mut sink);
-    let coupling = sink.finish(layout.rows.num_rows);
+    let coupling =
+        fill_generic_constraints_for_test(&ctx, 0, &layout, vec![Vec::new(); layout.num_cols])
+            .coupling;
 
     let target = ctx.positions.hydro(hydro_id).unwrap();
     for h in 0..layout.state.hydro_count {

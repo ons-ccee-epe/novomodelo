@@ -46,6 +46,7 @@ use novomodelo_sddp::hydro_models::{
     ProductionModelSet, ResolvedProductionModel,
 };
 
+use super::Emission;
 use super::builders::{
     BusSpec, HydroSpec, StageSpec, ThermalSpec, make_bus, make_hydro, make_stage, make_thermal,
 };
@@ -2171,6 +2172,14 @@ pub fn two_hydro_evaporation_study() -> (novomodelo_core::System, Config, Prepar
 /// equal systems.
 #[must_use]
 pub fn structural_studies() -> Vec<(String, novomodelo_core::System, StudySetup)> {
+    structural_studies_as(Emission::Logical)
+}
+
+/// [`structural_studies`] building the chosen inflow `emission`.
+#[must_use]
+pub fn structural_studies_as(
+    emission: Emission,
+) -> Vec<(String, novomodelo_core::System, StudySetup)> {
     let (discounted_system, discounted_config) = discounted_anticipated_study();
     let (discounted_system_for_setup, _) = discounted_anticipated_study();
     let (parallel_evap_system, parallel_evap_config, _) = parallel_multiblock_evaporation_study();
@@ -2186,35 +2195,45 @@ pub fn structural_studies() -> Vec<(String, novomodelo_core::System, StudySetup)
         (
             "in-code/discounted-anticipated".to_string(),
             discounted_system,
-            super::build_setup_in_code(discounted_system_for_setup, &discounted_config),
+            super::build_setup_in_code_as(
+                discounted_system_for_setup,
+                &discounted_config,
+                emission,
+            ),
         ),
         (
             "in-code/parallel-multiblock-evaporation".to_string(),
             parallel_evap_system,
-            super::build_setup_in_code_with_models(
+            super::build_setup_in_code_with_models_as(
                 parallel_evap_system_for_setup,
                 &parallel_evap_config,
                 parallel_evap_hydro_models_for_setup,
+                emission,
             ),
         ),
         (
             "structural/mixed-lead-anticipated".to_string(),
             mixed_lead_system,
-            super::build_setup_in_code(mixed_lead_system_for_setup, &mixed_lead_config),
+            super::build_setup_in_code_as(
+                mixed_lead_system_for_setup,
+                &mixed_lead_config,
+                emission,
+            ),
         ),
         (
             "structural/two-hydro-evaporation".to_string(),
             evap_system,
-            super::build_setup_in_code_with_models(
+            super::build_setup_in_code_with_models_as(
                 evap_system_for_setup,
                 &evap_config,
                 evap_hydro_models_for_setup,
+                emission,
             ),
         ),
         (
             "structural/parallel-inflow-slack".to_string(),
             slack_system,
-            super::build_setup_in_code(slack_system_for_setup, &slack_config),
+            super::build_setup_in_code_as(slack_system_for_setup, &slack_config, emission),
         ),
     ]
 }

@@ -17,15 +17,10 @@ use crate::cut::FutureCostFunction;
 use crate::indexer::{CutStateProjection, OutCol, StateSpace};
 
 /// Push one cut-row coefficient: `-coeff * col_scale[j]` (sign negation per the
-/// module-doc Benders contract). Sole owner of the negate-and-scale rule, shared
-/// by all three cut-row builders so it cannot drift apart.
+/// module-doc Benders contract). Sole owner of the negate-and-scale rule; every
+/// cut-row writer reaches it through [`push_cut_row`].
 #[inline]
-pub(crate) fn push_scaled_coefficient(
-    batch: &mut RowBatch,
-    col: OutCol,
-    coeff: f64,
-    col_scale: &[f64],
-) {
+fn push_scaled_coefficient(batch: &mut RowBatch, col: OutCol, coeff: f64, col_scale: &[f64]) {
     let j = col.get();
     debug_assert!(
         i32::try_from(j).is_ok(),
@@ -47,8 +42,9 @@ pub(crate) fn push_scaled_coefficient(
 /// The caller pushes this row's `row_starts` offset before calling and the
 /// terminator / `num_rows` / `add_rows` afterward; this helper appends only the
 /// non-zeros and bounds. Shared by [`build_cut_row_batch_into`],
-/// [`append_new_cuts_to_lp`], and the DCS [`append_slots_to_lp`] so the three
-/// cannot drift apart.
+/// [`append_new_cuts_to_lp`], the DCS [`append_slots_to_lp`], and
+/// [`build_delta_cut_row_batch_into`](crate::training::forward::build_delta_cut_row_batch_into)
+/// so the four cannot drift apart.
 ///
 /// `coefficients` has length `cut_state.n_slots()` (the pool's enabled cut-state
 /// dimensions); the row places each enabled non-padding coefficient onto the
@@ -223,8 +219,6 @@ pub fn build_cut_row_batch(
 ///
 /// Panics if `total_nnz` exceeds `i32::MAX` (LP exceeds the `HiGHS` API limit).
 /// In debug builds, also panics if `pool >= fcf.pools.len()`.
-///
-/// [`CutRowMap`]: CutRowMap
 pub fn append_new_cuts_to_lp<S: SolverInterface>(
     solver: &mut S,
     fcf: &FutureCostFunction,
@@ -305,8 +299,6 @@ pub fn append_new_cuts_to_lp<S: SolverInterface>(
 ///
 /// Panics if the total non-zero count exceeds `i32::MAX` (the `HiGHS` API
 /// limit), matching [`append_new_cuts_to_lp`].
-///
-/// [`CutPool`]: CutPool
 pub fn append_slots_to_lp<S: SolverInterface>(
     solver: &mut S,
     pool: &CutPool,

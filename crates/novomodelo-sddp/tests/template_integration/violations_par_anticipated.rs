@@ -345,7 +345,7 @@ fn parameter_coefficient_persists_across_stage_template_uses() {
     );
 
     let capacity_formula = m * b_max + n;
-    let mut buf = PatchBuffer::new(&state, &load_bus_indices, &geometry_per_stage);
+    let mut buf = PatchBuffer::new(&state, &load_bus_indices, &geometry_per_stage, &[]);
 
     assert_eq!(
         buf.indices.len(),
